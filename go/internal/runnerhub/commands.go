@@ -12,7 +12,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -73,7 +75,14 @@ func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartA
 	// id the Runner minted, so RelayCommsCall for this session resolves the
 	// agent account (comms-tools design T2). A container with no recorded
 	// account leaves no session binding, and its comms calls fail closed.
-	h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId())
+	//
+	// RIG-3696: a REFUSED promotion (the session id is durably owned by another
+	// account) leaves the session started on the Runner but bindable to nobody,
+	// so it is rolled back rather than left running unbound — the alternative is
+	// a live agent whose comms calls resolve nowhere and which no Stop reaps.
+	if promoteErr := h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId()); promoteErr != nil {
+		return nil, h.rollbackStartedSession(ctx, resp.GetSessionId(), promoteErr)
+	}
 	// The initial secret materialize no longer rides a signal: the Runner
 	// materializes the container's set pre-exec at Start, before the agent runs.
 	// The SecretsVersion signal is now the T6 ROTATION path only.
@@ -192,6 +201,61 @@ func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1intern
 	}
 	return result, runnerID, nil
 }
+
+// rollbackStartedSession tears down a session the Runner already started but
+// whose account binding was REFUSED (RIG-3696), and returns the error the Start
+// fails with. Used by both start legs (Start and StartResume): a started session
+// no binding can authorize is a live agent whose comms calls resolve nowhere,
+// so it is stopped rather than stranded.
+//
+// It relays the Stop command DIRECTLY rather than calling Hub.Stop, and that is
+// the load-bearing choice. Hub.Stop follows its relay with unbindSession, which
+// DELETES the durable session_bindings row by session id — and on this path that
+// row belongs to the OTHER account, the durable owner whose ownership is the
+// exact reason the promotion was refused. Stopping through Hub.Stop would
+// therefore destroy the binding the conflict protected, converting a fail-closed
+// refusal into the silent unbind it exists to prevent. The refused promotion
+// wrote nothing to this hub's maps either, so there is no cache state to evict:
+// a bare relay is the whole rollback.
+//
+// The Stop runs on context.WithoutCancel(ctx) bounded by rollbackStopTimeout:
+// the session is live regardless of the caller's context, and the dispatch path
+// has no deadline of its own, so an unbounded Stop against a Runner that accepts
+// the command but never answers would hang the Start
+// (server/service.go abandonStartedSession takes the same posture for the same
+// reason). A Stop failure is folded into the returned error with errors.Join
+// rather than masking the conflict: the session is then running unreapable, and
+// only an operator who can see BOTH causes can clean it up.
+func (h *Hub) rollbackStartedSession(ctx context.Context, sessionID string, cause error) error {
+	if sessionID == "" {
+		// The Runner answered with no session id, so there is nothing to stop —
+		// and nothing was started under an id anyone can name.
+		return connect.NewError(connect.CodeInternal, cause)
+	}
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackStopTimeout)
+	defer cancel()
+	_, _, stopErr := h.relay(stopCtx, sessionID, &compassv1internal.SessionsResponse{
+		RequestId: orNewRequestID(""),
+		Command: &compassv1internal.SessionsResponse_Stop{
+			Stop: &compassv1.StopAgentSessionRequest{SessionId: sessionID},
+		},
+	})
+	if stopErr != nil {
+		h.log.Error("session binding was refused and the started session could not be stopped; it is running unreapable",
+			"session_id", sessionID, "cause", cause, "stop_error", stopErr)
+		return connect.NewError(connect.CodeInternal, errors.Join(cause, fmt.Errorf("stopping the started session %q: %w", sessionID, stopErr)))
+	}
+	h.log.Error("session binding was refused; stopped the started session to avoid stranding it",
+		"session_id", sessionID, "cause", cause)
+	return connect.NewError(connect.CodeInternal, cause)
+}
+
+// rollbackStopTimeout bounds the best-effort Stop in rollbackStartedSession. The
+// runnerhub dispatch path has no deadline of its own, so without this bound a
+// Runner that accepts the Stop command and never answers would hang the Start
+// that is rolling back. Mirrors server/service.go's rollbackStopTimeout, the
+// same bound on the same class of teardown. A var so a test can shorten it.
+var rollbackStopTimeout = 30 * time.Second
 
 // runnerErrorToConnect maps a RunnerError to the Connect status the client sees.
 func runnerErrorToConnect(e *compassv1internal.RunnerError) error {

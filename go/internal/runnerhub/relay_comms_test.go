@@ -63,7 +63,10 @@ func bindLiveSession(hub *Hub) {
 		account       = store.AccountID("acct-agent")
 	)
 	hub.bindContainer(containerName, account)
-	hub.promoteSession(context.Background(), containerName, sessionID)
+	// Discarded with a reason: promoteSession only refuses a durable
+	// store.ErrConflict, and these hubs wire no SessionBindingStore, so the
+	// return is provably nil (helpers_test.go mustPromote is the asserting form).
+	_ = hub.promoteSession(context.Background(), containerName, sessionID)
 }
 
 // 1. An unknown session fails closed CodeNotFound and NEVER reaches the caller —
@@ -470,7 +473,8 @@ func TestUnbindSessionFiresTerminalPresenceEdge(t *testing.T) {
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession(context.Background(), "c1", "sess-a") // fires one promoted edge, not a lifecycle one
+	// Fires one promoted edge, not a lifecycle one.
+	mustPromote(t, hub, "c1", "sess-a")
 
 	hub.unbindSession(context.Background(), "sess-a")
 
@@ -494,11 +498,11 @@ func TestUnbindStaleSessionFiresNoTerminalEdgeWhenRepointed(t *testing.T) {
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession(context.Background(), "c1", "sess-old")
+	mustPromote(t, hub, "c1", "sess-old")
 	// A new container/session promotes onto the SAME account, re-pointing the
 	// reverse entry to sess-new (the newer live session).
 	hub.bindContainer("c2", "acct-a")
-	hub.promoteSession(context.Background(), "c2", "sess-new")
+	mustPromote(t, hub, "c2", "sess-new")
 
 	// Unbind the stale session: its forward entry is dropped, but the reverse
 	// entry now points at sess-new, so no terminal edge fires.
@@ -525,9 +529,9 @@ func TestEnrollFiresTerminalPresenceEdgePerBoundAccountAndClears(t *testing.T) {
 	hub.SetPresenceSink(pres)
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession(context.Background(), "c1", "sess-a")
+	mustPromote(t, hub, "c1", "sess-a")
 	hub.bindContainer("c2", "acct-b")
-	hub.promoteSession(context.Background(), "c2", "sess-b")
+	mustPromote(t, hub, "c2", "sess-b")
 
 	// A Runner reconnect: enroll drops every binding and drives each previously-
 	// bound account OFFLINE.

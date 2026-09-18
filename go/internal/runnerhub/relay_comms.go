@@ -12,6 +12,7 @@ package runnerhub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 
 	"connectrpc.com/connect"
@@ -55,15 +56,31 @@ func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID
 // instances drop any stale cache entry for it. The store write and the publish
 // both run with h.mu RELEASED — never hold the lock across a store call or a
 // sink — exactly the lock-then-store-then-map discipline the design requires.
-func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID string) {
+//
+// RIG-3696: a store.ErrConflict FAILS THE PROMOTION CLOSED — it returns the
+// error and installs NO in-RAM binding. Exactly one thing raises it
+// (session_bindings_session_key: this session id is already bound to a DIFFERENT
+// account), so caching the promotion anyway would leave this instance
+// authorizing the session's comms calls under an account the durable arbiter —
+// Postgres — says it does not speak for: in-RAM auth diverging from durable
+// ownership, which is the whole property the binding table exists to hold. The
+// refused promotion mutates NOTHING: no map write, no publish, no sink edge, and
+// the container->account entry is left for Remove's unbindContainer, so both RAM
+// and durable state are exactly as they were. The caller rolls the already
+// -started session back rather than run it unbound (commands.go Hub.Start).
+//
+// Any OTHER durable-write fault still falls back to the in-RAM cache: it is a
+// transient store fault, not a statement about ownership, so failing a Start the
+// Runner already completed would trade availability for nothing.
+func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID string) error {
 	if containerName == "" || sessionID == "" {
-		return
+		return nil
 	}
 	h.mu.Lock()
 	account, ok := h.containerAccounts[containerName]
 	if !ok {
 		h.mu.Unlock()
-		return
+		return nil
 	}
 	// Capture the store handle, routing fabric, and enrolled Runner id under the
 	// lock, then release BEFORE the store write: the binding row names the Runner
@@ -84,14 +101,22 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	tenant := ""
 	if bindings != nil && runnerID != "" {
 		d, err := bindings.RecordSessionBinding(ctx, sessionID, account, runnerID)
-		if err != nil {
+		switch {
+		case errors.Is(err, store.ErrConflict):
+			// The durable row for this session id names a DIFFERENT account.
+			// Fail closed: install no binding, publish nothing, and hand the
+			// caller the conflict so it tears the started session down.
+			h.log.Error("session binding conflicts with the durable owner; promotion refused",
+				"session_id", sessionID, "account", string(account), "error", err)
+			return fmt.Errorf("runnerhub: promoting session %q onto account %q: %w", sessionID, account, err)
+		case err != nil:
 			// A durable-write fault must not fail the Start that already succeeded
 			// on the Runner: log it and fall back to the in-RAM cache so the session
 			// resolves at least on this instance. The next re-enroll sweep or a
 			// cache-miss re-read reconciles against the table.
 			h.log.Error("record session binding failed; falling back to in-RAM cache",
 				"session_id", sessionID, "account", string(account), "error", err)
-		} else {
+		default:
 			displaced = d
 			tenant = string(bindings.EffectiveTenant(ctx))
 		}
@@ -143,6 +168,8 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	if presence != nil {
 		presence.OnSessionPromoted(account, sessionID)
 	}
+
+	return nil
 }
 
 // publishBindingChange fans one binding invalidation to peer instances over the

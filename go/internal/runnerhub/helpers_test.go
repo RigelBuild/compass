@@ -168,7 +168,22 @@ const testAgentAccount store.AccountID = "acct-agent"
 func bindSession(hub *Hub, sessionID string) {
 	container := "container-for-" + sessionID
 	hub.bindContainer(container, testAgentAccount)
-	hub.promoteSession(context.Background(), container, sessionID)
+	// The promotion error is discarded with a reason, not by oversight: the only
+	// thing promoteSession refuses is a durable store.ErrConflict, and no caller
+	// of this helper wires a SessionBindingStore, so the return is provably nil.
+	// A test that DOES wire one uses mustPromote below, which asserts on it.
+	_ = hub.promoteSession(context.Background(), container, sessionID)
+}
+
+// mustPromote drives promoteSession and fails the test if the promotion is
+// REFUSED — the shape every test that wires a SessionBindingStore uses, so a
+// fail-closed refusal can never be mistaken for a successful bind. A test that
+// EXPECTS the refusal calls promoteSession directly and asserts on the error.
+func mustPromote(t *testing.T, hub *Hub, containerName, sessionID string) {
+	t.Helper()
+	if err := hub.promoteSession(context.Background(), containerName, sessionID); err != nil {
+		t.Fatalf("promoteSession(%q, %q) = %v, want nil", containerName, sessionID, err)
+	}
 }
 
 // commsCall records one CommsCaller invocation: the account the hub resolved

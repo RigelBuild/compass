@@ -24,7 +24,13 @@ import (
 //
 // Post-relay it promotes the container's account binding onto the minted live
 // session id exactly as Start does, so a resumed session's comms calls resolve
-// the same way a fresh one's do.
+// the same way a fresh one's do — INCLUDING the RIG-3696 fail-closed rollback: a
+// refused promotion (the session id is durably owned by another account) stops
+// the session the Runner just started rather than leaving a live agent whose
+// comms calls resolve nowhere. A resume deliberately REUSES the logical session
+// id as the live id, so it is the leg where a durably-owned id is reachable at
+// all — the conflict means the resumed id belongs to a different account, which
+// is precisely the resume that must not proceed.
 func (h *Hub) StartResume(ctx context.Context, requestID string, req *compassv1.StartAgentSessionRequest, resumeBody []byte) (*compassv1.StartAgentSessionResponse, error) {
 	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
 		RequestId:  orNewRequestID(requestID),
@@ -35,6 +41,8 @@ func (h *Hub) StartResume(ctx context.Context, requestID string, req *compassv1.
 		return nil, err
 	}
 	resp := result.GetStart()
-	h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId())
+	if promoteErr := h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId()); promoteErr != nil {
+		return nil, h.rollbackStartedSession(ctx, resp.GetSessionId(), promoteErr)
+	}
 	return resp, nil
 }

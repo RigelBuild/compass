@@ -62,7 +62,7 @@ func TestPromoteSessionFiresStartSink(t *testing.T) {
 	// The Provision->Start promotion path: record the container's account, then
 	// promote it onto the minted session id.
 	hub.bindContainer("c1", testAgentAccount)
-	hub.promoteSession(context.Background(), "c1", "sess-1")
+	mustPromote(t, hub, "c1", "sess-1")
 
 	got := sink.snapshot()
 	if len(got) != 1 {
@@ -83,7 +83,7 @@ func TestPromoteSessionNoBindingFiresNothing(t *testing.T) {
 	hub.SetSessionStartSink(sink)
 
 	// No bindContainer: the container has no recorded account.
-	hub.promoteSession(context.Background(), "c-unknown", "sess-1")
+	mustPromote(t, hub, "c-unknown", "sess-1")
 
 	if got := sink.snapshot(); len(got) != 0 {
 		t.Fatalf("start edges = %d, want 0 (a non-binding promotion sweeps nothing)", len(got))
@@ -101,7 +101,7 @@ func TestPromoteSessionNilStartSinkStillBinds(t *testing.T) {
 	hub := newHubOnly() // no SetSessionStartSink
 
 	hub.bindContainer("c1", testAgentAccount)
-	hub.promoteSession(context.Background(), "c1", "sess-1")
+	mustPromote(t, hub, "c1", "sess-1")
 
 	// The binding is live in both directions — promoteSession did its job with no
 	// sink wired.

@@ -10,6 +10,8 @@ package runnerhub
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -146,6 +148,203 @@ func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 	}
 	if got := resp.GetSessionId(); got != "sess-ok" {
 		t.Fatalf("Start session id = %q, want sess-ok", got)
+	}
+}
+
+// attachStartStopRecorder enrolls a Runner and answers every Start with
+// startedSession and every Stop with success, recording which command variants
+// reached the wire — the seam the RIG-3696 rollback tests assert on. A Start
+// answered successfully is what makes the rollback reachable at all: the session
+// IS live on the Runner when the promotion is refused.
+func attachStartStopRecorder(t *testing.T, hub *Hub, startedSession string) *startStopRecorder {
+	t.Helper()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	router, _, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	rec := &startStopRecorder{}
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		var result *compassv1internal.SessionsRequest
+		switch cmd.GetCommand().(type) {
+		case *compassv1internal.SessionsResponse_Start:
+			rec.recordStart()
+			result = &compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: startedSession}},
+			}
+		case *compassv1internal.SessionsResponse_Stop:
+			rec.recordStop(cmd.GetStop().GetSessionId())
+			result = &compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result:    &compassv1internal.SessionsRequest_Stop{Stop: &compassv1.StopAgentSessionResponse{}},
+			}
+		}
+		go router.complete(result)
+		return nil
+	})
+	return rec
+}
+
+// startStopRecorder records the Start count and the session ids Stop was asked
+// to tear down. Concurrency-safe: the router's sender goroutine drives it.
+type startStopRecorder struct {
+	mu      sync.Mutex
+	starts  int
+	stopped []string
+}
+
+func (r *startStopRecorder) recordStart() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.starts++
+}
+
+func (r *startStopRecorder) recordStop(sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopped = append(r.stopped, sessionID)
+}
+
+func (r *startStopRecorder) snapshot() (starts int, stopped []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.starts, append([]string(nil), r.stopped...)
+}
+
+// conflictOnSession returns a fake binding store whose durable table already
+// binds sessionID to another account, so promoting it raises store.ErrConflict —
+// the RIG-3696 precondition both start legs must fail closed on.
+func conflictOnSession(hub *Hub, sessionID string) *fakeBindingStore {
+	bindings := newFakeBindingStore()
+	bindings.mu.Lock()
+	bindings.bindings[sessionID] = store.SessionBinding{SessionID: sessionID, AccountID: "acct-durable-owner", RunnerID: "runner-1"}
+	bindings.mu.Unlock()
+	hub.SetSessionBindingStore(bindings)
+	return bindings
+}
+
+// TestStartRollsBackTheStartedSessionOnABindingConflict is the RIG-3696 caller
+// half: when the promotion is REFUSED (the minted session id is durably owned by
+// another account), Start must not return success on a session nothing can
+// authorize. It stops the session it just started and returns the conflict.
+//
+// The Stop MUST go through the raw relay, not Hub.Stop: Hub.Stop follows its
+// relay with unbindSession, which deletes the durable row by session id — and
+// that row belongs to the OTHER account, whose ownership is the whole reason the
+// promotion was refused. This asserts the row SURVIVES the rollback, which is
+// what fails if the rollback is ever re-pointed at Hub.Stop.
+func TestStartRollsBackTheStartedSessionOnABindingConflict(t *testing.T) {
+	const contested = "sess-contested"
+	hub := newHubOnly()
+	rec := attachStartStopRecorder(t, hub, contested)
+	bindings := conflictOnSession(hub, contested)
+	hub.bindContainer("c1", testAgentAccount)
+
+	resp, err := hub.Start(context.Background(), "req-1", &compassv1.StartAgentSessionRequest{ContainerName: "c1"})
+
+	if err == nil {
+		t.Fatalf("Start with a conflicting binding = (%v, nil), want an error: a session no binding can authorize must not be reported as started", resp)
+	}
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Start error = %v, want one wrapping store.ErrConflict (the cause must survive the Connect wrap)", err)
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("Start error code = %v, want Internal", got)
+	}
+	starts, stopped := rec.snapshot()
+	if starts != 1 {
+		t.Fatalf("Start commands relayed = %d, want 1 (the session WAS started; that is why it needs rolling back)", starts)
+	}
+	if len(stopped) != 1 || stopped[0] != contested {
+		t.Fatalf("Stop commands relayed = %+v, want exactly [%s] — the started session must be torn down", stopped, contested)
+	}
+	// The durable owner's row survived: the rollback used the raw relay, so no
+	// unbindSession ran to delete the row the conflict was protecting.
+	bindings.mu.Lock()
+	owner := bindings.bindings[contested].AccountID
+	bindings.mu.Unlock()
+	if owner != "acct-durable-owner" {
+		t.Fatalf("durable binding for %s after rollback = %q, want acct-durable-owner — rolling back through Hub.Stop would unbind the very row the conflict protected", contested, owner)
+	}
+	// And the rolled-back session never resolves to the account that tried to
+	// claim it. The read-through still answers with the DURABLE OWNER (the row
+	// above survived), which is the arbiter's correct answer; the promoting
+	// account resolving is the divergence this whole change closes.
+	if acct, ok := hub.accountForSession(context.Background(), contested); ok && acct == testAgentAccount {
+		t.Fatalf("accountForSession(%s) after a rolled-back Start = %q — the promoting account must never resolve the session it failed to claim", contested, acct)
+	}
+}
+
+// TestStartResumeRollsBackTheStartedSessionOnABindingConflict: the resume leg
+// carries IDENTICAL promotion semantics. It matters more here than on the fresh
+// leg — a resume deliberately REUSES the logical session id as the live id, so a
+// durably-owned id is reachable by construction rather than by a collision.
+// The resume body is still relayed verbatim (the promotion runs after the relay);
+// what changes is that the refused promotion tears the session back down.
+func TestStartResumeRollsBackTheStartedSessionOnABindingConflict(t *testing.T) {
+	const contested = "sess-resumed"
+	hub := newHubOnly()
+	rec := attachStartStopRecorder(t, hub, contested)
+	conflictOnSession(hub, contested)
+	hub.bindContainer("c1", testAgentAccount)
+
+	resp, err := hub.StartResume(context.Background(), "req-1",
+		&compassv1.StartAgentSessionRequest{ContainerName: "c1", ResumeSessionId: contested},
+		[]byte("transcript body"))
+
+	if err == nil {
+		t.Fatalf("StartResume with a conflicting binding = (%v, nil), want an error", resp)
+	}
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("StartResume error = %v, want one wrapping store.ErrConflict", err)
+	}
+	starts, stopped := rec.snapshot()
+	if starts != 1 {
+		t.Fatalf("Start commands relayed = %d, want 1", starts)
+	}
+	if len(stopped) != 1 || stopped[0] != contested {
+		t.Fatalf("Stop commands relayed = %+v, want exactly [%s] — the resumed session must be torn down too", stopped, contested)
+	}
+}
+
+// TestStartResumePassesTheResumeIDThroughUnchanged: the rollback arm must not
+// have disturbed the resume pass-through. The public request is relayed VERBATIM
+// — resume_session_id included — and the Runner's minted id (which for a resume
+// IS the logical id) comes back as the response session id.
+func TestStartResumePassesTheResumeIDThroughUnchanged(t *testing.T) {
+	const resumeID = "sess-logical"
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	router, _, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	var relayedResumeID, relayedBody string
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		relayedResumeID = cmd.GetStart().GetResumeSessionId()
+		relayedBody = cmd.GetResumeBody().GetSessionBody()
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: resumeID}},
+		})
+		return nil
+	})
+
+	resp, err := hub.StartResume(context.Background(), "req-ok",
+		&compassv1.StartAgentSessionRequest{ContainerName: "c1", ResumeSessionId: resumeID},
+		[]byte("transcript body"))
+	if err != nil {
+		t.Fatalf("StartResume = %v, want success", err)
+	}
+	if relayedResumeID != resumeID {
+		t.Fatalf("relayed resume_session_id = %q, want %q (the public request is relayed verbatim)", relayedResumeID, resumeID)
+	}
+	if relayedBody != "transcript body" {
+		t.Fatalf("relayed resume body = %q, want the reconstructed transcript body", relayedBody)
+	}
+	if got := resp.GetSessionId(); got != resumeID {
+		t.Fatalf("StartResume session id = %q, want %q (a resume reuses the logical id)", got, resumeID)
 	}
 }
 
