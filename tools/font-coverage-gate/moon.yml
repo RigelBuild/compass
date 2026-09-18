@@ -1,9 +1,12 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
 # font-coverage-gate (RIG-3603 T8) — fail when rendered UI source uses a
-# character absent from the branded font faces (Space Mono / Departure Mono).
-# T8 is complete: ERROR is the default and this check is fail-closed. WARN is
-# available only as an explicit non-blocking opt-in via FONT_COVERAGE_GATE=warn.
+# character absent from the branded body face. Findings are enforced against
+# Space Mono (--rigel-mono, what body text resolves to); Departure Mono is
+# parsed and plausibility-checked as a format-12 / parser sanity check, not as
+# part of the covered set. T8 is complete: ERROR is the default and this check
+# is fail-closed. WARN is available only as an explicit non-blocking opt-in via
+# FONT_COVERAGE_GATE=warn.
 #
 # A bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag): install is
 # inherited via .moon/tasks/tag-bun.yml (the shared root install) and
@@ -26,10 +29,10 @@ tasks:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   check:
     # The coverage gate: parse the branded font cmaps and scan the real
-    # apps/ui/src tree for rendered characters they lack. Run from the workspace
-    # root so the globs resolve repo-relative (GATE_ROOT defaults to the git
-    # toplevel = workspace root). Distinct from `test`, which drives the pure
-    # core over fixtures; this observes the real tree and the real font files.
+    # apps/ui/src tree for rendered characters Space Mono lacks. Run from the
+    # workspace root so the globs resolve repo-relative (GATE_ROOT defaults to
+    # the git toplevel = workspace root). Distinct from `test`, which drives
+    # the pure core over fixtures; this observes the real tree and real fonts.
     command: 'bun run tools/font-coverage-gate/index.ts'
     deps: ['install']
     options:

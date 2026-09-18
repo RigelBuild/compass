@@ -35,6 +35,11 @@ describe("cmapCodepoints", () => {
 		expect(cp.has(0x2192)).toBe(true); // RIGHTWARDS ARROW
 		expect(cp.has(0x27e9)).toBe(false); // MATHEMATICAL RIGHT ANGLE BRACKET
 		expect(cp.has(0x2387)).toBe(false); // ALTERNATIVE KEY SYMBOL
+		// Exact cardinality: this is the covered set every finding clears, so a
+		// parser change that quietly adds or drops codepoints moves the gate's
+		// verdict. Pinning the count makes that a test failure, not a silent
+		// re-baseline. Update it only alongside a deliberate parser change.
+		expect(cp.size).toBe(624);
 	});
 
 	test("Departure Mono (format 12 / CFF OTTO): covers U+27E9", async () => {
@@ -45,6 +50,10 @@ describe("cmapCodepoints", () => {
 		// Departure has astral coverage; a codepoint > U+FFFF can only come from
 		// a format-12 subtable, so any such hit confirms the branch.
 		expect([...cp].some((c) => c > 0xffff)).toBe(true);
+		// Exact cardinality, as above. Departure's cmap is duplicated across
+		// four subtables (two format 4, two format 12), so this also pins that
+		// the union de-duplicates rather than double-counting.
+		expect(cp.size).toBe(1079);
 	});
 
 	test("throws on a truncated font rather than returning a partial set", () => {
@@ -86,8 +95,13 @@ const format4 = (segments: readonly Range[]): Uint8Array => {
 	return body;
 };
 
-/** Build a format-12 subtable covering `groups`. */
-const format12 = (groups: readonly Range[]): Uint8Array => {
+/**
+ * Build a format-12 subtable covering `groups`. `startGlyphId` is the glyph id
+ * of each group's FIRST codepoint (ids ascend from there), so the default of 1
+ * keeps every codepoint covered; pass 0 to make a group's first codepoint map
+ * to .notdef.
+ */
+const format12 = (groups: readonly Range[], startGlyphId = 1): Uint8Array => {
 	const body = new Uint8Array(16 + groups.length * 12);
 	const dv = new DataView(body.buffer);
 	dv.setUint16(0, 12); // format
@@ -97,7 +111,7 @@ const format12 = (groups: readonly Range[]): Uint8Array => {
 		const rec = 16 + g * 12;
 		dv.setUint32(rec, start);
 		dv.setUint32(rec + 4, end);
-		dv.setUint32(rec + 8, 1); // startGlyphId
+		dv.setUint32(rec + 8, startGlyphId);
 	}
 	return body;
 };
@@ -130,15 +144,11 @@ const font = (subtables: readonly Uint8Array[]): Uint8Array => {
 
 describe("cmapCodepoints — hostile cmap ranges", () => {
 	test("format 12 group past U+10FFFF throws instead of walking it", () => {
-		const started = performance.now();
+		// Walking that group would be 4.29e9 Set inserts; the throw is what
+		// proves the range was rejected rather than expanded.
 		expect(() => cmapCodepoints(font([format12([[0, 0xffffffff]])]))).toThrow(
 			/runs past U\+10FFFF/,
 		);
-		// Walking that group is 4.29e9 Set inserts. Measured on this box at
-		// ~90ms per 1.1e6 inserts, that is ~350s at the very best (in practice
-		// the Set exhausts memory first), so finishing inside 2s can only mean
-		// the range was rejected rather than expanded — a ~175x margin.
-		expect(performance.now() - started).toBeLessThan(2000);
 	});
 
 	test("format 12 groups summing past the expansion budget throw", () => {
@@ -159,6 +169,34 @@ describe("cmapCodepoints — hostile cmap ranges", () => {
 		expect(() => cmapCodepoints(font([format4(segments)]))).toThrow(
 			/expansion budget/,
 		);
+	});
+
+	test("the budget is font-wide: duplicated subtables cannot each spend it", () => {
+		// Each subtable is individually in budget (3 and 2 maximal codespaces,
+		// against a 4-codespace ceiling), so this throws ONLY if the budget
+		// spans subtables. A budget reset per subtable would let a font repeat
+		// an in-budget subtable without limit — the cheapest way to restore the
+		// unbounded walk the budget exists to stop.
+		const maximal: Range = [0, 0x10ffff];
+		expect(() =>
+			cmapCodepoints(
+				font([
+					format12([maximal, maximal, maximal]),
+					format12([maximal, maximal]),
+				]),
+			),
+		).toThrow(/expansion budget/);
+	});
+
+	test("format 12 startGlyphId 0 leaves the group's first codepoint uncovered", () => {
+		// Glyph 0 is .notdef: format 4 already treats it as uncovered, and a
+		// format-12 group's ids ascend from startGlyphId, so a group starting
+		// at 0 maps its FIRST codepoint to .notdef and the rest to real glyphs.
+		// Counting that first codepoint as covered would clear a rendered
+		// character that actually renders tofu — a false green in the gate's
+		// one direction that matters.
+		const covered = cmapCodepoints(font([format12([[0x2000, 0x2002]], 0)]));
+		expect([...covered].sort((a, b) => a - b)).toEqual([0x2001, 0x2002]);
 	});
 
 	test("the widest legal group (0..U+10FFFF) is still accepted", () => {
@@ -344,45 +382,88 @@ describe("resolveMode", () => {
 	);
 });
 
+// ---------------------------------------------------------------------------
+// CLI process contract — the gate as CI actually invokes it.
+//
+// Each case runs the real CLI as a subprocess against an isolated temp root
+// holding one UI source file and copies of the real font faces, so the exit
+// code and the printed report are observed, not inferred from the pure core.
+// ---------------------------------------------------------------------------
+
+/** Run the CLI over a temp root containing `source` as the only UI file. */
+const runGate = async (
+	source: string,
+	mode: string | undefined,
+): Promise<{ exitCode: number | null; output: string }> => {
+	const root = await mkdtemp(join(tmpdir(), "font-coverage-gate-"));
+	try {
+		await mkdir(join(root, "apps/ui/src"), { recursive: true });
+		await mkdir(join(root, "apps/eng-docs/public/fonts"), { recursive: true });
+		await writeFile(join(root, "apps/ui/src/index.ts"), source);
+		await Promise.all(
+			["SpaceMono-Regular.ttf", "DepartureMono-Regular.otf"].map((name) =>
+				cp(join(FONTS, name), join(root, "apps/eng-docs/public/fonts", name)),
+			),
+		);
+
+		const proc = Bun.spawn(
+			[process.execPath, resolve(import.meta.dir, "index.ts")],
+			{
+				env: {
+					...process.env,
+					GATE_ROOT: root,
+					...(mode === undefined ? {} : { FONT_COVERAGE_GATE: mode }),
+				},
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		const [stdout, stderr] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		await proc.exited;
+		return { exitCode: proc.exitCode, output: `${stdout}\n${stderr}` };
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+};
+
+// U+27E9 is absent from Space Mono (the covered set findings clear), so a
+// source containing it is one uncovered rendered character.
+const UNCOVERED_SOURCE = 'const rendered = "⟩";\n';
+
 describe("CLI process contract", () => {
 	test("invalid mode fails closed on an isolated fixture", async () => {
-		const root = await mkdtemp(join(tmpdir(), "font-coverage-gate-"));
-		try {
-			await mkdir(join(root, "apps/ui/src"), { recursive: true });
-			await mkdir(join(root, "apps/eng-docs/public/fonts"), {
-				recursive: true,
-			});
-			await writeFile(
-				join(root, "apps/ui/src/index.ts"),
-				'const rendered = "⟩";\n',
-			);
-			await Promise.all(
-				["SpaceMono-Regular.ttf", "DepartureMono-Regular.otf"].map((name) =>
-					cp(join(FONTS, name), join(root, "apps/eng-docs/public/fonts", name)),
-				),
-			);
+		const { exitCode, output } = await runGate(UNCOVERED_SOURCE, "invalid");
+		expect(exitCode).toBe(1);
+		expect(output).toContain("[ERROR mode]");
+		expect(output).toContain("1 uncovered rendered char(s)");
+	});
 
-			const proc = Bun.spawn(
-				[process.execPath, resolve(import.meta.dir, "index.ts")],
-				{
-					env: {
-						...process.env,
-						GATE_ROOT: root,
-						FONT_COVERAGE_GATE: "invalid",
-					},
-					stdout: "pipe",
-					stderr: "pipe",
-				},
-			);
-			const [stdout, stderr] = await Promise.all([
-				new Response(proc.stdout).text(),
-				new Response(proc.stderr).text(),
-			]);
-			await proc.exited;
-			expect(proc.exitCode).toBe(1);
-			expect(`${stdout}\n${stderr}`).toContain("[ERROR mode]");
-		} finally {
-			await rm(root, { recursive: true, force: true });
-		}
+	test("explicit WARN reports an uncovered char and still exits 0", async () => {
+		// WARN is the non-blocking opt-in: the same fixture that exits 1 under
+		// ERROR must print the finding and exit 0 here, or the opt-in either
+		// blocks CI or hides what it was asked to report.
+		const { exitCode, output } = await runGate(UNCOVERED_SOURCE, "warn");
+		expect(exitCode).toBe(0);
+		expect(output).toContain("[WARN mode]");
+		expect(output).toContain("1 uncovered rendered char(s)");
+		expect(output).toContain("U+27E9");
+		expect(output).toContain("not blocking");
+	});
+
+	test("a fully covered fixture exits 0 with zero findings in ERROR mode", async () => {
+		// The clean control for the fail-closed default: without it, every
+		// exit-1 case above is also satisfied by a gate that flags everything.
+		// U+2212 is in Space Mono's cmap, so it is rendered AND covered.
+		const { exitCode, output } = await runGate(
+			'const rendered = "a − b";\n',
+			undefined,
+		);
+		expect(exitCode).toBe(0);
+		expect(output).toContain("0 uncovered rendered char(s)");
+		expect(output).toContain("[ERROR mode]");
+		expect(output).not.toContain("not blocking");
 	});
 });
