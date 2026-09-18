@@ -1456,7 +1456,7 @@ func TestStartResumeBodyWithoutIDStartsFresh(t *testing.T) {
 		t.Fatalf("Provision = %v", err)
 	}
 	// Body set, id empty: the body must be dropped, not materialized.
-	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "body", ""); err != nil {
+    if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "body", "fresh-test"); err != nil {
 		t.Fatalf("Start = %v", err)
 	}
 
