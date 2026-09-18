@@ -1,7 +1,5 @@
 # Compass unified release lane (release-please + folded image publishing)
 
-Status: Active
-
 Linear:
 
 - TBD (spawning agent stamps the issue at PR time)

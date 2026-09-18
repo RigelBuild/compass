@@ -1,6 +1,5 @@
 # Compass Linear return path — amendment: server-resolved indirection link
 
-Status: Active
 Tracker: RIG-2794
 
 > **Extends #625 (frozen).** This record is a sibling amendment to

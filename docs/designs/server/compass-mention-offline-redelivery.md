@@ -1,7 +1,5 @@
 # Compass mention delivery for offline channel members — wake-based redelivery amendment
 
-Status: Draft
-
 All seven Open Questions ruled by Matt (2026-08-21) — folded into the body; see §Decisions.
 
 Tracker: RIG-1641.

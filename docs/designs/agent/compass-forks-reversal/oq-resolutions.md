@@ -1,7 +1,5 @@
 # Compass forks reversal — Open-Question resolutions (RIG-2336)
 
-Status: Active
-
 Amends [`design.md`](./design.md) (the frozen forks-reversal record, PR #434,
 merged as `9d48f9a9`). That record froze with its two **load-bearing** Open
 Questions unresolved — the pre-freeze ruling gate (`skill://design` § "No merge

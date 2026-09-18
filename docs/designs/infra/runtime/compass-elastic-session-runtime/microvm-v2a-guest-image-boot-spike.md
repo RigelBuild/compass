@@ -1,6 +1,5 @@
 # microVM Runner V2a — Guest Image + Boot Spike
 
-Status: PROPOSED — details the V2a milestone under the frozen parent
 [microvm-runner.md](./microvm-runner.md) (its Plan § V2a, microvm-runner.md:443-464).
 
 ## Problem / Intent

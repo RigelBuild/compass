@@ -1,7 +1,5 @@
 # Compass-native T5 — native-client mode end to end (RIG-1686)
 
-Status: Draft
-
 Refines the frozen parent record `docs/designs/ui/compass-native-app/design.md` §T5 + §A4. Design only; no implementation.
 
 ## Problem / Intent

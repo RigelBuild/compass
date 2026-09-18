@@ -1,7 +1,5 @@
 # Compass Threading UI — Slack-style threads in the channel surface
 
-Status: Active
-
 > Internal design record — July 2026. Builds on the frozen 0.7 record
 > (`../compass-0.7-channel-workspace/design.md`, merged): board-primary shell,
 > comms as a surface within it (standalone `channel` view + the agent

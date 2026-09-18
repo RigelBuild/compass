@@ -1,7 +1,5 @@
 # RIG-2257 — Compass ask-answer recovery: answer-as-message
 
-Status: Draft
-
 This record is the RIG-2257 successor to the T7 runner/hub dependency filed by
 `docs/designs/agent/compass-ask-comms-roundtrip/design.md` Decision 3. It is
 a pre-freeze rewrite of this same record: Matt ruled the prior draft's

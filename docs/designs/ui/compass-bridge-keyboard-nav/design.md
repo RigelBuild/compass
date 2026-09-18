@@ -1,6 +1,5 @@
 # Design: Compass Bridge keyboard navigation — 2-D roving-tabindex grid + empty-board state (RIG-2130)
 
-Status: Draft
 Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: RIG-2130. Deferred here by the Bridge re-clothe record — "**D4 — roving-tabindex
 2-D keyboard grid is OUT of scope** (was OQ-5): filed as a follow-up interaction

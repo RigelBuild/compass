@@ -1,7 +1,5 @@
 # Compass local dev: UI in `devenv up`, macOS full setup, gate hazard
 
-Status: Draft
-
 > **Design record (platform).** Local development experience on Linux and
 > macOS for the Compass repo. Three lanes: (1) `devenv up` starts the browser
 > UI with a route to the server's gRPC-Web dev door — direct-dial, no proxy

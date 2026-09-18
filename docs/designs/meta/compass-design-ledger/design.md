@@ -1,7 +1,5 @@
 # Compass design-decision ledger
 
-Status: Active
-
 > Internal design record — July 2026. Establishes the canonical
 > `docs/designs/product/DECISIONS.md` decision ledger, machine-checkable
 > `Status:` headers on every product design record, and a bun/TS CI gate

@@ -1,7 +1,5 @@
 # Bundle nix outputs, images, and binaries as GitHub Releases
 
-Status: Active
-
 > **Design record.** Citations name paths in `compass` = RigelBuild/compass at
 > `c25ce94f` (this repo, main at authoring). Line numbers drift as code evolves;
 > resolve against that revision. This is a public repo: the CD pipeline elsewhere in the fleet

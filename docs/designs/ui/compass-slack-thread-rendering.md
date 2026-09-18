@@ -1,7 +1,5 @@
 # Compass Slack-model thread rendering (RIG-1352)
 
-Status: Active
-
 Tracking: RIG-1352. Parent (frozen):
 `docs/designs/product/compass-0.8-threading-and-session-renderer/design.md`.
 This record **supersedes by citation** that record's dual-render decision (see

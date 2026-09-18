@@ -1,6 +1,5 @@
 # Compass forks reversal — pinned GitHub imports (RIG-2336)
 
-Status: Draft
 Owner: compass-repo
 
 > **Design record.** Reverses compass's `forks/` vendoring: each fork returns to its

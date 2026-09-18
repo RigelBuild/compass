@@ -1,7 +1,5 @@
 # Solid v2 migration — compass apps/ui (RIG-2187)
 
-Status: Draft
-
 Issue: RIG-2187 (child of RIG-2186 Target 2).
 
 ## Problem / Intent

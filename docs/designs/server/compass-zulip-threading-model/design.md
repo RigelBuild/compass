@@ -1,7 +1,5 @@
 # Compass: Zulip threading model
 
-Status: Active
-
 > **Ratified by Matt 2026-08-02; no open questions remain**, then **refined by
 > Matt 2026-08-02** with four follow-ups now folded in (see Decisions F8-F11):
 > collapse the pre-dogfood SQL migrations rather than layer another (F8); remove

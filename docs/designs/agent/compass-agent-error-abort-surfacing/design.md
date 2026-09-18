@@ -1,7 +1,5 @@
 # Pre-stream error/abort content surfacing (mapper)
 
-Status: Active
-
 Refs: RIG-2616 (parent RIG-974). Surface: compass-agent event mapper +
 `compass.v1` session-trace contract.
 

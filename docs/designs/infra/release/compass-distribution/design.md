@@ -1,6 +1,5 @@
 # Compass distribution & install surface
 
-Status: Draft
 Linear: RIG-2477 (client app per-OS matrix + install channels), RIG-2608
 (headless self-host stack distribution). Scope expansion of RIG-1746 ruled by
 Matt 2026-08-24.

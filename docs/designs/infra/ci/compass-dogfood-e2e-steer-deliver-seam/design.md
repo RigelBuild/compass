@@ -1,7 +1,5 @@
 # Compass dogfood e2e — steer/deliver split observation seam
 
-Status: Active
-
 Extends the frozen dogfood-e2e harness contract
 ([`../compass-dogfood-e2e/design.md`](../compass-dogfood-e2e/design.md), §A5
 legs 3-4, which frames the deliverable as "a reusable e2e harness"). This record

@@ -1,7 +1,5 @@
 # Compass agent container runtime — design
 
-Status: Active
-
 Design for how a per-agent Compass container gets its **toolchain**, its
 **credentials**, and stays **current** over a long-lived session, on the Go
 stack (`go`). Companion to the [architecture lineage](../meta/compass-architecture-lineage/design.md)

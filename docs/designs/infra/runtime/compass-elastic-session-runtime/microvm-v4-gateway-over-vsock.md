@@ -1,6 +1,5 @@
 # microVM Runner V4 — AgentGateway over host-side vsock
 
-Status: PROPOSED — details the V4 milestone under the frozen parent
 [microvm-runner.md](./microvm-runner.md) (its Plan § V4,
 microvm-runner.md:508-532; Approach (b), microvm-runner.md:105-137) and its
 frozen VMM/transport decision D1 (cloud-hypervisor hybrid vsock,

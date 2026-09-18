@@ -1,7 +1,5 @@
 # Compass multi-tenancy and NATS eventing substrate
 
-Status: Active
-
 Tracking: RIG-2861
 
 > **Design record.** This designs a core capability of the Compass OSS

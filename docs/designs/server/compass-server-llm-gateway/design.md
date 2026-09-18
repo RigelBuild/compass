@@ -1,6 +1,5 @@
 # Compass Server LLM Gateway (RIG-1715)
 
-Status: Draft
 Directory-form record under `docs/designs/server/`. Companion / downstream of
 `docs/designs/observability/compass-observability-architecture/design.md` (#656),
 whose Plane-A tasks T1–T3 name this record as their upstream prerequisite

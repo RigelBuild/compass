@@ -1,6 +1,5 @@
 # Compass shell routing (@solidjs/router adoption)
 
-Status: Draft
 Tracker: RIG-1693
 Ledger-impact: reserves DL-127 (shell-routing: @solidjs/router adoption + routes-vs-store source-of-truth call, one row); compass appends at ship
 

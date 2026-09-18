@@ -1,7 +1,5 @@
 # The OSS-core / managed-service boundary
 
-Status: Draft
-
 Tracking: RIG-2861
 
 > **Method record.** This formalizes where OSS-core versus managed-only work

@@ -1,6 +1,5 @@
 # Compass native app — embedded-mode revival (dual-mode returns; client mode survives)
 
-Status: Draft
 Linear: RIG-3139 (design); RIG-1662 (epic)
 Supersedes: DL-235 (the "client is the ONLY mode" thesis) and the
 app-never-spawns half of DL-236 (whose standalone-`compass-stack` half stays

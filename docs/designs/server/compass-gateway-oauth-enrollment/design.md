@@ -1,7 +1,5 @@
 # User OAuth login / credential enrollment for the Compass LLM gateway (RIG-3050)
 
-Status: Draft
-
 Tracking: RIG-3050
 Owner: compass-obs (design) → compass-server / gateway-TS / compass-ui (impl, per task)
 

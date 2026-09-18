@@ -1,7 +1,5 @@
 # gateway_credentials at-rest encryption + master-key custody
 
-Status: Active
-
 Tracking: RIG-2863 (parent RIG-1715)
 
 Addendum to the frozen record

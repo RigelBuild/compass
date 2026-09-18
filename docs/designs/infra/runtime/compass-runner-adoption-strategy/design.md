@@ -1,6 +1,5 @@
 # Compass self-host runner topology and adoption strategy
 
-Status: Active
 Tracking: RIG-3070
 Owner: compass-obs (design) → compass-runner (impl, runtime/sequencing)
 

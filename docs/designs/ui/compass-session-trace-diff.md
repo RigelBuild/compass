@@ -1,7 +1,5 @@
 # Compass session-trace DiffBlock: real line diff (RIG-1350)
 
-Status: Active
-
 Tracking: RIG-1350 (two advisory findings from the PR #847 review-of-record,
 Matt-ruled deferred to this follow-up). UI-only; walking-skeleton renderer
 scope. Parent contract: the frozen compass-0.8 threading/renderer record

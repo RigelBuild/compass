@@ -1,6 +1,5 @@
 # Compass host runtime tier
 
-Status: Draft
 Tracking: RIG-3512
 Owner: compass-runner (runtime) → compass-agent (onboarding review)
 

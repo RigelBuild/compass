@@ -1,7 +1,5 @@
 # Renovate-manage the Go analysis battery pins (RIG-3306)
 
-Status: Draft
-
 ## Problem / Intent
 
 `tools/toolchain/versions/go-analysis.nix` carries two hand-maintained source

@@ -1,7 +1,5 @@
 # Design: Searchable `?` Keyboard-Shortcuts Overlay (RIG-2482)
 
-Status: Draft
-
 ## Problem / Intent
 
 Compass ships a Linear-shaped keyboard ENGINE — a typed `DEFAULT_KEYMAP` table

@@ -1,7 +1,5 @@
 # Compass agent↔Runner call transport
 
-Status: Active
-
 > Freezes on merge; later changes supersede by citation, never rewrite
 > (`../compass-0.5/design.md:10-12`, convention restated in
 > `../compass-0.6/design.md:1116-1118`). Tracked as RIG-1351.

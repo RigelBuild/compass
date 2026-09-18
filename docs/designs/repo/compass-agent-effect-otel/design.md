@@ -1,6 +1,5 @@
 # Design: Adopt `@effect/opentelemetry` for compass-agent transport observability
 
-Status: Draft
 Linear: RIG-2426 (decision-to-adopt; implementation is a separate later issue).
 Parent record: `docs/designs/repo/compass-agent-effect-adoption/design.md`
 (RIG-2424, merged as PRs #465/#467/#471/#474; T5 runtime consolidation is

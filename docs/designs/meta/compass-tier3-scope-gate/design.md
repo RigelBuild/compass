@@ -1,6 +1,5 @@
 # Design: Scope-aware tier-3 command dispatch (RIG-2529)
 
-Status: Draft
 Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: RIG-2529. Closes the tier-3 focus-exclusivity hole RIG-2130 ratified as
 DEFER (RD-4, was OQ-6 — `compass-keyboard-spine-app-root/design.md:451-462`).

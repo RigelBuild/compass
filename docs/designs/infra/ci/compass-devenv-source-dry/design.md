@@ -1,7 +1,5 @@
 # RIG-2546 — compass devenv source unify + CI devenv-CLI DRY
 
-Status: Active
-
 ## Problem / Intent
 
 The logic that materializes the devenv CLI from a lockfile exists twice with two

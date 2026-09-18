@@ -1,7 +1,5 @@
 # RIG-2490 — Close the pre-settle mention-loss window (sibling to RIG-1641)
 
-Status: Draft
-
 Tracker: RIG-2490.
 
 Sibling follow-up to: `compass-mention-offline-redelivery.md` (RIG-1641) — per

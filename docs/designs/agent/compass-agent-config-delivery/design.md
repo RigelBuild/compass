@@ -1,7 +1,5 @@
 # Compass agent config-delivery seam — skills / extensions / MCP-server configs / env-vars
 
-Status: Draft
-
 > Freezes on merge; later changes supersede by citation, never rewrite
 > (convention: `../compass-0.5/design.md:10-12`, restated
 > `../compass-0.6/design.md:1116-1118`). Tracked as RIG-1568.

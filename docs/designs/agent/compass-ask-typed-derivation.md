@@ -1,7 +1,5 @@
 # Compass ask typed derivation — the superseding ask contract (Option A)
 
-Status: Active
-
 Tracking: RIG-1243 (Go-port wave follow-up flagged at PR #771 merge).
 
 **This record supersedes design compass-0.5 D5's `Ask` shape by citation**

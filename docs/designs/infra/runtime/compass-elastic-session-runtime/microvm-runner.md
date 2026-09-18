@@ -1,7 +1,5 @@
 # microVM Runner Backend
 
-Status: PROPOSED — RIG-2394 (reframed from a detailing record to a full design pass, 2026-08-21). The nine load-bearing forks are resolved (see Decisions D1-D9); this record freezes on merge.
-
 Parent: [compass-elastic-session-runtime/design.md](./design.md) — this record details under the parent's frozen decisions but replaces its falsified I1 implementation premise.
 
 ## Problem / Intent

@@ -1,6 +1,5 @@
 # Compass board ingestion: forge poll → webhooks (App-only credential cutover)
 
-Status: Draft
 Lane: compass-forge
 Tracker: RIG-2883
 

@@ -1,7 +1,5 @@
 # Compass Manager role taxonomy: supervisor / owner / manager + role-on-spawn
 
-Status: Draft
-
 Refs: RIG-3066 (this design pass), RIG-1724 (agent roles — the umbrella this is
 the coordinator-role slice of), RIG-2673 (org-management tools — the spawn
 `role`/`persona` wire field this composes with), RIG-1732 (role → block-0

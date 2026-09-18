@@ -1,6 +1,5 @@
 # Compass attribution simplification — attribution is a display fact
 
-Status: Active
 Tracker: SEA
 
 > **Amends frozen contract (#1018, DL-068).** This record is a sibling

@@ -1,6 +1,5 @@
 # Design: Compass DS Token Full Cutover + Canvas Migration
 
-Status: Draft
 Supersedes: the incremental/strangler framing of RIG-1876 (component-tier follow-up to PR #220)
 Owner lane: compass-ui · DS-tier owner: compass-ux (D2, `compass-ux-foundation/design.md`)
 

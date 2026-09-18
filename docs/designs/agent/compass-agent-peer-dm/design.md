@@ -1,6 +1,5 @@
 # Compass agent peer-DM — name-addressed comms + auto-created two-way agent↔agent DMs
 
-Status: Active
 Owner: agents
 Amends: compass-agent-org-mgmt-tools, compass-manager-comms-substrate,
 compass-zulip-threading-model (two explicit amendments, §Approach), and extends

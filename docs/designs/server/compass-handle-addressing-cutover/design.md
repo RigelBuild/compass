@@ -1,7 +1,5 @@
 # Design: Contract-wide id→handle cutover for compass request fields (RIG-2751)
 
-Status: Draft
-
 Tracking: RIG-2751 (Matt ruled Option A, contract-wide, 2026-08-25; the storage
 shape, owner-qualified wire, and rename/reclaim policy were negotiated to a
 FINAL contract and Matt-ratified 2026-08-26 with "LGTM, can start"; all

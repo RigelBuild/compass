@@ -1,6 +1,5 @@
 # Compass forge write path
 
-Status: Active
 Tracker: RIG-2170
 
 ## Problem / Intent

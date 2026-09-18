@@ -1,6 +1,5 @@
 # Compass native app — packaging + CI baseline (T6)
 
-Status: Draft
 Linear: RIG-1687
 
 > **Superseded in part by the client-only pivot

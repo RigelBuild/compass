@@ -1,7 +1,5 @@
 # Compass "batteries included" — the default skill/rule bundle (Dogfood cut)
 
-Status: Draft
-
 > Freezes on merge; later changes supersede by citation, never rewrite.
 > Tracked as RIG-1738. Fast-follow to the RIG-1732 Manager+implementer prompt
 > record ([compass-manager-prompt](../compass-manager-prompt/design.md), PR

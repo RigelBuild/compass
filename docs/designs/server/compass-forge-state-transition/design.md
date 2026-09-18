@@ -1,7 +1,5 @@
 # Design: Forge state-transition write op (RIG-3331)
 
-Status: Active
-
 ## Problem / Intent
 
 A Compass agent cannot change the state of a forge artifact. The `forgeService`

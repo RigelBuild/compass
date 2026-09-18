@@ -1,7 +1,5 @@
 # Compass: agent-facing spawn/despawn of peer agents
 
-Status: Active
-
 Design for the wave's defining capability: a supervisor agent spawns and
 despawns peer agents at runtime, through a Compass tool. Container create +
 teardown are fully wired **operator-facing**; there is **no agent-facing

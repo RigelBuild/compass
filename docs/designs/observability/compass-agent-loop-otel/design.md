@@ -1,6 +1,5 @@
 # Design: Activate OMP's native loop OpenTelemetry in compass-agent
 
-Status: Draft
 OQ1 RULED by Matt 2026-08-23 → (b) two independent providers to one collector;
 the (b) plan below is the one to build.
 Linear: RIG-2508 (Refs RIG-2384; spun out of RIG-2426 OQ4).

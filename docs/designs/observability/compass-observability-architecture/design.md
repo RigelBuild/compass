@@ -1,6 +1,5 @@
 # Compass observability & in-product data architecture
 
-Status: Draft
 Directory-form record under `docs/designs/observability/`.
 Products framing: [`docs/concepts/self-host-and-managed.md`](../../../concepts/self-host-and-managed.md)
 (two products, one core) — referenced throughout, not restated.

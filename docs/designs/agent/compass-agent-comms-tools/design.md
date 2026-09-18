@@ -1,7 +1,5 @@
 # Compass agent comms tools
 
-Status: Active
-
 Design for how the containerized first-party Compass agent gains tools to
 **use** the comms surface it is observed through: post a message to a channel
 (including a threaded reply), and read a channel's recent messages. The

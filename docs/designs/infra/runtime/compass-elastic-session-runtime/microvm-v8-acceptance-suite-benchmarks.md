@@ -1,6 +1,5 @@
 # microVM Runner V8 — isolation / contract / failure-mode acceptance suite + benchmarks
 
-Status: PROPOSED — details the V8 milestone under the frozen parent
 [microvm-runner.md](./microvm-runner.md) (its Plan § V8,
 microvm-runner.md:600-621; § Approach (c) peer-CID authentication,
 microvm-runner.md:158-164; (e) preflight/hard-fail, microvm-runner.md:211-236;

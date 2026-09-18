@@ -1,6 +1,5 @@
 # Compass UI query layer (@tanstack/solid-query + connect-query-core adoption)
 
-Status: Draft
 Tracker: RIG-1696
 Ledger-impact: reserves one row (Compass UI query layer adoption); compass appends at ship
 

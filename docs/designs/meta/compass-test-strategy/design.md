@@ -1,8 +1,5 @@
 # Compass full-system test strategy
 
-Status: Draft
-
-> **Design record** — ported from a frozen ancestor
 > test-strategy record into compass, with Matt-ruled amendments grounding it
 > against the shipped compass CI. Ledgered as DL-174..DL-181.
 

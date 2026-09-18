@@ -1,7 +1,5 @@
 # Compass CI job decomposition — dissolving the one-job gate
 
-Status: Draft
-
 > **Design record.** Reverses the `ONE JOB, NOT A MATRIX` decision documented at
 > the head of `.github/workflows/ci.yml` (lines 1–44) and decomposes the
 > monolithic `gates` job into parallel peer jobs — a moon-owned concern matrix

@@ -1,6 +1,5 @@
 # microVM Runner V3 — egress-in-guest
 
-Status: PROPOSED — details the V3 milestone under the frozen parent
 [microvm-runner.md](./microvm-runner.md) (its Plan § V3,
 microvm-runner.md:492-506) and its frozen networking decision D6
 (microvm-runner.md:733-750).

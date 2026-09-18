@@ -1,7 +1,5 @@
 # Compass ADE shell — Orca-mirror UI + a real, tracker-mapped state model
 
-Status: Active
-
 > Internal design record — July 2026. A UI/UX + state-model design for the next
 > iteration of the Compass ADE dev shell, building on the explorable Bridge
 > walking-skeleton (#453, #460). The product vision it serves and the strategic

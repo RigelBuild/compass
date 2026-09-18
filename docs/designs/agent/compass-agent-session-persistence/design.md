@@ -1,7 +1,5 @@
 # Compass agent session persistence: server-owned durable log via tee-emit; resume via a Runner-materialized session file + SDK-native load
 
-Status: Active
-
 > Freezes on merge; later changes supersede by citation, never rewrite.
 > Implements Linear RIG-1570 (pre-dogfood item 4) against TWO fixed rulings:
 > Matt's storage-ownership ruling of 2026-07-31 (storage is SERVER-OWNED — the

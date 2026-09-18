@@ -1,7 +1,5 @@
 # Design: Server runnerhub — per-router bounded send queue (non-blocking dispatch)
 
-Status: Active
-
 Tracker: RIG-1611 — PR #75 review LOW #3, parked at review time ("no change for
 MVP, multi-Runner only"). Provenance: the parent product record
 `docs/designs/server/compass-notification-delivery/design.md` (RIG-1569 T3)

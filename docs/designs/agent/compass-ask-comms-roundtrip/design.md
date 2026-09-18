@@ -1,7 +1,5 @@
 # Compass ask round-trip over the comms transport (RIG-1509 redesign)
 
-Status: Draft
-
 Tracking: RIG-1509 (redesign after PR #390 closed as wrong transport). Entangled: RIG-1310 (ask correlation key, co-owned by compass-agent).
 
 ## Problem / Intent

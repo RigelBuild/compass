@@ -1,7 +1,5 @@
 # Compass: migrate Dependabot → self-hosted Renovate in GitHub Actions
 
-Status: Draft
-
 ## Problem / Intent
 
 Compass runs GitHub Dependabot for its three ecosystems (`.github/dependabot.yml`:

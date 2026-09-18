@@ -1,7 +1,5 @@
 # Cross-process teardown for the embedded native-app stack
 
-Status: Draft
-
 > **App-invocation half superseded by the client-only pivot
 > ([`../compass-native-client-only/design.md`](../compass-native-client-only/design.md),
 > DL-235/DL-236, Matt 2026-08-23).** The native app retired embedded mode, so it

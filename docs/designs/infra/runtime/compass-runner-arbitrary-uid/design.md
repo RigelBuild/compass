@@ -1,7 +1,5 @@
 # Design: compass-runner arbitrary host uid support
 
-Status: Draft
-
 ## Problem / Intent
 
 The embedded compass-runner refuses to start unless its real uid is 1000, which

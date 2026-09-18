@@ -1,7 +1,5 @@
 # Compass dogfood e2e harness — full-stack scenario testing (RIG-1681)
 
-Status: Draft
-
 > **Design record.** A reusable full-stack e2e HARNESS for Compass — shared
 > stack-bring-up core, a scenario-authoring API of composable primitives, two
 > fidelity tiers (backend-only headless, UI-inclusive), and a model-backend
