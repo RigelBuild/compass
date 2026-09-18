@@ -59,11 +59,19 @@ func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.Pr
 	return resp, runnerID, nil
 }
 
-// Start relays a StartAgentSession command to the owning Runner.
 func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartAgentSessionRequest) (*compassv1.StartAgentSessionResponse, error) {
+	freshID := ""
+	if req.GetResumeSessionId() == "" {
+		var err error
+		freshID, err = h.freshSessionID()
+		if err != nil {
+			return nil, fmt.Errorf("minting fresh session id: %w", err)
+		}
+	}
 	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
-		RequestId: orNewRequestID(requestID),
-		Command:   &compassv1internal.SessionsResponse_Start{Start: req},
+		RequestId:      orNewRequestID(requestID),
+		FreshSessionId: freshID,
+		Command:        &compassv1internal.SessionsResponse_Start{Start: req},
 	})
 	if err != nil {
 		return nil, err
@@ -217,6 +225,14 @@ func orNewRequestID(id string) string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+func mintFreshSessionID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // provisionDedupID derives the correlation/dedup id for a provision. An empty

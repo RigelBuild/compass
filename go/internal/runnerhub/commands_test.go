@@ -148,6 +148,29 @@ func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 		t.Fatalf("Start session id = %q, want sess-ok", got)
 	}
 }
+func TestStartRelayCarriesFreshIDOnlyForFreshStart(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	router, _, _ := hub.routerFor("any")
+	var gotFresh string
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		gotFresh = cmd.GetFreshSessionId()
+		go router.complete(&compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId(), Result: &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-ok"}}})
+		return nil
+	})
+	if _, err := hub.Start(context.Background(), "fresh", &compassv1.StartAgentSessionRequest{ContainerName: "c1"}); err != nil {
+		t.Fatalf("fresh Start = %v", err)
+	}
+	if gotFresh == "" {
+		t.Fatal("fresh Start envelope omitted fresh_session_id")
+	}
+	if _, err := hub.Start(context.Background(), "resume", &compassv1.StartAgentSessionRequest{ContainerName: "c1", ResumeSessionId: "existing"}); err != nil {
+		t.Fatalf("resume Start = %v", err)
+	}
+	if gotFresh != "" {
+		t.Fatalf("resume Start envelope fresh_session_id = %q, want empty", gotFresh)
+	}
+}
 
 // TestStartEmitsNoInitialSignal: the initial secret materialize is pre-exec on
 // the Runner (host.Start, FetchSecretsByContainer), so a bound Start pushes NO

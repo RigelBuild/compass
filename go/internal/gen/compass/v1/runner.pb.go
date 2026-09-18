@@ -450,9 +450,29 @@ type SessionsResponse struct {
 	// = 8 and deliver_control = 11, and 12 is skipped (the design-abandoned
 	// ResumeContext resume, DL-065 — never wired, so nothing serialized it). A
 	// fresh tag, never a reused one.
-	ResumeBody    *ResumeBody `protobuf:"bytes,13,opt,name=resume_body,json=resumeBody,proto3" json:"resume_body,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ResumeBody *ResumeBody `protobuf:"bytes,13,opt,name=resume_body,json=resumeBody,proto3" json:"resume_body,omitempty"`
+	// fresh_session_id — the SERVER-MINTED live session id for a FRESH start, a
+	// TOP-LEVEL sibling of request_id OUTSIDE the command oneof, exactly like
+	// resume_body (RIG-3696). The Runner used to mint fresh ids from a
+	// process-local monotonic counter that restarts at 1, so a Runner restart
+	// re-minted an id a surviving durable session row still owned; a
+	// Server-global cryptographically random id cannot collide across restarts.
+	//
+	// INTERNAL-ONLY and deliberately NOT a field on the public
+	// StartAgentSessionRequest: a client must never be able to choose the id its
+	// own session is keyed by. The Server sets it on the internal envelope; the
+	// public `start` request is still relayed verbatim.
+	//
+	// Set ONLY for a fresh start, and IGNORED when `start.resume_session_id` is
+	// non-empty: a resume reuses the authorized logical id as the live id so the
+	// durable transcript keeps one lineage, so the Server never allocates for a
+	// resume and the Runner's selection takes resume_session_id first.
+	//
+	// Tag 14: the next free tag after resume_body = 13. A fresh tag, never a
+	// reused one.
+	FreshSessionId string `protobuf:"bytes,14,opt,name=fresh_session_id,json=freshSessionId,proto3" json:"fresh_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SessionsResponse) Reset() {
@@ -594,6 +614,13 @@ func (x *SessionsResponse) GetResumeBody() *ResumeBody {
 		return x.ResumeBody
 	}
 	return nil
+}
+
+func (x *SessionsResponse) GetFreshSessionId() string {
+	if x != nil {
+		return x.FreshSessionId
+	}
+	return ""
 }
 
 type isSessionsResponse_Command interface {
@@ -2059,7 +2086,7 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\tprovision\x18\x06 \x01(\v2+.compass.v1.ProvisionAgentWorkspaceResponseH\x00R\tprovision\x12/\n" +
 	"\x05error\x18\a \x01(\v2\x17.compass.v1.RunnerErrorH\x00R\x05error\x12B\n" +
 	"\x06remove\x18\b \x01(\v2(.compass.v1.RemoveAgentWorkspaceResponseH\x00R\x06removeB\b\n" +
-	"\x06result\"\x9e\x06\n" +
+	"\x06result\"\xc8\x06\n" +
 	"\x10SessionsResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12<\n" +
@@ -2075,7 +2102,8 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x06remove\x18\n" +
 	" \x01(\v2'.compass.v1.RemoveAgentWorkspaceRequestH\x00R\x06remove\x127\n" +
 	"\vresume_body\x18\r \x01(\v2\x16.compass.v1.ResumeBodyR\n" +
-	"resumeBodyB\t\n" +
+	"resumeBody\x12(\n" +
+	"\x10fresh_session_id\x18\x0e \x01(\tR\x0efreshSessionIdB\t\n" +
 	"\acommand\"/\n" +
 	"\n" +
 	"ResumeBody\x12!\n" +

@@ -56,7 +56,7 @@ type fakeSessionHost struct {
 	statusRelease chan struct{} // Status returns once this is closed
 }
 
-func (f *fakeSessionHost) Start(context.Context, *compassv1.StartAgentSessionRequest, string) (string, error) {
+func (f *fakeSessionHost) Start(context.Context, *compassv1.StartAgentSessionRequest, string, string) (string, error) {
 	return "sess-x", nil
 }
 
