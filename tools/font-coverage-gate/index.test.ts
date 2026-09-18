@@ -160,6 +160,35 @@ describe("cmapCodepoints — hostile cmap ranges", () => {
 			/runs past U\+10FFFF/,
 		);
 	});
+	test("bounds cmap encoding records to cmap table length", () => {
+		const data = font([
+			format4([
+				[0x41, 0x41],
+				[0xffff, 0xffff],
+			]),
+		]);
+		new DataView(data.buffer).setUint32(40, 4); // header only; record bytes remain in file
+		expect(() => cmapCodepoints(data)).toThrow(/cmap end/);
+	});
+
+	test("rejects subtable offsets outside cmap table", () => {
+		const data = font([
+			format4([
+				[0x41, 0x41],
+				[0xffff, 0xffff],
+			]),
+		]);
+		const dv = new DataView(data.buffer);
+		dv.setUint32(40, 12); // header + one encoding record, no subtable body
+		expect(() => cmapCodepoints(data)).toThrow(/cmap end/);
+	});
+
+	test("bounds unsupported subtable format reads to cmap end", () => {
+		const data = font([new Uint8Array([99, 99, 99, 99])]);
+		const dv = new DataView(data.buffer);
+		dv.setUint32(40, 12); // format bytes lie beyond declared cmap table
+		expect(() => cmapCodepoints(data)).toThrow(/cmap end/);
+	});
 
 	test("rejects a format-4 subtable that reads beyond its declared length", () => {
 		const subtable = format4([

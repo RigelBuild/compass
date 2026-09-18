@@ -136,6 +136,16 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 	if (maxpLength < 6) throw new Error("cmap: truncated maxp table");
 	const numGlyphs = u16(maxpOffset + 4);
 	const cmapEnd = cmapOffset + cmapLength;
+	const cmapNeed = (end: number, what: string): void => {
+		if (end > cmapEnd || end < cmapOffset)
+			throw new Error(
+				`cmap: truncated cmap table — ${what} runs past cmap end`,
+			);
+	};
+	const cmapU16 = (offset: number, what: string): number => {
+		cmapNeed(offset + 2, what);
+		return dv.getUint16(offset);
+	};
 	const covered = new Set<number>();
 	let budget = MAX_CMAP_EXPANSION;
 	const charge: ChargeRange = (start, end, what) => {
@@ -149,6 +159,10 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 				`cmap: malformed font — ${where} overruns the ${MAX_CMAP_EXPANSION}-codepoint cmap expansion budget`,
 			);
 		budget -= width;
+	};
+	const cmapU32 = (offset: number, what: string): number => {
+		cmapNeed(offset + 4, what);
+		return dv.getUint32(offset);
 	};
 	const boundedReaders = (base: number, length: number) => {
 		const end = base + length;
@@ -175,14 +189,19 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 			},
 		};
 	};
-	const numSub = u16(cmapOffset + 2);
+	cmapNeed(cmapOffset + 4, "cmap header");
+	const numSub = cmapU16(cmapOffset + 2, "cmap header");
 	for (let s = 0; s < numSub; s++) {
 		const rec = cmapOffset + 4 + s * 8;
-		need(rec + 8, "cmap encoding record");
+		cmapNeed(rec + 8, "cmap encoding record");
 		const subOffset = cmapOffset + u32(rec + 4);
-		const format = u16(subOffset);
+		cmapNeed(subOffset + 2, "cmap subtable header");
+		const format = cmapU16(subOffset, "cmap subtable header");
 		if (format === 4) {
-			const bounded = boundedReaders(subOffset, u16(subOffset + 2));
+			const bounded = boundedReaders(
+				subOffset,
+				cmapU16(subOffset + 2, "format 4 length"),
+			);
 			readFormat4(
 				subOffset,
 				covered,
@@ -192,7 +211,10 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 				charge,
 			);
 		} else if (format === 12) {
-			const bounded = boundedReaders(subOffset, u32(subOffset + 4));
+			const bounded = boundedReaders(
+				subOffset,
+				cmapU32(subOffset + 4, "format 12 length"),
+			);
 			readFormat12(subOffset, covered, bounded.u32, numGlyphs, charge);
 		}
 	}
