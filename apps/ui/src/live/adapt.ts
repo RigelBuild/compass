@@ -380,7 +380,7 @@ function adaptChangedStats(w: WireChangedStats): DomainChangedStats {
 
 /** Map a wire Check to the domain one. The wire `state` is a free string; the
  *  domain narrows it to the 6-valued forge vocabulary — cast at the boundary
- *  (the server emits exactly that vocabulary; comms_pb.ts:1703). */
+ *  (the server emits exactly that vocabulary; see `Check` in `compass_pb.ts`). */
 function adaptCheck(w: WireCheck): DomainCheck {
 	return {
 		name: w.name,
@@ -440,7 +440,7 @@ function adaptTrackerRef(w: WireTrackerRef): DomainTrackerRef {
  *  provider/forge ref, the optional agent attribution, the optional diffstat and
  *  checks roll-up (absent wire message → absent domain field), and the review /
  *  thread lists. `forgeState` is a forge-truth string narrowed to the domain
- *  union at the boundary (comms_pb.ts:1587). */
+ *  union at the boundary (see `PullRequest` in `compass_pb.ts`). */
 export function adaptPullRequest(w: WirePullRequest): DomainPullRequest {
 	return {
 		forge: adaptForgeRef(w.forge),
@@ -500,7 +500,8 @@ export function adaptIssue(w: WireIssue): DomainIssue {
  *  `UNSPECIFIED → undefined` is a defensive arm only: unreachable on the
  *  `GetRoster` path (which never emits UNSPECIFIED), it lets a caller fall back
  *  to its own default rather than paint a wrong dot. The default arm throws on
- *  an unmodeled numeric (the `agent-state.ts:71-78` exhaustiveness convention):
+ *  an unmodeled numeric (the `agentDotState` exhaustiveness convention in
+ *  `agent-state.ts`):
  *  the enum is proto3-open, so a version-skewed server could send a variant the
  *  `never` check can't catch at compile time — throw rather than return a raw
  *  enum that would break a downstream `Record<AgentState>` lookup. */
@@ -536,8 +537,8 @@ export interface AgentPresenceInfo {
 /** Map one wire `RosterEntry` to its presence-map entry: `[agentAccountId,
  *  info]`. The join carries ONLY the ephemeral presence — `lifecycle` (via
  *  `presenceLifecycle`) and the human-readable `activity` note (empty-string
- *  normalized to undefined, matching the `Agent.activity` contract
- *  `stub-data.ts:350-351`). The identity fields the wire also carries (`handle`,
+ *  normalized to undefined, matching the `Agent.activity` contract in
+ *  `stub-data.ts`). The identity fields the wire also carries (`handle`,
  *  `displayName`, `parentAgentId`) are deliberately DROPPED: accounts own
  *  identity (Approach fork 1 / R1), and a second identity source here could
  *  drift from the live `accountChanged` stream. */

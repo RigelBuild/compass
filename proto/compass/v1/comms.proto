@@ -346,7 +346,7 @@ message Message {
   // The posting account (a user or an agent).
   string author_account_id = 3;
   int64 at_unix_ms = 4;
-  // Ordered content; mirrors session-update blocks from the SDK (D5).
+  // Ordered content; the block sequence a streaming agent turn appends to (D5).
   repeated MessageBlock blocks = 5;
 }
 

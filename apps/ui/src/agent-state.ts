@@ -1,6 +1,6 @@
 // The agent-state projection — the pure core of the agent axis (design D9/D11). The agent
 // dot is a UI presentation over the daemon's coarse `AgentSessionState` plus the
-// `session/update` stream, NOT a parallel enum: `waiting`/`done`/`paused` are UI-only (D9),
+// agent session event stream, NOT a parallel enum: `waiting`/`done`/`paused` are UI-only (D9),
 // never written back. Consuming the generated enum gives one reconciliation point with exhaustiveness.
 
 import { AgentSessionState } from "@compass/client";
@@ -8,7 +8,7 @@ import type { AgentState } from "./stub-data";
 
 /**
  * The client-observed refinements the coarse `AgentSessionState` doesn't carry,
- * derived from the `session/update` stream (design D9). All optional: with none
+ * derived from the agent session event stream (design D9). All optional: with none
  * set, the projection falls back to the pure enum mapping.
  */
 export interface AgentStreamRefinement {

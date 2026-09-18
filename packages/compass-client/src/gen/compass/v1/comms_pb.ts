@@ -492,7 +492,7 @@ export type Message = Message$1<"compass.v1.Message"> & {
   atUnixMs: bigint;
 
   /**
-   * Ordered content; mirrors session-update blocks from the SDK (D5).
+   * Ordered content; the block sequence a streaming agent turn appends to (D5).
    *
    * @generated from field: repeated compass.v1.MessageBlock blocks = 5;
    */

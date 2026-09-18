@@ -1111,7 +1111,7 @@ type Message struct {
 	// The posting account (a user or an agent).
 	AuthorAccountId string `protobuf:"bytes,3,opt,name=author_account_id,json=authorAccountId,proto3" json:"author_account_id,omitempty"`
 	AtUnixMs        int64  `protobuf:"varint,4,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
-	// Ordered content; mirrors session-update blocks from the SDK (D5).
+	// Ordered content; the block sequence a streaming agent turn appends to (D5).
 	Blocks        []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
