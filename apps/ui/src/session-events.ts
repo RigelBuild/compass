@@ -161,6 +161,22 @@ function appendPlan(items: TraceItem[], entries: PlanEntry[]): void {
 	items.push({ kind: "plan", entries });
 }
 
+/**
+ * Fold an ordered SessionEvent stream into render-ready TraceItems (§431-438).
+ *
+ * - `assistant_text` / `thinking`: consecutive deltas sharing the SAME kind AND
+ *   messageId coalesce into one item, text concatenated with no separator. Any
+ *   interleaved item of another kind breaks adjacency → separate items.
+ * - `tool_call`: emits a `tool` item, tracked by toolCallId so updates fold in.
+ * - `tool_call_update`: folds into its tool item in place (latest status wins,
+ *   plus output/diffs when carried); an orphan update becomes its own tool item
+ *   with `call` undefined.
+ * - `plan`: latest plan wins — a prior plan item is removed before the fresh one
+ *   is pushed at the current position.
+ * - `notice`: passes through in place, carrying its event.
+ *
+ * Pure: input events are never mutated; all TraceItems are freshly built.
+ */
 export function foldSession(events: readonly SessionEvent[]): TraceItem[] {
 	const items: TraceItem[] = [];
 	const toolsById = new Map<string, ToolTraceItem>();
