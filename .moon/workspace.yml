@@ -116,7 +116,8 @@ projects:
   # character they lack — the check that lets RIG-3742 retire the Unifont
   # fallback pin. Registered so its typecheck + unit tests ride the moon-driven
   # CI sweep; unregistered, moon never discovers it and the gate is silently
-  # inert. WARN until T8 (8 known-uncovered chars today), then ERROR.
+  # T8 is complete; the registered gate defaults to ERROR. Pass WARN explicitly
+  # when a non-blocking rollout check is needed.
   font-coverage-gate: 'tools/font-coverage-gate'
   # The agent-image env gate (RIG-1444): builds the compass-agent image and
   # fails on wrong-image signals a green `container build` misses — a DEVENV_
