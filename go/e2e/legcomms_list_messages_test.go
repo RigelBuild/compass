@@ -96,7 +96,7 @@ func TestCommsListMessagesChannelResolution(t *testing.T) {
 	if err := f.AwaitTurnSettled(ctx, tail); err != nil {
 		t.Fatalf("AwaitTurnSettled(omitted): %v", err)
 	}
-	transcript, err := f.awaitTranscriptPersisted(ctx, st, sessionID, listMessagesHomeBody)
+	transcript, err := f.awaitTranscriptPersisted(ctx, st, sessionID, listMessagesMarker+": run omitted read")
 	if err != nil {
 		t.Fatalf("awaitTranscriptPersisted: %v", err)
 	}
