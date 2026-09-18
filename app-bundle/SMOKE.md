@@ -114,7 +114,6 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
     2>"$ERT/app.log"
 ```
 
-
 `xvfb-run` is the same virtual-framebuffer setup the client part uses, needed on
 a headless box.
 
@@ -174,6 +173,7 @@ Embedded mode stores no bearer, so there is no keychain entry to clear here
 (the local socket is a filesystem-permission boundary, not a bearer door).
 
 ## Part (b): client mode
+
 The stack runs the agent container over rootless podman. Pre-pull the image so
 bring-up does not cold-pull:
 
@@ -237,8 +237,6 @@ mode = "client"
 server_url = "https://127.0.0.1:50052"
 ca_cert = "$CSTATE/tls.crt"
 EOF
-```
-
 
 ### 3. Launch, connect, and render the board
 
@@ -246,7 +244,8 @@ EOF
 BINENV=$(nix build --no-link --print-out-paths \
   -f tools/toolchain/gtk-e2e-env.nix bin)
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
-  xvfb-run -a "$BUNDLE/bin/compass-app" 2>"$CRT/app.log"
+  xvfb-run -a "$BUNDLE/bin/compass-app" \
+    --state-dir "$CSTATE" --socket "$CRT/server.sock" 2>"$CRT/app.log"
 ```
 
 With no stored token, the app paints the connect screen. The server URL is
