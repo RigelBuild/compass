@@ -309,7 +309,7 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: container}, "", "")
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: container}, "", "test-session" )
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

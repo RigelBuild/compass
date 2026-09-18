@@ -128,7 +128,7 @@ func provisionAndStart(t *testing.T, host *agentHost, account string) string {
 	if err != nil {
 		t.Fatalf("Provision(%s) = %v", account, err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "")
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
 	if err != nil {
 		t.Fatalf("Start(%s) = %v", name, err)
 	}
