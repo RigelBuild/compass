@@ -65,17 +65,15 @@ import (
 // fails closed without an at-rest key; boot decoding requires exactly 64 hex chars.
 const stackMasterKey = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-// seedMasterKeyProvider rides the test environment because a spawned
-// compass-server inherits it, and compass-stack exposes no --secret-provider flag
-// to pass one through. Unconditional: honoring an ambient provider would put the
-// outcome back at the mercy of the developer's shell.
-func seedMasterKeyProvider(t *testing.T) {
+// seedMasterKeyProvider writes the fixture-owned master key and returns its
+// provider URI. Callers choose whether to wire it into Config or subprocess env.
+func seedMasterKeyProvider(t *testing.T) string {
 	t.Helper()
 	secretsPath := filepath.Join(t.TempDir(), "secrets.env")
 	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+stackMasterKey+"\n"), 0o600); err != nil {
 		t.Fatalf("write secrets file: %v", err)
 	}
-	t.Setenv("COMPASS_SECRET_PROVIDER", "dotenv://"+secretsPath)
+	return "dotenv://" + secretsPath
 }
 
 // agentImage is a small, pullable public image standing in for the agent image:
@@ -163,7 +161,7 @@ type stackFixture struct {
 // t.TempDir — only the socket/runtime paths are budget-constrained.
 func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 	t.Helper()
-	seedMasterKeyProvider(t)
+	secretProvider := seedMasterKeyProvider(t)
 	pgSockDir := filepath.Join(shortRoot, "pg")
 	runtimeDir := filepath.Join(shortRoot, "rt")
 	serverSock := filepath.Join(shortRoot, "s.sock")
@@ -189,16 +187,10 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 		database:   dsn,
 		image:      agentImage,
 		runtimeDir: runtimeDir,
-		// Headless T2 stack emits no OTLP; opt out of the bundled collector so
-		// buildDeps wires no collector adapter (the real collector path is
-		// covered by collector_podman_test.go). Without this, a struct-literal
-		// configFlags bypasses newFlagSet's CollectorImage default, leaving both
-		// CollectorImage and ExternalOTLPEndpoint empty -> an empty-image
-		// `podman run` deep in the adapter.
+		// Headless T2 stack emits no OTLP; opt out of the bundled collector.
 		otelExternal: "127.0.0.1:4317",
 		// compass-server connects its event fabric at boot, so opt out of the
-		// bundled NATS container onto one in-process broker: a live endpoint,
-		// without a container these subtests never exercise.
+		// bundled NATS container onto one in-process broker.
 		natsExternal: startTestNats(t),
 		// No agent here calls a model, so skip the bundled gateway too.
 		gatewayExternal: "http://127.0.0.1:4100",
@@ -206,6 +198,7 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
+	cfg.SecretProvider = secretProvider
 
 	deps, err := buildDeps(cfg)
 	if err != nil {
