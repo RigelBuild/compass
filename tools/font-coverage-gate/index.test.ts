@@ -15,7 +15,6 @@ import {
 	type Finding,
 	resolveMode,
 	scanSource,
-	stripComments,
 } from "./index.ts";
 
 const FONTS = `${import.meta.dir}/../../apps/eng-docs/public/fonts`;
@@ -51,7 +50,7 @@ describe("cmapCodepoints", () => {
 });
 
 // ---------------------------------------------------------------------------
-// stripComments / scanSource — comment awareness + line preservation.
+// scanSource — token awareness: comments excluded, rendered chars located.
 // ---------------------------------------------------------------------------
 
 describe("scanSource", () => {
@@ -74,9 +73,9 @@ describe("scanSource", () => {
 		expect(found.map((f) => f.codepoint)).toEqual([0x27e9]);
 	});
 
-	test("reports the correct line AFTER stripping a multi-line block comment", () => {
-		// A naive strip that DELETES comment lines would report the ■ on line 2,
-		// not 4. The space-preserving strip keeps it on line 4.
+	test("reports the correct line after a multi-line block comment", () => {
+		// Positions come from the source file's own line map, so the ■ is on
+		// line 4 — not line 2, as a scan of comment-free text would report.
 		const text = ["/* a", "   b", "*/", 'const t = "■";', ""].join("\n");
 		const found = scanSource("apps/ui/src/a.ts", text);
 		expect(found).toHaveLength(1);
@@ -84,7 +83,7 @@ describe("scanSource", () => {
 		expect(found[0]?.codepoint).toBe(0x25a0);
 	});
 
-	test("column is 1-based within the (stripped) line", () => {
+	test("column is 1-based within the line", () => {
 		const found = scanSource("apps/ui/src/a.ts", 'x="▸"\n');
 		expect(found[0]?.column).toBe(4);
 	});
@@ -96,21 +95,75 @@ describe("scanSource", () => {
 		);
 	});
 
-	test("an escaped quote does not end a string, so // inside stays a string", () => {
-		// The \" does not close the string; the // and the ▸ are still inside it.
+	test("a // inside a string literal is not a comment", () => {
 		const found = scanSource("apps/ui/src/a.ts", 'const s = "a\\" // ▸";\n');
 		expect(found.map((f) => f.codepoint)).toEqual([0x25b8]);
 	});
-});
 
-// ---------------------------------------------------------------------------
-// stripComments — direct: line count is invariant.
-// ---------------------------------------------------------------------------
+	test("locates a glyph inside a multi-line template literal", () => {
+		const found = scanSource(
+			"apps/ui/src/a.ts",
+			"const s = `intro\n  body ▸ tail`;\n",
+		);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.column).toBe(8);
+	});
 
-describe("stripComments", () => {
-	test("preserves the line count of a block comment", () => {
-		const text = "/* a\nb\nc */\nx";
-		expect(stripComments(text).split("\n")).toHaveLength(4);
+	test("a leading comment does not shift the reported column", () => {
+		const found = scanSource("apps/ui/src/a.ts", '// note\nconst s = "▸";\n');
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.column).toBe(12);
+	});
+
+	test("locates a glyph in multi-line JSX text", () => {
+		const text = "const e = (\n  <p>\n    go ▸\n  </p>\n);\n";
+		const found = scanSource("apps/ui/src/a.tsx", text);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(3);
+		expect(found[0]?.column).toBe(8);
+	});
+
+	test("an apostrophe in JSX text does not hide a glyph on a later line", () => {
+		// An apostrophe in JSX text is prose, not a string delimiter, so it must
+		// not affect how later lines are scanned.
+		const text = [
+			"<p>Matt's row</p>;",
+			"<a href={'https://x.dev'}>go ▸</a>;",
+			"",
+		].join("\n");
+		const found = scanSource("apps/ui/src/a.tsx", text);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.codepoint).toBe(0x25b8);
+	});
+
+	test("an apostrophe in JSX text does not turn a later doc comment into a finding", () => {
+		// A doc comment renders nothing, so its em-dash is not a finding.
+		const text = [
+			"<p>Matt's row</p>;",
+			"/** A pane — see notes. */",
+			"const x = 1;",
+			"",
+		].join("\n");
+		expect(scanSource("apps/ui/src/a.tsx", text)).toEqual([]);
+	});
+	test("a // inside a regex literal does not blank the rest of the line", () => {
+		// The `//` is regex syntax, not a comment, so the ▸ after it is rendered.
+		const found = scanSource(
+			"apps/ui/src/a.ts",
+			'const re = /https?:\\/\\//; const s = "▸";\n',
+		);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.codepoint).toBe(0x25b8);
+	});
+
+	test("an astral character is one finding, not two surrogate halves", () => {
+		const found = scanSource("apps/ui/src/a.ts", 'const s = "𝄞 ▸";\n');
+		expect(found.map((f) => f.codepoint)).toEqual([0x1d11e, 0x25b8]);
+		expect(found[1]?.column).toBe(15);
 	});
 });
 
