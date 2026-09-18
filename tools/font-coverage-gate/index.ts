@@ -28,11 +28,9 @@
 //   * Only LITERAL non-ASCII bytes are seen. A "\u25b8" escape, a &#9656;
 //     entity, or String.fromCodePoint renders the glyph invisibly to the scan.
 //     The tree writes literal glyphs throughout, which is what makes this safe.
-//   * stripComments has no regex-literal state, so a `//` inside a regex blanks
-//     the rest of that line; and an apostrophe in JSX text ("don't") opens a
-//     string state that can suppress a later comment strip. Neither fires on
-//     the current tree (verified against a whole-tree oracle sweep).
 //   * Only UI_SRC_DIR is scanned; apps/ui/e2e authors baselines too.
+//   * A .ts file containing JSX is parsed as non-JSX, so JSX text in it is not
+//     scanned. The tree keeps JSX in .tsx, which is what makes this safe.
 //
 // Inputs (env):
 //   GATE_ROOT            - directory to scan (default: git toplevel).
@@ -43,6 +41,7 @@
 //   2 - usage / internal error (font missing, truncated, or implausibly small)
 
 import { $ } from "bun";
+import ts from "typescript";
 
 /** The UI source root whose rendered characters the gate governs. */
 export const UI_SRC_DIR = "apps/ui/src";
@@ -63,6 +62,7 @@ export type Mode = "warn" | "error";
 export interface Finding {
 	path: string;
 	line: number;
+	/** 1-based UTF-16 code-unit offset within the line. */
 	column: number;
 	char: string;
 	codepoint: number;
@@ -188,91 +188,73 @@ function readFormat12(
 
 /**
  * Find every non-ASCII character in a rendered position in one UI source file.
- * Comment bodies (line + block) are stripped preserving line numbers; test
- * files (*.test.ts / *.test.tsx) are skipped entirely. The strip is
- * string-aware: a `//` inside a string literal is not a comment, and an escaped
- * quote does not end the string.
+ * The text is parsed by the TypeScript compiler and only leaf TOKENS are read,
+ * so comment bodies are excluded as trivia and JSX text, regex literals, and
+ * template spans are located as the parser tokenizes them. JSDoc subtrees are
+ * skipped. Test files (*.test.ts / *.test.tsx) are skipped entirely.
  */
 export function scanSource(relPath: string, text: string): Finding[] {
 	if (relPath.endsWith(".test.ts") || relPath.endsWith(".test.tsx")) return [];
-	const stripped = stripComments(text);
+	const sourceFile = ts.createSourceFile(
+		relPath,
+		text,
+		ts.ScriptTarget.Latest,
+		// No parent pointers: the walk only descends.
+		false,
+		relPath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+	);
 	const findings: Finding[] = [];
-	let line = 0;
-	for (const raw of stripped.split("\n")) {
-		line++;
-		let column = 0;
-		for (const ch of raw) {
-			column++;
-			const cp = ch.codePointAt(0);
-			if (cp !== undefined && cp > 127) {
-				findings.push({ path: relPath, line, column, char: ch, codepoint: cp });
-			}
-		}
-	}
+	collectFindings(sourceFile, sourceFile, relPath, findings);
 	return findings;
 }
 
 /**
- * Replace comment bodies with spaces, PRESERVING newlines (so line numbers of
- * later code are unchanged). String literals ('...', "...", `...`) are skipped
- * with escape handling, so a `//` or `/*` inside a string is not a comment.
+ * Recurse to leaf tokens, appending one Finding per non-ASCII codepoint in a
+ * leaf's text. Iteration is by codepoint so an astral character is one finding,
+ * not two surrogate halves.
  */
-export function stripComments(text: string): string {
-	const out: string[] = [];
-	let i = 0;
-	const n = text.length;
-	let state: "normal" | "line" | "block" = "normal";
-	let quote: string | null = null;
-	while (i < n) {
-		const c = text[i] ?? "";
-		const next = i + 1 < n ? (text[i + 1] ?? "") : "";
-		if (quote !== null) {
-			if (c === "\\") {
-				out.push(c, next);
-				i += 2;
-				continue;
-			}
-			out.push(c);
-			if (c === quote) quote = null;
-			i++;
-			continue;
+function collectFindings(
+	node: ts.Node,
+	sourceFile: ts.SourceFile,
+	relPath: string,
+	out: Finding[],
+): void {
+	// JSDoc is the one comment form the parser surfaces as real nodes rather
+	// than trivia, so its subtree is skipped: a doc comment renders nothing.
+	if (isJSDocNode(node)) return;
+	const children = node.getChildren(sourceFile);
+	if (children.length > 0) {
+		for (const child of children) {
+			collectFindings(child, sourceFile, relPath, out);
 		}
-		if (state === "line") {
-			out.push(c === "\n" ? "\n" : " ");
-			if (c === "\n") state = "normal";
-			i++;
-			continue;
-		}
-		if (state === "block") {
-			if (c === "*" && next === "/") {
-				out.push(" ", " ");
-				i += 2;
-				state = "normal";
-				continue;
-			}
-			out.push(c === "\n" ? "\n" : " ");
-			i++;
-			continue;
-		}
-		if (c === "/" && next === "/") {
-			out.push(" ", " ");
-			i += 2;
-			state = "line";
-			continue;
-		}
-		if (c === "/" && next === "*") {
-			out.push(" ", " ");
-			i += 2;
-			state = "block";
-			continue;
-		}
-		if (c === '"' || c === "'" || c === "`") {
-			quote = c;
-		}
-		out.push(c);
-		i++;
+		return;
 	}
-	return out.join("");
+	const start = node.getStart(sourceFile);
+	const leaf = node.getText(sourceFile);
+	for (let offset = 0; offset < leaf.length; ) {
+		const codepoint = leaf.codePointAt(offset);
+		if (codepoint === undefined) break;
+		const char = String.fromCodePoint(codepoint);
+		if (codepoint > 127) {
+			const at = sourceFile.getLineAndCharacterOfPosition(start + offset);
+			out.push({
+				path: relPath,
+				line: at.line + 1,
+				column: at.character + 1,
+				char,
+				codepoint,
+			});
+		}
+		offset += char.length;
+	}
+}
+
+/** True for a JSDoc node or anything inside one (tags, type expressions). */
+function isJSDocNode(node: ts.Node): boolean {
+	return (
+		node.kind >= ts.SyntaxKind.FirstJSDocNode &&
+		node.kind <= ts.SyntaxKind.LastJSDocNode
+	);
 }
 
 // ---------------------------------------------------------------------------
