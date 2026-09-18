@@ -15,6 +15,8 @@ import (
 	"errors"
 	"testing"
 
+	"connectrpc.com/connect"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -75,6 +77,32 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 	}
 	if got := resp.GetResult().GetCallId(); got != "tc-r" {
 		t.Fatalf("response call_id = %q, want tc-r", got)
+	}
+}
+
+// TestRelayCommsCallRosterArmErrorIsInBandNotStreamError: a roster caller
+// failure is rendered as a CommsCallError while RelayCommsCall itself remains
+// successful and preserves the request call_id.
+func TestRelayCommsCallRosterArmErrorIsInBandNotStreamError(t *testing.T) {
+	hub, comms := newHubWithComms()
+	comms.rosterErr = connect.NewError(connect.CodePermissionDenied, errors.New("roster denied"))
+	bindLiveSession(hub)
+
+	resp, err := hub.RelayCommsCall(context.Background(), relayRoster("sess-1", "tc-roster-err", &compassv1.GetRosterRequest{
+		Scope: compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
+	}))
+	if err != nil {
+		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band roster error", err)
+	}
+	toolErr := resp.GetResult().GetError()
+	if toolErr == nil {
+		t.Fatal("response has no in-band CommsCallError, want the roster failure rendered in-band")
+	}
+	if got := toolErr.GetCode(); got != connect.CodePermissionDenied.String() {
+		t.Fatalf("in-band error code = %q, want %q", got, connect.CodePermissionDenied.String())
+	}
+	if got := resp.GetResult().GetCallId(); got != "tc-roster-err" {
+		t.Fatalf("response call_id = %q, want tc-roster-err", got)
 	}
 }
 
