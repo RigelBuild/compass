@@ -159,6 +159,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/dl-reconcile": {
+      "name": "@compass/dl-reconcile",
+      "bin": {
+        "dl-reconcile": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/font-coverage-gate": {
       "name": "@compass/font-coverage-gate",
       "bin": {
@@ -502,6 +512,8 @@
     "@compass/cx-token-gate": ["@compass/cx-token-gate@workspace:tools/cx-token-gate"],
 
     "@compass/design-ledger-gate": ["@compass/design-ledger-gate@workspace:tools/design-ledger-gate"],
+
+    "@compass/dl-reconcile": ["@compass/dl-reconcile@workspace:tools/dl-reconcile"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 
