@@ -158,6 +158,23 @@ const sweepBatchSize = 200
 //     that cannot hold another tenant's volume, so excluding them removes the
 //     self-match surface (the environ/cmdline of the running searcher) without
 //     narrowing what the row actually probes.
+//
+// shellQuote returns one shell word that preserves s literally. The guest image
+// does not guarantee base64, so generated scripts use the POSIX single-quote
+// idiom for transport instead of relying on an optional decoder.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func shellQuoteWords(s string) string {
+	words := strings.Fields(s)
+	quoted := make([]string, 0, len(words))
+	for _, word := range words {
+		quoted = append(quoted, shellQuote(word))
+	}
+	return strings.Join(quoted, " ")
+}
+
 func sweepScript(needle, roots string) string {
 	// The awk program: scan every FILENAME handed to this invocation, print
 	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
@@ -170,7 +187,7 @@ func sweepScript(needle, roots string) string {
 	// that signal remains visible.
 	const awkProg = `BEGINFILE { if (ERRNO != "") { probeError=1; nextfile } } ` +
 		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { if (probeError) exit 2; exit !hit }`
-	return "export SWEEP_NEEDLE='" + needle + "'; " +
+	return "export SWEEP_NEEDLE=" + shellQuote(needle) + "; " +
 		"shopt -s globstar nullglob dotglob; found=1; batch=(); " +
 		// scan() runs one awk over the accumulated batch and clears it. Guarded
 		// on a non-empty batch so a trailing flush with nothing pending does not
@@ -181,7 +198,7 @@ func sweepScript(needle, roots string) string {
 		"scan() { ((${#batch[@]})) || return 0; " +
 		"awk '" + awkProg + "' \"${batch[@]}\"; status=$?; batch=(); " +
 		"case $status in 0) found=0;; 1) ;; *) return $status;; esac; }; " +
-		"for root in " + roots + "; do " +
+		"for root in " + shellQuoteWords(roots) + "; do " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
 		// "//proc/self/environ", which a /proc/* pattern does NOT match —
@@ -424,20 +441,20 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 	// the NON-ZERO EXIT — a confined command must fail, not merely print nothing.
 	attempts := map[string]crossSessionAttempt{
 		"B's absolute host volume path": {
-			script: "cat " + filepath.Join(volumeB, "host-secret.txt") + " " + filepath.Join(volumeB, "guest-secret.txt"),
+			script: "cat " + shellQuote(filepath.Join(volumeB, "host-secret.txt")) + " " + shellQuote(filepath.Join(volumeB, "guest-secret.txt")),
 		},
 		"B's volume dir listing": {
 			// An `ls` that SUCCEEDED and listed B's secrets would pass a
 			// content check; the discriminator here is the FILENAMES plus the
 			// exit code.
-			script: "ls -la " + volumeB,
+			script: "ls -la " + shellQuote(volumeB),
 			forbid: []string{"host-secret.txt", "guest-secret.txt"},
 		},
 		"traversal toward B": {
 			script: "cat /workspace/../volume/host-secret.txt; cat /workspace/../../*/volume/*secret*",
 		},
 		"a symlink A plants to B": {
-			script: "ln -sf " + volumeB + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
+			script: "ln -sf " + shellQuote(volumeB) + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
 		},
 		"a content sweep of every tree A can name": {
 			// NOT `grep -r`: the guest ships no grep/find, so that row exited 127
@@ -496,10 +513,10 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 	// let A try, and compare.
 	before := snapshotTree(t, volumeB)
 	for _, script := range []string{
-		"echo from-a > " + filepath.Join(volumeB, "pwned.txt"),
+		"echo from-a > " + shellQuote(filepath.Join(volumeB, "pwned.txt")),
 		"echo from-a > /workspace/b-link/pwned-link.txt",
-		"rm -f " + filepath.Join(volumeB, "host-secret.txt"),
-		"rm -rf " + volumeB,
+		"rm -f " + shellQuote(filepath.Join(volumeB, "host-secret.txt")),
+		"rm -rf " + shellQuote(volumeB),
 	} {
 		out, code := guestSh(t, mA, idA, script)
 		t.Logf("A write-into-B attempt %q -> exit %d, %q", script, code, strings.TrimSpace(out))
