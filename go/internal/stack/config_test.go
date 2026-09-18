@@ -92,6 +92,53 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "guest artifact requires microvm backend",
+			mutate: func(c *Config) {
+				c.RuntimeBackend = "container"
+				c.GuestArtifact = testGuestArtifact
+			},
+			wantErr:    true,
+			errSubstrs: []string{"GuestArtifact", "RuntimeBackend"},
+		},
+		{
+			name: "both guest knobs are mutually exclusive",
+			mutate: func(c *Config) {
+				c.RuntimeBackend = "microvm"
+				c.GuestArtifact = testGuestArtifact
+				c.GuestDir = "/state/guest"
+			},
+			wantErr:    true,
+			errSubstrs: []string{"mutually exclusive"},
+		},
+		{
+			name: "tag-pinned guest artifact is refused",
+			mutate: func(c *Config) {
+				c.RuntimeBackend = "microvm"
+				c.GuestArtifact = "ghcr.io/rigelbuild/compass-guest-image:latest"
+			},
+			wantErr:    true,
+			errSubstrs: []string{"digest-pinned"},
+		},
+		{
+			// Validate shares the fetcher's parser, so the grammar cases it
+			// rejects are refused here too rather than mid-startup.
+			name: "malformed guest artifact is refused",
+			mutate: func(c *Config) {
+				c.RuntimeBackend = "microvm"
+				c.GuestArtifact = "ghcr.io/Rigel/Guest@sha256:" + strings.Repeat("a", 64)
+			},
+			wantErr:    true,
+			errSubstrs: []string{"repository path"},
+		},
+		{
+			name: "microvm with a digest-pinned guest artifact",
+			mutate: func(c *Config) {
+				c.RuntimeBackend = "microvm"
+				c.GuestArtifact = testGuestArtifact
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range tests {

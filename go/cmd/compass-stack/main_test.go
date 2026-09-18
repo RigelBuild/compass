@@ -320,6 +320,153 @@ func TestResolveConfigNatsFlags(t *testing.T) {
 	})
 }
 
+// testGuestArtifact is a valid digest-pinned guest reference; Config.Validate
+// rejects a tag-pinned one, so every positive case must use a real digest.
+const testGuestArtifact = "ghcr.io/rigelbuild/compass-guest-image@sha256:" +
+	"1111111111111111111111111111111111111111111111111111111111111111"
+
+// TestResolveConfigGuestFlags covers the microVM guest knobs. The load-bearing
+// case is the LAST one: with no flags and no env, all three stay empty — an
+// implicit "microvm" here would route every stack onto a backend its host may
+// not support.
+func TestResolveConfigGuestFlags(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	t.Setenv("COMPASS_RUNTIME_BACKEND", "")
+	t.Setenv("COMPASS_GUEST_ARTIFACT", "")
+	t.Setenv("COMPASS_GUEST_DIR", "")
+
+	t.Run("backend and artifact thread into config", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.runtimeBackend = "microvm"
+		f.guestArtifact = testGuestArtifact
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.RuntimeBackend != "microvm" {
+			t.Errorf("RuntimeBackend = %q, want microvm", cfg.RuntimeBackend)
+		}
+		if cfg.GuestArtifact != testGuestArtifact {
+			t.Errorf("GuestArtifact = %q, want %q", cfg.GuestArtifact, testGuestArtifact)
+		}
+		if cfg.GuestDir != "" {
+			t.Errorf("GuestDir = %q, want empty", cfg.GuestDir)
+		}
+	})
+
+	t.Run("guest dir threads into config without existing on disk", func(t *testing.T) {
+		// The CLI deliberately does not check the dir's contents: whether the
+		// four files are there is a runtime question stack startup owns.
+		f := baseFlags(t.TempDir())
+		f.runtimeBackend = "microvm"
+		f.guestDir = "/does/not/exist/guest"
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.GuestDir != f.guestDir {
+			t.Errorf("GuestDir = %q, want %q", cfg.GuestDir, f.guestDir)
+		}
+	})
+
+	t.Run("env fallback honored, flag wins", func(t *testing.T) {
+		t.Setenv("COMPASS_RUNTIME_BACKEND", "microvm")
+		t.Setenv("COMPASS_GUEST_ARTIFACT", testGuestArtifact)
+
+		cfg, err := resolveConfig(baseFlags(t.TempDir()))
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.RuntimeBackend != "microvm" || cfg.GuestArtifact != testGuestArtifact {
+			t.Errorf("env values did not reach config: backend=%q artifact=%q", cfg.RuntimeBackend, cfg.GuestArtifact)
+		}
+
+		flagArtifact := "ghcr.io/rigelbuild/compass-guest-image@sha256:" + strings.Repeat("2", 64)
+		f := baseFlags(t.TempDir())
+		f.guestArtifact = flagArtifact
+		cfg, err = resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.GuestArtifact != flagArtifact {
+			t.Errorf("GuestArtifact = %q, want the flag value (flag wins over env)", cfg.GuestArtifact)
+		}
+	})
+
+	t.Run("artifact and dir together are rejected", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.runtimeBackend = "microvm"
+		f.guestArtifact = testGuestArtifact
+		f.guestDir = "/state/guest"
+		_, err := resolveConfig(f)
+		if err == nil {
+			t.Fatal("resolveConfig(artifact + dir) = nil error, want the mutual-exclusion rejection")
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("error = %v, want it to name the mutual exclusion", err)
+		}
+	})
+
+	t.Run("tag-pinned artifact is rejected", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.runtimeBackend = "microvm"
+		f.guestArtifact = "ghcr.io/rigelbuild/compass-guest-image:latest"
+		if _, err := resolveConfig(f); err == nil {
+			t.Fatal("resolveConfig(tag-pinned artifact) = nil error, want the digest-pin rejection")
+		}
+	})
+
+	t.Run("guest knobs without the microvm backend are rejected", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.guestArtifact = testGuestArtifact
+		if _, err := resolveConfig(f); err == nil {
+			t.Fatal("resolveConfig(artifact, no backend) = nil error, want a rejection")
+		}
+	})
+
+	t.Run("unset flags and env leave all three empty", func(t *testing.T) {
+		// Drive the real flag set so the registered defaults are what is read:
+		// a non-empty default on --runtime-backend would put every stack on a
+		// backend nobody selected.
+		fs, f := newFlagSet("up", true)
+		f.stateDir = t.TempDir()
+		f.image = "example.com/agent:latest"
+		if err := fs.Parse([]string{"--state-dir", f.stateDir, "--image", f.image}); err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		cfg, err := resolveConfig(*f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.RuntimeBackend != "" || cfg.GuestArtifact != "" || cfg.GuestDir != "" {
+			t.Fatalf("zero-flag config = {backend %q, artifact %q, dir %q}, want all empty (no implicit microVM)",
+				cfg.RuntimeBackend, cfg.GuestArtifact, cfg.GuestDir)
+		}
+	})
+
+	t.Run("flags are registered on every subcommand that resolves config", func(t *testing.T) {
+		for _, sub := range []string{"up", "down", "status"} {
+			fs, f := newFlagSet(sub, sub == "up")
+			dir := t.TempDir()
+			args := []string{
+				"--state-dir", dir, "--image", "example.com/agent:latest",
+				"--runtime-backend", "microvm", "--guest-artifact", testGuestArtifact,
+			}
+			if err := fs.Parse(args); err != nil {
+				t.Fatalf("%s: Parse: %v", sub, err)
+			}
+			cfg, err := resolveConfig(*f)
+			if err != nil {
+				t.Fatalf("%s: resolveConfig: %v", sub, err)
+			}
+			if cfg.RuntimeBackend != "microvm" || cfg.GuestArtifact != testGuestArtifact {
+				t.Errorf("%s: guest flags did not reach config: backend=%q artifact=%q", sub, cfg.RuntimeBackend, cfg.GuestArtifact)
+			}
+		}
+	})
+}
+
 func TestRunDispatch(t *testing.T) {
 	t.Run("unknown subcommand names the three", func(t *testing.T) {
 		err := run([]string{"bogus"})

@@ -123,7 +123,13 @@ type configFlags struct {
 	// natsExternalSet records whether --nats-external was explicitly passed, for
 	// the same explicit-empty reject otelExternalSet drives.
 	natsExternalSet bool
-	linger          bool
+	// The microVM guest knobs. runtimeBackend stays empty unless the flag or
+	// env explicitly selects a backend: an implicit "microvm" here would put
+	// every stack on a backend its host may not support.
+	runtimeBackend string
+	guestArtifact  string
+	guestDir       string
+	linger         bool
 }
 
 // newFlagSet builds a flag.FlagSet for one subcommand, registering the config
@@ -172,6 +178,20 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 	fs.StringVar(&f.natsExternal, "nats-external", "",
 		"Do not start the bundled NATS; point compass surfaces at this nats:// URL "+
 			"instead. The managed plane supplies its own broker.")
+	fs.StringVar(&f.runtimeBackend, "runtime-backend", "",
+		"Session backend the runner runs agents on ('microvm'). Empty leaves the "+
+			"runner on its own resolution — there is no implicit microVM. "+
+			"Honors $COMPASS_RUNTIME_BACKEND; the flag wins.")
+	fs.StringVar(&f.guestArtifact, "guest-artifact", "",
+		"Digest-pinned repo@sha256:<hex> guest image artifact to materialise "+
+			"under the state dir before the runner starts (microvm backend). "+
+			"Honors $COMPASS_GUEST_ARTIFACT; the flag wins. Mutually exclusive "+
+			"with --guest-dir.")
+	fs.StringVar(&f.guestDir, "guest-dir", "",
+		"Already-materialised guest directory (kernel, rootfs.erofs, initrd, "+
+			"manifest.sha256) to use as-is, skipping all fetching — the "+
+			"air-gapped path. Honors $COMPASS_GUEST_DIR; the flag wins. Mutually "+
+			"exclusive with --guest-artifact.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,
 			"Leave the stack running after this process exits (records Config.Linger).")
@@ -265,6 +285,23 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		return stack.Config{}, errors.New("--nats-external requires an explicit nats:// URL: point compass surfaces at your own broker (omit the flag to bundle one)")
 	}
 
+	// The guest knobs take the module's flag-then-env precedence with NO default
+	// on any of the three: an implicit backend selection here would silently
+	// route a stack onto microVM. Whether the guest dir's files exist is a
+	// runtime question stack startup owns, not this pure resolver's.
+	runtimeBackend := f.runtimeBackend
+	if runtimeBackend == "" {
+		runtimeBackend = os.Getenv("COMPASS_RUNTIME_BACKEND")
+	}
+	guestArtifact := f.guestArtifact
+	if guestArtifact == "" {
+		guestArtifact = os.Getenv("COMPASS_GUEST_ARTIFACT")
+	}
+	guestDir := f.guestDir
+	if guestDir == "" {
+		guestDir = os.Getenv("COMPASS_GUEST_DIR")
+	}
+
 	cfg := stack.Config{
 		StateDir:             f.stateDir,
 		SocketPath:           socketPath,
@@ -278,6 +315,9 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		ExternalOTLPEndpoint: f.otelExternal,
 		NatsImage:            f.natsImage,
 		ExternalNatsURL:      f.natsExternal,
+		RuntimeBackend:       runtimeBackend,
+		GuestArtifact:        guestArtifact,
+		GuestDir:             guestDir,
 		Linger:               f.linger,
 	}
 	if err := cfg.Validate(); err != nil {
