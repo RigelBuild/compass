@@ -160,6 +160,34 @@ func TestRelayCommsCallHappyListForwardsUnderBoundAccountAndStampsCallID(t *test
 	}
 }
 
+// 3b. A list caller failure is rendered as a CommsCallError while RelayCommsCall
+// itself remains successful and preserves the request call_id.
+//
+// Mutation: dropping caller error handling makes the in-band list error absent,
+// so this test fails.
+func TestRelayCommsCallListToolErrorIsInBandNotStreamError(t *testing.T) {
+	hub, comms := newHubWithComms()
+	comms.listErr = connect.NewError(connect.CodePermissionDenied, errors.New("list denied"))
+	bindLiveSession(hub)
+
+	resp, err := hub.RelayCommsCall(context.Background(), relayList("sess-1", "tc-list-err", &compassv1.ListMessagesRequest{
+		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: "chan-1"},
+	}))
+	if err != nil {
+		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band list error", err)
+	}
+	toolErr := resp.GetResult().GetError()
+	if toolErr == nil {
+		t.Fatal("response has no in-band CommsCallError, want the list failure rendered in-band")
+	}
+	if got := toolErr.GetCode(); got != connect.CodePermissionDenied.String() {
+		t.Fatalf("in-band error code = %q, want %q", got, connect.CodePermissionDenied.String())
+	}
+	if got := resp.GetResult().GetCallId(); got != "tc-list-err" {
+		t.Fatalf("response call_id = %q, want tc-list-err", got)
+	}
+}
+
 // 4. A tool-level failure is rendered IN-BAND as a CommsCallError, not as a
 // Connect stream error: the agent gets a renderable error and the transport
 // survives. This is the "tool failure != transport teardown" invariant. A
