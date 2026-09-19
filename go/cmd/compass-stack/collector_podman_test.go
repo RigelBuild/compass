@@ -66,7 +66,7 @@ func TestCollectorUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(t, binDir)
+	env := stackEnv(binDir)
 
 	fx := newContainerFixture(t, shortRoot(t, "-col"))
 	cfg := fx.cfg
@@ -143,7 +143,7 @@ func TestExternalOTLPUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(t, binDir)
+	env := stackEnv(binDir)
 
 	fx := newContainerFixture(t, shortRoot(t, "-extotel"))
 	cfg := fx.cfg

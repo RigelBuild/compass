@@ -71,7 +71,7 @@ func TestContainerPostgresUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(t, binDir)
+	env := stackEnv(binDir)
 
 	fx := newContainerFixture(t, shortRoot(t, "-ctr"))
 	cfg := fx.cfg
@@ -144,7 +144,7 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(t, binDir)
+	env := stackEnv(binDir)
 
 	// The "external" postgres: a throwaway TCP-published container the test owns.
 	externalDSN := startExternalPostgres(t)
