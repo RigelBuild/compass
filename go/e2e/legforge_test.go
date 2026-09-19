@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -83,7 +84,11 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 
 	requests := f.ForgeStub().Requests()
 	if len(requests) != 7 {
-		t.Fatalf("forge requests = %d, want 7 (one mint plus six API calls)", len(requests))
+		paths := make([]string, 0, len(requests))
+		for _, request := range requests {
+			paths = append(paths, request.Method+" "+request.Path)
+		}
+		t.Fatalf("forge requests = %d, want 7 (one mint plus six API calls); saw %v", len(requests), paths)
 	}
 	if requests[0].Path != "/api/v3/app/installations/1/access_tokens" || requests[0].Method != http.MethodPost {
 		t.Fatalf("mint request = %#v", requests[0])
@@ -135,8 +140,9 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	if err := json.Unmarshal(requests[3].Body, &commentBody); err != nil {
 		t.Fatalf("decode comment body: %v", err)
 	}
-	if commentBody["body"] != "forge leg comment" {
-		t.Fatalf("comment body = %#v", commentBody)
+	commentText, commentOK := commentBody["body"].(string)
+	if !commentOK || !strings.Contains(commentText, "forge leg comment") || !strings.Contains(commentText, "compass:owner") || !strings.Contains(commentText, "agent="+handle) {
+		t.Fatalf("comment body = %q", commentBody["body"])
 	}
 
 	var pullRequestBody map[string]any
@@ -151,6 +157,10 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "Created pull request #4243 in owner/repo: https://forge.stub/pulls/4243"); err != nil {
 		t.Fatalf("awaitTranscriptPersisted (pull request response): %v", err)
 	}
+	finalIssue := f.ForgeStub().Issue(forgeStubIssueNumber)
+	if finalIssue["state"] != "closed" || finalIssue["state_reason"] != "completed" {
+		t.Fatalf("final issue state=%v state_reason=%v, want closed/completed", finalIssue["state"], finalIssue["state_reason"])
+	}
 	authored, err := st.AuthoredArtifactByCoordinate(ctx, store.ForgeProviderGitHub, f.ForgeStub().Host(), repo, store.ForgeArtifactKindIssue, forgeStubIssueNumber)
 	if err != nil {
 		t.Fatalf("AuthoredArtifactByCoordinate: %v", err)
@@ -164,5 +174,12 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	}
 	if pullRequest.AgentAccountID != store.AccountID(agentID) || pullRequest.Number != forgeStubPullRequestNumber {
 		t.Fatalf("authored pull request agent=%q number=%d", pullRequest.AgentAccountID, pullRequest.Number)
+	}
+	transitionAgent, consumed, err := st.ConsumeStateTransition(ctx, store.ForgeProviderGitHub, f.ForgeStub().Host(), repo, store.ForgeArtifactKindIssue, forgeStubIssueNumber, store.TransitionStateClosed, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("ConsumeStateTransition: %v", err)
+	}
+	if !consumed || transitionAgent != store.AccountID(agentID) {
+		t.Fatalf("ConsumeStateTransition agent=%q consumed=%v, want %q true", transitionAgent, consumed, store.AccountID(agentID))
 	}
 }

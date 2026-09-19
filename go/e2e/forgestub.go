@@ -22,6 +22,7 @@ import (
 const (
 	forgeStubIssueNumber       uint64 = 4242
 	forgeStubPullRequestNumber uint64 = 4243
+	forgeStubLogin                    = "forge-stub"
 )
 
 type forgeStubRequest struct {
@@ -95,6 +96,16 @@ func (s *forgeStub) Requests() []forgeStubRequest {
 	return out
 }
 
+// Issue returns a copy of the stub's stored issue so a test can assert the
+// state a later GET would return.
+func (s *forgeStub) Issue(number uint64) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]any, len(s.issues[number]))
+	maps.Copy(out, s.issues[number])
+	return out
+}
+
 func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -152,7 +163,7 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "json", http.StatusBadRequest)
 			return
 		}
-		jsonOut(w, http.StatusCreated, issue(forgeStubPullRequestNumber, input, "open", "/pulls/4243"))
+		jsonOut(w, http.StatusCreated, pullRequest(input))
 	default:
 		http.NotFound(w, r)
 	}
@@ -173,7 +184,9 @@ func (s *forgeStub) handleIssue(w http.ResponseWriter, r *http.Request, parts []
 		return
 	}
 	if len(parts) == 6 && parts[5] == "comments" && r.Method == http.MethodPost {
-		jsonOut(w, http.StatusCreated, map[string]any{"id": 1, "body": "comment", "user": map[string]any{"login": "forge-stub"}})
+		comment := envelope("comment", "https://forge.stub/issues/"+parts[4]+"#issuecomment-1")
+		comment["id"] = 1
+		jsonOut(w, http.StatusCreated, comment)
 		return
 	}
 	if len(parts) != 5 || (r.Method != http.MethodGet && r.Method != http.MethodPatch) {
@@ -205,15 +218,11 @@ func (s *forgeStub) handleIssue(w http.ResponseWriter, r *http.Request, parts []
 }
 
 func issue(number uint64, input map[string]any, state, path string) map[string]any {
-	out := map[string]any{
-		"number":   number,
-		"title":    "forge stub issue",
-		"body":     "",
-		"state":    state,
-		"html_url": "https://forge.stub" + path,
-		"user":     map[string]any{"login": "forge-stub"},
-		"labels":   []map[string]string{},
-	}
+	out := envelope("", "https://forge.stub"+path)
+	out["number"] = number
+	out["title"] = "forge stub issue"
+	out["state"] = state
+	out["labels"] = []map[string]string{}
 	for key, value := range input {
 		if key == "labels" {
 			if labels, ok := value.([]any); ok {
@@ -231,6 +240,35 @@ func issue(number uint64, input map[string]any, state, path string) map[string]a
 	}
 	return out
 }
+
+// pullRequest shapes the GitHub pull-request response: head and base are
+// objects carrying a ref, not the bare strings the create request sends.
+func pullRequest(input map[string]any) map[string]any {
+	ref := func(key string) map[string]any {
+		value, _ := input[key].(string)
+		return map[string]any{"ref": value}
+	}
+	body, _ := input["body"].(string)
+	out := envelope(body, "https://forge.stub/pulls/4243")
+	out["number"] = forgeStubPullRequestNumber
+	out["title"], _ = input["title"].(string)
+	out["state"] = "open"
+	out["draft"], _ = input["draft"].(bool)
+	out["head"] = ref("head")
+	out["base"] = ref("base")
+	return out
+}
+
+// envelope is the field set every stub response shares: the authored body, the
+// artifact URL, and the stub's own author identity.
+func envelope(body, url string) map[string]any {
+	return map[string]any{
+		"body":     body,
+		"html_url": url,
+		"user":     map[string]any{"login": forgeStubLogin},
+	}
+}
+
 func (s *forgeStub) validAuthorization(value string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
