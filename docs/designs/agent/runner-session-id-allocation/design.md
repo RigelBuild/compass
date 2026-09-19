@@ -17,22 +17,22 @@ The planned target behavior, pending the implementation PR, makes the Server the
 
 ### Authoritative binding and data flow
 
-Planned target behavior (pending the implementation PR): `Hub.Start` is the sole fresh-start minting boundary. It sends `fresh_session_id` on the internal envelope, `dispatcher.execute` passes it to `agentHost.Start`, and the Runner returns the selected ID in its start result. The Server promotes the container's provisioned account binding only after that result. `promoteSession` records the live `session_id` to account binding and keeps its existing fail-closed behavior for unknown accounts. RelayCommsCall, RelayForgeCall, RelayBoardCall, RelayLifecycleCall, and FetchSecrets resolve the account from that binding; no relay trusts an account asserted by the Runner or client (`go/internal/runnerhub/relay_comms.go`, `relay_forge.go`, `relay_board.go`, `relay_lifecycle.go`, `handler.go`).
+Planned target behavior (pending the implementation PR): `Hub.Start` is the sole fresh-start minting boundary. It creates the Server-owned relay operation ID, derives `fresh_session_id`, and sends both on the internal `SessionsResponse` envelope. `dispatcher.execute` passes the envelope fields to `agentHost.Start`; the Runner returns the selected ID and authenticated attempt metadata in its start result. The Server promotes the container's provisioned account binding only after exact echo and attempt validation. `promoteSession` records the live `session_id` to account binding and keeps its existing fail-closed behavior for unknown accounts. RelayCommsCall, RelayForgeCall, RelayBoardCall, RelayLifecycleCall, and FetchSecrets resolve the account from that binding; no relay trusts an account asserted by the Runner or client (`go/internal/runnerhub/relay_comms.go`, `relay_forge.go`, `relay_board.go`, `relay_lifecycle.go`, `commands.go`).
 
-The planned internal field is a sibling of `request_id` and `resume_body`, outside the command oneof. It is not added to the public `StartAgentSessionRequest`. Fresh starts carry the Server-minted field. Resumes carry the existing `resume_body` and no fresh ID. The Runner selects `resume_session_id` first; otherwise it requires a non-empty `fresh_session_id` and uses it verbatim.
+The internal `fresh_session_id` is not the public `StartAgentSessionRequest` input and is never caller-selectable. The public `session_id` is the logical, durable key returned after promotion and used by later account-scoped calls. The internal `fresh_session_id` is only the Server-to-Runner value for a new lifetime; it is not a second public identifier and is not accepted from clients. The internal envelope also carries the Server-owned operation ID and exact container-attempt token needed for correlation. A caller-supplied request ID, fresh ID, account ID, or attempt token is rejected before minting.
 
 ### Fresh start (planned target behavior; pending implementation PR)
 
-1. `Hub.Start` mints a fresh ID and sends it as `fresh_session_id` with `Start`.
-2. The Runner serializes the container transition, rejects an already-live container, and starts the agent with that ID.
-3. The Server verifies the returned ID is the one it sent, then promotes the account binding and returns the response.
-4. A returned-ID mismatch is version skew or a Server/Runner defect. The Server does not promote it. Before any cleanup Stop, it proves a container/attempt ownership fence: the reported ID must be bound to the same container and this start attempt. A reported ID that is foreign, unbound, or owned by another attempt is never passed to Stop. Only an ID that passes that fence may receive a bounded Stop, using a context independent of the cancelled start request. The Server returns an internal error naming both IDs; if fenced cleanup fails, the error log names the container and both IDs for operator cleanup.
+1. `Hub.Start` validates that the public request contains no caller-owned mint inputs, allocates one Server operation ID, derives `fresh_session_id`, and sends them on the internal envelope.
+2. The Runner serializes the container transition, rejects an already-live container, and starts the agent with that ID and attempt token.
+3. The Server requires an exact `fresh_session_id` echo, exact operation-ID echo, and exact authenticated container-attempt match before promoting the account binding and returning the public `session_id`.
+4. A mismatch is version skew or a Server/Runner defect. The Server does not promote it. Cleanup is authorized by the authenticated container-attempt fence, not by the mismatched reported ID: it may stop only the exact attempt that performed this operation, using a bounded context independent of the cancelled start request. The reported ID is diagnostic only and is never used to select a foreign or later generation. The Server returns an internal error naming both IDs; if fenced cleanup fails, the error log names the container, operation, attempt, expected ID, and reported ID for operator cleanup.
 
-A missing result variant is also a wire-contract error and fails without Stop: there is no returned ID to stop. A fresh start with no Server-minted `fresh_session_id` fails at the Runner with `FailedPrecondition`; it never falls back to a Runner-local counter.
+A missing result variant, missing echo, or missing attempt correlation is a wire-contract error and fails without Stop because ownership cannot be proven. A fresh start with no Server-minted `fresh_session_id` fails at the Runner with `FailedPrecondition`; it never falls back to a Runner-local counter.
 
 ### Resume (planned target behavior; pending implementation PR)
 
-Resume authorization happens before the Runner call. The authorized logical ID is reused as the live ID. The Runner materializes the reconstructed session body before agent exec, validates the resume ID as a bare path element, and rejects malformed path input. A live collision for the logical ID returns `AlreadyRunning`. A fresh ID supplied alongside a resume is ignored in favor of the resume ID and logged as skew; production never sends both.
+Resume authorization happens before the Runner call. The authorized logical public `session_id` is reused as the live ID; no fresh ID or new binding is created. The Runner materializes the reconstructed session body before agent exec, validates the resume ID as a bare path element, and returns an exact resume-ID and authenticated attempt echo. The Server verifies both echoes and the same operation/attempt fence before accepting the resume. A live collision for the logical ID returns `AlreadyRunning`. A fresh ID or caller operation ID supplied alongside a resume is rejected, not selected or silently replaced.
 
 ## ID construction and retry identity
 
@@ -42,28 +42,76 @@ Runner restart, and the baseline does not provide deterministic retry identity
 across restarts.
 
 Planned target behavior (pending the implementation PR) follows DL-371 exactly.
-The Server derives `fresh_session_id` from the **Server relay request ID** (the
-normalized ID carried on the internal relay envelope), never from a client
-value or Runner-local state. The input is domain-separated, length-prefixed,
-and SHA-256 hashed:
+The Server derives `fresh_session_id` from a **Server-generated relay request ID**
+at the mint boundary. A caller-provided `request_id` or `orNewRequestID` input is
+never accepted as authority for a fresh ID: the Server MUST reject a non-empty
+caller value (or ignore it and replace it with a newly generated value before
+derivation, as the public API contract for that relay specifies), and production
+must never let a client choose the normalized ID. The Runner has no minting or
+fallback path. The input is domain-separated, length-prefixed, and SHA-256
+hashed:
 
 ```text
 SHA256("compass.session-id.v1" ||
-       u32be(len(relay_request_id)) || relay_request_id)
+       u32be(len(server_relay_request_id)) || server_relay_request_id)
 ```
 
 The digest is encoded as 64 lowercase hexadecimal characters. The domain label
-and length prefix are frozen by DL-371. No container name, account ID, or
-mutable retry metadata is included. A retry that reuses the same normalized
-Server relay request ID therefore derives the same logical ID. A distinct
-request ID derives a distinct ID. A request routed to another container MUST
-use a fresh relay request ID, so the derivation cannot become a cross-container
+and length prefix are frozen by DL-371. No container name, account ID, or mutable
+retry metadata is included. A retry that reuses the same normalized Server
+relay request ID therefore derives the same logical ID. A distinct request ID
+derives a distinct ID.
+
+The Server's mint boundary also owns the cross-container uniqueness invariant:
+every fresh generation, regardless of destination container, receives a
+distinct Server relay request ID and therefore a distinct derived session ID.
+A request routed to another container MUST use a fresh relay request ID; the
+same ID MUST NOT be reused across containers or made into a cross-container
 selector. The Runner receives the derived value and never derives or
 substitutes one.
 
 The request ID is stable only for retries of one Server operation. Concurrent
 generations use distinct relay request IDs and therefore distinct IDs; the
 per-container transition lock remains the independent generation fence.
+
+Known-vector proof is required in the implementation PR, not just a property
+claim: add `TestFreshSessionIDKnownVector` in `go/internal/runnerhub` and run
+`go test ./internal/runnerhub -run '^TestFreshSessionIDKnownVector$' -count=1`.
+The test must assert the exact lowercase digest for a fixed request ID and also
+assert same-input equality plus distinct-input inequality.
+
+The shipped baseline remains unchanged: `a92fa2d0` still uses Runner-local
+`monotonicIDs` until this proposal lands.
+
+## Mixed-version compatibility and rollout ordering
+
+The planned target behavior (pending the implementation PR) has no Runner
+version handshake. The Runner-first capability gate deploys the Server
+mint-and-echo path only after the target Runner accepts and returns
+`fresh_session_id`; otherwise fresh starts fail before invoking the Runner.
+Mixed-version smoke covers target Server + old Runner (mismatch, no binding,
+fenced cleanup), old Server + target Runner (fresh `FailedPrecondition`), and
+target Server + target Runner (fresh and resume success). Resumes remain
+compatible because the Runner gives precedence to the authorized
+`resume_session_id`; no silent fallback minting is allowed.
+
+## Acceptance tests (planned target behavior; pending implementation PR)
+
+The implementation PR is accepted only when these deterministic commands pass. Each test names an observable contract; the shipped baseline at `a92fa2d0` remains Runner-local `monotonicIDs` until that PR lands.
+
+- `go test ./internal/runnerhub -run '^TestFreshSessionIDKnownVector$' -count=1` — assert the exact DL-371 lowercase digest for a fixed Server operation ID, same-operation retry equality, and distinct-operation inequality.
+- `go test ./internal/runnerhub -run '^TestFreshSessionIDRejectsCallerInput$' -count=1` — a caller-supplied request/fresh/account/attempt value is rejected before minting; the Server-owned operation ID is the only derivation input.
+- `go test ./internal/runnerhub -run '^TestFreshStartEnvelopeCarriesServerOperationAndFreshID$' -count=1` — the internal envelope carries the Server operation ID, derived `fresh_session_id`, and attempt fence, while the public request has no mint fields.
+- `go test ./internal/runnerhub -run '^TestStartRelayRequiresExactIDAndAttemptEcho$' -count=1` — exact ID, operation, and authenticated attempt echoes are required before one binding is promoted; missing or altered values return `Internal` and create no binding.
+- `go test ./internal/runnerhub -run '^TestMismatchCleanupUsesAttemptFenceNotReportedID$' -count=1` — matching attempt correlation permits bounded cleanup under a detached context; foreign, unbound, later-generation, and mismatched-attempt IDs are never passed to Stop.
+- `go test ./internal/runnerhub -run '^TestRetryReusesOperationButRerouteMintsNewOperation$' -count=1` — retrying the same Server operation reuses its ID and logical session ID; rerouting to another container allocates a new operation and cannot reuse the old ID as a cross-container selector.
+- `go test ./internal/runnerhub -run '^TestRelayCommsCallAttributesToBoundAccount$' -count=1` && `go test ./internal/runnerhub -run '^TestRelayForgeCallAttributesToBoundAccount$' -count=1` && `go test ./internal/runnerhub -run '^TestRelayBoardCallAttributesToBoundAccount$' -count=1` && `go test ./internal/runnerhub -run '^TestRelayLifecycleCallAttributesToBoundAccount$' -count=1` && `go test ./internal/runnerhub -run '^TestFetchSecretsAttributesToBoundAccount$' -count=1` — every account-scoped relay resolves only through the Server-owned binding.
+- `go test ./internal/runnerhub -run '^TestFailClosedStoppedNeverSeenAndPostReconnect$' -count=1` — stopped, unknown, and stale post-reconnect IDs resolve to no account.
+- `go test ./internal/runnerhub -run '^TestEnrollFiresReapSinkWithClearedSessionIDs$' -count=1` && `go test ./internal/runnerhub -run '^TestConcurrentResolveDuringAFaultingReapCannotResurrect$' -count=1` — enrollment and concurrent reap cannot resurrect a stale binding.
+- `go test ./internal/runner -run '^TestFreshStartRejectsMissingServerID$' -count=1` — the Runner returns `FailedPrecondition` and never invokes a local fallback generator.
+- `go test ./internal/runner -run '^TestResumeExactSessionAndAttemptEcho$' -count=1` — resume returns the authorized public `session_id` exactly, validates the attempt echo, materializes the body before exec, and creates no fresh binding.
+- `go test ./internal/runner -run '^TestResumeRejectsCallerFreshIDAndMalformedSessionID$' -count=1` — caller mint inputs and path-escaping resume IDs fail closed; a live collision returns `AlreadyRunning`.
+- `go test ./internal/runnerhub -run '^TestMixedVersionRunnerFirstCapabilitySmoke$' -count=1` — old/new Server and Runner permutations prove fresh precondition or echo mismatch, fenced cleanup, no binding on skew, and usable exact-ID resumes.
 
 ## Lifetime, generation, and locking fences
 
@@ -141,10 +189,6 @@ The planned target behavior (pending the implementation PR) fails closed at ever
 
 The session-ID change adds no unbounded retry, archive, or body buffering. It does not broaden resume-body size or storage limits.
 
-## Mixed-version compatibility and rollout ordering
-
-The planned target behavior (pending the implementation PR) has no Runner version handshake. The planned rollout deploys the Server and Runner changes together, with the Server minting and echo validation enabled only once the deployed Runner accepts the internal field. A newer Runner with an older Server receives no `fresh_session_id` and rejects fresh starts with `FailedPrecondition`. An older Runner ignores the internal field and returns its old Runner-local ID; the newer Server detects the mismatch, performs fenced bounded cleanup only if the reported ID belongs to the same container and attempt, and returns `Internal` without recording a binding. Resumes remain compatible because the Runner gives precedence to the authorized `resume_session_id`. This is deliberate partial availability, not a compatibility shim; do not roll only one side and wait for fresh starts to recover.
-
 ## Alternatives rejected
 
 - **Runner-local random or enrollment-prefixed IDs:** collision resistance does not change the authority problem; the Runner would still mint a Server-owned key.
@@ -152,43 +196,6 @@ The planned target behavior (pending the implementation PR) has no Runner versio
 - **Public `fresh_session_id`:** a client-chosen storage key is an authorization bypass vector. The internal envelope is the only carrier.
 - **Promote whatever the Runner returns:** this silently accepts old-version skew. Echo verification plus bounded, ownership-fenced cleanup makes skew loud and fail closed.
 - **Per-call random IDs or request ID verbatim:** the former breaks retry idempotency; the latter conflates transient correlation identity with a durable public key.
-
-## Acceptance criteria (planned target behavior; pending implementation PR)
-
-1. A fresh start returns a non-empty server-minted `fresh_session_id`, and the
-   Runner reports that exact ID; no Runner-local ID generator remains. The
-   shipped baseline at `a92fa2d0` remains Runner-local `monotonicIDs` until
-   this proposal lands.
-2. The DL-371 derivation is explicit and tested: the same relay request ID
-   gives the same ID, while distinct concurrent generations and distinct
-   containers do not share one.
-3. A resume returns its authorized logical ID, materializes its body before
-   exec, and does not create or record a fresh ID.
-4. Concurrent starts on one container cannot create two live generations; a
-   resume cannot displace an existing live lifetime.
-5. Missing, malformed, foreign, mismatched, or otherwise untrusted IDs fail
-   closed. Mismatch cleanup is bounded, attempt-correlated, and never stops a
-   foreign ID or records a binding.
-6. All account-scoped relay paths resolve through the Server-owned binding, and
-   reconnect/Stop/Remove release that binding so stale IDs cannot authorize.
-7. Server and Runner mixed-version behavior is explicit: fresh starts fail
-   precondition or internal mismatch; resumes remain usable; no silent fallback
-   minting occurs.
-8. Named regression commands cover the observable contract:
-   - `go test ./internal/runnerhub -run '^TestStartRelayReturnsSessionIdOnSuccess$'` —
-     fresh relay returns the echoed ID and promotes one binding.
-   - `go test ./internal/runnerhub -run '^TestRelayCommsEveryArmAttributesToBoundAccount$'` —
-     every relay arm executes under the durable binding, not request identity.
-   - `go test ./internal/runnerhub -run '^TestFailClosedStoppedNeverSeenAndPostReconnect$'` —
-     stopped, unknown, and post-reconnect IDs resolve to no account.
-   - `go test ./internal/runnerhub -run '^TestEnrollFiresReapSinkWithClearedSessionIDs$'` —
-     enrollment clears prior live IDs and reports the exact cleared set.
-   - `go test ./internal/runnerhub -run '^TestConcurrentResolveDuringAFaultingReapCannotResurrect$'` —
-     concurrent cache reap cannot resurrect a stale binding.
-   - `go test ./internal/runner -run '^Test.*Start'` and
-     `go test ./internal/runner -run '^Test.*Resume'` — start/resume cases
-     assert preconditions, resume precedence, path guards, and the transition
-     lock.
 
 ## Implementation references
 
