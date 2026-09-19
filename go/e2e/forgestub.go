@@ -19,7 +19,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/certgen"
 )
 
-const forgeStubIssueNumber uint64 = 4242
+const (
+	forgeStubIssueNumber       uint64 = 4242
+	forgeStubPullRequestNumber uint64 = 4243
+)
 
 type forgeStubRequest struct {
 	Method        string
@@ -145,7 +148,7 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "json", http.StatusBadRequest)
 			return
 		}
-		jsonOut(w, http.StatusCreated, issue(4243, input, "open", "/pulls/4243"))
+		jsonOut(w, http.StatusCreated, issue(forgeStubPullRequestNumber, input, "open", "/pulls/4243"))
 	default:
 		http.NotFound(w, r)
 	}
@@ -227,8 +230,8 @@ func issue(number uint64, input map[string]any, state, path string) map[string]a
 func (s *forgeStub) validAuthorization(value string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, token := range s.tokens {
-		if value == "Bearer "+token {
+	for installationID, token := range s.tokens {
+		if installationID == 1 && value == "Bearer "+token {
 			return true
 		}
 	}

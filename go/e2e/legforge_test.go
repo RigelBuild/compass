@@ -96,14 +96,26 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 		"/api/v3/repos/owner/repo/issues/4242",
 		"/api/v3/repos/owner/repo/pulls",
 	}
+	wantMethods := []string{http.MethodPost, http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodGet, http.MethodPost}
 	for i, want := range wantPaths {
 		request := requests[i+1]
 		if request.Path != want {
 			t.Fatalf("forge request %d path = %q, want %q", i+1, request.Path, want)
 		}
+		if request.Method != wantMethods[i] {
+			t.Fatalf("forge request %d method = %q, want %q", i+1, request.Method, wantMethods[i])
+		}
 		if request.Authorization != "Bearer forge-stub-installation-1" {
 			t.Fatalf("request %d authorization = %q", i+1, request.Authorization)
 		}
+	}
+
+	var transitionBody map[string]any
+	if err := json.Unmarshal(requests[4].Body, &transitionBody); err != nil {
+		t.Fatalf("decode transition body: %v", err)
+	}
+	if transitionBody["state"] != "closed" || transitionBody["state_reason"] != "completed" {
+		t.Fatalf("transition body = %#v, want state=closed state_reason=completed", transitionBody)
 	}
 
 	var createBody map[string]any
@@ -144,13 +156,13 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 		t.Fatalf("AuthoredArtifactByCoordinate: %v", err)
 	}
 	if authored.AgentAccountID != store.AccountID(agentID) || authored.Number != forgeStubIssueNumber {
-		t.Fatalf("authored artifact = %#v", authored)
+		t.Fatalf("authored artifact agent=%q number=%d", authored.AgentAccountID, authored.Number)
 	}
-	pullRequest, err := st.AuthoredArtifactByCoordinate(ctx, store.ForgeProviderGitHub, f.ForgeStub().Host(), repo, store.ForgeArtifactKindPullRequest, 4243)
+	pullRequest, err := st.AuthoredArtifactByCoordinate(ctx, store.ForgeProviderGitHub, f.ForgeStub().Host(), repo, store.ForgeArtifactKindPullRequest, forgeStubPullRequestNumber)
 	if err != nil {
 		t.Fatalf("AuthoredArtifactByCoordinate pull request: %v", err)
 	}
-	if pullRequest.AgentAccountID != store.AccountID(agentID) || pullRequest.Number != 4243 {
-		t.Fatalf("authored pull request = %#v", pullRequest)
+	if pullRequest.AgentAccountID != store.AccountID(agentID) || pullRequest.Number != forgeStubPullRequestNumber {
+		t.Fatalf("authored pull request agent=%q number=%d", pullRequest.AgentAccountID, pullRequest.Number)
 	}
 }

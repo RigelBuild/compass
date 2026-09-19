@@ -38,17 +38,17 @@ func TestForgeStubProviderClient(t *testing.T) {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 	if created.Number != forgeStubIssueNumber || created.Title != "title" {
-		t.Fatalf("created = %#v", created)
+		t.Fatalf("created number=%d title=%q", created.Number, created.Title)
 	}
 	requests := stub.Requests()
 	if len(requests) != 2 {
 		t.Fatalf("requests = %d, want mint and create", len(requests))
 	}
 	if requests[0].Path != "/api/v3/app/installations/1/access_tokens" || requests[0].Method != http.MethodPost {
-		t.Fatalf("mint request = %#v", requests[0])
+		t.Fatalf("mint request method=%q path=%q", requests[0].Method, requests[0].Path)
 	}
 	if requests[1].Path != "/api/v3/repos/owner/repo/issues" || requests[1].Method != http.MethodPost {
-		t.Fatalf("create request = %#v", requests[1])
+		t.Fatalf("create request method=%q path=%q", requests[1].Method, requests[1].Path)
 	}
 	if requests[1].Authorization != "Bearer forge-stub-installation-1" {
 		t.Fatalf("authorization = %q", requests[1].Authorization)

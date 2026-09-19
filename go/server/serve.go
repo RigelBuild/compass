@@ -133,11 +133,10 @@ type ServeConfig struct {
 	SecretProvider string
 }
 
-// ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
-// agent forge-WRITE path. All-optional: the board lane is off (no App config)
-// and writes are off (no write secrets) unless the operator opts in, leaving
-// today's behavior. The forge tables exist but sit empty — a migration is not a
-// behavior change.
+// ForgeConfig configures forge board ingestion, webhooks, and agent writes.
+// All fields are optional: absent App credentials leave board ingestion off;
+// absent write credentials leave writes off. Existing deployments therefore
+// retain today's behavior while the forge tables remain empty.
 type ForgeConfig struct {
 	// Host is the forge host the lane binds (default "github.com"); the API
 	// base URL derives from it. Seed rows and the live target set are keyed
