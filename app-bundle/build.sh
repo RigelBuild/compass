@@ -4,7 +4,7 @@
 # four embedded sidecars (compass-stack, compass-server, compass-runner,
 # compass-clear-token) + the UI dist + the desktop file + LICENSE, every binary
 # stamped with the ONE version.
-# version. No postgres tooling and no compass-postgres sidecar — the embedded
+# No postgres tooling and no compass-postgres sidecar — the embedded
 # stack's postgres is a stock postgres:18 container via rootless podman (§A4).
 #
 # Why bash: this is nix + go build orchestration glue — it realizes the pinned
@@ -113,7 +113,7 @@ cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 
 # --- 6. Sanity assertions (§256-261). A green build means a COMPLETE bundle.
 log "Sanity: verifying staged bundle"
-for b in compass-app compass-stack compass-server compass-runner; do
+for b in compass-app compass-stack compass-server compass-runner compass-clear-token; do
   bin="$STAGE/bin/$b"
   if [[ ! -x "$bin" ]]; then
     err "sanity: missing/non-executable binary: bin/$b"

@@ -1,8 +1,8 @@
 //go:build unix
 
-// Command compass-clear-token removes the native client's stored bearer token
-// for one server URL. It is intentionally silent on success and never reads or
-// prints the credential; tokenstore owns the keyring/file backend selection.
+// Command compass-clear-token removes the native client's stored bearer token.
+// It is intentionally silent on success and never reads or prints the credential;
+// tokenstore owns the keyring/file backend selection.
 package main
 
 import (
@@ -28,9 +28,14 @@ func main() {
 func run(args []string) error {
 	fs := flag.NewFlagSet("compass-clear-token", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	showVersion := fs.Bool("version", false, "Print the version and exit.")
 	serverURL := fs.String("server-url", "", "HTTPS server URL whose stored bearer should be removed (required)")
 	stateDir := fs.String("state-dir", "", "App state directory used by the token store (required)")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *showVersion {
+		_, err := fmt.Fprintln(os.Stdout, version)
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -42,7 +47,13 @@ func run(args []string) error {
 	if *stateDir == "" {
 		return errors.New("a state directory is required: pass --state-dir")
 	}
-	if err := tokenstore.New(*stateDir).Delete(*serverURL); err != nil {
+	store := tokenstore.New(*stateDir)
+	if _, err := store.Read(*serverURL); errors.Is(err, tokenstore.ErrNotFound) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read stored token: %w", err)
+	}
+	if err := store.Delete(*serverURL); err != nil {
 		return fmt.Errorf("delete stored token: %w", err)
 	}
 	return nil

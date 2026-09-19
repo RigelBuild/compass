@@ -99,9 +99,10 @@ tools/toolchain/          the CI/dev-shell version-parity gate
 ```
 
 The `go/cmd/` binaries are `compass-server`, `compass-runner`, `compass-stack`
-(the self-host supervisor), `compass-app` (the desktop shell), `compass` (the
-CLI), plus `compass-postgres`, `compass-guestd`, `compass-mint-runner-token`,
-and `compass-gen-cert`. Build and toolchain config (`package.json`, `.moon/`,
+(the self-host supervisor), `compass-clear-token` (the native-client token
+helper), `compass-app` (the desktop shell), `compass` (the CLI), plus
+`compass-postgres`, `compass-guestd`, `compass-mint-runner-token`, and
+`compass-gen-cert`. Build and toolchain config (`package.json`, `.moon/`,
 `buf.*`, `devenv.nix`, `tools/toolchain/versions/*.nix`, `biome.json`) lives at
 the repository root.
 

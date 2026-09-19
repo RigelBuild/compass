@@ -3,10 +3,12 @@
 This runbook validates the packaged `compass-app` in embedded and client modes.
 Build the tarball with `moon run compass-app-bundle:build`, then unpack the
 result. The bundle is a non-relocatable dev-box artifact. Its `bin` entry is a
-`/nix/store` symlink. The bundle ships the `compass-app` shell and three
-sidecars: `compass-stack`, `compass-server`, and `compass-runner`
-(`app-bundle/build.sh:88-97`). It does not ship postgres tooling; embedded mode
-runs stock postgres:18 in a rootless podman container (`app-bundle/build.sh:6-7`).
+`/nix/store` symlink. The bundle ships the `compass-app` shell and four
+sidecars: `compass-stack`, `compass-server`, `compass-runner`, and
+`compass-clear-token` (the sidecar build loop in `app-bundle/build.sh`). It does
+not ship postgres tooling; embedded mode runs stock postgres:18 in a rootless
+podman container (the bundle header and sidecar build loop in
+`app-bundle/build.sh`).
 
 Run this on one Linux dev box with the build's `/nix/store` realized. What is
 under test is the packaged `compass-app`, so always launch it from the unpacked
@@ -57,9 +59,9 @@ BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 ```
 
 `<version>` is `0.1.0+g<short-sha>`. Keep the bundle's `bin/compass-app`,
-`bin/compass-stack`, `bin/compass-server`, and `bin/compass-runner` together.
-The build stages all three sidecars into that directory
-(`app-bundle/build.sh:88-97`).
+`bin/compass-stack`, `bin/compass-server`, `bin/compass-runner`, and
+`bin/compass-clear-token` together. The build stages all four sidecars into that
+directory (the sidecar build loop in `app-bundle/build.sh`).
 
 ### 3. Launch with no `app.toml`
 
@@ -291,16 +293,25 @@ compass-stack down \
 
 The bearer outlives all of that. Step 3 stored it under the OS keychain service
 `compass-app`, keyed by the server URL, or in a 0600 `remote-token` file under
-the state dir when no keychain backend is available (`tokenFileName` and
-`New` in `go/internal/tokenstore/tokenstore.go`: "fallback file under the
-caller-supplied state dir"). The packaged app has no logout action, so use the
-bundled `compass-clear-token` helper. It calls `Store.Delete` directly and never
-reads or prints the credential:
+the state dir when no keychain backend is available (`tokenFileName` and `New` in
+`go/internal/tokenstore/tokenstore.go`: "fallback file under the caller-supplied
+state dir"). The packaged app has no logout action, so use the bundled
+`compass-clear-token` helper. Its `run` function in
+`go/cmd/compass-clear-token/main.go` passes the supplied URL to `Store.Delete`
+without reading or printing the credential. The helper is URL-scoped: a matching
+URL deletes its token; a mismatched URL or an absent token leaves the stored file
+intact. Use the exact URL from `app.toml`, and verify the matching credential is
+cleared before removing the state directory:
 
 ```bash
 "$BUNDLE/bin/compass-clear-token" \
   --server-url "https://127.0.0.1:50052" \
   --state-dir "$CSTATE"
+```
+
+After this check, remove the client configuration and the pinned smoke state:
+
+```bash
 rm -f "$APP_CONFIG"
 rm -rf "$PREFIX" "$CSTATE" "$CRT"
 ```
@@ -312,7 +323,7 @@ rm -rf "$PREFIX" "$CSTATE" "$CRT"
 - [ ] no `app.toml` is present, so launch selects embedded mode (§Part (a), 3)
 - [ ] rootless podman and podman 4.3 or newer are available, and the agent image
       is pulled so bring-up does not cold-pull (§Part (a), 1)
-- [ ] the bundle contains the shell and three sidecars (§Part (a), 2)
+- [ ] the bundle contains the shell and four sidecars (§Part (a), 2)
 - [ ] **Quit and stop stack** (not plain close) closes the app; `podman ps -a
       --filter name='^compass-(postgres|otel-collector|nats|agent)-'` is empty
       and `$ERT/app.log` reports no teardown failure (§Part (a), 5)
@@ -330,5 +341,6 @@ rm -rf "$PREFIX" "$CSTATE" "$CRT"
 - [ ] one agent session reaches a running container (§Part (b), 4)
 - [ ] quit and relaunch auto-connects from the OS keychain, with no connect
       screen or bearer re-entry (§Part (b), 5)
-- [ ] the stored bearer is cleared from the keychain (or `remote-token`) and the
-      client `app.toml` is removed (§Part (b), 6)
+- [ ] the stored bearer for the matching server URL is cleared from the keychain
+      (or `remote-token`); a mismatched or absent URL leaves the stored file
+      intact, and the client `app.toml` is removed (§Part (b), 6)
