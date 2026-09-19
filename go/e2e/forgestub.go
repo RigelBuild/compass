@@ -120,6 +120,10 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v3/"), "/"), "/")
 	if len(parts) == 4 && parts[0] == "app" && parts[1] == "installations" && parts[3] == "access_tokens" && r.Method == http.MethodPost {
+		if !validAppJWT(r.Header.Get("Authorization")) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		installationID, err := strconv.ParseInt(parts[2], 10, 64)
 		if err != nil {
 			http.NotFound(w, r)
@@ -236,6 +240,10 @@ func (s *forgeStub) validAuthorization(value string) bool {
 		}
 	}
 	return false
+}
+
+func validAppJWT(value string) bool {
+	return strings.HasPrefix(value, "Bearer eyJ")
 }
 
 func jsonOut(w http.ResponseWriter, status int, value any) {
