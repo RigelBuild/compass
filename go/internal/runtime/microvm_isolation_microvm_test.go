@@ -188,31 +188,24 @@ func sweepScript(needle string, roots ...string) string {
 	const awkProg = `BEGINFILE { if (ERRNO != "") { probeError=1; nextfile } } ` +
 		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { if (probeError) exit 2; exit !hit }`
 	return "export SWEEP_NEEDLE=" + shellQuote(needle) + "; " +
-		"shopt -s globstar nullglob dotglob; found=1; batch=(); " +
-		// scan() runs one awk over the accumulated batch and clears it. Guarded
-		// on a non-empty batch so a trailing flush with nothing pending does not
-		// invoke awk on zero files (which would read stdin and hang).
-		//
-		// stderr is NOT suppressed: it carries the one signal that separates a
-		// real negative from a dead probe.
+		"shopt -s globstar nullglob dotglob; found=1; probe_error=0; batch=(); " +
+		"queue() { batch+=(\"$1\"); if ((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")); then scan; fi; }; " +
 		"scan() { ((${#batch[@]})) || return 0; " +
 		"awk '" + awkProg + "' \"${batch[@]}\"; status=$?; batch=(); " +
-		"case $status in 0) found=0;; 1) ;; *) return $status;; esac; }; " +
+		"case $status in 0) found=0;; 1) ;; *) probe_error=1;; esac; }; " +
 		"for root in " + shellQuoteWords(roots...) + "; do " +
+		"if [[ -f $root ]]; then queue \"$root\"; continue; fi; " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
 		// "//proc/self/environ", which a /proc/* pattern does NOT match —
-		// the sweep would then read its own environ and report finding the
+		// the sweep would then read its own environ and report the
 		// needle it was given, a false escape.
 		"n=$f; while [[ $n == //* ]]; do n=${n#/}; done; " +
 		"case $n in /proc/*|/sys/*|/dev/*) continue;; esac; " +
-		"[[ -f $f && -r $f ]] || continue; " +
-		"batch+=(\"$f\"); " +
-		"if ((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")); then scan || exit $?; fi; " +
-		// One `done` closes the per-file loop, the next the per-root loop.
+		"[[ -f $f ]] || continue; queue \"$f\"; " +
 		"done; " +
 		"done; " +
-		"scan || exit $?; exit $found"
+		"scan; if ((found == 0)); then exit 0; elif ((probe_error)); then exit 2; else exit 1; fi"
 }
 
 // TestMicroVMSweepScriptFindsItsNeedle is the non-vacuity control for
@@ -309,6 +302,32 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 			t.Logf("batched sweep over %d files (batch size %d) found the needle %s in %v: %q",
 				fileCount, sweepBatchSize, tt.name, elapsed.Round(time.Millisecond), strings.TrimSpace(truncate(out)))
 		})
+	}
+}
+
+// TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError proves an
+// unopenable input does not abort the walk before a later batch is searched.
+// /proc/$$/mem is a deterministic read refusal for the shell running the
+// sweep; the canary is planted after enough files to force a later batch.
+func TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-probe-error")
+
+	const needle = "SWEEP-PROBE-ERROR-LATER-7a4f2d11"
+	fileCount := sweepBatchSize + 1
+	plant := "mkdir -p /workspace/probe-error && for i in $(seq 1 " + strconv.Itoa(fileCount) + "); do " +
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/probe-error/f%03d.txt' \"$i\")\"; done && " +
+		"printf '%s\\n' '" + needle + "' >> /workspace/probe-error/f" + fmt.Sprintf("%03d.txt", fileCount)
+	if out, code := guestSh(t, m, id, plant); code != 0 {
+		t.Fatalf("planting probe-error regression files: exit %d, %q", code, truncate(out))
+	}
+
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/$$/mem", "/workspace/probe-error"))
+	if code != 0 {
+		t.Fatalf("later-batch needle was lost after an unopenable input (exit %d, %q)", code, truncate(out))
+	}
+	if !strings.Contains(out, needle) || !strings.Contains(out, "f"+fmt.Sprintf("%03d", fileCount)+".txt") {
+		t.Fatalf("sweep output %q does not identify the later-batch needle", truncate(out))
 	}
 }
 
