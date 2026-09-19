@@ -16,16 +16,14 @@
 // and plausibility-checked too (it proves the format-12 path and guards the
 // future display-face work), but Space Mono is the covered set findings clear.
 //
-// Adoption posture (RIG-3742 / T8): WARN until T8, then ERROR. There are 8
-// known-uncovered rendered characters TODAY, so a fail-closed gate would be red
-// on arrival. In WARN it prints findings and exits 0; in ERROR it exits 1 on
-// any finding. Mode is FONT_COVERAGE_GATE=warn|error (default warn). THE FLIP:
-// at T8 (RIG-3742), change the default below from "warn" to "error" so an
-// uncovered rendered glyph fails the build.
+// Adoption posture (RIG-3742 / T8): T8 is complete and ERROR is now the
+// default. In WARN it prints findings and exits 0; in ERROR it exits 1 on any
+// finding. Mode is FONT_COVERAGE_GATE=warn|error (default error). Set WARN
+// explicitly when a non-blocking report is needed.
 //
-// KNOWN BLIND SPOTS — the T8 flip assumes these stay absent, so widening the
-// gate is cheaper than discovering one after it is fail-closed:
-//   * Only LITERAL non-ASCII bytes are seen. A "\u25b8" escape, a &#9656;
+// KNOWN BLIND SPOTS — the fail-closed T8 gate assumes these stay absent, so
+// widening the gate is cheaper than discovering one after it is enforced:
+//   * Only LITERAL non-ASCII characters/code points are seen. A "\u25b8" escape, a &#9656;
 //     entity, or String.fromCodePoint renders the glyph invisibly to the scan.
 //     The tree writes literal glyphs throughout, which is what makes this safe.
 //   * Only UI_SRC_DIR is scanned; apps/ui/e2e authors baselines too.
@@ -34,7 +32,7 @@
 //
 // Inputs (env):
 //   GATE_ROOT            - directory to scan (default: git toplevel).
-//   FONT_COVERAGE_GATE   - "warn" (default) or "error".
+//   FONT_COVERAGE_GATE   - "warn" or "error" (default: error).
 // Exit codes:
 //   0 - no findings, OR findings in WARN mode (printed, non-blocking)
 //   1 - one or more findings in ERROR mode
@@ -72,36 +70,47 @@ export interface Finding {
 // cmap parser (pure, exported).
 // ---------------------------------------------------------------------------
 
+/** The highest codepoint Unicode defines; a cmap range past it is malformed. */
+const UNICODE_MAX = 0x10ffff;
+
+/** Font-wide cap on cmap expansion work; duplicated subtables share this budget. */
+const MAX_CMAP_EXPANSION = 4 * (UNICODE_MAX + 1);
+
+/**
+ * Validate one cmap range and charge it against the font's expansion budget.
+ * Throws for a range running past U+10FFFF or one that overruns the budget; a
+ * degenerate (start > end) range is legal and costs nothing.
+ */
+type ChargeRange = (start: number, end: number, what: string) => void;
+
 /**
  * Union the codepoint coverage of a font's cmap subtables. Parses the sfnt
  * table directory (TrueType 0x00010000 / 'true', or CFF 'OTTO') and reads the
  * `cmap` table, supporting subtable format 4 (BMP) and format 12 (astral);
- * other formats are ignored, not fatal. A malformed/truncated file throws — a
- * partial set would silently read as "uncovered" and green a broken gate.
+ * other formats are ignored, not fatal. A malformed/truncated file, or one
+ * whose ranges are out of Unicode or implausibly wide, throws — a partial set
+ * would silently read as "uncovered" and green a broken gate.
  */
 export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	const need = (end: number, what: string): void => {
-		if (end > dv.byteLength) {
+		if (end > dv.byteLength)
 			throw new Error(`cmap: truncated font — ${what} runs past end of file`);
-		}
 	};
 	const u16 = (o: number): number => {
 		need(o + 2, "uint16");
 		return dv.getUint16(o);
 	};
-	const i16 = (o: number): number => {
-		need(o + 2, "int16");
-		return dv.getInt16(o);
-	};
 	const u32 = (o: number): number => {
 		need(o + 4, "uint32");
 		return dv.getUint32(o);
 	};
-
 	need(12, "sfnt header");
 	const numTables = u16(4);
 	let cmapOffset = -1;
+	let cmapLength = 0;
+	let maxpOffset = -1;
+	let maxpLength = 0;
 	for (let t = 0; t < numTables; t++) {
 		const rec = 12 + t * 16;
 		need(rec + 16, "table record");
@@ -113,36 +122,125 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 		);
 		if (tag === "cmap") {
 			cmapOffset = u32(rec + 8);
-			break;
+			cmapLength = u32(rec + 12);
+		}
+		if (tag === "maxp") {
+			maxpOffset = u32(rec + 8);
+			maxpLength = u32(rec + 12);
 		}
 	}
 	if (cmapOffset < 0) throw new Error("cmap: no cmap table in font");
-
+	if (maxpOffset < 0) throw new Error("cmap: no maxp table in font");
+	need(cmapOffset + cmapLength, "cmap table");
+	need(maxpOffset + maxpLength, "maxp table");
+	if (maxpLength < 6) throw new Error("cmap: truncated maxp table");
+	const numGlyphs = u16(maxpOffset + 4);
+	const cmapEnd = cmapOffset + cmapLength;
+	const cmapNeed = (end: number, what: string): void => {
+		if (end > cmapEnd || end < cmapOffset)
+			throw new Error(
+				`cmap: truncated cmap table — ${what} runs past cmap end`,
+			);
+	};
+	const cmapU16 = (offset: number, what: string): number => {
+		cmapNeed(offset + 2, what);
+		return dv.getUint16(offset);
+	};
 	const covered = new Set<number>();
-	const numSub = u16(cmapOffset + 2);
+	let budget = MAX_CMAP_EXPANSION;
+	const charge: ChargeRange = (start, end, what) => {
+		if (start > end) return;
+		const where = `${what} 0x${start.toString(16)}..0x${end.toString(16)}`;
+		if (end > UNICODE_MAX)
+			throw new Error(`cmap: malformed font — ${where} runs past U+10FFFF`);
+		const width = end - start + 1;
+		if (width > budget)
+			throw new Error(
+				`cmap: malformed font — ${where} overruns the ${MAX_CMAP_EXPANSION}-codepoint cmap expansion budget`,
+			);
+		budget -= width;
+	};
+	const cmapU32 = (offset: number, what: string): number => {
+		cmapNeed(offset + 4, what);
+		return dv.getUint32(offset);
+	};
+	const boundedReaders = (base: number, length: number) => {
+		const end = base + length;
+		if (base < cmapOffset + 4 || end > cmapEnd)
+			throw new Error("cmap: malformed font — subtable runs past cmap table");
+		const bounded = (offset: number, size: number, what: string): void => {
+			if (offset < base || offset + size > end)
+				throw new Error(
+					`cmap: truncated subtable — ${what} runs past declared length`,
+				);
+		};
+		return {
+			u16: (offset: number) => {
+				bounded(offset, 2, "uint16");
+				return dv.getUint16(offset);
+			},
+			i16: (offset: number) => {
+				bounded(offset, 2, "int16");
+				return dv.getInt16(offset);
+			},
+			u32: (offset: number) => {
+				bounded(offset, 4, "uint32");
+				return dv.getUint32(offset);
+			},
+		};
+	};
+	cmapNeed(cmapOffset + 4, "cmap header");
+	const numSub = cmapU16(cmapOffset + 2, "cmap header");
 	for (let s = 0; s < numSub; s++) {
 		const rec = cmapOffset + 4 + s * 8;
+		cmapNeed(rec + 8, "cmap encoding record");
 		const subOffset = cmapOffset + u32(rec + 4);
-		const format = u16(subOffset);
-		if (format === 4) readFormat4(subOffset, covered, u16, i16);
-		else if (format === 12) readFormat12(subOffset, covered, u32);
-		// Any other format: ignore, not fatal.
+		cmapNeed(subOffset + 2, "cmap subtable header");
+		const format = cmapU16(subOffset, "cmap subtable header");
+		if (format === 4) {
+			const bounded = boundedReaders(
+				subOffset,
+				cmapU16(subOffset + 2, "format 4 length"),
+			);
+			readFormat4(
+				subOffset,
+				covered,
+				bounded.u16,
+				bounded.i16,
+				numGlyphs,
+				charge,
+			);
+		} else if (format === 12) {
+			const bounded = boundedReaders(
+				subOffset,
+				cmapU32(subOffset + 4, "format 12 length"),
+			);
+			readFormat12(subOffset, covered, bounded.u32, numGlyphs, charge);
+		}
 	}
 	return covered;
 }
 
-/** Format 4: segment-mapped BMP coverage. A codepoint is covered iff its glyph id is non-zero. */
+/** Format 4 coverage bounded by maxp.numGlyphs. */
 function readFormat4(
 	base: number,
 	out: Set<number>,
 	u16: (o: number) => number,
 	i16: (o: number) => number,
+	numGlyphs: number,
+	charge: ChargeRange,
 ): void {
 	const segCount = u16(base + 6) / 2;
 	const endBase = base + 14;
 	const startBase = endBase + segCount * 2 + 2; // +2 reservedPad
 	const deltaBase = startBase + segCount * 2;
 	const rangeBase = deltaBase + segCount * 2;
+	// Two passes on purpose: every segment is validated and charged BEFORE any
+	// is expanded, so a malformed table throws after O(segCount) reads instead
+	// of first spending a whole budget's worth of Set inserts.
+	for (let i = 0; i < segCount; i++) {
+		charge(u16(startBase + i * 2), u16(endBase + i * 2), "format 4 segment");
+	}
 	for (let i = 0; i < segCount; i++) {
 		const end = u16(endBase + i * 2);
 		const start = u16(startBase + i * 2);
@@ -160,25 +258,47 @@ function readFormat4(
 				glyph = u16(gaddr);
 				if (glyph !== 0) glyph = (glyph + delta) & 0xffff;
 			}
-			if (glyph !== 0) out.add(c);
+			if (glyph !== 0 && glyph < numGlyphs) out.add(c);
 		}
 	}
 }
 
-/** Format 12: segmented coverage, full Unicode range (Departure Mono needs this). */
+/**
+ * Format 12: segmented coverage, full Unicode range (Departure Mono needs
+ * this). As in format 4, a codepoint is covered iff its glyph id is non-zero.
+ */
 function readFormat12(
 	base: number,
 	out: Set<number>,
 	u32: (o: number) => number,
+	numGlyphs: number,
+	charge: ChargeRange,
 ): void {
 	const numGroups = u32(base + 12);
 	const groupBase = base + 16;
+	// Two passes: validate ranges and glyph-id arithmetic before expansion.
+	for (let g = 0; g < numGroups; g++) {
+		const rec = groupBase + g * 12;
+		const start = u32(rec);
+		const end = u32(rec + 4);
+		const startGlyphId = u32(rec + 8);
+		charge(start, end, "format 12 group");
+		if (start <= end && startGlyphId > 0xffffffff - (end - start)) {
+			throw new Error(
+				"cmap: malformed font — format 12 glyph id overflows uint32",
+			);
+		}
+	}
 	for (let g = 0; g < numGroups; g++) {
 		const rec = groupBase + g * 12;
 		const start = u32(rec);
 		const end = u32(rec + 4);
 		if (start > end) continue;
-		for (let c = start; c <= end; c++) out.add(c);
+		const startGlyphId = u32(rec + 8);
+		const from = startGlyphId === 0 ? start + 1 : start;
+		for (let c = from; c <= end; c++) {
+			if (startGlyphId + (c - start) < numGlyphs) out.add(c);
+		}
 	}
 }
 
@@ -266,11 +386,9 @@ export function evaluate(findings: Finding[], covered: Set<number>): Finding[] {
 	return findings.filter((f) => !covered.has(f.codepoint));
 }
 
-/** Resolve the blocking posture from env (default WARN). */
+/** Resolve the blocking posture from env (default ERROR; invalid values fail closed). */
 export function resolveMode(env: Record<string, string | undefined>): Mode {
-	return (env.FONT_COVERAGE_GATE ?? "").toLowerCase() === "error"
-		? "error"
-		: "warn";
+	return env.FONT_COVERAGE_GATE?.toLowerCase() === "warn" ? "warn" : "error";
 }
 
 /** Render a codepoint as U+XXXX (at least 4 hex digits, uppercase). */
@@ -347,7 +465,7 @@ if (import.meta.main) {
 	if (mode === "error" && uncovered.length > 0) process.exit(1);
 	if (uncovered.length > 0) {
 		console.log(
-			"font-coverage-gate: WARN mode — reported, not blocking. Flip default to ERROR at T8 (RIG-3742).",
+			"font-coverage-gate: WARN mode — reported, not blocking (explicit opt-in).",
 		);
 	}
 	process.exit(0);
