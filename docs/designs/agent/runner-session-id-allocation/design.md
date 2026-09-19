@@ -2,7 +2,7 @@
 
 Status: Active proposal
 
-Issue: [RIG-3696](https://linear.app/rigelbuild/issue/RIG-3696) (P1, parent RIG-2861).
+Issue: RIG-3696 (P1, parent RIG-2861).
 This record proposes a server-minted, restart-safe session-ID change. It is not an authoritative description of the currently shipped implementation. The shipped baseline remains Runner-local, emits process-local values, and resets its counter after a Runner restart. The design is frozen on merge; later changes supersede it by citation.
 
 ## Problem and intent
@@ -44,8 +44,6 @@ revealing which tuple component failed. A stale attempt after reconnect is
 also rejected. This is the authorization root; in-memory caches are only a
 disposable acceleration layer.
 
-Cleanup uses the same attempt-bearing Stop envelope. It is sent only after the authenticated `(runner_id, container_name, container_attempt_id)` tuple matches the operation. The mismatched reported session ID is diagnostic and MUST NOT be placed in Stop. Stop runs under a bounded detached context so a cancelled start cannot cancel ownership cleanup.
-
 ### Authoritative binding and data flow
 
 Planned target behavior (pending the implementation PR): the Server is the sole fresh-start minting boundary. It creates the Server-owned relay operation ID, derives `fresh_session_id`, and sends both on the internal envelope. The Runner returns the selected ID and authenticated attempt metadata in its start result. The Server promotes the provisioned account binding only after exact echo and attempt validation. Account-scoped operations resolve the account only from that Server-owned binding.
@@ -57,7 +55,7 @@ The internal `fresh_session_id` is not a public request input and is never calle
 1. The Server validates that the public request contains no caller-owned mint inputs, allocates one Server operation ID, derives `fresh_session_id`, and sends them on the internal envelope.
 2. The Runner serializes the container transition, rejects an already-live container, and starts the agent with that ID and attempt token.
 3. The Server requires an exact `fresh_session_id` echo, exact operation-ID echo, and exact authenticated container-attempt match before promoting the account binding and returning the public `session_id`.
-4. A mismatch is version skew or a Server/Runner defect. The Server does not promote it. Cleanup is authorized by the authenticated container-attempt fence, not by the mismatched reported ID: it may stop only the exact attempt that performed this operation, using a bounded context independent of the cancelled start request. The reported ID is diagnostic only and is never used to select a foreign or later generation. Errors identify the expected and reported IDs; failed fenced cleanup records the container, operation, attempt, expected ID, and reported ID for operator cleanup.
+4. A mismatch is version skew or a Server/Runner defect. The Server does not promote it; cleanup follows the exact internal lookup and attempt fence in the mismatch-correlation section, with the reported ID diagnostic only.
 
 A missing result variant, missing echo, or missing attempt correlation is a wire-contract error and fails without Stop because ownership cannot be proven. A fresh start with no Server-minted `fresh_session_id` fails at the Runner with `FailedPrecondition`; it never falls back to a Runner-local counter.
 
@@ -96,15 +94,17 @@ The Server persists the relay operation outcome with the promoted binding. The
 operation has three externally relevant states: **in flight** (minted, but not
 promoted), **promoted** (the exact ID, operation, and attempt echoes passed and
 one binding was committed), and **failed** (no binding was promoted). A retry
-is addressed by an authenticated Server-issued retry handle that maps to the
-single operation record; a client cannot mint, alter, or use an operation ID
-as a selector. The handle is accepted only for the authenticated account and
-destination container recorded in that operation.
+is addressed by an authenticated Server-issued retry handle bound to the
+single operation record and its authenticated `(account_id, actor_id,
+container_name)` tuple; a client cannot mint, alter, or use an operation ID as
+a selector. The handle is accepted only when the authenticated account, actor,
+and destination container all match the operation record.
 
 - While an operation is **in flight**, a retry carrying its authenticated retry
-  handle and the same destination container joins the existing operation. The
-  lookup of the handle, validation of account/container ownership, and choice
-  to join happen atomically with the in-flight state transition. The Server
+  handle and the same authenticated actor, account, and destination container
+  joins the existing operation. The lookup of the handle, validation of the
+  full tuple, and choice to join happen atomically with the in-flight state
+  transition. The Server
   does not allocate a second operation ID or `fresh_session_id`, reroute the
   request, or fence/cancel the existing operation.
 - Once an operation is **promoted**, a retry with the same authenticated retry
@@ -181,7 +181,7 @@ Runner's live bindings; a stopped, unknown, or post-reconnect ID fails closed
 rather than inheriting an old account. The Server's durable row remains the
 authorization root, while the Hub's in-memory maps are the live dispatch cache.
 
-Planned target behavior (pending the implementation PR): the Runner takes the per-container transition lock for the complete start, including slow pre-exec work. Under its synchronization guard it checks for a live session on that container before selecting the ID. This closes the check/start race that could otherwise admit two generations. Resume selection also checks that the logical ID is not already live. Stop, remove, reload, and reconnect use the same container/session transition discipline. Any mismatch cleanup must carry and verify the container/attempt ownership fence before Stop; it must never act on a foreign reported ID. A future multi-lifetime implementation must preserve the invariant that old-lifetime frames cannot bind to a new lifetime; it must reject frames whose authenticated operation, container, or attempt no longer matches the live generation.
+Planned target behavior (pending the implementation PR): the Runner takes the per-container transition lock for the complete start, including slow pre-exec work. Under its synchronization guard it checks for a live session on that container before selecting the ID. This closes the check/start race that could otherwise admit two generations. Resume selection also checks that the logical ID is not already live. Stop, remove, reload, and reconnect use the same container/session transition discipline. Any mismatch cleanup must carry and verify the container/attempt ownership fence before Stop; it must never act on a foreign reported ID. A future multi-lifetime implementation must preserve the invariant that old-lifetime frames cannot bind to a new lifetime; it must keep lifetime fencing independent of the logical session ID.
 
 The durable transcript path (when enabled by the session-persistence design)
 keeps sequence state scoped to the logical session and re-bases each Runner
@@ -204,23 +204,26 @@ mismatch is fail-closed.
 ## Mismatch correlation and cleanup
 
 A returned-ID mismatch is handled only after correlating the response to the
-same authenticated Server operation, Runner enrollment, container name, and
-container-attempt token that performed the start. Cleanup has one selector:
-the authenticated `(operation_id, container_name, container_attempt_id)` tuple.
-The reported session ID is diagnostic only. It is never placed in Stop and is
-never used to select a cleanup target, including when it differs from the
-expected ID.
+same authenticated Server operation, Runner enrollment, account, actor,
+container name, and container-attempt token that performed the start. Before
+any side effect, cleanup performs an exact internal lookup keyed by
+`(operation_id, account_id, actor_id, runner_id, container_name,
+container_attempt_id)` against the operation record, durable binding, and
+current enrollment. Cleanup has one selector: the internally recorded target
+returned by that lookup.
 
-If correlation is absent or differs, the Server records the mismatch and takes
-no cleanup action. When correlation matches, cleanup may stop only the exact
-operation/container/attempt selected by that authenticated tuple. It MUST NOT
-stop a foreign ID, a later generation, or an ID belonging to another
-Runner/container pair. Cleanup uses a bounded context independent of the
-cancelled start request. The Server never promotes the mismatched result; if
-cleanup fails, the log names the correlated operation, Runner, container,
-attempt, expected ID, and reported ID for operator cleanup.
+If the exact lookup is absent or differs, the Server records the mismatch and
+takes no cleanup action. When it matches, the Server builds the attempt-bearing
+Stop envelope from the lookup result and may stop only that exact
+operation/container/attempt. It MUST NOT stop a foreign ID, a later
+generation, or an ID belonging to another Runner/container pair. The reported
+session ID is diagnostic only: it is never placed in Stop, never used to select
+a cleanup target, and never a fallback when the internal lookup fails. Cleanup
+uses a bounded context independent of the cancelled start request. The Server
+never promotes the mismatched result; if cleanup fails, the log names the
+correlated operation, Runner, account, actor, container, attempt, expected ID,
+and reported ID for operator cleanup.
 
 This same rule applies to mixed-version responses: an old Runner's returned
 local ID is never promoted and remains diagnostic only. It is never passed to
 Stop, even when the authenticated attempt fence proves which attempt ran.
-*** End
