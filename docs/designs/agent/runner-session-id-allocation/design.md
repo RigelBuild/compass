@@ -23,7 +23,9 @@ internal `SessionsResponse` envelope and never mints a fallback. A resume reuses
 the already-authorized logical `resume_session_id`; it does not create a second
 logical session.
 
-## Authoritative binding and data flow
+## Decisions
+
+### Authoritative binding and data flow
 
 `Hub.Start` is the sole fresh-start minting boundary. It sends
 `fresh_session_id` on the internal envelope, `dispatcher.execute` passes it to
