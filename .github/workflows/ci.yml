@@ -2417,16 +2417,23 @@ jobs:
         working-directory: go
         # Both packages skip when rootless podman is unavailable. Fail closed.
         run: |
-          skip=$(sed -n 's/.*t\.Skip("\(rootless podman[^";]*\)[^"]*").*/\1/p' \
-            e2e/harness_test.go cmd/compass-stack/integration_podman_test.go | head -n 1)
-          if [ -z "$skip" ]; then
-            echo "::error::could not read a podman skip message"
+          e2e_skips=$(sed -nE 's/.*t\.Skip\("([^"]*)".*/\1/p' e2e/harness_test.go | sort -u)
+          stack_skips=$(sed -nE 's/.*t\.Skip\("([^"]*)".*/\1/p' cmd/compass-stack/integration_podman_test.go | sort -u)
+          if [ -z "$e2e_skips" ]; then
+            echo "::error::could not read any podman skip message from e2e/harness_test.go"
             exit 1
           fi
-          if grep -qF "$skip" /tmp/e2e.log; then
-            echo "::error::podman-tagged tests skipped — rootless podman is unavailable"
+          if [ -z "$stack_skips" ]; then
+            echo "::error::could not read any podman skip message from cmd/compass-stack/integration_podman_test.go"
             exit 1
           fi
+          skips=$(printf '%s\n%s\n' "$e2e_skips" "$stack_skips" | sed '/^$/d' | sort -u)
+          while IFS= read -r skip; do
+            if grep -qF -- "$skip" /tmp/e2e.log; then
+              echo "::error::podman-tagged tests skipped: $skip"
+              exit 1
+            fi
+          done <<< "$skips"
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
             echo "::error::the dogfood e2e package did not report ok"
             exit 1

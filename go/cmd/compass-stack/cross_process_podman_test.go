@@ -126,7 +126,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 	// the dir must be first on their PATH; compass-stack is invoked by full path.
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(t, binDir)
+	env := stackEnv(binDir)
 
 	// A short-path, free-port config resolved through the SAME resolveConfig the
 	// CLI uses (no duplicated config logic); the fixture's derived socket paths
@@ -278,26 +278,22 @@ func buildStackBinary(t *testing.T, binDir string) string {
 	return out
 }
 
-// stackEnv keeps non-COMPASS process settings, rebuilds PATH, and appends only
-// the fixture-owned secret provider. Ambient COMPASS_* values must not leak into
-// subprocess snapshots because flags and fixture config are the test contract.
-func stackEnv(t *testing.T, binDir string) []string {
-	t.Helper()
+// stackEnv returns the current environment with binDir prepended to PATH so a
+// compass-stack subprocess resolves the compass-postgres/-server/-runner
+// children (looked up by bare name via exec.LookPath) to the freshly built
+// binaries. PATH is rebuilt (not merely re-appended) so there is exactly one
+// PATH entry and binDir is unambiguously first.
+func stackEnv(binDir string) []string {
 	base := os.Environ()
-	out := make([]string, 0, len(base)+2)
+	out := make([]string, 0, len(base)+1)
 	oldPath := ""
 	for _, e := range base {
 		if p, ok := strings.CutPrefix(e, "PATH="); ok {
 			oldPath = p
 			continue
 		}
-		if strings.HasPrefix(e, "COMPASS_") {
-			continue
-		}
 		out = append(out, e)
 	}
-	secretProvider := seedMasterKeyProvider(t)
-	out = append(out, "COMPASS_SECRET_PROVIDER="+secretProvider)
 	return append(out, "PATH="+binDir+string(os.PathListSeparator)+oldPath)
 }
 
@@ -524,8 +520,27 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 			continue // header (line 1) or a blank line
 		}
 		fields := strings.Fields(text)
-		if len(fields) != 3 {
-			t.Fatalf("stack.pgids entry line %d malformed: %q", line, text)
+		if len(fields) == 0 {
+			continue
+		}
+		// v2 records tag entries: proc <component> <pgid> <starttime>,
+		// while ctr entries identify containers and have no process group.
+		switch fields[0] {
+		case "ctr":
+			if len(fields) != 3 {
+				t.Fatalf("stack.pgids container entry line %d malformed: %q", line, text)
+			}
+			continue
+		case "proc":
+			if len(fields) != 4 {
+				t.Fatalf("stack.pgids process entry line %d malformed: %q", line, text)
+			}
+			fields = fields[1:]
+		default:
+			// v1 records are untagged: <component> <pgid> <starttime>.
+			if len(fields) != 3 {
+				t.Fatalf("stack.pgids entry line %d malformed: %q", line, text)
+			}
 		}
 		pgid, err := strconv.Atoi(fields[1])
 		if err != nil {
