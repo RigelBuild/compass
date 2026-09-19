@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # build.sh — build the versioned Compass native-app release tarball
 # (compass-app-<version>-linux-amd64.tar.gz): the gtk4 shell (compass-app) + the
-# three embedded sidecars (compass-stack, compass-server, compass-runner) + the
-# UI dist + the desktop file + LICENSE, every binary stamped with the ONE
-# version. No postgres tooling and no compass-postgres sidecar — the embedded
+# four embedded sidecars (compass-stack, compass-server, compass-runner,
+# compass-clear-token) + the UI dist + the desktop file + LICENSE, every binary
+# stamped with the ONE version.
+# No postgres tooling and no compass-postgres sidecar — the embedded
 # stack's postgres is a stock postgres:18 container via rootless podman (§A4).
 #
 # Why bash: this is nix + go build orchestration glue — it realizes the pinned
@@ -85,11 +86,11 @@ CGO_ENABLED=1 CC="$CC_BIN" PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
   -ldflags "-X main.version=$v" \
   -o "$STAGE/bin/compass-app" ./cmd/compass-app
 
-# The three embedded sidecars (§A4/DL-321): pure-Go daemons the supervised stack
+# The four embedded sidecars (§A4/DL-321): pure-Go daemons the supervised stack
 # resolves in-bundle via prependExecDirToPath, so they build WITHOUT the gtk4
 # tag and without the CC/PKG_CONFIG closure the shell needs — same $v stamp.
 # NO compass-postgres: embedded's postgres is a DL-260 container, not a sidecar.
-for b in compass-stack compass-server compass-runner; do
+for b in compass-stack compass-server compass-runner compass-clear-token; do
   log "Building sidecar ($b)"
   CGO_ENABLED=0 go -C "$GO_DIR" build -trimpath \
     -ldflags "-X main.version=$v" \
@@ -112,7 +113,7 @@ cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 
 # --- 6. Sanity assertions (§256-261). A green build means a COMPLETE bundle.
 log "Sanity: verifying staged bundle"
-for b in compass-app compass-stack compass-server compass-runner; do
+for b in compass-app compass-stack compass-server compass-runner compass-clear-token; do
   bin="$STAGE/bin/$b"
   if [[ ! -x "$bin" ]]; then
     err "sanity: missing/non-executable binary: bin/$b"
