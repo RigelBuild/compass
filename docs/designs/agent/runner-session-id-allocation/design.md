@@ -44,12 +44,16 @@ across restarts.
 Planned target behavior (pending the implementation PR) follows DL-371 exactly.
 The Server derives `fresh_session_id` from a **Server-generated relay request ID**
 at the mint boundary. A caller-provided `request_id` or `orNewRequestID` input is
-never accepted as authority for a fresh ID: the Server MUST reject a non-empty
-caller value (or ignore it and replace it with a newly generated value before
-derivation, as the public API contract for that relay specifies), and production
-must never let a client choose the normalized ID. The Runner has no minting or
-fallback path. The input is domain-separated, length-prefixed, and SHA-256
-hashed:
+**always rejected for fresh minting**: if the public request carries a non-empty
+caller value, `Hub.Start` returns `InvalidArgument` before allocating a relay
+operation, deriving an ID, or invoking the Runner. It MUST NOT ignore,
+normalize, replace, or otherwise use that value. An absent or empty field is the
+only accepted input; the Server then generates the relay request ID. This is the
+regression named by `TestFreshSessionIDRejectsCallerInput`: the old path let a
+caller-controlled request ID reach normalization/derivation, making the durable
+session key client-selectable. Production must never let a client choose the
+normalized ID. The Runner has no minting or fallback path. The input is
+domain-separated, length-prefixed, and SHA-256 hashed:
 
 ```text
 SHA256("compass.session-id.v1" ||
@@ -57,10 +61,10 @@ SHA256("compass.session-id.v1" ||
 ```
 
 The digest is encoded as 64 lowercase hexadecimal characters. The domain label
-and length prefix are frozen by DL-371. No container name, account ID, or mutable
-retry metadata is included. A retry that reuses the same normalized Server
-relay request ID therefore derives the same logical ID. A distinct request ID
-derives a distinct ID.
+and length prefix are frozen by DL-371. No container name, account ID, or
+mutable retry metadata is included. A retry that reuses the same normalized
+Server relay request ID therefore derives the same logical ID. A distinct
+request ID derives a distinct ID.
 
 The Server's mint boundary also owns the cross-container uniqueness invariant:
 every fresh generation, regardless of destination container, receives a
@@ -69,6 +73,43 @@ A request routed to another container MUST use a fresh relay request ID; the
 same ID MUST NOT be reused across containers or made into a cross-container
 selector. The Runner receives the derived value and never derives or
 substitutes one.
+
+### Retry state machine after promotion
+
+The Server persists the relay operation outcome with the promoted binding. The
+operation has three externally relevant states: **in flight** (minted, but not
+promoted), **promoted** (the exact ID, operation, and attempt echoes passed and
+one binding was committed), and **failed** (no binding was promoted). A retry
+is identified by the same Server-owned operation ID; a client cannot select
+that ID.
+
+- While an operation is **in flight**, a retry for the same operation and same
+  destination container joins the existing operation. It does not mint a
+  second ID or start a second Runner lifetime. A different destination is a
+  reroute, not a retry: the Server allocates a new operation ID and a new
+  `fresh_session_id`, and the old operation is fenced/cancelled without
+  making its ID a cross-container selector.
+- Once an operation is **promoted**, a retry with the same operation ID returns
+  the recorded public start result (including the logical `session_id`) without
+  calling the Runner, minting an ID, or writing another binding. This is the
+  required post-promotion idempotency behavior, including after the original
+  response was lost.
+- A reroute after promotion is a new operation. It MUST NOT reuse the promoted
+  operation ID or logical session ID. Because the account already has a live
+  promoted session, the new operation returns `AlreadyRunning` and leaves the
+  existing binding unchanged; it never creates a second binding for that
+  account.
+- A **failed** operation may be retried only as the same operation when its
+  failure is explicitly retryable and no binding was promoted. A new operation
+  is used for a reroute or a non-retryable failure. Reusing a failed operation
+  after any promotion is invalid and returns `Conflict` without repair,
+  repointing, or deletion of durable ownership.
+
+Any durable uniqueness conflict (`ErrConflict`) is a Server-bug witness. It is
+surfaced as `Conflict`, leaves the existing binding untouched, and is never
+repaired by deleting or repointing ownership. A duplicate same-operation retry
+is the one exception: it reads the recorded promoted result rather than
+attempting another promotion.
 
 The request ID is stable only for retries of one Server operation. Concurrent
 generations use distinct relay request IDs and therefore distinct IDs; the
@@ -85,15 +126,30 @@ The shipped baseline remains unchanged: `a92fa2d0` still uses Runner-local
 
 ## Mixed-version compatibility and rollout ordering
 
-The planned target behavior (pending the implementation PR) has no Runner
-version handshake. The Runner-first capability gate deploys the Server
-mint-and-echo path only after the target Runner accepts and returns
-`fresh_session_id`; otherwise fresh starts fail before invoking the Runner.
-Mixed-version smoke covers target Server + old Runner (mismatch, no binding,
-fenced cleanup), old Server + target Runner (fresh `FailedPrecondition`), and
-target Server + target Runner (fresh and resume success). Resumes remain
-compatible because the Runner gives precedence to the authorized
-`resume_session_id`; no silent fallback minting is allowed.
+The planned target behavior (pending the implementation PR) uses an explicit
+**deployment gate**, not a vague Runner-first capability guess and not a
+runtime version handshake. The release manifest for each immutable Server
+artifact and Runner image carries the session-ID wire-contract revision. The
+deployment gate admits the pair only when both revisions are the target
+revision that defines `SessionsResponse.fresh_session_id` and the exact
+operation/attempt echoes. A mismatched pair is observably rejected at
+readiness/startup with a protocol-revision error naming the expected and
+reported revisions; it is not admitted to serve fresh starts. Rollout is
+therefore Runner image plus Server artifact as one gated release, with no
+mixed-version serving window.
+
+The planned target behavior still fails closed if an old pair reaches the relay
+before the gate takes effect: target Server + old Runner produces an echo or
+wire-contract mismatch, performs no promotion, and permits only
+attempt-fenced cleanup; old Server + target Runner cannot provide a Server
+minted ID and fresh start returns `FailedPrecondition`, with no local fallback
+or binding. Target Server + target Runner passes the gate and supports fresh
+and resume success. Resumes remain compatible because the Runner gives
+precedence to the authorized `resume_session_id`; no silent fallback minting is
+allowed. `TestMixedVersionDeploymentGateRejectsProtocolMismatch` is the
+regression test for the observable gate and both mixed permutations, while
+`TestFreshStartRejectsMissingServerID` covers the old-Server/target-Runner
+fail-closed behavior.
 
 ## Acceptance tests (planned target behavior; pending implementation PR)
 
@@ -111,7 +167,7 @@ The implementation PR is accepted only when these deterministic commands pass. E
 - `go test ./internal/runner -run '^TestFreshStartRejectsMissingServerID$' -count=1` — the Runner returns `FailedPrecondition` and never invokes a local fallback generator.
 - `go test ./internal/runner -run '^TestResumeExactSessionAndAttemptEcho$' -count=1` — resume returns the authorized public `session_id` exactly, validates the attempt echo, materializes the body before exec, and creates no fresh binding.
 - `go test ./internal/runner -run '^TestResumeRejectsCallerFreshIDAndMalformedSessionID$' -count=1` — caller mint inputs and path-escaping resume IDs fail closed; a live collision returns `AlreadyRunning`.
-- `go test ./internal/runnerhub -run '^TestMixedVersionRunnerFirstCapabilitySmoke$' -count=1` — old/new Server and Runner permutations prove fresh precondition or echo mismatch, fenced cleanup, no binding on skew, and usable exact-ID resumes.
+- `go test ./internal/runnerhub -run '^TestMixedVersionDeploymentGateRejectsProtocolMismatch$' -count=1` — the deployment gate rejects a mismatched protocol revision observably; target Server + old Runner and old Server + target Runner prove no binding and fail-closed fresh behavior, while target/target proves fresh and resume success.
 
 ## Lifetime, generation, and locking fences
 
