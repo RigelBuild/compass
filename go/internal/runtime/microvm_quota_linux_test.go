@@ -8,9 +8,12 @@ package runtime
 //
 // These are separate from microvm_quota_test.go because mountRoot and deviceOf
 // only exist under //go:build linux — the pure decision they feed is covered
-// there, on every GOOS.
+// there, on every GOOS. The two readVolumeQuota probes at the end are here for
+// the same reason: off Linux they reach the refusal stub, so one fails outright
+// and the other passes for the wrong reason.
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,59 +63,58 @@ func TestMountRootUnreadableAncestorIsInconclusive(t *testing.T) {
 }
 
 // TestMountRootResolvesAnUnblockedPath is the positive control for the walk: on
-// a path the Runner can traverse to its mount point, mountRoot resolves a real
-// reference AND reports that it crossed a device boundary to get there.
-//
+// a path nested below the test directory, mountRoot resolves a real reference
+// AND reports that it crossed a device boundary to get there.
+
 // It asserts the walk did real WORK, not merely that it returned something: the
-// root must be a strict prefix ANCESTOR of the input, and a nested subdirectory
+// root must be a strict prefix ANCESTOR of the nested input, and a deeper path
 // must resolve to the SAME root. Both fail on an identity-returning mountRoot —
 // which is exactly what the real one does for a path that IS a mount point, the
 // degeneracy the old non-empty-and-no-error assertion could not catch.
 func TestMountRootResolvesAnUnblockedPath(t *testing.T) {
 	base := t.TempDir()
 	nested := filepath.Join(base, "a", "b", "c")
-	if err := os.MkdirAll(nested, 0o700); err != nil {
+	deeper := filepath.Join(nested, "d")
+	if err := os.MkdirAll(deeper, 0o700); err != nil {
 		t.Fatalf("creating the nested tree: %v", err)
 	}
-	// t.TempDir resolves through symlinks the same way mountRoot does, so the
-	// prefix comparison below is against the resolved form on a box where
-	// $TMPDIR is a symlink.
-	resolvedBase, err := filepath.EvalSymlinks(base)
+	// Resolve the nested path because mountRoot resolves symlinks before walking.
+	resolvedNested, err := filepath.EvalSymlinks(nested)
 	if err != nil {
-		t.Fatalf("resolving the temp dir: %v", err)
+		t.Fatalf("resolving the nested path: %v", err)
 	}
 
-	root, distinct, err := mountRoot(base)
+	root, distinct, err := mountRoot(nested)
 	if err != nil {
-		t.Fatalf("mountRoot on an unblocked temp dir = %v, want a resolved mount root", err)
+		t.Fatalf("mountRoot on an unblocked nested path = %v, want a resolved mount root", err)
 	}
 	if !distinct {
-		t.Fatalf("mountRoot(%q) reported distinct=false; a temp dir is never its own mount point, so the "+
-			"device-boundary walk did not run", base)
+		t.Fatalf("mountRoot(%q) reported distinct=false; a nested path is below its mount point, so the "+
+			"device-boundary walk did not run", nested)
 	}
 	// STRICT ancestor: an identity-returning implementation returns the input
 	// itself, which this rejects.
-	if root == resolvedBase {
+	if root == resolvedNested {
 		t.Fatalf("mountRoot(%q) = %q — the input itself. The walk resolved no unprojected reference; an "+
-			"identity implementation would pass a mere non-empty check", base, root)
+			"identity implementation would pass a mere non-empty check", nested, root)
 	}
-	if !strings.HasPrefix(resolvedBase, strings.TrimSuffix(root, "/")+"/") {
-		t.Fatalf("mountRoot(%q) = %q, which is not a prefix ancestor of the input", base, root)
+	if !strings.HasPrefix(resolvedNested, strings.TrimSuffix(root, "/")+"/") {
+		t.Fatalf("mountRoot(%q) = %q, which is not a prefix ancestor of the input", nested, root)
 	}
-	// A NESTED path must land on the SAME mount root: the walk climbs to a
+	// A DEEPER path must land on the SAME mount root: the walk climbs to a
 	// device boundary, not to some depth-relative ancestor.
-	nestedRoot, nestedDistinct, err := mountRoot(nested)
+	deeperRoot, deeperDistinct, err := mountRoot(deeper)
 	if err != nil {
-		t.Fatalf("mountRoot(%q) = %v, want the same mount root as its ancestor", nested, err)
+		t.Fatalf("mountRoot(%q) = %v, want the same mount root as its ancestor", deeper, err)
 	}
-	if !nestedDistinct {
-		t.Errorf("mountRoot(%q) reported distinct=false for a deeply nested path", nested)
+	if !deeperDistinct {
+		t.Errorf("mountRoot(%q) reported distinct=false for a deeply nested path", deeper)
 	}
-	if nestedRoot != root {
+	if deeperRoot != root {
 		t.Fatalf("mountRoot(%q) = %q but mountRoot(%q) = %q; a device-boundary walk must reach the same "+
-			"mount root from both (an identity implementation returns each input instead)", nested, nestedRoot, base, root)
+			"mount root from both (an identity implementation returns each input instead)", deeper, deeperRoot, nested, root)
 	}
-	t.Logf("mount-root walk: %q and %q both resolve to %q", base, nested, root)
+	t.Logf("mount-root walk: %q and %q both resolve to %q", nested, deeper, root)
 }
 
 // TestMountRootRecognizesASelfReferentialPath is MED-3's core: a path that IS
@@ -206,5 +208,43 @@ func TestReadVolumeQuotaPropagatesInconclusiveMountRoot(t *testing.T) {
 	if err == nil {
 		t.Fatalf("readVolumeQuota(%q) = %s with no error; an unreachable mount root must propagate so a "+
 			"required-quota startup fails closed with the real cause", volume, reading)
+	}
+}
+
+// TestReadVolumeQuotaOnRealPath exercises the PRODUCTION statfs probe against a
+// real directory. What it can honestly assert without root is bounded but real:
+// the probe succeeds, reports a plausible filesystem, and resolves a mount root.
+func TestReadVolumeQuotaOnRealPath(t *testing.T) {
+	dir := t.TempDir()
+	reading, err := readVolumeQuota(dir)
+	if err != nil {
+		t.Fatalf("readVolumeQuota(%q) = %v, want a successful rootless read", dir, err)
+	}
+	if reading.LimitBytes <= 0 {
+		t.Fatalf("reading %s has no block total; statfs must report the filesystem size", reading)
+	}
+	if reading.MountRoot == "" {
+		t.Fatalf("reading %s resolved no mount root", reading)
+	}
+	if reading.UsedBytes < 0 || reading.UsedBytes > reading.LimitBytes {
+		t.Fatalf("reading %s has nonsensical usage", reading)
+	}
+	// The utilization the preflight logs must be finite and in range even with
+	// no quota — V7 meters this value.
+	if ratio := reading.UsedRatio(); ratio < 0 || ratio > 1 || math.IsNaN(ratio) {
+		t.Fatalf("UsedRatio() = %v on reading %s, want a finite ratio in [0,1]", ratio, reading)
+	}
+	if reading.Active() {
+		t.Fatalf("reading %s reports an active quota on the ordinary test filesystem; the Linux quota probe must preserve the negative assertion", reading)
+	}
+}
+
+// TestReadVolumeQuotaAbsentPath: a path that does not exist is a probe ERROR,
+// not a silent "no quota". Under QuotaRequired that difference decides whether
+// startup fails with the real cause (an unreachable volume) or with a misleading
+// missing-quota message.
+func TestReadVolumeQuotaAbsentPath(t *testing.T) {
+	if _, err := readVolumeQuota(t.TempDir() + "/does-not-exist"); err == nil {
+		t.Fatal("readVolumeQuota on an absent path = nil error, want a failure naming the path")
 	}
 }
