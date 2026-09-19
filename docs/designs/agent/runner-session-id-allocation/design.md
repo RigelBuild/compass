@@ -96,19 +96,22 @@ The Server persists the relay operation outcome with the promoted binding. The
 operation has three externally relevant states: **in flight** (minted, but not
 promoted), **promoted** (the exact ID, operation, and attempt echoes passed and
 one binding was committed), and **failed** (no binding was promoted). A retry
-is identified by the same Server-owned operation ID; a client cannot select
-that ID.
+is addressed by an authenticated Server-issued retry handle that maps to the
+single operation record; a client cannot mint, alter, or use an operation ID
+as a selector. The handle is accepted only for the authenticated account and
+destination container recorded in that operation.
 
-- While an operation is **in flight**, a retry for the same operation and same
-  destination container joins the existing operation. It does not mint a
-  reroute, not a retry: the Server allocates a new operation ID and a new
-  `fresh_session_id`, and the old operation is fenced/cancelled without
-  making its ID a cross-container selector.
-- Once an operation is **promoted**, a retry with the same operation ID returns
-  the recorded public start result (including the logical `session_id`) without
-  calling the Runner, minting an ID, or writing another binding. This is the
-  required post-promotion idempotency behavior, including after the original
-  response was lost.
+- While an operation is **in flight**, a retry carrying its authenticated retry
+  handle and the same destination container joins the existing operation. The
+  lookup of the handle, validation of account/container ownership, and choice
+  to join happen atomically with the in-flight state transition. The Server
+  does not allocate a second operation ID or `fresh_session_id`, reroute the
+  request, or fence/cancel the existing operation.
+- Once an operation is **promoted**, a retry with the same authenticated retry
+  handle returns the recorded public start result (including the logical
+  `session_id`) without calling the Runner, minting an ID, or writing another
+  binding. This is the required post-promotion idempotency behavior, including
+  after the original response was lost.
 - A reroute after promotion is a new operation. It MUST NOT reuse the promoted
   operation ID or logical session ID. Because the account already has a live
   promoted session, the new operation returns `AlreadyRunning` and leaves the
@@ -171,9 +174,6 @@ The implementation PR is accepted only when deterministic tests prove these obse
 - Runner tests prove a fresh start without a Server ID returns `FailedPrecondition` without local fallback, while resume returns the authorized public ID exactly, validates its attempt echo, materializes the body before exec, and creates no fresh binding.
 - Resume validation tests reject caller mint inputs and path-escaping IDs; a live collision returns `AlreadyRunning`.
 - Deployment-gate tests reject mismatched protocol revisions before fresh starts and bindings, while the target pair supports fresh start and resume.
-
-## Lifetime, generation, and locking fences
-
 The logical session ID is stable across authorized resumes. A live lifetime is
 still tied to the serving Runner **and exact container attempt** (Runner
 enrollment identity plus container name). Runner enrollment clears the serving
@@ -181,7 +181,7 @@ Runner's live bindings; a stopped, unknown, or post-reconnect ID fails closed
 rather than inheriting an old account. The Server's durable row remains the
 authorization root, while the Hub's in-memory maps are the live dispatch cache.
 
-Planned target behavior (pending the implementation PR): the Runner takes the per-container transition lock for the complete start, including slow pre-exec work. Under its synchronization guard it checks for a live session on that container before selecting the ID. This closes the check/start race that could otherwise admit two generations. Resume selection also checks that the logical ID is not already live. Stop, remove, reload, and reconnect use the same container/session transition discipline. Any mismatch cleanup must carry and verify the container/attempt ownership fence before Stop; it must never act on a foreign reported ID. A future multi-lifetime implementation must preserve the invariant that old-lifetime frames cannot bind to a new lifetime; it must use an explicit lifetime/generation fence rather than process uptime.
+Planned target behavior (pending the implementation PR): the Runner takes the per-container transition lock for the complete start, including slow pre-exec work. Under its synchronization guard it checks for a live session on that container before selecting the ID. This closes the check/start race that could otherwise admit two generations. Resume selection also checks that the logical ID is not already live. Stop, remove, reload, and reconnect use the same container/session transition discipline. Any mismatch cleanup must carry and verify the container/attempt ownership fence before Stop; it must never act on a foreign reported ID. A future multi-lifetime implementation must preserve the invariant that old-lifetime frames cannot bind to a new lifetime; it must reject frames whose authenticated operation, container, or attempt no longer matches the live generation.
 
 The durable transcript path (when enabled by the session-persistence design)
 keeps sequence state scoped to the logical session and re-bases each Runner
@@ -204,16 +204,23 @@ mismatch is fail-closed.
 ## Mismatch correlation and cleanup
 
 A returned-ID mismatch is handled only after correlating the response to the
-same authenticated Runner enrollment, container name, and container-attempt
-token that performed the start. The Server does not stop by session ID alone.
-If correlation is absent or differs, it records the mismatch and takes no
-cleanup action. When correlation matches, cleanup may stop only that exact
-attempt. It MUST NOT stop a foreign ID, a later generation, or an ID belonging
-to another Runner/container pair. Cleanup uses a bounded context independent
-of the cancelled start request. The Server never promotes the mismatched
-result; if cleanup fails, the log names the correlated Runner, container,
-attempt, and both IDs for operator cleanup.
+same authenticated Server operation, Runner enrollment, container name, and
+container-attempt token that performed the start. Cleanup has one selector:
+the authenticated `(operation_id, container_name, container_attempt_id)` tuple.
+The reported session ID is diagnostic only. It is never placed in Stop and is
+never used to select a cleanup target, including when it differs from the
+expected ID.
+
+If correlation is absent or differs, the Server records the mismatch and takes
+no cleanup action. When correlation matches, cleanup may stop only the exact
+operation/container/attempt selected by that authenticated tuple. It MUST NOT
+stop a foreign ID, a later generation, or an ID belonging to another
+Runner/container pair. Cleanup uses a bounded context independent of the
+cancelled start request. The Server never promotes the mismatched result; if
+cleanup fails, the log names the correlated operation, Runner, container,
+attempt, expected ID, and reported ID for operator cleanup.
 
 This same rule applies to mixed-version responses: an old Runner's returned
-local ID is never promoted, and is passed to Stop only when the authenticated
-attempt fence proves it is the same live attempt.
+local ID is never promoted and remains diagnostic only. It is never passed to
+Stop, even when the authenticated attempt fence proves which attempt ran.
+*** End
