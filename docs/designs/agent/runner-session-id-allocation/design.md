@@ -88,50 +88,21 @@ same ID MUST NOT be reused across containers or made into a cross-container
 selector. The Runner receives the derived value and never derives or
 substitutes one.
 
-### Retry state machine after promotion
+### Retry, persistence, and crash recovery
 
-The Server persists the relay operation outcome with the promoted binding. The
-operation has three externally relevant states: **in flight** (minted, but not
-promoted), **promoted** (the exact ID, operation, and attempt echoes passed and
-one binding was committed), and **failed** (no binding was promoted). A retry
-is addressed by an authenticated Server-issued retry handle bound to the
-single operation record and its authenticated `(account_id, actor_id,
-container_name)` tuple; a client cannot mint, alter, or use an operation ID as
-a selector. The handle is accepted only when the authenticated account, actor,
-and destination container all match the operation record.
+The Server persists one operation row before dispatch. It contains the relay request ID, derived `fresh_session_id`, opaque retry handle (stored hashed), authenticated tuple `(account_id, actor_id, runner_id, container_name, container_attempt_id)`, current enrollment revision, and state. Unique constraints on the operation identity, relay ID, and handle digest prevent duplicate ownership; the promoted binding has a unique logical `session_id`. The handle is the only retry selector and is never treated as an operation ID.
 
-- While an operation is **in flight**, a retry carrying its authenticated retry
-  handle and the same authenticated actor, account, and destination container
-  joins the existing operation. The lookup of the handle, validation of the
-  full tuple, and choice to join happen atomically with the in-flight state
-  transition. The Server
-  does not allocate a second operation ID or `fresh_session_id`, reroute the
-  request, or fence/cancel the existing operation.
-- Once an operation is **promoted**, a retry with the same authenticated retry
-  handle returns the recorded public start result (including the logical
-  `session_id`) without calling the Runner, minting an ID, or writing another
-  binding. This is the required post-promotion idempotency behavior, including
-  after the original response was lost.
-- A reroute after promotion is a new operation. It MUST NOT reuse the promoted
-  operation ID or logical session ID. Because the account already has a live
-  promoted session, the new operation returns `AlreadyRunning` and leaves the
-  existing binding unchanged; it never creates a second binding for that
-  account.
-- A **failed** operation may be retried only as the same operation when its
-  failure is explicitly retryable and no binding was promoted. A new operation
-  is used for a reroute or a non-retryable failure. Reusing a failed operation
-  after any promotion is invalid and returns `Conflict` without repair,
-  repointing, or deletion of durable ownership.
+The states are **in flight**, **promoted**, and **failed**. Create, handle lookup/join, and promotion are single database transactions. A retry is accepted only when its authenticated tuple and current enrollment equal the persisted tuple. Unknown, foreign, stale, and expired handles all return the same external `NotFound`; the response does not reveal which check failed.
 
-Any durable uniqueness conflict (`ErrConflict`) is a Server-bug witness. It is
-surfaced as `Conflict`, leaves the existing binding untouched, and is never
-repaired by deleting or repointing ownership. A duplicate same-operation retry
-is the one exception: it reads the recorded promoted result rather than
-attempting another promotion.
+- While **in flight**, a valid handle joins the existing operation atomically. It never allocates another operation or ID, reroutes, or cancels the first dispatch.
+- Once **promoted**, a valid handle returns the recorded public result without calling the Runner or writing another binding.
+- A **failed** operation is retryable only when its recorded failure is explicitly retryable and no binding was promoted. Otherwise the same external `Conflict` is returned; reroute uses a new operation and relay ID.
 
-The request ID is stable only for retries of one Server operation. Concurrent
-generations use distinct relay request IDs and therefore distinct IDs; the
-per-container transition lock remains the independent generation fence.
+The dispatch worker records the result and promotes only after exact ID, operation, and attempt echoes. If the Server crashes after dispatch but before promotion, recovery scans in-flight rows, verifies the recorded enrollment and attempt, and either joins/reconciles the same operation or marks it failed without creating a second binding. Recovery never promotes from a reported ID alone. Any uniqueness conflict is a Server-bug witness: return external `Conflict` and leave existing ownership untouched.
+
+Rerouting after promotion is a new operation and must not reuse the promoted operation or logical ID. It returns `AlreadyRunning` when the account already has a live binding. A request routed to another container always receives a new relay request ID; relay IDs and derived fresh IDs are never cross-container selectors.
+
+The request ID is stable only for retries of one operation. Concurrent generations use distinct relay IDs. The per-container transition lock remains the independent generation fence.
 
 The shipped baseline remains unchanged until this proposal lands.
 
@@ -168,40 +139,30 @@ The implementation PR is accepted only when deterministic tests prove these obse
 - An envelope test proves the internal message carries the Server operation ID, derived `fresh_session_id`, and attempt fence, while public requests cannot set internal fields.
 - An echo-validation test requires exact ID, operation, and authenticated attempt echoes before one binding is promoted; missing or altered values return an internal error and create no binding.
 - A cleanup test proves matching attempt correlation permits bounded cleanup under a detached context; foreign, unbound, later-generation, and mismatched-attempt IDs are never passed to Stop.
-- A retry test proves the same Server operation reuses its ID and logical session ID, while rerouting allocates a new operation and cannot reuse the old ID as a cross-container selector.
+- A retry test proves valid same-operation joins and post-promotion replay; unknown, foreign-account, stale-attempt, and old-enrollment handles all produce the same external `NotFound`, and non-retryable failures produce `Conflict`.
+- A persistence test kills the Server after dispatch and before promotion, restarts recovery, and proves at most one binding and one public result; rows retain relay ID, derived ID, retry-handle digest, full tuple, enrollment revision, and state.
+- A deterministic concurrency test releases two same-container starts at the transition barrier and proves exactly one is accepted, the other returns `AlreadyRunning`, and no second binding or fresh ID is created.
 - Account-attribution tests prove every account-scoped relay and secret operation resolves only through the Server-owned binding.
 - Fail-closed lifecycle tests prove stopped, unknown, and stale post-reconnect IDs resolve to no account, and enrollment/reap cannot resurrect stale bindings.
 - Runner tests prove a fresh start without a Server ID returns `FailedPrecondition` without local fallback, while resume returns the authorized public ID exactly, validates its attempt echo, materializes the body before exec, and creates no fresh binding.
 - Resume validation tests reject caller mint inputs and path-escaping IDs; a live collision returns `AlreadyRunning`.
 - Deployment-gate tests reject mismatched protocol revisions before fresh starts and bindings, while the target pair supports fresh start and resume.
-The logical session ID is stable across authorized resumes. A live lifetime is
-still tied to the serving Runner **and exact container attempt** (Runner
-enrollment identity plus container name). Runner enrollment clears the serving
-Runner's live bindings; a stopped, unknown, or post-reconnect ID fails closed
-rather than inheriting an old account. The Server's durable row remains the
-authorization root, while the Hub's in-memory maps are the live dispatch cache.
 
-Planned target behavior (pending the implementation PR): the Runner takes the per-container transition lock for the complete start, including slow pre-exec work. Under its synchronization guard it checks for a live session on that container before selecting the ID. This closes the check/start race that could otherwise admit two generations. Resume selection also checks that the logical ID is not already live. Stop, remove, reload, and reconnect use the same container/session transition discipline. Any mismatch cleanup must carry and verify the container/attempt ownership fence before Stop; it must never act on a foreign reported ID. A future multi-lifetime implementation must preserve the invariant that old-lifetime frames cannot bind to a new lifetime; it must keep lifetime fencing independent of the logical session ID.
+### Lifecycle and persistence boundary
 
-The durable transcript path (when enabled by the session-persistence design)
-keeps sequence state scoped to the logical session and re-bases each Runner
-lifetime. The session ID remains the stable key; a lifetime/generation marker
-is not a client-selectable substitute for that key.
+`StartAgentSession` is the lifecycle operation. Its durable session and transcript contract is defined by [the session-persistence design](../compass-agent-session-persistence/design.md); this record adds only operation identity, enrollment fencing, and promotion rules. The logical session ID remains stable across authorized resume, while each live lifetime is tied to the serving Runner and exact container attempt.
 
-### Durable and cache lifecycle
+Runner enrollment marks the prior attempt stale and clears its live cache. A stopped, unknown, or post-reconnect ID fails closed rather than inheriting an old account. The durable row is the authorization root; Hub/Runner maps are only a dispatch cache. Cache loss is recoverable from the durable row, but row absence or attempt mismatch is fail-closed.
+
+The Runner holds the per-container transition lock across pre-exec work and checks for a live session before selecting an ID. Start, resume, stop, remove, reload, and reconnect use the same transition discipline. Old-lifetime frames cannot bind to a new lifetime; lifetime fencing is independent of the logical session ID.
 
 | Event | Durable store (authoritative) | Hub/Runner cache (disposable) |
 | --- | --- | --- |
-| Enrollment | Keep authorized rows; mark the prior live attempt stale. | Clear every live binding for that Runner; accept only the new enrollment attempt. |
-| Fresh start | Promote only after exact ID echo and attempt correlation. | Populate after promotion; never authorize from cache alone. |
-| Reconnect | Keep logical session and transcript; do not rewrite ownership from reconnect traffic. | Drop old attempt bindings, then rebuild from authenticated durable state. |
-| Crash/restart | Preserve logical session and transcript; create no new binding without promotion. | Discard pre-crash entries; stale IDs cannot route or stop a new attempt. |
-| Stop/Remove | Release the matching durable live binding under the existing lifecycle operation. | Remove only the matching Runner/container-attempt entry. |
-
-Cache loss is recoverable from the durable row. Durable-row absence or attempt
-mismatch is fail-closed.
-
-## Mismatch correlation and cleanup
+| Enrollment | Mark the prior attempt stale. | Clear old live bindings; accept only the new attempt. |
+| Fresh start | Promote after exact echoes and attempt match. | Populate only after promotion. |
+| Reconnect | Keep logical session and transcript; do not rewrite ownership. | Drop old-attempt bindings, rebuild from authenticated state. |
+| Crash/restart | Preserve operation/session/transcript rows; create no binding without promotion. | Discard pre-crash entries. |
+| Stop/Remove | Release the matching binding under the lifecycle operation. | Remove only the matching attempt entry. |
 
 A returned-ID mismatch is handled only after correlating the response to the
 same authenticated Server operation, Runner enrollment, account, actor,
