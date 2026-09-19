@@ -520,8 +520,27 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 			continue // header (line 1) or a blank line
 		}
 		fields := strings.Fields(text)
-		if len(fields) != 3 {
-			t.Fatalf("stack.pgids entry line %d malformed: %q", line, text)
+		if len(fields) == 0 {
+			continue
+		}
+		// v2 records tag entries: proc <component> <pgid> <starttime>,
+		// while ctr entries identify containers and have no process group.
+		switch fields[0] {
+		case "ctr":
+			if len(fields) != 3 {
+				t.Fatalf("stack.pgids container entry line %d malformed: %q", line, text)
+			}
+			continue
+		case "proc":
+			if len(fields) != 4 {
+				t.Fatalf("stack.pgids process entry line %d malformed: %q", line, text)
+			}
+			fields = fields[1:]
+		default:
+			// v1 records are untagged: <component> <pgid> <starttime>.
+			if len(fields) != 3 {
+				t.Fatalf("stack.pgids entry line %d malformed: %q", line, text)
+			}
 		}
 		pgid, err := strconv.Atoi(fields[1])
 		if err != nil {

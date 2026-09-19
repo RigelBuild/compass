@@ -2401,73 +2401,48 @@ jobs:
             podman tag ghcr.io/rigelbuild/compass-agent:latest compass-agent:latest
           fi
 
-      - name: e2e (deterministic full-stack tier)
+      - name: e2e and compass-stack (deterministic full-stack tier)
         working-directory: go
         env:
-          # -race needs cgo, matching go/moon.yml's race lane. Without it `go
-          # test -race` refuses to build.
           CGO_ENABLED: '1'
-        # The deterministic tier: a REAL full stack — compass-server + runner +
-        # agent-container + a PRIVATE postgres the suite stands up itself — brought
-        # up via stack.Up, driven against a canned in-process model. No live model
-        # egress and no secrets (Decision D2), so it is reproducible and safe on
-        # every PR. It is build-tagged `podman`, so the moon `go test ./...`
-        # battery never compiles it — this step is the ONLY thing that runs it.
-        #
-        # D2's no-secrets claim scopes to THIS dogfood tier specifically: the
-        # forge live-contract oracle in the dedicated forge-oracle job is a
-        # separate, secret-bearing per-PR job (the LIVEGITHUB_*/LINEAR_FORGE testbed
-        # creds), so "the PR gate carries no secrets" is now true of the dogfood
-        # tier alone — see the record
-        # docs/designs/server/compass-forge-integration-testing.
-        #
-        # Same capture-replay-exit shape as the moon job's suites: redirect (not
-        # a `| tee` pipeline, whose exit status is tee's 0 and would swallow a
-        # FAIL), replay the log, then exit on go test's own status. `|| rc=$?`
-        # because the step runs under `bash -e`. The 20m timeout is finite
-        # headroom for a run that builds 3 binaries, stands up a real stack, and
-        # runs a container turn.
+        # Compile and run both podman-tagged surfaces, including the supervisor
+        # package's in-process and subprocess stack coverage.
         run: |
           rc=0
-          go test -tags podman -race -v -timeout 20m ./e2e/... >/tmp/e2e.log 2>&1 || rc=$?
+          go test -tags podman -race -v -timeout 20m ./e2e/... ./cmd/compass-stack/... >/tmp/e2e.log 2>&1 || rc=$?
           cat /tmp/e2e.log
           exit "$rc"
 
-      - name: Assert the dogfood e2e ran rather than skipped
+      - name: Assert podman packages ran rather than skipped
         working-directory: go
-        # The e2e legs t.Skip (never fail) when podmanUsable() is false — correct
-        # for a container-less sandbox, but a silent no-op here. A required check
-        # that let that skip pass would be VACUOUSLY green, so this guard makes an
-        # unavailable-podman run loud.
-        #
-        # Both halves are derived from source rather than hardcoded, matching the
-        # pgtest guard's discipline: a guard that drifts out of step with what it
-        # guards passes silently.
-        #   - the skip text is read from go/e2e/harness_test.go, so rewording the
-        #     skip cannot leave this grep matching nothing and reporting success;
-        #   - the ok line is required for the e2e package specifically, so "the
-        #     deterministic tier actually ran and passed" is what green means.
-        #     This matters because go/e2e/cannedmodel_test.go is deliberately
-        #     UNTAGGED and runs under a bare `go test`, so an `ok`-line grep alone
-        #     could pass on that file while the real podman legs silently skipped
-        #     — the skip-string check above is what closes that gap.
+        # Both packages skip when rootless podman is unavailable. Fail closed.
         run: |
-          skip=$(sed -n 's/.*t\.Skip("\(rootless podman[^";]*\)[^"]*").*/\1/p' \
-            e2e/harness_test.go)
-          if [ -z "$skip" ]; then
-            echo "::error::could not read the skip message out of go/e2e/harness_test.go — this guard has drifted from the harness and is no longer checking anything"
+          e2e_skips=$(sed -nE 's/.*t\.Skip\("([^"]*)".*/\1/p' e2e/harness_test.go | sort -u)
+          stack_skips=$(sed -nE 's/.*t\.Skip\("([^"]*)".*/\1/p' cmd/compass-stack/integration_podman_test.go | sort -u)
+          if [ -z "$e2e_skips" ]; then
+            echo "::error::could not read any podman skip message from e2e/harness_test.go"
             exit 1
           fi
-          if grep -qF "$skip" /tmp/e2e.log; then
-            echo "::error::dogfood e2e skipped — podman could not run compass-agent:latest, so nothing was asserted"
-            grep -nF "$skip" /tmp/e2e.log | head
+          if [ -z "$stack_skips" ]; then
+            echo "::error::could not read any podman skip message from cmd/compass-stack/integration_podman_test.go"
             exit 1
           fi
+          skips=$(printf '%s\n%s\n' "$e2e_skips" "$stack_skips" | sed '/^$/d' | sort -u)
+          while IFS= read -r skip; do
+            if grep -qF -- "$skip" /tmp/e2e.log; then
+              echo "::error::podman-tagged tests skipped: $skip"
+              exit 1
+            fi
+          done <<< "$skips"
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
-            echo "::error::the dogfood e2e package did not report ok — it failed, skipped, or never ran"
+            echo "::error::the dogfood e2e package did not report ok"
             exit 1
           fi
-          echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
+          if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/cmd/compass-stack[[:space:]]" /tmp/e2e.log; then
+            echo "::error::the compass-stack podman package did not report ok"
+            exit 1
+          fi
+          echo "podman e2e and compass-stack packages ran and reported ok"
 
   rollup:
     name: rollup
