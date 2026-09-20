@@ -1,11 +1,10 @@
+<!-- markdownlint-disable MD041 -->
 <!--
 Use an imperative Conventional Commits subject with a concrete result, between
 20 and 90 Unicode code points. Write 40 to 300 whitespace-delimited words in
 the authored sections below. Keep the description accurate as the change
 evolves. Remove these instructional comments before submitting.
 -->
-
-# Pull request
 
 ## Summary
 
@@ -47,6 +46,5 @@ If no public documentation needs an update, write: None: <reason>.
 <!--
 Add applicable public issue references after the sections, for example:
 Refs #123
-Do not add private links or internal design references, and do not add contributor
-attribution here.
+Do not add private links or internal design references here.
 -->
