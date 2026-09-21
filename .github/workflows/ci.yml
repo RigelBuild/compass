@@ -2404,27 +2404,41 @@ jobs:
       - name: e2e and compass-stack (deterministic full-stack tier)
         working-directory: go
         env:
-          CGO_ENABLED: '1'
+          CGO_ENABLED: '1' # -race needs cgo
         # Compile and run both podman-tagged surfaces, including the supervisor
         # package's in-process and subprocess stack coverage.
+        #
+        # -count=1 is load-bearing, not hygiene: podmanUsable() execs an external
+        # binary, whose verdict is an input the test cache cannot see, so a warm
+        # GOCACHE can replay `ok ... (cached)` on a runner where podman is broken
+        # and nothing runs. -p 1 serializes the two packages; both bind the same
+        # fixed host loopback ports (collector 13133).
+        #
+        # Redirect-then-cat, NOT `| tee`: a tee pipeline's exit status is tee's 0
+        # and would swallow a FAIL.
         run: |
           rc=0
-          go test -tags podman -race -v -timeout 20m ./e2e/... ./cmd/compass-stack/... >/tmp/e2e.log 2>&1 || rc=$?
+          go test -tags podman -race -count=1 -p 1 -v -timeout 20m ./e2e/... ./cmd/compass-stack/... >/tmp/e2e.log 2>&1 || rc=$?
           cat /tmp/e2e.log
           exit "$rc"
 
       - name: Assert podman packages ran rather than skipped
         working-directory: go
         # Both packages skip when rootless podman is unavailable. Fail closed.
+        #
+        # The extraction is anchored on "rootless podman" and swept across each
+        # WHOLE package: an unanchored capture matches any reworded skip, so the
+        # -z guards would stay quiet while the podman skip itself drifted out of
+        # the set. The anchor makes that drift trip -z again.
         run: |
-          e2e_skips=$(sed -nE 's/.*t\.Skip\("([^"]*)".*/\1/p' e2e/harness_test.go | sort -u)
-          stack_skips=$(sed -nE 's/.*t\.Skip\("([^"]*)".*/\1/p' cmd/compass-stack/integration_podman_test.go | sort -u)
+          e2e_skips=$(grep -rhoE 't\.Skipf?\("rootless podman[^"]*"' e2e/ | sed -E 's/.*\("//; s/"$//' | sort -u)
+          stack_skips=$(grep -rhoE 't\.Skipf?\("rootless podman[^"]*"' cmd/compass-stack/ | sed -E 's/.*\("//; s/"$//' | sort -u)
           if [ -z "$e2e_skips" ]; then
-            echo "::error::could not read any podman skip message from e2e/harness_test.go"
+            echo "::error::could not read any rootless-podman skip message from e2e/"
             exit 1
           fi
           if [ -z "$stack_skips" ]; then
-            echo "::error::could not read any podman skip message from cmd/compass-stack/integration_podman_test.go"
+            echo "::error::could not read any rootless-podman skip message from cmd/compass-stack/"
             exit 1
           fi
           skips=$(printf '%s\n%s\n' "$e2e_skips" "$stack_skips" | sed '/^$/d' | sort -u)
@@ -2434,6 +2448,17 @@ jobs:
               exit 1
             fi
           done <<< "$skips"
+          # A positive assertion, independent of skip wording: a named leg from
+          # each package must actually have PASSed. The `ok` line alone cannot
+          # carry this — a cached or fully-skipped package still prints it.
+          if ! grep -qE "^[[:space:]]*--- PASS: TestHarnessCore[[:space:]]" /tmp/e2e.log; then
+            echo "::error::the dogfood e2e package did not report a passing TestHarnessCore"
+            exit 1
+          fi
+          if ! grep -qE "^[[:space:]]*--- PASS: TestStackIntegration[[:space:]]" /tmp/e2e.log; then
+            echo "::error::the compass-stack podman package did not report a passing TestStackIntegration"
+            exit 1
+          fi
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
             echo "::error::the dogfood e2e package did not report ok"
             exit 1

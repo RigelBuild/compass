@@ -286,7 +286,10 @@ func buildStackBinary(t *testing.T, binDir string) string {
 //
 // It also seeds a fixture-owned secret provider: compass-server fails closed
 // without an at-rest master key, and a CI runner has no ambient provider, so
-// the subprocess must carry its own rather than inherit one.
+// the subprocess must carry its own rather than inherit one. An inherited
+// COMPASS_SECRET_PROVIDER is deliberately DISCARDED, not merely absent —
+// otherwise an operator's ambient provider would silently decide which key the
+// subprocess boots under, making the result depend on the dev box.
 func stackEnv(t *testing.T, binDir string) []string {
 	t.Helper()
 	provider := seedMasterKeyProvider(t)
@@ -299,6 +302,7 @@ func stackEnv(t *testing.T, binDir string) []string {
 			continue
 		}
 		if strings.HasPrefix(e, "COMPASS_SECRET_PROVIDER=") {
+			t.Logf("stackEnv: discarding the inherited COMPASS_SECRET_PROVIDER for the fixture's own throwaway dotenv provider")
 			continue
 		}
 		out = append(out, e)
@@ -521,6 +525,7 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 	}()
 
 	var groups []recordedGroup
+	containers := 0
 	sc := bufio.NewScanner(f)
 	line := 0
 	for sc.Scan() {
@@ -540,6 +545,7 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 			if len(fields) != 3 {
 				t.Fatalf("stack.pgids container entry line %d malformed: %q", line, text)
 			}
+			containers++
 			continue
 		case "proc":
 			if len(fields) != 4 {
@@ -564,6 +570,12 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan stack.pgids record %q: %v", recordPath, err)
+	}
+	// Name the real cause rather than letting the caller's "no groups" message
+	// send a maintainer looking for a spawn failure: a record that parsed fine
+	// but held only container entries leaves nothing to probe.
+	if len(groups) == 0 && containers > 0 {
+		t.Fatalf("stack.pgids had %d entries, all container-kind; no process group to probe", containers)
 	}
 	return groups
 }
