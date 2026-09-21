@@ -115,25 +115,19 @@ func guestSh(t *testing.T, m *MicroVMRuntime, id WorkloadID, script string) (str
 // (`ls`, `grep -r` on paths) needs its own forbidden strings, or the assertion
 // is vacuously true and the row proves nothing.
 type crossSessionAttempt struct {
-	script string
-	forbid []string
+	script              string
+	forbid              []string
+	probeErrorSensitive bool
 }
 
-// sweepBatchSize is how many paths one awk invocation is handed. The scan's
-// dominant cost is process creation, against the HARD 120s per-exec cap
-// (execDefaultTimeout, microvm_lifecycle.go). One-spawn-per-file over roots
-// including "/" ran the cross-tenant row at ~72s — ~60% of the cap, i.e. a flake
-// waiting for a loaded box. Batching collapses that fork cost to per-batch,
-// since awk takes many FILENAMEs per run and reports which file each match came
-// from itself.
+// sweepBatchSize is how many paths one awk invocation is handed. Process
+// creation is the scan's dominant cost, and each exec has a hard 120s cap
+// (execDefaultTimeout, microvm_lifecycle.go). Batching bounds that cost by the
+// number of batches: awk takes many FILENAMEs per run and reports which file
+// each match came from itself.
 //
-// Measured in-guest on this box over an identical 425-file tree, needle in the
-// last file: 644ms at batch size 1 versus 47ms at 200 — a 13.7x reduction, i.e.
-// batching removes essentially all of the ~1.5ms/file spawn overhead.
-//
-// 200 is bounded by the guest's ARG_MAX rather than by taste: paths average well
-// under 128 bytes, so a 200-path argv stays far inside the limit while cutting
-// spawns by two orders of magnitude.
+// Keep the batch bounded by ARG_MAX. Paths are short enough that 200 entries
+// leave ample argv headroom while avoiding one process per file.
 const sweepBatchSize = 200
 
 // sweepScript builds a recursive content search the guest can actually run. The
@@ -142,16 +136,17 @@ const sweepBatchSize = 200
 // confinement. bash's globstar walks the trees and awk does the matching, and
 // the exit status mirrors grep's: 0 when the needle was found, 1 when it was
 // not, so a caller can still assert the non-zero exit a confined command owes.
+// An input-open error exits 2 so the caller can distinguish a broken probe
+// from the expected no-match exit 1.
 //
 // Matching files are printed as `<path>:<line>`, so BOTH discriminators are
 // live: the secret body appears in the output if any file's content was read,
 // and the path appears if a file under another tenant's volume was reachable at
 // all.
 //
-// BATCHED, one awk per sweepBatchSize files rather than one per file: the
-// per-file variant spent nearly all its time forking (see sweepBatchSize) and
-// sat at ~60% of the 120s exec cap. awk is handed many FILENAMEs at once and
-// reports the matching one itself, so the output contract is unchanged.
+// BATCHED, one awk per sweepBatchSize files rather than one per file, to bound
+// process creation and execution time. awk is handed many FILENAMEs at once
+// and reports the matching one itself, so the output contract is unchanged.
 //
 // Two things stop the sweep from finding ITS OWN needle, which would be a false
 // escape report rather than a real one:
@@ -163,7 +158,24 @@ const sweepBatchSize = 200
 //     that cannot hold another tenant's volume, so excluding them removes the
 //     self-match surface (the environ/cmdline of the running searcher) without
 //     narrowing what the row actually probes.
-func sweepScript(needle, roots string) string {
+//
+// shellQuote returns one shell word that preserves s literally. The guest image
+// does not guarantee base64, so generated scripts use the POSIX single-quote
+// idiom for transport instead of relying on an optional decoder.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func shellQuoteWords(words ...string) string {
+	quoted := make([]string, 0, len(words))
+	for _, word := range words {
+		quoted = append(quoted, shellQuote(word))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func sweepScript(needle string, roots ...string) string {
+
 	// The awk program: scan every FILENAME handed to this invocation, print
 	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
 	// the caller's `found` accumulator keeps grep's semantics across batches.
@@ -171,10 +183,11 @@ func sweepScript(needle, roots string) string {
 	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk (agent-image ships
 	// pkgs.gawk) makes an unopenable input FATAL, aborting there and dropping
 	// later paths plus the batch's exit-status contribution. It covers OPEN
-	// errors only — a read error still aborts, why the scan below shows stderr.
-	const awkProg = `BEGINFILE { if (ERRNO) nextfile } ` +
-		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
-	return "export SWEEP_NEEDLE='" + needle + "'; " +
+	// errors only; read errors still abort too, and stderr stays unsuppressed so
+	// that signal remains visible.
+	const awkProg = `BEGINFILE { if (ERRNO != "") { probeError=1; nextfile } } ` +
+		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { if (probeError) exit 2; exit !hit }`
+	return "export SWEEP_NEEDLE=" + shellQuote(needle) + "; " +
 		"shopt -s globstar nullglob dotglob; found=1; batch=(); " +
 		// scan() runs one awk over the accumulated batch and clears it. Guarded
 		// on a non-empty batch so a trailing flush with nothing pending does not
@@ -183,22 +196,23 @@ func sweepScript(needle, roots string) string {
 		// stderr is NOT suppressed: it carries the one signal that separates a
 		// real negative from a dead probe.
 		"scan() { ((${#batch[@]})) || return 0; " +
-		"if awk '" + awkProg + "' \"${batch[@]}\"; then found=0; fi; batch=(); }; " +
-		"for root in " + roots + "; do " +
+		"awk '" + awkProg + "' \"${batch[@]}\"; status=$?; batch=(); " +
+		"case $status in 0) found=0;; 1) ;; *) return $status;; esac; }; " +
+		"for root in " + shellQuoteWords(roots...) + "; do " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
-		// "//proc/self/environ", which a /proc/* pattern does NOT match — the
-		// sweep would then read its own environ and report finding the needle
-		// it was given, a false escape.
+		// "//proc/self/environ", which a /proc/* pattern does NOT match —
+		// the sweep would then read its own environ and report finding the
+		// needle it was given, a false escape.
 		"n=$f; while [[ $n == //* ]]; do n=${n#/}; done; " +
 		"case $n in /proc/*|/sys/*|/dev/*) continue;; esac; " +
 		"[[ -f $f && -r $f ]] || continue; " +
 		"batch+=(\"$f\"); " +
-		"((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")) && scan; " +
+		"if ((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")); then scan || exit $?; fi; " +
 		// One `done` closes the per-file loop, the next the per-root loop.
 		"done; " +
 		"done; " +
-		"scan; exit $found"
+		"scan || exit $?; exit $found"
 }
 
 // TestMicroVMSweepScriptFindsItsNeedle is the non-vacuity control for
@@ -427,20 +441,20 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 	// the NON-ZERO EXIT — a confined command must fail, not merely print nothing.
 	attempts := map[string]crossSessionAttempt{
 		"B's absolute host volume path": {
-			script: "cat " + filepath.Join(volumeB, "host-secret.txt") + " " + filepath.Join(volumeB, "guest-secret.txt"),
+			script: "cat " + shellQuote(filepath.Join(volumeB, "host-secret.txt")) + " " + shellQuote(filepath.Join(volumeB, "guest-secret.txt")),
 		},
 		"B's volume dir listing": {
 			// An `ls` that SUCCEEDED and listed B's secrets would pass a
 			// content check; the discriminator here is the FILENAMES plus the
 			// exit code.
-			script: "ls -la " + volumeB,
+			script: "ls -la " + shellQuote(volumeB),
 			forbid: []string{"host-secret.txt", "guest-secret.txt"},
 		},
 		"traversal toward B": {
 			script: "cat /workspace/../volume/host-secret.txt; cat /workspace/../../*/volume/*secret*",
 		},
 		"a symlink A plants to B": {
-			script: "ln -sf " + volumeB + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
+			script: "ln -sf " + shellQuote(volumeB) + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
 		},
 		"a content sweep of every tree A can name": {
 			// NOT `grep -r`: the guest ships no grep/find, so that row exited 127
@@ -452,8 +466,9 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 			// parent is included explicitly so the one tree that could hold the
 			// secret is walked.
 			script: sweepScript(tenantBSecret,
-				"/tmp /mnt /media /run /var /home /workspace "+filepath.Dir(volumeB)),
-			forbid: []string{volumeB},
+				"/tmp", "/mnt", "/media", "/run", "/var", "/home", "/workspace", filepath.Dir(volumeB)),
+			forbid:              []string{volumeB},
+			probeErrorSensitive: true,
 		},
 	}
 	for name, attempt := range attempts {
@@ -473,6 +488,10 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 					t.Fatalf("tenant A's %s NAMED %q — tenant B's volume is reachable from A.\noutput: %q",
 						name, forbidden, truncate(out))
 				}
+			}
+			if attempt.probeErrorSensitive && code >= 2 {
+				t.Errorf("cross-tenant attempt %q had probe error exit %d (output %q); the confinement probe is broken",
+					name, code, truncate(out))
 			}
 			if code == 0 {
 				t.Errorf("cross-tenant attempt %q exited 0 (output %q); a confined command must fail",
@@ -494,10 +513,10 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 	// let A try, and compare.
 	before := snapshotTree(t, volumeB)
 	for _, script := range []string{
-		"echo from-a > " + filepath.Join(volumeB, "pwned.txt"),
+		"echo from-a > " + shellQuote(filepath.Join(volumeB, "pwned.txt")),
 		"echo from-a > /workspace/b-link/pwned-link.txt",
-		"rm -f " + filepath.Join(volumeB, "host-secret.txt"),
-		"rm -rf " + volumeB,
+		"rm -f " + shellQuote(filepath.Join(volumeB, "host-secret.txt")),
+		"rm -rf " + shellQuote(volumeB),
 	} {
 		out, code := guestSh(t, mA, idA, script)
 		t.Logf("A write-into-B attempt %q -> exit %d, %q", script, code, strings.TrimSpace(out))
