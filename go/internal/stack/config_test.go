@@ -70,6 +70,28 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "guest fields require microvm backend",
+			mutate: func(c *Config) {
+				c.RuntimeBackend = "container"
+				c.GuestDir = "/state/guest"
+			},
+			wantErr:    true,
+			errSubstrs: []string{"GuestDir", "RuntimeBackend"},
+		},
+		{
+			name:    "microvm with neither guest field",
+			mutate:  func(c *Config) { c.RuntimeBackend = "microvm" },
+			wantErr: false,
+		},
+		{
+			name: "microvm with guest dir",
+			mutate: func(c *Config) {
+				c.RuntimeBackend = "microvm"
+				c.GuestDir = "/state/guest"
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range tests {

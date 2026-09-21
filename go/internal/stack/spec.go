@@ -4,6 +4,7 @@ package stack
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -82,6 +83,17 @@ func runnerSpec(cfg Config, cert CertResult, token string) ProcessSpec {
 	// the same additive/zero-value-omit guarantee as the fields above.
 	for _, m := range cfg.Mounts {
 		args = append(args, "--mount", m)
+	}
+	if cfg.RuntimeBackend != "" {
+		args = append(args, "--backend", cfg.RuntimeBackend)
+		if cfg.GuestDir != "" {
+			args = append(args,
+				"--microvm-kernel", filepath.Join(cfg.GuestDir, "kernel"),
+				"--microvm-rootfs", filepath.Join(cfg.GuestDir, "rootfs.erofs"),
+				"--microvm-initrd", filepath.Join(cfg.GuestDir, "initrd"),
+				"--microvm-image-manifest", filepath.Join(cfg.GuestDir, "manifest.sha256"),
+			)
+		}
 	}
 	return ProcessSpec{
 		Component: ComponentRunner,
