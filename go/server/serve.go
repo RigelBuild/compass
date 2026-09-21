@@ -17,6 +17,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -143,6 +144,9 @@ type ForgeConfig struct {
 	// under this host, so changing it between boots abandons (does not migrate)
 	// the prior host's rows.
 	Host string
+	// ForgeCAPath is an optional PEM CA bundle trusted by GitHub/App clients.
+	// Empty preserves the default system roots and existing behavior.
+	ForgeCAPath string
 	// SeedRepos are "owner/name" repos boot-reconciled into
 	// forge_repo_subscriptions (bootstrap-only insert, ON CONFLICT DO NOTHING;
 	// lowercased for GITHUB) — a declarative SEED, not the live target set. The
@@ -270,6 +274,43 @@ func (c ForgeConfig) resolved() ForgeConfig {
 func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool {
 	havePrimary, haveReviewer := c.forgeWriteAppsConfigured(declared)
 	return havePrimary && haveReviewer
+}
+
+// forgeHTTPClient returns the Forge clients' HTTP client. With no CA configured
+// it keeps http.DefaultTransport, so the primary and reviewer clients go on
+// sharing one connection pool exactly as they did before this knob existed; a
+// configured bundle gets a cloned transport whose roots are the system pool
+// plus the operator's PEM. Linear and unrelated clients never use it.
+func forgeHTTPClient(path string) (*http.Client, error) {
+	if path == "" {
+		return &http.Client{Timeout: 30 * time.Second}, nil
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		transport = &http.Transport{}
+	}
+	transport = transport.Clone()
+	pem, err := os.ReadFile(path) //nolint:gosec // operator-configured forge CA bundle
+	if err != nil {
+		return nil, fmt.Errorf("read forge CA bundle: %w", err)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("load system cert pool: %w", err)
+	}
+	if roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, errors.New("forge CA bundle contains no certificates")
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.RootCAs = roots
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second}, nil
 }
 
 // forgeWriteAppsConfigured reports which of the two required write Apps — the
@@ -1216,16 +1257,21 @@ func buildBoardWebhookWiring(
 	// Build the ONE shared App token source + GitHub client both lanes ride.
 	// appTokenSource is safe for concurrent use (mint singleflighted), so the
 	// read lanes and the poll driver sharing one client is sound.
+	httpClient, err := forgeHTTPClient(rc.ForgeCAPath)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
 	tok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
 		AppID:          rc.App.AppID,
 		InstallationID: rc.App.InstallationID,
 		PrivateKey:     newDeclaredSecretResolver(resolver, rc.App.AppPrivateKeySecret),
 		Host:           rc.Host,
+		Client:         httpClient,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
 	}
-	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok})
+	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok, Client: httpClient})
 
 	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, client, log)
 	if err != nil {
@@ -1970,17 +2016,21 @@ func buildForgeWriteService(
 	if err := validateForgeSecret(ctx, resolver, "forge reviewer app key", fc.ReviewerApp.AppPrivateKeySecret); err != nil {
 		return nil, err
 	}
+	reviewerHTTP, err := forgeHTTPClient(fc.ForgeCAPath)
+	if err != nil {
+		return nil, err
+	}
 	reviewerTok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
 		AppID:          fc.ReviewerApp.AppID,
 		InstallationID: fc.ReviewerApp.InstallationID,
 		PrivateKey:     newDeclaredSecretResolver(resolver, fc.ReviewerApp.AppPrivateKeySecret),
 		Host:           fc.Host,
+		Client:         reviewerHTTP,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("forge reviewer app token source: %w", err)
 	}
-	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: reviewerTok})
-
+	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: reviewerTok, Client: reviewerHTTP})
 	// (3) The provider registry: the GitHub coordinate (author = shared primary
 	// client, reviewer = reviewer App client, F1) plus a Linear coordinate when
 	// the shared Linear token source is configured.

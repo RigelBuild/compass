@@ -1075,11 +1075,26 @@ jobs:
     env:
       TMPDIR: /tmp
     steps:
+      - name: Verify dispatched PR provenance before secrets
+        id: dispatch_provenance
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr }}
+        run: |
+          head_repo=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name')
+          if [ "$head_repo" != "$GH_REPO" ]; then
+            echo "::error::refusing secret-bearing Forge dispatch for PR #$PR_NUMBER from $head_repo"
+            exit 1
+          fi
+          echo 'trusted=true' >>"$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The forge-affected git diff needs the base branch history.
           fetch-depth: 0
-          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # Base-repoint re-trigger checks out the recomputed merge ref; empty
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
@@ -1202,7 +1217,8 @@ jobs:
           github.event_name == 'push' ||
           github.event_name == 'schedule' ||
           (github.event_name == 'workflow_dispatch' &&
-           github.event.inputs.pr != '')
+           github.event.inputs.pr != '' &&
+           steps.dispatch_provenance.outputs.trusted == 'true')
         env:
           LINEAR_FORGE_CLIENT_ID: ${{ secrets.LINEAR_FORGE_CLIENT_ID }}
           LINEAR_FORGE_CLIENT_SECRET: ${{ secrets.LINEAR_FORGE_CLIENT_SECRET }}
@@ -1238,7 +1254,8 @@ jobs:
           github.event_name == 'push' ||
           github.event_name == 'schedule' ||
           (github.event_name == 'workflow_dispatch' &&
-           github.event.inputs.pr != '')
+           github.event.inputs.pr != '' &&
+           steps.dispatch_provenance.outputs.trusted == 'true')
         env:
           # The T2 env contract (design §358-362, §431-436), post-RIG-3096 App
           # cutover: the GitHub live legs authenticate as two GitHub Apps — the
@@ -1303,7 +1320,8 @@ jobs:
           github.event_name == 'push' ||
           github.event_name == 'schedule' ||
           (github.event_name == 'workflow_dispatch' &&
-           github.event.inputs.pr != '')
+           github.event.inputs.pr != '' &&
+           steps.dispatch_provenance.outputs.trusted == 'true')
         run: |
           src=internal/forge/livegithub_test.go
           ghskip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' "$src")
@@ -2624,6 +2642,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.pr == '' &&
+      github.ref == 'refs/heads/main' &&
       inputs.regen == 'forge'
     # The top-level `permissions: contents: read` is the floor; this job widens
     # its own to open a PR: contents:write to push the regen branch,
@@ -2762,9 +2781,13 @@ jobs:
     # is what makes a bare dispatch fire ONLY the forge lane and leave this one
     # off; see the forge lane's `if:` for why the `inputs` context is the form
     # to copy here.
+    # The `refs/heads/main` conjunct matches the forge lane's: a dispatch names
+    # an arbitrary ref, and the dispatched ref's own copy of this file runs, so
+    # without it an arbitrary branch executes with contents+pull-requests write.
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.pr == '' &&
+      github.ref == 'refs/heads/main' &&
       inputs.regen == 'visual'
     # The top-level `permissions: contents: read` is the floor; widened exactly
     # as the forge lane's: contents:write to push the regen branch,
