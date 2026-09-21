@@ -57,6 +57,43 @@ function updateFence(
 	return { fence, handled: true };
 }
 
+/**
+ * Classify every line once, resolving fenced code blocks and HTML comment
+ * blocks, and return only the lines that are real document content.
+ *
+ * Both ledger counters read this one pass, so neither can model a markdown
+ * construct the other misses — the divergence class that has produced phantom
+ * rows, a silently shortened snapshot, and a phantom commented-out row. A
+ * construct taught here is taught to both at once. The POST is an
+ * authoritative full snapshot, so an unterminated block throws here, before
+ * either counter reads a line, rather than reading short or long.
+ */
+function documentContentLines(text: string): string[] {
+	const content: string[] = [];
+	let fence: Fence | null = null;
+	let inComment = false;
+	for (const line of text.split("\n")) {
+		if (inComment) {
+			if (line.includes("-->")) inComment = false;
+			continue;
+		}
+		// CommonMark HTML block type 2: opens on `<!--` indented at most 3
+		// spaces, and runs through the line carrying `-->`, trailing text included.
+		if (fence === null && /^ {0,3}<!--/.test(line)) {
+			inComment = !line.includes("-->");
+			continue;
+		}
+		const updated = updateFence(line, fence);
+		fence = updated.fence;
+		if (updated.handled || fence !== null) continue;
+		content.push(line);
+	}
+	if (fence !== null)
+		throw new Error("unterminated fenced block in design ledger");
+	if (inComment) throw new Error("unterminated HTML comment in design ledger");
+	return content;
+}
+
 function isTableLine(line: string): boolean {
 	return /^ {0,3}\|/.test(line);
 }
@@ -78,26 +115,19 @@ function forEachLedgerRow(
 	text: string,
 	callback: (line: string) => void,
 ): void {
-	let fence: Fence | null = null;
 	let tableState: "none" | "header" | "table" = "none";
-	for (const line of text.split("\n")) {
-		const updated = updateFence(line, fence);
-		fence = updated.fence;
-		if (updated.handled || fence !== null) continue;
-		if (tableState === "header") {
-			if (isLedgerSeparator(line)) tableState = "table";
-			else tableState = isLedgerHeader(line) ? "header" : "none";
+	for (const line of documentContentLines(text)) {
+		if (tableState === "header" && isLedgerSeparator(line)) {
+			tableState = "table";
 			continue;
 		}
-		if (tableState === "table") {
-			if (isTableLine(line)) callback(line);
-			else tableState = isLedgerHeader(line) ? "header" : "none";
+		if (tableState === "table" && isTableLine(line)) {
+			callback(line);
 			continue;
 		}
-		if (isLedgerHeader(line)) tableState = "header";
+		// Any other line ends the run; only an exact header re-anchors one.
+		tableState = isLedgerHeader(line) ? "header" : "none";
 	}
-	if (fence !== null)
-		throw new Error("unterminated fenced block in design ledger");
 }
 /** Parse every decision ID row in the design ledger, preserving duplicates and order. */
 export function parseLedger(text: string): LandedDecision[] {
@@ -114,21 +144,18 @@ export function parseLedger(text: string): LandedDecision[] {
 }
 
 /**
- * Count unfenced ledger-shaped rows independently of the parser's table anchor.
- * This deliberately does not model the table anchor, so anchor misreads surface
- * as mismatches. An unfenced non-ledger table beginning with a DL ID reads high.
+ * Count ledger-shaped rows independently of the parser's table anchor. This
+ * deliberately does not model the anchor, so anchor misreads surface as
+ * mismatches. An unfenced non-ledger table beginning with a DL ID reads high.
+ *
+ * The anchor is the ONLY independent part: line classification is the shared
+ * pre-pass, so this and the parser always see the same document content.
  */
 export function countRawLedgerRows(text: string): number {
 	let count = 0;
-	let fence: Fence | null = null;
-	for (const line of text.split("\n")) {
-		const updated = updateFence(line, fence);
-		fence = updated.fence;
-		if (updated.handled || fence !== null) continue;
+	for (const line of documentContentLines(text)) {
 		if (/^ {0,3}\|\s*DL-\d+\s*\|/.test(line)) count++;
 	}
-	if (fence !== null)
-		throw new Error("unterminated fenced block in design ledger");
 	return count;
 }
 
@@ -145,6 +172,11 @@ export type FetchFn = (
 export interface ReconcileDeps {
 	fetchFn?: FetchFn;
 	timeoutMs?: number;
+	/**
+	 * Test seam, not a supported knob: production always uses
+	 * `AbortSignal.timeout`. Injected so a test can observe the deadline the
+	 * caller actually requested.
+	 */
 	timeoutSignal?: (timeoutMs: number) => AbortSignal;
 }
 
