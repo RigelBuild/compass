@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.1](https://github.com/RigelBuild/compass/compare/v0.3.0...v0.3.1) (2026-09-21)
+
+
+### Features
+
+* **compass-agent:** record publish flush shape and batch size (RIG-3694) ([#1245](https://github.com/RigelBuild/compass/issues/1245)) ([67304fd](https://github.com/RigelBuild/compass/commit/67304fde79ab67071f66adaab0960b54d37c3ba0))
+* **design-ledger:** derive Compass record status from main (RIG-3662) ([#1284](https://github.com/RigelBuild/compass/issues/1284)) ([c10b267](https://github.com/RigelBuild/compass/commit/c10b26718d6b96015bfb0759aada37214f4b6137))
+* **docs:** reconcile design ledger IDs (RIG-3634) ([#1313](https://github.com/RigelBuild/compass/issues/1313)) ([2a6b7bf](https://github.com/RigelBuild/compass/commit/2a6b7bff67b63416a9d8d8eac7fcb3f11e9dfa14))
+* **guest-image:** derive the guest rootfs from the pinned agent OCI image ([#1252](https://github.com/RigelBuild/compass/issues/1252)) ([d8ccbb3](https://github.com/RigelBuild/compass/commit/d8ccbb3bac6818fb27b5f72f5fb85a11c532cccd))
+* **guest-image:** pin the agent OCI image the guest rootfs derives from (RIG-3786) ([#1215](https://github.com/RigelBuild/compass/issues/1215)) ([cc9e600](https://github.com/RigelBuild/compass/commit/cc9e600956bd46740dd84cc883043cb2ce90875f))
+* **guest-image:** publish the guest triple as a non-runnable OCI artifact ([#1268](https://github.com/RigelBuild/compass/issues/1268)) ([99f867f](https://github.com/RigelBuild/compass/commit/99f867f1e342de32c464cca3e22f230a0d2d1094))
+* **runner:** mint server session IDs (RIG-3696) ([#1283](https://github.com/RigelBuild/compass/issues/1283)) ([640a019](https://github.com/RigelBuild/compass/commit/640a019890b92294ed5957146d0fbcbb7a8b9a5f))
+* **tools:** add the font-coverage gate (RIG-3603) ([#1208](https://github.com/RigelBuild/compass/issues/1208)) ([a51dd4d](https://github.com/RigelBuild/compass/commit/a51dd4d38b133acc346ddc33123c2b5503a98d2e))
+
+
+### Bug Fixes
+
+* **devenv:** correct the runner-token comment to the real failure (RIG-3935) ([#1321](https://github.com/RigelBuild/compass/issues/1321)) ([8eb37ab](https://github.com/RigelBuild/compass/commit/8eb37abdf8381b8cfde5fa4853679283db6ce446))
+* **devenv:** fail the dogfood builds instead of exec'ing a stale binary (RIG-3935) ([#1318](https://github.com/RigelBuild/compass/issues/1318)) ([263cebd](https://github.com/RigelBuild/compass/commit/263cebdc4a439af6bdf7521c7f0e8305b57f343a))
+* **devenv:** guard XDG_RUNTIME_DIR before dogfood:clean removes anything (RIG-3366) ([#1317](https://github.com/RigelBuild/compass/issues/1317)) ([4353932](https://github.com/RigelBuild/compass/commit/4353932875e7cda8570b0a11e8c6d75225fd3412))
+* **devenv:** name both halves of the masked token-read failure (RIG-3935) ([#1322](https://github.com/RigelBuild/compass/issues/1322)) ([998397c](https://github.com/RigelBuild/compass/commit/998397cb3b73b35288c422b66c27db04b78721b2))
+* **devenv:** surface a failed runner-token read instead of enrolling empty (RIG-3935) ([#1320](https://github.com/RigelBuild/compass/issues/1320)) ([12e4007](https://github.com/RigelBuild/compass/commit/12e40078a63064deba557e57f2a90fc6a6ed81fd))
+* **tools:** parse UI source with the TypeScript compiler in the font gate (RIG-3855) ([#1274](https://github.com/RigelBuild/compass/issues/1274)) ([d320592](https://github.com/RigelBuild/compass/commit/d320592677c790a47d65d6801d3b390df195c9c7))
+
 ## [0.3.0](https://github.com/RigelBuild/compass/compare/v0.2.1...v0.3.0) (2026-09-16)
 
 
