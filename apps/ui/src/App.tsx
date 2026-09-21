@@ -29,7 +29,7 @@ import { shortcutForAria } from "./keyboard/keymap";
 
 // The Compass ADE shell — an Orca-inspired layout over the compass.v1 surface
 // (docs/specs/product/compass.md). A CSS grid: a topbar, a left agent-folder
-// tree, a central Bridge (swimlane board) / agent (ACP + terminals) view, a
+// tree, a central Bridge (swimlane board) / agent (session + terminals) view, a
 // right sidebar (fleet conversations + files/VCS/PR), and a bottom usage bar.
 // The board is primary; the "channel" and "agent" surfaces render as center
 // matches within the same shell (single Switch), reached via the store.
@@ -37,7 +37,7 @@ import { shortcutForAria } from "./keyboard/keymap";
 // This is the dev walking-skeleton made fully explorable: every surface reads
 // the in-memory stub (stub-data.ts) through one store (store.ts), so it renders
 // and is clickable in `vite dev` with no daemon and no Wails IPC. When the
-// daemon grows the real board / agent / ACP / audit streams, the store's
+// daemon grows the real board / agent / session / audit streams, the store's
 // accessors swap the fixture for the generated @compass/client and the
 // components stay as-is.
 
