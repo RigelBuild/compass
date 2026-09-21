@@ -81,6 +81,11 @@ type Stack struct {
 	// It is the in-process Down's teardown identity for the container (the same
 	// name persisted in the v2 pgid record for a cross-process down).
 	pgContainerName string
+	// guest is the resolved guest image location for the microVM backend:
+	// materialised from GuestArtifact, validated from GuestDir, or zero (the
+	// Runner image's baked assets stay live). Resolved before the runner spawn,
+	// so a fetch failure prevents the launch instead of a failing preflight.
+	guest GuestPaths
 	// pgids accumulates each spawned child's teardown identity (pgid +
 	// start-time token) in start order, so spawnChain can rewrite the state-dir
 	// pgid record after each spawn and a fully successful Down knows the file it
@@ -290,19 +295,54 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return fmt.Errorf("ensure runner token: %w", err)
 	}
 
-	// 6. Agent image present in the local store.
-	if err := s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage); err != nil {
-		return fmt.Errorf("ensure agent image: %w", err)
+	// 6. Agent image present in the local store. Skipped under microVM: the
+	// agent ships inside the guest rootfs, so there is no agent image to pull —
+	// and with no --image forwarded, pulling one would be a slow no-op that
+	// fails the whole up on a box with no registry access.
+	if !s.cfg.microVM() {
+		if err := s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage); err != nil {
+			return fmt.Errorf("ensure agent image: %w", err)
+		}
+	}
+
+	// 6b. Guest image resolved to concrete paths for the microVM backend. It
+	// runs BEFORE the runner spawn so a fetch or verification failure prevents
+	// the launch outright: a runner started against unresolved paths would boot
+	// and then fail its own preflight, with the real cause a log away.
+	if err := s.resolveGuest(ctx); err != nil {
+		return err
 	}
 
 	// 7. compass-runner (token via env only).
-	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, cert, token))
+	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, cert, token, s.guest))
 	if err != nil {
 		return fmt.Errorf("start compass-runner: %w", err)
 	}
 	s.runner = runner
 	if err := s.recordChild(ComponentRunner, runner); err != nil {
 		return err
+	}
+	return nil
+}
+
+// resolveGuest resolves the microVM guest image to concrete paths. Validate
+// already rejected the incoherent combinations, so three arms are exhaustive:
+// fetch a GuestArtifact into the content-addressed dir, validate a GuestDir
+// as-is, or leave the paths zero and keep the Runner image's baked assets live.
+func (s *Stack) resolveGuest(ctx context.Context) error {
+	switch {
+	case s.cfg.GuestArtifact != "":
+		paths, err := materializeGuest(ctx, s.cfg.GuestArtifact, s.cfg.StateDir)
+		if err != nil {
+			return fmt.Errorf("materialise guest image %q: %w", s.cfg.GuestArtifact, err)
+		}
+		s.guest = paths
+	case s.cfg.GuestDir != "":
+		paths, err := resolveGuestDir(s.cfg.GuestDir)
+		if err != nil {
+			return fmt.Errorf("resolve guest dir: %w", err)
+		}
+		s.guest = paths
 	}
 	return nil
 }

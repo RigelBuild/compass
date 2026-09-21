@@ -65,6 +65,11 @@ type stubSupervisor struct {
 	gate          map[Component]chan struct{}
 	entered       map[Component]chan struct{}
 	serverStarted *atomic.Bool
+	// mu guards specs, which records the last spec each component was started
+	// with so a test can assert the resolved argv. Two concurrent Ups share one
+	// supervisor (the contention test), so the map needs the lock.
+	mu    sync.Mutex
+	specs map[Component]ProcessSpec
 }
 
 func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
@@ -78,11 +83,27 @@ func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, 
 		s.rec.add("start-failed " + spec.Component.String())
 		return nil, err
 	}
+	s.mu.Lock()
+	s.specs[spec.Component] = spec
+	s.mu.Unlock()
 	s.rec.add("start " + spec.Component.String())
 	if spec.Component == ComponentServer && s.serverStarted != nil {
 		s.serverStarted.Store(true)
 	}
 	return &stubProcess{name: spec.Component.String(), pid: fakePid(spec.Component), rec: s.rec}, nil
+}
+
+// lastArgs returns the argument vector the named component was last started
+// with, failing the test if it never started.
+func (s *stubSupervisor) lastArgs(t *testing.T, c Component) []string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	spec, ok := s.specs[c]
+	if !ok {
+		t.Fatalf("%s never started", c)
+	}
+	return spec.Args
 }
 
 // fakePid maps a component to a stable, distinct fake pid the pgid-capture path
@@ -652,6 +673,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 		gate:          map[Component]chan struct{}{},
 		entered:       map[Component]chan struct{}{},
 		serverStarted: started,
+		specs:         map[Component]ProcessSpec{},
 	}
 	cert := &stubCert{rec: rec, notAfter: time.Now().Add(365 * 24 * time.Hour), rotateWindow: 30 * 24 * time.Hour}
 	token := &stubToken{rec: rec}
