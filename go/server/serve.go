@@ -133,10 +133,11 @@ type ServeConfig struct {
 	SecretProvider string
 }
 
-// ForgeConfig configures forge board ingestion, webhooks, and agent writes.
-// All fields are optional: absent App credentials leave board ingestion off;
-// absent write credentials leave writes off. Existing deployments therefore
-// retain today's behavior while the forge tables remain empty.
+// ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
+// agent forge-WRITE path. All-optional: the board lane is off (no App config)
+// and writes are off (no write secrets) unless the operator opts in, leaving
+// today's behavior. The forge tables exist but sit empty — a migration is not a
+// behavior change.
 type ForgeConfig struct {
 	// Host is the forge host the lane binds (default "github.com"); the API
 	// base URL derives from it. Seed rows and the live target set are keyed
@@ -158,15 +159,29 @@ type ForgeConfig struct {
 	App ForgeAppConfig
 	// ReviewerApp is the SECOND GitHub App credential — a distinct App
 	// definition (own AppID + private key + one installation) serving ONLY the
-	// reviewer write client (the submit_review arm).
+	// reviewer write client (the submit_review arm). A distinct GitHub identity
+	// from the primary App so an agent approving a PR it authored dispatches
+	// submit_review on a different account than it authored with, dissolving the
+	// author-approving-own-PR 422 at the credential layer (F1, DEC-1). The
+	// reviewer App registers NO webhook and no read lane, so its
+	// AppWebhookSecretName is unused; reads/webhooks/board/author-writes all ride
+	// the primary App (2-App topology, DEC-3).
 	ReviewerApp ForgeAppConfig
 	// LinearClientIDSecretName / LinearClientSecretName are the declared
 	// server_only secret NAMEs holding the Linear OAuth client-credentials pair
-	// (actor=app, the RIG-2682 "Compass" app).
+	// (actor=app, the RIG-2682 "Compass" app). The Linear write + notify lanes
+	// mint one shared client-credentials token from this pair (never a member
+	// PAT); a Linear coordinate + notify lane are wired iff BOTH names resolve to
+	// a declared secret (the VALUEs never cross config or a flag). Default to
+	// LINEAR_FORGE_CLIENT_ID / LINEAR_FORGE_CLIENT_SECRET.
 	LinearClientIDSecretName string
 	LinearClientSecretName   string
 	// LinearWebhookSecretName is the declared server_only secret NAME holding
-	// the Linear webhook signing secret.
+	// the Linear webhook signing secret the shared POST /webhooks ingress
+	// verifies deliveries against (the VALUE never crosses config or a flag).
+	// The Linear data-change arm runs iff this resolves to a declared secret —
+	// INDEPENDENT of the GitHub App gate (a deployment can run Linear
+	// notifications without a GitHub App and vice versa).
 	LinearWebhookSecretName string
 }
 
@@ -1236,7 +1251,9 @@ func buildBoardWebhookWiring(
 	if err := validateForgeSecret(ctx, resolver, "board webhook secret", rc.App.AppWebhookSecretName); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	// Build one CA-aware client for both installation-token minting and API calls.
+	// Build the ONE shared App token source + GitHub client both lanes ride.
+	// appTokenSource is safe for concurrent use (mint singleflighted), so the
+	// read lanes and the poll driver sharing one client is sound.
 	httpClient, err := forgeHTTPClient(rc.ForgeCAPath)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
@@ -1991,7 +2008,8 @@ func buildForgeWriteService(
 	}
 
 	// (2) The reviewer App client: validate its key secret (distinct fail-fast
-	// Build the reviewer token source with the same CA-aware transport used for API calls.
+	// text), then build its own installation-token source + client — a distinct
+	// GitHub identity from the primary App so F1's author-cannot-approve holds.
 	if err := validateForgeSecret(ctx, resolver, "forge reviewer app key", fc.ReviewerApp.AppPrivateKeySecret); err != nil {
 		return nil, err
 	}
