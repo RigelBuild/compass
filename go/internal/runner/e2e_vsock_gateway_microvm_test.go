@@ -125,9 +125,7 @@ func newMicroVMGatewayFixture(t *testing.T, relay *w3Relay) (*agentHost, *runtim
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, relay))
 	specs := &fakeSpecBuilder{spec: w3LiveSpec(t)}
-	var n int
-	newID := func() string { n++; return "w3-sess-" + string(rune('0'+n)) }
-	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
 	return host.(*agentHost), engine
 }
 

@@ -194,10 +194,10 @@ func (p *controlProducer) SendIfLive(sessionID string, op *compassv1internal.Age
 // Retire drops a session's control state. It is Bind's counterpart, and the
 // pair is the whole lifetime: every other retirement here is ack-driven or
 // takeover-driven, which prunes ops WITHIN a session but never the session
-// entry itself. The Runner reuses one container — and so one producer —
-// across Stop/Start, minting a fresh session id each time, so
-// without this the map grows by one controlSession per cycle for the life of
-// the process, each pinning up to maxRetainedOps retained ops.
+// entry itself. The Runner reuses one container — and so one producer — across
+// Stop/Start, receiving a fresh server-issued session id each time, so without
+// this the map grows by one controlSession per cycle for the life of the process,
+// each pinning up to maxRetainedOps retained ops.
 //
 // Retiring a session with a live subscription closes its wake channel, which
 // unparks the drainer; it observes the generation change and returns, exactly
@@ -235,8 +235,9 @@ func (p *controlProducer) Retire(sessionID string) {
 // rather than mint one. Creating on demand from the agent side cannot
 // distinguish "not started yet" from "already retired", so a subscribe or an
 // ack racing Stop rebuilt an entry nothing would ever retire again — the
-// lifecycle spends its one Stop for that id, and the next cycle mints a fresh
-// one. Ownership here makes that unrepresentable instead of guarded against.
+// lifecycle spends its one Stop for that id, and the next cycle receives a fresh
+// server-issued id. Ownership here makes that unrepresentable instead of guarded
+// against.
 //
 // Idempotent: re-binding a live id is a no-op, so a retried Start cannot
 // discard retained ops.
