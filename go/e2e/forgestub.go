@@ -177,8 +177,10 @@ func (s *forgeStub) handleIssue(w http.ResponseWriter, r *http.Request, parts []
 			return
 		}
 		value := issue(forgeStubIssueNumber, input, "open", "/issues/4242")
+		stored := make(map[string]any, len(value))
+		maps.Copy(stored, value)
 		s.mu.Lock()
-		s.issues[forgeStubIssueNumber] = value
+		s.issues[forgeStubIssueNumber] = stored
 		s.mu.Unlock()
 		jsonOut(w, http.StatusCreated, value)
 		return
@@ -198,6 +200,8 @@ func (s *forgeStub) handleIssue(w http.ResponseWriter, r *http.Request, parts []
 		http.NotFound(w, r)
 		return
 	}
+	// Encode a copy: the stored map stays live under the mutex, so handing it to
+	// jsonOut after the unlock would encode state a concurrent write can mutate.
 	s.mu.Lock()
 	value := s.issues[number]
 	if value == nil {
@@ -213,8 +217,10 @@ func (s *forgeStub) handleIssue(w http.ResponseWriter, r *http.Request, parts []
 		}
 		maps.Copy(value, input)
 	}
+	snapshot := make(map[string]any, len(value))
+	maps.Copy(snapshot, value)
 	s.mu.Unlock()
-	jsonOut(w, http.StatusOK, value)
+	jsonOut(w, http.StatusOK, snapshot)
 }
 
 func issue(number uint64, input map[string]any, state, path string) map[string]any {
@@ -269,6 +275,10 @@ func envelope(body, url string) map[string]any {
 	}
 }
 
+// validAuthorization accepts ONLY the primary App's installation-1 token. The
+// leg makes author writes exclusively, so routing one through the reviewer
+// client (installation 2) must fail to authenticate — that rejection is what
+// gives the leg teeth against a wrong-client mutation.
 func (s *forgeStub) validAuthorization(value string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -280,6 +290,9 @@ func (s *forgeStub) validAuthorization(value string) bool {
 	return false
 }
 
+// validAppJWT checks the mint request carries a JWT-shaped bearer. The stub
+// never verifies the signature: token identity is proven downstream by the
+// installation-keyed token every repository call must then present.
 func validAppJWT(value string) bool {
 	return strings.HasPrefix(value, "Bearer eyJ")
 }
