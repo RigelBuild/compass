@@ -103,8 +103,10 @@ tasks:
     # PLAYWRIGHT_CHROMIUM_PATH first, then a stale baseline: the shots live in
     # the tree, so a working copy whose parent predates the last recapture reds
     # until it rebases. Check those before regenerating.
-    # Regenerate via the `regen-visual-baselines` dispatch lane and merge the
-    # bot PR it opens.
+    # Regenerate ONLY via the `regen-visual-baselines` dispatch lane, never
+    # locally: a devenv recapture under the same pins still differs from CI's
+    # by ~18 px per shot. Dispatch ci.yml on the feature branch with
+    # `regen: visual` (the default is `forge`), then merge the bot PR.
     #
     # `cache: false` for the same reason `dev-smoke` sets it: a cached green
     # would survive a real rendering change whose inputs moon cannot hash
