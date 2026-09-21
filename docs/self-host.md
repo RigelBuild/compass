@@ -298,3 +298,10 @@ compass-stack status \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest
 ```
+
+## Dashboards
+
+The repo ships Grafana dashboard JSON for the agent's metrics and traces under
+[`dashboards/`](../dashboards/README.md). Import is manual and needs your own
+Prometheus and Tempo datasources; that README covers the import steps and which
+signals each dashboard binds.
