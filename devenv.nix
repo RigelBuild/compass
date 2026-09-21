@@ -381,7 +381,7 @@ in
         go build -o "$bin" ./cmd/compass-runner
         # Assign, then export. `export VAR="$(cmd)"` is itself a command whose
         # own exit status (0) masks the substitution's, so `set -e` never sees a
-        # failed read and the runner enrolls with an empty token.
+        # failed read and a truncated token reaches Enroll as `unauthenticated`.
         COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
         export COMPASS_RUNNER_TOKEN
         exec "$bin" \
