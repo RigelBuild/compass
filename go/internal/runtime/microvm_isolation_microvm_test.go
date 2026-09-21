@@ -305,10 +305,13 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 	}
 }
 
-// TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError proves an
-// unopenable input does not abort the walk before a later batch is searched.
-// /proc/$$/mem is a deterministic read refusal for the shell running the
-// sweep; the canary is planted after enough files to force a later batch.
+// TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError proves a probe
+// error does not discard a needle found in a later batch, and that the run
+// still reports the error rather than a clean no-match.
+//
+// The root must be /proc/self/mem, not /proc/$$/mem: roots are transported as
+// literal shell words, so $$ would never expand and the row would sweep a
+// nonexistent path — passing without ever producing the probe error it names.
 func TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError(t *testing.T) {
 	env := microvmtest.Require(t)
 	m, id, _ := isolationSession(t, env, "iso-sweep-probe-error")
@@ -322,9 +325,16 @@ func TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError(t *testing.T) {
 		t.Fatalf("planting probe-error regression files: exit %d, %q", code, truncate(out))
 	}
 
-	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/$$/mem", "/workspace/probe-error"))
+	// The unreadable root alone must exit 2, so the row cannot pass by sweeping
+	// a path that produced no probe error at all.
+	if out, code := guestSh(t, m, id, sweepScript("ABSENT-"+needle, "/proc/self/mem")); code != 2 {
+		t.Fatalf("unreadable root gave exit %d, want 2 (a probe error); the later-batch case below would be "+
+			"vacuous. output %q", code, truncate(out))
+	}
+
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/mem", "/workspace/probe-error"))
 	if code != 0 {
-		t.Fatalf("later-batch needle was lost after an unopenable input (exit %d, %q)", code, truncate(out))
+		t.Fatalf("later-batch needle was lost after an unreadable input (exit %d, %q)", code, truncate(out))
 	}
 	if !strings.Contains(out, needle) || !strings.Contains(out, "f"+fmt.Sprintf("%03d", fileCount)+".txt") {
 		t.Fatalf("sweep output %q does not identify the later-batch needle", truncate(out))
