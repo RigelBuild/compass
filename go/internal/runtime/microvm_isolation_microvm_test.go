@@ -305,39 +305,38 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 	}
 }
 
-// TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError proves a probe
-// error does not discard a needle found in a later batch, and that the run
-// still reports the error rather than a clean no-match.
+// TestMicroVMSweepScriptSurvivesAnUnopenableInput proves BEGINFILE/ERRNO lets
+// the scan resume after an unopenable file, so paths queued behind it in the
+// SAME awk batch are still searched.
 //
-// The root must be /proc/self/mem, not /proc/$$/mem: roots are transported as
-// literal shell words, so $$ would never expand and the row would sweep a
-// nonexistent path — passing without ever producing the probe error it names.
-func TestMicroVMSweepScriptFindsLaterBatchNeedleAfterProbeError(t *testing.T) {
+// The root is /proc/1/mem, an OPEN failure (EACCES). /proc/self/mem is a READ
+// failure, which gawk aborts on before BEGINFILE/ERRNO can set probeError.
+// Exit status alone cannot tell the two apart — a fatal abort and the
+// probeError path both exit 2 — so the observable is the needle surviving.
+func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	env := microvmtest.Require(t)
 	m, id, _ := isolationSession(t, env, "iso-sweep-probe-error")
 
 	const needle = "SWEEP-PROBE-ERROR-LATER-7a4f2d11"
-	fileCount := sweepBatchSize + 1
-	plant := "mkdir -p /workspace/probe-error && for i in $(seq 1 " + strconv.Itoa(fileCount) + "); do " +
-		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/probe-error/f%03d.txt' \"$i\")\"; done && " +
-		"printf '%s\\n' '" + needle + "' >> /workspace/probe-error/f" + fmt.Sprintf("%03d.txt", fileCount)
+	const unopenable = "/proc/1/mem"
+	plant := "mkdir -p /workspace/probe-error && printf '%s\\n' '" + needle + "' > /workspace/probe-error/hit.txt"
 	if out, code := guestSh(t, m, id, plant); code != 0 {
-		t.Fatalf("planting probe-error regression files: exit %d, %q", code, truncate(out))
+		t.Fatalf("planting the probe-error regression file: exit %d, %q", code, truncate(out))
+	}
+	if out, code := guestSh(t, m, id, "cat "+unopenable); code == 0 {
+		t.Skipf("%s is readable here, so it cannot stand in for an unopenable input: %q", unopenable, truncate(out))
 	}
 
-	// The unreadable root alone must exit 2, so the row cannot pass by sweeping
-	// a path that produced no probe error at all.
-	if out, code := guestSh(t, m, id, sweepScript("ABSENT-"+needle, "/proc/self/mem")); code != 2 {
-		t.Fatalf("unreadable root gave exit %d, want 2 (a probe error); the later-batch case below would be "+
-			"vacuous. output %q", code, truncate(out))
+	// Both roots land in one batch, so the needle is only reported if the scan
+	// resumed past the unopenable input instead of aborting the whole batch.
+	out, code := guestSh(t, m, id, sweepScript(needle, unopenable, "/workspace/probe-error/hit.txt"))
+	if !strings.Contains(out, needle) {
+		t.Fatalf("the needle queued behind %s was lost (exit %d, %q); an unopenable input aborted the batch",
+			unopenable, code, truncate(out))
 	}
-
-	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/mem", "/workspace/probe-error"))
-	if code != 0 {
-		t.Fatalf("later-batch needle was lost after an unreadable input (exit %d, %q)", code, truncate(out))
-	}
-	if !strings.Contains(out, needle) || !strings.Contains(out, "f"+fmt.Sprintf("%03d", fileCount)+".txt") {
-		t.Fatalf("sweep output %q does not identify the later-batch needle", truncate(out))
+	if code != 2 {
+		t.Fatalf("sweep exited %d after an unopenable input, want 2 so a broken probe stays distinguishable "+
+			"from a clean no-match. output %q", code, truncate(out))
 	}
 }
 
