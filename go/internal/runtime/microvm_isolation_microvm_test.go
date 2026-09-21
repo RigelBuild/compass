@@ -157,8 +157,8 @@ const sweepBatchSize = 200
 //   - /proc, /sys and /dev are skipped during the RECURSIVE WALK, removing the
 //     self-match surface (the searcher's own environ/cmdline) without narrowing
 //     what the row probes. A root named explicitly as a file is swept anyway,
-//     so never give a confinement row a /proc root: it would match its own
-//     environ and report a false escape.
+//     so never give a confinement row a /proc path as a FILE root: it would
+//     match its own environ and report a false escape.
 //
 // shellQuote returns one shell word that preserves s literally. The guest image
 // does not guarantee base64, so generated scripts use the POSIX single-quote
@@ -341,16 +341,39 @@ func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 			"from a clean no-match. output %q", code, truncate(out))
 	}
 
-	// The error now sits in the FIRST batch with a clean no-match batch behind
-	// it: a per-batch probe_error would report exit 1 and hide the dead probe.
-	filler := "mkdir -p /workspace/probe-error-filler && for i in $(seq 1 " + strconv.Itoa(sweepBatchSize) + "); do " +
-		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/probe-error-filler/f%03d.txt' \"$i\")\"; done"
-	if out, code := guestSh(t, m, id, filler); code != 0 {
-		t.Fatalf("planting the stickiness filler: exit %d, %q", code, truncate(out))
+	// The error now sits in an earlier batch than a clean no-match one: a
+	// per-batch probe_error would report exit 1 and hide the dead probe.
+	const fillerCount = sweepBatchSize + 25
+	filler := "mkdir -p /workspace/probe-error-filler && for i in $(seq 1 " + strconv.Itoa(fillerCount) + "); do " +
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/probe-error-filler/f%03d.txt' \"$i\")\"; done" +
+		" && ls /workspace/probe-error-filler | wc -l"
+	// A shell for loop reports only its last iteration, so count the files: a
+	// short plant would leave every sweep below inside a single batch.
+	planted, code := guestSh(t, m, id, filler)
+	if code != 0 {
+		t.Fatalf("planting the stickiness filler: exit %d, %q", code, truncate(planted))
+	}
+	if got := strings.TrimSpace(planted); got != strconv.Itoa(fillerCount) {
+		t.Fatalf("planted %q filler files, want %d; the batch boundary would not be crossed", got, fillerCount)
 	}
 	if out, code := guestSh(t, m, id, sweepScript("ABSENT-"+needle, unopenable, "/workspace/probe-error-filler")); code != 2 {
 		t.Fatalf("sweep exited %d with a probe error in an earlier batch, want 2: the error must survive later "+
 			"clean batches, or a dead probe reports as a clean no-match. output %q", code, truncate(out))
+	}
+
+	// A hit AFTER the probe error must still win: suppressing a hit once the
+	// probe broke would misreport a real escape as a broken probe.
+	last := fmt.Sprintf("/workspace/probe-error-filler/f%03d.txt", fillerCount)
+	if out, code := guestSh(t, m, id, "printf '%s\\n' '"+needle+"' >> "+shellQuote(last)); code != 0 {
+		t.Fatalf("planting the later-batch needle: exit %d, %q", code, truncate(out))
+	}
+	out, code = guestSh(t, m, id, sweepScript(needle, unopenable, "/workspace/probe-error-filler"))
+	if code != 0 {
+		t.Fatalf("sweep exited %d with a real hit after an earlier probe error, want 0, or a genuine escape "+
+			"reports as a broken probe. output %q", code, truncate(out))
+	}
+	if !strings.Contains(out, needle) {
+		t.Fatalf("sweep output %q does not report the later-batch hit it exited 0 for", truncate(out))
 	}
 }
 
