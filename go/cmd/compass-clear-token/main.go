@@ -1,8 +1,9 @@
 //go:build unix
 
 // Command compass-clear-token removes the native client's stored bearer token.
-// It is intentionally silent on success and never reads or prints the credential;
-// tokenstore owns the keyring/file backend selection.
+// It reads the stored entry solely to enforce URL scoping — the file backend's
+// Delete is not URL-aware — and discards the token; the credential is never
+// printed. Success is silent. tokenstore owns the keyring/file backend choice.
 package main
 
 import (
