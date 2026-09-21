@@ -32,26 +32,60 @@ function splitLedgerCells(line: string): string[] {
 	return cells;
 }
 
+type Fence = { marker: "`" | "~"; length: number };
+
+function updateFence(
+	line: string,
+	fence: Fence | null,
+): { fence: Fence | null; handled: boolean } {
+	const match = /^\s*(`{3,}|~{3,})/.exec(line);
+	if (!match) return { fence, handled: false };
+	const marker = match[1]?.[0];
+	const length = match[1]?.length ?? 0;
+	if (fence === null && (marker === "`" || marker === "~"))
+		return { fence: { marker, length }, handled: true };
+	if (fence !== null && marker === fence.marker && length >= fence.length)
+		return { fence: null, handled: true };
+	return { fence, handled: true };
+}
+
 /** Parse every decision ID row in the design ledger, preserving duplicates and order. */
 export function parseLedger(text: string): LandedDecision[] {
 	const landed: LandedDecision[] = [];
-	let inFence = false;
+	let fence: Fence | null = null;
 	for (const line of text.split("\n")) {
-		if (/^\s*(```|~~~)/.test(line)) {
-			inFence = !inFence;
-			continue;
-		}
-		if (inFence) continue;
+		const updated = updateFence(line, fence);
+		fence = updated.fence;
+		if (updated.handled || fence !== null) continue;
 		const trimmed = line.trim();
 		if (!trimmed.startsWith("|")) continue;
 		const cells = splitLedgerCells(trimmed);
 		if (cells.length !== 4) continue;
 		const id = cells[0];
-		if (id !== undefined && /^DL-\d+$/.test(id)) {
+		if (id !== undefined && /^DL-\d+$/.test(id))
 			landed.push({ id, surface: "designs", ref: "none" });
-		}
 	}
+	if (fence !== null)
+		throw new Error("unterminated fenced block in design ledger");
 	return landed;
+}
+
+/**
+ * Count rows the parser should have produced, tracking fences independently of
+ * it. This catches a parse that silently swallows the ledger's tail without
+ * failing on a fenced example the parser is right to skip.
+ */
+export function countRawLedgerRows(text: string): number {
+	let depth = 0;
+	let count = 0;
+	for (const line of text.split("\n")) {
+		if (/^\s*(`{3,}|~{3,})/.test(line)) {
+			depth = depth === 0 ? 1 : 0;
+			continue;
+		}
+		if (depth === 0 && /^\s*\|\s*DL-\d+\s*\|/.test(line)) count++;
+	}
+	return count;
 }
 
 export function buildRequestBody(ledger: string): ReconcileRequest {
@@ -75,17 +109,23 @@ export async function reconcile(
 	token: string,
 	deps: ReconcileDeps = {},
 ): Promise<void> {
-	if (token.length === 0) throw new Error("DL_CLAIM_TOKEN is required");
+	const trimmedToken = token.trim();
+	if (trimmedToken.length === 0) throw new Error("DL_CLAIM_TOKEN is required");
+	const timeoutMs =
+		deps.timeoutMs !== undefined && deps.timeoutMs > 0
+			? deps.timeoutMs
+			: 30_000;
 	const response = await (deps.fetchFn ?? fetch)(
 		"https://dl.rigel.build/reconcile",
 		{
 			method: "POST",
+			redirect: "error",
 			headers: {
-				Authorization: `Bearer ${token}`,
+				Authorization: `Bearer ${trimmedToken}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(deps.timeoutMs ?? 30_000),
+			signal: AbortSignal.timeout(timeoutMs),
 		},
 	);
 	if (!response.ok) {
@@ -100,8 +140,22 @@ if (import.meta.main) {
 			resolve(import.meta.dir, "../../docs/designs/DECISIONS.md"),
 			"utf8",
 		);
-		await reconcile(buildRequestBody(ledger), token);
-		console.log("Design ledger reconciliation completed.");
+		const body = buildRequestBody(ledger);
+		const rawCount = countRawLedgerRows(ledger);
+		if (body.landed.length !== rawCount) {
+			throw new Error(
+				`ledger parse mismatch: parsed ${body.landed.length} rows, found ${rawCount} raw rows`,
+			);
+		}
+		if (process.argv.includes("--check")) {
+			console.log(
+				`Design ledger parse check passed (${body.landed.length} rows).`,
+			);
+			process.exitCode = 0;
+		} else {
+			await reconcile(body, token);
+			console.log("Design ledger reconciliation completed.");
+		}
 	} catch (error) {
 		console.error(
 			"Design ledger reconciliation failed:",

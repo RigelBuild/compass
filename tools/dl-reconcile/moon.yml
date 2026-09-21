@@ -13,7 +13,14 @@ tasks:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  check:
+    command: 'bun run tools/dl-reconcile/index.ts --check'
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs: ['/docs/designs/DECISIONS.md', 'index.ts']
   ci:
-    deps: ['typecheck', 'test']
+    deps: ['typecheck', 'test', 'check']
     options:
       cache: false
