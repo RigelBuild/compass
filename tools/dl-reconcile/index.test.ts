@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	assertReconcilableLedger,
 	buildRequestBody,
 	countRawLedgerRows,
 	parseLedger,
@@ -296,6 +297,53 @@ describe("the ledger table anchor", () => {
 	}
 });
 
+describe("assertReconcilableLedger", () => {
+	test("refuses a renamed header before issuing a request", async () => {
+		const ledger = [
+			"| ID | Decision | Status | Records |",
+			"| --- | --- | --- | --- |",
+			"| DL-001 | real | Active | [r](r.md) |",
+		].join("\n");
+		const requests: unknown[] = [];
+		const fetchFn = async (input: string | URL | Request) => {
+			requests.push(input);
+			return new Response(null, { status: 204 });
+		};
+		await expect(
+			Promise.resolve().then(() =>
+				reconcile(assertReconcilableLedger(ledger), "token", { fetchFn }),
+			),
+		).rejects.toThrow("ledger parse mismatch: parsed 0 rows, found 1 raw rows");
+		expect(requests).toHaveLength(0);
+	});
+
+	test("refuses an empty ledger before issuing a request", async () => {
+		const requests: unknown[] = [];
+		const fetchFn = async (input: string | URL | Request) => {
+			requests.push(input);
+			return new Response(null, { status: 204 });
+		};
+		await expect(
+			Promise.resolve().then(() =>
+				reconcile(assertReconcilableLedger(""), "token", { fetchFn }),
+			),
+		).rejects.toThrow(
+			"ledger yielded no decision rows; refusing to post an empty frontier",
+		);
+		expect(requests).toHaveLength(0);
+	});
+
+	test("returns a body matching the raw row count for a valid ledger", () => {
+		const ledger = [
+			"| ID | Decision | Status | Record |",
+			"| --- | --- | --- | --- |",
+			"| DL-001 | real | Active | [r](r.md) |",
+		].join("\n");
+		const body = assertReconcilableLedger(ledger);
+		expect(body.landed).toHaveLength(countRawLedgerRows(ledger));
+	});
+});
+
 describe("reconcile", () => {
 	test("posts the exact request and body", async () => {
 		const requests: Request[] = [];
@@ -373,6 +421,30 @@ describe("reconcile", () => {
 			}),
 		).rejects.toThrow("DL_CLAIM_TOKEN is required");
 		expect(called).toBe(false);
+	});
+
+	test("passes an already-aborted seam signal to fetch and surfaces rejection", async () => {
+		const control = new AbortController();
+		control.abort();
+		let receivedSignal: AbortSignal | null | undefined;
+		let fetchStartedResolve: (() => void) | undefined;
+		const fetchStarted = new Promise<void>((resolve) => {
+			fetchStartedResolve = resolve;
+		});
+		const pending = reconcile(buildRequestBody(""), "token", {
+			timeoutMs: 5,
+			timeoutSignal: () => control.signal,
+			fetchFn: async (_input, init) => {
+				receivedSignal = init?.signal;
+				fetchStartedResolve?.();
+				if (init?.signal?.aborted)
+					throw new DOMException("The operation was aborted", "AbortError");
+				return new Response(null, { status: 204 });
+			},
+		});
+		await fetchStarted;
+		expect(receivedSignal).toBe(control.signal);
+		await expect(pending).rejects.toThrow("The operation was aborted");
 	});
 
 	test("builds the deadline signal from the caller's timeout", async () => {
