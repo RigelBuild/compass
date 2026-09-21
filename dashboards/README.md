@@ -6,13 +6,14 @@ These are the Plane-B operator dashboards for Compass observability: in-repo
 Grafana dashboard JSON that renders signals the shipped `compass-agent` emits
 today. They ship as JSON only — there is **no provisioning automation** (no
 datasource YAML, no docker-compose, no `grafana.ini`) by design, per decision
-D3/T5 of the frozen record
-[`docs/designs/platform/compass-observability-architecture/design.md`](../docs/designs/platform/compass-observability-architecture/design.md).
+D3/T5 of the record
+[`docs/designs/observability/compass-observability-architecture/design.md`](../docs/designs/observability/compass-observability-architecture/design.md).
 Import is the operator's one manual step.
 
 Each dashboard declares its datasource as a templating variable
-(`${DS_PROMETHEUS}` or `${DS_TEMPO}`) rather than a hard-coded uid, so the JSON
-imports into any Grafana: you pick the concrete datasource at import time.
+(`${DS_PROMETHEUS}` or `${DS_TEMPO}`) rather than a hard-coded uid, so you pick
+the concrete datasource at import time. They need a Prometheus datasource
+carrying the agent's metrics and a Tempo datasource supporting TraceQL.
 
 ## `compass-agent-transport.json`
 
@@ -64,7 +65,7 @@ To import a dashboard:
 
 ## Server/runner panels — follow-up (T4b)
 
-The Go server/runner observability signals (task T4b of the frozen record) do
+The Go server/runner observability signals (task T4b of that record) do
 not exist yet. Panels for those signals are a follow-up and will be added once
 those metrics ship; this directory currently binds only the shipped
 `compass-agent` signals listed above.
