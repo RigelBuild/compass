@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# dl-reconcile — posts the landed design-ledger frontier to the DL counter so
+# the counter hydrates before any claim. A bun/TypeScript CLI; a hoisted
+# root-workspace member (`bun` tag), so install is inherited from the shared
+# root install and this leaf has no own bun.lock.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

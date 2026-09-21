@@ -27,8 +27,14 @@ export function buildRequestBody(ledger: string): ReconcileRequest {
 	return { repo: "compass", landed: parseLedger(ledger) };
 }
 
+/** Only the request call is injected, so the seam omits `fetch`'s extras. */
+export type FetchFn = (
+	input: URL | RequestInfo,
+	init?: RequestInit,
+) => Promise<Response>;
+
 export interface ReconcileDeps {
-	fetchFn?: typeof fetch;
+	fetchFn?: FetchFn;
 }
 
 /** POST the ledger reconciliation payload to the deployment service. */
