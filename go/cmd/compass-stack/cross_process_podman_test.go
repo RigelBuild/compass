@@ -507,7 +507,9 @@ func parseLeaderStartTime(line string) (uint64, error) {
 // token. The record is
 //
 //	<version> <writerPid>
-//	<component> <pgid> <starttime>
+//	proc <component> <pgid> <starttime>   (v2 process entry)
+//	ctr <component> <name>                (v2 container entry, no process group)
+//	<component> <pgid> <starttime>        (v1, untagged — still read)
 //	...
 //
 // (internal/stack/pgidfile.go writePgidFile). The const/type are package-

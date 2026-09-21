@@ -238,7 +238,6 @@ func (c containerCfg) args(sub string, extra ...string) []string {
 // lives under one unique per-pid dir.
 func newContainerFixture(t *testing.T, root string) containerFixture {
 	t.Helper()
-
 	pgSockDir := filepath.Join(root, "pgsock")
 	runtimeDir := filepath.Join(root, "rt")
 	serverSock := filepath.Join(root, "s.sock")

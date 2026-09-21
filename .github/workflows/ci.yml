@@ -2411,14 +2411,24 @@ jobs:
         # -count=1 is load-bearing, not hygiene: podmanUsable() execs an external
         # binary, whose verdict is an input the test cache cannot see, so a warm
         # GOCACHE can replay `ok ... (cached)` on a runner where podman is broken
-        # and nothing runs. -p 1 serializes the two packages; both bind the same
-        # fixed host loopback ports (collector 13133).
+        # and nothing runs. Nothing else in this job closes that case.
+        #
+        # -p 1 serializes the two packages: each stands up real postgres/server/
+        # runner processes and rootless podman containers on this one host, and
+        # cmd/compass-stack additionally binds FIXED host loopback ports (collector
+        # 13133/4317/4318, nats 4222/8222). e2e opts out of both via
+        # --otel-external/--nats-external, so its share is host process and
+        # container contention rather than a port clash.
+        #
+        # -timeout is PER test binary, not for the whole run. 30m is headroom for
+        # cmd/compass-stack, whose podman legs each rebuild four binaries and whose
+        # own up/down budgets are 3m/150s.
         #
         # Redirect-then-cat, NOT `| tee`: a tee pipeline's exit status is tee's 0
         # and would swallow a FAIL.
         run: |
           rc=0
-          go test -tags podman -race -count=1 -p 1 -v -timeout 20m ./e2e/... ./cmd/compass-stack/... >/tmp/e2e.log 2>&1 || rc=$?
+          go test -tags podman -race -count=1 -p 1 -v -timeout 30m ./e2e/... ./cmd/compass-stack/... >/tmp/e2e.log 2>&1 || rc=$?
           cat /tmp/e2e.log
           exit "$rc"
 
@@ -2442,6 +2452,8 @@ jobs:
             exit 1
           fi
           skips=$(printf '%s\n%s\n' "$e2e_skips" "$stack_skips" | sed '/^$/d' | sort -u)
+          # The herestring (not a pipe) is load-bearing: a piped while runs in a
+          # subshell, where this exit 1 would not fail the step.
           while IFS= read -r skip; do
             if grep -qF -- "$skip" /tmp/e2e.log; then
               echo "::error::podman-tagged tests skipped: $skip"
@@ -2449,8 +2461,11 @@ jobs:
             fi
           done <<< "$skips"
           # A positive assertion, independent of skip wording: a named leg from
-          # each package must actually have PASSed. The `ok` line alone cannot
-          # carry this — a cached or fully-skipped package still prints it.
+          # each package must actually have PASSed. This closes the SKIP case — a
+          # fully-skipped package still prints its ok line. It does NOT close the
+          # cache case: a cached run replays the full -v output including these
+          # --- PASS lines, so -count=1 above is the only thing preventing a
+          # cached replay. Do not remove it.
           if ! grep -qE "^[[:space:]]*--- PASS: TestHarnessCore[[:space:]]" /tmp/e2e.log; then
             echo "::error::the dogfood e2e package did not report a passing TestHarnessCore"
             exit 1
