@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestConfigValidate(t *testing.T) {
+func TestConfigValidate(t *testing.T) { //nolint:funlen // validation matrix keeps related contract cases together
 	base := Config{
 		StateDir:    "/state",
 		SocketPath:  "/run/server.sock",
