@@ -379,7 +379,11 @@ in
         : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
         bin="${config.devenv.state}/compass/compass-runner"
         go build -o "$bin" ./cmd/compass-runner
-        export COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
+        # Assign, then export. `export VAR="$(cmd)"` is itself a command whose
+        # own exit status (0) masks the substitution's, so `set -e` never sees a
+        # failed read and the runner enrolls with an empty token.
+        COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
+        export COMPASS_RUNNER_TOKEN
         exec "$bin" \
           --runner-id ${dogfoodRunnerID} \
           --server "https://127.0.0.1:${toString config.processes.compass-server.ports.network.value}" \
