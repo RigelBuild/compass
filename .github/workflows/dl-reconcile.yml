@@ -12,9 +12,17 @@ permissions:
 
 jobs:
   reconcile:
+    timeout-minutes: 10
+    # A superseded full snapshot has no value, so cancel older runs.
+    concurrency:
+      group: design-ledger-reconcile
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Dispatch must never run branch code with the reconciliation token.
+          ref: main
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           # Naming the caches in this reviewed file keeps the trust reviewed:
