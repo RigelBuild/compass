@@ -511,9 +511,11 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 
 	// The server resolves the master key at boot and fails closed, so the fixture
-	// seeds its own provider instead of inheriting one. This dotenv is the WHOLE
-	// declared set because the fixture configures no forge, and buildManifest
-	// marks every declared name required — one more would fail the Load wholesale.
+	// seeds its own provider instead of inheriting one. buildManifest marks every
+	// declared name required, so this file must carry the master key plus exactly
+	// the forge names declareServerSecretNames declares — configureForgeStub
+	// appends those three below when WithForgeStub is set, and a declared name
+	// with no line here fails the Load wholesale.
 	// t.TempDir, not root: root is shared per-PID across ephemeral legs.
 	secretsPath := filepath.Join(t.TempDir(), "secrets.env")
 	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+fixtureMasterKey+"\n"), 0o600); err != nil {

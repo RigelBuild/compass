@@ -23,6 +23,8 @@ const (
 	forgeStubIssueNumber       uint64 = 4242
 	forgeStubPullRequestNumber uint64 = 4243
 	forgeStubLogin                    = "forge-stub"
+	// The primary App's installation; the reviewer App is installation 2.
+	forgeStubAuthorInstallation int64 = 1
 )
 
 type forgeStubRequest struct {
@@ -96,8 +98,9 @@ func (s *forgeStub) Requests() []forgeStubRequest {
 	return out
 }
 
-// Issue returns a copy of the stub's stored issue so a test can assert the
-// state a later GET would return.
+// Issue returns a shallow copy of the stub's stored issue so a test can assert
+// the state a later GET would return. Nested values stay aliased to live stub
+// state, so read them, never mutate them.
 func (s *forgeStub) Issue(number uint64) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -124,12 +127,20 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 		Body:          append([]byte(nil), body...),
 	})
 	s.mu.Unlock()
-	if strings.HasPrefix(r.URL.Path, "/api/v3/repos/") && !s.validAuthorization(r.Header.Get("Authorization")) {
+	// One predicate governs both routing and auth. A path missing the /api/v3
+	// prefix must 404, never route: TrimPrefix is a no-op on it, so a bare
+	// /repos/... would otherwise reach the issue arm with the bearer check
+	// skipped — and a host-classification regression emits exactly that path.
+	rest, ok := strings.CutPrefix(r.URL.Path, "/api/v3/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if parts[0] == "repos" && !s.validAuthorization(r.Header.Get("Authorization")) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v3/"), "/"), "/")
 	if len(parts) == 4 && parts[0] == "app" && parts[1] == "installations" && parts[3] == "access_tokens" && r.Method == http.MethodPost {
 		if !validAppJWT(r.Header.Get("Authorization")) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -154,8 +165,11 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 	case "issues":
 		s.handleIssue(w, r, parts, body)
 	case "pulls":
+		// Only PR creation is in this leg's scope. Every other pulls route
+		// answers 501 naming itself, so a future test reaching for one reads
+		// "not implemented" instead of debugging an opaque 404.
 		if len(parts) != 4 || r.Method != http.MethodPost {
-			http.NotFound(w, r)
+			http.Error(w, "forge stub: "+r.Method+" "+r.URL.Path+" not implemented", http.StatusNotImplemented)
 			return
 		}
 		var input map[string]any
@@ -282,12 +296,8 @@ func envelope(body, url string) map[string]any {
 func (s *forgeStub) validAuthorization(value string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for installationID, token := range s.tokens {
-		if installationID == 1 && value == "Bearer "+token {
-			return true
-		}
-	}
-	return false
+	token, ok := s.tokens[forgeStubAuthorInstallation]
+	return ok && value == "Bearer "+token
 }
 
 // validAppJWT checks the mint request carries a JWT-shaped bearer. The stub

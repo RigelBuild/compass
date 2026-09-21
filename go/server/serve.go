@@ -276,37 +276,40 @@ func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool 
 	return havePrimary && haveReviewer
 }
 
-// forgeHTTPClient returns the default system-root client, optionally extending
-// its roots with the operator-provided forge CA bundle. Linear and unrelated
-// clients never use this client.
+// forgeHTTPClient returns the Forge clients' HTTP client. With no CA configured
+// it keeps http.DefaultTransport, so the primary and reviewer clients go on
+// sharing one connection pool exactly as they did before this knob existed; a
+// configured bundle gets a cloned transport whose roots are the system pool
+// plus the operator's PEM. Linear and unrelated clients never use it.
 func forgeHTTPClient(path string) (*http.Client, error) {
+	if path == "" {
+		return &http.Client{Timeout: 30 * time.Second}, nil
+	}
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		transport = &http.Transport{}
 	}
 	transport = transport.Clone()
-	if path != "" {
-		pem, err := os.ReadFile(path) //nolint:gosec // operator-configured forge CA bundle
-		if err != nil {
-			return nil, fmt.Errorf("read forge CA bundle: %w", err)
-		}
-		roots, err := x509.SystemCertPool()
-		if err != nil {
-			return nil, fmt.Errorf("load system cert pool: %w", err)
-		}
-		if roots == nil {
-			roots = x509.NewCertPool()
-		}
-		if !roots.AppendCertsFromPEM(pem) {
-			return nil, errors.New("forge CA bundle contains no certificates")
-		}
-		if transport.TLSClientConfig == nil {
-			transport.TLSClientConfig = &tls.Config{}
-		} else {
-			transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-		}
-		transport.TLSClientConfig.RootCAs = roots
+	pem, err := os.ReadFile(path) //nolint:gosec // operator-configured forge CA bundle
+	if err != nil {
+		return nil, fmt.Errorf("read forge CA bundle: %w", err)
 	}
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("load system cert pool: %w", err)
+	}
+	if roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, errors.New("forge CA bundle contains no certificates")
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.RootCAs = roots
 	return &http.Client{Transport: transport, Timeout: 30 * time.Second}, nil
 }
 

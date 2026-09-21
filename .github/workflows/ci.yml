@@ -2781,9 +2781,13 @@ jobs:
     # is what makes a bare dispatch fire ONLY the forge lane and leave this one
     # off; see the forge lane's `if:` for why the `inputs` context is the form
     # to copy here.
+    # The `refs/heads/main` conjunct matches the forge lane's: a dispatch names
+    # an arbitrary ref, and the dispatched ref's own copy of this file runs, so
+    # without it an arbitrary branch executes with contents+pull-requests write.
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.pr == '' &&
+      github.ref == 'refs/heads/main' &&
       inputs.regen == 'visual'
     # The top-level `permissions: contents: read` is the floor; widened exactly
     # as the forge lane's: contents:write to push the regen branch,
