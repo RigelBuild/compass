@@ -101,12 +101,12 @@ tasks:
     # baseline second: an unset variable fails closed with an error. Check for
     # an overridden or stale-profile FONTCONFIG_FILE or
     # PLAYWRIGHT_CHROMIUM_PATH first, then a stale baseline: the shots live in
-    # the tree, so a working copy whose parent predates the last recapture reds
-    # until it rebases. Check those before regenerating.
+    # the tree, so committed shots older than the last recapture red until
+    # they are refreshed. Check those before regenerating.
     # Regenerate ONLY via `regen-visual-baselines` (dispatch `ci` on the
     # branch with `regen: visual`, not the `forge` default). A devenv
     # recapture under the pins is byte-identical to CI's, so local bytes are
-    # not WRONG — they are simply unattested, and nothing later proves which.
+    # not WRONG — they are simply unattested, and no later reader can tell.
     #
     # `cache: false` for the same reason `dev-smoke` sets it: a cached green
     # would survive a real rendering change whose inputs moon cannot hash
