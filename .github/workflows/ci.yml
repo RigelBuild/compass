@@ -2420,15 +2420,17 @@ jobs:
         # --otel-external/--nats-external, so its share is host process and
         # container contention rather than a port clash.
         #
-        # -timeout is PER test binary, not for the whole run. 30m is headroom for
-        # cmd/compass-stack, whose podman legs each rebuild four binaries and whose
-        # own up/down budgets are 3m/150s.
+        # -timeout is PER test binary, not for the whole run, and -p 1 runs the
+        # two binaries sequentially. So N binaries x -timeout must stay well under
+        # the job's timeout-minutes (60), or the job is killed before the deadline
+        # can fire — and a job-level kill skips the `cat` below, losing the log
+        # entirely. 2 x 20m = 40m leaves headroom for the ten setup steps.
         #
         # Redirect-then-cat, NOT `| tee`: a tee pipeline's exit status is tee's 0
         # and would swallow a FAIL.
         run: |
           rc=0
-          go test -tags podman -race -count=1 -p 1 -v -timeout 30m ./e2e/... ./cmd/compass-stack/... >/tmp/e2e.log 2>&1 || rc=$?
+          go test -tags podman -race -count=1 -p 1 -v -timeout 20m ./e2e/... ./cmd/compass-stack/... >/tmp/e2e.log 2>&1 || rc=$?
           cat /tmp/e2e.log
           exit "$rc"
 
@@ -2452,8 +2454,10 @@ jobs:
             exit 1
           fi
           skips=$(printf '%s\n%s\n' "$e2e_skips" "$stack_skips" | sed '/^$/d' | sort -u)
-          # The herestring (not a pipe) is load-bearing: a piped while runs in a
-          # subshell, where this exit 1 would not fail the step.
+          # Steps run under `bash -e` (the podman-step wrapper execs it), so this
+          # exit fails the step either way. The herestring is kept because it
+          # avoids the subshell outright — do not lean on -e alone if the job's
+          # shell ever changes.
           while IFS= read -r skip; do
             if grep -qF -- "$skip" /tmp/e2e.log; then
               echo "::error::podman-tagged tests skipped: $skip"
