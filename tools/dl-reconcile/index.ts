@@ -114,15 +114,21 @@ export function parseLedger(text: string): LandedDecision[] {
 }
 
 /**
- * Count the rows the parser should have produced. Fence tracking is shared with
- * parseLedger deliberately: ROW recognition is independent, while the fence
- * model is shared to avoid false failures from divergent fence tracking.
+ * Count unfenced ledger-shaped rows independently of the parser's table anchor.
+ * This deliberately does not model the table anchor, so anchor misreads surface
+ * as mismatches. An unfenced non-ledger table beginning with a DL ID reads high.
  */
 export function countRawLedgerRows(text: string): number {
 	let count = 0;
-	forEachLedgerRow(text, (line) => {
+	let fence: Fence | null = null;
+	for (const line of text.split("\n")) {
+		const updated = updateFence(line, fence);
+		fence = updated.fence;
+		if (updated.handled || fence !== null) continue;
 		if (/^ {0,3}\|\s*DL-\d+\s*\|/.test(line)) count++;
-	});
+	}
+	if (fence !== null)
+		throw new Error("unterminated fenced block in design ledger");
 	return count;
 }
 
@@ -139,6 +145,7 @@ export type FetchFn = (
 export interface ReconcileDeps {
 	fetchFn?: FetchFn;
 	timeoutMs?: number;
+	timeoutSignal?: (timeoutMs: number) => AbortSignal;
 }
 
 /** POST the ledger reconciliation payload to the deployment service. */
@@ -163,7 +170,7 @@ export async function reconcile(
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(timeoutMs),
+			signal: (deps.timeoutSignal ?? AbortSignal.timeout)(timeoutMs),
 		},
 	);
 	if (!response.ok) {
@@ -183,6 +190,14 @@ if (import.meta.main) {
 		if (body.landed.length !== rawCount) {
 			throw new Error(
 				`ledger parse mismatch: parsed ${body.landed.length} rows, found ${rawCount} raw rows`,
+			);
+		}
+		// An empty frontier is never legitimate here, and both counters agree on
+		// zero if the table header is ever renamed, so the mismatch check alone
+		// would let that post as complete.
+		if (body.landed.length === 0) {
+			throw new Error(
+				"ledger yielded no decision rows; refusing to post an empty frontier",
 			);
 		}
 		if (process.argv.includes("--check")) {

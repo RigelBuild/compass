@@ -38,10 +38,19 @@ describe("parseLedger", () => {
 	});
 
 	test("ignores indented code rows and deeply indented fences", () => {
-		const text =
-			"    | DL-900 | code | x | y |\n    ```\n    | DL-901 | code | x | y |\n    ```";
-		expect(parseLedger(text)).toEqual([]);
-		expect(countRawLedgerRows(text)).toBe(0);
+		const text = [
+			"| ID | Decision | Status | Record |",
+			"| --- | --- | --- | --- |",
+			"| DL-001 | real | x | y |",
+			"    | DL-900 | code | x | y |",
+			"    ```",
+			"    | DL-901 | code | x | y |",
+			"    ```",
+		].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+		expect(countRawLedgerRows(text)).toBe(1);
 	});
 
 	test("counts only decision rows in a valid table run", () => {
@@ -66,6 +75,16 @@ describe("parseLedger", () => {
 				].join("\n"),
 			),
 		).toEqual([{ id: "DL-002", surface: "designs", ref: "none" }]);
+	});
+	test("the floor excludes non-DL rows inside a table run", () => {
+		const text = [
+			"| ID | Decision | Status | Record |",
+			"| --- | --- | --- | --- |",
+			"| DL-001 | first | x | y |",
+			"| note | see above | x | y |",
+			"| DL-002 | second | x | y |",
+		].join("\n");
+		expect(countRawLedgerRows(text)).toBe(2);
 	});
 	test("rejects unterminated fences", () => {
 		expect(() => parseLedger("~~~\n| DL-001 | hidden | x | y |")).toThrow(
@@ -107,16 +126,6 @@ describe("parseLedger", () => {
 		expect(parseLedger(ledger)).toEqual([
 			{ id: "DL-001", surface: "designs", ref: "none" },
 		]);
-	});
-
-	test("the floor agrees with the parser on nested and mixed fences", () => {
-		const nested = "````markdown\n```\n| DL-9 | ex | x | y |\n```\n````";
-		const mixed = "```markdown\n~~~\n| DL-9 | ex | x | y |\n~~~\n```";
-		const real = "| DL-001 | real | x | y |";
-		for (const example of [nested, mixed]) {
-			const text = `${real}\n\n${example}\n`;
-			expect(countRawLedgerRows(text)).toBe(parseLedger(text).length);
-		}
 	});
 });
 
@@ -160,20 +169,22 @@ describe("reconcile", () => {
 	});
 	test("zero timeout uses the default deadline", async () => {
 		let signal: AbortSignal | null | undefined;
-		// A real 0ms deadline would fire before this control signal does; the
-		// 30s fallback cannot, so the wait discriminates without a fixed sleep.
-		const control = AbortSignal.timeout(25);
+		let requestedTimeout = 0;
+		const control = new AbortController();
 		await reconcile(buildRequestBody(""), "token", {
 			timeoutMs: 0,
+			timeoutSignal: (timeoutMs) => {
+				requestedTimeout = timeoutMs;
+				return control.signal;
+			},
 			fetchFn: async (_input, requestInit) => {
 				signal = requestInit?.signal;
-				await new Promise((resolve) =>
-					control.addEventListener("abort", resolve),
-				);
 				return new Response(null, { status: 204 });
 			},
 		});
-		expect(signal?.aborted).toBe(false);
+		expect(requestedTimeout).toBe(30_000);
+		expect(signal).toBe(control.signal);
+		control.abort();
 	});
 
 	test("rejects a non-2xx response", async () => {
@@ -199,16 +210,39 @@ describe("reconcile", () => {
 
 	test("aborts the request at the configured deadline", async () => {
 		let signal: AbortSignal | null | undefined;
+		const control = new AbortController();
 		await reconcile(buildRequestBody(""), "token", {
 			timeoutMs: 5,
+			timeoutSignal: () => control.signal,
 			fetchFn: async (_input, init) => {
 				signal = init?.signal;
 				return new Response(null, { status: 204 });
 			},
 		});
 		expect(signal?.aborted).toBe(false);
-		// Gate on the abort event itself, so the deadline drives the test.
-		await new Promise((resolve) => signal?.addEventListener("abort", resolve));
+		control.abort();
+		if (!signal?.aborted)
+			await new Promise<void>((resolve) =>
+				signal?.addEventListener("abort", () => resolve(), { once: true }),
+			);
+		expect(signal?.aborted).toBe(true);
+	});
+
+	test("defaults to a real firing deadline when none is injected", async () => {
+		let signal: AbortSignal | null | undefined;
+		// No timeoutSignal, so this exercises the production AbortSignal.timeout
+		// path that actually bounds the request.
+		await reconcile(buildRequestBody(""), "token", {
+			timeoutMs: 1,
+			fetchFn: async (_input, init) => {
+				signal = init?.signal;
+				return new Response(null, { status: 204 });
+			},
+		});
+		if (!signal?.aborted)
+			await new Promise<void>((resolve) =>
+				signal?.addEventListener("abort", () => resolve(), { once: true }),
+			);
 		expect(signal?.aborted).toBe(true);
 	});
 });
