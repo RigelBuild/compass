@@ -375,6 +375,7 @@ in
     # not. Restarts on failure because Dial/Enroll is single-shot with no retry.
     compass-runner = {
       exec = ''
+        set -euo pipefail
         : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
         bin="${config.devenv.state}/compass/compass-runner"
         go build -o "$bin" ./cmd/compass-runner
@@ -404,6 +405,7 @@ in
     # the cert/key exist when the network door opens.
     "dogfood:gen-cert" = {
       exec = ''
+        set -euo pipefail
         bin="${config.devenv.state}/compass/compass-gen-cert"
         go build -o "$bin" ./cmd/compass-gen-cert
         exec "$bin" \
@@ -441,6 +443,7 @@ in
     # migrated store). Idempotent: re-registers the same token when the file exists.
     "dogfood:mint-runner-token" = {
       exec = ''
+        set -euo pipefail
         bin="${config.devenv.state}/compass/compass-mint-runner-token"
         go build -o "$bin" ./cmd/compass-mint-runner-token
         exec "$bin" \
