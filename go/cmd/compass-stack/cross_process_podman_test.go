@@ -126,7 +126,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 	// the dir must be first on their PATH; compass-stack is invoked by full path.
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(binDir)
+	env := stackEnv(t, binDir)
 
 	// A short-path, free-port config resolved through the SAME resolveConfig the
 	// CLI uses (no duplicated config logic); the fixture's derived socket paths
@@ -283,17 +283,27 @@ func buildStackBinary(t *testing.T, binDir string) string {
 // children (looked up by bare name via exec.LookPath) to the freshly built
 // binaries. PATH is rebuilt (not merely re-appended) so there is exactly one
 // PATH entry and binDir is unambiguously first.
-func stackEnv(binDir string) []string {
+//
+// It also seeds a fixture-owned secret provider: compass-server fails closed
+// without an at-rest master key, and a CI runner has no ambient provider, so
+// the subprocess must carry its own rather than inherit one.
+func stackEnv(t *testing.T, binDir string) []string {
+	t.Helper()
+	provider := seedMasterKeyProvider(t)
 	base := os.Environ()
-	out := make([]string, 0, len(base)+1)
+	out := make([]string, 0, len(base)+2)
 	oldPath := ""
 	for _, e := range base {
 		if p, ok := strings.CutPrefix(e, "PATH="); ok {
 			oldPath = p
 			continue
 		}
+		if strings.HasPrefix(e, "COMPASS_SECRET_PROVIDER=") {
+			continue
+		}
 		out = append(out, e)
 	}
+	out = append(out, "COMPASS_SECRET_PROVIDER="+provider)
 	return append(out, "PATH="+binDir+string(os.PathListSeparator)+oldPath)
 }
 
