@@ -36,11 +36,14 @@ func TestRunValidation(t *testing.T) {
 }
 
 func TestRunVersion(t *testing.T) {
+	if version == "" {
+		t.Fatal("version must not be empty, or the assertion below is vacuous")
+	}
 	output := captureStdout(t, func() error {
 		return run([]string{"--version"})
 	})
-	if !strings.Contains(output, version) {
-		t.Fatalf("run(--version) output = %q, want version %q", output, version)
+	if strings.TrimSpace(output) != version {
+		t.Fatalf("run(--version) output = %q, want %q", output, version)
 	}
 }
 

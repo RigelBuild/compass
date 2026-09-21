@@ -57,7 +57,8 @@ tar -xzf app-bundle/compass-app-<version>-linux-amd64.tar.gz -C "$PREFIX"
 BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 ```
 
-`<version>` is the value from `version.txt`, followed by `+g<short-sha>`. Keep the bundle's `bin/compass-app`,
+`<version>` is the value from `version.txt`, followed by `+g<short-sha>`. Keep
+the bundle's `bin/compass-app`,
 `bin/compass-stack`, `bin/compass-server`, `bin/compass-runner`, and
 `bin/compass-clear-token` together. The build stages all four sidecars into that
 directory (the sidecar build loop in `app-bundle/build.sh`).
@@ -87,7 +88,8 @@ then `PATH` (`resolveStackBin` in `go/cmd/compass-app/embedded.go`). For this sm
 pass `--compass-stack` and require all launch overrides to be unset:
 
 ```bash
-unset COMPASS_STACK_BIN COMPASS_APP_MODE COMPASS_AGENT_IMAGE COMPASS_STATE_DIR COMPASS_SOCKET COMPASS_ASSETS_DIR COMPASS_DATABASE_DSN
+unset COMPASS_STACK_BIN COMPASS_APP_MODE COMPASS_AGENT_IMAGE \
+  COMPASS_STATE_DIR COMPASS_SOCKET COMPASS_ASSETS_DIR COMPASS_DATABASE_DSN
 find "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/compass" "$HOME/.compass" \
   -maxdepth 2 \( -type s -o -type f \) 2>/dev/null || true
 ```
@@ -104,7 +106,8 @@ prepends that same `bin/` directory for the supervised sidecars
 launch below relies on.
 
 Pin the stack's state directory and socket for the smoke. Left unset they
-default under `$HOME/.compass` (`resolveStateDir` in `go/cmd/compass-app/client.go`), which mixes smoke state into the real
+default under `$HOME/.compass` (`resolveStateDir` in
+`go/cmd/compass-app/client.go`), which mixes smoke state into the real
 dev-box install and leaves nothing safe to delete afterwards:
 
 ```bash
@@ -282,7 +285,8 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
 
 Auto-connect reads the stored bearer from the OS keychain and boots straight to
 the board with no connect screen or bearer re-entry
-(`bridgeService.Connect` in `go/cmd/compass-app/bridge_service.go`: "use the stored one"). The keychain entry is keyed
+(`bridgeService.Connect` in `go/cmd/compass-app/bridge_service.go`:
+"use the stored one"). The keychain entry is keyed
 by service `compass-app` and the server URL.
 
 ### 6. Cleanup
@@ -300,17 +304,32 @@ the state dir when no keychain backend is available (`tokenFileName` and `New` i
 `go/internal/tokenstore/tokenstore.go`: "fallback file under the caller-supplied
 state dir"). The packaged app has no logout action, so use the bundled
 `compass-clear-token` helper. Its `run` function in
-`go/cmd/compass-clear-token/main.go` passes the supplied URL to `Store.Delete`
-without reading or printing the credential. The helper is URL-scoped: a matching
-URL deletes its token; a mismatched URL or an absent token leaves the stored file
-intact. Use the exact URL from `app.toml`, and verify the matching credential is
-cleared before removing the state directory:
+`go/cmd/compass-clear-token/main.go` reads the stored entry only to confirm the
+URL matches, discarding the token, then passes the URL to `Store.Delete`. The
+credential is never printed. That read is what makes the helper URL-scoped: a
+matching URL deletes its token; a mismatched URL or an absent token leaves the
+stored file intact. Use the exact URL from `app.toml`:
 
 ```bash
 "$BUNDLE/bin/compass-clear-token" \
   --server-url "https://127.0.0.1:50052" \
   --state-dir "$CSTATE"
 ```
+
+The helper is silent on success, and exits 0 whether it deleted a token, found a
+mismatched URL, or found nothing at all. So confirm the outcome yourself rather
+than reading exit 0 as proof. On the file-fallback path the entry is a file:
+
+```bash
+test ! -e "$CSTATE/remote-token" && echo "file-backend token cleared"
+```
+
+When a keychain backend is bound — the normal path, since the fallback binds
+only after the Secret Service probe fails — the entry lives under service
+`compass-app` keyed by the server URL, outside the state directory, so
+`rm -rf` below cannot clear it. Check it out of band, for example with
+`secret-tool search service compass-app` on a Secret Service box. A typo in
+`--server-url` is a silent no-op, and that is what this check catches.
 
 After this check, remove the client configuration and the pinned smoke state:
 
@@ -344,6 +363,8 @@ rm -rf "$PREFIX" "$CSTATE" "$CRT"
 - [ ] one agent session reaches a running container (§Part (b), 4)
 - [ ] quit and relaunch auto-connects from the OS keychain, with no connect
       screen or bearer re-entry (§Part (b), 5)
-- [ ] the stored bearer for the matching server URL is cleared from the keychain
-      (or `remote-token`); a mismatched or absent URL leaves the stored file
-      intact, and the client `app.toml` is removed (§Part (b), 6)
+- [ ] the stored bearer for the matching server URL is cleared, confirmed by an
+      observation and not by the helper's exit code: `remote-token` is absent on
+      the file-fallback path, or the out-of-band keychain lookup finds no
+      `compass-app` entry for that URL; a mismatched or absent URL leaves the
+      stored file intact, and the client `app.toml` is removed (§Part (b), 6)
