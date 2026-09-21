@@ -399,6 +399,9 @@ func waitServerAnswering(t *testing.T, deps stack.Deps, socketPath string) {
 // the production teardown checks (internal/stack/pgidfile.go pgidEntry,
 // adapters/groupsignal.go Alive).
 type recordedGroup struct {
+	// component is the recorded component name, carried purely so a liveness
+	// failure names which child survived instead of a bare pgid.
+	component string
 	pgid      int
 	startTime uint64
 }
@@ -435,7 +438,7 @@ func waitGroupsGone(t *testing.T, groups []recordedGroup, budget time.Duration) 
 				break
 			}
 			if !time.Now().Before(deadline) {
-				t.Fatalf("process group %d still alive %s after down; the cross-process teardown did not stop it", grp.pgid, budget)
+				t.Fatalf("recorded %s process group %d still alive %s after down; the cross-process teardown did not stop it", grp.component, grp.pgid, budget)
 			}
 			<-ticker.C
 		}
@@ -568,7 +571,7 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 		if err != nil {
 			t.Fatalf("stack.pgids entry line %d has unparseable start time %q: %v", line, fields[2], err)
 		}
-		groups = append(groups, recordedGroup{pgid: pgid, startTime: startTime})
+		groups = append(groups, recordedGroup{component: fields[0], pgid: pgid, startTime: startTime})
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan stack.pgids record %q: %v", recordPath, err)
