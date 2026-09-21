@@ -38,13 +38,21 @@ function updateFence(
 	line: string,
 	fence: Fence | null,
 ): { fence: Fence | null; handled: boolean } {
-	const match = /^\s*(`{3,}|~{3,})/.exec(line);
+	const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
 	if (!match) return { fence, handled: false };
 	const marker = match[1]?.[0];
 	const length = match[1]?.length ?? 0;
+	const info = match[2]?.trim() ?? "";
 	if (fence === null && (marker === "`" || marker === "~"))
 		return { fence: { marker, length }, handled: true };
-	if (fence !== null && marker === fence.marker && length >= fence.length)
+	// CommonMark forbids an info string on a closing fence, so a fence line
+	// carrying one is content, not a closer.
+	if (
+		fence !== null &&
+		marker === fence.marker &&
+		length >= fence.length &&
+		info === ""
+	)
 		return { fence: null, handled: true };
 	return { fence, handled: true };
 }
@@ -71,19 +79,18 @@ export function parseLedger(text: string): LandedDecision[] {
 }
 
 /**
- * Count rows the parser should have produced, tracking fences independently of
- * it. This catches a parse that silently swallows the ledger's tail without
- * failing on a fenced example the parser is right to skip.
+ * Count the rows the parser should have produced. Fence tracking is shared with
+ * parseLedger deliberately: only ROW recognition is independent, so this catches
+ * a row-parsing regression without disagreeing about what is inside a fence.
  */
 export function countRawLedgerRows(text: string): number {
-	let depth = 0;
+	let fence: Fence | null = null;
 	let count = 0;
 	for (const line of text.split("\n")) {
-		if (/^\s*(`{3,}|~{3,})/.test(line)) {
-			depth = depth === 0 ? 1 : 0;
-			continue;
-		}
-		if (depth === 0 && /^\s*\|\s*DL-\d+\s*\|/.test(line)) count++;
+		const updated = updateFence(line, fence);
+		fence = updated.fence;
+		if (updated.handled || fence !== null) continue;
+		if (/^\s*\|\s*DL-\d+\s*\|/.test(line)) count++;
 	}
 	return count;
 }

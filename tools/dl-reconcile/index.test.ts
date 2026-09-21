@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { buildRequestBody, parseLedger, reconcile } from "./index.ts";
+import {
+	buildRequestBody,
+	countRawLedgerRows,
+	parseLedger,
+	reconcile,
+} from "./index.ts";
 
 describe("parseLedger", () => {
 	test("parses every DL row in order, including duplicates", () => {
@@ -53,6 +58,29 @@ describe("parseLedger", () => {
 		expect(parseLedger(ledger)).toEqual([
 			{ id: "DL-001", surface: "designs", ref: "none" },
 		]);
+	});
+
+	test("treats a fence line carrying an info string as content", () => {
+		const ledger = [
+			"```markdown",
+			"```json",
+			"| DL-900 | fenced example | x | y |",
+			"```",
+			"| DL-001 | real | x | y |",
+		].join("\n");
+		expect(parseLedger(ledger)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+
+	test("the floor agrees with the parser on nested and mixed fences", () => {
+		const nested = "````markdown\n```\n| DL-9 | ex | x | y |\n```\n````";
+		const mixed = "```markdown\n~~~\n| DL-9 | ex | x | y |\n~~~\n```";
+		const real = "| DL-001 | real | x | y |";
+		for (const example of [nested, mixed]) {
+			const text = `${real}\n\n${example}\n`;
+			expect(countRawLedgerRows(text)).toBe(parseLedger(text).length);
+		}
 	});
 });
 
