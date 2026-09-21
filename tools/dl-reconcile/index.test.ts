@@ -87,7 +87,8 @@ describe("reconcile", () => {
 			},
 		});
 		expect(signal?.aborted).toBe(false);
-		await Bun.sleep(25);
+		// Gate on the abort event itself, so the deadline drives the test.
+		await new Promise((resolve) => signal?.addEventListener("abort", resolve));
 		expect(signal?.aborted).toBe(true);
 	});
 });
