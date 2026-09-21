@@ -307,12 +307,13 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 
 // TestMicroVMSweepScriptSurvivesAnUnopenableInput proves BEGINFILE/ERRNO lets
 // the scan resume after an unopenable file, so paths queued behind it in the
-// SAME awk batch are still searched.
+// same awk batch are still searched.
 //
-// The root is /proc/1/mem, an OPEN failure (EACCES). /proc/self/mem is a READ
-// failure, which gawk aborts on before BEGINFILE/ERRNO can set probeError.
-// Exit status alone cannot tell the two apart — a fatal abort and the
-// probeError path both exit 2 — so the observable is the needle surviving.
+// The root is /proc/1/mem, an OPEN failure (EACCES) for the agent uid.
+// /proc/self/mem is a READ failure, which gawk aborts on before BEGINFILE can
+// set probeError; both paths exit 2, so the needle surviving is the observable.
+// A file root named directly is swept deliberately — the /proc exclusion
+// applies to the recursive walk, not to an explicit root.
 func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	env := microvmtest.Require(t)
 	m, id, _ := isolationSession(t, env, "iso-sweep-probe-error")
@@ -323,8 +324,10 @@ func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	if out, code := guestSh(t, m, id, plant); code != 0 {
 		t.Fatalf("planting the probe-error regression file: exit %d, %q", code, truncate(out))
 	}
-	if out, code := guestSh(t, m, id, "cat "+unopenable); code == 0 {
-		t.Skipf("%s is readable here, so it cannot stand in for an unopenable input: %q", unopenable, truncate(out))
+	// An openable root would make gawk abort on the read instead, which the
+	// needle assertion below catches loudly.
+	if out, code := guestSh(t, m, id, "exec 3< "+shellQuote(unopenable)); code == 0 {
+		t.Skipf("%s is openable here, so it cannot stand in for an unopenable input: %q", unopenable, truncate(out))
 	}
 
 	// Both roots land in one batch, so the needle is only reported if the scan
@@ -337,6 +340,32 @@ func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("sweep exited %d after an unopenable input, want 2 so a broken probe stays distinguishable "+
 			"from a clean no-match. output %q", code, truncate(out))
+	}
+}
+
+// TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError pins the exit
+// precedence: a real hit outranks a probe error from a LATER batch. Filling the
+// first batch exactly puts the two in separate batches, which is what makes the
+// ordering observable — in one batch awk masks the hit and both orderings agree.
+func TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-hit-precedence")
+
+	const needle = "SWEEP-HIT-BEFORE-PROBE-ERROR-3e91c7d2"
+	plant := "mkdir -p /workspace/hit-first && for i in $(seq 1 " + strconv.Itoa(sweepBatchSize) + "); do " +
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/hit-first/f%03d.txt' \"$i\")\"; done && " +
+		"printf '%s\\n' '" + needle + "' >> /workspace/hit-first/f001.txt"
+	if out, code := guestSh(t, m, id, plant); code != 0 {
+		t.Fatalf("planting the precedence files: exit %d, %q", code, truncate(out))
+	}
+
+	out, code := guestSh(t, m, id, sweepScript(needle, "/workspace/hit-first", "/proc/1/mem"))
+	if code != 0 {
+		t.Fatalf("sweep exited %d with a real hit in an earlier batch, want 0: a later probe error must not "+
+			"mask a hit, or a genuine escape reports as a broken probe. output %q", code, truncate(out))
+	}
+	if !strings.Contains(out, needle) {
+		t.Fatalf("sweep output %q does not report the hit it exited 0 for", truncate(out))
 	}
 }
 
