@@ -13,7 +13,7 @@ import { LeftSidebar } from "./LeftSidebar";
 
 // RED acceptance spec for T5 (design.md §578-613): the reshaped LeftSidebar —
 // the Bridge/Backlog/Done/Settings links, then a collapsible **Channels**
-// section (member channels + group DMs + browse/join, moved from ChannelSidebar)
+// section (member channels + browse/join, moved from ChannelSidebar)
 // ABOVE a collapsible **Agent workspaces** section (the existing folder tree).
 // It fails today because LeftSidebar renders the tree directly with no section
 // chrome and no channel rows: every assertion below is an
@@ -26,13 +26,12 @@ import { LeftSidebar } from "./LeftSidebar";
 //   - Standalone rail channels (kind "channel", membership !== "none"):
 //     ch-announcements, ch-coordination, ch-svc-compass ("svc.compass", unread
 //     5), ch-svc-ci-build. ch-random is membership "none" → the browse list.
-//   - Group DM dm-ui-server ("compass-ui, compass-server", kind group_dm) — lists in Channels.
 //   - 1:1 agent home DMs (kind "dm", one per board agent, name = handle) — must
 //     NOT list under Channels (§589); the agent workspace is their surface. compass-ui
 //     ("acc-compass-ui") is a `.tree-agent` leaf in the Agent workspaces tree instead.
 
-// The Channels rail lists standalone channels + group DMs but NOT 1:1 agent DMs
-// (kind "dm"). Derived from the fixture so a reshuffle can't stale the count.
+// The Channels rail lists standalone channels but NOT 1:1 agent DMs (kind "dm").
+// Derived from the fixture so a reshuffle can't stale the count.
 const RAIL_ROWS = STUB_CHANNELS.filter(
 	(c) => c.membership !== "none" && c.kind !== "dm",
 ).length;
@@ -133,9 +132,9 @@ describe("LeftSidebar (T5)", () => {
 		expect(container.querySelectorAll(".tree-agent").length).toBe(0);
 	});
 
-	// Contract (§611): the Channels section lists the standalone set — a plain
-	// channel (svc.compass) with its unread badge, and the group DM (compass-ui, compass-server).
-	test("lists standalone channels and the group DM with an unread badge", () => {
+	// Contract (§611): the Channels section lists standalone channels, including
+	// svc.compass with its unread badge.
+	test("lists standalone channels with an unread badge", () => {
 		const { container } = mountSidebar();
 
 		const compass = railRows(container).find(
@@ -144,16 +143,12 @@ describe("LeftSidebar (T5)", () => {
 		expect(compass).toBeDefined();
 		// ch-svc-compass carries 5 unread — the badge shows the count.
 		expect(compass?.querySelector(".ch-unread")?.textContent).toBe("5");
-
-		// The group DM lists as a rail row.
-		expect(railNames(container)).toContain("compass-ui, compass-server");
 	});
 
 	// Contract (§589, §611): 1:1 agent home DMs do NOT list under Channels — the
-	// rail row count is exactly the standalone set (channels + group DMs), and no
-	// row's label is a bare agent handle. The same handle ("compass-ui") DOES
-	// appear as an agent leaf in the tree, proving the exclusion is about the DM
-	// row, not the agent.
+	// rail row count is exactly the standalone set, and no row's label is a bare
+	// agent handle. The same handle ("compass-ui") DOES appear as an agent leaf
+	// in the tree, proving the exclusion is about the DM row, not the agent.
 	test("excludes 1:1 agent DMs from the Channels section", () => {
 		const { container } = mountSidebar();
 

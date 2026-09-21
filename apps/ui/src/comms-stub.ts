@@ -37,7 +37,7 @@ export interface ChannelGroup {
 /** A channel's kind (comms.proto ChannelKind). A plain channel is the default;
  *  DMs are direct conversations. An agent's ACP surface is NOT a channel — it is
  *  the agent workspace (the session observation panel), a separate surface. */
-export type ChannelKind = "channel" | "dm" | "group_dm";
+export type ChannelKind = "channel" | "dm";
 
 /** Per-channel membership state — the still-in-design join/subscribe model
  *  (brief: "join = can read; subscribe = new messages pushed at turn-end;
@@ -386,14 +386,6 @@ export const STUB_CHANNELS: Channel[] = [
 		memberAccountIds: [MATT, "acc-supervisor"],
 		topic: "Off-topic.",
 		membership: "none",
-		postPolicy: "open",
-	},
-	{
-		id: "dm-ui-server",
-		name: "compass-ui, compass-server",
-		kind: "group_dm",
-		memberAccountIds: [MATT, "acc-compass-ui", "acc-compass-server"],
-		membership: "subscribed",
 		postPolicy: "open",
 	},
 	// The per-agent home DMs (one 1:1 DM per board agent) — the 1:1 surviving-

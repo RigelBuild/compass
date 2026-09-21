@@ -21,6 +21,7 @@ import {
 	isQuestionAnswered,
 	type Message,
 } from "../comms-stub";
+import { avatarInitial } from "../constants";
 import { useStore } from "../context";
 import { MarkdownText } from "./MarkdownText";
 
@@ -428,7 +429,7 @@ const TopicRow: Component<{
 								title={`@${handleOf(props.byId, id)}`}
 								aria-label={`@${handleOf(props.byId, id)}`}
 							>
-								{handleOf(props.byId, id).charAt(0).toUpperCase()}
+								{avatarInitial(handleOf(props.byId, id))}
 							</span>
 						)}
 					</For>
