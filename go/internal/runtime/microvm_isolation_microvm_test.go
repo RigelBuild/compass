@@ -154,10 +154,11 @@ const sweepBatchSize = 200
 //   - The needle travels in an EXPORTED ENV VAR, never in argv. Passed as
 //     `awk -v`, it would land in the searcher's own /proc/self/cmdline, so the
 //     sweep would match the string it is looking for in its own command line.
-//   - /proc, /sys and /dev are skipped. They are synthetic kernel interfaces
-//     that cannot hold another tenant's volume, so excluding them removes the
-//     self-match surface (the environ/cmdline of the running searcher) without
-//     narrowing what the row actually probes.
+//   - /proc, /sys and /dev are skipped during the RECURSIVE WALK, removing the
+//     self-match surface (the searcher's own environ/cmdline) without narrowing
+//     what the row probes. A root named explicitly as a file is swept anyway,
+//     so never give a confinement row a /proc root: it would match its own
+//     environ and report a false escape.
 //
 // shellQuote returns one shell word that preserves s literally. The guest image
 // does not guarantee base64, so generated scripts use the POSIX single-quote
@@ -306,14 +307,12 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 }
 
 // TestMicroVMSweepScriptSurvivesAnUnopenableInput proves BEGINFILE/ERRNO lets
-// the scan resume after an unopenable file, so paths queued behind it in the
-// same awk batch are still searched.
+// the scan resume past an unopenable file, and that the resulting probe error
+// is sticky across batches.
 //
-// The root is /proc/1/mem, an OPEN failure (EACCES) for the agent uid.
-// /proc/self/mem is a READ failure, which gawk aborts on before BEGINFILE can
-// set probeError; both paths exit 2, so the needle surviving is the observable.
-// A file root named directly is swept deliberately — the /proc exclusion
-// applies to the recursive walk, not to an explicit root.
+// The root is /proc/1/mem, an OPEN failure for the agent uid; /proc/self/mem is
+// a READ failure gawk aborts on before BEGINFILE runs. Both exit 2, so the
+// needle surviving — not the status — is what proves the resume.
 func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	env := microvmtest.Require(t)
 	m, id, _ := isolationSession(t, env, "iso-sweep-probe-error")
@@ -326,8 +325,8 @@ func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	}
 	// An openable root would make gawk abort on the read instead, which the
 	// needle assertion below catches loudly.
-	if out, code := guestSh(t, m, id, "exec 3< "+shellQuote(unopenable)); code == 0 {
-		t.Skipf("%s is openable here, so it cannot stand in for an unopenable input: %q", unopenable, truncate(out))
+	if _, code := guestSh(t, m, id, "exec 3< "+shellQuote(unopenable)); code == 0 {
+		t.Skipf("%s is openable here, so it cannot stand in for an unopenable input", unopenable)
 	}
 
 	// Both roots land in one batch, so the needle is only reported if the scan
@@ -340,6 +339,18 @@ func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("sweep exited %d after an unopenable input, want 2 so a broken probe stays distinguishable "+
 			"from a clean no-match. output %q", code, truncate(out))
+	}
+
+	// The error now sits in the FIRST batch with a clean no-match batch behind
+	// it: a per-batch probe_error would report exit 1 and hide the dead probe.
+	filler := "mkdir -p /workspace/probe-error-filler && for i in $(seq 1 " + strconv.Itoa(sweepBatchSize) + "); do " +
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/probe-error-filler/f%03d.txt' \"$i\")\"; done"
+	if out, code := guestSh(t, m, id, filler); code != 0 {
+		t.Fatalf("planting the stickiness filler: exit %d, %q", code, truncate(out))
+	}
+	if out, code := guestSh(t, m, id, sweepScript("ABSENT-"+needle, unopenable, "/workspace/probe-error-filler")); code != 2 {
+		t.Fatalf("sweep exited %d with a probe error in an earlier batch, want 2: the error must survive later "+
+			"clean batches, or a dead probe reports as a clean no-match. output %q", code, truncate(out))
 	}
 }
 
@@ -357,6 +368,13 @@ func TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError(t *testing.T) {
 		"printf '%s\\n' '" + needle + "' >> /workspace/hit-first/f001.txt"
 	if out, code := guestSh(t, m, id, plant); code != 0 {
 		t.Fatalf("planting the precedence files: exit %d, %q", code, truncate(out))
+	}
+
+	// Without a live probe error in the trailing batch both orderings exit 0,
+	// so the precedence assertion below would pin nothing.
+	if out, code := guestSh(t, m, id, sweepScript("ABSENT-"+needle, "/proc/1/mem")); code != 2 {
+		t.Fatalf("the probe-error root gave exit %d, want 2; the precedence assertion would be vacuous. "+
+			"output %q", code, truncate(out))
 	}
 
 	out, code := guestSh(t, m, id, sweepScript(needle, "/workspace/hit-first", "/proc/1/mem"))
