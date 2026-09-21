@@ -375,10 +375,16 @@ in
     # not. Restarts on failure because Dial/Enroll is single-shot with no retry.
     compass-runner = {
       exec = ''
+        set -euo pipefail
         : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
         bin="${config.devenv.state}/compass/compass-runner"
         go build -o "$bin" ./cmd/compass-runner
-        export COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
+        # Assign, then export. `export VAR="$(cmd)"` is itself a command whose
+        # own exit status (0) masks the substitution's, so `set -e` never sees a
+        # failed read: an empty token misreports as unset, a truncated one
+        # fails Enroll as `unauthenticated`.
+        COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
+        export COMPASS_RUNNER_TOKEN
         exec "$bin" \
           --runner-id ${dogfoodRunnerID} \
           --server "https://127.0.0.1:${toString config.processes.compass-server.ports.network.value}" \
@@ -404,6 +410,7 @@ in
     # the cert/key exist when the network door opens.
     "dogfood:gen-cert" = {
       exec = ''
+        set -euo pipefail
         bin="${config.devenv.state}/compass/compass-gen-cert"
         go build -o "$bin" ./cmd/compass-gen-cert
         exec "$bin" \
@@ -441,6 +448,7 @@ in
     # migrated store). Idempotent: re-registers the same token when the file exists.
     "dogfood:mint-runner-token" = {
       exec = ''
+        set -euo pipefail
         bin="${config.devenv.state}/compass/compass-mint-runner-token"
         go build -o "$bin" ./cmd/compass-mint-runner-token
         exec "$bin" \
@@ -486,6 +494,10 @@ in
     "dogfood:clean" = {
       exec = ''
         set -euo pipefail
+        # Same guard the compass-runner process uses, and it runs FIRST: under
+        # `set -u` an unset XDG_RUNTIME_DIR otherwise aborts the task after the
+        # containers are already removed, so it half-succeeds and reports failure.
+        : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
         # Uses the host's rootless podman — the same binary/storage the runner
         # execs to create these containers, so it sees them (a nix-pinned podman
         # could resolve a different containers-storage config).
