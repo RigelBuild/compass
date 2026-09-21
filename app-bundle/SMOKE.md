@@ -39,7 +39,8 @@ pipeline order is preflight, `compass-stack up`, then `WhoAmI`
 Embedded mode requires Linux or macOS, rootless podman, and podman 4.3 or
 newer. These are fatal host checks. The agent image is checked locally but is
 pulled from GHCR by the stack when it is missing
-(`Deps.Run` in `go/internal/preflight/preflight.go`, `runEmbedded` in `go/cmd/compass-app/embedded.go`). Confirm rootless podman and the
+(`Deps.Run` in `go/internal/preflight/preflight.go`, `runEmbedded` in
+`go/cmd/compass-app/embedded.go`). Confirm rootless podman and the
 image before the smoke to avoid a cold pull:
 
 ```bash
@@ -141,7 +142,8 @@ Wait for the app to bring the stack to Ready. It then resolves the caller with
 `WhoAmI` over the local socket (`runEmbedded` in `go/cmd/compass-app/embedded.go`).
 Confirm that the app opens the board directly, without a client connect screen
 or bearer entry. Embedded mode has no client `server_url` or `ca_cert`
-configuration (`Parse` in `go/internal/appconfig/appconfig.go`: "client-only fields"), and its identity
+configuration (`Parse` in `go/internal/appconfig/appconfig.go`:
+"client-only fields"), and its identity
 comes from that local-socket call.
 
 From the board, start one agent session. Confirm that it reaches a running
@@ -324,12 +326,22 @@ than reading exit 0 as proof. On the file-fallback path the entry is a file:
 test ! -e "$CSTATE/remote-token" && echo "file-backend token cleared"
 ```
 
-When a keychain backend is bound — the normal path, since the fallback binds
-only after the Secret Service probe fails — the entry lives under service
-`compass-app` keyed by the server URL, outside the state directory, so
-`rm -rf` below cannot clear it. Check it out of band, for example with
-`secret-tool search service compass-app` on a Secret Service box. A typo in
-`--server-url` is a silent no-op, and that is what this check catches.
+Which backend is bound depends on whether a Secret Service is reachable. A
+headless smoke box usually has none, so the file check above is the one that
+applies. If a keychain is bound instead, the entry lives under service
+`compass-app` keyed by the server URL, outside the state directory, so the
+`rm -rf` below cannot clear it. Probe it by exact key, and discard the output:
+
+```bash
+secret-tool lookup service compass-app username "https://127.0.0.1:50052" \
+  >/dev/null && echo "keychain entry STILL PRESENT" || echo "keychain entry cleared"
+```
+
+Use `lookup`, never `secret-tool search`: `search` loads and prints the secret
+itself, which would dump a still-live bearer into the terminal on exactly the
+path this check exists to catch. `lookup` needs the exact key, so it also
+confirms the URL scoping. A typo in `--server-url` is a silent no-op, and that
+is what this check catches.
 
 After this check, remove the client configuration and the pinned smoke state:
 
