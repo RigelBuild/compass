@@ -3,9 +3,9 @@
 # (compass-app-<version>-linux-amd64.tar.gz): the gtk4 shell (compass-app) + the
 # four embedded sidecars (compass-stack, compass-server, compass-runner,
 # compass-clear-token) + the UI dist + the desktop file + LICENSE, every binary
-# stamped with the ONE version.
-# No postgres tooling and no compass-postgres sidecar — the embedded
-# stack's postgres is a stock postgres:18 container via rootless podman (§A4).
+# stamped with the ONE version. No postgres tooling and no compass-postgres
+# sidecar — the embedded stack's postgres is a stock postgres:18 container via
+# rootless podman (§A4).
 #
 # Why bash: this is nix + go build orchestration glue — it realizes the pinned
 # GTK cc/pkg-config closure with `nix build`, links the one gtk4 binary against
