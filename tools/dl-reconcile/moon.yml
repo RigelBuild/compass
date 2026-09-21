@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# Posts the landed design-ledger frontier to the DL counter, which must
+# hydrate before any claim.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  check:
+    command: 'bun run tools/dl-reconcile/index.ts --check'
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs: ['/docs/designs/DECISIONS.md', 'index.ts']
+  ci:
+    deps: ['typecheck', 'test', 'check']
+    options:
+      cache: false

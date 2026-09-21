@@ -193,6 +193,10 @@ projects:
   # moon-driven CI sweep — it was unregistered until RIG-3731, so the release
   # lane depended on a tool whose 22 tests never ran in CI.
   release-notes: 'tools/release-notes'
+  # The design-ledger reconciler: posts the landed DL-NNN frontier to the DL
+  # counter, which must hydrate before any claim. Registered so its typecheck +
+  # unit tests ride the moon-driven CI sweep.
+  dl-reconcile: 'tools/dl-reconcile'
 
 # File hashing uses moon's in-process native walker (the v2.5+ default), NOT the
 # git shell-out. This is load-bearing: the git hasher (`git ls-files` then `git
