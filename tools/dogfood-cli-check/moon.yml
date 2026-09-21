@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  check:
+    # Local/dogfood only: its subject is a binary that exists solely after
+    # `devenv up` on a provisioned box, so CI has nothing to assert against.
+    # `devenv tasks run dogfood:check-cli` is the real invocation.
+    command: 'bun run tools/dogfood-cli-check/index.ts'
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: false
+    inputs:
+      - 'index.ts'
+      - 'cli-check.ts'
+      - '/go/cmd/compass/**/*.go'
+  ci:
+    # `check` is deliberately absent: it would red every PR on a missing
+    # artifact CI never builds.
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

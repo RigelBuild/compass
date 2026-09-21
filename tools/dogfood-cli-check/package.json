@@ -1,0 +1,9 @@
+{
+	"name": "@compass/dogfood-cli-check",
+	"private": true,
+	"type": "module",
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

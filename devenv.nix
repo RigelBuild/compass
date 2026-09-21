@@ -442,6 +442,19 @@ in
       before = [ "devenv:processes:compass-server" ];
     };
 
+    # Assert the built artifact, not just the task graph: an absent binary means the build task never ran.
+    "dogfood:check-cli" = {
+      exec = ''
+        bun "${config.devenv.root}/tools/dogfood-cli-check/index.ts"
+      '';
+      cwd = config.devenv.root;
+      env = {
+        DEVENV_STATE = config.devenv.state;
+      };
+      after = [ "dogfood:build-cli" ];
+      before = [ "devenv:processes:compass-server" ];
+    };
+
     # mint-runner-token: register the `dogfood` runner and write its enrollment
     # token 0600 to the state dir. Reads the same DSN the server uses so store
     # precedence matches. Runs after the server is ready (its probe gates on the

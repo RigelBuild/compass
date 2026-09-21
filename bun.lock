@@ -169,6 +169,13 @@
         "typescript": "catalog:",
       },
     },
+    "tools/dogfood-cli-check": {
+      "name": "@compass/dogfood-cli-check",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/font-coverage-gate": {
       "name": "@compass/font-coverage-gate",
       "bin": {
@@ -514,6 +521,8 @@
     "@compass/design-ledger-gate": ["@compass/design-ledger-gate@workspace:tools/design-ledger-gate"],
 
     "@compass/dl-reconcile": ["@compass/dl-reconcile@workspace:tools/dl-reconcile"],
+
+    "@compass/dogfood-cli-check": ["@compass/dogfood-cli-check@workspace:tools/dogfood-cli-check"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 
