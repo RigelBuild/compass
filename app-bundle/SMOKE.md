@@ -57,7 +57,7 @@ tar -xzf app-bundle/compass-app-<version>-linux-amd64.tar.gz -C "$PREFIX"
 BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 ```
 
-`<version>` is `0.1.0+g<short-sha>`. Keep the bundle's `bin/compass-app`,
+`<version>` is the value from `version.txt`, followed by `+g<short-sha>`. Keep the bundle's `bin/compass-app`,
 `bin/compass-stack`, `bin/compass-server`, `bin/compass-runner`, and
 `bin/compass-clear-token` together. The build stages all four sidecars into that
 directory (the sidecar build loop in `app-bundle/build.sh`).
@@ -87,10 +87,14 @@ then `PATH` (`resolveStackBin` in `go/cmd/compass-app/embedded.go`). For this sm
 pass `--compass-stack` and require all launch overrides to be unset:
 
 ```bash
-unset COMPASS_STACK_BIN COMPASS_APP_MODE COMPASS_AGENT_IMAGE COMPASS_STATE_DIR COMPASS_SOCKET
+unset COMPASS_STACK_BIN COMPASS_APP_MODE COMPASS_AGENT_IMAGE COMPASS_STATE_DIR COMPASS_SOCKET COMPASS_ASSETS_DIR COMPASS_DATABASE_DSN
 find "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/compass" "$HOME/.compass" \
   -maxdepth 2 \( -type s -o -type f \) 2>/dev/null || true
 ```
+
+`COMPASS_ASSETS_DIR` must be clear in particular, or the app can serve a UI `dist`
+from outside the bundle. `COMPASS_DATABASE_DSN` must also be clear so the smoke
+uses the bundle's state-directory database configuration.
 
 The app resolves `compass-stack` as a sibling of the running `compass-app`
 executable, preferred over PATH (`resolveStackBin` in `go/cmd/compass-app/embedded.go`), and
@@ -278,7 +282,7 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
 
 Auto-connect reads the stored bearer from the OS keychain and boots straight to
 the board with no connect screen or bearer re-entry
-(`bridgeService.Connect` in `go/cmd/compass-app/bridge_service.go`: "stored bearer"). The keychain entry is keyed
+(`bridgeService.Connect` in `go/cmd/compass-app/bridge_service.go`: "use the stored one"). The keychain entry is keyed
 by service `compass-app` and the server URL.
 
 ### 6. Cleanup
