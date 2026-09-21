@@ -21,6 +21,36 @@ describe("parseLedger", () => {
 			{ id: "DL-42", surface: "designs", ref: "none" },
 		]);
 	});
+	test("parses escaped pipes within a valid table run", () => {
+		expect(
+			parseLedger(
+				"| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-7 | a \\| b | Active | [r](r.md) |",
+			),
+		).toEqual([{ id: "DL-7", surface: "designs", ref: "none" }]);
+	});
+
+	test("closes a shorter fence with a longer fence", () => {
+		expect(
+			parseLedger(
+				"```\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-9 | hidden | x | y |\n````\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-1 | visible | x | y |",
+			),
+		).toEqual([{ id: "DL-1", surface: "designs", ref: "none" }]);
+	});
+
+	test("ignores indented code rows and deeply indented fences", () => {
+		const text =
+			"    | DL-900 | code | x | y |\n    ```\n    | DL-901 | code | x | y |\n    ```";
+		expect(parseLedger(text)).toEqual([]);
+		expect(countRawLedgerRows(text)).toBe(0);
+	});
+
+	test("counts only decision rows in a valid table run", () => {
+		expect(
+			countRawLedgerRows(
+				"| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-7 | decision | Active | [r](r.md) |",
+			),
+		).toBe(1);
+	});
 	test("matches outer fence length and marker", () => {
 		expect(
 			parseLedger(
@@ -30,6 +60,8 @@ describe("parseLedger", () => {
 					"```",
 					"| DL-001 | valid | x | y |",
 					"````",
+					"| ID | Decision | Status | Record |",
+					"| --- | --- | --- | --- |",
 					"| DL-002 | after | x | y |",
 				].join("\n"),
 			),
@@ -43,7 +75,7 @@ describe("parseLedger", () => {
 	test("supports indented tilde fences", () => {
 		expect(
 			parseLedger(
-				"  ~~~\n| DL-999 | hidden | x | y |\n  ~~~\n| DL-001 | valid | x | y |",
+				"  ~~~\n| DL-999 | hidden | x | y |\n  ~~~\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-001 | valid | x | y |",
 			),
 		).toEqual([{ id: "DL-001", surface: "designs", ref: "none" }]);
 	});
@@ -52,6 +84,8 @@ describe("parseLedger", () => {
 			"```markdown",
 			"| DL-999 | example | x | y |",
 			"```",
+			"| ID | Decision | Status | Record |",
+			"| --- | --- | --- | --- |",
 			"| DL-001 | valid | x | y |",
 			"| DL-002 | partial | x |",
 		].join("\n");
@@ -66,6 +100,8 @@ describe("parseLedger", () => {
 			"```json",
 			"| DL-900 | fenced example | x | y |",
 			"```",
+			"| ID | Decision | Status | Record |",
+			"| --- | --- | --- | --- |",
 			"| DL-001 | real | x | y |",
 		].join("\n");
 		expect(parseLedger(ledger)).toEqual([
@@ -88,7 +124,7 @@ describe("reconcile", () => {
 	test("posts the exact request and body", async () => {
 		const requests: Request[] = [];
 		const body = buildRequestBody(
-			"| DL-001 | one | x | y |\n| DL-001 | two | x | y |",
+			"| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-001 | one | x | y |\n| DL-001 | two | x | y |",
 		);
 		await reconcile(body, "test-token", {
 			fetchFn: async (input, init) => {
@@ -124,10 +160,16 @@ describe("reconcile", () => {
 	});
 	test("zero timeout uses the default deadline", async () => {
 		let signal: AbortSignal | null | undefined;
+		// A real 0ms deadline would fire before this control signal does; the
+		// 30s fallback cannot, so the wait discriminates without a fixed sleep.
+		const control = AbortSignal.timeout(25);
 		await reconcile(buildRequestBody(""), "token", {
 			timeoutMs: 0,
 			fetchFn: async (_input, requestInit) => {
 				signal = requestInit?.signal;
+				await new Promise((resolve) =>
+					control.addEventListener("abort", resolve),
+				);
 				return new Response(null, { status: 204 });
 			},
 		});

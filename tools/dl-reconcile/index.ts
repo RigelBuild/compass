@@ -38,7 +38,7 @@ function updateFence(
 	line: string,
 	fence: Fence | null,
 ): { fence: Fence | null; handled: boolean } {
-	const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+	const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
 	if (!match) return { fence, handled: false };
 	const marker = match[1]?.[0];
 	const length = match[1]?.length ?? 0;
@@ -57,41 +57,72 @@ function updateFence(
 	return { fence, handled: true };
 }
 
-/** Parse every decision ID row in the design ledger, preserving duplicates and order. */
-export function parseLedger(text: string): LandedDecision[] {
-	const landed: LandedDecision[] = [];
+function isTableLine(line: string): boolean {
+	return /^ {0,3}\|/.test(line);
+}
+
+function isLedgerHeader(line: string): boolean {
+	if (!isTableLine(line)) return false;
+	return (
+		splitLedgerCells(line.trim()).join("|") === "ID|Decision|Status|Record"
+	);
+}
+
+function isLedgerSeparator(line: string): boolean {
+	if (!isTableLine(line)) return false;
+	const cells = splitLedgerCells(line.trim());
+	return cells.length === 4 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function forEachLedgerRow(
+	text: string,
+	callback: (line: string) => void,
+): void {
 	let fence: Fence | null = null;
+	let tableState: "none" | "header" | "table" = "none";
 	for (const line of text.split("\n")) {
 		const updated = updateFence(line, fence);
 		fence = updated.fence;
 		if (updated.handled || fence !== null) continue;
-		const trimmed = line.trim();
-		if (!trimmed.startsWith("|")) continue;
-		const cells = splitLedgerCells(trimmed);
-		if (cells.length !== 4) continue;
-		const id = cells[0];
-		if (id !== undefined && /^DL-\d+$/.test(id))
-			landed.push({ id, surface: "designs", ref: "none" });
+		if (tableState === "header") {
+			if (isLedgerSeparator(line)) tableState = "table";
+			else tableState = isLedgerHeader(line) ? "header" : "none";
+			continue;
+		}
+		if (tableState === "table") {
+			if (isTableLine(line)) callback(line);
+			else tableState = isLedgerHeader(line) ? "header" : "none";
+			continue;
+		}
+		if (isLedgerHeader(line)) tableState = "header";
 	}
 	if (fence !== null)
 		throw new Error("unterminated fenced block in design ledger");
+}
+/** Parse every decision ID row in the design ledger, preserving duplicates and order. */
+export function parseLedger(text: string): LandedDecision[] {
+	const landed: LandedDecision[] = [];
+	forEachLedgerRow(text, (line) => {
+		const trimmed = line.trim();
+		const cells = splitLedgerCells(trimmed);
+		if (cells.length !== 4) return;
+		const id = cells[0];
+		if (id !== undefined && /^DL-\d+$/.test(id))
+			landed.push({ id, surface: "designs", ref: "none" });
+	});
 	return landed;
 }
 
 /**
  * Count the rows the parser should have produced. Fence tracking is shared with
- * parseLedger deliberately: only ROW recognition is independent, so this catches
- * a row-parsing regression without disagreeing about what is inside a fence.
+ * parseLedger deliberately: ROW recognition is independent, while the fence
+ * model is shared to avoid false failures from divergent fence tracking.
  */
 export function countRawLedgerRows(text: string): number {
-	let fence: Fence | null = null;
 	let count = 0;
-	for (const line of text.split("\n")) {
-		const updated = updateFence(line, fence);
-		fence = updated.fence;
-		if (updated.handled || fence !== null) continue;
-		if (/^\s*\|\s*DL-\d+\s*\|/.test(line)) count++;
-	}
+	forEachLedgerRow(text, (line) => {
+		if (/^ {0,3}\|\s*DL-\d+\s*\|/.test(line)) count++;
+	});
 	return count;
 }
 
