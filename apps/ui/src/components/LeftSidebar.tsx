@@ -314,15 +314,15 @@ const BrowseChannels: Component<{ channels: Channel[] }> = (props) => {
 };
 
 /** The collapsible Channels section (above Agent workspaces): grouped member
- *  channels, a group-DMs subsection (1:1 agent DMs are excluded — the agent
- *  workspace is their surface, §589), then a browse/join list. */
+ *  channels, a multi-party DMs subsection (1:1 agent DMs are excluded — the
+ *  agent workspace is their surface, §589), then a browse/join list. */
 const ChannelsSection: Component = () => {
 	const store = useStore();
 	const collapsed = () => store.isSectionCollapsed("channels");
 	const memberChannels = () => railChannels(store.channels());
 	const sections = () =>
 		channelSections(memberChannels(), store.channelGroups());
-	// Group DMs only: drop any 1:1 agent DM (its surface is the workspace).
+	// Multi-party DMs only: drop any 1:1 agent DM (its surface is the workspace).
 	const dms = () => {
 		const byId = new Map(store.accounts().map((a) => [a.id, a]));
 		return dmChannels(memberChannels()).filter(

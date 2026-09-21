@@ -690,6 +690,19 @@ describe("agentDmChannel", () => {
 			"dm-1",
 		);
 	});
+
+	// The agent-workspace delegate keys off this returning undefined: a fallback
+	// to some other agent's DM would silently center the workspace on the wrong
+	// agent rather than failing to open.
+	test("an agent id with no DM resolves to undefined", () => {
+		const dm = ch({
+			id: "dm-agent",
+			kind: "dm",
+			memberAccountIds: [caller, "acc-agent"],
+		});
+		expect(agentDmChannel([dm], "acc-absent", caller, byId)).toBeUndefined();
+		expect(agentDmChannel([], "acc-agent", caller, byId)).toBeUndefined();
+	});
 });
 
 // ── Comms ask fixture integrity (refolded from the deleted ask-contract.test.ts,
