@@ -330,12 +330,26 @@ Which backend is bound depends on whether a Secret Service is reachable. A
 headless smoke box usually has none, so the file check above is the one that
 applies. If a keychain is bound instead, the entry lives under service
 `compass-app` keyed by the server URL, outside the state directory, so the
-`rm -rf` below cannot clear it. Probe it by exact key, and discard the output:
+`rm -rf` below cannot clear it. Probe it by exact key, keeping the secret off
+the capture and separating a real miss from a probe that never ran:
 
 ```bash
-secret-tool lookup service compass-app username "https://127.0.0.1:50052" \
-  >/dev/null && echo "keychain entry STILL PRESENT" || echo "keychain entry cleared"
+if err=$(secret-tool lookup service compass-app \
+     username "https://127.0.0.1:50052" 2>&1 >/dev/null); then
+  echo "keychain entry STILL PRESENT"
+elif [ -n "$err" ]; then
+  echo "LOOKUP FAILED, entry state UNKNOWN: $err"
+else
+  echo "keychain entry cleared"
+fi
 ```
+
+`secret-tool lookup` exits 1 both when the entry is absent and when it cannot
+reach a Secret Service, so a bare `||` would report "cleared" for a probe that
+never ran — the same false all-clear this step exists to prevent. The three-way
+form above separates them, and treats an absent `secret-tool` as UNKNOWN too.
+The `2>&1 >/dev/null` order matters: stderr is duplicated onto the capture
+first, then fd 1 is sent to `/dev/null`, so the secret is never captured.
 
 Use `lookup`, never `secret-tool search`: `search` loads and prints the secret
 itself, which would dump a still-live bearer into the terminal on exactly the
@@ -377,6 +391,7 @@ rm -rf "$PREFIX" "$CSTATE" "$CRT"
       screen or bearer re-entry (§Part (b), 5)
 - [ ] the stored bearer for the matching server URL is cleared, confirmed by an
       observation and not by the helper's exit code: `remote-token` is absent on
-      the file-fallback path, or the out-of-band keychain lookup finds no
-      `compass-app` entry for that URL; a mismatched or absent URL leaves the
-      stored file intact, and the client `app.toml` is removed (§Part (b), 6)
+      the file-fallback path, or the keychain probe reports the entry cleared.
+      A probe reporting UNKNOWN does not satisfy this — re-run it where the
+      keychain is reachable. A mismatched or absent URL leaves the stored file
+      intact, and the client `app.toml` is removed (§Part (b), 6)
