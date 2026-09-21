@@ -77,16 +77,17 @@ describe("reconcile", () => {
 		expect(called).toBe(false);
 	});
 
-	test("passes a bounded timeout signal", async () => {
+	test("aborts the request at the configured deadline", async () => {
 		let signal: AbortSignal | null | undefined;
 		await reconcile(buildRequestBody(""), "token", {
-			timeoutMs: 1234,
+			timeoutMs: 5,
 			fetchFn: async (_input, init) => {
 				signal = init?.signal;
 				return new Response(null, { status: 204 });
 			},
 		});
-		expect(signal).toBeInstanceOf(AbortSignal);
 		expect(signal?.aborted).toBe(false);
+		await Bun.sleep(25);
+		expect(signal?.aborted).toBe(true);
 	});
 });
