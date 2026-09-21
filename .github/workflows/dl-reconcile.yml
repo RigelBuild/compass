@@ -15,7 +15,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: oven-sh/setup-bun@v2
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # Naming the caches in this reviewed file keeps the trust reviewed:
+          # accept-flake-config would make nix trust any evaluated flake's own
+          # substituters and keys.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+      - name: Put the pinned bun toolchain on PATH
+        # bun comes from the nix-pinned toolchain, never setup-bun, so it is the
+        # same derivation as the dev shell's. `jq -r` renders a missing `.store`
+        # as the literal `null`, so guard for it explicitly.
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
       - name: Reconcile design ledger
         env:
           DL_CLAIM_TOKEN: ${{ secrets.DL_CLAIM_TOKEN }}
