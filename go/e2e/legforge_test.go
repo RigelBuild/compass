@@ -157,6 +157,20 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "Created pull request #4243 in owner/repo: https://forge.stub/pulls/4243"); err != nil {
 		t.Fatalf("awaitTranscriptPersisted (pull request response): %v", err)
 	}
+	// These read-back fields are rendered from the DECODED response, never from
+	// a request the agent sent, so a zeroed issue decode reddens them. Entries
+	// are stored as JSON, hence the escaped quotes.
+	for _, want := range []string{
+		`number=\"4242\"`,
+		`state=\"open\"`,
+		`forge_account=\"forge-stub\"`,
+		"[labels ",
+		`state=\"closed\"`,
+	} {
+		if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, want); err != nil {
+			t.Fatalf("awaitTranscriptPersisted (decoded issue %s): %v", want, err)
+		}
+	}
 	finalIssue := f.ForgeStub().Issue(forgeStubIssueNumber)
 	if finalIssue["state"] != "closed" || finalIssue["state_reason"] != "completed" {
 		t.Fatalf("final issue state=%v state_reason=%v, want closed/completed", finalIssue["state"], finalIssue["state_reason"])
