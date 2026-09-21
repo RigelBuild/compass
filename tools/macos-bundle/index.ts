@@ -248,6 +248,29 @@ export function staleMountPoints(
 	return [...found];
 }
 
+/**
+ * Render what a failed `hdiutil create` had open, for the EBUSY path. Pure so
+ * the formatting is unit-testable; the caller collects the probe output.
+ *
+ * `hdiutil create -srcfolder` reports "Resource busy" when something still
+ * holds the SOURCE tree, not only when the output path is busy — and the error
+ * never names the holder, which is why this flake has survived two fixes aimed
+ * at the output side.
+ */
+export function formatBusyDiagnosis(probes: {
+	stageRoot: string;
+	lsof: string;
+	hdiutilInfo: string;
+}): string {
+	const section = (title: string, body: string): string =>
+		`── ${title} ──\n${body.trim() || "(no output)"}`;
+	return [
+		`macos-bundle: hdiutil create failed; probing what holds ${probes.stageRoot}`,
+		section(`lsof +D ${probes.stageRoot}`, probes.lsof),
+		section("hdiutil info", probes.hdiutilInfo),
+	].join("\n");
+}
+
 // ── The edge (impure) ──────────────────────────────────────────────────────
 
 /** Fail loud if a required input path does not exist (build.sh sanity posture). */
@@ -276,6 +299,20 @@ async function detachStaleAttachments(target: {
 	for (const mount of staleMountPoints(probe.stdout.toString(), target)) {
 		await $`hdiutil detach ${mount} -force`.quiet().nothrow();
 	}
+}
+
+/**
+ * Collect what holds the staging tree after a failed `hdiutil create`. Never
+ * throws: a diagnostic that fails must not replace the real error.
+ */
+async function diagnoseBusy(stageRoot: string): Promise<string> {
+	const lsof = await $`lsof +D ${stageRoot}`.quiet().nothrow();
+	const info = await $`hdiutil info`.quiet().nothrow();
+	return formatBusyDiagnosis({
+		stageRoot,
+		lsof: lsof.stdout.toString() + lsof.stderr.toString(),
+		hdiutilInfo: info.stdout.toString() + info.stderr.toString(),
+	});
 }
 
 async function main(): Promise<void> {
@@ -336,11 +373,22 @@ async function main(): Promise<void> {
 	await $`codesign --sign - --force --deep ${appDir}`;
 
 	// Wrap the staging dir into a compressed (UDZO) .dmg. -ov overwrites an
-	// existing image so a re-run is idempotent. Detach any stale attachment of
-	// this volume first — on a reused runner a leaked mount makes create EBUSY.
+	// existing image so a re-run is idempotent. detachStaleAttachments covers a
+	// leaked mount of our own image; the observed EBUSY on a hosted ephemeral
+	// runner has no such mount and comes from the source tree instead.
 	await rm(args.out, { force: true });
 	await detachStaleAttachments({ imagePath: args.out, volumeName: "Compass" });
-	await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`;
+	const created =
+		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`.nothrow();
+	if (created.exitCode !== 0) {
+		// Fail loud with the holder named, never retry: the contention is between
+		// two commands we control (codesign above, create here), so a retry would
+		// mask our own unhandled failure mode.
+		console.error(await diagnoseBusy(stageRoot));
+		throw new Error(
+			`macos-bundle: hdiutil create failed (exit ${created.exitCode}): ${created.stderr.toString().trim()}`,
+		);
+	}
 
 	console.log(`macos-bundle: wrote ${args.out}`);
 }

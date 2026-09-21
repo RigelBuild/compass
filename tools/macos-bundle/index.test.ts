@@ -11,7 +11,12 @@
 // import.meta.main-guarded, so importing index.ts never runs it.
 
 import { describe, expect, test } from "bun:test";
-import { parseArgs, renderInfoPlist, staleMountPoints } from "./index.ts";
+import {
+	formatBusyDiagnosis,
+	parseArgs,
+	renderInfoPlist,
+	staleMountPoints,
+} from "./index.ts";
 
 /** The canonical render inputs used across the plist cases. */
 function plistOpts() {
@@ -326,5 +331,30 @@ describe("staleMountPoints — selects only this build's leaked attachment", () 
 			imageBlock("/tmp/unrelated.dmg", ["/Volumes/SomethingElse"]) +
 			imageBlock(TARGET.imagePath, ["/Volumes/Compass"]);
 		expect(staleMountPoints(info, TARGET)).toEqual(["/Volumes/Compass"]);
+	});
+});
+
+describe("formatBusyDiagnosis — names the holder of a busy staging tree", () => {
+	const probes = {
+		stageRoot: "/tmp/macos-bundle-stage",
+		lsof: "COMMAND   PID  USER\ncodesign 4711 runner",
+		hdiutilInfo: "no image attached",
+	};
+
+	test("carries the probed staging path so the reader knows what was busy", () => {
+		expect(formatBusyDiagnosis(probes)).toContain("/tmp/macos-bundle-stage");
+	});
+
+	test("carries the lsof holder, which is the whole point of the probe", () => {
+		expect(formatBusyDiagnosis(probes)).toContain("codesign 4711 runner");
+	});
+
+	test("carries the hdiutil attachment state alongside it", () => {
+		expect(formatBusyDiagnosis(probes)).toContain("no image attached");
+	});
+
+	test("an empty probe reads as no output, never as a blank section", () => {
+		const out = formatBusyDiagnosis({ ...probes, lsof: "   \n  " });
+		expect(out).toContain("(no output)");
 	});
 });
