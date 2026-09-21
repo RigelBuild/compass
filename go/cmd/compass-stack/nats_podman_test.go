@@ -60,7 +60,7 @@ func TestNatsUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(binDir)
+	env := stackEnv(t, binDir)
 
 	fx := newContainerFixture(t, shortRoot(t, "-nats"))
 	cfg := fx.cfg
@@ -134,7 +134,7 @@ func TestExternalNatsUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(binDir)
+	env := stackEnv(t, binDir)
 
 	fx := newContainerFixture(t, shortRoot(t, "-extnats"))
 	cfg := fx.cfg
