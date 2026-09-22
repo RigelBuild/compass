@@ -59,39 +59,41 @@ function updateFence(
 
 /**
  * Classify every line once, resolving fenced code blocks and HTML comment
- * blocks, and return only the lines that are real document content.
+ * blocks, and blank out whatever is not real document content.
+ *
+ * Blanked, never dropped: deleting a line splices its neighbours into
+ * contiguity, which is how a parked row joins a live table run the renderer
+ * would have broken. Mapping over the lines keeps that one-for-one by
+ * construction, and a blank can match no header, table line, or DL row.
  *
  * Both ledger counters read this one pass, so neither can model a markdown
- * construct the other misses — the divergence class that has produced phantom
- * rows, a silently shortened snapshot, and a phantom commented-out row. A
- * construct taught here is taught to both at once. The POST is an
- * authoritative full snapshot, so an unterminated block throws here, before
- * either counter reads a line, rather than reading short or long.
+ * construct the other misses. The POST is an authoritative full snapshot, so
+ * an unterminated block throws here, before either counter reads a line.
  */
-function documentContentLines(text: string): string[] {
-	const content: string[] = [];
+function blankNonContentLines(text: string): string[] {
 	let fence: Fence | null = null;
 	let inComment = false;
-	for (const line of text.split("\n")) {
+	const classified = text.split("\n").map((line) => {
 		if (inComment) {
+			// CommonMark comments do not nest, so the first `-->` closes this
+			// one however it reads — matching what the renderer shows.
 			if (line.includes("-->")) inComment = false;
-			continue;
+			return "";
 		}
 		// CommonMark HTML block type 2: opens on `<!--` indented at most 3
 		// spaces, and runs through the line carrying `-->`, trailing text included.
 		if (fence === null && /^ {0,3}<!--/.test(line)) {
 			inComment = !line.includes("-->");
-			continue;
+			return "";
 		}
 		const updated = updateFence(line, fence);
 		fence = updated.fence;
-		if (updated.handled || fence !== null) continue;
-		content.push(line);
-	}
+		return updated.handled || fence !== null ? "" : line;
+	});
 	if (fence !== null)
 		throw new Error("unterminated fenced block in design ledger");
 	if (inComment) throw new Error("unterminated HTML comment in design ledger");
-	return content;
+	return classified;
 }
 
 function isTableLine(line: string): boolean {
@@ -116,7 +118,7 @@ function forEachLedgerRow(
 	callback: (line: string) => void,
 ): void {
 	let tableState: "none" | "header" | "table" = "none";
-	for (const line of documentContentLines(text)) {
+	for (const line of blankNonContentLines(text)) {
 		if (tableState === "header" && isLedgerSeparator(line)) {
 			tableState = "table";
 			continue;
@@ -144,16 +146,13 @@ export function parseLedger(text: string): LandedDecision[] {
 }
 
 /**
- * Count ledger-shaped rows independently of the parser's table anchor. This
- * deliberately does not model the anchor, so anchor misreads surface as
- * mismatches. An unfenced non-ledger table beginning with a DL ID reads high.
- *
- * The anchor is the ONLY independent part: line classification is the shared
- * pre-pass, so this and the parser always see the same document content.
+ * Count ledger-shaped rows independently of the parser's table anchor, so an
+ * anchor misread surfaces as a mismatch. An unfenced non-ledger table
+ * beginning with a DL ID reads high.
  */
 export function countRawLedgerRows(text: string): number {
 	let count = 0;
-	for (const line of documentContentLines(text)) {
+	for (const line of blankNonContentLines(text)) {
 		if (/^ {0,3}\|\s*DL-\d+\s*\|/.test(line)) count++;
 	}
 	return count;
@@ -161,6 +160,25 @@ export function countRawLedgerRows(text: string): number {
 
 export function buildRequestBody(ledger: string): ReconcileRequest {
 	return { repo: "compass", landed: parseLedger(ledger) };
+}
+
+export function assertReconcilableLedger(ledger: string): ReconcileRequest {
+	const body = buildRequestBody(ledger);
+	const rawCount = countRawLedgerRows(ledger);
+	if (body.landed.length !== rawCount) {
+		throw new Error(
+			`ledger parse mismatch: parsed ${body.landed.length} rows, found ${rawCount} raw rows`,
+		);
+	}
+	// An empty frontier is never legitimate here, and both counters agree on
+	// zero if the table header is ever renamed, so the mismatch check alone
+	// would let that post as complete.
+	if (body.landed.length === 0) {
+		throw new Error(
+			"ledger yielded no decision rows; refusing to post an empty frontier",
+		);
+	}
+	return body;
 }
 
 /** Only the request call is injected, so the seam omits `fetch`'s extras. */
@@ -217,21 +235,7 @@ if (import.meta.main) {
 			resolve(import.meta.dir, "../../docs/designs/DECISIONS.md"),
 			"utf8",
 		);
-		const body = buildRequestBody(ledger);
-		const rawCount = countRawLedgerRows(ledger);
-		if (body.landed.length !== rawCount) {
-			throw new Error(
-				`ledger parse mismatch: parsed ${body.landed.length} rows, found ${rawCount} raw rows`,
-			);
-		}
-		// An empty frontier is never legitimate here, and both counters agree on
-		// zero if the table header is ever renamed, so the mismatch check alone
-		// would let that post as complete.
-		if (body.landed.length === 0) {
-			throw new Error(
-				"ledger yielded no decision rows; refusing to post an empty frontier",
-			);
-		}
+		const body = assertReconcilableLedger(ledger);
 		if (process.argv.includes("--check")) {
 			console.log(
 				`Design ledger parse check passed (${body.landed.length} rows).`,
