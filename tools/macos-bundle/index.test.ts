@@ -12,11 +12,12 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+	createOrThrow,
 	formatBusyDiagnosis,
 	formatCreateFailure,
 	parseArgs,
+	probe,
 	renderInfoPlist,
-	reportCreateFailure,
 	staleMountPoints,
 } from "./index.ts";
 
@@ -433,35 +434,113 @@ describe("formatCreateFailure — the headline a failed create leaves in the log
 	});
 });
 
-describe("reportCreateFailure — the real error outlives a stalled probe", () => {
+describe("createOrThrow — a busy create fails the build, loudly and once", () => {
+	const busy = {
+		exitCode: 1,
+		stderr: "hdiutil: create failed - Resource busy",
+	};
+
+	test("throws, so a failed create can never report a green build", async () => {
+		await expect(
+			createOrThrow(
+				busy,
+				async () => "DIAGNOSIS",
+				() => {},
+			),
+		).rejects.toThrow("Resource busy");
+	});
+
+	test("a successful create neither throws nor diagnoses", async () => {
+		let diagnosed = false;
+		const lines: string[] = [];
+		await createOrThrow(
+			{ exitCode: 0, stderr: "" },
+			async () => {
+				diagnosed = true;
+				return "DIAGNOSIS";
+			},
+			(line) => lines.push(line),
+		);
+		expect({ diagnosed, lines }).toEqual({ diagnosed: false, lines: [] });
+	});
+
 	test("emits the headline BEFORE the diagnosis", async () => {
 		const lines: string[] = [];
-		await reportCreateFailure(
-			"HEADLINE",
+		await createOrThrow(
+			busy,
 			async () => "DIAGNOSIS",
 			(line) => lines.push(line),
-		);
-		expect(lines).toEqual(["HEADLINE", "DIAGNOSIS"]);
+		).catch(() => {});
+		expect(lines).toEqual([
+			"macos-bundle: hdiutil create failed (exit 1): hdiutil: create failed - Resource busy",
+			"DIAGNOSIS",
+		]);
 	});
 
-	test("the headline is emitted before the diagnosis is even started", () => {
+	test("the headline reaches the log even if the diagnosis never returns", () => {
 		const lines: string[] = [];
-		// A diagnosis that never settles: the assertion runs on the synchronous
-		// prefix, so nothing here waits on wall-clock time.
-		void reportCreateFailure(
-			"HEADLINE",
+		// A diagnosis that never settles: the assertion reads the synchronous
+		// prefix, so nothing here waits on the clock.
+		void createOrThrow(
+			busy,
 			() => new Promise<string>(() => {}),
 			(line) => lines.push(line),
-		);
-		expect(lines).toEqual(["HEADLINE"]);
+		).catch(() => {});
+		expect(lines).toEqual([
+			"macos-bundle: hdiutil create failed (exit 1): hdiutil: create failed - Resource busy",
+		]);
 	});
 
-	test("returns the headline so the caller throws the same text it logged", async () => {
-		const thrown = await reportCreateFailure(
-			"HEADLINE",
-			async () => "DIAGNOSIS",
-			() => {},
+	test("reports the reason it was given, not the diagnosis text", async () => {
+		await expect(
+			createOrThrow(
+				busy,
+				async () => "UNRELATED_DIAGNOSIS",
+				() => {},
+			),
+		).rejects.not.toThrow("UNRELATED_DIAGNOSIS");
+	});
+});
+
+describe("probe — bounded, and truthful about how it ended", () => {
+	test("reports the real exit status of a command that ran", async () => {
+		const result = await probe(["sh", "-c", "exit 7"]);
+		expect(result.exitCode).toBe(7);
+	});
+
+	test("captures stdout and stderr separately", async () => {
+		const result = await probe(["sh", "-c", "echo OUT; echo ERR 1>&2"]);
+		expect({ out: result.stdout.trim(), err: result.stderr.trim() }).toEqual({
+			out: "OUT",
+			err: "ERR",
+		});
+	});
+
+	test("a command that never ran says so, rather than looking like no holder", async () => {
+		const result = await probe(["definitely-not-a-real-binary-xyz"]);
+		expect(result.exitCode).toBe("probe failed");
+	});
+
+	test("a signal death names the signal, not a probe that never ran", async () => {
+		const result = await probe(["sh", "-c", "kill -9 $$"]);
+		expect(result.exitCode).toBe("killed (SIGKILL)");
+	});
+
+	test("a descendant holding the pipe cannot outlive the budget", async () => {
+		// The grandchild keeps the inherited stdout open after its parent is
+		// signalled, which is what defeats a child-only timeout.
+		const result = await probe(
+			["sh", "-c", "printf HOLDER; sh -c 'sleep 60' & exec sleep 60"],
+			250,
 		);
-		expect(thrown).toBe("HEADLINE");
+		expect(result.exitCode).toBe("timed out");
+	});
+
+	test("keeps what a timed-out probe already printed", async () => {
+		const result = await probe(
+			["sh", "-c", "printf HOLDER; sh -c 'sleep 60' & exec sleep 60"],
+			250,
+		);
+		expect(result.stdout).toContain("HOLDER");
 	});
 });

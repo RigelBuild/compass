@@ -287,17 +287,23 @@ export function formatCreateFailure(
 }
 
 /**
- * Emit the headline BEFORE the diagnosis, so the real error still reaches the
- * log if the probe stalls, and return it for the caller to throw.
+ * Fail the build on a non-zero `hdiutil create`, emitting the headline BEFORE
+ * the diagnosis so the real error still reaches the log if the probe stalls.
+ * Takes only the fields it reads, so a test needs no subprocess.
  */
-export async function reportCreateFailure(
-	headline: string,
+export async function createOrThrow(
+	created: { exitCode: number | null; stderr: { toString(): string } },
 	diagnose: () => Promise<string>,
 	emit: (line: string) => void,
-): Promise<string> {
+): Promise<void> {
+	if (created.exitCode === 0) return;
+	const headline = formatCreateFailure(
+		created.exitCode,
+		created.stderr.toString(),
+	);
 	emit(headline);
 	emit(await diagnose());
-	return headline;
+	throw new Error(headline);
 }
 
 /**
@@ -305,7 +311,7 @@ export async function reportCreateFailure(
  * way it failed, so "(no output)" is never mistaken for "nothing holds it".
  */
 export type Probe = {
-	exitCode: number | "timed out" | "probe failed";
+	exitCode: number | "timed out" | "probe failed" | `killed (${string})`;
 	stdout: string;
 	stderr: string;
 };
@@ -366,12 +372,15 @@ async function diagnoseBusy(stageRoot: string): Promise<string> {
 const PROBE_TIMEOUT_MS = 10_000;
 
 /** Run one bounded probe, reporting any failure as output instead of raising. */
-async function probe(cmd: string[]): Promise<Probe> {
+export async function probe(
+	cmd: string[],
+	budgetMs = PROBE_TIMEOUT_MS,
+): Promise<Probe> {
 	try {
 		const child = Bun.spawn(cmd, {
 			stdout: "pipe",
 			stderr: "pipe",
-			timeout: PROBE_TIMEOUT_MS,
+			timeout: budgetMs,
 		});
 		// Accumulate as it arrives: a probe that outruns the deadline has usually
 		// already printed the holder line, which is the thing worth keeping.
@@ -387,6 +396,7 @@ async function probe(cmd: string[]): Promise<Probe> {
 		// The spawn timeout signals the child alone, so a descendant holding the
 		// inherited pipe can keep these reads open long past it. Race the reads
 		// too, or the bound is only as good as the deepest grandchild.
+		const deadline = new Deadline(budgetMs + 1_000);
 		const finished = await Promise.race([
 			Promise.all([
 				drain(child.stdout, (t) => {
@@ -397,20 +407,52 @@ async function probe(cmd: string[]): Promise<Probe> {
 				}),
 				child.exited,
 			]).then(() => true),
-			// biome-ignore lint/plugin: a real deadline on a subprocess read, not a test wait.
-			Bun.sleep(PROBE_TIMEOUT_MS + 1_000).then(() => false),
+			deadline.expired,
 		]);
-		if (!finished) child.kill("SIGKILL");
-		// `child.killed` is true for every spawn, so only the timeout's SIGTERM
-		// distinguishes a bounded-out probe from a normal non-zero exit.
-		const timedOut = !finished || child.signalCode === "SIGTERM";
+		// A live timer would keep the event loop referenced after we return. The
+		// child is already SIGTERM-dead by here; only a descendant outlives it,
+		// and that one is not ours to reap.
+		deadline.cancel();
 		return {
-			exitCode: timedOut ? "timed out" : (child.exitCode ?? "probe failed"),
+			exitCode: probeExit(child, finished),
 			stdout,
 			stderr,
 		};
 	} catch (err) {
 		return { exitCode: "probe failed", stdout: "", stderr: String(err) };
+	}
+}
+
+/**
+ * Classify a finished probe. A signal death reports the signal rather than
+ * "probe failed" — `child.exitCode` is null on a signal, and a killed holder is
+ * a real observation, not a probe that never ran.
+ */
+function probeExit(
+	child: Bun.Subprocess,
+	finished: boolean,
+): Probe["exitCode"] {
+	if (!finished) return "timed out";
+	if (child.signalCode === "SIGTERM") return "timed out";
+	if (child.signalCode !== null) return `killed (${child.signalCode})`;
+	return child.exitCode ?? "probe failed";
+}
+
+/** A cancellable deadline, so the losing race arm cannot outlive its probe. */
+class Deadline {
+	readonly expired: Promise<false>;
+	// biome-ignore lint/style/noRestrictedGlobals: the handle type of the timer below.
+	private timer: ReturnType<typeof setTimeout> | undefined;
+
+	constructor(ms: number) {
+		this.expired = new Promise<false>((resolve) => {
+			// biome-ignore lint/style/noRestrictedGlobals: a real subprocess deadline, not a test wait — budget+1000 sits behind the spawn timeout and wins only when a descendant holds the inherited pipe past the child's SIGTERM. Cancelled on the winning path.
+			this.timer = setTimeout(() => resolve(false), ms);
+		});
+	}
+
+	cancel(): void {
+		if (this.timer !== undefined) clearTimeout(this.timer);
 	}
 }
 
@@ -481,17 +523,7 @@ async function main(): Promise<void> {
 		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`
 			.quiet()
 			.nothrow();
-	if (created.exitCode !== 0) {
-		// Never retry: the holder is not identified yet, and a retry would destroy
-		// the evidence this probe exists to collect.
-		throw new Error(
-			await reportCreateFailure(
-				formatCreateFailure(created.exitCode, created.stderr.toString()),
-				() => diagnoseBusy(stageRoot),
-				(line) => console.error(line),
-			),
-		);
-	}
+	await createOrThrow(created, () => diagnoseBusy(stageRoot), console.error);
 
 	console.log(`macos-bundle: wrote ${args.out}`);
 }
