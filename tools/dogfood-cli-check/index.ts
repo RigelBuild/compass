@@ -14,9 +14,26 @@ const GO_ROOT = join(WORKSPACE_ROOT, "go");
 // compiles: globbing *.go misses go:embed assets and includes build-tag files.
 const SOURCE_GLOBS = ["./cmd/compass"];
 // `go list` templates do not interpret \t, so separate fields with a literal
-// token no path or filename can contain.
-
-const LIST_FORMAT = `{{.Dir}}${FIELD_SEP}{{range .GoFiles}}{{.}} {{end}}${FIELD_SEP}{{range .CgoFiles}}{{.}} {{end}}${FIELD_SEP}{{range .EmbedFiles}}{{.}} {{end}}`;
+// token no path or filename can contain. Every kind `go build` compiles or
+// links is listed: the repo has only Go and embeds today, but a future .s or
+// .syso must not slip past a gate that claims the exact build closure.
+const INPUT_FIELDS = [
+	"GoFiles",
+	"CgoFiles",
+	"EmbedFiles",
+	"CFiles",
+	"CXXFiles",
+	"MFiles",
+	"FFiles",
+	"SFiles",
+	"SysoFiles",
+	"HFiles",
+	"SwigFiles",
+	"SwigCXXFiles",
+] as const;
+const LIST_FORMAT = `{{.Dir}}${INPUT_FIELDS.map(
+	(field) => `${FIELD_SEP}{{range .${field}}}{{.}} {{end}}`,
+).join("")}`;
 const LIST_TIMEOUT_MS = 30_000;
 const HELP_TIMEOUT_MS = 5_000;
 const KILL_GRACE_MS = 2_000;
