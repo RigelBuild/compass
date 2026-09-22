@@ -150,19 +150,24 @@ const ANCHORED_ROW = [
 	"| --- | --- | --- | --- |",
 	"| DL-001 | real | Active (Matt, 2026-01-01) | [r](r.md) |",
 ];
+const PARKED_ROW =
+	"| DL-905 | parked | Active (Matt, 2026-01-01) | [r](r.md) |";
 
 describe("shared line classification", () => {
-	// Both counters read one classification pre-pass, so every fence and comment
-	// shape must resolve identically for the parser and the floor.
+	// Both counters read one classification pre-pass, so no fence or comment
+	// shape resolves for one and not the other. The floor carries no table
+	// anchor, so it still reads high where a classified-out region interrupts a
+	// run — a loud mismatch, never a silent agreement on a wrong frontier.
 	const cases: {
 		name: string;
 		lines: string[];
-		expected: LedgerOutcome;
+		parser: LedgerOutcome;
+		floor?: LedgerOutcome;
 	}[] = [
 		{
 			name: "an unterminated fence",
 			lines: ["```", ...ANCHORED_ROW],
-			expected: {
+			parser: {
 				kind: "throws",
 				message: "unterminated fenced block in design ledger",
 			},
@@ -170,7 +175,7 @@ describe("shared line classification", () => {
 		{
 			name: "a DL row inside a closed fence",
 			lines: ["```", "| DL-900 | hidden | x | y |", "```", ...ANCHORED_ROW],
-			expected: { kind: "rows", count: 1 },
+			parser: { kind: "rows", count: 1 },
 		},
 		{
 			name: "a fence line carrying an info string",
@@ -181,12 +186,12 @@ describe("shared line classification", () => {
 				"```",
 				...ANCHORED_ROW,
 			],
-			expected: { kind: "rows", count: 1 },
+			parser: { kind: "rows", count: 1 },
 		},
 		{
 			name: "an unterminated HTML comment",
 			lines: ["<!--", ...ANCHORED_ROW],
-			expected: {
+			parser: {
 				kind: "throws",
 				message: "unterminated HTML comment in design ledger",
 			},
@@ -202,12 +207,12 @@ describe("shared line classification", () => {
 				"| DL-905 | parked draft | Active (Matt, 2026-01-01) | [r](r.md) |",
 				"-->",
 			],
-			expected: { kind: "rows", count: 1 },
+			parser: { kind: "rows", count: 1 },
 		},
 		{
 			name: "a comment closer carrying trailing whitespace",
 			lines: ["<!--", "| DL-905 | parked | x | y |", "-->   ", ...ANCHORED_ROW],
-			expected: { kind: "rows", count: 1 },
+			parser: { kind: "rows", count: 1 },
 		},
 		{
 			name: "fence markers inside a comment",
@@ -218,7 +223,7 @@ describe("shared line classification", () => {
 				"-->",
 				...ANCHORED_ROW,
 			],
-			expected: { kind: "rows", count: 1 },
+			parser: { kind: "rows", count: 1 },
 		},
 		{
 			name: "a comment opener inside a fence",
@@ -229,7 +234,7 @@ describe("shared line classification", () => {
 				"```",
 				...ANCHORED_ROW,
 			],
-			expected: { kind: "rows", count: 1 },
+			parser: { kind: "rows", count: 1 },
 		},
 		{
 			name: "a single-line comment inside a table run",
@@ -238,7 +243,8 @@ describe("shared line classification", () => {
 				"<!-- | DL-905 | parked | x | y | -->",
 				"| DL-002 | also real | Active (Matt, 2026-01-02) | [r](r.md) |",
 			],
-			expected: { kind: "rows", count: 2 },
+			parser: { kind: "rows", count: 1 },
+			floor: { kind: "rows", count: 2 },
 		},
 		{
 			name: "a multi-line comment inside a table run",
@@ -249,14 +255,39 @@ describe("shared line classification", () => {
 				"-->",
 				"| DL-002 | also real | Active (Matt, 2026-01-02) | [r](r.md) |",
 			],
-			expected: { kind: "rows", count: 2 },
+			parser: { kind: "rows", count: 1 },
+			floor: { kind: "rows", count: 2 },
+		},
+		{
+			name: "an arrow in comment prose inside a table run",
+			lines: [
+				...ANCHORED_ROW,
+				"<!--",
+				"supersedes DL-100 --> DL-905",
+				"| DL-905 | parked | x | y |",
+				"-->",
+			],
+			parser: { kind: "rows", count: 1 },
+			floor: { kind: "rows", count: 2 },
+		},
+		{
+			name: "a nested comment opener inside a table run",
+			lines: [
+				...ANCHORED_ROW,
+				"<!--",
+				"<!-- inner note -->",
+				"| DL-905 | parked | x | y |",
+				"-->",
+			],
+			parser: { kind: "rows", count: 1 },
+			floor: { kind: "rows", count: 2 },
 		},
 	];
-	for (const { name, lines, expected } of cases) {
-		test(`${name} resolves the same for both counters`, () => {
+	for (const { name, lines, parser, floor } of cases) {
+		test(`${name} classifies once for both counters`, () => {
 			const text = lines.join("\n");
-			expect(outcome(() => parseLedger(text).length)).toEqual(expected);
-			expect(outcome(() => countRawLedgerRows(text))).toEqual(expected);
+			expect(outcome(() => parseLedger(text).length)).toEqual(parser);
+			expect(outcome(() => countRawLedgerRows(text))).toEqual(floor ?? parser);
 		});
 	}
 
@@ -269,6 +300,55 @@ describe("shared line classification", () => {
 			"| --- | --- | --- | --- |",
 			"| DL-905 | parked draft | Active (Matt, 2026-01-01) | [r](r.md) |",
 			"-->",
+		].join("\n");
+		expect(buildRequestBody(ledger).landed).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+
+	// Classifying a region out must never splice the lines around it together:
+	// a parked row that lands inside a live table run posts as landed.
+	for (const { name, block } of [
+		{
+			name: "an arrow in its prose",
+			block: ["<!--", "supersedes DL-100 --> DL-905", PARKED_ROW, "-->"],
+		},
+		{
+			name: "a nested comment opener",
+			block: ["<!--", "<!-- inner note -->", PARKED_ROW, "-->"],
+		},
+	]) {
+		test(`a parked block with ${name} inside a table run posts no phantom`, () => {
+			const ledger = [...ANCHORED_ROW, ...block].join("\n");
+			expect(buildRequestBody(ledger).landed).toEqual([
+				{ id: "DL-001", surface: "designs", ref: "none" },
+			]);
+			expect(() => assertReconcilableLedger(ledger)).toThrow(
+				"ledger parse mismatch: parsed 1 rows, found 2 raw rows",
+			);
+		});
+	}
+
+	test("a parked block inside a table run does not stitch the run back together", () => {
+		const ledger = [
+			...ANCHORED_ROW,
+			"<!--",
+			"parked note",
+			"-->",
+			"| DL-002 | stitched | Active (Matt, 2026-01-02) | [r](r.md) |",
+		].join("\n");
+		expect(buildRequestBody(ledger).landed).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+
+	test("a fenced block inside a table run does not stitch the run back together", () => {
+		const ledger = [
+			...ANCHORED_ROW,
+			"```",
+			"| DL-905 | fenced example | x | y |",
+			"```",
+			"| DL-002 | stitched | Active (Matt, 2026-01-02) | [r](r.md) |",
 		].join("\n");
 		expect(buildRequestBody(ledger).landed).toEqual([
 			{ id: "DL-001", surface: "designs", ref: "none" },

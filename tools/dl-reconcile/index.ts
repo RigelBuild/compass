@@ -59,36 +59,41 @@ function updateFence(
 
 /**
  * Classify every line once, resolving fenced code blocks and HTML comment
- * blocks, and return only the lines that are real document content.
+ * blocks, and blank out whatever is not real document content.
+ *
+ * Blanked, never dropped: deleting a line splices its neighbours into
+ * contiguity, which is how a parked row joins a live table run the renderer
+ * would have broken. Mapping over the lines keeps that one-for-one by
+ * construction, and a blank can match no header, table line, or DL row.
  *
  * Both ledger counters read this one pass, so neither can model a markdown
  * construct the other misses. The POST is an authoritative full snapshot, so
  * an unterminated block throws here, before either counter reads a line.
  */
-function documentContentLines(text: string): string[] {
-	const content: string[] = [];
+function blankNonContentLines(text: string): string[] {
 	let fence: Fence | null = null;
 	let inComment = false;
-	for (const line of text.split("\n")) {
+	const classified = text.split("\n").map((line) => {
 		if (inComment) {
+			// CommonMark comments do not nest, so the first `-->` closes this
+			// one however it reads — matching what the renderer shows.
 			if (line.includes("-->")) inComment = false;
-			continue;
+			return "";
 		}
 		// CommonMark HTML block type 2: opens on `<!--` indented at most 3
 		// spaces, and runs through the line carrying `-->`, trailing text included.
 		if (fence === null && /^ {0,3}<!--/.test(line)) {
 			inComment = !line.includes("-->");
-			continue;
+			return "";
 		}
 		const updated = updateFence(line, fence);
 		fence = updated.fence;
-		if (updated.handled || fence !== null) continue;
-		content.push(line);
-	}
+		return updated.handled || fence !== null ? "" : line;
+	});
 	if (fence !== null)
 		throw new Error("unterminated fenced block in design ledger");
 	if (inComment) throw new Error("unterminated HTML comment in design ledger");
-	return content;
+	return classified;
 }
 
 function isTableLine(line: string): boolean {
@@ -113,7 +118,7 @@ function forEachLedgerRow(
 	callback: (line: string) => void,
 ): void {
 	let tableState: "none" | "header" | "table" = "none";
-	for (const line of documentContentLines(text)) {
+	for (const line of blankNonContentLines(text)) {
 		if (tableState === "header" && isLedgerSeparator(line)) {
 			tableState = "table";
 			continue;
@@ -147,7 +152,7 @@ export function parseLedger(text: string): LandedDecision[] {
  */
 export function countRawLedgerRows(text: string): number {
 	let count = 0;
-	for (const line of documentContentLines(text)) {
+	for (const line of blankNonContentLines(text)) {
 		if (/^ {0,3}\|\s*DL-\d+\s*\|/.test(line)) count++;
 	}
 	return count;
