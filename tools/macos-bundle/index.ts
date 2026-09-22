@@ -276,6 +276,31 @@ export function formatBusyDiagnosis(probes: {
 }
 
 /**
+ * Render the headline for a failed `hdiutil create`. Empty stderr says so
+ * rather than trailing a bare colon, which reads as truncated output.
+ */
+export function formatCreateFailure(
+	exitCode: number | null,
+	stderr: string,
+): string {
+	return `macos-bundle: hdiutil create failed (exit ${exitCode}): ${stderr.trim() || "(no stderr)"}`;
+}
+
+/**
+ * Emit the headline BEFORE the diagnosis, so the real error still reaches the
+ * log if the probe stalls, and return it for the caller to throw.
+ */
+export async function reportCreateFailure(
+	headline: string,
+	diagnose: () => Promise<string>,
+	emit: (line: string) => void,
+): Promise<string> {
+	emit(headline);
+	emit(await diagnose());
+	return headline;
+}
+
+/**
  * One probe's result. A probe that never produced an exit status says which
  * way it failed, so "(no output)" is never mistaken for "nothing holds it".
  */
@@ -316,9 +341,9 @@ async function detachStaleAttachments(target: {
 	imagePath: string;
 	volumeName: string;
 }): Promise<void> {
-	const probe = await $`hdiutil info -plist`.quiet().nothrow();
-	if (probe.exitCode !== 0) return;
-	for (const mount of staleMountPoints(probe.stdout.toString(), target)) {
+	const info = await $`hdiutil info -plist`.quiet().nothrow();
+	if (info.exitCode !== 0) return;
+	for (const mount of staleMountPoints(info.stdout.toString(), target)) {
 		await $`hdiutil detach ${mount} -force`.quiet().nothrow();
 	}
 }
@@ -329,13 +354,16 @@ async function detachStaleAttachments(target: {
  * a diagnostic that blocks would erase the error it exists to explain.
  */
 async function diagnoseBusy(stageRoot: string): Promise<string> {
-	return formatBusyDiagnosis({
-		stageRoot,
-		// +D walks the tree to full depth and man lsof warns it can be slow.
-		lsof: await probe(["lsof", "+D", stageRoot]),
-		hdiutilInfo: await probe(["hdiutil", "info"]),
-	});
+	// Concurrent so the whole diagnostic is bounded once, not once per probe.
+	// +D walks the tree to full depth and man lsof warns it can be slow.
+	const [lsof, hdiutilInfo] = await Promise.all([
+		probe(["lsof", "+D", stageRoot]),
+		probe(["hdiutil", "info"]),
+	]);
+	return formatBusyDiagnosis({ stageRoot, lsof, hdiutilInfo });
 }
+
+const PROBE_TIMEOUT_MS = 10_000;
 
 /** Run one bounded probe, reporting any failure as output instead of raising. */
 async function probe(cmd: string[]): Promise<Probe> {
@@ -343,15 +371,27 @@ async function probe(cmd: string[]): Promise<Probe> {
 		const child = Bun.spawn(cmd, {
 			stdout: "pipe",
 			stderr: "pipe",
-			timeout: 10_000,
+			timeout: PROBE_TIMEOUT_MS,
 		});
-		const [stdout, stderr] = await Promise.all([
-			new Response(child.stdout).text(),
-			new Response(child.stderr).text(),
+		// The spawn timeout signals the child alone, so a descendant holding the
+		// inherited pipe can keep these reads open long past it. Race the reads
+		// too, or the bound is only as good as the deepest grandchild.
+		const drained = await Promise.race([
+			Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]),
+			// biome-ignore lint/plugin: a real deadline on a subprocess read, not a test wait.
+			Bun.sleep(PROBE_TIMEOUT_MS + 1_000).then(() => null),
 		]);
-		// `exited` resolves to the real status; `child.killed` is true for every
-		// spawn, so only the timeout's SIGTERM distinguishes a bounded-out probe.
-		const status = await child.exited;
+		if (drained === null) {
+			child.kill("SIGKILL");
+			return { exitCode: "timed out", stdout: "", stderr: "" };
+		}
+		const [stdout, stderr, status] = drained;
+		// `child.killed` is true for every spawn, so only the timeout's SIGTERM
+		// distinguishes a bounded-out probe from a normal non-zero exit.
 		return {
 			exitCode: child.signalCode === "SIGTERM" ? "timed out" : status,
 			stdout,
@@ -426,15 +466,19 @@ async function main(): Promise<void> {
 	await rm(args.out, { force: true });
 	await detachStaleAttachments({ imagePath: args.out, volumeName: "Compass" });
 	const created =
-		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`.nothrow();
+		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`
+			.quiet()
+			.nothrow();
 	if (created.exitCode !== 0) {
-		const failure = `macos-bundle: hdiutil create failed (exit ${created.exitCode}): ${created.stderr.toString().trim()}`;
-		// Report before probing so the real error survives even a probe that stalls.
-		console.error(failure);
 		// Never retry: the holder is not identified yet, and a retry would destroy
 		// the evidence this probe exists to collect.
-		console.error(await diagnoseBusy(stageRoot));
-		throw new Error(failure);
+		throw new Error(
+			await reportCreateFailure(
+				formatCreateFailure(created.exitCode, created.stderr.toString()),
+				() => diagnoseBusy(stageRoot),
+				(line) => console.error(line),
+			),
+		);
 	}
 
 	console.log(`macos-bundle: wrote ${args.out}`);

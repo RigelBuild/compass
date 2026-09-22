@@ -13,8 +13,10 @@
 import { describe, expect, test } from "bun:test";
 import {
 	formatBusyDiagnosis,
+	formatCreateFailure,
 	parseArgs,
 	renderInfoPlist,
+	reportCreateFailure,
 	staleMountPoints,
 } from "./index.ts";
 
@@ -398,5 +400,56 @@ describe("formatBusyDiagnosis — names the holder of a busy staging tree", () =
 			lsof: { exitCode: 1, stdout: "NOTRAILING", stderr: "WARN" },
 		});
 		expect(out).toContain("NOTRAILING\nWARN");
+	});
+
+	test("each section starts on its own line, not run together", () => {
+		expect(formatBusyDiagnosis(probes)).toContain("\n── lsof +D");
+	});
+});
+
+describe("formatCreateFailure — the headline a failed create leaves in the log", () => {
+	test("carries the exit code and the reason", () => {
+		expect(
+			formatCreateFailure(1, "hdiutil: create failed - Resource busy"),
+		).toBe(
+			"macos-bundle: hdiutil create failed (exit 1): hdiutil: create failed - Resource busy",
+		);
+	});
+
+	test("says so rather than trailing a bare colon when stderr is empty", () => {
+		expect(formatCreateFailure(1, "   ")).toContain("(no stderr)");
+	});
+});
+
+describe("reportCreateFailure — the real error outlives a stalled probe", () => {
+	test("emits the headline BEFORE the diagnosis", async () => {
+		const lines: string[] = [];
+		await reportCreateFailure(
+			"HEADLINE",
+			async () => "DIAGNOSIS",
+			(line) => lines.push(line),
+		);
+		expect(lines).toEqual(["HEADLINE", "DIAGNOSIS"]);
+	});
+
+	test("the headline is emitted before the diagnosis is even started", () => {
+		const lines: string[] = [];
+		// A diagnosis that never settles: the assertion runs on the synchronous
+		// prefix, so nothing here waits on wall-clock time.
+		void reportCreateFailure(
+			"HEADLINE",
+			() => new Promise<string>(() => {}),
+			(line) => lines.push(line),
+		);
+		expect(lines).toEqual(["HEADLINE"]);
+	});
+
+	test("returns the headline so the caller throws the same text it logged", async () => {
+		const thrown = await reportCreateFailure(
+			"HEADLINE",
+			async () => "DIAGNOSIS",
+			() => {},
+		);
+		expect(thrown).toBe("HEADLINE");
 	});
 });
