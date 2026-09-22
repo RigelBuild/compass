@@ -1,5 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { assertCliArtifact, type CliCheckInput } from "./cli-check";
+import {
+	assertCliArtifact,
+	type CliCheckInput,
+	FIELD_SEP,
+	parseListedInputs,
+} from "./cli-check";
+
+const ROOT = "/repo";
+const listed = (dir: string, go: string, embed = "") =>
+	[dir, go, "", embed].join(FIELD_SEP);
+
+describe("parseListedInputs", () => {
+	test("includes embedded assets, which no .go glob would see", () => {
+		expect(
+			parseListedInputs(
+				listed(`${ROOT}/go/store`, "store.go", "mig/1.sql"),
+				ROOT,
+			),
+		).toEqual([`${ROOT}/go/store/store.go`, `${ROOT}/go/store/mig/1.sql`]);
+	});
+	test("skips out-of-repo deps, which are immutable store paths", () => {
+		expect(
+			parseListedInputs(listed("/nix/store/go/src/fmt", "fmt.go"), ROOT),
+		).toEqual([]);
+	});
+	test("yields nothing for output carrying no separator", () => {
+		expect(parseListedInputs(`${ROOT}/go/cmd\tmain.go`, ROOT)).toEqual([]);
+	});
+});
 
 const healthy: CliCheckInput = {
 	binaryExists: true,

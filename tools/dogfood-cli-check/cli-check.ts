@@ -1,3 +1,29 @@
+/** Field separator for `parseListedInputs`; `go list` templates ignore \t. */
+export const FIELD_SEP = "|:|";
+
+/**
+ * Pull every in-repo build input out of `go list` output. Embeds count: a
+ * changed embedded asset rebuilds the binary but touches no .go file.
+ */
+export function parseListedInputs(
+	stdout: string,
+	repoRoot: string,
+): readonly string[] {
+	const files: string[] = [];
+	for (const line of stdout.split("\n")) {
+		const [dir, ...groups] = line.split(FIELD_SEP);
+		// Stdlib and module-cache deps are immutable store paths, pinned by
+		// go.mod/go.sum, so only in-repo inputs can go stale.
+		if (!dir?.startsWith(`${repoRoot}/`)) continue;
+		for (const group of groups) {
+			for (const name of group.trim().split(/\s+/).filter(Boolean)) {
+				files.push(`${dir}/${name}`);
+			}
+		}
+	}
+	return files;
+}
+
 export type CliRunResult =
 	| { readonly kind: "exit"; readonly code: number }
 	| { readonly kind: "timeout" }
@@ -7,6 +33,7 @@ export interface CliCheckInput {
 	readonly binaryExists: boolean;
 	readonly binaryExecutable: boolean;
 	readonly binaryMtimeMs: number | null;
+	/** Null only alongside a `sourceError`; the scan never half-succeeds. */
 	readonly newestSourceMtimeMs: number | null;
 	readonly sourceError: string | null;
 	readonly run: CliRunResult | null;
@@ -30,10 +57,17 @@ export function assertCliArtifact(input: CliCheckInput): CliCheckResult {
 			message: "operator CLI exists but is not executable",
 		};
 	}
-	if (input.sourceError !== null || input.newestSourceMtimeMs === null) {
+	if (input.sourceError !== null) {
 		return {
 			ok: false,
-			message: `operator CLI freshness cannot be checked: ${input.sourceError ?? "the linked source set is empty"}`,
+			message: `operator CLI freshness cannot be checked: ${input.sourceError}`,
+		};
+	}
+	if (input.newestSourceMtimeMs === null) {
+		return {
+			ok: false,
+			message:
+				"operator CLI freshness cannot be checked: no build inputs resolved",
 		};
 	}
 	if (
