@@ -337,12 +337,18 @@ describe("staleMountPoints — selects only this build's leaked attachment", () 
 describe("formatBusyDiagnosis — names the holder of a busy staging tree", () => {
 	const probes = {
 		stageRoot: "/tmp/macos-bundle-stage",
-		lsof: "COMMAND   PID  USER\ncodesign 4711 runner",
-		hdiutilInfo: "no image attached",
+		lsof: {
+			exitCode: 0,
+			stdout: "COMMAND   PID  USER\ncodesign 4711 runner",
+			stderr: "",
+		},
+		hdiutilInfo: { exitCode: 0, stdout: "no image attached", stderr: "" },
 	};
 
-	test("carries the probed staging path so the reader knows what was busy", () => {
-		expect(formatBusyDiagnosis(probes)).toContain("/tmp/macos-bundle-stage");
+	test("the banner states the failure and the tree it probed", () => {
+		expect(formatBusyDiagnosis(probes)).toContain(
+			"hdiutil create failed; probing what holds /tmp/macos-bundle-stage",
+		);
 	});
 
 	test("carries the lsof holder, which is the whole point of the probe", () => {
@@ -354,7 +360,34 @@ describe("formatBusyDiagnosis — names the holder of a busy staging tree", () =
 	});
 
 	test("an empty probe reads as no output, never as a blank section", () => {
-		const out = formatBusyDiagnosis({ ...probes, lsof: "   \n  " });
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: 1, stdout: "   \n  ", stderr: "" },
+		});
 		expect(out).toContain("(no output)");
+	});
+
+	test("a silent lsof exit 1 is readable as no holder, not as a failed probe", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: 1, stdout: "", stderr: "" },
+		});
+		expect(out).toContain("lsof +D /tmp/macos-bundle-stage (exit 1)");
+	});
+
+	test("a timed-out probe says so instead of reporting an exit code", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: "timed out", stdout: "", stderr: "" },
+		});
+		expect(out).toContain("(exit timed out)");
+	});
+
+	test("stderr keeps its own line when stdout has no trailing newline", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: 1, stdout: "NOTRAILING", stderr: "WARN" },
+		});
+		expect(out).toContain("NOTRAILING\nWARN");
 	});
 });

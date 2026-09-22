@@ -252,23 +252,42 @@ export function staleMountPoints(
  * Render what a failed `hdiutil create` had open, for the EBUSY path. Pure so
  * the formatting is unit-testable; the caller collects the probe output.
  *
- * `hdiutil create -srcfolder` reports "Resource busy" when something still
- * holds the SOURCE tree, not only when the output path is busy — and the error
- * never names the holder, which is why this flake has survived two fixes aimed
- * at the output side.
+ * `hdiutil create` can report "Resource busy" without naming the holder, so the
+ * cause has to be probed rather than inferred: the previous fix (detaching a
+ * leaked attachment, on both the CI step and the tool side) targeted the output
+ * image, and the flake outlived it.
+ *
+ * An exit code rides in each section header because a silent `lsof` exit 1 means
+ * "nothing holds the tree" — the most decisive result the probe can return, and
+ * indistinguishable from a probe that failed without it.
  */
 export function formatBusyDiagnosis(probes: {
 	stageRoot: string;
-	lsof: string;
-	hdiutilInfo: string;
+	lsof: Probe;
+	hdiutilInfo: Probe;
 }): string {
-	const section = (title: string, body: string): string =>
-		`── ${title} ──\n${body.trim() || "(no output)"}`;
+	const section = (title: string, probe: Probe): string =>
+		`── ${title} (exit ${probe.exitCode}) ──\n${probeOutput(probe)}`;
 	return [
 		`macos-bundle: hdiutil create failed; probing what holds ${probes.stageRoot}`,
 		section(`lsof +D ${probes.stageRoot}`, probes.lsof),
 		section("hdiutil info", probes.hdiutilInfo),
 	].join("\n");
+}
+
+/** One probe's result. `exitCode` is a string so a timeout can say so. */
+export type Probe = {
+	exitCode: number | string;
+	stdout: string;
+	stderr: string;
+};
+
+/** Join a probe's streams so a stdout without a trailing newline can't eat stderr. */
+function probeOutput(probe: Probe): string {
+	const parts = [probe.stdout, probe.stderr]
+		.map((s) => s.trim())
+		.filter(Boolean);
+	return parts.length > 0 ? parts.join("\n") : "(no output)";
 }
 
 // ── The edge (impure) ──────────────────────────────────────────────────────
@@ -303,16 +322,39 @@ async function detachStaleAttachments(target: {
 
 /**
  * Collect what holds the staging tree after a failed `hdiutil create`. Never
- * throws: a diagnostic that fails must not replace the real error.
+ * throws and never hangs: this runs only when the build has already failed, so
+ * a diagnostic that blocks would erase the error it exists to explain.
  */
 async function diagnoseBusy(stageRoot: string): Promise<string> {
-	const lsof = await $`lsof +D ${stageRoot}`.quiet().nothrow();
-	const info = await $`hdiutil info`.quiet().nothrow();
 	return formatBusyDiagnosis({
 		stageRoot,
-		lsof: lsof.stdout.toString() + lsof.stderr.toString(),
-		hdiutilInfo: info.stdout.toString() + info.stderr.toString(),
+		// +D walks the tree to full depth and man lsof warns it can be slow.
+		lsof: await probe(["lsof", "+D", stageRoot]),
+		hdiutilInfo: await probe(["hdiutil", "info"]),
 	});
+}
+
+/** Run one bounded probe, reporting any failure as output instead of raising. */
+async function probe(cmd: string[]): Promise<Probe> {
+	try {
+		const child = Bun.spawn(cmd, {
+			stdout: "pipe",
+			stderr: "pipe",
+			timeout: 10_000,
+		});
+		const [stdout, stderr] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+		]);
+		await child.exited;
+		return {
+			exitCode: child.killed ? "timed out" : (child.exitCode ?? "unknown"),
+			stdout,
+			stderr,
+		};
+	} catch (err) {
+		return { exitCode: "probe failed", stdout: "", stderr: String(err) };
+	}
 }
 
 async function main(): Promise<void> {
@@ -374,20 +416,20 @@ async function main(): Promise<void> {
 
 	// Wrap the staging dir into a compressed (UDZO) .dmg. -ov overwrites an
 	// existing image so a re-run is idempotent. detachStaleAttachments covers a
-	// leaked mount of our own image; the observed EBUSY on a hosted ephemeral
-	// runner has no such mount and comes from the source tree instead.
+	// leaked mount of our own image; the observed EBUSY had no such mount, so
+	// that cause is ruled out and the source tree is the leading suspect.
 	await rm(args.out, { force: true });
 	await detachStaleAttachments({ imagePath: args.out, volumeName: "Compass" });
 	const created =
 		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`.nothrow();
 	if (created.exitCode !== 0) {
-		// Fail loud with the holder named, never retry: the contention is between
-		// two commands we control (codesign above, create here), so a retry would
-		// mask our own unhandled failure mode.
+		const failure = `macos-bundle: hdiutil create failed (exit ${created.exitCode}): ${created.stderr.toString().trim()}`;
+		// Report before probing so the real error survives even a probe that stalls.
+		console.error(failure);
+		// Never retry: the holder is not identified yet, and a retry would destroy
+		// the evidence this probe exists to collect.
 		console.error(await diagnoseBusy(stageRoot));
-		throw new Error(
-			`macos-bundle: hdiutil create failed (exit ${created.exitCode}): ${created.stderr.toString().trim()}`,
-		);
+		throw new Error(failure);
 	}
 
 	console.log(`macos-bundle: wrote ${args.out}`);
