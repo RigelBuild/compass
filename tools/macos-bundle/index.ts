@@ -275,9 +275,12 @@ export function formatBusyDiagnosis(probes: {
 	].join("\n");
 }
 
-/** One probe's result. `exitCode` is a string so a timeout can say so. */
+/**
+ * One probe's result. A probe that never produced an exit status says which
+ * way it failed, so "(no output)" is never mistaken for "nothing holds it".
+ */
 export type Probe = {
-	exitCode: number | string;
+	exitCode: number | "timed out" | "probe failed";
 	stdout: string;
 	stderr: string;
 };
@@ -346,9 +349,11 @@ async function probe(cmd: string[]): Promise<Probe> {
 			new Response(child.stdout).text(),
 			new Response(child.stderr).text(),
 		]);
-		await child.exited;
+		// `exited` resolves to the real status; `child.killed` is true for every
+		// spawn, so only the timeout's SIGTERM distinguishes a bounded-out probe.
+		const status = await child.exited;
 		return {
-			exitCode: child.killed ? "timed out" : (child.exitCode ?? "unknown"),
+			exitCode: child.signalCode === "SIGTERM" ? "timed out" : status,
 			stdout,
 			stderr,
 		};

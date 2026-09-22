@@ -383,6 +383,15 @@ describe("formatBusyDiagnosis — names the holder of a busy staging tree", () =
 		expect(out).toContain("(exit timed out)");
 	});
 
+	test("a probe that never ran is distinguishable from one finding no holder", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: "probe failed", stdout: "", stderr: "lsof missing" },
+		});
+		expect(out).toContain("(exit probe failed)");
+		expect(out).toContain("lsof missing");
+	});
+
 	test("stderr keeps its own line when stdout has no trailing newline", () => {
 		const out = formatBusyDiagnosis({
 			...probes,
