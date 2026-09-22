@@ -10,24 +10,10 @@ tasks:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
-  check:
-    # Local/dogfood only: its subject is a binary that exists solely after
-    # `devenv up` on a provisioned box, so CI has nothing to assert against.
-    # `devenv tasks run dogfood:check-cli` is the real invocation.
-    command: 'bun run tools/dogfood-cli-check/index.ts'
-    deps: ['install']
-    options:
-      runFromWorkspaceRoot: true
-      cache: false
-      runInCI: false
-    inputs:
-      - 'index.ts'
-      - 'cli-check.ts'
-      - '/go/go.mod'
-      - '/go/go.sum'
   ci:
-    # `check` is deliberately absent: it would red every PR on a missing
-    # artifact CI never builds.
+    # No `check` task: the gate's subject is a binary that exists only after
+    # `devenv up` on a provisioned box, so moon has nothing to assert against.
+    # `devenv tasks run dogfood:check-cli` is its only real invocation.
     deps: ['typecheck', 'test']
     options:
       cache: false

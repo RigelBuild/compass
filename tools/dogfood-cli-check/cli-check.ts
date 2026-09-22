@@ -1,32 +1,23 @@
-/** Field separator for `parseListedInputs`; `go list` templates ignore \t. */
-export const FIELD_SEP = "|:|";
-
 /**
- * Pull every in-repo build input out of `go list` output. Embeds count: a
- * changed embedded asset rebuilds the binary but touches no .go file.
+ * Keep the in-repo build inputs from `go list`'s one-path-per-line output.
+ * Embeds count: a changed embedded asset rebuilds the binary but touches no
+ * .go file. External deps are dropped — go.mod/go.sum already pin them, so a
+ * change there shows up as a module-input mtime instead.
  */
 export function parseListedInputs(
 	stdout: string,
 	repoRoot: string,
 ): readonly string[] {
-	const files: string[] = [];
-	for (const line of stdout.split("\n")) {
-		const [dir, ...groups] = line.split(FIELD_SEP);
-		// Keep workspace-local inputs only: go.mod/go.sum already pin every
-		// external dep, so editing one shows up there rather than here.
-		if (!dir?.startsWith(`${repoRoot}/`)) continue;
-		for (const group of groups) {
-			for (const name of group.trim().split(/\s+/).filter(Boolean)) {
-				files.push(`${dir}/${name}`);
-			}
-		}
-	}
-	return files;
+	return stdout
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter((line) => line.startsWith(`${repoRoot}/`));
 }
 
 export type CliRunResult =
 	| { readonly kind: "exit"; readonly code: number }
 	| { readonly kind: "timeout" }
+	| { readonly kind: "signal"; readonly signal: string }
 	| { readonly kind: "spawn-failure" };
 
 export interface CliCheckInput {
@@ -91,6 +82,12 @@ export function assertCliArtifact(input: CliCheckInput): CliCheckResult {
 			ok: false,
 			message:
 				"operator CLI could not be started: artifact is corrupt or unrunnable",
+		};
+	}
+	if (input.run?.kind === "signal") {
+		return {
+			ok: false,
+			message: `operator CLI crashed on --help (killed by ${input.run.signal})`,
 		};
 	}
 	if (input.run?.kind !== "exit" || input.run.code !== 0) {

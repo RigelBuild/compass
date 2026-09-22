@@ -2,30 +2,34 @@ import { describe, expect, test } from "bun:test";
 import {
 	assertCliArtifact,
 	type CliCheckInput,
-	FIELD_SEP,
 	parseListedInputs,
 } from "./cli-check";
 
 const ROOT = "/repo";
-const listed = (dir: string, go: string, embed = "") =>
-	[dir, go, "", embed].join(FIELD_SEP);
 
 describe("parseListedInputs", () => {
 	test("includes embedded assets, which no .go glob would see", () => {
 		expect(
 			parseListedInputs(
-				listed(`${ROOT}/go/store`, "store.go", "mig/1.sql"),
+				`${ROOT}/go/store/store.go\n${ROOT}/go/store/mig/1.sql\n`,
 				ROOT,
 			),
 		).toEqual([`${ROOT}/go/store/store.go`, `${ROOT}/go/store/mig/1.sql`]);
 	});
-	test("skips out-of-repo deps, which are immutable store paths", () => {
-		expect(
-			parseListedInputs(listed("/nix/store/go/src/fmt", "fmt.go"), ROOT),
-		).toEqual([]);
+	test("keeps a path containing spaces whole", () => {
+		expect(parseListedInputs(`${ROOT}/go/a/my asset.txt\n`, ROOT)).toEqual([
+			`${ROOT}/go/a/my asset.txt`,
+		]);
 	});
-	test("yields nothing for output carrying no separator", () => {
-		expect(parseListedInputs(`${ROOT}/go/cmd\tmain.go`, ROOT)).toEqual([]);
+	test("skips out-of-repo deps, pinned instead by go.mod/go.sum", () => {
+		expect(parseListedInputs(`/nix/store/go/src/fmt/fmt.go\n`, ROOT)).toEqual(
+			[],
+		);
+	});
+	test("ignores the trailing blank record", () => {
+		expect(parseListedInputs(`${ROOT}/go/a.go\n\n`, ROOT)).toEqual([
+			`${ROOT}/go/a.go`,
+		]);
 	});
 });
 
@@ -66,6 +70,35 @@ describe("assertCliArtifact", () => {
 		).toEqual({
 			ok: false,
 			message: expect.stringContaining("freshness cannot be checked"),
+		});
+	});
+	test("surfaces the scan's own reason when it reports one", () => {
+		expect(
+			assertCliArtifact({
+				...healthy,
+				newestSourceMtimeMs: null,
+				sourceError: "go list timed out resolving the build closure",
+			}),
+		).toEqual({
+			ok: false,
+			message: expect.stringContaining("go list timed out"),
+		});
+	});
+	test("treats an unknown binary mtime as stale, never as current", () => {
+		expect(assertCliArtifact({ ...healthy, binaryMtimeMs: null })).toEqual({
+			ok: false,
+			message: expect.stringContaining("stale"),
+		});
+	});
+	test("names a signal death as a crash, not an exit code", () => {
+		expect(
+			assertCliArtifact({
+				...healthy,
+				run: { kind: "signal", signal: "SIGSEGV" },
+			}),
+		).toEqual({
+			ok: false,
+			message: expect.stringContaining("SIGSEGV"),
 		});
 	});
 	test("names a failed --help run", () => {

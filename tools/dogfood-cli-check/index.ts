@@ -4,7 +4,6 @@ import { join, resolve } from "node:path";
 import {
 	assertCliArtifact,
 	type CliRunResult,
-	FIELD_SEP,
 	parseListedInputs,
 } from "./cli-check";
 
@@ -13,10 +12,10 @@ const GO_ROOT = join(WORKSPACE_ROOT, "go");
 // The toolchain's own input list is the source of truth for what `go build`
 // compiles: globbing *.go misses go:embed assets and includes build-tag files.
 const SOURCE_GLOBS = ["./cmd/compass"];
-// `go list` templates do not interpret \t, so separate fields with a literal
-// token no path or filename can contain. Every kind `go build` compiles or
-// links is listed: the repo has only Go and embeds today, but a future .s or
-// .syso must not slip past a gate that claims the exact build closure.
+// One absolute path per line: `go list` separates a field's filenames with
+// spaces and never quotes them, so a name containing a space is ambiguous
+// unless the template emits each path on its own record. Every kind `go build`
+// compiles or links is listed — a future .s or .syso must not slip past.
 const INPUT_FIELDS = [
 	"GoFiles",
 	"CgoFiles",
@@ -31,9 +30,9 @@ const INPUT_FIELDS = [
 	"SwigFiles",
 	"SwigCXXFiles",
 ] as const;
-const LIST_FORMAT = `{{.Dir}}${INPUT_FIELDS.map(
-	(field) => `${FIELD_SEP}{{range .${field}}}{{.}} {{end}}`,
-).join("")}`;
+const LIST_FORMAT = INPUT_FIELDS.map(
+	(field) => `{{range .${field}}}{{$.Dir}}/{{.}}{{"\\n"}}{{end}}`,
+).join("");
 const LIST_TIMEOUT_MS = 30_000;
 const HELP_TIMEOUT_MS = 5_000;
 const KILL_GRACE_MS = 2_000;
@@ -71,6 +70,13 @@ async function linkedInputs(): Promise<{
 	} catch {
 		return { files: null, error: "go list could not be started" };
 	}
+	// Start draining before awaiting exit. Bun buffers pipes eagerly today, so
+	// this is not a live deadlock, but a writer that fills the pipe while we
+	// waited on exit would hang the gate rather than fail it.
+	const drained = Promise.all([
+		new Response(list.stdout).text(),
+		new Response(list.stderr).text(),
+	]);
 	const settled = await withTimeout(list, LIST_TIMEOUT_MS);
 	if (settled === "timeout") {
 		return {
@@ -78,10 +84,7 @@ async function linkedInputs(): Promise<{
 			error: "go list timed out resolving the build closure",
 		};
 	}
-	const [stdout, stderr] = await Promise.all([
-		new Response(list.stdout).text(),
-		new Response(list.stderr).text(),
-	]);
+	const [stdout, stderr] = await drained;
 	if (settled !== 0) {
 		return {
 			files: null,
@@ -155,8 +158,11 @@ async function runHelp(): Promise<CliRunResult> {
 		return { kind: "spawn-failure" };
 	}
 	const settled = await withTimeout(child, HELP_TIMEOUT_MS);
-	return settled === "timeout"
-		? { kind: "timeout" }
+	if (settled === "timeout") return { kind: "timeout" };
+	// A signal death reads as exit 139 otherwise, which sends an operator
+	// hunting a nonexistent CLI exit code instead of a crash.
+	return child.signalCode
+		? { kind: "signal", signal: child.signalCode }
 		: { kind: "exit", code: settled };
 }
 
