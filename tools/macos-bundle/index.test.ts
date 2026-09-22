@@ -385,6 +385,18 @@ describe("formatBusyDiagnosis — names the holder of a busy staging tree", () =
 		expect(out).toContain("(exit timed out)");
 	});
 
+	test("a timed-out probe still shows whatever holder it printed first", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: {
+				exitCode: "timed out",
+				stdout: "codesign 4711 runner",
+				stderr: "",
+			},
+		});
+		expect(out).toContain("codesign 4711 runner");
+	});
+
 	test("a probe that never ran is distinguishable from one finding no holder", () => {
 		const out = formatBusyDiagnosis({
 			...probes,

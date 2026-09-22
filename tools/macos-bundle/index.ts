@@ -373,27 +373,39 @@ async function probe(cmd: string[]): Promise<Probe> {
 			stderr: "pipe",
 			timeout: PROBE_TIMEOUT_MS,
 		});
+		// Accumulate as it arrives: a probe that outruns the deadline has usually
+		// already printed the holder line, which is the thing worth keeping.
+		let stdout = "";
+		let stderr = "";
+		const drain = async (
+			stream: ReadableStream<Uint8Array>,
+			onChunk: (text: string) => void,
+		): Promise<void> => {
+			const decoder = new TextDecoder();
+			for await (const chunk of stream) onChunk(decoder.decode(chunk));
+		};
 		// The spawn timeout signals the child alone, so a descendant holding the
 		// inherited pipe can keep these reads open long past it. Race the reads
 		// too, or the bound is only as good as the deepest grandchild.
-		const drained = await Promise.race([
+		const finished = await Promise.race([
 			Promise.all([
-				new Response(child.stdout).text(),
-				new Response(child.stderr).text(),
+				drain(child.stdout, (t) => {
+					stdout += t;
+				}),
+				drain(child.stderr, (t) => {
+					stderr += t;
+				}),
 				child.exited,
-			]),
+			]).then(() => true),
 			// biome-ignore lint/plugin: a real deadline on a subprocess read, not a test wait.
-			Bun.sleep(PROBE_TIMEOUT_MS + 1_000).then(() => null),
+			Bun.sleep(PROBE_TIMEOUT_MS + 1_000).then(() => false),
 		]);
-		if (drained === null) {
-			child.kill("SIGKILL");
-			return { exitCode: "timed out", stdout: "", stderr: "" };
-		}
-		const [stdout, stderr, status] = drained;
+		if (!finished) child.kill("SIGKILL");
 		// `child.killed` is true for every spawn, so only the timeout's SIGTERM
 		// distinguishes a bounded-out probe from a normal non-zero exit.
+		const timedOut = !finished || child.signalCode === "SIGTERM";
 		return {
-			exitCode: child.signalCode === "SIGTERM" ? "timed out" : status,
+			exitCode: timedOut ? "timed out" : (child.exitCode ?? "probe failed"),
 			stdout,
 			stderr,
 		};
