@@ -442,7 +442,8 @@ in
       before = [ "devenv:processes:compass-server" ];
     };
 
-    # Assert the built artifact, not just the task graph: an absent binary means the build task never ran.
+    # Assert the built artifact, not just the task graph: a missing binary means
+    # the build produced nothing — skipped, dropped from the closure, or failed.
     "dogfood:check-cli" = {
       exec = ''
         bun "${config.devenv.root}/tools/dogfood-cli-check/index.ts"

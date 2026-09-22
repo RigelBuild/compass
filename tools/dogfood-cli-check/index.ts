@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, stat } from "node:fs/promises";
+import { access, lstat, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
 	assertCliArtifact,
@@ -155,8 +155,10 @@ function report(result: { ok: boolean; message?: string }): number {
 }
 
 async function main(): Promise<number> {
-	const binaryStat = await stat(BINARY).catch(() => null);
-	const binaryExists = binaryStat !== null;
+	// lstat, not stat: the gate must judge the artifact build-cli wrote, so a
+	// symlink standing in for it is not the subject and never passes.
+	const binaryStat = await lstat(BINARY).catch(() => null);
+	const binaryExists = binaryStat?.isFile() === true;
 	const binaryExecutable = binaryExists
 		? await access(BINARY, constants.X_OK).then(
 				() => true,

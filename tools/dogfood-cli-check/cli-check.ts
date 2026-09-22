@@ -12,8 +12,8 @@ export function parseListedInputs(
 	const files: string[] = [];
 	for (const line of stdout.split("\n")) {
 		const [dir, ...groups] = line.split(FIELD_SEP);
-		// Stdlib and module-cache deps are immutable store paths, pinned by
-		// go.mod/go.sum, so only in-repo inputs can go stale.
+		// Keep workspace-local inputs only: go.mod/go.sum already pin every
+		// external dep, so editing one shows up there rather than here.
 		if (!dir?.startsWith(`${repoRoot}/`)) continue;
 		for (const group of groups) {
 			for (const name of group.trim().split(/\s+/).filter(Boolean)) {
