@@ -6,7 +6,8 @@ const healthy: CliCheckInput = {
 	binaryExecutable: true,
 	binaryMtimeMs: 20,
 	newestSourceMtimeMs: 10,
-	runExitCode: 0,
+	sourceError: null,
+	run: { kind: "exit", code: 0 },
 };
 
 describe("assertCliArtifact", () => {
@@ -31,10 +32,36 @@ describe("assertCliArtifact", () => {
 			message: expect.stringContaining("stale"),
 		});
 	});
+	test("names an empty source set", () => {
+		expect(
+			assertCliArtifact({ ...healthy, newestSourceMtimeMs: null }),
+		).toEqual({
+			ok: false,
+			message: expect.stringContaining("freshness cannot be checked"),
+		});
+	});
 	test("names a failed --help run", () => {
-		expect(assertCliArtifact({ ...healthy, runExitCode: 2 })).toEqual({
+		expect(
+			assertCliArtifact({ ...healthy, run: { kind: "exit", code: 2 } }),
+		).toEqual({
 			ok: false,
 			message: expect.stringContaining("exit 2"),
+		});
+	});
+	test("names a timed out --help run", () => {
+		expect(assertCliArtifact({ ...healthy, run: { kind: "timeout" } })).toEqual(
+			{
+				ok: false,
+				message: expect.stringContaining("timed out"),
+			},
+		);
+	});
+	test("names a spawn failure", () => {
+		expect(
+			assertCliArtifact({ ...healthy, run: { kind: "spawn-failure" } }),
+		).toEqual({
+			ok: false,
+			message: expect.stringContaining("corrupt or unrunnable"),
 		});
 	});
 });

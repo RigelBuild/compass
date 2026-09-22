@@ -1,12 +1,13 @@
 import { constants } from "node:fs";
-import { access, readdir, stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { assertCliArtifact } from "./cli-check";
+import { assertCliArtifact, type CliRunResult } from "./cli-check";
 
 const WORKSPACE_ROOT = resolve(import.meta.dir, "../..");
-const SOURCE_ROOT = join(WORKSPACE_ROOT, "go/cmd/compass");
-// Unset means this was not run from a devenv task; an empty prefix would make
-// the path relative and misreport a config error as a build that never ran.
+const GO_ROOT = join(WORKSPACE_ROOT, "go");
+// The toolchain's dependency graph is the source of truth for what `go build` links.
+const SOURCE_GLOBS = ["./cmd/compass"];
+const HELP_TIMEOUT_MS = 5_000;
 const stateDir = process.env.DEVENV_STATE;
 if (!stateDir) {
 	console.error(
@@ -16,18 +17,103 @@ if (!stateDir) {
 }
 const BINARY = join(stateDir, "compass/compass");
 
-async function newestSourceMtime(path: string): Promise<number> {
-	const entries = await readdir(path, { withFileTypes: true });
+interface SourceScan {
+	readonly newest: number | null;
+	readonly error: string | null;
+}
+
+/** Ask the toolchain which directories `go build` actually links. */
+async function linkedSourceDirs(): Promise<{
+	readonly dirs: readonly string[] | null;
+	readonly error: string | null;
+}> {
+	// Name the pipe shape so `stdout`/`stderr` stay readable streams: a bare
+	// `Bun.Subprocess` widens them to a union `Response` cannot take.
+	let list: Bun.Subprocess<"ignore", "pipe", "pipe">;
+	try {
+		list = Bun.spawn(
+			["go", "list", "-deps", "-f", "{{.Dir}}", ...SOURCE_GLOBS],
+			{ cwd: GO_ROOT, stdout: "pipe", stderr: "pipe" },
+		);
+	} catch {
+		return { dirs: null, error: "go list could not be started" };
+	}
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(list.stdout).text(),
+		new Response(list.stderr).text(),
+		list.exited,
+	]);
+	if (exitCode !== 0) {
+		return {
+			dirs: null,
+			error: `go list failed (exit ${exitCode}): ${stderr.trim()}`,
+		};
+	}
+	// Stdlib and module-cache deps are immutable store paths; go.mod/go.sum are
+	// checked separately, so only in-repo sources can go stale here.
+	const dirs = stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.startsWith(`${WORKSPACE_ROOT}/`));
+	return dirs.length === 0
+		? { dirs: null, error: "go list returned no in-repo source directories" }
+		: { dirs, error: null };
+}
+
+async function newestSourceMtime(): Promise<SourceScan> {
+	const { dirs, error } = await linkedSourceDirs();
+	if (dirs === null) return { newest: null, error };
 	let newest = 0;
-	for (const entry of entries) {
-		const entryPath = join(path, entry.name);
-		if (entry.isDirectory()) {
-			newest = Math.max(newest, await newestSourceMtime(entryPath));
-		} else if (entry.isFile() && entry.name.endsWith(".go")) {
-			newest = Math.max(newest, (await stat(entryPath)).mtimeMs);
+	let files = 0;
+	for (const directory of dirs) {
+		const glob = new Bun.Glob("*.go");
+		for await (const file of glob.scan({ cwd: directory, absolute: true })) {
+			if (file.endsWith("_test.go")) continue;
+			files += 1;
+			newest = Math.max(newest, (await stat(file)).mtimeMs);
 		}
 	}
-	return newest;
+	if (files === 0) {
+		return { newest: null, error: "linked source set has no buildable files" };
+	}
+	for (const input of [join(GO_ROOT, "go.mod"), join(GO_ROOT, "go.sum")]) {
+		try {
+			newest = Math.max(newest, (await stat(input)).mtimeMs);
+		} catch {
+			return { newest: null, error: `module input is missing: ${input}` };
+		}
+	}
+	return { newest, error: null };
+}
+
+async function runHelp(): Promise<CliRunResult> {
+	let child: Bun.Subprocess;
+	try {
+		child = Bun.spawn([BINARY, "--help"], {
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+	} catch {
+		return { kind: "spawn-failure" };
+	}
+	// A real abort timer, not a sleep: this task gates `devenv up`, so a CLI
+	// that hangs on --help must fail fast instead of wedging local bring-up.
+	let timer: Timer | undefined;
+	const timeout = new Promise<"timeout">((resolveTimeout) => {
+		// biome-ignore lint/style/noRestrictedGlobals: abort timeout, not a fixed sleep
+		timer = setTimeout(() => resolveTimeout("timeout"), HELP_TIMEOUT_MS);
+	});
+	try {
+		const outcome = await Promise.race([child.exited, timeout]);
+		if (outcome === "timeout") {
+			child.kill();
+			return { kind: "timeout" };
+		}
+		return { kind: "exit", code: outcome };
+	} finally {
+		// Otherwise the pending timer holds the event loop open past a fast exit.
+		clearTimeout(timer);
+	}
 }
 
 async function main(): Promise<number> {
@@ -39,19 +125,15 @@ async function main(): Promise<number> {
 				() => false,
 			)
 		: false;
-	const runExitCode =
-		binaryExists && binaryExecutable
-			? await Bun.spawn([BINARY, "--help"], {
-					stdout: "ignore",
-					stderr: "ignore",
-				}).exited
-			: null;
+	const run = binaryExists && binaryExecutable ? await runHelp() : null;
+	const source = await newestSourceMtime();
 	const result = assertCliArtifact({
 		binaryExists,
 		binaryExecutable,
 		binaryMtimeMs: binaryStat?.mtimeMs ?? null,
-		newestSourceMtimeMs: await newestSourceMtime(SOURCE_ROOT),
-		runExitCode,
+		newestSourceMtimeMs: source.newest,
+		sourceError: source.error,
+		run,
 	});
 	if (!result.ok) {
 		console.error(result.message);

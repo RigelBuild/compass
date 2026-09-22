@@ -23,7 +23,8 @@ tasks:
     inputs:
       - 'index.ts'
       - 'cli-check.ts'
-      - '/go/cmd/compass/**/*.go'
+      - '/go/go.mod'
+      - '/go/go.sum'
   ci:
     # `check` is deliberately absent: it would red every PR on a missing
     # artifact CI never builds.
