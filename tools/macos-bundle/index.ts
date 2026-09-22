@@ -248,6 +248,82 @@ export function staleMountPoints(
 	return [...found];
 }
 
+/**
+ * Render what a failed `hdiutil create` had open, for the EBUSY path. Pure so
+ * the formatting is unit-testable; the caller collects the probe output.
+ *
+ * `hdiutil create` can report "Resource busy" without naming the holder, so the
+ * cause has to be probed rather than inferred: the previous fix (detaching a
+ * leaked attachment, on both the CI step and the tool side) targeted the output
+ * image, and the flake outlived it.
+ *
+ * An exit code rides in each section header because a silent `lsof` exit 1 means
+ * "nothing holds the tree" — the most decisive result the probe can return, and
+ * indistinguishable from a probe that failed without it.
+ */
+export function formatBusyDiagnosis(probes: {
+	stageRoot: string;
+	lsof: Probe;
+	hdiutilInfo: Probe;
+}): string {
+	const section = (title: string, probe: Probe): string =>
+		`── ${title} (exit ${probe.exitCode}) ──\n${probeOutput(probe)}`;
+	return [
+		`macos-bundle: hdiutil create failed; probing what holds ${probes.stageRoot}`,
+		section(`lsof +D ${probes.stageRoot}`, probes.lsof),
+		section("hdiutil info", probes.hdiutilInfo),
+	].join("\n");
+}
+
+/**
+ * Render the headline for a failed `hdiutil create`. Empty stderr says so
+ * rather than trailing a bare colon, which reads as truncated output.
+ */
+export function formatCreateFailure(
+	exitCode: number | null,
+	stderr: string,
+): string {
+	return `macos-bundle: hdiutil create failed (exit ${exitCode}): ${stderr.trim() || "(no stderr)"}`;
+}
+
+/**
+ * Fail the build on a non-zero `hdiutil create`, emitting the headline BEFORE
+ * the diagnosis so the real error still reaches the log if the probe stalls.
+ * Takes only the fields it reads, so a test needs no subprocess.
+ */
+export async function createOrThrow(
+	created: { exitCode: number | null; stderr: { toString(): string } },
+	diagnose: () => Promise<string>,
+	emit: (line: string) => void,
+): Promise<void> {
+	if (created.exitCode === 0) return;
+	const headline = formatCreateFailure(
+		created.exitCode,
+		created.stderr.toString(),
+	);
+	emit(headline);
+	emit(await diagnose());
+	throw new Error(headline);
+}
+
+/**
+ * One probe's result. A probe that never produced an exit status says which
+ * way it failed, so "(no output)" is never mistaken for "nothing holds it".
+ */
+export type Probe = {
+	exitCode: number | "timed out" | "probe failed" | `killed (${string})`;
+	stdout: string;
+	stderr: string;
+};
+
+/** Join a probe's streams so a stdout without a trailing newline can't eat stderr. */
+function probeOutput(probe: Probe): string {
+	const parts = [probe.stdout, probe.stderr]
+		.map((s) => s.trim())
+		.filter(Boolean);
+	return parts.length > 0 ? parts.join("\n") : "(no output)";
+}
+
 // ── The edge (impure) ──────────────────────────────────────────────────────
 
 /** Fail loud if a required input path does not exist (build.sh sanity posture). */
@@ -271,10 +347,112 @@ async function detachStaleAttachments(target: {
 	imagePath: string;
 	volumeName: string;
 }): Promise<void> {
-	const probe = await $`hdiutil info -plist`.quiet().nothrow();
-	if (probe.exitCode !== 0) return;
-	for (const mount of staleMountPoints(probe.stdout.toString(), target)) {
+	const info = await $`hdiutil info -plist`.quiet().nothrow();
+	if (info.exitCode !== 0) return;
+	for (const mount of staleMountPoints(info.stdout.toString(), target)) {
 		await $`hdiutil detach ${mount} -force`.quiet().nothrow();
+	}
+}
+
+/**
+ * Collect what holds the staging tree after a failed `hdiutil create`. Never
+ * throws and never hangs: this runs only when the build has already failed, so
+ * a diagnostic that blocks would erase the error it exists to explain.
+ */
+async function diagnoseBusy(stageRoot: string): Promise<string> {
+	// Concurrent so the whole diagnostic is bounded once, not once per probe.
+	// +D walks the tree to full depth and man lsof warns it can be slow.
+	const [lsof, hdiutilInfo] = await Promise.all([
+		probe(["lsof", "+D", stageRoot]),
+		probe(["hdiutil", "info"]),
+	]);
+	return formatBusyDiagnosis({ stageRoot, lsof, hdiutilInfo });
+}
+
+const PROBE_TIMEOUT_MS = 10_000;
+
+/** Run one bounded probe, reporting any failure as output instead of raising. */
+export async function probe(
+	cmd: string[],
+	budgetMs = PROBE_TIMEOUT_MS,
+): Promise<Probe> {
+	try {
+		const child = Bun.spawn(cmd, {
+			stdout: "pipe",
+			stderr: "pipe",
+			timeout: budgetMs,
+		});
+		// Accumulate as it arrives: a probe that outruns the deadline has usually
+		// already printed the holder line, which is the thing worth keeping.
+		let stdout = "";
+		let stderr = "";
+		const drain = async (
+			stream: ReadableStream<Uint8Array>,
+			onChunk: (text: string) => void,
+		): Promise<void> => {
+			const decoder = new TextDecoder();
+			for await (const chunk of stream) onChunk(decoder.decode(chunk));
+		};
+		// The spawn timeout signals the child alone, so a descendant holding the
+		// inherited pipe can keep these reads open long past it. Race the reads
+		// too, or the bound is only as good as the deepest grandchild.
+		const deadline = new Deadline(budgetMs + 1_000);
+		const finished = await Promise.race([
+			Promise.all([
+				drain(child.stdout, (t) => {
+					stdout += t;
+				}),
+				drain(child.stderr, (t) => {
+					stderr += t;
+				}),
+				child.exited,
+			]).then(() => true),
+			deadline.expired,
+		]);
+		// A live timer would keep the event loop referenced after we return. The
+		// child is already SIGTERM-dead by here; only a descendant outlives it,
+		// and that one is not ours to reap.
+		deadline.cancel();
+		return {
+			exitCode: probeExit(child, finished),
+			stdout,
+			stderr,
+		};
+	} catch (err) {
+		return { exitCode: "probe failed", stdout: "", stderr: String(err) };
+	}
+}
+
+/**
+ * Classify a finished probe. A signal death reports the signal rather than
+ * "probe failed" — `child.exitCode` is null on a signal, and a killed holder is
+ * a real observation, not a probe that never ran.
+ */
+function probeExit(
+	child: Bun.Subprocess,
+	finished: boolean,
+): Probe["exitCode"] {
+	if (!finished) return "timed out";
+	if (child.signalCode === "SIGTERM") return "timed out";
+	if (child.signalCode !== null) return `killed (${child.signalCode})`;
+	return child.exitCode ?? "probe failed";
+}
+
+/** A cancellable deadline, so the losing race arm cannot outlive its probe. */
+class Deadline {
+	readonly expired: Promise<false>;
+	// biome-ignore lint/style/noRestrictedGlobals: the handle type of the timer below.
+	private timer: ReturnType<typeof setTimeout> | undefined;
+
+	constructor(ms: number) {
+		this.expired = new Promise<false>((resolve) => {
+			// biome-ignore lint/style/noRestrictedGlobals: a real subprocess deadline, not a test wait — budget+1000 sits behind the spawn timeout and wins only when a descendant holds the inherited pipe past the child's SIGTERM. Cancelled on the winning path.
+			this.timer = setTimeout(() => resolve(false), ms);
+		});
+	}
+
+	cancel(): void {
+		if (this.timer !== undefined) clearTimeout(this.timer);
 	}
 }
 
@@ -336,11 +514,16 @@ async function main(): Promise<void> {
 	await $`codesign --sign - --force --deep ${appDir}`;
 
 	// Wrap the staging dir into a compressed (UDZO) .dmg. -ov overwrites an
-	// existing image so a re-run is idempotent. Detach any stale attachment of
-	// this volume first — on a reused runner a leaked mount makes create EBUSY.
+	// existing image so a re-run is idempotent. detachStaleAttachments covers a
+	// leaked mount of our own image; the observed EBUSY had no such mount, so
+	// that cause is ruled out and the source tree is the leading suspect.
 	await rm(args.out, { force: true });
 	await detachStaleAttachments({ imagePath: args.out, volumeName: "Compass" });
-	await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`;
+	const created =
+		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`
+			.quiet()
+			.nothrow();
+	await createOrThrow(created, () => diagnoseBusy(stageRoot), console.error);
 
 	console.log(`macos-bundle: wrote ${args.out}`);
 }

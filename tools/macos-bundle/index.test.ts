@@ -11,7 +11,15 @@
 // import.meta.main-guarded, so importing index.ts never runs it.
 
 import { describe, expect, test } from "bun:test";
-import { parseArgs, renderInfoPlist, staleMountPoints } from "./index.ts";
+import {
+	createOrThrow,
+	formatBusyDiagnosis,
+	formatCreateFailure,
+	parseArgs,
+	probe,
+	renderInfoPlist,
+	staleMountPoints,
+} from "./index.ts";
 
 /** The canonical render inputs used across the plist cases. */
 function plistOpts() {
@@ -326,5 +334,213 @@ describe("staleMountPoints — selects only this build's leaked attachment", () 
 			imageBlock("/tmp/unrelated.dmg", ["/Volumes/SomethingElse"]) +
 			imageBlock(TARGET.imagePath, ["/Volumes/Compass"]);
 		expect(staleMountPoints(info, TARGET)).toEqual(["/Volumes/Compass"]);
+	});
+});
+
+describe("formatBusyDiagnosis — names the holder of a busy staging tree", () => {
+	const probes = {
+		stageRoot: "/tmp/macos-bundle-stage",
+		lsof: {
+			exitCode: 0,
+			stdout: "COMMAND   PID  USER\ncodesign 4711 runner",
+			stderr: "",
+		},
+		hdiutilInfo: { exitCode: 0, stdout: "no image attached", stderr: "" },
+	};
+
+	test("the banner states the failure and the tree it probed", () => {
+		expect(formatBusyDiagnosis(probes)).toContain(
+			"hdiutil create failed; probing what holds /tmp/macos-bundle-stage",
+		);
+	});
+
+	test("carries the lsof holder, which is the whole point of the probe", () => {
+		expect(formatBusyDiagnosis(probes)).toContain("codesign 4711 runner");
+	});
+
+	test("carries the hdiutil attachment state alongside it", () => {
+		expect(formatBusyDiagnosis(probes)).toContain("no image attached");
+	});
+
+	test("an empty probe reads as no output, never as a blank section", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: 1, stdout: "   \n  ", stderr: "" },
+		});
+		expect(out).toContain("(no output)");
+	});
+
+	test("a silent lsof exit 1 is readable as no holder, not as a failed probe", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: 1, stdout: "", stderr: "" },
+		});
+		expect(out).toContain("lsof +D /tmp/macos-bundle-stage (exit 1)");
+	});
+
+	test("a timed-out probe says so instead of reporting an exit code", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: "timed out", stdout: "", stderr: "" },
+		});
+		expect(out).toContain("(exit timed out)");
+	});
+
+	test("a timed-out probe still shows whatever holder it printed first", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: {
+				exitCode: "timed out",
+				stdout: "codesign 4711 runner",
+				stderr: "",
+			},
+		});
+		expect(out).toContain("codesign 4711 runner");
+	});
+
+	test("a probe that never ran is distinguishable from one finding no holder", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: "probe failed", stdout: "", stderr: "lsof missing" },
+		});
+		expect(out).toContain("(exit probe failed)");
+		expect(out).toContain("lsof missing");
+	});
+
+	test("stderr keeps its own line when stdout has no trailing newline", () => {
+		const out = formatBusyDiagnosis({
+			...probes,
+			lsof: { exitCode: 1, stdout: "NOTRAILING", stderr: "WARN" },
+		});
+		expect(out).toContain("NOTRAILING\nWARN");
+	});
+
+	test("each section starts on its own line, not run together", () => {
+		expect(formatBusyDiagnosis(probes)).toContain("\n── lsof +D");
+	});
+});
+
+describe("formatCreateFailure — the headline a failed create leaves in the log", () => {
+	test("carries the exit code and the reason", () => {
+		expect(
+			formatCreateFailure(1, "hdiutil: create failed - Resource busy"),
+		).toBe(
+			"macos-bundle: hdiutil create failed (exit 1): hdiutil: create failed - Resource busy",
+		);
+	});
+
+	test("says so rather than trailing a bare colon when stderr is empty", () => {
+		expect(formatCreateFailure(1, "   ")).toContain("(no stderr)");
+	});
+});
+
+describe("createOrThrow — a busy create fails the build, loudly and once", () => {
+	const busy = {
+		exitCode: 1,
+		stderr: "hdiutil: create failed - Resource busy",
+	};
+
+	test("throws, so a failed create can never report a green build", async () => {
+		await expect(
+			createOrThrow(
+				busy,
+				async () => "DIAGNOSIS",
+				() => {},
+			),
+		).rejects.toThrow("Resource busy");
+	});
+
+	test("a successful create neither throws nor diagnoses", async () => {
+		let diagnosed = false;
+		const lines: string[] = [];
+		await createOrThrow(
+			{ exitCode: 0, stderr: "" },
+			async () => {
+				diagnosed = true;
+				return "DIAGNOSIS";
+			},
+			(line) => lines.push(line),
+		);
+		expect({ diagnosed, lines }).toEqual({ diagnosed: false, lines: [] });
+	});
+
+	test("emits the headline BEFORE the diagnosis", async () => {
+		const lines: string[] = [];
+		await createOrThrow(
+			busy,
+			async () => "DIAGNOSIS",
+			(line) => lines.push(line),
+		).catch(() => {});
+		expect(lines).toEqual([
+			"macos-bundle: hdiutil create failed (exit 1): hdiutil: create failed - Resource busy",
+			"DIAGNOSIS",
+		]);
+	});
+
+	test("the headline reaches the log even if the diagnosis never returns", () => {
+		const lines: string[] = [];
+		// A diagnosis that never settles: the assertion reads the synchronous
+		// prefix, so nothing here waits on the clock.
+		void createOrThrow(
+			busy,
+			() => new Promise<string>(() => {}),
+			(line) => lines.push(line),
+		).catch(() => {});
+		expect(lines).toEqual([
+			"macos-bundle: hdiutil create failed (exit 1): hdiutil: create failed - Resource busy",
+		]);
+	});
+
+	test("reports the reason it was given, not the diagnosis text", async () => {
+		await expect(
+			createOrThrow(
+				busy,
+				async () => "UNRELATED_DIAGNOSIS",
+				() => {},
+			),
+		).rejects.not.toThrow("UNRELATED_DIAGNOSIS");
+	});
+});
+
+describe("probe — bounded, and truthful about how it ended", () => {
+	test("reports the real exit status of a command that ran", async () => {
+		const result = await probe(["sh", "-c", "exit 7"]);
+		expect(result.exitCode).toBe(7);
+	});
+
+	test("captures stdout and stderr separately", async () => {
+		const result = await probe(["sh", "-c", "echo OUT; echo ERR 1>&2"]);
+		expect({ out: result.stdout.trim(), err: result.stderr.trim() }).toEqual({
+			out: "OUT",
+			err: "ERR",
+		});
+	});
+
+	test("a command that never ran says so, rather than looking like no holder", async () => {
+		const result = await probe(["definitely-not-a-real-binary-xyz"]);
+		expect(result.exitCode).toBe("probe failed");
+	});
+
+	test("a signal death names the signal, not a probe that never ran", async () => {
+		const result = await probe(["sh", "-c", "kill -9 $$"]);
+		expect(result.exitCode).toBe("killed (SIGKILL)");
+	});
+
+	test("a descendant holding the pipe cannot outlive the budget", async () => {
+		// The grandchild keeps the inherited stdout open after its parent is
+		// signalled, which is what defeats a child-only timeout.
+		const result = await probe(
+			["sh", "-c", "printf HOLDER; sh -c 'sleep 60' & exec sleep 60"],
+			250,
+		);
+		expect(result.exitCode).toBe("timed out");
+	});
+
+	test("keeps what a timed-out probe already printed", async () => {
+		const result = await probe(
+			["sh", "-c", "printf HOLDER; sh -c 'sleep 60' & exec sleep 60"],
+			250,
+		);
+		expect(result.stdout).toContain("HOLDER");
 	});
 });
