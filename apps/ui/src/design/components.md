@@ -815,10 +815,9 @@ minimize toggle is the two-state case: both states are the one
 `disclosure` glyph, rotated by CSS — `⟩` open, `⟨` (180°) minimized — so the
 pair can never misalign the way two separate characters could.
 
-`comms.channelGlyph` returns the group-DM marker as DATA (a string in the
-marker column beside `@` and `#`), so a `<Glyph>` cannot go there. The old `⌗`
-U+2317 was uncovered; it swaps to `&` U+0026, covered by the brand face — a
-bitmap for one kind alone would mix glyph and character in one column.
+`comms.channelGlyph` returns the channel marker as DATA (a string in the marker
+column), so a `<Glyph>` cannot go there. It is now binary — `@` for a DM and
+`#` otherwise — both covered by the brand face.
 
 Kept as text — the `→` U+2192 is in the cmap, so a bitmap is a style call, not
 a coverage fix, and the typographic arrow reads at least as well:
