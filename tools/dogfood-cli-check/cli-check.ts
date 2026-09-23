@@ -48,29 +48,6 @@ export function assertCliArtifact(input: CliCheckInput): CliCheckResult {
 			message: "operator CLI exists but is not executable",
 		};
 	}
-	if (input.sourceError !== null) {
-		return {
-			ok: false,
-			message: `operator CLI freshness cannot be checked: ${input.sourceError}`,
-		};
-	}
-	if (input.newestSourceMtimeMs === null) {
-		return {
-			ok: false,
-			message:
-				"operator CLI freshness cannot be checked: no build inputs resolved",
-		};
-	}
-	if (
-		input.binaryMtimeMs === null ||
-		input.binaryMtimeMs <= input.newestSourceMtimeMs
-	) {
-		return {
-			ok: false,
-			message:
-				"operator CLI is stale: its mtime is not newer than linked Go sources or module inputs",
-		};
-	}
 	if (input.run?.kind === "timeout") {
 		return {
 			ok: false,
@@ -94,6 +71,29 @@ export function assertCliArtifact(input: CliCheckInput): CliCheckResult {
 		return {
 			ok: false,
 			message: `operator CLI failed to run --help (exit ${input.run?.kind === "exit" ? input.run.code : "unknown"})`,
+		};
+	}
+	if (input.sourceError !== null) {
+		return {
+			ok: false,
+			message: `operator CLI freshness cannot be checked: ${input.sourceError}`,
+		};
+	}
+	if (input.newestSourceMtimeMs === null) {
+		return {
+			ok: false,
+			message:
+				"operator CLI freshness cannot be checked: no build inputs resolved",
+		};
+	}
+	if (
+		input.binaryMtimeMs === null ||
+		input.binaryMtimeMs <= input.newestSourceMtimeMs
+	) {
+		return {
+			ok: false,
+			message:
+				"operator CLI is stale: its mtime is not newer than linked Go sources or module inputs",
 		};
 	}
 	return { ok: true };

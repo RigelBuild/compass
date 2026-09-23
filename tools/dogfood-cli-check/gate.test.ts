@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -40,9 +40,9 @@ afterAll(async () => {
 });
 
 describe("the gate end to end", () => {
-	test("resolves the real build closure rather than hanging or crashing", async () => {
-		// An absent binary is the cheap verdict, so reaching this message proves
-		// the state path resolved and no unnamed exception escaped.
+	test("names an absent artifact without paying for the dependency scan", async () => {
+		// The cheap verdict returns before `go list`, so this also pins that
+		// ordering: it would blow the test timeout if the scan ran here.
 		const { code, text } = await runGate(await stateDir());
 		expect(code).toBe(1);
 		expect(text).toContain("operator CLI is absent");
@@ -72,4 +72,20 @@ describe("the gate end to end", () => {
 		expect(code).toBe(1);
 		expect(text).toContain("operator CLI is absent");
 	});
+	// The only case that reaches `go list -deps`, which resolves the whole
+	// module closure and is slow on CI's cold cache — bun's 5s default is not a
+	// budget for it. Crash guard at 2x the gate's own 30s go list ceiling, so a
+	// correct run cannot race it; the hang risk is the subprocess.
+	// biome-ignore lint/plugin: hung-child crash guard, far above a correct run
+	test("resolves the real build closure and reports a runnable stub as stale", async () => {
+		const state = await stateDir();
+		const binary = join(state, "compass/compass");
+		// Runnable, so the run checks pass and freshness is what decides —
+		// and its mtime is older than the repo's newest source.
+		await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		await utimes(binary, new Date(0), new Date(0));
+		const { code, text } = await runGate(state);
+		expect(code).toBe(1);
+		expect(text).toContain("operator CLI is stale");
+	}, 60_000);
 });

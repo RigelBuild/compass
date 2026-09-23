@@ -205,8 +205,13 @@ async function main(): Promise<number> {
 			}),
 		);
 	}
+	// A binary that cannot run is already condemned, so skip the dependency
+	// scan: `go list -deps` costs seconds on a cold module cache.
 	const run = await runHelp();
-	const source = await newestSourceMtime();
+	const decided = run.kind !== "exit" || run.code !== 0;
+	const source = decided
+		? { newest: null, error: null }
+		: await newestSourceMtime();
 	return report(
 		assertCliArtifact({
 			...base,
