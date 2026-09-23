@@ -1,21 +1,21 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# font-coverage-gate (RIG-3603 T8 precondition) — fail when rendered UI source
-# uses a character absent from the branded font faces (Space Mono / Departure
-# Mono). This is the check that lets RIG-3742 retire the Unifont fallback pin in
-# the e2e chromium env: today the claim "no site renders an uncovered glyph" is
-# an eyeball pass over a hand-written census that has been wrong twice; this gate
-# parses the real font cmaps and scans apps/ui/src instead. WARN until T8, then
-# ERROR (FONT_COVERAGE_GATE=error).
+# font-coverage-gate (RIG-3603 T8) — fail when rendered UI source uses a
+# character absent from the branded body face. Findings are enforced against
+# Space Mono (--rigel-mono, what body text resolves to); Departure Mono is
+# parsed and plausibility-checked as a format-12 / parser sanity check, not as
+# part of the covered set. T8 is complete: ERROR is the default and this check
+# is fail-closed. WARN is available only as an explicit non-blocking opt-in via
+# FONT_COVERAGE_GATE=warn.
 #
 # A bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag): install is
 # inherited via .moon/tasks/tag-bun.yml (the shared root install) and
 # lint/format are whole-repo tasks on the root project (/moon.yml), so this leaf
 # has no own bun.lock and never runs its own install.
 #
-# NOT wired into the `:ci` aggregate's default red path: there are 8
-# known-uncovered rendered characters TODAY, so `check` runs in WARN mode and
-# exits 0. T8 flips the default to ERROR.
+# Wired into the `:ci` aggregate's red path: `check` is fail-closed by default
+# and exits 1 for uncovered rendered characters. Invalid or unset mode values
+# also resolve to ERROR; WARN requires an explicit FONT_COVERAGE_GATE=warn.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
@@ -24,15 +24,29 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs:
+      - '*.ts'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/apps/eng-docs/public/fonts/SpaceMono-Regular.ttf'
+      - '/apps/eng-docs/public/fonts/DepartureMono-Regular.otf'
   test:
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs:
+      - '*.ts'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/apps/eng-docs/public/fonts/SpaceMono-Regular.ttf'
+      - '/apps/eng-docs/public/fonts/DepartureMono-Regular.otf'
   check:
     # The coverage gate: parse the branded font cmaps and scan the real
-    # apps/ui/src tree for rendered characters they lack. Run from the workspace
-    # root so the globs resolve repo-relative (GATE_ROOT defaults to the git
-    # toplevel = workspace root). Distinct from `test`, which drives the pure
-    # core over fixtures; this observes the real tree and the real font files.
+    # apps/ui/src tree for rendered characters Space Mono lacks. Run from the
+    # workspace root so the globs resolve repo-relative (GATE_ROOT defaults to
+    # the git toplevel = workspace root). Distinct from `test`, which drives
+    # the pure core over fixtures; this observes the real tree and real fonts.
     command: 'bun run tools/font-coverage-gate/index.ts'
     deps: ['install']
     options:
