@@ -23,10 +23,12 @@ import (
 // publishedRef is one Publish call the fake fabric recorded, plus the row read
 // it made during the call and the call's context state.
 type publishedRef struct {
-	subject string
-	ref     fabric.EventRef
-	readErr error
-	ctxErr  error
+	subject     string
+	ref         fabric.EventRef
+	readErr     error
+	ctxErr      error
+	deadline    time.Time
+	hasDeadline bool
 }
 
 // fakeEventFabric records publishes and, for each one, re-reads the row so a
@@ -47,8 +49,12 @@ func (f *fakeEventFabric) Publish(ctx context.Context, subject string, ref fabri
 		f.onPublish()
 	}
 	_, readErr := f.st.MessageByID(store.WithSystemRole(ctx), ref.RowID)
+	deadline, hasDeadline := ctx.Deadline()
 	f.mu.Lock()
-	f.got = append(f.got, publishedRef{subject: subject, ref: ref, readErr: readErr, ctxErr: ctx.Err()})
+	f.got = append(f.got, publishedRef{
+		subject: subject, ref: ref, readErr: readErr, ctxErr: ctx.Err(),
+		deadline: deadline, hasDeadline: hasDeadline,
+	})
 	f.mu.Unlock()
 	return f.err
 }
@@ -192,8 +198,16 @@ func TestPostMessageFabricPublishOutlivesRequestCancellation(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
+	before := time.Now()
 	id := postText(ctx, t, svc, poster.ID, ch.ID, "hello", "")
 	assertOnePostedRef(t, fab, bootstrapTenant(st), id)
+
+	// Detached from cancellation, the publish still needs its own bound, or a
+	// stalled JetStream ack would pin the RPC.
+	got := fab.published()[0]
+	if !got.hasDeadline || got.deadline.After(time.Now().Add(fabricPublishTimeout)) || got.deadline.Before(before) {
+		t.Fatalf("publish deadline = %v (set %v), want within %v of the call", got.deadline, got.hasDeadline, fabricPublishTimeout)
+	}
 }
 
 func TestPostMessageIdempotentRetryDoesNotRepublishOnFabric(t *testing.T) {
