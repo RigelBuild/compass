@@ -240,11 +240,12 @@ func (l *lifecycleService) SpawnAsAccount(
 // DespawnAsAccount tears down a peer's compute (container + session), NOT its
 // identity: the account row is durable. Authority is the OWNER's, not the
 // spawner's — any agent may despawn a sibling its owner owns, but never a foreign
-// peer. Guards, each fail-closed: self-despawn -> CodeInvalidArgument; unknown,
-// non-agent, or foreign-owner target -> the SAME indistinguishable CodeNotFound.
-// Idempotent past the guards: a target with no live placement is already torn
-// down and succeeds without a Remove (the same already-stopped-succeeds contract
-// StopAgentSession has).
+// peer. The target is an agent handle, bare (the caller owner's namespace) or
+// `owner/agent`. Guards, each fail-closed: self-despawn -> CodeInvalidArgument;
+// unknown, non-agent, or foreign-owner target -> the SAME indistinguishable
+// CodeNotFound. Idempotent past the guards: a target with no live placement is
+// already torn down and succeeds without a Remove (the same
+// already-stopped-succeeds contract StopAgentSession has).
 func (l *lifecycleService) DespawnAsAccount(
 	ctx context.Context,
 	caller store.AccountID,
@@ -253,15 +254,8 @@ func (l *lifecycleService) DespawnAsAccount(
 	ctx, cancel := context.WithTimeout(ctx, spawnChainTimeout)
 	defer cancel()
 
-	target := store.AccountID(req.GetAgentHandle())
-	if target == caller {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
-	}
-
-	// Owner check, fail-closed and indistinguishable — and caller-FIRST to close a
-	// latency side-channel: resolving the caller before the target means both the
-	// unknown-target and foreign-owner paths run exactly two AgentOwner queries, so
-	// the outcomes differ only by an O(1) compare, never by round-trip count.
+	// Caller-FIRST closes a latency side-channel: every target outcome within one
+	// input form then runs the same query count and differs only by O(1) compares.
 	callerOwner, err := l.store.AgentOwner(ctx, caller)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -269,16 +263,12 @@ func (l *lifecycleService) DespawnAsAccount(
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner: %w", err))
 	}
-	targetOwner, err := l.store.AgentOwner(ctx, target)
+	target, err := l.resolveDespawnTarget(ctx, callerOwner, req.GetAgentHandle())
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errPeerNotFound)
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving target owner: %w", err))
+		return nil, err
 	}
-	if targetOwner != callerOwner {
-		// A peer the caller's owner does not own: indistinguishable from unknown.
-		return nil, connect.NewError(connect.CodeNotFound, errPeerNotFound)
+	if target == caller {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
 	}
 
 	// Authorized. Stop the target's live session first (best-effort, bounded so a
@@ -310,6 +300,36 @@ func (l *lifecycleService) DespawnAsAccount(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("releasing agent placement: %w", err))
 	}
 	return &compassv1internal.DespawnPeerResponse{}, nil
+}
+
+// resolveDespawnTarget resolves a despawn agent handle to an agent id the caller's
+// owner owns. A bare handle is looked up in callerOwner's namespace (2 queries
+// with the caller read). An `owner/agent` handle also reads callerOwner's handle
+// on every outcome (3 queries), and a foreign qualifier is never looked up: that
+// lookup would reveal whether the foreign user exists. Every miss is the one
+// errPeerNotFound, so unknown, non-agent, and foreign targets are identical.
+func (l *lifecycleService) resolveDespawnTarget(ctx context.Context, callerOwner store.AccountID, raw string) (store.AccountID, error) {
+	qh := store.ParseQualifiedHandle(raw)
+	ownerMatches := true
+	// Keyed on the separator, not a non-empty Owner, so "/x" never reads as bare "x".
+	if qh.Handle != qh.Raw {
+		ownerAcc, err := l.store.GetAccount(ctx, callerOwner)
+		if err != nil {
+			return "", connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner account: %w", err))
+		}
+		ownerMatches = qh.Owner == ownerAcc.Handle
+	}
+	acc, err := l.store.AgentByHandle(ctx, callerOwner, qh.Handle)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+			return "", connect.NewError(connect.CodeNotFound, errPeerNotFound)
+		}
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("resolving target handle: %w", err))
+	}
+	if !ownerMatches || acc.Agent.OwnerUserID != callerOwner {
+		return "", connect.NewError(connect.CodeNotFound, errPeerNotFound)
+	}
+	return acc.ID, nil
 }
 
 // autoOpenSpawnDM opens the manager<->new-peer DM (R8) and returns its channel
