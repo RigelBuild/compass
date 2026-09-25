@@ -175,6 +175,8 @@ tasks:
       - 'go.mod'
       - 'go.sum'
       - '**/testdata/**'
+      # Re-run this door check when the committed registry seed changes.
+      - '/docs/model-registry/day-1.json'
       - '/tools/toolchain/secretspec-env.nix'
       - 'go.work'
       - 'go.work.sum'
