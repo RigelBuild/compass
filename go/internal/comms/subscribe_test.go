@@ -70,7 +70,7 @@ func newStreamHarness(t *testing.T) streamHarness {
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
-	svc := NewComms(st, bus, admin.ID)
+	svc := NewComms(st, bus, nil, admin.ID)
 
 	path, handler := compassv1connect.NewCommsServiceHandler(svc)
 	mux := http.NewServeMux()

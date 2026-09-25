@@ -192,7 +192,7 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	svc := newService("otel-cors-test", bus, st, nil, nil, nil, nil)
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
@@ -241,7 +241,7 @@ func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 	svc := newService("otel-cors-session-test", bus, st, nil, nil, nil, nil)
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
@@ -309,7 +309,7 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 	svc := newService("otel-session-test", bus, st, nil, nil, nil, nil)
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
