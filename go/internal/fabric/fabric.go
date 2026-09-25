@@ -22,12 +22,17 @@ type Unsubscribe func()
 // payloads; see EventRef.
 type EventFabric interface {
 	Publish(ctx context.Context, subject string, ref EventRef) error
-	Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error)
+	// Subscribe and SubscribeKind invoke fn serially per subscription, with a
+	// ctx carrying the publisher's span context when one was propagated.
+	Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef)) (Unsubscribe, error)
 	// SubscribeKind is the tenant-wildcard read side: one durable queue-group
 	// consumer receiving one kind across EVERY tenant, which is what the
 	// per-Server delivery singleton needs (§T3). Publish stays per-tenant and
 	// concrete.
-	SubscribeKind(ctx context.Context, kind EventKind, fn func(EventRef)) (Unsubscribe, error)
+	SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef)) (Unsubscribe, error)
+	// OnReconnect runs fn after each NATS reconnect, once the fabric has logged
+	// it, so a consumer can sweep for events lost during the outage.
+	OnReconnect(fn func()) (Unsubscribe, error)
 }
 
 // RunnerFabric is the Server↔Runner async seam (frozen, §T3): per-Runner
@@ -100,10 +105,8 @@ type Config struct {
 	// The fabric reserves the CONNECTION LIFECYCLE for its own shutdown
 	// coordination: Close observes the connection's status directly rather than
 	// through a nats.ClosedHandler, so a caller may add its own ClosedHandler
-	// (a monitoring hook, say) without disarming Close's drain wait. Replacing
-	// the fabric's DisconnectErrHandler/ReconnectHandler is likewise safe —
-	// those are log-only, and a caller that replaces them loses the fabric's
-	// outage diagnostics, nothing more.
+	// without disarming Close's drain wait. Replacing the ReconnectHandler also
+	// disarms OnReconnect.
 	Options []nats.Option
 
 	// StreamName overrides DefaultStreamName.
@@ -249,6 +252,10 @@ type Fabric struct {
 	// substitute for it: that gate answers "may I start new work", this one
 	// answers "stop the work already running".
 	teardown chan struct{}
+
+	reconnectMu    sync.Mutex
+	reconnectNext  uint64
+	reconnectHooks map[uint64]func()
 }
 
 // Compile-time proof Fabric satisfies every seam. Cheap here, and it fails the
@@ -298,6 +305,7 @@ func New(cfg Config) (*Fabric, error) {
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			log.Info("fabric: nats reconnected", "url", nc.ConnectedUrl())
+			f.runReconnectHooks()
 		}),
 		// The Runner plane's safety argument: a stalled receiver is dropped AND
 		// reported, with the cursor sweep recovering what was dropped. The default
@@ -401,6 +409,47 @@ func (f *Fabric) Close() error {
 // no-lost-publish contract real; bounded, because a wedged or vanished server
 // must not hang a process's shutdown.
 const closeTimeout = 10 * time.Second
+
+// OnReconnect registers fn after the fabric's reconnect log is emitted.
+func (f *Fabric) OnReconnect(fn func()) (Unsubscribe, error) {
+	if fn == nil {
+		return nil, errors.New("fabric: OnReconnect requires a callback")
+	}
+	if err := f.checkOpen(); err != nil {
+		return nil, err
+	}
+	f.reconnectMu.Lock()
+	defer f.reconnectMu.Unlock()
+	if err := f.checkOpen(); err != nil {
+		return nil, err
+	}
+	if f.reconnectHooks == nil {
+		f.reconnectHooks = make(map[uint64]func())
+	}
+	f.reconnectNext++
+	id := f.reconnectNext
+	f.reconnectHooks[id] = fn
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.reconnectMu.Lock()
+			delete(f.reconnectHooks, id)
+			f.reconnectMu.Unlock()
+		})
+	}, nil
+}
+
+func (f *Fabric) runReconnectHooks() {
+	f.reconnectMu.Lock()
+	hooks := make([]func(), 0, len(f.reconnectHooks))
+	for _, fn := range f.reconnectHooks {
+		hooks = append(hooks, fn)
+	}
+	f.reconnectMu.Unlock()
+	for _, fn := range hooks {
+		fn()
+	}
+}
 
 // flushTimeout bounds a flush whose caller's context carries no deadline. A
 // flush is a round-trip to the server, and nats.go refuses a context without
