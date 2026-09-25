@@ -127,11 +127,18 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		return
 	}
 
+	// SpawnAgent takes an `owner/agent` handle, so read the admin's handle.
+	admin, err := st.GetAccount(ctx, adminID)
+	if err != nil {
+		log.Error("root-supervisor seed: reading admin account failed; will retry on next enroll", "err", err)
+		return
+	}
+
 	// Provision + Start under the fixed idempotency key. reject-on-live + the
 	// spawn memo make this a no-op for an already-live supervisor, so a re-enroll
 	// re-fire never launches a second container.
 	if _, err := svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentHandle:     string(supervisor.ID),
+		AgentHandle:     admin.Handle + "/" + supervisor.Handle,
 		ClientRequestId: seedClientRequestID,
 	})); err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {

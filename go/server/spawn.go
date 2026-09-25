@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // errAgentAlreadyLive is the reject-on-live cause: the target agent account
@@ -68,13 +69,20 @@ func (s *service) SpawnAgent(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
 
+	// Resolved before the memo so a retry keys on the account, not the spelling:
+	// a rename between attempts still joins the first spawn.
+	acc, err := s.resolveQualifiedAgent(ctx, req.Msg.GetAgentHandle())
+	if err != nil {
+		return nil, err
+	}
+
 	crid := req.Msg.GetClientRequestId()
 	// The dedup-join lookup. A non-empty client_request_id memoizes the spawn, keyed
 	// by (account, id): the first caller runs it, every retry for the SAME account
 	// joins the entry. An empty id is not memoized. Keying on the account matches
 	// provisionDedupID: an id reused across accounts is a distinct spawn.
 	if crid != "" {
-		key := spawnKey{account: req.Msg.GetAgentHandle(), crid: crid}
+		key := spawnKey{account: string(acc.ID), crid: crid}
 		call, joined := s.joinOrBeginSpawn(key)
 		if call == nil {
 			return nil, connect.NewError(connect.CodeInternal, errors.New("spawn: join returned no memo entry"))
@@ -84,7 +92,7 @@ func (s *service) SpawnAgent(
 			// return its result — never a second Provision, never reject-on-live.
 			return awaitSpawn(ctx, call)
 		}
-		resp, err := s.runSpawn(ctx, req.Msg)
+		resp, err := s.runSpawn(ctx, acc, crid)
 		s.settleSpawn(key, call, resp, err)
 		if err != nil {
 			return nil, err
@@ -92,7 +100,7 @@ func (s *service) SpawnAgent(
 		return connect.NewResponse(resp), nil
 	}
 
-	resp, err := s.runSpawn(ctx, req.Msg)
+	resp, err := s.runSpawn(ctx, acc, crid)
 	if err != nil {
 		return nil, err
 	}
@@ -116,27 +124,26 @@ func awaitSpawn(ctx context.Context, call *spawnCall) (*connect.Response[compass
 	}
 }
 
-// runSpawn is the cache-miss body: reject-on-live, then Provision, then Start,
-// under the one client_request_id. It reuses the existing handlers so the full
-// orchestration (persona/role authority, placement, session ownership, rollback)
-// is identical to the two-call human path.
-func (s *service) runSpawn(ctx context.Context, msg *compassv1.SpawnAgentRequest) (*compassv1.SpawnAgentResponse, error) {
+// runSpawn is the cache-miss body for the resolved agent acc: reject-on-live,
+// then Provision, then Start, under the one client_request_id. It reuses the
+// provision and start paths so the full orchestration (persona/role authority,
+// placement, session ownership, rollback) is identical to the two-call human path.
+func (s *service) runSpawn(ctx context.Context, acc store.Account, crid string) (*compassv1.SpawnAgentResponse, error) {
 	// Pre-Provision reject-on-live: consult the Runner (authoritative for live
 	// session truth) and reject if the target agent already holds one. Cache-miss
 	// path only, BEFORE Provision, so a rejected spawn churns no container. Sourced
 	// from the Runner, never Server in-memory state (which fails open after reconnect).
-	if err := s.rejectIfAgentLive(ctx, msg.GetAgentHandle()); err != nil {
+	if err := s.rejectIfAgentLive(ctx, string(acc.ID)); err != nil {
 		return nil, err
 	}
 
-	provResp, err := s.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentHandle:     msg.GetAgentHandle(),
-		ClientRequestId: msg.GetClientRequestId(),
-	}))
+	provResp, err := s.provisionAgent(ctx, acc, &compassv1.ProvisionAgentWorkspaceRequest{
+		ClientRequestId: crid,
+	})
 	if err != nil {
 		return nil, err
 	}
-	container := provResp.Msg.GetContainerName()
+	container := provResp.GetContainerName()
 
 	startResp, err := s.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
 		ContainerName: container,

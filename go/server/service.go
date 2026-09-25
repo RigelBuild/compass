@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -124,10 +125,11 @@ func newService(version string, bus *events.Bus[busPayload], st *store.Store, hu
 // ProvisionAgentWorkspace creates the isolated per-agent container for a
 // workstream by relaying to the owning Runner (Client -> Server -> RunnerHub ->
 // Runner -> AgentRuntime façade); the Server holds no container-engine code. The
-// request's client_request_id (when set) is the OQ6 idempotency key threaded to
-// the RunnerHub as the correlation id: a timeout-retry with the same id joins
-// the in-flight/completed call and returns the same container_name rather than
-// provisioning a second container.
+// agent is named `owner/agent` and resolved here; the Runner receives the
+// resolved account id. The request's client_request_id (when set) is the OQ6
+// idempotency key threaded to the RunnerHub as the correlation id: a
+// timeout-retry with the same id joins the in-flight/completed call and returns
+// the same container_name rather than provisioning a second container.
 func (s *service) ProvisionAgentWorkspace(
 	ctx context.Context,
 	req *connect.Request[compassv1.ProvisionAgentWorkspaceRequest],
@@ -135,34 +137,13 @@ func (s *service) ProvisionAgentWorkspace(
 	if s.hub == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
-	// SERVER-AUTHORITATIVE persona and role: populate the outgoing persona/role from
-	// the store's AgentAccount, overwriting whatever the client sent, so a caller
-	// cannot inject a system or role prompt. A non-agent account carries neither;
-	// the client values are still cleared. The Runner receives these on req.Msg.
-	acc, err := s.store.GetAccount(ctx, store.AccountID(req.Msg.GetAgentHandle()))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no account with id %s", req.Msg.GetAgentHandle()))
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("reading agent account for persona: %w", err))
-	}
-	if acc.IsAgent() {
-		req.Msg.Persona = acc.Agent.Persona
-		req.Msg.Role = acc.Agent.Role
-	} else {
-		req.Msg.Persona = ""
-		req.Msg.Role = ""
-	}
-	resp, runnerID, err := s.hub.Provision(ctx, req.Msg.GetClientRequestId(), req.Msg)
+	acc, err := s.resolveQualifiedAgent(ctx, req.Msg.GetAgentHandle())
 	if err != nil {
 		return nil, err
 	}
-	// Record the agent's durable PLACEMENT — which Runner and container name — only
-	// now that the Runner created the container. Idempotent upsert. This is what makes
-	// the container->account mapping survive a Server restart, and what RIG-1516
-	// reattach recovery reads to name agents stranded by a Runner restart.
-	if err := s.store.RecordAgentPlacement(ctx, store.AccountID(req.Msg.GetAgentHandle()), runnerID, resp.GetContainerName()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
+	resp, err := s.provisionAgent(ctx, acc, req.Msg)
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -363,32 +344,35 @@ func (s *service) WhoAmI(
 // ungated alongside every other method — that door mounts no interceptors, since
 // the 0600 socket is itself the local admin credential — so the token minted here
 // is valid on the network door (no capability beyond the bootstrap-admin token
-// file the same local peer already owns). It verifies the account exists in the
-// store, then mints a token in the token store and returns it once; the store
-// retains only its hash.
+// file the same local peer already owns). The account is a bare user handle or an
+// `owner/agent` handle; the token store retains only the token's hash.
 func (s *service) IssueToken(
 	ctx context.Context,
 	req *connect.Request[compassv1.IssueTokenRequest],
 ) (*connect.Response[compassv1.IssueTokenResponse], error) {
-	id := store.AccountID(req.Msg.GetAccountHandle())
-	if id == "" {
+	raw := req.Msg.GetAccountHandle()
+	if raw == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("account_id is required"))
+			errors.New("account_handle is required"))
 	}
-	acc, err := s.store.GetAccount(ctx, id)
+	// The admin door is not visibility-scoped (no D9 clip): the admin may name any account.
+	var acc store.Account
+	var err error
+	if qh := store.ParseQualifiedHandle(raw); qh.Handle != qh.Raw {
+		acc, err = s.resolveQualifiedAgent(ctx, raw)
+	} else if acc, err = s.store.UserByHandle(ctx, raw); err != nil {
+		err = handleLookupError(raw, err)
+	}
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound,
-				fmt.Errorf("no account with id %s", id))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
+	id := acc.ID
 	// The system account (@compass) is structurally not authenticatable: it is a
 	// server-internal sender, never a token subject. Refuse here rather than
 	// relying on the admin gate alone — defense in depth on the token-minting door.
 	if acc.System != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("account %s is the system account and cannot be issued a token", id))
+			fmt.Errorf("account %q is the system account and cannot be issued a token", raw))
 	}
 	token, err := auth.IssueAccountToken(ctx, s.store, id)
 	if err != nil {
@@ -526,6 +510,69 @@ func (s *service) SubscribeAgentSession(
 			}
 		}
 	}
+}
+
+// provisionAgent relays a Provision for the resolved agent acc and records its
+// placement. It relays a COPY of msg whose agent_handle is the resolved account
+// id, because the Runner, its container bind, and the hub's dedup key all read
+// that field as an id.
+func (s *service) provisionAgent(
+	ctx context.Context,
+	acc store.Account,
+	msg *compassv1.ProvisionAgentWorkspaceRequest,
+) (*compassv1.ProvisionAgentWorkspaceResponse, error) {
+	relay := proto.CloneOf(msg)
+	relay.AgentHandle = string(acc.ID)
+	// SERVER-AUTHORITATIVE persona and role: overwrite whatever the client sent
+	// with the store's values, so a caller cannot inject a system or role prompt.
+	relay.Persona = acc.Agent.Persona
+	relay.Role = acc.Agent.Role
+	resp, runnerID, err := s.hub.Provision(ctx, relay.GetClientRequestId(), relay)
+	if err != nil {
+		return nil, err
+	}
+	// Record the agent's durable PLACEMENT — which Runner and container name — only
+	// now that the Runner created the container. Idempotent upsert. This is what makes
+	// the container->account mapping survive a Server restart, and what RIG-1516
+	// reattach recovery reads to name agents stranded by a Runner restart.
+	if err := s.store.RecordAgentPlacement(ctx, acc.ID, runnerID, resp.GetContainerName()); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
+	}
+	return resp, nil
+}
+
+// resolveQualifiedAgent resolves an `owner/agent` handle on the admin door, which
+// has no agent session to default a bare handle's owner from. A bare handle and
+// every miss return the same NotFound naming the submitted handle.
+func (s *service) resolveQualifiedAgent(ctx context.Context, raw string) (store.Account, error) {
+	qh := store.ParseQualifiedHandle(raw)
+	if qh.Handle == qh.Raw {
+		return store.Account{}, handleNotFound(raw)
+	}
+	owner, err := s.store.UserByHandle(ctx, qh.Owner)
+	if err != nil {
+		return store.Account{}, handleLookupError(raw, err)
+	}
+	acc, err := s.store.AgentByHandle(ctx, owner.ID, qh.Handle)
+	if err != nil {
+		return store.Account{}, handleLookupError(raw, err)
+	}
+	return acc, nil
+}
+
+// handleNotFound is the admin door's single miss for a submitted handle. It
+// names the handle as sent and never a resolved id.
+func handleNotFound(raw string) error {
+	return connect.NewError(connect.CodeNotFound, fmt.Errorf("no account with handle %q", raw))
+}
+
+// handleLookupError maps a store resolver error: a miss or a malformed segment
+// (an empty owner or agent part) is handleNotFound, anything else is Internal.
+func handleLookupError(raw string, err error) error {
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+		return handleNotFound(raw)
+	}
+	return connect.NewError(connect.CodeInternal, fmt.Errorf("resolving handle %q: %w", raw, err))
 }
 
 // startResumeSession is the resume leg of StartAgentSession (T6, RIG-1667). It
