@@ -282,6 +282,18 @@ describe("shared line classification", () => {
 			parser: { kind: "rows", count: 1 },
 			floor: { kind: "rows", count: 2 },
 		},
+		{
+			name: "a comment opener indented three spaces",
+			lines: ["   <!--", "| DL-905 | p | x | y |", "   -->", ...ANCHORED_ROW],
+			parser: { kind: "rows", count: 1 },
+		},
+		{
+			// Four spaces make indented code, not a comment, so the row stays content.
+			name: "a comment opener indented four spaces",
+			lines: ["    <!--", "| DL-905 | p | x | y |", "    -->", ...ANCHORED_ROW],
+			parser: { kind: "rows", count: 1 },
+			floor: { kind: "rows", count: 2 },
+		},
 	];
 	for (const { name, lines, parser, floor } of cases) {
 		test(`${name} classifies once for both counters`, () => {
@@ -370,6 +382,17 @@ describe("the ledger table anchor", () => {
 				header,
 				"| --- | --- | --- | --- |",
 				"| DL-001 | real | Active (Matt, 2026-01-01) | [r](r.md) |",
+			].join("\n");
+			expect(parseLedger(text)).toEqual([]);
+			expect(countRawLedgerRows(text)).toBe(1);
+		});
+	}
+	for (const separator of ["| a | b | c | d |", "| --- | --- | --- |"]) {
+		test(`yields no rows under the non-delimiter row ${separator}`, () => {
+			const text = [
+				"| ID | Decision | Status | Record |",
+				separator,
+				"| DL-001 | real | x | y |",
 			].join("\n");
 			expect(parseLedger(text)).toEqual([]);
 			expect(countRawLedgerRows(text)).toBe(1);
