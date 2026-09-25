@@ -10,8 +10,9 @@ import (
 )
 
 const findAskMessage = `-- name: FindAskMessage :many
-SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.blocks @> $2::jsonb
@@ -27,6 +28,7 @@ type FindAskMessageRow struct {
 	ID              string
 	TopicID         string
 	AuthorAccountID string
+	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
 }
@@ -44,6 +46,7 @@ func (q *Queries) FindAskMessage(ctx context.Context, arg FindAskMessageParams) 
 			&i.ID,
 			&i.TopicID,
 			&i.AuthorAccountID,
+			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
 		); err != nil {
@@ -74,9 +77,8 @@ type GetChannelPostPolicyRow struct {
 // and commit their own txns), the ON CONFLICT idempotency signalling
 // (errMessageInsertConflict), the JSONB block (de)serialization, and the D9
 // not-found/forbidden error mapping — all hand-written around these generated
-// calls. Every message read shares the id/topic_id/author_account_id/at_unix_ms/
-// blocks projection (the former scanMessages order) so the Go maps each row the
-// same way via messageFromParts.
+// calls. Every message read shares the id/topic_id/author_account_id/author_handle/
+// at_unix_ms/blocks projection so the Go maps each row through messageFromParts.
 func (q *Queries) GetChannelPostPolicy(ctx context.Context, id string) (GetChannelPostPolicyRow, error) {
 	row := q.db.QueryRow(ctx, getChannelPostPolicy, id)
 	var i GetChannelPostPolicyRow
@@ -96,9 +98,10 @@ func (q *Queries) GetMessageBlocks(ctx context.Context, id string) ([]byte, erro
 }
 
 const getMessageByRequestID = `-- name: GetMessageByRequestID :many
-SELECT id, topic_id, author_account_id, at_unix_ms, blocks
-FROM messages
-WHERE author_account_id = $1 AND client_request_id = $2
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
+WHERE m.author_account_id = $1 AND m.client_request_id = $2
 `
 
 type GetMessageByRequestIDParams struct {
@@ -110,6 +113,7 @@ type GetMessageByRequestIDRow struct {
 	ID              string
 	TopicID         string
 	AuthorAccountID string
+	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
 }
@@ -127,6 +131,7 @@ func (q *Queries) GetMessageByRequestID(ctx context.Context, arg GetMessageByReq
 			&i.ID,
 			&i.TopicID,
 			&i.AuthorAccountID,
+			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
 		); err != nil {
@@ -197,7 +202,8 @@ INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
 DO NOTHING
-RETURNING id, at_unix_ms, seq
+RETURNING id, at_unix_ms, seq,
+          (SELECT handle FROM account_handles WHERE account_id = $3) AS author_handle
 `
 
 type InsertMessageParams struct {
@@ -211,9 +217,10 @@ type InsertMessageParams struct {
 }
 
 type InsertMessageRow struct {
-	ID       string
-	AtUnixMs int64
-	Seq      int64
+	ID           string
+	AtUnixMs     int64
+	Seq          int64
+	AuthorHandle string
 }
 
 func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (InsertMessageRow, error) {
@@ -227,7 +234,12 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (I
 		arg.ClientRequestID,
 	)
 	var i InsertMessageRow
-	err := row.Scan(&i.ID, &i.AtUnixMs, &i.Seq)
+	err := row.Scan(
+		&i.ID,
+		&i.AtUnixMs,
+		&i.Seq,
+		&i.AuthorHandle,
+	)
 	return i, err
 }
 
@@ -257,8 +269,9 @@ func (q *Queries) InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnorePa
 }
 
 const listMessages = `-- name: ListMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
@@ -280,6 +293,7 @@ type ListMessagesRow struct {
 	ID              string
 	TopicID         string
 	AuthorAccountID string
+	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
 }
@@ -304,6 +318,7 @@ func (q *Queries) ListMessages(ctx context.Context, arg ListMessagesParams) ([]L
 			&i.ID,
 			&i.TopicID,
 			&i.AuthorAccountID,
+			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
 		); err != nil {
@@ -338,8 +353,9 @@ func (q *Queries) ReviveTopic(ctx context.Context, id string) error {
 }
 
 const searchMessages = `-- name: SearchMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
@@ -361,6 +377,7 @@ type SearchMessagesRow struct {
 	ID              string
 	TopicID         string
 	AuthorAccountID string
+	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
 }
@@ -384,6 +401,7 @@ func (q *Queries) SearchMessages(ctx context.Context, arg SearchMessagesParams) 
 			&i.ID,
 			&i.TopicID,
 			&i.AuthorAccountID,
+			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
 		); err != nil {
@@ -426,7 +444,9 @@ WHERE m.id = $3
     SELECT 1 FROM channel_members cm
     WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
   )
-RETURNING m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
+RETURNING m.id, m.topic_id, m.author_account_id,
+          (SELECT handle FROM account_handles WHERE account_id = $4) AS author_handle,
+          m.at_unix_ms, m.blocks
 `
 
 type UpdateMessageBlocksAsAuthorParams struct {
@@ -440,6 +460,7 @@ type UpdateMessageBlocksAsAuthorRow struct {
 	ID              string
 	TopicID         string
 	AuthorAccountID string
+	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
 }
@@ -456,6 +477,7 @@ func (q *Queries) UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMes
 		&i.ID,
 		&i.TopicID,
 		&i.AuthorAccountID,
+		&i.AuthorHandle,
 		&i.AtUnixMs,
 		&i.Blocks,
 	)

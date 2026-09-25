@@ -81,8 +81,6 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// source-name denormalization stamped onto the deliver/steer control so the
 	// recipient renders the source channel+topic without a roster lookup (RIG-2956
 	// T0). An unknown topic id is store.ErrNotFound, which the caller logs and
-	// treats as empty names — never a delivery block, exactly as GetAccount's
-	// from_handle miss degrades.
 	TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
 	// ChannelAgentMembers resolves every agent MEMBER of a channel (subscribe
@@ -128,11 +126,6 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// CountOwedMentions returns the total owed_mention row count — the startup
 	// visibility log (T2 observability).
 	CountOwedMentions(ctx context.Context) (int, error)
-	// GetAccount resolves an account by id, used to denormalize the author's
-	// handle onto the deliver/steer control (RIG-2486 T1 from_handle). An unknown
-	// id is store.ErrNotFound, which the caller logs and treats as an empty
-	// handle — never a delivery block.
-	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
 	// MarkMentionsRouted stamps messageID's settle-edge mention pass complete
 	// (mentions_routed_at = now, unix ms) — the recovery scan's mark after it
 	// replays a message's mention pass, and the live path's mark (T3). Idempotent:
@@ -458,24 +451,10 @@ func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (cha
 	return channelName, topicName
 }
 
-// authorHandle resolves a wire message's author account id to its handle — the
-// value denormalized onto the deliver/steer control as the SessionInjection
-// from_handle (RIG-2486 T1). A missing author id or a store miss is logged and
-// yields an empty handle: the from_handle is an observation signal, never a
-// delivery precondition, so a handle miss must not block the dispatch (matches
-// the log-and-continue posture the mention/subscriber resolvers already use).
-func (c *Consumer) authorHandle(ctx context.Context, msg *compassv1.Message) string {
-	author := store.AccountID(msg.GetAuthorAccountId())
-	if author == "" {
-		return ""
-	}
-	acc, err := c.st.GetAccount(ctx, author)
-	if err != nil {
-		c.log.ErrorContext(ctx, "delivery: resolve author handle for injection from_handle",
-			"error", err, "message_id", msg.GetId(), "author", string(author))
-		return ""
-	}
-	return acc.Handle
+// authorHandle returns the current handle carried by every wire Message. The
+// store query joins account_handles before MessageToWire maps live and re-read messages.
+func (c *Consumer) authorHandle(_ context.Context, msg *compassv1.Message) string {
+	return msg.GetAuthorHandle()
 }
 
 // mentionRE matches one `@`-mention token: `@` then a handle. The handle is

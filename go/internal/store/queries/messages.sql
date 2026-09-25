@@ -4,9 +4,8 @@
 -- and commit their own txns), the ON CONFLICT idempotency signalling
 -- (errMessageInsertConflict), the JSONB block (de)serialization, and the D9
 -- not-found/forbidden error mapping — all hand-written around these generated
--- calls. Every message read shares the id/topic_id/author_account_id/at_unix_ms/
--- blocks projection (the former scanMessages order) so the Go maps each row the
--- same way via messageFromParts.
+-- calls. Every message read shares the id/topic_id/author_account_id/author_handle/
+-- at_unix_ms/blocks projection so the Go maps each row through messageFromParts.
 
 -- name: GetChannelPostPolicy :one
 SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id
@@ -17,7 +16,8 @@ INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
 DO NOTHING
-RETURNING id, at_unix_ms, seq;
+RETURNING id, at_unix_ms, seq,
+          (SELECT handle FROM account_handles WHERE account_id = $3) AS author_handle;
 
 -- name: UpdateTopicLastSeq :exec
 UPDATE topics SET last_seq = GREATEST(last_seq, $2) WHERE id = $1;
@@ -53,7 +53,9 @@ WHERE m.id = $3
     SELECT 1 FROM channel_members cm
     WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
   )
-RETURNING m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks;
+RETURNING m.id, m.topic_id, m.author_account_id,
+          (SELECT handle FROM account_handles WHERE account_id = $4) AS author_handle,
+          m.at_unix_ms, m.blocks;
 
 -- name: GetMessageBlocks :one
 SELECT blocks FROM messages WHERE id = $1;
@@ -65,8 +67,9 @@ JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.id = $2 AND t.channel_id = $3;
 
 -- name: ListMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
@@ -75,8 +78,9 @@ ORDER BY m.seq DESC
 LIMIT $4;
 
 -- name: SearchMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
@@ -86,14 +90,16 @@ ORDER BY ts_rank(m.search_tsv, websearch_to_tsquery('english', $2)) DESC, m.seq 
 LIMIT $4;
 
 -- name: FindAskMessage :many
-SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.blocks @> $2::jsonb
 FOR UPDATE OF m;
 
 -- name: GetMessageByRequestID :many
-SELECT id, topic_id, author_account_id, at_unix_ms, blocks
-FROM messages
-WHERE author_account_id = $1 AND client_request_id = $2;
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
+WHERE m.author_account_id = $1 AND m.client_request_id = $2;
