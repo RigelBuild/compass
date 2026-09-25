@@ -14,8 +14,8 @@ The design is in
 ## Day-1 defaults
 
 [`day-1.json`](./day-1.json) is the day-1 registry. It is a complete
-`PutModelRegistry` request body. Every model id in it exists in the model
-catalog that Compass currently pins.
+`PutModelRegistry` request body. Every model id in it exists in the
+`@oh-my-pi/pi-catalog` 18.0.11 model catalog that Compass pins.
 
 | Stable name | Candidates, in order |
 | --- | --- |
@@ -31,21 +31,25 @@ first-party credential for it.
 
 ## Recommended model per role
 
-Pick the row for the credentials you hold. The value goes in a profile's
-`models.manager` or `models.agents.<name>` selector. Add `:high` or another
-reasoning level after the name when you want one.
+These are recommendations, not the shipped `default` profile, which picks its
+own models. Pick the row for the credentials you hold. The value goes in a
+profile's `models.manager` or `models.agents.<name>` selector. Add `:high` or
+another reasoning level after the name when you want one.
 
 | Provider you hold | Manager roles (supervisor, owner, manager) | Implementer subagent |
 | --- | --- | --- |
 | OpenAI (ChatGPT OAuth or API key) | `gpt-5-5` | `gpt-5-5` |
 | Anthropic (OAuth or API key) | `claude-opus-4-8` | `claude-opus-4-8` |
 | Google (API key) | `gemini-3-1-pro` | `gemini-3-1-pro` |
-| OpenRouter or Bedrock only | `claude-opus-4-8` | `claude-opus-4-8` |
+| OpenRouter only | `gpt-5-5` | `gpt-5-5` |
+| Bedrock only | `claude-opus-4-8` | `claude-opus-4-8` |
 | OpenAI and Anthropic | `gpt-5-5` | `gpt-5-5` |
 
 These values follow the fleet's current practice: the OpenAI Codex tier first,
-then the Anthropic Opus tier. The goal they serve is long-running coding agents,
-where a low hallucination rate counts as much as raw capability.
+then the Anthropic Opus tier. Bedrock carries no `gpt-5-5` candidate, so a
+Bedrock-only fleet uses the Opus tier. The goal these values serve is
+long-running coding agents, where a low hallucination rate counts as much as
+raw capability.
 
 Per-role model evaluations will replace these values with measured numbers.
 When they land, the change is a registry write (below), not a new release.
@@ -55,17 +59,25 @@ When they land, the change is a registry write (below), not a new release.
 Registry defaults are data in the Server store. You change them with an
 operator `PutModelRegistry` RPC write, not with a Compass release.
 
-On the Server host, the Unix socket is the admin credential. Seed an empty
-registry from the repository root:
+The Unix socket is the admin credential. Only the user that runs the Server
+can open it. Run these commands as that user on the Server host, for example
+`sudo -u compass` under the [systemd unit](../self-host.md#running-under-systemd).
+
+Set `SOCK` to the Server's socket. That is its `--socket` value, or by default
+`$XDG_RUNTIME_DIR/compass/server.sock` in the Server's environment, or
+`~/.compass/server.sock` in its home when `XDG_RUNTIME_DIR` is unset. Set `TAG`
+to the release tag you run; the seed ships in releases after `v0.3.0`. Fetch
+the seed, then write it into an empty registry:
 
 ```console
-curl --unix-socket "$XDG_RUNTIME_DIR/compass/server.sock" \
+curl -fsSLO "https://raw.githubusercontent.com/RigelBuild/compass/$TAG/docs/model-registry/day-1.json"
+curl --unix-socket "$SOCK" \
     -H 'Content-Type: application/json' \
-    --data @docs/model-registry/day-1.json \
+    --data @day-1.json \
     http://localhost/compass.v1.CompassService/PutModelRegistry
 ```
 
-The socket is `~/.compass/server.sock` when `XDG_RUNTIME_DIR` is unset.
+From a repository checkout, use the file in this directory instead.
 
 `expectedVersion` is a compare-and-set guard. `0` writes the first registry
 only. To update a registry that already exists, read its current version with
