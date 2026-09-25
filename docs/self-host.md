@@ -298,3 +298,11 @@ compass-stack status \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest
 ```
+
+## Model registry
+
+Profiles name models by stable name, and the Server maps each name to a
+provider chain. Seed the registry once after first boot, and update it later
+with the same operator RPC write. No release is needed. The day-1 defaults,
+the recommended model per role, and the commands are in
+[the model registry guide](model-registry/README.md).
