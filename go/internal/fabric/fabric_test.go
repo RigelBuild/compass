@@ -3,7 +3,9 @@ package fabric
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -245,6 +247,70 @@ func TestFabricImplementsEverySeamOverOneConnection(t *testing.T) {
 	}
 }
 
+func TestOnReconnectAfterServerRestart(t *testing.T) {
+	logs := &capturingLogger{}
+	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	srv := natsserver.RunServer(&server.Options{
+		Port: -1, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
+	})
+	port := srv.Addr().(*net.TCPAddr).Port
+	url := fmt.Sprintf("nats://127.0.0.1:%d", port)
+	f := newFabric(t, Config{URL: url, Log: log})
+	var calls atomic.Int64
+	reconnected := make(chan struct{}, 1)
+	unsub, err := f.OnReconnect(func() {
+		calls.Add(1)
+		reconnected <- struct{}{}
+	})
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	defer unsub()
+	srv.Shutdown()
+	restarted := natsserver.RunServer(&server.Options{
+		Port: port, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
+	})
+	defer restarted.Shutdown()
+	select {
+	case <-reconnected:
+	case <-time.After(gate):
+		t.Fatal("OnReconnect did not fire after server restart")
+	}
+	if out := logs.String(); !strings.Contains(out, "fabric: nats reconnected") {
+		t.Fatalf("reconnect log missing: %q", out)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close after reconnect: %v", err)
+	}
+}
+
+func TestOnReconnectUnsubscribe(t *testing.T) {
+	f := newFabric(t, Config{})
+	var calls atomic.Int64
+	unsub, err := f.OnReconnect(func() { calls.Add(1) })
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	unsub()
+	f.runReconnectHooks()
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("unsubscribed callback ran %d times, want 0", got)
+	}
+}
+
+func TestOnReconnectRejectsNilAndClosedFabric(t *testing.T) {
+	f := newFabric(t, Config{})
+	if _, err := f.OnReconnect(nil); err == nil {
+		t.Fatal("OnReconnect(nil): want error")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := f.OnReconnect(func() {}); !errors.Is(err, errClosed) {
+		t.Fatalf("OnReconnect after Close: want errClosed, got %v", err)
+	}
+}
+
 // TestCloseIsIdempotentAndFailsClosed defends two things at once: Close can be
 // called twice (a deferred Close beside an explicit one is not a bug), and
 // post-Close work is refused rather than silently no-oping — a Publish that
@@ -270,10 +336,10 @@ func TestCloseIsIdempotentAndFailsClosed(t *testing.T) {
 	if err := f.Publish(ctx, subject, EventRef{Tenant: "t-closed", Kind: KindMessagePosted, RowID: "m1"}); !errors.Is(err, errClosed) {
 		t.Fatalf("Publish after Close: want errClosed, got %v", err)
 	}
-	if _, err := f.Subscribe(ctx, subject, func(EventRef) {}); !errors.Is(err, errClosed) {
+	if _, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) {}); !errors.Is(err, errClosed) {
 		t.Fatalf("Subscribe after Close: want errClosed, got %v", err)
 	}
-	if _, err := f.SubscribeKind(ctx, KindMessagePosted, func(EventRef) {}); !errors.Is(err, errClosed) {
+	if _, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) {}); !errors.Is(err, errClosed) {
 		t.Fatalf("SubscribeKind after Close: want errClosed, got %v", err)
 	}
 	if err := f.SendCommand(ctx, "r1", nil); !errors.Is(err, errClosed) {
