@@ -2077,6 +2077,48 @@
 	gap: 10px;
 }
 
+.settings-registry {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.settings-registry-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	column-gap: 8px;
+	row-gap: 2px;
+	font-size: 12px;
+}
+
+.settings-registry-name {
+	color: var(--cx-text-bright);
+	font-family: var(--cx-font-ui);
+}
+
+.settings-registry-display,
+.settings-registry-candidates {
+	color: var(--cx-text-dim);
+}
+
+/* The chain takes its own line; each candidate stays whole when it wraps. */
+.settings-registry-candidates {
+	flex-basis: 100%;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.settings-registry-candidate {
+	display: inline-flex;
+	gap: 6px;
+	white-space: nowrap;
+}
+
 .settings-btn {
 	padding: 6px 16px;
 	border-radius: var(--cx-radius-sm);
