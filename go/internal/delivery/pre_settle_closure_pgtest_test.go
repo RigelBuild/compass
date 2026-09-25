@@ -295,17 +295,24 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	// Agent-authored mention, committed NULL, unpublished — the held message the
 	// restart severs from any live author turn.
 	msg := postThroughStore(t, ctx, s, ch, author.ID, "@aa agent-authored mention held then lost")
+	if got := msg.AuthorHandle; got != author.Handle {
+		t.Fatalf("stored agent author handle = %q, want %q", got, author.Handle)
+	}
 
-	c, _, _ := newPgConsumer(t, s) // fresh bus + fresh consumer => c.held empty, no live author
-	// Intent marker (a construction invariant, not a live guard): a freshly-built
-	// consumer's c.held is empty, so the restart premise — the held message is no
-	// longer held and is therefore scannable — holds by construction.
+	c, disp, res := newPgConsumer(t, s) // fresh bus + fresh consumer => c.held empty, no live author
 	if c.messageHeld(string(msg.ID)) {
 		t.Fatalf("message %s unexpectedly held on a fresh consumer: the restart must clear c.held", msg.ID)
 	}
+	res.bind(member.ID, "sess-member")
 	startConsumer(t, c)
-
-	waitOwed(t, ctx, s, member.ID, 1)
+	c.OnSessionStarted("sess-member", member.ID)
+	if !disp.waitForMessage(t, string(msg.ID)) {
+		t.Fatalf("agent-authored message %s not delivered to the member", msg.ID)
+	}
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].messageAuthorHandle != author.Handle || got[0].fromHandle != author.Handle {
+		t.Fatalf("delivered agent author handles = %+v, want %q", got, author.Handle)
+	}
 	waitMarked(t, ctx, s, string(msg.ID))
 }
 

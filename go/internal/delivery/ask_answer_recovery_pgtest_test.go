@@ -78,7 +78,6 @@ func TestT7OfflineAnswerSweptAtSessionStart(t *testing.T) {
 	c, disp, res := newPgConsumer(t, s)
 	startConsumer(t, c)
 
-	// The owner answers while the asker has no live session.
 	answer := answerAndPublish(t, ctx, s, c, owner.ID, "ask-1")
 
 	// No live session: the fan-out cannot deliver, so nothing is dispatched yet.
@@ -87,6 +86,10 @@ func TestT7OfflineAnswerSweptAtSessionStart(t *testing.T) {
 	c.OnSessionStarted("sess-asker", asker.ID)
 	if !disp.waitForMessage(t, string(answer.ID)) {
 		t.Fatalf("answer %s never delivered on the asker's session start", answer.ID)
+	}
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].messageAuthorHandle != owner.Handle {
+		t.Fatalf("delivered answer author handle = %+v, want %q", got, owner.Handle)
 	}
 
 	// Ack advances the cursor: the answer leaves the durable owed set, so a

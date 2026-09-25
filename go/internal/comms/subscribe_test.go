@@ -455,6 +455,9 @@ func TestPostMessageWriteThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
+	if got := posted.Msg.GetMessage().GetAuthorHandle(); got != poster.Handle {
+		t.Fatalf("posted message author handle = %q, want %q", got, poster.Handle)
+	}
 	wantID := posted.Msg.GetMessage().GetId()
 
 	// Write-through means BOTH sides observe one post: the store row is durable
@@ -467,11 +470,16 @@ func TestPostMessageWriteThrough(t *testing.T) {
 	}
 	if msgs := listed.Msg.GetMessages(); len(msgs) != 1 || msgs[0].GetId() != wantID {
 		t.Fatalf("store rows = %+v, want exactly the posted message %q", msgs, wantID)
+	} else if msgs[0].GetAuthorHandle() != poster.Handle {
+		t.Fatalf("listed message author handle = %q, want %q", msgs[0].GetAuthorHandle(), poster.Handle)
 	}
 	// ...and the event fired.
 	got := awaitFirst(t, events)
 	if mp := got.GetMessagePosted(); mp == nil || mp.GetMessage().GetId() != wantID {
 		t.Fatalf("event = %+v, want MessagePosted for %q", got.GetPayload(), wantID)
+	}
+	if mp := got.GetMessagePosted(); mp != nil && mp.GetMessage().GetAuthorHandle() != poster.Handle {
+		t.Fatalf("event author handle = %q, want %q", mp.GetMessage().GetAuthorHandle(), poster.Handle)
 	}
 }
 

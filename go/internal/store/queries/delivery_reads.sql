@@ -27,9 +27,10 @@ ORDER BY aa.account_id;
 SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE account_id = $1);
 
 -- name: MessageByID :one
-SELECT id, topic_id, author_account_id, at_unix_ms, blocks
-FROM messages
-WHERE id = $1;
+SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+FROM messages m
+JOIN account_handles ah ON ah.account_id = m.author_account_id
+WHERE m.id = $1;
 
 -- name: MessageChannel :one
 SELECT t.channel_id FROM messages m JOIN topics t ON t.id = m.topic_id WHERE m.id = $1;
