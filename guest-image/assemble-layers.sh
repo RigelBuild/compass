@@ -1,5 +1,6 @@
 # Unpacks OCI layer tarballs into a staged rootfs tree. Shared by the rootfs
-# derivation and its fixture tests so both exercise the same code.
+# derivation and its fixture tests so both exercise the same code. Bash, not
+# TypeScript: it runs inside a nix runCommand builder, which has no bun.
 #   unpack ROOT LAYER...                 header allowlist, whiteouts, extract
 #   restore-dir-modes ROOT LAYER...      re-apply published directory modes
 #   check-contract ROOT IMAGE PATH...    each PATH resolves to an executable
@@ -9,7 +10,10 @@ set -euo pipefail
 # nodes, FIFOs and escaping links have no business in a guest userland.
 check_headers() {
   local layer=$1 bad
-  if ! bad=$(tar -tvzf "$layer" | awk '
+  # Escaping spaces in names leaves the raw " -> " / " link to " delimiter
+  # unambiguous; numeric owners keep the five-field prefix fixed; -P lists
+  # targets as published rather than with tar's leading-/ stripped.
+  if ! bad=$(tar -P --quoting-style=escape --quote-chars=' ' --numeric-owner -tvzf "$layer" | awk '
     function climbs(name, target,   n, p, i, depth, m, q) {
       n = split(name, p, "/")
       depth = 0
@@ -114,8 +118,10 @@ restore_dir_modes() {
   dirs=$(mktemp)
   for layer in "$@"; do
     # Select directories by tar's type flag: these layers list directories with
-    # no trailing slash, so matching on one restores nothing.
-    if tar -tvzf "$layer" | awk '$1 ~ /^d/ {print $NF}' > "$dirs"; then
+    # no trailing slash. The name is everything after the five-field prefix, in
+    # tar's escape quoting, which -T unquotes.
+    if tar --quoting-style=escape --numeric-owner -tvzf "$layer" \
+      | awk '$1 ~ /^d/ { sub(/^([^ ]+ +){5}/, ""); print }' > "$dirs"; then
       tar -xzpf "$layer" -C "$root" --overwrite --no-recursion -T "$dirs"
     fi
   done

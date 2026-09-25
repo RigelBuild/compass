@@ -98,11 +98,28 @@ pkgs.runCommand "compass-guest-assembly-tests" { } ''
   mkdir e4; echo x > e4/a; ln e4/a e4/hl
   tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --no-recursion \
     -P --transform='s|^a$|/etc/passwd|' -C e4 -cf - a hl | gzip -n > e4.tgz
+  expect_break "hardlink leaves the archive" assemble unpack "$(mktemp -d)" e4.tgz
+
+  # A delimiter inside a member name must not move the parsed link target.
+  mkdir e6; echo x > e6/a; ln e6/a "e6/hl link to safe"
+  tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --no-recursion \
+    -P --transform='s|^a$|/etc/passwd|' -C e6 -cf - a "hl link to safe" | gzip -n > e6.tgz
+  expect_break "hardlink leaves the archive" assemble unpack "$(mktemp -d)" e6.tgz
+
+  mkdir e7; ln -s /etc/passwd "e7/x -> ok"
+  mklayer e7.tgz e7 "x -> ok"
+  expect_break "symlink to a host path" assemble unpack "$(mktemp -d)" e7.tgz
 
   # A store symlink is what the real image ships, so it must pass.
   mkdir e5; ln -s /nix/store/00000000000000000000000000000000-x/bin/sh e5/sh
   mklayer e5.tgz e5 sh
   assemble unpack "$(mktemp -d)" e5.tgz || fail "(e) a /nix/store symlink was rejected"
+
+  # (f) directory modes survive a name with a space; unpack re-opens u+w.
+  mkdir -p "f1/dir a"; echo x > "f1/dir a/f"; chmod 0555 "f1/dir a"
+  mklayer f1.tgz f1 "dir a" "dir a/f"
+  r=$(mktemp -d); assemble unpack "$r" f1.tgz; assemble restore-dir-modes "$r" f1.tgz
+  [ "$(stat -c %a "$r/dir a")" = 555 ] || fail "(f) dir a mode is $(stat -c %a "$r/dir a"), want 555"
 
   touch $out
 ''
