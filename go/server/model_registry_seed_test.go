@@ -4,6 +4,7 @@ package server
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -30,19 +31,23 @@ func TestDay1ModelRegistrySeedPassesDoor(t *testing.T) {
 		t.Fatalf("day-1 model registry seed rejected at the door: %v", err)
 	}
 
-	entries := req.GetRegistry().GetEntries()
-	if len(entries) == 0 {
-		t.Fatal("day-1 model registry seed has no entries")
+	// The chains the docs page tables promise; update both together.
+	want := map[string][]string{
+		"claude-opus-4-8": {"anthropic/claude-opus-4-8", "openrouter/anthropic/claude-opus-4.8", "amazon-bedrock/global.anthropic.claude-opus-4-8"},
+		"gpt-5-5":         {"openai-codex/gpt-5.5", "openai/gpt-5.5", "openrouter/openai/gpt-5.5"},
+		"gemini-3-1-pro":  {"google/gemini-3.1-pro-preview", "openrouter/google/gemini-3.1-pro-preview"},
 	}
-	for name, entry := range entries {
-		candidates := entry.GetCandidates()
-		if len(candidates) == 0 {
-			t.Fatalf("entry %q has no candidates", name)
+	entries := req.GetRegistry().GetEntries()
+	if len(entries) != len(want) {
+		t.Errorf("seed has %d entries, want %d", len(entries), len(want))
+	}
+	for name, chain := range want {
+		var got []string
+		for _, c := range entries[name].GetCandidates() {
+			got = append(got, c.GetProvider()+"/"+c.GetModelId())
 		}
-		switch provider := candidates[0].GetProvider(); provider {
-		case "anthropic", "openai", "openai-codex", "google":
-		default:
-			t.Errorf("entry %q first candidate provider = %q, want a day-1 provider", name, provider)
+		if !slices.Equal(got, chain) {
+			t.Errorf("entry %q candidates = %v, want %v", name, got, chain)
 		}
 	}
 }
