@@ -283,6 +283,11 @@ describe("shared line classification", () => {
 			floor: { kind: "rows", count: 2 },
 		},
 		{
+			name: "a comment opener indented three spaces",
+			lines: ["   <!--", "| DL-905 | p | x | y |", "   -->", ...ANCHORED_ROW],
+			parser: { kind: "rows", count: 1 },
+		},
+		{
 			// Four spaces make indented code, not a comment, so the row stays content.
 			name: "a comment opener indented four spaces",
 			lines: ["    <!--", "| DL-905 | p | x | y |", "    -->", ...ANCHORED_ROW],
@@ -382,15 +387,17 @@ describe("the ledger table anchor", () => {
 			expect(countRawLedgerRows(text)).toBe(1);
 		});
 	}
-	test("yields no rows when the row under the header is not a delimiter row", () => {
-		const text = [
-			"| ID | Decision | Status | Record |",
-			"| a | b | c | d |",
-			"| DL-001 | real | x | y |",
-		].join("\n");
-		expect(parseLedger(text)).toEqual([]);
-		expect(countRawLedgerRows(text)).toBe(1);
-	});
+	for (const separator of ["| a | b | c | d |", "| --- | --- | --- |"]) {
+		test(`yields no rows under the non-delimiter row ${separator}`, () => {
+			const text = [
+				"| ID | Decision | Status | Record |",
+				separator,
+				"| DL-001 | real | x | y |",
+			].join("\n");
+			expect(parseLedger(text)).toEqual([]);
+			expect(countRawLedgerRows(text)).toBe(1);
+		});
+	}
 });
 
 describe("assertReconcilableLedger", () => {
