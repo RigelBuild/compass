@@ -30,7 +30,7 @@ Rejected. DL-141 (delegated-implementation folds into management-trees) and DL-1
 
 ## Global Constraints
 
-- Portable core guidance MUST NOT name a specific human, the private monorepo, the forge organization, a specific issue-key prefix, a named merge service, or local workspace paths; refer to the human generically as "the operator". This repo is public: `tools/orion-ref-gate` scans for the private repo's literal name and is a fail-closed backstop on push/schedule, **not** a PR-blocking gate — it is absent from a docs-only PR's affected closure — and it cannot catch a tokenless private-path citation or place-pointer (see `docs/concepts/self-host-and-managed.md`).
+- Portable core guidance MUST NOT name a specific human, a private repository, the forge organization, a specific issue-key prefix, a named merge service, or local workspace paths; refer to the human generically as "the operator". This repo is public: `tools/orion-ref-gate` runs on PRs (its `check` task takes the whole tree as input, so `moon query tasks --affected` selects it), but it matches one literal identifier only, so a tokenless path citation or place-pointer rests on the author (see `docs/concepts/self-host-and-managed.md`).
 - Preserve Compass roles (`supervisor`, `owner`, `manager`), in-process workers, async channels/topics, and operator-gated merge behavior.
 - Provider-specific Linear, Pulumi, forge, and merge-queue details belong in optional adapter skills or configuration, never the portable core.
 - Do not expose credentials or place secret values in prompts, rules, skills, tests, or migration notes.
