@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +47,9 @@ const (
 	fakeRunnerToken = "cnVubmVyLXRva2Vu"
 	fakeContainer   = "compass-agent-c1"
 	fakeSessionID   = "sess-relayed"
+	// fixtureAgentHandle names the fixture agent (atlas, owned by admin) the way
+	// the admin door takes it.
+	fixtureAgentHandle = "admin/atlas"
 )
 
 // placementFixture is one service wired to a real store and a real Runner door,
@@ -275,7 +280,7 @@ func TestProvisionAgentWorkspaceRecordsPlacementNamingServingRunner(t *testing.T
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 
-	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID), ClientRequestId: "prov-1"}))
+	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-1"}))
 	if err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
@@ -330,7 +335,7 @@ func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
 		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
 	}
 	const wantPersona = "You are Atlas, a meticulous senior engineer."
-	personaAgent, err := f.store.CreateAgent(ctx, seed.Agent.OwnerUserID, store.NewAgent{
+	_, err = f.store.CreateAgent(ctx, seed.Agent.OwnerUserID, store.NewAgent{
 		Handle:      "withpersona",
 		DisplayName: "P",
 		Persona:     wantPersona,
@@ -340,42 +345,13 @@ func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(personaAgent.ID), ClientRequestId: "prov-persona",
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/withpersona", ClientRequestId: "prov-persona",
 		Persona: "CLIENT-INJECTED-EVIL"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 
 	if got := f.runner.provisionPersona(t); got != wantPersona {
 		t.Fatalf("Runner received persona %q, want %q (server must overwrite the client value)", got, wantPersona)
-	}
-}
-
-// TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount pins the non-agent
-// branch of the server-authoritative persona invariant: when a user-account id
-// is passed as agent_account_id, the store read-through finds a non-agent
-// account (acc.IsAgent()==false) and must clear the client-supplied persona to
-// empty, so a caller cannot inject a system prompt via a non-agent account.
-func TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount(t *testing.T) {
-	f := newPlacementFixture(t)
-	ctx := context.Background() // the test root context
-
-	// The admin (a user account, not an agent) is the fixture agent's owner.
-	seed, err := f.store.GetAccount(ctx, f.agentID)
-	if err != nil {
-		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
-	}
-	adminID := seed.Agent.OwnerUserID
-
-	f.runner.forget() // discard the attach probe
-	// EXPECTED to error: admin is a user account, absent from agent_accounts, so the
-	// placement write fails on its FK (CodeInternal). The persona-clear is still
-	// observable because the Provision command is recorded (persona cleared) before
-	// the placement write runs. The error is not what this test pins, so discarded.
-	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent",
-		Persona: "CLIENT-INJECTED-EVIL"}))
-
-	if got := f.runner.provisionPersona(t); got != "" {
-		t.Fatalf("Runner received persona %q for a non-agent account, want empty (client value must be cleared)", got)
 	}
 }
 
@@ -397,7 +373,7 @@ func TestProvisionAgentWorkspaceOverwritesRoleFromStore(t *testing.T) {
 		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
 	}
 	const wantRole = "manager"
-	roleAgent, err := f.store.CreateAgent(ctx, seed.Agent.OwnerUserID, store.NewAgent{
+	_, err = f.store.CreateAgent(ctx, seed.Agent.OwnerUserID, store.NewAgent{
 		Handle:      "withrole",
 		DisplayName: "R",
 		Role:        wantRole,
@@ -407,7 +383,7 @@ func TestProvisionAgentWorkspaceOverwritesRoleFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(roleAgent.ID), ClientRequestId: "prov-role",
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "admin/withrole", ClientRequestId: "prov-role",
 		Role: "client-injected-evil"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
@@ -417,49 +393,52 @@ func TestProvisionAgentWorkspaceOverwritesRoleFromStore(t *testing.T) {
 	}
 }
 
-// TestProvisionAgentWorkspaceClearsRoleForNonAgentAccount pins the non-agent
-// branch of the server-authoritative role invariant: when a user-account id is
-// passed as agent_account_id, the store read-through finds a non-agent account
-// (acc.IsAgent()==false) and must clear the client-supplied role to empty, so a
-// caller cannot inject a role prompt via a non-agent account.
-func TestProvisionAgentWorkspaceClearsRoleForNonAgentAccount(t *testing.T) {
+// TestProvisionAgentWorkspaceUnresolvedHandleIsNotFound pins the admin door's
+// resolution contract: a bare handle (no owner to resolve in), an unknown owner,
+// an unknown agent, and a user named in the agent slot all return CodeNotFound
+// naming the SUBMITTED handle, before any Provision reaches the Runner.
+//
+// Mutation: defaulting a bare handle to some owner, or letting a non-agent through
+// to the relay, reddens the zero-Provision or the code assertion; naming a
+// resolved id in the error reddens the message assertion.
+func TestProvisionAgentWorkspaceUnresolvedHandleIsNotFound(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
+	f.runner.forget()           // discard the attach probe
 
-	// The admin (a user account, not an agent) is the fixture agent's owner.
-	seed, err := f.store.GetAccount(ctx, f.agentID)
-	if err != nil {
-		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
+	for _, handle := range []string{"atlas", "nobody/atlas", "admin/nobody", "admin/admin", "/atlas", "admin/"} {
+		_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: "prov-miss"}))
+		if code := connect.CodeOf(err); code != connect.CodeNotFound {
+			t.Fatalf("ProvisionAgentWorkspace(%q) code = %v, want CodeNotFound", handle, code)
+		}
+		if want := strconv.Quote(handle); !strings.Contains(err.Error(), want) {
+			t.Fatalf("ProvisionAgentWorkspace(%q) error = %q, want it to name the submitted handle %s", handle, err.Error(), want)
+		}
+		if strings.Contains(err.Error(), string(f.agentID)) {
+			t.Fatalf("ProvisionAgentWorkspace(%q) error = %q leaks the resolved account id", handle, err.Error())
+		}
 	}
-	adminID := seed.Agent.OwnerUserID
-
-	f.runner.forget() // discard the attach probe
-	// EXPECTED to error: admin is a user account, absent from agent_accounts, so the
-	// placement write fails on its FK (CodeInternal). The role-clear is still
-	// observable because the Provision command is recorded (role cleared) before the
-	// placement write runs. The error is not what this test pins, so discarded.
-	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent-role",
-		Role: "client-injected-evil"}))
-
-	if got := f.runner.provisionRole(t); got != "" {
-		t.Fatalf("Runner received role %q for a non-agent account, want empty (client value must be cleared)", got)
+	if got := f.runner.provisionCount(); got != 0 {
+		t.Fatalf("Provision commands = %d, want 0 (an unresolved handle never reaches the Runner); commands: %v", got, f.runner.commands())
 	}
 }
 
-// TestProvisionAgentWorkspaceUnknownAccountIsNotFound pins that the persona
-// read-through fails closed: an unknown agent_account_id yields CodeNotFound,
-// short-circuiting container creation before any Provision or placement.
-func TestProvisionAgentWorkspaceUnknownAccountIsNotFound(t *testing.T) {
+// TestProvisionAgentWorkspaceRelaysResolvedAccountID pins the relay contract: the
+// Runner, its container bind, and the hub's dedup key read agent_handle as an
+// account id, so the Server must relay the RESOLVED id, never the submitted handle.
+//
+// Mutation: relaying req.Msg unchanged sends "admin/atlas" to the Runner, and the
+// provisioned-account assertion reddens.
+func TestProvisionAgentWorkspaceRelaysResolvedAccountID(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
+	f.runner.forget()           // discard the attach probe
 
-	_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-does-not-exist", ClientRequestId: "prov-unknown",
-		Persona: "whatever"}))
-	if err == nil {
-		t.Fatalf("ProvisionAgentWorkspace = nil error, want CodeNotFound for an unknown account id")
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-relay"})); err != nil {
+		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
-	if code := connect.CodeOf(err); code != connect.CodeNotFound {
-		t.Fatalf("ProvisionAgentWorkspace error code = %v, want %v", code, connect.CodeNotFound)
+	if want := "provision " + string(f.agentID); !slices.Contains(f.runner.commands(), want) {
+		t.Fatalf("Runner commands = %v, want %q (the resolved account id)", f.runner.commands(), want)
 	}
 }
 

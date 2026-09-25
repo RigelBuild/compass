@@ -513,7 +513,7 @@ func TestRemoveAgentWorkspaceHandler(t *testing.T) {
 	ctx := context.Background()
 
 	// Provision a real placement to release.
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID), ClientRequestId: "prov-rm"})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-rm"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 	if _, _, err := f.store.PlacementForAgent(ctx, f.agentID); err != nil {
