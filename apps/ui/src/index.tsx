@@ -129,6 +129,7 @@ async function main(
 		createAppStore({
 			comms: clients.comms,
 			compass: clients.compass,
+			transport: clients.transport,
 			queryClient,
 			callerId,
 			// Namespace persisted UI prefs (the pinned-agent set) to this

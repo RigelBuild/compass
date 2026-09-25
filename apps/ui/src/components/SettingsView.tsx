@@ -4,7 +4,10 @@ import {
 	createSignal,
 	createStore,
 	For,
+	Match,
 	reconcile,
+	Show,
+	Switch,
 	snapshot,
 } from "solid-js";
 import { useStore } from "../context";
@@ -79,9 +82,18 @@ function reverseGroups(
  *  Edits land in a local draft seeded from `store.trackerConfig()` — never the
  *  store on every keystroke — and are committed via `store.setTrackerConfig`
  *  only on Save. Reset reseeds the draft from the store. The header shows the
- *  live (committed) handle + kind so it's clear what's actually wired. */
+ *  live (committed) handle + kind so it's clear what's actually wired. Below it,
+ *  a read-only view of the fleet model registry (hidden on an offline store). */
 export const SettingsView: Component = () => {
 	const store = useStore();
+	const ready = createMemo(() => {
+		const state = store.modelRegistry();
+		return state.status === "ready" ? state : undefined;
+	});
+	const error = createMemo(() => {
+		const state = store.modelRegistry();
+		return state.status === "error" ? state : undefined;
+	});
 
 	const seed = (): TrackerConfig =>
 		structuredClone(snapshot(store.trackerConfig()));
@@ -268,6 +280,73 @@ export const SettingsView: Component = () => {
 					Reset
 				</button>
 			</div>
+			<Show when={store.modelRegistry().status !== "offline"}>
+				<section class="settings-section" aria-label="Model registry">
+					<div class="settings-section-head">
+						<span class="heading">Model registry</span>
+						<Show when={ready()}>
+							{(state) => (
+								<span class="sub">
+									v{String(state().version)} · Read-only — edited via the
+									operator registry RPC.
+								</span>
+							)}
+						</Show>
+					</div>
+					<Switch>
+						<Match when={store.modelRegistry().status === "pending"}>
+							<span class="sub">Loading…</span>
+						</Match>
+						<Match when={error()}>
+							{(state) => <span role="alert">{state().message}</span>}
+						</Match>
+						<Match when={ready()}>
+							{(state) => (
+								<Show
+									when={state().entries.length > 0}
+									fallback={
+										<p class="backlog-empty sub">
+											No model registry configured.
+										</p>
+									}
+								>
+									<ul class="settings-registry">
+										<For each={state().entries}>
+											{(row) => (
+												<li class="settings-registry-row">
+													<span class="settings-registry-name">
+														{row.stableName}
+													</span>
+													<span class="settings-registry-display">
+														{row.displayName}
+													</span>
+													<span class="settings-registry-candidates">
+														<For each={row.candidates}>
+															{(candidate, index) => (
+																<span class="settings-registry-candidate">
+																	<Show when={index() > 0}>
+																		<span
+																			class="settings-map-arrow"
+																			aria-hidden="true"
+																		>
+																			→
+																		</span>
+																	</Show>
+																	{candidate.provider}/{candidate.modelId}
+																</span>
+															)}
+														</For>
+													</span>
+												</li>
+											)}
+										</For>
+									</ul>
+								</Show>
+							)}
+						</Match>
+					</Switch>
+				</section>
+			</Show>
 		</section>
 	);
 };
