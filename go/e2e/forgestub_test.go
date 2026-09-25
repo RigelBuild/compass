@@ -65,7 +65,8 @@ func TestForgeStubProviderClient(t *testing.T) {
 }
 
 // TestForgeStubDecodesCreateResponses checks every field the provider decodes
-// from the PR-create and comment responses. The tier-2 leg never renders them.
+// from the PR-create and comment responses. The tier-2 leg renders only the PR
+// number and URL.
 func TestForgeStubDecodesCreateResponses(t *testing.T) {
 	stub := newForgeStub(t)
 	provider := newForgeStubProvider(t, stub)
