@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +16,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runner"
 )
 
-func TestForgeStubProviderClient(t *testing.T) {
-	stub := newForgeStub(t)
+// newForgeStubProvider returns a GitHub provider authenticated to stub as the
+// primary App's installation 1.
+func newForgeStubProvider(t *testing.T, stub *forgeStub) *forge.GitHub {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -31,8 +34,13 @@ func TestForgeStubProviderClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAppTokenSource: %v", err)
 	}
-	provider := forge.NewGitHub(forge.GitHubConfig{Host: stub.Host(), Token: appTokens, Client: client.(*http.Client)})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return forge.NewGitHub(forge.GitHubConfig{Host: stub.Host(), Token: appTokens, Client: client.(*http.Client)})
+}
+
+func TestForgeStubProviderClient(t *testing.T) {
+	stub := newForgeStub(t)
+	provider := newForgeStubProvider(t, stub)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	created, err := provider.CreateIssue(ctx, "owner/repo", forge.CreateIssue{Title: "title", Body: "body", Labels: []string{"bug"}})
 	if err != nil {
@@ -53,6 +61,52 @@ func TestForgeStubProviderClient(t *testing.T) {
 	}
 	if requests[1].Authorization != "Bearer forge-stub-installation-1" {
 		t.Fatalf("authorization = %q", requests[1].Authorization)
+	}
+}
+
+// TestForgeStubDecodesCreateResponses checks every field the provider decodes
+// from the PR-create and comment responses. The tier-2 leg renders only the PR
+// number and URL.
+func TestForgeStubDecodesCreateResponses(t *testing.T) {
+	stub := newForgeStub(t)
+	provider := newForgeStubProvider(t, stub)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	pr, err := provider.CreatePullRequest(ctx, "owner/repo", forge.CreatePR{Title: "pr title", Body: "pr body", HeadRef: "feature", BaseRef: "main", Draft: true})
+	if err != nil {
+		t.Fatalf("CreatePullRequest: %v", err)
+	}
+	wantPR := forge.PullRequest{
+		Number:       forgeStubPullRequestNumber,
+		Title:        "pr title",
+		Body:         "pr body",
+		State:        "open",
+		URL:          "https://forge.stub/pulls/4243",
+		HeadRef:      "feature",
+		BaseRef:      "main",
+		ForgeAccount: forgeStubLogin,
+		Draft:        true,
+	}
+	if !reflect.DeepEqual(pr, wantPR) {
+		t.Fatalf("decoded pull request = %+v, want %+v", pr, wantPR)
+	}
+
+	// The stub answers every comment with body "comment" and id 1, so a
+	// different request body proves the decoded body came from the response.
+	comment, err := provider.CommentOnPullRequest(ctx, "owner/repo", forgeStubPullRequestNumber, "request body")
+	if err != nil {
+		t.Fatalf("CommentOnPullRequest: %v", err)
+	}
+	wantComment := forge.Comment{
+		ID:           1,
+		Key:          "1",
+		URL:          "https://forge.stub/issues/4243#issuecomment-1",
+		Body:         "comment",
+		ForgeAccount: forgeStubLogin,
+	}
+	if comment != wantComment {
+		t.Fatalf("decoded comment = %+v, want %+v", comment, wantComment)
 	}
 }
 
