@@ -68,20 +68,21 @@ Set `SOCK` to the Server's socket. That is its `--socket` value, or by default
 `~/.compass/server.sock` in its home when `XDG_RUNTIME_DIR` is unset.
 
 Set `REF` to the source of the Server you run: its release tag, or for a Nix
-flake install the commit that `nix profile list` shows. The seed is not in
-`v0.3.0` or earlier; on those releases, use `main`. Fetch the seed as yourself
-to a path the Server user can read, then write it into an empty registry:
+flake install the commit that `nix profile list` shows. If the seed is absent
+at that ref (it is not in `v0.3.0` or earlier, or in older flake pins), use
+`main`. Fetch the seed as yourself and pipe it straight into the write, which
+runs as the Server user:
 
 ```console
-curl -fsSL -o /tmp/day-1.json \
-    "https://raw.githubusercontent.com/RigelBuild/compass/$REF/docs/model-registry/day-1.json" &&
-sudo -u compass curl --fail-with-body --unix-socket "$SOCK" \
-    -H 'Content-Type: application/json' \
-    --data @/tmp/day-1.json \
-    http://localhost/compass.v1.CompassService/PutModelRegistry
+curl -fsSL "https://raw.githubusercontent.com/RigelBuild/compass/$REF/docs/model-registry/day-1.json" |
+    sudo -u compass curl --fail-with-body --unix-socket "$SOCK" \
+        -H 'Content-Type: application/json' \
+        --data-binary @- \
+        http://localhost/compass.v1.CompassService/PutModelRegistry
 ```
 
-From a repository checkout, `docs/model-registry/day-1.json` is the same file.
+A failed fetch sends an empty body, which the Server rejects. From a
+repository checkout, `docs/model-registry/day-1.json` is the same file.
 
 `expectedVersion` is a compare-and-set guard. `0` writes the first registry
 only. To update a registry that already exists, read its current version with
