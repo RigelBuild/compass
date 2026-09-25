@@ -13,7 +13,7 @@ import (
 )
 
 // TestDay1ModelRegistrySeedPassesDoor checks that the committed seed parses as a
-// PutModelRegistryRequest, passes store validation, and matches the docs tables.
+// PutModelRegistryRequest, passes store validation, and holds the expected chains.
 func TestDay1ModelRegistrySeedPassesDoor(t *testing.T) {
 	content, err := os.ReadFile("../../docs/model-registry/day-1.json")
 	if err != nil {
@@ -32,7 +32,7 @@ func TestDay1ModelRegistrySeedPassesDoor(t *testing.T) {
 		t.Fatalf("day-1 model registry seed rejected at the door: %v", err)
 	}
 
-	// The chains the docs page tables promise; update both together.
+	// The docs page tables list these chains; keep the two in step by hand.
 	want := map[string][]store.ModelCandidate{
 		"claude-opus-4-8": {
 			{Provider: "anthropic", ModelID: "claude-opus-4-8"},
