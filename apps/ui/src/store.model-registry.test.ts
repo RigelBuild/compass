@@ -135,6 +135,44 @@ describe("model registry store state", () => {
 		}
 	});
 
+	test("keeps the loaded registry when a later refetch fails", async () => {
+		let fail = false;
+		const transport = transportFor(() => {
+			if (fail) throw new Error("down");
+			return response(2n, {
+				opus: {
+					displayName: "Opus",
+					candidates: [{ provider: "anthropic", modelId: "opus" }],
+				},
+			});
+		});
+		const queryClient = testQueryClient();
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({ queryClient, transport });
+		});
+		try {
+			await settle(store.modelRegistry);
+			fail = true;
+			await queryClient.refetchQueries();
+			flush();
+			expect(store.modelRegistry()).toEqual({
+				status: "ready",
+				version: 2n,
+				entries: [
+					{
+						stableName: "opus",
+						displayName: "Opus",
+						candidates: [{ provider: "anthropic", modelId: "opus" }],
+					},
+				],
+			});
+		} finally {
+			dispose();
+		}
+	});
+
 	test("maps entries into sorted rows", () => {
 		expect(
 			modelRegistryRows(

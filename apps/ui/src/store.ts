@@ -830,6 +830,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			(path) => applyRoute(path),
 		);
 	};
+
+	// The read-only fleet model registry. Cached data wins over a failed refetch so a
+	// transient outage never blanks a loaded registry; memoized so rows map once per fetch.
 	const modelRegistryQuery = options.transport
 		? createConnectQuery(CompassService.method.getModelRegistry, () => ({}), {
 				transport: options.transport,
@@ -837,19 +840,18 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			})
 		: undefined;
 	const modelRegistry: Accessor<ModelRegistryState> = modelRegistryQuery
-		? () => {
-				if (modelRegistryQuery.isPending) return { status: "pending" };
+		? createMemo((): ModelRegistryState => {
+				const data = modelRegistryQuery.data;
+				if (data)
+					return {
+						status: "ready",
+						version: data.version,
+						entries: modelRegistryRows(data.registry?.entries ?? {}),
+					};
 				if (modelRegistryQuery.isError)
 					return { status: "error", message: modelRegistryQuery.error.message };
-				const data = modelRegistryQuery.data;
-				return data
-					? {
-							status: "ready",
-							version: data.version,
-							entries: modelRegistryRows(data.registry?.entries ?? {}),
-						}
-					: { status: "pending" };
-			}
+				return { status: "pending" };
+			})
 		: () => ({ status: "offline" });
 
 	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the user's
