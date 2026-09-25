@@ -76,7 +76,7 @@ func newDME2EWire(t *testing.T) *dmE2EWire {
 
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
 
 	// The production delivery wire (sinks.go:142-155), assembled inline with the
 	// REAL resume-based waker whose dm opener is the comms service — so the spawn

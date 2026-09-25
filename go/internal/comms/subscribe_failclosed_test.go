@@ -455,7 +455,7 @@ func TestForwardCommsLiveTailOverrunEmitsTerminalResync(t *testing.T) {
 // surfaces as a whole-suite timeout instead of this test failing.
 func driveUnderflowResync(t *testing.T, bus *events.Bus[*compassv1.SubscribeCommsResponse], req *compassv1.SubscribeCommsRequest) forwardResult {
 	t.Helper()
-	svc := NewComms(nil, bus, testActor)
+	svc := NewComms(nil, bus, nil, testActor)
 
 	path, handler := compassv1connect.NewCommsServiceHandler(svc)
 	mux := http.NewServeMux()

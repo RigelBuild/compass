@@ -788,7 +788,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// agent-initiated comms calls through this handler (the CommsCaller).
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	defer commsBus.Close()
-	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
 	// Register the coordination-channel reconcile as the store's in-tx hook, so
 	// the two parent-edge writers auto-provision/reconcile a manager's
 	// coordination channel atomically with the tree edge (RIG-1722 T5). Wired here

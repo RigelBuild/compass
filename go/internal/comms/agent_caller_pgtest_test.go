@@ -160,7 +160,7 @@ func TestPostAsAccountEmptyAccountFailsClosedNoAdminWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
-	svc := NewComms(st, bus, admin.ID)
+	svc := NewComms(st, bus, nil, admin.ID)
 	ctx := context.Background()
 
 	// A channel the admin founds (so admin is a member) — the write target that
