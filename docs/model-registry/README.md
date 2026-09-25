@@ -81,8 +81,9 @@ curl -fsSL "https://raw.githubusercontent.com/RigelBuild/compass/$REF/docs/model
         http://localhost/compass.v1.CompassService/PutModelRegistry
 ```
 
-A failed fetch sends an empty body, which the Server rejects. From a
-repository checkout, `docs/model-registry/day-1.json` is the same file.
+A failed or interrupted fetch sends an empty or truncated body, which the
+Server rejects. From a repository checkout, `docs/model-registry/day-1.json`
+is the same file.
 
 `expectedVersion` is a compare-and-set guard. `0` writes the first registry
 only. To update a registry that already exists, read its current version with
