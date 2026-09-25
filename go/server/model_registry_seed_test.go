@@ -12,8 +12,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// TestDay1ModelRegistrySeedPassesDoor pins the committed seed as a Connect-JSON
-// PutModelRegistry body the door accepts, so the documented curl keeps working.
+// TestDay1ModelRegistrySeedPassesDoor checks that the committed seed parses as a
+// PutModelRegistryRequest, passes store validation, and matches the docs tables.
 func TestDay1ModelRegistrySeedPassesDoor(t *testing.T) {
 	content, err := os.ReadFile("../../docs/model-registry/day-1.json")
 	if err != nil {
@@ -27,27 +27,34 @@ func TestDay1ModelRegistrySeedPassesDoor(t *testing.T) {
 	if req.GetExpectedVersion() != 0 {
 		t.Fatalf("expected_version = %d, want 0 for first seed", req.GetExpectedVersion())
 	}
-	if err := store.ValidateModelRegistry(registryFromProto(req.GetRegistry())); err != nil {
+	reg := registryFromProto(req.GetRegistry())
+	if err := store.ValidateModelRegistry(reg); err != nil {
 		t.Fatalf("day-1 model registry seed rejected at the door: %v", err)
 	}
 
 	// The chains the docs page tables promise; update both together.
-	want := map[string][]string{
-		"claude-opus-4-8": {"anthropic/claude-opus-4-8", "openrouter/anthropic/claude-opus-4.8", "amazon-bedrock/global.anthropic.claude-opus-4-8"},
-		"gpt-5-5":         {"openai-codex/gpt-5.5", "openai/gpt-5.5", "openrouter/openai/gpt-5.5"},
-		"gemini-3-1-pro":  {"google/gemini-3.1-pro-preview", "openrouter/google/gemini-3.1-pro-preview"},
+	want := map[string][]store.ModelCandidate{
+		"claude-opus-4-8": {
+			{Provider: "anthropic", ModelID: "claude-opus-4-8"},
+			{Provider: "openrouter", ModelID: "anthropic/claude-opus-4.8"},
+			{Provider: "amazon-bedrock", ModelID: "global.anthropic.claude-opus-4-8"},
+		},
+		"gpt-5-5": {
+			{Provider: "openai-codex", ModelID: "gpt-5.5"},
+			{Provider: "openai", ModelID: "gpt-5.5"},
+			{Provider: "openrouter", ModelID: "openai/gpt-5.5"},
+		},
+		"gemini-3-1-pro": {
+			{Provider: "google", ModelID: "gemini-3.1-pro-preview"},
+			{Provider: "openrouter", ModelID: "google/gemini-3.1-pro-preview"},
+		},
 	}
-	entries := req.GetRegistry().GetEntries()
-	if len(entries) != len(want) {
-		t.Errorf("seed has %d entries, want %d", len(entries), len(want))
+	if len(reg.Entries) != len(want) {
+		t.Errorf("seed has %d entries, want %d", len(reg.Entries), len(want))
 	}
 	for name, chain := range want {
-		var got []string
-		for _, c := range entries[name].GetCandidates() {
-			got = append(got, c.GetProvider()+"/"+c.GetModelId())
-		}
-		if !slices.Equal(got, chain) {
-			t.Errorf("entry %q candidates = %v, want %v", name, got, chain)
+		if got := reg.Entries[name].Candidates; !slices.Equal(got, chain) {
+			t.Errorf("entry %q candidates = %+v, want %+v", name, got, chain)
 		}
 	}
 }

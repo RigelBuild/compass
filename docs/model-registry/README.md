@@ -60,24 +60,28 @@ Registry defaults are data in the Server store. You change them with an
 operator `PutModelRegistry` RPC write, not with a Compass release.
 
 The Unix socket is the admin credential. Only the user that runs the Server
-can open it. Run these commands as that user on the Server host, for example
+can open it, so the write runs as that user on the Server host, for example
 `sudo -u compass` under the [systemd unit](../self-host.md#running-under-systemd).
 
 Set `SOCK` to the Server's socket. That is its `--socket` value, or by default
 `$XDG_RUNTIME_DIR/compass/server.sock` in the Server's environment, or
-`~/.compass/server.sock` in its home when `XDG_RUNTIME_DIR` is unset. Set `TAG`
-to the release tag you run; the seed ships in releases after `v0.3.0`. Fetch
-the seed, then write it into an empty registry:
+`~/.compass/server.sock` in its home when `XDG_RUNTIME_DIR` is unset.
+
+Set `REF` to the source of the Server you run: its release tag, or for a Nix
+flake install the commit that `nix profile list` shows. The seed is not in
+`v0.3.0` or earlier; on those releases, use `main`. Fetch the seed as yourself
+to a path the Server user can read, then write it into an empty registry:
 
 ```console
-curl -fsSLO "https://raw.githubusercontent.com/RigelBuild/compass/$TAG/docs/model-registry/day-1.json"
-curl --unix-socket "$SOCK" \
+curl -fsSL -o /tmp/day-1.json \
+    "https://raw.githubusercontent.com/RigelBuild/compass/$REF/docs/model-registry/day-1.json" &&
+sudo -u compass curl --fail-with-body --unix-socket "$SOCK" \
     -H 'Content-Type: application/json' \
-    --data @day-1.json \
+    --data @/tmp/day-1.json \
     http://localhost/compass.v1.CompassService/PutModelRegistry
 ```
 
-From a repository checkout, use the file in this directory instead.
+From a repository checkout, `docs/model-registry/day-1.json` is the same file.
 
 `expectedVersion` is a compare-and-set guard. `0` writes the first registry
 only. To update a registry that already exists, read its current version with
