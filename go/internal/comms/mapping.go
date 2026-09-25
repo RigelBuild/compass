@@ -3,6 +3,7 @@ package comms
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -497,6 +498,10 @@ func (c *Comms) publishAgentWorkspaceChanged(w store.AgentWorkspace) {
 	})
 }
 
+// fabricPublishTimeout bounds the post-commit publish once it no longer follows
+// the request's cancellation, so a stalled JetStream ack cannot pin the RPC.
+const fabricPublishTimeout = 5 * time.Second
+
 func (c *Comms) publishMessagePosted(ctx context.Context, m store.Message) {
 	c.bus.PublishCtx(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
@@ -510,7 +515,11 @@ func (c *Comms) publishMessagePosted(ctx context.Context, m store.Message) {
 	ref := fabric.EventRef{Tenant: tenant, Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
 	subject, err := fabric.CommsSubject(tenant, fabric.KindMessagePosted)
 	if err == nil {
-		err = c.fabric.Publish(ctx, subject, ref)
+		// A retry of this post is idempotent and never republishes, so a client
+		// hanging up after commit must not cancel the only publish attempt.
+		pubCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricPublishTimeout)
+		err = c.fabric.Publish(pubCtx, subject, ref)
+		cancel()
 	}
 	// The row is already committed, so failing the RPC would report a persisted
 	// write as lost; the delivery recovery sweep owns redelivery instead.
