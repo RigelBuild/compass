@@ -77,7 +77,7 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	// A real caller (not nil) makes the agent-authored leg drivable.
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
 
 	// The hub over a discard board + tail — otherwise the same shape
 	// newPlacementFixtureWith builds.

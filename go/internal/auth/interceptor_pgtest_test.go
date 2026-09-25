@@ -74,7 +74,7 @@ func TestBearerInterceptorSetsCommsActorNotAdminFallback(t *testing.T) {
 	// diverts attribution to the real caller.
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin)
 
 	// Drive CreateChannelGroup through the bearer interceptor: the interceptor
 	// resolves the member token and threads the caller into the ctx it hands the

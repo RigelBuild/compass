@@ -59,7 +59,7 @@ func newHandler(t *testing.T) (*Comms, *store.Store) {
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
-	return NewComms(st, bus, admin.ID), st
+	return NewComms(st, bus, nil, admin.ID), st
 }
 
 func TestCreateChannelEmitsChannelChanged(t *testing.T) {

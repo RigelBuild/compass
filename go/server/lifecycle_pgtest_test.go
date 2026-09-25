@@ -47,7 +47,7 @@ func newLifecycleFixture(t *testing.T) lifecycleFixture {
 	// is unused — OpenDMAsAccount always sets the caller explicitly).
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(pf.store, commsBus, owner)
+	commsSvc := comms.NewComms(pf.store, commsBus, nil, owner)
 	return lifecycleFixture{
 		placementFixture: pf,
 		lc:               newLifecycleService(pf.store, pf.hub, commsSvc),

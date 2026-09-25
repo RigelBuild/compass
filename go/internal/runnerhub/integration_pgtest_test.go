@@ -320,7 +320,7 @@ func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Sto
 	// adminID is the comms handler's ambient fallback; the agent-initiated leg
 	// (PostAsAccount) overrides it per-call with the resolved agent account, so
 	// the post attributes to the agent, never the admin.
-	commsSvc := comms.NewComms(st, bus, admin.ID)
+	commsSvc := comms.NewComms(st, bus, nil, admin.ID)
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
 		t.Fatalf("bus.Subscribe: %v", err)

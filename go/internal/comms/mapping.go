@@ -2,10 +2,12 @@ package comms
 
 import (
 	"context"
+	"log/slog"
 
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -501,6 +503,23 @@ func (c *Comms) publishMessagePosted(ctx context.Context, m store.Message) {
 			MessagePosted: &compassv1.MessagePosted{Message: MessageToWire(m)},
 		},
 	})
+	if c.fabric == nil {
+		return
+	}
+	tenant := string(c.store.EffectiveTenant(ctx))
+	ref := fabric.EventRef{Tenant: tenant, Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	subject, err := fabric.CommsSubject(tenant, fabric.KindMessagePosted)
+	if err == nil {
+		err = c.fabric.Publish(ctx, subject, ref)
+	}
+	// The row is already committed, so failing the RPC would report a persisted
+	// write as lost; the delivery recovery sweep owns redelivery instead.
+	if err != nil {
+		slog.ErrorContext(ctx, "comms: publishing message_posted to fabric failed", "error", err, "message_id", string(m.ID))
+		if c.fabricPublishFailures != nil {
+			c.fabricPublishFailures.Add(ctx, 1)
+		}
+	}
 }
 
 func (c *Comms) publishMessageUpdated(m store.Message) {

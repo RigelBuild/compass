@@ -295,7 +295,7 @@ func TestGetRosterActivitySurvivesSimulatedRestart(t *testing.T) {
 
 	// Simulate the restart: a brand-new handler over the SAME store, its in-memory
 	// presence projection empty (nothing re-enrolled yet).
-	fresh := NewComms(st, newBus(t), owner.ID)
+	fresh := NewComms(st, newBus(t), nil, owner.ID)
 
 	resp, err := fresh.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
 		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
