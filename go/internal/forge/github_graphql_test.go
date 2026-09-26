@@ -18,15 +18,23 @@ import (
 	"time"
 )
 
-// noRollupGraphQL is a Checks GraphQL leg (threads excluded) whose last commit
-// has no status-check rollup, so nothing is required.
-const noRollupGraphQL = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}`
+// headSHA is the REST head SHA of the scripted PRs; a contexts page for any
+// other oid is a moved head.
+const headSHA = "s7"
+
+// noRollupGraphQL is a Checks GraphQL leg (threads excluded) whose last commit,
+// head sha, has no status-check rollup, so nothing is required.
+func noRollupGraphQL(sha string) string {
+	return `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"oid":"` + sha + `","statusCheckRollup":null}}]}}}}}`
+}
 
 // emptyPullGraphQL is a GetPullRequest GraphQL leg with no threads and no
-// status-check rollup on the last commit.
-const emptyPullGraphQL = `{"data":{"repository":{"pullRequest":{
+// status-check rollup on the last commit, head sha.
+func emptyPullGraphQL(sha string) string {
+	return `{"data":{"repository":{"pullRequest":{
 	"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
-	"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}`
+	"commits":{"nodes":[{"commit":{"oid":"` + sha + `","statusCheckRollup":null}}]}}}}}`
+}
 
 // gqlBody marshals a GraphQL data value into a response body.
 func gqlBody(t *testing.T, data any) string {
@@ -60,15 +68,12 @@ func comment(login, kind, body string) ghGQLComment {
 	return ghGQLComment{Author: &ghGQLActor{Login: login, Typename: kind}, Body: body}
 }
 
-// rollup is one page of status contexts on the PR's last commit.
-func rollup(next bool, cursor string, nodes ...ghGQLContext) *ghGQLPullCommits {
-	c := &ghGQLPullCommits{Nodes: make([]struct {
-		Commit struct {
-			StatusCheckRollup *ghGQLRollup `json:"statusCheckRollup"`
-		} `json:"commit"`
-	}, 1)}
-	c.Nodes[0].Commit.StatusCheckRollup = &ghGQLRollup{Contexts: ghGQLContexts{PageInfo: ghPageInfo{HasNextPage: next, EndCursor: cursor}, Nodes: nodes}}
-	return c
+// rollup is one page of status contexts on the PR's last commit, oid.
+func rollup(oid string, next bool, cursor string, nodes ...ghGQLContext) *ghGQLPullCommits {
+	var n ghGQLCommitNode
+	n.Commit.OID = oid
+	n.Commit.StatusCheckRollup = &ghGQLRollup{Contexts: ghGQLContexts{PageInfo: ghPageInfo{HasNextPage: next, EndCursor: cursor}, Nodes: nodes}}
+	return &ghGQLPullCommits{Nodes: []ghGQLCommitNode{n}}
 }
 
 // checkRun is a CheckRun context; statusContext is a legacy StatusContext.
@@ -84,7 +89,7 @@ func statusContext(name string, required bool) ghGQLContext {
 // check runs and no reviews, ahead of the GraphQL responses a test appends.
 func pullRESTLegs(checkRuns string, gql ...scriptedResponse) []scriptedResponse {
 	return append([]scriptedResponse{
-		{status: 200, body: `{"number":7,"state":"open","head":{"ref":"f","sha":"s7"},"base":{"ref":"main"},"user":{"login":"a"}}`},
+		{status: 200, body: `{"number":7,"state":"open","head":{"ref":"f","sha":"` + headSHA + `"},"base":{"ref":"main"},"user":{"login":"a"}}`},
 		{status: 200, body: `[]`},
 		{status: 200, body: `{"check_runs": [` + checkRuns + `]}`},
 		{status: 200, body: `{"statuses": []}`},
@@ -99,7 +104,7 @@ func ok200(body string) scriptedResponse { return scriptedResponse{status: 200, 
 // and both pages' threads are returned in order.
 func TestGetPullRequestThreadPagination(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: pullRESTLegs("",
-		ok200(pullPage(t, threadsConn(true, "CUR1", thread("T1", "a.go", false, comment("x", "User", "one"))), rollup(false, "c"))),
+		ok200(pullPage(t, threadsConn(true, "CUR1", thread("T1", "a.go", false, comment("x", "User", "one"))), rollup(headSHA, false, "c"))),
 		ok200(pullPage(t, threadsConn(false, "CUR2", thread("T2", "b.go", true, comment("y", "User", "two"))), nil)),
 	)}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
@@ -136,8 +141,8 @@ func TestGetPullRequestThreadsAndContextsPageTogether(t *testing.T) {
 	runs := `{"name":"build","status":"completed","conclusion":"success","html_url":""},
 		{"name":"rollup","status":"completed","conclusion":"success","html_url":""}`
 	rt := &scriptedRoundTripper{responses: pullRESTLegs(runs,
-		ok200(pullPage(t, threadsConn(true, "T-1", thread("A", "a.go", false, comment("x", "User", "1"))), rollup(true, "C-1", checkRun("build", false)))),
-		ok200(pullPage(t, threadsConn(true, "T-2", thread("B", "b.go", false, comment("x", "User", "2"))), rollup(false, "C-2", checkRun("rollup", true)))),
+		ok200(pullPage(t, threadsConn(true, "T-1", thread("A", "a.go", false, comment("x", "User", "1"))), rollup(headSHA, true, "C-1", checkRun("build", false)))),
+		ok200(pullPage(t, threadsConn(true, "T-2", thread("B", "b.go", false, comment("x", "User", "2"))), rollup(headSHA, false, "C-2", checkRun("rollup", true)))),
 		ok200(pullPage(t, threadsConn(false, "T-3", thread("C", "c.go", false, comment("x", "User", "3"))), nil)),
 	)}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
@@ -170,14 +175,14 @@ func TestGetPullRequestThreadsAndContextsPageTogether(t *testing.T) {
 // still marks its check, and page 2 is requested with the page-1 cursor.
 func TestChecksRequiredContextPagination(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{
-		ok200(`{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`),
+		ok200(`{"number":9,"head":{"sha":"` + headSHA + `"},"base":{"ref":"main"},"user":{"login":"a"}}`),
 		ok200(`{"check_runs": [
 			{"name":"build","status":"completed","conclusion":"success","html_url":""},
 			{"name":"rollup","status":"completed","conclusion":"success","html_url":""}
 		]}`),
 		ok200(`{"statuses": []}`),
-		ok200(pullPage(t, nil, rollup(true, "CX1", checkRun("build", false)))),
-		ok200(pullPage(t, nil, rollup(false, "CX2", checkRun("rollup", true)))),
+		ok200(pullPage(t, nil, rollup(headSHA, true, "CX1", checkRun("build", false)))),
+		ok200(pullPage(t, nil, rollup(headSHA, false, "CX2", checkRun("rollup", true)))),
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -196,12 +201,12 @@ func TestChecksRequiredContextPagination(t *testing.T) {
 // A required StatusContext marks the legacy status of the same name, and a PR
 // whose commits list is empty has nothing required.
 func TestChecksRequiredContextShapes(t *testing.T) {
-	detail := ok200(`{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`)
+	detail := ok200(`{"number":9,"head":{"sha":"` + headSHA + `"},"base":{"ref":"main"},"user":{"login":"a"}}`)
 	status := ok200(`{"statuses": [{"context":"legacy","state":"success","target_url":""}]}`)
 
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{
 		detail, ok200(`{"check_runs": []}`), status,
-		ok200(pullPage(t, nil, rollup(false, "c", statusContext("legacy", true)))),
+		ok200(pullPage(t, nil, rollup(headSHA, false, "c", statusContext("legacy", true)))),
 	}}
 	got, err := newTestGitHub(rt, &fakeTokenSource{token: "t"}).Checks(context.Background(), "org/repo", 9)
 	if err != nil {
@@ -234,7 +239,7 @@ func TestGetPullRequestThreadCommentPagination(t *testing.T) {
 		Nodes:    []ghGQLComment{comment("y", ghTypeBot, "second")},
 	}}})
 	rt := &scriptedRoundTripper{responses: pullRESTLegs("",
-		ok200(pullPage(t, threadsConn(false, "t", long), rollup(false, "c"))),
+		ok200(pullPage(t, threadsConn(false, "t", long), rollup(headSHA, false, "c"))),
 		ok200(more),
 	)}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
@@ -286,15 +291,15 @@ func TestPullGraphQLErrorBranches(t *testing.T) {
 		{"errors array", []scriptedResponse{ok200(`{"data":null,"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a PullRequest with the number of 7."}]}`)}, "Could not resolve to a PullRequest"},
 		{"null repository", []scriptedResponse{ok200(`{"data":{"repository":null}}`)}, "repository"},
 		{"null pull request", []scriptedResponse{ok200(`{"data":{"repository":{"pullRequest":null}}}`)}, "pull request"},
-		{"no threads connection", []scriptedResponse{ok200(pullPage(t, nil, rollup(false, "c")))}, "review threads connection"},
+		{"no threads connection", []scriptedResponse{ok200(pullPage(t, nil, rollup(headSHA, false, "c")))}, "review threads connection"},
 		{"no commits connection", []scriptedResponse{ok200(pullPage(t, threadsConn(false, "t"), nil))}, "commits connection"},
-		{"next page without a cursor", []scriptedResponse{ok200(pullPage(t, threadsConn(true, ""), rollup(false, "c")))}, "without an endCursor"},
+		{"next page without a cursor", []scriptedResponse{ok200(pullPage(t, threadsConn(true, ""), rollup(headSHA, false, "c")))}, "without an endCursor"},
 		{"repeated cursor", []scriptedResponse{
-			ok200(pullPage(t, threadsConn(true, "SAME"), rollup(false, "c"))),
+			ok200(pullPage(t, threadsConn(true, "SAME"), rollup(headSHA, false, "c"))),
 			ok200(pullPage(t, threadsConn(true, "SAME"), nil)),
 		}, "repeats the previous cursor"},
 		{"null thread node", []scriptedResponse{
-			ok200(pullPage(t, threadsConn(false, "t", longThread), rollup(false, "c"))),
+			ok200(pullPage(t, threadsConn(false, "t", longThread), rollup(headSHA, false, "c"))),
 			ok200(`{"data":{"node":null}}`),
 		}, "review thread"},
 	}
@@ -307,6 +312,45 @@ func TestPullGraphQLErrorBranches(t *testing.T) {
 			}
 			if rt.calls != 4+len(tc.gql) {
 				t.Errorf("calls = %d, want %d", rt.calls, 4+len(tc.gql))
+			}
+		})
+	}
+}
+
+// The contexts must describe the commit the REST checks were read at. A moved
+// head, on page 1 or mid-walk, is errHeadMoved naming both SHAs, never a
+// Required set joined from another commit. A null rollup is checked too, so a
+// new head with no checks cannot clear the old head's required flags.
+func TestPullGraphQLHeadMoved(t *testing.T) {
+	var moved ghGQLCommitNode
+	moved.Commit.OID = "newhead"
+	cases := []struct {
+		name string
+		gql  []scriptedResponse
+	}{
+		{"page 1 at another commit", []scriptedResponse{
+			ok200(pullPage(t, threadsConn(false, "t"), rollup("newhead", false, "c", checkRun("build", true)))),
+		}},
+		{"page 1 null rollup at another commit", []scriptedResponse{
+			ok200(pullPage(t, threadsConn(false, "t"), &ghGQLPullCommits{Nodes: []ghGQLCommitNode{moved}})),
+		}},
+		{"head changes on page 2", []scriptedResponse{
+			ok200(pullPage(t, threadsConn(false, "t"), rollup(headSHA, true, "C1", checkRun("build", false)))),
+			ok200(pullPage(t, nil, rollup("newhead", false, "C2", checkRun("rollup", true)))),
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: pullRESTLegs("", tc.gql...)}
+			_, err := newTestGitHub(rt, &fakeTokenSource{token: "t"}).GetPullRequest(context.Background(), "org/repo", 7)
+			if !errors.Is(err, errHeadMoved) {
+				t.Fatalf("err = %v, want errHeadMoved", err)
+			}
+			if msg := err.Error(); !strings.Contains(msg, headSHA) || !strings.Contains(msg, "newhead") {
+				t.Errorf("err = %q, want both SHAs", msg)
+			}
+			if rt.calls != 4+len(tc.gql) {
+				t.Errorf("calls = %d, want %d (no retry, no fallback)", rt.calls, 4+len(tc.gql))
 			}
 		})
 	}

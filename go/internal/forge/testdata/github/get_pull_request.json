@@ -124,6 +124,7 @@
 									"nodes": [
 										{
 											"commit": {
+												"oid": "abc123",
 												"statusCheckRollup": {
 													"contexts": {
 														"pageInfo": {

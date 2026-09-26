@@ -97,6 +97,7 @@ var wireVolatile = map[string]func(node any) any{
 	"login":       fixedSentinel(canonAccount),
 	"displayName": fixedSentinel(canonAccount),
 	"sha":         fixedSentinel(canonSHA),
+	"oid":         fixedSentinel(canonSHA),
 	"ref":         fixedSentinel(canonRef),
 	"title":       fixedSentinel(canonTitle),
 	"body":        fixedSentinel(canonBody),
@@ -105,10 +106,12 @@ var wireVolatile = map[string]func(node any) any{
 }
 
 // wireOnlyVolatile names wire keys that change per capture but decode into no
-// domain field, so they have no domainToWire entry. A GraphQL endCursor is one:
-// it only feeds the next page's request.
+// domain field, so they have no domainToWire entry. A GraphQL endCursor only
+// feeds the next page's request; a commit oid is only compared to head.sha, so it
+// shares sha's sentinel.
 var wireOnlyVolatile = map[string]struct{}{
 	"endCursor": {},
+	"oid":       {},
 }
 
 // canonCursor sentinels a GraphQL endCursor. A null stays null: it marks a last
@@ -424,7 +427,7 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 	all := json.RawMessage(`{
 		"number": 1, "id": 2, "html_url": "h", "url": "u", "target_url": "t",
 		"updated_at": "a", "updatedAt": "b", "login": "l", "displayName": "d",
-		"sha": "s", "ref": "r", "title": "ti", "body": "bo", "description": "de",
+		"sha": "s", "oid": "o", "ref": "r", "title": "ti", "body": "bo", "description": "de",
 		"endCursor": "Y3Vyc29y", "last": { "endCursor": null },
 		"state": "open", "keep": "kept"
 	}`)
@@ -432,7 +435,7 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 		"number": 42, "id": 42, "html_url": "https://example.invalid/canonical",
 		"url": "https://example.invalid/canonical", "target_url": "https://example.invalid/canonical",
 		"updated_at": "2026-08-01T12:30:00Z", "updatedAt": "2026-08-01T12:30:00Z",
-		"login": "octocat", "displayName": "octocat", "sha": "canonicalsha",
+		"login": "octocat", "displayName": "octocat", "sha": "canonicalsha", "oid": "canonicalsha",
 		"ref": "canonical-ref", "title": "canonical title", "body": "canonical body",
 		"description": "canonical body", "endCursor": "canonical-cursor", "last": { "endCursor": null },
 		"state": "open", "keep": "kept"
@@ -577,7 +580,7 @@ func TestUpdateCanonicalizeComposite(t *testing.T) {
 					"pageInfo": { "hasNextPage": false, "endCursor": "live-c" },
 					"nodes": [ { "author": { "login": "dave-live", "__typename": "Bot" }, "body": "live nit" } ] } }
 			] },
-			"commits": { "nodes": [ { "commit": { "statusCheckRollup": { "contexts": {
+			"commits": { "nodes": [ { "commit": { "oid": "livesha123abc", "statusCheckRollup": { "contexts": {
 				"pageInfo": { "hasNextPage": false, "endCursor": "MQ" },
 				"nodes": [ { "__typename": "CheckRun", "name": "build", "isRequired": true } ] } } } } ] }
 		} } } }`)},

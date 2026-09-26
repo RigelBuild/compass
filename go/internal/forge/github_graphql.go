@@ -19,6 +19,10 @@ import (
 // exactly "owner/name"; GraphQL takes the two halves as separate variables.
 var errMalformedRepo = errors.New("forge: malformed github repo, want owner/name")
 
+// errHeadMoved means the PR head changed during a read, so the REST checks and
+// the GraphQL contexts describe different commits. The caller re-reads.
+var errHeadMoved = errors.New("forge: github pull request head moved during read")
+
 // ghGraphQLRateLimited is the errors[].type GitHub returns, on HTTP 200, when
 // the GraphQL budget is spent.
 const ghGraphQLRateLimited = "RATE_LIMITED"
@@ -157,11 +161,15 @@ type ghGQLRollup struct {
 
 // ghGQLPullCommits is the PR's last commit (commits(last: 1)).
 type ghGQLPullCommits struct {
-	Nodes []struct {
-		Commit struct {
-			StatusCheckRollup *ghGQLRollup `json:"statusCheckRollup"`
-		} `json:"commit"`
-	} `json:"nodes"`
+	Nodes []ghGQLCommitNode `json:"nodes"`
+}
+
+// ghGQLCommitNode is one PullRequestCommit; oid pins the rollup to a head SHA.
+type ghGQLCommitNode struct {
+	Commit struct {
+		OID               string       `json:"oid"`
+		StatusCheckRollup *ghGQLRollup `json:"statusCheckRollup"`
+	} `json:"commit"`
 }
 
 // ghGQLPull is the pull request half; each connection is absent when excluded.
@@ -189,10 +197,8 @@ type ghGQLThreadNode struct {
 
 // pullReadQuery fetches review threads and required contexts in one call. The
 // @include flags let a later page fetch only the connection still paging. The
-// contexts are read through the pull request (commits(last: 1)), which needs
-// only Pull requests: read, not the Contents access a git-object read would.
-// Required-ness depends on the context name and the base-branch rules, not on
-// the commit, so the last commit need not equal the REST head SHA.
+// contexts are read through the pull request (commits(last: 1)), so only Pull
+// requests: read is needed; the commit oid pins each page to the REST head SHA.
 const pullReadQuery = `query($owner: String!, $name: String!, $number: Int!, $threads: Boolean!, $threadsAfter: String, $contexts: Boolean!, $contextsAfter: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -211,6 +217,7 @@ const pullReadQuery = `query($owner: String!, $name: String!, $number: Int!, $th
       commits(last: 1) @include(if: $contexts) {
         nodes {
           commit {
+            oid
             statusCheckRollup {
               contexts(first: 100, after: $contextsAfter) {
                 pageInfo { hasNextPage endCursor }
@@ -258,7 +265,7 @@ func (g *GitHub) checksForPull(ctx context.Context, c pullCoord, sha string, wit
 	if err != nil {
 		return Checks{}, nil, err
 	}
-	threads, required, err := g.pullGraphQL(ctx, c, withThreads)
+	threads, required, err := g.pullGraphQL(ctx, c, sha, withThreads)
 	if err != nil {
 		return Checks{}, nil, fmt.Errorf("forge: github graphql for %q#%d: %w", c.repo, c.number, err)
 	}
@@ -273,6 +280,7 @@ func (g *GitHub) checksForPull(ctx context.Context, c pullCoord, sha string, wit
 // pullGraphQLWalk is the cursor state of one pullGraphQL walk. A connection
 // that has finished drops out of later queries through its @include flag.
 type pullGraphQLWalk struct {
+	sha                         string // REST head SHA every contexts page must match
 	threads                     []ReviewThread
 	required                    map[string]struct{}
 	threadsAfter, contextsAfter any // nil sends JSON null: the first page
@@ -280,11 +288,11 @@ type pullGraphQLWalk struct {
 }
 
 // pullGraphQL walks pullReadQuery to completion: every review-thread page (when
-// withThreads) and every context page. It returns the threads in forge order and
-// the set of required context names (a CheckRun's name, a StatusContext's
-// context), which match the REST check names.
-func (g *GitHub) pullGraphQL(ctx context.Context, c pullCoord, withThreads bool) ([]ReviewThread, map[string]struct{}, error) {
-	w := pullGraphQLWalk{required: map[string]struct{}{}, moreThreads: withThreads, moreContexts: true}
+// withThreads) and every context page of head commit sha. It returns the threads
+// in forge order and the set of required context names (a CheckRun's name, a
+// StatusContext's context), which match the REST check names.
+func (g *GitHub) pullGraphQL(ctx context.Context, c pullCoord, sha string, withThreads bool) ([]ReviewThread, map[string]struct{}, error) {
+	w := pullGraphQLWalk{sha: sha, required: map[string]struct{}{}, moreThreads: withThreads, moreContexts: true}
 	for w.moreThreads || w.moreContexts {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -339,16 +347,25 @@ func (g *GitHub) foldThreads(ctx context.Context, w *pullGraphQLWalk, c pullCoor
 
 // foldContexts adds one page of required context names to w and advances its
 // cursor. A PR with no commits, or a last commit with no checks or statuses
-// (a null rollup), has nothing required.
+// (a null rollup), has nothing required. The oid check runs first, so a newer
+// head's null rollup cannot clear the old head's required checks.
 func foldContexts(w *pullGraphQLWalk, c pullCoord, commits *ghGQLPullCommits) error {
 	if commits == nil {
 		return fmt.Errorf("forge: github graphql: pull request %q#%d has no commits connection", c.repo, c.number)
 	}
-	if len(commits.Nodes) == 0 || commits.Nodes[0].Commit.StatusCheckRollup == nil {
+	if len(commits.Nodes) == 0 {
 		w.moreContexts = false
 		return nil
 	}
-	contexts := commits.Nodes[0].Commit.StatusCheckRollup.Contexts
+	commit := commits.Nodes[0].Commit
+	if commit.OID != w.sha {
+		return fmt.Errorf("%w: checks read at %s, contexts at %s", errHeadMoved, w.sha, commit.OID)
+	}
+	if commit.StatusCheckRollup == nil {
+		w.moreContexts = false
+		return nil
+	}
+	contexts := commit.StatusCheckRollup.Contexts
 	for _, cx := range contexts.Nodes {
 		if !cx.IsRequired {
 			continue

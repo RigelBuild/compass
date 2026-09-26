@@ -1437,7 +1437,7 @@ const happyPullGraphQL = `{"data":{"repository":{
 				"pageInfo":{"hasNextPage":false,"endCursor":null},
 				"nodes":[{"author":{"login":"dave","__typename":"User"},"body":"why?"}]}}
 		]},
-	"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+	"commits":{"nodes":[{"commit":{"oid":"abc123","statusCheckRollup":{"contexts":{
 		"pageInfo":{"hasNextPage":false,"endCursor":"c1"},
 		"nodes":[
 			{"__typename":"CheckRun","name":"build","isRequired":true},
@@ -1588,7 +1588,7 @@ func TestGetPullRequestOpenState(t *testing.T) {
 		{status: 200, body: `[]`},
 		{status: 200, body: `{"check_runs": []}`},
 		{status: 200, body: `{"statuses": []}`},
-		{status: 200, body: emptyPullGraphQL},
+		{status: 200, body: emptyPullGraphQL("sha5")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1639,7 +1639,7 @@ func TestChecksMixedFailure(t *testing.T) {
 	const statusBody = `{"statuses": [
 		{"context": "coverage", "state": "success", "target_url": "https://ci/cov"}
 	]}`
-	const graphQLBody = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+	const graphQLBody = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"oid":"deadbeef","statusCheckRollup":{"contexts":{
 		"pageInfo":{"hasNextPage":false,"endCursor":"c1"},
 		"nodes":[
 			{"__typename":"CheckRun","name":"lint","isRequired":true},
@@ -1716,7 +1716,7 @@ func TestChecksPending(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: checkRunsBody},
 		{status: 200, body: `{"statuses": []}`},
-		{status: 200, body: noRollupGraphQL},
+		{status: 200, body: noRollupGraphQL("s")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1740,7 +1740,7 @@ func TestChecksAllSuccess(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": [{"name":"build","status":"completed","conclusion":"success","html_url":""}]}`},
 		{status: 200, body: `{"statuses": [{"context":"cov","state":"success","target_url":""}]}`},
-		{status: 200, body: noRollupGraphQL},
+		{status: 200, body: noRollupGraphQL("s")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1787,7 +1787,7 @@ func TestChecksFollowsPagination(t *testing.T) {
 		}},
 		{status: 200, body: page2},
 		{status: 200, body: `{"statuses": []}`},
-		{status: 200, body: noRollupGraphQL},
+		{status: 200, body: noRollupGraphQL("pg")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1828,7 +1828,7 @@ func TestChecksUnknownNonTerminalStatusPending(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": [{"name":"gate","status":"waiting","conclusion":"","html_url":""}]}`},
 		{status: 200, body: `{"statuses": []}`},
-		{status: 200, body: noRollupGraphQL},
+		{status: 200, body: noRollupGraphQL("s")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1856,7 +1856,7 @@ func TestChecksCancelledIsFailure(t *testing.T) {
 			{"name":"deploy","status":"completed","conclusion":"cancelled","html_url":""}
 		]}`},
 		{status: 200, body: `{"statuses": []}`},
-		{status: 200, body: noRollupGraphQL},
+		{status: 200, body: noRollupGraphQL("s")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1881,7 +1881,7 @@ func TestChecksNeutralRollsUpSuccess(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": [{"name":"advisory","status":"completed","conclusion":"neutral","html_url":""}]}`},
 		{status: 200, body: `{"statuses": []}`},
-		{status: 200, body: noRollupGraphQL},
+		{status: 200, body: noRollupGraphQL("s")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1905,7 +1905,7 @@ func TestChecksLegacyErrorStatusIsFailure(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": []}`},
 		{status: 200, body: `{"statuses": [{"context":"legacy","state":"error","target_url":""}]}`},
-		{status: 200, body: noRollupGraphQL},
+		{status: 200, body: noRollupGraphQL("s")},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
