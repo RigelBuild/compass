@@ -13,7 +13,7 @@ of this record). DL-071/DL-073 stay Active — this record amends the
 OQ-3 offline clause by citation, it does not reverse the steer-only precedence
 or the control-op shapes.
 
-> **Amends `compass-notification-delivery` (merged).** Per the merged-record
+> **Amends `compass-notification-delivery` (merged).** Per the frozen-record
 > convention a later change ADDS a record (sibling precedent:
 > `compass-sidebar-pins-unreachable-amendment`,
 > `compass-server-ownership-layer-amendment`); the merged record is never

@@ -582,7 +582,8 @@ The package skeleton mirrors `go/internal/compute`'s layering
   byte-identical (GC 8). Under `SourceVolume`, `ensureCheckoutDir` still
   runs (idempotent `mkdir -p` on the mounted path, same uid-ownership
   intent, `agent.go:354-358`). The `AgentSpec.Mounts` doc comment is amended
-  per P2-GC-a. No `WorkloadRuntime` change (`podman.go:399-403`).
+  per P2-GC-a. No `WorkloadRuntime` change
+  (`podman.go:399-403`).
 - **Depends:** W1 (the mount it documents); parallel with W3.
 - **Test cycle:** existing launch-path regression suite green with zero-value
   `Source`; a `SourceVolume` spec produces the writable mount + stable

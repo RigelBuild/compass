@@ -97,8 +97,9 @@ takes only `RovingDirection = "prev" | "next" | "first" | "last"`
 commands to the **active group's own handler**; the group owns its movement
 semantics (1-D lists implement prev/next; the board grid implements the 2-D
 model below). `moveWithinGroup` stays satisfiable as the 1-D convenience path;
-`zones.ts` is not edited; this slice needs no change to it. This is a design
-decision here, not a contract change.
+the `zones.ts` file is not edited (a contract changes by addition, never by
+rewrite). This is a design decision here, not a contract
+change.
 
 ### The 2-D sparse-grid cursor model
 

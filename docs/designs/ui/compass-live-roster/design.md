@@ -240,9 +240,9 @@ already-documented `joinAgents` seam, and component cutovers to the accessor.
   `options.comms`/`options.compass` must keep working with fixture data and no
   network (the walking skeleton, `App.tsx:20-25`; every existing happy-dom
   test constructs it this way).
-- **`agentTree` / `treeOrder` / `boardAgents` / `prRowGroups` semantics are
-  out of scope** (agent-trees record §T4/T5) — this record changes their INPUT
-  plumbing only.
+- **`agentTree` / `treeOrder` / `boardAgents` / `prRowGroups` contracts are
+  unchanged** (agent-trees record §T4/T5) — this record changes their INPUT
+  plumbing only, never their semantics.
 - **No styling work** — `app.css` / token/empty-state visuals are the
   compass-ux lane; this record adds render seams only.
 - **Mixed liveness is out of scope** — a store constructed with one client but

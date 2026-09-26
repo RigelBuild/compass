@@ -79,7 +79,8 @@ provisioned as a dedicated container image out of the box.
 
 ## Decisions encoded (Matt's rulings — not open questions)
 
-Two rulings from Matt (2026-08-24) are the premises of this record:
+Two rulings from Matt (2026-08-24) are the premises of this
+record:
 
 1. **Client app (RIG-2477): full per-OS matrix + install channels.** The
    client ships on Linux AND macOS together (not Linux-first), and beyond a

@@ -276,10 +276,9 @@ the wire, so determinism matters only for logging/tests.
 
 ### (c) `MicroVMRuntime` methods against the vsock service
 
-The nine `WorkloadRuntime` signatures (`microvm.go:71-116`, `var _
-WorkloadRuntime = (*MicroVMRuntime)(nil)`) are filled by translating each
-verb onto V2a's harness + the (a) service. `MicroVMRuntime` grows a
-per-session state table
+The nine `WorkloadRuntime` signatures (`microvm.go:71-116`, `var _ WorkloadRuntime =
+(*MicroVMRuntime)(nil)`) are filled by translating each verb onto V2a's
+harness + the (a) service. `MicroVMRuntime` grows a per-session state table
 (`WorkloadID → *session`), where a `session` holds the V2a `BootConfig`
 (`go/internal/runtime/microvm/config.go:21-35`), the running `*microvm.VM`
 handle, the `GuestControl` client, and the runtime dir. The `microvm` package

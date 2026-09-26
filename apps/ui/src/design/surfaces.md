@@ -455,7 +455,7 @@ designed to admit both later without rework — a tab strip or a splitter hosts 
 same window-scoped views — but neither ships in the dogfood scope.
 
 **Cross-lane seam.** Hosting these views in real OS windows depends on the native
-shell. The frozen compass-native record (`compass-native-app/design.md`, DL-110)
+shell. The compass-native record (`compass-native-app/design.md`, DL-110)
 is single-window today: one window loading the built UI. This decomposition
 expands that scope, so compass-native's shell record needs a multi-window
 amendment (RIG-1684's lane) before the views can be hosted in separate OS

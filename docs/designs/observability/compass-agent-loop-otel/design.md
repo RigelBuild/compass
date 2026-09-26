@@ -171,7 +171,7 @@ asymmetrically, so **a deployer `OTEL_SERVICE_NAME` override renames the LOOP
 signal only** — the transport stays `compass-agent` (code wins) — splitting the
 two under exactly the override the `??=` was meant to honor. Making them
 symmetric would mean the transport reading `OTEL_SERVICE_NAME`, a transport
-code change this record does not make. Instead: the loop defaults to
+code change that moves the transport's containment fence. Instead: the loop defaults to
 `compass-agent` to match the transport, the T2 deployer contract documents that
 an override splits the signals (and that the real join key is the shared
 resource attributes of Decision 3a below, not the service name), and a

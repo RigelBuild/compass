@@ -90,7 +90,8 @@ work has to run where the hardware and the session are. See Open Questions.
 #### `WorkloadRuntime` implementation
 
 The host backend implements `WorkloadRuntime`
-(`go/internal/runtime/podman.go:348-396`) as-is; it does not amend it.
+(`go/internal/runtime/podman.go:348-396`) as-is; it does not
+amend it.
 The nine methods, per the interface doc comments, and their host-process
 semantics — including where the mapping is degenerate:
 
@@ -286,7 +287,8 @@ env-overridable:
   `MainDeps.configMount` is documented as "Overridable ONLY so a test can point
   the reader at a tempdir fixture instead of the container path"
   (`cli.ts:586-590`) — this promotes that from a test-only dependency seam to a
-  first-class environment input, a change to the path contract.
+  first-class environment input, a change to the path contract, named
+  as such.
 
 This changes the `compass-agent` package's path contract and its two pinned
 contract tests. It is scoped: today's value

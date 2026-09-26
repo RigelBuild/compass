@@ -765,8 +765,7 @@ recommendation.
   `GuestRSSBytes` (microvm-runner.md:545-547); §(e) fills it with summed
   proportional-set-size (PSS), not resident-set-size, because guest RAM is one
   shared mapping and PSS is the honest per-VM share (`launch.go:459-464`). The
-  name is kept to match the parent's sketch, at the cost of an RSS name on a
-  PSS value; a doc comment states the PSS
+  name is kept to match the parent's sketch, with a doc comment stating the PSS
   basis, and the value undercounts by the passt share (`PR_SET_DUMPABLE=0`,
   `launch.go:470-483`). Redefining a field's meaning is flagged rather
   than done silently. **Recommendation:** keep the name; document the

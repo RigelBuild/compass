@@ -3051,7 +3051,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		]);
 	});
 
-	// ── MP-1 PROPERTY (frozen record §MP-1) ───────────────────────────────────
+	// ── MP-1 PROPERTY (design record §MP-1) ───────────────────────────────────
 
 	// Passing a role prompt as customSystemPrompt REPLACES OMP's block-0 — but the SDK's custom-
 	// system-prompt template STILL auto-injects skills + rules, and the footer stays separate. Two

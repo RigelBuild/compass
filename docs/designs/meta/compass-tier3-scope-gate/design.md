@@ -92,12 +92,13 @@ the main zone actually holds focus.
 - Every new global-chord contract needs a **production-wiring test**: mount
   the real App via `mountApp`, press the chord, observe the store — not a
   unit stub alone.
-- **This changes `dispatch.ts`.** RIG-2130 RD-2 set its shape, and RIG-2456
-  left it unmodified ("`apps/ui/src/keyboard/
+- **This changes `dispatch.ts`.** RIG-2130 RD-2 set its shape, and
+  RIG-2456 left it unmodified ("`apps/ui/src/keyboard/
   dispatch.ts` is **not modified**", `compass-keyboard-spine-app-root/
-  design.md:38-42`), as did RD-4 ("`dispatch.ts` stays frozen"). This record
-  makes the change, and the flipped RD-4 pin test (T2) is the visible,
-  reviewable proof that the behavior changed deliberately.
+  design.md:38-42`), as did RD-4 ("`dispatch.ts` stays frozen"). This
+  record makes the change, and the flipped RD-4 pin test (T2) is the
+  visible, reviewable proof that the behavior changed
+  deliberately.
 - Ledger: new decisions are record-local (Decisions below); the driver
   assembles DL rows into `DECISIONS.md` at PR-assembly time (DL ids are global
   across all sections; the true max on main is DL-226, `DECISIONS.md:154`, so

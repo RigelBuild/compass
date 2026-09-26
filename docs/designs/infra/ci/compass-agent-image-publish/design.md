@@ -72,9 +72,10 @@ decision, not an assumption:
 
 ### Decision: platform contract — `linux/amd64` single-arch (dogfood milestone)
 
-A settled fact, not an open question: compass-native's merged record (PR #1073,
-`docs/designs/ui/compass-native-app/design.md`) sets the consumer's arch to
-Linux x86_64 for the dogfood milestone — non-Linux runner support and
+A settled fact, not an open question: compass-native's merged
+record (PR #1073, `docs/designs/ui/compass-native-app/design.md`)
+sets the consumer's arch to Linux x86_64 for the dogfood
+milestone — non-Linux runner support and
 macOS packaging are deferred there to a GA follow-up (`:522-524` "reproducible
 build of the app bundle for Linux (the dev/dogfood target; macOS packaging
 tracked as follow-up per A5)"; `:246-248` "non-Linux runner support … deferred

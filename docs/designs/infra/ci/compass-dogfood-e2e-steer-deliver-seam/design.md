@@ -161,7 +161,7 @@ product signal rather than test-only scaffolding — directly Matt's "invest in 
 best harness" principle (the emit is a one-line sibling of the existing
 `deliveryAck`, on the FrameSink path that ack already rides). The one real cost is a
 **public** proto surface (`SessionEvent.SessionInjection`): op-kind becomes
-client-visible. The parent frames the
+client-visible. This reverses **no** decision of the parent. The parent frames the
 split only as its observable outcome — "steer reaches the mentioned peer's real
 session, deliver reaches the unmentioned one" (`../compass-dogfood-e2e/design.md:664`)
 — and takes **no** position on whether the op-kind is client-visible; the only

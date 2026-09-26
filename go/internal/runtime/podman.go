@@ -393,9 +393,10 @@ type WorkloadRuntime interface {
 	// `podman update`-class operation on the container backend) — the
 	// resize-in-place elastic-compute path (C3). The verb is reserved on the
 	// interface at S1 (the same discipline as ExecStreaming) so every backend
-	// and fake carries it from the start; the resize BEHAVIOR — actually
-	// applying and later restoring the limits around a heavy op — is C3's to
-	// fill in behind this signature.
+	// and fake carries it from the start and C3 needs no interface change;
+	// the resize BEHAVIOR — actually applying and later restoring the limits
+	// around a heavy op — is C3's to fill in behind this
+	// signature.
 	// PodmanCLI.Resize therefore returns ErrResizeNotImplemented until C3, and
 	// no caller invokes it yet, so the existing session path is unchanged.
 	Resize(ctx context.Context, id WorkloadID, limits ResourceLimits) error
@@ -625,8 +626,8 @@ func removeArgs(id WorkloadID) []string {
 
 // ErrResizeNotImplemented is returned by PodmanCLI.Resize until C3 fills in the
 // resize-in-place behavior behind the reserved seam. The verb exists on the
-// interface now so every backend and fake carries it; the podman
-// `container update` wiring is C3's, so
+// interface now, so every backend and fake carries it and C3 lands no interface
+// change; the podman `container update` wiring is C3's, so
 // calling it today is a programming error the sentinel names explicitly rather
 // than a silent no-op that would fake a limit change that never happened.
 var ErrResizeNotImplemented = errors.New("runtime: WorkloadRuntime.Resize is reserved at S1 and implemented in C3")

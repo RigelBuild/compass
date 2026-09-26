@@ -61,7 +61,8 @@ message AgentAttribution {
 ```
 
 Fields 2–3 and the names `owner_handle`/`verified` are reserved per proto
-discipline, although no wire build has shipped them — grep of the
+discipline because the #1018 record published the 3-field shape, even
+though no wire build has shipped them — grep of the
 compass repo's `proto/compass/v1/compass.proto` and the generated client
 `packages/compass-client/src/gen/compass/v1/compass_pb.ts` (both verified
 this run) finds no `AgentAttribution` symbol.

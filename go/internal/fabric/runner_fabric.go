@@ -47,8 +47,9 @@ type RunnerEvent struct {
 
 // RunnerIDHeader is the header the Runner stamps its id into when publishing on
 // the shared fan-in subject. A header rather than a proto field because the wire
-// (PublishEventsRequest) carries no runner id — it was a per-stream property
-// back when the Runner had one stream, and pub/sub has no stream to carry it.
+// (PublishEventsRequest) carries no runner id — it was a per-stream
+// property back when the Runner had one stream, and pub/sub has no
+// stream to carry it.
 const RunnerIDHeader = "Compass-Runner-Id"
 
 // SendCommand pushes cmd to one Runner's command subject over core NATS.

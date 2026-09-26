@@ -522,7 +522,8 @@ func classifyConnectErr(err error) (kind, message string) {
 	// CodeUnauthenticated is bad-token, deadline is folded into bad-url above,
 	// and every other code — CodePermissionDenied (403 on a revoked token),
 	// CodeUnavailable with no net/tls cause, etc. — is the explicit `other`
-	// residual, never a silent fallthrough. Widening it amends that record.
+	// residual, never a silent fallthrough. Widening it is a contract change
+	// (a new design record), not an inline tweak.
 	if connect.CodeOf(err) == connect.CodeUnauthenticated {
 		return connectKindBadToken, "The server rejected this token"
 	}

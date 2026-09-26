@@ -13,7 +13,7 @@ import type {
 	Review,
 } from "./stub-data";
 
-/** The primary PR the card / Done row / PR pane renders for an issue (DL-071).
+/** The primary PR the card / Done row / PR pane renders for an issue.
  *  Total, fixed precedence: the first OPEN pr in `prs` order, else the first
  *  MERGED, else the last element. Open-ness comes from `forgeState` (no PR
  *  timestamp exists on the wire, so selection is by open-ness and `prs`

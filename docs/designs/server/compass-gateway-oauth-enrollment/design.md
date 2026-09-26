@@ -661,7 +661,7 @@ managed-extends-the-store precedent
   `proto/compass/v1/*.proto` + `moon run compass-proto:gen` — never a
   hand-written stub. compass.v1 is the sole UI↔server door
   (`compass.proto:1-4`).
-- **Builds on the RIG-1715 record**: the
+- **Builds on, never redesigns, the RIG-1715 record**: the
   `gateway_credentials` store shape (scope column, monotonic `version` CAS),
   own-before-shared pools, and the gateway RPC-store read path
   (`compass-server-llm-gateway/design.md:312-405,768-804`). This record's two

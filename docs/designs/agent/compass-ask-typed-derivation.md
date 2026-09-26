@@ -4,7 +4,7 @@ Tracking: RIG-1243 (Go-port wave follow-up flagged at PR #771 merge).
 
 **This record supersedes design compass-0.5 D5's `Ask` shape by citation**
 (`docs/designs/product/compass-0.5/design.md:288`, "D5 — The UI pivots around
-the communication layer"; the single-question `compass.v1.Ask` is D5's
+the communication layer"; the frozen single-question `compass.v1.Ask` is D5's
 contract child). Per the AGENTS.md freeze rule a frozen record is never
 rewritten — a change ADDS a superseding record, and this is that record. Matt
 ruled the contract fork: **Option A — reshape `compass.v1.Ask` to
