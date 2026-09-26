@@ -81,12 +81,10 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	return nil
 }
 
-// hold registers messageID under its author's session for later firing at the
-// author's settle edge (design.md:157-160), ordered by commit time (stable), so a
-// ref redelivered after a later one still fires in post order. It captures the
-// origin trace and tenant from ctx for fireHeld. If the author already settled at
-// or after atUnixMs, it also queues a settle edge, so the loop fires it at once
-// and still behind any earlier message of that author.
+// hold registers messageID under its author's session, ordered by commit time,
+// for firing at the author's settle edge (design.md:157-160); a ref redelivered
+// after a later one still fires in post order. If the author already settled at
+// or after atUnixMs, it also queues a settle edge so the loop fires it at once.
 //
 // The two clocks come from different instances. A settling clock behind the
 // committing one holds a message until the next settle, which is benign. A
