@@ -220,6 +220,27 @@ func TestNewConnectErrorRedactsPassword(t *testing.T) {
 	}
 }
 
+// Every credential form nats.go accepts stays out of logs: a seed list past its
+// first entry, a username-only token, and a scheme-less entry.
+func TestRedactURLHidesEveryCredentialForm(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		"nats://u:pw1@h1:4222,nats://u:pw2@h2:4222",
+		"nats://tok3n@h4:4222",
+		"svc:pw3@h3:4222",
+	} {
+		got := redactURL(raw)
+		for _, secret := range []string{"pw1", "pw2", "pw3", "tok3n"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("redactURL(%q) = %q, leaks %q", raw, got, secret)
+			}
+		}
+	}
+	if got := redactURL("nats://h1:4222,nats://h2:4222"); got != "nats://h1:4222,nats://h2:4222" {
+		t.Errorf("redactURL of credential-free seeds = %q, want them unchanged", got)
+	}
+}
+
 // TestFabricImplementsEverySeamOverOneConnection defends the record's
 // one-connection-per-party contract. That *Fabric satisfies all three
 // interfaces is a compile-time assertion in fabric.go; what a test can add is
