@@ -21,6 +21,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -333,5 +334,56 @@ func TestAccountsByHandlesEmptyInputNoOp(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("AccountsByHandles(empty) = %v, want empty map", got)
+	}
+}
+
+// TestAccountsByHandlesMalformedQualifierIsMiss (OQ-7 grammar): a separator with
+// an empty owner, an empty agent segment, or a nested '/' is a clean miss naming
+// the submitted spelling. "/alice" and "/compass-ux" must never fall back to the
+// bare arm, where the user and the caller's own agent would resolve.
+//
+// Mutation: branching on a non-empty Owner instead of the separator resolves the
+// two leading-'/' spellings bare and reddens their ErrNotFound assertions.
+func TestAccountsByHandlesMalformedQualifierIsMiss(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	matt := mustUser(t, s, "matt")
+	mustUser(t, s, "alice")
+	mustAgent(t, s, matt.ID, "compass-ux")
+
+	for _, raw := range []string{"/alice", "/compass-ux", "matt/compass-ux/x", "matt/", "/"} {
+		t.Run(raw, func(t *testing.T) {
+			got, err := s.AccountsByHandles(ctx, matt.ID, matt.ID, []QualifiedHandle{qh(raw)})
+			sentinelIs(t, err, ErrNotFound, raw)
+			if got != nil {
+				t.Fatalf("AccountsByHandles(%q) hits = %v, want none on an atomic miss", raw, got)
+			}
+			want := fmt.Sprintf("%v: handle %q", ErrNotFound, raw)
+			if err.Error() != want {
+				t.Fatalf("AccountsByHandles(%q) error = %q, want %q", raw, err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestAccountsByHandlesBareCollisionUserWins (OQ-7): when a user and the caller's
+// own agent share a handle, the bare spelling resolves to the user and the
+// owner-qualified spelling to the agent.
+func TestAccountsByHandlesBareCollisionUserWins(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	matt := mustUser(t, s, "matt")
+	user := mustUser(t, s, "atlas")
+	agent := mustAgent(t, s, matt.ID, "atlas")
+
+	got, err := s.AccountsByHandles(ctx, matt.ID, matt.ID, []QualifiedHandle{qh("atlas"), qh("matt/atlas")})
+	if err != nil {
+		t.Fatalf("AccountsByHandles(atlas, matt/atlas): %v", err)
+	}
+	if got["atlas"] != user.ID {
+		t.Errorf("bare atlas = %q, want the user %q (global index wins a bare collision)", got["atlas"], user.ID)
+	}
+	if got["matt/atlas"] != agent.ID {
+		t.Errorf("matt/atlas = %q, want matt's agent %q", got["matt/atlas"], agent.ID)
 	}
 }

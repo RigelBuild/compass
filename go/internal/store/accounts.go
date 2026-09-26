@@ -761,10 +761,10 @@ func (s *Store) UserByHandle(ctx context.Context, handle string) (Account, error
 }
 
 // QualifiedHandle is a submitted account handle parsed into its owner qualifier
-// and bare handle. Owner is empty for a bare handle (`matt`, `compass-ux`),
-// non-empty for an owner-qualified agent handle (`matt/compass-ux` → Owner
-// "matt", Handle "compass-ux"). Raw preserves the exact submitted spelling so a
-// resolver error can name it back verbatim (the oracle-safe message contract).
+// and bare handle (`matt/compass-ux` → Owner "matt", Handle "compass-ux"). Use
+// Qualified (the separator), never an empty Owner, to tell bare from qualified;
+// Malformed flags a qualified spelling that breaks the one-level grammar. Raw
+// preserves the submitted spelling so a resolver error can name it verbatim.
 type QualifiedHandle struct {
 	Owner  string
 	Handle string
@@ -775,6 +775,13 @@ type QualifiedHandle struct {
 // It keys on the separator, not a non-empty Owner, so "/x" counts as qualified.
 func (q QualifiedHandle) Qualified() bool {
 	return q.Handle != q.Raw
+}
+
+// Malformed reports whether a qualified handle breaks the one-level owner/agent
+// grammar: an empty owner, an empty agent segment, or a nested '/'. A bare handle
+// is never malformed; an out-of-charset segment simply misses the exact lookup.
+func (q QualifiedHandle) Malformed() bool {
+	return q.Qualified() && (q.Owner == "" || q.Handle == "" || strings.Contains(q.Handle, "/"))
 }
 
 // ParseQualifiedHandle splits a submitted handle on the FIRST '/': everything
@@ -838,10 +845,12 @@ func (s *Store) AccountsByHandles(ctx context.Context, viewer, callerOwner Accou
 // account id, or returns ("", nil) for a clean miss (unknown, wrong-namespace,
 // or invisible — all indistinguishable). A real query fault is a non-nil error.
 func (s *Store) resolveOneHandle(ctx context.Context, viewer, callerOwner AccountID, qh QualifiedHandle) (AccountID, error) {
-	if qh.Handle == "" {
+	// A malformed qualifier misses outright; resolving "/x" bare would let it
+	// reach the user or the caller's own agent named x.
+	if qh.Handle == "" || qh.Malformed() {
 		return "", nil
 	}
-	if qh.Owner != "" {
+	if qh.Qualified() {
 		// owner-qualified: resolve the owner segment in the global user/system
 		// index (excluding system, which owns no agents), then the agent segment
 		// under it.
