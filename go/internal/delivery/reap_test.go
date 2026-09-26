@@ -7,7 +7,10 @@ package delivery
 // a Runner (re-)enroll, so a no-frame author death's entry does not leak.
 // White-box to drive c.hold and read c.held; sleep-free (synchronous delete).
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // OnSessionsReaped drops exactly the held entries for the reaped session ids and
 // leaves a DIFFERENT author's held entry untouched — the enroll-bounded reap the
@@ -16,9 +19,9 @@ func TestOnSessionsReapedDropsHeldEntries(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes (dispatcher/resolver/reads) are unused here — the reap is a pure in-memory delete with no dispatch/resolve/read path.
 
 	// Two authors hold pending delivers; a no-frame death would strand both.
-	c.hold("sess-dead", "m1", "")
-	c.hold("sess-dead", "m2", "")
-	c.hold("sess-live", "m3", "")
+	c.hold(context.Background(), "sess-dead", "m1")
+	c.hold(context.Background(), "sess-dead", "m2")
+	c.hold(context.Background(), "sess-live", "m3")
 
 	if !c.isHeld("sess-dead", "m1") || !c.isHeld("sess-dead", "m2") {
 		t.Fatal("precondition: sess-dead should hold m1 and m2")
@@ -43,7 +46,7 @@ func TestOnSessionsReapedDropsHeldEntries(t *testing.T) {
 // no-op that touches no held entry.
 func TestOnSessionsReapedEmptyIsNoop(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes are unused — an empty-slice reap touches no dispatch/resolve/read path.
-	c.hold("sess-a", "m1", "")
+	c.hold(context.Background(), "sess-a", "m1")
 
 	c.OnSessionsReaped(nil)
 
@@ -57,7 +60,7 @@ func TestOnSessionsReapedEmptyIsNoop(t *testing.T) {
 // leaves every unrelated held entry intact — delete of an absent map key.
 func TestOnSessionsReapedAbsentIDIsNoop(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes are unused — reaping an absent id touches no dispatch/resolve/read path.
-	c.hold("sess-live", "m1", "")
+	c.hold(context.Background(), "sess-live", "m1")
 
 	c.OnSessionsReaped([]string{"sess-never-held"})
 

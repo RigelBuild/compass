@@ -5,16 +5,13 @@ package delivery
 // RIG-2490 T4 — the pre-settle mention-loss closure cycle, end-to-end over the FULL
 // T1–T3 stack against a REAL Postgres. Each leg drives the true consumer and gates
 // on the durable effect (an owed_mentions row, a steer). Crash/restart legs post the
-// mention THROUGH THE STORE over a FRESH bus, so only the recovery scan surfaces it.
+// mention THROUGH THE STORE with no ref published, so only the recovery scan surfaces it.
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/RigelBuild/compass/go/events"
-	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
-	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -35,16 +32,14 @@ func openDeliveryStore(t *testing.T) *store.Store {
 	return s
 }
 
-// newPgConsumer builds a consumer over the REAL store and a FRESH events.Bus,
-// with the shared in-memory fakes for the hub's dispatch + resolution roles. The
-// fresh bus is the severance primitive: it never saw any publish, so Run's
-// since_seq=0 subscription replays nothing and only the recovery scan surfaces a
-// committed-but-unmarked mention.
+// newPgConsumer builds a consumer over the REAL store and a fresh fake fabric,
+// with the shared in-memory fakes for the hub's dispatch + resolution roles. A
+// store-only post publishes no ref, so only the recovery scan surfaces it.
 func newPgConsumer(t *testing.T, s *store.Store) (*Consumer, *fakeDispatcher, *fakeResolver) {
 	t.Helper()
 	disp := newFakeDispatcher()
 	res := newFakeResolver()
-	c := NewConsumer(events.NewBus[*compassv1.SubscribeCommsResponse](), s, disp, res, discardLogger())
+	c := NewConsumer(s, disp, res, newFakeFabric(), discardLogger())
 	return c, disp, res
 }
 
@@ -92,9 +87,8 @@ func subscribeMember(t *testing.T, ctx context.Context, s *store.Store, owner st
 }
 
 // postThroughStore commits a message directly via the store's public append
-// path — NO bus publish. This is the severance: the message is durable with a
-// NULL mention marker, but no MessagePosted event ever reaches any bus, so a
-// consumer over a fresh bus can surface it only via the recovery scan.
+// path and publishes NO ref: the message is durable with a NULL mention marker,
+// so a consumer can surface it only via the recovery scan.
 func postThroughStore(t *testing.T, ctx context.Context, s *store.Store, ch store.ChannelID, author store.AccountID, body string) store.Message {
 	t.Helper()
 	m, _, err := s.AppendMessage(ctx, store.Message{
@@ -182,9 +176,9 @@ func waitMarked(t *testing.T, ctx context.Context, s *store.Store, messageID str
 }
 
 // Leg 1 — CRASH. A mention to an offline, out-of-sweep-set agent member is
-// committed with a NULL marker and its bus event severed (fresh bus). Run's START
-// scan recovers it into an owed row; the member's session start sweeps it as
-// EXACTLY ONE steer; an ack clears it so a second start sweeps nothing.
+// committed with a NULL marker and no ref published. Run's START scan recovers it
+// into an owed row; the member's session start sweeps it as EXACTLY ONE steer; an
+// ack clears it so a second start sweeps nothing.
 func TestCrashRecoveryStartScanOwedThenOneSteerThenAckClears(t *testing.T) {
 	ctx := context.Background()
 	s := openDeliveryStore(t)
@@ -202,7 +196,7 @@ func TestCrashRecoveryStartScanOwedThenOneSteerThenAckClears(t *testing.T) {
 	msg := postThroughStore(t, ctx, s, ch, owner.ID, "@aa ping while you were offline")
 
 	c, disp, res := newPgConsumer(t, s)
-	startConsumer(t, c) // start scan (consumer.go:279) runs before the live loop
+	startConsumer(t, c) // the start scan runs before Run subscribes
 
 	// Recovered: a durable owed row materialized purely from durable state.
 	waitOwed(t, ctx, s, member.ID, 1)
@@ -239,11 +233,10 @@ func TestCrashRecoveryStartScanOwedThenOneSteerThenAckClears(t *testing.T) {
 	}
 }
 
-// Leg 2 — NEGATIVE CONTROL (severance proof). A fresh bus subscribed as Run does has
-// an EMPTY Replay and the message is in the committed-but-unmarked set, yet
-// OwedMentions is empty until the scan runs — so the crash leg's owed row is the
-// scan's alone (the start-scan ablation reddens Leg 1/4).
-func TestNegativeControlFreshBusSeversMentionNoOwedWithoutScan(t *testing.T) {
+// Leg 2 — NEGATIVE CONTROL. The store-only post is in the committed-but-unmarked
+// set, yet OwedMentions is empty until the scan runs — so the crash leg's owed row
+// is the scan's alone (the start-scan ablation reddens Leg 1/4).
+func TestNegativeControlStoreOnlyPostNoOwedWithoutScan(t *testing.T) {
 	ctx := context.Background()
 	s := openDeliveryStore(t)
 	owner := mustOwner(t, ctx, s)
@@ -251,18 +244,6 @@ func TestNegativeControlFreshBusSeversMentionNoOwedWithoutScan(t *testing.T) {
 	ch := mustRoomWithMembers(t, ctx, s, owner.ID, member.ID)
 
 	msg := postThroughStore(t, ctx, s, ch, owner.ID, "@aa severed mention")
-
-	// Severance is real: a fresh bus subscribed the way Run subscribes replays
-	// nothing — the store-only post reached no bus.
-	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
-	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-	defer sub.Cancel()
-	if len(sub.Replay) != 0 {
-		t.Fatalf("fresh-bus Replay = %d events, want 0 (the store-only post must be severed from the bus)", len(sub.Replay))
-	}
 
 	// The scan's INPUT exists (committed, NULL marker) ...
 	if !unroutedContains(t, ctx, s, string(msg.ID)) {
@@ -276,7 +257,7 @@ func TestNegativeControlFreshBusSeversMentionNoOwedWithoutScan(t *testing.T) {
 
 // Leg 3 — AGENT-AUTHORED, held-then-restart. An agent-authored mention posted while
 // its author streams is HELD live and marked only at settle. A restart before
-// settle is a fresh bus + fresh consumer: no author session, c.held empty, so the
+// settle is a fresh consumer: no author session, c.held empty, so the
 // committed-NULL message is scannable and the start scan recovers it.
 func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	ctx := context.Background()
@@ -296,7 +277,7 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	// restart severs from any live author turn.
 	msg := postThroughStore(t, ctx, s, ch, author.ID, "@aa agent-authored mention held then lost")
 
-	c, _, _ := newPgConsumer(t, s) // fresh bus + fresh consumer => c.held empty, no live author
+	c, _, _ := newPgConsumer(t, s) // fresh consumer => c.held empty, no live author
 	// Intent marker (a construction invariant, not a live guard): a freshly-built
 	// consumer's c.held is empty, so the restart premise — the held message is no
 	// longer held and is therefore scannable — holds by construction.
@@ -309,64 +290,28 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	waitMarked(t, ctx, s, string(msg.ID))
 }
 
-// Leg 4 — LAGGED OVERRUN. A mention committed (NULL, unpublished) DURING a bus-lag
-// overrun window is recovered by the OVERRUN-branch scan, not the start scan. A live
-// message stalls the consumer inside its first dispatch, the mention is committed
-// after entry, the buffer overruns, and release triggers a deterministic re-subscribe.
-func TestLaggedOverrunBranchScanRecoversDroppedWindowMention(t *testing.T) {
+// Leg 4 — PUBLISH FAILED MID-RUN. A mention committed after Run subscribed, whose
+// publish failed, is invisible to the start scan; the scan a fabric reconnect
+// triggers recovers it into a durable owed row and marks it.
+func TestReconnectScanRecoversPublishFailedMention(t *testing.T) {
 	ctx := context.Background()
 	s := openDeliveryStore(t)
 	owner := mustOwner(t, ctx, s)
-	live := mustAgentAcct(t, ctx, s, owner.ID, "live")
 	member := mustAgentAcct(t, ctx, s, owner.ID, "aa")
-	ch := mustRoomWithMembers(t, ctx, s, owner.ID, live.ID, member.ID)
-	subscribeMember(t, ctx, s, owner.ID, ch, live.ID) // a live subscriber so m0 produces a real deliver to stall on
+	ch := mustRoomWithMembers(t, ctx, s, owner.ID, member.ID)
 
 	if in, err := s.InSweepSet(ctx, member.ID, ch); err != nil || in {
 		t.Fatalf("InSweepSet(member,ch) = (%v,%v), want (false,nil)", in, err)
 	}
 
-	// m0: a real committed message (no mention) whose LIVE deliver to the live
-	// subscriber the armed dispatch stalls on. Committed before start so the
-	// start scan simply marks it (no mention, no dispatch).
-	m0 := postThroughStore(t, ctx, s, ch, owner.ID, "first, plain, live")
-	res := newFakeResolver()
-	res.bind(live.ID, "sess-live")
-	c := NewConsumer(events.NewBus[*compassv1.SubscribeCommsResponse](), s, newFakeDispatcher(), res, discardLogger())
-	disp := c.dispatch.(*fakeDispatcher)
-
-	resubscribed := make(chan struct{})
-	c.afterResubscribe = func() { close(resubscribed) }
-
-	disp.armFirstBlock()
+	c, _, _ := newPgConsumer(t, s)
 	startConsumer(t, c)
+	fab := fakeFabricOf(c)
+	fab.waitSubscribed(t)
 
-	// Publish m0's real event; its live deliver to sess-live enters the armed
-	// dispatch and stalls. Entry here is strictly AFTER Run's start scan
-	// completed (the scan runs before the live loop), so committing the mention
-	// now hides it from that scan — only the overrun-branch scan can recover it.
-	c.bus.Publish(postedResponse(comms.MessageToWire(m0)))
-	<-disp.enteredFirst
-	m1 := postThroughStore(t, ctx, s, ch, owner.ID, "@aa dropped in the overrun window")
-	// Overrun the live buffer so the subscription latches lagged and closes.
-	// These flood events are bus-only overrun fuel with no store row; the consumer
-	// is stalled inside the armed first dispatch, so none is ever handled. The
-	// id/channel mismatch is inert by construction.
-	for range busLagFloodCount {
-		c.bus.Publish(postedResponse(wireText("flood", owner.ID, "x")))
-	}
-	close(disp.releaseFirst)
+	m1 := postThroughStore(t, ctx, s, ch, owner.ID, "@aa committed but never published")
+	fab.fireReconnect()
 
-	select {
-	case <-resubscribed:
-	case <-time.After(testTimeout):
-		t.Fatal("consumer never re-subscribed after the lag overrun")
-	}
-
-	// The overrun-branch scan (consumer.go:343) recovered the dropped-window
-	// mention into a durable owed row and marked it.
-	if n := owedTotal(t, ctx, s, member.ID); n != 1 {
-		t.Fatalf("owed rows for member = %d, want 1 (the overrun-branch scan recovers the dropped-window mention)", n)
-	}
+	waitOwed(t, ctx, s, member.ID, 1)
 	waitMarked(t, ctx, s, string(m1.ID))
 }

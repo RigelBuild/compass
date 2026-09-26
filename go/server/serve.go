@@ -44,6 +44,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/envelope"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
@@ -81,6 +82,10 @@ type ServeConfig struct {
 	// (T1). Required: the comms vertical is store-backed, so Serve opens the
 	// store at startup and refuses to serve without it.
 	DatabaseDSN string
+	// NatsURL is the NATS connection string for the event fabric. Required:
+	// comms publishes and delivery subscribes through the fabric, so Serve
+	// refuses to boot when it cannot connect.
+	NatsURL string
 	// S3 is the object-store archive tier config (RIG-1667 T4). Optional: when
 	// unset (no endpoint/bucket) the server boots without an archive tier and the
 	// store's nil object-store guard fails a flush loudly only if one is ever
@@ -688,6 +693,9 @@ func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig
 // cancelling it drains them; if either exits on its own the other is torn down
 // and the error propagates.
 //
+// It connects the event fabric at cfg.NatsURL before opening the store and
+// fails startup when it cannot, so a Server never runs without delivery.
+//
 // On shutdown it closes the bus (waking every open SubscribeEvents stream so
 // graceful drain completes), then removes the socket file iff it is still the
 // one it bound (inode-checked, so a racing successor server's socket is intact).
@@ -744,15 +752,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	defer bus.Close()
 	publishReady(bus)
 
-	// The store of record (T1) backs the comms vertical and the token store, and
-	// carries the RIG-1667 T4 object-store archive seam. Open it before serving so
-	// a bad DSN, a failed migration, or a bad S3 config fails startup here, not
-	// mid-request.
-	st, err := openStore(ctx, cfg)
+	// The event fabric carries comms publishes and delivery's trigger; the store
+	// of record backs comms, the token store, and the transcript archive seam.
+	// Both open before serving, so an unreachable broker, a bad DSN, a failed
+	// migration, or a bad S3 config fails startup here, not mid-request.
+	fab, st, err := openFabricAndStore(ctx, cfg)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
 	defer st.Close()
+	// Deferred after st.Close, so it runs first: the drain finishes in-flight
+	// delivery callbacks, which read the store, while the store is still open.
+	defer closeFabric(fab)
 
 	// Seed the platform accounts before serving: bootstrap admin, reserved system
 	// sender @compass, reserved Linear bridge sender @linear. Created
@@ -788,7 +799,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// agent-initiated comms calls through this handler (the CommsCaller).
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	defer commsBus.Close()
-	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
+	commsSvc := comms.NewComms(st, commsBus, fab, admin.ID)
 	// Register the coordination-channel reconcile as the store's in-tx hook, so
 	// the two parent-edge writers auto-provision/reconcile a manager's
 	// coordination channel atomically with the tree edge (RIG-1722 T5). Wired here
@@ -877,11 +888,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// The board + GitHub notify lanes are nil when the GitHub App is absent; the
 	// Linear notify lane is nil when Linear is not configured. A nil lane starts nothing.
 	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, forgeWiring.notifyLane, doors.linearNotify)
-	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
-	// the T8 presence projection, both tailing the comms bus with their bus-tail
-	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
-	// ends when the comms bus closes in drainDoors).
-	startCommsBusConsumers(gctx, g, commsBus, st, hub, hubLog)
+	// The comms consumers: delivery fan-out on the event fabric and the presence
+	// projection on the comms bus, both on the serve group rooted on gctx
+	// (cancels at shutdown; presence also ends when drainDoors closes the bus).
+	startCommsConsumers(gctx, g, commsBus, fab, st, hub, hubLog)
 	// Drain member of the same group: wake on gctx cancellation, then hand off to
 	// drainDoors. A drain that overruns (a handler still wedged mid-replay)
 	// surfaces as the error rather than a false clean shutdown; a real serve
@@ -2239,6 +2249,29 @@ func failStartup(udsListener net.Listener, listeners boundListeners, err error) 
 	udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 	listeners.close()
 	return err
+}
+
+// openFabricAndStore connects the event fabric, then opens the store, so an
+// unreachable broker fails before migrations run. A store failure closes the fabric.
+func openFabricAndStore(ctx context.Context, cfg ServeConfig) (*fabric.Fabric, *store.Store, error) {
+	fab, err := fabric.New(fabric.Config{URL: cfg.NatsURL})
+	if err != nil {
+		return nil, nil, fmt.Errorf("connecting event fabric: %w", err)
+	}
+	st, err := openStore(ctx, cfg)
+	if err != nil {
+		closeFabric(fab)
+		return nil, nil, err
+	}
+	return fab, st, nil
+}
+
+// closeFabric drains the event fabric on shutdown. Serve has already chosen its
+// return value by then, so a failed drain is logged, not returned.
+func closeFabric(fab *fabric.Fabric) {
+	if err := fab.Close(); err != nil {
+		slog.Default().Warn("draining event fabric on shutdown", "error", err)
+	}
 }
 
 func closeListener(l net.Listener) {

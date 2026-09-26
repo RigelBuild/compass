@@ -16,7 +16,7 @@ import (
 // waitHeld blocks until authorSession holds at least n pending-deliver entries,
 // or fails at the deadline. Event-gates on the registry, polled with a yielding
 // ticker — no wall-clock synchronization, just a bounded observe-loop over an
-// in-memory field the bus goroutine mutates.
+// in-memory field the fabric callback mutates.
 func (c *Consumer) waitHeld(t *testing.T, authorSession string, n int) { //nolint:unparam // read-clarity signature: both authorSession and n are intentionally explicit at each call site (which session's held-queue, how many entries) though currently constant — not dead code.
 	t.Helper()
 	deadline := time.After(testTimeout)

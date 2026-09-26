@@ -135,10 +135,11 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 		want           []string
 	}{
 		{
-			name: "empty provider preserves five-flag argv",
+			name: "empty provider preserves six-flag argv",
 			want: []string{
 				"--socket", base.SocketPath,
 				"--database", base.DatabaseDSN,
+				"--nats-url", "nats://127.0.0.1:4222",
 				"--listen", base.ListenAddr,
 				"--tls-cert", cert.CertPath,
 				"--tls-key", cert.KeyPath,
@@ -150,6 +151,7 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 			want: []string{
 				"--socket", base.SocketPath,
 				"--database", base.DatabaseDSN,
+				"--nats-url", "nats://127.0.0.1:4222",
 				"--listen", base.ListenAddr,
 				"--tls-cert", cert.CertPath,
 				"--tls-key", cert.KeyPath,
@@ -163,6 +165,37 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 			cfg.SecretProvider = tt.secretProvider
 			if got := serverSpec(cfg, cert).Args; !slices.Equal(got, tt.want) {
 				t.Fatalf("serverSpec Args = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestServerSpecAlwaysForwardsNatsURL pins --nats-url on both NATS postures:
+// compass-server refuses to boot without a fabric, so a bundled stack must pass
+// the container's loopback endpoint and --nats-external the operator's URL.
+func TestServerSpecAlwaysForwardsNatsURL(t *testing.T) {
+	cert := CertResult{CertPath: "/state/tls.crt", KeyPath: "/state/tls.key"}
+	tests := []struct {
+		name, external, want string
+	}{
+		{name: "bundled nats passes the loopback client endpoint", want: "nats://127.0.0.1:4222"},
+		{name: "external nats passes the operator URL", external: "nats://nats.example.com:4222", want: "nats://nats.example.com:4222"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				SocketPath:      "/state/compass.sock",
+				DatabaseDSN:     "host=/state/pg dbname=compass",
+				ListenAddr:      "127.0.0.1:50052",
+				ExternalNatsURL: tt.external,
+			}
+			args := serverSpec(cfg, cert).Args
+			i := slices.Index(args, "--nats-url")
+			if i < 0 || i+1 == len(args) {
+				t.Fatalf("serverSpec Args = %q, want --nats-url with a value", args)
+			}
+			if got := args[i+1]; got != tt.want {
+				t.Fatalf("--nats-url = %q, want %q", got, tt.want)
 			}
 		})
 	}

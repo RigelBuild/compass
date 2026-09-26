@@ -327,9 +327,9 @@ func countSpansNamed(exp *tracetest.InMemoryExporter, name string) int {
 // instead of satisfying the wait and returning with my own edge still pending.
 //
 // delivery.sweep.owedMentions is also the only sweep name safe to count. The
-// obvious alternative, delivery.sweep.session, is emitted by the bus-lag overrun
-// path too (sweepAllLive), so its count is inflatable by something that is not a
-// start edge.
+// obvious alternative, delivery.sweep.session, is emitted by the reconnect and
+// floor-tick recovery too (sweepAllLive), so its count is inflatable by
+// something that is not a start edge.
 func waitForStartSweep(t *testing.T, exp *tracetest.InMemoryExporter, n int) {
 	t.Helper()
 	deadline := timeAfter()
@@ -701,8 +701,8 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 
 		waitForDeliverOfMessage(t, w.runner, recipSess, msgID)
 
-		// FIFO BARRIER, not a sleep: gatedDispatch completes on the consumer's Run
-		// goroutine before the loop takes the next bus event, so a LATER post's
+		// FIFO BARRIER, not a sleep: gatedDispatch completes inside the consumer's
+		// serial fabric callback before the next event is handled, so a LATER post's
 		// deliver proves the first dispatch returned. Waited BY IDENTITY (a re-
 		// delivered first message would shift any fixed index; position never held).
 		barrierMsgID := w.post(t, "barrier: a plain post completes the earlier dispatch")
@@ -850,7 +850,7 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		authorClient := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, author.ID))
 		_, heldMsgID := postOverTracedDoor(t, ctx, authorClient, w.channel, "held until I settle")
 
-		// FIFO BARRIER, not a sleep: the Run loop drains bus events on ONE goroutine
+		// FIFO BARRIER, not a sleep: the fabric runs delivery callbacks serially and
 		// in order, so a later HUMAN post (settled at post, dispatched at once) whose
 		// deliver is observed proves the earlier agent post was already held. Same
 		// barrier idiom as the offline-mention e2e's cycle A.

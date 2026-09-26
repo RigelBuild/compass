@@ -36,22 +36,22 @@ func postAsk(t *testing.T, ctx context.Context, s *store.Store, ch store.Channel
 	}
 }
 
-// answerAndPublish answers askID as answerer and publishes MessagePosted for the
-// resulting answer message onto the consumer's bus — the comms RespondToAsk
-// effect (the store insert + the delivery trigger) without the RPC edge.
+// answerAndPublish answers askID as answerer and publishes the answer's
+// message_posted ref — the comms RespondToAsk effect (the store insert + the
+// delivery trigger) without the RPC edge.
 func answerAndPublish(t *testing.T, ctx context.Context, s *store.Store, c *Consumer, answerer store.AccountID, askID string) store.Message {
 	t.Helper()
 	_, answer, err := s.AnswerAsk(ctx, answerer, askID, []store.AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	if err != nil {
 		t.Fatalf("AnswerAsk(%q): %v", askID, err)
 	}
-	c.bus.Publish(postedResponse(comms.MessageToWire(answer)))
+	publishRef(t, ctx, c, s.EffectiveTenant(ctx), string(answer.ID))
 	return answer
 }
 
 // answerOnly answers askID without publishing — the severed path for the
 // recovery-scan scenario (the answer is committed, mentions_routed_at NULL, but
-// no MessagePosted reaches the fresh bus).
+// no ref is ever published).
 func answerOnly(t *testing.T, ctx context.Context, s *store.Store, answerer store.AccountID, askID string) store.Message {
 	t.Helper()
 	_, answer, err := s.AnswerAsk(ctx, answerer, askID, []store.AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
@@ -272,8 +272,8 @@ func TestT7OwedAnswerSweptAsSteerCarriesAskAnswerBlock(t *testing.T) {
 }
 
 // Scenario 7: the consumer restarts BEFORE fanOut runs; the out-of-sweep asker
-// still recovers. The answer is committed (mentions_routed_at NULL) but never
-// published to this fresh consumer's bus — only the recovery scan
+// still recovers. The answer is committed (mentions_routed_at NULL) but its ref
+// is never published — only the recovery scan
 // (scanMissedMentions) can re-derive the owed row through the shared targeting
 // body, and the next OnSessionStarted delivers it.
 func TestT7RestartBeforeFanoutRecoveryScanReDerives(t *testing.T) {
@@ -288,7 +288,7 @@ func TestT7RestartBeforeFanoutRecoveryScanReDerives(t *testing.T) {
 	// The answer is committed but its MessagePosted is severed (never published).
 	answer := answerOnly(t, ctx, s, owner.ID, "ask-1")
 
-	// A fresh bus + consumer: Run's start scan is the only thing that can surface
+	// A fresh consumer: Run's start scan is the only thing that can surface
 	// the committed-NULL answer.
 	c, disp, res := newPgConsumer(t, s)
 	startConsumer(t, c)
