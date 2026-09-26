@@ -87,6 +87,24 @@ func TestCreateChannelEmitsChannelChanged(t *testing.T) {
 	}
 }
 
+// TestCreateChannelUnknownOrInvisibleMemberHandleIsNotFound: member_handles are
+// viewer-scoped, so an invisible agent must miss exactly like an unknown one.
+func TestCreateChannelUnknownOrInvisibleMemberHandleIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+	mustAgent(t, st, other.ID, "hidden")
+
+	for _, handle := range []string{"ghost", "other/ghost", "other/hidden", "hidden"} {
+		_, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+			Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+			MemberHandles: []string{handle},
+		}))
+		connectNotFoundFor(t, err, handle, "CreateChannel member "+handle)
+	}
+}
+
 func TestMembershipTiersJoinVersusSubscribe(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
