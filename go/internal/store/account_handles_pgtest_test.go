@@ -23,7 +23,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ---- T0: uniqueness invariants ----
@@ -385,5 +388,68 @@ func TestAccountsByHandlesBareCollisionUserWins(t *testing.T) {
 	}
 	if got["matt/atlas"] != agent.ID {
 		t.Errorf("matt/atlas = %q, want matt's agent %q", got["matt/atlas"], agent.ID)
+	}
+}
+
+// sqlcQueryCounter counts sqlc-generated statements (their SQL opens with the
+// "-- name:" header), so the tenant-arming SET LOCAL/set_config statements
+// batched ahead of each query are not counted.
+type sqlcQueryCounter struct{ n atomic.Int64 }
+
+func (c *sqlcQueryCounter) count(sql string) {
+	if strings.HasPrefix(sql, "-- name:") {
+		c.n.Add(1)
+	}
+}
+
+func (c *sqlcQueryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	c.count(d.SQL)
+	return ctx
+}
+
+func (c *sqlcQueryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (c *sqlcQueryCounter) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (c *sqlcQueryCounter) TraceBatchQuery(_ context.Context, _ *pgx.Conn, d pgx.TraceBatchQueryData) {
+	c.count(d.SQL)
+}
+
+func (c *sqlcQueryCounter) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+// TestAccountsByHandlesQueryCountBounded (§T2 "one query per namespace"): a mixed
+// batch costs at most four queries however many handles it carries, and still
+// names every miss in submitted order.
+//
+// Mutation: a per-handle loop spends up to two queries per handle (10 here).
+func TestAccountsByHandlesQueryCountBounded(t *testing.T) {
+	ctx := context.Background()
+	counter := &sqlcQueryCounter{}
+	s := newTracedTestStore(t, counter)
+	matt := mustUser(t, s, "matt")
+	mustUser(t, s, "alice")
+	mustAgent(t, s, matt.ID, "ux")
+	mustAgent(t, s, matt.ID, "ux-two")
+
+	handles := []QualifiedHandle{
+		qh("alice"),            // bare user
+		qh("ux"),               // bare own agent
+		qh("matt/ux-two"),      // qualified agent
+		qh("ghost"),            // bare miss
+		qh("nobody/ux"),        // unknown owner
+		qh("matt/ghost-agent"), // qualified agent miss
+	}
+	counter.n.Store(0)
+	_, err := s.AccountsByHandles(ctx, matt.ID, matt.ID, handles)
+	queries := counter.n.Load()
+
+	want := fmt.Sprintf("%v: handle %q", ErrNotFound, "ghost, nobody/ux, matt/ghost-agent")
+	if err == nil || err.Error() != want {
+		t.Fatalf("AccountsByHandles error = %v, want %q", err, want)
+	}
+	if queries > 4 {
+		t.Fatalf("AccountsByHandles ran %d queries for %d handles, want at most 4 (one per namespace)", queries, len(handles))
 	}
 }

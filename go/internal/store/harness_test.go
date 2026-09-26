@@ -17,6 +17,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 )
 
@@ -55,5 +58,25 @@ func openStore(t *testing.T, dsn string) *Store {
 		t.Fatalf("store Open: %v", err)
 	}
 	t.Cleanup(s.Close)
+	return s
+}
+
+// newTracedTestStore is newTestStore with tracer on every pooled connection. Open
+// has no tracer seam, so the migrated store's pool is swapped for a traced one
+// on the same DSN; s.q reads s.pool per call, so every query goes through it.
+func newTracedTestStore(t *testing.T, tracer pgx.QueryTracer) *Store {
+	t.Helper()
+	s, dsn := newTestStoreDSN(t)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("traced pool: %v", err)
+	}
+	s.pool.Close()
+	s.pool = pool // closed by the Close openStore registered
 	return s
 }
