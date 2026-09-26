@@ -390,10 +390,13 @@ in
   # that loads them, mounts the erofs root + tmpfs overlay, and switch_roots to
   # /sbin/init. $out IS the initrd file. The module-set check gates the build:
   # a kernel-pin move that drops a `=m` module fails here, not at boot.
-  compass-guest-initrd = pkgs.runCommand "compass-guest-initrd" { } ''
-    ${moduleConfigCheck}
-    cp ${initrdImage}/initrd $out
-  '';
+  compass-guest-initrd =
+    pkgs.runCommand "compass-guest-initrd"
+      { }
+      ''
+        ${moduleConfigCheck}
+        cp ${initrdImage}/initrd $out
+      '';
 
   # Synthetic-layer fixtures for the unpack and contract logic the rootfs uses.
   compass-guest-assembly-tests = import ./assembly-tests.nix {
