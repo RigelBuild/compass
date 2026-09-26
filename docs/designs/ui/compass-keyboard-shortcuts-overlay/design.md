@@ -17,7 +17,7 @@ exhaustive reference sheet.
 The sheet's `list.*` completeness rests on the tier-3 scope gate and
 `list.*` registration owned by **RIG-2529**
 (`docs/designs/meta/compass-tier3-scope-gate/design.md`), an external
-frozen dependency of this record — cited the same way this record cites the
+dependency of this record — cited the same way this record cites the
 merged RIG-2456 spine (see D8, T2b).
 
 ## Global Constraints
@@ -197,7 +197,7 @@ Join semantics:
   RD-4/OQ-6 focus hole. That is a shared-dispatcher change and is OWNED BY
   ITS OWN RECORD, **RIG-2529**
   (`docs/designs/meta/compass-tier3-scope-gate/design.md`), which this
-  record depends on as external frozen substrate — the same way it depends
+  record depends on as external substrate — the same way it depends
   on the merged RIG-2456 spine. With RIG-2529 merged, the strict join (D3,
   unchanged) surfaces `?`, `Mod+B`, `Shift+Enter`, AND the `list.*` block.
   See T2b and D8.
@@ -377,7 +377,7 @@ toggle flips `shortcutsOpen()`; `toggleShortcuts()` then `showBridge()` →
 `list.*` commands get registered and tier 3 becomes scope-aware — but that
 change is a shared-dispatcher concern OWNED BY **RIG-2529**
 (`docs/designs/meta/compass-tier3-scope-gate/design.md`), an external
-frozen dependency of this record, exactly as the merged RIG-2456 spine is.
+dependency of this record, exactly as the merged RIG-2456 spine is.
 RIG-2529 specifies: tier 3 (`dispatch.ts:122-129`) runs a matched global
 entry's command only if `command.scope === "global"` or it matches the
 active zone (`Command.scope`, `commands.ts:18,40`, already exists); the
@@ -558,7 +558,7 @@ design change either way.
 **Cross-record substrate note:** RIG-2529
 (`docs/designs/meta/compass-tier3-scope-gate/design.md`) is the shared
 scope-gate substrate BOTH this record and RIG-2483 cite as an external
-frozen dependency; the overlay and palette impl PRs stack on RIG-2529's
+dependency; the overlay and palette impl PRs stack on RIG-2529's
 merge. The four shared App-root regions above remain an impl-time
 set-union coordination between the two sibling impl PRs only.
 
@@ -583,7 +583,7 @@ four-region App-root conflict above is the separate impl-PR concern.)
       `view.shortcuts` registration (+ spine/store tests)
 - [ ] T3 — `shortcuts-model.ts` `buildShortcutGroups` join + substring filter
       (+ pure-module tests)
-- [ ] T2b — `list.*` rows via the RIG-2529 scope gate (external frozen
+- [ ] T2b — `list.*` rows via the RIG-2529 scope gate (external
       dependency; the overlay impl PR stacks on RIG-2529's merge) — pure
       registry consumption, verified by T5 cases 5-6
 - [ ] T4 — `ShortcutsOverlay.tsx` (focus-restore + Tab trap unconditional) +
@@ -645,7 +645,7 @@ four-region App-root conflict above is the separate impl-PR concern.)
    long-term end state — register the group-relative commands AND make
    tier 3 scope-aware — owned by RIG-2529
    (`docs/designs/meta/compass-tier3-scope-gate/design.md`), an
-   external frozen dependency of this record.** The naive drafted shape
+   external dependency of this record.** The naive drafted shape
    (register against a scope-blind tier 3) stays withdrawn as unsafe;
    RIG-2529's scope gate (run a tier-3 match only when `command.scope` is
    `"global"` or matches the active zone) makes `scope: "main"`
@@ -684,7 +684,7 @@ the full rulings live in the Decisions above. In brief:
    — register the eight `list.*` commands AND make tier 3 scope-aware,
    closing RIG-2130 RD-4/OQ-6 — extracted to its own record **RIG-2529**
    (`docs/designs/meta/compass-tier3-scope-gate/design.md`), which this
-   record consumes as external frozen substrate (D8, T2b). Neither the
+   record consumes as external substrate (D8, T2b). Neither the
    group-relative-rendering workaround nor deferral to RIG-2483 was taken.
 3. **Shift-drop scope (was OQ3).** The GENERAL rule — drop `Shift` for a
    modifier-less single printable non-ASCII-letter, EXCLUDING Space — not

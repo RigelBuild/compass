@@ -40,7 +40,7 @@ artifact kind shows* — orthogonal axes, and conflating them would make
 
 - **Issues tab** = today's board unchanged: `BOARD_LANES` columns,
   swimlane/status `BoardMode` toggle, `boardAgents`/`cellItems`/`laneTotal`
-  partition (`board.ts:45-71`). Its swimlane row order is Record C's frozen
+  partition (`board.ts:45-71`). Its swimlane row order is Record C's
   `treeOrder(agents)` contract (see §Merge order) — "the board takes
   `treeOrder`'s sequence and then keeps only `boardAgents` rows" (C record
   §T5). This record cites that contract; it does not redesign it.
@@ -161,11 +161,11 @@ DL-097 row's reference resolves; A (DL-096) merges before this record.
 
 - **Sequencing:** merges AFTER Record C (#1058, DL-095) and Record A (#1059,
   DL-096); the swimlane/group ordering consumes C's `treeOrder` and
-  `subtreeAgentIds` (`board.ts`) as frozen contracts — do not reimplement or
+  `subtreeAgentIds` (`board.ts`) — do not reimplement or
   fork them.
 - **NO model change:** no proto, server, or `stub-data.ts` type edits. The
   #1018 canonical `Issue`/`PullRequest`/`ChecksSummary`/`Review` types
-  (DL-067..070 + DL-091, frozen) carry every field this view reads. A task that seems
+  (DL-067..070 + DL-091) carry every field this view reads. A task that seems
   to need a model field is a STOP-and-escalate, not a local addition.
 - **Derivations live in `board-render.ts`; partitions in `board.ts`** — pure,
   total functions over injected lists (no store/fixture imports), matching

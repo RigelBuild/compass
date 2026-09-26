@@ -5,7 +5,7 @@ Tracker: RIG-2717
 > **Extends #625 (frozen).** This record is a sibling amendment to
 > `docs/designs/server/compass-linear-agent-responder/design.md` (merged in
 > #625). The merged record is frozen; per house convention a later change ADDS
-> a record. This amendment changes two things about the frozen record's Part 1 /
+> a record. This amendment changes two things about that record's Part 1 /
 > T7 webhook receiver: (1) the mount **path** moves from bare `/webhooks` to
 > `/webhooks/linear`, and (2) the **ownership** of the mount itself moves from
 > RIG-2717 T7 to the forge notification lane (RIG-2732), which lands a single
@@ -16,7 +16,7 @@ Tracker: RIG-2717
 
 ## Problem / Intent
 
-The frozen record mounts the Linear responder at a **bare** path and assigns
+The #625 record mounts the Linear responder at a **bare** path and assigns
 the mount to RIG-2717 T7:
 
 > "The receiver is a **plain `netMux.Handle("/webhooks", …)` alongside the
@@ -26,7 +26,7 @@ the mount to RIG-2717 T7:
 > `buildNetworkServer` … `netMux.Handle("POST /webhooks", h)` beside the Connect
 > mounts" — #625 design.md:775-785
 
-Two things have changed since that freeze:
+Two things have changed since that record merged:
 
 1. **A second webhook provider landed.** RIG-2883 mounted the GitHub App
    ingress at `POST /webhooks/github`
@@ -96,11 +96,11 @@ fail-closed verify — the shape RIG-2883 already established for GitHub:
   ```
 
   The handler maps `ErrQueueFull` to HTTP 500 so Linear retries the delivery
-  (the frozen §T6 contract, #625 design.md:742-745). `ParseSessionEvent`
+  (the #625 §T6 contract, #625 design.md:742-745). `ParseSessionEvent`
   (`webhook.go:55`) turns the verified raw body into the `*SessionEvent` the
   seam takes.
 
-This keeps one verifier and one mount while preserving the frozen
+This keeps one verifier and one mount while preserving the
 responder-library boundary: RIG-2717 still owns everything from `Enqueue`
 inward (route → topic → association → the two `created` emits), and RIG-2732
 owns the front door.

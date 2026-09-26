@@ -403,7 +403,7 @@ type InsertChannelGroupParams struct {
 // (effectiveVisibilityCTE / viewerCTE / channelVisiblePredicate /
 // groupVisiblePredicate). The copies MUST stay textually identical so the stream
 // edge's single-id visibility check cannot drift from the list read (the
-// anti-drift guarantee the frozen record requires).
+// anti-drift guarantee the design record requires).
 func (q *Queries) InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) error {
 	_, err := q.db.Exec(ctx, insertChannelGroup,
 		arg.ID,

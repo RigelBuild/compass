@@ -530,7 +530,7 @@ func TestReconcileOrphansSkipsAVolumeBeingAttached(t *testing.T) {
 // package's volumes. A directory under the base dir without that marker belongs
 // to someone else and must never be stamped or reaped.
 //
-// This is not hypothetical. The frozen record places W2's snapshot store as a
+// This is not hypothetical. The design record places W2's snapshot store as a
 // sibling subtree under the same base dir keyed by VolumeSnapshotID — a
 // non-volume directory in exactly this position. A scan that treated every
 // directory entry as a volume root would have ReconcileOrphans stamp that store
@@ -989,7 +989,7 @@ func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 		t.Fatalf("releasing the volume lock: %v", err)
 	}
 
-	// The stamp, by contrast, stays INSIDE the volume root (the frozen record
+	// The stamp, by contrast, stays INSIDE the volume root (the design record
 	// places it there), and eachVolume iterates directories only, so the
 	// sibling lock file is never mistaken for a volume.
 	live := mustCreate(t, m, "sess-stamped")

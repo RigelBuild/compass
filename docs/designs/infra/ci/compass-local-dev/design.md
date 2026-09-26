@@ -390,7 +390,7 @@ OQ4, not a task.
 - **Platform guards:** macOS relaxation is per-attr, never a deleted guard
   wholesale; anything podman-native or GTK-linked stays
   `lib.optionalAttrs pkgs.stdenv.isLinux`.
-- **Frozen decisions composed, not reopened:** DL-106/DL-109/DL-110/DL-111/
+- **Composes existing decisions and changes none:** DL-106/DL-109/DL-110/DL-111/
   DL-112/DL-183 (native app), DL-025/026/027/078 (container/secrets/config).
   The deployed `main`/`preview` env model is owned by the private
   infrastructure design repo; this record is the developer-box lane only.
@@ -702,7 +702,7 @@ so OQ2 is intentionally absent — it was promoted to a decision, not dropped.
   conditional — automate only if hermetic against a scripted fake; the hermetic
   arm proved infeasible in-fence, so the decision is the manual smoke.)
 
-Ledger-impact: none — this record composes frozen decisions (DL-106/109/110/
+Ledger-impact: none — this record composes existing decisions (DL-106/109/110/
 111/112/183, DL-025/026/027/078) and makes only operational/local-dev
 choices; no new product decision. (The ledger gate scopes product records:
 `tools/design-ledger-gate/index.ts:45` `PRODUCT_DIR = "docs/designs/product"`;

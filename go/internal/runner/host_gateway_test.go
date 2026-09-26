@@ -7,7 +7,7 @@ package runner
 // leg. The host tier has NO bind mounts, so the leg serves the per-agent gateway
 // socket and materializes the config tree INSIDE the handle's own 0700 state dir
 // and threads both paths to the agent as env vars on the streaming exec — never
-// mounting them at the frozen /run/compass paths. A serve/materialize failure
+// mounting them at the default /run/compass paths. A serve/materialize failure
 // after Launch tears both the socket and the container down. Every case names a
 // contract a plausible bug would break.
 

@@ -36,7 +36,7 @@ export type GlyphName =
 	| "stop";
 
 /** [x, y] of each lit cell (11×11, one CSS px per cell), transcribed from the
- *  frozen ASCII grids in `design/components.md` §Glyphs (`#` = lit). Keying on
+ *  ASCII grids in `design/components.md` §Glyphs (`#` = lit). Keying on
  *  the exhaustive `GlyphName` union makes a name without a bitmap a compile
  *  error, not a silent runtime blank. */
 const GLYPH_CELLS: Record<

@@ -338,7 +338,7 @@ func (s *Store) DeleteModelRegistry(ctx context.Context) error {
 }
 
 // checkBundleProfileRefsAgainstRegistry is the REVERSE orphan guard mandated by
-// the frozen design (compass-stable-name-routing/design.md §P2 L530-532): the
+// the design (compass-stable-name-routing/design.md §P2 L530-532): the
 // bundle-door profile lint. PutAgentConfig calls it before the bundle row write,
 // so a config bundle whose profile pins a stable name absent from the current
 // model registry fails closed (ErrInvalidArgument) rather than publishing a

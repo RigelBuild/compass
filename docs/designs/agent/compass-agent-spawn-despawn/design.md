@@ -83,7 +83,7 @@ end-to-end for the operator. Verified at source:
 - **Agent-initiated calls already have a trust model and a relay shape.** The
   agent dials a per-container Unix socket (`AgentGateway`,
   `proto/compass/v1/agent_gateway.proto:47-64`, DL-015/DL-017); the Runner
-  forwards to the Server as a pure forwarder. The frozen trust model: "The
+  forwards to the Server as a pure forwarder. The trust model: "The
   Runner is a pure forwarder: it sends RelayCommsCall{session_id, call} and
   asserts NO account. The SERVER resolves session_id -> agent account from
   THIS hub's own binding — recorded from the Provision request's
@@ -125,7 +125,7 @@ exactly the DL-049 shape: a new `rpc Lifecycle(LifecycleCallRequest) returns
 (LifecycleCallResult)` beside `rpc Comms(…)` (`agent_gateway.proto:48`), a new
 Runner→Server unary `rpc RelayLifecycleCall(RelayLifecycleCallRequest)
 returns (RelayLifecycleCallResponse)` beside `RelayCommsCall`
-(`runner.proto:91`) — additive to the frozen dial-out model (the Runner still
+(`runner.proto:91`) — additive to the dial-out model (the Runner still
 initiates; the Server gains no inbound route, `runner.proto:35-37`). There is
 deliberately **no public agent-callable spawn RPC on `CompassService`**: the
 agent container holds no server token and no network path to the Server
@@ -345,7 +345,7 @@ operator-facing first (the agent path composes it):
   message RemoveAgentWorkspaceResponse {}
   ```
 
-- **Sessions relay command**: a new variant in the frozen command/result
+- **Sessions relay command**: a new variant in the command/result
   oneofs — `RemoveAgentWorkspaceRequest remove = 10;` in
   `SessionsResponse.command` and `RemoveAgentWorkspaceResponse remove = 8;`
   in `SessionsRequest.result` — reusing the public payload verbatim, the
@@ -405,7 +405,7 @@ error the model reads; it never tears the transport down.
   for lifecycle would dilute that structural property).
 - **A public agent-callable `SpawnAgent` on `CompassService`** — rejected: the
   agent has no token and no network path to the Server; every agent-initiated
-  call rides the socket→Runner→relay chain by frozen decision (DL-015/DL-017).
+  call rides the socket→Runner→relay chain (DL-015/DL-017).
   A public RPC would exist only for a caller that cannot reach it.
 - **Expose Provision/Start/Stop individually to the agent** (three relay
   variants instead of one orchestrated SpawnPeer) — rejected: it forces the

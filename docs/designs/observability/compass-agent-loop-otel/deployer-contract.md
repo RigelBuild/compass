@@ -17,7 +17,7 @@ compass-agent emits two OpenTelemetry signal trees to the same collector
 - the **loop** signal — OMP's native agent-loop tracing, reused via
   `@oh-my-pi/pi-coding-agent/telemetry-export` and activated in
   `cli.ts` `main()`;
-- the **transport** signal — the frozen `src/transport/` layer's own OTel
+- the **transport** signal — the `src/transport/` layer's own OTel
   provider.
 
 They are separate trace trees exported to one collector and correlated there by
@@ -74,8 +74,8 @@ the existing test suites stay green unmodified.
 
 ## Asymmetries a deployer must know
 
-Both of these are documented rather than code-fixed (the transport is frozen;
-ruling (b)). A deployer configuring a collector must know them.
+Both of these are documented rather than code-fixed (ruling (b) changes no
+transport code). A deployer configuring a collector must know them.
 
 ### F5 — endpoint-gate asymmetry
 

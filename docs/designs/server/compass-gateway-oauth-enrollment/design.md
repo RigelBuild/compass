@@ -5,7 +5,7 @@ Owner: compass-obs (design) → compass-server / gateway-TS / compass-ui (impl, 
 
 ## Problem / Intent
 
-The frozen RIG-1715 gateway record
+The RIG-1715 gateway record
 (`docs/designs/platform/compass-server-llm-gateway/design.md`) designs the
 `gateway_credentials` value store, OAuth refresh, rotation, pools, and the
 gateway READING credentials at request time — but assumes credentials are
@@ -79,15 +79,15 @@ mechanism is §The EnrollmentPolicy seam):
 
 | Credential kind | Managed | Self-host |
 | --- | --- | --- |
-| API key (any provider — commercial terms) | server-side (RIG-1715 as frozen) | yes |
+| API key (any provider — commercial terms) | server-side (RIG-1715 as designed) | yes |
 | Subscription OAuth — permissive tier (e.g. GLM Coding, Kimi Code) | server-side | yes |
 | Subscription OAuth — restricted tier (Anthropic, OpenAI) | NOT offered | yes (user's own box = their IP, their risk — the OMP posture) |
 | Aggregators (OpenRouter etc. — the cheap-OSS price-sensitive path) | server-side | yes |
 
-**This is a policy gate on top of the frozen RIG-1715 contract, NOT a
+**This is a policy gate on top of the RIG-1715 contract, NOT a
 supersession.** RIG-1715's server-side consumption model composes
 unchanged: the gateway remains "the only runtime holder of upstream
-provider credentials at request time" (frozen §Credential storage and
+provider credentials at request time" (§Credential storage and
 rotation, `compass-server-llm-gateway/design.md:312-337`) and "OAuth
 refresh stays gateway-side, as it already is" (`design.md:367`) — for
 every credential a deployment is permitted to hold. The OSS core's own
@@ -467,7 +467,7 @@ store surface is `List / UpdateOAuth / Disable`
 (`design.md:799`) — read + refresh-write-back + disable, no CREATE. **This
 record makes two named additions to that seam: the `Create` write** (and
 the api_key insert path) **and the identity/display columns** backing
-upsert-by-identity + the UI list — the frozen row shape is "api_key and
+upsert-by-identity + the UI list — the RIG-1715 row shape is "api_key and
 OAuth-shaped payloads (access/refresh/expiry), a monotonic `version` per
 row supplying the CAS substrate, and a scope column"
 (`design.md:324-331`), with no identity columns.
@@ -487,7 +487,7 @@ identity coalesced to `''` in the key) and degraded-identity re-logins
 replace instead of accreting. Identity display fields
 (email/orgName) are stored for the UI list. The
 gateway's read path (RIG-1715 T2 `List`) picks the new row up on its next
-snapshot with zero changes — enrollment composes with the frozen read
+snapshot with zero changes — enrollment composes with the RIG-1715 read
 design instead of touching it. Deletion is RIG-1715's CAS `Disable`, so
 disconnect never races a concurrent gateway refresh write-back.
 
@@ -568,7 +568,7 @@ re-implementation costs a per-provider protocol port plus permanent sync.
 ### Gateway hosts initiate/callback directly (rejected)
 
 Let the Bun gateway own the whole enrollment HTTP surface. Rejected on two
-frozen contracts: the UI may only speak compass.v1 ("the single, owned
+grounds: the UI may only speak compass.v1 ("the single, owned
 door", `compass.proto:1-4`; RIG-1715 GC: "The gateway's HTTP listener is
 agent-facing, never UI-facing",
 `compass-server-llm-gateway/design.md:691-694`), and the public HTTPS
@@ -661,7 +661,7 @@ managed-extends-the-store precedent
   `proto/compass/v1/*.proto` + `moon run compass-proto:gen` — never a
   hand-written stub. compass.v1 is the sole UI↔server door
   (`compass.proto:1-4`).
-- **Consumes, never redesigns, the frozen RIG-1715 record**: the
+- **Builds on the RIG-1715 record**: the
   `gateway_credentials` store shape (scope column, monotonic `version` CAS),
   own-before-shared pools, and the gateway RPC-store read path
   (`compass-server-llm-gateway/design.md:312-405,768-804`). This record's two
@@ -680,7 +680,7 @@ managed-extends-the-store precedent
   subscription-OAuth credential" holds by managed's injected policy
   denying enrollment, not by a core mode check. Enforced server-side in
   the enrollment handlers (E3), not merely hidden in the UI (E5). This
-  is a policy gate ON TOP of the frozen RIG-1715 consumption model,
+  is a policy gate ON TOP of the RIG-1715 consumption model,
   which composes unchanged — NOT a supersession of RIG-1715 (its "OAuth
   refresh stays gateway-side" contract,
   `compass-server-llm-gateway/design.md:367`, holds as-is for every
@@ -739,14 +739,14 @@ degrades to partial in real paths (anthropic bootstrap catch,
 Also the api_key-kind insert used by E3's `SetProviderApiKey`.
 
 Freeze cross-reference (freeze-PR guidance for the driver): this task
-amends RIG-1715's frozen `gateway_credentials` shape — the platform
+amends RIG-1715's `gateway_credentials` shape — the platform
 record describes the store with no identity columns
 (`compass-server-llm-gateway/design.md:324-331`). At freeze, add a
 cross-reference to RIG-1715's platform ledger (or an explicit amendment
 note in the RIG-1715 record) recording that RIG-3050 extends
 `gateway_credentials` with the identity/display columns
 (email/org_name/orgId/accountId), the `Create` method, and the
-`UNIQUE NULLS NOT DISTINCT` identity index — so a reader of the frozen
+`UNIQUE NULLS NOT DISTINCT` identity index — so a reader of the
 platform record is pointed at this server record for the current table
 shape. This draft edits neither the RIG-1715 record nor `DECISIONS.md`.
 
@@ -1037,7 +1037,7 @@ Interfaces:
   BYO-egress is rejected (Alternatives considered): it does not cure the
   ToS violation and reimposes the friction managed removes. RIG-1715's
   server-side consumption model composes UNCHANGED — this is a policy
-  gate on top of the frozen contract, not a supersession (Approach
+  gate on top of the RIG-1715 contract, not a supersession (Approach
   §Consumption eligibility).
 
 ## Open Questions
@@ -1066,5 +1066,5 @@ Interfaces:
   implementation (a per-provider terms check); GLM and Kimi are the
   expected permissive set (the Kodus precedent, Approach §Consumption
   eligibility) but each flag flips only after its own verification. The
-  tier is data (`ProviderDefinition` capability field), not frozen
+  tier is data (`ProviderDefinition` capability field), not
   architecture, so a reassignment never reopens this record.

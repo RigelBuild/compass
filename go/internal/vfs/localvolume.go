@@ -107,7 +107,7 @@ type LocalManager struct {
 	baseDir string
 }
 
-// LocalManager is the P2 backend behind the frozen seam; the assertion keeps the
+// LocalManager is the P2 backend behind the VolumeManager seam; the assertion keeps the
 // two in lockstep at compile time.
 var _ VolumeManager = (*LocalManager)(nil)
 
@@ -523,7 +523,7 @@ func (m *LocalManager) Snapshot(ctx context.Context, v Volume) (VolumeSnapshotID
 }
 
 // Archive returns the not-implemented sentinel: the verb's consumer is D4's
-// cold-idle (OQ-2), so P2 freezes the signature and defers the object-store
+// cold-idle (OQ-2), so P2 reserves the signature and defers the object-store
 // implementation.
 func (m *LocalManager) Archive(ctx context.Context, v Volume) (ArchiveRef, error) {
 	return "", ErrArchiveNotImplemented
@@ -568,7 +568,7 @@ func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 // marker dir that CreateVolume writes. That marker is the volume-identity
 // token, not merely the stamp's container — a directory under the base dir
 // without it does not belong to this package and is never stamped or reaped.
-// The base dir is not this package's exclusively: the frozen record places W2's
+// The base dir is not this package's exclusively: the design record places W2's
 // snapshot store as a sibling subtree under the same base dir keyed by
 // VolumeSnapshotID, and without this check the first ReconcileOrphans would
 // stamp that store closed and the next Expire past the window would silently

@@ -51,7 +51,7 @@ import "compass/v1/forge.proto";
 // binding and attributes in-process, fail-closed (design Decision #3, OQ-2).
 // INTERNAL surface (never public gen).
 service AgentGateway {
-  rpc Comms(CommsCallRequest) returns (CommsCallResult);  // frozen T1, unchanged
+  rpc Comms(CommsCallRequest) returns (CommsCallResult);  // design T1
 
   // Lifecycle (unary, agent -> Runner): spawn or despawn a peer agent. A
   // sibling call family to Comms (DL-049 shape) — the LifecycleCallRequest /
@@ -126,7 +126,7 @@ message CommsCallRequest {
   // would grow an unbounded conversation tree. W3C format
   // `00-<32hex trace-id>-<16hex span-id>-<2hex flags>`; EMPTY on a human-seeded
   // first turn (no triggering message). Field 10 leaves 7-9 for the in-flight
-  // org-management oneof arms (RIG-2673); numbers are frozen (DL-186/OQ-1b).
+  // org-management oneof arms (RIG-2673); numbers are assigned per DL-186/OQ-1b.
   // Server-side link per
   // docs/designs/observability/compass-server-runner-otel/design.md.
   string trigger_traceparent = 10;
@@ -437,7 +437,7 @@ message BoardCallRequest {
   }
 }
 
-// Set an issue's canonical lifecycle state. Carries the full frozen
+// Set an issue's canonical lifecycle state. Carries the full
 // UpdateIssueState semantics re-homed (compass-issue-model/design.md:474-511):
 // any of the eight real states is a legal target (any-to-any; DL-033's arrows
 // are normative flow, not server-enforced), ISSUE_STATE_UNSPECIFIED is an
@@ -500,5 +500,5 @@ message PostConversationFrameRequest {
 message PostConversationFrameResponse {}
 
 // The Control subscribe request carries no session id: the per-container socket
-// the call arrives on IS the session identity (frozen Decision #4).
+// the call arrives on IS the session identity (design Decision #4).
 message ControlSubscribeRequest {}

@@ -4,7 +4,7 @@
 > **A1** — a slash-namespaced kebab check-name convention for every CI job —
 > and **B1** — a no-op PR body/title edit stops polluting the PR checks
 > surface. Builds directly on the concern-matrix decomposition record
-> (`compass-ci-job-decomposition/design.md`), which froze the current job
+> (`compass-ci-job-decomposition/design.md`), which set the current job
 > graph this record renames. Evidence PR: #591.
 
 ## Problem / Intent
@@ -229,7 +229,7 @@ forces A4 — recorded as the contingency, not a flip of the ruled decision.
 - **Base-re-point coverage is load-bearing.** Whatever replaces `edited` in
   ci.yml MUST produce a fresh-merge-SHA full run when a PR's base flips
   (jj-vine stacks), with no manual step.
-- **Rollup semantics frozen.** `!cancelled()` (never `success()`/`always()`),
+- **Rollup semantics unchanged.** `!cancelled()` (never `success()`/`always()`),
   the paired-flag skip excusal, and the fail-red-on-empty-flag posture
   (ci.yml:1655–1707) are untouched by both decisions.
 - **Concurrency separation by event action** stays (a re-trigger or `edited`

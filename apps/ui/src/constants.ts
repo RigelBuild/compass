@@ -105,7 +105,7 @@ export interface AvatarTabItem extends ActivityBarItemBase {
 	unreachable?: boolean;
 }
 
-/** An activity-bar item, split at the item per Matt's frozen ruling: a static
+/** An activity-bar item, split at the item per Matt's ruling: a static
  *  glyph tab or a fleet avatar tab. */
 export type ActivityBarItem = GlyphTabItem | AvatarTabItem;
 

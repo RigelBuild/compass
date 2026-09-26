@@ -15,7 +15,7 @@
 > - **CD-2** — Carriage is Runner-fetch: a **server-streaming**
 >   `FetchAgentConfig` RPC on the Runner-dialed `RunnerService`, plus a
 >   `ConfigVersion` signal on the `Sessions` response stream —
->   signal-then-pull over the frozen dial-out inversion, the exact pattern
+>   signal-then-pull over the dial-out inversion, the exact pattern
 >   RIG-1327's `FetchSecrets`/`SecretsVersion` set; the inversion gains no
 >   inbound route.
 > - **CD-3** — Injection for skills/extensions/MCP-configs is a Runner-local,
@@ -40,7 +40,7 @@ agent's isolated podman container — today no injection seam exists for any
 of the four, so an agent cannot run a real wave (no skills, no MCP tooling,
 no env). This record designs that seam end to end for the MVP's
 **fleet-wide** scope — one config bundle that every agent gets:
-declaration, carriage over the frozen Server↔Runner inversion, per-type
+declaration, carriage over the Server↔Runner inversion, per-type
 injection into the container, and the update path. Per-agent
 differentiation is deliberately out of the MVP; post-MVP, config keys on a
 persona / agent-level role, never an individual agent id. Env-vars reuse
@@ -74,7 +74,7 @@ Today's gap, at source:
 
 Every task below inherits these; they are constraints, not choices.
 
-1. **The Server↔Runner inversion is frozen.** The Runner dials OUT; "the
+1. **The Server↔Runner inversion.** The Runner dials OUT; "the
    Server has no inbound route to call the Runner: command delivery cannot be
    a unary Server->Runner RPC, so it rides the Server's *response* half of a
    Runner-opened bidi stream"
@@ -107,7 +107,7 @@ Every task below inherits these; they are constraints, not choices.
    new version dir + a symlink flip) without touching the create-time mount
    set. A pinned `<version>/`-dir mount was rejected: a bind mount cannot
    see a later symlink flip.
-4. **Env-vars ride RIG-1327's surface — no second env channel.** The frozen
+4. **Env-vars ride RIG-1327's surface — no second env channel.** The
    record `compass-agent-container-runtime.md` designs env/secret delivery
    end to end: `FetchSecrets` on RunnerService (its T4, `:750-754`), the
    `SecretMaterializer` with the file-vs-env `DeliveryKind` split and the
@@ -157,7 +157,7 @@ Every task below inherits these; they are constraints, not choices.
 
 ## Approach
 
-The seam mirrors, deliberately, the shape RIG-1327 already froze for secrets
+The seam mirrors, deliberately, the shape RIG-1327 already set for secrets
 — its Decision 3: "Distribution + rotation ride the v0.6 config spine (Runner
 fetches; `Sessions` stream signals; stdin-`exec` injection; the file-vs-env
 delivery split)" (`compass-agent-container-runtime.md:31-36`) — because
@@ -245,7 +245,7 @@ semantics (RIG-1327 T6).
 The Runner fetches the bundle; the Server only ever signals. Two
 held-for-review deltas on the existing internal `RunnerService`
 (`proto/compass/v1/runner.proto:43`), both Runner-initiated so
-the frozen dial-out shape is untouched:
+the dial-out shape is untouched:
 
 - `rpc FetchAgentConfig(FetchAgentConfigRequest) returns (stream FetchAgentConfigResponse)`
   — **server-streaming**, Runner→Server, unkeyed (it fetches the one fleet
@@ -272,7 +272,7 @@ config (or env/secret) update only on the response half of the
 Runner-opened `Sessions` stream — "the Server's RESPONSE stream pushes
 session *commands* downward"
 (`proto/compass/v1/runner.proto:53-56`) — and the Runner then
-re-fetches. No new inbound Server→Runner RPC exists; the frozen dial-out
+re-fetches. No new inbound Server→Runner RPC exists; the dial-out
 inversion is untouched. This is exactly what RIG-1327 T6 wires for
 `SecretsVersion` (`compass-agent-container-runtime.md:844-856`); env-var
 updates ride that same secrets path — this record adds no env mechanism.
@@ -325,7 +325,7 @@ dir is written into the already-mounted tree and would carry the Runner's
 label, so there the Runner **`chcon -R`s the new version dir into the
 container's MCS label** (read via `podman inspect` MountLabel) after
 writing it and before flipping `current` — chosen over adding a per-mount
-relabel control to the frozen `Mount` struct (a larger podman-layer delta
+relabel control to the `Mount` struct (a larger podman-layer delta
 this record would have to own).
 
 Pruning (folded from review): after a successful `current` flip (and, on

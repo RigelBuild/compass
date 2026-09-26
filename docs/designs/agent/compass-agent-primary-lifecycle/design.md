@@ -2,9 +2,9 @@
 
 Tracker: SEA
 
-> **Amends frozen contract (#1018, DL-091 / DL-032).** This record is a
+> **Amends a merged record (#1018, DL-091 / DL-032).** This record is a
 > sibling amendment to `docs/designs/server/compass-issue-model/design.md`
-> (merged in #1018) and composes with the DL-070 server projection it froze.
+> (merged in #1018) and composes with the DL-070 server projection it defined.
 > It ratifies Matt's 2026-08-04 ruling that the board lifecycle is
 > **agent-primary**: "i'm not sure we should even have the UI move cards? i
 > think that's primarily for the agents to do, the user can modify issue
@@ -17,15 +17,15 @@ Tracker: SEA
 > RPC (verified absent). The `Issue`/`IssueState` READ types DID ship in
 > RIG-1727 S1a (PR #145, `compass.proto:595` `enum IssueState`,
 > `compass.proto:645` `message Issue`) and survive unchanged — only the
-> `CompassService` write RPC was frozen on paper and is dropped before build.
+> `CompassService` write RPC was specified on paper and is dropped before build.
 
 ## Problem / Intent
 
-The frozen model made the **UI** the lifecycle driver: "Lifecycle is
+The #1018 model made the **UI** the lifecycle driver: "Lifecycle is
 server-authoritative, so lifecycle **writes** are a `CompassService`
 surface" with a single mutation RPC — "The board is a MANUAL lifecycle — the
 human/agent is authoritative over Compass state (DL-032)"
-(`compass-issue-model/design.md:454-455`, `:480-482`), and DL-091 froze
+(`compass-issue-model/design.md:454-455`, `:480-482`), and DL-091 defined
 archive as "a lifecycle transition to a terminal `ARCHIVED` state via
 `UpdateIssueState`" (`DECISIONS.md:154`). Matt reversed the write model
 (2026-08-04): the Compass UI does **not** move cards — it is read-only for
@@ -82,7 +82,7 @@ message BoardCallRequest {
   }
 }
 
-// Set an issue's canonical lifecycle state. Carries the FULL frozen
+// Set an issue's canonical lifecycle state. Carries the FULL
 // UpdateIssueState semantics (compass-issue-model/design.md:474-511),
 // re-homed: any of the eight real states is a legal target (any-to-any;
 // DL-033's arrows are normative flow, not server-enforced), UNSPECIFIED is
@@ -135,7 +135,7 @@ Two cross-file notes, both with settled precedent:
   the public `go/gen` package — and the gen-fence must keep the canonical
   symbols unfenced"
   (`compass-server-ownership-layer-amendment/design.md:144-147`).
-- The server-side transition semantics are **unchanged from the frozen
+- The server-side transition semantics are **unchanged from the issue-model
   record**: the compare-and-transition ("read current state, apply the
   target (rejecting only `UNSPECIFIED`), commit the new canonical state to
   Postgres, then record+publish the result", with read-and-validate inside
@@ -150,7 +150,7 @@ Two cross-file notes, both with settled precedent:
 ### (b) The tracker write: native tracker status ingested into the projection
 
 Matt's ruling makes the tracker the **user's** state-write surface, which
-inverts the frozen direction. DL-032 said "Compass state is canonical; the
+inverts the #1018 direction. DL-032 said "Compass state is canonical; the
 tracker is a projection of it" (`DECISIONS.md:144`), and the issue-model
 record leaned on the one-way arrow: "the tracker is a projection OF this
 state per DL-032, and cannot be inverted to recover it"
@@ -165,7 +165,7 @@ becomes a second lifecycle-transition PRODUCER feeding it:
   native status field as a watched input. No new transport.
 - **Mapping**: the existing `TrackerStatusMapping` runs in reverse —
   `fromTrackerStatus` already exists as a contract
-  (`tracker.ts:69-84`, preserved by the frozen record with the
+  (`tracker.ts:69-84`, preserved by the issue-model record with the
   seven-working-states domain, `compass-issue-model/design.md:639-646`).
   A tracker status maps into one of the SEVEN working states. `ARCHIVED` has
   no tracker status of its own, but it is **not agent-only** (Matt,
@@ -175,7 +175,7 @@ becomes a second lifecycle-transition PRODUCER feeding it:
   a legal user action.
 - **Echo suppression is NOT free — it needs a tracker-status-space rule**
   (Resolved decision 1, RULED by Matt). Both producers funnel into the same
-  serialized compare-and-transition, but the frozen state-space idempotency
+  serialized compare-and-transition, but the state-space idempotency
   rule alone is insufficient: the default Linear map is non-injective
   (`apps/ui/src/tracker.ts:44-60` — `queued`/`todo` both → `"Todo"`,
   `blocked`/`in_progress` both → `"In Progress"`), so an agent's own
@@ -200,10 +200,10 @@ becomes a second lifecycle-transition PRODUCER feeding it:
 The Compass UI drops every issue-state write affordance: Backlog promote
 (`store.ts` `promoteToTodo` :1847-1860 + its `BacklogView.tsx:43` button),
 drag-to-column, and Done/archive (`store.ts` `archiveIssue` :1862-1875 + its
-`DoneView.tsx:79-83` button) — the guards the frozen record itemized as
+`DoneView.tsx:79-83` button) — the guards the issue-model record itemized as
 preserved (`compass-issue-model/design.md:87-90`, `:498-511`) are removed
 rather than re-homed, including the `seam.updateIssueStatus` mirror call
-inside promote (`store.ts:1859`). The board renders lifecycle from the frozen
+inside promote (`store.ts:1859`). The board renders lifecycle from the existing
 read path: the canonical `Issue` rides "`SubscribeEventsResponse` as a new
 oneof variant … `Issue issue = 16;` // the canonical board unit, pushed on
 every change" (`compass-issue-model/design.md:284-297`), shipping in RIG-1727
@@ -308,7 +308,7 @@ population:
   `AgentGateway` socket (`agent_gateway.proto:8-10`,
   `compass-agent-spawn-despawn/design.md:132-135`). The relay IS the
   agent-facing RPC edge; no task may add a public agent-callable state RPC.
-- **The read path is frozen.** `Issue`/`PullRequest`/`IssueState` and
+- **The read path is out of scope.** `Issue`/`PullRequest`/`IssueState` and
   `SubscribeEventsResponse.issue = 16` (RIG-1727 S1a, PR #145) are consumed
   as-is; no task edits them.
 - **Additive proto only.** New RPCs, messages, and oneof variants at fresh
@@ -383,7 +383,7 @@ PR, per the same-PR-flip rule):
   patterns), and DL-031 (`:143` — a board-primary LAYOUT ruling, not a
   write-path ruling; explicitly not touched).
 
-`Interfaces:` consumes the frozen records cited above; produces
+`Interfaces:` consumes the records cited above; produces
 `docs/designs/agent/compass-agent-primary-lifecycle/design.md` + the
 `DECISIONS.md` delta. Gate: `design-ledger-gate`.
 
@@ -431,7 +431,7 @@ canonical types unfenced).
   `CommsCaller`/`ForgeCaller`/`LifecycleCaller` injection pattern,
   `compass-agent-spawn-despawn/design.md:653-662`). Authz/tool errors
   in-band as `BoardCallError`; transport failures are Connect errors.
-- The transition executor: the frozen compare-and-transition
+- The transition executor: the issue-model compare-and-transition
   (`compass-issue-model/design.md:513-521`) implemented once in the server
   package beside the projection, invoked by `BoardCaller` — Postgres
   commit, record+publish, outbound tracker mirror on real transitions
@@ -573,13 +573,13 @@ decisions the record is now designed against.
 
 1. **[Load-bearing — BLOCKS this record's downstream forge alignment; raised
    with Matt, ruling pending] The forge/tracker access model: store-first
-   read-through vs the frozen stateless relay.** Matt (2026-08-04): "the agent
+   read-through vs the stateless relay.** Matt (2026-08-04): "the agent
    calls a tool [that] first hits the Compass store, where info can be returned
    immediately if the PR or issue is already tracked, and the Server
    continuously polls those … to keep the state up to date … If they call the
    tool and it isn't tracked by Compass already, Compass goes and fetches it,
    tracks it into the store, and then returns that." This is a **store-first
-   read-through** model. The frozen `compass-server-ownership-layer` record
+   read-through** model. The `compass-server-ownership-layer` record
    (RIG-1728) specified the opposite for forge reads — a **stateless
    pass-through relay**: "nothing is stored, nothing is resolved, and no
    coordinate can drift" (`compass-server-ownership-layer/design.md:352-354`).
@@ -588,7 +588,7 @@ decisions the record is now designed against.
    forge-carrier proto) and the RIG-1728 forge read path. **Impact:** the A1
    proto's `ForgeCall*` read arms may need to become store-reads with a
    fetch-on-miss, and the naming/shape may change. Parked here because it is
-   Matt's ruling to make on the frozen forge contract; A1 authoring holds on
+   Matt's ruling to make on the forge contract; A1 authoring holds on
    it. (Non-blocking for this amendment's merge — the write model stands
    regardless.)
 2. **[Non-load-bearing, deferrable] Specific tracker adapters for status

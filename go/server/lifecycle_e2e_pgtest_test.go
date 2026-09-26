@@ -2,7 +2,7 @@
 
 package server
 
-// End-to-end T7 of the FROZEN spawn/despawn design (RIG-1617): the WHOLE
+// End-to-end T7 of the spawn/despawn design (RIG-1617): the WHOLE
 // agent-initiated spawn/despawn wire over a REAL AgentGateway socket, real Postgres,
 // and a real Runner-over-stub-engine, driving every hop through to lifecycleService.
 // Lives in package server (option B: the hub needs unexported *lifecycleService).

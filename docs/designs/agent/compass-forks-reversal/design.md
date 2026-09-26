@@ -20,7 +20,7 @@ machinery that existed only to carry them.
 
 ## Global Constraints
 
-- **FROZEN (Matt, 2026-08-19): shared `RigelBuild/{devenv,nix2container,oh-my-pi}`
+- **Matt's ruling (2026-08-19): shared `RigelBuild/{devenv,nix2container,oh-my-pi}`
   repos + combined patch work.** Compass consumes the shared canonical fork
   repos — one canonical fork per upstream. Patches useful to both the
   fleet and compass land in the shared repos, never duplicated. Do
@@ -86,7 +86,7 @@ raw-CLI call sites (six files, incl. `tools/agent-image-env-gate/index.ts`) that
 bypass the lock (see L1/L2 Interfaces). Today a single `path:` tree
 makes CLI-rev == module-rev by construction (`devenv.nix:457-460` names exactly
 this as the reason for the pin shape). The flake-input side follows the internal
-monorepo's frozen default — `github:RigelBuild/<fork>` pinned via `devenv.lock` —
+monorepo's default — `github:RigelBuild/<fork>` pinned via `devenv.lock` —
 but the six raw-CLI sites bypass that lock, so the reversal MUST separately
 preserve the CLI-rev == module-rev identity: the recommended shape is a tiny
 compass-side flake re-exporting the locked inputs so every consumer resolves one
@@ -272,7 +272,7 @@ this record does not require it.
   per-upstream Copybara spoke repos) — rejected. Matt ruled shared canonical
   repos: one fork per upstream, patch work combined. Two forks of the same
   upstream would duplicate the patch work and re-create the divergence this
-  reversal exists to end. Frozen; not relitigated here.
+  reversal exists to end. Matt's ruling; not relitigated here.
 - **Defer until the fleet's reversal fully lands** — rejected. Only
   the nix2container lane has a genuine cross-repo dependency (the shared
   nix-DB-drop fix); serializing the whole reversal behind that completion keeps
@@ -575,18 +575,18 @@ Interfaces:
    `devenv.nix:476`, `ci.yml:812`, `publish-agent-image.yml:139,160`,
    `tools/agent-image-env-gate/index.ts:100,118`) —
    **LOAD-BEARING, but narrower than first framed.** The *flake-input* half is
-   settled: the prior art froze the nix-flake-input class as
+   settled: the prior art set the nix-flake-input class as
    `github:RigelBuild/<fork>` pinned **via lockfile** (the deliberate default
    plus a whole-repo narHash fix), so compass's one flake-input consumer,
    `agent-image/devenv.lock`, converges on that with no reason to diverge. What
-   that precedent does **not** cover is the wrinkle: its frozen class table has
+   that precedent does **not** cover is the wrinkle: its class table has
    four import classes — flake-input, standalone-executable-as-a-file,
    GHCR-image, and no-consumer — but **none is a raw-CLI bypass**, whereas
    compass invokes the fork CLI raw at the six sites above, which bypass
    `devenv.lock` entirely.
    Today a single `path:` tree makes the CLI rev and the locked
    module-set rev identical by construction (`devenv.nix:457-460` names this as
-   the reason for the pin shape; the frozen dogfood-loop record makes the same
+   the reason for the pin shape; the dogfood-loop record makes the same
    argument, `docs/designs/platform/compass-dogfood-loop/design.md:225-229`).
    Scattering a `github:…/<rev>` literal across those six lockfile-bypass sites
    reintroduces a silent divergence: a bump editing the lock but not a literal

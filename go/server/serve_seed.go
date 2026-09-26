@@ -29,7 +29,7 @@ const (
 // spawnableRoles is the closed Manager-role taxonomy a spawn request may name:
 // supervisor (owns the whole tree — intake, incidents, broadcasts, first
 // contact), owner (owns a product/service/domain), manager (owns one lane). The
-// set is a frozen product decision, NOT derived from the operator config
+// set is a product decision, NOT derived from the operator config
 // bundle's prompts/ members — legality is a fixed contract while the bundle is
 // mutable state. All three are spawnable; a spawned supervisor is parented and
 // permitted (standing up a separate tree is the intended use).

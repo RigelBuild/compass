@@ -14,7 +14,7 @@ import type {
 } from "./stub-data";
 
 /** The primary PR the card / Done row / PR pane renders for an issue (DL-071).
- *  Total, precedence frozen: the first OPEN pr in `prs` order, else the first
+ *  Total, fixed precedence: the first OPEN pr in `prs` order, else the first
  *  MERGED, else the last element. Open-ness comes from `forgeState` (no PR
  *  timestamp exists on the wire, so selection is by open-ness and `prs`
  *  ordering, never PR number — numbers are per-repo and incomparable across a

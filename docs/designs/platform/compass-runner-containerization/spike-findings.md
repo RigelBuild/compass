@@ -7,7 +7,7 @@ are fixed before anyone runs them, rather than being chosen after seeing
 results.
 
 **This spike narrows a pod spec; it does not ask whether containerization
-works.** The composition already boots on Linux with `/dev/kvm` — the frozen
+works.** The composition already boots on Linux with `/dev/kvm` — the
 [microVM CI/dev enablement](../../infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md)
 record runs KVM-backed boot tests as a required leg on GitHub Actions'
 `ubuntu-latest`. What a pod adds is confinement: a cgroup device controller, a

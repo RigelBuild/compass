@@ -1,7 +1,7 @@
 // CompassAgent — the first-party in-container agent (design §T5).
 // Maps session events to compass.v1 `AgentFrame`s (EventMapper → FrameSink) and
 // drives the session from decoded `AgentControl` ops (ControlSource), gated by the
-// replay barrier. Drives the inner `session.agent` to keep the frozen contract.
+// replay barrier. Drives the inner `session.agent` to keep the control contract.
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
@@ -227,7 +227,7 @@ export class CompassAgent {
 		this.#deliverFromHandles.set(msg.id, fromHandle);
 		this.#deliverTraceparents.set(msg.id, traceparent);
 		this.#deliverSourceNames.set(msg.id, sourceNames);
-		// Idle deliver starts a turn immediately (frozen :799/:810); a mid-turn deliver
+		// Idle deliver starts a turn immediately (record :799/:810); a mid-turn deliver
 		// waits for the `agent_end` flush. "Idle" consults BOTH `#turnActive` AND
 		// `#session.isStreaming` — a control prompt sets streaming SYNCHRONOUSLY but flips
 		// `#turnActive` later, so gating on `isStreaming` avoids an AgentBusyError inject.
@@ -274,7 +274,7 @@ export class CompassAgent {
 
 	// RIG-1310 §8 — channel-borne steer arm, called when a `SteerControl.message`
 	// decodes. Unlike deliver, a steer is an @-mention interrupt: mid-turn it injects
-	// into the running loop; idle it starts a fresh turn (frozen record :788-814).
+	// into the running loop; idle it starts a fresh turn (record :788-814).
 	// Shares deliver's `#processedMessageIds` dedup; the ack means "injected".
 	steer(
 		msg: Message,
@@ -458,7 +458,7 @@ export class CompassAgent {
 	// sets `isStreaming` SYNCHRONOUSLY, so two calls on one `agent_end` edge collide. The
 	// input concatenates the two renderers (delivers, then forge) with "\n\n".
 
-	// The ack means "injected", not "turn finished" (frozen :800), so a mid-turn crash
+	// The ack means "injected", not "turn finished" (record :800), so a mid-turn crash
 	// keeps the receipt. A settled REJECTION means NEITHER batch injected (a real mid-turn
 	// failure resolves instead) — fail closed for both: un-dedup delivers for redelivery;
 	// for forge do NOT re-enqueue or fire ackRail (the Runner is the redelivery authority).
@@ -594,10 +594,10 @@ export class CompassAgent {
 		});
 	}
 
-	// Apply one decoded control frame, discriminated on the frozen AgentControl oneof:
+	// Apply one decoded control frame, discriminated on the AgentControl oneof:
 	// replay applies to context; replay_complete lifts the barrier; prompt/steer/config
 	// drive the session once replay settled. Drives the inner `Agent` to preserve the
-	// frozen control contract (see the file header).
+	// control contract (see the file header).
 	async #applyControl(control: AgentControl): Promise<void> {
 		switch (control.kind) {
 			case "replay":

@@ -89,7 +89,7 @@ type backendCaps struct {
 	// the byte-identical podman path yields an *exec.ExitError from a SIGKILLed
 	// child (ExitCode() == -1). Both prove the SAME behavioral contract — a
 	// deliberate Kill+Wait surfaces as a signalled exit isDeliberateKill accepts
-	// — in the two shapes the frozen isDeliberateKill (agent_exec.go:239-258)
+	// — in the two shapes isDeliberateKill (agent_exec.go:239-258)
 	// matches. Asserting a single type across both is impossible without a
 	// production change to PodmanCLI, which U5 forbids; the gate keeps the podman
 	// byte-path unregressed AND proves the microVM portable-error path.

@@ -117,9 +117,9 @@ describe("AGENT_SOCKET_PATH", () => {
 
 	// The path became env-overridable for the host tier: the host-process backend has no
 	// bind mounts, so it serves the socket inside the agent handle's state dir and threads
-	// the path via COMPASS_AGENT_SOCKET_PATH. The frozen literal stays the DEFAULT — a
+	// the path via COMPASS_AGENT_SOCKET_PATH. The fixed literal stays the DEFAULT — a
 	// container-tier agent (no override) resolves it unchanged.
-	test("resolveSocketPath defaults to the frozen path when unset or blank", () => {
+	test("resolveSocketPath defaults to the fixed path when unset or blank", () => {
 		expect(resolveSocketPath({})).toBe(AGENT_SOCKET_PATH);
 		expect(resolveSocketPath({ COMPASS_AGENT_SOCKET_PATH: "   " })).toBe(
 			AGENT_SOCKET_PATH,
@@ -262,7 +262,7 @@ describe("deriveLitellmMcpUrl", () => {
 	});
 });
 
-// The seed path is the frozen T5 placement: a 0600 `$HOME/.compass/auth-seed.json`
+// The seed path is the T5 placement: a 0600 `$HOME/.compass/auth-seed.json`
 // written by the Runner's materializer.
 describe("authSeedPath", () => {
 	test("resolves under the supplied HOME", () => {
@@ -272,7 +272,7 @@ describe("authSeedPath", () => {
 	});
 });
 
-// The env-file path is the frozen RIG-1327 T5 placement: a 0600
+// The env-file path is the RIG-1327 T5 placement: a 0600
 // `$HOME/.compass/env` written by the Runner's materializer, beside the seed.
 describe("envFilePath", () => {
 	test("resolves under the supplied HOME", () => {
@@ -992,7 +992,7 @@ describe("main", () => {
 	});
 
 	// The host tier serves the socket inside the agent handle's state dir and threads its path
-	// via COMPASS_AGENT_SOCKET_PATH — so main must dial the OVERRIDE, not the frozen constant.
+	// via COMPASS_AGENT_SOCKET_PATH — so main must dial the OVERRIDE, not the default constant.
 	// Pinning it AT THE CALL SITE catches a main that resolved the env but dialed the default.
 	// Non-vacuity: reverting cli.ts to dial AGENT_SOCKET_PATH reds this while default-dial stays green.
 	test("dials the carrier at the COMPASS_AGENT_SOCKET_PATH override when set", async () => {
@@ -2582,7 +2582,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	// The host tier materializes config inside the agent handle's state dir and threads the root
 	// via COMPASS_AGENT_CONFIG_MOUNT_PATH — NOT the deps.configMount seam. This drives the mount
 	// through the ENV VAR alone and asserts a mounted skill reaches options.skills. Non-vacuity:
-	// reverting cli.ts to read AGENT_CONFIG_MOUNT_PATH reds this while the frozen-default tests stay green.
+	// reverting cli.ts to read AGENT_CONFIG_MOUNT_PATH reds this while the default-path tests stay green.
 	test("reads the mount at the COMPASS_AGENT_CONFIG_MOUNT_PATH override when deps.configMount is unset", async () => {
 		const mount = scratch();
 		writeMount(mount, "skills/host-skill/SKILL.md", mountSkill("host-skill"));

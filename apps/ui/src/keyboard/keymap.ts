@@ -1,7 +1,7 @@
 /**
  * Default global keymap table — the single source of default chord bindings.
  *
- * Frozen by design record D5 (Global keymap, D5:444-457). CONTRACT + DEFAULT
+ * Specified by design record D5 (Global keymap, D5:444-457). CONTRACT + DEFAULT
  * DATA: the typed table below captures every default chord D5 lists. No runtime
  * behavior — compass-ui reads this table to install bindings.
  *

@@ -10,7 +10,7 @@ import (
 // (internal/linearagent) produce, and the router (T4) consumes. It is a
 // server-internal value; it is not a wire type.
 //
-// Field types are grounded on the frozen wire currency (the ForgeNotification
+// Field types are grounded on the wire currency (the ForgeNotification
 // gen message, internal/gen/compass/v1/forge.pb.go:326-341): Change is the
 // notification kind, Comment a *CommentRef, Checks a *v1.ChecksSummary, Kind
 // the artifact kind. Provider is the compass.v1 ForgeProvider enum.

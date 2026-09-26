@@ -240,9 +240,9 @@ already-documented `joinAgents` seam, and component cutovers to the accessor.
   `options.comms`/`options.compass` must keep working with fixture data and no
   network (the walking skeleton, `App.tsx:20-25`; every existing happy-dom
   test constructs it this way).
-- **`agentTree` / `treeOrder` / `boardAgents` / `prRowGroups` contracts are
-  frozen** (agent-trees record §T4/T5) — this record changes their INPUT
-  plumbing only, never their semantics.
+- **`agentTree` / `treeOrder` / `boardAgents` / `prRowGroups` semantics are
+  out of scope** (agent-trees record §T4/T5) — this record changes their INPUT
+  plumbing only.
 - **No styling work** — `app.css` / token/empty-state visuals are the
   compass-ux lane; this record adds render seams only.
 - **Mixed liveness is out of scope** — a store constructed with one client but
@@ -469,7 +469,7 @@ persist) are all composed with, not superseded:
 Every fork below is settled: R2 (`OFFLINE` dot) by Matt's ruling; R1/R3/R4/R5
 survived the design-critic's attack as the recommended choice; R6 is confirmed
 by server source. None is a live open question — the record carries these as
-the frozen contract.
+decided.
 
 - **R1 (roster source) — join, not replace.** Join the live `accounts`
   (identity/tree) with a presence map seeded by `GetRoster(OWNER)` + tailed by

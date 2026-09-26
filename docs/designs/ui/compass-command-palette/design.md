@@ -8,7 +8,7 @@ parallel — the palette is the *do-an-action* surface, the overlay the
 registry both consume, plus the shared commands-as-inventory rule OWNED by
 the RIG-2529 tier-3 scope-gate record
 (`docs/designs/meta/compass-tier3-scope-gate/design.md`) — an external
-frozen dependency both records cite, never redefine (see A3/D6). No other
+dependency both records cite, never redefine (see A3/D6). No other
 cross-dependency is designed here, but at IMPL time the palette and overlay
 PRs touch the same four App-root wiring lines (`spine.ts` deps + signature,
 the `store.ts:1896` spine-creation site, `App.tsx` imports + `<Show>` hosts,
@@ -17,7 +17,7 @@ second rebases.
 
 ## Problem / Intent
 
-The command palette is fully specified but does not exist. The spec is frozen
+The command palette is fully specified but does not exist. The spec lives
 in `apps/ui/src/design/components.md:411-454` ("Command palette (Kobalte
 combobox) … One surface, two modes, prefix-free") and its CSS is already
 shipped (`apps/ui/src/design/components/palette.css:1-2` — "Command palette —
@@ -65,7 +65,7 @@ chords are learnable from the surfaces that invoke them.
   (`test-router.tsx:35-56`), press the chord — never a test that
   self-registers the command under test (the anti-pattern the RIG-2456 review
   caught; the good pattern is `keyboard-e2e.test.tsx:37-48`).
-- **Registry contract is frozen-plus-additive** (DL-152/DL-225): consume
+- **Registry contract** (DL-152/DL-225): consume
   `CommandRegistry` as-is (`commands.ts:108-116` — `register/get/all/
   unregister`); do not widen it.
 
@@ -250,13 +250,13 @@ and tier 3 only runs a command whose scope is global or matches the active
 zone, so registering a `scope: "main"` command is safe.* The seeds above are
 `scope: "global"` view commands, so the palette does NOT depend on RIG-2529
 for its own correctness — the rule is restated here only so the two records
-never diverge; RIG-2529 is the external frozen substrate that makes the
+never diverge; RIG-2529 is the external substrate that makes the
 registry safe as the app-wide inventory (e.g. the eight `list.*` commands it
 registers, which then earn palette action rows for free).
 
 ### A4 — Navigation mode: store-backed `DestinationProvider`s
 
-The contracts already exist, frozen and unimplemented: `Destination`
+The contracts already exist, specified and unimplemented: `Destination`
 (`commands.ts:63-70` — `{ id, title, kind, navigate(), score? }`),
 `DestinationKind` (`commands.ts:49-56` — `agent | channel | topic | issue |
 pr | view`), `DestinationProvider` (`commands.ts:84-87` — `{ id,
@@ -310,7 +310,7 @@ the spec's grouped-list anatomy. Prefix-free: one query string feeds both.
 
 ### A5 — Result-row anatomy + the shortcut chip seam
 
-Each row renders the frozen four-part anatomy (`components.md:429-433`;
+Each row renders the four-part anatomy (`components.md:429-433`;
 `palette.css:87-147`): `.cx-palette-glyph` (9px 1-bit type glyph — command icon
 or destination `kind`; compass-ui emits the inline SVG, `palette.css:108`) ·
 `.cx-palette-title` · `.cx-palette-context` (dim: the command's `scope` / the
@@ -332,7 +332,7 @@ export function shortcutFor(id: CommandId, platform: Platform): string | undefin
 
 (first matching row, `resolveChord`-resolved — `keymap.ts:37-38`). The palette
 renders `shortcutFor(command.id, platform)` — every command this record gives
-a chip has a keymap row. `Command.shortcut` stays in the frozen contract as an
+a chip has a keymap row. `Command.shortcut` stays in the contract as an
 escape hatch for a future keymap-less command, but any such override MUST be
 piped through `resolveChord` before rendering, never shown raw. Presentation:
 a tiny `<ShortcutChip chord={...} />` component

@@ -187,7 +187,7 @@ silent decision hides, but not batched to Matt as forks:
   rule inheriting body size shrinks 1px. Intended (the DS UI base) — flagged so
   the T2 screenshot review reads it as intent, not a regression.
 - **Radius / body-face** — see the mapping-table notes (radius `md` not `lg`;
-  the mono-UI face-distinction erasure). Both frozen D7 choices, reviewed in
+  the mono-UI face-distinction erasure). Both decided D7 choices, reviewed in
   screenshots.
 - **Zero expected happy-dom test fallout.** No happy-dom test asserts a color,
   hex, computed style, or `var(--…)` string — `App.test.tsx` touches
@@ -301,7 +301,7 @@ two, post-warden-delete) flip per decision 1: `.mention-chip.reserved` →
 `--cx-accent` (blue), the three tool-name uses (`.tool-name` `:1212`, `:1952`,
 `:2195`) → `--cx-text-bright` (`tokens.css:100`). Move the layout knobs into the
 new commented block.
-Interfaces: consumes the frozen mapping table + T2; produces the flipped
+Interfaces: consumes the mapping table + T2; produces the flipped
 `app.css` (every legacy `var()` ref flipped to its decided `--cx-*` target —
 zero undefined vars) + a T1 screenshot pass.
 
@@ -367,7 +367,7 @@ Interfaces: consumes T1-T6; produces the reviewed screenshot set + changelog.
 ## Resolved decisions
 
 Four **LOAD-BEARING** forks, all ruled by Matt on 2026-08-08. Recorded here as
-the frozen contract — execution reads the decided target, not a fork. (The
+the decided contract — execution reads the decided target, not a fork. (The
 former scrollbar-hover question is a stated assumption, not a fork — see
 *Stated assumptions & known follow-ups*.) Decision 2's issue-axis reuse for the
 PR badge has DS-tier sign-off from compass-ux (the DS-tier owner); it coins no

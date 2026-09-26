@@ -35,7 +35,7 @@ rovingGroup : null` gate, `Bridge.tsx:463-467`, locked by the
   (2.5.4).
 - `apps/ui/src/keyboard/dispatch.ts` is **not modified**: the
   `installKeymap(registry, active, activeZone?)` signature and the three-tier
-  fall-through semantics (RD-2) are frozen and already correct for a root
+  fall-through semantics (RD-2) are already correct for a root
   install — this record only changes *who calls it* and *what the accessors
   close over*.
 - The RIG-2130 focus gate is inviolable: whatever publishes a roving group to
@@ -46,7 +46,7 @@ rovingGroup : null` gate, `Bridge.tsx:463-467`, locked by the
   precedence test (`Bridge.test.tsx:376-413`) must stay green (possibly
   re-hosted, see T3 — the *assertions* are the contract, not the mount
   shape).
-- Do not edit the frozen parent record; reference it. The frozen zone
+- Do not edit the frozen parent record; reference it. The zone
   contract `apps/ui/src/keyboard/zones.ts` stays contracts-only except where
   this record explicitly realizes a slice of it.
 - Exactly ONE `window` keydown listener in production at any time (the
@@ -146,8 +146,8 @@ accessor is:
   leak degrades to a dead per-keydown scan, never a misfire. Cost is
   O(groups × stops) per keydown with matching chords — single-digit groups,
   tens of stops: negligible.
-- **Relation to the frozen `FocusZoneController` seam** (`zones.ts:91-119`):
-  `registerRovingGroup(group: RovingGroup)` (zones.ts:102) is the frozen
+- **Relation to the `FocusZoneController` seam** (`zones.ts:91-119`):
+  `registerRovingGroup(group: RovingGroup)` (zones.ts:102) is the
   sketch of exactly this registration. This record realizes the
   *registration slice only*, taking the runtime `RovingGroupHandle` (which
   carries its `RovingGroup` identity at `roving.ts:29` plus the
@@ -167,7 +167,7 @@ the left sidebar, a zone-activation claim with no focus evidence. Not the
 Bridge's shipped constant `() => "main"` either, for the same reason lifted
 app-wide. Deriving from the focused group keeps tier-2 exactly as live as it
 is today where it matters (board stop focused → group zone `"main"` active →
-the frozen `Shift+Enter → comms.newline {when:"main"}` entry is a real
+the `Shift+Enter → comms.newline {when:"main"}` entry is a real
 contender that tier-1 must beat — the load-bearing precedence test keeps its
 teeth) and keeps it dormant without focus evidence. Observable delta in
 production today: none — no `when`-scoped command is registered in prod
@@ -180,7 +180,7 @@ richer zone model.
 - `createKeyboardSpine()` registers `view.bridge` as its first command —
   `{ id: cmd("view.bridge"), title: "Go to Bridge", keywords: ["board",
   "bridge", "kanban"], scope: "global", run: () => store.showBridge() }` —
-  satisfying the frozen §403-404 (registration lives with the behavior; the
+  satisfying the parent's §403-404 (registration lives with the behavior; the
   spine is created inside `createAppStore` where `showBridge` is in scope).
 - `App.tsx` (the router root layout, mounted once under both HashRouter and
   MemoryRouter) installs in its component body next to the existing
@@ -228,7 +228,7 @@ richer zone model.
    (`registry.ts:23-27`), and the registry is the palette's specced source of
    truth (`commands.ts:104-106`). So `unregister` is currently the *only*
    containment of the tier-3 escape — which couples it to OQ-6's ruling.
-   The contract file is frozen-by-D5 contracts-only; this is an additive
+   The contract file is contracts-only (D5); this is an additive
    method with no behavior change for existing callers — recorded as a DL row
    (see Global Constraints). **Contract-shape alternative (weigh at freeze):**
    have `register()` return a `() => void` disposer that removes *only if the
@@ -447,7 +447,7 @@ the load-bearing three.
   assertions are preserved verbatim. Non-keyboard Bridge tests keep their
   direct mounts.
 - **RD-4 — the tier-3 escape: DEFER with eyes open** *(was OQ-6; option B)*.
-  `dispatch.ts` stays frozen (unmodified). The tier-1 focus gate does not
+  `dispatch.ts` stays unmodified. The tier-1 focus gate does not
   cover tier 3, so a registered `board.*` command (`Shift+Enter →
   board.openAssignedAgent`, keymap.ts:98, no `when`) is reachable from a
   non-editable target while the board is mounted-but-unfocused — a
@@ -472,7 +472,7 @@ the load-bearing three.
 - **OQ-5 (non-load-bearing) — the other tabled global chords
   (`view.agentWorkspace`, `view.settings`, `palette.open`,
   `keymap.ts:65-67`).** Unregistered globals fall through harmlessly by
-  frozen design (`dispatch.ts:120-129`). Registering them is one-liner work
+  design (`dispatch.ts:120-129`). Registering them is one-liner work
   *after* this record lands the spine, but each belongs to its owning
   surface/lane and none is in RIG-2456's scope. Recommendation: defer;
   file follow-up issues per lane when this record's impl merges.

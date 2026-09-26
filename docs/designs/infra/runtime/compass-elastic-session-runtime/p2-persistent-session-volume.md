@@ -1,7 +1,7 @@
 # P2 — Persistent Session Volume + VirtualFS Seam
 
 > **Design record.** Detailing pass for task **P2** of
-> [compass-elastic-session-runtime](./design.md) (RIG-1717, frozen in PR #446;
+> [compass-elastic-session-runtime](./design.md) (RIG-1717, merged in PR #446;
 > its Plan § P2, design.md:603-653), incorporating the
 > [VirtualFS descope amendment](./virtualfs-descope-amendment.md) (RIG-2395,
 > ruled by Matt 2026-08-19, PR #459), which moved the `VirtualFS`
@@ -9,11 +9,11 @@
 > materialize wiring from S1 into P2 and deferred the clone-model /
 > clone-credential-location decision to this record
 > (virtualfs-descope-amendment.md:57-72,116-129). Where this record and the
-> frozen parent disagree, the amendment governs. Every `go/internal/*`
+> parent disagree, the amendment governs. Every `go/internal/*`
 > citation is a path in the **`RigelBuild/compass`** monorepo at main
 > `17111cc0` (line numbers drift; resolve against that commit).
 
-Status: PROPOSED — details P2 under the frozen parent + the active amendment;
+Status: PROPOSED — details P2 under the parent + the active amendment;
 the central clone/credential fork (OQ-1) is ruled (Matt, 2026-09-05, DL-326).
 Tracking: RIG-2395
 
@@ -157,7 +157,7 @@ Concretely:
   DL-326): a provably-clean post-clone tree, stamped at W5's clone-complete
   signal, keyed in the W2 index.
   Detection of the copy primitive is a runtime capability probe, not a config
-  knob (OQ-3). `VolumeSnapshotID` stays an **opaque string** (frozen so by the
+  knob (OQ-3). `VolumeSnapshotID` stays an **opaque string** (set so by the
   parent, design.md:536-537); its P2 production shape is the snapshot store's
   key, never parsed by callers.
 - **sccache is a cross-session complement, not a replacement** — incompatible
@@ -188,7 +188,7 @@ backends in siblings, session-scoped construction):
 - **The destination is binding state of the `VirtualFS` instance** —
   constructed with the target root, which at P2 is the session's attached
   volume — not a `Materialize` parameter (parent design.md:533-536), so a
-  later destination (a customer-VFS interop root) swaps behind the frozen
+  later destination (a customer-VFS interop root) swaps behind the same
   signature.
 - `Release` detaches/cleans the materialized root without destroying volume
   contents (volume destruction is `Expire`'s, never `Release`'s).
@@ -423,12 +423,12 @@ The package skeleton mirrors `go/internal/compute`'s layering
       HostRoot  string
   }
 
-  // VolumeSnapshotID is the opaque key of a stored volume snapshot (frozen
-  // opaque by the parent record; never parsed by callers).
+  // VolumeSnapshotID is the opaque key of a stored volume snapshot (opaque per
+  // the parent record; never parsed by callers).
   type VolumeSnapshotID string
 
   // ArchiveRef is the opaque reference to an archived volume in the
-  // object store (consumed by D4's cold-idle; signatures frozen here,
+  // object store (consumed by D4's cold-idle; signatures reserved here,
   // implementation deferred — see OQ-2).
   type ArchiveRef string
 
@@ -582,8 +582,7 @@ The package skeleton mirrors `go/internal/compute`'s layering
   byte-identical (GC 8). Under `SourceVolume`, `ensureCheckoutDir` still
   runs (idempotent `mkdir -p` on the mounted path, same uid-ownership
   intent, `agent.go:354-358`). The `AgentSpec.Mounts` doc comment is amended
-  per P2-GC-a. No `WorkloadRuntime` change (the interface stays frozen,
-  `podman.go:399-403`).
+  per P2-GC-a. No `WorkloadRuntime` change (`podman.go:399-403`).
 - **Depends:** W1 (the mount it documents); parallel with W3.
 - **Test cycle:** existing launch-path regression suite green with zero-value
   `Source`; a `SourceVolume` spec produces the writable mount + stable
@@ -751,7 +750,7 @@ behind, so it does not close the leak.
 ### OQ-2 — `Archive`/`Restore` implementation timing *(non-load-bearing)*
 
 The parent puts the verbs on P2's API but their consumer is D4's cold-idle
-(design.md:638-641,714-723). **Recommendation:** freeze the signatures in
+(design.md:638-641,714-723). **Recommendation:** reserve the signatures in
 W1 with honest not-implemented sentinels (the `Resize`/`ExecStreaming`
 discipline, `podman.go:387-396`, `compute.go:26-29`); the object-store
 backend and endpoint config land with D4, which owns the archive

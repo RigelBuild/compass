@@ -76,7 +76,7 @@ func recordingStreamHandler(rec *spyResult) connect.StreamingHandlerFunc {
 	}
 }
 
-// TestAdminGateGatesFrozenAdminOnlyRPCs is the frozen partition: exactly the five
+// TestAdminGateGatesFrozenAdminOnlyRPCs is the gated partition: exactly the five
 // privileged CompassService RPCs (agent-session start/stop/reload/inspect + token
 // issuance) are admin-gated. For each, the admin passes (nil) and a non-admin is
 // denied — so a procedure silently dropping out of the gated set (non-admin

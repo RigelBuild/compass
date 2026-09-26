@@ -26,7 +26,7 @@ against the fixture (seam-compatible with the eventual daemon `PostMessage`).
   When the daemon grows the real streams, the accessors below stay and their
   bodies swap the fixture for the generated @compass/client"). No component
   imports `STUB_MESSAGES` directly; no daemon calls anywhere in this work.
-- **Board-primary framing** (frozen, 0.7 record §39-52): the board is the
+- **Board-primary framing** (0.7 record §39-52): the board is the
   shell; the channel is a surface WITHIN it — the standalone `channel` view
   and the agent workspace's chat pane. Both mounts render the SAME
   `ChannelView`, so every threading affordance here must behave in both.

@@ -18,7 +18,7 @@ import (
 //
 // It runs against either the pool or an open transaction (querier), so a
 // mutation can gate inside its own tx before touching state — the D9 discipline
-// the frozen record requires on every write RPC ("authorized server-side
+// the design record requires on every write RPC ("authorized server-side
 // against the authenticated account's visible set", design.md:1101-1102).
 func requireChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID ChannelID) error {
 	member, err := db.New(q).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
@@ -63,7 +63,7 @@ func isChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID 
 // owns topicID. It is the topic-scoped form the SubscribeComms stream edge uses
 // to gate MessagePosted/MessageUpdated now that a wire message carries only a
 // topic, not a channel: the channel is resolved through topics.channel_id (the
-// frozen record's "a consumer that needs the channel resolves it through the
+// design record's "a consumer that needs the channel resolves it through the
 // topic"), so the per-event filter stays at read-parity with ListMessages
 // (which JOINs channel_members on the topic's channel). An unknown topic yields
 // false (not visible) — the not-found/forbidden merge extended to the stream.
@@ -84,7 +84,7 @@ func (s *Store) IsTopicChannelMember(ctx context.Context, actor AccountID, topic
 // or when the group is visible to everyone (VisibilityShared). A group the actor
 // neither owns nor may see — and an unknown group — both return ErrNotFound (the
 // not-found/forbidden merge), so a non-owner cannot probe which group ids exist.
-// This realizes the frozen record's "CreateChannel — caller-authorized against
+// This realizes the design record's "CreateChannel — caller-authorized against
 // the parent group" (design.md:362-367).
 func requireGroupCreateAuthz(ctx context.Context, q db.DBTX, actor AccountID, groupID ChannelGroupID) error {
 	authorized, err := db.New(q).GroupCreateAuthorized(ctx, db.GroupCreateAuthorizedParams{

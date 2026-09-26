@@ -180,7 +180,7 @@ func TestRemoveArgsCarriesVolumes(t *testing.T) {
 	}
 }
 
-// Resize is frozen into the WorkloadRuntime seam at S1 but its behavior is
+// Resize is reserved on the WorkloadRuntime seam at S1 but its behavior is
 // C3's: PodmanCLI.Resize must return ErrResizeNotImplemented, never a silent
 // nil. A no-op success would let a future caller believe a container's cgroup
 // limits were raised when they never moved — the exact false-positive the

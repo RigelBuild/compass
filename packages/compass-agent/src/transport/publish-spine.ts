@@ -89,7 +89,7 @@ export interface PublishSpine {
 // and disposes it at drain() end; a borrowed one is NEVER disposed here.
 
 // `metricNamespace` prefixes the gauges and the flush-shape rows. Defaults to ""
-// — production yields the frozen names; a test passes a unique prefix so its
+// — production yields the bare names; a test passes a unique prefix so its
 // reads hit a private registry entry (the global registry keys on the name).
 export function createPublishSpine(
 	publish: (stream: AsyncIterable<PublishFrameRequest>) => Promise<unknown>,

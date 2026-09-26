@@ -212,12 +212,12 @@ func commsSnapshotBoundary(snapshotSeq, instanceEpoch uint64) *compassv1.Subscri
 // whether an event is visible to a subscriber. Each method is the single-id form
 // of a List* read predicate, so the per-event stream filter rides at exact
 // read-parity — the store is the one D9 source of truth and the two cannot drift
-// (the frozen record's anti-drift requirement). *store.Store satisfies it; a
+// (the design record's anti-drift requirement). *store.Store satisfies it; a
 // test can substitute a fake to drive the filter without a database.
 type eventVisibility interface {
 	// IsTopicChannelMember gates MessagePosted/MessageUpdated: a wire message
 	// carries only its topic, so the channel is resolved through topics.channel_id
-	// (the frozen record's topic->channel resolution), keeping the per-event
+	// (the design record's topic->channel resolution), keeping the per-event
 	// filter at read-parity with ListMessages (a channel_members JOIN on the
 	// topic's channel).
 	IsTopicChannelMember(ctx context.Context, actor store.AccountID, topicID string) (bool, error)

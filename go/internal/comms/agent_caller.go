@@ -164,7 +164,7 @@ func (c *Comms) ListAsAccount(
 // real channel id within account's visible set, then delegates to the id-typed
 // PostAsAccount. This is the ONLY caller that treats the container arm as a name;
 // PostAsAccount stays id-typed for its internal id-holder co-callers
-// (postSetupThread, CommitAgentPost, the offline-mention e2e), which the frozen
+// (postSetupThread, CommitAgentPost, the offline-mention e2e), which the design
 // record's "resolve in PostAsAccount" wording predates.
 //
 // Per R2 there is NO home-channel default at the tool level: an empty channel

@@ -1,7 +1,7 @@
 # Compass Native App — Multi-Window Support
 
 Parent: [compass-native-app/design.md](../compass-native-app/design.md) (DL-106..DL-112)
-Composes with: [compass-native-client-mode/design.md](../compass-native-client-mode/design.md) (frozen T5)
+Composes with: [compass-native-client-mode/design.md](../compass-native-client-mode/design.md) (T5)
 
 ## Problem / Intent
 
@@ -13,7 +13,7 @@ opens exactly one window — `go/cmd/compass-app/main.go:128-137`, a single
 Wails v3 supports N windows natively (`WindowManager.NewWithOptions`,
 `wails/v3@v3.0.0-beta.0/pkg/application/window_manager.go:54`, callable
 repeatedly); this record designs HOW Compass uses that — window topology,
-per-window boot semantics, bridge frame routing, and composition with the frozen
+per-window boot semantics, bridge frame routing, and composition with the
 T5 mode-injection contract. The startup default stays ONE window (no user
 expects an app to open several from the jump); a Window menu opens more, and the
 set is persisted across runs.
@@ -125,7 +125,7 @@ Why this is correct, grounded in the wiring as-built:
 
 ### A3 — Composition with T5 mode injection and the connect gate
 
-The frozen T5 record injects the launch mode as a startup global
+The T5 record injects the launch mode as a startup global
 (`window.__COMPASS_MODE__ = "embedded" | "client"`) **at window creation**, via
 the `WebviewWindowOptions` in `run()`
 (`compass-native-client-mode/design.md:709-730` OQ-8; T5.6 at `:554-574`).
@@ -137,8 +137,8 @@ divergence is therefore structurally impossible and no new mode surface is
 added.
 
 **The client-mode connect gate composes too — it is per-window, and so is the
-frozen T5 contract.** The T5.5 connect gate is per-window and stateful, and the
-frozen T5 record mandates ONE auto-connect probe chain *per window boot*: boot
+T5 contract.** The T5.5 connect gate is per-window and stateful, and the
+T5 record mandates ONE auto-connect probe chain *per window boot*: boot
 calls `Connect` with an empty token and the shell runs no separate pre-window
 probe, so a single window boot never double-probes
 (`compass-native-client-mode/design.md:180-186`, :550-553). Multi-window keeps
@@ -166,7 +166,7 @@ construction:
 The connect gate therefore needs no cross-window coordination: no shared client
 state, no first-window sentinel, no shell→UI "already-armed" signal — none of
 which the architecture has (each webview is an isolated JS runtime, A1) or the
-frozen injection contract carries. The earlier framing of a two-window startup as
+injection contract carries. The earlier framing of a two-window startup as
 a load-bearing collision (two concurrent `shellConnect("")` probes *corrupting*
 `tokenstore.Write`/`SetBearer`) is dissolved: the empty-token writes are
 serialized and idempotent, so concurrent boot probes are safe rather than racy.
@@ -271,7 +271,7 @@ set" behavior without imposing a multi-window default on a fresh install.
 - **No mode divergence above the transport boundary** (DL-106,
   `compass-native-app/design.md:335-338`): multi-window adds no new UI-side
   conditional; `apps/ui` is unchanged by this record.
-- **T5 mode-injection contract is frozen**
+- **T5 mode-injection contract**
   (`compass-native-client-mode/design.md:709-730`): `window.__COMPASS_MODE__`
   is injected at window creation for EVERY window, via the single window
   factory — never per-window-divergent.
@@ -417,7 +417,7 @@ and `apps/ui` is untouched by this record (A1, A3).
 
 ## Ledger-impact
 
-**None proposed.** This record refines the frozen native-app shell rows rather
+**None proposed.** This record refines the native-app shell rows rather
 than deciding a new contract class: DL-106 (one binary/two modes — untouched;
 multi-window is mode-agnostic by A3), DL-107 (the frame contract — unchanged;
 A4 changes delivery targeting, not the frame shape), DL-108 (linger — A2 keeps
@@ -446,11 +446,11 @@ Matt's rulings and folded into the record:
   the old `localStorage` last-writer-wins clobber does not arise (A1). The
   server-side prefs move is a named dependency (its own record/task), not this
   record's work.
-- Two-window startup × the frozen T5 connect gate → **resolved: the frozen
+- Two-window startup × the T5 connect gate → **resolved: the
   contract is per-window, and concurrent boot probes are safe** (A3). Every window
   runs the one unchanged per-window probe; the empty-token connect serializes on
   `connectMu` and is idempotent, so a restored multi-window set's N boot probes
-  converge safely — no second probe *within* a boot, no frozen-contract
+  converge safely — no second probe *within* a boot, no contract
   amendment, no `apps/ui` change.
 
 **Non-load-bearing (explicit deferrals):**

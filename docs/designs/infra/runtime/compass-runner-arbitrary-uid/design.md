@@ -4,10 +4,10 @@
 
 The embedded compass-runner refuses to start unless its real uid is 1000, which
 blocks hosted/GA deployments where the host uid is arbitrary
-(`docs/designs/ui/compass-native-app/design.md` §OQ5 froze the split:
+(`docs/designs/ui/compass-native-app/design.md` §OQ5 set the split:
 preflight-and-refuse is the interim, arbitrary-uid is the GA-blocking
-follow-up — this record). The **launch mechanism is already decided and
-frozen** in the Active record
+follow-up — this record). The **launch mechanism is already decided** in the
+Active record
 `docs/designs/agent/compass-agent-container-runtime.md` — T1's uid-mapping
 invariant (`:630-640`), T2's flag switch (`:668-670`: "``Create``
 (`podman.go:347-357`) switches `--userns=keep-id` to
@@ -45,7 +45,7 @@ regression test targets.
 
 ## Approach
 
-Implement the frozen T1/T2 launch mechanism as a thin slice —
+Implement the T1/T2 launch mechanism as a thin slice —
 `--userns=keep-id:uid=<agent-uid>,gid=<agent-gid>` in `PodmanCLI.Create` —
 and remove/replace the now-wrong startup refusal. Five residual decisions,
 each grounded below: (a) and (b) were load-bearing forks Matt ruled on (both

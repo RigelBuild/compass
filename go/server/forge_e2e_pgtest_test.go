@@ -2,7 +2,7 @@
 
 package server
 
-// End-to-end T8 of the FROZEN Compass forge-write design: the WHOLE agent-initiated
+// End-to-end T8 of the Compass forge-write design: the WHOLE agent-initiated
 // forge-WRITE wire over a REAL per-container AgentGateway socket, chokepoint mounted
 // via hub.SetForgeCaller over forge.FakeProvider fakes. Drives every hop: agent ->
 // AgentGateway.Forge -> Runner -> RelayForgeCall -> Hub -> forgeService.

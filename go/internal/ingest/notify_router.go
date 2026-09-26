@@ -71,8 +71,8 @@ type NotifyTarget struct {
 // AdvanceDeliveredRevisionCAS, and ONLY when the subscriber was already caught
 // up (the CAS predicate makes that concurrency-safe).
 //
-// RECONCILED INCONSISTENCY (surfaced): the frozen interface block
-// (design.md:815-825) lists exactly three methods, but the frozen Route
+// RECONCILED INCONSISTENCY (surfaced): the design's interface block
+// (design.md:815-825) lists exactly three methods, but the design's Route
 // algorithm's step 1 (design.md:841, "load the coordinate's prior snapshot from
 // the cursor via NotifyStore") requires a single-coordinate cursor load the
 // listed methods cannot serve (ListNotifyTargets is the sweep's bulk enumerate,
@@ -199,7 +199,7 @@ func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller,
 	return &NotifyRouter{store: st, dispatcher: disp, checksRoller: checks, pullNumbers: pulls, identities: ids, forgeRef: forgeRef, log: log}
 }
 
-// Route runs the frozen algorithm (design.md:841-872) for one event:
+// Route runs the design's algorithm (design.md:841-872) for one event:
 //  0. For a CHECKS event carrying a head SHA but NO number (a GitHub
 //     check_suite webhook — the payload is head-SHA-keyed), resolve the SHA to
 //     its PR number via PullNumberResolver BEFORE the zero-number guard, so the

@@ -135,7 +135,7 @@ reference what registries already serve durably.**
   are dev/desktop tooling built on demand and are *excluded* from v1 to keep
   the asset set meaning something — an OQ records the boundary).
 - *Arch matrix:* `linux-amd64` for all three binaries (the dogfood/CD target —
-  the agent-image record froze linux/amd64 as the dogfood platform, `compass
+  the agent-image record set linux/amd64 as the dogfood platform, `compass
   docs/designs/platform/compass-agent-image-publish.md:54-67`), plus
   `darwin-arm64` for the **CLI only** (Matt's macOS dev machines run the CLI
   against remote/dogfood stacks; the daemons deploy on Linux, and shipping

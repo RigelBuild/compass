@@ -281,7 +281,7 @@ after T1 lands.
   WebKitGTK 6.0 wording; while rewriting the error string, also fix
   `main_nogtk3.go:14`'s stale "go/moon.yml build lane" claim (`go/moon.yml`
   carries zero gtk references today — do not copy it verbatim into
-  `main_nogtk4.go`). NOTE: the distribution record's frozen T2 darwin
+  `main_nogtk4.go`). NOTE: the distribution record's T2 darwin
   tag table (`compass-distribution/design.md:503-514`) spells `gtk3`; if
   darwin T2 has not landed when this executes, coordinate the rename with
   that lane (the table's `(linux && gtk3) || darwin` shapes are already

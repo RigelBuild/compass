@@ -350,7 +350,7 @@ func StartSuitePostgresMain(stateDir, sockDir string, port int) (string, func(),
 // startSuitePostgres is the shared bring-up body behind the TB and TB-free
 // variants. It resolves the wrapper on PATH, forms the supervisor's
 // keyword/value DSN (host=<sockDir> port=<port> dbname=compass sslmode=disable —
-// the frozen form cmd/compass-postgres parses and compass-server later opens),
+// the form cmd/compass-postgres parses and compass-server later opens),
 // exec's the wrapper with the supervisor's argv, and gates readiness on a bounded
 // connect poll that also short-circuits if the child exits first. On any failure
 // it reaps a started child and returns a nil stop.

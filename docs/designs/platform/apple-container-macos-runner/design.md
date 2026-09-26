@@ -11,7 +11,7 @@ Linear: RIG-3238 (design)
 > and this record disagree — including the vsock-gating text below.
 
 Investigation + design record for RIG-3238: whether Apple `container`
-(github.com/apple/container) becomes a supported backend behind the frozen
+(github.com/apple/container) becomes a supported backend behind the
 `WorkloadRuntime`/`SelectBackend` seam for the Compass native app's embedded
 macOS front door, and if so, the adoption sequencing. This record carries
 Matt's RIG-3246 ruling plus an adoption plan whose BUILD (not direction) is
@@ -72,7 +72,7 @@ vsock hardware leg remain gated.
 ## Approach
 
 **Ruling (Matt, RIG-3246, 2026-09-05): Apple `container` is THE macOS
-embedded runtime — a new `AppleContainerCLI` backend behind the frozen
+embedded runtime — a new `AppleContainerCLI` backend behind the
 `SelectBackend` seam, the agent data path mirroring the microVM over vsock,
 the runner staying host-side (darwin-native) driving it, and postgres +
 collector moving onto apple-container too, so macOS carries NO podman.
@@ -130,7 +130,7 @@ Reasoning, in order of weight:
    no podman", OQ-13 resolved), so the "no machine / no podman" win covers the
    WHOLE macOS stack, not only the agent containers — the DL-260 podman shell
    for postgres is swapped for apple-container on macOS (T-2 scope).
-3. **The seam was built for this.** `WorkloadRuntime` is a frozen interface
+3. **The seam was built for this.** `WorkloadRuntime` is an interface
    (`go/internal/runtime/podman.go:343-348`: "WorkloadRuntime is the
    container engine seam … An interface so the Runner can hold a
    WorkloadRuntime and tests can substitute a fake") and `SelectBackend`
@@ -334,7 +334,7 @@ trivially satisfiable (a version-floor probe on one binary, like
   `container system start` command") — inside the invariant. The installer
   requiring admin once to place files under /usr/local is an install-time
   cost, not a runtime posture.
-- **The `WorkloadRuntime` interface stays frozen.** The new backend
+- **The `WorkloadRuntime` interface is unchanged.** The new backend
   implements all nine `WorkloadRuntime` verbs, Resize included as the
   additively-reserved one (`podman.go:348-397`), and adds NO verbs. Any
   backend-specific need rides the off-interface marker pattern
@@ -531,7 +531,7 @@ Matt ruled OQ-9 A (the mac mini on Woodpecker, ssh access provisioned).**
   config key (documented in the self-host doc) and the preflight adapter.
   **BLOCKED ON the embedded-revival stack (its T-2 revived `compass-app` +
   the preflight `Deps` seam) merging — that stack is at its review gate as of
-  this record, so the `Deps` seam shape is not yet frozen. If review reshapes
+  this record, so the `Deps` seam shape is not yet settled. If review reshapes
   that seam, T-4's Interfaces re-syncs to the merged shape before execution;
   T-4 does NOT start against the unmerged shape.**
 - **Test cycle:** unit tests over the injected probe seam (absent binary /

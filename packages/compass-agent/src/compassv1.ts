@@ -1,6 +1,6 @@
 // The single import point for every compass.v1 type + schema this package uses. A barrel:
 // where the generated types live is a build-seam decision owned by the compass service.
-// Frozen §T5: generated into ./gen via a second `out:` on buf.gen.yaml; if it fans out
+// Per §T5: generated into ./gen via a second `out:` on buf.gen.yaml; if it fans out
 // differently, only this file's imports change. The agent emits protojson (no @connectrpc).
 
 // Codec: protobuf-es v2 runtime (the gen files import from the same package).

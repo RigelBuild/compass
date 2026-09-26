@@ -2,7 +2,7 @@
 
 Ledger: DL-367
 Owner lane: compass-ux (design) → compass-ui (execution)
-Refs: RIG-3603. Adopts the technique frozen by DL-150 (state dot: 9×9
+Refs: RIG-3603. Adopts the technique of DL-150 (state dot: 9×9
 `crispEdges` 1-bit SVG) and DL-199 (badge: pixel-art 1-bit glyph + 2-char mono
 axis code). All code references are to main `97741c5ce2f4`.
 
@@ -15,14 +15,14 @@ and end users get whatever their OS substitutes. Separately,
 `ActivityBarItem.icon: string` conflates two different primitives — a fixed
 chrome symbol and a person's initial — behind one string field. This record
 replaces chrome glyphs with dot-matrix `crispEdges` SVG per DL-150/DL-199,
-splits the item type at the item per Matt's frozen ruling, and states the
+splits the item type at the item per Matt's ruling, and states the
 conditions under which the Unifont pin can be retired.
 
 ## Global Constraints
 
 - **Solid v2 (`solid-js@2.0.0-rc.1`), TS strict, Biome (tabs).** Props are
   never destructured in components.
-- **Technique is frozen, not chosen here.** DL-150/DL-199 already ruled: 1-bit
+- **Technique follows DL-150/DL-199:** 1-bit
   whole-cell grids, `shape-rendering="crispEdges"`, one `<rect width="1"
   height="1">` per lit cell, filled with `currentColor` so tier colors keep
   applying through the wrapper (`StateDot.tsx`, `BadgeGlyph.tsx` are the
@@ -35,7 +35,7 @@ conditions under which the Unifont pin can be retired.
   violation (`app.css` `.r-tab .r-tab-icon`). What the grid MUST satisfy is
   whole-pixel placement inside the 34px `.r-tab`, so its 1px cells do not
   straddle device pixels.
-- **Item-level union, per Matt's frozen ruling.** `ActivityBarItem` splits AT
+- **Item-level union, per Matt's ruling.** `ActivityBarItem` splits AT
   THE ITEM: `{ kind: "glyph"; … }` vs `{ kind: "avatar"; … }`. A field-level
   union (one `icon` field with two shapes) was explicitly rejected. Both the
   refactor and the glyph work land in RIG-3603.
@@ -89,7 +89,7 @@ device pixels, so the box is pinned to a whole-pixel offset (T3+T4).
 
 Bitmap storage follows `BadgeGlyph.tsx` exactly: a module-level
 `GLYPH_CELLS: Record<GlyphName, ReadonlyArray<readonly [number, number]>>`
-of `[x, y]` lit cells, transcribed from frozen ASCII grids added to
+of `[x, y]` lit cells, transcribed from ASCII grids added to
 `design/components.md` §Glyphs (`#` = lit). Keying the table on the exhaustive
 `GlyphName` union makes a name without a bitmap a compile error, not a runtime
 blank — the same guard `BadgeGlyph`'s `GlyphKey` provides.
@@ -98,7 +98,7 @@ blank — the same guard `BadgeGlyph`'s `GlyphKey` provides.
 `"status" | "files" | "vcs" | "pr"` — and grows semantic names (never
 character names) as the chrome audit (T5) converts further sites.
 
-### The `ActivityBarItem` split (Matt's frozen ruling)
+### The `ActivityBarItem` split (Matt's ruling)
 
 The union splits **at the item**, in `apps/ui/src/constants.ts`:
 
@@ -244,7 +244,7 @@ Add `apps/ui/src/components/Glyph.tsx`: the `GlyphName` union, the
 `GLYPH_CELLS` table for the four static-tab glyphs (status grid, files folder,
 vcs branch, pr arrows), and the component rendering the 11×11 `crispEdges`
 SVG on `currentColor`, following `BadgeGlyph.tsx`'s shape. Transcribe the four
-frozen ASCII grids into `design/components.md` §Glyphs; `GLYPH_CELLS` cites
+ASCII grids into `design/components.md` §Glyphs; `GLYPH_CELLS` cites
 them. Unit-test that every `GlyphName` key yields a non-empty cell list and
 all cells lie in `0..10`.
 
@@ -283,7 +283,7 @@ union without the render branch is a TS-strict error, so a split leaves a red
 commit mid-stack and breaks bisection.
 
 In `apps/ui/src/constants.ts`: replace the single interface with the
-`GlyphTabItem | AvatarTabItem` union (shapes as frozen in `## Approach`).
+`GlyphTabItem | AvatarTabItem` union (shapes as set in `## Approach`).
 `RIGHT_SIDEBAR_TAB_BY_ID` entries become `kind: "glyph"` with `name` replacing
 `icon`; `fleetItemForAgent`/`unreachableFleetItem` return `AvatarTabItem` with
 `letter: avatarInitial(…)`. Narrow `FleetPane`, `AgentUnreachable`, and
@@ -407,14 +407,14 @@ state-dot.png — positive control, byte-identical before and after
 
 ### T7 — docs
 
-Update `design/components.md` §Glyphs with the full frozen grid set and the
+Update `design/components.md` §Glyphs with the full grid set and the
 two-arm activity-bar item contract; note the DL-367 adoption in the section
 header. No changelog beyond the record.
 
 Interfaces:
 
 ```text
-design/components.md §Glyphs — frozen ASCII grids, one per GlyphName ("#" = lit)
+design/components.md §Glyphs — ASCII grids, one per GlyphName ("#" = lit)
 ```
 
 ### T8 — Unifont pin removal + baseline recapture (SEPARATE STACKED PR)
@@ -471,7 +471,7 @@ apps/ui/e2e/__screens__/ — 11 baselines recaptured against the shrunk font set
   case. **This is what lets the Unifont pin retire.**
 - **D2 — glyph cell grid: 11×11.** Ruled by Matt. An odd grid gives a true
   center cell like the 9×9 exemplars, and the extra resolution matters for
-  pictographs (gear, folder, branch). StateDot and BadgeGlyph stay frozen at
+  pictographs (gear, folder, branch). StateDot and BadgeGlyph stay at
   9×9 per DL-150/DL-199; they are physically separate components, so two grid
   sizes coexisting is fine.
   11×11 does **not** resolve the pre-existing 15px slot violation — the

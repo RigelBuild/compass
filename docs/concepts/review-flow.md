@@ -4,8 +4,7 @@ Compass's review posture is a single review pass per PR plus the human's final
 merge gate. When more than one Manager has a stake in a PR, a UX question
 follows: does the PR need **every** interested Manager to approve, or **one**
 approval plus comments from the rest? This doc records the question and the
-current posture; it is a product/review-flow convention, not a frozen
-mechanism.
+current posture; it is a product/review-flow convention.
 
 ## The two shapes
 

@@ -299,7 +299,7 @@ extension is a deployment concern and is not designed here.
   sha256sum manifest, verified by `verifyImages` in
   `go/internal/runtime/microvm_preflight.go`. Fetching lives in the stack
   (deploy time) and in publish tooling only.
-- **The boot contract is frozen.** erofs lower on `/dev/vda`, initrd modprobe
+- **The boot contract is unchanged.** erofs lower on `/dev/vda`, initrd modprobe
   set (`virtio_pci`, `virtio_blk`, `erofs`, `overlay`, plus the runtime set),
   fixed filesystem UUID, `/sbin/init` = `compass-guestd`, and a present
   `/bin/sh` (total-backend outage if missing — asserted at derivation time,
@@ -590,4 +590,4 @@ flag on a dev box.
   change merges and publishes before the pin bump that picks it up.
 - **Per-workload guest agent images** stay ruled out (see
   §Alternatives considered).
-- **The Runner's three-file-path contract** stays frozen (see §Approach).
+- **The Runner's three-file-path contract** stays unchanged (see §Approach).
