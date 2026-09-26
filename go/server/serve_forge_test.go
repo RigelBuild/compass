@@ -688,6 +688,9 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 	if !ok {
 		t.Fatal("no Linear write coordinate registered with a configured token source")
 	}
+	if resolved.host != forge.LinearHost {
+		t.Fatalf("Linear coordinate resolved host %q, want %q (the DL-055 row rejects an empty host)", resolved.host, forge.LinearHost)
+	}
 	writeLinear, ok := resolved.author.(*forge.Linear)
 	if !ok {
 		t.Fatalf("Linear coordinate author is %T, want *forge.Linear", resolved.author)
