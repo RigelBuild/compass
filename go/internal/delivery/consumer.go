@@ -142,6 +142,9 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 type settleEvent struct {
 	sessionID string
 	state     compassv1.AgentSessionState
+	// upTo bounds the commit times this edge fires. A real settle fires all; a
+	// late hold's replay fires only its settled turn, not a still-streaming one.
+	upTo int64
 }
 
 // startEvent is one queued session-start edge handed from the hub's Start (or
@@ -169,6 +172,7 @@ type heldEntry struct {
 	messageID   string
 	traceparent string
 	tenant      store.TenantID
+	atUnixMs    int64 // commit time, matched against settleEvent.upTo
 }
 
 // Consumer consumes message_posted refs and fans posted messages out to

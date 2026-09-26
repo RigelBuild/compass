@@ -98,7 +98,7 @@ func (c *Consumer) fanOutStored(ctx context.Context, messageID string) {
 // settling clock ahead by more than the gap between turns fires a still-streaming
 // message early, with partial blocks. One process stamping both has no skew.
 func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, atUnixMs int64) {
-	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx)}
+	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx), atUnixMs: atUnixMs}
 	if tenant, ok := store.TenantFromContext(ctx); ok {
 		entry.tenant = tenant
 	}
@@ -107,10 +107,12 @@ func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, at
 	settled, ok := c.lastSettle[authorSession]
 	fireNow := ok && settled >= atUnixMs
 	if fireNow {
-		// lastSettle stays as is: this is a replay of that settle, not a new one.
+		// lastSettle stays as is: this replays that settle, bounded to its turn so
+		// a later, still-streaming message of the author stays held.
 		c.settleQueue = append(c.settleQueue, settleEvent{
 			sessionID: authorSession,
 			state:     compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
+			upTo:      settled,
 		})
 	}
 	c.mu.Unlock()

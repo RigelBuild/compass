@@ -4,6 +4,7 @@ package delivery
 
 import (
 	"context"
+	"math"
 
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
@@ -27,7 +28,7 @@ func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessi
 		return
 	}
 	c.mu.Lock()
-	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state})
+	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state, upTo: math.MaxInt64})
 	// Recorded with the enqueue, so a hold that loses the race to the drain
 	// still sees this settle.
 	c.lastSettle[sessionID] = c.now().UnixMilli()
@@ -87,9 +88,9 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 }
 
 // drainSettles fires every queued author-settle edge under the loop's ctx. Each
-// edge fires the messages held for that author session, in post order, from
-// each message's CURRENT (settled) stored blocks (design.md:158-168), then
-// clears the registry entry. An edge for a session with nothing held is a no-op.
+// edge fires the messages held for that author session up to its upTo, in post
+// order, from each message's CURRENT (settled) stored blocks (design.md:158-168).
+// An edge for a session with nothing in range is a no-op.
 //
 // A no-frame author death never enqueues an edge. No-loss still holds: the
 // sweeps skip only messages held for a LIVE author, so the cursor sweep
@@ -104,7 +105,7 @@ func (c *Consumer) drainSettles(ctx context.Context) {
 		ev := c.settleQueue[0]
 		c.settleQueue = c.settleQueue[1:]
 		c.mu.Unlock()
-		c.fireHeld(ctx, ev.sessionID)
+		c.fireHeld(ctx, ev.sessionID, ev.upTo)
 	}
 }
 
@@ -258,17 +259,28 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 	return nil
 }
 
-// fireHeld dispatches every message held for authorSession, ascending, and
-// clears the registry entry. Each message is re-read under its hold-time tenant,
-// so the deliver carries the SETTLED blocks (design.md:158-161), and recipients
-// are re-resolved against the then-current subscription + liveness.
-func (c *Consumer) fireHeld(ctx context.Context, authorSession string) {
+// fireHeld dispatches, ascending, the messages held for authorSession whose
+// commit time is at most upTo, and keeps the rest held in order. Each is
+// re-read under its hold-time tenant, so the deliver carries the SETTLED blocks
+// (design.md:158-161), and recipients are re-resolved at fire time.
+func (c *Consumer) fireHeld(ctx context.Context, authorSession string, upTo int64) {
 	c.mu.Lock()
-	held := c.held[authorSession]
-	delete(c.held, authorSession)
+	var fire, keep []heldEntry
+	for _, e := range c.held[authorSession] {
+		if e.atUnixMs <= upTo {
+			fire = append(fire, e)
+		} else {
+			keep = append(keep, e)
+		}
+	}
+	if len(keep) == 0 {
+		delete(c.held, authorSession)
+	} else {
+		c.held[authorSession] = keep
+	}
 	c.mu.Unlock()
 
-	for _, entry := range held {
+	for _, entry := range fire {
 		// The drain ctx carries no tenant; re-read under the one captured at hold.
 		tctx := store.WithTenant(ctx, entry.tenant)
 		wire, channel, author, err := c.storeMessageToWire(tctx, entry.messageID)
@@ -312,17 +324,25 @@ func (c *Consumer) sweepAllLive(ctx context.Context) {
 
 // heldIDs snapshots the ids held for LIVE author sessions. An entry stranded
 // under a dead session has no settle coming, so the sweeps must deliver it.
+// Liveness is read after the held snapshot, so a session that went live in
+// between is still skipped; a stale-live one also stays skipped, the safe side.
 func (c *Consumer) heldIDs() map[string]struct{} {
-	live := c.liveSessionIDs() // resolver read stays outside c.mu
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	ids := make(map[string]struct{})
+	bySession := make(map[string][]string, len(c.held))
 	for sid, entries := range c.held {
+		for _, e := range entries {
+			bySession[sid] = append(bySession[sid], e.messageID)
+		}
+	}
+	c.mu.Unlock()
+	live := c.liveSessionIDs() // resolver read stays outside c.mu
+	ids := make(map[string]struct{})
+	for sid, msgIDs := range bySession {
 		if _, ok := live[sid]; !ok {
 			continue
 		}
-		for _, e := range entries {
-			ids[e.messageID] = struct{}{}
+		for _, id := range msgIDs {
+			ids[id] = struct{}{}
 		}
 	}
 	return ids
