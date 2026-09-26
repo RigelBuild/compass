@@ -14,8 +14,8 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
-// TestOpenAgentWorkspaceByHandleOpensOwnAgent: the owner addresses its agent by
-// bare handle and gets that agent's workspace, so resolution lands in the caller's namespace.
+// TestOpenAgentWorkspaceByHandleOpensOwnAgent: a bare handle resolves in the
+// caller's own namespace.
 func TestOpenAgentWorkspaceByHandleOpensOwnAgent(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()

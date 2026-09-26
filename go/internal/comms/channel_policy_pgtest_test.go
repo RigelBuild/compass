@@ -53,8 +53,8 @@ func TestSetChannelPolicyUpdatesAndEchoes(t *testing.T) {
 	}
 }
 
-// TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound: owner_handle
-// resolves viewer-scoped, so a real-but-invisible agent misses byte-identically to an unknown handle.
+// TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound: owner_handle is
+// viewer-scoped, so an invisible agent must miss exactly like an unknown one.
 func TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
