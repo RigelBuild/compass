@@ -25,7 +25,7 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    # The pure core (build-core.ts) over fixtures: the out-path parsing, the
-    # artifact→build-arg mapping (incl. the kernel's bzImage suffix, which the
-    # file-shaped rootfs/initrd must NOT gain), and the closure-root selection.
+    # The pure cores over fixtures: build-core.ts (out-path parsing, the
+    # artifact→build-arg mapping, closure-root selection) and retag-core.ts (the
+    # release re-tag walk's fail-closed probe classification and coherence).
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
