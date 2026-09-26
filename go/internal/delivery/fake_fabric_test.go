@@ -22,7 +22,8 @@ const testTenant store.TenantID = "tenant-1"
 // fakeFabric is an in-memory fabric.EventFabric. Publish queues a ref the way
 // the stream retains one, so a ref published before SubscribeKind is delivered
 // once the consumer subscribes. One goroutine runs the callback serially, as the
-// fabric promises, and fireReconnect runs the OnReconnect hooks.
+// fabric promises, and fireReconnect runs the OnReconnect hooks. A callback
+// error is recorded and redelivered until maxDeliver attempts, then dropped.
 type fakeFabric struct {
 	queue      chan fakeEvent
 	subscribed chan struct{}
@@ -30,27 +31,32 @@ type fakeFabric struct {
 	// beforeSubscribe, when set, runs at the top of SubscribeKind so a test can
 	// observe what Run finished before it subscribed.
 	beforeSubscribe func()
+	maxDeliver      int
 
 	mu       sync.Mutex
 	hooks    map[int]func()
 	nextHook int
 	acked    []string
 	ackSig   chan struct{}
+	failures map[string][]error
 }
 
 // fakeEvent is one queued publish: the ref plus the publisher's traceparent,
-// which the real fabric carries in a message header.
+// which the real fabric carries in a message header, and the attempts so far.
 type fakeEvent struct {
 	ref         fabric.EventRef
 	traceparent string
+	attempts    int
 }
 
 func newFakeFabric() *fakeFabric {
 	return &fakeFabric{
 		queue:      make(chan fakeEvent, 1024),
 		subscribed: make(chan struct{}),
+		maxDeliver: fabric.DefaultMaxDeliver,
 		hooks:      map[int]func(){},
 		ackSig:     make(chan struct{}, 1024),
+		failures:   map[string][]error{},
 	}
 }
 
@@ -69,11 +75,11 @@ func (f *fakeFabric) Publish(ctx context.Context, _ string, ref fabric.EventRef)
 }
 
 // Subscribe is the concrete-subject read side, which the consumer must not use.
-func (f *fakeFabric) Subscribe(context.Context, string, func(context.Context, fabric.EventRef)) (fabric.Unsubscribe, error) {
+func (f *fakeFabric) Subscribe(context.Context, string, func(context.Context, fabric.EventRef) error) (fabric.Unsubscribe, error) {
 	return nil, errors.New("fake fabric: the delivery consumer subscribes by kind only")
 }
 
-func (f *fakeFabric) SubscribeKind(ctx context.Context, kind fabric.EventKind, fn func(context.Context, fabric.EventRef)) (fabric.Unsubscribe, error) {
+func (f *fakeFabric) SubscribeKind(ctx context.Context, kind fabric.EventKind, fn func(context.Context, fabric.EventRef) error) (fabric.Unsubscribe, error) {
 	if kind != fabric.KindMessagePosted {
 		return nil, fmt.Errorf("fake fabric: unexpected kind %q", kind)
 	}
@@ -88,17 +94,39 @@ func (f *fakeFabric) SubscribeKind(ctx context.Context, kind fabric.EventKind, f
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// Nak'd events go here and run before the next queued one, like an
+		// immediate redelivery; the goroutine owns the slice, so it needs no lock.
+		var redeliver []fakeEvent
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-stop:
-				return
-			case ev := <-f.queue:
-				// The real fabric extracts the header's span onto the subscription ctx.
-				fn(otelx.ContextWithTraceparent(ctx, ev.traceparent), ev.ref)
-				f.ack(ev.ref.RowID)
+			var ev fakeEvent
+			if len(redeliver) > 0 {
+				// A retry still honours teardown, as the real consumer's drain does.
+				select {
+				case <-ctx.Done():
+					return
+				case <-stop:
+					return
+				default:
+				}
+				ev, redeliver = redeliver[0], redeliver[1:]
+			} else {
+				select {
+				case <-ctx.Done():
+					return
+				case <-stop:
+					return
+				case ev = <-f.queue:
+				}
 			}
+			// The real fabric extracts the header's span onto the subscription ctx.
+			ev.attempts++
+			if err := fn(otelx.ContextWithTraceparent(ctx, ev.traceparent), ev.ref); err != nil {
+				if f.fail(ev, err) {
+					redeliver = append(redeliver, ev)
+				}
+				continue
+			}
+			f.ack(ev.ref.RowID)
 		}
 	}()
 	f.subOnce.Do(func() { close(f.subscribed) })
@@ -148,6 +176,22 @@ func (f *fakeFabric) ack(rowID string) {
 	f.acked = append(f.acked, rowID)
 	f.mu.Unlock()
 	signalObserved(f.ackSig)
+}
+
+// fail records a callback error and reports whether to redeliver (a Nak): true
+// until maxDeliver attempts are spent, after which the event is dropped (parked).
+func (f *fakeFabric) fail(ev fakeEvent, err error) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failures[ev.ref.RowID] = append(f.failures[ev.ref.RowID], err)
+	return ev.attempts < f.maxDeliver
+}
+
+// failuresFor returns the callback errors recorded for rowID, in order.
+func (f *fakeFabric) failuresFor(rowID string) []error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.failures[rowID])
 }
 
 // waitAcked blocks until the callback for rowID has returned, or fails at the

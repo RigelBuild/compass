@@ -5,6 +5,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -34,19 +35,21 @@ import (
 // re-resolve at fire time (the settle path re-resolves recipients against the
 // then-current subscription + liveness), so a subscription change between post
 // and settle is honored.
-func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) {
+//
+// Every read whose failure is returned runs before the first hold or dispatch;
+// reads inside fanOut are logged and acked, since a retry would repeat its steers.
+func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) error {
 	if msg == nil {
-		return
+		return nil
 	}
 	author := store.AccountID(msg.GetAuthorAccountId())
 	messageID := msg.GetId()
 	if msg.GetTopicId() == "" || messageID == "" {
-		return
+		return nil
 	}
 	authorIsAgent, err := c.st.IsAgentAccount(ctx, author)
 	if err != nil {
-		c.log.ErrorContext(ctx, "delivery: resolve author kind", "error", err, "message_id", messageID)
-		return
+		return c.readFailure(ctx, "resolve author kind", messageID, err)
 	}
 
 	if !authorIsAgent {
@@ -55,11 +58,10 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 		// through topics.channel_id (the frozen record's topic->channel resolution).
 		channel, err := c.st.MessageChannel(ctx, messageID)
 		if err != nil {
-			c.log.ErrorContext(ctx, "delivery: resolve message channel", "error", err, "message_id", messageID)
-			return
+			return c.readFailure(ctx, "resolve message channel", messageID, err)
 		}
 		c.fanOut(ctx, channel, author, msg)
-		return
+		return nil
 	}
 
 	// Agent-authored. If the author has a live session, HOLD until it settles;
@@ -68,30 +70,23 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	// (design.md:177-178, :306).
 	authorSession, live := c.resolver.SessionForAccount(ctx, author)
 	if !live {
-		c.fanOutStored(ctx, messageID)
-		return
+		wire, channel, storedAuthor, err := c.storeMessageToWire(ctx, messageID)
+		if err != nil {
+			return c.readFailure(ctx, "re-read message for stored-block deliver", messageID, err)
+		}
+		c.fanOut(ctx, channel, storedAuthor, wire)
+		return nil
 	}
 	c.hold(ctx, authorSession, messageID, msg.GetAtUnixMs())
-}
-
-// fanOutStored delivers a message now from its stored blocks: the author has no
-// live turn.
-func (c *Consumer) fanOutStored(ctx context.Context, messageID string) {
-	wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
-	if err != nil {
-		// The message vanished between post and deliver (unexpected): skip it;
-		// the cursor never advanced, so the sweep still redelivers.
-		c.log.ErrorContext(ctx, "delivery: re-read message for stored-block deliver", "error", err, "message_id", messageID)
-		return
-	}
-	c.fanOut(ctx, channel, author, wire)
+	return nil
 }
 
 // hold registers messageID under its author's session for later firing at the
-// author's settle edge (design.md:157-160), in post order. It captures the origin
-// trace and tenant from ctx for fireHeld. If the author already settled at or
-// after atUnixMs, it also queues a settle edge, so the loop fires it at once and
-// still behind any earlier message of that author.
+// author's settle edge (design.md:157-160), ordered by commit time (stable), so a
+// ref redelivered after a later one still fires in post order. It captures the
+// origin trace and tenant from ctx for fireHeld. If the author already settled at
+// or after atUnixMs, it also queues a settle edge, so the loop fires it at once
+// and still behind any earlier message of that author.
 //
 // The two clocks come from different instances. A settling clock behind the
 // committing one holds a message until the next settle, which is benign. A
@@ -103,7 +98,15 @@ func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, at
 		entry.tenant = tenant
 	}
 	c.mu.Lock()
-	c.held[authorSession] = append(c.held[authorSession], entry)
+	entries := c.held[authorSession]
+	// First index strictly after atUnixMs: equal stamps keep arrival order.
+	i, _ := slices.BinarySearchFunc(entries, atUnixMs, func(e heldEntry, at int64) int {
+		if e.atUnixMs <= at {
+			return -1
+		}
+		return 1
+	})
+	c.held[authorSession] = slices.Insert(entries, i, entry)
 	settled, ok := c.lastSettle[authorSession]
 	fireNow := ok && settled >= atUnixMs
 	if fireNow {

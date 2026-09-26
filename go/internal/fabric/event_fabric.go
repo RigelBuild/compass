@@ -72,14 +72,14 @@ func (f *Fabric) Publish(ctx context.Context, subject string, ref EventRef) erro
 // consumer is shared, every instance subscribing to a subject must run the same
 // fabric Config — see Config.MaxDeliver.
 //
-// Acking is explicit and follows fn: fn returning normally acks, and fn
-// panicking is recovered and treated as a failure (a panic in one subscriber
-// must not take down the process — and must not silently ack an unprocessed
-// event either). A failure Naks for immediate redelivery until NumDelivered
+// Acking is explicit and follows fn: fn returning nil acks, and fn returning an
+// error or panicking is a failure. A panic is recovered, so one subscriber can
+// neither take down the process nor silently ack an unprocessed event. A
+// failure Naks for immediate redelivery until NumDelivered
 // reaches MaxDeliver — total ATTEMPTS, not retries — at which point the message
 // is parked on DLQSubject and Term'd. An undecodable payload is parked
 // immediately: redelivering it can never succeed.
-func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef)) (Unsubscribe, error) {
+func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	if err := f.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(context.
 // a SubscribeKind(KindMessagePosted) receives message_posted for every tenant
 // and nothing else. Subscribe keeps its strict concrete-subject grammar — a
 // wildcard subject cannot be reached through it.
-func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef)) (Unsubscribe, error) {
+func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	if err := f.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(cont
 //
 // It performs no validation of its own: subject must come from
 // validCommsSubject or CommsWildcardSubject.
-func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(context.Context, EventRef)) (Unsubscribe, error) {
+func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	stream, err := f.ensureStream(ctx)
 	if err != nil {
 		return nil, err
@@ -191,9 +191,9 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 }
 
 // handleEvent runs one delivery: decode, invoke fn under a panic guard, then ack
-// or park. Split out of Subscribe so the ack/park decision is readable on its
-// own.
-func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(context.Context, EventRef)) {
+// on nil or retry/park on an error. Split out of Subscribe so the ack/park
+// decision is readable on its own.
+func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(context.Context, EventRef) error) {
 	ref, decodeErr := decodeEventRef(msg.Data())
 	if decodeErr != nil {
 		// Unparseable: no number of redeliveries changes the bytes.
@@ -232,18 +232,17 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(con
 	}
 }
 
-// invoke calls fn, converting a panic into an error. A subscriber callback is
-// consumer code running on the fabric's goroutine: letting it panic would take
-// the process down, and recovering without failing the message would ack an
-// event nobody processed.
-func invoke(ctx context.Context, fn func(context.Context, EventRef), ref EventRef) (err error) {
+// invoke calls fn and returns its error, converting a panic into an error. A
+// subscriber callback is consumer code running on the fabric's goroutine:
+// letting it panic would take the process down, and recovering without failing
+// the message would ack an event nobody processed.
+func invoke(ctx context.Context, fn func(context.Context, EventRef) error, ref EventRef) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("fabric: subscriber panicked handling %s/%s: %v", ref.Kind, ref.RowID, r)
 		}
 	}()
-	fn(ctx, ref)
-	return nil
+	return fn(ctx, ref)
 }
 
 // traceparent reads the trace header in any case: a server may have rewritten

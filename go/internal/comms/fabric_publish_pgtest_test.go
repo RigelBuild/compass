@@ -61,11 +61,11 @@ func (f *fakeEventFabric) Publish(ctx context.Context, subject string, ref fabri
 	return f.err
 }
 
-func (f *fakeEventFabric) Subscribe(context.Context, string, func(context.Context, fabric.EventRef)) (fabric.Unsubscribe, error) {
+func (f *fakeEventFabric) Subscribe(context.Context, string, func(context.Context, fabric.EventRef) error) (fabric.Unsubscribe, error) {
 	return nil, errors.New("fakeEventFabric: Subscribe not used by comms")
 }
 
-func (f *fakeEventFabric) SubscribeKind(context.Context, fabric.EventKind, func(context.Context, fabric.EventRef)) (fabric.Unsubscribe, error) {
+func (f *fakeEventFabric) SubscribeKind(context.Context, fabric.EventKind, func(context.Context, fabric.EventRef) error) (fabric.Unsubscribe, error) {
 	return nil, errors.New("fakeEventFabric: SubscribeKind not used by comms")
 }
 
