@@ -33,8 +33,14 @@ type OwnershipIndex interface {
 	AuthoredArtifactByCoordinate(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error)
 }
 
-// ManagerResolver is ancestor-or-self: every tree node is Manager-class, so the
-// recorded authoring agent is its own owning Manager (store.ErrNotFound if not).
+// ManagerResolver walks a recorded authoring agent (possibly a peer) to its
+// owning Manager and returns that Manager's account id and home channel id.
+// It is its own narrow seam because no single store method spans the tree walk
+// (up parent_agent_id to the nearest tree ancestor — any Manager-class role,
+// not a role=="manager" filter, since every tree node is now Manager-class and
+// an owner parent must not be skipped) AND the home-channel read; the
+// driver backs it with the store's agent-tree + account reads at assembly.
+// store.ErrNotFound when the agent (or a walk ancestor) does not resolve.
 type ManagerResolver interface {
 	OwningManager(ctx context.Context, agent store.AccountID) (managerAccountID store.AccountID, homeChannelID string, err error)
 }
@@ -67,8 +73,8 @@ func NewResolver(ownership OwnershipIndex, managers ManagerResolver, forgeHost s
 // ResolveResponder resolves the stable Manager and home channel that should run
 // ev's session (design §Part 2). A recorded ownership row for the delegated
 // issue's forge coordinate walks the recorded authoring agent to its owning
-// Manager; a missing row (store.ErrNotFound) or an event with no issue
-// coordinate falls back to the supervisor + dedicated routing channel.
+// Manager; a missing row, an unresolvable walk (store.ErrNotFound on either), or
+// an event with no issue coordinate falls back to the supervisor + routing channel.
 func (r *Resolver) ResolveResponder(ctx context.Context, ev *SessionEvent) (managerAccountID store.AccountID, homeChannelID string, err error) {
 	provider, host, repo, number, ok := r.coordinate(ev)
 	if !ok {
@@ -87,7 +93,12 @@ func (r *Resolver) ResolveResponder(ctx context.Context, ev *SessionEvent) (mana
 
 	// Recorded row: walk the AUTHORING agent (possibly a peer) to its owning
 	// Manager and that Manager's home channel.
-	return r.managers.OwningManager(ctx, art.AgentAccountID)
+	manager, home, err := r.managers.OwningManager(ctx, art.AgentAccountID)
+	if errors.Is(err, store.ErrNotFound) {
+		// No live Manager left on the author's line: the supervisor triages it.
+		return r.fallback.RoutingTarget(ctx)
+	}
+	return manager, home, err
 }
 
 // coordinate extracts the delegated issue's forge coordinate from ev. A Linear

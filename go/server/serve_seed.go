@@ -6,9 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"errors"
-	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -28,13 +26,9 @@ const (
 	rootSupervisorRole        = "supervisor"
 )
 
-// linearRoutingChannelName is the admin-owned channel where a Linear session no
-// Manager owns lands for the root supervisor to triage.
-const linearRoutingChannelName = "linear-routing"
-
-// linearRoutingMu serializes the routing-channel ensure: the ready hook fires on
-// its own goroutine per Runner attach, and ungrouped channel names are not unique.
-var linearRoutingMu sync.Mutex
+// errTreeNotEmpty is createRootSupervisor's "operator-built root" outcome: the seed
+// adopts nothing, so it must say so when Linear needs the supervisor as its fallback.
+var errTreeNotEmpty = errors.New("root-supervisor seed: agent tree already has an operator-built root")
 
 // spawnableRoles is the closed Manager-role taxonomy a spawn request may name:
 // supervisor (owns the whole tree — intake, incidents, broadcasts, first
@@ -125,10 +119,14 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		if !isAdminRootSupervisor(supervisor, adminID) {
 			log.Error("root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
 				"agent_account_id", supervisor.ID)
+			warnNoLinearRoutingTarget(log, linearBridgeID, "the supervisor handle is not the admin's root agent")
 			return
 		}
 	case errors.Is(err, store.ErrNotFound):
 		created, ok, cerr := createRootSupervisor(ctx, st, adminID, log)
+		if errors.Is(cerr, errTreeNotEmpty) {
+			warnNoLinearRoutingTarget(log, linearBridgeID, "the agent tree has an operator-built root")
+		}
 		if cerr != nil || !ok {
 			return // createRootSupervisor logged the reason (or the tree was non-empty).
 		}
@@ -140,7 +138,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 
 	// Ensured before the spawn: routing needs only the rows, not a live session.
 	if linearBridgeID != "" {
-		if err := ensureLinearRoutingChannel(ctx, st, adminID, supervisor.ID, linearBridgeID); err != nil {
+		if _, err := st.EnsureLinearRoutingChannel(ctx, adminID, supervisor.ID, linearBridgeID); err != nil {
 			log.Error("root-supervisor seed: ensuring the linear routing channel failed; will retry on next enroll",
 				"agent_account_id", supervisor.ID, "err", err)
 		}
@@ -184,33 +182,13 @@ func isAdminRootSupervisor(acct store.Account, adminID store.AccountID) bool {
 	return acct.Agent != nil && acct.Agent.OwnerUserID == adminID && acct.Agent.ParentAgentID == ""
 }
 
-// ensureLinearRoutingChannel find-or-creates the routing channel with the supervisor
-// and bridge as members; mandatory subscription delivers to the non-home supervisor.
-func ensureLinearRoutingChannel(ctx context.Context, st *store.Store, adminID, supervisorID, bridgeID store.AccountID) error {
-	linearRoutingMu.Lock()
-	defer linearRoutingMu.Unlock()
-	members := []store.AccountID{supervisorID, bridgeID}
-	channel, err := st.ChannelByNameForViewer(ctx, adminID, linearRoutingChannelName)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		if _, err := st.CreateChannel(ctx, adminID, store.NewChannel{
-			Name:             linearRoutingChannelName,
-			Kind:             store.ChannelKindChannel,
-			MemberAccountIDs: members,
-			Policy:           store.ChannelPolicy{MandatorySubscription: true},
-		}); err != nil {
-			return fmt.Errorf("creating the %s channel: %w", linearRoutingChannelName, err)
-		}
-		return nil
-	case err != nil:
-		return fmt.Errorf("finding the %s channel: %w", linearRoutingChannelName, err)
+// warnNoLinearRoutingTarget flags a seed that returns before the routing channel exists:
+// with Linear on, cold delegations and bare @mentions then have no routing target.
+func warnNoLinearRoutingTarget(log *slog.Logger, linearBridgeID store.AccountID, reason string) {
+	if linearBridgeID == "" {
+		return
 	}
-	for _, member := range members {
-		if err := st.EnsureChannelMember(ctx, channel.ID, member); err != nil {
-			return fmt.Errorf("adding %s to the %s channel: %w", member, linearRoutingChannelName, err)
-		}
-	}
-	return nil
+	log.Warn("root-supervisor seed: cold Linear delegations have no routing target", "reason", reason)
 }
 
 // postSetupThread posts the platform's Setup thread as @compass into the
@@ -245,8 +223,8 @@ func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, comp
 
 // createRootSupervisor creates the root supervisor agent, but only on an EMPTY
 // tree (no root under the admin). It returns (agent, true, nil) when it created
-// one, and (zero, false, nil) when it created nothing — either the tree already
-// held a root (operator-built), or a concurrent seed won the unique-handle race
+// one, (zero, false, errTreeNotEmpty) when the tree already held an operator-built
+// root, and (zero, false, nil) when a concurrent seed won the unique-handle race
 // (that winner drives the start). The caller starts the supervisor only on a
 // true. Any real error is returned with created=false.
 func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.AccountID, log *slog.Logger) (store.Account, bool, error) {
@@ -256,8 +234,7 @@ func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.Ac
 		return store.Account{}, false, err
 	}
 	if roots > 0 {
-		// The tree is not empty (operator built a root), so seed nothing.
-		return store.Account{}, false, nil
+		return store.Account{}, false, errTreeNotEmpty
 	}
 	agent, err := st.CreateAgent(ctx, adminID, store.NewAgent{
 		Handle:      rootSupervisorHandle,

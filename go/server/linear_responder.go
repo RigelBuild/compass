@@ -31,7 +31,7 @@ const linearAPITimeout = 30 * time.Second
 
 var (
 	errRoutingSupervisor = errors.New("linear routing: root supervisor unresolved")
-	errRoutingChannel    = errors.New("linear routing: " + linearRoutingChannelName + " channel unresolved")
+	errRoutingChannel    = errors.New("linear routing: " + store.LinearRoutingChannelName + " channel unresolved")
 )
 
 var (
@@ -58,17 +58,32 @@ type linearRouting struct {
 	adminID store.AccountID
 }
 
-// OwningManager is ancestor-or-self: every tree node is Manager-class, so the
-// recorded authoring agent is the Manager and its home channel is the target.
+// OwningManager walks from the recorded author up ParentAgentID, self first, to the
+// first agent with a placement; a despawned author's work lands on its live ancestor.
 func (r *linearRouting) OwningManager(ctx context.Context, agent store.AccountID) (store.AccountID, string, error) {
-	acct, err := r.st.GetAccount(ctx, agent)
-	if err != nil {
-		return "", "", err
+	// The visited set stops a parent cycle in the data from spinning the walk forever.
+	visited := map[store.AccountID]bool{}
+	for current := agent; current != "" && !visited[current]; {
+		visited[current] = true
+		acct, err := r.st.GetAccount(ctx, current)
+		if err != nil {
+			return "", "", err
+		}
+		if acct.Agent == nil {
+			return "", "", fmt.Errorf("%w: account %q is not an agent", store.ErrNotFound, current)
+		}
+		switch _, _, err := r.st.PlacementForAgent(ctx, current); {
+		case err == nil:
+			if acct.Agent.HomeChannelID == "" {
+				return "", "", fmt.Errorf("%w: agent %q has no home channel", store.ErrNotFound, current)
+			}
+			return acct.ID, string(acct.Agent.HomeChannelID), nil
+		case !errors.Is(err, store.ErrNotFound):
+			return "", "", err
+		}
+		current = acct.Agent.ParentAgentID
 	}
-	if acct.Agent == nil || acct.Agent.HomeChannelID == "" {
-		return "", "", fmt.Errorf("%w: account %q has no agent home channel", store.ErrNotFound, agent)
-	}
-	return acct.ID, string(acct.Agent.HomeChannelID), nil
+	return "", "", fmt.Errorf("%w: agent %q has no live ancestor", store.ErrNotFound, agent)
 }
 
 // RoutingTarget resolves both halves on every call because both are seeded after
@@ -81,11 +96,11 @@ func (r *linearRouting) RoutingTarget(ctx context.Context) (store.AccountID, str
 	if !isAdminRootSupervisor(supervisor, r.adminID) {
 		return "", "", fmt.Errorf("%w: %q is not the admin's root agent", errRoutingSupervisor, rootSupervisorHandle)
 	}
-	channel, err := r.st.ChannelByNameForViewer(ctx, r.adminID, linearRoutingChannelName)
+	channel, err := r.st.LinearRoutingChannel(ctx, r.adminID)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", errRoutingChannel, err)
 	}
-	return supervisor.ID, string(channel.ID), nil
+	return supervisor.ID, string(channel), nil
 }
 
 // buildLinearWiring builds the Linear lanes beside the webhook that feeds them:
