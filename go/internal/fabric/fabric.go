@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -368,26 +367,29 @@ func New(cfg Config) (*Fabric, error) {
 	return f, nil
 }
 
-// redactURL hides all userinfo in a NATS URL or comma-separated seed list: a
-// username-only userinfo is a token, and nats.go accepts scheme-less entries.
+// redactURL hides all userinfo in a NATS URL or comma-separated seed list. NATS
+// URLs have no path, so everything before an entry's last '@' is credential
+// material, even when it holds a raw '/', '?' or '#'.
 func redactURL(raw string) string {
-	parts := strings.Split(raw, ",")
-	for i, p := range parts {
+	var out []string
+	for p := range strings.SplitSeq(raw, ",") {
 		p = strings.TrimSpace(p)
-		if !strings.Contains(p, "://") {
-			p = "nats://" + p
-		}
-		u, err := url.Parse(p)
-		if err != nil {
-			parts[i] = "<unparseable nats url>"
+		if p == "" {
 			continue
 		}
-		if u.User != nil {
-			u.User = url.User("redacted")
+		at := strings.LastIndex(p, "@")
+		if at < 0 {
+			out = append(out, p)
+			continue
 		}
-		parts[i] = u.String()
+		scheme := "nats"
+		// Only a letters-only prefix is a scheme; anything else is credential.
+		if i := strings.Index(p[:at], "://"); i > 0 && strings.Trim(p[:i], "abcdefghijklmnopqrstuvwxyz") == "" {
+			scheme = p[:i]
+		}
+		out = append(out, scheme+"://redacted@"+p[at+1:])
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(out, ",")
 }
 
 // subDropped reports a subscription's dropped-message count for logging.
