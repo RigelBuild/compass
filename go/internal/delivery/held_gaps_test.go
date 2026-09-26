@@ -139,6 +139,66 @@ func TestFireNowKeepsPostOrderBehindHeld(t *testing.T) {
 	}
 }
 
+// The edge a late hold queues must fire only that turn's messages. A message
+// of the next turn, still streaming, stays held until its own settle.
+func TestFireNowSparesNextTurnMessage(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(200))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var armed atomic.Bool
+	reads.beforeMessageByID = func(id string) {
+		if id == "m1" && armed.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+		}
+	}
+	startConsumer(t, c)
+	// Also runs before startConsumer's cleanup, so a failed assert never leaves
+	// the loop parked in the hook.
+	unpark := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unpark)
+	fab := fakeFabricOf(c)
+	fab.waitSubscribed(t)
+
+	postMessage(t, c, reads, messageAt("m1", "m1 body", time.UnixMilli(100)))
+	c.waitHeld(t, "sess-author", 1)
+	armed.Store(true)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	select {
+	case <-entered:
+	case <-time.After(testTimeout):
+		t.Fatal("fireHeld never re-read m1")
+	}
+	postMessage(t, c, reads, messageAt("m-late", "late body", time.UnixMilli(150)))
+	postMessage(t, c, reads, messageAt("m-next", "next partial", time.UnixMilli(300)))
+	fab.waitAcked(t, "m-late")
+	fab.waitAcked(t, "m-next")
+	unpark()
+
+	disp.waitFor(t, "m-late")
+	// The loop drains edges in order, so once this one is popped every earlier
+	// fire returned.
+	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.waitSettleDrained(t)
+	got := disp.records()
+	if len(got) != 2 || got[0].messageID != "m1" || got[1].messageID != "m-late" {
+		t.Fatalf("delivers = %+v, want exactly [m1, m-late]", got)
+	}
+	if !c.isHeld("sess-author", "m-next") {
+		t.Fatal("m-next is no longer held before its own turn settled")
+	}
+
+	reads.seedMessage(messageAt("m-next", "next settled", time.UnixMilli(300)))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	rec := disp.waitFor(t, "m-next")
+	if rec.sessionID != "sess-recip" || rec.firstText != "next settled" {
+		t.Fatalf("m-next deliver = %+v, want {sess-recip, next settled}", rec)
+	}
+	if n := disp.countFor("m-next"); n != 1 {
+		t.Fatalf("m-next dispatched %d times, want exactly 1", n)
+	}
+}
+
 // Control: a message committed after the recorded settle belongs to a later
 // turn, so it is held until the next settle.
 func TestHoldAfterSettleKeepsLaterMessageHeld(t *testing.T) {
