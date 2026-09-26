@@ -128,7 +128,9 @@ const result = publishVerified(
 				encoding: "utf8",
 				stdio: ["ignore", process.stderr.fd, "pipe"],
 			});
-			return { status: copy.status, stderr: copy.stderr ?? "" };
+			// A spawn failure (skopeo not on PATH) has no stderr; report its error.
+			const stderr = copy.error ? String(copy.error) : (copy.stderr ?? "");
+			return { status: copy.status, stderr };
 		},
 	},
 );
