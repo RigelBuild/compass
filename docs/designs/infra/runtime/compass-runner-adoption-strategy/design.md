@@ -586,9 +586,9 @@ freeze-time delta shape the directory's amendments use
    app-architecture reversal that delivers it (reversing DL-235's
    client-only charter) is designed in the compass-native lane's
    embedded-revival record and carries its own ledger row there. AMENDS
-   the KVM-only amendment (`microvm-kvm-only-amendment.md:96-97`)
-   with the self-host carve-out; the `WorkloadRuntime` interface is
-   unchanged.
+   the frozen KVM-only amendment (`microvm-kvm-only-amendment.md:96-97`)
+   with the self-host carve-out; the `WorkloadRuntime` interface stays
+   frozen.
 2. **Proposed (2026-09, spec split + host tier — no DL id minted here; the
    coordinator assigns one at freeze).** The living runner tier strategy
    moves out of this record into a spec,

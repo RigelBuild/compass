@@ -275,8 +275,8 @@ as `0015`). The division of labor:
   LIST walk (DDL below; the driver's own working table).
 - **`agent_forge_subscriptions` + `forge_artifact_cursors`** — the DL-053
   per-artifact agent-notification machinery, writer-less this slice: nothing
-  this slice EXECUTES touches them; they land as anticipatory schema,
-  pgtest-covered (T2 test 7) before their writers (PR-C / the
+  this slice EXECUTES touches them; they land as anticipatory schema, shape
+  frozen + pgtest-covered (T2 test 7) before their writers (PR-C / the
   agent-notification slice) exist.
 
 Adaptations, now all settled (the two that were OQ-D's sub-forks are ruled;

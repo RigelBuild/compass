@@ -210,7 +210,7 @@ surface is tracked as a follow-up, out of scope for the Compass adoption
 - **Class:** `.cx-state-dot` · `data-state`, `data-alive="1"` (working only).
 - **States (agent process axis):** `working | idle | waiting | done | paused |
   stopped | error | disconnected` — the eight `AgentState` values, keyed 1:1
-  against the brand vocabulary.
+  against the brand eight-glyph vocabulary.
 - **Geometry:** a 9×9 1-bit bitmap grid, `shape-rendering="crispEdges"` (no
   anti-aliasing). Glyph geometry is fixed by the grids below; `compass-ui`
   emits identical inline SVG.

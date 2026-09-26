@@ -6,8 +6,8 @@
 > model in Matt's round-two/round-three rulings in
 > `../compass-0.6/design.md` (RT-2 home channel, RT-3 turn-end delivery, the
 > delivery-timing amendment) and the merged Server-ownership-layer record
-> (`../compass-server-ownership-layer/design.md`, #995), cited throughout.
-> Tracker: RIG-1569. Lane: compass-comms (driver);
+> (`../compass-server-ownership-layer/design.md`, #995) are cited, never
+> re-decided. Tracker: RIG-1569. Lane: compass-comms (driver);
 > co-owned pieces are named per task.
 
 ## Problem / Intent
@@ -32,7 +32,7 @@ notifications (#995) ride.
 
 ## Approach
 
-### The inputs, verbatim
+### The inputs, verbatim (cited, never re-decided)
 
 - **RT-3 — turn-end delivery: deliver → queue → coalesce → ack** (Matt,
   round-three, `../compass-0.6/design.md:1454-1468`, restated `:1839-1843`): a
@@ -390,7 +390,8 @@ message DeliverControl {
 // AgentFrame gains (additive, buf-breaking-safe like ReplayCompleteAck/ControlAck):
 message DeliveryAck {
   // The acked message id — compass-0.6:1426-1428 specifies delivery_ack as
-  // "carrying the acked message id so the Server advances the … delivery cursor".
+  // "carrying the acked message id so the Server advances
+  // the … delivery cursor".
   string message_id = 1;
 }
 ```

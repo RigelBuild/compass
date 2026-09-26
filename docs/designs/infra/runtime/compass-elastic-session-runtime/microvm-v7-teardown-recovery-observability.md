@@ -715,7 +715,7 @@ of that one sentence, and both are surfaced:
   — it does not set `deadCause`, does not call `vm.Shutdown`, and does not
   make the session refuse anything. `DeathWatch` therefore no longer closes
   after one send; see its contract above. The fatality ruling is OQ-6
-  (load-bearing: it changes the parent's text), and the body designs against its
+  (load-bearing: it rules on the parent's text), and the body designs against its
   recommendation, matrix-literal non-fatality WITH observation.
 - **The guest.** `DeathWatch` observes host children only, so a guest that
   kernel-panics and hangs under a live VMM is a zombie session nothing
@@ -1695,7 +1695,7 @@ recommendation.
   reap is what the lock prevents, and refusing startup over a
   still-draining predecessor would be the box outage this option rejects.
 - **OQ-6 (LOAD-BEARING) — the net backend leaves the parent's supervised
-  set; this changes the parent's text.** State the divergence plainly, because
+  set; this rules on the parent's text.** State the divergence plainly, because
   it is larger than a fatality question: the parent's §(f) preamble
   supervises the per-session process set including the "net backend"
   (microvm-runner.md:240-241), and V7 removes passt from session-FATAL

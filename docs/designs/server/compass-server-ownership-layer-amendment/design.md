@@ -209,7 +209,7 @@ amended proto work, confirmed against the live tree this run.
   or `RelayForgeCall` symbol (grep of `proto/compass/v1/`, this run) — so the
   amended add-list is still a purely additive change and passes the `breaking`
   task (`buf breaking … --against origin/main`, #995 design.md:1490-1491) with
-  no new exemption. This change removes nothing from a shipped wire surface.
+  no new exemption. Nothing is ever removed from a shipped wire surface.
 - **Files touched** (amending #995 T1's list, design.md:1625-1639):
   the NEW leaf `proto/compass/v1/forge.proto` (`ForgeNotification`/
   `ForgeNotificationKind`, `ForgeArtifactKind`, `CommentRef`; imports only

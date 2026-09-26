@@ -744,7 +744,8 @@ so these document why, not open forks.
 - **A full component library** (Ark full builds, shadcn ports, Hope UI…) —
   ships someone else's look and density; the ADE look is the product's
   identity, and re-theming a library costs more than owning ~20 small
-  primitives. Kobalte stays, scoped to a11y-hard behavior only. Rejected.
+  primitives. Kobalte stays, scoped to a11y-hard behavior only.
+  Rejected.
 - **CSS-in-JS** (vanilla-extract, Panda) — runtime or codegen cost, a second
   styling idiom beside plain CSS, and no benefit over custom properties for a
   single fixed-shell app. Rejected.

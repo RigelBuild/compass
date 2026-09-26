@@ -15,7 +15,7 @@
 > - **CD-2** — Carriage is Runner-fetch: a **server-streaming**
 >   `FetchAgentConfig` RPC on the Runner-dialed `RunnerService`, plus a
 >   `ConfigVersion` signal on the `Sessions` response stream —
->   signal-then-pull over the dial-out inversion, the exact pattern
+>   signal-then-pull over the frozen dial-out inversion, the exact pattern
 >   RIG-1327's `FetchSecrets`/`SecretsVersion` set; the inversion gains no
 >   inbound route.
 > - **CD-3** — Injection for skills/extensions/MCP-configs is a Runner-local,
@@ -74,7 +74,7 @@ Today's gap, at source:
 
 Every task below inherits these; they are constraints, not choices.
 
-1. **The Server↔Runner inversion.** The Runner dials OUT; "the
+1. **The Runner dials out; the Server never calls the Runner.** "the
    Server has no inbound route to call the Runner: command delivery cannot be
    a unary Server->Runner RPC, so it rides the Server's *response* half of a
    Runner-opened bidi stream"

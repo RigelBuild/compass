@@ -549,9 +549,9 @@ kind-unspecified rejection into every handler. The pair matches the codebase.
   no `time.Sleep` in tests.
 - Two forge test tiers only (DL-210): hermetic golden replay (untagged) +
   `//go:build livegithub` live oracle. No third harness.
-- Proto arm numbers: `transition_issue_state = 14`,
-  `transition_pull_request_state = 15` (first free after the documented
-  `call_id=1, arms 2-11, forge=12, client_request_id=13` layout).
+- Proto arm numbers are fixed at `transition_issue_state = 14`,
+  `transition_pull_request_state = 15` (first free after the documented `call_id=1,
+  arms 2-11, forge=12, client_request_id=13` layout) and are not renumbered after assignment.
 - The portable state domain is exactly `{open, closed}` on requests. `merged`
   is read-side only (the `toPullRequest` fold); no request may express it.
 - No forge domain type on the wire (DL-069): requests stay all-scalar, results

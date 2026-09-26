@@ -120,9 +120,12 @@ must not run on this backend. Three candidates:
 
 - **Option A (rejected): grow `WorkloadRuntime` with an
   `ArmEgress(ctx, id, EgressPolicy) error` verb** (podman impl = today's exec
-  moved verbatim; microVM impl = no-op). Clean in the abstract and the most
-  discoverable shape, but it touches every fake and the shared contract suite
-  for a verb one backend no-ops. Largest blast radius of the three.
+  moved verbatim; microVM impl = no-op). Clean in
+  the abstract and the most discoverable shape,
+  but it touches every fake and the shared
+  contract suite for a verb one backend
+  no-ops. Largest blast radius of the
+  three.
 - **Option B (rejected): hoist arming into both backends' `Start`** (podman
   gains a session table to carry the spec from Create to Start, and issues the
   same exec from inside `PodmanCLI.Start`). This deletes `armEgress` entirely
