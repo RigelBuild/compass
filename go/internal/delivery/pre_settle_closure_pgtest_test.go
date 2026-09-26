@@ -295,8 +295,11 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	// Agent-authored mention, committed NULL, unpublished — the held message the
 	// restart severs from any live author turn.
 	msg := postThroughStore(t, ctx, s, ch, author.ID, "@aa agent-authored mention held then lost")
+	if got := msg.AuthorHandle; got != author.Handle {
+		t.Fatalf("stored agent author handle = %q, want %q", got, author.Handle)
+	}
 
-	c, _, _ := newPgConsumer(t, s) // fresh bus + fresh consumer => c.held empty, no live author
+	c, disp, res := newPgConsumer(t, s) // fresh bus + fresh consumer => c.held empty, no live author
 	// Intent marker (a construction invariant, not a live guard): a freshly-built
 	// consumer's c.held is empty, so the restart premise — the held message is no
 	// longer held and is therefore scannable — holds by construction.
@@ -305,8 +308,31 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	}
 	startConsumer(t, c)
 
+	// The member is offline through the start scan, so recovery must leave a
+	// durable owed row rather than a live dispatch.
 	waitOwed(t, ctx, s, member.ID, 1)
 	waitMarked(t, ctx, s, string(msg.ID))
+
+	// The member's session start sweeps the owed row as a steer that carries the
+	// author's handle. Delivery is at-least-once, so check every copy.
+	res.bind(member.ID, "sess-member")
+	c.OnSessionStarted("sess-member", member.ID)
+	if !disp.waitForMessage(t, string(msg.ID)) {
+		t.Fatalf("owed agent-authored message %s not swept to the member on session start", msg.ID)
+	}
+	steered := 0
+	for _, rec := range disp.snapshot() {
+		if rec.messageID != string(msg.ID) {
+			continue
+		}
+		steered++
+		if rec.kind != opSteer || rec.messageAuthorHandle != author.Handle || rec.fromHandle != author.Handle {
+			t.Fatalf("owed-sweep dispatch = %+v, want a steer with author handle %q", rec, author.Handle)
+		}
+	}
+	if steered == 0 {
+		t.Fatalf("no dispatch record for owed message %s", msg.ID)
+	}
 }
 
 // Leg 4 — LAGGED OVERRUN. A mention committed (NULL, unpublished) DURING a bus-lag

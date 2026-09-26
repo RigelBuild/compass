@@ -117,12 +117,10 @@ func TestPinSweepIsUnconditionalWhenAlsoOwed(t *testing.T) {
 	}
 }
 
-// RIG-2486 T1 (pin-sweep coverage): the pin sweep denormalizes the author's
-// handle onto each pinned deliver op. Seeds the author's account and asserts the
-// pin's deliver carries its handle. Mirrors TestDeliverAndSteerCarryAuthorFromHandle
-// and reuses TestPinSweepDeliversCurrentPinsWhenCursorCaughtUp's harness.
+// RIG-2880: the pin sweep preserves the author handle from its store row on the
+// delivered wire Message and DeliverControl.
 func TestSweepPinsCarriesAuthorFromHandle(t *testing.T) {
-	c, disp, res, reads := newTestConsumer(t)
+	c, disp, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 	const author store.AccountID = "human-1"
 	const recipient store.AccountID = "agent-recip"
@@ -131,9 +129,6 @@ func TestSweepPinsCarriesAuthorFromHandle(t *testing.T) {
 	reads.sweepChannels[recipient] = []store.ChannelID{ch}
 	reads.pins[ch] = []store.PinnedEntry{{MessageID: "pinned-1", Position: 0}}
 	reads.seedMessage(textMessage("pinned-1", author, "the pinned board"))
-	// The author's account resolves its handle for the denormalized from_handle.
-	reads.accounts[author] = store.Account{ID: author, Handle: "matt"}
-	res.bind(recipient, "sess-recip")
 	startConsumer(t, c)
 
 	c.OnSessionStarted("sess-recip", recipient)
@@ -145,8 +140,8 @@ func TestSweepPinsCarriesAuthorFromHandle(t *testing.T) {
 	if len(got) != 1 || got[0].kind != opDeliver || got[0].messageID != "pinned-1" {
 		t.Fatalf("dispatch = %+v, want one deliver of pinned-1", got)
 	}
-	if got[0].fromHandle != "matt" {
-		t.Fatalf("from_handle = %q on pin deliver, want matt", got[0].fromHandle)
+	if got[0].fromHandle != "matt" || got[0].messageAuthorHandle != "matt" {
+		t.Fatalf("pin author handles = (%q, %q), want (matt, matt)", got[0].messageAuthorHandle, got[0].fromHandle)
 	}
 }
 

@@ -348,6 +348,9 @@ message Message {
   int64 at_unix_ms = 4;
   // Ordered content; mirrors ACP session/update blocks (D5).
   repeated MessageBlock blocks = 5;
+  // The author's bare handle, for display only: not unique across owners (two
+  // owners' agents can share one) and not an address. author_account_id is the stable key.
+  string author_handle = 6;
 }
 
 // One content block in a message: the durable conversation the comms layer

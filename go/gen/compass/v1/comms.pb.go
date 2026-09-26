@@ -1112,7 +1112,10 @@ type Message struct {
 	AuthorAccountId string `protobuf:"bytes,3,opt,name=author_account_id,json=authorAccountId,proto3" json:"author_account_id,omitempty"`
 	AtUnixMs        int64  `protobuf:"varint,4,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
 	// Ordered content; mirrors ACP session/update blocks (D5).
-	Blocks        []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	Blocks []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	// The author's bare handle, for display only: not unique across owners (two
+	// owners' agents can share one) and not an address. author_account_id is the stable key.
+	AuthorHandle  string `protobuf:"bytes,6,opt,name=author_handle,json=authorHandle,proto3" json:"author_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1180,6 +1183,13 @@ func (x *Message) GetBlocks() []*MessageBlock {
 		return x.Blocks
 	}
 	return nil
+}
+
+func (x *Message) GetAuthorHandle() string {
+	if x != nil {
+		return x.AuthorHandle
+	}
+	return ""
 }
 
 // One content block in a message: the durable conversation the comms layer
@@ -4942,14 +4952,15 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12+\n" +
 	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\x121\n" +
 	"\x15created_by_account_id\x18\x05 \x01(\tR\x12createdByAccountId\x12\x1a\n" +
-	"\barchived\x18\x06 \x01(\bR\barchived\"\xb0\x01\n" +
+	"\barchived\x18\x06 \x01(\bR\barchived\"\xd5\x01\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\btopic_id\x18\x02 \x01(\tR\atopicId\x12*\n" +
 	"\x11author_account_id\x18\x03 \x01(\tR\x0fauthorAccountId\x12\x1c\n" +
 	"\n" +
 	"at_unix_ms\x18\x04 \x01(\x03R\batUnixMs\x120\n" +
-	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\"\x8f\x01\n" +
+	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\x12#\n" +
+	"\rauthor_handle\x18\x06 \x01(\tR\fauthorHandle\"\x8f\x01\n" +
 	"\fMessageBlock\x12\x14\n" +
 	"\x04text\x18\x01 \x01(\tH\x00R\x04text\x12#\n" +
 	"\x03ask\x18\x02 \x01(\v2\x0f.compass.v1.AskH\x00R\x03ask\x12;\n" +

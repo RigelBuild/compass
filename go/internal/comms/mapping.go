@@ -149,6 +149,7 @@ func MessageToWire(m store.Message) *compassv1.Message {
 		Id:              string(m.ID),
 		TopicId:         m.TopicID,
 		AuthorAccountId: string(m.AuthorAccountID),
+		AuthorHandle:    m.AuthorHandle,
 		AtUnixMs:        m.At.UnixMilli(),
 		Blocks:          blocksToWire(m.Blocks),
 	}

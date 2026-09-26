@@ -55,15 +55,17 @@ func (q *Queries) IsAgentAccount(ctx context.Context, accountID string) (bool, e
 }
 
 const messageByID = `-- name: MessageByID :one
-SELECT id, topic_id, author_account_id, at_unix_ms, blocks
-FROM messages
-WHERE id = $1
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
+FROM messages m
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
+WHERE m.id = $1
 `
 
 type MessageByIDRow struct {
 	ID              string
 	TopicID         string
 	AuthorAccountID string
+	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
 }
@@ -75,6 +77,7 @@ func (q *Queries) MessageByID(ctx context.Context, id string) (MessageByIDRow, e
 		&i.ID,
 		&i.TopicID,
 		&i.AuthorAccountID,
+		&i.AuthorHandle,
 		&i.AtUnixMs,
 		&i.Blocks,
 	)

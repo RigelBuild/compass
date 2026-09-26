@@ -104,6 +104,10 @@ function postResult(id: string, topicId: string): CommsCallResult {
 	});
 }
 
+// Every helper message carries this account id beside its handle. The fence must
+// never render it: an agent addresses people by handle, never by account id.
+const AUTHOR_ACCOUNT_ID = "acct-0f3a9c-never-rendered";
+
 function textMessage(
 	id: string,
 	author: string,
@@ -112,7 +116,8 @@ function textMessage(
 ): Message {
 	return create(MessageSchema, {
 		id,
-		authorAccountId: author,
+		authorAccountId: AUTHOR_ACCOUNT_ID,
+		authorHandle: author,
 		atUnixMs: 0n,
 		topicId,
 		blocks: [
@@ -131,7 +136,8 @@ function askMessage(
 ): Message {
 	return create(MessageSchema, {
 		id,
-		authorAccountId: author,
+		authorAccountId: AUTHOR_ACCOUNT_ID,
+		authorHandle: author,
 		atUnixMs: 0n,
 		topicId: "t-1",
 		blocks: [
@@ -1187,7 +1193,7 @@ describe("comms_list_messages", () => {
 		const at = (ms: number, id: string, author: string, text: string) =>
 			create(MessageSchema, {
 				id,
-				authorAccountId: author,
+				authorHandle: author,
 				atUnixMs: BigInt(ms),
 				topicId: "t-1",
 				blocks: [
@@ -1224,6 +1230,25 @@ describe("comms_list_messages", () => {
 		]);
 	});
 
+	// The author attribute is the handle. An account id is an internal key the
+	// agent cannot address anyone by, so it must never appear in the transcript.
+	test("the fence names the author by handle and never shows the account id", async () => {
+		const list = tool(
+			new CommsBroker(
+				new FakeTransport(listResult(textMessage("m-1", "alice", "hi"))),
+			),
+			"comms_list_messages",
+		);
+
+		const text = textOf(await exec(list, "tc-6h", {}));
+		const f = fenceOf(text);
+
+		expect(openRecords(text)).toEqual([
+			`<msg ${f} id="m-1" author="alice" at="${EPOCH}">`,
+		]);
+		expect(text).not.toContain(AUTHOR_ACCOUNT_ID);
+	});
+
 	// Messages in two distinct topics render under two distinct topic headers,
 	// each grouping its own messages. Group order is first-seen in the
 	// oldest-first sequence.
@@ -1231,7 +1256,7 @@ describe("comms_list_messages", () => {
 		const at = (ms: number, id: string, text: string, topicId: string) =>
 			create(MessageSchema, {
 				id,
-				authorAccountId: "acct-x",
+				authorHandle: "acct-x",
 				atUnixMs: BigInt(ms),
 				topicId,
 				blocks: [
@@ -1534,7 +1559,7 @@ describe("comms_list_messages", () => {
 					listResult(
 						create(MessageSchema, {
 							id: "m-1",
-							authorAccountId: "acct-x",
+							authorHandle: "acct-x",
 							atUnixMs: 0n,
 							topicId: "t-1",
 							blocks: [],
@@ -1630,7 +1655,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "mallory",
+									authorHandle: "mallory",
 									atUnixMs: 0n,
 									blocks: [],
 								}),
@@ -1718,7 +1743,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs: 0n,
 									topicId: "t-1",
 									blocks: [
@@ -1771,7 +1796,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs: 0n,
 									blocks: [
 										create(MessageBlockSchema, {
@@ -1828,7 +1853,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs: 0n,
 									blocks: [
 										create(MessageBlockSchema, {
@@ -1877,7 +1902,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs: 0n,
 									blocks: [
 										create(MessageBlockSchema, {
@@ -1944,7 +1969,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs: 0n,
 									blocks: [
 										create(MessageBlockSchema, {
@@ -1993,7 +2018,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs: 8640000000000001n,
 									topicId: "t-1",
 									blocks: [
@@ -2004,7 +2029,7 @@ describe("comms_list_messages", () => {
 								}),
 								create(MessageSchema, {
 									id: "m-2",
-									authorAccountId: "acct-y",
+									authorHandle: "acct-y",
 									atUnixMs: 0n,
 									topicId: "t-1",
 									blocks: [
@@ -2056,7 +2081,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs,
 									blocks: [
 										create(MessageBlockSchema, {
@@ -2098,7 +2123,7 @@ describe("comms_list_messages", () => {
 							listResult(
 								create(MessageSchema, {
 									id: "m-1",
-									authorAccountId: "acct-x",
+									authorHandle: "acct-x",
 									atUnixMs: 0n,
 									blocks: [
 										create(MessageBlockSchema, {
@@ -2122,7 +2147,7 @@ describe("comms_list_messages", () => {
 	test("a mixed text+ask message keeps both parts", async () => {
 		const message = create(MessageSchema, {
 			id: "m-1",
-			authorAccountId: "acct-x",
+			authorHandle: "acct-x",
 			atUnixMs: 0n,
 			topicId: "t-1",
 			blocks: [

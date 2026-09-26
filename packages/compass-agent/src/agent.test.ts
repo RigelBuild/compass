@@ -1815,8 +1815,8 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 
 	test("deliver with no fromHandle emits an empty from_handle (server store-miss path)", async () => {
 		const h = startDeliverAgent();
-		// The Server logs a handle-resolution miss and sends an empty from_handle
-		// rather than blocking the delivery — the injection still fires, empty.
+		// The Server sends an empty from_handle when the author has no handle row;
+		// the delivery is not blocked — the injection still fires, empty.
 		h.agent.deliver(deliverMsg("m1", "hello"));
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();

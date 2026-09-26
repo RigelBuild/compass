@@ -84,7 +84,7 @@ func (s *Store) MessageByID(ctx context.Context, messageID string) (Message, err
 		}
 		return Message{}, fmt.Errorf("store: read message by id: %w", err)
 	}
-	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AtUnixMs, row.Blocks)
+	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AuthorHandle, row.AtUnixMs, row.Blocks)
 }
 
 // MessageChannel resolves a message id to its channel — the ack arm's channel

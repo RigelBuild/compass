@@ -123,7 +123,7 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 		c.log.ErrorContext(ctx, "delivery: resolve subscribers", "error", err, "channel", string(channel))
 		return
 	}
-	fromHandle := c.authorHandle(ctx, msg)
+	fromHandle := msg.GetAuthorHandle()
 	for _, agent := range recipients {
 		if mentioned[agent] {
 			continue // steer-only precedence: a mentioned agent never also gets a deliver
@@ -164,7 +164,7 @@ func (c *Consumer) routeMentionsFor(ctx context.Context, channel store.ChannelID
 		return nil
 	}
 	mentioned := c.resolveMentioned(ctx, channel, author, handles)
-	fromHandle := c.authorHandle(ctx, msg)
+	fromHandle := msg.GetAuthorHandle()
 	for agent := range mentioned {
 		sessionID, live := c.resolver.SessionForAccount(ctx, agent)
 		if live {
@@ -259,7 +259,7 @@ func (c *Consumer) routeAskAnswerFor(ctx context.Context, channel store.ChannelI
 	// path). The owed sweep also dispatches as a STEER, so both render through the T6
 	// ask_answer arm and dedup by msg.id absorbs any overlap.
 	if sessionID, live := c.resolver.SessionForAccount(ctx, asker); live {
-		c.dispatchSteerTo(ctx, sessionID, msg, c.authorHandle(ctx, msg))
+		c.dispatchSteerTo(ctx, sessionID, msg, msg.GetAuthorHandle())
 	}
 }
 
