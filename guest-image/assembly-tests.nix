@@ -110,6 +110,14 @@ pkgs.runCommand "compass-guest-assembly-tests" { } ''
   mklayer e7.tgz e7 "x -> ok"
   expect_break "symlink to a host path" assemble unpack "$(mktemp -d)" e7.tgz
 
+  # A member name tar -T would read as an option must not reach restore. It is
+  # added as ./--directory=.. so this tar call does not parse it, then stripped.
+  mkdir -p "e8/--directory=.." e8/escaped
+  tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --no-recursion \
+    --transform='s|^\./||' -C e8 -cf - "./--directory=.." escaped | gzip -n > e8.tgz
+  tar -tzf e8.tgz | grep -qx -- '--directory=../\?' || fail "(e) e8 fixture lacks the option-like name"
+  expect_break "option-like member name" assemble unpack "$(mktemp -d)" e8.tgz
+
   # A store symlink is what the real image ships, so it must pass.
   mkdir e5; ln -s /nix/store/00000000000000000000000000000000-x/bin/sh e5/sh
   mklayer e5.tgz e5 sh

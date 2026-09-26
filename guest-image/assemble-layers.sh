@@ -27,10 +27,13 @@ check_headers() {
     }
     {
       t = substr($0, 1, 1)
-      if (t == "-" || t == "d") next
-      if (t != "l" && t != "h") { print "  unsupported entry type: " $0; bad = 1; next }
       line = $0
       sub(/^([^ ]+ +){5}/, "", line)
+      # restore-dir-modes feeds names to tar -T, which reads a leading "-" as an
+      # option: "--directory=.." would retarget every later directory.
+      if (substr(line, 1, 1) == "-") { print "  option-like member name: " $0; bad = 1; next }
+      if (t == "-" || t == "d") next
+      if (t != "l" && t != "h") { print "  unsupported entry type: " $0; bad = 1; next }
       sep = (t == "l") ? " -> " : " link to "
       i = index(line, sep)
       if (i == 0) { print "  unparseable link entry: " $0; bad = 1; next }
