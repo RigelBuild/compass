@@ -164,14 +164,17 @@ func TestMembershipTiersJoinVersusSubscribe(t *testing.T) {
 	}
 }
 
-// TestUpdateChannelMembersUnknownHandleIsNotFound: adding an unknown member
-// handle to a REAL channel the caller owns fails atomically (OQ-2) with
-// CodeNotFound, and the error names the submitted handle — the resolveHandles
-// miss leg, distinct from the unknown-channel miss in TestEdgeErrorMapping.
-func TestUpdateChannelMembersUnknownHandleIsNotFound(t *testing.T) {
+// TestUpdateChannelMembersUnknownOrInvisibleHandleIsNotFound: adding an unknown
+// member handle to a REAL channel the caller owns fails atomically (OQ-2) with
+// CodeNotFound naming the submitted handle — the resolveHandles miss leg, distinct
+// from the unknown-channel miss in TestEdgeErrorMapping. Handles are
+// viewer-scoped, so another owner's agent must miss byte-identically.
+func TestUpdateChannelMembersUnknownOrInvisibleHandleIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+	mustAgent(t, st, other.ID, "hidden")
 
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
@@ -181,13 +184,12 @@ func TestUpdateChannelMembersUnknownHandleIsNotFound(t *testing.T) {
 	}
 	chID := created.Msg.GetChannel().GetId()
 
-	_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:        chID,
-		AddMemberHandles: []string{"ghost"},
-	}))
-	connectCodeIs(t, addErr, connect.CodeNotFound, "add an unknown member handle")
-	if addErr == nil || !strings.Contains(addErr.Error(), "ghost") {
-		t.Fatalf("error %v must name the submitted handle (ghost)", addErr)
+	for _, handle := range []string{"ghost", "other/ghost", "other/hidden", "hidden"} {
+		_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+			ChannelId:        chID,
+			AddMemberHandles: []string{handle},
+		}))
+		connectNotFoundFor(t, addErr, handle, "add member "+handle)
 	}
 }
 

@@ -158,7 +158,7 @@ func TestUpdateChannelMembersAsAccountUnknownMemberHandleIsNotFound(t *testing.T
 		ChannelId:        string(ch.ID),
 		AddMemberHandles: []string{"ghost"},
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount with an unresolvable member handle")
+	connectNotFoundFor(t, err, "ghost", "UpdateChannelMembersAsAccount with an unresolvable member handle")
 }
 
 // TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound: an agent adds
@@ -188,7 +188,7 @@ func TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound(t *testing
 		ChannelId:        string(ch.ID),
 		AddMemberHandles: []string{otherAgent.Handle},
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount with a foreign-owner (invisible) member handle")
+	connectNotFoundFor(t, err, otherAgent.Handle, "UpdateChannelMembersAsAccount with a foreign-owner (invisible) member handle")
 }
 
 // TestUpdateChannelMembersAsAccountEmptyAccountIsNoActor: an empty account →
