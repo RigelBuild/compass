@@ -330,10 +330,11 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	peerBID := store.AccountID(peerBResp.GetAgentAccountId())
 	peerBContainer := peerBResp.GetContainerName()
 	// The supervisor (owner A's agent) despawns owner B's peer over its OWN
-	// socket.
+	// socket, naming it owner-qualified (`owner-b/peer-b`), since a bare handle
+	// resolves only in the caller owner's namespace.
 	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
 		CallId: "foreign-despawn-1",
-		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: "peer-b"}},
+		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: userB.Handle + "/peer-b"}},
 	}))
 	if err != nil {
 		t.Fatalf("Lifecycle(foreign despawn) over the socket = %v, want an in-band result", err)

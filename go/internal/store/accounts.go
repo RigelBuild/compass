@@ -484,6 +484,20 @@ func (s *Store) AgentOwner(ctx context.Context, agentAccountID AccountID) (Accou
 	return AccountID(ownerUserID), nil
 }
 
+// AccountHandle returns an account's resolution handle from account_handles,
+// the column handle lookups match against (accounts.handle is display only).
+// ErrNotFound when the account has no handle row.
+func (s *Store) AccountHandle(ctx context.Context, id AccountID) (string, error) {
+	handle, err := s.q.GetAccountHandle(ctx, string(id))
+	if err != nil {
+		if noRows(err) {
+			return "", fmt.Errorf("%w: account handle %q", ErrNotFound, id)
+		}
+		return "", fmt.Errorf("store: get account handle: %w", err)
+	}
+	return handle, nil
+}
+
 // ResolveOwner resolves a caller to the user account it acts under. It mirrors
 // the caller-owner resolution ReparentAgent applies inline (clause 0): an agent
 // caller resolves to its agent_accounts.owner_user_id, while a user caller has
@@ -755,6 +769,12 @@ type QualifiedHandle struct {
 	Owner  string
 	Handle string
 	Raw    string
+}
+
+// Qualified reports whether the submitted handle carried the '/' separator.
+// It keys on the separator, not a non-empty Owner, so "/x" counts as qualified.
+func (q QualifiedHandle) Qualified() bool {
+	return q.Handle != q.Raw
 }
 
 // ParseQualifiedHandle splits a submitted handle on the FIRST '/': everything

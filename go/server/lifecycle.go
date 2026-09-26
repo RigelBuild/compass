@@ -39,8 +39,8 @@ type lifecycleService struct {
 	store *store.Store
 	hub   *runnerhub.Hub
 	// dm opens the manager<->new-peer DM at spawn time (R8). Nil for instances
-	// that never spawn (the waker, the store-free self-despawn test), in which
-	// case autoOpenSpawnDM returns an empty name.
+	// that never spawn (the waker), in which case autoOpenSpawnDM returns an
+	// empty name.
 	dm dmOpener
 	// wakeGroup coalesces concurrent WakeAgent calls for the SAME agent onto one
 	// start (RIG-1641 T3 cost control, §Decisions OQ-2): a burst of messages at
@@ -112,9 +112,9 @@ var spawnChainTimeout = 60 * time.Second
 var errCannotDespawnSelf = errors.New("cannot despawn self")
 
 // errPeerNotFound is the in-band cause a despawn returns for EVERY unauthorized
-// or unknown target — unknown id, non-agent id, and foreign-owner peer all
-// collapse to this one message so the caller can never distinguish a peer it may
-// not touch from one that does not exist (the not-found/forbidden merge).
+// or unknown target — unknown handle, non-agent handle, and foreign-owner peer
+// all collapse to this one message so the caller can never distinguish a peer it
+// may not touch from one that does not exist (the not-found/forbidden merge).
 // CodeNotFound.
 var errPeerNotFound = errors.New("peer not found")
 
@@ -303,21 +303,18 @@ func (l *lifecycleService) DespawnAsAccount(
 }
 
 // resolveDespawnTarget resolves a despawn agent handle to an agent id the caller's
-// owner owns. A bare handle is looked up in callerOwner's namespace (2 queries
-// with the caller read). An `owner/agent` handle also reads callerOwner's handle
-// on every outcome (3 queries), and a foreign qualifier is never looked up: that
-// lookup would reveal whether the foreign user exists. Every miss is the one
-// errPeerNotFound, so unknown, non-agent, and foreign targets are identical.
+// owner owns. Each input form runs a constant query shape whatever the outcome,
+// and a foreign qualifier is never looked up, since that would reveal whether the
+// foreign user exists. Every miss is the one errPeerNotFound.
 func (l *lifecycleService) resolveDespawnTarget(ctx context.Context, callerOwner store.AccountID, raw string) (store.AccountID, error) {
 	qh := store.ParseQualifiedHandle(raw)
 	ownerMatches := true
-	// Keyed on the separator, not a non-empty Owner, so "/x" never reads as bare "x".
-	if qh.Handle != qh.Raw {
-		ownerAcc, err := l.store.GetAccount(ctx, callerOwner)
+	if qh.Qualified() {
+		ownerHandle, err := l.store.AccountHandle(ctx, callerOwner)
 		if err != nil {
-			return "", connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner account: %w", err))
+			return "", connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner handle: %w", err))
 		}
-		ownerMatches = qh.Owner == ownerAcc.Handle
+		ownerMatches = qh.Owner == ownerHandle
 	}
 	acc, err := l.store.AgentByHandle(ctx, callerOwner, qh.Handle)
 	if err != nil {
