@@ -42,10 +42,11 @@ import (
 // This mirrors the comms store's (author_account_id, client_request_id)
 // idempotency scoping (store/migrations/0001_init.sql), keyed to the agent
 // account the provision creates an isolated container for.
-func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.ProvisionAgentWorkspaceRequest) (*compassv1.ProvisionAgentWorkspaceResponse, string, error) {
+func (h *Hub) Provision(ctx context.Context, requestID string, accountID store.AccountID, req *compassv1.ProvisionAgentWorkspaceRequest) (*compassv1.ProvisionAgentWorkspaceResponse, string, error) {
 	result, runnerID, err := h.relay(ctx, "", &compassv1internal.SessionsResponse{
-		RequestId: provisionDedupID(requestID, req),
-		Command:   &compassv1internal.SessionsResponse_Provision{Provision: req},
+		RequestId:      provisionDedupID(requestID, accountID),
+		AgentAccountId: string(accountID),
+		Command:        &compassv1internal.SessionsResponse_Provision{Provision: req},
 	})
 	if err != nil {
 		return nil, "", err
@@ -55,7 +56,7 @@ func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.Pr
 	// Start can promote it to a session binding RelayCommsCall resolves against.
 	// The Runner never asserts this account; it is the Server's own record, keyed
 	// by the container name. Live comms binding only, cleared on re-enroll.
-	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentHandle()))
+	h.bindContainer(resp.GetContainerName(), accountID)
 	return resp, runnerID, nil
 }
 
@@ -242,7 +243,7 @@ func mintFreshSessionID() (string, error) {
 // derives a distinct id and does not join. The derivation is a domain-separated
 // SHA-256 over length-prefixed fields, so no field's value can be shifted into
 // another to forge a collision.
-func provisionDedupID(clientRequestID string, req *compassv1.ProvisionAgentWorkspaceRequest) string {
+func provisionDedupID(clientRequestID string, accountID store.AccountID) string {
 	if clientRequestID == "" {
 		var b [16]byte
 		_, _ = rand.Read(b[:])
@@ -252,7 +253,7 @@ func provisionDedupID(clientRequestID string, req *compassv1.ProvisionAgentWorks
 	for _, field := range []string{
 		"compass.provision.v1", // domain separator
 		clientRequestID,
-		req.GetAgentHandle(),
+		string(accountID),
 	} {
 		var lp [8]byte
 		binary.BigEndian.PutUint64(lp[:], uint64(len(field)))

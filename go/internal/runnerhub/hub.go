@@ -396,8 +396,8 @@ type Hub struct {
 	// enrollment re-attaches rather than registering a second entry.
 	runner *attachedRunner
 	// containerAccounts binds a provisioned container_name to the agent account
-	// it was provisioned for (recorded at Provision, from the request's
-	// agent_account_id). Start promotes the entry to sessionAccounts under the
+	// it was provisioned for (recorded at Provision, from the resolved account id
+	// the caller passes Hub.Provision). Start promotes the entry to sessionAccounts under the
 	// minted session_id; it lives here only for the Provision..Start window.
 	containerAccounts map[string]store.AccountID
 	// sessionAccounts binds a live session_id to its agent account — the authoritative

@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -430,11 +429,11 @@ func TestProvisionAgentWorkspaceUnresolvedHandleIsNotFound(t *testing.T) {
 }
 
 // TestProvisionAgentWorkspaceRelaysResolvedAccountID pins the relay contract: the
-// Runner, its container bind, and the hub's dedup key read agent_handle as an
-// account id, so the Server must relay the RESOLVED id, never the submitted handle.
+// resolved account id rides the internal envelope's agent_account_id, and the
+// public request's agent_handle is relayed verbatim as the submitted handle.
 //
-// Mutation: relaying req.Msg unchanged sends "admin/atlas" to the Runner, and the
-// provisioned-account assertion reddens.
+// Mutation: overwriting agent_handle with the id, or dropping the envelope id,
+// reddens one of the two assertions.
 func TestProvisionAgentWorkspaceRelaysResolvedAccountID(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
@@ -443,8 +442,12 @@ func TestProvisionAgentWorkspaceRelaysResolvedAccountID(t *testing.T) {
 	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-relay"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
-	if want := "provision " + string(f.agentID); !slices.Contains(f.runner.commands(), want) {
-		t.Fatalf("Runner commands = %v, want %q (the resolved account id)", f.runner.commands(), want)
+	cmd := f.runner.provisionEnvelope(t)
+	if got := cmd.GetAgentAccountId(); got != string(f.agentID) {
+		t.Fatalf("relayed agent_account_id = %q, want the resolved id %q", got, f.agentID)
+	}
+	if got := cmd.GetProvision().GetAgentHandle(); got != fixtureAgentHandle {
+		t.Fatalf("relayed provision.agent_handle = %q, want the submitted handle %q", got, fixtureAgentHandle)
 	}
 }
 
@@ -795,7 +798,7 @@ func (r *recordingRunner) commands() []string {
 	for _, c := range r.seen {
 		switch v := c.GetCommand().(type) {
 		case *compassv1internal.SessionsResponse_Provision:
-			out = append(out, "provision "+v.Provision.GetAgentHandle())
+			out = append(out, "provision "+c.GetAgentAccountId())
 		case *compassv1internal.SessionsResponse_Start:
 			out = append(out, "start "+v.Start.GetContainerName())
 		case *compassv1internal.SessionsResponse_Stop:
@@ -982,6 +985,23 @@ func answer(cmd *compassv1internal.SessionsResponse) *compassv1internal.Sessions
 		}}
 	}
 	return out
+}
+
+// provisionEnvelope returns the recorded Provision envelope as the Runner received
+// it. Fails if no Provision was seen, so a silent miss cannot pass as empty fields.
+func (r *recordingRunner) provisionEnvelope(t *testing.T) *compassv1internal.SessionsResponse {
+	t.Helper()
+	r.mu.Lock()
+	for _, c := range r.seen {
+		if c.GetProvision() != nil {
+			r.mu.Unlock()
+			return c
+		}
+	}
+	r.mu.Unlock()
+	// commands() takes r.mu, so summarize only after releasing it.
+	t.Fatalf("no Provision command recorded, saw %v", r.commands())
+	return nil
 }
 
 // provisionPersona returns the persona on the recorded Provision command — the

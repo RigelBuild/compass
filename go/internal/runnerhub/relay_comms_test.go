@@ -324,7 +324,7 @@ func TestRelayCommsCallStoppedSessionFailsClosedNotFound(t *testing.T) {
 }
 
 // 9. Provision->Start through the real command path binds the minted session to
-// the account named in the Provision request, so accountForSession resolves it.
+// the account id passed to Hub.Provision, so accountForSession resolves it.
 // Driven through Hub.Provision and Hub.Start (with a fake Runner returning canned
 // container/session ids) so the binding is proven end to end, not just via the
 // helper.
@@ -356,7 +356,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, _, err := hub.Provision(ctx, "req-prov", "0123456789abcdef0123456789abcdef", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "matt/ada"}); err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if _, err := hub.Start(ctx, "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err != nil {
@@ -368,11 +368,11 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 		t.Fatal("accountForSession(sess-live) = not bound, want the provisioned account after Provision->Start")
 	}
 	if account != "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("session bound to %q, want the Provision request's agent_account_id 0123456789abcdef0123456789abcdef", account)
+		t.Fatalf("session bound to %q, want the provisioned account id 0123456789abcdef0123456789abcdef", account)
 	}
 }
 
-// 10. A Provision with an EMPTY agent_account_id leaves no binding (bindContainer
+// 10. A Provision with an EMPTY account id leaves no binding (bindContainer
 // ignores an empty account), so after Start the session resolves to nothing and
 // RelayCommsCall fails closed CodeNotFound — never an empty-account attribution.
 func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
@@ -401,7 +401,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: ""}); err != nil {
+	if _, _, err := hub.Provision(ctx, "req-prov", "", &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
 		t.Fatalf("Provision (empty account) = %v, want success", err)
 	}
 	if _, err := hub.Start(ctx, "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err != nil {

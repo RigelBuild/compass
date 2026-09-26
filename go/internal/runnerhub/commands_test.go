@@ -58,7 +58,7 @@ func TestCommandsNoRunnerIsUnavailable(t *testing.T) {
 		call func() error
 	}{
 		{"provision", func() error {
-			_, _, err := hub.Provision(ctx, "r1", &compassv1.ProvisionAgentWorkspaceRequest{})
+			_, _, err := hub.Provision(ctx, "r1", "", &compassv1.ProvisionAgentWorkspaceRequest{})
 			return err
 		}},
 		{"start", func() error {

@@ -79,9 +79,9 @@ func (r *configFanoutRuntime) launchCount(id string) int {
 // provision several distinct containers through one host.
 type accountSpecBuilder struct{}
 
-func (accountSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
+func (accountSpecBuilder) BuildSpec(_ *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (runtime.AgentSpec, error) {
 	spec := liveSpec()
-	spec.Name = "cont-" + req.GetAgentHandle()
+	spec.Name = "cont-" + accountID
 	return spec, nil
 }
 
@@ -124,7 +124,7 @@ func shortRuntimeDir(t *testing.T) string {
 func provisionAndStart(t *testing.T, host *agentHost, account string) string {
 	t.Helper()
 	ctx := context.Background()
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: account})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, account)
 	if err != nil {
 		t.Fatalf("Provision(%s) = %v", account, err)
 	}

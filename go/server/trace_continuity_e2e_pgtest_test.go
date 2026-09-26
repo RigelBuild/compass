@@ -276,7 +276,7 @@ func bringSessionLive(t *testing.T, w *mentionE2EWire, exp *tracetest.InMemoryEx
 	sweepsBefore := countSpansNamed(exp, startSweepSpanName)
 	w.runner.setContainerNames(container)
 	w.runner.setStartIDs(session)
-	presp, _, err := w.hub.Provision(w.ctx, "", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(account)})
+	presp, _, err := w.hub.Provision(w.ctx, "", account, &compassv1.ProvisionAgentWorkspaceRequest{})
 	if err != nil {
 		t.Fatalf("Provision(%s): %v", account, err)
 	}

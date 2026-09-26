@@ -211,7 +211,7 @@ func (w *notifyE2EWire) goLive(t *testing.T, account store.AccountID, container,
 	t.Helper()
 	w.runner.setContainerNames(container)
 	w.runner.setStartIDs(session)
-	presp, _, err := w.hub.Provision(w.ctx, "", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(account)})
+	presp, _, err := w.hub.Provision(w.ctx, "", account, &compassv1.ProvisionAgentWorkspaceRequest{})
 	if err != nil {
 		t.Fatalf("Provision(%s): %v", account, err)
 	}

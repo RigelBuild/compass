@@ -46,8 +46,8 @@ func TestSpawnAgentRunsProvisionThenStart(t *testing.T) {
 	if got := f.runner.provisionCount(); got != 1 {
 		t.Fatalf("Provision commands = %d, want 1; commands: %v", got, f.runner.commands())
 	}
-	// The Runner keys the container on the account id, so the relay carries the
-	// resolved id rather than the submitted handle.
+	// The Runner keys the container on the account id, so the envelope carries
+	// the resolved id beside the relayed request.
 	if want := "provision " + string(f.agentID); !slices.Contains(f.runner.commands(), want) {
 		t.Fatalf("Runner commands = %v, want %q (the resolved account id)", f.runner.commands(), want)
 	}
