@@ -221,23 +221,35 @@ func TestNewConnectErrorRedactsPassword(t *testing.T) {
 }
 
 // Every credential form nats.go accepts stays out of logs: a seed list past its
-// first entry, a username-only token, and a scheme-less entry.
+// first entry, a username-only token, a scheme-less entry, and raw '/', '?' or
+// '#' in a credential, which url.Parse would read as path, query or fragment.
 func TestRedactURLHidesEveryCredentialForm(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{
 		"nats://u:pw1@h1:4222,nats://u:pw2@h2:4222",
 		"nats://tok3n@h4:4222",
 		"svc:pw3@h3:4222",
+		"nats://Zm9v/pw4+cXV4@h:4222",
+		"nats://u:pw5?x@h:4222",
+		"nats://u:#pw6@h:4222",
+		"pw7:a://b@h:4222",
 	} {
 		got := redactURL(raw)
-		for _, secret := range []string{"pw1", "pw2", "pw3", "tok3n"} {
+		for _, secret := range []string{"pw1", "pw2", "pw3", "pw4", "pw5", "pw6", "pw7", "tok3n"} {
 			if strings.Contains(got, secret) {
 				t.Errorf("redactURL(%q) = %q, leaks %q", raw, got, secret)
 			}
 		}
 	}
-	if got := redactURL("nats://h1:4222,nats://h2:4222"); got != "nats://h1:4222,nats://h2:4222" {
-		t.Errorf("redactURL of credential-free seeds = %q, want them unchanged", got)
+	for raw, want := range map[string]string{
+		"nats://h1:4222,nats://h2:4222": "nats://h1:4222,nats://h2:4222",
+		"tls://u:p@h:4222":              "tls://redacted@h:4222",
+		"nats://a:4222,":                "nats://a:4222",
+		"":                              "",
+	} {
+		if got := redactURL(raw); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 
