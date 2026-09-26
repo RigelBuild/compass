@@ -84,6 +84,21 @@ func TestCreateChannelAsAccountInvisibleGroupIsNotFound(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeNotFound, "CreateChannelAsAccount in invisible group")
 }
 
+// TestCreateChannelAsAccountUnknownMemberHandleIsNotFound: the agent adapter
+// inherits CreateChannel's atomic member resolution, so an unknown handle fails the create with the human's NOT_FOUND.
+func TestCreateChannelAsAccountUnknownMemberHandleIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+
+	_, err := svc.CreateChannelAsAccount(ctx, agent.ID, &compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberHandles: []string{"ghost"},
+	})
+	connectNotFoundFor(t, err, "ghost", "CreateChannelAsAccount with an unresolvable member handle")
+}
+
 // TestUpdateChannelMembersAsAccountAddsMember: an agent adds a member to a channel
 // it authored (and so can mutate) → the updated Channel carries the new member,
 // and a ChannelChanged is fanned out (parity with the human caller's path).
