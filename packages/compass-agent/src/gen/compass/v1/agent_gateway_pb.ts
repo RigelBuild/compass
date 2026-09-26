@@ -135,7 +135,7 @@ export type CommsCallRequest = Message<"compass.v1.CommsCallRequest"> & {
    * `00-<32hex trace-id>-<16hex span-id>-<2hex flags>`; EMPTY on a human-seeded
    * first turn (no triggering message). Field 10 leaves 7-9 for the in-flight
    * org-management oneof arms (RIG-2673); numbers stay in place, renamed never
-   * renumbered (DL-186/OQ-1b). Server-side link per
+   * renumbered (OQ-1b). Server-side link per
    * docs/designs/observability/compass-server-runner-otel/design.md.
    *
    * @generated from field: string trigger_traceparent = 10;
