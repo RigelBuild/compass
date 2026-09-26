@@ -51,8 +51,8 @@ design token** — `--topbar-h: 44px`, `--usage-h: 26px`, `--right-w: 400px`
 (`app.css:52-57`) have no DS counterpart and are not colors/type/space; they
 survive in a new, clearly-commented `/* app layout knobs (not DS tokens) */`
 `:root` block so the D7 guard can allowlist them by name. `--pink: #db61a2`
-(`app.css:32`) has zero consumers (verified: no `var(--pink)` match anywhere in
-`apps/ui/src`) and is deleted outright.
+(`app.css:32`) is remapped, not deleted: `.msg.system .msg-role` became its
+consumer after this record was drafted, so it moves to `--cx-author-system`.
 
 The mechanical mapping (targets verified present in `tokens.css:80-213`):
 
@@ -80,6 +80,7 @@ The mechanical mapping (targets verified present in `tokens.css:80-213`):
 | `--st-merged` | 3 | **`--cx-issue-done`** | PR-merged ≈ done on task axis (decision 2); no new token |
 | `--radius` `8px` / `--radius-sm` `5px` | 39 | `--cx-radius-md` `6px` / `--cx-radius-sm` `3px` (`tokens.css:200-202`) | stated assumption: the px delta is part of the deliberate restyle, reviewed in screenshots — not an OQ. `md` not `lg` (`10px`, `tokens.css:202`): the restyle tightens per the dense-UI direction |
 | `--font-mono` (ui-monospace stack) | 35 | `--cx-font-ui` (`--rigel-mono` = Space Mono, `tokens.css:61,189`) | type-face flip, visible. Note: erases the code-vs-body face distinction — 35 `--font-mono` refs collapse onto the same `--cx-font-ui` the body now uses; no `--cx-font-code` exists (`--cx-ed-*` editor block reserved-unbuilt). Intended by the mono-UI design; called out so the screenshot review reads it as intent |
+| `--pink` `#db61a2` | 1 | `--cx-author-system` → `--rigel-magenta` | new token for the system author; purple stays mark-only, magenta is the closest non-purple primitive |
 | `--topbar-h` / `--usage-h` / `--right-w` | 3 | kept as layout knobs | renamed block, guard-allowlisted |
 
 Ref counts from a `var(--…)` tally of `app.css` at `94754d0a` (546 total
@@ -320,7 +321,7 @@ T1 screenshot pass including the state-dot crop.
 ### T5 — Delete the legacy `:root` tier + raw-hex sweep
 
 Delete `app.css:7-58` (everything not already moved/deleted by T2-T4),
-including unused `--pink`. Sweep the remaining ~39 raw hex literals in
+including `--pink` once its consumer is on `--cx-author-system`. Sweep the remaining ~39 raw hex literals in
 `app.css` (e.g. `color: #fff` at `:1605`, ask-error fallbacks `#f87171`) to
 `app.css`. Grep-verify: zero `--bg`/`--text`/`--st-`/`--accent`/
 `--purple`/raw-hex outside the allowlist.
