@@ -44,13 +44,13 @@ func newClaimCounter(fab fabric.EventFabric) *claimCounter {
 	}
 }
 
-func (c *claimCounter) SubscribeKind(ctx context.Context, kind fabric.EventKind, fn func(context.Context, fabric.EventRef)) (fabric.Unsubscribe, error) {
-	unsub, err := c.EventFabric.SubscribeKind(ctx, kind, func(ctx context.Context, ref fabric.EventRef) {
+func (c *claimCounter) SubscribeKind(ctx context.Context, kind fabric.EventKind, fn func(context.Context, fabric.EventRef) error) (fabric.Unsubscribe, error) {
+	unsub, err := c.EventFabric.SubscribeKind(ctx, kind, func(ctx context.Context, ref fabric.EventRef) error {
 		c.mu.Lock()
 		c.claims[ref.RowID]++
 		c.mu.Unlock()
 		c.claimed <- struct{}{}
-		fn(ctx, ref)
+		return fn(ctx, ref)
 	})
 	if err == nil {
 		c.once.Do(func() { close(c.subscribed) })

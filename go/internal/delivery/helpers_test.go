@@ -306,6 +306,13 @@ type fakeReads struct {
 	// MessageByID before f.mu is acquired, so a test can act at the point a
 	// re-read happens (e.g. a concurrent hold between the scan's checks).
 	beforeMessageByID func(messageID string)
+	// messageErrs, when set for an id, makes the next MessageByID calls for it
+	// fail with these errors in order, one per call; a nil entry reads normally.
+	// authorErrs (per account, IsAgentAccount) and channelErrs (per message id,
+	// MessageChannel) queue outcomes the same way.
+	messageErrs map[string][]error
+	authorErrs  map[store.AccountID][]error
+	channelErrs map[string][]error
 	// reads records the scope of every MessageByID call, so a test can assert a
 	// re-read ran under the message's tenant and not the system role.
 	reads []readScope
@@ -358,6 +365,9 @@ func newFakeReads() *fakeReads {
 		handles:       map[string]store.Account{},
 		accounts:      map[store.AccountID]store.Account{},
 		messages:      map[string]store.Message{},
+		messageErrs:   map[string][]error{},
+		authorErrs:    map[store.AccountID][]error{},
+		channelErrs:   map[string][]error{},
 		topicNames:    map[string]struct{ channelName, topicName string }{},
 		owed:          map[store.AccountID]map[store.ChannelID][]store.Message{},
 		sweepChannels: map[store.AccountID][]store.ChannelID{},
@@ -580,7 +590,20 @@ func (f *fakeReads) GetAccount(_ context.Context, id store.AccountID) (store.Acc
 func (f *fakeReads) IsAgentAccount(_ context.Context, account store.AccountID) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := popErr(f.authorErrs, account); err != nil {
+		return false, err
+	}
 	return f.agents[account], nil
+}
+
+// popErr takes the next queued outcome for key; nil means read normally.
+func popErr[K comparable](queues map[K][]error, key K) error {
+	errs := queues[key]
+	if len(errs) == 0 {
+		return nil
+	}
+	queues[key] = errs[1:]
+	return errs[0]
 }
 
 func (f *fakeReads) MessageByID(ctx context.Context, messageID string) (store.Message, error) {
@@ -591,6 +614,9 @@ func (f *fakeReads) MessageByID(ctx context.Context, messageID string) (store.Me
 	defer f.mu.Unlock()
 	tenant, _ := store.TenantFromContext(ctx)
 	f.reads = append(f.reads, readScope{messageID: messageID, tenant: tenant, systemRole: store.IsSystemRole(ctx)})
+	if err := popErr(f.messageErrs, messageID); err != nil {
+		return store.Message{}, err
+	}
 	m, ok := f.messages[messageID]
 	if !ok {
 		return store.Message{}, store.ErrNotFound
@@ -608,6 +634,9 @@ func (f *fakeReads) MessageByID(ctx context.Context, messageID string) (store.Me
 func (f *fakeReads) MessageChannel(_ context.Context, messageID string) (store.ChannelID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := popErr(f.channelErrs, messageID); err != nil {
+		return "", err
+	}
 	for _, row := range f.unrouted {
 		if string(row.ID) == messageID {
 			return row.Channel, nil

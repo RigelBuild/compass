@@ -8,6 +8,7 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -302,9 +303,9 @@ func (c *Consumer) SetAgentWaker(w AgentWaker) {
 }
 
 // Run consumes message_posted refs and drains settle, start, and recovery work
-// until ctx is cancelled. A publish failed after commit, or a ref acked after a
-// failed read, reaches live recipients via the recovery pass (reconnect or floor
-// tick) and offline ones at their next session start.
+// until ctx is cancelled. A publish failed after commit, or a ref parked after
+// its reads kept failing, reaches live recipients via the recovery pass
+// (reconnect or floor tick) and offline ones at their next session start.
 func (c *Consumer) Run(ctx context.Context) error {
 	// Sweeps and scans enumerate every tenant, so they run as the BYPASSRLS system
 	// role; per-event work stays tenant-scoped under ctx.
@@ -357,16 +358,29 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 // onEventRef handles one ref on the fabric goroutine, concurrently with Run's
-// drains. Any read failure is logged and acked (see Run for recovery). A post
-// whose author settled before the hold landed is delivered at once (hold).
-func (c *Consumer) onEventRef(ctx context.Context, ref fabric.EventRef) {
+// drains. A transient read error is returned before any hold or dispatch, so the
+// fabric redelivers; a missing row or a deliberate skip returns nil and acks.
+// A post whose author settled before the hold landed is delivered at once (hold).
+func (c *Consumer) onEventRef(ctx context.Context, ref fabric.EventRef) error {
 	ctx = store.WithTenant(ctx, store.TenantID(ref.Tenant))
 	m, err := c.st.MessageByID(ctx, ref.RowID)
 	if err != nil {
-		c.log.ErrorContext(ctx, "delivery: re-read posted message", "error", err, "message_id", ref.RowID, "tenant", ref.Tenant)
-		return
+		return c.readFailure(ctx, "re-read posted message", ref.RowID, err)
 	}
-	c.onMessagePosted(ctx, comms.MessageToWire(m))
+	return c.onMessagePosted(ctx, comms.MessageToWire(m))
+}
+
+// readFailure logs a failed pre-dispatch read. A missing row returns nil (acked),
+// since redelivery cannot make it appear; any other error is returned to redeliver.
+// The tenant comes from ctx, which onEventRef scoped to the ref's tenant.
+func (c *Consumer) readFailure(ctx context.Context, what, messageID string, err error) error {
+	tenant, _ := store.TenantFromContext(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		c.log.ErrorContext(ctx, "delivery: "+what+": row missing, skipping", "error", err, "message_id", messageID, "tenant", string(tenant))
+		return nil
+	}
+	c.log.WarnContext(ctx, "delivery: "+what+": will redeliver", "error", err, "message_id", messageID, "tenant", string(tenant))
+	return fmt.Errorf("delivery: %s %s: %w", what, messageID, err)
 }
 
 // requestRecovery marks a recovery pass owed and wakes the loop. It runs on the

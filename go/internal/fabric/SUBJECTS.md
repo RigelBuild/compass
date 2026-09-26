@@ -200,9 +200,10 @@ Delivery semantics per message:
 
 1. Decode the `EventRef`. Undecodable → **park immediately** (no number of
    redeliveries changes the bytes).
-2. Run the subscriber callback under a panic guard. A panic becomes a failure —
-   it neither takes the process down nor acks an event nobody handled.
-3. Success → `Ack()`. A *failed ack* after successful handling is logged, never
+2. Run the subscriber callback under a panic guard. A returned error or a panic
+   is a failure; a panic neither takes the process down nor acks an event
+   nobody handled.
+3. `nil` → `Ack()`. A *failed ack* after successful handling is logged, never
    parked: it costs one redelivery, which the subscriber's Postgres re-read makes
    idempotent.
 4. Failure → read `Metadata().NumDelivered`, which counts **attempts**. Below
