@@ -75,7 +75,7 @@ the existing test suites stay green unmodified.
 ## Asymmetries a deployer must know
 
 Both of these are documented rather than code-fixed (a fix would move the
-transport's containment fence; ruling (b)). A deployer configuring a collector must know them.
+transport's containment fence; ruling (b)). A deployer must know them.
 
 ### F5 — endpoint-gate asymmetry
 

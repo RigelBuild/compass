@@ -6,7 +6,7 @@
 > model in Matt's round-two/round-three rulings in
 > `../compass-0.6/design.md` (RT-2 home channel, RT-3 turn-end delivery, the
 > delivery-timing amendment) and the merged Server-ownership-layer record
-> (`../compass-server-ownership-layer/design.md`, #995) are cited, never
+> (`../compass-server-ownership-layer/design.md`, #995); both are cited, never
 > re-decided. Tracker: RIG-1569. Lane: compass-comms (driver);
 > co-owned pieces are named per task.
 
