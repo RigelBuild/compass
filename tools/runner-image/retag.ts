@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 // Mint the compass-runner `:vX.Y.Z` release tag by copying an already-published
 // `:git-<sha12>` manifest: a registry-side write, never a build, never `:latest`.
-// The source is the newest first-parent ancestor of the release sha that has a
-// published image (see retag-core.ts for why that is the release's bytes).
+// The source is the newest published closure image at or before the release
+// sha (see retag-core.ts for what that does and does not guarantee).
 //
-// Needs `git` (full history) and `skopeo` on PATH. The runner package is
-// private, so every call reads REGISTRY_AUTH_FILE (the file `skopeo login` wrote).
+// Needs `git` (full history), `skopeo`, and RUNNER_IMAGE_CLOSURE_PATHS. The
+// runner package is private, so every call reads REGISTRY_AUTH_FILE (the file
+// `skopeo login` wrote).
 //
 // Usage:
 //   bun tools/runner-image/retag.ts --repo <ghcr.io/owner/name> \
@@ -14,6 +15,7 @@
 import { appendFileSync } from "node:fs";
 import {
 	assertCoherent,
+	assertNoClosureChange,
 	EXIT,
 	MAX_WALK,
 	manifestIdentity,
@@ -46,18 +48,13 @@ async function skopeo(args: readonly string[]): Promise<string> {
 	return result.stdout;
 }
 
-/** The first MAX_WALK first-parent ancestors of `sha`, newest first. */
-async function firstParentAncestors(sha: string): Promise<string[]> {
-	const result = await run([
-		"git",
-		"rev-list",
-		"--first-parent",
-		`--max-count=${MAX_WALK}`,
-		sha,
-	]);
+/** A git call that must succeed. A failure here is missing history, not a
+ * registry fault: the job must check out with fetch-depth 0. */
+async function git(args: readonly string[]): Promise<string[]> {
+	const result = await run(["git", ...args]);
 	if (result.exitCode !== 0) {
 		throw new RetagError(
-			`git rev-list ${sha} failed (exit ${result.exitCode}); the walk needs full history (fetch-depth: 0): ${result.stderr.trim()}`,
+			`git ${args.join(" ")} failed (exit ${result.exitCode}); the resolver needs full history (fetch-depth: 0): ${result.stderr.trim()}`,
 			EXIT.usage,
 		);
 	}
@@ -84,13 +81,25 @@ async function main(): Promise<number> {
 	sha12(releaseSha);
 
 	const resolved = await resolveAncestor(
-		await firstParentAncestors(releaseSha),
+		await git([
+			"rev-list",
+			"--first-parent",
+			`--max-count=${MAX_WALK}`,
+			releaseSha,
+		]),
 		(short) =>
 			run(["skopeo", "inspect", "--raw", `docker://${repo}:git-${short}`]),
 	);
 	const source = manifestIdentity(resolved.raw);
 	console.log(
 		`resolved source image ${repo}:git-${resolved.sha12} (walk position ${resolved.position}) = ${source.manifestDigest}`,
+	);
+	// Before any registry write: the ancestors the walk skipped must carry no
+	// closure change, or the resolved image lacks it.
+	assertNoClosureChange(
+		process.env.RUNNER_IMAGE_CLOSURE_PATHS ?? "",
+		resolved.sha12,
+		await git(["diff", "--name-only", resolved.commit, releaseSha]),
 	);
 
 	// Copy BY DIGEST so a re-push of the build tag between the probe and the
@@ -111,11 +120,11 @@ async function main(): Promise<number> {
 		`verified: ${target} = ${repo}@${minted.manifestDigest} (from :git-${resolved.sha12})`,
 	);
 
-	const output = process.env.GITHUB_OUTPUT;
-	if (output) {
+	const summary = process.env.GITHUB_STEP_SUMMARY;
+	if (summary) {
 		appendFileSync(
-			output,
-			`image_digest=${minted.manifestDigest}\nresolved_sha12=${resolved.sha12}\n`,
+			summary,
+			`runner release image: \`${target}\` = \`${repo}@${minted.manifestDigest}\` (from :git-${resolved.sha12})\n`,
 		);
 	}
 	return 0;

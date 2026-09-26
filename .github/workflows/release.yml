@@ -1301,8 +1301,8 @@ jobs:
   release-runner-image:
     name: release-runner-image
     runs-on: ubuntu-latest
-    # Digest-re-tag the newest published ancestor `:git-<sha12>` runner image to
-    # `:vX.Y.Z`. Never builds and never touches `:latest` (publish-runner-image owns it).
+    # Digest-re-tag the newest published closure image at or before the release sha
+    # to `:vX.Y.Z`. Never builds and never touches `:latest` (publish-runner-image owns it).
     needs: release-pr
     permissions:
       contents: read
@@ -1382,9 +1382,9 @@ jobs:
             --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
       - name: Digest-re-tag the newest ancestor image to the semver tag
-        id: retag
-        # Resolves the source ancestor, copies its manifest by digest, verifies
-        # the tag, and writes image_digest/resolved_sha12 to GITHUB_OUTPUT.
+        # Resolves the source ancestor, fails if a skipped ancestor changed the
+        # runner closure (RUNNER_IMAGE_CLOSURE_PATHS, workflow env), then copies
+        # by digest, verifies the tag, and records it in the step summary.
         env:
           TAG_NAME: ${{ needs.release-pr.outputs.tag_name }}
           RELEASE_SHA: ${{ needs.release-pr.outputs.sha }}

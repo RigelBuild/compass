@@ -2,18 +2,18 @@
 // already-published `:git-<sha12>` manifest, never by building. No I/O, so
 // retag-core.test.ts drives every fail-closed edge without a registry.
 //
-// The per-push lane only publishes when a push touches the runner closure, so
-// the release sha itself often has no image. The newest first-parent ancestor
-// that DOES have one contains every closure change at or before it, so its
-// bytes are the release's bytes.
+// The per-push lane publishes only when a push touches the runner closure, so
+// the release sha itself often has no image. The tag names the newest published
+// closure image at or before the release sha. The version string stamped into
+// that image may lag the release, because version.txt is outside the closure.
 
 import { isImageDigest } from "./publish-core.ts";
 
 /** Exit codes, numbered so a failed run names its own fault in CI. 3 means no
- * published ancestor exists (dispatch publish-runner-image, then re-run), 4 is
- * a registry fault to re-run, 5 means the release tag does not carry the
- * source manifest, 6 means the registry returned something other than one
- * single-platform manifest. */
+ * usable published ancestor exists (see REMEDIATION), 4 is a registry fault
+ * to re-run, 5 means the release tag does not carry the source manifest, 6
+ * means the registry returned something other than one single-platform
+ * manifest. */
 export const EXIT = {
 	usage: 2,
 	noAncestor: 3,
@@ -25,6 +25,11 @@ export const EXIT = {
 /** How many first-parent ancestors the walk probes before giving up. A bounded
  * walk makes a publish outage fail fast instead of probing all of history. */
 export const MAX_WALK = 50;
+
+/** The fix for exit 3. A main dispatch publishes main's HEAD, so it helps only
+ * while that HEAD is still the release sha. */
+const REMEDIATION =
+	"Remediation: while the release sha is still main's HEAD, workflow_dispatch the release workflow on main so publish-runner-image publishes it, then re-run this job. Once main has moved on, that dispatch publishes a different commit and cannot fix this. Never rebuild here.";
 
 /** A resolver fault carrying the exit code the CLI should die with. */
 export class RetagError extends Error {
@@ -49,15 +54,25 @@ export type Probe =
 	| { kind: "absent" }
 	| { kind: "ambiguous"; detail: string };
 
-/** Only a definitive "no such tag" answer is `absent`. Everything else — a 5xx,
- * a throttle, an auth blip, a timeout — is `ambiguous`, because treating it as
- * absent would walk on and re-tag an OLDER, stale image. `\b404\b` needs a
- * boundary so the digits of a probed sha12 echoed in the error never match. */
-export function classifyProbe(result: ProbeResult): Probe {
+/** Only the registry saying the probed tag has no manifest is `absent`. That
+ * is `manifest unknown`, or a 404 with an empty body, on skopeo's read of this
+ * exact tag. Everything else is `ambiguous`: a 5xx, a 403, a timeout, a missing
+ * repository, or a 404 page from a proxy. Reading one of those as absent would
+ * walk on and re-tag an older, stale image. */
+export function classifyProbe(result: ProbeResult, tag: string): Probe {
 	if (result.exitCode === 0) return { kind: "found", raw: result.stdout };
 	const detail = result.stderr.trim();
-	if (/manifest unknown/i.test(detail) || /\b404\b/.test(detail)) {
-		return { kind: "absent" };
+	const scope = `reading manifest ${tag} in `;
+	const at = detail.indexOf(scope);
+	if (at !== -1) {
+		// Drop the `<repo>: ` that follows, leaving the registry's own reason.
+		const reason = detail.slice(at + scope.length).replace(/^\S+: /, "");
+		if (
+			reason.startsWith("manifest unknown") ||
+			reason.startsWith('StatusCode: 404, \\"\\"')
+		) {
+			return { kind: "absent" };
+		}
 	}
 	return { kind: "ambiguous", detail };
 }
@@ -85,6 +100,8 @@ export function releaseTag(tag: string): string {
 }
 
 export type Resolved = {
+	/** The full ancestor sha, for the closure diff against the release sha. */
+	commit: string;
 	/** The ancestor whose `:git-<sha12>` is the release's source image. */
 	sha12: string;
 	/** 1-based position in the first-parent walk. */
@@ -106,15 +123,15 @@ export async function resolveAncestor(
 	const walk = ancestors.slice(0, MAX_WALK);
 	for (const [index, commit] of walk.entries()) {
 		const short = sha12(commit);
-		const result = classifyProbe(await probe(short));
+		const result = classifyProbe(await probe(short), `git-${short}`);
 		switch (result.kind) {
 			case "found":
-				return { sha12: short, position: index + 1, raw: result.raw };
+				return { commit, sha12: short, position: index + 1, raw: result.raw };
 			case "absent":
 				continue;
 			case "ambiguous":
 				throw new RetagError(
-					`ambiguous registry error probing :git-${short} (not a definitive 404); refusing to fall through to an older ancestor: ${result.detail}`,
+					`ambiguous registry error probing :git-${short} (not a definitive missing-tag answer); refusing to fall through to an older ancestor: ${result.detail}`,
 					EXIT.registryFailed,
 				);
 			default:
@@ -122,9 +139,49 @@ export async function resolveAncestor(
 		}
 	}
 	throw new RetagError(
-		`no :git-<sha12> image resolved within ${MAX_WALK} first-parent ancestors (walked ${walk.length}). Remediation: workflow_dispatch the release workflow so publish-runner-image publishes the release sha, then re-run this job. Never rebuild here.`,
+		`no :git-<sha12> image resolved within ${MAX_WALK} first-parent ancestors (walked ${walk.length}). ${REMEDIATION}`,
 		EXIT.noAncestor,
 	);
+}
+
+/** The changed paths that fall in the closure set. Same rules as the publish
+ * gate: `dir/**` matches anything under `dir/`, any other entry matches exactly.
+ * An empty set is refused, so an unset env var cannot pass every diff. */
+export function closureChanges(
+	closurePaths: string,
+	changed: readonly string[],
+): string[] {
+	const patterns = closurePaths
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0);
+	if (patterns.length === 0) {
+		throw new RetagError("the runner closure path set is empty", EXIT.usage);
+	}
+	return changed.filter((path) =>
+		patterns.some((pattern) =>
+			pattern.endsWith("/**")
+				? path.startsWith(pattern.slice(0, -2))
+				: path === pattern,
+		),
+	);
+}
+
+/** An absent tag can mean a failed publish, not "no closure change". So any
+ * closure change between the resolved ancestor and the release sha fails the
+ * mint rather than tag an image that lacks it. */
+export function assertNoClosureChange(
+	closurePaths: string,
+	resolvedSha12: string,
+	changed: readonly string[],
+): void {
+	const hits = closureChanges(closurePaths, changed);
+	if (hits.length > 0) {
+		throw new RetagError(
+			`:git-${resolvedSha12} predates runner closure changes it lacks (${hits.join(", ")}); a newer publish is missing. ${REMEDIATION}`,
+			EXIT.noAncestor,
+		);
+	}
 }
 
 export type ManifestIdentity = {
