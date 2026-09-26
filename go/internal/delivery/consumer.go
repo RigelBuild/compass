@@ -193,29 +193,16 @@ type Consumer struct {
 	mu sync.Mutex
 	// held is the pending-deliver registry (design.md:157-168), keyed by the
 	// AUTHOR's live session id: an agent-authored message posted while its author
-	// still streams is HELD here until that author's session settles
-	// (WORKING->READY) or reaches a terminal frame. The value is the ordered set
-	// of message ids held for that author, in post order, so a settle fires them
-	// ascending. A no-frame author death (no settle edge ever enqueues) leaves
-	// its entry here until it is reaped: the reap happens in-process on the next
-	// Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped), which
-	// drops the entry for every session id whose hub binding enroll just cleared.
-	// So the common no-frame death is reaped at that next enroll rather than
-	// persisting until process restart. The reap is best-effort, NOT a hard
-	// bound: the reaped set is exactly the session ids bound at enroll time, and a
-	// no-frame-dead session is never re-promoted (its id, once cleared, never
-	// re-enters the hub's session map), so a narrow race can still strand one
-	// entry until process restart — a Deliver that resolved the author LIVE an
-	// instant before enroll cleared the maps can hold(sess) just AFTER that
-	// enroll's reap, re-adding the dead session's entry; because that id never
-	// re-enrolls, no later enroll reaps it. Delivery correctness (no-loss) is
-	// unaffected either way — only the reap (a leak bound, not the delivery
-	// guarantee) is best-effort: the recipient still receives the message via the
-	// reconnect cursor sweep, independent of this registry.
+	// still streams is HELD here until that session settles (WORKING->READY) or
+	// reaches a terminal frame. Values are in post order, so a settle fires them
+	// ascending. A no-frame author death never settles; its entry waits for the
+	// next-enroll reap (OnSessionsReaped), and a reap race can strand one entry.
+	// The sweeps skip only messages held for a LIVE author, so the cursor sweep
+	// still delivers a stranded entry.
 	held map[string][]heldEntry
 	// lastSettle maps an author session id to the unix ms of its latest settle
 	// edge, so a message whose hold lost the race with that settle fires at once.
-	// Pruned by the recovery pass and dropped on reap.
+	// The recovery pass drops entries of dead sessions; the reap drops them too.
 	lastSettle map[string]int64
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
@@ -396,19 +383,20 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 	c.mu.Lock()
 	pending := c.recoveryPending
 	c.recoveryPending = false
-	if pending {
-		// A hold this late is not a same-turn race, so the entry can go.
-		floor := c.now().Add(-recoveryFloorInterval).UnixMilli()
-		for sid, settled := range c.lastSettle {
-			if settled < floor {
-				delete(c.lastSettle, sid)
-			}
-		}
-	}
 	c.mu.Unlock()
 	if !pending {
 		return
 	}
+	// A settle time guards a hold at any age, for example when a backlog replays
+	// after an outage, so only a dead session's entry goes.
+	live := c.liveSessionIDs()
+	c.mu.Lock()
+	for sid := range c.lastSettle {
+		if _, ok := live[sid]; !ok {
+			delete(c.lastSettle, sid)
+		}
+	}
+	c.mu.Unlock()
 	c.sweepAllLive(ctx)
 	c.scanMissedMentions(ctx)
 }

@@ -8,6 +8,7 @@ package delivery
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -627,6 +628,13 @@ func (d *blockCapturingDispatcher) countFor(messageID string) int {
 		}
 	}
 	return n
+}
+
+// records returns every recorded deliver, in dispatch order.
+func (d *blockCapturingDispatcher) records() []blockRecord {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.calls)
 }
 
 // The no-live-author path delivers the STORED block set. The ref carries no
