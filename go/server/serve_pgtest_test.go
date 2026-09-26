@@ -31,6 +31,7 @@ func TestServeBindsSocketServesClientAndCleansUpOnCancel(t *testing.T) {
 		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 	}
 	provisionMasterKeyProvider(t, &cfg)
+	provisionNats(t, &cfg)
 	go func() {
 		errCh <- Serve(ctx, cfg)
 	}()
@@ -98,6 +99,7 @@ func TestServeShutdownIsClean(t *testing.T) {
 		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 	}
 	provisionMasterKeyProvider(t, &cfg)
+	provisionNats(t, &cfg)
 	go func() {
 		errCh <- Serve(ctx, cfg)
 	}()
@@ -159,6 +161,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 	}
 	provisionMasterKeyProvider(t, &cfg)
+	provisionNats(t, &cfg)
 	go func() {
 		errCh <- Serve(serveCtx, cfg)
 	}()

@@ -126,11 +126,13 @@ func TestServeFailsWhenAdminHandleNamesExistingMember(t *testing.T) {
 	// tears down a wrongly-serving Serve.
 	serveCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
+	natsURL := startTestNats(t)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Serve(serveCtx, ServeConfig{
 			SocketPath:  filepath.Join(dir, "compass.sock"),
 			DatabaseDSN: dsn,
+			NatsURL:     natsURL,
 			Version:     "admin-handle-conflict-test",
 			AdminHandle: "matt",
 		})

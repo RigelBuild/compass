@@ -227,7 +227,7 @@ in
   '';
 
   # One-command Compass dogfood enroll-loop: `devenv up` stands up the full
-  # backend (postgres → gen-cert → compass-server → compass-ui →
+  # backend (postgres + nats → gen-cert → compass-server → compass-ui →
   # mint-runner-token → compass-runner, plus build-cli). Ordering is load-bearing:
   # each stage `after`s the store/cert/token the next needs, and dogfood:build-cli
   # uses a `before` edge (nothing execs it, so an `after` edge would drop it from
@@ -246,6 +246,27 @@ in
   };
 
   processes = {
+    # nats: the event-fabric broker. compass-server publishes comms events to it
+    # and delivery consumes them, so the server refuses to boot without it.
+    # JetStream stores under the state dir; loopback-only, like the stack's.
+    nats = {
+      exec = ''
+        exec ${lib.getExe pkgs.nats-server} -js -a 127.0.0.1 \
+          -p ${toString config.processes.nats.ports.client.value} \
+          -m ${toString config.processes.nats.ports.monitor.value} \
+          -sd "${config.devenv.state}/nats"
+      '';
+      ports.client.allocate = 4222;
+      ports.monitor.allocate = 8222;
+      # /healthz answers 200 only once JetStream is enabled, the same readiness
+      # verdict the self-host stack probes.
+      ready.exec = ''
+        ${lib.getExe pkgs.curl} -fsS --max-time 2 \
+          "http://127.0.0.1:${toString config.processes.nats.ports.monitor.value}/healthz" >/dev/null
+      '';
+      restart.on = "on_failure";
+    };
+
     # compass-server: serves compass.v1 on a Unix socket plus a loopback
     # gRPC-Web port. Builds once then `exec`s the binary so no shell/`go run`
     # parent lingers — the binary sits directly in the process group devenv-tasks
@@ -324,11 +345,14 @@ in
         # pgx keyword/value DSN over the Postgres Unix socket. No user= : pgx
         # defaults to the OS user, the peer-auth identity that owns `compass`.
         COMPASS_DATABASE_DSN = dogfoodDSN;
+        # The event fabric; compass-server reads it when --nats-url is absent.
+        COMPASS_NATS_URL = "nats://127.0.0.1:${toString config.processes.nats.ports.client.value}";
       };
-      # Wait for Postgres to accept connections before starting, so the store
-      # opens first try. (dogfood:gen-cert orders `before` this so the TLS
-      # cert/key exist when the network door opens.)
-      after = [ "devenv:processes:postgres" ];
+      # Wait for Postgres and NATS before starting: the server opens the store
+      # and connects the event fabric at boot, and fails closed on either.
+      # (dogfood:gen-cert orders `before` this so the TLS cert/key exist when
+      # the network door opens.)
+      after = [ "devenv:processes:postgres" "devenv:processes:nats" ];
       # Ready only once the server answers, not merely once the socket exists:
       # compass-server binds the socket BEFORE migrating and accepting, so
       # `test -S` would flip ready true while a dial still blocks. Probe

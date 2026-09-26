@@ -143,6 +143,7 @@ func newTLSClient(t *testing.T, addr string, pool *x509.CertPool) compassv1conne
 func serveInBackground(t *testing.T, cfg ServeConfig) {
 	t.Helper()
 	provisionMasterKeyProvider(t, &cfg)
+	provisionNats(t, &cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- Serve(ctx, cfg) }()

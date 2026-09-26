@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	natsd "github.com/nats-io/nats-server/v2/server"
+	natsserver "github.com/nats-io/nats-server/v2/test"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/stack"
@@ -31,6 +33,22 @@ func dotenvForgeValue(v string) string {
 	v = strings.ReplaceAll(v, `"`, `\"`)
 	v = strings.ReplaceAll(v, "\n", `\n`)
 	return `"` + v + `"`
+}
+
+// startFixtureNats runs one in-process JetStream NATS server on loopback and
+// returns its client URL. The server and its store dir are released with t.
+func startFixtureNats(t *testing.T) string {
+	t.Helper()
+	srv := natsserver.RunServer(&natsd.Options{
+		Host:      "127.0.0.1",
+		Port:      natsd.RANDOM_PORT,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		NoLog:     true,
+		NoSigs:    true,
+	})
+	t.Cleanup(srv.Shutdown)
+	return srv.ClientURL()
 }
 
 func forgePEM(t *testing.T) []byte {
@@ -550,11 +568,10 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// — pure CI cost (the real collector is covered by the podman-guarded tests).
 		// Opt out via --otel-external so spawnChain skips startCollector.
 		ExternalOTLPEndpoint: "127.0.0.1:4317",
-		// This headless stack connects to no broker (the NATS cutover is a later
-		// slice), so a bundled NATS would be pure CI cost and the e2e deps wire no
-		// NatsContainer anyway. Opt out via --nats-external so spawnChain skips
-		// startNats entirely.
-		ExternalNatsURL: "nats://127.0.0.1:4222",
+		// One in-process JetStream NATS per stack: compass-server refuses to boot
+		// without an event fabric, and a bundled container would be pure CI cost.
+		// Its cleanup is registered before Up's Down, so it outlives the server.
+		ExternalNatsURL: startFixtureNats(t),
 	}
 
 	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a

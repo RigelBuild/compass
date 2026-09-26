@@ -57,7 +57,7 @@ func (c *Consumer) scanMissedMentions(ctx context.Context) {
 			// backstops the out-of-sweep asker (the answer message is committed
 			// mentions_routed_at IS NULL, so it appears in this scan).
 			c.routeAskAnswerFor(ctx, channel, wireMsg)
-			if err := c.st.MarkMentionsRouted(ctx, id); err != nil {
+			if err := c.markUnlessHeld(ctx, id); err != nil {
 				c.log.ErrorContext(ctx, "delivery: scan missed mentions mark", "error", err, "message_id", id)
 				continue // leave unmarked; the pass ran but re-runs next point (at-least-once)
 			}
@@ -85,4 +85,16 @@ func (c *Consumer) messageHeld(messageID string) bool {
 		}
 	}
 	return false
+}
+
+// markUnlessHeld marks messageID routed unless a callback held it after the
+// scan's first check; a held message stays NULL for its settle pass to mark.
+// markMu keeps a hold from landing between this re-check and the mark.
+func (c *Consumer) markUnlessHeld(ctx context.Context, messageID string) error {
+	c.markMu.Lock()
+	defer c.markMu.Unlock()
+	if c.messageHeld(messageID) {
+		return nil
+	}
+	return c.st.MarkMentionsRouted(ctx, messageID)
 }

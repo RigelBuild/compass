@@ -68,7 +68,7 @@ func TestPinSweepDoesNotDoubleHandleLiveEdit(t *testing.T) {
 	startConsumer(t, c)
 
 	// The edit's new message rides D1: a live MessagePosted fans out once.
-	c.bus.Publish(postedResponse(wireText("edit-2", author, "edited board")))
+	postMessage(t, c, reads, textMessage("edit-2", author, "edited board"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()

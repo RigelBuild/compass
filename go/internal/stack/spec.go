@@ -22,11 +22,14 @@ const embeddedRunnerID = "embedded"
 
 // serverSpec builds the compass-server child spec from the resolved config and
 // cert paths, mirroring the devenv dogfood invocation: --socket / --database /
-// --listen / --tls-cert / --tls-key, plus --secret-provider when pinned.
+// --nats-url / --listen / --tls-cert / --tls-key, plus --secret-provider when
+// pinned. --nats-url is unconditional because the server refuses to boot
+// without an event fabric.
 func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 	args := []string{
 		"--socket", cfg.SocketPath,
 		"--database", cfg.DatabaseDSN,
+		"--nats-url", natsURL(cfg),
 		"--listen", cfg.ListenAddr,
 		"--tls-cert", cert.CertPath,
 		"--tls-key", cert.KeyPath,

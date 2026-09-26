@@ -8,8 +8,8 @@ package delivery
 // subscriber, no owed row).
 
 // Plus sweepOwedMentions (dispatch every owed mention as a STEER, clearing an
-// unreadable row). Driven through the real bus + fakes, gating on the recorder's
-// dispatches/wakes, never a sleep.
+// unreadable row). Driven through the fake fabric + fakes, gating on the
+// recorder's dispatches/wakes, never a sleep.
 
 import (
 	"testing"
@@ -40,7 +40,7 @@ func TestOfflineUnsubscribedMentionRecordsOwedAndWakes(t *testing.T) {
 	// agentA is offline (never bound) and NOT in the sweep set (sweepSet unseeded).
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@aa ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@aa ping"))
 	w.waitForWakes(t, 1)
 
 	if got := disp.snapshot(); len(got) != 0 {
@@ -71,7 +71,7 @@ func TestOfflineSubscribedMentionWakesNoOwed(t *testing.T) {
 	// agentA is offline (never bound).
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@aa ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@aa ping"))
 	w.waitForWakes(t, 1)
 
 	if got := disp.snapshot(); len(got) != 0 {
@@ -98,7 +98,7 @@ func TestOfflineSubscriberDeliverArmWakesNoOwed(t *testing.T) {
 	// agentA is a subscriber, NOT mentioned, and offline (never bound).
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "no mention here")))
+	postMessage(t, c, reads, textMessage("m1", author, "no mention here"))
 	w.waitForWakes(t, 1)
 
 	if got := disp.snapshot(); len(got) != 0 {
@@ -128,7 +128,7 @@ func TestBroadcastMentionWakesAllOwedOnlyOutOfSweepSet(t *testing.T) {
 	// A is out of the sweep set (unseeded). Both offline.
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@agents standup")))
+	postMessage(t, c, reads, textMessage("m1", author, "@agents standup"))
 	w.waitForWakes(t, 2)
 
 	if got := disp.snapshot(); len(got) != 0 {
@@ -299,7 +299,7 @@ func TestNilWakerRoutesWithoutPanic(t *testing.T) {
 	// agentA offline, out of sweep set.
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@aa ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@aa ping"))
 	// The owed row is the observable effect (a nil-safe wake is a no-op): gate on it.
 	reads.waitForOwed(t, agentA, 1)
 	if got := disp.snapshot(); len(got) != 0 {
@@ -327,7 +327,7 @@ func TestOfflineMentionNowLiveAfterRecordSteersDirectly(t *testing.T) {
 	}
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@aa ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@aa ping"))
 	if !disp.waitForMessage(t, "m1") {
 		t.Fatal("m1 never steered: a now-live-after-record member must be steered directly")
 	}

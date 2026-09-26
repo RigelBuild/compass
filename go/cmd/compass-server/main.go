@@ -195,6 +195,13 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		return server.ServeConfig{}, false, errors.New("a Postgres DSN is required: pass --database or set $COMPASS_DATABASE_DSN")
 	}
 
+	// The event fabric carries delivery's trigger, so a Server without one would
+	// commit posts it never delivers; fail here like the DSN rather than at boot.
+	natsURL := firstNonEmpty(*f.natsURL, os.Getenv("COMPASS_NATS_URL"))
+	if natsURL == "" {
+		return server.ServeConfig{}, false, errors.New("a NATS URL is required for the event fabric: pass --nats-url or set $COMPASS_NATS_URL")
+	}
+
 	// S3 archive tier: each flag falls back to its $COMPASS_S3_* env, mirroring
 	// the DATABASE_DSN precedence. All-optional: an absent endpoint/bucket leaves
 	// the archive tier unconfigured and the server boots socket-only.
@@ -220,6 +227,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		Listen:            listen,
 		TLS:               tlsConfig,
 		DatabaseDSN:       databaseDSN,
+		NatsURL:           natsURL,
 		S3:                s3Config,
 		Forge:             forgeConfig,
 		StateDir:          *f.stateDir,
@@ -259,6 +267,7 @@ type serveFlags struct {
 	tlsCert           *string
 	tlsKey            *string
 	database          *string
+	natsURL           *string
 	s3Endpoint        *string
 	s3Bucket          *string
 	s3AccessKey       *string
@@ -299,6 +308,9 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 		database: fs.String("database", "",
 			"Postgres DSN for the store of record (e.g. postgres://user:pass@host/compass). "+
 				"Defaults to $COMPASS_DATABASE_DSN."),
+		natsURL: fs.String("nats-url", "",
+			"NATS connection string for the event fabric (e.g. nats://127.0.0.1:4222; "+
+				"a comma-separated seed list is a cluster). Required. Defaults to $COMPASS_NATS_URL."),
 		s3Endpoint: fs.String("s3-endpoint", "",
 			"S3-compatible object-store endpoint host[:port] (no scheme) for the "+
 				"transcript archive tier (Garage/R2/MinIO/AWS). Defaults to "+

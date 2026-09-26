@@ -17,6 +17,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/delivery"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/presence"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -108,13 +109,12 @@ func (h hubPresenceSource) PresenceFor(accountIDs []store.AccountID) map[store.A
 	return out
 }
 
-// startDeliveryConsumer builds the RIG-1569 T3 fan-out consumer over the comms
-// bus, wires the consumer<->hub construction cycle (consumer takes hub as
-// ControlDispatcher/SessionResolver; hub takes consumer as SettleSink and
-// SessionStartSink), and starts its bus-tail goroutine on gctx (ending at shutdown
-// or when the comms bus closes).
-func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
-	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
+// startDeliveryConsumer builds the fan-out consumer over the event fabric, wires
+// the consumer<->hub construction cycle (consumer takes hub as ControlDispatcher/
+// SessionResolver; hub takes consumer as SettleSink and SessionStartSink), and
+// starts its Run on gctx, which ends at shutdown.
+func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, fab fabric.EventFabric, st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
+	c := delivery.NewConsumer(st, hub, hub, fab, log)
 	// The wake seam (RIG-1641 T3): a FRESH lifecycleService, not the instance
 	// wireHubServiceCycles wired. lifecycleService is stateless besides its own
 	// singleflight group, and only the waker path drives WakeAgent, so this
@@ -145,12 +145,11 @@ func startPresencePublisher(gctx context.Context, g *errgroup.Group, commsBus *e
 	g.Go(func() error { return p.Run(gctx) })
 }
 
-// startCommsBusConsumers starts both comms-bus consumers (RIG-1569): the T3
-// delivery fan-out consumer and the T8 presence projection. Serve calls this one
-// helper so the two starts, which share the same construction inputs (comms bus,
-// store, hub, serve group, gctx), stay one statement at the call site.
-func startCommsBusConsumers(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
-	startDeliveryConsumer(gctx, g, commsBus, st, hub, log)
+// startCommsConsumers starts both comms consumers: delivery fan-out on the event
+// fabric and the presence projection on the comms bus. They share the store,
+// hub, serve group, and gctx, so Serve starts them in one statement.
+func startCommsConsumers(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], fab fabric.EventFabric, st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
+	startDeliveryConsumer(gctx, g, fab, st, hub, log)
 	startPresencePublisher(gctx, g, commsBus, st, hub, log)
 }
 
@@ -164,7 +163,7 @@ func startCommsBusConsumers(gctx context.Context, g *errgroup.Group, commsBus *e
 // nothing. The notify lanes are the same *forgeNotifyLane type, taken variadically so a new
 // notify lane is one more argument, not a new param. Serve calls this one helper
 // so the Run starts, which share the serve group + gctx, stay one statement at
-// the call site (mirroring startCommsBusConsumers). Every Run returns nil on
+// the call site (mirroring startCommsConsumers). Every Run returns nil on
 // ctx-cancel.
 func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, notify ...*forgeNotifyLane) {
 	if board != nil {

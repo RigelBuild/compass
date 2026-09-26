@@ -3,7 +3,7 @@
 package delivery
 
 // RIG-2490 T2 — the recovery scan (scanMissedMentions), RED-first. Each case
-// drives the scan SYNCHRONOUSLY (not through the bus) over hand-written fakes
+// drives the scan SYNCHRONOUSLY (not through Run) over hand-written fakes
 // and asserts the observable effects: owed rows recorded, wakes, steers, and
 // the mentions-routed mark.
 
@@ -17,7 +17,7 @@ import (
 
 // Case a: an unmarked message mentioning an OFFLINE out-of-sweep-set member ⇒
 // the scan records a durable owed row, wakes the member, and marks the message
-// complete — the crash/overrun recovery of a pre-settle mention.
+// complete — the crash recovery of a pre-settle mention.
 func TestScanRecoversOfflineOutOfSweepSetMention(t *testing.T) {
 	c, disp, _, reads := newTestConsumer(t)
 	w := withWaker(c)
@@ -59,7 +59,7 @@ func TestScanSkipsHeldMessage(t *testing.T) {
 	reads.members[ch] = []store.AccountID{agentA}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
-	c.hold("author-sess", "m1", "") // registered in c.held under its author session
+	c.hold(context.Background(), "author-sess", "m1") // registered in c.held under its author session
 
 	c.scanMissedMentions(context.Background())
 
@@ -231,6 +231,43 @@ func TestScanBatchReadFaultStops(t *testing.T) {
 	reads.mu.Unlock()
 	if len(calls) != 1 {
 		t.Fatalf("UnroutedMentionMessages calls = %d, want 1 (read attempted once, then scan stops on the fault)", len(calls))
+	}
+}
+
+// A fabric callback can hold a message after the scan's held-check but before
+// its mark. The scan must leave that message unmarked; otherwise a later-block
+// mention is excluded from the next recovery scan once the hold is lost.
+func TestScanSkipsMarkWhenHeldBetweenCheckAndMark(t *testing.T) {
+	c, _, _, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "agent-author"
+	const agentA, agentB store.AccountID = "agent-a", "agent-b"
+
+	reads.agents[author] = true
+	reads.members[ch] = []store.AccountID{agentA, agentB}
+	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.handles["bb"] = agentAccount(agentB, "bb")
+	reads.seedUnrouted(textMessage("m1", author, "@aa first"), ch, 1)
+	// The hold lands while the scan re-reads m1: after its held-check.
+	injected := false
+	reads.beforeMessageByID = func(id string) {
+		if id == "m1" && !injected {
+			injected = true
+			c.hold(context.Background(), "sess-author", "m1")
+		}
+	}
+	c.scanMissedMentions(context.Background())
+	if got := reads.markCount("m1"); got != 0 {
+		t.Fatalf("marks for m1 = %d, want 0 (held after the scan's check, so its settle pass owns the mark)", got)
+	}
+
+	// The author dies with no frame and the reap drops the hold; its turn had
+	// grown the stored blocks. The next recovery scan must still route @bb.
+	c.OnSessionsReaped([]string{"sess-author"})
+	reads.seedMessage(textMessage("m1", author, "@aa first @bb later"))
+	c.scanMissedMentions(context.Background())
+	if n := reads.owedCount(agentB); n != 1 {
+		t.Fatalf("owed rows for agentB = %d, want 1 (the later-block mention must stay recoverable)", n)
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -27,14 +26,6 @@ import (
 // device: tests gate on the recorder's observed dispatch count, not elapsed time.
 const testTimeout = 10 * time.Second
 
-// busLagFloodCount is how many messages the bus-lag tests publish to force a
-// live-buffer overrun: it must exceed the events bus's per-subscriber live-tail
-// buffer (sized to events.RingCapacity) so the subscriber's channel latches
-// lagged and closes — the exact condition the resync/sweep path under test
-// triggers on. Derived from the exported cap, so raising it cannot silently
-// degrade the RIG-2514 regression guard into a no-op that still passes.
-const busLagFloodCount = events.RingCapacity + 76
-
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // signalObserved does a NON-BLOCKING send of a per-call token on a test
@@ -44,9 +35,8 @@ func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 // mutex-guarded calls slice BEFORE this send, so the token is a wakeup hint,
 // never the source of truth. The send must not block: a blocking send turns the
 // observation channel into backpressure on the code under test, so a test that
-// produces more dispatches than the buffer holds (the bus-lag floods publish
-// 1100 past the 1024-token buffer) wedges the consumer's Run goroutine on a full
-// channel the moment a waiter stops draining — a deadlock that passes in
+// produces more dispatches than the buffer holds wedges the dispatching goroutine
+// on a full channel the moment a waiter stops draining — a deadlock that passes in
 // isolation but hangs the whole package to the -timeout under cross-test load
 // (RIG-2514). Dropping a token is safe: a drop happens only when the buffer is
 // full (hence non-empty), so a blocked waiter still has a token to drain and loop
@@ -312,6 +302,13 @@ type fakeReads struct {
 	// a message INTO the sweep/subscribe window without deadlocking other reads
 	// on the fake's lock.
 	beforeUndelivered func(store.AccountID)
+	// beforeMessageByID, when set, is called with the message id at the TOP of
+	// MessageByID before f.mu is acquired, so a test can act at the point a
+	// re-read happens (e.g. a concurrent hold between the scan's checks).
+	beforeMessageByID func(messageID string)
+	// reads records the scope of every MessageByID call, so a test can assert a
+	// re-read ran under the message's tenant and not the system role.
+	reads []readScope
 	// owedMentions is the OwedMentions read per agent (channel -> messages),
 	// distinct from `owed` (UndeliveredMessages / the cursor sweep). T2's
 	// sweepOwedMentions reads this map. RecordOwedMention appends into it and
@@ -344,6 +341,13 @@ type fakeReads struct {
 	// unroutedErr, when set, makes UnroutedMentionMessages fail — a test drives
 	// the batch-read-fault-stops-the-scan edge with it.
 	unroutedErr error
+}
+
+// readScope is the store scope one MessageByID call ran under.
+type readScope struct {
+	messageID  string
+	tenant     store.TenantID
+	systemRole bool
 }
 
 func newFakeReads() *fakeReads {
@@ -579,9 +583,14 @@ func (f *fakeReads) IsAgentAccount(_ context.Context, account store.AccountID) (
 	return f.agents[account], nil
 }
 
-func (f *fakeReads) MessageByID(_ context.Context, messageID string) (store.Message, error) {
+func (f *fakeReads) MessageByID(ctx context.Context, messageID string) (store.Message, error) {
+	if f.beforeMessageByID != nil {
+		f.beforeMessageByID(messageID)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	tenant, _ := store.TenantFromContext(ctx)
+	f.reads = append(f.reads, readScope{messageID: messageID, tenant: tenant, systemRole: store.IsSystemRole(ctx)})
 	m, ok := f.messages[messageID]
 	if !ok {
 		return store.Message{}, store.ErrNotFound
@@ -628,6 +637,20 @@ func (f *fakeReads) UndeliveredMessages(_ context.Context, agent store.AccountID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.owed[agent], nil
+}
+
+// readScopes returns the scope of every MessageByID call for messageID, in call
+// order.
+func (f *fakeReads) readScopes(messageID string) []readScope {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []readScope
+	for _, r := range f.reads {
+		if r.messageID == messageID {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // seedTopicNames registers a topic id's source channel+topic names the
@@ -728,13 +751,16 @@ func textMessage(id string, author store.AccountID, body string) store.Message {
 	}
 }
 
-// postedResponse builds a MessagePosted bus payload for msg.
-func postedResponse(msg *compassv1.Message) *compassv1.SubscribeCommsResponse {
-	return &compassv1.SubscribeCommsResponse{
-		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
-			MessagePosted: &compassv1.MessagePosted{Message: msg},
-		},
+// textMessageBlocks builds a store.Message with one text block per body on the
+// shared test channel ("chan-1"), so a test can mention the same @handle across
+// separate blocks and assert global dedup.
+func textMessageBlocks(id string, author store.AccountID, bodies ...string) store.Message {
+	m := textMessage(id, author, "")
+	m.Blocks = make([]store.MessageBlock, 0, len(bodies))
+	for _, body := range bodies {
+		m.Blocks = append(m.Blocks, store.MessageBlock{Text: &body})
 	}
+	return m
 }
 
 // wireText builds a wire Message with one text block on the shared test channel
@@ -748,29 +774,14 @@ func wireText(id string, author store.AccountID, body string) *compassv1.Message
 	}
 }
 
-// wireTextBlocks builds a wire Message with one text block per body on the
-// shared test channel ("chan-1"), so a test can mention the same @handle across
-// separate blocks and assert global dedup.
-func wireTextBlocks(id string, author store.AccountID, bodies ...string) *compassv1.Message {
-	blocks := make([]*compassv1.MessageBlock, 0, len(bodies))
-	for _, body := range bodies {
-		blocks = append(blocks, &compassv1.MessageBlock{Block: &compassv1.MessageBlock_Text{Text: body}})
-	}
-	return &compassv1.Message{
-		Id:              id,
-		TopicId:         "topic-1",
-		AuthorAccountId: string(author),
-		Blocks:          blocks,
-	}
-}
-
-// newTestConsumer builds a consumer over fresh fakes and returns them. The bus
-// is a real events.Bus so the tests exercise the true Subscribe/Publish tail.
+// newTestConsumer builds a consumer over fresh fakes and returns them. The
+// fabric is a fakeFabric (fakeFabricOf reaches it), so a test publishes refs and
+// fires reconnects the way the real fabric would.
 func newTestConsumer(t *testing.T) (*Consumer, *fakeDispatcher, *fakeResolver, *fakeReads) {
 	t.Helper()
 	disp := newFakeDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(events.NewBus[*compassv1.SubscribeCommsResponse](), reads, disp, res, discardLogger())
+	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
 	return c, disp, res, reads
 }

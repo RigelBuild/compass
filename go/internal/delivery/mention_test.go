@@ -3,7 +3,7 @@
 package delivery
 
 // The mention→steer routing acceptance cases (RIG-1569 T7, design record D5).
-// Each drives the consumer through the real events bus + hand-written fakes and
+// Each drives the consumer through the fake fabric + hand-written fakes and
 // gates on the recorder's observed dispatches (steer vs deliver) — never a sleep,
 // never a retry (rule://no-retries).
 
@@ -39,7 +39,7 @@ func TestMentionedMemberGetsSteerNotDeliver(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "hey @aa look here")))
+	postMessage(t, c, reads, textMessage("m1", author, "hey @aa look here"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -66,7 +66,7 @@ func TestUnmentionedSubscriberGetsDeliver(t *testing.T) {
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "hey @aa")))
+	postMessage(t, c, reads, textMessage("m1", author, "hey @aa"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -100,7 +100,7 @@ func TestNonMemberMentionIsNoop(t *testing.T) {
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@aa are you there")))
+	postMessage(t, c, reads, textMessage("m1", author, "@aa are you there"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -131,12 +131,12 @@ func TestSelfMentionAndReservedSelfNoop(t *testing.T) {
 	reads.handles["author"] = agentAccount(authorAgent, "author")
 	res.bind(authorAgent, "sess-author")
 	res.bind(agentB, "sess-b")
-	// The settled block set carries the self-mention AND the reserved ping.
-	reads.seedMessage(textMessage("m1", authorAgent, "@author @agents standup"))
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "streaming...")))
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "streaming..."))
 	c.waitHeld(t, "sess-author", 1)
+	// The settled block set carries the self-mention AND the reserved ping.
+	reads.seedMessage(textMessage("m1", authorAgent, "@author @agents standup"))
 	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	disp.waitForDispatches(t, 1)
 
@@ -172,7 +172,7 @@ func TestReservedAgentsExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "@agents sync")))
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "@agents sync"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -204,7 +204,7 @@ func TestMentionedAgentNoLiveSessionSkipped(t *testing.T) {
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@aa ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@aa ping"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -232,7 +232,7 @@ func TestSteerCarriesMessage(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m7", author, "@aa urgent")))
+	postMessage(t, c, reads, textMessage("m7", author, "@aa urgent"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()[0]
@@ -264,7 +264,7 @@ func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	startConsumer(t, c)
 
 	// @aa steers agent-a; agent-b (subscribed, unmentioned) gets a plain deliver.
-	c.bus.Publish(postedResponse(wireText("m1", human, "hey @aa")))
+	postMessage(t, c, reads, textMessage("m1", human, "hey @aa"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -292,7 +292,7 @@ func TestFromHandleMissDeliversWithEmptyHandle(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+	postMessage(t, c, reads, textMessage("m1", human, "hi"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -326,7 +326,7 @@ func TestDeliverAndSteerCarrySourceChannelAndTopicNames(t *testing.T) {
 	startConsumer(t, c)
 
 	// @aa steers agent-a; agent-b (subscribed, unmentioned) gets a plain deliver.
-	c.bus.Publish(postedResponse(wireText("m1", human, "hey @aa")))
+	postMessage(t, c, reads, textMessage("m1", human, "hey @aa"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -355,7 +355,7 @@ func TestSourceNameMissDeliversWithEmptyNames(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+	postMessage(t, c, reads, textMessage("m1", human, "hi"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -383,17 +383,17 @@ func TestStreamedMentionAtSettleEdgeSteers(t *testing.T) {
 	reads.handles["aa"] = agentAccount(agentA, "aa")
 	res.bind(authorAgent, "sess-author")
 	res.bind(agentA, "sess-a")
-	// The SETTLED, grown block set carries the @mention that the POSTED wire did
-	// not — the exact stream-in-at-settle gap D5 closes.
-	reads.seedMessage(textMessage("m8", authorAgent, "here you go @aa"))
 	startConsumer(t, c)
 
 	// Posted while streaming: NO mention yet, so it is HELD; nothing dispatched.
-	c.bus.Publish(postedResponse(wireText("m8", authorAgent, "one moment")))
+	postMessage(t, c, reads, textMessage("m8", authorAgent, "one moment"))
 	c.waitHeld(t, "sess-author", 1)
 	if got := disp.snapshot(); len(got) != 0 {
 		t.Fatalf("dispatched %d before settle, want 0 (held)", len(got))
 	}
+	// The author's turn grows the stored blocks with the @mention the posted
+	// version lacked — the exact stream-in-at-settle gap D5 closes.
+	reads.seedMessage(textMessage("m8", authorAgent, "here you go @aa"))
 
 	// Author settles: the held routing fires from the grown blocks and steers A.
 	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
@@ -424,7 +424,7 @@ func TestReservedUsersIsNoop(t *testing.T) {
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@users ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@users ping"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -459,7 +459,7 @@ func TestReservedEveryoneExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "@everyone sync")))
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "@everyone sync"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -490,7 +490,7 @@ func TestUnknownHandleMentionIsNoop(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@nobody ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@nobody ping"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -518,7 +518,7 @@ func TestMultiBlockMentionDedupsToOneSteer(t *testing.T) {
 	startConsumer(t, c)
 
 	// Same @aa in two distinct blocks: global dedup must collapse to one steer.
-	c.bus.Publish(postedResponse(wireTextBlocks("m1", author, "hey @aa", "again @aa")))
+	postMessage(t, c, reads, textMessageBlocks("m1", author, "hey @aa", "again @aa"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -548,7 +548,7 @@ func TestUnsubscribedOfflineMentionedMemberGetsNoImmediateDispatch(t *testing.T)
 	res.bind(agentB, "sess-b") // agentA is offline — never bound.
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "@aa ping")))
+	postMessage(t, c, reads, textMessage("m1", author, "@aa ping"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()

@@ -3,14 +3,13 @@
 package delivery
 
 // T5/RIG-2892 trace-propagation acceptance cases for the delivery consumer.
-// Each drives the consumer through the real events bus + hand-written fakes and
+// Each drives the consumer through the fake fabric + hand-written fakes and
 // event-gates on observed dispatches, never a sleep (rule://no-retries).
 
 import (
 	"context"
 	"testing"
 
-	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -39,13 +38,6 @@ func spanTraceparent(t *testing.T) (context.Context, string) {
 	return ctx, got
 }
 
-// publishCtxResponse publishes a MessagePosted onto the bus under ctx, so the
-// bus stamps ctx's active-span traceparent onto the Stamped envelope — the
-// publish-point origin the consumer's Run loop extracts (Move 1 + Move 2).
-func publishCtxResponse(bus *events.Bus[*compassv1.SubscribeCommsResponse], ctx context.Context, msg *compassv1.Message) {
-	bus.PublishCtx(ctx, postedResponse(msg))
-}
-
 // TestLiveDeliverAndSteerCarryPublisherTraceparent pins Moves 2+3 on the live
 // path: a message published under an active span carries that span's
 // traceparent onto BOTH the deliver op (to a plain subscriber) and the steer op
@@ -68,7 +60,8 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 
 		ctx, want := spanTraceparent(t)
 		// @aa steers agent-a; agent-b (subscribed, unmentioned) gets a deliver.
-		publishCtxResponse(c.bus, ctx, wireText("m1", human, "hey @aa"))
+		reads.seedMessage(textMessage("m1", human, "hey @aa"))
+		publishRef(t, ctx, c, testTenant, "m1")
 		disp.waitForDispatches(t, 2)
 
 		got := disp.snapshot()
@@ -95,7 +88,7 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 		startConsumer(t, c)
 
 		// A plain Publish (no span, no PublishCtx) ⇒ empty envelope traceparent.
-		c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+		postMessage(t, c, reads, textMessage("m1", human, "hi"))
 		disp.waitForDispatches(t, 1)
 
 		got := disp.snapshot()
@@ -107,7 +100,7 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 
 // TestHeldThenSettleCarriesOriginTraceparentAcrossSettleEdge pins Move 5 (the
 // load-bearing invariant): a message held while its agent author streams is
-// posted under span A on the bus goroutine, but fired at the author's settle
+// posted under span A on the fabric callback goroutine, but fired at the author's settle
 // edge on the bare settle-drain loop ctx (no active span). The origin
 // traceparent captured at hold() must be restamped at fireHeld(), so the
 // settled deliver carries A's trace across the goroutine boundary. Empty origin
@@ -128,7 +121,7 @@ func TestHeldThenSettleCarriesOriginTraceparentAcrossSettleEdge(t *testing.T) {
 
 		ctx, want := spanTraceparent(t)
 		// Post under span A while the author streams: HELD, nothing dispatched.
-		publishCtxResponse(c.bus, ctx, wireText("m1", authorAgent, "initial body"))
+		publishRef(t, ctx, c, testTenant, "m1")
 		c.waitHeld(t, "sess-author", 1)
 		if got := disp.snapshot(); len(got) != 0 {
 			t.Fatalf("dispatched %d before settle, want 0 (held)", len(got))
@@ -162,7 +155,7 @@ func TestHeldThenSettleCarriesOriginTraceparentAcrossSettleEdge(t *testing.T) {
 		startConsumer(t, c)
 
 		// Posted with no span ⇒ empty origin held ⇒ empty on the fired deliver.
-		c.bus.Publish(postedResponse(wireText("m1", authorAgent, "initial body")))
+		postMessage(t, c, reads, textMessage("m1", authorAgent, "initial body"))
 		c.waitHeld(t, "sess-author", 1)
 		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 		disp.waitForDispatches(t, 1)
@@ -190,7 +183,7 @@ func TestDispatchNeverBlocksWithoutProviderOrSpan(t *testing.T) {
 	startConsumer(t, c)
 
 	// No global provider installed by this test, no span on the publish ctx.
-	c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+	postMessage(t, c, reads, textMessage("m1", human, "hi"))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -231,7 +224,7 @@ func TestDispatchMetricIncrementsWithOpKindOnly(t *testing.T) {
 	startConsumer(t, c)
 
 	// @aa steers agent-a; agent-b gets a deliver — one of each op kind.
-	c.bus.Publish(postedResponse(wireText("m1", human, "hey @aa")))
+	postMessage(t, c, reads, textMessage("m1", human, "hey @aa"))
 	disp.waitForDispatches(t, 2)
 
 	var rm metricdata.ResourceMetrics
