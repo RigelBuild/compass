@@ -20,8 +20,8 @@ import (
 )
 
 // TestHandleLookupStoreFaultIsInternal drives each admin-door handle resolver
-// against a closed store, so every lookup fails with a fault rather than a miss.
-// The hub is live so the handlers reach resolution; none reaches a Runner call.
+// against a closed store, so the first lookup (the owner or user handle) fails
+// with a fault rather than a miss. The hub is live so the handlers reach resolution.
 //
 // Mutation: mapping every resolver error to handleNotFound in handleLookupError
 // turns each call into CodeNotFound.
@@ -31,6 +31,7 @@ func TestHandleLookupStoreFaultIsInternal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store Open: %v", err)
 	}
+	t.Cleanup(st.Close)
 	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: "admin", DisplayName: "admin"})
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)

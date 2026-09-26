@@ -9,10 +9,9 @@ import (
 
 // TestMessageReadsKeepAuthorWithoutHandleRow pins author_handle as a LEFT JOIN:
 // an author with no account_handles row still has its message read back, with
-// an empty AuthorHandle. An inner join would silently drop the message.
+// an empty AuthorHandle, through list, id, search, and request-id replay reads.
 //
-// Mutation: making ListMessages or MessageByID an INNER JOIN on account_handles
-// drops the row, so the list comes back empty or MessageByID is ErrNotFound.
+// Mutation: making any of those reads an INNER JOIN on account_handles drops the row.
 func TestMessageReadsKeepAuthorWithoutHandleRow(t *testing.T) {
 	ctx := context.Background() // test root context
 	s := newTestStore(t)
@@ -34,7 +33,7 @@ func TestMessageReadsKeepAuthorWithoutHandleRow(t *testing.T) {
 	}
 
 	ch := mustNamedChannelWith(t, s, owner.ID, "room", author)
-	id, _ := postAs(t, s, ch, author, "no handle row")
+	id, _ := postAs(t, s, ch, author, "unhandled author note")
 
 	list, err := s.ListMessages(ctx, ListMessagesQuery{Actor: owner.ID, ChannelID: ch})
 	if err != nil {
@@ -53,5 +52,24 @@ func TestMessageReadsKeepAuthorWithoutHandleRow(t *testing.T) {
 	}
 	if m.AuthorAccountID != author || m.AuthorHandle != "" {
 		t.Fatalf("MessageByID author = %q handle %q, want %q with an empty handle", m.AuthorAccountID, m.AuthorHandle, author)
+	}
+
+	found, err := s.SearchMessages(ctx, owner.ID, SearchScope{ChannelID: ch}, "unhandled", Page{})
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(found) != 1 || string(found[0].ID) != id || found[0].AuthorHandle != "" {
+		t.Fatalf("SearchMessages = %+v, want the one message %s with an empty handle", found, id)
+	}
+
+	// A replayed client_request_id returns the stored row via the request-id read.
+	msg := Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock("replayed")}}
+	first, _, err := s.AppendMessage(ctx, msg, string(ch), TopicRef{Name: "general"}, "crid-1")
+	if err != nil {
+		t.Fatalf("AppendMessage(first): %v", err)
+	}
+	again, inserted, err := s.AppendMessage(ctx, msg, string(ch), TopicRef{Name: "general"}, "crid-1")
+	if err != nil || inserted || again.ID != first.ID || again.AuthorHandle != "" {
+		t.Fatalf("AppendMessage(replay) = %+v inserted=%v err=%v, want %s replayed with an empty handle", again, inserted, err, first.ID)
 	}
 }
