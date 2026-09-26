@@ -28,10 +28,12 @@ check_headers() {
     {
       t = substr($0, 1, 1)
       line = $0
-      sub(/^([^ ]+ +){5}/, "", line)
+      # Padding sits only inside the first five fields; exactly one space
+      # follows the time, so a leading space in the name survives the strip.
+      sub(/^([^ ]+ +){4}[^ ]+ /, "", line)
       # restore-dir-modes feeds names to tar -T, which reads a leading "-" as an
       # option: "--directory=.." would retarget every later directory.
-      if (substr(line, 1, 1) == "-") { print "  option-like member name: " $0; bad = 1; next }
+      if (line ~ /^(-|\\ )/) { print "  option-like member name: " $0; bad = 1; next }
       if (t == "-" || t == "d") next
       if (t != "l" && t != "h") { print "  unsupported entry type: " $0; bad = 1; next }
       sep = (t == "l") ? " -> " : " link to "
@@ -124,7 +126,7 @@ restore_dir_modes() {
     # no trailing slash. The name is everything after the five-field prefix, in
     # tar's escape quoting, which -T unquotes.
     if tar --quoting-style=escape --numeric-owner -tvzf "$layer" \
-      | awk '$1 ~ /^d/ { sub(/^([^ ]+ +){5}/, ""); print }' > "$dirs"; then
+      | awk '$1 ~ /^d/ { sub(/^([^ ]+ +){4}[^ ]+ /, ""); print }' > "$dirs"; then
       tar -xzpf "$layer" -C "$root" --overwrite --no-recursion -T "$dirs"
     fi
   done

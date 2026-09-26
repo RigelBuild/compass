@@ -118,6 +118,20 @@ pkgs.runCommand "compass-guest-assembly-tests" { } ''
   tar -tzf e8.tgz | grep -qx -- '--directory=../\?' || fail "(e) e8 fixture lacks the option-like name"
   expect_break "option-like member name" assemble unpack "$(mktemp -d)" e8.tgz
 
+  mkdir -p "e9/ --directory=.." e9/escaped
+  tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --no-recursion \
+    --transform='s|^\./||' -C e9 -cf - "./ --directory=.." escaped | gzip -n > e9.tgz
+  tar -tzf e9.tgz | grep -qx -- ' --directory=../\?' || fail "(e) e9 fixture lacks the leading-space name"
+  expect_break "option-like member name" assemble unpack "$(mktemp -d)" e9.tgz
+
+  # (f) a leading space is part of the name, so that directory's mode restores.
+  mkdir -p "f2/ lead"; chmod 0555 "f2/ lead"
+  tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --no-recursion \
+    --transform='s|^\./||' -C f2 -cf - "./ lead" | gzip -n > f2.tgz
+  r=$(mktemp -d); tar -xzf f2.tgz -C "$r"; chmod 0755 "$r/ lead"
+  assemble restore-dir-modes "$r" f2.tgz
+  [ "$(stat -c %a "$r/ lead")" = 555 ] || fail "(f) ' lead' mode is $(stat -c %a "$r/ lead"), want 555"
+
   # A store symlink is what the real image ships, so it must pass.
   mkdir e5; ln -s /nix/store/00000000000000000000000000000000-x/bin/sh e5/sh
   mklayer e5.tgz e5 sh
