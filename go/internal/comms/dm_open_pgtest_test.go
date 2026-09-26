@@ -125,7 +125,7 @@ func TestOpenDMMalformedQualifierIsNotFound(t *testing.T) {
 	alice := mustAgent(t, st, owner.ID, "alice")
 	mustAgent(t, st, owner.ID, "bob")
 
-	for _, peer := range []string{"/bob", "owner/bob/x"} {
+	for _, peer := range []string{"/bob", "owner/bob/x", "owner/", "/"} {
 		_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peer}))
 		connectCodeIs(t, err, connect.CodeNotFound, "OpenDM("+peer+")")
 		var ce *connect.Error

@@ -761,10 +761,10 @@ func (s *Store) UserByHandle(ctx context.Context, handle string) (Account, error
 }
 
 // QualifiedHandle is a submitted account handle parsed into its owner qualifier
-// and bare handle. Owner is empty for a bare handle (`matt`, `compass-ux`),
-// non-empty for an owner-qualified agent handle (`matt/compass-ux` → Owner
-// "matt", Handle "compass-ux"). Raw preserves the exact submitted spelling so a
-// resolver error can name it back verbatim (the oracle-safe message contract).
+// and bare handle (`matt/compass-ux` → Owner "matt", Handle "compass-ux"). Use
+// Qualified (the separator), never an empty Owner, to tell bare from qualified;
+// Malformed flags a qualified spelling that breaks the one-level grammar. Raw
+// preserves the submitted spelling so a resolver error can name it verbatim.
 type QualifiedHandle struct {
 	Owner  string
 	Handle string
