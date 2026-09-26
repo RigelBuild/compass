@@ -41,7 +41,7 @@ func TestWakeAgentLiveIsNoOp(t *testing.T) {
 
 	// Make the agent LIVE through the real Provision->Start promotion path the
 	// hub drives: bindContainer then promoteSession bind (agent -> live session).
-	if _, _, err := f.hub.Provision(ctx, "prov-live", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID)}); err != nil {
+	if _, _, err := f.hub.Provision(ctx, "prov-live", f.agentID, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if _, err := f.hub.Start(ctx, "start-live", &compassv1.StartAgentSessionRequest{ContainerName: fakeContainer}); err != nil {
@@ -245,7 +245,7 @@ func TestWakeAgentSingleflightCoalescesToOneStart(t *testing.T) {
 	// leader's StartResume->promoteSession promotes the agent LIVE. That closes the
 	// residual race: a follower reaching wakeGroup.Do just after the leader releases
 	// finds the agent live at the not-live pre-check and no-ops.
-	if _, _, err := f.hub.Provision(ctx, "prov-sf", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID)}); err != nil {
+	if _, _, err := f.hub.Provision(ctx, "prov-sf", f.agentID, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
 		t.Fatalf("Provision (bind container): %v", err)
 	}
 	f.runner.forget()

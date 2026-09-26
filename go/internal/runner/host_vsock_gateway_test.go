@@ -107,7 +107,7 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 	h, engine := newVsockGatewayFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
@@ -181,7 +181,7 @@ func TestVsockProvisionTeardownClosesListener(t *testing.T) {
 	h, engine := newVsockGatewayFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -221,7 +221,7 @@ func TestVsockProvisionServeFailureTearsDownSession(t *testing.T) {
 		t.Fatalf("pre-occupying suffixed path: %v", err)
 	}
 
-	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err == nil {
 		t.Fatal("Provision with an unservable suffixed path = nil, want a Serve error")
 	}
@@ -243,7 +243,7 @@ func TestVsockProvisionResolveMissTearsDownSession(t *testing.T) {
 	engine.missing = true
 	ctx := context.Background()
 
-	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err == nil {
 		t.Fatal("Provision with an unresolvable endpoint = nil, want an error")
 	}
@@ -275,7 +275,7 @@ func TestVsockRefreshConfigSkipsProbedSession(t *testing.T) {
 	// the gate present it is never reached (the probe short-circuits first).
 	_ = stubRelabelAnyRoot(t)
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}

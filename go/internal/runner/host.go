@@ -41,7 +41,7 @@ const (
 // spec. Keeping it a seam means Provision is fully wired to AgentRuntime.Launch
 // without T4 hard-coding image/egress derivation that later tiers own.
 type SpecBuilder interface {
-	BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error)
+	BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (runtime.AgentSpec, error)
 }
 
 // vsockGatewayEngine is the unexported backend probe the microVM runtime
@@ -173,8 +173,8 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 // idempotent (no duplicate container) before this runs; a genuine spec/launch
 // failure surfaces here, and a socket already serving that container name is
 // reused rather than double-served (idempotent retry).
-func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest) (string, error) {
-	spec, err := h.specs.BuildSpec(req)
+func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (string, error) {
+	spec, err := h.specs.BuildSpec(req, accountID)
 	if err != nil {
 		return "", err
 	}

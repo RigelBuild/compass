@@ -26,7 +26,7 @@ import (
 )
 
 // bindContainer records that container_name was provisioned for agentAccountID.
-// Called from Provision with the request's agent_account_id. Start later
+// Called from Provision with the resolved account id. Start later
 // promotes this to a session binding under the minted session_id. An empty
 // account or container is ignored — a provision that named no account cannot
 // bind one (the comms call it would later serve fails closed instead).

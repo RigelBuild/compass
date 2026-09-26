@@ -28,7 +28,8 @@ type SessionHost interface {
 	// Provision creates the isolated per-agent container for a workstream via the
 	// AgentRuntime façade, returning its stable container_name. Provision and
 	// start are separate: a container can exist idle before a session runs in it.
-	Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest) (containerName string, err error)
+	// accountID is the server-resolved id from the envelope, never req.agent_handle.
+	Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (containerName string, err error)
 	// Stop tears a session down. Stopping an unknown/already-stopped session
 	// succeeds (idempotent, matching the established StopAgentSession semantics).
 	Stop(ctx context.Context, sessionID string) error
@@ -326,7 +327,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 			return d.errorResult(ctx, id, ctx.Err())
 		}
 		defer func() { <-d.provisionSem }()
-		containerName, err := d.host.Provision(ctx, c.Provision)
+		containerName, err := d.host.Provision(ctx, c.Provision, cmd.GetAgentAccountId())
 		if err != nil {
 			return d.errorResult(ctx, id, err)
 		}

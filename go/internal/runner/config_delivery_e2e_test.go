@@ -209,7 +209,7 @@ type e2eSpecBuilder struct {
 	name string
 }
 
-func (b e2eSpecBuilder) BuildSpec(_ *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
+func (b e2eSpecBuilder) BuildSpec(*compassv1.ProvisionAgentWorkspaceRequest, string) (runtime.AgentSpec, error) {
 	return runtime.AgentSpec{
 		Name:  b.name,
 		Image: agentImage,
@@ -305,7 +305,7 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	// 1. Seed the fleet at v1 and bring the container + agent online.
 	pub.setConfigBundle(AgentConfigBundle{Version: v1hash, Tarball: buildConfigTarball(t, validBundle())})
 
-	container, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "e2e"})
+	container, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "e2e")
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}

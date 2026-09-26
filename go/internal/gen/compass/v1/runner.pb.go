@@ -471,6 +471,13 @@ type SessionsResponse struct {
 	// Tag 14: the next free tag after resume_body = 13. A fresh tag, never a
 	// reused one.
 	FreshSessionId string `protobuf:"bytes,14,opt,name=fresh_session_id,json=freshSessionId,proto3" json:"fresh_session_id,omitempty"`
+	// agent_account_id — the server-resolved agent account id for a `provision`
+	// command, a TOP-LEVEL sibling outside the command oneof like fresh_session_id.
+	// INTERNAL-ONLY: the public `provision` request is relayed verbatim, so its
+	// agent_handle keeps its one meaning (the owner-qualified handle) and never
+	// carries an id. Set only on a provision; the Runner rejects a provision
+	// without it. Tag 15: the next free tag after fresh_session_id = 14.
+	AgentAccountId string `protobuf:"bytes,15,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -619,6 +626,13 @@ func (x *SessionsResponse) GetResumeBody() *ResumeBody {
 func (x *SessionsResponse) GetFreshSessionId() string {
 	if x != nil {
 		return x.FreshSessionId
+	}
+	return ""
+}
+
+func (x *SessionsResponse) GetAgentAccountId() string {
+	if x != nil {
+		return x.AgentAccountId
 	}
 	return ""
 }
@@ -2086,7 +2100,7 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\tprovision\x18\x06 \x01(\v2+.compass.v1.ProvisionAgentWorkspaceResponseH\x00R\tprovision\x12/\n" +
 	"\x05error\x18\a \x01(\v2\x17.compass.v1.RunnerErrorH\x00R\x05error\x12B\n" +
 	"\x06remove\x18\b \x01(\v2(.compass.v1.RemoveAgentWorkspaceResponseH\x00R\x06removeB\b\n" +
-	"\x06result\"\xc8\x06\n" +
+	"\x06result\"\xf2\x06\n" +
 	"\x10SessionsResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12<\n" +
@@ -2103,7 +2117,8 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	" \x01(\v2'.compass.v1.RemoveAgentWorkspaceRequestH\x00R\x06remove\x127\n" +
 	"\vresume_body\x18\r \x01(\v2\x16.compass.v1.ResumeBodyR\n" +
 	"resumeBody\x12(\n" +
-	"\x10fresh_session_id\x18\x0e \x01(\tR\x0efreshSessionIdB\t\n" +
+	"\x10fresh_session_id\x18\x0e \x01(\tR\x0efreshSessionId\x12(\n" +
+	"\x10agent_account_id\x18\x0f \x01(\tR\x0eagentAccountIdB\t\n" +
 	"\acommand\"/\n" +
 	"\n" +
 	"ResumeBody\x12!\n" +

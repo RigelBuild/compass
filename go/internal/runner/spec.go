@@ -184,11 +184,10 @@ func ResolveAgentImage(engine runtime.WorkloadRuntime, configured string) (strin
 	return "", true, nil
 }
 
-// BuildSpec maps the request's agent account onto a full AgentSpec, filling
-// image/egress/workspace-layout from the defaults.
-func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
+// BuildSpec maps the server-resolved agent account id onto a full AgentSpec,
+// filling image/egress/workspace-layout from the defaults.
+func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (runtime.AgentSpec, error) {
 	d := b.defaults
-	accountID := req.GetAgentHandle()
 	if err := validAccountID(accountID); err != nil {
 		return runtime.AgentSpec{}, err
 	}
