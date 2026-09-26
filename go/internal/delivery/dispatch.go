@@ -63,17 +63,19 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	}
 
 	// Agent-authored. If the author has a live session, HOLD until it settles;
-	// otherwise, or if the turn that posted it already settled, deliver now,
-	// re-reading the settled blocks from the store — mirroring fireHeld, never
-	// the posted (possibly partial) wire message (design.md:177-178, :306).
+	// otherwise deliver now, re-reading the settled blocks from the store —
+	// mirroring fireHeld, never the posted (possibly partial) wire message
+	// (design.md:177-178, :306).
 	authorSession, live := c.resolver.SessionForAccount(ctx, author)
-	if !live || c.hold(ctx, authorSession, messageID, msg.GetAtUnixMs()) {
+	if !live {
 		c.fanOutStored(ctx, messageID)
+		return
 	}
+	c.hold(ctx, authorSession, messageID, msg.GetAtUnixMs())
 }
 
 // fanOutStored delivers a message now from its stored blocks: the author has no
-// live turn, or the turn that posted it already settled.
+// live turn.
 func (c *Consumer) fanOutStored(ctx context.Context, messageID string) {
 	wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
 	if err != nil {
@@ -87,21 +89,37 @@ func (c *Consumer) fanOutStored(ctx context.Context, messageID string) {
 
 // hold registers messageID under its author's session for later firing at the
 // author's settle edge (design.md:157-160), in post order. It captures the origin
-// trace and tenant from ctx for fireHeld. It returns true without registering
-// when the author already settled at or after atUnixMs, so the caller fires now.
-// Clock skew between Server instances can still leave such a message held.
-func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, atUnixMs int64) (fireNow bool) {
+// trace and tenant from ctx for fireHeld. If the author already settled at or
+// after atUnixMs, it also queues a settle edge, so the loop fires it at once and
+// still behind any earlier message of that author.
+//
+// The two clocks come from different instances. A settling clock behind the
+// committing one holds a message until the next settle, which is benign. A
+// settling clock ahead by more than the gap between turns fires a still-streaming
+// message early, with partial blocks. One process stamping both has no skew.
+func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, atUnixMs int64) {
 	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx)}
 	if tenant, ok := store.TenantFromContext(ctx); ok {
 		entry.tenant = tenant
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if settled, ok := c.lastSettle[authorSession]; ok && settled >= atUnixMs {
-		return true
-	}
 	c.held[authorSession] = append(c.held[authorSession], entry)
-	return false
+	settled, ok := c.lastSettle[authorSession]
+	fireNow := ok && settled >= atUnixMs
+	if fireNow {
+		// lastSettle stays as is: this is a replay of that settle, not a new one.
+		c.settleQueue = append(c.settleQueue, settleEvent{
+			sessionID: authorSession,
+			state:     compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
+		})
+	}
+	c.mu.Unlock()
+	if fireNow {
+		select {
+		case c.notify <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // fanOut dispatches one settled message. It first routes any `@`-mentions to a

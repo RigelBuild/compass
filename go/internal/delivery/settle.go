@@ -88,20 +88,13 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 }
 
 // drainSettles fires every queued author-settle edge under the loop's ctx. Each
-// edge fires the messages held for that author session, in post order, from each
-// message's CURRENT (settled) stored blocks (design.md:158-168), then clears the
-// registry entry. A pre-T9 Runner link loss has no Runner-observed process exit,
-// so no settle edge fires to clear its held entry; it is left in place until it
-// is reaped. The reap happens in-process on the next Runner (re-)enroll via the
-// hub's SessionReapSink (OnSessionsReaped), which drops the entry for every
-// session id enroll just cleared. The reap is best-effort, not a hard bound: a
-// Deliver that resolved the author LIVE just before enroll cleared the maps can
-// re-hold the session just AFTER that enroll's reap. The same logical id can now
-// be re-promoted after re-enroll, and a later settle can clear the entry; if it
-// is not re-promoted or settled, it can remain until process restart. No-loss is
-// unaffected regardless — the reconnect sweep still delivers the message
-// (design.md:168-176); only the leak bound, not the delivery guarantee, is
-// best-effort.
+// edge fires the messages held for that author session, in post order, from
+// each message's CURRENT (settled) stored blocks (design.md:158-168), then
+// clears the registry entry. An edge for a session with nothing held is a no-op.
+//
+// A pre-T9 Runner link loss never enqueues an edge. No-loss still holds: the
+// sweeps skip only messages held for a LIVE author, so the cursor sweep
+// delivers an entry stranded under a dead session (design.md:168-176).
 func (c *Consumer) drainSettles(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -134,8 +127,8 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 		ev := c.startQueue[0]
 		c.startQueue = c.startQueue[1:]
 		c.mu.Unlock()
-		// Skip held messages: fireHeld re-resolves recipients at settle, so this
-		// session still gets them, with their settled blocks.
+		// Skip messages held for a live author: fireHeld re-resolves recipients
+		// at settle, so this session still gets them with their settled blocks.
 		c.sweepSession(ctx, ev.account, ev.sessionID, true)
 		if err := c.sweepPins(ctx, ev.account, ev.sessionID); err != nil {
 			c.log.ErrorContext(ctx, "delivery: sweep pins on session start", "error", err,
@@ -295,19 +288,10 @@ func (c *Consumer) fireHeld(ctx context.Context, authorSession string) {
 	}
 }
 
-// OnSessionsReaped drops the held-deliver registry entries for sessions whose
-// hub bindings were cleared at a Runner (re-)enroll (SessionReapSink). A pre-T9
-// Runner link loss has no Runner-observed process exit, so no settle edge fires
-// fireHeld to clear its entry; this enroll-bounded reap realizes the design's
-// promised cleanup (design.md:172-175). The reap is best-effort, not a hard
-// bound: a concurrent Deliver that resolved the author LIVE just before enroll
-// cleared the maps can re-hold the session just AFTER that enroll's reap. The
-// same logical id may be re-promoted after re-enroll; a later settle can clear
-// the entry, but if the session is not re-promoted or settled the entry may
-// remain until process restart. No-loss is unaffected: any message still owed
-// is redelivered by the recipient's reconnect cursor sweep. Pure in-memory work
-// under c.mu — it does not enqueue onto the consumer loop or touch the store, so
-// it is safe to run directly on the hub's enroll goroutine.
+// OnSessionsReaped drops the held-deliver and settle-time entries for sessions
+// whose hub bindings were cleared at a Runner (re-)enroll, so a pre-T9 link loss
+// does not leak an entry (design.md:172-175). The cursor sweep still delivers
+// what was held, since it skips only live authors' messages.
 func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -318,26 +302,41 @@ func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 }
 
 // sweepAllLive is the recovery pass a fabric reconnect or the floor tick runs:
-// it redelivers every owed message to every live agent session, skipping held
-// ones so partial blocks never go out ahead of fireHeld (message_id dedup would
-// drop the settled deliver).
+// it redelivers every owed message to every live agent session, skipping those
+// held for a live author so partial blocks never go out ahead of fireHeld
+// (message_id dedup would drop the settled deliver).
 func (c *Consumer) sweepAllLive(ctx context.Context) {
 	for account, sessionID := range c.resolver.LiveAgentSessions() {
 		c.sweepSession(ctx, account, sessionID, true)
 	}
 }
 
-// heldIDs snapshots every held message id.
+// heldIDs snapshots the ids held for LIVE author sessions. An entry stranded
+// under a dead session has no settle coming, so the sweeps must deliver it.
 func (c *Consumer) heldIDs() map[string]struct{} {
+	live := c.liveSessionIDs() // resolver read stays outside c.mu
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ids := make(map[string]struct{})
-	for _, entries := range c.held {
+	for sid, entries := range c.held {
+		if _, ok := live[sid]; !ok {
+			continue
+		}
 		for _, e := range entries {
 			ids[e.messageID] = struct{}{}
 		}
 	}
 	return ids
+}
+
+// liveSessionIDs snapshots the set of live agent session ids.
+func (c *Consumer) liveSessionIDs() map[string]struct{} {
+	bound := c.resolver.LiveAgentSessions()
+	live := make(map[string]struct{}, len(bound))
+	for _, sid := range bound {
+		live[sid] = struct{}{}
+	}
+	return live
 }
 
 // sweepSession redelivers one agent's owed messages in seq order under the
