@@ -91,6 +91,11 @@ SELECT owner_user_id
 FROM agent_accounts
 WHERE account_id = $1;
 
+-- name: GetAccountHandle :one
+SELECT handle
+FROM account_handles
+WHERE account_id = $1;
+
 -- name: ResolveOwner :one
 SELECT COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)::text AS owner;
 
