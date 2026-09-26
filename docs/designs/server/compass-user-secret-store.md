@@ -505,8 +505,8 @@ integrity for user/agent `scope_id` is enforced at the store door instead:
 transaction, the `secrets_scope_shape` CHECK holds the shape, and
 `declared_by` (FK, ON DELETE RESTRICT) still ties every row to a real
 account. What door-side enforcement does NOT give is delete-time behavior —
-what happens to an agent-scoped row when its agent account is deleted is an
-open question, not silently decided here.
+what happens to an agent-scoped row when its agent account is deleted is
+resolved by D11.
 
 **Resolution: most-specific-wins, collapsed in SQL.** The injected
 environment holds ONE value per name: an agent-scoped row shadows the
@@ -1070,8 +1070,8 @@ to `Active (key-custody clause superseded by the user-secret store record)`.
 | DL-362 | The canonical user-secret AAD is the five-field tuple `"compass/user-secret/v1\x00" + tenantID + "\x00" + decimal(scopeKind) + "\x00" + scopeID + "\x00" + name + "\x00" + decimal(keyVersion)` (Go: `UserSecretAAD(tenantID string, scopeKind int16, scopeID, name string, keyVersion int16) []byte`; SMALLINTs rendered `strconv.FormatInt(int64(v), 10)`), every field bound unconditionally (a tenant row binds scopeID as the empty string) with `\x00` separators keeping the encoding injective. Fixed BEFORE any migration ships because the AAD is baked into every ciphertext — a scope field added later would force a re-encrypt of every row. Refines DL-351's four-field AAD clause; DL-351's other rulings stand | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
 | DL-363 | Writing a tenant-scoped user-secret row requires an admin (`store.UserRoleAdmin`, `go/internal/store/types.go`), reusing the existing role elevation rather than introducing a permission concept: tenant (0) admin-only, user (1) and agent (2) writable by the owning user or an admin. SUPERSEDED IN PART by DL-370: the role check lands at the RPC edge, not the store door, which keeps DL-360's scope-shape and referential checks. READS are deliberately asymmetric — a plain user's agent resolves tenant rows, which is the point of a shared tenant value under DL-361; reading a shared secret is the feature, writing one is the privileged act. The wire surface is now ruled by DL-370 (a `SecretScope` selector on `SetSecretRequest`/`DeleteSecretRequest`) | Active (Matt, 2026-09-12) | [user-secret store §D8](compass-user-secret-store.md#resolved-decisions) |
 | DL-370 | `SetSecretRequest`/`DeleteSecretRequest` gain a `SecretScope scope` selector, and the default is USER scope — an unspecified scope writes `(scope_kind=1, scope_id=caller)`, so a client that omits the field gets the private-by-default coordinate rather than a tenant-wide value every other user's agents resolve. Tenant scope is explicit and requires `store.UserRoleAdmin`, checked at the RPC edge (where `requireUser`'s existing `GetAccount` already holds the role) rather than the store door, which keeps DL-360's scope-shape and referential checks. Agent scope gets no wire surface: agents hold no write door, so an agent-scoped write has no authenticated writer to authorize. SUPERSEDES DL-361's "pinned to the tenant coordinate" clause and DL-363's enforcement point, keeping DL-363's authorization matrix. Corrects a factual error in D8: no admin check existed on the user-secret write path — `classifyProcedure` returns `authenticatedOpen` for both verbs — so T5 adds the gate rather than documenting one. Behavior change stated not silent: a re-set writes a NEW user-scoped row and does NOT retire the pre-existing tenant row, which keeps resolving for every other user until an admin deletes it at explicit tenant scope | Active (Matt, 2026-09-12) | [user-secret store §D9](compass-user-secret-store.md#resolved-decisions) |
-| DL-376 | A user-secret row's `declared_by` is provenance only (who last wrote the row); it carries no authorization weight, and write/delete authority stays with the DL-363/DL-370 scope rules at the RPC edge | Active (Matt, 2026-09-25) | [user-secret store](compass-user-secret-store.md#resolved-decisions) |
-| DL-377 | User- and agent-scoped `secrets` rows may linger after their account is gone while no account-delete path exists (pre-production wipe posture); the change that adds account deletion must delete that account's scoped rows in the same transaction, at the Go door rather than a DB trigger | Active (Matt, 2026-09-25) | [user-secret store](compass-user-secret-store.md#resolved-decisions) |
+| DL-376 | A user-secret row's `declared_by` is provenance only (the account that first declared the row; a rewrite keeps it); it carries no authorization weight, and write/delete authority stays with the DL-363/DL-370 scope rules at the RPC edge | Active (Matt, 2026-09-25) | [user-secret store](compass-user-secret-store.md#resolved-decisions) |
+| DL-377 | User- and agent-scoped `secrets` rows may linger after their account is gone while no account-delete path exists (pre-production wipe posture); the change that adds account deletion must, in the same transaction, delete that account's scoped rows at the Go door rather than a DB trigger and resolve `declared_by`'s ON DELETE RESTRICT for rows it declared outside its own scope (RIG-4032) | Active (Matt, 2026-09-25) | [user-secret store](compass-user-secret-store.md#resolved-decisions) |
 
 ## Resolved decisions
 
@@ -1234,22 +1234,25 @@ the draft argued for, and because D1 supersedes part of a frozen record.
   (`requireUser` rejects agent tokens), so an agent-scoped write has no
   authenticated writer to authorize. Ledger: DL-370.
 - **D10 — `declared_by` is provenance only (Matt, 2026-09-25, RIG-4003 Q1
-  option A).** It records who last wrote the row. It carries no authorization
+  option A).** It names the account that first declared the row; a rewrite
+  keeps it (`UpsertSecret` does not update it). It carries no authorization
   weight: who may write or delete a row is decided only by the D8/D9 scope
   rules at the RPC edge. A second ownership rule would disagree with the scope
   rules for tenant rows, which have no single owner. Ledger: DL-376.
 - **D11 — Scoped rows on account deletion: accept lingering rows now, sweep
   before GA (Matt, 2026-09-25, RIG-4003 Q2 "A then B").** Today no path deletes
   an account, so no scoped row can be orphaned yet; the pre-production wipe
-  posture covers the gap. The change that first adds account deletion must
-  delete that account's user- or agent-scoped `secrets` rows in the same
-  transaction, in Go at the door beside the other account-delete effects, not
-  in a trigger. Ledger: DL-377.
+  posture covers the gap. The change that first adds account deletion must, in
+  the same transaction, delete that account's user- or agent-scoped `secrets`
+  rows (in Go at the account-delete door, not a trigger, which would be the
+  only one in the schema) and resolve `declared_by`'s ON DELETE RESTRICT for
+  rows the account declared outside its own scope. Tracked as RIG-4032.
+  Ledger: DL-377.
 
 ## Open questions
 
-The 2026-09-11 scope ruling makes the following genuinely ambiguous. Each
-needs a Matt ruling; none is silently decided by this amendment.
+Every question below is now resolved; they stay listed so the trail from the
+2026-09-11 scope ruling to each decision is visible.
 
 - ~~**What `declared_by` means beside `scope_id`.**~~ RESOLVED by D10
   (2026-09-25): provenance only.
