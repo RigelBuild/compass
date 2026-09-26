@@ -4,7 +4,7 @@ Tracking: RIG-1243 (Go-port wave follow-up flagged at PR #771 merge).
 
 **This record supersedes design compass-0.5 D5's `Ask` shape by citation**
 (`docs/designs/product/compass-0.5/design.md:288`, "D5 — The UI pivots around
-the communication layer"; the frozen single-question `compass.v1.Ask` is D5's
+the communication layer"; the single-question `compass.v1.Ask` is D5's
 contract child). Per the AGENTS.md freeze rule a frozen record is never
 rewritten — a change ADDS a superseding record, and this is that record. Matt
 ruled the contract fork: **Option A — reshape `compass.v1.Ask` to
@@ -34,7 +34,7 @@ const askSchema = arkType({
 });
 ```
 
-while the frozen `compass.v1.Ask` is **single-question**
+while the current `compass.v1.Ask` is **single-question**
 (`proto/compass/v1/comms.proto:277-288`):
 
 ```proto
@@ -61,7 +61,7 @@ onto it.
 
 ## Approach — Option A: reshape `Ask` → `repeated AskQuestion` (buf-breaking)
 
-Reshape the frozen contract so one `Ask` carries the native ask's full
+Reshape the contract so one `Ask` carries the native ask's full
 question list, each question carrying every native axis, and one
 `RespondToAsk` answers all of them atomically. This is a **deliberate
 buf-breaking change**: `buf.yaml` gates the schema at
@@ -263,7 +263,7 @@ rather than asked — see Resolved decisions for the reasoning):
   `custom_text`, so it maps as a free-text-only question. (This dissolves the
   prior record's OQ7.)
 - **`timed_out` lives on `AskQuestion` as audit state**, beside
-  `chosen_option_ids`/`custom_text` — same pattern the frozen shape used for
+  `chosen_option_ids`/`custom_text` — same pattern the prior shape used for
   chosen ids ("kept for audit", comms.proto:286-287). Whether the Compass
   answer path ever *sets* it (native auto-selects on timeout,
   `getAutoSelectionOnTimeout`, ask.ts:161-167) is RIG-1310's interception-seam
@@ -371,9 +371,9 @@ rendered ask live rather than decorative.
 
 ## Alternatives considered
 
-### The per-axis gap map (against the pre-reshape frozen contract)
+### The per-axis gap map (against the pre-reshape contract)
 
-Every axis on which native OMP `ask` and the pre-reshape frozen
+Every axis on which native OMP `ask` and the pre-reshape
 `compass.v1.Ask` disagreed, verified at source this run. Under Option A every
 row gains a carrier (see Axis carriers above); this map is what B/C would
 have dropped and what D would have carried additively:
@@ -413,7 +413,7 @@ Declined with B, a fortiori.
 ### Option D — additive, non-breaking proto evolution (declined)
 
 Reach the same parity by ADDING `repeated AskQuestion questions = 6` and the
-axis carriers alongside the frozen fields 1-5 (deprecated-in-comment, never
+axis carriers alongside the existing fields 1-5 (deprecated-in-comment, never
 removed), dual-writing `questions[0]` into the legacy single-question fields
 during transition. Under `buf.yaml:19-21` (`breaking: use: [FILE]`) additions
 are non-breaking, so D reaches full atomic parity with no buf-break and no

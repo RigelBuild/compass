@@ -64,7 +64,7 @@ no convergence refactor ever needed.
 
 - **Toolchain:** module `github.com/RigelBuild/compass/go`, go 1.25.0
   (`go/go.mod`).
-- **DL-053 (FROZEN, Matt 2026-07-27, `DECISIONS.md:76`) — the target model,
+- **DL-053 (Matt 2026-07-27, `DECISIONS.md:76`) — the target model,
   not an option:** "Forge subscriptions are Server-side Postgres rows with a
   per-artifact FETCH cursor (advanced on any 200) split from a per-subscriber
   DELIVERY cursor (advanced only on that subscriber's own successful notify),
@@ -107,7 +107,7 @@ no convergence refactor ever needed.
   pre-existing `issues` CHECK `IN (1, 2, 3)` (`0013_issues.sql:32`) excludes
   Linear and is a SEPARATE prerequisite for actually ingesting Linear
   issues — out of scope here, documented as OQ-E.
-- **DL-129 (FROZEN, Matt 2026-08-04, `DECISIONS.md:176`):** tracker native
+- **DL-129 (Matt 2026-08-04, `DECISIONS.md:176`):** tracker native
   status "is ingested into the DL-070 server projection through the reverse
   `TrackerStatusMapping` (DL-053 poll; echo-suppressed in tracker-status
   space, tracker-sourced transitions never mirror back, stale polls dropped
@@ -116,7 +116,7 @@ no convergence refactor ever needed.
   (`forge.Issue.State`, `provider.go:45-46` — "the forge's truth
   (\"open\" | \"closed\")"), so PR-C MUST NOT re-fetch the endpoint (see
   Approach → the one-fetch-path guarantee).
-- **OQ-6 (FROZEN, Matt 2026-07-27):** the GitHub client is hand-rolled over
+- **OQ-6 (Matt 2026-07-27):** the GitHub client is hand-rolled over
   `net/http`, **no new dependency** (~300 LOC); go-github is REJECTED — it
   lacks a conditional-request + budget mechanism hook. Conditional requests
   (`If-None-Match`/ETag → treat `304 Not Modified` as no-change) and honoring
@@ -275,15 +275,15 @@ as `0015`). The division of labor:
   LIST walk (DDL below; the driver's own working table).
 - **`agent_forge_subscriptions` + `forge_artifact_cursors`** — the DL-053
   per-artifact agent-notification machinery, writer-less this slice: nothing
-  this slice EXECUTES touches them; they land as anticipatory schema, shape
-  frozen + pgtest-covered (T2 test 7) before their writers (PR-C / the
+  this slice EXECUTES touches them; they land as anticipatory schema,
+  pgtest-covered (T2 test 7) before their writers (PR-C / the
   agent-notification slice) exist.
 
 Adaptations, now all settled (the two that were OQ-D's sub-forks are ruled;
 the rest are the mechanical application of existing tree standards):
 
 - **Coordinate alignment (author-decided):** the spec'd DDL keys on
-  `provider TEXT` and omits the forge host; the tree's frozen issue
+  `provider TEXT` and omits the forge host; the tree's issue
   coordinate is `(forge_provider SMALLINT, forge_host, repo, number)`
   (`0013_issues.sql:29-35` — "forge coordinate: the idempotency key"). Every
   0015 key adopts the 0013 convention (SMALLINT provider enum + `forge_host
@@ -722,7 +722,7 @@ Mirrors the two established precedents exactly:
 
 ## Alternatives considered
 
-- **(a) go-github library — REJECTED (OQ-6, frozen Matt 2026-07-27).** It
+- **(a) go-github library — REJECTED (OQ-6, Matt 2026-07-27).** It
   would add a dependency for what is ~300 LOC of `net/http`, and its
   high-level API lacks the hook this driver's core mechanism needs:
   first-class conditional-request (`If-None-Match`/304) handling fused with an

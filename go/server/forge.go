@@ -328,7 +328,7 @@ func (s *forgeService) dedup(ctx context.Context, caller store.AccountID, client
 // one (#995 design.md:2487-2488). Only create_issue / create_pull_request mint
 // an artifact coordinate (kind issue|pull_request); the comment/review arms have
 // no coordinate to record, so they never reach here (F3 is create-only per the
-// frozen ruling, design.md:149-155/971-982).
+// ruling, design.md:149-155/971-982).
 func (s *forgeService) record(ctx context.Context, rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, kind store.ForgeArtifactKind, number uint64) *compassv1internal.ForgeCallError {
 	err := s.store.RecordAuthoredArtifact(ctx, store.AuthoredArtifact{
 		Provider:        store.ForgeProvider(rf.provider),

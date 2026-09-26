@@ -24,8 +24,8 @@ import (
 // hash, redacted for exactly that reason — secrets.go String/GoString omit it);
 // duplicating that hash here for zero benefit would reopen it on the un-redacted
 // signal path. So this stays a monotonic counter, deliberately un-redacted.
-// (Frozen invariant, driver-committed: runner.proto:213-220 SecretsVersion doc,
-// design record §916-918. Do NOT "optimize" this into a hash.)
+// (Pinned by runner.proto:213-220 SecretsVersion doc and design record
+// §916-918. Do NOT "optimize" this into a hash.)
 func (h *Hub) mintSecretsVersion() string {
 	return strconv.FormatUint(h.secretsVersion.Add(1), 10)
 }

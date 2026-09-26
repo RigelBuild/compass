@@ -1,7 +1,7 @@
 # Fabric subjects and JetStream configuration
 
 The written spec for the NATS eventing substrate: the five subject grammars, the
-dead-letter subject, and the JetStream stream/consumer configuration. Frozen by
+dead-letter subject, and the JetStream stream/consumer configuration. Set by
 `docs/designs/infra/runtime/compass-managed-multitenancy/design.md` §T3/§Q3;
 this file is the operational restatement that later tasks build against, and
 `package fabric` is its only implementation.
@@ -19,7 +19,7 @@ this file is the operational restatement that later tasks build against, and
 | `compass.routing.binding.*` | core NATS | `RoutingBindingWildcardSubject()` | Servers → every Server (cross-tenant invalidation, **subscribe-side only**) |
 | `compass.dlq.comms` | core NATS | `DLQSubject` | fabric → operator (parked events) |
 
-`client.<sessionID>` sits outside the `compass.` root deliberately — the frozen
+`client.<sessionID>` sits outside the `compass.` root deliberately — the
 grammar names it that way, and it must not be captured by the comms stream's
 subject wildcard.
 

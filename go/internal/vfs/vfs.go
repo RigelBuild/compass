@@ -76,7 +76,7 @@ var ErrSnapshotNotImplemented = errors.New("vfs: Snapshot store is implemented i
 
 // ErrArchiveNotImplemented is the honest sentinel the P2 backend returns from
 // the reserved Archive method: the verb's consumer is D4's cold-idle (OQ-2), so
-// the signature is frozen here and the object-store implementation deferred.
+// the signature is reserved here and the object-store implementation deferred.
 var ErrArchiveNotImplemented = errors.New("vfs: Archive is reserved at P2 and implemented in D4")
 
 // ErrRestoreNotImplemented is the honest sentinel the P2 backend returns from
@@ -91,12 +91,12 @@ type Volume struct {
 	HostRoot  string
 }
 
-// VolumeSnapshotID is the opaque key of a stored volume snapshot (frozen opaque
-// by the parent record; never parsed by callers).
+// VolumeSnapshotID is the opaque key of a stored volume snapshot (opaque per
+// the parent record; never parsed by callers).
 type VolumeSnapshotID string
 
 // ArchiveRef is the opaque reference to an archived volume in the object store
-// (consumed by D4's cold-idle; signature frozen here, implementation deferred —
+// (consumed by D4's cold-idle; signature reserved here, implementation deferred —
 // see OQ-2).
 type ArchiveRef string
 

@@ -89,7 +89,7 @@ plus the accent left rule, never a raised background.
 - **Classes:** `.cx-axis-badge` · `data-axis` (`ci | review`) · `data-status`
   · `data-compact`; contains `.cx-axis-code` (the `CI` / `RV` mono label) and a
   9×9 `.glyph` SVG.
-- **What it is:** the frozen Option B — a fixed 2-char axis code in the mono UI
+- **What it is:** the chosen Option B — a fixed 2-char axis code in the mono UI
   face followed by a 9×9 1-bit pixel-art status glyph. The wrapper's
   `data-axis`+`data-status` is the single source of truth: it sets `color`,
   which paints both the code text and (via `currentColor`) the glyph fill. The
@@ -210,7 +210,7 @@ surface is tracked as a follow-up, out of scope for the Compass adoption
 - **Class:** `.cx-state-dot` · `data-state`, `data-alive="1"` (working only).
 - **States (agent process axis):** `working | idle | waiting | done | paused |
   stopped | error | disconnected` — the eight `AgentState` values, keyed 1:1
-  against the frozen brand vocabulary.
+  against the brand vocabulary.
 - **Geometry:** a 9×9 1-bit bitmap grid, `shape-rendering="crispEdges"` (no
   anti-aliasing). Glyph geometry is fixed by the grids below; `compass-ui`
   emits identical inline SVG.
@@ -222,7 +222,7 @@ surface is tracked as a follow-up, out of scope for the Compass adoption
 - **Tokens:** `--cx-st-working/-idle/-waiting/-done/-paused/-stopped/-error/
   -disconnected`, `--cx-pulse-period`, `--cx-ease-out`.
 
-### The eight frozen state glyphs (canonical 9×9 grids)
+### The eight state glyphs (canonical 9×9 grids)
 
 `#` = lit cell, `.` = off. The dot box is 9px (one CSS px per grid cell —
 razor-crisp per the brand 1-bit whole-cell rule); it sits within the ~12px

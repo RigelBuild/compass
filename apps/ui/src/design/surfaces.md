@@ -4,7 +4,7 @@ This document is the per-surface composition spec for the Compass ADE. Where
 `components.md` owns the component vocabulary — the `.cx-*` classes, their
 `data-*` variants, and the `--cx-*` tokens each consumes — this document owns how
 those contracts compose into the surfaces a user actually lives in. The
-information architecture is frozen upstream; structure comes from the IA
+information architecture is set upstream; structure comes from the IA
 records, look and navigation come from here.
 
 Each surface is specified along five facets:

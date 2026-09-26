@@ -973,9 +973,9 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 		Role:    handle.Role(),
 	}
 	// On the host tier the socket and config live in the handle's state dir, not at
-	// the frozen /run/compass paths (no mounts). Thread those overrides so the agent
+	// the default /run/compass paths (no mounts). Thread those overrides so the agent
 	// dials/reads where the host leg served them. Absent for container tiers, which
-	// resolve the frozen defaults.
+	// resolve the defaults.
 	h.mu.Lock()
 	transport, ok := h.hostTransports[handle.Name()]
 	h.mu.Unlock()

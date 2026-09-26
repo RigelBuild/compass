@@ -52,7 +52,7 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	if !authorIsAgent {
 		// Human-authored: settled at post, deliver immediately from posted blocks.
 		// A wire message carries only its topic; resolve the channel it lives in
-		// through topics.channel_id (the frozen record's topic->channel resolution).
+		// through topics.channel_id (the design record's topic->channel resolution).
 		channel, err := c.st.MessageChannel(ctx, messageID)
 		if err != nil {
 			c.log.ErrorContext(ctx, "delivery: resolve message channel", "error", err, "message_id", messageID)

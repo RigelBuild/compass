@@ -41,7 +41,7 @@ observation panel" (`ChannelView.tsx:150-152`).
 
 Non-goals (ticket): no chat-in-a-box mega-component; no Kobalte/corvu a11y
 primitives (deferred); no change to the `AppStore` contract or component tree
-(#783's frozen surface); no Go.
+(#783's surface); no Go.
 
 Spec-impact: none. Net-new UI rendering entirely below the store seam
 (`store.ts:10-13`: "the accessors below stay and their bodies swap the fixture
@@ -463,7 +463,7 @@ alternatives already argued inline in §Approach.
 
 - **Chat-in-a-box mega-components (Deep Chat, Loquix, and kin):** rejected —
   ticket non-goal. They own the whole surface (composer, list, bubbles),
-  which collides with the frozen #783 component tree, the `AskBlock` contract
+  which collides with the #783 component tree, the `AskBlock` contract
   (first-responder-wins, settled-lock — defended by `ChannelView.test.tsx`),
   and the Compass-specific mention syntax. We need two narrow capabilities,
   not a chat product.
@@ -498,7 +498,7 @@ Every task below inherits these; task briefs do not restate them.
   the catalog carries only shared toolchain deps (root `package.json:26-31`);
   app runtime deps are pinned in the app (`@tauri-apps/api: "^2"`,
   `solid-js: "^1.9.13"`, app `package.json:8-10`).
-- **No `AppStore` contract or component-tree change** (#783 frozen).
+- **No `AppStore` contract or component-tree change** (#783, a ticket non-goal).
   `MentionText` chip semantics and the whole `AskBlock` ask contract are
   preserved; the existing `ChannelView.test.tsx` suite stays green.
 - **Guard-clean:** no new source line matches

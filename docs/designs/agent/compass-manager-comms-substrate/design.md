@@ -50,7 +50,7 @@ do not exist today:
    `compass-sidebar-pins/design.md:74`) — no server message, no broadcast, no
    redelivery. The pinned board here is server-side broadcast *content*.
 
-This record designs the three together, riding the frozen notification-delivery
+This record designs the three together, riding the notification-delivery
 rail (DL-071/072/073) and the agent tree (DL-095), design only — implementation
 lands later in the `RigelBuild/compass` repo.
 
@@ -70,7 +70,7 @@ written; no new authz policy is invented").
 
 ### A1 — RIG-1721: roster query — a `GetRoster` RPC + `compass_roster` tool over the D4 presence snapshot
 
-**Read path, not a new projection.** DL-074 froze presence as a 4-state
+**Read path, not a new projection.** DL-074 defined presence as a 4-state
 in-memory projection: "the hub keeps the last-published state per agent in
 memory (presence is ephemeral truth about a live pipeline; it deliberately has
 NO durable table)" (`compass-notification-delivery/design.md:491-494`), with
@@ -220,7 +220,7 @@ channel's *location* without touching its *policy*.
 
 ### A3 — RIG-1723: pinned board — a pure pointer set over existing topic-scoped messages; edit = topic-mandatory post + repoint, so redelivery IS delivery
 
-**Not DL-096.** Stated once more for the freeze: DL-096's sidebar pins are
+**Not DL-096.** Stated once more: DL-096's sidebar pins are
 "a per-user client-local UI preference (`localStorage`-backed …)"
 (`DECISIONS.md:156`) — presentation, no server state. RIG-1723's pinned board
 is server-side channel content: authored by the channel owner, stored in
@@ -229,7 +229,7 @@ word, nothing else; neither supersedes the other.
 
 **The board is a pure pointer set; pinning never creates a message.** A
 pinned-board entry references an EXISTING `Message` row by id — and under the
-frozen topic model every message lives in exactly one topic ("every message
+topic model every message lives in exactly one topic ("every message
 belongs to exactly one topic (`messages.topic_id NOT NULL`) and stores only
 that topic id — never a channel id", DL-098, `DECISIONS.md:170`;
 `Message.topic_id = 2`, `comms.proto:276-284`), so a pin points at a message
@@ -243,7 +243,7 @@ topic-mandatory path (`compass_post_message`/`PostMessage`, whose request
 carries the mandatory `oneof topic { topic_id = 6; topic_name = 7; }`,
 `comms.proto:679-682`), then repoint the pin at the new id (compare-and-swap,
 T6). This one choice makes every hard delivery question dissolve into the
-frozen rail:
+existing rail:
 
 - **Redeliver-on-edit = plain delivery of a new message.** DL-072's
   exactly-once comes from agent-side `message_id` dedup

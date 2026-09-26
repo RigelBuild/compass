@@ -5,7 +5,7 @@ the coordinator-role slice of), RIG-2673 (org-management tools — the spawn
 `role`/`persona` wire field this composes with), RIG-1732 (role → block-0
 mechanism). Design only — no code ships with this record.
 
-**Frozen decisions (Matt, designed against, not relitigated):**
+**Matt's decisions (designed against, not relitigated):**
 
 1. Three Manager roles — `supervisor` / `owner` / `manager` — replace today's
    single `manager` role.
@@ -195,7 +195,7 @@ server-authoritative-empty invariant quoted in §Problem: role becomes
 **Validation source: a server constant, not a bundle walk.** The check is a
 fixed `[]string{"supervisor", "owner", "manager"}` in `go/server` (beside
 `rootSupervisorRole`), NOT a lookup of the current config bundle's `prompts/`
-members. Rationale: the taxonomy is a frozen product decision — a closed set —
+members. Rationale: the taxonomy is a product decision — a closed set —
 while the bundle is operator-mutable state; deriving legality from the bundle
 would let an arbitrary label become spawnable by publishing a prompt dir, and
 would make spawn validity flap with config pushes. The bundle-absent case is
@@ -345,7 +345,7 @@ T6, one release) is the plan.
 - **PUBLIC repo** (RigelBuild/compass): the record, prompts, and concepts doc
   are published verbatim; no private-repo artifacts, no linked tracker URLs
   (bare RIG-NNNN per `docs/designs/CONTRIBUTING.md` rule 1).
-- **Frozen taxonomy:** exactly `supervisor` / `owner` / `manager`. No worker
+- **Closed taxonomy:** exactly `supervisor` / `owner` / `manager`. No worker
   role. Every spawned node carries one of the three. These are decisions, not
   parameters of any task below.
 - **Role label is a path segment.** The traversal guard at

@@ -249,7 +249,7 @@ type Querier interface {
 	// (effectiveVisibilityCTE / viewerCTE / channelVisiblePredicate /
 	// groupVisiblePredicate). The copies MUST stay textually identical so the stream
 	// edge's single-id visibility check cannot drift from the list read (the
-	// anti-drift guarantee the frozen record requires).
+	// anti-drift guarantee the design record requires).
 	InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) error
 	InsertChannelPin(ctx context.Context, arg InsertChannelPinParams) error
 	InsertCoordinationChannel(ctx context.Context, arg InsertCoordinationChannelParams) (string, error)

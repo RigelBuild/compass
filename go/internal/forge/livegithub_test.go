@@ -48,7 +48,7 @@ const liveLinearSkipMessage = "live linear oracle: LINEAR_FORGE credential unset
 // fixtures), so a bare tagged run skips it cleanly with this one-line literal.
 const liveUpdateSkipMessage = "live update capture: -update unset; skipping fixture regeneration"
 
-// Env contract (frozen design T2 interfaces, RIG-3096 App-credential cutover).
+// Env contract (design T2 interfaces, RIG-3096 App-credential cutover).
 // The GitHub live legs now authenticate as two GitHub Apps (author + reviewer),
 // each an App id + installation id + PEM private key, so the oracle exercises
 // the production installation-token mint path (githubapp.go NewAppTokenSource)

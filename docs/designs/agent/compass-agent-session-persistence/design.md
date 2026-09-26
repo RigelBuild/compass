@@ -395,7 +395,7 @@ append throws it (`session-manager.ts:674`).
   rebuildable, never in the resume path — a new RIG-1580-adjacent follow-up)
   and the retention GC that reclaims ended-session PG hot-tails are both named
   seams, not built here.
-- **The socket/control transport.** Frozen by the consolidation record;
+- **The socket/control transport.** Owned by the consolidation record;
   nothing here touches carrier, framing, or the `AgentControl` envelope —
   the parked `TranscriptReplay` shell stays parked, untouched.
 - **Runner-side shipping.** No step ships logs after teardown; the Runner
@@ -700,7 +700,7 @@ message ResumeBody {
 
 // SessionsResponse gains resume_body as a TOP-LEVEL sibling (beside request_id,
 // OUTSIDE the command oneof) — NOT a field inside the `start` variant, which
-// stays the frozen public StartAgentSessionRequest relayed verbatim.
+// stays the public StartAgentSessionRequest relayed verbatim.
 message SessionsResponse {
   // string request_id = 1; oneof command { start = 2 … secrets_version = 8 }
   // unchanged — `start` is still the verbatim public request.
@@ -711,7 +711,7 @@ message SessionsResponse {
 The carrier is a TOP-LEVEL sibling field on the internal `SessionsResponse`
 envelope (`ResumeBody resume_body = <N>`, beside `request_id` and OUTSIDE the
 `command` oneof), NOT a field inside the `start` variant — `start` stays the
-frozen public `StartAgentSessionRequest` relayed verbatim. `<N>` is a FRESH
+public `StartAgentSessionRequest` relayed verbatim. `<N>` is a FRESH
 internal tag confirmed at authoring time (next free after `secrets_version =
 8`) — NOT the retired `ResumeContext resume = 12` slot (F8/DL-065): reusing a
 freed tag, even internal-only, invites confusion, and the record's

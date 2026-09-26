@@ -2,12 +2,12 @@
 
 > Freezes on merge; later changes supersede by citation, never rewrite
 > (`../compass-0.5/design.md:10-12`, convention restated in
-> `../compass-0.6/design.md:1116-1118`). This record is EXECUTION AGAINST A
-> FROZEN DELIVERY MODEL: Matt's round-two/round-three rulings in
+> `../compass-0.6/design.md:1116-1118`). This record implements the delivery
+> model in Matt's round-two/round-three rulings in
 > `../compass-0.6/design.md` (RT-2 home channel, RT-3 turn-end delivery, the
 > delivery-timing amendment) and the merged Server-ownership-layer record
-> (`../compass-server-ownership-layer/design.md`, #995) are consumed and cited,
-> never re-decided. Tracker: RIG-1569. Lane: compass-comms (driver);
+> (`../compass-server-ownership-layer/design.md`, #995), cited throughout.
+> Tracker: RIG-1569. Lane: compass-comms (driver);
 > co-owned pieces are named per task.
 
 ## Problem / Intent
@@ -32,7 +32,7 @@ notifications (#995) ride.
 
 ## Approach
 
-### The frozen inputs, verbatim (consumed, never re-decided)
+### The inputs, verbatim
 
 - **RT-3 — turn-end delivery: deliver → queue → coalesce → ack** (Matt,
   round-three, `../compass-0.6/design.md:1454-1468`, restated `:1839-1843`): a
@@ -78,7 +78,7 @@ notifications (#995) ride.
   co-owned: it lands as compass-spec's consolidated RIG-1310 follow-up, in
   coordination with compass/compass-agent — never unilaterally from this lane.
 - **#995 Server ownership layer** (merged 2026-07-30,
-  `../compass-server-ownership-layer/design.md`): Decision 5 freezes the forge
+  `../compass-server-ownership-layer/design.md`): Decision 5 sets the forge
   subscription model — Server-stored subscriptions, a per-artifact FETCH cursor
   split from a per-subscriber DELIVERY cursor, poll-based in v1, and delivery
   over "the EXISTING push path": one additional `SessionsResponse` oneof
@@ -115,7 +115,7 @@ is today, a router with typed dispatch methods (`commands.go:48-119` pattern).
 disjunct.** On `MessagePosted(channel_id)`: resolve agent members —
 `channel_members cm JOIN agent_accounts aa ON aa.account_id = cm.account_id
 WHERE cm.channel_id = $1 AND (cm.subscribed OR cm.channel_id =
-aa.home_channel_id)`. The disjunct is a frozen-model-fidelity repair, not an
+aa.home_channel_id)`. The disjunct is a model-fidelity repair, not an
 optimization: RT-2 makes home-channel subscription "implicit, not a togglable
 row" (`../compass-0.6/design.md:441-444`), but the BUILT store makes it an
 ordinary togglable row — `CreateAgent` seeds it `subscribed=TRUE`
@@ -123,7 +123,7 @@ ordinary togglable row — `CreateAgent` seeds it `subscribed=TRUE`
 member's row via `ON CONFLICT … DO UPDATE SET subscribed = EXCLUDED.subscribed`
 (`channels.go:442-456`); the no-clobber protection covers only the i>0
 pulled-in owner rows (`DO NOTHING`, `channels.go:459-463`). The query enforces
-the frozen guarantee read-side, independent of the row's flag. A store-side
+the RT-2 guarantee read-side, independent of the row's flag. A store-side
 guard rejecting a `subscribed=false` flip on the home row is optional
 belt-and-suspenders owned by compass-server (`channels.go`), not required for
 delivery correctness. The author is excluded (an agent never receives its own
@@ -310,7 +310,7 @@ are T2 red-first tests.
 
 **Advance on ack: resolve the message id, mark, fill gaps.** The agent emits
 one `AgentFrame.delivery_ack` per processed message (the new variant, D3),
-carrying the acked `message_id` — the frozen shape
+carrying the acked `message_id` — the shape RT-3 specifies
 (`../compass-0.6/design.md:1426-1428`). It rides the `PublishEvents` spine
 like the other two control-plane acks (`agent.proto:54-67`) and the RunnerHub
 routes it to the cursor store (a new arm in `Deliver`'s frame switch,
@@ -389,15 +389,14 @@ message DeliverControl {
 }
 // AgentFrame gains (additive, buf-breaking-safe like ReplayCompleteAck/ControlAck):
 message DeliveryAck {
-  // The acked message id — the FROZEN ack shape: compass-0.6:1426-1428 froze
-  // delivery_ack as "carrying the acked message id so the Server advances
-  // the … delivery cursor".
+  // The acked message id — compass-0.6:1426-1428 specifies delivery_ack as
+  // "carrying the acked message id so the Server advances the … delivery cursor".
   string message_id = 1;
 }
 ```
 
 The ack is per message: N coalesced delivers → N `delivery_ack` frames, one
-per processed message (the singular frozen shape; compass-agent independently
+per processed message (the singular shape; compass-agent independently
 cites the same `delivery_ack{message_id}` and leans per-message). Acks ride
 the loss-tolerant Publish spine (`agent.proto:54-67`), so N small frames is
 cheap for MVP; a lost ack costs one redelivery, which the message_id dedup
@@ -415,7 +414,7 @@ what it needs from the full shape. compass-agent has confirmed exactly this
 (full `Message`, agent formats from structured fields, citing RIG-1310), so
 OQ-2 is a documented resolution, not an open fork.
 
-**Mention-borne steer gets the same treatment.** The frozen model routes an
+**Mention-borne steer gets the same treatment.** The 0.6 model routes an
 `@`-mention as `AgentControl.steer` sourced from a channel `PostMessage`
 (`../compass-0.6/design.md:425-430`) — also a first-party `Message`. So the
 channel-borne `SteerControl` carries the same single `Message` field (no seq;
@@ -522,7 +521,7 @@ fail a post.
 
 **Resolution and routing.** Each parsed handle resolves to an account; an agent
 account that is a **member** of the channel (subscribe state irrelevant, per the
-frozen amendment `../compass-0.6/design.md:454-458`) is routed a `steer` op
+amendment `../compass-0.6/design.md:454-458`) is routed a `steer` op
 carrying the same `Message` (D3). The author exclusion applies here exactly as
 it does to deliver (D1): an agent whose own post mentions its own handle — or
 posts `@agents` in a channel it is a member of — never steers itself; the
@@ -561,7 +560,7 @@ orthogonal to whether the AUTHOR'S message is settled).
 
 ### D6 — Issue/PR notification delivery: the same rail, payload deferred
 
-**The mechanism is D1's, generically.** #995 Decision 5 froze the subscription
+**The mechanism is D1's, generically.** #995 Decision 5 set the subscription
 model (Server-stored `forge_subscriptions` with a per-subscriber
 `delivered_revision` delivery cursor, per-artifact fetch cursor, 60s conditional
 polling) and the path ("no new transport": one `SessionsResponse` variant, one
@@ -583,7 +582,7 @@ now would freeze against a moving target. Deferred as OQ-6, RATIFIED (Matt,
 load-bearing for the forge leg only; it gates no channel-delivery task).
 
 **Scope note — ask-answer push is a fourth rider, deliberately out of scope.**
-The frozen model routes a `RespondToAsk` answer into the session as
+The 0.6 model routes a `RespondToAsk` answer into the session as
 `AgentControl.ask_answer` and makes it the wake that ends an idle-waiting
 agent (`../compass-0.6/design.md:405-407`, `:418-421`) — the same
 Server→Runner→agent rail this record builds. `AskAnswerControl` is already
@@ -606,13 +605,13 @@ a `RespondToAsk` hook calling the same `ControlDispatcher` (T3) — filed as
   them. `AgentPresenceChanged` (D4) is a PUBLIC comms.proto message and rides
   the public lane — it must NOT appear in the fence list.
 - **Egress seal.** No new network path out of the agent container. All
-  agent-bound traffic rides the frozen per-container Unix socket
+  agent-bound traffic rides the per-container Unix socket
   (`AgentGateway.Control`); all Server→Runner traffic rides the existing
   Runner-opened `Sessions`/`PublishEvents` streams (dial-out inversion,
   `runner.proto:57-66`). Nothing in this record opens an inbound route.
-- **Frozen-model fidelity.** RT-2/RT-3/the delivery-timing amendment and #995
-  Decision 5 are consumed as written; a task that would deviate stops and
-  escalates rather than reinterpreting.
+- **Model fidelity.** RT-2/RT-3/the delivery-timing amendment and #995
+  Decision 5 are the model this record implements; a task that would deviate
+  stops and escalates rather than reinterpreting.
 - **Proto co-ownership.** Every `agent.proto`/`runner.proto` change here lands
   as part of compass-spec's consolidated RIG-1310 follow-up, coordinated with
   compass-agent — one schema PR, both sides regenerate (`buf generate` all
@@ -636,7 +635,7 @@ comms.proto delta.
 Populate `DeliverControl { compass.v1.Message message = 1; }` and the
 channel-borne `SteerControl` field (same single `Message`); add
 `AgentFrame.delivery_ack = 6` carrying `DeliveryAck { string message_id = 1; }`
-(the frozen shape, `../compass-0.6/design.md:1426-1428`); add the generic
+(the RT-3 shape, `../compass-0.6/design.md:1426-1428`); add the generic
 control-op relay variant to `SessionsResponse.command` — no new SUCCESS
 result variant: the success receipt rides `AgentFrame.delivery_ack` per
 RT-3, not the runner result stream, but a refusal rides the existing
@@ -799,7 +798,7 @@ turn-end coalescing queue → single `prompt` at turn end (immediate when idle)
 channel-borne steer → `agent.steer` with the formatted message, acked the
 same way. Replay-barrier refusal semantics unchanged.
 
-- Interfaces: `immediate.deliver(msg)` populated (frozen C4 signature,
+- Interfaces: `immediate.deliver(msg)` populated (the C4 signature,
   `control-source.ts:153-156`); a coalescing queue + a processed-`Message.id`
   set in `CompassAgent`; ack emission via the existing sink
   (`this.#sink.emit`, `agent.ts:138-141` pattern) as
@@ -959,10 +958,10 @@ non-load-bearing and merges on the recommendation. No open fork remains.
 - **OQ-4 (load-bearing, UPGRADED) — cursor keying: per-(agent, channel)
   durable vs RT-3's literal "per-session". RATIFIED (Matt, 2026-07-29):
   per-(agent, channel) durable, amending RT-3's "per-session" wording.**
-  RT-3's frozen text says "the
+  RT-3's text says "the
   **Server** tracks **per-session** delivery from those acks"
   (`../compass-0.6/design.md:1461-1464`) — and this record re-keys the cursor
-  to `(agent_account_id, channel_id)`, a frozen-WORDING departure that was
+  to `(agent_account_id, channel_id)`, a departure from RT-3's wording that was
   Matt's to ratify, not this record's to self-rule — and he has. The re-key
   is well-motivated: compass-0.6 also calls the cursor "durable" (`:1467`),
   containers are stateless and replaced routinely (#995 Decision 5's

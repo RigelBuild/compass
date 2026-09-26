@@ -2,11 +2,11 @@
 
 Tracker: SEA
 
-> **Extends #995 (frozen).** This record is a sibling amendment to
+> **Extends #995 (merged).** This record is a sibling amendment to
 > `docs/designs/server/compass-server-ownership-layer/design.md` (merged in
 > #995). The merged record is frozen; per the frozen-record convention a later change ADDS
 > a record. This amendment reconciles #995's forge-shaped proto type family to
-> the single canonical `compass.v1` family frozen by
+> the single canonical `compass.v1` family defined by
 > `docs/designs/server/compass-issue-model/design.md` (#1018).
 
 ## Problem / Intent
@@ -23,7 +23,7 @@ Matt's type-architecture ruling (2026-07-31, ratified as DL-069,
 DECISIONS.md:127) supersedes that family: Compass owns a **single** canonical
 `compass.v1` `Issue`/`PullRequest` type pair; "the server translates raw forge
 data into these types at ingestion, the raw forge shape is never a proto/wire
-type" (DL-069). The frozen #1018 record names this amendment as the
+type" (DL-069). The #1018 record names this amendment as the
 reconciliation site:
 
 > "(PR #995's earlier sketch of forge-proxy proto messages under these names
@@ -38,7 +38,7 @@ the canonical `compass.v1` types. Nothing here is a retrofit of shipped wire
 surface: the #995 T1 proto is **not yet built** — `grep` of the live proto
 tree (`proto/compass/v1/`, compass repo) finds no `ForgeCall`, `ForgeAuthor`,
 or `RelayForgeCall` symbol, and no `go/internal/forge` package exists. The
-amendment edits the frozen plan's remaining work, not deployed protocol.
+amendment edits the #995 plan's remaining work, not deployed protocol.
 
 ## Approach
 
@@ -60,7 +60,7 @@ wire**. Three layers, one type family:
    *emits across the wire* changes.
 
 2. **The wire — the canonical `compass.v1` family only.** What crosses any
-   proto boundary is #1018's frozen family, defined in `compass.proto`
+   proto boundary is #1018's canonical family, defined in `compass.proto`
    (package `compass.v1`), not `agent_gateway.proto`:
    - `Issue` (#1018 design.md:169-197) — "The board unit: a Compass Issue —
      the forge issue's fields PLUS the Compass agent attribution PLUS the
@@ -195,7 +195,7 @@ Constraints below.
 
 ## Global Constraints
 
-Every task below inherits these; they restate the frozen gates that bind the
+Every task below inherits these; they restate the gates that bind the
 amended proto work, confirmed against the live tree this run.
 
 - **No AI tool, agent-product, or persona names** anywhere in the record, the
@@ -209,7 +209,7 @@ amended proto work, confirmed against the live tree this run.
   or `RelayForgeCall` symbol (grep of `proto/compass/v1/`, this run) — so the
   amended add-list is still a purely additive change and passes the `breaking`
   task (`buf breaking … --against origin/main`, #995 design.md:1490-1491) with
-  no new exemption. Nothing is ever removed from a shipped wire surface.
+  no new exemption. This change removes nothing from a shipped wire surface.
 - **Files touched** (amending #995 T1's list, design.md:1625-1639):
   the NEW leaf `proto/compass/v1/forge.proto` (`ForgeNotification`/
   `ForgeNotificationKind`, `ForgeArtifactKind`, `CommentRef`; imports only

@@ -9,14 +9,14 @@ routing (design.md:507-562) and OQ-3's offline clause (design.md:951-960).
 
 Ledger: this record's PR appends a new `DL-<n>` row to
 `docs/designs/product/DECISIONS.md` in the same diff (§Ledger delta at the end
-of this record). DL-071/DL-073 stay Active — this record amends the frozen
+of this record). DL-071/DL-073 stay Active — this record amends the
 OQ-3 offline clause by citation, it does not reverse the steer-only precedence
 or the control-op shapes.
 
-> **Amends `compass-notification-delivery` (frozen).** Per the frozen-record
+> **Amends `compass-notification-delivery` (merged).** Per the merged-record
 > convention a later change ADDS a record (sibling precedent:
 > `compass-sidebar-pins-unreachable-amendment`,
-> `compass-server-ownership-layer-amendment`); the frozen record is never
+> `compass-server-ownership-layer-amendment`); the merged record is never
 > edited in place. All file+line grounding below was verified against the
 > working tree this run (jj workspace off main `6200cde3`).
 
@@ -76,7 +76,7 @@ mention→steer routing set […] this query is the same JOIN shape MINUS the
 `(cm.subscribed OR home_channel)` disjunct, so an unsubscribed non-home agent
 member is STILL returned." So the mention is routed-at but never delivered.
 
-The frozen contract this amends is D5's offline promise
+The contract this amends is D5's offline promise
 (`compass-notification-delivery/design.md:546-549`): "A mentioned agent with no
 live session gets nothing now and picks the message up as a swept `deliver` on
 next start — a steer is a mid-turn interrupt by definition; there is no turn to
@@ -150,7 +150,7 @@ cursor position". Unlike the pin step it dispatches each owed mention as a
 STEER (the `dispatchSteerTo` shape, `dispatch.go:141`), preserving D5
 mention→steer semantics for the mention-gap population (§Decisions OQ-4).
 The row is cleared when
-the message is acked (`AgentFrame.delivery_ack{message_id}`, the frozen D3
+the message is acked (`AgentFrame.delivery_ack{message_id}`, the D3
 ack) — via a deliberate restructure of `AckDelivery`
 (`go/internal/store/delivery_cursors.go:93`) that T1 specifies: the existing
 txn's cursor-gated early-return/rollback path would otherwise never commit
@@ -210,7 +210,7 @@ type AskAnswerWaker interface {
 - nil-safe: a consumer with no waker wired is exactly today's behavior minus
   loss (the owed row still lands; delivery waits for the next natural start);
 - best-effort and void: a wake fault is logged, never fails the post or the
-  fan-out — the frozen "mention routing can never fail a post" property
+  fan-out — the "mention routing can never fail a post" property
   (design.md:521-523) holds unchanged.
 
 The implementation RESUMES the offline agent's most recent session — never a
@@ -303,12 +303,12 @@ mention it was already going to be a steer, so we deliver as a steer to keep
 the semantics the same; in practice they both do the same thing to an agent
 who isn't running a turn" (Matt, 2026-08-21). D5 mention→steer is preserved
 for that population by `sweepOwedMentions`, the only start-sweep step that
-dispatches a steer. Steer-only precedence (the frozen record's OQ-3,
+dispatches a steer. Steer-only precedence (the delivery record's OQ-3,
 RATIFIED) keeps its ratified meaning throughout: exactly one signal per
 message per agent — never steer + deliver.
 
 The two other woken populations receive a PLAIN deliver, not a steer, and
-this is correct — it is the frozen offline behavior (design.md:546-548: an
+this is correct — it is the existing offline behavior (design.md:546-548: an
 offline subscribed mentioned member "picks the message up as a swept
 `deliver` on next start"), not a regression:
 
@@ -324,7 +324,7 @@ offline subscribed mentioned member "picks the message up as a swept
 
 So the steer ruling is scoped precisely to the mention-gap population — the
 one population the owed row exists for; the woken steer acks through the
-frozen message_id ack, which clears the owed row (T1's restructured
+message_id ack, which clears the owed row (T1's restructured
 `AckDelivery`) for that no-cursor population.
 
 **"Natural start", defined (§Decisions OQ-3):** a natural start is the next
@@ -383,7 +383,7 @@ the pre-settle window every consumer-processed fact shares (§Decisions
 OQ-5); once
 `routeMentions` runs, the owed row survives wake failure, restart, and
 re-enroll. Durable fact first, in-memory coordination second (the same
-reasoning the frozen record uses for the cursor itself, design.md D2).
+reasoning the delivery record uses for the cursor itself, design.md D2).
 Rejected standalone; its targeted-dispatch idea survives inside the decided
 design as the start-sweep's owed-mention step.
 
@@ -423,7 +423,7 @@ own.
   a cursor-swept or live-delivered copy, exactly as the pin sweep already
   relies on (`go/internal/delivery/settle.go:150-153`). No server-side dedup
   is added.
-- **Frozen contracts untouched:** steer-only precedence (the frozen record's
+- **Unchanged:** steer-only precedence (the delivery record's
   OQ-3) in its ratified sense — exactly one signal per message per agent, and
   the woken mention IS that one steer (§Decisions OQ-4); the D2 cursor shape
   and `AckDelivery`'s cursor-advance semantics (T1 deliberately changes only
@@ -620,8 +620,8 @@ row, and the start-edge cursor sweep delivers it as a plain deliver.
   Interfaces: none new — this task is wiring + the behavioral test cycle over
   T1-T3's surfaces.
 
-**T5 — ledger + frozen-record cross-note.** Append the DL row(s) (§Ledger
-delta) to `docs/designs/product/DECISIONS.md` in the same PR; the frozen
+**T5 — ledger + delivery-record cross-note.** Append the DL row(s) (§Ledger
+delta) to `docs/designs/product/DECISIONS.md` in the same PR; the merged
 record itself is not edited (amend-by-addition).
 
 ## Tasks
@@ -702,11 +702,11 @@ owed row — the mention-gap population (unsubscribed, non-home,
 non-mandatory). D5 mention→steer is preserved there; steer-only precedence
 keeps its ratified meaning throughout (exactly one signal per message per
 agent — a steer, never steer + deliver). The woken steer acks through the
-frozen message_id ack, clearing the owed row for that no-cursor population
+message_id ack, clearing the owed row for that no-cursor population
 (T1's restructured `AckDelivery`). Scope, stated precisely: a
 subscribed/home/mandatory MENTIONED member has no owed row, so when woken it
 receives the message as a cursor-swept PLAIN deliver via `sweepSession` —
-the frozen offline behavior (design.md:546-548), not a regression; and the
+the existing offline behavior (design.md:546-548), not a regression; and the
 subscribe-wake deliver arm (OQ-6) likewise stays a plain deliver. The steer
 is the gap population's; the deliver is everyone else's.
 
@@ -780,7 +780,7 @@ owed.
   pre-settle window is accepted for MVP (RIG-2490). Amends D5/OQ-3's offline
   clause by citation" | Active (Matt, 2026-08-21) | [mention offline
   redelivery §Approach, §Decisions].
-- **No row flips.** OQ-3's ratification lives in the frozen record's prose
+- **No row flips.** OQ-3's ratification lives in the delivery record's prose
   (design.md:951-960), not in its own ledger row — DL-071/DL-073 (the D1/D3
   rows nearest it, `DECISIONS.md:133,135`) describe machinery this record
   extends, not reverses, so both stay Active. If the driver prefers an

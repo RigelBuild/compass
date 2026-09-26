@@ -170,8 +170,8 @@ The honest limit, stated rather than buried: the two sides read the name
 asymmetrically, so **a deployer `OTEL_SERVICE_NAME` override renames the LOOP
 signal only** — the transport stays `compass-agent` (code wins) — splitting the
 two under exactly the override the `??=` was meant to honor. Making them
-symmetric would mean the transport reading `OTEL_SERVICE_NAME`, which touches
-the FROZEN sibling record — not worth it. Instead: the loop defaults to
+symmetric would mean the transport reading `OTEL_SERVICE_NAME`, a transport
+code change this record does not make. Instead: the loop defaults to
 `compass-agent` to match the transport, the T2 deployer contract documents that
 an override splits the signals (and that the real join key is the shared
 resource attributes of Decision 3a below, not the service name), and a
@@ -287,7 +287,7 @@ is in the AsyncLocalStorage context (`getOtelParent` reads `contextApi.active()`
      deliberately does NOT span (`../../repo/compass-agent-effect-otel/design.md:159-162`).
      (a) therefore delivers a shared exporter and NO real tree — the same
      correlation (b) gets from a shared collector, at the cost of the ordering
-     invariant below and a coupling to the frozen transport.
+     invariant below and a coupling to the transport.
   3. **Ordering coupling.** The global provider must be registered BEFORE
      transport construction (`cli.ts:588`) or the transport's
      `Tracer.layerGlobal` captures the no-op global provider — a startup-order
@@ -310,7 +310,7 @@ same `OTEL_EXPORTER_OTLP_ENDPOINT`, both under `service.name = compass-agent`
 AND both stamped with a shared `compass.session.id` resource attribute
 (Decision 3 / 3a).
 
-- For: zero transport changes — the merged sibling record stays frozen; zero
+- For: zero transport changes; zero
   cross-boundary coupling (the transport containment fence,
   `export-surface.test.ts`, is untouched); the loop side is exactly OMP's
   own battle-tested pattern (`main.ts:1357-1360`); each side keeps its own
@@ -351,7 +351,7 @@ provider lives inside its `ManagedRuntime` behind the containment fence — no
 `@opentelemetry/*`/`@effect/*` type may cross the transport's export surface
 (sibling Global Constraints; `export-surface.test.ts`), so extracting a
 `Tracer` for the loop would breach exactly the boundary the sibling record
-froze. The global-provider path needs no new surface anywhere.
+set. The global-provider path needs no new surface anywhere.
 
 ## Global Constraints
 
@@ -369,7 +369,7 @@ froze. The global-provider path needs no new surface anywhere.
   (`agent-image/entrypoint.nix`). If implementation discovers a dep is
   needed after all, STOP and surface it — that flips the FOD hash and is a
   reviewable event, not a drive-by.
-- **Transport containment fence untouched (frozen, sibling record).** No
+- **Transport containment fence untouched (sibling record).** No
   change to `src/transport/` under this record's recommended (b); no
   `effect`/`@effect/opentelemetry`/`@opentelemetry/*` type in any exported
   signature; `export-surface.test.ts` stays green unmodified. (If OQ1 is
@@ -537,7 +537,7 @@ Interfaces:
 ## Tasks
 
 - [x] OQ1 ruled by Matt → (b) two independent providers. No T3; the transport
-  stays frozen and untouched.
+  stays untouched.
 - [ ] T1 — endpoint-gated registration + enabled-path env defaults
   (`OTEL_SERVICE_NAME`, `compass.session.id` into `OTEL_RESOURCE_ATTRIBUTES`),
   plus `telemetry: {}` in `main()`; seam tests (bit-identical inert-when-unset,
@@ -562,7 +562,7 @@ Interfaces:
    context, so `getOtelParent` picks up no parent; `publish.batch` aggregates
    many turns into one span with no well-defined single parent). So (a) trades
    a registration-before-construction ordering invariant and a coupling to the
-   frozen transport record for the same collector-level correlation (b) already
+   transport record for the same collector-level correlation (b) already
    has. (b) is zero transport delta, exactly OMP's own shipped pattern, and
    does not foreclose the genuinely-unified view later — which is a span-LINKS
    change (threading trace context through the frame sink), not the parentage

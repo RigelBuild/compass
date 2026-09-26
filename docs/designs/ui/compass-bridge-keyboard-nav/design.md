@@ -10,12 +10,12 @@ roving-tabindex follow-up" (`compass-bridge-reclothe/design.md:432-433`).
 Governing spec: `apps/ui/src/design/surfaces.md` §"Bridge — the Issues and PRs
 board", "Focus and keyboard" + "Empty states" + flip item 6
 (`surfaces.md:236-245,264-266`).
-Frozen contracts consumed: `apps/ui/src/keyboard/zones.ts`, `keymap.ts`,
+Contracts consumed: `apps/ui/src/keyboard/zones.ts`, `keymap.ts`,
 `commands.ts` (compass-ux-foundation D4/D5).
 
 ## Problem / Intent
 
-The Bridge board's frozen spec requires that "the board is the main-view focus
+The Bridge board's spec requires that "the board is the main-view focus
 zone and a two-dimensional roving-tabindex grid: arrow keys move a card cursor
 across lanes and columns, `Enter` selects the card, `Shift+Enter` opens the
 assigned agent's workspace. `Ctrl+B` opens the Bridge view"
@@ -86,7 +86,7 @@ listener (the B-shrink path). The honest case for A is twofold: four more
 surfaces are specced on the same roving model
 (`surfaces.md:124-127,170-173,297-300,361-365`), so the bookkeeping is built
 once here instead of re-invented per surface; and B would stand up a second
-movement convention beside the frozen contract — a local model the spine later
+movement convention beside the keyboard contracts — a local model the spine later
 has to absorb. A-minimal costs roughly one extra right-sized task (T1) over B
 and eliminates that debt.
 
@@ -97,9 +97,8 @@ takes only `RovingDirection = "prev" | "next" | "first" | "last"`
 commands to the **active group's own handler**; the group owns its movement
 semantics (1-D lists implement prev/next; the board grid implements the 2-D
 model below). `moveWithinGroup` stays satisfiable as the 1-D convenience path;
-the frozen `zones.ts` file is not edited (a frozen record/contract is amended
-by addition, never rewritten). This is a design decision here, not a contract
-change.
+`zones.ts` is not edited; this slice needs no change to it. This is a design
+decision here, not a contract change.
 
 ### The 2-D sparse-grid cursor model
 
@@ -159,7 +158,7 @@ flattened column order, else previous, else the first stop on the board).
   `onDblClick={openAssignedAgent}`, `IssueCard.tsx:29-32,58`; no-assignee falls
   back to select, same as the dblclick fallback). `Shift+Enter` is a
   **board-group-relative** binding (`board.openAssignedAgent`), resolved by the
-  active roving group ahead of the frozen `Shift+Enter → comms.newline`
+  active roving group ahead of the `Shift+Enter → comms.newline`
   `when:"main"` entry (`keymap.ts:99`) — the board and comms both live in the
   `main` zone (`surfaces.md:236`), so a whole-zone precedence rule cannot pick
   between them; the dispatcher disambiguates by focused group, not by zone (the
@@ -293,13 +292,13 @@ either mode rather than inheriting the quirk.
   none of which ship in this lane — so the dispatcher could bind chord→handler
   through a plain map and the registry could land with the palette lane that
   consumes `all()`. Rejected: the registry is a ~10-line map wrapper whose shape
-  is already frozen; deferring it splits the spine's core across two lanes for
+  is already specified; deferring it splits the spine's core across two lanes for
   no real saving, and the dispatcher wants a single resolution point commands
   register into. Weighed and kept minimal-plus-registry.
 - **Fork B (board-local keydown, no spine).** Rejected (RD-1: Matt ratified
   A-minimal): four sibling surfaces are specced on the same roving model, so B
   would re-invent the bookkeeping per surface and stand up a second movement
-  convention beside the frozen contracts. (`Ctrl+B` is deliverable under B via a
+  convention beside the keyboard contracts. (`Ctrl+B` is deliverable under B via a
   windowed special case, so it is not the deciding factor — the sibling-surface
   reuse is.)
 - **Cell-addressed cursor (cursor names a cell, second axis to enter cards).**
@@ -321,7 +320,7 @@ Every task inherits these; none restates them.
 - **Stack:** SolidJS ^1.9.13 + Vite + TypeScript; no new dependencies. Pure
   client UI — the board reads the store's reactive fleet/issue list; no server
   work in this lane.
-- **Frozen contracts are read-only:** `keyboard/zones.ts`, `keyboard/commands.ts`
+- **Contracts unchanged in this lane:** `keyboard/zones.ts`, `keyboard/commands.ts`
   are not edited. `keyboard/keymap.ts` accepts ONLY additive `DEFAULT_KEYMAP`
   entries for the new board commands (`board.openAssignedAgent`,
   `board.openCardCrossLink`), minted via the file's own `cmd()` boundary
@@ -363,13 +362,13 @@ normalizes the event to a chord string (`Mod` per `resolveChord`,
    chord to the group's `handleCommand` and stop. This is why the board's
    `Enter`/`Shift+Enter`/`Space` fire board commands, not the `when:"main"`
    `comms.*` entries: the board and comms share the `main` zone
-   (`surfaces.md:236`), so the frozen whole-zone precedence rule
+   (`surfaces.md:236`), so the whole-zone precedence rule
    (`keymap.ts:48-51,95-97`) cannot disambiguate two surfaces in one zone — the
    dispatcher disambiguates by **focused group**. This refines, not contradicts,
    the KeymapEntry doc's own framing that the Lists block is "resolved against
    the active roving group at dispatch" (`keymap.ts:45-48`).
 2. **Scoped tier** — else, a `when`-scoped entry whose zone is active wins over
-   a window-global one (the frozen D5 ranking, `keymap.ts:48-51`). Its live
+   a window-global one (the D5 ranking, `keymap.ts:48-51`). Its live
    consumers are zone-scoped commands on a non-input focus target; the one
    scoped family in today's keymap, `comms.*` (`when:"main"`), does not route
    here — the comms composer handles its own keys locally (see the guard note
@@ -514,7 +513,7 @@ T1 — the Lists-block convention, `keymap.ts:45-48,78-82`).
 **Space cross-link — as-built footnote (RIG-2130 impl, Matt-approved):** the
 board's `Space` cross-link takes NO keymap row of its own. The dispatcher
 resolves a chord to its FIRST group-relative match in `DEFAULT_KEYMAP` order
-(`dispatch.ts:95-97`), and the frozen Lists block already binds
+(`dispatch.ts:95-97`), and the Lists block already binds
 `Space → list.expandOrToggle` (`keymap.ts:84`) ahead of any appended board row —
 so a `{ chord: "Space", commandId: cmd("board.openCardCrossLink") }` row would be
 dead code, never selected. The board instead maps the group-relative
@@ -522,7 +521,7 @@ dead code, never selected. The board instead maps the group-relative
 exactly as it maps the arrow `list.*` ids. `board.openCardCrossLink` remains a
 registered command (palette + the OQ-2 future remap when a real board `Space`
 affordance lands); it simply has no default binding row. Behavior is identical to
-the frozen intent (Space fires the cursor card's cross-link, chip-less card still
+the designed intent (Space fires the cursor card's cross-link, chip-less card still
 claimed); only the routing is via the existing Lists row, not a new one.
 Test cycle: `Bridge.test.tsx` component tests — one tab stop on the mounted
 board, arrow traversal across a fixture with a multi-card cell + an empty cell,
@@ -534,7 +533,7 @@ positional `aria-label` is
 present on the cursor stop, tab-switch resets cursor, pointer paths unregressed.
 
 **Focus-gate + tab-switch reset — as-built footnote (RIG-2130 impl, PR #472
-review fold):** two conformance fixes to the frozen contract found in review.
+review fold):** two conformance fixes to the contract found in review.
 (1) *Focus-exclusivity.* The board supplies its active-group accessor to
 `installKeymap` gated on focus — `() => rovingGroup.isFocused() ? rovingGroup :
 null` (`Bridge.tsx`), where `isFocused()` is `stops().some(s => s.el ===
@@ -606,12 +605,12 @@ deferrals.
   surfaces are specced on the same roving model
   (`surfaces.md:124-127,170-173,297-300,361-365`), so the bookkeeping is built
   once rather than re-invented per surface, and A avoids standing up a second
-  movement convention beside the frozen contracts, which say "compass-ui owns
+  movement convention beside the keyboard contracts, which say "compass-ui owns
   the implementation" (`zones.ts:6-7`). (Matt: "A, whatever gives us the best
   end state".) The Plan below is written against A-minimal.
 - **RD-2 (was OQ-4) — the main-zone dispatch model: a three-tier dispatcher
   with fall-through.** The board and the comms composer both live in the `main`
-  focus zone (`surfaces.md:236`), and the frozen keymap binds
+  focus zone (`surfaces.md:236`), and the keymap binds
   `Enter`/`Shift+Enter` both unscoped (Lists block, `list.*`) and `when:"main"`
   (`comms.send`/`comms.newline`, `keymap.ts:98-99`) — so a literal whole-zone
   precedence rule (`keymap.ts:48-51,95-97`) would fire the comms commands on the
@@ -630,12 +629,12 @@ deferrals.
   sends on non-shift `Enter`, `ChannelView.tsx:316,321-327`) and never
   dispatched through tier-2 anyway (the
   editable-target guard, T1). The two are focus-exclusive, so they never
-  contend. This reads the frozen D5 "scoped wins while its zone is
+  contend. This reads the D5 "scoped wins while its zone is
   active" ranking as *focused-surface* precedence, not literal whole-zone
-  precedence, and touches no frozen contract. (Matt ratified the three-tier
+  precedence, and needs no contract change. (Matt ratified the three-tier
   model.) The rejected alternatives — a literal whole-zone rule forcing the
   board's verbs off `Enter`/`Shift+Enter`, and extending `when` with sub-zone
-  surface scoping (which would edit the frozen contract) — are recorded in
+  surface scoping (a wider `when` contract than focus needs) — are recorded in
   §Approach/T1.
 
 ## Open Questions

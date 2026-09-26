@@ -41,7 +41,7 @@ import {
 import type { OutboundFrame } from "./frame";
 
 // A frame the mapper could not produce a compass.v1 payload for — surfaced, never
-// silently dropped (the frozen "unknown frame types logged + counted" rule
+// silently dropped (the design's "unknown frame types logged + counted" rule
 // applies symmetrically on the produce side). The agent logs + counts these; a
 // growing count means a session-event type the map does not yet cover.
 export interface UnmappedEvent {
@@ -187,7 +187,7 @@ export class EventMapper {
 				// A session event the map does not cover: the orchestration-only variants of the
 				// `AgentSessionEvent` superset (auto_compaction_*, auto_retry_*, etc.), the
 				// `notice` variant, and any future variant. Surface a single UnmappedEvent so it
-				// is logged + counted, never dropped and never a crash (frozen invariant).
+				// is logged + counted, never dropped and never a crash (design invariant).
 				return [
 					{
 						kind: "unmapped",

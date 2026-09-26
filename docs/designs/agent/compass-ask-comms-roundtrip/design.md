@@ -14,7 +14,7 @@ is the deliberate, distinct break from the traditional agentic session loop.
 An `ask` is therefore a **typed comms message** posted onto a channel/topic and
 answered **async**: the agent posts its questions and continues; the operator
 answers whenever they get to it; the answer returns to the agent as a typed
-control op on a later turn. This record wires the agent to that already-frozen
+control op on a later turn. This record wires the agent to that existing
 transport — the agent-side **raise** (a Compass tool emitting
 `PostMessage(MessageBlock{ask})`) and the agent-side **answer-consume**
 (`AskAnswerControl` over the control lane). PR #390, which wired RIG-1509
@@ -23,7 +23,7 @@ this record replaces it.
 
 ## Approach
 
-The transport is **already frozen in proto** — this record invents nothing on
+The transport is **already defined in proto** — this record invents nothing on
 the wire; it wires the agent to both ends of it.
 
 ### The raise lane (agent → comms)
@@ -127,7 +127,7 @@ a second one is rejected") and wakes the asking agent
 `c.askWaker.WakeAskAnswer(ctx, msg.AuthorAccountID, req.Msg.GetAskId(),
 req.Msg.GetAnswers())`, best-effort and nil-safe).
 
-The answer reaches the agent as the frozen 6th `AgentControl` variant
+The answer reaches the agent as the `AgentControl` variant
 (`proto/compass/v1/agent.proto:164`: `AskAnswerControl ask_answer = 4;`),
 shaped (`agent.proto:180-191`):
 
@@ -239,7 +239,7 @@ AgentFrame.
 **Ruling this record makes**: DL-043's derivation **mechanism** (the
 `#deriveAsk` → AgentFrame conversation-frame path) is **superseded** by this
 record; DL-043's `Ask = repeated AskQuestion` **shape** stays **live** — it is
-exactly the shape frozen in `comms.proto:361-427` that both lanes of this
+exactly the shape defined in `comms.proto:361-427` that both lanes of this
 record ride. The ledger delta (below) records this as a partial supersede.
 
 ### Non-goals
@@ -266,7 +266,7 @@ it presumes a promptable session: the Compass session log is **observe + stop
 only** — there is no composer, no dialog, no reply path through the session.
 An `askDialog` answer would have to arrive through a surface that structurally
 does not accept input. It also makes the ask **turn-blocking** (the native tool
-awaits a single result covering every question), where the frozen comms
+awaits a single result covering every question), where the comms
 contract is explicitly async (`comms.proto:358-360`). The session-UI seam is
 the wrong transport, not a smaller version of the right one.
 
@@ -276,7 +276,7 @@ Ruled out by Matt: the SDK ask tool is not set up for the async flow (its
 contract is await-one-result), and the ask format may be extended later —
 extension is cleaner on a Compass-owned tool than inside an overridden SDK
 seam. DL-139's role delta already tells the agent "async comms / no `ask`",
-so a Compass-native surface is consistent with frozen intent.
+so a Compass-native surface is consistent with that intent.
 
 ### Weighed: three tool surfaces for raising an ask
 
@@ -314,7 +314,7 @@ Recommendation, ruled by Decision 1: **dedicated `comms_post_ask`**.
 
 ### Global Constraints
 
-- **No proto changes.** The ask/answer transport is frozen:
+- **No proto changes.** The ask/answer transport already exists:
   `MessageBlock.ask` (`comms.proto:343-350`), `Ask`/`AskQuestion`/`AskOption`
   (`comms.proto:361-427`), `PostMessage` (`comms.proto:85`), `RespondToAsk`
   (`comms.proto:98`), `AskAnswerControl` (`agent.proto:164,180-191`). This

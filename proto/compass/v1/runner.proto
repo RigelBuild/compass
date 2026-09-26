@@ -15,12 +15,12 @@
 // not a change to the public messages. `buf lint`/`buf breaking` still cover it
 // (they glob `compass/**/*.proto`).
 //
-// Frozen, not re-decided here: the three-RPC shape and directions are fixed by
+// The three-RPC shape and directions come from
 // the platform record. Because the Runner
 // dials OUT to the Server, the Server has no inbound route to call the Runner:
 // command delivery cannot be a unary Server->Runner RPC, so it rides the
-// Server's *response* half of a Runner-opened bidi stream. Cutting the concrete
-// message fields to realize that frozen shape is conformance.
+// Server's *response* half of a Runner-opened bidi stream. The concrete
+// message fields below realize that shape.
 
 syntax = "proto3";
 
@@ -84,7 +84,7 @@ service RunnerService {
   // attributes the call in-process under comms.WithActor, fail-closed: an
   // unknown/stopped session is CodeNotFound, never a stale account or the
   // bootstrap-admin fallback (transport design Decision #3 / OQ-2, comms-tools
-  // design T2). A fourth RPC, additive to the frozen dial-out shape (the Runner
+  // design T2). A fourth RPC, additive to the dial-out shape (the Runner
   // still initiates; the Server gains no inbound route): merging the comms-tools
   // record ratifies it (comms-tools OQ-1). The request oneof (CommsCallRequest,
   // agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
@@ -100,7 +100,7 @@ service RunnerService {
   // own Provision-originated hub binding, then resolves that agent's owner to
   // scope spawn (owner-inherited) and despawn (same-owner) authority,
   // fail-closed: an unknown/stopped session is CodeNotFound, never a stale
-  // account or the bootstrap admin. Additive to the frozen dial-out shape (the
+  // account or the bootstrap admin. Additive to the dial-out shape (the
   // Runner still initiates; the Server gains no inbound route); merging the
   // spawn/despawn record ratifies it.
   rpc RelayLifecycleCall(RelayLifecycleCallRequest) returns (RelayLifecycleCallResponse);
@@ -116,7 +116,7 @@ service RunnerService {
   // credential (DL-052), fail-closed: an unknown/stopped session is CodeNotFound,
   // never a stale account or the bootstrap admin. Read ops are answered from the
   // projection/store, not a live forge proxy (DL-069 amendment OQ-A). Additive to
-  // the frozen dial-out shape (the Runner still initiates; the Server gains no
+  // the dial-out shape (the Runner still initiates; the Server gains no
   // inbound route); merging the ownership-layer record ratifies it.
   rpc RelayForgeCall(RelayForgeCallRequest) returns (RelayForgeCallResponse);
 
@@ -129,7 +129,7 @@ service RunnerService {
   // its own Provision-originated hub binding and runs the transition under that
   // caller (single-trust-domain MVP, amendment §Resolved decisions 2),
   // fail-closed: an unknown/stopped session is CodeNotFound, never a stale
-  // account or the bootstrap admin. Additive to the frozen dial-out shape (the
+  // account or the bootstrap admin. Additive to the dial-out shape (the
   // Runner still initiates; the Server gains no inbound route).
   rpc RelayBoardCall(RelayBoardCallRequest) returns (RelayBoardCallResponse);
 
@@ -155,7 +155,7 @@ service RunnerService {
   // duplicate. A new field would fork the Runner's advisory dedup from the real
   // commit boundary, so we reuse it (Matt-ratified).
   //
-  // Additive to the frozen dial-out shape (the Runner still initiates; the
+  // Additive to the dial-out shape (the Runner still initiates; the
   // Server gains no inbound route), same justification as RelayCommsCall.
   rpc CommitConversationFrame(CommitConversationFrameRequest) returns (CommitConversationFrameResponse);
 
@@ -163,7 +163,7 @@ service RunnerService {
   // secret set for one session to materialize into the agent container (RIG-1327
   // T4). Inject-all: no name filter, no per-agent grants (the filter is the
   // named future per-agent-scoping seam). The response is no-log: a logging
-  // interceptor must never dump resolved values. Additive to the frozen dial-out
+  // interceptor must never dump resolved values. Additive to the dial-out
   // shape (the Runner still initiates; the Server gains no inbound route).
   rpc FetchSecrets(FetchSecretsRequest) returns (FetchSecretsResponse);
 
@@ -179,7 +179,7 @@ service RunnerService {
   // is unkeyed — no per-account binding — so, like the other RunnerService RPCs,
   // it is authenticated by the per-Runner token alone (account-subject tokens
   // rejected). An unconfigured fleet returns a version frame with an empty
-  // version and no chunks, never an error. Additive to the frozen dial-out shape
+  // version and no chunks, never an error. Additive to the dial-out shape
   // (the Runner still initiates; the Server gains no inbound route).
   rpc FetchAgentConfig(FetchAgentConfigRequest) returns (stream FetchAgentConfigResponse);
 }
@@ -232,7 +232,7 @@ message SessionsRequest {
 
 // A session command, pushed Server->Runner on the Sessions response stream (the
 // inversion: the Server's response half carries commands — see the RPC comment).
-// The command variants reuse the frozen public session-RPC request payloads
+// The command variants reuse the public session-RPC request payloads
 // (compass.proto) verbatim: the relay carries exactly what the Client-facing
 // CompassService session RPC received, so a payload field added there flows
 // through the relay unchanged. `request_id` is the OQ6 idempotency key: a retry
@@ -479,7 +479,7 @@ message PublishEventsRequest {
   // Server commits the frame at-most-once per (author, key) at the comms
   // Message store (store/messages.go AppendMessage clientRequestID), so a
   // committed-but-response-lost retry is deduped, never duplicated. Carried
-  // here because the frozen wire had no field for it and Message.id is
+  // here because the wire had no field for it and Message.id is
   // Server-assigned, not agent-minted (transport-consolidation record,
   // Matt's Option A ruling 2026-07-24).
   string idempotency_key = 4;

@@ -38,7 +38,7 @@ canonical create shape:
 > ack. A comment mints no artifact coordinate, so it is neither F3-deduped nor
 > DL-055-recorded (the store index has no comment kind).
 
-And the `record` helper pins the F3 boundary as a frozen ruling:
+And the `record` helper pins the F3 boundary as a ruling:
 
 > Only create_issue / create_pull_request mint an artifact coordinate (kind
 > issue|pull_request); the comment/review arms have no coordinate to record,
@@ -471,9 +471,9 @@ channel that can carry the agent's identity across the write→webhook gap.
 The alternative — the chokepoint synthesizing the STATE `ForgeEvent` itself,
 actor attached, at write time — is weighed in Alternatives considered and
 rejected for the double-notification and lane-coupling problems; the fork is
-OQ-1 because RIG-3326's frozen text names an event-carried actor.
+OQ-1 because RIG-3326's text names an event-carried actor.
 
-This record deliberately freezes the *durable half* (memo write at the
+This record deliberately specifies the *durable half* (memo write at the
 chokepoint + the consume-on-match store read) and the *contract* the router
 consumes; the router-side match/suppress logic is RIG-3326's own scope (PR
 open at Matt's gate). Nothing here depends on that PR landing first — the memo
@@ -482,7 +482,7 @@ binds to the contract stated above whenever it lands.
 
 ### Agent tools
 
-DL-241 froze the toolset as arm-mirroring:
+DL-241 made the toolset arm-mirroring:
 
 > The agent forge native toolset is ten single-purpose tools, one per
 > `ForgeCallRequest` arm …
@@ -525,7 +525,7 @@ a dependency direction that does not exist (the lanes are wired independently
 at serve assembly); (c) delivery timing gains nothing — the memo path
 attributes the SAME webhook-driven event the pipeline already routes. The memo
 is one table + one seam, entirely inside existing patterns. Kept as OQ-1
-because the consumer record's frozen text speaks of the actor "stamped … onto
+because the consumer record's text speaks of the actor "stamped … onto
 the emitted event", which reads closer to the synthetic shape.
 
 ### A portable state enum on the wire (vs the raw string)
@@ -549,7 +549,7 @@ kind-unspecified rejection into every handler. The pair matches the codebase.
   no `time.Sleep` in tests.
 - Two forge test tiers only (DL-210): hermetic golden replay (untagged) +
   `//go:build livegithub` live oracle. No third harness.
-- Proto arm numbers are frozen once assigned: `transition_issue_state = 14`,
+- Proto arm numbers: `transition_issue_state = 14`,
   `transition_pull_request_state = 15` (first free after the documented
   `call_id=1, arms 2-11, forge=12, client_request_id=13` layout).
 - The portable state domain is exactly `{open, closed}` on requests. `merged`
@@ -707,7 +707,7 @@ RIG-3326's implementation, built against the contract in §Actor attribution.
 
 Interfaces: consumes T4's store surface; produces the seam (final name/shape
 coordinated with the RIG-3326 executor at execution — the contract, not the
-identifier, is frozen here) returning the acting agent's owner-qualified
+identifier, is specified here) returning the acting agent's owner-qualified
 identity or a clean miss.
 
 Tests: pgtest — a recorded transition resolves for a matching STATE event
@@ -821,7 +821,7 @@ in draft).
   The actor carrier is the durable `forge_state_transitions` memo, written
   after a successful transition at the chokepoint and consumed on match at the
   notify lane (§Actor attribution). The synthetic-event alternative is
-  rejected. Because the RIG-3326 record's frozen text describes the actor as
+  rejected. Because the RIG-3326 record's text describes the actor as
   stamped "onto the emitted event" — which reads as the synthetic shape — this
   ruling makes **RIG-3326 the side whose text bends**: its STATE arm resolves
   the actor through a memo lookup at the actor-resolution seam rather than off

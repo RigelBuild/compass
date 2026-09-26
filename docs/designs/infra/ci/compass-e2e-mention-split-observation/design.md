@@ -3,9 +3,9 @@
 The three load-bearing forks below were ruled by Matt (2026-08-19); this record
 freezes on merge as the contract T1–T6 execute against. No implementation in
 this record's PR.
-Parent record: [compass-dogfood-e2e](../compass-dogfood-e2e/design.md) (FROZEN —
-this record does not reopen its tier or its assertion; it settles only the
-observation MECHANISM that record explicitly deferred).
+Parent record: [compass-dogfood-e2e](../compass-dogfood-e2e/design.md) (this
+record keeps its tier and its assertion; it settles only the observation
+MECHANISM that record explicitly deferred).
 Ledger-impact: none — this is a `docs/designs/platform/` record; the
 design-ledger gate governs product records only (`tools/design-ledger-gate/
 index.ts:44-45`: ``export const PRODUCT_DIR = "docs/designs/product"``, and
@@ -16,7 +16,7 @@ documentation, not a gate requirement.
 
 ## Problem / Intent
 
-The frozen dogfood-e2e design requires H4's leg 4 to prove, over the real
+The dogfood-e2e design requires H4's leg 4 to prove, over the real
 stack, that "steer reaches the mentioned peer's real session, deliver reaches
 the unmentioned one" (`docs/designs/platform/compass-dogfood-e2e/design.md:663-665`).
 The e2e test asserts everything else in H4 already; the split itself is an
@@ -30,8 +30,8 @@ explicit deferral (`go/e2e/legthreefour_test.go:239-251`):
 
 This record decides the observation seam that makes the split assertable from
 the harness, and how the test stands up the second (subscribed-but-unmentioned)
-recipient. WHAT to assert and the e2e TIER are frozen; only the mechanism is
-open here.
+recipient. WHAT to assert and the e2e TIER come from the parent; this record
+decides only the mechanism.
 
 ## Approach
 
@@ -55,7 +55,7 @@ can see it:
 
 - `go/internal/delivery/consumer.go:288-307` — `deliverOp`/`steerOp` wrap the
   message in `AgentControl_Deliver` / `AgentControl_Steer`; the comment at
-  `:298-300` pins the frozen intent: "the only deliver-vs-steer difference is
+  `:298-300` states the intent: "the only deliver-vs-steer difference is
   recipient-side (design.md:558-562)".
 - The relay envelope is internal: `proto/compass/v1/runner.proto:299-309` —
   "DispatchControl — the Server->Runner relay envelope for a control op";
@@ -193,16 +193,16 @@ the effect, not the dispatch decision, and it is blocked on Finding 2 anyway
 ### Option C — public trace event carrying op-kind: REJECTED
 
 Adding a `SessionEvent`/`AgentSessionFrame` variant that surfaces the control
-op-kind to clients contradicts the frozen intent that the difference is
-"recipient-side" and internal (`consumer.go:298-300` quoting frozen
+op-kind to clients contradicts the stated intent that the difference is
+"recipient-side" and internal (`consumer.go:298-300` quoting
 design.md:558-562), widens a public proto (`SessionEvent` is "the render
 contract for the UI's session pane", `compass.proto:440-441`) for a test-only
 need, and creates a permanent client-visible surface the product design never
-sanctioned. Rejected; recorded here so it is not re-litigated.
+sanctioned. Rejected.
 
 ### RECOMMENDED — Option 1: env-gated dispatch tap in compass-server + receipt via existing session tails
 
-Two independent signals compose into the frozen assertion:
+Two independent signals compose into the parent's assertion:
 
 1. **Kind, per recipient (the tap).** compass-server, when a test-only env
    var (`COMPASS_TEST_DISPATCH_TAP`, carrying a unix-socket path) is set at
@@ -251,8 +251,8 @@ because both recipients are idle when the mention lands and an idle deliver
 starts a turn just as an idle steer does
 (`packages/compass-agent/src/agent.ts:252-254`). Proving
 interrupt-vs-coalesce is a distinct, heavier scenario (a peer scripted
-mid-turn) the frozen H4 green condition does not require — H4 green is
-"steer reaches the mentioned peer's real session" (frozen `design.md:663`),
+mid-turn) the H4 green condition does not require — H4 green is
+"steer reaches the mentioned peer's real session" (parent `design.md:663`),
 not "interrupts a live turn" — so it is out of scope here, noted so the
 residual is not mistaken for a gap.
 
@@ -280,7 +280,7 @@ reachability).
 **Extend, not a new test.** The split assertions replace the
 `TODO(RIG-1788)` block inside `TestLegThreeFourSpawnAndMessaging`
 (`legthreefour_test.go:239-255`) rather than standing up a new test: the
-frozen H4 green condition is "one ordered run" (frozen design.md:663), the
+H4 green condition is "one ordered run" (parent design.md:663), the
 spawner/peer/containers/tails the split needs are exactly the ones leg 3 built,
 and a second podman test would pay the full multi-minute stack+container cost
 again in the CI job that runs this tier
@@ -309,7 +309,7 @@ script stays drawn only by the test's scripted turns.
   stay `-race` clean.
 - The tap is test-only: env unset ⇒ production wiring is byte-for-byte
   unchanged (`startDeliveryConsumer` passes the bare hub).
-- The frozen parent record is not edited; present-but-red is the accepted
+- The parent record is not edited; present-but-red is the accepted
   intermediate state for the receipt arm until T1 lands (matching how the leg
   itself rode RED awaiting H3, `legthreefour_test.go:33-40`).
 - Go code follows the package's existing seams and naming; no new proto
@@ -505,9 +505,9 @@ Interfaces:
      assert that within the window up to each recipient's settle the peer
      session has NO `deliver` record and the spawner NO `steer` record for
      the message id. The exclusion is WINDOW-SCOPED to the settle, not an
-     absolute negative: the frozen design permits a steered-but-unacked
+     absolute negative: the current design permits a steered-but-unacked
      message to be sweep-redelivered as a deliver later
-     (`go/internal/delivery/dispatch.go:122-123`, frozen `design.md:546-548`),
+     (`go/internal/delivery/dispatch.go:122-123`, parent `design.md:546-548`),
      so an absolute "never a deliver" would assert a guarantee the system
      does not make (OQ4).
 - No `RIG-`/`SEA-` id in the added code; the replaced TODO comment goes away
@@ -556,7 +556,7 @@ as the rationale trail, not open questions.
    hold-a-turn-open stub machinery, proves effect not decision, and is blocked
    on the same gateway un-park anyway; (3) a public trace-event variant
    carrying op-kind — permanent client-visible surface creep against the
-   frozen "recipient-side/internal" intent.
+   stated "recipient-side/internal" intent.
 
    Weighed-and-rejected sub-alternatives to the tap's gating/placement:
    (i) build-tag gating (`-tags` in `buildBinariesFromModuleRoot`,
@@ -585,11 +585,11 @@ as the rationale trail, not open questions.
    settle.** Ruled: window-scoped, NOT an absolute negative. T6's exclusion
    ("the mentioned peer received no *deliver* for this message id") is scoped
    to the observation window ending at the peer's turn settle, because the
-   frozen design permits a steered-but-unacked message to be sweep-redelivered
+   current design permits a steered-but-unacked message to be sweep-redelivered
    as a plain deliver on a later reconnect/resync
    (`go/internal/delivery/dispatch.go:122-123`;
    `go/internal/delivery/settle.go:241` builds `deliverOp` for every owed
-   message; frozen `design.md:546-548`). An absolute negative would assert a
+   message; parent `design.md:546-548`). An absolute negative would assert a
    guarantee the system does not make. This also hardens T6's
    red-by-reverting-T1 check: with the exclusion re-read after settle, a sweep
    that greens the receipt arm under reverted T1 is caught by the deliver

@@ -20,8 +20,8 @@ package stack
 // Bump procedure: a DIGEST bump within postgres:18 (an upstream security rebuild,
 // same major) is automated — Renovate surfaces this const as a docker dep via a
 // customManager in tools/renovate/config.json5 (depName `postgres-stack`) and
-// opens a reviewable PR to advance the digest. A MAJOR bump (18 -> 19) is frozen
-// by DL-260 for on-disk-format stability and stays manual: the customManager's
+// opens a reviewable PR to advance the digest. A MAJOR bump (18 -> 19) stays
+// manual per DL-260 for on-disk-format stability: the customManager's
 // packageRule pins allowedVersions to /^18$/, so 18 -> 19 is never auto-proposed.
 // When you do move the major deliberately, re-run the T8 container integration
 // test (up -> probe DSN -> fresh-process down -> container gone) against the new

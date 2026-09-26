@@ -901,7 +901,7 @@ func (s *Store) visibleAgentHandleID(ctx context.Context, viewer, owner AccountI
 }
 
 // ListAccounts returns the accounts visible to visibleTo. The visibility rule
-// (D9, owner-gated access — the frozen record pins DM/channel visibility
+// (D9, owner-gated access — the design record pins DM/channel visibility
 // precisely but delegates account-listing scope to "the accounts visible to the
 // caller", comms.proto:48-49; this is the store's conservative realization,
 // flagged for review): the caller always sees itself and every user account (the
@@ -911,7 +911,7 @@ func (s *Store) visibleAgentHandleID(ctx context.Context, viewer, owner AccountI
 // textually shared across the ListVisibleAccounts, AccountVisibleTo, and the two
 // visible-handle queries (queries/accounts.sql) so the stream edge's per-event
 // account filter cannot drift from this list read (the anti-drift guarantee the
-// frozen "store is the D9 source of truth" requires).
+// record's "store is the D9 source of truth" requires).
 func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Account, error) {
 	rows, err := s.q.ListVisibleAccounts(ctx, string(visibleTo))
 	if err != nil {

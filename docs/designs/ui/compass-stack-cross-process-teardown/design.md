@@ -17,7 +17,7 @@ lockfiled attach — [native app §A3](../compass-native-app/design.md#a3--embed
 DL-108 stays Active; this record decides ONE thing DL-108 left implicit and the
 implementation left unrealized: **how `compass-stack down`, invoked as a fresh
 process, tears down a stack that a prior, now-exited `compass-stack up`
-spawned.** It realizes the frozen native-app record's teardown claim
+spawned.** It realizes the native-app record's teardown claim
 (`compass-native-app/design.md:206` — "runs `compass-stack down`, which SIGTERMs
 the tree and waits out the server's drain") **for the three supervised stack
 children** (postgres, compass-server, compass-runner), which is currently false
@@ -39,7 +39,7 @@ handles, so a fresh `down` is a silent no-op. This:
    no-op that leaves the stack running,
 2. blocks the **T4.3 (RIG-1685) e2e gate** from proving teardown or
    process-safely cleaning up the stack it starts, and
-3. contradicts the frozen design's `down`-SIGTERMs-the-tree claim.
+3. contradicts the native-app design's `down`-SIGTERMs-the-tree claim.
 
 **Scope of "the tree".** This mechanism signals the three supervised stack
 children — postgres, compass-server, compass-runner — each a process-group
@@ -175,7 +175,7 @@ So the runner cannot be confirmed dead by a socket probe (it has none), and
 killing the *server* first makes a surviving runner exit on its own when its
 link drops — both facts the teardown sequence below relies on.
 
-**The frozen record's claim this realizes.**
+**The native-app record's claim this realizes.**
 `docs/designs/ui/compass-native-app/design.md:204-206`:
 
 > ```text
@@ -192,7 +192,7 @@ SIGKILL), then confirms teardown.** Children already run as their own
 process-group leaders (`Setpgid: true`, pid == pgid), so the pgids are available
 at spawn for free. This is the standard daemon-pidfile pattern, self-contained
 in this lane (`go/internal/stack` + `compass-stack` + `compass-app`), and it
-makes the frozen "SIGTERM the tree" sentence literally true **for the three
+makes the record's "SIGTERM the tree" sentence literally true **for the three
 supervised children** (containers scoped out — Open Question 0).
 
 ### The pgid record file
@@ -372,8 +372,8 @@ A cannot signal. Not the mechanism of record either way.
 ### C — App supervises `up` as a long-lived foreground child (rejected)
 
 Add a foreground/blocking mode to `compass-stack up` so the app holds the
-process and SIGTERMs its group on quit. Rejected because it **breaks two frozen
-contracts**:
+process and SIGTERMs its group on quit. Rejected because it **reverses two
+design choices** this mechanism does not need to touch:
 
 - T2's fire-and-return CLI contract (`main.go:235-238`, quoted above) — a
   foregrounded `up` is a different program.
@@ -420,7 +420,7 @@ under A's portable path, not replacing it.
 6. **Scope**: the mechanism signals the three supervised stack children only.
    Live agent containers are out of scope (Open Question 0 / RIG-1884); this
    record does not silently claim to stop them.
-7. **No frozen contract changes**: `up` stays fire-and-return; linger stays the
+7. **No contract changes**: `up` stays fire-and-return; linger stays the
    default; no proto changes; DL-108 stays Active.
 8. Unix-only, like the rest of the package (`//go:build unix`,
    `stack.go:1`).
@@ -582,7 +582,7 @@ scope and the record says the container assertion is deliberately absent.
    containers are OUT of Option A's scope and tracked as a distinct runner-lane
    gap (**RIG-1884**). This is the conservative default: it keeps the teardown
    fork self-contained in this lane (no cross-lane proto/runner change gating it),
-   matches the literal frozen text (written about the stack, before containers
+   matches the record's literal text (written about the stack, before containers
    were a teardown consideration), and treats the runner-not-stopping-its-own-
    containers gap as the separate bug it is. If Matt rules (b)/(c)/(d), the
    companion mechanism lands under RIG-1884 (and, for (c), T2/T5 gain the

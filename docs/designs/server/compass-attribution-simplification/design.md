@@ -2,7 +2,7 @@
 
 Tracker: SEA
 
-> **Amends frozen contract (#1018, DL-068).** This record is a sibling
+> **Amends a merged record (#1018, DL-068).** This record is a sibling
 > amendment to `docs/designs/server/compass-issue-model/design.md` (merged in
 > #1018): the merged record is frozen, so a later change ADDS a record. It
 > ratifies Matt's 2026-08-01 ruling that agent attribution is a plain display
@@ -15,7 +15,7 @@ Tracker: SEA
 
 ## Problem / Intent
 
-The frozen `AgentAttribution` message carries three fields and a
+The `AgentAttribution` message in #1018 carries three fields and a
 hedge-unless-verified render contract
 (`compass-issue-model/design.md:137-144`):
 
@@ -38,7 +38,7 @@ on the content, or the ability for it to get into `main`." Attribution is a
 plain display fact. The board render already ships the bare handle —
 `authorLabel` returns `` `@${agent.agentHandle}` `` with no owner text and no
 hedge (compass repo `apps/ui/src/board-render.ts:85-86`) — so the render and
-the frozen contract disagree. This record makes the contract catch up.
+the #1018 contract disagree. This record makes the contract catch up.
 
 ## Approach
 
@@ -61,8 +61,7 @@ message AgentAttribution {
 ```
 
 Fields 2–3 and the names `owner_handle`/`verified` are reserved per proto
-discipline: the frozen #1018 record published the 3-field shape, so the
-numbers are burned even though no wire build has shipped them — grep of the
+discipline, although no wire build has shipped them — grep of the
 compass repo's `proto/compass/v1/compass.proto` and the generated client
 `packages/compass-client/src/gen/compass/v1/compass_pb.ts` (both verified
 this run) finds no `AgentAttribution` symbol.

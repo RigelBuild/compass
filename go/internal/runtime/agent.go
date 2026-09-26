@@ -289,7 +289,7 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Work
 // inGuestEgressArmer is a backend that arms the egress firewall itself, inside
 // its isolation boundary (as guest root, before the exec gate opens), so the
 // host-side armEgress exec must be skipped. It is a marker, deliberately NOT a
-// verb on the frozen WorkloadRuntime interface (podman.go): AgentRuntime probes
+// verb on the WorkloadRuntime interface (podman.go): AgentRuntime probes
 // for it and skips arming when a backend self-arms (design §(c)). Only
 // MicroVMRuntime implements it; PodmanCLI and the test fakes do not, so the
 // host-side arm runs byte-identically for them.

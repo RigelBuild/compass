@@ -21,7 +21,7 @@ mapper surfaces the *fact* of the failure but never its *content*: a
 produces a counted `UnmappedEvent` stamped `"abort-surfacing staged"`
 (`mapping.ts:312-319`) — a deliberately-staged placeholder. Neither carries the
 error message, the failure class, or the HTTP status to a subscriber tailing the
-session, so a UI session pane cannot show *what* went wrong. This record freezes
+session, so a UI session pane cannot show *what* went wrong. This record specifies
 the payload shape that surfaces that content as typed session-trace content.
 
 ## Global Constraints
@@ -320,7 +320,7 @@ the same contract.
 
 - **(Non-load-bearing, deferred)** Surface `AssistantMessage.errorId`
   (`types.ts:733`, a bit-packed machine-readable classifier) as a future
-  `SessionError` field. Omitted from the frozen contract: a subscriber cannot
+  `SessionError` field. Omitted from the contract: a subscriber cannot
   interpret the bit layout without pi-ai's error-id helpers (`error/flags.ts`;
   the SDK's own `types.ts:732` doc-comment still points at the pre-move
   `utils/error-id.ts`), and the oneof/
