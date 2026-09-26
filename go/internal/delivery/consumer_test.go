@@ -3,7 +3,7 @@
 package delivery
 
 // The fan-out consumer's acceptance cases (RIG-1569 T3), RED-first. Each drives
-// the consumer through the real events bus + hand-written fakes and gates on the
+// the consumer through the fake fabric + hand-written fakes and gates on the
 // recorder's observed dispatches — never a sleep, never a retry (rule://no-retries).
 
 import (
@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -20,18 +19,17 @@ import (
 
 // startConsumer runs c.Run in the background on a cancelable child of the test
 // root and registers cancellation + drain on cleanup, so every test ends the
-// loop deterministically. Returns the bus the test publishes onto.
+// loop deterministically and a Run error fails the test.
 func startConsumer(t *testing.T, c *Consumer) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		_ = c.Run(ctx) // Run returns nil on ctx cancel; the error is asserted elsewhere
-		close(done)
-	}()
+	errc := make(chan error, 1)
+	go func() { errc <- c.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-errc; err != nil {
+			t.Errorf("consumer Run: %v", err)
+		}
 	})
 }
 
@@ -49,7 +47,7 @@ func TestPostedDispatchesOnePerLiveSubscriber(t *testing.T) {
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "hello")))
+	postMessage(t, c, reads, textMessage("m1", author, "hello"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -81,8 +79,8 @@ func TestPostedDispatchesAscendingPerSession(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "first")))
-	c.bus.Publish(postedResponse(wireText("m2", author, "second")))
+	postMessage(t, c, reads, textMessage("m1", author, "first"))
+	postMessage(t, c, reads, textMessage("m2", author, "second"))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -106,7 +104,7 @@ func TestUnsubscribedMemberGetsNothing(t *testing.T) {
 	res.bind(unsubscribed, "sess-unsub") // live, but not a subscriber
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "hello")))
+	postMessage(t, c, reads, textMessage("m1", author, "hello"))
 	disp.waitForDispatches(t, 1)
 
 	for _, d := range disp.snapshot() {
@@ -129,7 +127,7 @@ func TestHumanAuthoredDeliversAtPost(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+	postMessage(t, c, reads, textMessage("m1", human, "hi"))
 	disp.waitForDispatches(t, 1)
 
 	if got := disp.snapshot(); got[0].messageID != "m1" || got[0].sessionID != "sess-a" {
@@ -150,16 +148,17 @@ func TestAgentAuthoredHeldUntilSettle(t *testing.T) {
 	reads.agents[authorAgent] = true
 	res.bind(authorAgent, "sess-author")
 	res.bind(recipient, "sess-recip")
-	// The store holds the SETTLED blocks the settle edge re-reads.
-	reads.seedMessage(textMessage("m1", authorAgent, "settled body"))
 	startConsumer(t, c)
 
 	// Post while the author streams: HELD, nothing dispatched yet.
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "initial body")))
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "initial body"))
 	c.waitHeld(t, "sess-author", 1)
 	if got := disp.snapshot(); len(got) != 0 {
 		t.Fatalf("dispatched %d before settle, want 0 (held)", len(got))
 	}
+
+	// The author's turn grows the stored blocks before it settles.
+	reads.seedMessage(textMessage("m1", authorAgent, "settled body"))
 
 	// Author settles WORKING->READY: fire the held deliver from settled blocks.
 	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
@@ -184,10 +183,9 @@ func TestAgentAuthoredFiredOnTerminalFrame(t *testing.T) {
 	reads.agents[authorAgent] = true
 	res.bind(authorAgent, "sess-author")
 	res.bind(recipient, "sess-recip")
-	reads.seedMessage(textMessage("m1", authorAgent, "stored body"))
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "initial body")))
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "initial body"))
 	c.waitHeld(t, "sess-author", 1)
 
 	// Author dies with an ERRORED terminal frame: fire the held set from stored.
@@ -213,10 +211,9 @@ func TestAgentAuthoredNoFrameNotForceDelivered(t *testing.T) {
 	reads.agents[authorAgent] = true
 	res.bind(authorAgent, "sess-author")
 	res.bind(recipient, "sess-recip")
-	reads.seedMessage(textMessage("m1", authorAgent, "stored body"))
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "initial body")))
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "initial body"))
 	c.waitHeld(t, "sess-author", 1)
 
 	// A no-frame death is a DISCONNECTED edge (the bounded-reattach window), which
@@ -253,7 +250,7 @@ func TestAgentAuthoredNoLiveAuthorDeliversNow(t *testing.T) {
 	res.bind(recipient, "sess-recip")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "stored body")))
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "stored body"))
 	disp.waitForDispatches(t, 1)
 
 	if got := disp.snapshot(); got[0].sessionID != "sess-recip" || got[0].messageID != "m1" {
@@ -299,7 +296,7 @@ func TestLiveEventsQueueBehindSweep(t *testing.T) {
 	// A live deliver for the SAME session, published now, reaches the gate and
 	// blocks there (the sweep holds it). Wait for it to reach the gate, then
 	// assert nothing has dispatched — it is provably queued, not dropped.
-	c.bus.Publish(postedResponse(wireText("live-1", author, "live")))
+	postMessage(t, c, reads, textMessage("live-1", author, "live"))
 	<-atGate
 	if got := disp.snapshot(); len(got) != 0 {
 		t.Fatalf("recorded %d dispatches while the sweep holds the gate, want 0 (live deliver must queue behind)", len(got))
@@ -318,47 +315,161 @@ func TestLiveEventsQueueBehindSweep(t *testing.T) {
 	}
 }
 
-// Case 7: a bus-lag resync triggers the sweep, NOT a loss. When the live channel
-// overruns, the consumer redelivers every owed message to every live session rather
-// than dropping the missed events. Driven deterministically: block the first
-// dispatch, overrun the buffer, release, and assert the owed message arrives.
-func TestBusLagTriggersSweepNotLoss(t *testing.T) {
+// Case 7: a message whose fabric publish failed is owed by the cursor but never
+// published. A fabric reconnect runs the recovery pass, which delivers it to a
+// live recipient that never restarts; only the sweep can reach it.
+func TestReconnectSweepsPublishFailedPlainDeliver(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 	const author store.AccountID = "human-1"
-	const liveAgent store.AccountID = "agent-live"
-	const sweptAgent store.AccountID = "agent-swept"
+	const recipient store.AccountID = "agent-recip"
 
-	reads.subscribers[ch] = []store.AccountID{liveAgent}
-	res.bind(liveAgent, "sess-live")
-	res.bind(sweptAgent, "sess-swept")
-	// The swept agent is owed a message it can ONLY receive via the sweep (it is
-	// not a live-channel subscriber), so its arrival proves the lag path swept.
-	reads.owed[sweptAgent] = map[store.ChannelID][]store.Message{
-		ch: {textMessage("swept-only", author, "owed")},
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+	fab := fakeFabricOf(c)
+	fab.waitSubscribed(t)
+
+	reads.mu.Lock()
+	reads.owed[recipient] = map[store.ChannelID][]store.Message{ch: {textMessage("unpublished", author, "plain")}}
+	reads.mu.Unlock()
+	fab.fireReconnect()
+
+	if !disp.waitForMessage(t, "unpublished") {
+		t.Fatal("publish-failed plain message never delivered after a fabric reconnect")
 	}
-	// Block the first live dispatch so the consumer stalls and its live buffer
-	// overruns while we publish past the ring window.
-	disp.armFirstBlock()
+}
+
+// Case 7b: while NATS stays up nothing reconnects, so the floor tick is what
+// bounds how long a publish-failed plain message waits for a live recipient.
+func TestFloorTickSweepsPublishFailedPlainDeliver(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const recipient store.AccountID = "agent-recip"
+
+	tick := make(chan time.Time)
+	c.newFloorTicker = func() (<-chan time.Time, func()) { return tick, func() {} }
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+	fakeFabricOf(c).waitSubscribed(t)
+
+	reads.mu.Lock()
+	reads.owed[recipient] = map[store.ChannelID][]store.Message{ch: {textMessage("unpublished", author, "plain")}}
+	reads.mu.Unlock()
+	select {
+	case tick <- time.Now():
+	case <-time.After(testTimeout):
+		t.Fatal("consumer loop never read the floor tick")
+	}
+
+	if !disp.waitForMessage(t, "unpublished") {
+		t.Fatal("publish-failed plain message never delivered after a floor tick")
+	}
+}
+
+// OQ-1: a ref whose row is missing is logged and acked, since redelivery cannot
+// make the row appear; the refs behind it still deliver.
+func TestMissingRowRefIsAckedAndConsumerContinues(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const agentA store.AccountID = "agent-a"
+
+	reads.subscribers[ch] = []store.AccountID{agentA}
+	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	// First event: consumed off Live, then stalls in dispatch (armed).
-	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
-	<-disp.enteredFirst
-
-	// Overrun the consumer's live buffer (busLagFloodCount > liveBufferCapacity)
-	// so its channel closes lagged.
-	for range busLagFloodCount {
-		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
+	publishPosted(t, c, "ghost") // never committed: MessageByID is ErrNotFound
+	fakeFabricOf(c).waitAcked(t, "ghost")
+	postMessage(t, c, reads, textMessage("m1", author, "hello"))
+	if !disp.waitForMessage(t, "m1") {
+		t.Fatal("m1 never delivered after a missing-row ref")
 	}
+	for _, d := range disp.snapshot() {
+		if d.messageID == "ghost" {
+			t.Fatalf("dispatched the missing-row ref: %+v", d)
+		}
+	}
+}
 
-	// Release the stalled dispatch. The consumer drains its buffer, then reads the
-	// lagged-closed channel and runs the sweep.
-	close(disp.releaseFirst)
+// OQ-3 part 1: the per-event re-read runs under the ref's tenant, never the
+// system role, and the held deliver re-reads under the tenant captured at hold.
+func TestEventReadsRunUnderRefTenant(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const authorAgent store.AccountID = "agent-author"
+	const recipient store.AccountID = "agent-recip"
+	const tenant store.TenantID = "tenant-b"
 
-	// The swept-only message reaching sess-swept proves lag -> sweep, not loss.
-	if !disp.waitForMessage(t, "swept-only") {
-		t.Fatal("owed message never redelivered after bus lag: the lag path lost it instead of sweeping")
+	reads.subscribers[ch] = []store.AccountID{recipient}
+	reads.agents[authorAgent] = true
+	res.bind(authorAgent, "sess-author")
+	res.bind(recipient, "sess-recip")
+	reads.seedMessage(textMessage("m1", authorAgent, "body"))
+	startConsumer(t, c)
+
+	publishRef(t, context.Background(), c, tenant, "m1")
+	c.waitHeld(t, "sess-author", 1)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	disp.waitForDispatches(t, 1)
+
+	scopes := reads.readScopes("m1")
+	if len(scopes) != 2 {
+		t.Fatalf("MessageByID(m1) calls = %d, want 2 (the post re-read and the settle re-read)", len(scopes))
+	}
+	for i, s := range scopes {
+		if s.tenant != tenant || s.systemRole {
+			t.Fatalf("MessageByID(m1) call %d ran under %+v, want tenant %q without the system role", i, s, tenant)
+		}
+	}
+}
+
+// OQ-2: fabric callbacks hold while the loop drains settles, concurrently. Under
+// -race this proves the held registry is synchronized, and each held message
+// still fires exactly once.
+func TestConcurrentEventRefAndSettleDrainFireEachHeldOnce(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const authorAgent store.AccountID = "agent-author"
+	const recipient store.AccountID = "agent-recip"
+	const n = 50
+
+	reads.subscribers[ch] = []store.AccountID{recipient}
+	reads.agents[authorAgent] = true
+	res.bind(authorAgent, "sess-author")
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+
+	settling := make(chan struct{})
+	go func() {
+		defer close(settling)
+		for range n {
+			c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+		}
+	}()
+	for i := range n {
+		postMessage(t, c, reads, textMessage("m"+itoa(i), authorAgent, "body"))
+	}
+	<-settling
+	fab := fakeFabricOf(c)
+	for i := range n {
+		fab.waitAcked(t, "m"+itoa(i))
+	}
+	// Every hold has landed; this settle fires whatever the racing ones missed.
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	disp.waitForDispatches(t, n)
+	// The loop drains edges in order, so once this one is popped every earlier fire returned.
+	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.waitSettleDrained(t)
+
+	fired := map[string]int{}
+	for _, d := range disp.snapshot() {
+		fired[d.messageID]++
+	}
+	for i := range n {
+		if id := "m" + itoa(i); fired[id] != 1 {
+			t.Fatalf("dispatches of %s = %d, want exactly 1", id, fired[id])
+		}
 	}
 }
 
@@ -379,7 +490,7 @@ func TestRefusedDispatchIsNonFatalNoAdvance(t *testing.T) {
 	disp.refuse["sess-refused"] = errNoStream
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "hello")))
+	postMessage(t, c, reads, textMessage("m1", author, "hello"))
 	// The OK recipient still gets its deliver — the refusal did not wedge the
 	// consumer, and the refused deliver recorded nothing (no cursor advance path).
 	disp.waitForDispatches(t, 1)
@@ -387,133 +498,6 @@ func TestRefusedDispatchIsNonFatalNoAdvance(t *testing.T) {
 		if d.sessionID == "sess-refused" {
 			t.Fatalf("a refused dispatch was recorded as delivered: %+v", d)
 		}
-	}
-}
-
-// FIX 1 (RIG-1569 T3 review): a bus-lag overrun must RE-SUBSCRIBE and keep
-// delivering, not terminate the singleton consumer goroutine. The pre-fix code ran
-// the sweep then `return nil`, so one overrun ended live delivery forever. Drives an
-// overrun, then publishes a NEW message AFTER the sweep and asserts it delivers live.
-func TestBusLagResubscribesAndKeepsDelivering(t *testing.T) {
-	c, disp, res, reads := newTestConsumer(t)
-	const ch store.ChannelID = "chan-1"
-	const author store.AccountID = "human-1"
-	const liveAgent store.AccountID = "agent-live"
-	const sweptAgent store.AccountID = "agent-swept"
-
-	reads.subscribers[ch] = []store.AccountID{liveAgent}
-	res.bind(liveAgent, "sess-live")
-	res.bind(sweptAgent, "sess-swept")
-	// The swept agent is owed a message only the sweep can deliver, so its
-	// arrival proves the overrun swept before the loop resumed.
-	reads.owed[sweptAgent] = map[store.ChannelID][]store.Message{
-		ch: {textMessage("swept-only", author, "owed")},
-	}
-
-	// A deterministic signal that the lag branch re-subscribed: without it a
-	// post-sweep publish could race into the (deliberately un-drained) replay
-	// snapshot rather than the fresh live tail. Under the pre-fix code the branch
-	// returns instead of re-subscribing, so this never fires — the RED.
-	resubscribed := make(chan struct{})
-	c.afterResubscribe = func() { close(resubscribed) }
-
-	disp.armFirstBlock()
-	startConsumer(t, c)
-
-	// First event consumed off Live, then stalls in the armed dispatch.
-	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
-	<-disp.enteredFirst
-
-	// Overrun the live buffer (busLagFloodCount > liveBufferCapacity) so the
-	// channel closes lagged.
-	for range busLagFloodCount {
-		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
-	}
-	// Release the stall: the consumer drains its buffer, reads the lagged-closed
-	// channel, sweeps, then re-subscribes and continues.
-	close(disp.releaseFirst)
-
-	if !disp.waitForMessage(t, "swept-only") {
-		t.Fatal("owed message never redelivered after bus lag: the lag path lost it instead of sweeping")
-	}
-	select {
-	case <-resubscribed:
-	case <-time.After(testTimeout):
-		t.Fatal("consumer never re-subscribed after the lag overrun: the loop returned instead of continuing (permanent live-delivery death)")
-	}
-
-	// A NEW message published after the sweep+resubscribe must be delivered live —
-	// proof the singleton loop is still running and still fanning out.
-	c.bus.Publish(postedResponse(wireText("post-sweep-1", author, "alive")))
-	if !disp.waitForMessage(t, "post-sweep-1") {
-		t.Fatal("post-sweep message never delivered: the consumer stopped after the overrun instead of re-subscribing and continuing")
-	}
-}
-
-// FIX A (RIG-1569 T3 round-2 review): a bus-lag resync must SUBSCRIBE before it
-// sweeps, or a message committed between the owed-read and the fresh Subscribe
-// reaches no one until reconnect. Blocks the consumer INSIDE the resync sweep,
-// publishes M during the block, and asserts M arrives live (sweep-first: skipped Replay).
-func TestBusLagResubscribeDeliversWindowMessageLive(t *testing.T) {
-	c, disp, res, reads := newTestConsumer(t)
-	const ch store.ChannelID = "chan-1"
-	const author store.AccountID = "human-1"
-	const windowAgent store.AccountID = "agent-window"
-
-	// windowAgent is the sole live subscriber of chan-1 and is owed NOTHING, so
-	// the resync sweep dispatches it nothing — a clean discriminator: the window
-	// message can reach sess-window ONLY via live delivery, never the sweep.
-	reads.subscribers[ch] = []store.AccountID{windowAgent}
-	res.bind(windowAgent, "sess-window")
-
-	// Block the resync sweep mid-flight so the test can publish M while the
-	// consumer is between subscribe and the tail resume. On the FIRST owed-read
-	// (any agent), signal entry then block until released.
-	enteredSweep := make(chan struct{})
-	releaseSweep := make(chan struct{})
-	var once sync.Once
-	reads.beforeUndelivered = func(store.AccountID) {
-		once.Do(func() {
-			close(enteredSweep)
-			<-releaseSweep
-		})
-	}
-
-	disp.armFirstBlock()
-	startConsumer(t, c)
-
-	// First event consumed off Live, then stalls in the armed dispatch.
-	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
-	<-disp.enteredFirst
-
-	// Overrun the live buffer (busLagFloodCount > liveBufferCapacity) so the
-	// channel closes lagged.
-	for range busLagFloodCount {
-		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
-	}
-	// The window publish must happen once the consumer is inside the resync sweep,
-	// but the recorder channel has to keep draining meanwhile (the flood fills it
-	// during the Live-buffer drain), so run the coordination in a goroutine and
-	// let waitForMessage below drain the recorder.
-	go func() {
-		<-enteredSweep
-		// The consumer is inside the resync sweep. With the subscribe-first order
-		// the fresh subscription is already live, so M lands on the new Live; with
-		// the pre-fix sweep-first order the subscribe has not happened yet, so M
-		// falls into the (skipped) fresh Replay and is never delivered live.
-		c.bus.Publish(postedResponse(wireText("window-m", author, "in the window")))
-		close(releaseSweep)
-	}()
-
-	// Release the stall: the consumer drains its buffer, reads the lagged-closed
-	// channel, and runs the resync (subscribe + sweep), blocking in the sweep's
-	// beforeUndelivered until the goroutine above releases it.
-	close(disp.releaseFirst)
-
-	// M must be delivered live to sess-window. Its owed set is empty, so a sweep
-	// could never have carried it — arrival proves subscribe-first closed the seam.
-	if !disp.waitForMessage(t, "window-m") {
-		t.Fatal("window message never delivered live to sess-window: the resync swept before it subscribed, so M fell into the skipped replay and was lost until reconnect")
 	}
 }
 
@@ -573,15 +557,13 @@ func (d *blockCapturingDispatcher) waitFor(t *testing.T, messageID string) block
 	}
 }
 
-// FIX 3 (RIG-1569 T3 review): the no-live-author path must deliver from the
-// STORED block set, not the posted (possibly partial) wire message. The pre-fix
-// code fanned out the raw bus `msg`. Seeds the store with a GROWN block set
-// distinct from the posted one and asserts the dispatched deliver carries it.
+// FIX 3 (RIG-1569 T3 review): the no-live-author path delivers the STORED block
+// set. The ref carries no blocks, so the deliver must carry what the store holds.
 func TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks(t *testing.T) {
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()
 	reads := newFakeReads()
-	c := NewConsumer(events.NewBus[*compassv1.SubscribeCommsResponse](), reads, disp, res, discardLogger())
+	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
 
 	const ch store.ChannelID = "chan-1"
 	const authorAgent store.AccountID = "agent-author"
@@ -589,27 +571,26 @@ func TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks(t *testing.T) {
 
 	reads.subscribers[ch] = []store.AccountID{recipient}
 	reads.agents[authorAgent] = true
-	// Author agent is NOT live (already stopped at post). The store holds the
-	// SETTLED, grown block set; the posted wire message carries the stale partial.
+	// Author agent is NOT live (already stopped at post); the store holds the
+	// SETTLED, grown block set.
 	reads.seedMessage(textMessage("m1", authorAgent, "stored grown body"))
 	res.bind(recipient, "sess-recip")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "posted partial body")))
+	publishPosted(t, c, "m1")
 
 	rec := disp.waitFor(t, "m1")
 	if rec.sessionID != "sess-recip" {
 		t.Fatalf("no-live-author deliver session = %q, want sess-recip", rec.sessionID)
 	}
 	if rec.firstText != "stored grown body" {
-		t.Fatalf("no-live-author deliver carried %q, want the STORED blocks %q — the branch fanned out the posted (stale) message instead of re-reading the store",
-			rec.firstText, "stored grown body")
+		t.Fatalf("no-live-author deliver carried %q, want the STORED blocks %q", rec.firstText, "stored grown body")
 	}
 }
 
 // TestConsumerNilAgentWakerConstructsAndRuns pins the nil-safe wake seam
 // (RIG-1641 T3): a Consumer built with no AgentWaker wired — the default, since
-// T3 adds no production caller — constructs and runs its bus-tail loop exactly as
+// T3 adds no production caller — constructs and runs its loop exactly as
 // before, routing a posted message to a live subscriber. The wake seam is
 // defined and wired at assembly but dormant until T2/T4 add the routing caller;
 // this proves its mere presence changes nothing when unset.
@@ -629,7 +610,7 @@ func TestConsumerNilAgentWakerConstructsAndRuns(t *testing.T) {
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", author, "hello")))
+	postMessage(t, c, reads, textMessage("m1", author, "hello"))
 	disp.waitForDispatches(t, 1)
 
 	if got := disp.snapshot(); len(got) != 1 || got[0].sessionID != "sess-a" {

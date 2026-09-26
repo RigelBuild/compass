@@ -8,40 +8,27 @@ package delivery
 
 // The durable owed row is the offline backstop, the live-session re-check is the
 // latency path, and the arm is re-derived by the recovery scan so a restart in
-// the commit->fanOut window still backstops. Driven through the real bus + fakes.
+// the commit->fanOut window still backstops. Driven through the fake fabric + fakes.
 
 import (
 	"context"
 	"testing"
 
-	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// wireAskAnswer builds a wire answer Message authored by answerer, carrying a
-// single ask_answer block whose snapshot is an answered ask and whose
-// asker_account_id targets asker — the shape RespondToAsk publishes.
-func wireAskAnswer(id string, answerer, asker store.AccountID) *compassv1.Message {
-	return &compassv1.Message{
-		Id:              id,
-		TopicId:         "topic-1",
-		AuthorAccountId: string(answerer),
-		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
-			Ask: &compassv1.Ask{
-				AskId:     "ask-1",
-				Answered:  true,
-				Questions: []*compassv1.AskQuestion{{QuestionId: "q1", Question: "?", ChosenOptionIds: []string{"opt-a"}}},
-			},
-			AskerAccountId: string(asker),
-		}}}},
-	}
-}
+const (
+	askAnswerID                 = "ans-1"
+	answerer    store.AccountID = "human-1"
+	asker       store.AccountID = "agent-asker"
+)
 
-// storeAskAnswer builds the store-side answer message for the recovery-scan
-// path (seedUnrouted re-reads a store.Message).
-func storeAskAnswer(id string, answerer, asker store.AccountID) store.Message {
+// storeAskAnswer builds an answer message authored by answerer, carrying a
+// single answered ask_answer block whose asker_account_id targets asker — the
+// shape RespondToAsk commits.
+func storeAskAnswer() store.Message {
 	return store.Message{
-		ID:              store.MessageID(id),
+		ID:              askAnswerID,
 		TopicID:         "topic-1",
 		AuthorAccountID: answerer,
 		Blocks: []store.MessageBlock{{AskAnswer: &store.AskAnswerBlock{
@@ -61,15 +48,13 @@ func storeAskAnswer(id string, answerer, asker store.AccountID) store.Message {
 func TestAskAnswerOfflineOutOfSweepAskerRecordsOwed(t *testing.T) {
 	c, disp, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
-	const answerer store.AccountID = "human-1"
-	const asker store.AccountID = "agent-asker"
 
 	// asker is a channel member but NOT subscribed (out of the sweep set) and
 	// offline (never bound). answerer authors the answer.
 	reads.members[ch] = []store.AccountID{asker}
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireAskAnswer("ans-1", answerer, asker)))
+	postMessage(t, c, reads, storeAskAnswer())
 	reads.waitForOwed(t, asker, 1)
 
 	if got := disp.snapshot(); len(got) != 0 {
@@ -87,16 +72,14 @@ func TestAskAnswerOfflineOutOfSweepAskerRecordsOwed(t *testing.T) {
 func TestAskAnswerLiveOutOfSweepAskerDispatchesDirectly(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
-	const answerer store.AccountID = "human-1"
-	const asker store.AccountID = "agent-asker"
 
 	reads.members[ch] = []store.AccountID{asker}
 	// asker out of the sweep set but LIVE.
 	res.bind(asker, "sess-asker")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireAskAnswer("ans-1", answerer, asker)))
-	if !disp.waitForMessage(t, "ans-1") {
+	postMessage(t, c, reads, storeAskAnswer())
+	if !disp.waitForMessage(t, askAnswerID) {
 		t.Fatal("ans-1 never dispatched: a live out-of-sweep asker must be steered directly")
 	}
 
@@ -115,8 +98,6 @@ func TestAskAnswerLiveOutOfSweepAskerDispatchesDirectly(t *testing.T) {
 func TestAskAnswerSubscribedAskerNoOwedNoDirect(t *testing.T) {
 	c, disp, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
-	const answerer store.AccountID = "human-1"
-	const asker store.AccountID = "agent-asker"
 
 	// asker subscribed AND in the sweep set, but OFFLINE — so the normal deliver
 	// loop wakes it (no direct steer) and records no owed row.
@@ -126,7 +107,7 @@ func TestAskAnswerSubscribedAskerNoOwedNoDirect(t *testing.T) {
 	w := withWaker(c)
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireAskAnswer("ans-1", answerer, asker)))
+	postMessage(t, c, reads, storeAskAnswer())
 	w.waitForWakes(t, 1) // the normal deliver arm wakes the offline subscriber
 
 	if n := reads.owedCount(asker); n != 0 {
@@ -148,13 +129,11 @@ func TestAskAnswerSubscribedAskerNoOwedNoDirect(t *testing.T) {
 func TestAskAnswerRecoveryScanReDerivesOwed(t *testing.T) {
 	c, disp, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
-	const answerer store.AccountID = "human-1"
-	const asker store.AccountID = "agent-asker"
 
 	reads.members[ch] = []store.AccountID{asker}
 	// asker offline + out of the sweep set. The answer message is committed but
 	// unmarked (the fanOut never ran — restart in the commit→fanOut window).
-	reads.seedUnrouted(storeAskAnswer("ans-1", answerer, asker), ch, 1)
+	reads.seedUnrouted(storeAskAnswer(), ch, 1)
 
 	c.scanMissedMentions(context.Background())
 
@@ -164,7 +143,7 @@ func TestAskAnswerRecoveryScanReDerivesOwed(t *testing.T) {
 	if n := reads.owedCount(asker); n != 1 {
 		t.Fatalf("owed rows for asker = %d, want 1 (recovery scan re-derives the owed row)", n)
 	}
-	if got := reads.markCount("ans-1"); got != 1 {
+	if got := reads.markCount(askAnswerID); got != 1 {
 		t.Fatalf("marks for ans-1 = %d, want 1 (a processed message is marked complete)", got)
 	}
 }

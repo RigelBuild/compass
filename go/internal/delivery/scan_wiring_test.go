@@ -4,21 +4,20 @@ package delivery
 
 // RIG-2490 T3 — the recovery scan wired at both consumer recovery points and the
 // mention-routed mark stamped on the live settle path, RED-first. Each case
-// drives the consumer through the real events bus + fakes and gates on the
+// drives the consumer through the fake fabric + fakes and gates on the
 // observable durable effect (owed row, mark), never a sleep.
 
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// Start-scan leg: a committed-but-unmarked mention whose bus event is ABSENT
-// (never replayed or delivered live) is recovered by Run's start scan — the
-// offline out-of-sweep-set member gets a durable owed row and the message is
-// marked. Without the wiring the owed row never appears (the RED).
+// Start-scan leg: a committed-but-unmarked mention whose ref was never published
+// is recovered by Run's start scan. The offline out-of-sweep-set member gets a
+// durable owed row and the message is marked; without the scan the owed row
+// never appears (the RED).
 func TestStartScanRecoversMissedMention(t *testing.T) {
 	c, _, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -38,57 +37,60 @@ func TestStartScanRecoversMissedMention(t *testing.T) {
 	}
 }
 
-// Overrun leg: a committed-but-unmarked mention dropped in the bus-lag overrun
-// window is recovered by the overrun-branch scan. Driven exactly like the
-// bus-lag resync cases (arm the first dispatch, overrun the live buffer,
-// release), gating on the afterResubscribe seam — the scan runs before it fires,
-// so once resubscribed is closed the scan has completed. Without the wiring the
-// owed row never appears (the RED).
-func TestOverrunBranchScansMissedMention(t *testing.T) {
-	c, disp, res, reads := newTestConsumer(t)
+// The start scan finishes before Run subscribes, so no event is handled until
+// the committed-but-unmarked set has been recovered.
+func TestStartScanCompletesBeforeSubscribe(t *testing.T) {
+	c, _, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 	const author store.AccountID = "human-1"
-	const liveAgent store.AccountID = "agent-live"
 	const agentA store.AccountID = "agent-a"
 
-	reads.subscribers[ch] = []store.AccountID{liveAgent}
-	res.bind(liveAgent, "sess-live")
 	reads.members[ch] = []store.AccountID{agentA}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
-	// m1 is seeded AFTER the start scan has run (below, past <-disp.enteredFirst)
-	// so Run's start scan reads an empty unrouted set — only the overrun-branch
-	// scan can recover it. Without that isolation the start scan would grab m1 at
-	// loop entry and this test would pass with the overrun-branch scan removed.
-
-	resubscribed := make(chan struct{})
-	c.afterResubscribe = func() { close(resubscribed) }
-
-	disp.armFirstBlock()
-	startConsumer(t, c)
-
-	// First event consumed off Live, then stalls in the armed dispatch. Entry
-	// here is strictly after Run's start scan completed, so seeding m1 now hides
-	// it from that scan; only the overrun-branch scan can recover it.
-	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
-	<-disp.enteredFirst
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
-	// Overrun the live buffer so the channel closes lagged.
-	for range busLagFloodCount {
-		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
-	}
-	close(disp.releaseFirst)
+	fab := fakeFabricOf(c)
+	marksAtSubscribe := -1
+	fab.beforeSubscribe = func() { marksAtSubscribe = reads.markCount("m1") }
+	startConsumer(t, c)
+	fab.waitSubscribed(t)
 
-	select {
-	case <-resubscribed:
-	case <-time.After(testTimeout):
-		t.Fatal("consumer never re-subscribed after the lag overrun")
+	if marksAtSubscribe != 1 {
+		t.Fatalf("marks for m1 when Run subscribed = %d, want 1 (the start scan must finish first)", marksAtSubscribe)
 	}
-	if n := reads.owedCount(agentA); n != 1 {
-		t.Fatalf("owed rows for agentA = %d, want 1 (the overrun-branch scan recovers the dropped-window mention)", n)
+}
+
+// A serve shutdown that lands while Run is subscribing is a clean stop, not a
+// Run error: the serve group would otherwise report a failed shutdown.
+func TestRunReturnsNilWhenCancelledWhileSubscribing(t *testing.T) {
+	fab := newFakeFabric()
+	c := NewConsumer(newFakeReads(), newFakeDispatcher(), newFakeResolver(), fab, discardLogger())
+	ctx, cancel := context.WithCancel(t.Context())
+	fab.beforeSubscribe = cancel
+
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("Run cancelled while subscribing = %v, want nil", err)
 	}
-	if got := reads.markCount("m1"); got != 1 {
-		t.Fatalf("marks for m1 = %d, want 1 (the overrun-branch scan marks the recovered message)", got)
-	}
+}
+
+// Reconnect leg: a mention committed after Run subscribed, whose publish failed,
+// is invisible to the start scan; the scan a fabric reconnect triggers recovers
+// it. Without the reconnect hook the owed row never appears (the RED).
+func TestReconnectScansMissedMention(t *testing.T) {
+	c, _, _, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const agentA store.AccountID = "agent-a"
+
+	reads.members[ch] = []store.AccountID{agentA}
+	reads.handles["aa"] = agentAccount(agentA, "aa")
+	startConsumer(t, c)
+	fab := fakeFabricOf(c)
+	fab.waitSubscribed(t)
+
+	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
+	fab.fireReconnect()
+
+	reads.waitForOwed(t, agentA, 1)
 }
 
 // Live-path mark: a live settle pass through fanOut marks the message, so a
