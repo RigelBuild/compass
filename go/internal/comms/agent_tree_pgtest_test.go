@@ -51,15 +51,9 @@ func TestReparentAgentHappyPathEmitsAccountChanged(t *testing.T) {
 	}
 }
 
-// TestReparentAgentForeignCallerNotFound: a caller under a different owner names
-// the target by an owner-qualified handle it cannot reach — the store's clause-0
-// authority failure is remapped to NOT_FOUND naming the submitted handle
-// (DL-269), byte-identical to an unknown target, so the foreign caller cannot
-// probe the target's existence.
-//
-// The parent is the intruder itself, so the same-owner parent pre-check passes
-// and the call reaches the store; a foreign parent would miss at the pre-check
-// first and name the parent handle instead.
+// TestReparentAgentForeignCallerNotFound: a foreign caller's authority failure must
+// read as an unknown target. Its parent is itself, so the call gets past the
+// parent pre-check to the target check.
 func TestReparentAgentForeignCallerNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -207,10 +201,8 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 	}))
 	connectNotFoundFor(t, err, "no-such-agent", "create with missing parent")
 
-	// A parent under a different owner → NOT_FOUND (was PermissionDenied): the
-	// owner-qualified foreign parent resolves, but the same-owner check is
-	// remapped to name the submitted handle (DL-269) — byte-identical to an
-	// unknown parent under the same qualifier, code AND message.
+	// A foreign parent resolves, but the same-owner check must read as an unknown
+	// parent under the same qualifier, code AND message.
 	other := mustUser(t, st, "other")
 	mustAgent(t, st, other.ID, "foreign")
 	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{

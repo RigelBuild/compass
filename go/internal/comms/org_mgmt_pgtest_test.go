@@ -85,7 +85,7 @@ func TestCreateChannelAsAccountInvisibleGroupIsNotFound(t *testing.T) {
 }
 
 // TestCreateChannelAsAccountUnknownMemberHandleIsNotFound: the agent adapter
-// inherits CreateChannel's atomic member resolution, so an unknown handle fails the create with the human's NOT_FOUND.
+// shares CreateChannel's atomic member resolution and its NOT_FOUND.
 func TestCreateChannelAsAccountUnknownMemberHandleIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()

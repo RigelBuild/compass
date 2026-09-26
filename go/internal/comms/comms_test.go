@@ -87,8 +87,8 @@ func TestCreateChannelEmitsChannelChanged(t *testing.T) {
 	}
 }
 
-// TestCreateChannelUnknownOrInvisibleMemberHandleIsNotFound: member_handles
-// resolve viewer-scoped, so a real agent the caller cannot see must miss byte-identically to an unknown handle.
+// TestCreateChannelUnknownOrInvisibleMemberHandleIsNotFound: member_handles are
+// viewer-scoped, so an invisible agent must miss exactly like an unknown one.
 func TestCreateChannelUnknownOrInvisibleMemberHandleIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
