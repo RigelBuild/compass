@@ -64,6 +64,95 @@
 						}
 					]
 				}
+			},
+			{
+				"status": 200,
+				"body": {
+					"data": {
+						"repository": {
+							"pullRequest": {
+								"reviewThreads": {
+									"pageInfo": {
+										"hasNextPage": false,
+										"endCursor": "Y3Vyc29yOnYyOpHOAAAAAQ=="
+									},
+									"nodes": [
+										{
+											"id": "PRRT_kwDOAAAAAc4AAAAB",
+											"isResolved": true,
+											"path": "main.go",
+											"comments": {
+												"pageInfo": {
+													"hasNextPage": false,
+													"endCursor": "Y3Vyc29yOnYyOpHOAAAAAg=="
+												},
+												"nodes": [
+													{
+														"author": {
+															"login": "carol",
+															"__typename": "User"
+														},
+														"body": "nit: rename"
+													},
+													{
+														"author": { "login": "botly", "__typename": "Bot" },
+														"body": "done"
+													}
+												]
+											}
+										},
+										{
+											"id": "PRRT_kwDOAAAAAc4AAAAC",
+											"isResolved": false,
+											"path": "README.md",
+											"comments": {
+												"pageInfo": {
+													"hasNextPage": false,
+													"endCursor": "Y3Vyc29yOnYyOpHOAAAAAw=="
+												},
+												"nodes": [
+													{
+														"author": null,
+														"body": "left by a deleted account"
+													}
+												]
+											}
+										}
+									]
+								},
+								"commits": {
+									"nodes": [
+										{
+											"commit": {
+												"oid": "abc123",
+												"statusCheckRollup": {
+													"contexts": {
+														"pageInfo": {
+															"hasNextPage": false,
+															"endCursor": "MQ"
+														},
+														"nodes": [
+															{
+																"__typename": "CheckRun",
+																"name": "build",
+																"isRequired": true
+															},
+															{
+																"__typename": "StatusContext",
+																"context": "legacy-ci",
+																"isRequired": false
+															}
+														]
+													}
+												}
+											}
+										}
+									]
+								}
+							}
+						}
+					}
+				}
 			}
 		],
 		"want": {
@@ -85,7 +174,7 @@
 						"Name": "build",
 						"State": "success",
 						"URL": "https://ci/build",
-						"Required": false
+						"Required": true
 					},
 					{
 						"Name": "legacy-ci",
@@ -109,7 +198,27 @@
 					"Body": "needs work"
 				}
 			],
-			"Threads": null
+			"Threads": [
+				{
+					"Path": "main.go",
+					"Resolved": true,
+					"Comments": [
+						{ "Author": "carol", "IsBot": false, "Body": "nit: rename" },
+						{ "Author": "botly[bot]", "IsBot": true, "Body": "done" }
+					]
+				},
+				{
+					"Path": "README.md",
+					"Resolved": false,
+					"Comments": [
+						{
+							"Author": "",
+							"IsBot": false,
+							"Body": "left by a deleted account"
+						}
+					]
+				}
+			]
 		}
 	}
 }
