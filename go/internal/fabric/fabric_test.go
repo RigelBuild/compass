@@ -208,43 +208,56 @@ func TestNewUnreachableURL(t *testing.T) {
 	}
 }
 
-// A boot failure must not print the operator's NATS password into the log.
-func TestNewConnectErrorRedactsPassword(t *testing.T) {
-	t.Parallel()
-	_, err := New(Config{URL: "nats://svc:hunter2@127.0.0.1:1", Options: []nats.Option{nats.Timeout(2 * time.Second)}})
-	if err == nil {
-		t.Fatal("New against an unreachable server: want an error, got nil")
-	}
-	if strings.Contains(err.Error(), "hunter2") {
-		t.Fatalf("connect error leaks the password: %v", err)
+// credentialURLs are NATS URLs whose secrets (every "pw"/"tok" token) must never
+// reach a log: seed lists, tokens, scheme-less entries, and credentials holding
+// raw reserved characters that url.Parse misreads or rejects.
+var credentialURLs = []string{
+	"nats://u:pw1@127.0.0.1:1,nats://u:pw2@127.0.0.1:1",
+	"nats://tok3n@127.0.0.1:1",
+	"svc:pw3@127.0.0.1:1",
+	"nats://Zm9v/pw4+cXV4@127.0.0.1:1",
+	"nats://u:pw5?x@127.0.0.1:1",
+	"nats://u:#pw6@127.0.0.1:1",
+	"pw7:a://b@127.0.0.1:1",
+	"nats://u:pw8%zz@127.0.0.1:1",
+	"nats://u:pw9^x@127.0.0.1:1",
+	"nats://u:pwA#x@127.0.0.1:1",
+	"nats://u:pwB,x@127.0.0.1:1",
+	"nats://tokC,en@127.0.0.1:1",
+}
+
+var credentialSecrets = []string{"pw1", "pw2", "pw3", "pw4", "pw5", "pw6", "pw7", "pw8", "pw9", "pwA", "pwB", "tok3n", "tokC"}
+
+func assertNoSecret(t *testing.T, raw, got string) {
+	t.Helper()
+	for _, secret := range credentialSecrets {
+		if strings.Contains(got, secret) {
+			t.Errorf("for %q: %q leaks %q", raw, got, secret)
+		}
 	}
 }
 
-// Every credential form nats.go accepts stays out of logs: a seed list past its
-// first entry, a username-only token, a scheme-less entry, and raw '/', '?' or
-// '#' in a credential, which url.Parse would read as path, query or fragment.
+// A boot failure must not print the operator's NATS credentials, including
+// through nats.go's own URL parse error.
+func TestNewConnectErrorRedactsCredentials(t *testing.T) {
+	t.Parallel()
+	for _, raw := range credentialURLs {
+		_, err := New(Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second)}})
+		if err == nil {
+			t.Fatalf("New(%q) against an unreachable server: want an error, got nil", raw)
+		}
+		assertNoSecret(t, raw, err.Error())
+	}
+}
+
 func TestRedactURLHidesEveryCredentialForm(t *testing.T) {
 	t.Parallel()
-	for _, raw := range []string{
-		"nats://u:pw1@h1:4222,nats://u:pw2@h2:4222",
-		"nats://tok3n@h4:4222",
-		"svc:pw3@h3:4222",
-		"nats://Zm9v/pw4+cXV4@h:4222",
-		"nats://u:pw5?x@h:4222",
-		"nats://u:#pw6@h:4222",
-		"pw7:a://b@h:4222",
-	} {
-		got := redactURL(raw)
-		for _, secret := range []string{"pw1", "pw2", "pw3", "pw4", "pw5", "pw6", "pw7", "tok3n"} {
-			if strings.Contains(got, secret) {
-				t.Errorf("redactURL(%q) = %q, leaks %q", raw, got, secret)
-			}
-		}
+	for _, raw := range credentialURLs {
+		assertNoSecret(t, raw, redactURL(raw))
 	}
 	for raw, want := range map[string]string{
 		"nats://h1:4222,nats://h2:4222": "nats://h1:4222,nats://h2:4222",
-		"tls://u:p@h:4222":              "tls://redacted@h:4222",
-		"nats://a:4222,":                "nats://a:4222",
+		"tls://u:p@h:4222":              "tls://<redacted>@h:4222",
 		"":                              "",
 	} {
 		if got := redactURL(raw); got != want {

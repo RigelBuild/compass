@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -355,6 +356,10 @@ func New(cfg Config) (*Fabric, error) {
 
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
+		// A URL parse error quotes the raw URL, credentials included; never wrap it.
+		if _, ok := errors.AsType[*url.Error](err); ok {
+			return nil, fmt.Errorf("fabric: connecting to nats at %q: the URL does not parse; check its credentials for unescaped reserved characters", redactURL(cfg.URL))
+		}
 		return nil, fmt.Errorf("fabric: connecting to nats at %q: %w", redactURL(cfg.URL), err)
 	}
 	js, err := jetstream.New(nc)
@@ -367,29 +372,20 @@ func New(cfg Config) (*Fabric, error) {
 	return f, nil
 }
 
-// redactURL hides all userinfo in a NATS URL or comma-separated seed list. NATS
-// URLs have no path, so everything before an entry's last '@' is credential
-// material, even when it holds a raw '/', '?' or '#'.
+// redactURL hides NATS URL credentials. Every userinfo byte, in any seed-list
+// entry, precedes the string's last '@', so all of it is cut. A credentialed
+// seed list keeps only the hosts after that '@'.
 func redactURL(raw string) string {
-	var out []string
-	for p := range strings.SplitSeq(raw, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		at := strings.LastIndex(p, "@")
-		if at < 0 {
-			out = append(out, p)
-			continue
-		}
-		scheme := "nats"
-		// Only a letters-only prefix is a scheme; anything else is credential.
-		if i := strings.Index(p[:at], "://"); i > 0 && strings.Trim(p[:i], "abcdefghijklmnopqrstuvwxyz") == "" {
-			scheme = p[:i]
-		}
-		out = append(out, scheme+"://redacted@"+p[at+1:])
+	at := strings.LastIndex(raw, "@")
+	if at < 0 {
+		return raw
 	}
-	return strings.Join(out, ",")
+	scheme := "nats"
+	// Only a letters-only prefix is a scheme; anything else is credential.
+	if i := strings.Index(raw[:at], "://"); i > 0 && strings.Trim(raw[:i], "abcdefghijklmnopqrstuvwxyz") == "" {
+		scheme = raw[:i]
+	}
+	return scheme + "://<redacted>@" + raw[at+1:]
 }
 
 // subDropped reports a subscription's dropped-message count for logging.
