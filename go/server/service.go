@@ -358,7 +358,7 @@ func (s *service) IssueToken(
 	// The admin door is not visibility-scoped (no D9 clip): the admin may name any account.
 	var acc store.Account
 	var err error
-	if qh := store.ParseQualifiedHandle(raw); qh.Handle != qh.Raw {
+	if qh := store.ParseQualifiedHandle(raw); qh.Qualified() {
 		acc, err = s.resolveQualifiedAgent(ctx, raw)
 	} else if acc, err = s.store.UserByHandle(ctx, raw); err != nil {
 		err = handleLookupError(raw, err)
@@ -546,7 +546,7 @@ func (s *service) provisionAgent(
 // every miss return the same NotFound naming the submitted handle.
 func (s *service) resolveQualifiedAgent(ctx context.Context, raw string) (store.Account, error) {
 	qh := store.ParseQualifiedHandle(raw)
-	if !qh.Qualified() {
+	if !qh.Qualified() || qh.Malformed() {
 		return store.Account{}, handleNotFound(raw)
 	}
 	owner, err := s.store.UserByHandle(ctx, qh.Owner)
