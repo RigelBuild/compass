@@ -64,10 +64,10 @@ import (
 )
 
 const (
-	// w3AgentHandle is the 32-hex agent handle every W3 Provision uses (the
+	// w3AccountID is the 32-hex agent account id every W3 Provision uses (the
 	// BuildSpec input shape the real spec builder validates); its exact value is
 	// irrelevant, only that it is the minted fixed-width lowercase-hex shape.
-	w3AgentHandle = "0123456789abcdef0123456789abcdef"
+	w3AccountID = "0123456789abcdef0123456789abcdef"
 	// w3ProbeCallID is the Comms CallId the round-trip probes send; asserting it
 	// flows to the relay verbatim and back proves the call, not merely a connect.
 	w3ProbeCallID = "w3-vsock-1"
@@ -213,7 +213,7 @@ func TestVsockGateway_HostServesSuffixedSocket(t *testing.T) {
 	fake := newW3Relay()
 	h, engine := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AccountID)
 	if err != nil {
 		t.Fatalf("Provision (boot + serve over vsock suffixed path) = %v", err)
 	}
@@ -278,7 +278,7 @@ func TestVsockGateway_FailClosedBeforeStart(t *testing.T) {
 	fake := newW3Relay()
 	h, _ := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AccountID)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -312,7 +312,7 @@ func TestVsockGateway_TeardownRemovesSuffixedSocket(t *testing.T) {
 	fake := newW3Relay()
 	h, _ := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AccountID)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -350,7 +350,7 @@ func TestVsockGateway_InGuestRoundTripOverVsock(t *testing.T) {
 	fake := newW3Relay()
 	h, engine := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AccountID)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -397,7 +397,7 @@ func TestVsockGateway_InGuestVsockIsNotIP(t *testing.T) {
 	fake := newW3Relay()
 	h, engine := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AccountID)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
