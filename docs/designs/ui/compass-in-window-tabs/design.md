@@ -85,9 +85,18 @@ matching component from the existing route table, inside that view's
 `ViewContext`. `appRoutes` stays the single component map, so production, tests
 (`test-router.tsx`) and the pane renderer cannot drift.
 
-Browser back and forward move the focused view through its own history. Each
-view keeps a small history stack in its `ViewScope`. Switching tabs replaces the
-URL without pushing an entry, so back never jumps between tabs.
+There is one browser history, and it stays linear. A navigation in a view
+pushes an entry whose history state carries that view's id (`navigate(path,
+{ state })` and `location.state` in `@solidjs/router` 2, `NavigateOptions` and
+`Location` in its `dist/types.d.ts`). A tab switch uses `{ replace: true }`.
+Switching tabs therefore never fills the back stack. On back or forward, the
+entry's path is applied to the view named in its state, and that view's tab is
+focused. An entry with no state, or one naming a closed view, applies to the
+focused view. The replace on a tab switch rewrites the current entry to the
+newly focused tab's path and id. Back then goes to the entry before it, which
+may belong to another tab; that tab is focused and navigated to the entry's
+path. A view's current path lives in the window layout, not in history, so a
+replace never changes what a hidden tab shows.
 
 ### A3 — Window layout: tabs, each a single view or a two-pane split
 
@@ -355,7 +364,10 @@ view's path and applies hash changes to it (A2). Layout persists to
 - Tests: reducer cases for dedupe, close focus order, the last-tab rule, the
   tab cap, move bounds, and a split whose pane closes back to a single view.
   `loadLayout` with a corrupt value falls back to one Bridge tab. A deep-link
-  hash that is not in the restored layout opens as the focused tab.
+  hash that is not in the restored layout opens as the focused tab. A
+  memory-history test: navigate tab A to `/done`, switch to tab B on `/`,
+  navigate B to `/backlog`, then go back once. B shows `/`, tab A still shows
+  `/done`, and the history length grew by exactly the two navigations.
 
 ### T4 — Tab strip UI, keep-alive and sidebar open modes
 
