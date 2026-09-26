@@ -357,8 +357,14 @@ func New(cfg Config) (*Fabric, error) {
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
 		// nats.go's errors can quote URL fragments (a parse error, or a DNS error
-		// on a comma-split credential), so with credentials only fixed text passes.
-		if strings.Contains(cfg.URL, "@") && !errors.Is(err, nats.ErrNoServers) {
+		// on a comma-split credential). With credentials, only fixed-text sentinels
+		// pass, wrapped as the sentinel itself so no server or URL text rides along.
+		if strings.Contains(cfg.URL, "@") {
+			for _, s := range []error{nats.ErrNoServers, nats.ErrAuthorization} {
+				if errors.Is(err, s) {
+					return nil, fmt.Errorf("fabric: connecting to nats at %q: %w", redactURL(cfg.URL), s)
+				}
+			}
 			return nil, fmt.Errorf("fabric: connecting to nats at %q: connect failed; cause withheld because the URL carries credentials", redactURL(cfg.URL))
 		}
 		return nil, fmt.Errorf("fabric: connecting to nats at %q: %w", redactURL(cfg.URL), err)
