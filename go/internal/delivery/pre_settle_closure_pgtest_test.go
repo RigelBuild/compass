@@ -300,20 +300,39 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	}
 
 	c, disp, res := newPgConsumer(t, s) // fresh bus + fresh consumer => c.held empty, no live author
+	// Intent marker (a construction invariant, not a live guard): a freshly-built
+	// consumer's c.held is empty, so the restart premise — the held message is no
+	// longer held and is therefore scannable — holds by construction.
 	if c.messageHeld(string(msg.ID)) {
 		t.Fatalf("message %s unexpectedly held on a fresh consumer: the restart must clear c.held", msg.ID)
 	}
-	res.bind(member.ID, "sess-member")
 	startConsumer(t, c)
+
+	// The member is offline through the start scan, so recovery must leave a
+	// durable owed row rather than a live dispatch.
+	waitOwed(t, ctx, s, member.ID, 1)
+	waitMarked(t, ctx, s, string(msg.ID))
+
+	// The member's session start sweeps the owed row as a steer that carries the
+	// author's handle. Delivery is at-least-once, so check every copy.
+	res.bind(member.ID, "sess-member")
 	c.OnSessionStarted("sess-member", member.ID)
 	if !disp.waitForMessage(t, string(msg.ID)) {
-		t.Fatalf("agent-authored message %s not delivered to the member", msg.ID)
+		t.Fatalf("owed agent-authored message %s not swept to the member on session start", msg.ID)
 	}
-	got := disp.snapshot()
-	if len(got) != 1 || got[0].messageAuthorHandle != author.Handle || got[0].fromHandle != author.Handle {
-		t.Fatalf("delivered agent author handles = %+v, want %q", got, author.Handle)
+	steered := 0
+	for _, rec := range disp.snapshot() {
+		if rec.messageID != string(msg.ID) {
+			continue
+		}
+		steered++
+		if rec.kind != opSteer || rec.messageAuthorHandle != author.Handle || rec.fromHandle != author.Handle {
+			t.Fatalf("owed-sweep dispatch = %+v, want a steer with author handle %q", rec, author.Handle)
+		}
 	}
-	waitMarked(t, ctx, s, string(msg.ID))
+	if steered == 0 {
+		t.Fatalf("no dispatch record for owed message %s", msg.ID)
+	}
 }
 
 // Leg 4 — LAGGED OVERRUN. A mention committed (NULL, unpublished) DURING a bus-lag

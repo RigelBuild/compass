@@ -119,8 +119,8 @@ export const CONTROL_RECONNECT_NO_PROGRESS_MAX = 10;
 // RIG-1310 §8 the handle carries the full comms Message (.id intact): both arms decode
 // their message field and forward it here, where the agent dedups, injects, and acks.
 export interface ImmediateControl {
-	// The second arg is the denormalized author from_handle off the wire (RIG-2486
-	// T1), empty on a resolve miss. The third is the W3C traceparent (RIG-2508 T3),
+	// The second arg is the author from_handle off the wire (RIG-2486 T1), which
+	// mirrors the message's author_handle. The third is the W3C traceparent (RIG-2508 T3),
 	// empty when there was no active span. The fourth carries the denormalized SOURCE
 	// channel + topic NAMES (peer-DM DL-292), the delivery's source/reply target.
 	steer(

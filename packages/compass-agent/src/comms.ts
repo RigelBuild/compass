@@ -732,7 +732,9 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					ms >= -62135596800000 && ms <= 253402300799999
 						? new Date(ms).toISOString()
 						: `(malformed ${fence})`;
-				return `<msg ${fence} id="${attr(m.id, fence)}" author="${attr(m.authorAccountId, fence)}" at="${attr(at, fence)}">\n${shown}\n</msg ${fence}>`;
+				// Agents see the author's handle only; the account id is an internal key
+				// and never reaches the transcript.
+				return `<msg ${fence} id="${attr(m.id, fence)}" author="${attr(m.authorHandle, fence)}" at="${attr(at, fence)}">\n${shown}\n</msg ${fence}>`;
 			};
 			// Group preserving first-seen topic order; a Map keeps insertion order.
 			const groups = new Map<string, Message[]>();
