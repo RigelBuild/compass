@@ -10,6 +10,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1050,7 +1052,7 @@ func TestGitHubTransitionRespectsBudgetGate(t *testing.T) {
 			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 			now := time.Now()
 			g.now = func() time.Time { return now }
-			g.resetAt = now.Add(90 * time.Second)
+			g.resetAt[resourceCore] = now.Add(90 * time.Second)
 
 			err := tc.call(g)
 			var rle *RateLimitError
@@ -1418,9 +1420,34 @@ func TestGetIssueBudgetGateFailFast(t *testing.T) {
 
 // --- read path: GetPullRequest -----------------------------------------------
 
-// GetPullRequest happy path: the 3-leg composite (detail + reviews + checks),
-// merged->"merged" state fold, Changed stats, Reviews (bot/human, verdict
-// lowercased), embedded Checks populated, Threads nil, and the endpoint chain.
+// happyPullGraphQL is TestGetPullRequestHappy's GraphQL leg: a resolved thread
+// with a human and a bot comment, an unresolved PR-level thread, and one
+// required check run beside a non-required legacy status.
+const happyPullGraphQL = `{"data":{"repository":{
+	"pullRequest":{"reviewThreads":{
+		"pageInfo":{"hasNextPage":false,"endCursor":"t1"},
+		"nodes":[
+			{"id":"T1","isResolved":true,"path":"main.go","comments":{
+				"pageInfo":{"hasNextPage":false,"endCursor":null},
+				"nodes":[
+					{"author":{"login":"carol","__typename":"User"},"body":"nit"},
+					{"author":{"login":"botly","__typename":"Bot"},"body":"fixed"}
+				]}},
+			{"id":"T2","isResolved":false,"path":"","comments":{
+				"pageInfo":{"hasNextPage":false,"endCursor":null},
+				"nodes":[{"author":{"login":"dave","__typename":"User"},"body":"why?"}]}}
+		]},
+	"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+		"pageInfo":{"hasNextPage":false,"endCursor":"c1"},
+		"nodes":[
+			{"__typename":"CheckRun","name":"build","isRequired":true},
+			{"__typename":"StatusContext","context":"legacy-ci","isRequired":false}
+		]}}}}]}}
+}}}`
+
+// GetPullRequest happy path: the 5-request composite (detail + reviews + check
+// runs + statuses + GraphQL), merged->"merged" state fold, Changed stats, Reviews (bot/human,
+// verdict lowercased), embedded Checks with Required from GraphQL, and Threads.
 func TestGetPullRequestHappy(t *testing.T) {
 	const detailBody = `{
 		"number": 42,
@@ -1452,6 +1479,7 @@ func TestGetPullRequestHappy(t *testing.T) {
 		{status: 200, body: reviewsBody},
 		{status: 200, body: checkRunsBody},
 		{status: 200, body: statusBody},
+		{status: 200, body: happyPullGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1466,6 +1494,7 @@ func TestGetPullRequestHappy(t *testing.T) {
 		"https://api.github.com/repos/org/repo/pulls/42/reviews?per_page=100&page=1",
 		"https://api.github.com/repos/org/repo/commits/abc123/check-runs?per_page=100&page=1",
 		"https://api.github.com/repos/org/repo/commits/abc123/status?per_page=100&page=1",
+		"https://api.github.com/graphql",
 	}
 	if rt.calls != len(wantURLs) {
 		t.Fatalf("calls = %d, want %d", rt.calls, len(wantURLs))
@@ -1474,8 +1503,18 @@ func TestGetPullRequestHappy(t *testing.T) {
 		if got := rt.requests[i].URL.String(); got != want {
 			t.Errorf("request %d URL = %s, want %s", i, got, want)
 		}
-		if m := rt.requests[i].Method; m != http.MethodGet {
-			t.Errorf("request %d method = %s, want GET", i, m)
+		wantMethod := http.MethodGet
+		if i == len(wantURLs)-1 {
+			wantMethod = http.MethodPost
+		}
+		if m := rt.requests[i].Method; m != wantMethod {
+			t.Errorf("request %d method = %s, want %s", i, m, wantMethod)
+		}
+	}
+	gqlBody := readReqBody(t, rt.requests[4])
+	for _, want := range []string{`"owner":"org"`, `"name":"repo"`, `"number":42`, `"threads":true`, `"contexts":true`} {
+		if !strings.Contains(gqlBody, want) {
+			t.Errorf("graphql body missing %s: %s", want, gqlBody)
 		}
 	}
 
@@ -1504,20 +1543,32 @@ func TestGetPullRequestHappy(t *testing.T) {
 		t.Errorf("Reviews[1] = %+v", got.Reviews[1])
 	}
 
-	// Embedded checks populated (both sources), rolled up to success.
+	// Embedded checks populated (both sources), rolled up to success; only the
+	// check GraphQL reports as required is marked Required.
 	if got.Checks.HeadSHA != "abc123" {
 		t.Errorf("Checks.HeadSHA = %q, want abc123", got.Checks.HeadSHA)
 	}
 	if got.Checks.State != "success" {
 		t.Errorf("Checks.State = %q, want success", got.Checks.State)
 	}
-	if len(got.Checks.Checks) != 2 {
-		t.Errorf("Checks.Checks len = %d, want 2", len(got.Checks.Checks))
+	wantChecks := []Check{
+		{Name: "build", State: "success", URL: "https://ci/build", Required: true},
+		{Name: "legacy-ci", State: "success", URL: "https://ci/legacy", Required: false},
+	}
+	if !slices.Equal(got.Checks.Checks, wantChecks) {
+		t.Errorf("Checks.Checks = %+v, want %+v", got.Checks.Checks, wantChecks)
 	}
 
-	// Threads left empty on the REST read path.
-	if got.Threads != nil {
-		t.Errorf("Threads = %v, want nil", got.Threads)
+	// Threads: forge order, resolution, path, comments in order with bot flag.
+	wantThreads := []ReviewThread{
+		{Path: "main.go", Resolved: true, Comments: []ThreadComment{
+			{Author: "carol", Body: "nit"},
+			{Author: "botly[bot]", IsBot: true, Body: "fixed"},
+		}},
+		{Path: "", Resolved: false, Comments: []ThreadComment{{Author: "dave", Body: "why?"}}},
+	}
+	if !reflect.DeepEqual(got.Threads, wantThreads) {
+		t.Errorf("Threads = %+v, want %+v", got.Threads, wantThreads)
 	}
 }
 
@@ -1537,6 +1588,7 @@ func TestGetPullRequestOpenState(t *testing.T) {
 		{status: 200, body: `[]`},
 		{status: 200, body: `{"check_runs": []}`},
 		{status: 200, body: `{"statuses": []}`},
+		{status: 200, body: emptyPullGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1576,7 +1628,8 @@ func TestGetPullRequestLegError(t *testing.T) {
 // --- read path: Checks -------------------------------------------------------
 
 // Checks happy path: resolves the head SHA from pull detail, folds check-runs +
-// combined-status, and rolls up a mixed set (one failure) to "failure".
+// combined-status, rolls up a mixed set (one failure) to "failure", and marks
+// Required from the GraphQL contexts (threads excluded from that query).
 func TestChecksMixedFailure(t *testing.T) {
 	const detailBody = `{"number":9,"head":{"sha":"deadbeef"},"base":{"ref":"main"},"user":{"login":"a"}}`
 	const checkRunsBody = `{"check_runs": [
@@ -1586,10 +1639,18 @@ func TestChecksMixedFailure(t *testing.T) {
 	const statusBody = `{"statuses": [
 		{"context": "coverage", "state": "success", "target_url": "https://ci/cov"}
 	]}`
+	const graphQLBody = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+		"pageInfo":{"hasNextPage":false,"endCursor":"c1"},
+		"nodes":[
+			{"__typename":"CheckRun","name":"lint","isRequired":true},
+			{"__typename":"CheckRun","name":"build","isRequired":false},
+			{"__typename":"StatusContext","context":"coverage","isRequired":true}
+		]}}}}]}}}}}`
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{
 		{status: 200, body: detailBody},
 		{status: 200, body: checkRunsBody},
 		{status: 200, body: statusBody},
+		{status: 200, body: graphQLBody},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1602,6 +1663,7 @@ func TestChecksMixedFailure(t *testing.T) {
 		"https://api.github.com/repos/org/repo/pulls/9",
 		"https://api.github.com/repos/org/repo/commits/deadbeef/check-runs?per_page=100&page=1",
 		"https://api.github.com/repos/org/repo/commits/deadbeef/status?per_page=100&page=1",
+		"https://api.github.com/graphql",
 	}
 	if rt.calls != len(wantURLs) {
 		t.Fatalf("calls = %d, want %d", rt.calls, len(wantURLs))
@@ -1609,6 +1671,12 @@ func TestChecksMixedFailure(t *testing.T) {
 	for i, want := range wantURLs {
 		if got := rt.requests[i].URL.String(); got != want {
 			t.Errorf("request %d URL = %s, want %s", i, got, want)
+		}
+	}
+	gqlBody := readReqBody(t, rt.requests[3])
+	for _, want := range []string{`"threads":false`, `"contexts":true`, `"number":9`} {
+		if !strings.Contains(gqlBody, want) {
+			t.Errorf("graphql body missing %s: %s", want, gqlBody)
 		}
 	}
 
@@ -1623,11 +1691,12 @@ func TestChecksMixedFailure(t *testing.T) {
 	if len(got.Checks) != 3 {
 		t.Fatalf("Checks len = %d, want 3", len(got.Checks))
 	}
-	// Folded entries in order: check-runs first, then statuses. Required false.
+	// Folded entries in order: check-runs first, then statuses. Required comes
+	// from the GraphQL contexts, for check runs and legacy statuses alike.
 	want := []Check{
 		{Name: "build", State: "success", URL: "https://ci/build", Required: false},
-		{Name: "lint", State: "failure", URL: "https://ci/lint", Required: false},
-		{Name: "coverage", State: "success", URL: "https://ci/cov", Required: false},
+		{Name: "lint", State: "failure", URL: "https://ci/lint", Required: true},
+		{Name: "coverage", State: "success", URL: "https://ci/cov", Required: true},
 	}
 	for i, w := range want {
 		if got.Checks[i] != w {
@@ -1647,6 +1716,7 @@ func TestChecksPending(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: checkRunsBody},
 		{status: 200, body: `{"statuses": []}`},
+		{status: 200, body: noRollupGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1670,6 +1740,7 @@ func TestChecksAllSuccess(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": [{"name":"build","status":"completed","conclusion":"success","html_url":""}]}`},
 		{status: 200, body: `{"statuses": [{"context":"cov","state":"success","target_url":""}]}`},
+		{status: 200, body: noRollupGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1716,6 +1787,7 @@ func TestChecksFollowsPagination(t *testing.T) {
 		}},
 		{status: 200, body: page2},
 		{status: 200, body: `{"statuses": []}`},
+		{status: 200, body: noRollupGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1723,9 +1795,9 @@ func TestChecksFollowsPagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Checks: %v", err)
 	}
-	// detail + 2 check-run pages + 1 status page.
-	if rt.calls != 4 {
-		t.Fatalf("calls = %d, want 4 (detail + 2 check-run pages + status)", rt.calls)
+	// detail + 2 check-run pages + 1 status page + GraphQL.
+	if rt.calls != 5 {
+		t.Fatalf("calls = %d, want 5 (detail + 2 check-run pages + status + graphql)", rt.calls)
 	}
 	wantURLs := []string{
 		"https://api.github.com/repos/org/repo/pulls/9",
@@ -1756,6 +1828,7 @@ func TestChecksUnknownNonTerminalStatusPending(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": [{"name":"gate","status":"waiting","conclusion":"","html_url":""}]}`},
 		{status: 200, body: `{"statuses": []}`},
+		{status: 200, body: noRollupGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1783,6 +1856,7 @@ func TestChecksCancelledIsFailure(t *testing.T) {
 			{"name":"deploy","status":"completed","conclusion":"cancelled","html_url":""}
 		]}`},
 		{status: 200, body: `{"statuses": []}`},
+		{status: 200, body: noRollupGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1807,6 +1881,7 @@ func TestChecksNeutralRollsUpSuccess(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": [{"name":"advisory","status":"completed","conclusion":"neutral","html_url":""}]}`},
 		{status: 200, body: `{"statuses": []}`},
+		{status: 200, body: noRollupGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
@@ -1830,6 +1905,7 @@ func TestChecksLegacyErrorStatusIsFailure(t *testing.T) {
 		{status: 200, body: detailBody},
 		{status: 200, body: `{"check_runs": []}`},
 		{status: 200, body: `{"statuses": [{"context":"legacy","state":"error","target_url":""}]}`},
+		{status: 200, body: noRollupGraphQL},
 	}}
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 

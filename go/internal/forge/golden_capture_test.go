@@ -29,14 +29,15 @@ import (
 // so a request derived from canonicalized coordinates and a Want derived from a
 // canonicalized response agree (e.g. request head == response head.ref).
 const (
-	canonAccount   = "octocat"                           // login, displayName -> ForgeAccount/Author
-	canonURL       = "https://example.invalid/canonical" // html_url, url, target_url -> URL
-	canonIDString  = "canonical-id"                      // a string/UUID id (Linear) -> ID / resolve coordinate
-	canonUpdatedAt = "2026-08-01T12:30:00Z"              // updated_at, updatedAt -> UpdatedAt
-	canonSHA       = "canonicalsha"                      // sha -> HeadSHA
-	canonRef       = "canonical-ref"                     // ref -> HeadRef/BaseRef
-	canonTitle     = "canonical title"                   // title -> Title
-	canonBody      = "canonical body"                    // body, description -> Body
+	canonAccount     = "octocat"                           // login, displayName -> ForgeAccount/Author
+	canonURL         = "https://example.invalid/canonical" // html_url, url, target_url -> URL
+	canonIDString    = "canonical-id"                      // a string/UUID id (Linear) -> ID / resolve coordinate
+	canonUpdatedAt   = "2026-08-01T12:30:00Z"              // updated_at, updatedAt -> UpdatedAt
+	canonSHA         = "canonicalsha"                      // sha -> HeadSHA
+	canonRef         = "canonical-ref"                     // ref -> HeadRef/BaseRef
+	canonTitle       = "canonical title"                   // title -> Title
+	canonBody        = "canonical body"                    // body, description -> Body
+	canonCursorValue = "canonical-cursor"                  // endCursor (GraphQL paging; no domain field)
 )
 
 // canonNumber is the numeric sentinel (number, numeric id) as a float64 — the
@@ -83,8 +84,8 @@ var volatileFields = map[string]struct{}{
 // value during canonicalization. Each entry is a func of the current node so a
 // key whose JSON type varies (id: numeric on GitHub, a UUID string on Linear)
 // picks a type-appropriate sentinel; the fixed-value keys ignore the node. The
-// keyset is the union of the wire keys every domainToWire entry references
-// (asserted coherent in TestUpdateCanonicalizeCoversVolatileFields).
+// keyset is the union of the wire keys every domainToWire entry references plus
+// wireOnlyVolatile (asserted coherent in TestUpdateCanonicalizeCoversVolatileFields).
 var wireVolatile = map[string]func(node any) any{
 	"number":      fixedSentinel(canonNumber),
 	"id":          canonID,
@@ -100,6 +101,23 @@ var wireVolatile = map[string]func(node any) any{
 	"title":       fixedSentinel(canonTitle),
 	"body":        fixedSentinel(canonBody),
 	"description": fixedSentinel(canonBody),
+	"endCursor":   canonCursor,
+}
+
+// wireOnlyVolatile names wire keys that change per capture but decode into no
+// domain field, so they have no domainToWire entry. A GraphQL endCursor is one:
+// it only feeds the next page's request.
+var wireOnlyVolatile = map[string]struct{}{
+	"endCursor": {},
+}
+
+// canonCursor sentinels a GraphQL endCursor. A null stays null: it marks a last
+// page, and replay must still see the connection end.
+func canonCursor(node any) any {
+	if node == nil {
+		return nil
+	}
+	return canonCursorValue
 }
 
 // domainToWire maps each forge DOMAIN volatile key (the Go field names in
@@ -117,9 +135,10 @@ var wireVolatile = map[string]func(node any) any{
 //   - HeadRef  <- ref           (ghPull/ghPullDetail.Head.Ref)
 //   - BaseRef  <- ref           (ghPull/ghPullDetail.Base.Ref) — same wire key as HeadRef
 //   - ForgeAccount <- login,displayName (GitHub user.login; Linear creator/user displayName)
-//   - Author   <- login        (ghReviewRow.User.Login on the reviews leg)
+//   - Author   <- login        (ghReviewRow.User.Login on the reviews leg; ghGQLActor.Login on
+//     the GraphQL thread comments, which gets a "[bot]" suffix for a Bot)
 //   - Title    <- title
-//   - Body     <- body,description (GitHub body; Linear description)
+//   - Body     <- body,description (GitHub body, incl. GraphQL thread comments; Linear description)
 var domainToWire = map[string][]string{
 	"Number":       {"number"},
 	"ID":           {"id"},
@@ -352,9 +371,9 @@ func flattenQuery(q url.Values) map[string]string {
 // TestUpdateCanonicalizeCoversVolatileFields is the "single source of truth" tie:
 // domainToWire's keyset MUST equal the oracle's volatileFields, and the two tables
 // MUST agree on the wire keys — every key domainToWire references has a
-// wireVolatile sentinel, and every sentinel is referenced. A new domain volatile
-// added to volatileFields without a wire mapping — or a wireVolatile key no domain
-// field decodes from — fails here.
+// wireVolatile sentinel, and every sentinel is referenced by a domain field or
+// listed in wireOnlyVolatile. A new domain volatile added to volatileFields
+// without a wire mapping — or an unexplained wireVolatile key — fails here.
 func TestUpdateCanonicalizeCoversVolatileFields(t *testing.T) {
 	got := make(map[string]struct{}, len(domainToWire))
 	for k := range domainToWire {
@@ -366,6 +385,9 @@ func TestUpdateCanonicalizeCoversVolatileFields(t *testing.T) {
 	}
 
 	referenced := map[string]struct{}{}
+	for w := range wireOnlyVolatile {
+		referenced[w] = struct{}{}
+	}
 	for domain, wires := range domainToWire {
 		for _, w := range wires {
 			referenced[w] = struct{}{}
@@ -376,7 +398,7 @@ func TestUpdateCanonicalizeCoversVolatileFields(t *testing.T) {
 	}
 	for w := range wireVolatile {
 		if _, ok := referenced[w]; !ok {
-			t.Errorf("wireVolatile has key %q not referenced by any domainToWire entry", w)
+			t.Errorf("wireVolatile has key %q not referenced by any domainToWire entry or wireOnlyVolatile", w)
 		}
 	}
 }
@@ -403,6 +425,7 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 		"number": 1, "id": 2, "html_url": "h", "url": "u", "target_url": "t",
 		"updated_at": "a", "updatedAt": "b", "login": "l", "displayName": "d",
 		"sha": "s", "ref": "r", "title": "ti", "body": "bo", "description": "de",
+		"endCursor": "Y3Vyc29y", "last": { "endCursor": null },
 		"state": "open", "keep": "kept"
 	}`)
 	wantAll := json.RawMessage(`{
@@ -411,7 +434,8 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 		"updated_at": "2026-08-01T12:30:00Z", "updatedAt": "2026-08-01T12:30:00Z",
 		"login": "octocat", "displayName": "octocat", "sha": "canonicalsha",
 		"ref": "canonical-ref", "title": "canonical title", "body": "canonical body",
-		"description": "canonical body", "state": "open", "keep": "kept"
+		"description": "canonical body", "endCursor": "canonical-cursor", "last": { "endCursor": null },
+		"state": "open", "keep": "kept"
 	}`)
 	assertJSONEqual(t, "canonicalized every wire-volatile key", canonicalizeWire(all), wantAll)
 
@@ -512,12 +536,13 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 // TestUpdateCanonicalizeComposite is the credential-free guard for the single
 // riskiest capture: get_pull_request, the only fixture with EXTRA legs. It runs
 // a synthetic live capture — a PR detail GET (asserted) followed by the reviews,
-// check_runs, and legacy statuses legs (Extra) — through the REAL assembleFixture
-// -> replayFixture pipeline. This exercises what create_issue cannot: the
-// responses[prelude+1:] Extra assembly, canonNode's []any recursion into an
-// array of objects that themselves carry volatile keys (the two reviews, each an
-// Author<-user.login), and volatile substitution across separate legs
-// (target_url on the statuses leg, sha on the detail leg vs Checks.HeadSHA).
+// check_runs, legacy statuses, and GraphQL threads+contexts legs (Extra) —
+// through the REAL assembleFixture -> replayFixture pipeline. This exercises
+// what create_issue cannot: the responses[prelude+1:] Extra assembly,
+// canonNode's []any recursion into arrays of objects that themselves carry
+// volatile keys (the two reviews and the thread comments, each an
+// Author<-login), and volatile substitution across separate legs (target_url on
+// the statuses leg, sha on the detail leg vs Checks.HeadSHA).
 func TestUpdateCanonicalizeComposite(t *testing.T) {
 	coords := fixtureRequest{Op: "get_pull_request", Repo: "org/repo", Number: 98765}
 	responses := []capturedResponse{
@@ -544,14 +569,29 @@ func TestUpdateCanonicalizeComposite(t *testing.T) {
 		{status: 200, body: json.RawMessage(`{ "statuses": [
 			{ "context": "legacy-ci", "state": "success", "target_url": "https://ci/live-legacy" }
 		] }`)},
+		// extra leg 4: GraphQL threads + required contexts — a bot comment login
+		// and body inside nested arrays, a thread node id, and paging cursors.
+		{status: 200, body: json.RawMessage(`{ "data": { "repository": { "pullRequest": {
+			"reviewThreads": { "pageInfo": { "hasNextPage": false, "endCursor": "live-cursor" }, "nodes": [
+				{ "id": "PRRT_live", "isResolved": true, "path": "main.go", "comments": {
+					"pageInfo": { "hasNextPage": false, "endCursor": "live-c" },
+					"nodes": [ { "author": { "login": "dave-live", "__typename": "Bot" }, "body": "live nit" } ] } }
+			] },
+			"commits": { "nodes": [ { "commit": { "statusCheckRollup": { "contexts": {
+				"pageInfo": { "hasNextPage": false, "endCursor": "MQ" },
+				"nodes": [ { "__typename": "CheckRun", "name": "build", "isRequired": true } ] } } } } ] }
+		} } } }`)},
 	}
 
 	// assembleFixture derives BOTH halves by replay; replayFixture then re-asserts
-	// the emitted requests (all 4 legs, exact count) and decode(Body)==Want. A
+	// the emitted requests (all 5 legs, exact count) and decode(Body)==Want. A
 	// regression in Extra-leg assembly or array-of-volatile-objects recursion
 	// fails here credential-free instead of only at live -update time.
 	f := assembleFixture(t, providerGitHub, "get_pull_request_probe", 0, coords, responses)
 	replayFixture(t, providerGitHub, f)
+	if strings.Contains(string(f.Response.Extra[3].Body), "live-cursor") {
+		t.Errorf("GraphQL endCursor not canonicalized: %s", f.Response.Extra[3].Body)
+	}
 
 	// Want is marshal(decode(Body)); domain types carry no json tags, so they
 	// marshal to their Go field names verbatim. Decode into a local tagged struct
@@ -566,10 +606,17 @@ func TestUpdateCanonicalizeComposite(t *testing.T) {
 		Checks struct {
 			HeadSHA string `json:"HeadSHA"`
 			Checks  []struct {
-				Name string `json:"Name"`
-				URL  string `json:"URL"`
+				Name     string `json:"Name"`
+				URL      string `json:"URL"`
+				Required bool   `json:"Required"`
 			} `json:"Checks"`
 		} `json:"Checks"`
+		Threads []struct {
+			Comments []struct {
+				Author string `json:"Author"`
+				IsBot  bool   `json:"IsBot"`
+			} `json:"Comments"`
+		} `json:"Threads"`
 	}
 	if err := json.Unmarshal(f.Response.Want, &pr); err != nil {
 		t.Fatalf("unmarshal derived get_pull_request Want: %v (%s)", err, f.Response.Want)
@@ -610,6 +657,18 @@ func TestUpdateCanonicalizeComposite(t *testing.T) {
 	}
 	if pr.Number != uint64(canonNumber) {
 		t.Errorf("derived Number = %d, want %d (canonicalized)", pr.Number, uint64(canonNumber))
+	}
+
+	// (e) the GraphQL leg: the thread comment's login canonicalizes and keeps the
+	// bot suffix, and the required context still marks its check.
+	if len(pr.Threads) != 1 || len(pr.Threads[0].Comments) != 1 {
+		t.Fatalf("derived Threads = %+v, want one thread with one comment", pr.Threads)
+	}
+	if c := pr.Threads[0].Comments[0]; c.Author != canonAccount+"[bot]" || !c.IsBot {
+		t.Errorf("thread comment = %+v, want %q bot", c, canonAccount+"[bot]")
+	}
+	if !pr.Checks.Checks[0].Required || pr.Checks.Checks[1].Required {
+		t.Errorf("derived Checks = %+v, want only build required", pr.Checks.Checks)
 	}
 }
 
