@@ -6,14 +6,15 @@ import (
 	"strings"
 	"sync"
 
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// traceContext carries the publisher's span across NATS headers. It is fixed,
-// like the bus's traceparent stamp, so propagation does not hinge on telemetry setup.
-var traceContext = propagation.TraceContext{}
+// traceparentHeader is the W3C key, lowercase because nats-server 2.11/2.12
+// lowercase it in place and NATS headers are case-sensitive.
+const traceparentHeader = "traceparent"
 
 // Publish sends ref to subject on JetStream, returning only once the server has
 // acked it into the stream — so a Publish that returns nil means the event is
@@ -49,7 +50,9 @@ func (f *Fabric) Publish(ctx context.Context, subject string, ref EventRef) erro
 		return err
 	}
 	msg := &nats.Msg{Subject: subject, Data: data, Header: nats.Header{}}
-	traceContext.Inject(ctx, propagation.HeaderCarrier(msg.Header))
+	if tp := otelx.Traceparent(ctx); tp != "" {
+		msg.Header.Set(traceparentHeader, tp)
+	}
 	if _, err := f.js.PublishMsg(ctx, msg, jetstream.WithMsgID(ref.msgID())); err != nil {
 		return fmt.Errorf("fabric: publishing %s/%s to %q: %w", ref.Kind, ref.RowID, subject, err)
 	}
@@ -210,8 +213,14 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(con
 		f.park(ctx, msg, fmt.Errorf("fabric: event ref %s/%s names subject %q but was delivered on %q", ref.Tenant, ref.Kind, want, got))
 		return
 	}
-	deliveryCtx := traceContext.Extract(ctx, propagation.HeaderCarrier(msg.Headers()))
-	if err := invoke(fn, deliveryCtx, ref); err != nil {
+	// Detached from ctx so an event drained after Subscribe's ctx ends still
+	// runs live; bounded by AckWait, past which the server redelivers anyway.
+	// The subscriber's span is stripped so only the publisher's trace carries.
+	base := trace.ContextWithSpanContext(context.WithoutCancel(ctx), trace.SpanContext{})
+	deliveryCtx, cancel := context.WithTimeout(otelx.ContextWithTraceparent(base, traceparent(msg.Headers())), f.cfg.ackWait())
+	err := invoke(deliveryCtx, fn, ref)
+	cancel()
+	if err != nil {
 		f.retryOrPark(ctx, msg, err)
 		return
 	}
@@ -227,7 +236,7 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(con
 // consumer code running on the fabric's goroutine: letting it panic would take
 // the process down, and recovering without failing the message would ack an
 // event nobody processed.
-func invoke(fn func(context.Context, EventRef), ctx context.Context, ref EventRef) (err error) {
+func invoke(ctx context.Context, fn func(context.Context, EventRef), ref EventRef) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("fabric: subscriber panicked handling %s/%s: %v", ref.Kind, ref.RowID, r)
@@ -235,6 +244,17 @@ func invoke(fn func(context.Context, EventRef), ctx context.Context, ref EventRe
 	}()
 	fn(ctx, ref)
 	return nil
+}
+
+// traceparent reads the trace header in any case: a server may have rewritten
+// the canonical key a publisher sent.
+func traceparent(h nats.Header) string {
+	for k, v := range h {
+		if strings.EqualFold(k, traceparentHeader) && len(v) > 0 {
+			return v[0]
+		}
+	}
+	return ""
 }
 
 // retryOrPark Naks a failed delivery for another attempt, or parks it once the

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -31,7 +34,10 @@ type EventFabric interface {
 	// concrete.
 	SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef)) (Unsubscribe, error)
 	// OnReconnect runs fn after each NATS reconnect, once the fabric has logged
-	// it, so a consumer can sweep for events lost during the outage.
+	// it, so a consumer can sweep for events lost during the outage. fn runs on
+	// a fabric goroutine, never concurrently with itself; a burst of reconnects
+	// may coalesce into one call, and fn never runs for the initial connect.
+	// The returned Unsubscribe is idempotent.
 	OnReconnect(fn func()) (Unsubscribe, error)
 }
 
@@ -105,8 +111,8 @@ type Config struct {
 	// The fabric reserves the CONNECTION LIFECYCLE for its own shutdown
 	// coordination: Close observes the connection's status directly rather than
 	// through a nats.ClosedHandler, so a caller may add its own ClosedHandler
-	// without disarming Close's drain wait. Replacing the ReconnectHandler also
-	// disarms OnReconnect.
+	// without disarming Close's drain wait. A caller's ReconnectHandler is
+	// chained after the fabric's, so it does not disarm OnReconnect either.
 	Options []nats.Option
 
 	// StreamName overrides DefaultStreamName.
@@ -253,9 +259,13 @@ type Fabric struct {
 	// answers "stop the work already running".
 	teardown chan struct{}
 
-	reconnectMu    sync.Mutex
-	reconnectNext  uint64
-	reconnectHooks map[uint64]func()
+	// reconnectHooks is read by the hook goroutine New starts; reconnectSignal
+	// wakes it. One slot, sent non-blocking, so a reconnect burst coalesces and
+	// the NATS callback goroutine never waits on a hook.
+	reconnectMu     sync.Mutex
+	reconnectNext   uint64
+	reconnectHooks  map[uint64]func()
+	reconnectSignal chan struct{}
 }
 
 // Compile-time proof Fabric satisfies every seam. Cheap here, and it fails the
@@ -285,10 +295,25 @@ func New(cfg Config) (*Fabric, error) {
 	// Close performs (expected, and noise if logged). It is assigned before
 	// nats.Connect can fire either.
 	f := &Fabric{
-		cfg:      cfg,
-		log:      log,
-		teardown: make(chan struct{}),
+		cfg:             cfg,
+		log:             log,
+		teardown:        make(chan struct{}),
+		reconnectHooks:  make(map[uint64]func()),
+		reconnectSignal: make(chan struct{}, 1),
 	}
+
+	// Read the caller's ReconnectHandler off a scratch Options so the fabric's
+	// own handler, appended last, can chain it rather than be replaced by it.
+	var scratch nats.Options
+	for _, opt := range cfg.Options {
+		if opt == nil {
+			continue
+		}
+		if err := opt(&scratch); err != nil {
+			return nil, fmt.Errorf("fabric: applying Config.Options: %w", err)
+		}
+	}
+	callerReconnected := scratch.ReconnectedCB
 
 	// Reconnect forever: NATS being briefly unreachable is an outage to ride
 	// out, not a reason to abandon the connection — the record's degrade path is
@@ -303,10 +328,6 @@ func New(cfg Config) (*Fabric, error) {
 			}
 			log.Warn("fabric: nats disconnected; delivery degrades to the cursor sweep until reconnect", "error", err)
 		}),
-		nats.ReconnectHandler(func(nc *nats.Conn) {
-			log.Info("fabric: nats reconnected", "url", nc.ConnectedUrl())
-			f.runReconnectHooks()
-		}),
 		// The Runner plane's safety argument: a stalled receiver is dropped AND
 		// reported, with the cursor sweep recovering what was dropped. The default
 		// options install no async error callback — so without this the one lossy path
@@ -320,10 +341,21 @@ func New(cfg Config) (*Fabric, error) {
 				"subject", sub.Subject, "dropped", subDropped(sub), "error", err)
 		}),
 	}, cfg.Options...)
+	opts = append(opts, nats.ReconnectHandler(func(nc *nats.Conn) {
+		if f.checkOpen() != nil {
+			return // Close's own drain; no sweep is wanted.
+		}
+		// Redacted: the URL can carry the --nats-url credentials as userinfo.
+		log.Info("fabric: nats reconnected", "url", nc.ConnectedUrlRedacted())
+		f.signalReconnect()
+		if callerReconnected != nil {
+			callerReconnected(nc)
+		}
+	}))
 
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("fabric: connecting to nats at %q: %w", cfg.URL, err)
+		return nil, fmt.Errorf("fabric: connecting to nats at %q: %w", redactURL(cfg.URL), err)
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -331,7 +363,18 @@ func New(cfg Config) (*Fabric, error) {
 		return nil, fmt.Errorf("fabric: creating jetstream context: %w", err)
 	}
 	f.nc, f.js = nc, js
+	go f.runReconnectLoop()
 	return f, nil
+}
+
+// redactURL masks a URL's password: the operator's --nats-url can carry
+// credentials, and connect errors reach the boot log.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparseable nats url>"
+	}
+	return u.Redacted()
 }
 
 // subDropped reports a subscription's dropped-message count for logging.
@@ -410,21 +453,18 @@ func (f *Fabric) Close() error {
 // must not hang a process's shutdown.
 const closeTimeout = 10 * time.Second
 
-// OnReconnect registers fn after the fabric's reconnect log is emitted.
+// OnReconnect registers fn to run after each reconnect; see
+// EventFabric.OnReconnect. fn runs on the fabric's hook goroutine under a panic
+// guard, never concurrently with itself, and reconnects may coalesce into one
+// call. fn never runs for the initial connect. Unsubscribe is idempotent.
 func (f *Fabric) OnReconnect(fn func()) (Unsubscribe, error) {
 	if fn == nil {
 		return nil, errors.New("fabric: OnReconnect requires a callback")
-	}
-	if err := f.checkOpen(); err != nil {
-		return nil, err
 	}
 	f.reconnectMu.Lock()
 	defer f.reconnectMu.Unlock()
 	if err := f.checkOpen(); err != nil {
 		return nil, err
-	}
-	if f.reconnectHooks == nil {
-		f.reconnectHooks = make(map[uint64]func())
 	}
 	f.reconnectNext++
 	id := f.reconnectNext
@@ -439,16 +479,50 @@ func (f *Fabric) OnReconnect(fn func()) (Unsubscribe, error) {
 	}, nil
 }
 
+// signalReconnect wakes the hook goroutine without blocking: if a wake-up is
+// already pending, this reconnect coalesces into it.
+func (f *Fabric) signalReconnect() {
+	select {
+	case f.reconnectSignal <- struct{}{}:
+	default:
+	}
+}
+
+// runReconnectLoop is the hook goroutine New starts. It keeps hooks off the
+// NATS callback goroutine and exits with the fabric.
+func (f *Fabric) runReconnectLoop() {
+	for {
+		select {
+		case <-f.teardown:
+			return
+		case <-f.reconnectSignal:
+			f.runReconnectHooks()
+		}
+	}
+}
+
+// runReconnectHooks runs every hook in registration order, each under its own
+// panic guard so one bad hook neither kills the process nor skips the rest.
 func (f *Fabric) runReconnectHooks() {
 	f.reconnectMu.Lock()
-	hooks := make([]func(), 0, len(f.reconnectHooks))
-	for _, fn := range f.reconnectHooks {
-		hooks = append(hooks, fn)
+	ids := slices.Sorted(maps.Keys(f.reconnectHooks))
+	hooks := make([]func(), 0, len(ids))
+	for _, id := range ids {
+		hooks = append(hooks, f.reconnectHooks[id])
 	}
 	f.reconnectMu.Unlock()
 	for _, fn := range hooks {
-		fn()
+		f.runReconnectHook(fn)
 	}
+}
+
+func (f *Fabric) runReconnectHook(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			f.log.Error("fabric: reconnect hook panicked", "panic", r)
+		}
+	}()
+	fn()
 }
 
 // flushTimeout bounds a flush whose caller's context carries no deadline. A

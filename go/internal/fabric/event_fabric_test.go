@@ -53,17 +53,34 @@ func TestPublishPropagatesTraceContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommsSubject: %v", err)
 	}
+	tracer := sdktrace.NewTracerProvider().Tracer("fabric-test")
+	// A spanned Subscribe ctx makes the no-span assertion below able to fail: the
+	// callback must not inherit the subscriber's span.
+	subCtx, subSpan := tracer.Start(ctx, "subscriber")
+	defer subSpan.End()
 	got := make(chan context.Context, 2)
-	unsub, err := f.Subscribe(ctx, subject, func(ctx context.Context, _ EventRef) { got <- ctx })
+	unsub, err := f.Subscribe(subCtx, subject, func(ctx context.Context, _ EventRef) { got <- ctx })
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	defer unsub()
-	tracer := sdktrace.NewTracerProvider().Tracer("fabric-test")
 	spanCtx, span := tracer.Start(ctx, "publish")
 	wantTraceID := trace.SpanContextFromContext(spanCtx).TraceID()
 	if err := f.Publish(spanCtx, subject, EventRef{Tenant: "t-trace", Kind: KindMessagePosted, RowID: "trace"}); err != nil {
 		t.Fatalf("Publish with span: %v", err)
+	}
+	// The stored key must be lowercase: servers that lowercase in place leave a
+	// canonical-only reader blind, whatever this package's own reader tolerates.
+	stream, err := f.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	stored, err := stream.GetLastMsgForSubject(ctx, subject)
+	if err != nil {
+		t.Fatalf("GetLastMsgForSubject: %v", err)
+	}
+	if _, ok := stored.Header[traceparentHeader]; !ok {
+		t.Fatalf("stored headers %v lack the lowercase %q key", stored.Header, traceparentHeader)
 	}
 	span.End()
 	delivered := recvContext(t, got)
@@ -75,6 +92,120 @@ func TestPublishPropagatesTraceContext(t *testing.T) {
 	}
 	if sc := trace.SpanContextFromContext(recvContext(t, got)); sc.IsValid() {
 		t.Fatalf("delivered SpanContext = %v, want invalid", sc)
+	}
+}
+
+// TestSubscribeReadsTraceparentAnyCase pins the receive side against header
+// case: nats-server 2.11/2.12 lowercase Traceparent in place, and NATS headers
+// are case-sensitive, so a canonical-only read silently drops the trace.
+func TestSubscribeReadsTraceparentAnyCase(t *testing.T) {
+	t.Parallel()
+	const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	wantTraceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatalf("TraceIDFromHex: %v", err)
+	}
+	for _, key := range []string{"traceparent", "Traceparent"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			ctx := testCtx(t)
+			f := newFabric(t, Config{})
+			subject, err := CommsSubject("t-trace-case", KindMessagePosted)
+			if err != nil {
+				t.Fatalf("CommsSubject: %v", err)
+			}
+			got := make(chan context.Context, 1)
+			unsub, err := f.Subscribe(ctx, subject, func(ctx context.Context, _ EventRef) { got <- ctx })
+			if err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			defer unsub()
+			data, err := EventRef{Tenant: "t-trace-case", Kind: KindMessagePosted, RowID: "m1"}.encode()
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			// Straight onto JetStream, so the header key is exactly the one under test.
+			msg := &nats.Msg{Subject: subject, Data: data, Header: nats.Header{key: []string{tp}}}
+			if _, err := f.js.PublishMsg(ctx, msg); err != nil {
+				t.Fatalf("PublishMsg: %v", err)
+			}
+			if gotTraceID := trace.SpanContextFromContext(recvContext(t, got)).TraceID(); gotTraceID != wantTraceID {
+				t.Fatalf("delivered trace ID = %s, want %s", gotTraceID, wantTraceID)
+			}
+		})
+	}
+}
+
+// TestCallbackContextSurvivesSubscribeCancel pins that an event drained after
+// the Subscribe ctx is cancelled still gets a live ctx: the drain exists to
+// process claimed events, and a dead ctx would fail every one of them.
+func TestCallbackContextSurvivesSubscribeCancel(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+	subject, err := CommsSubject("t-cancel", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		calls   atomic.Int64
+		firstIn = make(chan struct{})
+		release = make(chan struct{})
+		errs    = make(chan error, 2)
+	)
+	unsub, err := f.Subscribe(subCtx, subject, func(cbCtx context.Context, _ EventRef) {
+		if calls.Add(1) == 1 {
+			close(firstIn)
+			select {
+			case <-release:
+			case <-time.After(gate):
+			}
+		}
+		errs <- cbCtx.Err()
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer unsub()
+	publish := func(id string) {
+		t.Helper()
+		if err := f.Publish(ctx, subject, EventRef{Tenant: "t-cancel", Kind: KindMessagePosted, RowID: id}); err != nil {
+			t.Fatalf("Publish %s: %v", id, err)
+		}
+	}
+	publish("one")
+	<-firstIn
+	publish("two")
+	stream, err := f.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	cons, err := stream.Consumer(ctx, durableName(subject))
+	if err != nil {
+		t.Fatalf("Consumer: %v", err)
+	}
+	// The second event must be in this client's buffer before the cancel, so it
+	// is delivered by the drain rather than by a live consumer.
+	pollUntil(t, "the second event buffered behind the first", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumAckPending > 1
+	})
+	cancel()
+	close(release)
+	for i := range 2 {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("callback %d saw ctx.Err() = %v, want nil", i+1, err)
+			}
+		case <-time.After(gate):
+			t.Fatalf("callback %d did not run within %s", i+1, gate)
+		}
 	}
 }
 
@@ -812,11 +943,11 @@ func TestInvokeConvertsPanicToError(t *testing.T) {
 	t.Parallel()
 	ref := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "m1"}
 
-	if err := invoke(func(context.Context, EventRef) {}, context.Background(), ref); err != nil {
+	if err := invoke(context.Background(), func(context.Context, EventRef) {}, ref); err != nil {
 		t.Fatalf("a callback that returns normally must not error: %v", err)
 	}
 
-	err := invoke(func(context.Context, EventRef) { panic(errors.New("boom")) }, context.Background(), ref)
+	err := invoke(context.Background(), func(context.Context, EventRef) { panic(errors.New("boom")) }, ref)
 	if err == nil {
 		t.Fatal("a panicking callback must yield an error, not a nil (which would ack an unhandled event)")
 	}
