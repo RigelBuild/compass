@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -345,8 +346,8 @@ func New(cfg Config) (*Fabric, error) {
 		if f.checkOpen() != nil {
 			return // Close's own drain; no sweep is wanted.
 		}
-		// Redacted: the URL can carry the --nats-url credentials as userinfo.
-		log.Info("fabric: nats reconnected", "url", nc.ConnectedUrlRedacted())
+		// Redacted: the NATS URL can carry credentials or a token as userinfo.
+		log.Info("fabric: nats reconnected", "url", redactURL(nc.ConnectedUrl()))
 		f.signalReconnect()
 		if callerReconnected != nil {
 			callerReconnected(nc)
@@ -367,14 +368,26 @@ func New(cfg Config) (*Fabric, error) {
 	return f, nil
 }
 
-// redactURL masks a URL's password: the operator's --nats-url can carry
-// credentials, and connect errors reach the boot log.
+// redactURL hides all userinfo in a NATS URL or comma-separated seed list: a
+// username-only userinfo is a token, and nats.go accepts scheme-less entries.
 func redactURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "<unparseable nats url>"
+	parts := strings.Split(raw, ",")
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if !strings.Contains(p, "://") {
+			p = "nats://" + p
+		}
+		u, err := url.Parse(p)
+		if err != nil {
+			parts[i] = "<unparseable nats url>"
+			continue
+		}
+		if u.User != nil {
+			u.User = url.User("redacted")
+		}
+		parts[i] = u.String()
 	}
-	return u.Redacted()
+	return strings.Join(parts, ",")
 }
 
 // subDropped reports a subscription's dropped-message count for logging.
@@ -496,6 +509,10 @@ func (f *Fabric) runReconnectLoop() {
 		case <-f.teardown:
 			return
 		case <-f.reconnectSignal:
+			// select picks randomly once teardown is closed too; never sweep then.
+			if f.checkOpen() != nil {
+				return
+			}
 			f.runReconnectHooks()
 		}
 	}
