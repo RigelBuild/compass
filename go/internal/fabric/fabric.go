@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -98,7 +97,8 @@ type RoutingFabric interface {
 type Config struct {
 	// URL is the NATS connection string. A single node and a cluster differ
 	// only here (§Q3: scaling NATS is never an application mode) — a
-	// comma-separated seed list is a cluster.
+	// comma-separated seed list is a cluster, so a ',' in a credential must be
+	// percent-encoded (%2C).
 	URL string
 
 	// Name labels this connection in NATS monitoring (`nats server report
@@ -356,9 +356,10 @@ func New(cfg Config) (*Fabric, error) {
 
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
-		// A URL parse error quotes the raw URL, credentials included; never wrap it.
-		if _, ok := errors.AsType[*url.Error](err); ok {
-			return nil, fmt.Errorf("fabric: connecting to nats at %q: the URL does not parse; check its credentials for unescaped reserved characters", redactURL(cfg.URL))
+		// nats.go's errors can quote URL fragments (a parse error, or a DNS error
+		// on a comma-split credential), so with credentials only fixed text passes.
+		if strings.Contains(cfg.URL, "@") && !errors.Is(err, nats.ErrNoServers) {
+			return nil, fmt.Errorf("fabric: connecting to nats at %q: connect failed; cause withheld because the URL carries credentials", redactURL(cfg.URL))
 		}
 		return nil, fmt.Errorf("fabric: connecting to nats at %q: %w", redactURL(cfg.URL), err)
 	}
