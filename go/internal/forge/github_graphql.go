@@ -20,7 +20,7 @@ import (
 var errMalformedRepo = errors.New("forge: malformed github repo, want owner/name")
 
 // errHeadMoved means the PR head changed during a read, so the REST checks and
-// the GraphQL contexts describe different commits. The caller re-reads.
+// the GraphQL contexts describe different commits; a fresh read is consistent.
 var errHeadMoved = errors.New("forge: github pull request head moved during read")
 
 // ghGraphQLRateLimited is the errors[].type GitHub returns, on HTTP 200, when
