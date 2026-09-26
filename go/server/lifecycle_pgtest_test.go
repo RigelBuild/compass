@@ -10,6 +10,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -18,6 +19,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/comms"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -591,6 +593,86 @@ func TestDespawnCallerNotAnAgentIsInternal(t *testing.T) {
 	}
 	if !errors.Is(err, errCallerNotAgent) {
 		t.Fatalf("non-agent-caller despawn err = %v, want wrapping errCallerNotAgent", err)
+	}
+}
+
+// TestDespawnResolverQueryShapeIsConstantPerForm pins the constant query shape:
+// within one input form every outcome runs the same sqlc queries, so latency
+// cannot tell a foreign or non-agent target from an unknown one. A qualified
+// despawn also never looks up the foreign owner it names, since that lookup would
+// reveal whether the foreign user exists.
+//
+// The own hit is the caller itself: it resolves a hit and stops at the self
+// guard, so teardown queries (which only a hit reaches) stay out of the count.
+//
+// Mutation: resolving the qualifier with UserByHandle(qh.Owner) adds a query to
+// the qualified form; resolving the target before the caller drops one from a miss.
+func TestDespawnResolverQueryShapeIsConstantPerForm(t *testing.T) {
+	ctx := context.Background() // test root context
+	counter := &pgtest.SQLCQueryCounter{}
+	st, err := store.OpenTraced(ctx, pgtest.RequireDSN(t), counter)
+	if err != nil {
+		t.Fatalf("store OpenTraced: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: "admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	caller, err := st.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "atlas", DisplayName: "Atlas"})
+	if err != nil {
+		t.Fatalf("CreateAgent(atlas): %v", err)
+	}
+	other, err := st.CreateUser(ctx, store.NewUser{Handle: "other", DisplayName: "Other"})
+	if err != nil {
+		t.Fatalf("CreateUser(other): %v", err)
+	}
+	if _, err := st.CreateAgent(ctx, other.ID, store.NewAgent{Handle: "x", DisplayName: "X"}); err != nil {
+		t.Fatalf("CreateAgent(other/x): %v", err)
+	}
+	// No outcome here reaches teardown, so no Runner hub is needed.
+	lc := newLifecycleService(st, nil, nil)
+
+	forms := []struct {
+		name    string
+		want    []string
+		handles map[string]string // outcome -> submitted handle
+	}{
+		{
+			name: "bare",
+			want: []string{"GetAgentOwner", "GetAccountByOwnerHandle"},
+			handles: map[string]string{
+				"own hit":   "atlas",
+				"unknown":   "ghost",
+				"foreign":   "x",
+				"non-agent": "admin",
+			},
+		},
+		{
+			name: "qualified",
+			want: []string{"GetAgentOwner", "GetAccountHandle", "GetAccountByOwnerHandle"},
+			handles: map[string]string{
+				"own hit":         "admin/atlas",
+				"unknown":         "admin/ghost",
+				"foreign":         "other/x",
+				"unknown-owner":   "nobody/x",
+				"non-agent":       "admin/admin",
+				"foreign-non-agt": "other/other",
+			},
+		},
+	}
+	for _, form := range forms {
+		for outcome, handle := range form.handles {
+			counter.Reset()
+			_, err := lc.DespawnAsAccount(ctx, caller.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: handle})
+			if err == nil {
+				t.Fatalf("%s %s: despawn %q = success, want a refusal", form.name, outcome, handle)
+			}
+			if got := counter.Names(); !slices.Equal(got, form.want) {
+				t.Fatalf("%s %s: despawn %q ran %v, want %v", form.name, outcome, handle, got, form.want)
+			}
+		}
 	}
 }
 
