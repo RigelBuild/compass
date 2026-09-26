@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -40,12 +41,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// unknownAccountID is a non-empty account id deliberately distinct from any
-// bootstrap admin's or member's id — the "account does not exist" reference for
-// the NotFound paths. store.AccountID is a bare string now, so any well-formed
-// but never-created id is unknown; a fixed literal keeps the assertion
-// deterministic (no dependence on a generated value).
-const unknownAccountID = "no-such-account"
+// unknownHandle is a non-empty account handle deliberately distinct from the
+// bootstrap admin's and member's — the "account does not exist" reference for
+// the NotFound paths. A fixed literal keeps the assertion deterministic.
+const unknownHandle = "no-such-account"
 
 // freeLoopbackAddr returns a currently-free 127.0.0.1 address by binding an
 // ephemeral port and immediately releasing it, so Serve can rebind it without a
@@ -410,7 +409,7 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	// issue calls IssueToken (adminOnly) carrying the given bearer value (""
 	// leaves the Authorization header absent), returning connect's error code.
 	issue := func(bearer string) connect.Code {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
+		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "admin"})
 		if bearer != "" {
 			req.Header().Set("Authorization", bearer)
 		}
@@ -421,7 +420,7 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	}
 
 	t.Run("valid admin token on adminOnly RPC succeeds", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
+		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "admin"})
 		req.Header().Set("Authorization", "Bearer "+adminTok)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
@@ -646,56 +645,86 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 
 // TestIssueTokenHandlerInputContract pins the IssueToken handler's own
 // input/mint contract, isolated from the door's auth (covered in group 2) by
-// driving the bare handler: an EMPTY id is InvalidArgument, a non-empty but
-// unknown id is NotFound, and an existing account mints a non-empty token that
-// the store resolves back to that account. store.AccountID is a bare string, so
-// "unparseable" is no longer a concept — empty vs unknown is the whole input
-// partition. A flipped code mapping or a mint that does not register in the store
-// reddens the matching sub-case.
+// driving the bare handler: an EMPTY handle is InvalidArgument, an unknown handle
+// is NotFound naming the submitted handle, a user handle or an `owner/agent`
+// handle mints a token the store resolves back to that account, and the system
+// handle is PermissionDenied. The admin door is not visibility-scoped, so an
+// agent of another user that shares no channel with the admin still mints. A
+// flipped code mapping or a mint that does not register in the store reddens the
+// matching sub-case.
 func TestIssueTokenHandlerInputContract(t *testing.T) {
 	ctx := t.Context()
-	st, admin, _ := newNetworkStore(t)
+	st, admin, member := newNetworkStore(t)
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	svc := newService("test", bus, st, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
+	// An agent of a NON-admin user: the admin shares no channel with it.
+	memberAgent, err := st.CreateAgent(ctx, member, store.NewAgent{Handle: "helper", DisplayName: "Helper"})
+	if err != nil {
+		t.Fatalf("CreateAgent(member/helper): %v", err)
+	}
 
-	t.Run("empty account id is InvalidArgument", func(t *testing.T) {
-		rpcCtx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	t.Run("empty account handle is InvalidArgument", func(t *testing.T) {
+		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 		defer cancel()
 		_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: ""}))
 		if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
-			t.Fatalf("empty account_id = %v, want CodeInvalidArgument", code)
+			t.Fatalf("empty account_handle = %v, want CodeInvalidArgument", code)
 		}
 	})
 
-	t.Run("unknown account id is NotFound", func(t *testing.T) {
-		rpcCtx, cancel := context.WithTimeout(context.Background(), testTimeout)
-		defer cancel()
-		_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownAccountID}))
-		if code := connect.CodeOf(err); code != connect.CodeNotFound {
-			t.Fatalf("non-empty but unknown account_id = %v, want CodeNotFound", code)
+	t.Run("unknown handle is NotFound naming the submitted handle", func(t *testing.T) {
+		for _, handle := range []string{unknownHandle, "member/" + unknownHandle, unknownHandle + "/helper", string(admin)} {
+			rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
+			_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: handle}))
+			cancel()
+			if code := connect.CodeOf(err); code != connect.CodeNotFound {
+				t.Fatalf("IssueToken(%q) = %v, want CodeNotFound", handle, code)
+			}
+			if want := strconv.Quote(handle); !strings.Contains(err.Error(), want) {
+				t.Fatalf("IssueToken(%q) error = %q, want it to name the submitted handle %s", handle, err.Error(), want)
+			}
 		}
 	})
 
-	t.Run("existing account mints a resolvable token", func(t *testing.T) {
+	t.Run("bare handle of an admin-owned agent is NotFound", func(t *testing.T) {
+		// A bare IssueToken handle names a user only; an agent needs `owner/agent`.
+		adminAgent, err := st.CreateAgent(ctx, admin, store.NewAgent{Handle: "scout", DisplayName: "Scout"})
+		if err != nil {
+			t.Fatalf("CreateAgent(admin/scout): %v", err)
+		}
 		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 		defer cancel()
-		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)}))
+		_, err = client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: adminAgent.Handle}))
+		if code := connect.CodeOf(err); code != connect.CodeNotFound {
+			t.Fatalf("IssueToken(%q) = %v, want CodeNotFound", adminAgent.Handle, code)
+		}
+	})
+
+	mintsFor := func(t *testing.T, handle string, want store.AccountID) {
+		t.Helper()
+		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
+		defer cancel()
+		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: handle}))
 		if err != nil {
-			t.Fatalf("IssueToken for an existing account: %v", err)
+			t.Fatalf("IssueToken(%q): %v", handle, err)
 		}
-		token := resp.Msg.GetToken()
-		if token == "" {
-			t.Fatal("IssueToken returned an empty token for an existing account")
-		}
-		subj, err := auth.ResolveToken(ctx, st, token, store.SubjectAccount)
+		subj, err := auth.ResolveToken(ctx, st, resp.Msg.GetToken(), store.SubjectAccount)
 		if err != nil {
 			t.Fatalf("the minted token does not resolve in the store: %v", err)
 		}
-		if subj.ID != string(admin) {
-			t.Fatalf("minted token resolves to %s, want the target account %s", subj.ID, admin)
+		if subj.ID != string(want) {
+			t.Fatalf("IssueToken(%q) token resolves to %s, want %s", handle, subj.ID, want)
 		}
+	}
+
+	t.Run("user handle mints a resolvable token", func(t *testing.T) {
+		mintsFor(t, "admin", admin)
+	})
+
+	t.Run("owner/agent handle mints for an agent the admin shares no channel with", func(t *testing.T) {
+		mintsFor(t, "member/helper", memberAgent.ID)
 	})
 
 	t.Run("system account is PermissionDenied and mints no token", func(t *testing.T) {
@@ -705,7 +734,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnsureSystemAccount: %v", err)
 		}
-		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(sys.ID)}))
+		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: sys.Handle}))
 		if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
 			t.Fatalf("IssueToken for the system account = %v, want CodePermissionDenied — @compass is not authenticatable", code)
 		}
@@ -757,7 +786,7 @@ func TestServeWithListenWritesAdminToken0600(t *testing.T) {
 	}
 
 	client := newTLSClient(t, addr, pool)
-	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownAccountID})
+	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownHandle})
 	req.Header().Set("Authorization", "Bearer "+token)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()

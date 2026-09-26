@@ -97,13 +97,13 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 
 	// Observer bearers for both tenants. These are the credentials every
 	// assertion below rides; the admin bearer would make all three vacuous.
-	_, owner1Comms, err := f.AsObserver(ctx, owner1ID)
+	_, owner1Comms, err := f.AsObserver(ctx, t4Owner1Handle)
 	if err != nil {
-		t.Fatalf("AsObserver(owner-1 %s): %v", owner1ID, err)
+		t.Fatalf("AsObserver(owner-1 %s): %v", t4Owner1Handle, err)
 	}
-	_, owner2Comms, err := f.AsObserver(ctx, owner2ID)
+	_, owner2Comms, err := f.AsObserver(ctx, t4Owner2Handle)
 	if err != nil {
-		t.Fatalf("AsObserver(owner-2 %s): %v", owner2ID, err)
+		t.Fatalf("AsObserver(owner-2 %s): %v", t4Owner2Handle, err)
 	}
 
 	// One agent under EACH owner, never started (no Provision, no StartSession —
@@ -277,9 +277,10 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 	// owner's agent (comms/comms.go:683-685) and remaps it to the NOT_FOUND an
 	// unknown handle gets. Called directly on the generated client AsObserver
 	// returns — no fixture wrapper.
-	_, agent1Comms, err := f.AsObserver(ctx, agent1ID)
+	agent1Handle := t4Owner1Handle + "/" + t4Agent1Handle
+	_, agent1Comms, err := f.AsObserver(ctx, agent1Handle)
 	if err != nil {
-		t.Fatalf("AsObserver(owner-1's agent %s): %v", agent1ID, err)
+		t.Fatalf("AsObserver(owner-1's agent %s): %v", agent1Handle, err)
 	}
 
 	crossOwnerPeer := t4Owner2Handle + "/" + t4Agent2Handle

@@ -301,21 +301,15 @@ func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
 // An account the server cannot resolve is NOT_FOUND, surfaced as the returned
 // error (never a panic — the caller, a test, decides fatality).
 //
-// The argument accepts EITHER spelling — an account id or a handle — because the
-// two surfaces disagree: IssueTokenRequest.account_handle is documented as a
-// handle (compass.proto:758-763) but the server consumes it as an account ID
-// (service.go:420-425 feeds store.AccountID(...) straight into GetAccount, which
-// keys on accounts.id), while CommsService's member/owner fields resolve strictly
-// through account_handles.handle. So this resolves the ref to an id over
-// ListAccounts first. An unresolvable ref is passed through UNCHANGED so the
-// SERVER decides the code — that keeps NOT_FOUND the server's answer rather than
-// a locally-synthesized one.
+// The argument accepts an account id, a bare handle, or an `owner/agent` handle,
+// and is mapped to the wire handle IssueTokenRequest.account_handle takes (see
+// wireHandle); `owner/agent` passes through as-is. An unresolvable ref is passed
+// through UNCHANGED so the SERVER decides the code — that keeps NOT_FOUND the
+// server's answer rather than a locally-synthesized one.
 func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassServiceClient, commsServiceClient, error) {
-	// Best-effort id resolution; a miss (unknown ref, or a list error) leaves the
-	// caller's spelling intact for the server to reject.
-	target := handle
-	if acc, err := f.lookupAccount(ctx, handle); err == nil {
-		target = acc.GetId()
+	target, err := f.wireHandle(ctx, handle)
+	if err != nil {
+		target = handle
 	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -336,12 +330,46 @@ func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassService
 	return compass, comms, nil
 }
 
+// wireHandle maps an account ref (an id or a bare handle) to the handle the admin
+// door takes: a user's bare handle, or `owner/agent` for an agent. A ref already
+// spelled `owner/agent` passes through unchanged. Legs hold ids from
+// CreateAgent/CreateUser, so the fixture does the mapping in one place.
+func (f *Fixture) wireHandle(ctx context.Context, ref string) (string, error) {
+	// Already the `owner/agent` wire form: nothing to map.
+	if strings.Contains(ref, "/") {
+		return ref, nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	if err != nil {
+		return "", fmt.Errorf("ListAccounts RPC: %w", err)
+	}
+	byID := make(map[string]*compassv1.Account, len(resp.Msg.GetAccounts()))
+	for _, acc := range resp.Msg.GetAccounts() {
+		byID[acc.GetId()] = acc
+	}
+	for _, acc := range resp.Msg.GetAccounts() {
+		if acc.GetId() != ref && acc.GetHandle() != ref {
+			continue
+		}
+		agent := acc.GetAgent()
+		if agent == nil {
+			return acc.GetHandle(), nil
+		}
+		owner, ok := byID[agent.GetOwnerUserId()]
+		if !ok {
+			return "", fmt.Errorf("owner %q of agent %q is not visible", agent.GetOwnerUserId(), ref)
+		}
+		return owner.GetHandle() + "/" + acc.GetHandle(), nil
+	}
+	return "", fmt.Errorf("no visible account matching %q (by id or handle)", ref)
+}
+
 // lookupAccount resolves an account ref — an id OR a handle — to its Account
 // over ListAccounts (the only account read CommsService exposes; there is no
-// GetAccount RPC). It exists because the id/handle spelling required differs per
-// request field (see AsObserver), so a fixture wrapper taking one spelling has to
-// be able to reach the other. An unmatched ref is store-shaped ErrNotFound-like:
-// a plain error naming the ref, for the caller to wrap or ignore.
+// GetAccount RPC). An unmatched ref is store-shaped ErrNotFound-like: a plain
+// error naming the ref, for the caller to wrap or ignore.
 func (f *Fixture) lookupAccount(ctx context.Context, ref string) (*compassv1.Account, error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()

@@ -33,13 +33,17 @@ func (f *Fixture) CreateAgent(ctx context.Context, handle, displayName string) (
 }
 
 // Provision provisions the agent's per-account workspace container over
-// CompassService and returns the assigned container name. clientRequestID is the
-// idempotency key. Repo carriage was removed (RIG-1527), so no repo/ref fields
-// exist to set.
+// CompassService and returns the assigned container name. accountID is mapped to
+// the `owner/agent` handle the request takes. clientRequestID is the idempotency
+// key. Repo carriage was removed (RIG-1527), so no repo/ref fields exist to set.
 func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID string) (containerName string, err error) {
+	handle, err := f.wireHandle(ctx, accountID)
+	if err != nil {
+		return "", fmt.Errorf("resolving agent handle: %w", err)
+	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: accountID, ClientRequestId: clientRequestID}))
+	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: clientRequestID}))
 	if err != nil {
 		return "", fmt.Errorf("ProvisionAgentWorkspace RPC: %w", err)
 	}
