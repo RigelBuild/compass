@@ -2,6 +2,7 @@ package fabric
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -1567,6 +1568,8 @@ func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
 
 	invoked := make(chan EventRef, 16)
 	release := make(chan struct{})
+	releaseHeld := sync.OnceFunc(func() { close(release) })
+	defer releaseHeld()
 	var first sync.Once
 	slow := func(_ context.Context, ref EventRef) {
 		invoked <- ref
@@ -1603,7 +1606,7 @@ func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
 		}
 		return info.NumRedelivered > 0
 	})
-	close(release)
+	releaseHeld()
 	if got := recvRef(t, invoked); got != want {
 		t.Fatalf("second invocation got %+v, want the same healthy ref %+v", got, want)
 	}
@@ -1611,7 +1614,7 @@ func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
 
 // TestAlwaysSlowCallbackExhaustsMaxDeliver pins where an unbounded callback
 // ends: a healthy event whose every attempt outlives AckWait spends the whole
-// MaxDeliver budget, which the server reports on its max-deliveries advisory.
+// MaxDeliver budget and is dropped by the server, not parked on DLQSubject.
 func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
@@ -1625,6 +1628,10 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 		t.Fatalf("nats.Connect: %v", err)
 	}
 	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
 	wildcard, err := CommsWildcardSubject(KindMessagePosted)
 	if err != nil {
 		t.Fatalf("CommsWildcardSubject: %v", err)
@@ -1637,12 +1644,10 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 		t.Fatalf("flushing the raw subscriptions: %v", err)
 	}
 
-	var attempts atomic.Int64
 	release := make(chan struct{})
-	slow := func(context.Context, EventRef) {
-		attempts.Add(1)
-		<-release
-	}
+	releaseHeld := sync.OnceFunc(func() { close(release) })
+	defer releaseHeld()
+	slow := func(context.Context, EventRef) { <-release }
 	for name, f := range map[string]*Fabric{"a": a, "b": b} {
 		unsub, err := f.SubscribeKind(ctx, KindMessagePosted, slow)
 		if err != nil {
@@ -1650,7 +1655,6 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 		}
 		defer unsub()
 	}
-	defer close(release)
 
 	ref := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-always-slow"}
 	subject, err := CommsSubject(ref.Tenant, ref.Kind)
@@ -1660,8 +1664,52 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	if err := a.Publish(ctx, subject, ref); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
+	stream, err := a.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	streamInfo, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream Info: %v", err)
+	}
+	publishedSeq := streamInfo.State.LastSeq
+
 	// The advisory names the shared durable, so either instance's attempts count.
-	if _, err := exhausted.NextMsgWithContext(ctx); err != nil {
+	msg, err := exhausted.NextMsgWithContext(ctx)
+	if err != nil {
 		t.Fatalf("the always-slow healthy event never exhausted MaxDeliver=2: %v", err)
+	}
+	var advisory struct {
+		StreamSeq  uint64 `json:"stream_seq"`
+		Deliveries uint64 `json:"deliveries"`
+	}
+	if err := json.Unmarshal(msg.Data, &advisory); err != nil {
+		t.Fatalf("decoding the max-deliveries advisory: %v", err)
+	}
+	if advisory.Deliveries != 2 || advisory.StreamSeq != publishedSeq {
+		t.Fatalf("advisory = %+v, want deliveries 2 for stream seq %d", advisory, publishedSeq)
+	}
+
+	releaseHeld()
+	cons := kindConsumer(t, ctx, a, KindMessagePosted)
+	pollUntil(t, "no delivery awaiting ack", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumAckPending == 0
+	})
+	// Close drains the released callbacks and flushes any park they published;
+	// the raw flush then orders every routed DLQ message ahead of the check.
+	for name, f := range map[string]*Fabric{"a": a, "b": b} {
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close %s: %v", name, err)
+		}
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the raw connection: %v", err)
+	}
+	if n, _, err := dlq.Pending(); err != nil || n != 0 {
+		t.Fatalf("dlq pending = %d (err %v), want 0: a slow healthy event is dropped, never parked", n, err)
 	}
 }

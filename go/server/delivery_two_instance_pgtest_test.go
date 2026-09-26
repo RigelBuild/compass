@@ -178,8 +178,16 @@ func TestTwoInstancesClaimEachPostExactlyOnce(t *testing.T) {
 			t.Errorf("message %s claimed %d time(s) (a=%d, b=%d), want exactly 1", id, total, claimsA[id], claimsB[id])
 		}
 	}
-	if total := len(claimsA) + len(claimsB); total > n {
-		t.Errorf("claimed %d distinct refs across instances, want at most %d (a=%v, b=%v)", total, n, claimsA, claimsB)
+	want := make(map[string]bool, n)
+	for _, id := range posted {
+		want[id] = true
+	}
+	for name, claims := range map[string]map[string]int{"a": claimsA, "b": claimsB} {
+		for id, count := range claims {
+			if !want[id] {
+				t.Errorf("instance %s claimed %s %d time(s), which was never posted", name, id, count)
+			}
+		}
 	}
 	t.Logf("claims: a=%d, b=%d", len(claimsA), len(claimsB))
 }
