@@ -95,7 +95,7 @@ func ParseLinearDataEvent(raw []byte) (ev forge.ForgeEvent, ok bool, err error) 
 func parseLinearIssue(de dataEvent) (forge.ForgeEvent, bool, error) {
 	base := forge.ForgeEvent{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
-		Host:     "linear.app",
+		Host:     forge.LinearHost,
 		Repo:     de.Data.Team.Key,
 		Kind:     compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE,
 		Number:   de.Data.Number,
@@ -128,7 +128,7 @@ func parseLinearComment(de dataEvent) (forge.ForgeEvent, bool, error) {
 	iss := de.Data.Issue
 	base := forge.ForgeEvent{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
-		Host:     "linear.app",
+		Host:     forge.LinearHost,
 		Repo:     iss.Team.Key,
 		Kind:     compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE,
 		Number:   iss.Number,

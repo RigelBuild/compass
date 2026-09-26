@@ -62,7 +62,7 @@ func newForgeE2EWire(t *testing.T) *forgeE2EWire {
 
 	reg := newForgeProviderRegistry()
 	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: forgeE2EHost}, author, reviewer, true)
-	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}, linear, linear, false)
+	registerLinearForgeCoordinate(reg, linear)
 
 	// The chokepoint reads tracked issues off a store-backed issue projection
 	// (its own bus, distinct from the wire's). None of these writes are tracked,
@@ -419,5 +419,70 @@ func TestForgeLinearUnimplementedOverTheWire(t *testing.T) {
 	}
 	if len(w.author.Calls()) != 0 {
 		t.Fatalf("github author calls on a LINEAR-addressed call = %d, want 0 (ForgeRef must route to Linear)", len(w.author.Calls()))
+	}
+}
+
+// TestForgeLinearCreateIssueOverTheWire pins the Linear create arm's DL-055 row:
+// a Linear-addressed create_issue must record under the Linear host, whether the
+// ForgeRef leaves the host unset (registry default) or names it explicitly.
+func TestForgeLinearCreateIssueOverTheWire(t *testing.T) {
+	w := newForgeE2EWire(t)
+	ctx := w.ctx
+
+	cases := []struct {
+		name      string
+		ref       *compassv1.ForgeRef
+		requestID string
+		number    uint64
+	}{
+		{
+			name:      "unset host resolves the linear.app default",
+			ref:       &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR},
+			requestID: "req-linear-default-host",
+			number:    41,
+		},
+		{
+			name:      "explicit linear.app host resolves",
+			ref:       &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"},
+			requestID: "req-linear-explicit-host",
+			number:    42,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w.linear.CreateIssueResult = forge.Issue{Number: tc.number, URL: "https://linear.app/rigel/issue/RIG-1"}
+
+			resp, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
+				CallId:          "fc-" + tc.requestID,
+				ClientRequestId: tc.requestID,
+				Forge:           tc.ref,
+				Call: &compassv1internal.ForgeCallRequest_CreateIssue{CreateIssue: &compassv1internal.CreateIssueRequest{
+					Repo: "SEA", Title: "linear issue", Body: "b",
+				}},
+			}))
+			if err != nil {
+				t.Fatalf("Forge(linear create_issue) over the socket = %v", err)
+			}
+			if e := resp.Msg.GetError(); e != nil {
+				t.Fatalf("linear create_issue returned in-band error {code=%q msg=%q}, want an Issue arm", e.GetCode(), e.GetMessage())
+			}
+			if got := resp.Msg.GetIssue().GetForge().GetHost(); got != "linear.app" {
+				t.Fatalf("result forge host = %q, want linear.app", got)
+			}
+
+			art, ok, aerr := w.store.AuthoredArtifactByRequestID(ctx, w.supervisor.ID, tc.requestID)
+			if aerr != nil {
+				t.Fatalf("AuthoredArtifactByRequestID = %v", aerr)
+			}
+			if !ok {
+				t.Fatal("no DL-055 ownership row for the linear create, want one")
+			}
+			if art.Provider != store.ForgeProviderLinear || art.Host != "linear.app" {
+				t.Fatalf("row coordinate = (%v, %q), want (linear, linear.app)", art.Provider, art.Host)
+			}
+			if art.Number != tc.number {
+				t.Fatalf("row number = %d, want %d", art.Number, tc.number)
+			}
+		})
 	}
 }
