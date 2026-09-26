@@ -12,6 +12,7 @@ import {
 	releaseTag,
 	resolveAncestor,
 	sha12,
+	splitNulPaths,
 } from "./retag-core.ts";
 
 const CONFIG_A =
@@ -435,6 +436,27 @@ describe("closureChanges", () => {
 			() => closureChanges(" \n\n", ["runner-image/Dockerfile"]),
 			EXIT.usage,
 		);
+	});
+});
+
+describe("splitNulPaths", () => {
+	test("splits NUL-terminated names and drops the trailing empty entry", () => {
+		expect(splitNulPaths("a/b.go\0runner-image/Dockerfile\0")).toEqual([
+			"a/b.go",
+			"runner-image/Dockerfile",
+		]);
+	});
+
+	test("keeps a name with a space or a newline whole", () => {
+		// -z prints names raw, so a newline is part of the name, not a separator.
+		expect(splitNulPaths("docs/a b.md\0runner-image/odd\nname\0")).toEqual([
+			"docs/a b.md",
+			"runner-image/odd\nname",
+		]);
+	});
+
+	test("an empty diff is no names", () => {
+		expect(splitNulPaths("")).toEqual([]);
 	});
 });
 

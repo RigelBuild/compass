@@ -1152,7 +1152,11 @@ jobs:
 
           # An unreachable before-sha (force-push, GC'd object, fetch transient)
           # leaves no diff base. Publish rather than fail — the no-drop invariant.
-          if ! changed="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null)"; then
+          # --no-renames: a rename prints only its destination, which would hide
+          # a file moved OUT of the closure. -z output keeps NULs, which command
+          # substitution drops, so the names go to a file.
+          changed="$RUNNER_TEMP/runner-image-changed"
+          if ! git diff -z --no-renames --name-only "$BEFORE_SHA" "$HEAD_SHA" >"$changed" 2>/dev/null; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
             echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
             exit 0
@@ -1164,17 +1168,17 @@ jobs:
             case "$pattern" in
               *'/**')
                 prefix="${pattern%'/**'}/"
-                while IFS= read -r f; do
+                while IFS= read -r -d '' f; do
                   [ -n "$f" ] || continue
                   case "$f" in
                     "$prefix"*) should_publish=true ;;
                   esac
-                done <<< "$changed"
+                done <"$changed"
                 ;;
               *)
-                while IFS= read -r f; do
+                while IFS= read -r -d '' f; do
                   [ "$f" = "$pattern" ] && should_publish=true
-                done <<< "$changed"
+                done <"$changed"
                 ;;
             esac
             [ "$should_publish" = true ] && break
@@ -1210,6 +1214,27 @@ jobs:
           fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
+
+      - name: Put the pinned skopeo on PATH
+        if: steps.gate.outputs.should_publish == 'true'
+        # publish.ts tags the verified digest with skopeo. The same pinned skopeo
+        # release-image uses; take the output carrying bin/skopeo, since the
+        # derivation also ships a `-man` output.
+        run: |
+          set -euo pipefail
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
 
       - name: Start a rootless buildkitd
         if: steps.gate.outputs.should_publish == 'true'
@@ -1255,7 +1280,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
-        # BuildKit reads registry creds from a docker config file. Writing it
+        # BuildKit reads registry creds from a docker config file, and
+        # publish.ts passes the same file to skopeo as --authfile. Writing it
         # with a 0600 umask in a private dir keeps the token off argv and out of
         # any process listing.
         run: |
@@ -1282,10 +1308,11 @@ jobs:
 
       - name: Publish by digest and assert reproducibility
         if: steps.gate.outputs.should_publish == 'true'
-        # Re-runs the build with the push exporter (buildctl has no `push` verb),
-        # then fails unless the registry's digest equals the local one. The
-        # deployable `repo@sha256:…` lands in the step summary: GHCR has no
-        # server-side tag immutability, so nothing deployed resolves via a tag.
+        # Re-runs the build with the push exporter (buildctl has no `push` verb)
+        # to push by digest only, fails unless the registry's digest equals the
+        # local one, and only then tags it `:git-<sha12>`. The deployable
+        # `repo@sha256:…` lands in the step summary: GHCR has no server-side tag
+        # immutability, so nothing deployed resolves via a tag.
         run: |
           set -euo pipefail
           # `--short=12` returns the SHORTEST UNIQUE length that is >= 12, so a

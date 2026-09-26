@@ -1,17 +1,24 @@
 #!/usr/bin/env bun
 // Publish the compass-runner container image by digest: scan the locally built
-// image config for leaked secrets, push with rootless BuildKit, then assert the
-// digest the registry accepted equals the one the local build produced.
+// image config for leaked secrets, push it UNTAGGED with rootless BuildKit,
+// assert the digest the registry accepted equals the one the local build
+// produced, and only then tag that digest `:git-<sha12>` with skopeo.
 //
 // WHY A DIGEST AND NOT A TAG. GHCR has no server-side tag immutability, so
 // anyone holding packages:write can re-point a tag at other bytes. The
-// DaemonSet therefore pins `repo@sha256:…`; the `:git-<sha>` tag exists only so
-// a human can find the build.
+// DaemonSet therefore pins `repo@sha256:…`; the `:git-<sha>` tag exists so a
+// human can find the build and so the release re-tag can resolve it.
+//
+// WHY TAG LAST. The release re-tag promotes `:git-<sha12>` to `:vX.Y.Z`. A tag
+// written before the digest check would survive a failed check and be promoted.
 //
 // WHY THIS DELEGATES TO build.ts. buildctl exposes no `push` verb — a push is
 // an EXPORTER on `build` — so publishing runs the same build with
 // `--output push`. Delegating keeps ONE staging implementation: a second copy
 // could drift in the details that make the digest reproducible.
+//
+// Needs `skopeo` on PATH and DOCKER_CONFIG naming the dir whose config.json
+// holds the registry auth (BuildKit reads the same file).
 //
 // Usage:
 //   bun tools/runner-image/publish.ts --repo <ghcr.io/owner/name> --sha <sha12>
@@ -23,10 +30,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	buildTag,
-	digestFromMetadata,
-	digestRef,
 	EXIT,
 	isImageDigest,
+	publishVerified,
 	secretConfigViolations,
 } from "./publish-core.ts";
 
@@ -52,7 +58,16 @@ if (!repo || !sha12) {
 		"usage: publish.ts --repo <ghcr.io/owner/name> --sha <sha12>",
 	);
 }
-const tag = buildTag(repo, sha12);
+// Validate the sha before any build or registry work.
+buildTag(repo, sha12);
+const dockerConfig = process.env.DOCKER_CONFIG;
+if (!dockerConfig) {
+	fail(
+		EXIT.usage,
+		"DOCKER_CONFIG is unset; it must name the dir whose config.json holds the registry auth",
+	);
+}
+const authFile = join(dockerConfig, "config.json");
 
 // The local layout the build lane wrote. Scanning the ASSEMBLED config (not the
 // Dockerfile) is what proves what ships, and scanning BEFORE the push matters
@@ -81,41 +96,46 @@ if (violations.length > 0) {
 const metadataDir = mkdtempSync(join(tmpdir(), "runner-image-"));
 process.on("exit", () => rmSync(metadataDir, { recursive: true, force: true }));
 const metadataFile = join(metadataDir, "meta.json");
-const push = spawnSync(
-	"bun",
-	[
-		join(here, "build.ts"),
-		"--output",
-		"push",
-		"--tag",
-		tag,
-		"--metadata-file",
-		metadataFile,
-	],
-	{ cwd: workspaceRoot, stdio: "inherit", timeout: 60 * 60 * 1000 },
+const result = publishVerified(
+	{ repo, sha12, localDigest, authFile },
+	{
+		push: () => {
+			const push = spawnSync(
+				"bun",
+				[
+					join(here, "build.ts"),
+					"--output",
+					"push",
+					"--tag",
+					repo,
+					"--metadata-file",
+					metadataFile,
+				],
+				{ cwd: workspaceRoot, stdio: "inherit", timeout: 60 * 60 * 1000 },
+			);
+			return {
+				status: push.status,
+				metadata:
+					push.status === 0
+						? JSON.parse(readFileSync(metadataFile, "utf8"))
+						: undefined,
+			};
+		},
+		skopeo: (args) => {
+			// skopeo's progress goes to stderr: the workflow captures this script's
+			// single stdout line as the ref.
+			const copy = spawnSync("skopeo", [...args], {
+				encoding: "utf8",
+				stdio: ["ignore", process.stderr.fd, "pipe"],
+			});
+			return { status: copy.status, stderr: copy.stderr ?? "" };
+		},
+	},
 );
-if (push.status !== 0) {
-	fail(EXIT.pushFailed, `push to ${tag} exited ${push.status ?? "on signal"}`);
-}
-
-const metadata: unknown = JSON.parse(readFileSync(metadataFile, "utf8"));
-const pushedDigest = digestFromMetadata(metadata);
-if (!pushedDigest) {
-	fail(EXIT.pushFailed, `${metadataFile} carries no containerimage.digest`);
-}
-
-// The push exporter's digest must equal the digest the local build produced.
-// Unequal means the published bytes are not the reviewed, locally-reproduced
-// bytes — which is the whole point of pinning a digest downstream.
-if (pushedDigest !== localDigest) {
-	fail(
-		EXIT.digestMismatch,
-		`local build produced ${localDigest} but the push resolved ${pushedDigest}`,
-	);
-}
+if (!result.ok) fail(result.code, result.message);
 
 // The deployable reference, on stdout so the workflow step can capture it.
-console.log(digestRef(repo, pushedDigest));
+console.log(result.ref);
 
 /** The single sha256 manifest an OCI layout's index names. */
 function manifestDigest(dir: string): string {

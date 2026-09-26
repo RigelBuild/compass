@@ -3,8 +3,12 @@ import {
 	buildTag,
 	digestFromMetadata,
 	digestRef,
+	EXIT,
 	isImageDigest,
+	type PublishIO,
+	publishVerified,
 	secretConfigViolations,
+	tagArgs,
 } from "./publish-core.ts";
 
 const DIGEST =
@@ -182,5 +186,121 @@ describe("digestFromMetadata", () => {
 	test("returns undefined for non-object metadata", () => {
 		expect(digestFromMetadata(null)).toBe(undefined);
 		expect(digestFromMetadata("sha256:…")).toBe(undefined);
+	});
+});
+
+describe("tagArgs", () => {
+	test("copies the verified digest to the build tag with explicit auth", () => {
+		expect(
+			tagArgs("ghcr.io/x/y", DIGEST, "c724a9ee03a8", "/run/docker/config.json"),
+		).toEqual([
+			"copy",
+			"--preserve-digests",
+			"--authfile",
+			"/run/docker/config.json",
+			`docker://ghcr.io/x/y@${DIGEST}`,
+			"docker://ghcr.io/x/y:git-c724a9ee03a8",
+		]);
+	});
+
+	test("refuses a non-digest source, so the tag cannot follow another tag", () => {
+		expect(() =>
+			tagArgs("ghcr.io/x/y", "latest", "c724a9ee03a8", "/a"),
+		).toThrow();
+	});
+});
+
+describe("publishVerified", () => {
+	const OTHER =
+		"sha256:3125c2a158a8329c40ac7c1daa8909f09fe82a5231ff0df05319d0be4d4c4bb6";
+	const input = {
+		repo: "ghcr.io/x/y",
+		sha12: "c724a9ee03a8",
+		localDigest: DIGEST,
+		authFile: "/auth.json",
+	};
+
+	/** A fake runner that records the order of registry writes. */
+	function fake(
+		push: { status: number | null; metadata: unknown },
+		skopeoStatus = 0,
+	): { io: PublishIO; calls: string[] } {
+		const calls: string[] = [];
+		return {
+			calls,
+			io: {
+				push: () => {
+					calls.push("push");
+					return push;
+				},
+				skopeo: (args) => {
+					calls.push(`skopeo ${args.join(" ")}`);
+					return { status: skopeoStatus, stderr: "denied: no write\n" };
+				},
+			},
+		};
+	}
+
+	test("tags only after the pushed digest matches, and reports the digest ref", () => {
+		const { io, calls } = fake({
+			status: 0,
+			metadata: { "containerimage.digest": DIGEST },
+		});
+		expect(publishVerified(input, io)).toEqual({
+			ok: true,
+			ref: `ghcr.io/x/y@${DIGEST}`,
+		});
+		expect(calls).toEqual([
+			"push",
+			`skopeo ${tagArgs("ghcr.io/x/y", DIGEST, "c724a9ee03a8", "/auth.json").join(" ")}`,
+		]);
+	});
+
+	test("a digest mismatch fails and creates no tag", () => {
+		// The tag is what retag.ts promotes, so unverified bytes must never get one.
+		const { io, calls } = fake({
+			status: 0,
+			metadata: { "containerimage.digest": OTHER },
+		});
+		const result = publishVerified(input, io);
+		expect(result).toMatchObject({ ok: false, code: EXIT.digestMismatch });
+		expect(calls).toEqual(["push"]);
+	});
+
+	test("a missing pushed digest fails as a push fault and creates no tag", () => {
+		const { io, calls } = fake({ status: 0, metadata: {} });
+		expect(publishVerified(input, io)).toMatchObject({
+			ok: false,
+			code: EXIT.pushFailed,
+		});
+		expect(calls).toEqual(["push"]);
+	});
+
+	test("a failed push fails and creates no tag", () => {
+		const { io, calls } = fake({ status: 1, metadata: undefined });
+		expect(publishVerified(input, io)).toMatchObject({
+			ok: false,
+			code: EXIT.pushFailed,
+		});
+		expect(calls).toEqual(["push"]);
+	});
+
+	test("a failed tag copy is a push fault that carries skopeo's stderr", () => {
+		const { io } = fake(
+			{ status: 0, metadata: { "containerimage.digest": DIGEST } },
+			1,
+		);
+		const result = publishVerified(input, io);
+		expect(result).toMatchObject({ ok: false, code: EXIT.pushFailed });
+		expect(result.ok ? "" : result.message).toContain("denied: no write");
+	});
+
+	test("a bad sha fails before anything reaches the registry", () => {
+		const { io, calls } = fake({
+			status: 0,
+			metadata: { "containerimage.digest": DIGEST },
+		});
+		expect(() => publishVerified({ ...input, sha12: "abc" }, io)).toThrow();
+		expect(calls).toEqual([]);
 	});
 });
