@@ -250,6 +250,29 @@ func TestNewConnectErrorRedactsCredentials(t *testing.T) {
 	}
 }
 
+// With credentials in the URL, New still names the fixed-text causes an operator
+// acts on: nothing reachable, and a rejected password.
+func TestNewCredentialedURLKeepsActionableCause(t *testing.T) {
+	t.Parallel()
+	_, err := New(Config{URL: "nats://u:pw1@127.0.0.1:1", Options: []nats.Option{nats.Timeout(2 * time.Second)}})
+	if !errors.Is(err, nats.ErrNoServers) {
+		t.Errorf("unreachable credentialed URL: err = %v, want nats.ErrNoServers", err)
+	}
+
+	srv := natsserver.RunServer(&server.Options{
+		Port: -1, Username: "u", Password: "right", NoLog: true, NoSigs: true,
+	})
+	t.Cleanup(srv.Shutdown)
+	raw := fmt.Sprintf("nats://u:pw2@127.0.0.1:%d", srv.Addr().(*net.TCPAddr).Port)
+	_, err = New(Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second), nats.NoReconnect()}})
+	if !errors.Is(err, nats.ErrAuthorization) {
+		t.Errorf("wrong password: err = %v, want nats.ErrAuthorization", err)
+	}
+	if err != nil {
+		assertNoSecret(t, raw, err.Error())
+	}
+}
+
 func TestRedactURLHidesEveryCredentialForm(t *testing.T) {
 	t.Parallel()
 	for _, raw := range credentialURLs {
