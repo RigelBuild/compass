@@ -28,6 +28,9 @@ func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessi
 	}
 	c.mu.Lock()
 	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state})
+	// Recorded with the enqueue, so a hold that loses the race to the drain
+	// still sees this settle.
+	c.lastSettle[sessionID] = c.now().UnixMilli()
 	c.mu.Unlock()
 	// Coalescing wakeup: a full buffer already signals a pending drain, so a
 	// dropped send loses nothing (the loop drains the whole queue).
@@ -131,7 +134,9 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 		ev := c.startQueue[0]
 		c.startQueue = c.startQueue[1:]
 		c.mu.Unlock()
-		c.sweepSession(ctx, ev.account, ev.sessionID, false)
+		// Skip held messages: fireHeld re-resolves recipients at settle, so this
+		// session still gets them, with their settled blocks.
+		c.sweepSession(ctx, ev.account, ev.sessionID, true)
 		if err := c.sweepPins(ctx, ev.account, ev.sessionID); err != nil {
 			c.log.ErrorContext(ctx, "delivery: sweep pins on session start", "error", err,
 				"account", string(ev.account), "session_id", ev.sessionID)
@@ -304,6 +309,7 @@ func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 	defer c.mu.Unlock()
 	for _, sid := range sessionIDs {
 		delete(c.held, sid)
+		delete(c.lastSettle, sid)
 	}
 }
 

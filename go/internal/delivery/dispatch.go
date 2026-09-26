@@ -63,35 +63,45 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	}
 
 	// Agent-authored. If the author has a live session, HOLD until it settles;
-	// otherwise deliver now, re-reading the settled blocks from the store (no
-	// live turn to wait on) — mirroring fireHeld, never the posted (possibly
-	// partial) wire message (design.md:177-178, :306).
+	// otherwise, or if the turn that posted it already settled, deliver now,
+	// re-reading the settled blocks from the store — mirroring fireHeld, never
+	// the posted (possibly partial) wire message (design.md:177-178, :306).
 	authorSession, live := c.resolver.SessionForAccount(ctx, author)
-	if !live {
-		wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
-		if err != nil {
-			// The message vanished between post and deliver (unexpected): skip it;
-			// the cursor never advanced, so the sweep still redelivers.
-			c.log.ErrorContext(ctx, "delivery: re-read message for dead-author deliver", "error", err, "message_id", messageID)
-			return
-		}
-		c.fanOut(ctx, channel, author, wire)
+	if !live || c.hold(ctx, authorSession, messageID, msg.GetAtUnixMs()) {
+		c.fanOutStored(ctx, messageID)
+	}
+}
+
+// fanOutStored delivers a message now from its stored blocks: the author has no
+// live turn, or the turn that posted it already settled.
+func (c *Consumer) fanOutStored(ctx context.Context, messageID string) {
+	wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
+	if err != nil {
+		// The message vanished between post and deliver (unexpected): skip it;
+		// the cursor never advanced, so the sweep still redelivers.
+		c.log.ErrorContext(ctx, "delivery: re-read message for stored-block deliver", "error", err, "message_id", messageID)
 		return
 	}
-	c.hold(ctx, authorSession, messageID)
+	c.fanOut(ctx, channel, author, wire)
 }
 
 // hold registers messageID under its author's session for later firing at the
 // author's settle edge (design.md:157-160), in post order. It captures the origin
-// trace and tenant from ctx for fireHeld.
-func (c *Consumer) hold(ctx context.Context, authorSession, messageID string) {
+// trace and tenant from ctx for fireHeld. It returns true without registering
+// when the author already settled at or after atUnixMs, so the caller fires now.
+// Clock skew between Server instances can still leave such a message held.
+func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, atUnixMs int64) (fireNow bool) {
 	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx)}
 	if tenant, ok := store.TenantFromContext(ctx); ok {
 		entry.tenant = tenant
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if settled, ok := c.lastSettle[authorSession]; ok && settled >= atUnixMs {
+		return true
+	}
 	c.held[authorSession] = append(c.held[authorSession], entry)
+	return false
 }
 
 // fanOut dispatches one settled message. It first routes any `@`-mentions to a

@@ -213,6 +213,10 @@ type Consumer struct {
 	// guarantee) is best-effort: the recipient still receives the message via the
 	// reconnect cursor sweep, independent of this registry.
 	held map[string][]heldEntry
+	// lastSettle maps an author session id to the unix ms of its latest settle
+	// edge, so a message whose hold lost the race with that settle fires at once.
+	// Pruned by the recovery pass and dropped on reap.
+	lastSettle map[string]int64
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
 	// (coalescing wakeups): the hook appends and signals without blocking Deliver.
@@ -244,6 +248,9 @@ type Consumer struct {
 	// newFloorTicker starts the recovery floor tick; a test swaps in a channel
 	// it drives.
 	newFloorTicker func() (<-chan time.Time, func())
+
+	// now stamps and prunes lastSettle; a test swaps in a fixed clock.
+	now func() time.Time
 
 	// dispatched counts control dispatches (deliver + steer), labelled only by
 	// op kind (compass.op.kind = steer|deliver). Created ONCE at NewConsumer from
@@ -281,6 +288,7 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 		resolver:   resolver,
 		log:        log,
 		held:       make(map[string][]heldEntry),
+		lastSettle: make(map[string]int64),
 		notify:     make(chan struct{}, 1),
 		gates:      make(map[string]*sync.Mutex),
 		dispatched: dispatched,
@@ -288,6 +296,7 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 			t := time.NewTicker(recoveryFloorInterval)
 			return t.C, t.Stop
 		},
+		now: time.Now,
 	}
 }
 
@@ -357,9 +366,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 // onEventRef handles one ref on the fabric goroutine, concurrently with Run's
-// drains. Any read failure is logged and acked (see Run for recovery). A settle
-// drained before an earlier post is held leaves that message waiting for the
-// author's next settle or session edge.
+// drains. Any read failure is logged and acked (see Run for recovery). A post
+// whose author settled before the hold landed is delivered at once (hold).
 func (c *Consumer) onEventRef(ctx context.Context, ref fabric.EventRef) {
 	ctx = store.WithTenant(ctx, store.TenantID(ref.Tenant))
 	m, err := c.st.MessageByID(ctx, ref.RowID)
@@ -388,6 +396,15 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 	c.mu.Lock()
 	pending := c.recoveryPending
 	c.recoveryPending = false
+	if pending {
+		// A hold this late is not a same-turn race, so the entry can go.
+		floor := c.now().Add(-recoveryFloorInterval).UnixMilli()
+		for sid, settled := range c.lastSettle {
+			if settled < floor {
+				delete(c.lastSettle, sid)
+			}
+		}
+	}
 	c.mu.Unlock()
 	if !pending {
 		return
