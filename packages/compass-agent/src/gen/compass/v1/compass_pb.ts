@@ -1553,9 +1553,10 @@ export const GetAgentStatusResponseSchema: GenMessage<GetAgentStatusResponse> = 
  */
 export type IssueTokenRequest = Message<"compass.v1.IssueTokenRequest"> & {
   /**
-   * The account to mint a token for — a `@handle` naming a user or agent; the
-   * server resolves it to an account id; unknown → NOT_FOUND. The caller's
-   * identity is the authenticated connection, never a field here.
+   * The account to mint a token for: a bare `@handle` names a user, and
+   * `owner/agent` names that user's agent. Resolved without the D9 visibility
+   * clip (admin door); unknown → NOT_FOUND, a system account → PERMISSION_DENIED.
+   * The caller's identity is the authenticated connection, never a field here.
    *
    * @generated from field: string account_handle = 1;
    */
