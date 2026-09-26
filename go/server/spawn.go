@@ -1,9 +1,9 @@
 //go:build unix
 
-// The composite start: SpawnAgent runs ProvisionAgentWorkspace then StartAgentSession
-// under ONE client_request_id (DL-166), reusing the human-path handlers verbatim. Two
-// behaviors it owns: end-to-end idempotency (a client_request_id-keyed memo, since the
-// lower primitives don't compose a sequential retry) and pre-Provision reject-on-live.
+// The composite start: SpawnAgent runs provisionAgent then the StartAgentSession
+// handler under ONE client_request_id (DL-166). It owns end-to-end idempotency (a
+// client_request_id-keyed memo, since the lower primitives don't compose a
+// sequential retry) and pre-Provision reject-on-live.
 package server
 
 import (
@@ -57,10 +57,10 @@ type spawnCall struct {
 // SpawnAgent brings an agent online in one call: it provisions the agent's
 // container and starts its session under the single client_request_id, owning
 // end-to-end idempotency and the pre-Provision reject-on-live short-circuit. It
-// reuses the ProvisionAgentWorkspace and StartAgentSession handlers, so a server
-// built with no Runner door surfaces their Unavailable, and a mid-sequence
-// failure surfaces their Connect status (the Start rollback already tears a
-// stranded container back down).
+// reuses provisionAgent and the StartAgentSession handler; a server built with
+// no Runner door gets Unavailable from its own hub check, and a mid-sequence
+// failure surfaces the relay's Connect status (the Start rollback already tears
+// a stranded container back down).
 func (s *service) SpawnAgent(
 	ctx context.Context,
 	req *connect.Request[compassv1.SpawnAgentRequest],
@@ -75,8 +75,13 @@ func (s *service) SpawnAgent(
 	if err != nil {
 		return nil, err
 	}
+	return s.spawnAccount(ctx, acc, req.Msg.GetClientRequestId())
+}
 
-	crid := req.Msg.GetClientRequestId()
+// spawnAccount is SpawnAgent past the wire edge, for an already-resolved agent
+// acc: the memo, reject-on-live, and runSpawn. The root-supervisor seed calls it
+// directly with the account it already holds. The caller has checked s.hub.
+func (s *service) spawnAccount(ctx context.Context, acc store.Account, crid string) (*connect.Response[compassv1.SpawnAgentResponse], error) {
 	// The dedup-join lookup. A non-empty client_request_id memoizes the spawn, keyed
 	// by (account, id): the first caller runs it, every retry for the SAME account
 	// joins the entry. An empty id is not memoized. Keying on the account matches

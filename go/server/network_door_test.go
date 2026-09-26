@@ -41,10 +41,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// unknownAccountID is a non-empty account handle deliberately distinct from the
+// unknownHandle is a non-empty account handle deliberately distinct from the
 // bootstrap admin's and member's — the "account does not exist" reference for
 // the NotFound paths. A fixed literal keeps the assertion deterministic.
-const unknownAccountID = "no-such-account"
+const unknownHandle = "no-such-account"
 
 // freeLoopbackAddr returns a currently-free 127.0.0.1 address by binding an
 // ephemeral port and immediately releasing it, so Serve can rebind it without a
@@ -675,7 +675,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 	})
 
 	t.Run("unknown handle is NotFound naming the submitted handle", func(t *testing.T) {
-		for _, handle := range []string{unknownAccountID, "member/" + unknownAccountID, unknownAccountID + "/helper", string(admin)} {
+		for _, handle := range []string{unknownHandle, "member/" + unknownHandle, unknownHandle + "/helper", string(admin)} {
 			rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 			_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: handle}))
 			cancel()
@@ -685,6 +685,20 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 			if want := strconv.Quote(handle); !strings.Contains(err.Error(), want) {
 				t.Fatalf("IssueToken(%q) error = %q, want it to name the submitted handle %s", handle, err.Error(), want)
 			}
+		}
+	})
+
+	t.Run("bare handle of an admin-owned agent is NotFound", func(t *testing.T) {
+		// A bare IssueToken handle names a user only; an agent needs `owner/agent`.
+		adminAgent, err := st.CreateAgent(ctx, admin, store.NewAgent{Handle: "scout", DisplayName: "Scout"})
+		if err != nil {
+			t.Fatalf("CreateAgent(admin/scout): %v", err)
+		}
+		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
+		defer cancel()
+		_, err = client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: adminAgent.Handle}))
+		if code := connect.CodeOf(err); code != connect.CodeNotFound {
+			t.Fatalf("IssueToken(%q) = %v, want CodeNotFound", adminAgent.Handle, code)
 		}
 	})
 
@@ -772,7 +786,7 @@ func TestServeWithListenWritesAdminToken0600(t *testing.T) {
 	}
 
 	client := newTLSClient(t, addr, pool)
-	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownAccountID})
+	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownHandle})
 	req.Header().Set("Authorization", "Bearer "+token)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
