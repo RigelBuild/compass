@@ -1,19 +1,9 @@
 //go:build unix
 
-// Package delivery is the Server-side notification fan-out consumer (RIG-1569
-// T3, design record D1). It consumes message_posted refs from the event fabric
-// and, for each posted message, resolves the subscribed agent sessions and
-// dispatches a `deliver` control down the existing Sessions relay to each live
-// recipient — timed by the author-split settle gate — while the durable
-// per-(agent, channel) delivery cursor is advanced only when the recipient acks
-// (the ack arm lives in the RunnerHub; this package is the trigger + dispatch
-// side).
-//
-// It runs its OWN long-lived goroutine started in server assembly, not a
-// per-request handler: Run(ctx) roots the loop on the serve-scoped ctx, and the
-// loop ends when that ctx is cancelled (rule://go-thread-context — the ctx
-// passed to Run IS the goroutine's root; the loop never mints a fresh one, and
-// the settle hook hands its work back to this loop rather than storing a ctx).
+// Package delivery fans each posted message out to subscribed live agent
+// sessions as a `deliver` control, timed by the author-split settle gate. It
+// consumes message_posted refs from the event fabric on a goroutine rooted in
+// the serve ctx; the hub's ack arm advances the durable delivery cursor.
 package delivery
 
 import (
@@ -200,10 +190,6 @@ type Consumer struct {
 	// and wires this seam; no routing path calls it yet (that is T2/T4).
 	agentWaker AgentWaker
 
-	// markMu makes hold atomic with the recovery scan's held re-check + mark, so
-	// the scan never marks a message a callback just held. Taken before mu.
-	markMu sync.Mutex
-
 	mu sync.Mutex
 	// held is the pending-deliver registry (design.md:157-168), keyed by the
 	// AUTHOR's live session id: an agent-authored message posted while its author
@@ -316,9 +302,10 @@ func (c *Consumer) SetAgentWaker(w AgentWaker) {
 }
 
 // Run consumes message_posted refs and drains settle, start, and recovery work
-// until ctx is cancelled. JetStream redelivers every ref this Server did not ack,
-// so the one gap left is a publish that failed after commit; the reconnect hook
-// and the floor tick close it with a recovery pass over the cursor.
+// until ctx is cancelled. JetStream redelivers every ref this Server did not ack.
+// Two gaps remain: a publish that failed after commit, and a ref acked after a
+// failed read. The reconnect hook and the floor tick close both with a recovery
+// pass over the cursor.
 func (c *Consumer) Run(ctx context.Context) error {
 	// Sweeps and scans enumerate every tenant, so they run as the BYPASSRLS system
 	// role; per-event work stays tenant-scoped under ctx.
@@ -371,9 +358,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 // onEventRef handles one ref on the fabric goroutine, concurrently with Run's
-// drains. A settle drained before an earlier post is held only delays that
-// deliver; the cursor sweep is still the no-loss floor. A missing row is logged
-// and acked, since redelivery cannot make it appear.
+// drains. Any read failure is logged and acked: redelivery cannot make a missing
+// row appear, and a transient failure falls to the recovery pass. A settle
+// drained before an earlier post is held leaves that message waiting for the
+// author's next settle or session edge.
 func (c *Consumer) onEventRef(ctx context.Context, ref fabric.EventRef) {
 	ctx = store.WithTenant(ctx, store.TenantID(ref.Tenant))
 	m, err := c.st.MessageByID(ctx, ref.RowID)

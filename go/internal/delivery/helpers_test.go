@@ -732,6 +732,29 @@ func (f *fakeReads) markCount(messageID string) int {
 	return f.marked[messageID]
 }
 
+// unroutedCallCount reports how many UnroutedMentionMessages reads ran.
+func (f *fakeReads) unroutedCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.unroutedCalls)
+}
+
+// waitUnroutedCalls blocks until n UnroutedMentionMessages reads have run. The
+// recovery pass reads last in its mention scan, so this marks a finished pass.
+func (f *fakeReads) waitUnroutedCalls(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for f.unroutedCallCount() < n {
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatalf("UnroutedMentionMessages calls = %d, want %d", f.unroutedCallCount(), n)
+		}
+	}
+}
+
 // agentAccount builds a resolved agent store.Account for the handle→account map,
 // so AgentByHandle resolves a mention to it. The Agent subtype is what makes
 // IsAgent() true (the store's non-agent handles are ErrNotFound, so only agents

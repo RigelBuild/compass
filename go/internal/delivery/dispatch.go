@@ -83,15 +83,12 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 
 // hold registers messageID under its author's session for later firing at the
 // author's settle edge (design.md:157-160), in post order. It captures the origin
-// trace and tenant from ctx for fireHeld, and takes markMu so it cannot land
-// between the recovery scan's held re-check and its mark.
+// trace and tenant from ctx for fireHeld.
 func (c *Consumer) hold(ctx context.Context, authorSession, messageID string) {
 	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx)}
 	if tenant, ok := store.TenantFromContext(ctx); ok {
 		entry.tenant = tenant
 	}
-	c.markMu.Lock()
-	defer c.markMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.held[authorSession] = append(c.held[authorSession], entry)

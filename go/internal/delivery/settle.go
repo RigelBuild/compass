@@ -131,7 +131,7 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 		ev := c.startQueue[0]
 		c.startQueue = c.startQueue[1:]
 		c.mu.Unlock()
-		c.sweepSession(ctx, ev.account, ev.sessionID)
+		c.sweepSession(ctx, ev.account, ev.sessionID, nil)
 		if err := c.sweepPins(ctx, ev.account, ev.sessionID); err != nil {
 			c.log.ErrorContext(ctx, "delivery: sweep pins on session start", "error", err,
 				"account", string(ev.account), "session_id", ev.sessionID)
@@ -311,18 +311,34 @@ func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 // recovery pass a fabric reconnect or the floor tick triggers. The cursor defines
 // what each agent is owed, so a failed publish is a latency blip, never a loss.
 // Each session's re-dispatch runs under that session's gate (design.md:220-225).
+// Held messages are skipped: a sweep would send the author's partial blocks
+// ahead of fireHeld, and message_id dedup would then drop the settled deliver.
 func (c *Consumer) sweepAllLive(ctx context.Context) {
+	skip := c.heldIDs()
 	for account, sessionID := range c.resolver.LiveAgentSessions() {
-		c.sweepSession(ctx, account, sessionID)
+		c.sweepSession(ctx, account, sessionID, skip)
 	}
+}
+
+// heldIDs snapshots every held message id, once per recovery pass.
+func (c *Consumer) heldIDs() map[string]struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ids := make(map[string]struct{})
+	for _, entries := range c.held {
+		for _, e := range entries {
+			ids[e.messageID] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // sweepSession redelivers every message owed to one agent, ascending seq per
 // channel, under the recipient session's dispatch gate held for the WHOLE ordered
 // re-dispatch — so live events for that session queue behind the sweep and
 // drain after it (design.md:220-225), never interleaving ahead of the sweep's
-// ordered set.
-func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, sessionID string) {
+// ordered set. Messages whose id is in skip are left for their settle to fire.
+func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, sessionID string, skip map[string]struct{}) {
 	// Root a per-pass span (see sweepPins): the swept delivers link to its trace.
 	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.sweep.session")
 	defer span.End()
@@ -336,6 +352,9 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 	defer gate.Unlock()
 	for _, msgs := range owed {
 		for i := range msgs {
+			if _, held := skip[string(msgs[i].ID)]; held {
+				continue
+			}
 			wire := comms.MessageToWire(msgs[i])
 			cn, tn := c.sourceNames(ctx, wire)
 			op := deliverOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx))

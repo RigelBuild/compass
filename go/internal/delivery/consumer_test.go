@@ -199,8 +199,8 @@ func TestAgentAuthoredFiredOnTerminalFrame(t *testing.T) {
 
 // Case 11: an agent-authored message held whose author dies with NO terminal
 // frame is NOT force-delivered by an author trigger — no settle edge ever fires,
-// so nothing is dispatched and the held entry stays for the reconnect sweep and
-// the hub's next-enroll reap ("no-loss, not no-leak").
+// so nothing is dispatched and the held entry stays until the hub's next-enroll
+// reap, after which the recovery sweep delivers it ("no-loss, not no-leak").
 func TestAgentAuthoredNoFrameNotForceDelivered(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -290,7 +290,7 @@ func TestLiveEventsQueueBehindSweep(t *testing.T) {
 	// session gate, so a concurrent live deliver for the same session must queue
 	// behind it.
 	disp.armFirstBlock()
-	go c.sweepSession(context.Background(), recipient, "sess-recip")
+	go c.sweepSession(context.Background(), recipient, "sess-recip", nil)
 	<-disp.enteredFirst // the sweep dispatch is in-flight, holding the gate
 
 	// A live deliver for the SAME session, published now, reaches the gate and
@@ -364,6 +364,65 @@ func TestFloorTickSweepsPublishFailedPlainDeliver(t *testing.T) {
 
 	if !disp.waitForMessage(t, "unpublished") {
 		t.Fatal("publish-failed plain message never delivered after a floor tick")
+	}
+}
+
+// A recovery pass must not sweep a message held for a still-streaming author:
+// the partial blocks would land first and message_id dedup would drop the
+// settled deliver. The settle then sends it once, carrying the settled blocks.
+func TestRecoverySweepSkipsHeldMessage(t *testing.T) {
+	disp := newBlockCapturingDispatcher()
+	res := newFakeResolver()
+	reads := newFakeReads()
+	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
+	const ch store.ChannelID = "chan-1"
+	const authorAgent store.AccountID = "agent-author"
+	const human store.AccountID = "human-1"
+	const recipient store.AccountID = "agent-recip"
+
+	tick := make(chan time.Time)
+	c.newFloorTicker = func() (<-chan time.Time, func()) { return tick, func() {} }
+	reads.subscribers[ch] = []store.AccountID{recipient}
+	reads.agents[authorAgent] = true
+	res.bind(authorAgent, "sess-author")
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+	fab := fakeFabricOf(c)
+	fab.waitSubscribed(t)
+
+	postMessage(t, c, reads, textMessage("m1", authorAgent, "partial body"))
+	c.waitHeld(t, "sess-author", 1)
+	// The cursor owes the recipient both the held message and a plain one.
+	reads.mu.Lock()
+	reads.owed[recipient] = map[store.ChannelID][]store.Message{ch: {
+		textMessage("m1", authorAgent, "partial body"),
+		textMessage("plain", human, "plain body"),
+	}}
+	reads.mu.Unlock()
+
+	// Each pass ends with the mention scan's batch read, which gates the sweep.
+	passes := reads.unroutedCallCount()
+	select {
+	case tick <- time.Now():
+	case <-time.After(testTimeout):
+		t.Fatal("consumer loop never read the floor tick")
+	}
+	reads.waitUnroutedCalls(t, passes+1)
+	disp.waitFor(t, "plain") // positive control: a non-held owed message is swept
+	fab.fireReconnect()
+	reads.waitUnroutedCalls(t, passes+2)
+	if n := disp.countFor("m1"); n != 0 {
+		t.Fatalf("recovery swept held m1 %d times, want 0 (fireHeld owns it)", n)
+	}
+
+	reads.seedMessage(textMessage("m1", authorAgent, "settled body"))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	rec := disp.waitFor(t, "m1")
+	if rec.sessionID != "sess-recip" || rec.firstText != "settled body" {
+		t.Fatalf("settled deliver = %+v, want {sess-recip, m1, settled body}", rec)
+	}
+	if n := disp.countFor("m1"); n != 1 {
+		t.Fatalf("m1 dispatched %d times, want exactly 1", n)
 	}
 }
 
@@ -557,8 +616,21 @@ func (d *blockCapturingDispatcher) waitFor(t *testing.T, messageID string) block
 	}
 }
 
-// FIX 3 (RIG-1569 T3 review): the no-live-author path delivers the STORED block
-// set. The ref carries no blocks, so the deliver must carry what the store holds.
+// countFor reports how many delivers of messageID were recorded.
+func (d *blockCapturingDispatcher) countFor(messageID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := 0
+	for _, rec := range d.calls {
+		if rec.messageID == messageID {
+			n++
+		}
+	}
+	return n
+}
+
+// The no-live-author path delivers the STORED block set. The ref carries no
+// blocks, so the deliver must carry what the store holds.
 func TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks(t *testing.T) {
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()

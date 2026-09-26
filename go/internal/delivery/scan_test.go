@@ -234,10 +234,10 @@ func TestScanBatchReadFaultStops(t *testing.T) {
 	}
 }
 
-// A fabric callback can hold a message after the scan's held-check but before
-// its mark. The scan must leave that message unmarked; otherwise a later-block
-// mention is excluded from the next recovery scan once the hold is lost.
-func TestScanSkipsMarkWhenHeldBetweenCheckAndMark(t *testing.T) {
+// A message held at mark time must stay unmarked, even when the hold landed
+// after the scan's first held-check; otherwise a later-block mention is
+// excluded from the next recovery scan once the hold is lost.
+func TestScanSkipsMarkWhenHeldAtMarkTime(t *testing.T) {
 	c, _, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 	const author store.AccountID = "agent-author"
@@ -248,7 +248,7 @@ func TestScanSkipsMarkWhenHeldBetweenCheckAndMark(t *testing.T) {
 	reads.handles["aa"] = agentAccount(agentA, "aa")
 	reads.handles["bb"] = agentAccount(agentB, "bb")
 	reads.seedUnrouted(textMessage("m1", author, "@aa first"), ch, 1)
-	// The hold lands while the scan re-reads m1: after its held-check.
+	// The hold lands while the scan re-reads m1, so it is held at mark time.
 	injected := false
 	reads.beforeMessageByID = func(id string) {
 		if id == "m1" && !injected {
@@ -258,7 +258,7 @@ func TestScanSkipsMarkWhenHeldBetweenCheckAndMark(t *testing.T) {
 	}
 	c.scanMissedMentions(context.Background())
 	if got := reads.markCount("m1"); got != 0 {
-		t.Fatalf("marks for m1 = %d, want 0 (held after the scan's check, so its settle pass owns the mark)", got)
+		t.Fatalf("marks for m1 = %d, want 0 (held at mark time, so its settle pass owns the mark)", got)
 	}
 
 	// The author dies with no frame and the reap drops the hold; its turn had

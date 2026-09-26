@@ -753,9 +753,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	publishReady(bus)
 
 	// The event fabric carries comms publishes and delivery's trigger; the store
-	// of record (T1) backs comms, the token store, and the RIG-1667 T4 archive
-	// seam. Both open before serving, so an unreachable broker, a bad DSN, a
-	// failed migration, or a bad S3 config fails startup here, not mid-request.
+	// of record backs comms, the token store, and the transcript archive seam.
+	// Both open before serving, so an unreachable broker, a bad DSN, a failed
+	// migration, or a bad S3 config fails startup here, not mid-request.
 	fab, st, err := openFabricAndStore(ctx, cfg)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
