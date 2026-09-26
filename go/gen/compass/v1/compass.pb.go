@@ -3886,9 +3886,11 @@ func (x *GetAgentStatusResponse) GetStatuses() []*AgentSessionStatus {
 // IssueToken: the admin-only path to mint a bearer token for an account.
 type IssueTokenRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The account to mint a token for — a `@handle` naming a user or agent; the
-	// server resolves it to an account id; unknown → NOT_FOUND. The caller's
-	// identity is the authenticated connection, never a field here.
+	// The account to mint a token for: a bare handle (`matt`, no leading `@`)
+	// names a user, and `owner/agent` names that user's agent. Resolved without
+	// the D9 visibility clip (admin door); empty → INVALID_ARGUMENT, unknown →
+	// NOT_FOUND, a system account → PERMISSION_DENIED.
+	// The caller's identity is the authenticated connection, never a field here.
 	AccountHandle string `protobuf:"bytes,1,opt,name=account_handle,json=accountHandle,proto3" json:"account_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
