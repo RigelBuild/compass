@@ -36,6 +36,17 @@ func notFoundFor(handle string) string {
 	return fmt.Sprintf("%v: handle %q", store.ErrNotFound, handle)
 }
 
+// connectNotFoundFor asserts err is CodeNotFound whose message is exactly
+// notFoundFor(handle): two misses passing this for their own spellings are byte-identical.
+func connectNotFoundFor(t *testing.T, err error, handle, ctx string) {
+	t.Helper()
+	connectCodeIs(t, err, connect.CodeNotFound, ctx)
+	var ce *connect.Error
+	if !errors.As(err, &ce) || ce.Message() != notFoundFor(handle) {
+		t.Fatalf("%s: error = %v, want message %q naming the submitted handle", ctx, err, notFoundFor(handle))
+	}
+}
+
 // TestResolveHandlesPreservesSubmittedOrder: the returned ids follow the
 // SUBMITTED order, one id per submitted SLOT, so a caller that also needs
 // per-input identity (memberUpdatesFromWire, mapping.go:291-299 slices each list

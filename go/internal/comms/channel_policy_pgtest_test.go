@@ -53,6 +53,33 @@ func TestSetChannelPolicyUpdatesAndEchoes(t *testing.T) {
 	}
 }
 
+// TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound: owner_handle
+// resolves viewer-scoped, so a real-but-invisible agent misses byte-identically to an unknown handle.
+func TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+	mustAgent(t, st, other.ID, "hidden")
+
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := created.Msg.GetChannel().GetId()
+
+	for _, handle := range []string{"ghost", "other/ghost", "other/hidden"} {
+		_, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+			ChannelId:   chID,
+			PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+			OwnerHandle: handle,
+		}))
+		connectNotFoundFor(t, err, handle, "SetChannelPolicy owner "+handle)
+	}
+}
+
 // TestPostMessageOwnerOnlyNonOwnerIsNotFound: a non-owner member posting to an
 // OWNER_ONLY channel gets CodeNotFound at the edge — the same code a non-member
 // gets, so the policy leaks no oracle.

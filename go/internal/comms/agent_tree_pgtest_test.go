@@ -56,24 +56,34 @@ func TestReparentAgentHappyPathEmitsAccountChanged(t *testing.T) {
 // authority failure is remapped to NOT_FOUND naming the submitted handle
 // (DL-269), byte-identical to an unknown target, so the foreign caller cannot
 // probe the target's existence.
+//
+// The parent is the intruder itself, so the same-owner parent pre-check passes
+// and the call reaches the store; a foreign parent would miss at the pre-check
+// first and name the parent handle instead.
 func TestReparentAgentForeignCallerNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 	other := mustUser(t, st, "other")
-	a := mustAgent(t, st, owner.ID, "a")
 	mustAgent(t, st, owner.ID, "b")
 	intruder := mustAgent(t, st, other.ID, "intruder")
 
 	// The intruder owner-qualifies the target into owner's namespace; the
 	// resolver resolves it (AgentByHandle is not viewer-scoped), but the store's
 	// clause-0 authority check then fails and is remapped to NOT_FOUND.
-	_, err := svc.ReparentAgent(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	_, foreignErr := svc.ReparentAgent(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
 		AgentHandle:     "owner/b",
-		NewParentHandle: "owner/a",
+		NewParentHandle: "intruder",
 	}))
-	connectCodeIs(t, err, connect.CodeNotFound, "foreign caller")
-	_ = a
+	connectNotFoundFor(t, foreignErr, "owner/b", "foreign caller")
+
+	// An unknown target from the same vantage with the same parent: a resolver
+	// miss carrying the same template for its own spelling.
+	_, unknownErr := svc.ReparentAgent(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+		AgentHandle:     "owner/ghost",
+		NewParentHandle: "intruder",
+	}))
+	connectNotFoundFor(t, unknownErr, "owner/ghost", "unknown target")
 }
 
 // TestReparentAgentCrossOwnerParentNotFound: a parent under a different owner is
@@ -195,11 +205,12 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 		DisplayName:  "Orphan",
 		ParentHandle: "no-such-agent",
 	}))
-	connectCodeIs(t, err, connect.CodeNotFound, "create with missing parent")
+	connectNotFoundFor(t, err, "no-such-agent", "create with missing parent")
 
 	// A parent under a different owner → NOT_FOUND (was PermissionDenied): the
 	// owner-qualified foreign parent resolves, but the same-owner check is
-	// remapped to name the submitted handle (DL-269).
+	// remapped to name the submitted handle (DL-269) — byte-identical to an
+	// unknown parent under the same qualifier, code AND message.
 	other := mustUser(t, st, "other")
 	mustAgent(t, st, other.ID, "foreign")
 	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
@@ -207,7 +218,13 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 		DisplayName:  "Cross",
 		ParentHandle: "other/foreign",
 	}))
-	connectCodeIs(t, err, connect.CodeNotFound, "create with cross-owner parent")
+	connectNotFoundFor(t, err, "other/foreign", "create with cross-owner parent")
+	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle:       "cross",
+		DisplayName:  "Cross",
+		ParentHandle: "other/ghost",
+	}))
+	connectNotFoundFor(t, err, "other/ghost", "create with unknown parent under a real owner")
 }
 
 // TestCreateAgentByAgentCallerResolvesOwner is the RIG-1644 red-green teeth:
