@@ -87,9 +87,20 @@ func TestT7OfflineAnswerSweptAtSessionStart(t *testing.T) {
 	if !disp.waitForMessage(t, string(answer.ID)) {
 		t.Fatalf("answer %s never delivered on the asker's session start", answer.ID)
 	}
-	got := disp.snapshot()
-	if len(got) != 1 || got[0].messageAuthorHandle != owner.Handle {
-		t.Fatalf("delivered answer author handle = %+v, want %q", got, owner.Handle)
+	// Delivery is at-least-once, so the answer may be dispatched more than once;
+	// every copy must carry the answerer's handle.
+	answered := 0
+	for _, rec := range disp.snapshot() {
+		if rec.messageID != string(answer.ID) {
+			continue
+		}
+		answered++
+		if rec.messageAuthorHandle != owner.Handle || rec.fromHandle != owner.Handle {
+			t.Fatalf("delivered answer handles = %q/%q, want %q", rec.messageAuthorHandle, rec.fromHandle, owner.Handle)
+		}
+	}
+	if answered == 0 {
+		t.Fatalf("no dispatch record for answer %s", answer.ID)
 	}
 
 	// Ack advances the cursor: the answer leaves the durable owed set, so a

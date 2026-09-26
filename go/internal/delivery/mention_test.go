@@ -300,6 +300,7 @@ func TestEmptyAuthorHandleDeliversAsEmptyFromHandle(t *testing.T) {
 	}
 }
 
+// RIG-2956 T0: the source channel + topic names are denormalized onto BOTH the
 // steer and deliver ops, resolved once via TopicChannelNames from topic_id. The
 // agent renders "Channel <name> › topic <name>:" without a roster lookup. RED
 // before the wrap sites populated the names: both ops carried empty names.
@@ -335,9 +336,8 @@ func TestDeliverAndSteerCarrySourceChannelAndTopicNames(t *testing.T) {
 }
 
 // RIG-2956 T0: a source-name resolution MISS (the topic is not found) is logged
-// and yields EMPTY channel+topic names — it never blocks the delivery, exactly
-// as a from_handle miss degrades. The deliver still dispatches; only its source
-// names are empty.
+// and yields EMPTY channel+topic names — it never blocks the delivery. The
+// deliver still dispatches; only its source names are empty.
 func TestSourceNameMissDeliversWithEmptyNames(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"

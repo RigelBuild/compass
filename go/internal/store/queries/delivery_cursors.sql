@@ -36,10 +36,10 @@ INSERT INTO owed_mentions (agent_account_id, message_id, channel_id, recorded_at
 SELECT $1, $2, $3, $4, a.tenant_id FROM accounts a WHERE a.id = $1
 ON CONFLICT (agent_account_id, message_id) DO NOTHING;
 -- name: OwedMentions :many
-SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM owed_mentions om
 JOIN messages m ON m.id = om.message_id
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 WHERE om.agent_account_id = $1
 ORDER BY t.channel_id, m.seq ASC;
@@ -53,9 +53,9 @@ SELECT COUNT(*) FROM owed_mentions;
 -- name: MarkMentionsRouted :exec
 UPDATE messages SET mentions_routed_at = $1 WHERE id = $2;
 -- name: UnroutedMentionMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks, t.channel_id, m.seq
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id, m.seq
 FROM messages m
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 WHERE m.mentions_routed_at IS NULL AND m.seq > $1
 ORDER BY m.seq ASC
@@ -78,12 +78,12 @@ UPDATE agent_delivery_cursors
 SET acked_seq = $3, above_seqs = $4, acked_at = now()
 WHERE agent_account_id = $1 AND channel_id = $2;
 -- name: UndeliveredMessages :many
-SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM channel_members cm
 JOIN agent_accounts aa ON aa.account_id = cm.account_id
 JOIN topics t ON t.channel_id = cm.channel_id
 JOIN messages m ON m.topic_id = t.id
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN channels ch ON ch.id = cm.channel_id
 LEFT JOIN agent_delivery_cursors dc
        ON dc.agent_account_id = cm.account_id AND dc.channel_id = cm.channel_id

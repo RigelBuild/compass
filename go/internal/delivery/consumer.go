@@ -81,6 +81,7 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// source-name denormalization stamped onto the deliver/steer control so the
 	// recipient renders the source channel+topic without a roster lookup (RIG-2956
 	// T0). An unknown topic id is store.ErrNotFound, which the caller logs and
+	// treats as empty names — never a delivery block.
 	TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
 	// ChannelAgentMembers resolves every agent MEMBER of a channel (subscribe
@@ -435,8 +436,7 @@ func steerOp(msg *compassv1.Message, fromHandle, channelName, topicName, tracepa
 // agent renders the source without a roster lookup (RIG-2956 T0). A missing
 // topic id or a store miss is logged and yields empty names: the names are a
 // render signal, never a delivery precondition, so a name miss must not block
-// the dispatch — the exact log-and-continue posture authorHandle applies to the
-// from_handle.
+// the dispatch.
 func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (channelName, topicName string) {
 	topicID := msg.GetTopicId()
 	if topicID == "" {
@@ -449,12 +449,6 @@ func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (cha
 		return "", ""
 	}
 	return channelName, topicName
-}
-
-// authorHandle returns the current handle carried by every wire Message. The
-// store query joins account_handles before MessageToWire maps live and re-read messages.
-func (c *Consumer) authorHandle(_ context.Context, msg *compassv1.Message) string {
-	return msg.GetAuthorHandle()
 }
 
 // mentionRE matches one `@`-mention token: `@` then a handle. The handle is

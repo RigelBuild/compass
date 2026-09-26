@@ -55,9 +55,9 @@ func (q *Queries) IsAgentAccount(ctx context.Context, accountID string) (bool, e
 }
 
 const messageByID = `-- name: MessageByID :one
-SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 WHERE m.id = $1
 `
 

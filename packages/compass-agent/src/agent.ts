@@ -69,9 +69,9 @@ export class CompassAgent {
 	// The coalescing queue: messages delivered mid-turn, drained into one prompt
 	// at the next flush.
 	#deliverQueue: Message[] = [];
-	// RIG-2486 T1 — denormalized author `from_handle` per queued deliver, keyed on
+	// RIG-2486 T1 — the author `from_handle` per queued deliver, keyed on
 	// `Message.id`. A deliver injected at turn-end flush must stash its from_handle
-	// (resolved server-side, carried on the wire control) to travel with the
+	// (the wire control's copy of the message's author_handle) to travel with the
 	// message to `#emitInjection`. Set at enqueue, read + deleted per message at flush.
 	readonly #deliverFromHandles = new Map<string, string>();
 	// Trace-continuity (design record §T2): the W3C `traceparent` per queued

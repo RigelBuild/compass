@@ -10,9 +10,9 @@ import (
 )
 
 const findAskMessage = `-- name: FindAskMessage :many
-SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.blocks @> $2::jsonb
@@ -98,9 +98,9 @@ func (q *Queries) GetMessageBlocks(ctx context.Context, id string) ([]byte, erro
 }
 
 const getMessageByRequestID = `-- name: GetMessageByRequestID :many
-SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 WHERE m.author_account_id = $1 AND m.client_request_id = $2
 `
 
@@ -203,7 +203,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
 DO NOTHING
 RETURNING id, at_unix_ms, seq,
-          (SELECT handle FROM account_handles WHERE account_id = $3) AS author_handle
+          COALESCE((SELECT handle FROM account_handles WHERE account_id = $3), '')::text AS author_handle
 `
 
 type InsertMessageParams struct {
@@ -269,9 +269,9 @@ func (q *Queries) InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnorePa
 }
 
 const listMessages = `-- name: ListMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
@@ -353,9 +353,9 @@ func (q *Queries) ReviveTopic(ctx context.Context, id string) error {
 }
 
 const searchMessages = `-- name: SearchMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, ah.handle AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
-JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
@@ -445,7 +445,7 @@ WHERE m.id = $3
     WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
   )
 RETURNING m.id, m.topic_id, m.author_account_id,
-          (SELECT handle FROM account_handles WHERE account_id = $4) AS author_handle,
+          COALESCE((SELECT handle FROM account_handles WHERE account_id = $4), '')::text AS author_handle,
           m.at_unix_ms, m.blocks
 `
 

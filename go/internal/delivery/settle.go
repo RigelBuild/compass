@@ -191,7 +191,7 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 				continue
 			}
 			cn, tn := c.sourceNames(ctx, wire)
-			ops = append(ops, pinOp{op: deliverOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx)), messageID: entry.MessageID})
+			ops = append(ops, pinOp{op: deliverOp(wire, wire.GetAuthorHandle(), cn, tn, otelx.Traceparent(ctx)), messageID: entry.MessageID})
 		}
 	}
 	gate := c.gateFor(sessionID)
@@ -242,7 +242,7 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 				continue
 			}
 			cn, tn := c.sourceNames(ctx, wire)
-			ops = append(ops, steerOpEntry{op: steerOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx)), messageID: m.ID})
+			ops = append(ops, steerOpEntry{op: steerOp(wire, wire.GetAuthorHandle(), cn, tn, otelx.Traceparent(ctx)), messageID: m.ID})
 		}
 	}
 	if len(ops) > 0 {
@@ -339,7 +339,7 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 		for i := range msgs {
 			wire := comms.MessageToWire(msgs[i])
 			cn, tn := c.sourceNames(ctx, wire)
-			op := deliverOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx))
+			op := deliverOp(wire, wire.GetAuthorHandle(), cn, tn, otelx.Traceparent(ctx))
 			if err := c.dispatch.DispatchControl(ctx, sessionID, op); err != nil {
 				c.log.WarnContext(ctx, "delivery: sweep dispatch failed, leaving to next sweep",
 					"error", err, "session_id", sessionID, "message_id", string(msgs[i].ID))

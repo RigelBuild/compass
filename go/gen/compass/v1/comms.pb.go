@@ -1113,7 +1113,8 @@ type Message struct {
 	AtUnixMs        int64  `protobuf:"varint,4,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
 	// Ordered content; mirrors ACP session/update blocks (D5).
 	Blocks []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
-	// The author's current handle; author_account_id remains the stable identity key.
+	// The author's bare handle, for display only: not unique across owners (two
+	// owners' agents can share one) and not an address. author_account_id is the stable key.
 	AuthorHandle  string `protobuf:"bytes,6,opt,name=author_handle,json=authorHandle,proto3" json:"author_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
