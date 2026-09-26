@@ -71,6 +71,20 @@ func (f *fakeManagerResolver) OwningManager(_ context.Context, agent store.Accou
 	return mh.manager, mh.homeChannel, nil
 }
 
+// fakeFallback scripts the fallback target and counts calls, so a test can pin
+// that the recorded-row path never consults it.
+type fakeFallback struct {
+	manager store.AccountID
+	channel string
+	err     error
+	calls   int
+}
+
+func (f *fakeFallback) RoutingTarget(context.Context) (store.AccountID, string, error) {
+	f.calls++
+	return f.manager, f.channel, f.err
+}
+
 func sessionEvent(identifier string) *SessionEvent {
 	ev := &SessionEvent{Type: "AgentSessionEvent", Action: "created"}
 	ev.AgentSession.Issue.Identifier = identifier
@@ -152,7 +166,8 @@ func TestResolveResponder(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewResolver(tc.ownership, tc.managers, testForgeHost, testSupervisor, testRoutingChan)
+			fallback := &fakeFallback{manager: testSupervisor, channel: testRoutingChan}
+			r := NewResolver(tc.ownership, tc.managers, testForgeHost, fallback)
 
 			gotManager, gotChannel, err := r.ResolveResponder(ctx, sessionEvent(tc.identifier))
 			if err != nil {
@@ -168,9 +183,14 @@ func TestResolveResponder(t *testing.T) {
 			// The walk must be invoked exactly when a row is recorded, and on the
 			// RECORDED authoring agent — the peer case proves peer -> Manager, not
 			// peer -> peer (a walk skipped or walked from the wrong agent reddens).
+			// The fallback is consulted only when no row resolves: before the
+			// supervisor is seeded it errors, and an owned issue must still route.
 			if tc.wantWalk == "" {
 				if tc.managers.calls != 0 {
 					t.Errorf("manager walk invoked %d times, want 0 (fallback path)", tc.managers.calls)
+				}
+				if fallback.calls != 1 {
+					t.Errorf("fallback resolved %d times, want 1", fallback.calls)
 				}
 			} else {
 				if tc.managers.calls != 1 {
@@ -178,6 +198,9 @@ func TestResolveResponder(t *testing.T) {
 				}
 				if tc.managers.gotFrom != tc.wantWalk {
 					t.Errorf("walk started from %q, want %q (must walk the RECORDED authoring agent)", tc.managers.gotFrom, tc.wantWalk)
+				}
+				if fallback.calls != 0 {
+					t.Errorf("fallback resolved %d times on a recorded row, want 0", fallback.calls)
 				}
 			}
 		})
@@ -192,7 +215,7 @@ func TestResolveResponderExtractsLinearCoordinate(t *testing.T) {
 	ctx := context.Background()
 	own := &fakeOwnershipIndex{wantRepo: "RIG", wantNumber: 2717, row: store.AuthoredArtifact{AgentAccountID: "acct-x"}}
 	mgr := &fakeManagerResolver{owners: map[store.AccountID]managerHome{"acct-x": {manager: "m", homeChannel: "c"}}}
-	r := NewResolver(own, mgr, testForgeHost, testSupervisor, testRoutingChan)
+	r := NewResolver(own, mgr, testForgeHost, &fakeFallback{manager: testSupervisor, channel: testRoutingChan})
 
 	if _, _, err := r.ResolveResponder(ctx, sessionEvent("RIG-2717")); err != nil {
 		t.Fatalf("ResolveResponder: %v", err)
@@ -222,7 +245,7 @@ func TestResolveResponderPropagatesOwnershipError(t *testing.T) {
 	boom := errors.New("store: connection reset")
 	own := &erroringOwnershipIndex{err: boom}
 	mgr := &fakeManagerResolver{owners: map[store.AccountID]managerHome{}}
-	r := NewResolver(own, mgr, testForgeHost, testSupervisor, testRoutingChan)
+	r := NewResolver(own, mgr, testForgeHost, &fakeFallback{manager: testSupervisor, channel: testRoutingChan})
 
 	_, _, err := r.ResolveResponder(ctx, sessionEvent("RIG-2717"))
 	if !errors.Is(err, boom) {
@@ -230,6 +253,32 @@ func TestResolveResponderPropagatesOwnershipError(t *testing.T) {
 	}
 	if mgr.calls != 0 {
 		t.Errorf("manager walk invoked %d times on ownership error, want 0", mgr.calls)
+	}
+}
+
+// TestResolveResponderPropagatesFallbackError proves an unresolvable fallback
+// surfaces as an error on both fallback paths, never as an empty target.
+func TestResolveResponderPropagatesFallbackError(t *testing.T) {
+	ctx := context.Background()
+	notSeeded := errors.New("linear routing channel not seeded")
+
+	for _, tc := range []struct{ name, identifier string }{
+		{name: "bare @mention", identifier: ""},
+		{name: "unknown coordinate", identifier: "RIG-9999"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			own := &fakeOwnershipIndex{wantRepo: "RIG", wantNumber: 2717}
+			mgr := &fakeManagerResolver{owners: map[store.AccountID]managerHome{}}
+			r := NewResolver(own, mgr, testForgeHost, &fakeFallback{err: notSeeded})
+
+			gotManager, gotChannel, err := r.ResolveResponder(ctx, sessionEvent(tc.identifier))
+			if !errors.Is(err, notSeeded) {
+				t.Fatalf("error = %v, want the fallback failure propagated", err)
+			}
+			if gotManager != "" || gotChannel != "" {
+				t.Errorf("target = (%q, %q), want empty on error", gotManager, gotChannel)
+			}
+		})
 	}
 }
 

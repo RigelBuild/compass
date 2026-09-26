@@ -593,7 +593,7 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 	// buildLinearWebhookWiring is the consumer buildDoors routes the SERVER
 	// instance to. Fed the server set it mounts a handler; fed the container
 	// set it silently returns the off-state, which is failure mode (b).
-	handler, err := buildLinearWebhookWiring(ctx, cfg, server, &recordingSink{}, nil)
+	handler, err := buildLinearWebhookWiring(ctx, cfg, server, &recordingSink{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLinearWebhookWiring(server): %v", err)
 	}
@@ -601,7 +601,7 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 		t.Fatal("server resolver did not mount the Linear webhook handler")
 	}
 
-	offHandler, err := buildLinearWebhookWiring(ctx, cfg, container, &recordingSink{}, nil)
+	offHandler, err := buildLinearWebhookWiring(ctx, cfg, container, &recordingSink{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLinearWebhookWiring(container): %v", err)
 	}

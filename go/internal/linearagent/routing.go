@@ -33,49 +33,35 @@ type OwnershipIndex interface {
 	AuthoredArtifactByCoordinate(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64) (store.AuthoredArtifact, error)
 }
 
-// ManagerResolver walks a recorded authoring agent (possibly a peer) to its
-// owning Manager and returns that Manager's account id and home channel id.
-// It is its own narrow seam because no single store method spans the tree walk
-// (up parent_agent_id to the nearest tree ancestor — any Manager-class role,
-// not a role=="manager" filter, since every tree node is now Manager-class and
-// an owner parent must not be skipped) AND the home-channel read; the
-// driver backs it with the store's agent-tree + account reads at assembly.
-// store.ErrNotFound when the agent (or a walk ancestor) does not resolve.
+// ManagerResolver is ancestor-or-self: every tree node is Manager-class, so the
+// recorded authoring agent is its own owning Manager (store.ErrNotFound if not).
 type ManagerResolver interface {
 	OwningManager(ctx context.Context, agent store.AccountID) (managerAccountID store.AccountID, homeChannelID string, err error)
 }
 
+// FallbackTarget resolves per call because the supervisor is seeded after boot;
+// until then it returns an error naming whichever half is missing.
+type FallbackTarget interface {
+	RoutingTarget(ctx context.Context) (supervisorAccountID store.AccountID, routingChannelID string, err error)
+}
+
 // Resolver resolves a delegated Linear session to a stable (Manager, home
-// channel). It holds the ownership-index and manager-walk seams plus the
-// config-resolved fallback target (the supervisor / top-level Manager account
-// and the dedicated routing channel id).
+// channel), falling back to the supervisor's routing target when no row resolves.
 type Resolver struct {
 	ownership OwnershipIndex
 	managers  ManagerResolver
+	fallback  FallbackTarget
 
 	// forgeHost is the forge coordinate host recorded for Linear-authored
 	// artifacts, config-resolved at construction. It completes the coordinate
 	// key the ownership index is queried on (provider is always Linear here).
 	forgeHost string
-
-	// supervisorAccountID and routingChannelID are the fallback target: the
-	// supervisor / top-level Manager and the dedicated routing channel a
-	// no-recorded-row (or coordinate-less) event routes to.
-	supervisorAccountID store.AccountID
-	routingChannelID    string
 }
 
-// NewResolver constructs a Resolver over its two seams and the config-resolved
-// fallback target. forgeHost is the coordinate host Linear-authored rows carry;
-// supervisorAccountID and routingChannelID are the dedicated routing fallback.
-func NewResolver(ownership OwnershipIndex, managers ManagerResolver, forgeHost string, supervisorAccountID store.AccountID, routingChannelID string) *Resolver {
-	return &Resolver{
-		ownership:           ownership,
-		managers:            managers,
-		forgeHost:           forgeHost,
-		supervisorAccountID: supervisorAccountID,
-		routingChannelID:    routingChannelID,
-	}
+// NewResolver constructs a Resolver over its seams; forgeHost is the coordinate
+// host Linear-authored rows carry.
+func NewResolver(ownership OwnershipIndex, managers ManagerResolver, forgeHost string, fallback FallbackTarget) *Resolver {
+	return &Resolver{ownership: ownership, managers: managers, fallback: fallback, forgeHost: forgeHost}
 }
 
 // ResolveResponder resolves the stable Manager and home channel that should run
@@ -87,13 +73,13 @@ func (r *Resolver) ResolveResponder(ctx context.Context, ev *SessionEvent) (mana
 	provider, host, repo, number, ok := r.coordinate(ev)
 	if !ok {
 		// A bare @mention with no issue coordinate: route to the supervisor.
-		return r.supervisorAccountID, r.routingChannelID, nil
+		return r.fallback.RoutingTarget(ctx)
 	}
 
 	art, err := r.ownership.AuthoredArtifactByCoordinate(ctx, provider, host, repo, store.ForgeArtifactKindIssue, number)
 	if errors.Is(err, store.ErrNotFound) {
 		// No recorded row: a cold delegation Compass has never authored.
-		return r.supervisorAccountID, r.routingChannelID, nil
+		return r.fallback.RoutingTarget(ctx)
 	}
 	if err != nil {
 		return "", "", err

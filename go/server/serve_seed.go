@@ -6,7 +6,9 @@ import (
 	"context"
 	_ "embed"
 	"errors"
+	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -25,6 +27,14 @@ const (
 	rootSupervisorDisplayName = "Supervisor"
 	rootSupervisorRole        = "supervisor"
 )
+
+// linearRoutingChannelName is the admin-owned channel where a Linear session no
+// Manager owns lands for the root supervisor to triage.
+const linearRoutingChannelName = "linear-routing"
+
+// linearRoutingMu serializes the routing-channel ensure: the ready hook fires on
+// its own goroutine per Runner attach, and ungrouped channel names are not unique.
+var linearRoutingMu sync.Mutex
 
 // spawnableRoles is the closed Manager-role taxonomy a spawn request may name:
 // supervisor (owns the whole tree — intake, incidents, broadcasts, first
@@ -96,8 +106,9 @@ var setupThreadBody string
 // RIG-1820 covers first-launch seed and the never-started re-drive above.
 //
 // A failure is logged, not fatal: the server stays up and the next Runner
-// reconnect re-fires the seed.
-func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *comms.Comms, adminID, compassID store.AccountID, log *slog.Logger) {
+// reconnect re-fires the seed. A non-empty linearBridgeID also ensures the Linear
+// routing channel once the supervisor exists; empty means Linear is off.
+func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *comms.Comms, adminID, compassID, linearBridgeID store.AccountID, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, seedTimeout)
 	defer cancel()
 
@@ -111,7 +122,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		// handle, so assert the found agent is actually THIS admin's root before
 		// re-driving it — else a non-admin-owned agent holding the reserved handle
 		// would be auto-provisioned. Keeps the "adopts nothing it did not seed" contract.
-		if supervisor.Agent == nil || supervisor.Agent.OwnerUserID != adminID || supervisor.Agent.ParentAgentID != "" {
+		if !isAdminRootSupervisor(supervisor, adminID) {
 			log.Error("root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
 				"agent_account_id", supervisor.ID)
 			return
@@ -125,6 +136,14 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	default:
 		log.Error("root-supervisor seed: looking up supervisor failed; skipping seed", "err", err)
 		return
+	}
+
+	// Ensured before the spawn: routing needs only the rows, not a live session.
+	if linearBridgeID != "" {
+		if err := ensureLinearRoutingChannel(ctx, st, adminID, supervisor.ID, linearBridgeID); err != nil {
+			log.Error("root-supervisor seed: ensuring the linear routing channel failed; will retry on next enroll",
+				"agent_account_id", supervisor.ID, "err", err)
+		}
 	}
 
 	// Provision + Start under the fixed idempotency key. reject-on-live + the
@@ -157,6 +176,41 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	// home channel. A post failure is logged, not fatal (matching the seed's own
 	// posture); the next ready-hook re-fire retries it.
 	postSetupThread(ctx, cm, st, compassID, supervisor, log)
+}
+
+// isAdminRootSupervisor is the ownership assertion on a supervisor-handle lookup:
+// handles are global, so only the admin's own root agent is the supervisor.
+func isAdminRootSupervisor(acct store.Account, adminID store.AccountID) bool {
+	return acct.Agent != nil && acct.Agent.OwnerUserID == adminID && acct.Agent.ParentAgentID == ""
+}
+
+// ensureLinearRoutingChannel find-or-creates the routing channel with the supervisor
+// and bridge as members; mandatory subscription delivers to the non-home supervisor.
+func ensureLinearRoutingChannel(ctx context.Context, st *store.Store, adminID, supervisorID, bridgeID store.AccountID) error {
+	linearRoutingMu.Lock()
+	defer linearRoutingMu.Unlock()
+	members := []store.AccountID{supervisorID, bridgeID}
+	channel, err := st.ChannelByNameForViewer(ctx, adminID, linearRoutingChannelName)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		if _, err := st.CreateChannel(ctx, adminID, store.NewChannel{
+			Name:             linearRoutingChannelName,
+			Kind:             store.ChannelKindChannel,
+			MemberAccountIDs: members,
+			Policy:           store.ChannelPolicy{MandatorySubscription: true},
+		}); err != nil {
+			return fmt.Errorf("creating the %s channel: %w", linearRoutingChannelName, err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("finding the %s channel: %w", linearRoutingChannelName, err)
+	}
+	for _, member := range members {
+		if err := st.EnsureChannelMember(ctx, channel.ID, member); err != nil {
+			return fmt.Errorf("adding %s to the %s channel: %w", member, linearRoutingChannelName, err)
+		}
+	}
+	return nil
 }
 
 // postSetupThread posts the platform's Setup thread as @compass into the
