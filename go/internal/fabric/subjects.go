@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// The frozen subject grammar (§T3). The fabric owns the grammar: callers build a
+// The subject grammar (§T3). The fabric owns the grammar: callers build a
 // subject through the helpers below and hand the string to Publish / Subscribe /
 // SendCommand, so no consumer ever concatenates a subject itself.
 const (
@@ -89,7 +89,7 @@ func CommsWildcardSubject(kind EventKind) (string, error) {
 	return subjectPrefix + "." + wildcardToken + ".comms." + string(kind), nil
 }
 
-// validCommsSubject checks a whole comms subject against the frozen grammar:
+// validCommsSubject checks a whole comms subject against the grammar:
 // exactly compass.<tenant>.comms.<kind>, with both variable tokens valid.
 //
 // Subscribe takes a subject string, not a (tenant, kind) pair, so this is the
@@ -178,7 +178,7 @@ func RoutingBindingWildcardSubject() string {
 }
 
 // ClientSubject builds the per-connection delivery subject for a live client:
-// client.<sessionID>. Deliberately outside the "compass." root — the frozen
+// client.<sessionID>. Deliberately outside the "compass." root — the
 // grammar names it "client.<sessionID>" (§T3), and it is not a
 // COMPASS_COMMS-stream subject. Unused in this task; the delivery edge lands on
 // it later.

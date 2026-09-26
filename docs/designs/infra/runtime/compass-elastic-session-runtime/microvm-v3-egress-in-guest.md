@@ -1,7 +1,7 @@
 # microVM Runner V3 — egress-in-guest
 
 [microvm-runner.md](./microvm-runner.md) (its Plan § V3,
-microvm-runner.md:492-506) and its frozen networking decision D6
+microvm-runner.md:492-506) and its networking decision D6
 (microvm-runner.md:733-750).
 
 Ledger impact: none. V3 fills behavior the parent's own D6 already ratified
@@ -120,12 +120,12 @@ must not run on this backend. Three candidates:
 
 - **Option A (rejected): grow `WorkloadRuntime` with an
   `ArmEgress(ctx, id, EgressPolicy) error` verb** (podman impl = today's exec
-  moved verbatim; microVM impl = no-op). Clean in the abstract, but it
-  violates the interface's freeze discipline — the surface was deliberately
-  completed at S1 so "no interface change lands after S1"
-  (`podman.go:379-388`, the `Resize` reservation) — and it touches every fake
-  and the shared contract suite for a verb one backend no-ops. Largest blast
-  radius of the three.
+  moved verbatim; microVM impl = no-op). Clean in
+  the abstract and the most discoverable shape,
+  but it touches every fake and the shared
+  contract suite for a verb one backend
+  no-ops. Largest blast radius of the
+  three.
 - **Option B (rejected): hoist arming into both backends' `Start`** (podman
   gains a session table to carry the spec from Create to Start, and issues the
   same exec from inside `PodmanCLI.Start`). This deletes `armEgress` entirely
@@ -158,8 +158,8 @@ must not run on this backend. Three candidates:
   existing `armEgress` exec runs byte-identically (`agent.go:300-309`); fakes
   don't implement it either, so every existing hermetic test (e.g.
   `TestEgressIsArmedAsRootNotTheAgentUser`, agent_test.go:213-216) keeps
-  passing unchanged. The frozen interface is untouched. Smallest blast radius:
-  one marker method + one guarded call site.
+  passing unchanged. The `WorkloadRuntime` interface is untouched. Smallest
+  blast radius: one marker method + one guarded call site.
 
 ### (d) The guest arm: guestd runs the script as root, fail-closed
 
@@ -296,9 +296,9 @@ Every task below inherits these.
   (microvm-runner.md:498-502).
 - **No proto wire change.** Doc-comment updates only (§(f)); `buf lint` +
   `buf breaking` green; internal-go lane only.
-- **Frozen `WorkloadRuntime` interface untouched.** The (c) probe is a marker
+- **`WorkloadRuntime` interface untouched.** The (c) probe is a marker
   method on `MicroVMRuntime` + an unexported assertion in `AgentRuntime`,
-  never an interface verb (`podman.go:379-388` discipline).
+  never an interface verb (§(c) Option C).
 - **KVM-gated vs hermetic split** (V2b GC, microvm-v2b-guest-supervisor-exec.md:
   605-615): everything booting a VM carries the microvm build tag and
   `microvmtest.Require(t)`; the guestd arm logic, the spec→request threading,
@@ -424,7 +424,7 @@ Start-intrinsic delivery, the `AgentRuntime` probe.
     at the top of `AgentRuntime.provision` (`agent.go:290-293`) to skip
     `armEgress` when satisfied; `armEgress` itself unchanged
     (`agent.go:300-309`); plus a one-line pointer comment beside the
-    `WorkloadRuntime` freeze note (`podman.go:379-388`) naming
+    `WorkloadRuntime` interface (`podman.go:379-388`) naming
     `inGuestEgressArmer`, so a future backend — or a `WorkloadRuntime`
     decorator, which would otherwise swallow the marker and silently re-enable
     `armEgress` on the microVM backend (a loud but hard-to-diagnose launch
@@ -511,18 +511,18 @@ recommendation.
   which could be read as the arm happening at `AgentRuntime.provision` *time*
   (post-Start), as on podman. As built, V2b buried the gate-opening Provision
   RPC inside `Start` (`microvm_lifecycle.go:304-310`), and the contract suite
-  freezes Start→Exec identity across backends — so the only consistent
+  pins Start→Exec identity across backends — so the only consistent
   completion is arming **inside Start** and `provision` skipping `armEgress`
   (§(b) Option 1, §(c) Option C). This *strengthens* the parent's
   "armed before exec acceptance" (microvm-runner.md:152-155); it is flagged
-  because the parent record is frozen and the literal routing differs.
+  because the literal routing differs from the parent's.
   **Recommendation:** ratify Start-intrinsic arming as the correct reading.
 - **OQ-2 (load-bearing) — the (c) probe mechanism.** Marker-method probe
-  (recommended, §(c) Option C) vs growing the frozen `WorkloadRuntime`
-  interface (Option A). The probe keeps the interface frozen and the blast
-  radius at one call site; the interface verb is the more discoverable shape
-  but contradicts the S1 no-interface-change discipline
-  (`podman.go:379-388`) and touches every fake. **Recommendation:** Option C.
+  (recommended, §(c) Option C) vs growing the `WorkloadRuntime`
+  interface (Option A). The probe keeps the blast radius at one call site; the
+  interface verb is the more discoverable shape but touches every fake and
+  the shared contract suite for a verb one backend no-ops.
+  **Recommendation:** Option C.
 - **OQ-3 (load-bearing) — always-arm on the microVM backend (§(e)).** Every
   microVM Start arms at least default-deny, including direct
   `WorkloadRuntime` callers (the KVM contract/e2e suites), a conceded
@@ -557,21 +557,21 @@ recommendation.
   parent's arm-before-gate sentence (§(e)).** guestd still *accepts* an empty
   `nft_script` — skipping the arm and opening the exec gate with no ruleset —
   as a hermetic test seam (the V2b supervisor tests, non-Linux harnesses).
-  This literally contradicts the frozen parent's "Only after a successful arm
+  This literally contradicts the parent's "Only after a successful arm
   does the supervisor accept exec requests" (microvm-runner.md:152-155). It is
   production-safe: the host path never sends an empty script (`NftScript()` has
   no empty representation — it always emits at least the default-deny base
   ruleset, `egress.go:88-90`), so no real session opens the gate unarmed. The
   contradiction is therefore test-seam-only and deliberate, but under the
   RIG-2675 posture a detailing record must flag any contradiction with the
-  frozen parent rather than resolve it in body prose. **Recommendation:**
+  parent rather than resolve it in body prose. **Recommendation:**
   ratify the empty-script acceptance as a test-only carve-out (production stays
   always-armed), decided alongside OQ-1's timing reading.
 
 ### Ledger assessment
 
 `Ledger impact: none.` The egress substrate (in-guest nft, guestd-as-root arm,
-no NET_ADMIN on the workload, userspace net backend) is D6, already frozen in
+no NET_ADMIN on the workload, userspace net backend) is D6, already decided in
 the parent (microvm-runner.md:733-750); this record fills its behavior and
 resolves implementation-shaped forks (OQ-1..3, OQ-7) that stay inside the microVM
 record's own decision numbering. No new cross-cutting decision;

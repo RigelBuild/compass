@@ -99,7 +99,7 @@ type whPayload struct {
 
 // ParseGitHubEvent maps (X-GitHub-Event, raw body) to a normalized ForgeEvent,
 // or ok=false for an event/action this arm ignores (counted-and-dropped by the
-// caller, never an error). The mapping follows the frozen Approach event table
+// caller, never an error). The mapping follows the design's Approach event table
 // (design.md:131-142). Bodies run StripOwner here — normalize is the one strip
 // point (design.md:554-557, 657-659).
 func ParseGitHubEvent(event string, body []byte) (ev ForgeEvent, ok bool, err error) {

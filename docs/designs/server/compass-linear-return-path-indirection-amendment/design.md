@@ -12,7 +12,7 @@ Tracker: RIG-2794
 
 ## Problem / Intent
 
-The frozen record's Part 3 sets the session external URL to a DIRECT deep link
+The #625 record's Part 3 sets the session external URL to a DIRECT deep link
 resolved at dispatch time:
 
 > "**A session external URL** (`agentSessionUpdate` with an `externalUrls`
@@ -73,7 +73,7 @@ Properties this buys:
 
 - **Post-independent.** The indirection URL is a pure function of the session
   id — it does not wait on routing, ownership resolution, topic creation, or
-  the prompt post. It comfortably fits the 10-second liveness SLA the frozen
+  the prompt post. It comfortably fits the 10-second liveness SLA the #625
   record binds the external-URL emit to (#625 design.md:337-344: the
   dispatcher "sets the session external URL directly from the webhook dispatch
   path, before any agent turn begins").
@@ -151,11 +151,11 @@ survive verbatim:
 - **NO Linear session-lifecycle machine** — unchanged; there is still exactly
   one external-URL update per session, ever.
 - **NOT-1-1 topic mapping** — unchanged; the redirect targets a CHANNEL (the
-  routing channel or the home channel), never a topic, exactly the frozen
+  routing channel or the home channel), never a topic, exactly the #625
   OQ-4 shape ("the deep link points at the Manager's home channel … not at
   the specific topic", #625 design.md:270-273).
 
-The ONLY delta: the frozen "deep link to the resolved Manager's home channel"
+The ONLY delta: the "deep link to the resolved Manager's home channel"
 clause of DL-256 becomes "stable indirection URL whose server-side redirect
 resolves to the routing channel or the Manager's home channel at click time."
 

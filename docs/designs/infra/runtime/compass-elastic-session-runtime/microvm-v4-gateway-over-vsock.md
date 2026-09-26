@@ -2,10 +2,10 @@
 
 [microvm-runner.md](./microvm-runner.md) (its Plan § V4,
 microvm-runner.md:508-532; Approach (b), microvm-runner.md:105-137) and its
-frozen VMM/transport decision D1 (cloud-hypervisor hybrid vsock,
+VMM/transport decision D1 (cloud-hypervisor hybrid vsock,
 microvm-runner.md:665-670).
 
-Ledger impact: none. V4 details the transport D1 already froze ("D1 also fixes
+Ledger impact: none. V4 details the transport D1 already set ("D1 also fixes
 the **host-side vsock transport shape**: cloud-hypervisor uses hybrid vsock",
 microvm-runner.md:665-670); nothing here is a new cross-cutting decision, and
 `docs/designs/DECISIONS.md` is untouched.
@@ -122,7 +122,7 @@ The record's central call. Three candidates:
   sibling that duplicates `Serve` minus the `Mount` helper would be a second
   convention beside an existing one. The parent sketched the interface before
   the direction inversion was verified; the detailing outcome is that the
-  sketch collapses into reuse. Flagged against the frozen parent's phrasing in
+  sketch collapses into reuse. Flagged against the parent's phrasing in
   OQ-2.
 - **Option C (rejected): serve from the `runtime` layer** (the backend owns
   the VM, so let `MicroVMRuntime` serve the gateway beside it). Violates
@@ -177,7 +177,7 @@ microvm-v3-egress-in-guest.md:138-163):
 - `MicroVMRuntime` gains one exported method,
   `AgentGatewayEndpoint(name string) (socketPath string, ok bool)`, returning
   `microvm.GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort)`
-  for the named session — NOT on the frozen `WorkloadRuntime` interface.
+  for the named session — NOT on the `WorkloadRuntime` interface.
 - `agentHost` probes its engine via an unexported single-method interface,
   `type vsockGatewayEngine interface { AgentGatewayEndpoint(string) (string, bool) }`.
   - Probe **absent** (podman, every fake): today's path byte-identical —
@@ -259,7 +259,7 @@ takes no per-session socket configuration, so this constant IS the rendezvous"
   bypassing the forwarder entirely; the coarsened host-side identity binding
   this implies is ruled on in OQ-7.
 
-This is a deliberate, flagged divergence from the frozen parent's
+This is a deliberate, flagged divergence from the parent's
 env-injection sentence (OQ-1): the *contract* the parent wants — the agent
 reaches its Runner over the per-session vsock channel — is met, with the agent
 binary and its fixed-path contract untouched on both backends, and no
@@ -324,7 +324,7 @@ Two path-budget facts, handled in W2:
 
 Provision's second refused mount is the read-only fleet-config tree
 (`host.go:178-193`). Config delivery into the guest is its own slice (it wants
-a virtio-fs share or a control-plane push, V6/V2b territory — no frozen plan
+a virtio-fs share or a control-plane push, V6/V2b territory — no merged plan
 names it yet), and V4 must not smuggle it in. Skipping it is **safe by the
 agent's own contract**: "UNCONFIGURED — no `current` symlink, or the whole
 mount absent — is a VALID empty state, not an error: every reader is tolerant
@@ -383,7 +383,7 @@ Every task below inherits these.
   mount list Provision builds on podman, `AGENT_SOCKET_PATH`, or any podman
   argv; fakes don't implement the (c) probe, so every existing hermetic runner
   suite runs unchanged.
-- **Frozen `WorkloadRuntime` interface untouched.** The (c) probe is a
+- **`WorkloadRuntime` interface untouched.** The (c) probe is a
   marker/endpoint method on `MicroVMRuntime` + an unexported assertion in
   `agentHost`, never an interface verb — the V3-ratified discipline
   (microvm-v3-egress-in-guest.md:300-302).
@@ -588,7 +588,7 @@ test opening with `microvmtest.Require(t)`.
 Batched for the pre-freeze ruling; the body designs against each
 recommendation.
 
-- **OQ-1 (load-bearing) — two divergences from the frozen parent's V4 prose.**
+- **OQ-1 (load-bearing) — two divergences from the parent's V4 prose.**
   (i) The parent injects the dial target "via the exec environment"
   (microvm-runner.md:519-522); as detailed, the agent cannot dial AF_VSOCK
   from Bun/Node (§(d)), so the design keeps the agent's fixed
@@ -597,7 +597,7 @@ recommendation.
   "per-session-port→VM identity, assigned and recorded by the backend at
   boot" (microvm-runner.md:135-137); as detailed, hybrid vsock makes the
   host endpoint a per-session AF_UNIX *path*, so the port is fixed
-  (§(e)) — the exact identity model V2b froze for the control port
+  (§(e)) — the exact identity model V2b set for the control port
   (`microvm_lifecycle.go:48-52`). Both meet the parent's contract by a
   different mechanism than its sketch; under the flag-don't-silently-resolve
   posture a detailing record surfaces them. **Recommendation:** ratify both

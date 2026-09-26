@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestSubjectBuilders defends the frozen grammar itself: every subject a
+// TestSubjectBuilders defends the grammar itself: every subject a
 // consumer will ever publish or subscribe to comes from a builder in
 // subjects.go, so a drift in any one of them silently re-wires a plane. The
 // exact strings are asserted, not a pattern — the grammar is the contract other
@@ -243,7 +243,7 @@ func TestEventKindsAreValidSubjectTokens(t *testing.T) {
 		KindTopicUpserted,
 	}
 	if len(kinds) != 7 {
-		t.Fatalf("expected the 7 frozen comms kinds, listed %d", len(kinds))
+		t.Fatalf("expected the 7 comms kinds, listed %d", len(kinds))
 	}
 	seen := make(map[EventKind]bool, len(kinds))
 	for _, k := range kinds {

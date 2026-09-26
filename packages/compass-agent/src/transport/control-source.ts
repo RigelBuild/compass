@@ -115,7 +115,7 @@ export const CONTROL_RECONNECT_MIN_UPTIME_MS = 5000;
 export const CONTROL_RECONNECT_NO_PROGRESS_MAX = 10;
 
 // The immediate-dispatch handle: the actions a mid-turn steer / turn-end deliver
-// drives without waiting for the iterator's next pull. Frozen C4 signature. As of
+// drives without waiting for the iterator's next pull. C4 signature. As of
 // RIG-1310 §8 the handle carries the full comms Message (.id intact): both arms decode
 // their message field and forward it here, where the agent dedups, injects, and acks.
 export interface ImmediateControl {
@@ -206,7 +206,7 @@ export interface SocketControlSourceOptions {
 	 * free of the `effect` package — `createSocketControlSource` is re-exported
 	 * from the package entry, and the export-surface guard forbids an `effect`
 	 * type on the public `.d.ts`. Defaults to "" — production yields the exact
-	 * frozen metric name. A test passes a unique prefix so its gauge read hits a
+	 * bare metric name. A test passes a unique prefix so its gauge read hits a
 	 * private registry entry, immune to the cross-file gauge race: the
 	 * shared process-global registry keys structurally on the metric name, and a
 	 * bare gauge would be moved by a concurrent sibling test file between this
@@ -229,14 +229,14 @@ const defaultOnUnmapped = (u: UnmappedEvent): void =>
  * Publish spine, and reconnects (bounded) on a transport drop while ending
  * cleanly on a Runner-initiated close.
  *
- * The two required arguments are the frozen C4 contract; the optional
+ * The two required arguments are the C4 contract; the optional
  * collaborators are an options bag so a caller overriding only the clock does
  * not have to restate the unmapped handler positionally.
  *
  * @param transport the Runner socket handle (its `control()` server-stream +
  *   `publishSpine()` ack lane)
  * @param immediate the SDK steer/deliver actions the immediate path drives —
- *   threaded per the frozen signature; not invoked while the wire carries empty
+ *   threaded per the C4 signature; not invoked while the wire carries empty
  *   shells (OQ-2(A)), RIG-1310 populates the payload
  * @param options optional `onUnmapped` / `now` collaborators
  */

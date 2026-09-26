@@ -17,7 +17,7 @@ import (
 // deferred Unsubscribe beside an explicit one is not a bug.
 type Unsubscribe func()
 
-// EventFabric is the comms/delivery event seam (frozen, §T3). It carries
+// EventFabric is the comms/delivery event seam (§T3). It carries
 // compact references on JetStream — durable at-least-once fan-out — never
 // payloads; see EventRef.
 type EventFabric interface {
@@ -30,7 +30,7 @@ type EventFabric interface {
 	SubscribeKind(ctx context.Context, kind EventKind, fn func(EventRef)) (Unsubscribe, error)
 }
 
-// RunnerFabric is the Server↔Runner async seam (frozen, §T3): per-Runner
+// RunnerFabric is the Server↔Runner async seam (§T3): per-Runner
 // command push out, queue-grouped event fan-in back. It rides core NATS
 // (best-effort); a command to an offline Runner is recovered by the
 // delivery-cursor sweep, not by a stream.
@@ -260,9 +260,9 @@ var (
 )
 
 // New connects to NATS and returns the fabric. It does not create the JetStream
-// stream — that happens lazily on the first Publish/Subscribe, because the
-// frozen signature carries no context and rooting a fresh one here would sever
-// the caller's cancellation chain.
+// stream — that happens lazily on the first Publish/Subscribe, because New
+// takes no context and rooting a fresh one here would sever the caller's
+// cancellation chain.
 func New(cfg Config) (*Fabric, error) {
 	if cfg.URL == "" {
 		return nil, errors.New("fabric: Config.URL is required (the NATS connection string)")

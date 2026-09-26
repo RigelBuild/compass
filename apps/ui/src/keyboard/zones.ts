@@ -1,7 +1,7 @@
 /**
  * Focus-zone model — the contract compass-ui implements against.
  *
- * Frozen by design record D4 (Focus model: one ring, spatial focus zones,
+ * Specified by design record D4 (Focus model: one ring, spatial focus zones,
  * roving tabindex). CONTRACTS ONLY: interfaces, type unions, and documented
  * ordering. No runtime behavior, no DOM, no Solid components — compass-ui owns
  * the implementation.

@@ -1170,7 +1170,7 @@ END $$;
 REVOKE DELETE ON server_key_state FROM compass_app, compass_system;
 
 -- ENABLE + FORCE RLS + the per-tenant policy on every tenant-owned table. The
--- policy shape is the frozen T2 form: a scalar-subquery GUC read (evaluated once
+-- policy shape is the T2 form: a scalar-subquery GUC read (evaluated once
 -- per statement), a non-empty guard (fail-closed on an unset/empty GUC), and
 -- tenant_id equality — as both USING (reads) and WITH CHECK (writes). Done in a
 -- DO loop so the identical policy is never copy-pasted 25 times.

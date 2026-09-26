@@ -2,7 +2,7 @@
 
 > Freezes on merge; later changes supersede by
 > citation, never rewrite (`../compass-0.5/design.md:10-12`, convention restated
-> in `../compass-0.6/design.md:1116-1118`). Extends the frozen
+> in `../compass-0.6/design.md:1116-1118`). Extends
 > `../compass-agent-runner-transport/design.md` (merged as #849, RIG-1351) and
 > supersedes-by-citation its Decision #2 and its OQ-8 (Matt's ruling,
 > 2026-07-22: "get everything onto the unix socket(s)"), plus the v0.6 §T5
@@ -13,7 +13,7 @@
 
 ## Problem / Intent
 
-The frozen transport record put agent-initiated *calls* on a per-container Unix
+The transport record put agent-initiated *calls* on a per-container Unix
 socket but deliberately left the stdout `AgentFrame` telemetry spine and the
 (unbuilt) stdin control lane on stdio (`../compass-agent-runner-transport/design.md:41-43`,
 Decision #2 "Off stdio"). Matt has now ruled the opposite: ALL agent↔Runner
@@ -33,7 +33,7 @@ failure-model layer is where this record does its real design work; the RPC
 shapes themselves are the easy part. OQ-2 and OQ-6 carry that weight.
 
 **Scope boundary.** The socket itself — its lifecycle, perms, bind-mount, uid
-map, stale recovery, and the `Comms` unary — is the frozen record's; nothing
+map, stale recovery, and the `Comms` unary — is the transport record's; nothing
 there is reopened. The Runner→Server leg (`PublishEvents`,
 `proto/compass/v1/runner.proto:63-70`) is also untouched: the Runner
 still relays frames upward Runner-sequenced; only the agent→Runner hop below it
@@ -49,7 +49,7 @@ By citation (the frozen records are never edited):
   "The stdout `AgentFrame` telemetry spine and the (unbuilt) stdin control lane
   are NOT this channel… stdio keeps its §T5 shape"). Overridden by Matt's
   2026-07-22 ruling: telemetry and control ALSO ride the socket. The rest of the
-  frozen Decisions (#1 Runner-sole, #3 one seam, #4 per-container socket, #5
+  transport record's Decisions (#1 Runner-sole, #3 one seam, #4 per-container socket, #5
   additive network impl) stand unchanged — this record depends on them.
 - **OQ-8** (`../compass-agent-runner-transport/design.md:583-589`), which
   recommended leaving telemetry on stdout. Superseded by the ruling. In
@@ -94,7 +94,7 @@ not built code — the cheapest possible time to change carrier.
 
 ### Telemetry: `Publish` client-stream on `AgentGateway`
 
-A new RPC on the frozen internal service
+A new RPC on the internal service
 (`../compass-agent-runner-transport/design.md:316-318`):
 
 ```proto
@@ -181,7 +181,7 @@ inversion `RunnerService.Sessions` uses one hop up
 (`proto/compass/v1/runner.proto:52-61`: the Server "pushes session
 *commands* downward" on the response stream of a Runner-opened RPC).
 
-- **The wire message is the frozen-variant `AgentControl` oneof** — variant
+- **The wire message is the `AgentControl` oneof** — variant
   names/types per the v0.6 ratification
   (`../compass-0.6/design.md:1439-1451`), payload fields still owned by
   RIG-1310's parked decision (`agent.proto:76-85`). This record moves the
@@ -205,7 +205,7 @@ inversion `RunnerService.Sessions` uses one hop up
   through that pull loop queues behind the running turn — the deadlock class
   the comms socket already dissolved for call results
   (`../compass-agent-runner-transport/design.md:504-514`, the same event-loop-
-  delivery insight the frozen record's T5 proved for comms results). The socket
+  delivery insight the transport record's T5 proved for comms results). The socket
   `ControlSource` therefore consumes the Connect stream on the Node event loop
   into a **dispatcher** that routes by variant: `steer` (the mid-turn interrupt,
   `../compass-0.6/design.md:1466`) and `deliver` (turn-end-queued,
@@ -248,7 +248,7 @@ unchanged: the pipes exist, the protocol just no longer lives on them.
 
 **Teardown ordering (C5).** Today the terminal STOPPED/ERRORED frame rides
 stdout and the pipe survives until process exit, so the relay always drains it
-(`agent.ts:87-97`). Over the socket the frozen T2 `Close` runs
+(`agent.ts:87-97`). Over the socket the transport record's T2 `Close` runs
 `http.Server.Shutdown` under a bounded deadline then `srv.Close()` force-closes
 (`../compass-agent-runner-transport/design.md:381-385,514-517`) — and the agent
 emits its terminal frame AFTER its control iterator ends, i.e. inside that
@@ -263,10 +263,10 @@ before socket close" in its red set.
 
 ## Alternatives considered
 
-- **Keep the frozen split (status quo — stdio for telemetry/control, socket for
-  calls).** This was the frozen record's own Decision #2 + OQ-8 posture, chosen
+- **Keep the split (status quo — stdio for telemetry/control, socket for
+  calls).** This was the transport record's own Decision #2 + OQ-8 posture, chosen
   when the socket did not yet exist and telemetry's pipe was live and adequate.
-  Matt overrode it once the socket was frozen: two carriers mean two framings
+  Matt overrode it once the socket was designed: two carriers mean two framings
   (newline-protojson AND Connect), two failure models, a hand-rolled scanner
   with a line cap (`go/internal/runner/relay.go:144-145`), and a
   control lane that would still need its own bespoke stdin decoder built from
@@ -300,7 +300,7 @@ before socket close" in its red set.
   consolidation (one carrier, one framing) without inventing a combined
   envelope neither side wants. Rejected.
 - **A sibling internal service instead of new RPCs on `AgentGateway`.** The
-  frozen brief allows either. Rejected: the service boundary would carry no
+  brief allows either. Rejected: the service boundary would carry no
   meaning — same socket, same server, same internal gen lanes, same fence — and
   a second service name is one more gen-fence symbol and one more handler
   registration for zero isolation. `AgentGateway` is already "everything the
@@ -312,7 +312,7 @@ before socket close" in its red set.
   `PostConversationFrame`) ride the existing per-container Unix socket — a local
   hop, no new port, no network path; the nft posture
   (`../compass-agent-container-runtime.md:206-217`) is neither relied on nor
-  disturbed (frozen Decision #4,
+  disturbed (transport Decision #4,
   `../compass-agent-runner-transport/design.md:61-75`).
 - **`WithReadMaxBytes` on the socket server.** Retiring the scanner also retires
   the 4 MiB line cap (`relay.go:145`), today the only per-message size bound on
@@ -326,7 +326,7 @@ before socket close" in its red set.
 - **RIG-1267 gen-fence: extend the symbol list for every new internal name.**
   The fence is a fixed literal grep (`proto/moon.yml:123`:
   `AgentFrame|AgentControl|SessionFrame|RunnerService|RunnerError|compassv1internal`,
-  with `AgentGateway|CommsCall` added by the frozen record's T1) with the
+  with `AgentGateway|CommsCall` added by the transport record's T1) with the
   maintenance instruction "Extend the symbol list as internal messages are
   added" (`moon.yml:118-119`). C1 here MUST add `PublishFrame`,
   `PostConversationFrame`, `ControlSubscribe`, `ReplayCompleteAck`, and
@@ -334,18 +334,18 @@ before socket close" in its red set.
   `PostConversationFrameRequest`/`PostConversationFrameResponse`/
   `ControlSubscribeRequest` and the two ack messages); `AgentControl` and
   `AgentFrame` are already listed. Red→green proves the fence bites (a
-  deliberate leak greps RED before `exclude_paths` lands), per the frozen T1's
+  deliberate leak greps RED before `exclude_paths` lands), per the transport T1's
   pattern (`../compass-agent-runner-transport/design.md:347-356`).
 - **Additive + buf-breaking-safe.** New RPCs on the existing internal
   `AgentGateway` service, a first wire definition of `AgentControl` (with an
-  envelope `control_seq` field), and two new variants on the frozen `AgentFrame`
+  envelope `control_seq` field), and two new variants on the `AgentFrame`
   oneof (`ReplayCompleteAck`, `ControlAck`) — pure additions in the owned
   `compass.v1` package; `buf lint`/`buf breaking` glob `compass/**/*.proto` and
   cover them. No existing message/field changes (new oneof variants and a new
   field number are additive); the stdout relay retirement deletes Go/TS code,
   not proto surface (`AgentFrame` stays — it is the stream payload).
 - **`AgentControl` payload fields stay RIG-1310's.** This record defines the
-  oneof CARRIER message with the frozen variant names
+  oneof CARRIER message with the v0.6 variant names
   (`../compass-0.6/design.md:1439-1451`) but leaves the payload message fields
   exactly as parked (`proto/compass/v1/agent.proto:76-85`) — C1
   lands empty-shell payloads for the not-yet-representable variants; see OQ-1
@@ -357,7 +357,7 @@ before socket close" in its red set.
   (`proto/compass/v1/runner.proto:63-70`) and the hub's gap
   detection (`go/internal/runnerhub/hub.go:125-126,178-188`) are
   invariant across the carrier swap.
-- **Biome `@connectrpc` fence.** The frozen record's T4 already carves
+- **Biome `@connectrpc` fence.** The transport record's T4 already carves
   `packages/compass-agent/src/transport/**` and widens the ban to
   `@connectrpc/connect-node` (`../compass-agent-runner-transport/design.md:229-248`).
   The telemetry sink and control source impls here live under that SAME carved
@@ -372,24 +372,24 @@ before socket close" in its red set.
   clauses, BY CITATION (see Approach); the frozen records themselves are never
   edited. It also consumes, unchanged: Decisions #1/#3/#4/#5, the socket
   lifecycle + stale recovery (its T2), and the `Comms` unary (its T1/T3).
-- **Ordering with the frozen record's tasks.** This record's tasks build ON the
-  frozen T1/T2/T4 (the proto file, the socket listener, the agent transport
-  module). None of that has landed yet (the frozen record froze at design
+- **Ordering with the transport record's tasks.** This record's tasks build ON
+  its T1/T2/T4 (the proto file, the socket listener, the agent transport
+  module). None of that has landed yet (the transport record merged at design
   time); execution here stacks after — or alongside, same lane — those tasks,
   never duplicates them.
 
 ## Plan
 
 Dependency-ordered. C1 defines the wire; C2 (Runner telemetry ingest) and C3
-(Runner control producer) depend on C1 and on the frozen record's T2 (the
+(Runner control producer) depend on C1 and on the transport record's T2 (the
 socket listener exists); C4 (agent-side sink/source) depends on C1 and the
-frozen T4 (the carved transport module exists); C5 retires the stdio protocol
+transport T4 (the carved transport module exists); C5 retires the stdio protocol
 path and proves end-to-end, last.
 
 ### C1 — Wire: `Publish` + `Control` + durable `PostConversationFrame`, `AgentControl` carrier, ack variants, gen-fence
 
-Extend the frozen internal service (`proto/compass/v1/agent_gateway.proto`,
-frozen T1) with the two streaming RPCs AND the correlated durable-frame unary
+Extend the internal service (`proto/compass/v1/agent_gateway.proto`,
+transport T1) with the two streaming RPCs AND the correlated durable-frame unary
 OQ-2→(c) requires; give `AgentControl` its first wire definition (the CARRIER
 oneof with the ratified variant names, `../compass-0.6/design.md:1439-1451`,
 payload fields only for the variants already representable — OQ-1); and add the
@@ -399,7 +399,7 @@ two agent→Runner ack `AgentFrame` variants OQ-4→(i) and the amended OQ-6 nee
 
 ```proto
 service AgentGateway {
-  rpc Comms(CommsCallRequest) returns (CommsCallResult);  // frozen T1, unchanged
+  rpc Comms(CommsCallRequest) returns (CommsCallResult);  // transport T1, unchanged
   // agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every
   // TRACE and SESSION AgentFrame rides it in emission order. Replaces the
   // stdout relay's trace/session half.
@@ -430,7 +430,7 @@ message PostConversationFrameRequest {
   string idempotency_key = 2;
 }
 message PostConversationFrameResponse {}               // returned only after the upstream PublishEvents forward is accepted
-message ControlSubscribeRequest {}                     // the socket IS the session identity (frozen Decision #4)
+message ControlSubscribeRequest {}                     // the socket IS the session identity (transport Decision #4)
 
 // First wire definition (agent.proto). Variant names/types are the ratified
 // v0.6 oneof; payload fields land per-variant as representable (OQ-1). The
@@ -462,7 +462,7 @@ message DeliverControl {}
 message TranscriptReplay {}
 message ConfigControl {}
 
-// Two agent -> Runner ACK variants ADDED to the frozen AgentFrame oneof
+// Two agent -> Runner ACK variants ADDED to the AgentFrame oneof
 // (agent.proto), riding Publish beside the ratified DeliveryAck
 // (../compass-0.6/design.md:1424-1426,1459 — the established frame-spine ack
 // convention, OQ-4(i)). Additive to the existing oneof; buf-breaking-safe.
@@ -485,7 +485,7 @@ matching client-stream / unary / server-stream methods (agent side).
 `Red→green:` RED: extend the gen-fence grep (`proto/moon.yml:123`)
 with `PublishFrame|PostConversationFrame|ControlSubscribe|ReplayCompleteAck|ControlAck`
 BEFORE touching `exclude_paths`, regenerate — the leaked symbols grep RED in a
-public tree (proves the fence bites, the frozen T1 pattern). `buf breaking`
+public tree (proves the fence bites, the transport T1 pattern). `buf breaking`
 proves the additions (new RPCs, new `AgentControl`, the two new `AgentFrame`
 variants, the `control_seq` field) non-breaking. GREEN: `exclude_paths` keeps
 the file out of `buf.gen.yaml`; internal lanes emit handler/client; gen-fence +
@@ -493,7 +493,7 @@ the file out of `buf.gen.yaml`; internal lanes emit handler/client; gen-fence +
 
 ### C2 — Runner telemetry ingest: `Publish` handler, durable `PostConversationFrame` handler, ack routing
 
-Three Runner-side ingest paths, all resolving the session via the frozen T3
+Three Runner-side ingest paths, all resolving the session via the transport T3
 socket→container→session mapping (`../compass-agent-runner-transport/design.md:404-416`),
 fail-closed before Start:
 
@@ -517,7 +517,7 @@ fail-closed before Start:
    `applied_above` seqs so an out-of-order-applied op is not redelivered).
 
 `Interfaces:` (package `go/internal/runner/gateway`, extending the
-frozen T2/T3 `Gateway`)
+transport T2/T3 `Gateway`)
 
 ```go
 // Publish forwards trace/session frames up PublishEvents Runner-sequenced;
@@ -656,7 +656,7 @@ the Runner-side callers that DECIDE what to send (RIG-1310 / RT-3 lanes), and th
 
 ### C4 — Agent-side: socket `FrameSink` (split by durability) + socket `ControlSource` + dispatcher
 
-Two impls in the carved transport module (frozen T4's
+Two impls in the carved transport module (transport T4's
 `packages/compass-agent/src/transport/**`), each behind an existing seam so
 `CompassAgent` itself does not change shape:
 
@@ -694,7 +694,7 @@ export function createSocketControlSource(
 ): ControlSource;
 ```
 
-(`RunnerTransport` is the frozen T4 Connect-client handle over the socket;
+(`RunnerTransport` is the transport T4 Connect-client handle over the socket;
 decode of the staged empty-shell variants surfaces as the counted unmapped op,
 the same posture as the staged `askAnswer` arm, `agent.ts:169-181`.)
 
@@ -861,7 +861,7 @@ the acceptance criterion is satisfiable against C1's empty shells.
 Batched for Matt; each carried this record's recommendation. **Matt ruled on
 2026-07-22: OQ-2 resolved (c) — route durable conversation frames off the lossy
 `Publish` spine onto the correlated call path; every other recommendation
-accepted (LGTM).** Folded below as the frozen decisions this record merges on.
+accepted (LGTM).** Folded below as the ratified decisions this record merges on.
 
 - **OQ-1 (LOAD-BEARING; RESOLVED — Matt, 2026-07-22) — Does the parked `AgentMessage` payload decision
   (RIG-1310) block the control-lane migration?** The stdin decoder was parked
@@ -883,7 +883,7 @@ accepted (LGTM).** Folded below as the frozen decisions this record merges on.
   switch, and this record lands only the carrier + the mechanism test. The
   claim is deliberately "resolves the mid-turn DISPATCH class," not "resolves
   mid-turn steer end-to-end" — the latter waits on the payload. The alternative
-  (hold C3/C4-control until RIG-1310 rules) re-couples two decisions the frozen
+  (hold C3/C4-control until RIG-1310 rules) re-couples two decisions the transport
   record already decoupled.
   **Resolved — ratified (Matt, 2026-07-22).** Control rides the socket now with
   empty-shell control messages (C1); C3's Runner-side callers must not send the

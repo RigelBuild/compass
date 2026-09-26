@@ -79,8 +79,8 @@ provisioned as a dedicated container image out of the box.
 
 ## Decisions encoded (Matt's rulings — not open questions)
 
-Two rulings from Matt (2026-08-24) are the frozen premises of this record;
-nothing below re-litigates them:
+Two rulings from Matt (2026-08-24) are the premises of this
+record:
 
 1. **Client app (RIG-2477): full per-OS matrix + install channels.** The
    client ships on Linux AND macOS together (not Linux-first), and beyond a
@@ -156,7 +156,7 @@ nothing below re-litigates them:
    `podman pull`ed, DL-112) and the repo's container tooling is podman
    throughout; the postgres container reuses it — no docker, no compose file
    as the product interface.
-9. **Thin-client bundle content is frozen by DL-238**: `compass-app` + `dist`
+9. **Thin-client bundle content is set by DL-238**: `compass-app` + `dist`
    + `.desktop` + LICENSE on Linux (`app-bundle/build.sh:2-5`: "the thin
    CLIENT bundle: the gtk3 shell (compass-app) + the UI dist + the desktop
    file + LICENSE. No sidecar binaries, no postgres tooling"); the macOS
@@ -300,19 +300,19 @@ Distribution, three legs:
 
 > **T8 errata (RIG-2759, PR #652) — additive; the frozen §S4 prose below is
 > intact.** T8's container-backed adapter ratified two contract-fidelity
-> deviations from the literal run contract below, both preserving the frozen
+> deviations from the literal run contract below, both preserving the
 > socket-only / `trust`-auth / byte-identical-DSN invariant:
 >
 > + **`POSTGRES_USER=<os-user>` is set in the container env** (the env list at
 >   §S4 below enumerates `POSTGRES_DB=compass`,
 >   `POSTGRES_HOST_AUTH_METHOD=trust`, and `PGDATA` — but no `POSTGRES_USER`).
 >   Under `--userns=keep-id` the container
->   runs as the host OS user, and the frozen DSN is user-less
+>   runs as the host OS user, and the DSN is user-less
 >   (`host=<dir> port=<p> dbname=compass sslmode=disable` — no `user=`), which
 >   pgx resolves to that OS user. The stock `postgres:18` image otherwise
 >   bootstraps `POSTGRES_USER=postgres`, so a user-less DSN would fail
 >   (`role "<osuser>" does not exist`); setting `POSTGRES_USER=<os-user>` makes
->   the created superuser role match the DSN identity §S4 froze. Carries an
+>   the created superuser role match the DSN identity §S4 set. Carries an
 >   in-code fork note at `go/internal/stack/adapters/postgres_container.go:43-52`
 >   (set at `runArgs`, `postgres_container.go:175`).
 > + **`unix_socket_directories` lists BOTH the image's compiled-in
@@ -325,7 +325,7 @@ Distribution, three legs:
 >   (`postgres_container.go:180`, `defaultSocketDir` at
 >   `postgres_container.go:34`); `compass-server` still opens only the DSN dir,
 >   bind-mounted host↔container at the identical path
->   (`postgres_container.go:178`) — the frozen `host=<socket-dir>` DSN is
+>   (`postgres_container.go:178`) — the `host=<socket-dir>` DSN is
 >   unchanged.
 
 **Decision (Matt's ruling 2):** the simple path provisions postgres as a
@@ -409,7 +409,7 @@ Mechanics, grounded in the current seams:
   child at all — and the pgid record format grows a first-class **container
   teardown identity**:
   + **Format v2.** `pgidFileVersion` bumps `"1"` → `"2"`
-    (`pgidfile.go:20-22`, the frozen DL-183 contract). Entries become a
+    (`pgidfile.go:20-22`, the DL-183 format). Entries become a
     discriminated union, tagged by a kind field on the entry line:
     + *process entry* — today's `{Component, Pgid, StartTime}`, torn down by
       group signal exactly as now (`proc <component> <pgid> <starttime>`);
@@ -895,13 +895,13 @@ a `compass-cli@head` formula or a flake `packages.head`)? The flake tracks
 already IS the head channel. **Recommendation:** no extra head channels;
 brew stays semver-only, flake-at-main is the sanctioned bleeding edge.
 
-### OQ-7 [load-bearing] — containerized postgres teardown extends the frozen DL-183 pgid format to v2
+### OQ-7 [load-bearing] — containerized postgres teardown extends the DL-183 pgid format to v2
 
 The container has no process-group teardown identity (S4: a rootless
 `podman run` client's `Pid()` does not describe the container, which runs
 under conmon outside the client's group), so the fresh-`down` path needs a
 container entry kind in the `stack.pgids` record — a `"1"` → `"2"` bump of
-`pgidFileVersion` (`pgidfile.go:20-22`), the format DL-183 froze. The
+`pgidFileVersion` (`pgidfile.go:20-22`), the format DL-183 set. The
 alternative that avoids the format change is the systemd/quadlet-managed
 container (§Alternatives): the stack only probes the DSN, but the install
 story gains unit provisioning and `up`/`down` stop owning the database

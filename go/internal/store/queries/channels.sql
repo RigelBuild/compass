@@ -9,7 +9,7 @@
 -- (effectiveVisibilityCTE / viewerCTE / channelVisiblePredicate /
 -- groupVisiblePredicate). The copies MUST stay textually identical so the stream
 -- edge's single-id visibility check cannot drift from the list read (the
--- anti-drift guarantee the frozen record requires).
+-- anti-drift guarantee the design record requires).
 
 -- name: InsertChannelGroup :exec
 INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility)

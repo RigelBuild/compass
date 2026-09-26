@@ -126,7 +126,7 @@ func ValidateProfile(profile string) error {
 // secret. The rotation diff reads the struct field directly, not a log line, so
 // dropping it from the log surface costs nothing. (A keyed hash — HMAC under a
 // server key — is a defense-in-depth option, redundant once the version is
-// unlogged; it would amend the frozen SHA-256 algorithm, so it is deferred.)
+// unlogged; adopting it amends the record's SHA-256 choice, so it is deferred.)
 func Version(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])

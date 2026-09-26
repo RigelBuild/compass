@@ -1,4 +1,4 @@
-// CompassAgent: control application + the frozen replay barrier (§T5). Tests inject a fake
+// CompassAgent: control application + the replay barrier (§T5). Tests inject a fake
 // AgentSession (a recording inner Agent + a subscribe stream) and a fake ControlSource, then
 // assert the observable effects: which SDK methods run() drove, in what order, and the lifecycle
 // frames bracketing it. The barrier is load-bearing: live input is refused until ReplayComplete lifts it.
@@ -836,7 +836,7 @@ describe("CompassAgent — RT-3 turn-end delivery (RIG-1310 §8 deliver arm)", (
 		h.agent.deliver(deliverMsg("m1", "once"));
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();
-		// A SECOND ack for m1 — the guarded re-ack (frozen design.md:405-406 "the
+		// A SECOND ack for m1 — the guarded re-ack (design.md:405-406 "the
 		// dedup absorbs the lost ack"; :338 a duplicate ack is a no-op on the
 		// Server). Non-vacuity: revert the re-ack → this goes ["m1"] vs ["m1","m1"].
 		expect(ackIds(h.frames)).toEqual(["m1", "m1"]);

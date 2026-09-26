@@ -602,7 +602,7 @@ export const ForgeNotificationAckSchema: GenMessage<ForgeNotificationAck> = /*@_
  * Two agent -> Runner control-plane ACK frames, added as AgentFrame oneof
  * variants above (riding the loss-tolerable Publish spine beside DeliveryAck,
  * the established frame-spine ack convention — consolidation OQ-4(i) + amended
- * OQ-6). Additive to the frozen oneof; buf-breaking-safe.
+ * OQ-6). Additive to the oneof; buf-breaking-safe.
  *
  * @generated from message compass.v1.ReplayCompleteAck
  */

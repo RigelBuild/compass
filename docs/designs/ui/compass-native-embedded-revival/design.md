@@ -452,7 +452,7 @@ ruling ("support BOTH podman and microVM runners going forward") accepts
 the permanent two-runtime-shapes cost, and the elastic-runtime tradeoff it
 implies (burst/density paths carrying both shapes) lives with #804's
 trust-model split, which owns the runtime direction (Global Constraint 6).
-Two frozen artifacts still assert the falsified microVM-sole-runtime
+Two artifacts still assert the falsified microVM-sole-runtime
 end-state — `microvm-runner.md` D2 ("the container path is **removed** and
 microVM becomes the sole runtime … a transitional bootstrap, not a
 permanent second runtime") and the runner flag help
@@ -693,7 +693,7 @@ its cycle (elided below as "module gates green").
   `microvm-runner.md` D2 ("the container path is removed and microVM
   becomes the sole runtime") and a fix for the runner flag-help comment
   (`compass-runner/main.go:229-230` "'podman' (default, transitional)") —
-  no frozen artifact may keep asserting the falsified sole-runtime
+  no artifact may keep asserting the falsified sole-runtime
   end-state. Land the §Ledger-impact rows +
   status-cell flips in `docs/designs/DECISIONS.md` (driver applies; same
   PR as the record per Global Constraint 8). Citation sweep: update the

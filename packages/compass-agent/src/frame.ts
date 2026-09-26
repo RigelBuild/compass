@@ -1,5 +1,5 @@
 // The frame boundary: the seam between the typed compass.v1 payloads the agent
-// produces/consumes and the stdio bytes the Runner drives. Frozen contract (design:
+// produces/consumes and the stdio bytes the Runner drives. Contract (design:
 // spine-inversion + RIG-1570 tee): stdout `AgentFrame` oneof session/transcript_entry/
 // delivery_ack, stdin `AgentControl` oneof prompt/steer/deliver/config/replay/complete.
 
@@ -18,7 +18,7 @@ import {
 	toJson,
 } from "./compassv1";
 
-// One outbound frame the agent emits — exactly one frozen `AgentFrame` oneof
+// One outbound frame the agent emits — exactly one `AgentFrame` oneof
 // variant. A discriminated union so the envelope has a single place to stamp the
 // oneof field, and the reader a single field to classify on.
 export type OutboundFrame =

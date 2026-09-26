@@ -516,7 +516,7 @@ All forks below were surfaced to Matt and ruled before freeze (2026-08-16).
 ## Ledger assessment
 
 **Ledger-impact: none.** This is a dev-infra/testing boot-path addition: it
-supersedes no frozen product decision (the board model DL-069/DL-071, the
+supersedes no product decision (the board model DL-069/DL-071, the
 live-wiring records RIG-1729, and the test-strategy record's Go e2e tier are
 all untouched — the fixture mode is complementary UI-layer determinism, and
 the live boot path is behavior-identical when the mode is off). No

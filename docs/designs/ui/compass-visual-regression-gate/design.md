@@ -286,7 +286,7 @@ that proves noisy, one-line PR) is cheaper than guessing up front.
 
 ## Global Constraints
 
-- **Determinism knobs are frozen and must match the substrate exactly**:
+- **Determinism knobs must match the substrate exactly**:
   `screenshot: "off"`, `reducedMotion: "reduce"`, `deviceScaleFactor: 1`
   (`playwright.config.ts:60-62`); per-shot `animations: "disabled"`,
   `scale: "css"` on every capture, plus `fullPage: true` on the 7 full-page
@@ -538,7 +538,7 @@ Interfaces:
 ## Open Questions
 
 All five load-bearing forks were **ruled by Matt on 2026-09-07** at the design-PR
-gate. Recorded here as the frozen contract — execution reads the decided target,
+gate. Recorded here as the decided contract — execution reads the decided target,
 not a fork.
 
 1. **OQ-1 (RESOLVED — Matt 2026-09-07): base `maxDiffPixelRatio` = 0.001.**

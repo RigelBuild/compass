@@ -66,10 +66,10 @@ type AgentEnv struct {
 	// SocketPath, when non-empty, overrides the agent's default gateway-socket
 	// path (agent-side AGENT_SOCKET_PATH). ConfigMountPath likewise overrides the
 	// default config-mount root (AGENT_CONFIG_MOUNT_PATH). Both are empty on the
-	// container tiers, which deliver the socket + config at the frozen paths by
+	// container tiers, which deliver the socket + config at the default paths by
 	// bind mount; the host-process tier has no mounts, so it serves both inside
 	// the handle's own state dir and threads the paths here. Empty is omitted, so
-	// a container-tier agent receives neither var and resolves the frozen defaults.
+	// a container-tier agent receives neither var and resolves the defaults.
 	SocketPath      string
 	ConfigMountPath string
 }

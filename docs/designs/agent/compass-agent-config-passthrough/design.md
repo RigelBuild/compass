@@ -87,7 +87,7 @@ model roles, tool enablement all unconfigurable) and with **no fleet
 AGENTS.md** (the SDK discovers AGENTS.md "by walking up from cwd"
 (`forks/oh-my-pi/packages/coding-agent/src/discovery/agents-md.ts:4`), and
 nothing in the container's cwd chain carries one unless the checkout happens
-to). Matt's rulings (frozen inputs): whole-config-file passthrough, not a
+to). Matt's rulings: whole-config-file passthrough, not a
 curated subset; fleet-global for MVP; reuse the existing mount + ConfigVersion +
 `current`-flip + Reload machinery — no second channel. This record designs
 exactly that delta, plus the exhaustive sweep of every other config-dir
@@ -102,7 +102,7 @@ the current agent wave populates — adding rules/, subagent definitions
 Inherited from the sibling record (`../compass-agent-config-delivery/design.md`)
 and restated where this record's tasks touch them:
 
-1. **The Server↔Runner inversion is frozen** (sibling GC-1). This record
+1. **The Runner dials out** (sibling GC-1). This record
    needs **no wire change at all**: carriage is the landed server-streaming
    `FetchAgentConfig` + `ConfigVersion` signal (DL-079), which moves opaque
    bundle bytes — new categories ride inside the tarball.

@@ -1,4 +1,4 @@
-/* State dot — .cx-state-dot[data-state] (D3). The frozen brand eight-glyph
+/* State dot — .cx-state-dot[data-state] (D3). The brand eight-glyph
    agent-state vocabulary (brand/state-icons.md), rendered as a 9×9 1-bit bitmap
    (glyph geometry lives in components.md; compass-ui emits the inline SVG on
    this box). This file carries: the 9×9 sizing, per-state color via --cx-st-*,

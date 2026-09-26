@@ -4,7 +4,7 @@ import { AGENT_STATE_LABEL } from "../constants";
 import type { AgentState } from "../stub-data";
 import { StateDot } from "./StateDot";
 
-// The eight frozen state-dot grids, transcribed INDEPENDENTLY from
+// The eight state-dot grids, transcribed INDEPENDENTLY from
 // design/components.md §State dot (`#` = lit, `.` = off; 9×9). This catches a
 // wrong grid even when its lit-cell count is unchanged (idle and done both have
 // 9 cells; stopped and disconnected differ by only 4).
@@ -110,7 +110,7 @@ const STATES: readonly AgentState[] = [
 	"disconnected",
 ];
 
-// The [x,y] set a grid's `#` cells occupy — the frozen geometry the SVG must draw.
+// The [x,y] set a grid's `#` cells occupy — the geometry the SVG must draw.
 function litCells(grid: readonly string[]): Set<string> {
 	const cells = new Set<string>();
 	grid.forEach((row, y) => {
@@ -138,10 +138,10 @@ function mount(state: AgentState) {
 }
 
 describe("StateDot", () => {
-	// Each state draws its own frozen geometry. Assert exact lit-cell POSITIONS,
+	// Each state draws its own designed geometry. Assert exact lit-cell POSITIONS,
 	// not just the count, against the independently-transcribed design grids.
 	for (const state of STATES) {
-		test(`${state} draws exactly its frozen grid`, () => {
+		test(`${state} draws exactly its design grid`, () => {
 			const expected = litCells(GRIDS[state]);
 			const actual = renderedCells(mount(state));
 			expect([...actual].sort()).toEqual([...expected].sort());

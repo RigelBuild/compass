@@ -331,7 +331,7 @@ func (a *AppleContainerCLI) MountLabel(_ context.Context, _ WorkloadID) (string,
 	return "", nil
 }
 
-// Resize is the S1-frozen resize-in-place verb, unimplemented here for the same
+// Resize is the resize-in-place verb reserved at S1, unimplemented here for the same
 // reason as PodmanCLI.Resize: a silent no-op would report a limit change that
 // never happened. This CLI exposes no live resource-update verb at the version
 // floor.

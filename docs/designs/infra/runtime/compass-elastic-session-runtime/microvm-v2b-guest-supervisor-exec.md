@@ -67,7 +67,7 @@ RPC_REQUEST/RESPONSE_STANDARD_NAME — no carve-out",
 `guest_control.proto:27-28`) — and the two directions carry disjoint payloads
 anyway (stdin down, stdout/stderr/exit up). V2b uses
 `ExecStreamRequest`/`ExecStreamResponse`, each a `oneof` of direction-specific
-frames. A naming refinement, not a semantic contradiction of the frozen parent.
+frames. A naming refinement, not a semantic contradiction of the parent.
 
 **Messages.** The one-shot pair mirrors `ExecSpec`/`ExecOutput`
 (`podman.go:117-130,156-160`) field for field:
@@ -210,7 +210,7 @@ itself is V3's:
 This means the GUEST side of V3 lands as a handler-body change plus the
 `AgentRuntime` routing — the gate, the state machine, and the wire surface are
 already in place. The HOST side is NOT yet plumbed, and V2b makes one
-structural bet worth flagging: `Start(ctx, id)` (frozen, `podman.go:310`)
+structural bet worth flagging: `Start(ctx, id)` (`podman.go:310`)
 carries no spec, yet Start is where V2b buries the `Provision` call, so V3's
 `ProvisionRequest.nft_script` must come from somewhere Start can reach. On
 podman the arm rides a post-Start root-capable `Exec` from
@@ -258,7 +258,7 @@ no inheritable caps), preserving "the agent then runs as a non-root user whose
 capability set is empty, so it cannot flush or edit the ruleset"
 (`egress.go:7-9`).
 
-**Peer-CID authentication.** The parent freezes it: "The supervisor
+**Peer-CID authentication.** The parent sets it: "The supervisor
 authenticates its vsock peer: it accepts control requests only from the host
 (CID 2) and refuses the in-guest loopback (CID 1)"
 (microvm-runner.md:158-164). V2b implements it at the listener: the accepted
@@ -276,7 +276,7 @@ the wire, so determinism matters only for logging/tests.
 
 ### (c) `MicroVMRuntime` methods against the vsock service
 
-The nine frozen signatures (`microvm.go:71-116`, `var _ WorkloadRuntime =
+The nine `WorkloadRuntime` signatures (`microvm.go:71-116`, `var _ WorkloadRuntime =
 (*MicroVMRuntime)(nil)`) are filled by translating each verb onto V2a's
 harness + the (a) service. `MicroVMRuntime` grows a per-session state table
 (`WorkloadID → *session`), where a `session` holds the V2a `BootConfig`
@@ -350,8 +350,8 @@ no cycle" (`config.go:5-7`) — V2b is the planned importer.
   (`agent_exec.go:192-199`) work unchanged above the seam. The `ChildHandle`
   problem: the podman handle wraps a live `*exec.Cmd`
   (`podman.go:217-220`), which does not exist host-side here. Rather than
-  widen the frozen interface, `ChildHandle` gains a second internal
-  construction over a `killFunc`/`waitFunc` pair (same exported
+  widen the interface for one backend's handle shape, `ChildHandle` gains a
+  second internal construction over a `killFunc`/`waitFunc` pair (same exported
   Kill/Wait/Terminate surface). Kill → `Signal(exec_id, SIGKILL)` issued with
   a short internal deadline and NEVER blocking the caller past it: podman's
   Kill is an instantaneous local `h.cancel()` (`podman.go:214-217`), so the
@@ -454,7 +454,7 @@ explicitly. Threat model, both directions:
 - **Guest authenticating the host (the direction that actually matters).**
   The exec surface's real exposure is an unauthorized CALLER: an in-guest
   process dialing the supervisor port over vsock loopback and requesting a
-  uid-0 exec or a re-arm. That is the parent's frozen peer-CID check
+  uid-0 exec or a re-arm. That is the parent's peer-CID check
   (microvm-runner.md:158-164), implemented in V2b ((b)) and probed by V8's
   escalation test (microvm-runner.md:618-621). Host-side, the AF_UNIX socket
   is 0700-dir-protected per session; any same-uid process that can open it
@@ -462,7 +462,7 @@ explicitly. Threat model, both directions:
   for podman's own control socket.
 
 **Recommendation (OQ-A, load-bearing): no credential protocol in V2b.**
-Peer-CID checking (frozen, guest-side) plus structural socket identity
+Peer-CID checking (guest-side) plus structural socket identity
 (host-side) is the boundary. One cheap hardening is worth its two lines: the
 host generates a random **boot nonce** per session, passes it on the kernel
 cmdline (`compass.boot_nonce=<hex>`, beside the existing
@@ -545,13 +545,13 @@ outright was weighed and rejected: (1) *Language* — the kata agent is Rust,
 tini and dumb-init are C; guestd is Go, and its reaper logic is a small amount
 of Go — cheaper to write than an FFI boundary or a second runtime in the guest.
 (2) *Transport* — kata speaks ttRPC over vsock; V2b is Connect/h2c over the
-frozen V2a hybrid-vsock door, so the wire layer does not port. (3) *Scope* —
+V2a hybrid-vsock door, so the wire layer does not port. (3) *Scope* —
 kata's `AgentService` is a full OCI container runtime (~50 RPCs spanning
 execution, stdio, networking, and observability, plus a `rustjail` embedded
 OCI runtime); V2b is one exec session per VM (~4 RPCs), so adopting the agent
 would mean importing an order of magnitude more surface than the design needs,
 against the "guest supervisor is a thin exec supervisor" non-goal. (4) *Host
-interface* — the acceptance bar is our frozen `runtime.WorkloadRuntime`
+interface* — the acceptance bar is our `runtime.WorkloadRuntime`
 (`microvm.go:71-116`); no external agent implements it, so the host-side
 translation layer §(c) is ours regardless. The prior art proves the shape and
 the correctness model; the code stays a reference.
@@ -569,7 +569,7 @@ in V2b-concrete form.
   Kill/Wait/Terminate semantics match (`podman.go:209-248`), including
   Wait-after-SIGKILL yielding a deliberate-kill error `isDeliberateKill`
   recognizes — via the portable exit-signal error taxonomy OQ-G/U3b introduces,
-  since a remote `waitFunc` cannot forge the `*exec.ExitError` the frozen check
+  since a remote `waitFunc` cannot forge the `*exec.ExitError` the existing check
   matches today (`agent_exec.go:232-239`); exec stdin bodies never appear in
   any process list (`agent.go:238-246`); uid-0 exec is refused
   (microvm-runner.md:358-360); `Remove` is idempotent; `Resize` returns
@@ -777,7 +777,7 @@ Launch + Health-poll + nonce check + Provision in Start, spec translation onto
 U3, graceful Stop, idempotent Remove, `Exists` from the session table,
 `MountLabel` → `""`.
 
-- **Interfaces:** produces the filled methods behind the frozen signatures
+- **Interfaces:** produces the filled methods behind the existing signatures
   (`microvm.go:71-116` — no signature change) and the extended
   `MicroVMConfig` fields V2b needs beyond the V1 four
   (`microvm.go:25-35`: VMMPath/VirtiofsdPath/KernelImage/RootfsImage): at
@@ -844,7 +844,7 @@ the interface, run against both backends.
       exit-signal error + widened `isDeliberateKill` with a podman-row
       regression test
 - [ ] U4 — `MicroVMRuntime` lifecycle: Create/Start/Exec/ExecStreaming/
-      Stop/Remove/Exists/MountLabel behind the frozen signatures (Exists +
+      Stop/Remove/Exists/MountLabel behind the existing signatures (Exists +
       dup-name Create keyed on `spec.Name`)
 - [ ] U5 — shared WorkloadRuntime contract suite (podman + microVM rows;
       microVM rows KVM-gated) + Q-budget numbers
@@ -864,7 +864,7 @@ The non-load-bearing OQ-E/OQ-F stand at their recommendations.
 - **OQ-A (load-bearing) — exec-transport authentication.** The V2a proto
   header requires this to be revisited when Exec/Signal/Provision land
   (`guest_control.proto:43-46`). Options: (1) **no credential protocol** —
-  guest-side peer-CID refusal (frozen, microvm-runner.md:158-164) plus
+  guest-side peer-CID refusal (microvm-runner.md:158-164) plus
   host-side structural socket identity (the per-session AF_UNIX endpoint in a
   runtime dir only the Runner's uid can reach), hardened with a host-minted
   boot nonce on the kernel cmdline that guestd echoes in `HealthResponse` and
@@ -966,7 +966,7 @@ The non-load-bearing OQ-E/OQ-F stand at their recommendations.
 
 ### Ledger assessment
 
-`Ledger-impact: none` recommended. This record details forks the frozen
+`Ledger-impact: none` recommended. This record details forks the
 parent already framed (its §(b) exec surface, §(c) gate + uid posture, §(f)
 teardown, D4's supervisor split) and resolves them within the parent's
 decisions. Two resolutions are genuinely new cross-record calls: OQ-A's

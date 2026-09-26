@@ -23,7 +23,7 @@ import { testQueryClient } from "./test-support";
 // fail now and pass once T1 lands. It asserts fixture invariants + the composed
 // view-model contract, never plumbing; no test restates an implementation detail.
 //
-// NOTE on item "no kind field": the frozen record's new `Account` KEEPS
+// NOTE on item "no kind field": the record's new `Account` KEEPS
 // `kind: "user" | "agent"` (design.md:334,337) — it is the OLD harness-flavoured
 // axis that is dropped: the `harness` key (design.md:340 "no `harness` — dropped")
 // and the old `Agent.kind: AgentKind` ("omp"|"claude"|… ). So the scans below

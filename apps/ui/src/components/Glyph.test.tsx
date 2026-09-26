@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
 import { GLYPH_NAMES, Glyph } from "./Glyph";
 
-// The <Glyph/> invariants named by the frozen record (compass-glyph-primitives
+// The <Glyph/> invariants named by the design record (compass-glyph-primitives
 // §"The <Glyph/> primitive"): every glyph name yields a non-empty cell list,
 // and every cell lies within the 11×11 grid. We reach the geometry through the
 // rendered SVG so the assertions bind the observable output, not the table.

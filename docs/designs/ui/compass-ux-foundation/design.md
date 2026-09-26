@@ -1,14 +1,14 @@
 # Compass UX foundation — target design system + interaction model
 
 Linear: RIG-1663
-Supersedes: the pre-freeze draft of this record (an out-of-tree PR; its
+Supersedes: the earlier draft of this record (an out-of-tree PR; its
 DL-114..122 block never shipped)
 
-That pre-freeze draft was authored against a *provisional* brand identity; the
-Rigel brand spec has since FROZEN (`docs/specs/brand/`), and this rewrite
-re-derives the record against the frozen spec. File references are relative to
+That earlier draft was authored against a *provisional* brand identity; the
+Rigel brand spec has since landed (`docs/specs/brand/`), and this rewrite
+re-derives the record against it. File references are relative to
 `apps/ui/src/` in `RigelBuild/compass` unless otherwise pathed; `brand <file>`
-cites the Rigel frozen brand spec.
+cites the Rigel brand spec.
 
 ## Problem / Intent
 
@@ -25,23 +25,23 @@ navigation, and live accessibility defects
 This record designs the **target end-state UX**: the Compass semantic token
 tier, the first-party component system, the keyboard-first interaction model
 (command palette, global keymap, focus model), the editor-theme mapping, the
-motion system, and how that system renders the frozen target IA — across both
+motion system, and how that system renders the target IA — across both
 render hosts (the Wails desktop app and the browser-hosted product at
 `compass.rigel.build`). It does **not** design the visual language itself — the
-Rigel brand spec froze that (the chase-light / dot-matrix spine, the Night Owl
+Rigel brand spec owns that (the chase-light / dot-matrix spine, the Night Owl
 palette, the three-face type system, the eight-state icon vocabulary, the motion
-system). This record **consumes** the frozen brand spec as its primitive tier
+system). This record **consumes** the brand spec as its primitive tier
 and designs everything Compass owns on top of it. The bar is **genuine
 excellence** on the surfaces a user lives in — the Bridge board, the Manager
 tree, the agent channels + threads, and the agent session trace (D6's excellence
 bar) — not merely brand-compliance. The current UI is the *functional*
 reference — what users must be able to do — never the visual basis. Downstream
-of the frozen brand spec, upstream of all `apps/ui` implementation work.
+of the brand spec, upstream of all `apps/ui` implementation work.
 
 ## Global Constraints
 
-Frozen by Matt 2026-08-03 (stack/styling/seam/keyboard) and by the brand
-freeze (spec-consumption). Every task in `## Plan` inherits these; do not
+Ruled by Matt 2026-08-03 (stack/styling/seam/keyboard) and by the brand
+spec (spec-consumption). Every task in `## Plan` inherits these; do not
 reopen any of them inside a task.
 
 1. **Design record only.** No code ships with this record; it is the contract
@@ -68,14 +68,14 @@ reopen any of them inside a task.
    **No Tailwind. No full component library. No CSS-in-JS.** Adding any heavy
    styling dependency is a design fork requiring a new record. This scopes the
    motion *runtime*, not the motion *system*: the product UI expresses the
-   frozen brand motion system (D9) in **pure CSS/SVG + Solid's fine-grained
+   brand motion system (D9) in **pure CSS/SVG + Solid's fine-grained
    reactivity** — the marketing showcase's GSAP/Three.js/Lenis/Barba stack
    (`docs/specs/brand/motion.md` §"The tech stack") is a *separate track* (brand scopes it
    to the marketing site, and `motion.md` marks it "the aspiration, not yet
    built"); this record consumes the same motion vocabulary that stack renders,
    built on the cheap substrate instead. The motion system itself is fully in
    scope (D9).
-4. **Brand seam**: the frozen Rigel brand spec is the upstream source of
+4. **Brand seam**: the Rigel brand spec is the upstream source of
    truth and this record's **primitive tier**. A design record cites, never
    imports: Compass consumes the live token names verbatim
    (the upstream brand token source) and never invents a parallel palette. Compass owns
@@ -92,13 +92,13 @@ reopen any of them inside a task.
    ("polarity inversion, not a redesign", `docs/specs/brand/color.md`) is kept
    architecturally open via semantic-tier indirection but does not ship in
    this record's scope.
-7. **The target IA is frozen** (DL-095/096, DL-113, DL-098/099,
+7. **The target IA comes from its records** (DL-095/096, DL-113, DL-098/099,
    DL-067/070/097, DL-129, DL-039). This record designs how it looks and how it
    is navigated; it does not redesign the IA. RIG-1622 (channels under the
-   agent tree) is unfrozen — the design must accommodate that direction
+   agent tree) is still open — the design must accommodate that direction
    without depending on its mechanism.
 8. **Naming/markup conventions** (record-adopted from the codebase, not
-   Matt-frozen): component visual contracts are expressed as a class
+   Matt-ruled): component visual contracts are expressed as a class
    vocabulary plus `data-*` variant modifiers — the codebase's existing
    convention (`.state-dot[data-state=…]`, `app.css:490-514` consumed by
    `components/StateDot.tsx:20-24`; `<span class="ci-badge"
@@ -114,7 +114,7 @@ multi-window, workspace scope). Each is citable and owes a ledger row (see
 ### D1 — Visual language: the frozen Rigel spine, worn at ADE density
 
 The old draft *derived* a visual language ("starlight instrumentation") from
-Night Owl; that derivation is now superseded — the brand spec froze the
+Night Owl; that derivation is now superseded — the brand spec owns the
 language. Compass looks like a precision instrument for supervising an agent
 fleet at night, expressed in the one Rigel idiom: the chase-light / dot-matrix
 spine — discrete ON/OFF cells, 1-bit bitmap-native, hard edges, a lit segment
@@ -160,7 +160,7 @@ that identity wears at ADE density. Five principles govern every component:
 **Tiering.** Three tiers, each with a distinct prefix and a strict
 consumption direction (primitive → semantic → component; never skip upward):
 
-- **Primitive tier — `--rigel-*`** (brand-owned, frozen). Compass mirrors the
+- **Primitive tier — `--rigel-*`** (brand-owned). Compass mirrors the
   live brand token set VERBATIM into its primitives block — names and values
   from the upstream brand token source, no additions, no renames:
 
@@ -191,7 +191,7 @@ consumption direction (primitive → semantic → component; never skip upward):
   D9) and the two font stacks (`--rigel-mono`, `--rigel-display` — verbatim
   from `docs/specs/brand/type.md` §"The token stacks"). The old draft's
   `--rigel-slate/violet/coral/white/night-3/blue-bright/teal` names DO NOT
-  EXIST in the frozen set and never appear; there is no violet token at all.
+  EXIST in the brand set and never appear; there is no violet token at all.
   Compass consumes this tier read-only; brand co-reviews any file that
   defines it. Six `docs/specs/brand/color.md` values are documented in the spec but not
   yet tokenized in the upstream brand token source (selection `#1d3b53`, faint `#637777`,
@@ -237,14 +237,14 @@ consumption direction (primitive → semantic → component; never skip upward):
     working-state green, NOT the syntax-tier success green), done →
     `--rigel-cyan`, waiting → `--rigel-amber`, disconnected →
     `--rigel-amber`, error → `--rigel-red`, idle/paused/stopped →
-    `--rigel-mute`. Non-color distinguishability comes from the frozen
+    `--rigel-mute`. Non-color distinguishability comes from the brand
     eight-glyph icon vocabulary (D3), so the set is CVD-safe and
     reduced-motion-safe by brand contract, not by per-record derivation.
   - Issue lifecycle (task axis) — `--cx-issue-*`: a SEPARATE namespace from
     agent state. `BOARD_LANES` (`constants.ts:17-23`) defines five rendered
     lanes — `queued|blocked|in_progress|in_review|done` — plus the pre-active
     `backlog|todo` tier that does not render on the grid (`constants.ts:28`).
-    Colors re-mapped onto the frozen set (the old draft's violet does not
+    Colors re-mapped onto the brand set (the old draft's violet does not
     exist): queued → `--rigel-mute`, blocked → `--rigel-red`, in_progress →
     `--rigel-green` (the lane means "an agent is working it" — deliberately
     the working green), in_review → `--rigel-amber` (awaiting human
@@ -286,7 +286,7 @@ consumption direction (primitive → semantic → component; never skip upward):
   `--rigel-stream-char-ms`, `--cx-cursor-blink` → `--rigel-cursor-blink`; plus
   `--cx-tooltip-delay` (400ms, Compass-owned — no brand primitive). D9 owns the
   motion rules. Z-index: `--cx-z-raised|overlay|modal|palette|toast`
-  (10/100/200/300/400). Focus: `--cx-focus-ring` — already frozen upstream
+  (10/100/200/300/400). Focus: `--cx-focus-ring` — already defined upstream
   as `2px solid var(--rigel-blue)` (upstream brand token source; `docs/specs/brand/color.md`:
   "the focus ring is blue… not purple"), consumed as-is.
 
@@ -321,7 +321,7 @@ wiring) are compass-ui's side of the seam; this record owns what renders.
 | Composer | `.cx-composer` | Multi-line, Enter/Shift-Enter, disabled state, grows to cap |
 | Card | `.cx-card` · `data-selected` | Issue/PR/backlog rows; selected = `--cx-bg-selected` + accent left rule |
 | Badge / Pip / Chip | `.cx-badge` · `data-status`, `.cx-pip`, `.cx-chip` | CI (`--cx-ci-*`), review (`--cx-review-*`), unread counts, tracker chips |
-| State dot | `.cx-state-dot` · `data-state` (8 agent states) | The frozen brand vocabulary — see below |
+| State dot | `.cx-state-dot` · `data-state` (8 agent states) | The brand vocabulary — see below |
 | Tabs | `.cx-tabs` · `data-orientation="h\|v"` | Topbar view-tabs, right-sidebar activity bar, workspace tab strip |
 | Panel / Pane | `.cx-panel`, `.cx-pane` · `data-focused` | The workspace's two fixed panes (home channel · session trace); focused pane = accent 1px inner rule |
 | Tree row | `.cx-tree-row` · `data-depth`, `data-selected` | Agent tree + channel/topic rows; 26px height, caret, state dot, pin affordance |
@@ -335,13 +335,13 @@ wiring) are compass-ui's side of the seam; this record owns what renders.
 | Loader (spinner / bar) | `.cx-loader` · `data-topology="spinner\|bar"` | The brand chase-light primitive, pure CSS/SVG — see D9 |
 | Scrollbar | global | Thin (8px), thumb `--cx-border-strong`, track transparent |
 
-**State dot: the frozen eight-glyph vocabulary.** The old draft spent four
+**State dot: the brand eight-glyph vocabulary.** The old draft spent four
 review rounds deriving its own dot treatments (ring-arc working, plain-dot
 idle, hourglass debates); that derivation is deleted, not carried — brand
-froze the vocabulary and explicitly ruled the ring out ("the `working` form
+set the vocabulary and explicitly ruled the ring out ("the `working` form
 was ruled this session over an earlier ring, which read as a bare 'C' at the
 12px row-dot size", `docs/specs/brand/state-icons.md`). `.cx-state-dot` consumes the
-frozen set 1:1 against the `AgentState` enum (`stub-data.ts:47-55`), 9×9
+brand set 1:1 against the `AgentState` enum (`stub-data.ts:47-55`), 9×9
 bitmap grid, static by default, CVD-safe:
 
 | state | glyph (`docs/specs/brand/state-icons.md`) | color (`--cx-st-*`, D2) |
@@ -381,7 +381,7 @@ classes; no Kobalte default styles ship.
 ### D4 — Focus model: one ring, spatial focus zones, roving tabindex
 
 - **One focus treatment.** `--cx-focus-ring` on `:focus-visible` everywhere —
-  the token is frozen upstream as `2px solid var(--rigel-blue)`
+  the token is defined upstream as `2px solid var(--rigel-blue)`
   (upstream brand token source), blue because interaction lives on the flow color and
   purple stays inside the mark (`docs/specs/brand/color.md` §"The one-accent rule").
   Pointer interactions don't paint rings; keyboard always does. The two
@@ -408,7 +408,7 @@ classes; no Kobalte default styles ship.
 
 ### D5 — Command palette + global keymap: the keyboard is a first-class surface
 
-Carried forward from the pre-freeze draft intact — brand does not touch this
+Carried forward from the earlier draft intact — brand does not touch this
 pillar; only token references are refreshed. Greenfield (no palette exists;
 keyboard today is Enter/Shift-Enter in the composer and a few explicit
 `onKeyDown` handlers).
@@ -458,7 +458,7 @@ keyboard today is Enter/Shift-Enter in the composer and a few explicit
 
 ### D6 — Rendering the frozen IA: surface-by-surface composition
 
-The IA is frozen (Global Constraint 7); this decision states how the design
+The IA comes from its records (Global Constraint 7); this decision states how the design
 system renders each surface, in both render hosts (the Wails desktop app and
 the browser, Global Constraint 2). Structure comes from the records; look and
 navigation come from here. The native shell, OS windows, and mode plumbing are
@@ -497,7 +497,7 @@ multi-window session mounts one view per window. Deferred (**RIG-1808**, Beta
 milestone), not built here: tabs *within* a window (Linear-style) and in-window
 split views — the view decomposition is designed to admit both later without
 rework (a tab strip or a splitter hosts the same window-scoped views), but
-neither ships in the dogfood scope. **Cross-lane seam:** compass-native's frozen
+neither ships in the dogfood scope. **Cross-lane seam:** compass-native's
 record (`compass-native-app/design.md`, DL-110) is single-window today (one
 window loading the built UI); DL-160 expands its scope, so compass-native's
 shell record needs a multi-window amendment (RIG-1684's lane) before this
@@ -515,7 +515,7 @@ is explicit, not implicit.
 - **Left sidebar — the agent tree** (DL-095: `parent_agent_id` is the sole
   org mechanism, folders removed, no agent special-cased, re-parenting
   first-class). Rendered as `.cx-tree-row`s at 26px: caret (children), state
-  dot (the frozen glyph set, D3), name, role pip (supervisor/warden get a
+  dot (the brand glyph set, D3), name, role pip (supervisor/warden get a
   pip, not a special row), unread badge. Selection = `--cx-bg-selected` +
   accent left rule. Keyboard: arrows/Enter/Space per D4; drag + a palette
   "Re-parent agent…" command for re-parenting. Below the tree, the channel
@@ -607,7 +607,7 @@ is explicit, not implicit.
   internals; this record owns their rendered contract.
 - `apps/ui/src/keyboard/` — command registry (`commands.ts`), keymap
   (`keymap.ts`), focus-zone controller (`zones.ts`). Contracts (registry
-  entry shape, keymap table shape) are frozen here; internals are
+  entry shape, keymap table shape) are defined here; internals are
   compass-ui's.
 - CI guard: stylelint bans raw hex + `--rigel-*` outside `tokens.css` (D2's
   consumption rule, enforced) and literal duration/easing values outside
@@ -622,11 +622,11 @@ is explicit, not implicit.
 
 ### D8 — Brand seam + the mark + editor-theme mapping
 
-- Brand owns the frozen spec; Compass **cites** it and mirrors `--rigel-*`
+- Brand owns the spec; Compass **cites** it and mirrors `--rigel-*`
   values into the primitives block of `tokens.css` with provenance. When
   brand revises, the delta lands as a one-block PR that brand co-reviews. The
-  old draft's "pending-freeze" variables are gone: purple is frozen
-  (`#a66ef5`, mark-only), the type system is frozen (three faces — the old
+  old draft's pending variables are gone: purple is `#a66ef5`
+  (mark-only), and the type system is three faces (the old
   "IBM Plex Mono base" language is superseded; Plex survives only as the
   fallback inside the `--rigel-mono` stack, `docs/specs/brand/type.md`).
 - **The mark in the ADE.** The topbar brand slot renders per the brand
@@ -651,8 +651,8 @@ is explicit, not implicit.
 
 ### D9 — Motion: consume the frozen brand motion system, pure CSS/SVG
 
-New decision — the pre-freeze draft deferred motion to a follow-up record;
-the brand motion system is now frozen (`docs/specs/brand/motion.md`) and this record
+New decision — the earlier draft deferred motion to a follow-up record;
+the brand motion system now exists (`docs/specs/brand/motion.md`) and this record
 consumes it. The product UI expresses it in **pure CSS/SVG** — no client-side
 animation runtime (no GSAP/Three.js/Lenis/Barba; that stack is the marketing
 showcase's, `docs/specs/brand/motion.md` §"The tech stack" scopes the product-UI
@@ -734,21 +734,21 @@ coordination note, not a blocker.
 
 ## Alternatives considered
 
-Recorded for the record — the styling tech is frozen (Global Constraint 3),
-so these are documentation of why, not open forks.
+Recorded for the record — the styling tech is ruled (Global Constraint 3),
+so these document why, not open forks.
 
 - **Tailwind CSS** — utility classes would speed prototyping, but the token
   system IS the deliverable here; Tailwind adds a config-DSL layer between
   brand tokens and CSS, a build dependency, and a class-soup idiom foreign to
-  the existing `class + data-*` contract convention. Rejected (frozen).
+  the existing `class + data-*` contract convention. Rejected.
 - **A full component library** (Ark full builds, shadcn ports, Hope UI…) —
   ships someone else's look and density; the ADE look is the product's
   identity, and re-theming a library costs more than owning ~20 small
-  primitives. Kobalte stays, scoped to a11y-hard behavior only. Rejected
-  (frozen).
+  primitives. Kobalte stays, scoped to a11y-hard behavior only.
+  Rejected.
 - **CSS-in-JS** (vanilla-extract, Panda) — runtime or codegen cost, a second
   styling idiom beside plain CSS, and no benefit over custom properties for a
-  single fixed-shell app. Rejected (frozen).
+  single fixed-shell app. Rejected.
 - **A client-side animation runtime for product motion** (GSAP et al.) — the
   brand's award-site stack is scoped to the marketing showcase; the product
   UI's motion vocabulary (pulse, chase-light loaders, translate+fade,
@@ -773,9 +773,9 @@ so these are documentation of why, not open forks.
   Solid-native and mature) — the palette is a flagship surface and the
   registry must be our contract; Kobalte's combobox + our registry is the
   same effort with full ownership. Rejected.
-- **Re-deriving the state-dot vocabulary in this record** (the pre-freeze
+- **Re-deriving the state-dot vocabulary in this record** (the earlier
   draft's four-round ring-arc/glyph derivation) — superseded wholesale: brand
-  froze the eight-glyph set and explicitly ruled out the ring-arc working
+  set the eight-glyph set and explicitly ruled out the ring-arc working
   form ("read as a bare 'C' at 12px", `docs/specs/brand/state-icons.md`). Deleted, not
   carried; do not resurrect.
 
@@ -790,7 +790,7 @@ to it incrementally so `apps/ui` ships working at every step.
    the scrollbar and the `:focus-visible` ring (deliberately in step 1 — an
    a11y defect, not a cosmetic; the type flip waits for step 2).
 2. **Shell + chrome re-clothe** — the type system lands (Space Mono body,
-   the frozen `--rigel-mono` stack; Departure display slots where D2 permits
+   the brand `--rigel-mono` stack; Departure display slots where D2 permits
    them); topbar, sidebars, usage bar, view-tabs move to `.cx-*` contracts
    and semantic tokens. First visible identity change.
 3. **Keyboard spine lands as pure addition** — focus zones, keymap registry,
@@ -799,7 +799,7 @@ to it incrementally so `apps/ui` ships working at every step.
 4. **Surface-by-surface flips**, each its own PR, legacy selectors deleted in
    the same diff (no shims): left sidebar/tree → Bridge board → comms
    (channel/topic) → right sidebar → workspace/trace → Backlog/Done/Settings.
-   Ordering tracks the frozen-IA implementation lanes: the board flip lands
+   Ordering tracks the IA implementation lanes: the board flip lands
    after RIG-1633's remodel merges; the right-sidebar flip lands after RIG-1645
    (unreachable-pin, DL-113; the left sidebar/tree flip has no such dependency).
 5. **Legacy vocabulary retired** — `--bg*`, `--st-*`, `--accent*` and orphan
@@ -814,7 +814,7 @@ they neither block nor are blocked by this record.
 
 Every task inherits `## Global Constraints`. Tasks are design/spec + initial
 delivery slices sized for their own review cycle; compass-ui executes the
-`.tsx` internals against the contracts each task freezes.
+`.tsx` internals against the contracts each task defines.
 
 **T1 — Token tiers: author `design/tokens.css`** (D2, D8)
 Author the three-tier token file: `--rigel-*` primitives block (mirrored
@@ -845,7 +845,7 @@ lint setup (`apps/ui/package.json` lint script gains stylelint).
 Author the per-component contract specs + CSS for the D3 table: class name,
 `data-*` variants, all six states (rest/hover/active/selected/disabled/
 focus), consumed tokens, and per-component notes (card selection rule, pane
-focus rule). The state dot consumes the frozen `docs/specs/brand/state-icons.md`
+focus rule). The state dot consumes the `docs/specs/brand/state-icons.md`
 glyph set as inline 9×9 `crispEdges` SVG — this task transcribes, it does not
 re-derive; verify glyph legibility at the 12px row-dot render size against
 the brand assertion. One CSS file per component under `design/components/`.
@@ -854,7 +854,7 @@ Interfaces: consumes T1 tokens + T2 base + `docs/specs/brand/state-icons.md`/`do
 record's directory as `components.md`. compass-ui co-reviews.
 
 **T4 — Command registry + keymap contract** (D5)
-Freeze the command-registry entry shape (`{ id, title, keywords, scope,
+Define the command-registry entry shape (`{ id, title, keywords, scope,
 shortcut?, run }`), the destination-provider interface (async, ranked), the
 keymap table (D5 defaults, `Ctrl`↔`Cmd` abstraction), the focus-zone model
 (zone ids, roving-tabindex rule, escape ladder), and the
@@ -888,7 +888,7 @@ the session trace from the brand streaming treatment
 surface mounts standalone against its DL-127 route with its own focus
 zones/command scope and no sibling-region dependency, so compass-native can host
 it in its own window.
-Interfaces: consumes T3 contracts + frozen IA records
+Interfaces: consumes T3 contracts + IA records
 (DL-095/096/098/099/067/070/097/039/127/129) + `docs/specs/brand/identity.md` + the named
 Rigel-site mockups; produces `surfaces.md` in this record's directory — the
 checklist each flip PR cites.
@@ -914,7 +914,7 @@ Interfaces: consumes T1 tokens + `docs/specs/brand/motion.md`/`docs/specs/brand/
 `design/components/loader.css`, the pulse/stream keyframe blocks in
 `base.css` (consuming the `--cx-*` motion aliases, never `--rigel-*`
 directly, so the D7 guard stays clean), and a `motion.md` spec in this
-record's directory. Brand co-reviews fidelity to the frozen motion system.
+record's directory. Brand co-reviews fidelity to the brand motion system.
 
 **T9 — Adoption step 1-2 execution: tokens/base/shell land** (D10)
 Land T1+T2 output in-tree, flip the shell chrome (topbar, sidebar frames,
@@ -928,7 +928,7 @@ but functional).
 
 - [ ] T1 — Token tiers: author `design/tokens.css` (primitive mirror/semantic/scale; brand co-review)
 - [ ] T2 — Base layer + stylelint consumption guard (hex + `--rigel-*` + literal durations)
-- [ ] T3 — Component visual contracts (`design/components/*.css` + `components.md`; frozen state-glyph transcription; compass-ui co-review)
+- [ ] T3 — Component visual contracts (`design/components/*.css` + `components.md`; brand state-glyph transcription; compass-ui co-review)
 - [ ] T4 — Command registry + keymap + focus-zone contracts (`keyboard/*.ts` stubs; compass-ui co-review)
 - [ ] T5 — Command palette surface (`palette.css` + spec)
 - [ ] T6 — Surface composition specs (`surfaces.md`: per-surface flip checklists, mark placement, the four excellence surfaces from their references, the window-scoped-view contract)
@@ -977,7 +977,7 @@ decisions above; recorded here for provenance.
    `PaneKind` arm + `newTerminalPane` in `store.ts` retire at the workspace
    flip step (D10). New decision DL-158.
 
-Remaining deferrals, carried from the pre-freeze draft (none load-bearing):
+Remaining deferrals, carried from the earlier draft (none load-bearing):
 
 1. **[NLB] User-remappable keybindings surface.** The keymap registry is a
    single table precisely so a remap UI is possible; the UI itself (settings

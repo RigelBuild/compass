@@ -36,7 +36,7 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 
 The `compass-agent` base image already builds and loads locally
 (`dogfood:agent-image` → `containers-storage:compass-agent:latest`), but per
-frozen decision DL-112 (`docs/designs/ui/compass-native-app/design.md`
+decision DL-112 (`docs/designs/ui/compass-native-app/design.md`
 §OQ6) the native app does not bundle the agent image: `compass-stack` `podman
 pull`s it from GHCR at first run. Nothing publishes the image today. This
 record designs the publish lane — the GHCR side of that seam; the pull side is
@@ -72,10 +72,10 @@ decision, not an assumption:
 
 ### Decision: platform contract — `linux/amd64` single-arch (dogfood milestone)
 
-A settled fact, not an open question: the consumer's arch is **frozen** in
-compass-native's merged record (PR #1073,
-`docs/designs/ui/compass-native-app/design.md`) to Linux x86_64 for the
-dogfood milestone — non-Linux runner support and
+A settled fact, not an open question: compass-native's merged
+record (PR #1073, `docs/designs/ui/compass-native-app/design.md`)
+sets the consumer's arch to Linux x86_64 for the dogfood
+milestone — non-Linux runner support and
 macOS packaging are deferred there to a GA follow-up (`:522-524` "reproducible
 build of the app bundle for Linux (the dev/dogfood target; macOS packaging
 tracked as follow-up per A5)"; `:246-248` "non-Linux runner support … deferred
@@ -496,7 +496,7 @@ Interfaces:
 - [ ] T3: in-workflow `skopeo inspect` verification + documented
       `podman pull` / `--image` smoke.
 - [ ] Platform contract: `linux/amd64` single-arch (settled per compass-native's
-      frozen record #1073); T3 asserts `.Architecture`/`.Os` as the tripwire.
+      merged record #1073); T3 asserts `.Architecture`/`.Os` as the tripwire.
       macOS/`aarch64` multi-arch is a forward add in the GA native-packaging
       record, not here.
 - [ ] T4: fold the durable publish description into

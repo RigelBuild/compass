@@ -109,7 +109,7 @@ mapping); and a Linear provider (read + write), extending DL-051's
 - **Toolchain:** Go `go 1.25.0` floor per `go/go.mod:15` (`go 1.25.0`), built
   under toolchain go1.26.6; `MOON_TOOLCHAIN_FORCE_GLOBALS=true` for all moon
   invocations.
-- **DL reconciliation list (frozen; this record composes with, never
+- **DL reconciliation list (this record composes with, never
   contradicts):** DL-048 (Server is ownership layer), DL-049 (`ForgeCall*`
   sibling family, one envelope both hops), DL-050 (`StampOwner` sole chokepoint;
   parsed header = untrusted display), DL-051 (forge adapter behind swappable
@@ -157,7 +157,7 @@ mapping); and a Linear provider (read + write), extending DL-051's
 ## Approach
 
 The write path composes five existing seams — it invents no new architecture.
-Every piece below extends a pattern already frozen and built in the tree.
+Every piece below extends a pattern already built in the tree.
 
 ### 1. The `ForgeCaller` seam + `RelayForgeCall` Server leg (the DL-050 chokepoint)
 
@@ -418,7 +418,7 @@ while the domain dispatch lives once, in the service.
 ### A live forge proxy for the read arms
 
 Answering `get_issue`/`list_issues`/`get_pull_request` by calling the Provider
-directly for TRACKED artifacts. Rejected — already ruled: the amendment froze
+directly for TRACKED artifacts. Rejected: the amendment ruled
 OQ-A option 3 ("read ops … answered from the projection/store", amendment
 design.md:474-476), and a live proxy for artifacts the store already tracks
 would spend the DL-053 rate budget the poll driver rations. The live fetch for
@@ -439,7 +439,7 @@ Rejected in favor of a `ReviewRef` in forge.proto (OQ-1).
 A `GetForgeCapabilities` call (or a Linear-specific call family) so agents
 never hit an unsupported op. Rejected for v1: it adds a wire surface + an agent
 round-trip to avoid an error the agent handles anyway (in-band, non-fatal,
-self-describing), and DL-049 froze ONE sibling family. The typed
+self-describing), and DL-049 chose ONE sibling family. The typed
 `unimplemented` error + static tool-prompt documentation carries the same
 information at zero new surface. Revisit only if a third provider makes the
 capability matrix genuinely dynamic (OQ-4).
@@ -456,7 +456,7 @@ worth a dependency, and the budget/token seams are already built.
 Closing the A5 crash window (forge-success → crash → no ownership row, no
 idempotency memo) with a durable intent row written BEFORE the provider call
 (outbox pattern: intent → forge call → confirm), or a reconciliation sweep.
-Rejected for v1: it inverts the ordering DL-055 froze for a reason ("a row
+Rejected for v1: it inverts the ordering DL-055 set for a reason ("a row
 must never be written for an artifact the forge rejected", #995
 design.md:2487-2488) — an intent row IS a row for an artifact the forge may
 yet reject, so the pattern needs a second state column plus a janitor for
@@ -474,7 +474,7 @@ domain types are Go-only, the real edge is T2 → T3 for the `doJSON` helper
 (A7: the previously-drawn T1 → T3 edge was false); T4 (service) consumes
 T1+T2+T3 interfaces; T5 (relay legs) consumes the `ForgeCaller` interface,
 whose DEFINITION lives in runnerhub — T5 may land FIRST with the interface
-frozen there and T4 implementing it (A7); T6 (Linear) depends on T2's
+defined there and T4 implementing it (A7); T6 (Linear) depends on T2's
 `Provider` widening, independent of T3/T4/T5; T7 (index) is independent after
 T4's call-order contract; T8 (wiring + E2E) last.
 Dependencies: T1 → T4; T2 → {T3, T4, T6}; T3 → T4; T4 ↔ T5 (interface in T5's
@@ -765,7 +765,7 @@ unbound-session PermissionDenied, forward carries the bound session id
 verbatim, nil result → CodeInternal (lifecycle_test.go conventions).
 
 Depends: T4 (interface shape; a fake caller suffices for this task's tests, so
-T5 can land before T4 if the interface is frozen in T5 and T4 implements it —
+T5 can land before T4 if the interface is defined in T5 and T4 implements it —
 the interface DEFINITION lives in runnerhub either way).
 
 ### T6 — Linear provider (read + write)
@@ -947,7 +947,7 @@ decisions; the only live questions below are two non-load-bearing deferrals.
   provider fact; the canonical PullRequest surface is never fabricated on a
   Linear coordinate.
 - **OQ-4 — Addressing: (a).** Same oneof + optional envelope `ForgeRef` +
-  typed unsupported-op error; no negotiation RPC. Why: DL-049 froze one
+  typed unsupported-op error; no negotiation RPC. Why: DL-049 chose one
   family; the error is self-describing; two providers need no dynamic
   discovery surface.
 - **OQ-5 — Linear stamp semantics: (a), corrected by OQ-8.** Stamp via
@@ -974,7 +974,7 @@ decisions; the only live questions below are two non-load-bearing deferrals.
   a `client_request_id` column + UNIQUE `(agent_account_id,
   client_request_id)` index on `forge_authored_artifacts`, written in the
   same ordered step as the DL-055 row. Why: a retried create must return the
-  original artifact, and the spawn precedent already froze the shape.
+  original artifact, and the spawn precedent already set the shape.
   The key is minted once per logical create (the spawn-precedent contract):
   reusing one `client_request_id` across differently-typed creates returns the
   originally-recorded artifact by design, and the stored `kind` is returned so

@@ -1,6 +1,6 @@
 // The socket FrameSink: the outbound half of the agent↔Runner socket transport
 // (transport-consolidation C4). A split-by-durability sink over AgentGateway,
-// classifying each OutboundFrame by its frozen `kind` (frame.ts):
+// classifying each OutboundFrame by its `kind` (frame.ts):
 
 // - a "session" frame (opaque trace + board lifecycle) is loss-tolerable and rides
 //   the fire-and-forget Publish client-stream through the shared PublishSpine. A

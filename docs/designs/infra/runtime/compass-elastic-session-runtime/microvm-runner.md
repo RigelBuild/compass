@@ -1,6 +1,6 @@
 # microVM Runner Backend
 
-Parent: [compass-elastic-session-runtime/design.md](./design.md) — this record details under the parent's frozen decisions but replaces its falsified I1 implementation premise.
+Parent: [compass-elastic-session-runtime/design.md](./design.md) — this record details under the parent's decisions but replaces its falsified I1 implementation premise.
 
 ## Problem / Intent
 
@@ -52,7 +52,7 @@ it is the honest scope of this record: a **dedicated microVM Runner backend**
 — a second implementation behind `runtime.WorkloadRuntime` — rather than a
 config swap.
 
-This record details *under* the parent's frozen decisions (Decision 5: the
+This record details *under* the parent's decisions (Decision 5: the
 inter-tenant boundary IS a hardware-virtualized microVM, design.md:881-894;
 the virtio-fs no-copy invariant, design.md:586-587) and replaces only the
 falsified implementation mechanism. Per design.md:892-894, "Through Dogfood +
@@ -79,7 +79,7 @@ Per D1, the VMM is **cloud-hypervisor**. The design relies only on the
 **virtio-fs-preserving shape** — a KVM-backed VMM offering virtio-fs
 (shared-memory file sharing), virtio-vsock (host↔guest stream channel), and
 virtio-net, launched rootless as an ordinary host process per session.
-Firecracker is excluded by the frozen no-copy invariant (no virtio-fs — see
+Firecracker is excluded by the no-copy invariant (no virtio-fs — see
 Alternatives). cloud-hypervisor's virtio-fs
 ([docs/fs.md](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/fs.md):
 `--fs` with `--memory shared=on`) and memory/CPU hotplug
@@ -174,7 +174,7 @@ uid/capability gate on every exec.
 
 ### (d) virtio-fs session volume: stable path, per-tenant isolation, quota
 
-- **Stable path (frozen invariant).** One dedicated `virtiofsd` per session,
+- **Stable path (no-copy invariant).** One dedicated `virtiofsd` per session,
   rooted at that session's volume directory; the guest mounts the virtio-fs
   tag at the same stable absolute path the container path uses, preserving
   the no-copy invariant P2/C3 depend on (design.md:586-587).
@@ -198,7 +198,7 @@ uid/capability gate on every exec.
   exhaust the shared filesystem. But the obvious mechanisms collide with
   "rootless is hard": project-quota *assignment* (`FS_IOC_FSSETXATTR` +
   `quotactl`) and the loopback-image fallback (`mount(2)`) both need
-  `CAP_SYS_ADMIN` the Runner does not have (`podman.go:22-24`), and the frozen
+  `CAP_SYS_ADMIN` the Runner does not have (`podman.go:22-24`), and the
   no-copy invariant forbids swapping the virtio-fs volume for a quota-bounded
   block device. Per D7 the Runner therefore never *assigns* quota: the
   multi-tenant deployment provisions the session-volume filesystem with
@@ -228,7 +228,7 @@ create":
 - **KVM-absent ⇒ hard-fail (D3):** with no container fallback, `/dev/kvm`
   absence (or any preflight failure) aborts Runner startup with an error
   naming the missing capability and the fix ("needs KVM — use the managed
-  service or a KVM host"). This supersedes the parent's frozen
+  service or a KVM host"). This supersedes the parent's
   degrade-to-container behavior (design.md:600-601), which only held while the
   container path existed; a silent isolation downgrade on a multi-tenant box
   after a KVM regression is a security incident, not a degraded mode.
@@ -301,7 +301,7 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   ([firecracker docs — supported devices](https://github.com/firecracker-microvm/firecracker/blob/main/docs/api_requests/README.md);
   virtio-fs has been explicitly declined upstream,
   [firecracker #1180](https://github.com/firecracker-microvm/firecracker/issues/1180)).
-  Forfeits the frozen no-copy virtio-fs invariant (design.md:586-587) — a
+  Forfeits the no-copy virtio-fs invariant (design.md:586-587) — a
   hard backend filter, so Firecracker is out regardless of its other merits
   (exec via its guest agent over vsock is the same shape we adopt).
 - **Kata Containers — rejected (D1).** The most mature guest control plane in
@@ -341,7 +341,7 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   libkrun option).
 - **gVisor — rejected.** Userspace syscall interception (a Sentry kernel in
   userspace, [gvisor.dev architecture](https://gvisor.dev/docs/)), not a
-  hardware-virtualization boundary. Fails the frozen Decision 5 ("the
+  hardware-virtualization boundary. Fails Decision 5 ("the
   inter-tenant boundary IS a hardware-virtualized microVM",
   design.md:881-888) on its face.
 
@@ -363,8 +363,8 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
 - **Co-located Runner (D8).** The Runner runs one-per-box, managing only that
   box's local microVMs over host-local vsock; fleet provisioning/scheduling and
   telemetry fan-in are a separate control plane, out of scope here. The agent
-  never talks directly to the Server — the local Runner remains the sole,
-  frozen attribution boundary.
+  never talks directly to the Server — the local Runner remains the sole
+  attribution boundary.
 - **Box-independent durable volume + suspend-to-durable (D9).** Sessions are
   not sticky to a box beyond the warm path: an idle session is suspended to its
   durable volume and woken on any available Runner (the D5 suspend/serialize →
@@ -693,7 +693,7 @@ each is kept so the executor sees *why*, not just *what*.
    (V5) fails Runner startup with an error naming the missing capability and
    pointing at the fix ("needs KVM — use the managed service or a KVM-capable
    host"), mirroring `VerifyUsernsRemapSupport`'s name-the-floor posture
-   (`podman.go:443-467`). This *supersedes* the parent's frozen
+   (`podman.go:443-467`). This *supersedes* the parent's
    degrade-to-container default (design.md:600-601), which only made sense
    while the container path existed; a silent isolation downgrade after a KVM
    regression on a multi-tenant box is a security incident, not a degraded
@@ -750,7 +750,7 @@ each is kept so the executor sees *why*, not just *what*.
    (d) collides with "rootless is hard": project-quota *assignment*
    (`FS_IOC_FSSETXATTR` + `quotactl`) and the loopback-image fallback
    (`mount(2)`) both need `CAP_SYS_ADMIN` the rootless Runner lacks
-   (`podman.go:22-24`), and the frozen no-copy invariant forbids swapping the
+   (`podman.go:22-24`), and the no-copy invariant forbids swapping the
    virtio-fs volume for a quota-bounded block device. Decision: the Runner
    never *assigns* quota. The multi-tenant deployment provisions the
    session-volume filesystem with per-directory project quota via operator IaC
@@ -775,7 +775,7 @@ each is kept so the executor sees *why*, not just *what*.
      bottleneck. One Runner per box scales horizontally and makes each relay a
      cheap local vsock call — so "run multiple Runners so we don't get
      bottlenecked" is *satisfied by* co-location, not a reason against it.
-   - **It preserves the frozen attribution boundary.** The agent stays
+   - **It preserves the attribution boundary.** The agent stays
      untrusted with no outbound route except through its local Runner, which
      owns the container→session_id binding structurally and forwards session_id
      resolving no account itself (`gateway.go`: "the Runner resolves NO account
@@ -785,7 +785,7 @@ each is kept so the executor sees *why*, not just *what*.
      agent does
      **not** talk directly to the Server — that would hand an untrusted process
      a Server-facing credential and break loss-detection, to save a hop
-     co-location already makes local. The frozen transport-consolidation
+     co-location already makes local. The transport-consolidation
      record stands.
 
    **Out of scope for this record (own design when the managed service is
@@ -813,7 +813,7 @@ each is kept so the executor sees *why*, not just *what*.
    of resize-needs-headroom. Co-location makes this *simpler*, not harder:
    because the agent only ever talks to its **local** Runner (D8), a woken
    session that lands on a new box simply gets the new local Runner beside it,
-   and the frozen attribution boundary is preserved wherever it lands — no
+   and the attribution boundary is preserved wherever it lands — no
    sticky affinity, no reprovision-the-original-box requirement. The one
    constraint this places on **this** record's backend: the microVM backend
    must boot a session from a **box-independent durable volume** (network-

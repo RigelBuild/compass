@@ -76,7 +76,7 @@ type boardService struct {
 	// transitionMu serializes the compare-and-transition so read→validate→commit
 	// is atomic — a concurrent transition on the SAME issue cannot make the
 	// same-state decision stale (design.md:515-521: validation is part of the
-	// serialized transition, NOT a pre-lock step). The frozen record's cleanest
+	// serialized transition, NOT a pre-lock step). The design record's cleanest
 	// form is a per-ISSUE mutex; a single executor mutex is chosen for the MVP
 	// (justified): it serializes ALL transitions, which is strictly stronger than
 	// per-issue atomicity (never wrong), and the agent-initiated write volume is
@@ -128,7 +128,7 @@ func (b *boardService) SetIssueStateAsAccount(
 var errUnspecifiedTarget = errors.New("issue state target is UNSPECIFIED")
 
 // SetIssueState is the ONE transition executor every state producer shares: the
-// frozen compare-and-transition (design.md:513-521). Under the serialized
+// compare-and-transition (design.md:513-521). Under the serialized
 // transition lock it reads current truth, rejects an UNSPECIFIED target, no-ops
 // (returning current, NO publish) when already at the target — ARCHIVED included,
 // the any-to-any idempotent re-archive — else commits the new canonical state to

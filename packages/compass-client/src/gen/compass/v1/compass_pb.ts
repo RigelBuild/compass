@@ -3272,8 +3272,8 @@ export const CompassService: GenService<{
    * rejected (not-found), never leaked (design: architecture-lineage).
    *
    * The streamed response is AgentSessionFrame, not the `SubscribeAgentSessionResponse`
-   * that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (design: architecture-lineage) and
-   * a wrapper would change the frozen wire shape. Ignore
+   * that RPC_RESPONSE_STANDARD_NAME wants: the design (architecture-lineage) names it, and
+   * a wrapper would change the wire shape. Ignore
    * the rule for this one RPC only — every other RPC keeps it armed.
    * buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
    *

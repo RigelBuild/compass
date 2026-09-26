@@ -260,7 +260,7 @@ What carries over unchanged:
   registry, and the router are transport-agnostic"
   (`go/internal/runnerhub/hub.go:10-14`). The fabric replaces the feed, not
   the write-through.
-- **The agent↔Runner hop is untouched.** RIG-2394 froze it as vsock through
+- **The agent↔Runner hop is untouched.** RIG-2394 made it vsock through
   the attribution boundary
   (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md`);
   NATS is never exposed to the untrusted in-VM side.
@@ -365,7 +365,7 @@ per-message acks, and `max_deliver` with a dead-letter subject so a
 poison message parks instead of redelivering forever.
 
 **Rejected placements.** NATS as a Client-facing transport (stays Connect);
-NATS on the agent↔Runner hop (frozen vsock, RIG-2394); JetStream as the comms
+NATS on the agent↔Runner hop (stays vsock, RIG-2394); JetStream as the comms
 **message store** (Postgres write-through is the product's structure — the
 audit/search substrate rationale behind DL-021,
 `docs/designs/meta/compass-architecture-lineage/design.md:46-51` — and
@@ -643,7 +643,7 @@ holder of state the product cannot regenerate.
   behavioral forks; single-tenant runs the same schema with one bootstrap
   tenant row against the same stack — Postgres, the OTel collector, and a
   single-node NATS.
-- **The agent↔Runner hop is frozen.** vsock through the attribution boundary
+- **The agent↔Runner hop stays vsock.** vsock through the attribution boundary
   (RIG-2394); no task exposes NATS to the in-VM side.
 - **Seams before swaps.** Every fabric consumer lands behind an interface
   (the hub's own posture, `go/internal/runnerhub/hub.go:10-14`). Single-node

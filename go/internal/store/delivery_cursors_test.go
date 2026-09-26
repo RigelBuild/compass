@@ -450,7 +450,7 @@ func TestUndeliveredMessagesHomeChannelSweepsWhenUnsubscribed(t *testing.T) {
 		t.Fatal("precondition: agent home membership should be subscribed=false")
 	}
 
-	// The frozen guarantee: the home channel still sweeps despite subscribed=false.
+	// The guarantee: the home channel still sweeps despite subscribed=false.
 	got, err := s.UndeliveredMessages(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("UndeliveredMessages: %v", err)

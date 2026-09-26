@@ -378,7 +378,7 @@ func virtiofsdArgs(cfg BootConfig, subUIDBase, subGIDBase int) []string {
 // host-side ownership with NO namespace-uid-0 mapping and therefore none of the
 // above capabilities, at the cost of foreclosing POSIX ACLs on the share — is
 // tracked as a design fork (RIG-3330) for the record's owner to rule on. It is
-// NOT swapped in here: --uid-map/--gid-map is the frozen record's named
+// NOT swapped in here: --uid-map/--gid-map is the design record's named
 // mechanism, and changing it is a design decision, not a review fix.
 func virtiofsdIDMapArgs(agentUID uint32, subUIDBase, subGIDBase int) []string {
 	if agentUID == 0 {
@@ -412,8 +412,8 @@ func idMapSpec(namespaceID, hostID string) string {
 //     presents the single virtio-net device as eth0"). The pinned generic
 //     kernel defaults to predictable naming (enpNsM); without this the guest's
 //     link is enp0s5 and guestd fail-closes with "Link not found". This is a
-//     host-side boot parameter, not a guest change — guestd's eth0 contract is
-//     frozen (T2), and the host is what must present that name.
+//     host-side boot parameter, not a guest change — guestd binds eth0 (T2),
+//     and the host is what must present that name.
 func vmmArgs(cfg BootConfig, consolePath string, opts launchOptions) []string {
 	cmdline := strings.TrimSpace(cfg.Cmdline +
 		" console=ttyS0 net.ifnames=0 compass.vsock_port=" + strconv.FormatUint(uint64(cfg.VsockPort), 10))

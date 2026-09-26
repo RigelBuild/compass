@@ -18,7 +18,7 @@ T5 wires it end to end: mode-select → connect screen (bearer token ONLY) →
 keychain store + bearer injection over the shell IPC → remote TLS dial with
 optional private-CA anchor → apiVersion compat check → `WhoAmI` resolves the
 caller account → board renders live. Refines parent §T5 (design.md:493-518)
-against frozen rows DL-107 (shell-side CA trust + bearer injection), DL-109
+against rows DL-107 (shell-side CA trust + bearer injection), DL-109
 (mode-select + keychain-first creds, never config/argv), DL-111 (WhoAmI
 supplies caller identity).
 
@@ -269,7 +269,7 @@ residual (never a silent fallthrough).
   typed causes for free.
 - **Extending `ResponseFrame.error` with a machine-readable `code` field** so
   the UI can classify transport failures generally: rejected for T5 — it
-  changes the frozen §A2 frame contract for a need the single `Connect`
+  widens the §A2 frame contract for a need the single `Connect`
   method covers; revisit only if post-connect mid-session error legibility
   demands it (Open Question OQ-6).
 - **Connect screen as a router route** (`/connect` in `AppRoutes`): rejected in
@@ -432,7 +432,7 @@ it starts. Parent §A2 anticipates the `ShellIpc` swap
 (`compass-native-app/design.md:127-130` — "swaps only the two framework calls
 (`invoke`, `Channel`, today Tauri-shaped in the UI) for the Wails runtime
 behind a thin `ShellIpc` shim"), so it is contract-legitimate; the gate is
-ownership/scheduling, not the frozen contract.
+ownership/scheduling, not the contract.
 
 Replaces the stale Tauri binding (`apps/ui/src/daemon-transport.ts:185-207`,
 `@tauri-apps/api/core`) with the Wails v3 one matching the Go shell's actual
@@ -730,7 +730,7 @@ design red-team. Kept here as the decision record.
 ## Ledger-impact
 
 **None — with one PR-flagged dependency.** This record is a pure refinement of
-the parent's frozen rows: DL-107 (the bearer-injection + CA-trust point lands
+the parent's rows: DL-107 (the bearer-injection + CA-trust point lands
 in the T5.1 target exactly as the row states), DL-109 (keychain-first store +
 connect screen + no-config/argv, T5.2/T5.5), DL-110 (Wails v3 binding,
 T5.4), DL-111 (WhoAmI subject, T5.3). No new decision class is introduced:

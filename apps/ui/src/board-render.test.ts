@@ -68,7 +68,7 @@ function issue(over: Partial<Issue>): Issue {
 	};
 }
 
-// primaryPr picks the rendered PR by a FROZEN precedence (DL-071): first OPEN in
+// primaryPr picks the rendered PR by a fixed precedence: first OPEN in
 // `prs` order, else first MERGED, else the last element; empty prs → undefined.
 // Selection is never by PR number. An inversion (merged before open, or first
 // instead of last for the fallback) reddens these.

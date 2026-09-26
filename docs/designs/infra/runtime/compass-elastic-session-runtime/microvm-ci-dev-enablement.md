@@ -1,14 +1,14 @@
 # microVM CI + Dev Enablement
 
-Parent: [microvm-runner.md](./microvm-runner.md) (RIG-2394, frozen) — this
+Parent: [microvm-runner.md](./microvm-runner.md) (RIG-2394) — this
 record enables that record's KVM-gated impl tasks (V2a→V8) to be developed and
 CI-verified across the compass dev shell and GitHub Actions, with a self-hosted
 fallback if hosted KVM proves unreliable; it changes no decision the parent
-froze.
+made.
 
 ## Problem / Intent
 
-The frozen microVM Runner record chose cloud-hypervisor as the sole VMM (D1,
+The microVM Runner record chose cloud-hypervisor as the sole VMM (D1,
 `microvm-runner.md:642-670`), booting a guest kernel + rootfs over virtio-fs +
 vsock with a passt/gvproxy-class userspace net backend (D6,
 `microvm-runner.md:733-750`). V1 (the `MicroVMRuntime` seam + backend
@@ -27,7 +27,7 @@ unblocking V2a→V8.
 ## Approach
 
 Four decisions, one per fork. Together they produce a **two-tier test posture**
-the frozen record already anticipates: hardware-independent unit/contract tests
+the parent record already anticipates: hardware-independent unit/contract tests
 run in the moon battery everywhere; boot/integration tests are tagged and run
 KVM-backed — "an integration test (KVM-gated, skipped where absent)"
 (`microvm-runner.md:462`), "KVM-gated for the microVM rows"

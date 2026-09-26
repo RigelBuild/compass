@@ -13,13 +13,13 @@ validation, Setup-thread creation trigger (root-manager first
 `StartAgentSession`), thread content/versioning, and its ledger rows." This
 record decides exactly those things — (A) the `@compass` sender
 representation and (B) the Setup-thread first-turn flow — and nothing the
-parent already froze.
+parent already decided.
 
 ## Global Constraints
 
 1. **Go module**: `github.com/RigelBuild/compass/go`. Server-side work
    lands under `go/server` and `go/internal/store`; no new top-level packages.
-2. **The mechanism is frozen, not re-litigated.** Matt ruled (parent record
+2. **The mechanism is Matt's ruling, not re-litigated.** Matt ruled (parent record
    OQ-C, its DL-187 row text at
    `compass-first-turn-delivery/design.md:570`): "The `@compass` reserved
    alias is FROZEN as the system-sender mechanism for ANY system-level message
@@ -28,7 +28,7 @@ parent already froze.
    initial Setup thread in the manager's home channel) uses it and is scoped
    OUT to follow-up RIG-1820, which owes only the sender representation +
    Setup flow." This record inherits that verbatim.
-3. **No prompt field anywhere.** The `initial_prompt` removal is frozen by the
+3. **No prompt field anywhere.** The `initial_prompt` removal is decided by the
    parent record's DL-186-equivalent row (`compass-first-turn-delivery/`
    `design.md:569`); nothing in this record threads a prompt through any start
    contract. An agent session always starts idle; its first turn is a channel

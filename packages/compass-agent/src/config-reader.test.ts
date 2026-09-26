@@ -74,7 +74,7 @@ function skillMd(name: string, description: string): string {
 // per-session config placement. A drift is a silent unconfigured boot, so it is
 // pinned — beside AGENT_SOCKET_PATH's contract test.
 describe("AGENT_CONFIG_MOUNT_PATH", () => {
-	test("is the frozen /run/compass/agent-config contract path", () => {
+	test("is the fixed /run/compass/agent-config contract path", () => {
 		expect(AGENT_CONFIG_MOUNT_PATH).toBe("/run/compass/agent-config");
 	});
 
@@ -88,9 +88,9 @@ describe("AGENT_CONFIG_MOUNT_PATH", () => {
 	// transport: the socket and config paths"): the host-process backend has no
 	// bind mounts, so it materializes the config tree inside the agent handle's
 	// own state dir and threads the root via COMPASS_AGENT_CONFIG_MOUNT_PATH. The
-	// frozen literal stays the DEFAULT — a container-tier agent (no override)
+	// fixed literal stays the DEFAULT — a container-tier agent (no override)
 	// reads it unchanged.
-	test("resolveConfigMountPath defaults to the frozen path when unset or blank", () => {
+	test("resolveConfigMountPath defaults to the fixed path when unset or blank", () => {
 		expect(resolveConfigMountPath({})).toBe(AGENT_CONFIG_MOUNT_PATH);
 		expect(
 			resolveConfigMountPath({ COMPASS_AGENT_CONFIG_MOUNT_PATH: "   " }),

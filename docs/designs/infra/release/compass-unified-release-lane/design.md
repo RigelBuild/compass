@@ -13,7 +13,7 @@ Linear:
 > (two-lane split, §192-235), Fork 4 (`v*`-tag controls, §275-315), OQ-3
 > (binary-only trigger breadth, §481-491), and OQ-7's *bump mechanism* clause
 > ("manual now, release-please at GA", §499-503). Every OTHER ruling of that
-> record stays frozen and live — notably OQ-7's pre-GA `0.MINOR.PATCH` scheme,
+> record stays live — notably OQ-7's pre-GA `0.MINOR.PATCH` scheme,
 > `v1.0.0` at GA, the ONE-whole-product-version attach-check architecture, and
 > the post-1.0 MAJOR rule (§495-516). It also proposes retiring
 > `.github/workflows/publish-agent-image.yml`, whose design record
@@ -23,7 +23,7 @@ Linear:
 
 ## Problem / Intent
 
-Matt ruled two changes to the frozen release-bundling design (2026-08-25):
+Matt ruled two changes to the release-bundling design (2026-08-25):
 
 1. **Cadence = release-please, NOW.** One whole-product semver, cut by a
    standing release-please "Release PR" that accumulates merged conventional
@@ -103,7 +103,7 @@ manifest fan-out): the product versions as ONE unit — eight `go/cmd/*` binarie
 carry an identical `var version = "0.1.0"` fallback stamped at build via
 `-ldflags "-X main.version=<v>"` (e.g. `go/cmd/compass-stack/main.go:37-40`),
 and `compass-stack` feeds it to `Deps.ExpectedVersion` (`main.go:310`) so
-client/server are architecturally same-version (OQ-7's frozen clause, intact).
+client/server are architecturally same-version (OQ-7's clause, intact).
 
 The bumped source of truth is a root **`version.txt`** (the `simple` strategy's
 native target), plus `.release-please-manifest.json` +
@@ -174,14 +174,14 @@ per-push job under `queue: max` (NOT the default single pending slot), so a
 cancelled by a later per-push entrant claiming the one pending slot — a
 non-superseding release mint must never be silently dropped. `:latest` stays
 owned and moved EXCLUSIVELY by the per-push job — the release lane never
-touches it (the frozen Fork 3 rationale for dropping `latest` from the release
+touches it (the Fork 3 rationale for dropping `latest` from the release
 invocation, `compass-release-bundling.md:220-232`, carries over unchanged).
 
 Rebuild-at-release (running `publish.sh git-<sha12> v<X.Y.Z>` on the release
 sha) was weighed and rejected: it costs the full closure build for a
 guaranteed-identical artifact, doubles the cache-miss surface, and — because
 `publish.sh` builds before tagging — would put a second builder in a lane the
-frozen record deliberately kept single-builder.
+release-bundling record deliberately kept single-builder.
 
 ### A5 — controls on the new human act (Fork-4-equivalent)
 
@@ -210,7 +210,7 @@ human act is now MERGING the Release PR; the controls re-express as:
 
 ### A6 — security posture (copied verbatim where reused)
 
-Wherever the unified lane reuses the frozen lanes' steps, the posture copies
+Wherever the unified lane reuses the existing lanes' steps, the posture copies
 VERBATIM:
 
 - `cachix/install-nix-action` with the two caches named inline in
@@ -268,7 +268,7 @@ job is what keeps these consumers fed between releases.
 - **Per-push auto-patch** (every main push bumps PATCH): release noise — a
   release per commit is the `build-<sha12>` prerelease lane wearing semver
   clothes; no batching, no human gate, and PATCH stops meaning anything.
-- **The deferred two-lane split** (frozen Fork 3(c): `build-<sha12>`
+- **The deferred two-lane split** (Fork 3(c): `build-<sha12>`
   prerelease per push + manual `v*` semver): builds a prerelease rail that
   release-please obsoletes at GA anyway, and keeps the tag-push human act
   Fork 4 had to harden with a ruleset + ancestry guard. Superseded.
@@ -289,7 +289,7 @@ job is what keeps these consumers fed between releases.
 - **Two workflows (release-pr + on-release build):** would need the release
   EVENT to fire a second workflow; same-run output gating removes that need
   entirely, so this buys nothing. Rejected.
-- **Fold into ci.yml:** rejected for the same reasons both frozen lanes
+- **Fold into ci.yml:** rejected for the same reasons both existing lanes
   document in their headers (least privilege, concurrency polarity, hot-path
   latency; `publish-agent-image.yml:3-28`).
 

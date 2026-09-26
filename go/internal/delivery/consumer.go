@@ -74,7 +74,7 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// MessageChannel resolves the channel a message lives in through its topic
 	// (topics.channel_id) — a wire/store message carries only its topic now, so
 	// the fan-out resolves the channel it delivers to through this join (the
-	// frozen record's topic->channel resolution).
+	// design record's topic->channel resolution).
 	MessageChannel(ctx context.Context, messageID string) (store.ChannelID, error)
 	// TopicChannelNames resolves a message's topic id to its topic name and the
 	// name of the channel it lives in (topics.channel_id -> channels.name) — the
@@ -560,7 +560,7 @@ func (c *Consumer) gateFor(sessionID string) *sync.Mutex {
 // the no-live-author / sweep paths dispatch from (design.md:158-161), never a
 // stale in-memory copy. The channel is returned alongside because a wire/store
 // message no longer carries it: the fan-out gate needs the channel, resolved
-// through topics.channel_id (the frozen record's topic->channel resolution).
+// through topics.channel_id (the design record's topic->channel resolution).
 func (c *Consumer) storeMessageToWire(ctx context.Context, messageID string) (*compassv1.Message, store.ChannelID, store.AccountID, error) {
 	m, err := c.st.MessageByID(ctx, messageID)
 	if err != nil {

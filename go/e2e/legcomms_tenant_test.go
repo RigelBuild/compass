@@ -16,7 +16,7 @@ package e2e
 // "what this tenant CANNOT see".
 //
 // Deliberately a TRANSPORT proof: the full visibility leak matrix stays at the
-// DB tier (internal/comms/visibility_filter_test.go) per the frozen record
+// DB tier (internal/comms/visibility_filter_test.go) per the design record
 // (design.md:132). What is proven HERE, and nowhere else, is that the filter
 // survives the real door — real bearers, real HTTP/2 server-streams, real
 // cross-process seq ordering.

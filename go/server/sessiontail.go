@@ -26,7 +26,7 @@ const tailBuffer = 256
 // sessionTail is the real SessionTailSink: a per-session live
 // fan-out from the single RelaySessionFrame writer (the RunnerHub delivery path)
 // to the N SubscribeAgentSession subscribers of that session. It is the
-// live-tail wiring the frozen record scopes for this increment — no replay ring,
+// live-tail wiring the design record scopes for this increment — no replay ring,
 // no resync, no reattach window (those are the deferred daemon-lifecycle
 // machinery, compass.proto AgentSessionState notes). A subscriber joins at the
 // live head and receives frames until it disconnects, the session ends, or it

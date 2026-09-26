@@ -22,7 +22,7 @@ self-origin notification (RIG-3326), under Matt's three hard rulings:
    the handle is OWNER-QUALIFIED (owner-handle + agent-handle), because a bare
    agent handle is unique only per owner (§handles below).
 
-This is the suppression sibling of the frozen Record A ("forge self-delegate
+This is the suppression sibling of the merged Record A ("forge self-delegate
 write path", `docs/designs/server/compass-forge-self-delegate/design.md`,
 PR #900), which is write-path-only and explicitly defers suppression here
 (Record A `docs/designs/server/compass-forge-self-delegate/design.md`). The write path is not re-designed here; Record A
@@ -183,7 +183,7 @@ close of the agent's issue is NOT (the human is not a Compass handle, so the
 match fails → deliver).
 
 **The carrier is RIG-3331's memo, and this record does NOT add a field to the
-event.** An earlier draft of this record froze the carrier as a new
+event.** An earlier draft of this record fixed the carrier as a new
 `ForgeEvent.Actor` field on T0, reasoning that `ForgeEvent`
 (`go/internal/forge/notify_event.go` — Provider / Host / Repo / Kind / Number /
 Project / URL / Change / Comment / Checks / HeadSHA / State / DeliveryID) has
@@ -370,7 +370,7 @@ implements, if its probe answers "fires"):
   and the issue itself stays readable — recorded here rather than left as an
   unnoticed contradiction of the Global Constraint.
 - **Not landed here:** shipping the gate before Record B proves the webhook
-  fires would be dead code guarding an unobservable path. This record freezes
+  fires would be dead code guarding an unobservable path. This record specifies
   the contract; Record B lands the column + check with its ingress (T4).
 
 ### Ledger delta (described here; the append happens in this record's PR)
@@ -500,7 +500,7 @@ changed.
   live oracle. Suppression is server-side logic with no new provider wire
   behavior, so this record adds NO live-tier legs.
 - No planning metadata (issue ids, task labels) inline in code.
-- Surface (2) implementation is Record-B-gated (RIG-3271): this record freezes
+- Surface (2) implementation is Record-B-gated (RIG-3271): this record specifies
   the seam contract only; no dead gate code lands here.
 
 ## Plan
@@ -640,7 +640,7 @@ func (r *NotifyRouter) selfOrigin(ctx context.Context, actor Handle, sub NotifyS
 // reasoning `toIngestCursor` already documents for cursors
 // (`toIngestSubscribers` in `go/server/serve.go`). Note the sweep's current consumer
 // (`reconcileTarget` in `go/internal/ingest/notify_reconcile.go`) does not read Scope, so (b) breaks nothing on
-// landing; it is required so the frozen invariant is not false for every
+// landing; it is required so the invariant is not false for every
 // sweep-produced subscriber. None of this is an assumed freebie.
 type NotifySubscriber struct { /* … existing fields … */ Scope ForgeSubscriptionScope }
 ```
@@ -740,7 +740,7 @@ event on the same artifact reaches the author; and the owner-namespace pair
 
 ### T4 — Surface (2) seam contract (Record-B-gated; no code in this record)
 
-Freeze the contract Record B implements if its probe shows an app-set
+Specify the contract Record B implements if its probe shows an app-set
 `delegateId` fires `created`:
 
 - `forge_authored_artifacts` gains `self_delegated_at_unix_ms BIGINT NULL`,
@@ -768,7 +768,7 @@ type SelfOriginGate interface {
 }
 ```
 
-Deliverable in THIS record's PR: this frozen contract in the record itself —
+Deliverable in THIS record's PR: this contract in the record itself —
 no production code, no migration (dead code guarding an unobservable path is
 worse than a documented contract).
 
@@ -806,7 +806,7 @@ stays Active.
       resolution) + both-lane wiring + e2e pgtest (self suppressed / cross
       delivered / CHECKS delivered / cursor advanced / owner-namespace pair
       does not cross-suppress)
-- [ ] T4: surface (2) `SelfOriginGate` consume-on-match contract frozen in this
+- [ ] T4: surface (2) `SelfOriginGate` consume-on-match contract specified in this
       record (Record-B-gated; no code)
 - [ ] T5: DL-364 + the DL-094/DL-186 owner-clause amendment rows appended in
       the freeze PR (confirm next-free ids vs every open design PR at freeze)
@@ -829,7 +829,7 @@ stays Active.
   event, so STATE has no positive match and delivers (the safe interim, and the
   T1 STATE arm ships resolving the transition actor with the fail-open miss
   behaviour built in). This is a **dispatch-ordering dependency, not a freeze
-  blocker**: the record is a valid frozen contract now — the STATE arm is
+  blocker**: the record is complete now — the STATE arm is
   interim-safe (fail-open) the moment T1 lands and becomes active-suppressing
   once RIG-3331's op stamps the real actor. RIG-3331 sequences before T1's STATE
   activation, and both land before this suppression is relied on for STATE.
@@ -838,7 +838,7 @@ stays Active.
 
 - **OQ-2 (surface (2) firing) — non-blocking.** Whether an app-set `delegateId`
   fires a `created` AgentSessionEvent is unobservable until Record B's ingress
-  lands (RIG-3271-gated; Record A `docs/designs/server/compass-forge-self-delegate/design.md`). T4's contract is frozen
+  lands (RIG-3271-gated; Record A `docs/designs/server/compass-forge-self-delegate/design.md`). T4's contract is specified
   here; Record B implements or discards it based on the probe. Not load-bearing
   for this record — nothing here blocks on the answer, so it does not gate the
   freeze.

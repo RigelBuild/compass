@@ -391,19 +391,19 @@ type WorkloadRuntime interface {
 
 	// Resize changes a live workload's cgroup resource limits in place (a
 	// `podman update`-class operation on the container backend) — the
-	// resize-in-place elastic-compute path (C3). The verb is frozen into the
-	// interface at S1 (additively
-	// reserved, the same discipline as ExecStreaming) so every backend and fake
-	// carries the full surface from the start and no interface change lands
-	// after S1; the resize BEHAVIOR — actually applying and later restoring the
-	// limits around a heavy op — is C3's to fill in behind this signature.
+	// resize-in-place elastic-compute path (C3). The verb is reserved on the
+	// interface at S1 (the same discipline as ExecStreaming) so every backend
+	// and fake carries it from the start and C3 needs no interface change;
+	// the resize BEHAVIOR — actually applying and later restoring the limits
+	// around a heavy op — is C3's to fill in behind this
+	// signature.
 	// PodmanCLI.Resize therefore returns ErrResizeNotImplemented until C3, and
 	// no caller invokes it yet, so the existing session path is unchanged.
 	Resize(ctx context.Context, id WorkloadID, limits ResourceLimits) error
 }
 
-// WorkloadRuntime is frozen: a backend that self-arms egress does NOT grow a
-// verb here. MicroVMRuntime carries an off-interface marker EgressArmedInGuest(),
+// A backend that self-arms egress does NOT grow a verb on WorkloadRuntime:
+// MicroVMRuntime carries an off-interface marker EgressArmedInGuest(),
 // and AgentRuntime.provision type-asserts inGuestEgressArmer to skip armEgress
 // (design §(c)). A future backend or decorator must re-expose it to keep working.
 
@@ -625,14 +625,14 @@ func removeArgs(id WorkloadID) []string {
 }
 
 // ErrResizeNotImplemented is returned by PodmanCLI.Resize until C3 fills in the
-// resize-in-place behavior behind the S1-frozen seam. The verb exists on the
-// interface now (so every backend and fake carries the full surface and C3
-// lands no interface change); the podman `container update` wiring is C3's, so
+// resize-in-place behavior behind the reserved seam. The verb exists on the
+// interface now, so every backend and fake carries it and C3 lands no interface
+// change; the podman `container update` wiring is C3's, so
 // calling it today is a programming error the sentinel names explicitly rather
 // than a silent no-op that would fake a limit change that never happened.
 var ErrResizeNotImplemented = errors.New("runtime: WorkloadRuntime.Resize is reserved at S1 and implemented in C3")
 
-// Resize is the S1-frozen resize-in-place verb, unimplemented until C3. It
+// Resize is the resize-in-place verb reserved at S1, unimplemented until C3. It
 // returns ErrResizeNotImplemented rather than silently succeeding: a no-op that
 // reported success would let a future caller believe a container was resized
 // when its cgroup limits never moved. C3 replaces this body with the real

@@ -3,12 +3,12 @@
 [microvm-runner.md](./microvm-runner.md) (its Plan § V8,
 microvm-runner.md:600-621; § Approach (c) peer-CID authentication,
 microvm-runner.md:158-164; (e) preflight/hard-fail, microvm-runner.md:211-236;
-(h) boot-latency/RSS budget, microvm-runner.md:278-287) and the frozen D3
+(h) boot-latency/RSS budget, microvm-runner.md:278-287) and the D3
 hard-fail decision (microvm-runner.md:693-703).
 Authoritative issue scope: RIG-2499.
 
 Ledger impact: none. V8 is the terminal detailing record of the V-spine: it
-proves properties the parent already froze (D3 hard-fail, §(c) peer-CID
+proves properties the parent already set (D3 hard-fail, §(c) peer-CID
 refusal, §(d) isolation, §(f) failure handling) and measures the Q-budget the
 parent explicitly defers to data ("Set from V2a/V8 measurements on real
 hardware, not invented here", microvm-runner.md:839-842). Nothing here is a new
@@ -54,7 +54,7 @@ Three gaps V8 closes:
 
 2. **The contract and failure-mode proofs stop below the session lifecycle.**
    The shared `WorkloadRuntime` contract suite runs on the microVM backend
-   (`contract_microvm_test.go:34-69`), but the S1-frozen seam contract the
+   (`contract_microvm_test.go:34-69`), but the S1 seam contract the
    parent's design demands — "a session and a burst both boot on the microVM
    runtime and pass the S1/C3 contract tests unchanged" (design.md:596-597)
    — is not exercised through `AgentRuntime.Launch` and the gateway on this
@@ -1907,7 +1907,7 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
   construction (`go/internal/delivery/trace_test.go:209-220`). Watch
   cardinality: no per-session attributes in any assertion helper.
 - **No production-code changes.** V8's Go deliverables are test files, test
-  data, and CI workflow edits; the frozen `WorkloadRuntime` interface and
+  data, and CI workflow edits; the `WorkloadRuntime` interface and
   all backend behavior are untouched. Where a proof requires a mutation, the
   mutation is transient (local build), recorded in the PR description, and
   never merged.
@@ -2183,7 +2183,7 @@ inline rather than pretending a decision was made.
   (dial connects, gate closes it, exit 2). Cost: it enables the very channel
   the cycle exists to prove unreachable, trading a structural guarantee for
   a policy one on a multi-tenant box, and it is a guest-image change inside
-  a docs-then-tests milestone. The fork is the parent's frozen wording
+  a docs-then-tests milestone. The fork is the parent's wording
   against the structurally stronger reality, so the ruling is Matt's, not an
   executor's. **Recommendation: (a)** — never weaken an isolation surface to
   make a test match its prose; assert the stronger property and record the

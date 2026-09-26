@@ -8,7 +8,7 @@ Every forge test in the tree is hermetic — `go/internal/forge/github_test.go`
 drives the client through a stub `http.RoundTripper` ("`scriptedRoundTripper`
 serves a queue of scripted responses (or a per-call func), recording each
 request for assertions", `github_test.go:26-27`), and the write-path record's
-frozen strategy is "differential-oracle pyramid per DL-174 (hermetic in-memory
+strategy is "differential-oracle pyramid per DL-174 (hermetic in-memory
 reference — `FakeProvider` + `httptest`-backed clients — in the default gate"
 (`compass-forge-write-path/design.md:136-139`). Hermetic tests prove our code
 matches *the contract we believe GitHub has*; nothing proves we modeled that

@@ -21,7 +21,7 @@ Amends: RIG-1717 elastic session runtime record (PR #446)
 The frozen record's task **S1** lists the `vfs.VirtualFS` source-of-tree seam
 (interface + git-checkout backend + provision wiring) as a deliverable
 alongside the `compute.ComputeRuntime` seam and the `WorkloadRuntime.Resize`
-freeze. During S1 execution, building `VirtualFS` surfaced that the seam has
+reservation. During S1 execution, building `VirtualFS` surfaced that the seam has
 **no production caller at S1** and quietly bakes in an unsettled architectural
 decision. This amendment descopes `VirtualFS` from S1 to **P2**, where it
 first has a real caller and where its dependent decision is made explicitly.
@@ -86,9 +86,9 @@ cloning).
 - **Keep `VirtualFS` in S1 as the frozen record specifies.** Rejected: ships a
   seam + backend + tests with no production caller until P2, and pre-commits
   the self-clone → Runner-clone shift via a seam nothing calls. The record's
-  stated rationale for freezing it early ("interop-with-customer-VFS later can
+  stated rationale for landing it early ("interop-with-customer-VFS later can
   swap without over-building") does not require the seam to exist *before* it
-  has any caller — freezing the shape at P2, when the first backend (volume
+  has any caller — landing the shape at P2, when the first backend (volume
   materialization) lands, achieves the same forward-compatibility without the
   dead code.
 - **Keep a narrower `VirtualFS` that only manages the FS root (no cloning).**
@@ -103,7 +103,7 @@ new code task — S1 shrinks, P2 grows.
 
 ### S1 (RIG-2393) — remove the `VirtualFS` deliverable
 
-- S1's deliverables are **`WorkloadRuntime.Resize` freeze** (PR #454) and
+- S1's deliverables are **`WorkloadRuntime.Resize` reservation** (PR #454) and
   **`compute.ComputeRuntime`** seam + in-place backend + fail-closed routing
   (PR #457). The `vfs.VirtualFS` seam, its git-checkout backend, the
   `WorkspaceSource` variant, and the provision-materialize wiring are **removed

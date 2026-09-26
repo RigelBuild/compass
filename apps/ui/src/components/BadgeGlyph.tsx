@@ -8,7 +8,7 @@ import { type Component, For } from "solid-js";
  *  `currentColor`, so there is one source of truth and no attribute to keep in
  *  sync on the inner SVG.
  *
- *  The glyph geometry is the six frozen grids transcribed in
+ *  The glyph geometry is the six grids transcribed in
  *  `design/components.md` §Badge — one `<rect>` per lit cell. `compact` hides
  *  the code span (the Option A glyph-only fallback for cramped surfaces via
  *  `data-compact`).
@@ -29,7 +29,7 @@ type BadgeGlyphProps =
 type GlyphKey = `ci-${CiStatus}` | `review-${ReviewStatus}`;
 
 /** [x, y] of each lit cell (9×9, one CSS px per cell), transcribed from the
- *  frozen ASCII grids in `design/components.md` §Badge (`#` = lit). */
+ *  ASCII grids in `design/components.md` §Badge (`#` = lit). */
 const GLYPH_CELLS: Record<
 	GlyphKey,
 	ReadonlyArray<readonly [number, number]>

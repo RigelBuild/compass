@@ -1,7 +1,7 @@
 /**
  * Command registry contract — the spine of the keyboard-first product.
  *
- * Frozen by design record D5 (Command palette + global keymap). CONTRACTS
+ * Specified by design record D5 (Command palette + global keymap). CONTRACTS
  * ONLY: interfaces, type unions, and branded ids. No runtime behavior, no
  * registry implementation — compass-ui implements against these stubs.
  */

@@ -4,9 +4,9 @@
 
 **Forced correction (unique mechanism):** the trace-lane sync `emit()` path is `runtime.runSync(Queue.offer(q, frame))` on the `Queue.sliding` — sliding `offer` completes synchronously (never suspends, so `runSync` cannot throw on a live queue), drops-**oldest**, and the eviction stays synchronously countable by reading `q.unsafeSize()` (returns `Option<number>`) **before** the offer (`size == capacity` => imminent eviction). Spelling: `q.unsafeSize()`, not `Queue.sizeUnsafe`.
 
-**Contract preserved — this revises one internal mechanism, not the frozen shape:** `emit()` stays sync/void; no `Effect<>` in any exported signature (`runSync` is transport-internal); the trace lane -> `Queue.sliding` mapping is unchanged; drop-oldest and the sync drop-count are preserved (`frame-sink.test.ts:435` drop-oldest ordinals stay green). OQ-3's "sync path needs no runtime" becomes "sync path calls `runtime.runSync`." T5's single-transport-owned-`ManagedRuntime` containment is **unaffected**. Scope: contained to T3 (trace lane); T1, T2 untouched.
+**Contract preserved — this revises one internal mechanism, not the public shape:** `emit()` stays sync/void; no `Effect<>` in any exported signature (`runSync` is transport-internal); the trace lane -> `Queue.sliding` mapping is unchanged; drop-oldest and the sync drop-count are preserved (`frame-sink.test.ts:435` drop-oldest ordinals stay green). OQ-3's "sync path needs no runtime" becomes "sync path calls `runtime.runSync`." T5's single-transport-owned-`ManagedRuntime` containment is **unaffected**. Scope: contained to T3 (trace lane); T1, T2 untouched.
 
-Linear: RIG-2384. The adopt/don't-adopt call is **frozen** — ruled by Matt
+Linear: RIG-2384. The adopt/don't-adopt call is **decided** — ruled by Matt
 (2026-08-20) and recorded in the compass effect-adoption decision record
 ([`../compass-effect-adoption-decision.md`](../compass-effect-adoption-decision.md)).
 This record
@@ -15,7 +15,7 @@ layer onto Effect.
 
 ## Problem / Intent
 
-The frozen ruling adopts Effect **now, on `packages/compass-agent` only**,
+Matt's ruling adopts Effect **now, on `packages/compass-agent` only**,
 naming the transport layer as the concrete target because it already
 hand-rolls the exact primitives Effect ships — "a bounded priority queue with
 drop-oldest overload (`transport/publish-spine.ts:43`), bounded-backoff retry
@@ -55,7 +55,7 @@ behind it:
   never suspends (sliding drops rather than blocks), via `Queue.unsafeOffer` —
   the escape hatch Effect ships for sync producers. The priority path is a
   synchronous array push onto the ruled-hybrid plain array (`enqueuePriority`),
-  equally sync and `void`. Neither suspends, so both satisfy the frozen
+  equally sync and `void`. Neither suspends, so both satisfy the
   sync/void contract without a runtime, and no `Effect<...>` type appears in any
   exported signature.
 - **Promise-returning seams.** `drain()`, `emitDurable()` are
@@ -122,7 +122,7 @@ runtime lifecycle consolidation in `index.ts` (T5).
   enough that a red test localizes to one module.
 - **(b) Thin Effect wrapper at the edges only.** Rejected: it adds the
   dependency without replacing any hand-rolled Queue/Schedule/supervision —
-  the opposite of the frozen rationale ("the transport layer's
+  the opposite of the ruling's rationale ("the transport layer's
   Queue/Schedule/supervision needs are met by Effect's primitives from the
   start, rather than growing a second and third bespoke version").
   This is distinct from the ruled hybrid
@@ -453,7 +453,7 @@ written against the recommendations. **Load-bearing** questions need Matt's
 ruling before implementation starts (they change the shape of the work);
 **deferrable** ones can be resolved in-PR by the implementer + reviewer.
 
-- **OQ-1 (load-bearing) — Blast radius within the package.** The frozen
+- **OQ-1 (load-bearing) — Blast radius within the package.** The
   ruling scopes adoption to the agent-runner package and names the transport
   as the concrete target.
   **Recommendation: first cut = `src/transport/` only** (this Plan), with
@@ -466,7 +466,7 @@ ruling before implementation starts (they change the shape of the work);
   the Plan entirely.
 - **OQ-2 (load-bearing) — Migration strategy.** Full rewrite vs incremental
   vs edge wrapper. **Recommendation: incremental, primitive-by-primitive
-  behind the frozen module interfaces** (Approach; Alternatives a/b) — one
+  behind the existing module interfaces** (Approach; Alternatives a/b) — one
   module per PR, existing tests green unmodified as each PR's merge gate.
   Load-bearing because it fixes the PR structure and the review contract.
 - **OQ-3 (load-bearing) — The OMP-SDK / Effect Runtime boundary.**
@@ -476,7 +476,7 @@ ruling before implementation starts (they change the shape of the work);
   `RunnerTransport` methods) are `runPromise` at the module boundary; no
   `Effect<...>` in any exported type.** Load-bearing because it is the
   containment guarantee — if Effect types were allowed to leak into
-  `CompassAgent`, the frozen "public shape unchanged" constraint breaks and
+  `CompassAgent`, the "public shape unchanged" constraint breaks and
   the adoption becomes package-wide de facto.
 - **OQ-4 (deferrable) — Per-attempt deadline mechanism.** Keep Connect's
   `CallOptions.timeoutMs` (cancels the RPC on the wire,
