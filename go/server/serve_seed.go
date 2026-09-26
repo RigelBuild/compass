@@ -39,7 +39,7 @@ var spawnableRoles = map[string]struct{}{
 	"manager":    {},
 }
 
-// seedClientRequestID is the fixed idempotency key the seed's SpawnAgent runs
+// seedClientRequestID is the fixed idempotency key the seed's spawnAccount runs
 // under. Fixed (not per-call) so a re-enroll that re-fires the seed for an
 // already-seeded-and-live supervisor joins the completed spawn or is rejected
 // on-live, never provisioning a second container for it.
@@ -81,13 +81,13 @@ var setupThreadBody string
 // It is find-or-create-then-start: on a later Runner reconnect it re-fires and
 // re-drives a supervisor whose row exists but was never started (a prior boot
 // created the row but its Start failed), because that supervisor has no success
-// memo to join, so SpawnAgent runs reject-on-live then Provision/Start for real.
+// memo to join, so spawnAccount runs reject-on-live then Provision/Start for real.
 // The create half stays gated on an EMPTY tree: if the operator has built any
 // other root, the seed adopts nothing and creates nothing.
 //
 // Re-drive is bounded by the spawn memo, and does NOT cover a Runner-only
 // restart within the memo's success-retention window (spawnMemoTTL). The start
-// is SpawnAgent under a fixed client_request_id (seedClientRequestID); once a
+// is spawnAccount under a fixed client_request_id (seedClientRequestID); once a
 // boot's Start succeeds, that success is memoized, so a re-fire inside the window
 // joins the completed spawn and returns its cached session id WITHOUT consulting
 // the Runner — even if the session actually died with a restarted Runner. Real
@@ -127,20 +127,10 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		return
 	}
 
-	// SpawnAgent takes an `owner/agent` handle, so read the admin's handle.
-	admin, err := st.GetAccount(ctx, adminID)
-	if err != nil {
-		log.Error("root-supervisor seed: reading admin account failed; will retry on next enroll", "err", err)
-		return
-	}
-
 	// Provision + Start under the fixed idempotency key. reject-on-live + the
 	// spawn memo make this a no-op for an already-live supervisor, so a re-enroll
 	// re-fire never launches a second container.
-	if _, err := svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentHandle:     admin.Handle + "/" + supervisor.Handle,
-		ClientRequestId: seedClientRequestID,
-	})); err != nil {
+	if _, err := svc.spawnAccount(ctx, supervisor, seedClientRequestID); err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {
 			// Already live (reject-on-live) — the supervisor is up. Still post the
 			// Setup thread: on a re-fire for a supervisor that came up on a prior
@@ -154,7 +144,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		return
 	}
 
-	// SpawnAgent returned without error: either it drove Provision/Start, or it
+	// spawnAccount returned without error: either it drove Provision/Start, or it
 	// joined this boot's completed seed spawn. It does NOT re-confirm liveness
 	// against the Runner on a memo join (see the memo caveat above), so this
 	// reports the seed drove to completion, not an independently verified session.

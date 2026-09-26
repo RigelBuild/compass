@@ -513,15 +513,15 @@ func (s *service) SubscribeAgentSession(
 }
 
 // provisionAgent relays a Provision for the resolved agent acc and records its
-// placement. It relays a COPY of msg whose agent_handle is the resolved account
-// id, because the Runner, its container bind, and the hub's dedup key all read
-// that field as an id.
+// placement.
 func (s *service) provisionAgent(
 	ctx context.Context,
 	acc store.Account,
 	msg *compassv1.ProvisionAgentWorkspaceRequest,
 ) (*compassv1.ProvisionAgentWorkspaceResponse, error) {
 	relay := proto.CloneOf(msg)
+	// The Runner hop carries the resolved account id: the Runner, its container
+	// bind, and the hub's dedup key all read agent_handle as an id.
 	relay.AgentHandle = string(acc.ID)
 	// SERVER-AUTHORITATIVE persona and role: overwrite whatever the client sent
 	// with the store's values, so a caller cannot inject a system or role prompt.
@@ -533,8 +533,8 @@ func (s *service) provisionAgent(
 	}
 	// Record the agent's durable PLACEMENT — which Runner and container name — only
 	// now that the Runner created the container. Idempotent upsert. This is what makes
-	// the container->account mapping survive a Server restart, and what RIG-1516
-	// reattach recovery reads to name agents stranded by a Runner restart.
+	// the container->account mapping survive a Server restart, and what reattach
+	// recovery reads to name agents stranded by a Runner restart.
 	if err := s.store.RecordAgentPlacement(ctx, acc.ID, runnerID, resp.GetContainerName()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
 	}
@@ -546,7 +546,7 @@ func (s *service) provisionAgent(
 // every miss return the same NotFound naming the submitted handle.
 func (s *service) resolveQualifiedAgent(ctx context.Context, raw string) (store.Account, error) {
 	qh := store.ParseQualifiedHandle(raw)
-	if qh.Handle == qh.Raw {
+	if !qh.Qualified() {
 		return store.Account{}, handleNotFound(raw)
 	}
 	owner, err := s.store.UserByHandle(ctx, qh.Owner)

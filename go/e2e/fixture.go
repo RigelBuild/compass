@@ -301,10 +301,11 @@ func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
 // An account the server cannot resolve is NOT_FOUND, surfaced as the returned
 // error (never a panic — the caller, a test, decides fatality).
 //
-// The argument accepts an account id or a bare handle and is mapped to the wire
-// handle IssueTokenRequest.account_handle takes (see wireHandle). An unresolvable
-// ref is passed through UNCHANGED so the SERVER decides the code — that keeps
-// NOT_FOUND the server's answer rather than a locally-synthesized one.
+// The argument accepts an account id, a bare handle, or an `owner/agent` handle,
+// and is mapped to the wire handle IssueTokenRequest.account_handle takes (see
+// wireHandle); `owner/agent` passes through as-is. An unresolvable ref is passed
+// through UNCHANGED so the SERVER decides the code — that keeps NOT_FOUND the
+// server's answer rather than a locally-synthesized one.
 func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassServiceClient, commsServiceClient, error) {
 	target, err := f.wireHandle(ctx, handle)
 	if err != nil {
@@ -330,9 +331,14 @@ func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassService
 }
 
 // wireHandle maps an account ref (an id or a bare handle) to the handle the admin
-// door takes: a user's bare handle, or `owner/agent` for an agent. Legs hold ids
-// from CreateAgent/CreateUser, so the fixture does the mapping in one place.
+// door takes: a user's bare handle, or `owner/agent` for an agent. A ref already
+// spelled `owner/agent` passes through unchanged. Legs hold ids from
+// CreateAgent/CreateUser, so the fixture does the mapping in one place.
 func (f *Fixture) wireHandle(ctx context.Context, ref string) (string, error) {
+	// Already the `owner/agent` wire form: nothing to map.
+	if strings.Contains(ref, "/") {
+		return ref, nil
+	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))

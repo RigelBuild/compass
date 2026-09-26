@@ -405,6 +405,12 @@ func TestProvisionAgentWorkspaceUnresolvedHandleIsNotFound(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 	f.runner.forget()           // discard the attach probe
+	// The admin/ legs resolve the admin owner before the agent miss, so its id is
+	// the one a leaky error could carry.
+	ownerID, err := f.store.AgentOwner(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("AgentOwner(fixture agent) = %v", err)
+	}
 
 	for _, handle := range []string{"atlas", "nobody/atlas", "admin/nobody", "admin/admin", "/atlas", "admin/"} {
 		_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: handle, ClientRequestId: "prov-miss"}))
@@ -414,8 +420,8 @@ func TestProvisionAgentWorkspaceUnresolvedHandleIsNotFound(t *testing.T) {
 		if want := strconv.Quote(handle); !strings.Contains(err.Error(), want) {
 			t.Fatalf("ProvisionAgentWorkspace(%q) error = %q, want it to name the submitted handle %s", handle, err.Error(), want)
 		}
-		if strings.Contains(err.Error(), string(f.agentID)) {
-			t.Fatalf("ProvisionAgentWorkspace(%q) error = %q leaks the resolved account id", handle, err.Error())
+		if strings.Contains(err.Error(), string(ownerID)) {
+			t.Fatalf("ProvisionAgentWorkspace(%q) error = %q leaks the resolved owner id", handle, err.Error())
 		}
 	}
 	if got := f.runner.provisionCount(); got != 0 {
