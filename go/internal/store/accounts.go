@@ -820,11 +820,80 @@ func ParseQualifiedHandle(raw string) QualifiedHandle {
 // no-op (empty map, nil error).
 func (s *Store) AccountsByHandles(ctx context.Context, viewer, callerOwner AccountID, handles []QualifiedHandle) (map[string]AccountID, error) {
 	hits := make(map[string]AccountID, len(handles))
-	var missing []string
-	for _, qh := range handles {
-		id, err := s.resolveOneHandle(ctx, viewer, callerOwner, qh)
-		if err != nil {
+	// Each handle is classified once; every later pass reads kinds[i]. A malformed
+	// qualifier misses outright, since resolving "/x" bare would reach x.
+	kinds := make([]handleKind, len(handles))
+	var bare, owners []string
+	for i, qh := range handles {
+		switch {
+		case qh.Handle == "" || qh.Malformed():
+			kinds[i] = handleMiss
+		case qh.Qualified():
+			kinds[i] = handleQualified
+			owners = append(owners, qh.Owner)
+		default:
+			kinds[i] = handleBare
+			bare = append(bare, qh.Handle)
+		}
+	}
+	// A nil map reads as all-miss, so an arm with no input skips its query.
+	var global, ownerIDs map[string]AccountID
+	var err error
+	// bare: the visible, non-system global index first, so a user wins a
+	// collision with the caller's own agent; a miss falls to that agent.
+	if len(bare) > 0 {
+		if global, err = s.visibleGlobalHandleIDs(ctx, viewer, bare); err != nil {
 			return nil, err
+		}
+	}
+	// owner-qualified: the owner is a namespace key, not an addressed target, so
+	// it resolves without the visibility clip (system excluded; it owns no agents).
+	if len(owners) > 0 {
+		if ownerIDs, err = s.globalHandleIDs(ctx, owners); err != nil {
+			return nil, err
+		}
+	}
+	// Both agent arms share one namespace, so they ride one query. agentKeys[i]
+	// is handle i's agent lookup; the zero key (no agent arm) never matches.
+	agentKeys := make([]agentHandleKey, len(handles))
+	var keys []agentHandleKey
+	for i, qh := range handles {
+		switch kinds[i] {
+		case handleMiss:
+			continue
+		case handleQualified:
+			owner, ok := ownerIDs[qh.Owner]
+			if !ok {
+				continue
+			}
+			agentKeys[i] = agentHandleKey{owner: owner, handle: qh.Handle}
+		case handleBare:
+			if _, ok := global[qh.Handle]; ok || callerOwner == "" {
+				continue
+			}
+			agentKeys[i] = agentHandleKey{owner: callerOwner, handle: qh.Handle}
+		}
+		keys = append(keys, agentKeys[i])
+	}
+	var agents map[agentHandleKey]AccountID
+	if len(keys) > 0 {
+		if agents, err = s.visibleAgentHandleIDs(ctx, viewer, keys); err != nil {
+			return nil, err
+		}
+	}
+
+	var missing []string
+	for i, qh := range handles {
+		var id AccountID
+		switch kinds[i] {
+		case handleBare:
+			var ok bool
+			if id, ok = global[qh.Handle]; !ok {
+				id = agents[agentKeys[i]]
+			}
+		case handleQualified:
+			id = agents[agentKeys[i]]
+		case handleMiss:
 		}
 		if id == "" {
 			missing = append(missing, qh.Raw)
@@ -841,92 +910,79 @@ func (s *Store) AccountsByHandles(ctx context.Context, viewer, callerOwner Accou
 	return hits, nil
 }
 
-// resolveOneHandle resolves a single QualifiedHandle to a visible, non-system
-// account id, or returns ("", nil) for a clean miss (unknown, wrong-namespace,
-// or invisible — all indistinguishable). A real query fault is a non-nil error.
-func (s *Store) resolveOneHandle(ctx context.Context, viewer, callerOwner AccountID, qh QualifiedHandle) (AccountID, error) {
-	// A malformed qualifier misses outright; resolving "/x" bare would let it
-	// reach the user or the caller's own agent named x.
-	if qh.Handle == "" || qh.Malformed() {
-		return "", nil
-	}
-	if qh.Qualified() {
-		// owner-qualified: resolve the owner segment in the global user/system
-		// index (excluding system, which owns no agents), then the agent segment
-		// under it.
-		ownerID, err := s.globalHandleID(ctx, qh.Owner)
-		if err != nil {
-			return "", err
-		}
-		if ownerID == "" {
-			return "", nil
-		}
-		return s.visibleAgentHandleID(ctx, viewer, ownerID, qh.Handle)
-	}
-	// bare: a user/system-tier handle in the global index (visible, non-system),
-	// OR an agent handle in the caller's own owner namespace.
-	id, err := s.visibleGlobalHandleID(ctx, viewer, qh.Handle)
-	if err != nil {
-		return "", err
-	}
-	if id != "" {
-		return id, nil
-	}
-	return s.visibleAgentHandleID(ctx, viewer, callerOwner, qh.Handle)
+// agentHandleKey addresses one agent handle in its owner's namespace.
+type agentHandleKey struct {
+	owner  AccountID
+	handle string
 }
 
-// globalHandleID resolves a bare handle in the global user/system index
+// handleKind is how AccountsByHandles routes one submitted handle.
+type handleKind uint8
+
+const (
+	handleMiss handleKind = iota
+	handleBare
+	handleQualified
+)
+
+// globalHandleIDs resolves bare handles in the global user/system index
 // (owner_user_id IS NULL), excluding the system account, WITHOUT a visibility
 // clip — it backs the owner-qualifier lookup, whose owner is a namespace key,
-// not an addressed target. Empty id on a clean miss.
-func (s *Store) globalHandleID(ctx context.Context, handle string) (AccountID, error) {
-	id, err := s.q.GetGlobalHandleID(ctx, handle)
+// not an addressed target. A miss is simply absent from the map.
+func (s *Store) globalHandleIDs(ctx context.Context, handles []string) (map[string]AccountID, error) {
+	rows, err := s.q.ResolveGlobalHandles(ctx, handles)
 	if err != nil {
-		if noRows(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("store: resolve global handle: %w", err)
+		return nil, fmt.Errorf("store: resolve global handles: %w", err)
 	}
-	return AccountID(id), nil
+	ids := make(map[string]AccountID, len(rows))
+	for _, r := range rows {
+		ids[r.Handle] = AccountID(r.AccountID)
+	}
+	return ids, nil
 }
 
-// visibleGlobalHandleID resolves a bare handle in the global user/system index,
+// visibleGlobalHandleIDs resolves bare handles in the global user/system index,
 // excluding the system account AND intersecting the viewer's account-visible set
-// (the shared visibility predicate). Empty id on a clean miss (unknown or
-// invisible).
-func (s *Store) visibleGlobalHandleID(ctx context.Context, viewer AccountID, handle string) (AccountID, error) {
-	id, err := s.q.GetVisibleGlobalHandleID(ctx, db.GetVisibleGlobalHandleIDParams{
-		ID:     string(viewer),
-		Handle: handle,
+// (the shared visibility predicate). A miss (unknown or invisible) is absent
+// from the map.
+func (s *Store) visibleGlobalHandleIDs(ctx context.Context, viewer AccountID, handles []string) (map[string]AccountID, error) {
+	rows, err := s.q.ResolveVisibleGlobalHandles(ctx, db.ResolveVisibleGlobalHandlesParams{
+		ID:      string(viewer),
+		Column2: handles,
 	})
 	if err != nil {
-		if noRows(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("store: resolve visible global handle: %w", err)
+		return nil, fmt.Errorf("store: resolve visible global handles: %w", err)
 	}
-	return AccountID(id), nil
+	ids := make(map[string]AccountID, len(rows))
+	for _, r := range rows {
+		ids[r.Handle] = AccountID(r.AccountID)
+	}
+	return ids, nil
 }
 
-// visibleAgentHandleID resolves an agent handle in owner's agent namespace
-// (owner_user_id = owner), intersecting the viewer's account-visible set. An
-// empty owner (no caller namespace) or a clean miss returns an empty id.
-func (s *Store) visibleAgentHandleID(ctx context.Context, viewer, owner AccountID, handle string) (AccountID, error) {
-	if owner == "" {
-		return "", nil
+// visibleAgentHandleIDs resolves (owner, handle) pairs in each owner's agent
+// namespace (owner_user_id = owner), intersecting the viewer's account-visible
+// set. A miss (unknown or invisible) is absent from the map.
+func (s *Store) visibleAgentHandleIDs(ctx context.Context, viewer AccountID, keys []agentHandleKey) (map[agentHandleKey]AccountID, error) {
+	owners := make([]string, len(keys))
+	handles := make([]string, len(keys))
+	for i, k := range keys {
+		owners[i] = string(k.owner)
+		handles[i] = k.handle
 	}
-	id, err := s.q.GetVisibleAgentHandleID(ctx, db.GetVisibleAgentHandleIDParams{
-		ID:          string(viewer),
-		OwnerUserID: pgtype.Text{String: string(owner), Valid: true},
-		Handle:      handle,
+	rows, err := s.q.ResolveVisibleAgentHandles(ctx, db.ResolveVisibleAgentHandlesParams{
+		ID:      string(viewer),
+		Column2: owners,
+		Column3: handles,
 	})
 	if err != nil {
-		if noRows(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("store: resolve visible agent handle: %w", err)
+		return nil, fmt.Errorf("store: resolve visible agent handles: %w", err)
 	}
-	return AccountID(id), nil
+	ids := make(map[agentHandleKey]AccountID, len(rows))
+	for _, r := range rows {
+		ids[agentHandleKey{owner: AccountID(r.OwnerUserID.String), handle: r.Handle}] = AccountID(r.AccountID)
+	}
+	return ids, nil
 }
 
 // ListAccounts returns the accounts visible to visibleTo. The visibility rule
