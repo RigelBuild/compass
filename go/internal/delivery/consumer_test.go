@@ -8,12 +8,14 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -427,8 +429,8 @@ func TestRecoverySweepSkipsHeldMessage(t *testing.T) {
 	}
 }
 
-// OQ-1: a ref whose row is missing is logged and acked, since redelivery cannot
-// make the row appear; the refs behind it still deliver.
+// OQ-1: a ref whose row is missing is logged and acked (the callback returns
+// nil), since redelivery cannot make the row appear; the refs behind it still deliver.
 func TestMissingRowRefIsAckedAndConsumerContinues(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -449,6 +451,153 @@ func TestMissingRowRefIsAckedAndConsumerContinues(t *testing.T) {
 		if d.messageID == "ghost" {
 			t.Fatalf("dispatched the missing-row ref: %+v", d)
 		}
+	}
+}
+
+// errTransientRead stands in for a store read that fails but may succeed on retry.
+var errTransientRead = errors.New("connection reset")
+
+// A transient read failure returns an error so the fabric redelivers, and no
+// hold or dispatch happens first. ErrNotFound returns nil so the ref is acked.
+func TestOnEventRefReadErrorContract(t *testing.T) {
+	const ch store.ChannelID = "chan-1"
+	const recipient store.AccountID = "agent-recip"
+	for _, tc := range []struct {
+		name        string
+		author      store.AccountID
+		authorAgent bool
+		authorLive  bool
+		msgErrs     []error // MessageByID outcomes; nil reads normally
+		authorErrs  []error // IsAgentAccount outcomes
+		channelErrs []error // MessageChannel outcomes
+		wantErr     error   // nil: the ref is acked
+	}{
+		{name: "transient first read, live agent author", author: "agent-author", authorAgent: true, authorLive: true, msgErrs: []error{errTransientRead}, wantErr: errTransientRead},
+		{name: "transient first read, human author", author: "human-1", msgErrs: []error{errTransientRead}, wantErr: errTransientRead},
+		{name: "transient stored re-read, offline agent author", author: "agent-author", authorAgent: true, msgErrs: []error{nil, errTransientRead}, wantErr: errTransientRead},
+		{name: "transient author-kind read", author: "agent-author", authorAgent: true, authorLive: true, authorErrs: []error{errTransientRead}, wantErr: errTransientRead},
+		{name: "transient channel read, human author", author: "human-1", channelErrs: []error{errTransientRead}, wantErr: errTransientRead},
+		{name: "not found", author: "human-1", msgErrs: []error{store.ErrNotFound}},
+		{name: "channel not found, human author", author: "human-1", channelErrs: []error{store.ErrNotFound}},
+		{name: "stored re-read not found, offline agent author", author: "agent-author", authorAgent: true, msgErrs: []error{nil, store.ErrNotFound}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, disp, res, reads := newTestConsumer(t)
+			reads.subscribers[ch] = []store.AccountID{recipient}
+			reads.agents[tc.author] = tc.authorAgent
+			res.bind(recipient, "sess-recip")
+			if tc.authorLive {
+				res.bind(tc.author, "sess-author")
+			}
+			reads.seedMessage(textMessage("m1", tc.author, "body"))
+			reads.messageErrs["m1"] = tc.msgErrs
+			reads.authorErrs[tc.author] = tc.authorErrs
+			reads.channelErrs["m1"] = tc.channelErrs
+
+			ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: "m1"}
+			err := c.onEventRef(context.Background(), ref)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("onEventRef = %v, want an error wrapping %v so the fabric redelivers", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("onEventRef = %v, want nil: a missing row is acked", err)
+			}
+			if got := disp.snapshot(); len(got) != 0 {
+				t.Fatalf("dispatched %+v on a failed read, want nothing", got)
+			}
+			if c.isHeld("sess-author", "m1") {
+				t.Fatal("held m1 on a failed read: a redelivery would hold it twice")
+			}
+		})
+	}
+}
+
+// Through the fabric, a transient read failure is redelivered, and the retry
+// dispatches exactly once, including for a held agent-authored post.
+func TestTransientReadFailureRedeliversAndDispatchesOnce(t *testing.T) {
+	for _, authorAgent := range []bool{false, true} {
+		name := "human author"
+		if authorAgent {
+			name = "held agent author"
+		}
+		t.Run(name, func(t *testing.T) {
+			c, disp, res, reads := newTestConsumer(t)
+			const ch store.ChannelID = "chan-1"
+			const author store.AccountID = "author-1"
+			const recipient store.AccountID = "agent-recip"
+			reads.subscribers[ch] = []store.AccountID{recipient}
+			reads.agents[author] = authorAgent
+			res.bind(recipient, "sess-recip")
+			if authorAgent {
+				res.bind(author, "sess-author")
+			}
+			reads.messageErrs["m1"] = []error{errTransientRead}
+			startConsumer(t, c)
+
+			postMessage(t, c, reads, textMessage("m1", author, "hello"))
+			fab := fakeFabricOf(c)
+			fab.waitAcked(t, "m1")
+			if got := fab.failuresFor("m1"); len(got) != 1 || !errors.Is(got[0], errTransientRead) {
+				t.Fatalf("recorded failures = %v, want exactly one wrapping %v", got, errTransientRead)
+			}
+			if authorAgent {
+				c.waitHeld(t, "sess-author", 1)
+				c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+			}
+			if !disp.waitForMessage(t, "m1") {
+				t.Fatal("m1 never delivered after its redelivered ref")
+			}
+			// A marker behind m1 proves the loop drained; a duplicate would be ahead of it.
+			postMessage(t, c, reads, textMessage("m2", "human-2", "marker"))
+			if !disp.waitForMessage(t, "m2") {
+				t.Fatal("marker m2 never delivered")
+			}
+			if n := countDispatches(disp, "m1"); n != 1 {
+				t.Fatalf("m1 dispatched %d times, want exactly 1", n)
+			}
+		})
+	}
+}
+
+func countDispatches(d *fakeDispatcher, messageID string) int {
+	n := 0
+	for _, r := range d.snapshot() {
+		if r.messageID == messageID {
+			n++
+		}
+	}
+	return n
+}
+
+// A Nak'd ref can arrive after a later one of the same author, so hold orders by
+// commit time: m2 held before m1 still fires as [m1, m2].
+func TestHoldOrdersByCommitTimeNotArrival(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const author store.AccountID = "agent-author"
+	reads.subscribers["chan-1"] = []store.AccountID{"agent-recip"}
+	reads.agents[author] = true
+	res.bind(author, "sess-author")
+	res.bind("agent-recip", "sess-recip")
+	for _, m := range []struct {
+		id string
+		at int64
+	}{{"m2", 200}, {"m1", 100}} {
+		msg := textMessage(m.id, author, m.id+" body")
+		msg.At = time.UnixMilli(m.at)
+		reads.seedMessage(msg)
+		c.hold(store.WithTenant(context.Background(), testTenant), "sess-author", m.id, m.at)
+	}
+	startConsumer(t, c)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	disp.waitForDispatches(t, 2)
+	snap := disp.snapshot()
+	got := make([]string, 0, len(snap))
+	for _, d := range snap {
+		got = append(got, d.messageID)
+	}
+	if !slices.Equal(got, []string{"m1", "m2"}) {
+		t.Fatalf("dispatch order = %v, want [m1 m2] (commit order, not arrival)", got)
 	}
 }
 

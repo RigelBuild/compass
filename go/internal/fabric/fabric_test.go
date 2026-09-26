@@ -507,10 +507,10 @@ func TestCloseIsIdempotentAndFailsClosed(t *testing.T) {
 	if err := f.Publish(ctx, subject, EventRef{Tenant: "t-closed", Kind: KindMessagePosted, RowID: "m1"}); !errors.Is(err, errClosed) {
 		t.Fatalf("Publish after Close: want errClosed, got %v", err)
 	}
-	if _, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) {}); !errors.Is(err, errClosed) {
+	if _, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) error { return nil }); !errors.Is(err, errClosed) {
 		t.Fatalf("Subscribe after Close: want errClosed, got %v", err)
 	}
-	if _, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) {}); !errors.Is(err, errClosed) {
+	if _, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error { return nil }); !errors.Is(err, errClosed) {
 		t.Fatalf("SubscribeKind after Close: want errClosed, got %v", err)
 	}
 	if err := f.SendCommand(ctx, "r1", nil); !errors.Is(err, errClosed) {
