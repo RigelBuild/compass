@@ -336,9 +336,9 @@ func TestSpawnSameHandleDifferentOwnerCreatesDistinctPeer(t *testing.T) {
 // — so a foreign peer's (or user's) existence can never be probed.
 //
 // Mutation: returning a distinct code (e.g. PermissionDenied) for a
-// foreign-but-existing target, or resolving a foreign `owner/` qualifier,
-// reddens the "same as unknown" assertions — the existence probe the merge
-// exists to prevent.
+// foreign-but-existing target reddens the "same as unknown" assertions; honoring
+// a foreign `owner/` qualifier despawns owner B's peer, and that success reddens
+// the despawnErr fatal.
 func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
@@ -389,13 +389,15 @@ func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 		"foreign":   despawnErr("peer-b"),
 		"non-agent": despawnErr("admin"),
 	})
-	// Qualified form: owner B's real peer under owner B's real handle, and an
-	// unknown owner.
+	// Qualified form: owner B's real peer under owner B's real handle, an unknown
+	// owner, an empty owner, and an empty agent handle.
 	assertSame("qualified", despawnErr("nobody/does-not-exist"), map[string]error{
 		"foreign":             despawnErr("userb/peer-b"),
 		"foreign-owner-own":   despawnErr("userb/caller-b"),
 		"own-owner-unknown":   despawnErr("admin/does-not-exist"),
 		"wrong-owner-own-agt": despawnErr("userb/atlas"),
+		"empty-owner":         despawnErr("/atlas"),
+		"empty-handle":        despawnErr("admin/"),
 	})
 
 	// Owner B's peer is untouched.
@@ -412,9 +414,8 @@ func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 // id: a caller despawning its own handle, bare or owner-qualified, gets
 // CodeInvalidArgument.
 //
-// Mutation: removing the target==caller guard makes this fall through to the
-// owner check and (since caller owns itself) attempt teardown — reddening the
-// invalid_argument assertion.
+// Mutation: removing the target==caller guard lets a self-target past the
+// resolver and into teardown — reddening the invalid_argument assertion.
 func TestDespawnSelfIsInvalidArgument(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()

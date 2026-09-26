@@ -151,6 +151,7 @@ type Querier interface {
 	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
 	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
+	GetAccountHandle(ctx context.Context, accountID string) (string, error)
 	GetAgentOwner(ctx context.Context, accountID string) (string, error)
 	GetAgentParent(ctx context.Context, accountID string) (pgtype.Text, error)
 	GetAgentWorkspaceID(ctx context.Context, agentAccountID string) (string, error)
