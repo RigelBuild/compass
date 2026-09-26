@@ -104,3 +104,87 @@ export function digestFromMetadata(metadata: unknown): string | undefined {
 	if (typeof digest !== "string" || !isImageDigest(digest)) return undefined;
 	return digest;
 }
+
+/** The skopeo argv that gives a verified digest its `:git-<sha12>` tag. The
+ * source is the digest, never a tag, so the tag can only name verified bytes.
+ * --preserve-digests fails the copy rather than let skopeo rewrite the manifest. */
+export function tagArgs(
+	repo: string,
+	digest: string,
+	sha12: string,
+	authFile: string,
+): string[] {
+	return [
+		"copy",
+		"--preserve-digests",
+		"--authfile",
+		authFile,
+		`docker://${digestRef(repo, digest)}`,
+		`docker://${buildTag(repo, sha12)}`,
+	];
+}
+
+/** The two registry writes a publish makes, injected so the order is testable. */
+export type PublishIO = {
+	/** The untagged push-by-digest build; `metadata` is its parsed metadata file. */
+	push: () => { status: number | null; metadata: unknown };
+	skopeo: (args: readonly string[]) => {
+		status: number | null;
+		stderr: string;
+	};
+};
+
+export type PublishResult =
+	| { ok: true; ref: string }
+	| { ok: false; code: number; message: string };
+
+/**
+ * Push untagged, verify the pushed digest, and only then tag it. The tag is
+ * what the release re-tag promotes, so a failed check must leave no tag.
+ */
+export function publishVerified(
+	input: { repo: string; sha12: string; localDigest: string; authFile: string },
+	io: PublishIO,
+): PublishResult {
+	const { repo, sha12, localDigest, authFile } = input;
+	// Fail on a bad sha before any registry write.
+	buildTag(repo, sha12);
+
+	const push = io.push();
+	if (push.status !== 0) {
+		return {
+			ok: false,
+			code: EXIT.pushFailed,
+			message: `push to ${repo} exited ${push.status ?? "on signal"}`,
+		};
+	}
+	const pushedDigest = digestFromMetadata(push.metadata);
+	if (!pushedDigest) {
+		return {
+			ok: false,
+			code: EXIT.pushFailed,
+			message: "the push metadata carries no containerimage.digest",
+		};
+	}
+	// The push exporter's digest must equal the digest the local build produced.
+	// Unequal means the published bytes are not the reviewed, locally-reproduced
+	// bytes — which is the whole point of pinning a digest downstream.
+	if (pushedDigest !== localDigest) {
+		return {
+			ok: false,
+			code: EXIT.digestMismatch,
+			message: `local build produced ${localDigest} but the push resolved ${pushedDigest}`,
+		};
+	}
+
+	const args = tagArgs(repo, pushedDigest, sha12, authFile);
+	const tag = io.skopeo(args);
+	if (tag.status !== 0) {
+		return {
+			ok: false,
+			code: EXIT.pushFailed,
+			message: `skopeo ${args.join(" ")} exited ${tag.status ?? "on signal"}: ${tag.stderr.trim()}`,
+		};
+	}
+	return { ok: true, ref: digestRef(repo, pushedDigest) };
+}

@@ -98,7 +98,8 @@ export function closureRoots(outputs: RunnerImageOutputs): string[] {
 /** The buildctl `--output` spec for each supported output mode. `oci` writes a
  * browsable local layout (what the publish lane scans BEFORE deciding to push);
  * `image` names a tagged image for a local dogfood load; `push` uploads to a
- * registry.
+ * registry BY DIGEST ONLY, so `tag` is the bare repo and no tag is written. The
+ * publish lane tags the digest only after it verifies it.
  *
  * `push` is an EXPORTER, not a separate command — buildctl has no `push` verb,
  * so publishing re-runs this build with a different output. That is why the
@@ -124,7 +125,7 @@ export function outputSpec(
 	// context both yielded sha256:e6e98c76…), which makes this belt-and-braces
 	// against that coupling changing, not a behaviour change.
 	if (mode === "push") {
-		return `type=image,name=${tag},push=true,oci-mediatypes=true,${rewrite}`;
+		return `type=image,name=${tag},push=true,push-by-digest=true,oci-mediatypes=true,${rewrite}`;
 	}
 	return `type=image,name=${tag},${rewrite}`;
 }

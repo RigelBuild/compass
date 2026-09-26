@@ -144,6 +144,14 @@ export async function resolveAncestor(
 	);
 }
 
+/** The names `git diff -z --name-only` printed. Every name ends in NUL, so the
+ * last split entry is empty. -z keeps a name with a newline whole. */
+export function splitNulPaths(stdout: string): string[] {
+	const names = stdout.split("\0");
+	if (names.at(-1) === "") names.pop();
+	return names;
+}
+
 /** The changed paths that fall in the closure set. Same rules as the publish
  * gate: `dir/**` matches anything under `dir/`, any other entry matches exactly.
  * An empty set is refused, so an unset env var cannot pass every diff. */

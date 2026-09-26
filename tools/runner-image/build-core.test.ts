@@ -96,9 +96,9 @@ describe("outputSpec", () => {
 		);
 	});
 
-	test("push exports to the registry, since buildctl has no push verb", () => {
-		expect(outputSpec("push", "ghcr.io/x/y:git-abc", "/tmp/out")).toBe(
-			"type=image,name=ghcr.io/x/y:git-abc,push=true,oci-mediatypes=true,rewrite-timestamp=true",
+	test("push exports to the registry by digest only, so a push leaves no tag", () => {
+		expect(outputSpec("push", "ghcr.io/x/y", "/tmp/out")).toBe(
+			"type=image,name=ghcr.io/x/y,push=true,push-by-digest=true,oci-mediatypes=true,rewrite-timestamp=true",
 		);
 	});
 
