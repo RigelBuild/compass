@@ -302,10 +302,9 @@ func (c *Consumer) SetAgentWaker(w AgentWaker) {
 }
 
 // Run consumes message_posted refs and drains settle, start, and recovery work
-// until ctx is cancelled. JetStream redelivers every ref this Server did not ack.
-// Two gaps remain: a publish that failed after commit, and a ref acked after a
-// failed read. The reconnect hook and the floor tick close both with a recovery
-// pass over the cursor.
+// until ctx is cancelled. A publish failed after commit, or a ref acked after a
+// failed read, reaches live recipients via the recovery pass (reconnect or floor
+// tick) and offline ones at their next session start.
 func (c *Consumer) Run(ctx context.Context) error {
 	// Sweeps and scans enumerate every tenant, so they run as the BYPASSRLS system
 	// role; per-event work stays tenant-scoped under ctx.
@@ -358,8 +357,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 // onEventRef handles one ref on the fabric goroutine, concurrently with Run's
-// drains. Any read failure is logged and acked: redelivery cannot make a missing
-// row appear, and a transient failure falls to the recovery pass. A settle
+// drains. Any read failure is logged and acked (see Run for recovery). A settle
 // drained before an earlier post is held leaves that message waiting for the
 // author's next settle or session edge.
 func (c *Consumer) onEventRef(ctx context.Context, ref fabric.EventRef) {

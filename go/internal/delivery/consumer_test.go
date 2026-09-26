@@ -245,7 +245,7 @@ func TestAgentAuthoredNoLiveAuthorDeliversNow(t *testing.T) {
 	reads.subscribers[ch] = []store.AccountID{recipient}
 	reads.agents[authorAgent] = true
 	// Author agent is NOT bound to a live session (already stopped at post), so
-	// the deliver re-reads the settled blocks from the store (FIX 3).
+	// the deliver re-reads the settled blocks from the store.
 	reads.seedMessage(textMessage("m1", authorAgent, "stored body"))
 	res.bind(recipient, "sess-recip")
 	startConsumer(t, c)
@@ -290,7 +290,7 @@ func TestLiveEventsQueueBehindSweep(t *testing.T) {
 	// session gate, so a concurrent live deliver for the same session must queue
 	// behind it.
 	disp.armFirstBlock()
-	go c.sweepSession(context.Background(), recipient, "sess-recip", nil)
+	go c.sweepSession(context.Background(), recipient, "sess-recip", false)
 	<-disp.enteredFirst // the sweep dispatch is in-flight, holding the gate
 
 	// A live deliver for the SAME session, published now, reaches the gate and

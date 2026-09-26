@@ -131,7 +131,7 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 		ev := c.startQueue[0]
 		c.startQueue = c.startQueue[1:]
 		c.mu.Unlock()
-		c.sweepSession(ctx, ev.account, ev.sessionID, nil)
+		c.sweepSession(ctx, ev.account, ev.sessionID, false)
 		if err := c.sweepPins(ctx, ev.account, ev.sessionID); err != nil {
 			c.log.ErrorContext(ctx, "delivery: sweep pins on session start", "error", err,
 				"account", string(ev.account), "session_id", ev.sessionID)
@@ -307,20 +307,17 @@ func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 	}
 }
 
-// sweepAllLive redelivers every owed message to every live agent session — the
-// recovery pass a fabric reconnect or the floor tick triggers. The cursor defines
-// what each agent is owed, so a failed publish is a latency blip, never a loss.
-// Each session's re-dispatch runs under that session's gate (design.md:220-225).
-// Held messages are skipped: a sweep would send the author's partial blocks
-// ahead of fireHeld, and message_id dedup would then drop the settled deliver.
+// sweepAllLive is the recovery pass a fabric reconnect or the floor tick runs:
+// it redelivers every owed message to every live agent session, skipping held
+// ones so partial blocks never go out ahead of fireHeld (message_id dedup would
+// drop the settled deliver).
 func (c *Consumer) sweepAllLive(ctx context.Context) {
-	skip := c.heldIDs()
 	for account, sessionID := range c.resolver.LiveAgentSessions() {
-		c.sweepSession(ctx, account, sessionID, skip)
+		c.sweepSession(ctx, account, sessionID, true)
 	}
 }
 
-// heldIDs snapshots every held message id, once per recovery pass.
+// heldIDs snapshots every held message id.
 func (c *Consumer) heldIDs() map[string]struct{} {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -333,12 +330,10 @@ func (c *Consumer) heldIDs() map[string]struct{} {
 	return ids
 }
 
-// sweepSession redelivers every message owed to one agent, ascending seq per
-// channel, under the recipient session's dispatch gate held for the WHOLE ordered
-// re-dispatch — so live events for that session queue behind the sweep and
-// drain after it (design.md:220-225), never interleaving ahead of the sweep's
-// ordered set. Messages whose id is in skip are left for their settle to fire.
-func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, sessionID string, skip map[string]struct{}) {
+// sweepSession redelivers one agent's owed messages in seq order under the
+// session's gate held for the whole pass, so live delivers queue behind it
+// (design.md:220-225). skipHeld leaves messages held at owed-read time to fireHeld.
+func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, sessionID string, skipHeld bool) {
 	// Root a per-pass span (see sweepPins): the swept delivers link to its trace.
 	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.sweep.session")
 	defer span.End()
@@ -346,6 +341,11 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 	if err != nil {
 		c.log.ErrorContext(ctx, "delivery: sweep undelivered", "error", err, "account", string(account))
 		return
+	}
+	var skip map[string]struct{}
+	if skipHeld {
+		// Snapshot after the owed read, so the window is one read, not one pass.
+		skip = c.heldIDs()
 	}
 	gate := c.gateFor(sessionID)
 	gate.Lock()
