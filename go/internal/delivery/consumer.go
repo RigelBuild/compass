@@ -142,6 +142,9 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 type settleEvent struct {
 	sessionID string
 	state     compassv1.AgentSessionState
+	// upTo bounds the commit times this edge fires. A real settle fires all; a
+	// late hold's replay fires only its settled turn, not a still-streaming one.
+	upTo int64
 }
 
 // startEvent is one queued session-start edge handed from the hub's Start (or
@@ -169,6 +172,7 @@ type heldEntry struct {
 	messageID   string
 	traceparent string
 	tenant      store.TenantID
+	atUnixMs    int64 // commit time, matched against settleEvent.upTo
 }
 
 // Consumer consumes message_posted refs and fans posted messages out to
@@ -193,26 +197,17 @@ type Consumer struct {
 	mu sync.Mutex
 	// held is the pending-deliver registry (design.md:157-168), keyed by the
 	// AUTHOR's live session id: an agent-authored message posted while its author
-	// still streams is HELD here until that author's session settles
-	// (WORKING->READY) or reaches a terminal frame. The value is the ordered set
-	// of message ids held for that author, in post order, so a settle fires them
-	// ascending. A no-frame author death (no settle edge ever enqueues) leaves
-	// its entry here until it is reaped: the reap happens in-process on the next
-	// Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped), which
-	// drops the entry for every session id whose hub binding enroll just cleared.
-	// So the common no-frame death is reaped at that next enroll rather than
-	// persisting until process restart. The reap is best-effort, NOT a hard
-	// bound: the reaped set is exactly the session ids bound at enroll time, and a
-	// no-frame-dead session is never re-promoted (its id, once cleared, never
-	// re-enters the hub's session map), so a narrow race can still strand one
-	// entry until process restart — a Deliver that resolved the author LIVE an
-	// instant before enroll cleared the maps can hold(sess) just AFTER that
-	// enroll's reap, re-adding the dead session's entry; because that id never
-	// re-enrolls, no later enroll reaps it. Delivery correctness (no-loss) is
-	// unaffected either way — only the reap (a leak bound, not the delivery
-	// guarantee) is best-effort: the recipient still receives the message via the
-	// reconnect cursor sweep, independent of this registry.
+	// still streams is HELD here until that session settles (WORKING->READY) or
+	// reaches a terminal frame. Values are in post order, so a settle fires them
+	// ascending. A no-frame author death never settles; its entry waits for the
+	// next-enroll reap (OnSessionsReaped), and a reap race can strand one entry.
+	// The sweeps skip only messages held for a LIVE author, so the cursor sweep
+	// still delivers a stranded entry.
 	held map[string][]heldEntry
+	// lastSettle maps an author session id to the unix ms of its latest settle
+	// edge, so a message whose hold lost the race with that settle fires at once.
+	// The recovery pass drops entries of dead sessions; the reap drops them too.
+	lastSettle map[string]int64
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
 	// (coalescing wakeups): the hook appends and signals without blocking Deliver.
@@ -244,6 +239,9 @@ type Consumer struct {
 	// newFloorTicker starts the recovery floor tick; a test swaps in a channel
 	// it drives.
 	newFloorTicker func() (<-chan time.Time, func())
+
+	// now stamps and prunes lastSettle; a test swaps in a fixed clock.
+	now func() time.Time
 
 	// dispatched counts control dispatches (deliver + steer), labelled only by
 	// op kind (compass.op.kind = steer|deliver). Created ONCE at NewConsumer from
@@ -281,6 +279,7 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 		resolver:   resolver,
 		log:        log,
 		held:       make(map[string][]heldEntry),
+		lastSettle: make(map[string]int64),
 		notify:     make(chan struct{}, 1),
 		gates:      make(map[string]*sync.Mutex),
 		dispatched: dispatched,
@@ -288,6 +287,7 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 			t := time.NewTicker(recoveryFloorInterval)
 			return t.C, t.Stop
 		},
+		now: time.Now,
 	}
 }
 
@@ -357,9 +357,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 // onEventRef handles one ref on the fabric goroutine, concurrently with Run's
-// drains. Any read failure is logged and acked (see Run for recovery). A settle
-// drained before an earlier post is held leaves that message waiting for the
-// author's next settle or session edge.
+// drains. Any read failure is logged and acked (see Run for recovery). A post
+// whose author settled before the hold landed is delivered at once (hold).
 func (c *Consumer) onEventRef(ctx context.Context, ref fabric.EventRef) {
 	ctx = store.WithTenant(ctx, store.TenantID(ref.Tenant))
 	m, err := c.st.MessageByID(ctx, ref.RowID)
@@ -392,6 +391,16 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 	if !pending {
 		return
 	}
+	// A settle time guards a hold at any age, for example when a backlog replays
+	// after an outage, so only a dead session's entry goes.
+	live := c.liveSessionIDs()
+	c.mu.Lock()
+	for sid := range c.lastSettle {
+		if _, ok := live[sid]; !ok {
+			delete(c.lastSettle, sid)
+		}
+	}
+	c.mu.Unlock()
 	c.sweepAllLive(ctx)
 	c.scanMissedMentions(ctx)
 }
