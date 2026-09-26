@@ -25,8 +25,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// bindContainer records the account and Runner that provisioned containerName.
-// Start later promotes its account to a session binding. Empty values fail closed.
+// bindContainer records the resolved account and Runner that provisioned
+// containerName. Start later promotes its account to a session binding. Empty values fail closed.
 func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID, runnerID string) {
 	if containerName == "" || agentAccountID == "" || runnerID == "" {
 		return

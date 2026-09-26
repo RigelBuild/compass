@@ -213,7 +213,7 @@ func TestVsockGateway_HostServesSuffixedSocket(t *testing.T) {
 	fake := newW3Relay()
 	h, engine := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: w3AgentHandle})
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
 	if err != nil {
 		t.Fatalf("Provision (boot + serve over vsock suffixed path) = %v", err)
 	}
@@ -278,7 +278,7 @@ func TestVsockGateway_FailClosedBeforeStart(t *testing.T) {
 	fake := newW3Relay()
 	h, _ := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: w3AgentHandle})
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -312,7 +312,7 @@ func TestVsockGateway_TeardownRemovesSuffixedSocket(t *testing.T) {
 	fake := newW3Relay()
 	h, _ := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: w3AgentHandle})
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -350,7 +350,7 @@ func TestVsockGateway_InGuestRoundTripOverVsock(t *testing.T) {
 	fake := newW3Relay()
 	h, engine := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: w3AgentHandle})
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -397,7 +397,7 @@ func TestVsockGateway_InGuestVsockIsNotIP(t *testing.T) {
 	fake := newW3Relay()
 	h, engine := newMicroVMGatewayFixture(t, fake)
 
-	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: w3AgentHandle})
+	name, err := h.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, w3AgentHandle)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}

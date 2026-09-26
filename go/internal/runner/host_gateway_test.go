@@ -120,7 +120,7 @@ func TestHostProvisionServesInStateDirWithNoMounts(t *testing.T) {
 	h, engine := newHostGatewayFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: hostAgentHandle})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, hostAgentHandle)
 	if err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
@@ -195,7 +195,7 @@ func TestHostStartThreadsTransportEnvVars(t *testing.T) {
 	h, engine := newHostGatewayFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: hostAgentHandle})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, hostAgentHandle)
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -229,7 +229,7 @@ func TestHostProvisionResolveMissTearsDownSession(t *testing.T) {
 	engine.missing = true
 	ctx := context.Background()
 
-	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: hostAgentHandle})
+	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, hostAgentHandle)
 	if err == nil {
 		t.Fatal("Provision with an unresolvable state dir = nil, want an error")
 	}
@@ -259,7 +259,7 @@ func TestHostProvisionConfigMaterializeFailureTearsDownSocket(t *testing.T) {
 	engine.blockConfig = true
 	name := liveSpec().Name
 
-	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: hostAgentHandle})
+	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, hostAgentHandle)
 	if err == nil {
 		t.Fatal("Provision with an unwritable config root = nil, want the materialize error")
 	}

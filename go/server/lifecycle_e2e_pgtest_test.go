@@ -697,7 +697,7 @@ func provisionWhenSeamLiveE2E(t *testing.T, ctx context.Context, hub *runnerhub.
 	t.Helper()
 	deadline := time.After(e2eTimeout)
 	for {
-		resp, _, err := hub.Provision(ctx, "prov-supervisor", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(agentID)})
+		resp, _, err := hub.Provision(ctx, "prov-supervisor", agentID, &compassv1.ProvisionAgentWorkspaceRequest{})
 		if err == nil {
 			name := resp.GetContainerName()
 			if name == "" {
