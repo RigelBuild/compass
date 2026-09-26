@@ -21,6 +21,10 @@ import (
 	"time"
 )
 
+// LinearHost is the forge-coordinate host of every Linear artifact. Webhook
+// events, the notify lane and the write lane must agree on it to join rows.
+const LinearHost = "linear.app"
+
 const (
 	// linearDefaultEndpoint is the public Linear GraphQL endpoint; LinearConfig.Host
 	// overrides it (the whole endpoint URL, not just a hostname).

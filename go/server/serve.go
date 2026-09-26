@@ -1794,7 +1794,7 @@ func buildLinearNotifyLane(
 	}
 	const (
 		provider = store.ForgeProviderLinear
-		host     = "linear.app"
+		host     = forge.LinearHost
 	)
 	client := forge.NewLinear(forge.LinearConfig{Token: tokens, Log: log})
 
@@ -2042,8 +2042,7 @@ func buildForgeWriteService(
 	// One client serves both roles, riding the SAME linearTokens instance (DEC-4).
 	// isDefault=false: GitHub is the default, Linear is selected explicitly.
 	if linearTokens != nil {
-		linear := forge.NewLinear(forge.LinearConfig{Token: linearTokens, Log: log})
-		registry.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}, linear, linear, false)
+		registerLinearForgeCoordinate(registry, forge.NewLinear(forge.LinearConfig{Token: linearTokens, Log: log}))
 	}
 
 	return newForgeService(st, issueBrd, registry), nil
@@ -2058,6 +2057,13 @@ func buildForgeWriteService(
 // credential layer.
 func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer *forge.GitHub) {
 	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: fc.Host}, author, reviewer, true)
+}
+
+// registerLinearForgeCoordinate registers the Linear write coordinate. It must
+// carry forge.LinearHost: the DL-055 row rejects an empty host. One client
+// serves both roles (Linear has no author/reviewer split).
+func registerLinearForgeCoordinate(reg *forgeProviderRegistry, linear forge.Provider) {
+	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host: forge.LinearHost}, linear, linear, false)
 }
 
 // buildLinearTokenSource builds the ONE shared Linear OAuth client-credentials
