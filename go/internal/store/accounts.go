@@ -820,15 +820,19 @@ func ParseQualifiedHandle(raw string) QualifiedHandle {
 // no-op (empty map, nil error).
 func (s *Store) AccountsByHandles(ctx context.Context, viewer, callerOwner AccountID, handles []QualifiedHandle) (map[string]AccountID, error) {
 	hits := make(map[string]AccountID, len(handles))
-	// A malformed qualifier or empty handle misses outright; resolving "/x" bare
-	// would let it reach the user or the caller's own agent named x.
+	// Each handle is classified once; every later pass reads kinds[i]. A malformed
+	// qualifier misses outright, since resolving "/x" bare would reach x.
+	kinds := make([]handleKind, len(handles))
 	var bare, owners []string
-	for _, qh := range handles {
+	for i, qh := range handles {
 		switch {
 		case qh.Handle == "" || qh.Malformed():
+			kinds[i] = handleMiss
 		case qh.Qualified():
+			kinds[i] = handleQualified
 			owners = append(owners, qh.Owner)
 		default:
+			kinds[i] = handleBare
 			bare = append(bare, qh.Handle)
 		}
 	}
@@ -854,16 +858,16 @@ func (s *Store) AccountsByHandles(ctx context.Context, viewer, callerOwner Accou
 	agentKeys := make([]agentHandleKey, len(handles))
 	var keys []agentHandleKey
 	for i, qh := range handles {
-		switch {
-		case qh.Handle == "" || qh.Malformed():
+		switch kinds[i] {
+		case handleMiss:
 			continue
-		case qh.Qualified():
+		case handleQualified:
 			owner, ok := ownerIDs[qh.Owner]
 			if !ok {
 				continue
 			}
 			agentKeys[i] = agentHandleKey{owner: owner, handle: qh.Handle}
-		default:
+		case handleBare:
 			if _, ok := global[qh.Handle]; ok || callerOwner == "" {
 				continue
 			}
@@ -880,9 +884,16 @@ func (s *Store) AccountsByHandles(ctx context.Context, viewer, callerOwner Accou
 
 	var missing []string
 	for i, qh := range handles {
-		id, ok := global[qh.Handle]
-		if !ok || qh.Qualified() {
+		var id AccountID
+		switch kinds[i] {
+		case handleBare:
+			var ok bool
+			if id, ok = global[qh.Handle]; !ok {
+				id = agents[agentKeys[i]]
+			}
+		case handleQualified:
 			id = agents[agentKeys[i]]
+		case handleMiss:
 		}
 		if id == "" {
 			missing = append(missing, qh.Raw)
@@ -904,6 +915,15 @@ type agentHandleKey struct {
 	owner  AccountID
 	handle string
 }
+
+// handleKind is how AccountsByHandles routes one submitted handle.
+type handleKind uint8
+
+const (
+	handleMiss handleKind = iota
+	handleBare
+	handleQualified
+)
 
 // globalHandleIDs resolves bare handles in the global user/system index
 // (owner_user_id IS NULL), excluding the system account, WITHOUT a visibility
