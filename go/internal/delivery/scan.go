@@ -88,11 +88,9 @@ func (c *Consumer) messageHeld(messageID string) bool {
 }
 
 // markUnlessHeld marks messageID routed unless a callback held it after the
-// scan's first check; a held message stays NULL for its settle pass to mark.
-// markMu keeps a hold from landing between this re-check and the mark.
+// scan's first check; a message held at mark time stays NULL for its settle
+// pass to mark.
 func (c *Consumer) markUnlessHeld(ctx context.Context, messageID string) error {
-	c.markMu.Lock()
-	defer c.markMu.Unlock()
 	if c.messageHeld(messageID) {
 		return nil
 	}
