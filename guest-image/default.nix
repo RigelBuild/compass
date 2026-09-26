@@ -339,69 +339,7 @@ in
       ''
         root=$(mktemp -d)
 
-        # Whiteouts in a layer hide only the layers BELOW it, so each layer's
-        # markers are applied to the accreting tree before its own content is
-        # extracted -- an opaque marker applied afterwards would delete the
-        # sibling files that same layer adds.
-        for layer in ${lib.concatStringsSep " " agentLayers}; do
-          members=$(tar -tzf "$layer" | sed 's|^\./||')
-
-          # Archive names drive the rm -rf and tar writes below, so a `..`
-          # component fails the build rather than being sanitized: tar would
-          # follow it out of the staged tree.
-          if printf '%s\n' "$members" | grep -qE '(^|/)\.\.(/|$)'; then
-            echo "guest-image: BUILD-BREAK — layer $layer has a '..' member path." >&2
-            exit 1
-          fi
-
-          # A layer replacing a lower layer's symlink with a real directory is
-          # legitimate OCI, but tar would write THROUGH the stale symlink --
-          # outside $root when its target is absolute. Drop such parents so tar
-          # materializes a directory instead.
-          for d in $(printf '%s\n' "$members" | sed -n 's|/[^/]*$||p' | sort -u); do
-            p=""
-            IFS=/
-            for c in $d; do
-              [ -n "$c" ] || continue
-              p="$p/$c"
-              if [ -L "$root$p" ]; then rm -f "$root$p"; fi
-            done
-            unset IFS
-          done
-
-          # A marker is a `.wh.`-prefixed final COMPONENT. Matching the
-          # substring anywhere would read an ordinary path that merely contains
-          # `.wh.` as a delete order against a file the layer legitimately
-          # ships.
-          printf '%s\n' "$members" | { grep -E '(^|/)\.wh\.' || true; } | while read -r marker; do
-            dir=$(dirname "$marker")
-            base=$(basename "$marker")
-            case "$base" in
-              .wh.*) ;;
-              *) continue ;;
-            esac
-            if [ "$base" = ".wh..wh..opq" ]; then
-              # A marker naming a path the lower layers never created means the
-              # layer stack is not what this build thinks it is; fail loudly
-              # rather than swallowing the status.
-              if [ ! -d "$root/$dir" ]; then
-                echo "guest-image: BUILD-BREAK — opaque marker names a missing directory $dir." >&2
-                exit 1
-              fi
-              find "$root/$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-            else
-              rm -rf "$root/$dir/''${base#.wh.}"
-            fi
-          done
-
-          # -p restores each member's recorded mode; without it every member
-          # takes the builder's umask instead (measured: /bin packed 0755 where
-          # the image ships 0555). Staging write access is re-opened on
-          # DIRECTORIES only, leaving file modes as published.
-          tar -xzpf "$layer" -C "$root" --overwrite \
-            --exclude='.wh.*' --exclude='*/.wh.*'
-          find "$root" -type d -exec chmod u+w {} +
-        done
+        bash ${./assemble-layers.sh} unpack "$root" ${lib.concatStringsSep " " agentLayers}
 
         # Lay the boot layer over the unpacked image. It wins on any path
         # conflict: /sbin/init, /sbin/modprobe, /lib/modules and the writable
@@ -427,81 +365,9 @@ in
           exit 1
         fi
 
-        # Re-extract the directory members to restore their published modes,
-        # undoing the staging u+w. / is then set outright: `cp -a ${bootLayer}/.`
-        # stamps the store's 0555 onto it, so leaving it to a chmod's residue
-        # makes / untraversable or accidentally right depending on ordering.
-        for layer in ${lib.concatStringsSep " " agentLayers}; do
-          # Select directory members by tar's type flag: these layers list
-          # directories with no trailing slash, so matching on one restores
-          # nothing.
-          if tar -tvzf "$layer" | awk '$1 ~ /^d/ {print $NF}' > dirs.txt; then
-            tar -xzpf "$layer" -C "$root" --overwrite --no-recursion -T dirs.txt
-          fi
-        done
-        chmod 0755 "$root"
-
-        # The userland contract, checked on the ASSEMBLED tree. EVERY component
-        # resolves inside $root, as the kernel will after switch_root: following
-        # only the final symlink resolves an intermediate /bin -> /nix/store/...
-        # against the BUILDER's store, passing an image with no /bin/sh at all.
-        for p in ${lib.concatStringsSep " " userlandContract}; do
-          resolved=""
-          rest="/$p"
-          hops=0
-          while [ -n "$rest" ]; do
-            comp=''${rest#/}
-            comp=''${comp%%/*}
-            tail=''${rest#/"$comp"}
-            case "$comp" in
-              . | "")
-                rest="$tail"
-                continue
-                ;;
-              ..)
-                resolved=$(dirname "$resolved")
-                [ "$resolved" = "/" ] || [ "$resolved" = "." ] && resolved=""
-                rest="$tail"
-                continue
-                ;;
-            esac
-            resolved="$resolved/$comp"
-            if [ -L "$root$resolved" ]; then
-              # Count symlink traversals, not path components: a deep
-              # symlink-free path is not a loop, and Linux's own ELOOP is 40.
-              hops=$((hops + 1))
-              if [ "$hops" -gt 40 ]; then
-                echo "guest-image: BUILD-BREAK — /$p is a symlink loop in the image." >&2
-                exit 1
-              fi
-              link=$(readlink "$root$resolved")
-              case "$link" in
-                /*)
-                  resolved=""
-                  rest="$link$tail"
-                  ;;
-                *)
-                  resolved=$(dirname "$resolved")
-                  [ "$resolved" = "/" ] || [ "$resolved" = "." ] && resolved=""
-                  rest="/$link$tail"
-                  ;;
-              esac
-            else
-              rest="$tail"
-            fi
-          done
-          target="$resolved"
-          if [ ! -f "$root$target" ] || [ ! -x "$root$target" ]; then
-            echo "guest-image: BUILD-BREAK — /$p is not an executable in the rootfs." >&2
-            echo "  It resolves to $target, which the image does not carry as one." >&2
-            echo "  The guest userland comes from the pinned agent image" >&2
-            echo "  (${checkedLock.repo}@${checkedLock.digest})." >&2
-            echo "  Either that image stopped shipping it, or a layer failed to" >&2
-            echo "  unpack. /bin/sh missing is a TOTAL backend outage: every" >&2
-            echo "  microVM Start shells out to arm egress." >&2
-            exit 1
-          fi
-        done
+        bash ${./assemble-layers.sh} restore-dir-modes "$root" ${lib.concatStringsSep " " agentLayers}
+        bash ${./assemble-layers.sh} check-contract "$root" \
+          "${checkedLock.repo}@${checkedLock.digest}" ${lib.concatStringsSep " " userlandContract}
 
         # Pack twice with identical flags and assert bit-equality; --workers=1
         # removes job-queue ordering as a variable. Intra-run smoke check only:
@@ -531,4 +397,10 @@ in
         ${moduleConfigCheck}
         cp ${initrdImage}/initrd $out
       '';
+
+  # Synthetic-layer fixtures for the unpack and contract logic the rootfs uses.
+  compass-guest-assembly-tests = import ./assembly-tests.nix {
+    inherit pkgs;
+    script = ./assemble-layers.sh;
+  };
 }
