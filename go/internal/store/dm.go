@@ -255,7 +255,7 @@ func verifyReconcileDMTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 func isReservedDMGroupTx(ctx context.Context, tx pgx.Tx, groupID ChannelGroupID) (bool, error) {
 	switch row, err := db.New(tx).GetGroupNameVisibility(ctx, string(groupID)); {
 	case err == nil:
-		return row.Name == dmGroupName && ChannelGroupVisibility(row.Visibility) == VisibilityOwner, nil
+		return row.TopLevel && row.Name == dmGroupName && ChannelGroupVisibility(row.Visibility) == VisibilityOwner, nil
 	case noRows(err):
 		return false, nil
 	default:

@@ -103,7 +103,7 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 	// lock (LockOwnerCoordinationTx), so the get-then-create cannot race a
 	// concurrent reconcile for the same owner into two groups; channel_groups has
 	// no unique index on (name, owner, parent), and CreateChannelGroup refuses the
-	// reserved top-level name, so only other paths can plant such a row.
+	// reserved top-level name, so only the system insert can plant such a row.
 
 	qtx := db.New(tx)
 	existing, err := qtx.GetCoordinationGroup(ctx, db.GetCoordinationGroupParams{
