@@ -24,7 +24,7 @@ const externalURLLabel = "Open in Compass"
 
 // clientRequestIDPrefix namespaces the comms-rail idempotency key the dispatcher
 // stamps on every PostAsAccount so a redelivered webhook never double-posts
-// (§Part 1 message-level dedup). The full key is "linear-delivery:<uuid>".
+// (§Part 1 message-level dedup). The full key is "linear-delivery:<Linear-Delivery id>".
 const clientRequestIDPrefix = "linear-delivery:"
 
 // ErrQueueFull is returned by Enqueue when the bounded channel is full. The HTTP
@@ -90,8 +90,8 @@ type DispatcherParams struct {
 	DeepLinkFor func(channelID string) string
 	// Bridge is the seeded @linear bridge system account id (T3a).
 	Bridge store.AccountID
-	// NewRequestID mints the uuid half of a client_request_id. Injectable for
-	// deterministic tests; defaults to uuid.NewString.
+	// NewRequestID mints the fallback key half when an event has no delivery id.
+	// Injectable for deterministic tests; defaults to uuid.NewString.
 	NewRequestID func() string
 }
 
@@ -230,7 +230,7 @@ func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error 
 	}}); err != nil {
 		return err
 	}
-	return d.post(ctx, homeChannel, topicID, ev.PromptContext)
+	return d.post(ctx, homeChannel, topicID, ev.PromptContext, d.clientRequestID(ctx, ev))
 }
 
 // handlePrompted routes a follow-up to the recorded conversation: look up the
@@ -241,7 +241,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 	row, err := d.assoc.LinearAgentSession(ctx, ev.AgentSession.ID)
 	switch {
 	case err == nil:
-		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Body)
+		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Body, d.clientRequestID(ctx, ev))
 	case errors.Is(err, store.ErrNotFound):
 		manager, homeChannel, resErr := d.resolve(ctx, ev)
 		if resErr != nil {
@@ -263,20 +263,20 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 		}); upErr != nil {
 			return upErr
 		}
-		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Body)
+		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Body, d.clientRequestID(ctx, ev))
 	default:
 		return err
 	}
 }
 
-// post writes one message as the @linear bridge account into channel/topic with
-// a fresh dedup client_request_id.
-func (d *Dispatcher) post(ctx context.Context, channelID, topicID, body string) error {
+// post writes one message as the @linear bridge account into channel/topic under
+// the event's dedup client_request_id.
+func (d *Dispatcher) post(ctx context.Context, channelID, topicID, body, clientRequestID string) error {
 	_, err := d.poster.PostAsAccount(ctx, d.bridge, &compassv1.PostMessageRequest{
 		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
 		Topic:           &compassv1.PostMessageRequest_TopicId{TopicId: topicID},
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
-		ClientRequestId: d.clientRequestID(),
+		ClientRequestId: clientRequestID,
 	})
 	return err
 }
@@ -290,9 +290,15 @@ func (d *Dispatcher) emitError(ctx context.Context, sessionID string, cause erro
 	}
 }
 
-// clientRequestID mints the comms-rail idempotency key: "linear-delivery:<uuid>".
-func (d *Dispatcher) clientRequestID() string {
-	return clientRequestIDPrefix + d.newRequestID()
+// clientRequestID keys an event's one post on its Linear-Delivery id, so a replayed
+// delivery collapses onto the stored row; a missing header falls back to a fresh uuid.
+func (d *Dispatcher) clientRequestID(ctx context.Context, ev *SessionEvent) string {
+	if ev.DeliveryID == "" {
+		slog.WarnContext(ctx, "linearagent dispatcher: session event has no Linear-Delivery id; replay dedup off",
+			"linear_session_id", ev.AgentSession.ID)
+		return clientRequestIDPrefix + d.newRequestID()
+	}
+	return clientRequestIDPrefix + ev.DeliveryID
 }
 
 // topicName is the issue identifier when present, else the session id.

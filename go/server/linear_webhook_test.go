@@ -175,6 +175,27 @@ func TestLinearWebhookHandler_SessionEvent(t *testing.T) {
 	}
 }
 
+// TestLinearWebhookHandler_SessionDeliveryID pins that the Linear-Delivery header
+// reaches the event: the dispatcher's replay dedup keys on it.
+func TestLinearWebhookHandler_SessionDeliveryID(t *testing.T) {
+	secret := []byte("shh")
+	now := time.Unix(1_700_000_000, 0)
+	h, _, session := linHandler(t, secret, now, false)
+	body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":"s1"}}`, freshTS(now))
+
+	req := httptest.NewRequest(http.MethodPost, linearWebhookPath, strings.NewReader(string(body)))
+	req.Header.Set(linearSignatureHeader, linSign(secret, body))
+	req.Header.Set("Linear-Delivery", "d-123")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || session.count() != 1 {
+		t.Fatalf("code = %d, enqueued = %d; want 200 and 1", rec.Code, session.count())
+	}
+	if got := session.events[0].DeliveryID; got != "d-123" {
+		t.Fatalf("DeliveryID = %q, want the Linear-Delivery header d-123", got)
+	}
+}
+
 func TestLinearWebhookHandler_SessionQueueFull(t *testing.T) {
 	secret := []byte("shh")
 	now := time.Unix(1_700_000_000, 0)

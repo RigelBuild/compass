@@ -150,7 +150,7 @@ func (h *linearWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	switch env.Type {
 	case linearTypeSession:
-		h.serveSession(ctx, w, body)
+		h.serveSession(ctx, w, r, body)
 	case linearTypeIssue, linearTypeComment:
 		h.serveData(ctx, w, body)
 	default:
@@ -163,13 +163,14 @@ func (h *linearWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // the data branch, Enqueue is itself non-blocking (a bounded try-send) and its
 // return maps to the status code, so the status is written AFTER Enqueue: a full
 // queue is a 500 (Linear retries), everything else a 200.
-func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.ResponseWriter, body []byte) {
+func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.ResponseWriter, r *http.Request, body []byte) {
 	ev, err := linearagent.ParseSessionEvent(body)
 	if err != nil {
 		h.log.WarnContext(ctx, "linear session event parse error", "err", err)
 		w.WriteHeader(http.StatusOK) // verified-but-malformed: ack-and-drop.
 		return
 	}
+	ev.DeliveryID = r.Header.Get("Linear-Delivery")
 	if h.sessionSink == nil {
 		// Linear is not configured: ack so Linear does not retry an event nothing handles.
 		h.log.WarnContext(ctx, "linear session responder not configured, dropping event",

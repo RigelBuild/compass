@@ -253,8 +253,35 @@ func TestDispatcherCreatedTopicNameFallsBackToSession(t *testing.T) {
 	}
 }
 
+// TestDispatcherReplayKeysOnDeliveryID pins the replay dedup: two deliveries of one
+// Linear-Delivery id post with the same client_request_id, so the store collapses them.
+func TestDispatcherReplayKeysOnDeliveryID(t *testing.T) {
+	comms := &recordingComms{posted: make(chan struct{}, 2)}
+	calls := 0
+	d := newTestDispatcher(t, dispatcherDeps{
+		res:    &fakeResolver{manager: "mgr", homeChannel: "chan"},
+		comms:  comms,
+		topics: &fakeTopics{topicID: "topic"},
+		assoc:  &fakeAssoc{},
+		client: &recordingClient{},
+		reqID:  func() string { calls++; return fmt.Sprintf("random-%d", calls) },
+	})
+	stop := runDispatcher(t, d)
+	defer stop()
+
+	for range 2 {
+		ev := &SessionEvent{Action: "created", DeliveryID: "delivery-1", AgentSession: AgentSession{ID: "sess-1"}}
+		if err := d.Enqueue(ev); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		<-comms.posted
+	}
+	assertReqID(t, comms.reqIDs[0], "delivery-1")
+	assertReqID(t, comms.reqIDs[1], "delivery-1")
+}
+
 // TestDispatcherPromptedFollowUp pins the prompted path: a hit posts the
-// agentActivity body into the RECORDED channel/topic, with a fresh dedup key,
+// agentActivity body into the RECORDED channel/topic, keyed on its delivery id,
 // and never re-runs the created-side emits.
 func TestDispatcherPromptedFollowUp(t *testing.T) {
 	comms := &recordingComms{posted: make(chan struct{}, 1)}
@@ -268,13 +295,14 @@ func TestDispatcherPromptedFollowUp(t *testing.T) {
 		topics: &fakeTopics{topicID: "should-not-be-used"},
 		assoc:  assoc,
 		client: client,
-		reqID:  func() string { return "uuid-2" },
+		reqID:  func() string { return "random-uuid" },
 	})
 	stop := runDispatcher(t, d)
 	defer stop()
 
 	if err := d.Enqueue(&SessionEvent{
 		Action:        "prompted",
+		DeliveryID:    "delivery-2",
 		AgentSession:  AgentSession{ID: "sess-1"},
 		AgentActivity: AgentActivity{Body: "the follow-up prompt"},
 	}); err != nil {
@@ -285,7 +313,7 @@ func TestDispatcherPromptedFollowUp(t *testing.T) {
 	if comms.topics[0] != "topic-1" || comms.bodies[0] != "the follow-up prompt" {
 		t.Fatalf("post topic/body = %q/%q, want topic-1/the follow-up prompt", comms.topics[0], comms.bodies[0])
 	}
-	assertReqID(t, comms.reqIDs[0], "uuid-2")
+	assertReqID(t, comms.reqIDs[0], "delivery-2")
 	// No created-side emits on a follow-up.
 	if got := client.seq(); len(got) != 0 {
 		t.Fatalf("prompted emitted Linear activities %v, want none", got)
