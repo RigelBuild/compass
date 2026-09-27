@@ -210,8 +210,6 @@ type linE2EWire struct {
 	supervisor store.Account
 	manager    store.Account
 	routingCh  store.ChannelID
-	// ownedSession is the recorded-owner session the prompted scenario follows up on.
-	ownedSession string
 }
 
 func newLinE2EWire(t *testing.T) *linE2EWire {
@@ -280,8 +278,8 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 	}
 }
 
-// sessionBody marshals a signed-ready AgentSessionEvent; text is the prompt
-// context on `created` and the activity body on `prompted`.
+// linE2ESessionBody marshals an AgentSessionEvent for signing; text is the
+// promptContext on `created` and the activity body on `prompted`.
 func linE2ESessionBody(t *testing.T, action, sessionID string, issue linearagent.Issue, text string, ts time.Time) []byte {
 	t.Helper()
 	ev := linearagent.SessionEvent{
@@ -402,11 +400,18 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	text := "<issue>RIG-101 prompt context " + sessionID + "</issue>"
 	body := linE2ESessionBody(t, "created", sessionID, linearagent.Issue{ID: "issue-101", Identifier: "RIG-101"}, text, time.Now())
 
-	// Linear is parked, so a 200 here proves the ack never waits on the return path.
+	// Linear is parked, so an ack that waited on the return path never returns.
 	release := w.linear.hold()
 	defer release()
-	if code := w.deliverSigned(t, body); code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", code)
+	acked := make(chan int, 1)
+	go func() { acked <- w.deliverSigned(t, body) }()
+	select {
+	case code := <-acked:
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+	case <-timeAfter():
+		t.Fatal("webhook ack waited on the Linear return path")
 	}
 	release()
 
@@ -442,7 +447,6 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	if len(updates) != 1 || updates[0].Status != http.StatusOK || len(updates[0].ExternalURLs) != 1 || updates[0].ExternalURLs[0].URL != wantURL {
 		t.Errorf("session updates = %+v, want one accepted update with external URL %s", updates, wantURL)
 	}
-	w.ownedSession = sessionID
 }
 
 func (w *linE2EWire) scenarioCreatedUnstamped(t *testing.T) {
@@ -479,27 +483,35 @@ func (w *linE2EWire) scenarioReplay(t *testing.T) {
 }
 
 func (w *linE2EWire) scenarioPrompted(t *testing.T) {
-	sessionID := w.ownedSession
-	if sessionID == "" {
-		t.Fatal("no session from created_recorded_owner to prompt")
+	sessionID := uuid.NewString()
+	created := "<issue>RIG-101 prompt context " + sessionID + "</issue>"
+	owned := linearagent.Issue{ID: "issue-101", Identifier: "RIG-101"}
+	if code := w.deliverSigned(t, linE2ESessionBody(t, "created", sessionID, owned, created, time.Now())); code != http.StatusOK {
+		t.Fatalf("created status = %d, want 200", code)
 	}
+	w.waitForMessage(t, w.manager.Agent.HomeChannelID, created)
 	row, err := w.st.LinearAgentSession(t.Context(), sessionID)
 	if err != nil {
 		t.Fatalf("LinearAgentSession: %v", err)
 	}
+
+	// No issue on the follow-up: a re-resolve would land in the routing channel, so
+	// only the recorded association can put it in the owner's topic.
 	text := "follow-up prompt " + uuid.NewString()
-	body := linE2ESessionBody(t, "prompted", sessionID, linearagent.Issue{ID: "issue-101", Identifier: "RIG-101"}, text, time.Now())
-	if code := w.deliverSigned(t, body); code != http.StatusOK {
+	if code := w.deliverSigned(t, linE2ESessionBody(t, "prompted", sessionID, linearagent.Issue{}, text, time.Now())); code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}
 	msg := w.waitForMessage(t, row.ChannelID, text)
 	if msg.TopicID != row.TopicID {
 		t.Errorf("prompted post topic = %s, want the created topic %s", msg.TopicID, row.TopicID)
 	}
+	if got := w.messagesWithText(t, w.routingCh, text); len(got) != 0 {
+		t.Errorf("routing channel holds %d copies of the follow-up, want 0", len(got))
+	}
 }
 
 func (w *linE2EWire) scenario401(t *testing.T) {
-	// A prior scenario must have minted, so the 401 lands on a cached token.
+	// The barrier mints and drains, so the 401 lands on a cached token with nothing in flight.
 	w.barrier(t)
 	mintsBefore, served401Before := w.linear.counters()
 	w.linear.failNext401()
@@ -537,7 +549,12 @@ func (w *linE2EWire) scenarioTampered(t *testing.T) {
 	text := "<issue>tampered " + sessionID + "</issue>"
 	body := linE2ESessionBody(t, "created", sessionID, linearagent.Issue{}, text, time.Now())
 	sig := []byte(linSign(w.secret, body))
-	sig[len(sig)-1] ^= 0x01
+	// Swap in a different hex digit so the MAC compare, not hex decoding, rejects it.
+	if sig[len(sig)-1] == '0' {
+		sig[len(sig)-1] = '1'
+	} else {
+		sig[len(sig)-1] = '0'
+	}
 	if code := w.deliver(t, body, string(sig), uuid.NewString()); code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", code)
 	}
