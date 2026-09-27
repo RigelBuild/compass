@@ -4,7 +4,9 @@
 -- name: GetLinearRoutingGroup :one
 -- Visibility-discriminated like GetOwnerDMGroup: a planted wider __linear__ group is never adopted.
 SELECT id FROM channel_groups
-WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL AND visibility = $3;
+WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL AND visibility = $3
+ORDER BY id
+LIMIT 1;
 
 -- name: InsertLinearRoutingGroup :exec
 INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility)
@@ -23,5 +25,7 @@ RETURNING id;
 -- name: LockLinearRouting :exec
 SELECT pg_advisory_xact_lock(hashtext('linear-routing:' || $1));
 
--- name: ReassertLinearRoutingMandatory :exec
-UPDATE channels SET mandatory_subscription = TRUE WHERE id = $1 AND mandatory_subscription = FALSE;
+-- name: ReassertLinearRoutingShape :exec
+-- The bridge posts as a non-owner, so owner-only or owned drift would refuse every cold delegation.
+UPDATE channels SET mandatory_subscription = TRUE, post_policy = $2, owner_account_id = NULL
+WHERE id = $1 AND (mandatory_subscription = FALSE OR post_policy <> $2 OR owner_account_id IS NOT NULL);

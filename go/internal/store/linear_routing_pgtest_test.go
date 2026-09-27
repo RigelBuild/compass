@@ -72,8 +72,8 @@ func TestEnsureLinearRoutingChannelSkipsSharedGroup(t *testing.T) {
 	}
 }
 
-// TestEnsureLinearRoutingChannelReconcilesDrift: a reserved channel that lost mandatory
-// and its members is restored, with the supervisor a seeded delivery target again.
+// TestEnsureLinearRoutingChannelReconcilesDrift: a reserved channel that lost mandatory,
+// its open post policy and its members is restored, with the supervisor a delivery target again.
 func TestEnsureLinearRoutingChannelReconcilesDrift(t *testing.T) {
 	s := newTestStore(t)
 	admin, supervisor, bridge := routingParties(t, s)
@@ -84,6 +84,7 @@ func TestEnsureLinearRoutingChannelReconcilesDrift(t *testing.T) {
 
 	for _, stmt := range []string{
 		`UPDATE channels SET mandatory_subscription = FALSE WHERE id = $1`,
+		`UPDATE channels SET post_policy = 1, owner_account_id = (SELECT account_id FROM channel_members WHERE channel_id = $1 LIMIT 1) WHERE id = $1`,
 		`DELETE FROM agent_delivery_cursors WHERE channel_id = $1`,
 		`DELETE FROM channel_members WHERE channel_id = $1`,
 	} {
@@ -105,6 +106,9 @@ func TestEnsureLinearRoutingChannelReconcilesDrift(t *testing.T) {
 	}
 	if !ch.Policy.MandatorySubscription {
 		t.Fatal("mandatory_subscription still FALSE after reconcile, want TRUE")
+	}
+	if ch.Policy.PostPolicy != ChannelPostPolicyOpen || ch.Policy.OwnerAccountID != "" {
+		t.Fatalf("policy after reconcile = %+v, want open and ownerless", ch.Policy)
 	}
 	members := memberSet(ch)
 	for _, want := range []AccountID{supervisor.ID, bridge.ID, admin.ID} {

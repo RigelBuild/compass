@@ -448,7 +448,8 @@ type Querier interface {
 	// bundle is a fleet-wide singleton row (singleton = TRUE).
 	PutAgentConfig(ctx context.Context, arg PutAgentConfigParams) error
 	ReassertDMMandatory(ctx context.Context, id string) error
-	ReassertLinearRoutingMandatory(ctx context.Context, id string) error
+	// The bridge posts as a non-owner, so owner-only or owned drift would refuse every cold delegation.
+	ReassertLinearRoutingShape(ctx context.Context, arg ReassertLinearRoutingShapeParams) error
 	// Agent-placement queries (sqlc adoption T5, RIG-3034). These replace the inline
 	// SQL literals in internal/store/agent_placements.go; the hand-written Store
 	// methods keep their signatures and map the placement rows into the

@@ -36,6 +36,8 @@ const getLinearRoutingGroup = `-- name: GetLinearRoutingGroup :one
 
 SELECT id FROM channel_groups
 WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL AND visibility = $3
+ORDER BY id
+LIMIT 1
 `
 
 type GetLinearRoutingGroupParams struct {
@@ -116,11 +118,18 @@ func (q *Queries) LockLinearRouting(ctx context.Context, dollar_1 pgtype.Text) e
 	return err
 }
 
-const reassertLinearRoutingMandatory = `-- name: ReassertLinearRoutingMandatory :exec
-UPDATE channels SET mandatory_subscription = TRUE WHERE id = $1 AND mandatory_subscription = FALSE
+const reassertLinearRoutingShape = `-- name: ReassertLinearRoutingShape :exec
+UPDATE channels SET mandatory_subscription = TRUE, post_policy = $2, owner_account_id = NULL
+WHERE id = $1 AND (mandatory_subscription = FALSE OR post_policy <> $2 OR owner_account_id IS NOT NULL)
 `
 
-func (q *Queries) ReassertLinearRoutingMandatory(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, reassertLinearRoutingMandatory, id)
+type ReassertLinearRoutingShapeParams struct {
+	ID         string
+	PostPolicy int16
+}
+
+// The bridge posts as a non-owner, so owner-only or owned drift would refuse every cold delegation.
+func (q *Queries) ReassertLinearRoutingShape(ctx context.Context, arg ReassertLinearRoutingShapeParams) error {
+	_, err := q.db.Exec(ctx, reassertLinearRoutingShape, arg.ID, arg.PostPolicy)
 	return err
 }

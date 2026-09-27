@@ -154,6 +154,40 @@ func TestLinearRoutingOwningManager(t *testing.T) {
 	}
 }
 
+// TestLinearRoutingOwningManagerWalksPastDeadParent: the walk keeps climbing past an
+// unplaced parent, so a live grandparent owns a despawned author's issue.
+func TestLinearRoutingOwningManagerWalksPastDeadParent(t *testing.T) {
+	ctx := t.Context()
+	st := forgeTestStore(t)
+	owner, err := st.CreateUser(ctx, store.NewUser{Handle: "owner", DisplayName: "Owner"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	root, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "root-manager", DisplayName: "Root", Role: "manager"})
+	if err != nil {
+		t.Fatalf("CreateAgent(root): %v", err)
+	}
+	mid, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "mid-manager", DisplayName: "Mid", ParentAgentID: root.ID})
+	if err != nil {
+		t.Fatalf("CreateAgent(mid): %v", err)
+	}
+	author, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "author", DisplayName: "Author", ParentAgentID: mid.ID})
+	if err != nil {
+		t.Fatalf("CreateAgent(author): %v", err)
+	}
+	if err := st.RecordAgentPlacement(ctx, root.ID, "runner-1", "compass-"+string(root.ID)); err != nil {
+		t.Fatalf("RecordAgentPlacement(root): %v", err)
+	}
+
+	gotManager, gotChannel, err := (&linearRouting{st: st, adminID: owner.ID}).OwningManager(ctx, author.ID)
+	if err != nil {
+		t.Fatalf("OwningManager(author): %v", err)
+	}
+	if gotManager != root.ID || gotChannel != string(root.Agent.HomeChannelID) {
+		t.Errorf("OwningManager(author) = (%q, %q), want the live grandparent (%q, %q)", gotManager, gotChannel, root.ID, root.Agent.HomeChannelID)
+	}
+}
+
 // TestSeedWarnsNoLinearRoutingTarget: with Linear on, each early-return arm of the
 // seed warns once that cold delegations have no routing target; Linear off stays quiet.
 func TestSeedWarnsNoLinearRoutingTarget(t *testing.T) {

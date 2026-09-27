@@ -151,8 +151,11 @@ func linearRoutingChannelID(row db.GetLinearRoutingChannelRow) (ChannelID, error
 // mandatory channel delivers to every member, so every agent member needs a cursor.
 func reconcileLinearRoutingChannelTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, members []AccountID) error {
 	qtx := db.New(tx)
-	if err := qtx.ReassertLinearRoutingMandatory(ctx, string(channelID)); err != nil {
-		return fmt.Errorf("store: reassert linear routing mandatory: %w", err)
+	if err := qtx.ReassertLinearRoutingShape(ctx, db.ReassertLinearRoutingShapeParams{
+		ID:         string(channelID),
+		PostPolicy: int16(ChannelPostPolicyOpen),
+	}); err != nil {
+		return fmt.Errorf("store: reassert linear routing shape: %w", err)
 	}
 	for _, m := range members {
 		if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
