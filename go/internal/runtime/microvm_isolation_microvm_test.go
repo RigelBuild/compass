@@ -456,6 +456,32 @@ func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
 	}
 }
 
+// TestMicroVMSweepScriptFailsClosedOnAReadError pins the READ-error residue
+// BEGINFILE cannot cover: gawk opens its own /proc/self/mem, fails the read, and
+// aborts the batch, so a needle queued behind it is never scanned.
+func TestMicroVMSweepScriptFailsClosedOnAReadError(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-read-error")
+
+	const needle = "SWEEP-READ-ERROR-4c8d20e7"
+	plant := "mkdir -p /workspace/read-error && printf '%s\\n' '" + needle + "' > /workspace/read-error/hit.txt"
+	if out, code := guestSh(t, m, id, plant); code != 0 {
+		t.Fatalf("planting the read-error needle: exit %d, %q", code, truncate(out))
+	}
+	// Control: the needle alone is found, so a lost needle below is the abort.
+	if out, code := guestSh(t, m, id, sweepScript(needle, "/workspace/read-error/hit.txt")); code != 0 {
+		t.Fatalf("the needle alone gave exit %d, %q, want 0", code, truncate(out))
+	}
+
+	// Same batch: gawk aborts on the read, so the needle is lost. A scan() that
+	// reads that abort as "no match" reports a clean exit 1 over a dead probe.
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/mem", "/workspace/read-error/hit.txt"))
+	if code != 2 {
+		t.Fatalf("sweep exited %d after a read error, %q; want 2, or a dead probe reports as a clean no-match",
+			code, truncate(out))
+	}
+}
+
 // TestMicroVMVolumeTraversalConfined is the path-traversal leg: the guest tries
 // to escape /workspace three ways and is confined every time, proven from both
 // sides of the boundary.
