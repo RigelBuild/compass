@@ -410,10 +410,10 @@ func TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError(t *testing.T) {
 	}
 }
 
-// TestMicroVMSweepScriptSkipsItsOwnProcEntries pins both self-match defenses:
-// the walk-time /proc exclusion, and the needle travelling in the environment
-// rather than argv. Without either, the sweep reports a false escape (or a
-// probe error) instead of a clean no-match.
+// TestMicroVMSweepScriptSkipsItsOwnProcEntries pins the self-match defenses in
+// sweepScript's doc: the walk skips /proc (after collapsing a leading "//"), and
+// the needle stays out of the searcher's cmdline by travelling in its
+// environment. A sweep that reads either reports a false escape.
 func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
 	env := microvmtest.Require(t)
 	m, id, _ := isolationSession(t, env, "iso-sweep-proc-skip")
@@ -425,12 +425,22 @@ func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
 		t.Fatalf("sweeping /proc/self/environ as a file root gave exit %d, %q; want exit 0 with the needle, "+
 			"or the exclusion assertion below would be vacuous", code, truncate(out))
 	}
+	// The walk must actually reach environ, or a no-match proves nothing.
+	walk := "shopt -s globstar nullglob dotglob; for f in /proc/self/**/*; do " +
+		"[[ $f == /proc/self/environ ]] && { echo reached; break; }; done"
+	if out, _ := guestSh(t, m, id, walk); strings.TrimSpace(out) != "reached" {
+		t.Fatalf("the /proc/self walk never reached environ (%q); the exclusion assertion would be vacuous", truncate(out))
+	}
 
-	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self"))
-	if code != 1 || strings.Contains(out, needle) {
-		t.Fatalf("sweeping a /proc/self directory root gave exit %d, %q; want exit 1 without the needle: "+
-			"the walk must skip /proc, or the sweep reads its own environ and reports a false escape",
-			code, truncate(out))
+	// "//proc/self" globs to "//proc/self/…", which only the slash collapse
+	// brings back under the /proc/* exclusion.
+	for _, root := range []string{"/proc/self", "//proc/self"} {
+		out, code := guestSh(t, m, id, sweepScript(needle, root))
+		if code != 1 || strings.Contains(out, needle) {
+			t.Fatalf("sweeping a %s directory root gave exit %d, %q; want exit 1 without the needle: "+
+				"the walk must skip /proc, or the sweep reads its own environ and reports a false escape",
+				root, code, truncate(out))
+		}
 	}
 
 	// A FILE root is swept as-is, so awk reads its own cmdline here: it holds
@@ -439,7 +449,7 @@ func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
 		t.Fatalf("sweeping /proc/self/cmdline for the awk argv0 gave exit %d, %q; want exit 0, "+
 			"or the argv assertion below would be vacuous", code, truncate(out))
 	}
-	out, code = guestSh(t, m, id, sweepScript(needle, "/proc/self/cmdline"))
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/cmdline"))
 	if code != 1 || strings.Contains(out, needle) {
 		t.Fatalf("sweeping /proc/self/cmdline gave exit %d, %q; want exit 1 without the needle: "+
 			"the needle is in argv, so the sweep matches its own command line", code, truncate(out))
