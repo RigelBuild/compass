@@ -55,6 +55,7 @@ func TestT0ServerSecretsShape(t *testing.T) {
 	}{
 		{"server_secrets", []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, nil},
 		{"server_key_state", []string{"SELECT", "INSERT", "UPDATE"}, []string{"DELETE"}},
+		{"token_usage_prune_horizon", []string{"SELECT", "UPDATE"}, []string{"INSERT", "DELETE"}},
 	} {
 		for _, role := range []string{"compass_app", "compass_system"} {
 			for _, priv := range tc.granted {
