@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 )
 
@@ -27,6 +29,10 @@ const (
 	// linearSignatureHeader carries the HMAC-SHA256 hex of the raw body under
 	// the webhook secret (RIG-2717 design §134).
 	linearSignatureHeader = "Linear-Signature"
+
+	// linearDeliveryHeader is Linear's per-delivery UUID, repeated on a retry; the
+	// dispatcher keys its post dedup on it.
+	linearDeliveryHeader = "Linear-Delivery"
 
 	// linearWebhookSkew bounds how stale a webhookTimestamp may be before the
 	// delivery is acked-and-dropped (RIG-2717 §145): the timestamp is inside the
@@ -170,7 +176,10 @@ func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.Response
 		w.WriteHeader(http.StatusOK) // verified-but-malformed: ack-and-drop.
 		return
 	}
-	ev.DeliveryID = r.Header.Get("Linear-Delivery")
+	// The header is outside the signed body, so only a well-formed UUID may key dedup.
+	if id := r.Header.Get(linearDeliveryHeader); uuid.Validate(id) == nil {
+		ev.DeliveryID = id
+	}
 	if h.sessionSink == nil {
 		// Linear is not configured: ack so Linear does not retry an event nothing handles.
 		h.log.WarnContext(ctx, "linear session responder not configured, dropping event",

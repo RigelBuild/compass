@@ -175,24 +175,35 @@ func TestLinearWebhookHandler_SessionEvent(t *testing.T) {
 	}
 }
 
-// TestLinearWebhookHandler_SessionDeliveryID pins that the Linear-Delivery header
-// reaches the event: the dispatcher's replay dedup keys on it.
+// TestLinearWebhookHandler_SessionDeliveryID pins that a UUID Linear-Delivery header
+// reaches the event, and that a malformed one (unsigned input) never keys dedup.
 func TestLinearWebhookHandler_SessionDeliveryID(t *testing.T) {
-	secret := []byte("shh")
-	now := time.Unix(1_700_000_000, 0)
-	h, _, session := linHandler(t, secret, now, false)
-	body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":"s1"}}`, freshTS(now))
+	const id = "3f8e2a1c-5b7d-4e9f-a0c2-6d1b8e4f7a93"
+	for _, tc := range []struct{ name, header, want string }{
+		{"uuid", id, id},
+		{"malformed", strings.Repeat("x", 4096), ""},
+		{"absent", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			secret := []byte("shh")
+			now := time.Unix(1_700_000_000, 0)
+			h, _, session := linHandler(t, secret, now, false)
+			body := fmt.Appendf(nil, `{"type":"AgentSessionEvent","action":"created","webhookTimestamp":%d,"agentSession":{"id":"s1"}}`, freshTS(now))
 
-	req := httptest.NewRequest(http.MethodPost, linearWebhookPath, strings.NewReader(string(body)))
-	req.Header.Set(linearSignatureHeader, linSign(secret, body))
-	req.Header.Set("Linear-Delivery", "d-123")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || session.count() != 1 {
-		t.Fatalf("code = %d, enqueued = %d; want 200 and 1", rec.Code, session.count())
-	}
-	if got := session.events[0].DeliveryID; got != "d-123" {
-		t.Fatalf("DeliveryID = %q, want the Linear-Delivery header d-123", got)
+			req := httptest.NewRequest(http.MethodPost, linearWebhookPath, strings.NewReader(string(body)))
+			req.Header.Set(linearSignatureHeader, linSign(secret, body))
+			if tc.header != "" {
+				req.Header.Set(linearDeliveryHeader, tc.header)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || session.count() != 1 {
+				t.Fatalf("code = %d, enqueued = %d; want 200 and 1", rec.Code, session.count())
+			}
+			if got := session.events[0].DeliveryID; got != tc.want {
+				t.Fatalf("DeliveryID = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

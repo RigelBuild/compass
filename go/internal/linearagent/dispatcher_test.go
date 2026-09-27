@@ -186,7 +186,6 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 		Client:       client,
 		DeepLinkFor:  func(ch string) string { return "https://compass.rigel.build/c/" + ch },
 		Bridge:       testBridge,
-		NewRequestID: func() string { return "fixed-uuid" },
 	})
 	stop := runDispatcher(t, d)
 	defer stop()
@@ -194,6 +193,7 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 	if err := d.Enqueue(&SessionEvent{
 		Action:        "created",
 		PromptContext: "please do the thing",
+		DeliveryID:    "delivery-0",
 		AgentSession:  AgentSession{ID: "sess-1", Issue: Issue{ID: "iss-1", Identifier: "RIG-9"}},
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -226,7 +226,7 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 	if comms.topics[0] != "topic-1" || comms.bodies[0] != "please do the thing" {
 		t.Fatalf("post topic/body = %q/%q, want topic-1/please do the thing", comms.topics[0], comms.bodies[0])
 	}
-	assertReqID(t, comms.reqIDs[0], "fixed-uuid")
+	assertReqID(t, comms.reqIDs[0], "delivery-0")
 }
 
 // TestDispatcherCreatedTopicNameFallsBackToSession pins the topic-name fallback:
@@ -257,14 +257,12 @@ func TestDispatcherCreatedTopicNameFallsBackToSession(t *testing.T) {
 // Linear-Delivery id post with the same client_request_id, so the store collapses them.
 func TestDispatcherReplayKeysOnDeliveryID(t *testing.T) {
 	comms := &recordingComms{posted: make(chan struct{}, 2)}
-	calls := 0
 	d := newTestDispatcher(t, dispatcherDeps{
 		res:    &fakeResolver{manager: "mgr", homeChannel: "chan"},
 		comms:  comms,
 		topics: &fakeTopics{topicID: "topic"},
 		assoc:  &fakeAssoc{},
 		client: &recordingClient{},
-		reqID:  func() string { calls++; return fmt.Sprintf("random-%d", calls) },
 	})
 	stop := runDispatcher(t, d)
 	defer stop()
@@ -278,6 +276,31 @@ func TestDispatcherReplayKeysOnDeliveryID(t *testing.T) {
 	}
 	assertReqID(t, comms.reqIDs[0], "delivery-1")
 	assertReqID(t, comms.reqIDs[1], "delivery-1")
+}
+
+// TestDispatcherNoDeliveryIDSkipsDedup pins the fallback: with no delivery id the
+// key is empty, which the store never dedups, so distinct events are not folded together.
+func TestDispatcherNoDeliveryIDSkipsDedup(t *testing.T) {
+	comms := &recordingComms{posted: make(chan struct{}, 2)}
+	d := newTestDispatcher(t, dispatcherDeps{
+		res:    &fakeResolver{manager: "mgr", homeChannel: "chan"},
+		comms:  comms,
+		topics: &fakeTopics{topicID: "topic"},
+		assoc:  &fakeAssoc{},
+		client: &recordingClient{},
+	})
+	stop := runDispatcher(t, d)
+	defer stop()
+
+	for _, id := range []string{"sess-a", "sess-b"} {
+		if err := d.Enqueue(&SessionEvent{Action: "created", AgentSession: AgentSession{ID: id}}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		<-comms.posted
+	}
+	if comms.reqIDs[0] != "" || comms.reqIDs[1] != "" {
+		t.Fatalf("client_request_ids = %q, want both empty (no dedup without a delivery id)", comms.reqIDs)
+	}
 }
 
 // TestDispatcherPromptedFollowUp pins the prompted path: a hit posts the
@@ -295,7 +318,6 @@ func TestDispatcherPromptedFollowUp(t *testing.T) {
 		topics: &fakeTopics{topicID: "should-not-be-used"},
 		assoc:  assoc,
 		client: client,
-		reqID:  func() string { return "random-uuid" },
 	})
 	stop := runDispatcher(t, d)
 	defer stop()
@@ -338,6 +360,7 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 
 	if err := d.Enqueue(&SessionEvent{
 		Action:        "prompted",
+		DeliveryID:    "delivery-9",
 		AgentSession:  AgentSession{ID: "sess-orphan"},
 		AgentActivity: AgentActivity{Body: "orphaned follow-up"},
 	}); err != nil {
@@ -354,6 +377,7 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 	if comms.topics[0] != "topic-9" || comms.bodies[0] != "orphaned follow-up" {
 		t.Fatalf("post topic/body = %q/%q, want topic-9/orphaned follow-up", comms.topics[0], comms.bodies[0])
 	}
+	assertReqID(t, comms.reqIDs[0], "delivery-9")
 }
 
 // TestDispatcherEnqueueWhenFull pins the backpressure contract: a full bounded
@@ -440,10 +464,10 @@ func lastErrorBody(c *recordingClient) string {
 	return ""
 }
 
-// assertReqID checks the dedup client_request_id scheme: "linear-delivery:<uuid>".
-func assertReqID(t *testing.T, got, wantUUID string) {
+// assertReqID checks the dedup client_request_id scheme: "linear-delivery:<delivery id>".
+func assertReqID(t *testing.T, got, wantDelivery string) {
 	t.Helper()
-	want := clientRequestIDPrefix + wantUUID
+	want := clientRequestIDPrefix + wantDelivery
 	if got != want {
 		t.Fatalf("client_request_id = %q, want %q", got, want)
 	}
@@ -461,15 +485,10 @@ type dispatcherDeps struct {
 	topics Topics
 	assoc  Associations
 	client Client
-	reqID  func() string
 }
 
 func newTestDispatcher(t *testing.T, deps dispatcherDeps) *Dispatcher {
 	t.Helper()
-	reqID := deps.reqID
-	if reqID == nil {
-		reqID = func() string { return "fixed-uuid" }
-	}
 	return NewDispatcher(DispatcherParams{
 		Buffer:       4,
 		Resolve:      deps.res.resolve,
@@ -480,6 +499,5 @@ func newTestDispatcher(t *testing.T, deps dispatcherDeps) *Dispatcher {
 		Client:       deps.client,
 		DeepLinkFor:  func(ch string) string { return "https://compass.rigel.build/c/" + ch },
 		Bridge:       testBridge,
-		NewRequestID: reqID,
 	})
 }

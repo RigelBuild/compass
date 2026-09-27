@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/google/uuid"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -90,9 +88,6 @@ type DispatcherParams struct {
 	DeepLinkFor func(channelID string) string
 	// Bridge is the seeded @linear bridge system account id (T3a).
 	Bridge store.AccountID
-	// NewRequestID mints the fallback key half when an event has no delivery id.
-	// Injectable for deterministic tests; defaults to uuid.NewString.
-	NewRequestID func() string
 }
 
 // Dispatcher drains a bounded channel of verified session events on a single
@@ -102,40 +97,34 @@ type DispatcherParams struct {
 // moves on. There is NO relay: the dispatcher does not observe or mirror agent
 // output; the return path is the two `created` emits only (§Part 3).
 type Dispatcher struct {
-	ch           chan *SessionEvent
-	resolve      ResolveFunc
-	poster       CommsPoster
-	members      Memberships
-	topics       Topics
-	assoc        Associations
-	client       Client
-	deepLinkFor  func(channelID string) string
-	bridge       store.AccountID
-	newRequestID func() string
+	ch          chan *SessionEvent
+	resolve     ResolveFunc
+	poster      CommsPoster
+	members     Memberships
+	topics      Topics
+	assoc       Associations
+	client      Client
+	deepLinkFor func(channelID string) string
+	bridge      store.AccountID
 }
 
 // NewDispatcher builds a Dispatcher from params. Buffer defaults to 1 when
-// non-positive; NewRequestID defaults to uuid.NewString.
+// non-positive.
 func NewDispatcher(p DispatcherParams) *Dispatcher {
 	buf := p.Buffer
 	if buf <= 0 {
 		buf = 1
 	}
-	newRequestID := p.NewRequestID
-	if newRequestID == nil {
-		newRequestID = uuid.NewString
-	}
 	return &Dispatcher{
-		ch:           make(chan *SessionEvent, buf),
-		resolve:      p.Resolve,
-		poster:       p.Poster,
-		members:      p.Members,
-		topics:       p.Topics,
-		assoc:        p.Associations,
-		client:       p.Client,
-		deepLinkFor:  p.DeepLinkFor,
-		bridge:       p.Bridge,
-		newRequestID: newRequestID,
+		ch:          make(chan *SessionEvent, buf),
+		resolve:     p.Resolve,
+		poster:      p.Poster,
+		members:     p.Members,
+		topics:      p.Topics,
+		assoc:       p.Associations,
+		client:      p.Client,
+		deepLinkFor: p.DeepLinkFor,
+		bridge:      p.Bridge,
 	}
 }
 
@@ -230,7 +219,7 @@ func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error 
 	}}); err != nil {
 		return err
 	}
-	return d.post(ctx, homeChannel, topicID, ev.PromptContext, d.clientRequestID(ctx, ev))
+	return d.post(ctx, homeChannel, topicID, ev.PromptContext, clientRequestID(ctx, ev))
 }
 
 // handlePrompted routes a follow-up to the recorded conversation: look up the
@@ -241,7 +230,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 	row, err := d.assoc.LinearAgentSession(ctx, ev.AgentSession.ID)
 	switch {
 	case err == nil:
-		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Body, d.clientRequestID(ctx, ev))
+		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Body, clientRequestID(ctx, ev))
 	case errors.Is(err, store.ErrNotFound):
 		manager, homeChannel, resErr := d.resolve(ctx, ev)
 		if resErr != nil {
@@ -263,7 +252,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 		}); upErr != nil {
 			return upErr
 		}
-		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Body, d.clientRequestID(ctx, ev))
+		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Body, clientRequestID(ctx, ev))
 	default:
 		return err
 	}
@@ -291,12 +280,12 @@ func (d *Dispatcher) emitError(ctx context.Context, sessionID string, cause erro
 }
 
 // clientRequestID keys an event's one post on its Linear-Delivery id, so a replayed
-// delivery collapses onto the stored row; a missing header falls back to a fresh uuid.
-func (d *Dispatcher) clientRequestID(ctx context.Context, ev *SessionEvent) string {
+// delivery collapses onto the stored row. No id means an empty key: the post is not deduped.
+func clientRequestID(ctx context.Context, ev *SessionEvent) string {
 	if ev.DeliveryID == "" {
 		slog.WarnContext(ctx, "linearagent dispatcher: session event has no Linear-Delivery id; replay dedup off",
 			"linear_session_id", ev.AgentSession.ID)
-		return clientRequestIDPrefix + d.newRequestID()
+		return ""
 	}
 	return clientRequestIDPrefix + ev.DeliveryID
 }
