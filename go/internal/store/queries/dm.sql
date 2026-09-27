@@ -36,6 +36,6 @@ SELECT pg_advisory_xact_lock(hashtext('dm:' || $1));
 UPDATE channels SET mandatory_subscription = TRUE WHERE id = $1 AND mandatory_subscription = FALSE;
 
 -- name: GetGroupNameVisibility :one
--- Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (name AND
+-- Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (top-level AND name AND
 -- VisibilityOwner) the CreateChannel create-guard keys on.
 SELECT name, visibility, (parent_group_id IS NULL)::boolean AS top_level FROM channel_groups WHERE id = $1;

@@ -42,7 +42,7 @@ type GetGroupNameVisibilityRow struct {
 	TopLevel   bool
 }
 
-// Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (name AND
+// Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (top-level AND name AND
 // VisibilityOwner) the CreateChannel create-guard keys on.
 func (q *Queries) GetGroupNameVisibility(ctx context.Context, id string) (GetGroupNameVisibilityRow, error) {
 	row := q.db.QueryRow(ctx, getGroupNameVisibility, id)
