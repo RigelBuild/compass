@@ -410,6 +410,30 @@ func TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError(t *testing.T) {
 	}
 }
 
+// TestMicroVMSweepScriptSkipsItsOwnProcEntries pins the walk-time /proc
+// exclusion. A /proc/self directory root walks the searcher's own environ,
+// which holds the needle; without the exclusion the sweep reports a false
+// escape (or a probe error) instead of a clean no-match.
+func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-proc-skip")
+
+	const needle = "SWEEP-PROC-SELF-3b9e61c4"
+	// A FILE root bypasses the exclusion, so this proves the self-match
+	// surface is live in the guest; otherwise the exit-1 check pins nothing.
+	if out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/environ")); code != 0 || !strings.Contains(out, needle) {
+		t.Fatalf("sweeping /proc/self/environ as a file root gave exit %d, %q; want exit 0 with the needle, "+
+			"or the exclusion assertion below would be vacuous", code, truncate(out))
+	}
+
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self"))
+	if code != 1 || strings.Contains(out, needle) {
+		t.Fatalf("sweeping a /proc/self directory root gave exit %d, %q; want exit 1 without the needle: "+
+			"the walk must skip /proc, or the sweep reads its own environ and reports a false escape",
+			code, truncate(out))
+	}
+}
+
 // TestMicroVMVolumeTraversalConfined is the path-traversal leg: the guest tries
 // to escape /workspace three ways and is confined every time, proven from both
 // sides of the boundary.
