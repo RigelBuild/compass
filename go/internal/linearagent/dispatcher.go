@@ -283,7 +283,7 @@ func (d *Dispatcher) emitError(ctx context.Context, sessionID string, cause erro
 // delivery collapses onto the stored row. No id means an empty key: the post is not deduped.
 func clientRequestID(ctx context.Context, ev *SessionEvent) string {
 	if ev.DeliveryID == "" {
-		slog.WarnContext(ctx, "linearagent dispatcher: session event has no Linear-Delivery id; replay dedup off",
+		slog.WarnContext(ctx, "linearagent dispatcher: session event has no valid Linear-Delivery id; replay dedup off",
 			"linear_session_id", ev.AgentSession.ID)
 		return ""
 	}
