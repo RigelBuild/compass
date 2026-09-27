@@ -28,7 +28,7 @@ type Querier interface {
 	AdvanceForgeDeliveredRevisionCAS(ctx context.Context, arg AdvanceForgeDeliveredRevisionCASParams) (int64, error)
 	// AdvanceTokenUsagePruneHorizon commits before the prune deletes anything, and
 	// waits for a rebuild that holds the old horizon. It only moves forward.
-	AdvanceTokenUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) error
+	AdvanceTokenUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the

@@ -11,15 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const advanceTokenUsagePruneHorizon = `-- name: AdvanceTokenUsagePruneHorizon :exec
+const advanceTokenUsagePruneHorizon = `-- name: AdvanceTokenUsagePruneHorizon :execrows
 UPDATE token_usage_prune_horizon SET horizon = GREATEST(horizon, $1::timestamptz)
 `
 
 // AdvanceTokenUsagePruneHorizon commits before the prune deletes anything, and
 // waits for a rebuild that holds the old horizon. It only moves forward.
-func (q *Queries) AdvanceTokenUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) error {
-	_, err := q.db.Exec(ctx, advanceTokenUsagePruneHorizon, cutoff)
-	return err
+func (q *Queries) AdvanceTokenUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceTokenUsagePruneHorizon, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const appendTokenUsageEvents = `-- name: AppendTokenUsageEvents :exec

@@ -2,8 +2,8 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -115,10 +115,14 @@ func (p *Postgres) PruneTokenUsageBefore(ctx context.Context, beforeUnixMs int64
 	var tenants []string
 	err := p.st.WithTx(ctx, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if err := q.AdvanceTokenUsagePruneHorizon(ctx, cutoff); err != nil {
+		n, err := q.AdvanceTokenUsagePruneHorizon(ctx, cutoff)
+		if err != nil {
 			return err
 		}
-		var err error
+		// A missing row would let a rebuild drop rollups the prune left eventless.
+		if n == 0 {
+			return errors.New("prune horizon row is missing")
+		}
 		tenants, err = q.ListTenantIDs(ctx)
 		return err
 	})
@@ -207,13 +211,6 @@ func appendParams(events []TokenUsageEvent) db.AppendTokenUsageEventsParams {
 func timestamptz(unixMs int64) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: time.UnixMilli(unixMs), Valid: true}
 }
-
-// The unix milliseconds pgx can send as a timestamptz. Postgres starts at
-// 4714-11-24 BC, and pgx overflows int64 microseconds past MaxInt64/1000.
-const (
-	minTimestamptzMs = -210_866_803_200_000
-	maxTimestamptzMs = math.MaxInt64 / 1000
-)
 
 // bound converts a comparison bound. pgx wraps an out-of-range time silently,
 // so such a bound becomes the infinity that compares the same way.
