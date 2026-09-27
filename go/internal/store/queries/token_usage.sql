@@ -129,7 +129,7 @@ SELECT date_trunc('day', occurred_at, 'UTC'), owner_user_id, agent_account_id, p
 
 -- AdvanceTokenUsagePruneHorizon commits before the prune deletes anything, and
 -- waits for a rebuild that holds the old horizon. It only moves forward.
--- name: AdvanceTokenUsagePruneHorizon :exec
+-- name: AdvanceTokenUsagePruneHorizon :execrows
 UPDATE token_usage_prune_horizon SET horizon = GREATEST(horizon, @cutoff::timestamptz);
 
 -- DeleteTokenUsageEventsBefore deletes old events of the tx's tenant only,

@@ -4,6 +4,7 @@ package usagetest
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -29,9 +30,11 @@ func Run(t *testing.T, h Harness) {
 	t.Run("buckets_split_on_utc_hour_and_day_boundaries", bucketsSplitOnUTCBoundaries(h))
 	t.Run("agent_and_provider_filters_narrow_the_sum", filtersNarrowTheSum(h))
 	t.Run("empty_range_returns_no_buckets", emptyRangeReturnsNoBuckets(h))
+	t.Run("unbounded_range_returns_every_bucket", unboundedRangeReturnsEveryBucket(h))
 	t.Run("series_is_ordered_by_bucket_start", seriesIsOrdered(h))
 	t.Run("rebuild_restores_cleared_rollups", rebuildRestoresClearedRollups(h))
 	t.Run("prune_drops_old_events_and_keeps_rollups", pruneKeepsRollups(h))
+	t.Run("prune_accepts_extreme_cutoffs", pruneAcceptsExtremeCutoffs(h))
 	t.Run("tenants_are_isolated", tenantsAreIsolated(h))
 	t.Run("invalid_events_are_rejected_and_write_nothing", invalidEventsWriteNothing(h))
 	t.Run("invalid_queries_are_rejected", invalidQueriesAreRejected(h))
@@ -221,6 +224,25 @@ func emptyRangeReturnsNoBuckets(h Harness) func(*testing.T) {
 	}
 }
 
+// The extreme bounds are past what a timestamptz holds, so a backend must clamp
+// them rather than fail or wrap.
+func unboundedRangeReturnsEveryBucket(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		mustAppend(t, ctx, s,
+			event("e1", at(-day), "a1", "anthropic", 1),
+			event("e2", at(hour), "a1", "anthropic", 2),
+			event("e3", at(2*day), "a1", "anthropic", 4),
+		)
+		wantSeries(t, ctx, s,
+			usage.SeriesQuery{Granularity: usage.GranularityHour, StartUnixMs: math.MinInt64, EndUnixMs: math.MaxInt64},
+			bucket(at(-day), 1), bucket(at(hour), 2), bucket(at(2*day), 4))
+		wantSeries(t, ctx, s,
+			usage.SeriesQuery{Granularity: usage.GranularityDay, StartUnixMs: math.MinInt64, EndUnixMs: math.MaxInt64},
+			bucket(at(-day), 1), bucket(at(0), 2), bucket(at(2*day), 4))
+	}
+}
+
 func seriesIsOrdered(h Harness) func(*testing.T) {
 	return func(t *testing.T) {
 		s, ctx := h.New(t), h.Ctx(t, 0)
@@ -292,6 +314,21 @@ func pruneKeepsRollups(h Harness) func(*testing.T) {
 	}
 }
 
+func pruneAcceptsExtremeCutoffs(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		mustAppend(t, ctx, s,
+			event("e1", at(hour), "a1", "anthropic", 1),
+			event("e2", at(day), "a1", "anthropic", 2),
+		)
+		mustPrune(t, ctx, s, math.MinInt64, 0)
+		mustPrune(t, ctx, s, math.MaxInt64, 2)
+		// Every rollup is now older than the horizon, so a rebuild keeps them all.
+		mustRebuild(t, ctx, s)
+		wantSeries(t, ctx, s, query(usage.GranularityHour), bucket(at(hour), 1), bucket(at(day), 2))
+	}
+}
+
 func tenantsAreIsolated(h Harness) func(*testing.T) {
 	return func(t *testing.T) {
 		s, ctx0, ctx1 := h.New(t), h.Ctx(t, 0), h.Ctx(t, 1)
@@ -306,6 +343,12 @@ func tenantsAreIsolated(h Harness) func(*testing.T) {
 		mustRebuild(t, ctx1, s)
 		wantSeries(t, ctx0, s, query(usage.GranularityHour), bucket(at(hour), 1))
 		wantSeries(t, ctx1, s, query(usage.GranularityHour), bucket(at(hour), 2))
+
+		// Event IDs are unique per tenant, so each tenant counts "shared" once.
+		mustAppend(t, ctx0, s, event("shared", at(hour), "a1", "anthropic", 4))
+		mustAppend(t, ctx1, s, event("shared", at(hour), "a1", "anthropic", 8))
+		wantSeries(t, ctx0, s, query(usage.GranularityHour), bucket(at(hour), 5))
+		wantSeries(t, ctx1, s, query(usage.GranularityHour), bucket(at(hour), 10))
 	}
 }
 
@@ -315,6 +358,7 @@ func invalidEventsWriteNothing(h Harness) func(*testing.T) {
 		for name, mutate := range map[string]func(*usage.TokenUsageEvent){
 			"empty_id":        func(e *usage.TokenUsageEvent) { e.ID = "" },
 			"zero_time":       func(e *usage.TokenUsageEvent) { e.OccurredAtUnixMs = 0 },
+			"time_past_max":   func(e *usage.TokenUsageEvent) { e.OccurredAtUnixMs = math.MaxInt64 },
 			"empty_agent":     func(e *usage.TokenUsageEvent) { e.AgentAccountID = "" },
 			"empty_owner":     func(e *usage.TokenUsageEvent) { e.OwnerUserID = "" },
 			"empty_provider":  func(e *usage.TokenUsageEvent) { e.Provider = "" },

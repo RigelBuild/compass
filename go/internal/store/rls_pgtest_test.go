@@ -546,10 +546,12 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	// NOT mere bookkeeping: the bucket-A loop at the end of this test iterates
 	// this map and asserts each listed table has RLS DISABLED, so removing the
 	// entry would let an accidental `ENABLE ROW LEVEL SECURITY` on either table
-	// pass unnoticed.
+	// pass unnoticed. token_usage_prune_horizon is global because one prune
+	// spans every tenant.
 	bucketA := map[string]bool{
 		"tenants": true, "tokens": true, "agent_config_bundle": true,
 		"server_secrets": true, "server_key_state": true,
+		"token_usage_prune_horizon": true,
 	}
 
 	// Enumerate every table in the current (per-test) schema that carries a

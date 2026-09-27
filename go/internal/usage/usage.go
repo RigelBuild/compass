@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 )
@@ -60,6 +61,13 @@ const (
 	dayMs  = 24 * hourMs
 )
 
+// The unix milliseconds pgx can send as a timestamptz. Postgres starts at
+// 4714-11-24 BC, and pgx overflows int64 microseconds past MaxInt64/1000.
+const (
+	minTimestamptzMs = -210_866_803_200_000
+	maxTimestamptzMs = math.MaxInt64 / 1000
+)
+
 // SeriesQuery selects the rollup buckets whose start lies in
 // [StartUnixMs, EndUnixMs).
 type SeriesQuery struct {
@@ -85,10 +93,12 @@ type Bucket struct {
 }
 
 // Store is the Plane-A usage store seam: an append-only event write plus rollup
-// reads. Each call is scoped to the tenant the backend resolves from ctx.
+// reads. Each call but PruneTokenUsageBefore is scoped to ctx's tenant, which
+// the backend resolves.
 type Store interface {
 	// AppendTokenUsage records a batch atomically. It is idempotent on event ID
-	// so a retried batch never double-counts.
+	// for events still inside the retention window, so a retried batch never
+	// double-counts. A pruned event's ID is forgotten and counts again.
 	AppendTokenUsage(ctx context.Context, events []TokenUsageEvent) error
 	// TokenUsageSeries returns the non-empty buckets in the window, oldest first.
 	TokenUsageSeries(ctx context.Context, query SeriesQuery) ([]Bucket, error)
@@ -150,6 +160,8 @@ func (e *TokenUsageEvent) problem() string {
 		return "empty id"
 	case e.OccurredAtUnixMs <= 0:
 		return "non-positive occurred_at"
+	case e.OccurredAtUnixMs > maxTimestamptzMs:
+		return "occurred_at past the last storable timestamp"
 	case e.AgentAccountID == "", e.OwnerUserID == "", e.Provider == "", e.Model == "":
 		return "empty rollup key (agent, owner, provider, model)"
 	case e.InputTokens < 0, e.OutputTokens < 0, e.CacheReadTokens < 0, e.CacheWriteTokens < 0,
