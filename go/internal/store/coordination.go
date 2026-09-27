@@ -102,10 +102,8 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 	// the reconcile would itself create. The caller holds the per-owner advisory
 	// lock (LockOwnerCoordinationTx), so the get-then-create cannot race a
 	// concurrent reconcile for the same owner into two groups; channel_groups has
-	// no unique index on (name, owner, parent), and the only unguarded writer
-	// (the user's CreateChannelGroup) cannot produce an owner-visibility row the
-	// discriminated SELECT would wrongly adopt.
-	const coordinationGroupName = "__coordination__"
+	// no unique index on (name, owner, parent), and CreateChannelGroup refuses the
+	// reserved top-level name, so only other paths can plant such a row.
 
 	qtx := db.New(tx)
 	existing, err := qtx.GetCoordinationGroup(ctx, db.GetCoordinationGroupParams{

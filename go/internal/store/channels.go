@@ -24,6 +24,11 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 	if g.Name == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
 	}
+	// Reserved system names are refused at top level, merged into ErrNotFound
+	// like CreateChannel so the reservation cannot be probed.
+	if g.ParentGroupID == "" && isReservedGroupName(g.Name) {
+		return ChannelGroup{}, fmt.Errorf("%w: group %q", ErrNotFound, g.Name)
+	}
 
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {

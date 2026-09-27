@@ -18,6 +18,16 @@ import (
 // key on.
 const dmGroupName = "__dm__"
 
+// coordinationGroupName is the fixed reserved name of the per-owner
+// coordination group.
+const coordinationGroupName = "__coordination__"
+
+// isReservedGroupName reports whether name is a system group name that a
+// caller may not claim at top level.
+func isReservedGroupName(name string) bool {
+	return name == dmGroupName || name == coordinationGroupName
+}
+
 // DMChannelSpec is the resolved identity + membership for one peer-DM channel,
 // computed by the OpenDM path (which owns the deterministic sorted-handle NAME
 // and the two agent parties) and handed to UpsertDMChannelTx (which owns the
