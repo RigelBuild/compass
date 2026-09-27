@@ -26,6 +26,9 @@ type Querier interface {
 	// (someone else advanced first), NOT an error — the wrapper reports it as
 	// advanced=false.
 	AdvanceForgeDeliveredRevisionCAS(ctx context.Context, arg AdvanceForgeDeliveredRevisionCASParams) (int64, error)
+	// AdvanceTokenUsagePruneHorizon commits before the prune deletes anything, and
+	// waits for a rebuild that holds the old horizon. It only moves forward.
+	AdvanceTokenUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) error
 	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the
@@ -50,6 +53,10 @@ type Querier interface {
 	// Feeds isAgentWorkspaceVisible: membership on the agent's home channel.
 	AgentWorkspaceVisible(ctx context.Context, arg AgentWorkspaceVisibleParams) (bool, error)
 	AgentsByOwner(ctx context.Context, ownerUserID string) ([]AgentsByOwnerRow, error)
+	// AppendTokenUsageEvents inserts a batch and adds only the events it inserted
+	// to both rollups, so a replayed id counts once. The arrays hold one element
+	// per event, and no id repeats.
+	AppendTokenUsageEvents(ctx context.Context, arg AppendTokenUsageEventsParams) error
 	AuthoredArtifactByCoordinate(ctx context.Context, arg AuthoredArtifactByCoordinateParams) (ForgeAuthoredArtifact, error)
 	AuthoredArtifactByRequestID(ctx context.Context, arg AuthoredArtifactByRequestIDParams) (ForgeAuthoredArtifact, error)
 	// Agent-transcript queries (sqlc adoption T5, RIG-3034). These replace the
@@ -130,6 +137,12 @@ type Querier interface {
 	// A DELETE ... RETURNING takes no ORDER BY, so the Store method sorts the
 	// returned slice by session id to keep a sweep pass deterministic and diffable.
 	DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]DeleteSessionBindingsForRunnerRow, error)
+	// DeleteTokenUsageEventsBefore deletes old events of the tx's tenant only,
+	// because row-level security scopes it. The prune runs it once per tenant.
+	DeleteTokenUsageEventsBefore(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	// DeleteTokenUsageRollupsFrom drops both rollups from the horizon on. Older
+	// rollups can hold pruned events, so they stay.
+	DeleteTokenUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	DeleteTopic(ctx context.Context, id string) error
 	// Agent-forge-subscription / artifact-cursor queries (sqlc adoption T6,
 	// RIG-3034). These replace the inline SQL literals in
@@ -332,6 +345,9 @@ type Querier interface {
 	ListForgeNotifyTargets(ctx context.Context, arg ListForgeNotifyTargetsParams) ([]ListForgeNotifyTargetsRow, error)
 	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
+	// ListTenantIDs lists every tenant. tenants has no row-level security, so the
+	// app role sees them all without the BYPASSRLS system role.
+	ListTenantIDs(ctx context.Context) ([]string, error)
 	// Topic-domain queries (sqlc adoption T4, RIG-3034). These replace the inline
 	// SQL literals in internal/store/topics.go; the hand-written Store methods keep
 	// their signatures, the UpdateTopic tx orchestration, the rename/merge resolution
@@ -429,6 +445,11 @@ type Querier interface {
 	// the displaced value is a READ, so the PK cannot cover it. This lock is taken
 	// before the read, so it does.
 	LockSessionBindingAccount(ctx context.Context, arg LockSessionBindingAccountParams) error
+	// Token-usage queries (Plane A). The tenant tx sets the GUC that RLS reads and
+	// that tenant_id defaults to, so no statement here names a tenant.
+	// LockTokenUsage serializes one tenant's appends and rebuilds. A rebuild beside
+	// an append would count the append's events twice or lose them.
+	LockTokenUsage(ctx context.Context) error
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
 	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
 	MessageByID(ctx context.Context, id string) (MessageByIDRow, error)
@@ -517,6 +538,9 @@ type Querier interface {
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ReviveTopic(ctx context.Context, id string) error
 	RevokeToken(ctx context.Context, hash []byte) (int64, error)
+	// RollUpTokenUsageFrom rebuilds both rollups from the events at or after the
+	// horizon.
+	RollUpTokenUsageFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	SafetyValveSegments(ctx context.Context, arg SafetyValveSegmentsParams) ([]SafetyValveSegmentsRow, error)
 	// Scaffold-only query proving sqlc generation works end to end (T1).
 	//
@@ -594,6 +618,13 @@ type Querier interface {
 	SweepChannels(ctx context.Context, accountID string) ([]string, error)
 	TenantIDBySlug(ctx context.Context, slug string) (string, error)
 	TokenHashExists(ctx context.Context, hash []byte) (bool, error)
+	// TokenUsagePruneHorizon reads the prune horizon and holds it until the tx
+	// ends, so a prune cannot delete the events a rebuild is about to count.
+	TokenUsagePruneHorizon(ctx context.Context) (pgtype.Timestamptz, error)
+	// TokenUsageSeries sums one granularity's rollup rows per bucket. granularity
+	// is the usage.Granularity value: 1 is hourly, 2 is daily. An empty agent list
+	// or provider means no filter.
+	TokenUsageSeries(ctx context.Context, arg TokenUsageSeriesParams) ([]TokenUsageSeriesRow, error)
 	// Authorization-probe queries (sqlc adoption T6, RIG-3034). These replace the
 	// inline SQL literals in internal/store/authz.go; the hand-written helpers keep
 	// their signatures and the not-found/forbidden merge, wrapping these EXISTS

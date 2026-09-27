@@ -133,6 +133,9 @@ type ServeConfig struct {
 	// points the whole deployment's custody — including the master key — at a
 	// managed store, per the record's A2 KMS-by-provider-URI custody note.
 	SecretProvider string
+	// UsageEventRetention is how long raw token-usage events are kept; 0 turns
+	// the daily prune off. The CLI defaults it to 90 days.
+	UsageEventRetention time.Duration
 }
 
 // ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
@@ -894,6 +897,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
 	// ends when the comms bus closes in drainDoors).
 	startCommsBusConsumers(gctx, g, commsBus, st, hub, hubLog)
+	// Bound the raw token-usage log: a daily prune drops the events past the
+	// retention window, and the rollups keep their sums.
+	startUsageRetention(gctx, g, st, cfg.UsageEventRetention, hubLog)
 	// Drain member of the same group: wake on gctx cancellation, then hand off to
 	// drainDoors. A drain that overruns (a handler still wedged mid-replay)
 	// surfaces as the error rather than a false clean shutdown; a real serve
