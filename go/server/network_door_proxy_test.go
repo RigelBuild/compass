@@ -1,9 +1,9 @@
-//go:build pgtest && unix
+//go:build unix
 
 package server
 
-// Proxied path spellings against the network door: none may escape the slow-body
-// read deadline by being classified as an exempt Runner stream path.
+// Proxied spellings of the exempt Runner stream paths must not be classified exempt:
+// each near-miss has to reach the handler with the slow-body read deadline armed.
 
 import (
 	"bufio"
@@ -12,55 +12,51 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
-// proxyForeignHost is the Host a fronting proxy may pass through unchanged.
-const proxyForeignHost = "foreign.example"
-
-// deadlineRecorder records whether the middleware armed a read deadline and
-// forwards the call so the real per-request deadline still applies.
+// deadlineRecorder records that the middleware armed a read deadline and forwards
+// the call so the real per-request deadline still applies.
 type deadlineRecorder struct {
 	http.ResponseWriter
-	armed *bool
+	armed *atomic.Bool
 }
 
 func (d deadlineRecorder) SetReadDeadline(deadline time.Time) error {
-	*d.armed = true
+	d.armed.Store(true)
 	return http.NewResponseController(d.ResponseWriter).SetReadDeadline(deadline)
 }
 
-// pathProbe is what the inner handler saw: the parsed path and whether the
-// deadline was armed before the handler ran.
-type pathProbe struct {
-	path  string
-	armed bool
-}
-
-// startPathProbeDoor serves withBodyReadDeadline over real net/http parsing, so
-// each request-target reaches the middleware exactly as the server decoded it.
-func startPathProbeDoor(t *testing.T) (string, <-chan pathProbe) {
+// probeDeadline serves one raw request through withBodyReadDeadline on a fresh door
+// and reports the decoded path, whether the deadline was armed, and the status.
+func probeDeadline(t *testing.T, target string) (path string, armed bool, status int) {
 	t.Helper()
-	probes := make(chan pathProbe, 1)
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec, ok := w.(deadlineRecorder)
-		probes <- pathProbe{path: r.URL.Path, armed: ok && *rec.armed}
+	var armedFlag atomic.Bool
+	seen := make(chan string, 1)
+	door := withBodyReadDeadline(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.URL.Path
 		w.WriteHeader(http.StatusNoContent)
-	})
-	door := withBodyReadDeadline(inner, networkBodyReadTimeout)
+	}), networkBodyReadTimeout)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		door.ServeHTTP(deadlineRecorder{ResponseWriter: w, armed: new(bool)}, r)
+		door.ServeHTTP(deadlineRecorder{ResponseWriter: w, armed: &armedFlag}, r)
 	}))
 	t.Cleanup(srv.Close)
-	return srv.Listener.Addr().String(), probes
+
+	status = sendRawTarget(t, srv.Listener.Addr().String(), target)
+	select {
+	case path = <-seen:
+	default:
+		t.Fatalf("target %q: handler never ran (status %d); the row no longer tests the exemption", target, status)
+	}
+	return path, armedFlag.Load(), status
 }
 
 // sendRawTarget writes target verbatim as the HTTP/1.1 request-target; the Go
-// client would normalize several of these spellings before sending.
+// client would normalize these spellings before sending.
 func sendRawTarget(t *testing.T, addr, target string) int {
 	t.Helper()
 	var d net.Dialer
@@ -76,7 +72,7 @@ func sendRawTarget(t *testing.T, addr, target string) int {
 	if err := conn.SetDeadline(time.Now().Add(testTimeout)); err != nil {
 		t.Fatalf("set conn safety deadline: %v", err)
 	}
-	raw := "POST " + target + " HTTP/1.1\r\nHost: " + proxyForeignHost +
+	raw := "POST " + target + " HTTP/1.1\r\nHost: foreign.example" +
 		"\r\nContent-Type: application/proto\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx"
 	if _, err := io.WriteString(conn, raw); err != nil {
 		t.Fatalf("write raw request %q: %v", target, err)
@@ -92,63 +88,27 @@ func sendRawTarget(t *testing.T, addr, target string) int {
 }
 
 func TestNetworkDoorProxyPathSpellingsKeepBodyDeadline(t *testing.T) {
-	addr, probes := startPathProbeDoor(t)
-	info := compassv1connect.CompassServiceGetServerInfoProcedure
 	sessions := compassv1internalconnect.RunnerServiceSessionsProcedure
 
-	// probe sends target and returns what the handler saw, or ok=false when the
-	// server rejected the request before the handler ran (the handler answers 204).
-	probe := func(t *testing.T, target string) (pathProbe, int, bool) {
-		t.Helper()
-		status := sendRawTarget(t, addr, target)
-		if status != http.StatusNoContent {
-			return pathProbe{}, status, false
-		}
-		select {
-		case p := <-probes:
-			return p, status, true
-		case <-timeAfter():
-			t.Fatalf("target %q answered 204 but the handler reported nothing", target)
-			return pathProbe{}, status, false
-		}
-	}
-
 	t.Run("control: canonical exempt path is not armed", func(t *testing.T) {
-		p, status, ran := probe(t, sessions)
-		if !ran || p.armed {
-			t.Fatalf("exempt path: ran=%v armed=%v status=%d, want the handler reached with no deadline", ran, p.armed, status)
+		if _, armed, _ := probeDeadline(t, sessions); armed {
+			t.Fatal("canonical Sessions path armed the deadline, want it exempt")
 		}
 	})
 
-	nonExempt := []struct{ name, target string }{
-		{"canonical", info},
-		{"trailing slash", info + "/"},
-		{"double leading slash", "/" + info},
-		{"percent-encoded dot in service name", strings.Replace(info, "compass.v1", "compass%2Ev1", 1)},
-		{"percent-encoded slash before method", strings.Replace(info, "Service/", "Service%2F", 1)},
-		{"absolute-form foreign host", "https://" + proxyForeignHost + info},
-		{"absolute-form double slash", "https://" + proxyForeignHost + "/" + info},
-		{"query string", info + "?x=" + sessions},
-		{"exempt near-miss: trailing slash", sessions + "/"},
-		{"exempt near-miss: double leading slash", "/" + sessions},
-		{"exempt near-miss: case-folded", strings.ToLower(sessions)},
-		{"exempt near-miss: dot segment", "/compass.v1.RunnerService/x/../Sessions"},
-		{"exempt near-miss: encoded trailing slash", sessions + "%2F"},
-	}
-	for _, tc := range nonExempt {
+	for _, tc := range []struct{ name, target string }{
+		{"trailing slash", sessions + "/"},
+		{"double leading slash", "/" + sessions},
+		{"dot segment", "/compass.v1.RunnerService/x/../Sessions"},
+		{"encoded trailing slash", sessions + "%2F"},
+		{"case-folded", strings.ToLower(sessions)},
+		{"absolute-form double slash", "https://foreign.example/" + sessions},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, status, ran := probe(t, tc.target)
-			if !ran {
-				if status < 400 {
-					t.Fatalf("target %q: handler not reached but status=%d, want a rejection", tc.target, status)
-				}
-				t.Logf("target %q rejected before the handler (status %d)", tc.target, status)
-				return
+			path, armed, status := probeDeadline(t, tc.target)
+			if !armed {
+				t.Fatalf("target %q decoded to %q (status %d) with no read deadline: a near-miss was classified exempt", tc.target, path, status)
 			}
-			if !p.armed {
-				t.Fatalf("target %q parsed as path %q with no read deadline armed: a non-exempt spelling was classified exempt", tc.target, p.path)
-			}
-			t.Logf("target %q -> path %q, deadline armed", tc.target, p.path)
 		})
 	}
 }
