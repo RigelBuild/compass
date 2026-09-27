@@ -114,42 +114,60 @@ func TestPostgresPruneWaitsForHeldHorizon(t *testing.T) {
 	}
 }
 
-// A rebuild beside an append would count the append twice or lose it, so an
-// append waits for whoever holds the tenant's usage lock.
-func TestPostgresAppendWaitsForUsageLock(t *testing.T) {
-	st, s := openPostgres(t)
-	ctx := store.WithTenant(t.Context(), pgTenants[0])
+// A rebuild beside an append would count the append twice or lose it, so both
+// wait for whoever holds the tenant's usage lock.
+func TestPostgresWritersWaitForUsageLock(t *testing.T) {
 	day0 := time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC)
-	if err := s.AppendTokenUsage(ctx, []usage.TokenUsageEvent{pgEvent("e1", day0, 1)}); err != nil {
-		t.Fatalf("AppendTokenUsage: %v", err)
-	}
 	q := usage.SeriesQuery{
 		Granularity: usage.GranularityDay,
 		StartUnixMs: day0.UnixMilli(),
 		EndUnixMs:   day0.Add(24 * time.Hour).UnixMilli(),
 	}
-	before := series(t, s, ctx, q)
+	for _, tc := range []struct {
+		name string
+		// prepare runs before the lock is taken; write runs while it is held.
+		prepare   func(ctx context.Context, s usage.Store) error
+		write     func(ctx context.Context, s usage.Store) error
+		wantInput int64
+	}{
+		{"append", func(context.Context, usage.Store) error { return nil },
+			func(ctx context.Context, s usage.Store) error {
+				return s.AppendTokenUsage(ctx, []usage.TokenUsageEvent{pgEvent("e2", day0, 2)})
+			}, 3},
+		{"rebuild", usage.ClearPostgresRollups,
+			func(ctx context.Context, s usage.Store) error { return s.RebuildTokenUsageRollups(ctx) }, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, s := openPostgres(t)
+			ctx := store.WithTenant(t.Context(), pgTenants[0])
+			if err := s.AppendTokenUsage(ctx, []usage.TokenUsageEvent{pgEvent("e1", day0, 1)}); err != nil {
+				t.Fatalf("AppendTokenUsage: %v", err)
+			}
+			if err := tc.prepare(ctx, s); err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			before := series(t, s, ctx, q)
 
-	pid, commit := holdTx(t, st, ctx, func(tx pgx.Tx) error {
-		return db.New(tx).LockTokenUsage(ctx)
-	})
-	done := make(chan error, 1)
-	go func() {
-		done <- s.AppendTokenUsage(ctx, []usage.TokenUsageEvent{pgEvent("e2", day0, 2)})
-	}()
+			pid, commit := holdTx(t, st, ctx, func(tx pgx.Tx) error {
+				return db.New(tx).LockTokenUsage(ctx)
+			})
+			done := make(chan error, 1)
+			go func() { done <- tc.write(ctx, s) }()
 
-	waitBlockedBy(t, st, pid)
-	if got := series(t, s, ctx, q); !slices.Equal(got, before) {
-		t.Fatalf("with the usage lock held, rollups moved: got %+v, want %+v", got, before)
-	}
+			waitBlockedBy(t, st, pid)
+			if got := series(t, s, ctx, q); !slices.Equal(got, before) {
+				t.Fatalf("with the usage lock held, rollups moved: got %+v, want %+v", got, before)
+			}
 
-	commit()
-	if err := <-done; err != nil {
-		t.Fatalf("AppendTokenUsage: %v", err)
-	}
-	got := series(t, s, ctx, q)
-	if len(got) != 1 || got[0].InputTokens != 3 {
-		t.Fatalf("after the append, series = %+v, want one bucket of 3 input tokens", got)
+			commit()
+			if err := <-done; err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			got := series(t, s, ctx, q)
+			if len(got) != 1 || got[0].InputTokens != tc.wantInput {
+				t.Fatalf("after the %s, series = %+v, want one bucket of %d input tokens", tc.name, got, tc.wantInput)
+			}
+		})
 	}
 }
 
