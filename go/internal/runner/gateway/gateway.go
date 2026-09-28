@@ -258,8 +258,17 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 	g.control = r
 }
 
-// Serve starts the per-container socket before the agent starts so it can reach the Server.
-// The socket forwards comms, lifecycle, forge, board calls, and telemetry.
+// Serve creates the per-container agent socket at path and serves this
+// container's AgentGateway over it, returning the live listener. It composes the
+// container's Gateway (containerName bound to the socket, deps.Sessions resolving
+// it to the live session, deps forwarding comms, lifecycle, forge and board calls
+// and telemetry to the Server, deps.Committer committing durable conversation
+// frames) onto the owner-only Unix socket the SocketListener owns, with an
+// explicit ReadMaxBytes bound on every method (Global Constraints: a large
+// agent-buffered message is a stream/unary error, not an OOM). Called at
+// Provision, before `podman run`, so the bind-mount source is live when the
+// container starts; the returned listener's Close tears the socket down at
+// container teardown.
 func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketListener, error) {
 	// The socket-lifetime context: it outlives any one agent request and is
 	// cancelled when the listener closes at container teardown. The shared upstream

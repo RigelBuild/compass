@@ -2,8 +2,14 @@
 
 package runner
 
-// End-to-end coverage proves calls cross the socket and reach the Server.
-// Gateway unit tests bypass host wiring, so they cannot prove this path.
+// T5 Half-A end-to-end proof (RIG-1351): the Runner-side agent->Runner call
+// transport, exercised through the REAL integrated stack rather than the T2
+// gateway/socket unit fakes. Every test dials the actual per-container Unix
+// socket that Provision served, over a real h2c Connect AgentGatewayClient, and
+// asserts the call flows agent -> socket -> Gateway -> (container->session
+// resolve) -> RelayCommsCall -> fake Server -> back. The T2 tests use
+// UnimplementedAgentGatewayHandler / blockingGateway and never touch the real
+// agentHost-backed Gateway, so this seam is uncovered until here.
 //
 // Deterministic + event-gated only (channels, short-deadline contexts): no
 // sleeps, no retries (rule://no-retries). testTimeout (helpers_test.go) bounds
@@ -27,8 +33,17 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// recordingRelay captures calls so the socket tests can verify forwarding.
-// Comms can block for teardown tests; Board returns a canned result.
+// recordingRelay is a fake RunnerService Server standing in for the real
+// RelayCommsCall endpoint. It captures every RelayCommsCallRequest it receives
+// (under a mutex, so the test goroutine and the h2c handler goroutine race
+// safely) and returns a canned result echoing the call id, so the test can
+// prove the exact session id + call reached the Server and the result flowed
+// back. When started != nil it blocks the forward until release is closed or
+// the request context is cancelled — the in-flight state a test event-gates on
+// for the force-close scenario, mirroring gateway/socket_test.go's
+// blockingGateway. RelayBoardCall is captured the same way and answers a canned
+// result, proving host wiring reaches the Board leg. Enroll/PublishEvents/
+// Sessions stay unimplemented (the embedded Unimplemented handler).
 type recordingRelay struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 
@@ -151,6 +166,16 @@ func listenerPath(t *testing.T, h *agentHost, container string) string {
 	return l.Path()
 }
 
+// TestE2ERoundTripUnderBoundSession — the GREEN happy path. Contract: a call
+// arriving on the container's socket while a session is bound reaches the Server
+// carrying (a) the exact session id Start minted and (b) the agent's CallId
+// verbatim, and the Server's result flows back to the client. Proving the exact
+// session id reached RelayCommsCall IS the attribution proof at the Runner seam
+// (OQ-2: the Runner forwards the session id it structurally owns and asserts no
+// account). Mutation that reddens it: forwarding a wrong/empty session id
+// (Gateway reading the wrong container->session mapping), dropping/duplicating
+// the forward, Gateway.Comms not returning the Server's result, or the host not
+// wiring the Board relay — each breaks one of the assertions below.
 func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	fake := &recordingRelay{}
 	h := newTransportFixture(t, fake)
