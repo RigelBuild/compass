@@ -2,14 +2,8 @@
 
 package runner
 
-// T5 Half-A end-to-end proof (RIG-1351): the Runner-side agent->Runner call
-// transport, exercised through the REAL integrated stack rather than the T2
-// gateway/socket unit fakes. Every test dials the actual per-container Unix
-// socket that Provision served, over a real h2c Connect AgentGatewayClient, and
-// asserts the call flows agent -> socket -> Gateway -> (container->session
-// resolve) -> RelayCommsCall -> fake Server -> back. The T2 tests use
-// UnimplementedAgentGatewayHandler / blockingGateway and never touch the real
-// agentHost-backed Gateway, so this seam is uncovered until here.
+// End-to-end coverage proves calls cross the socket and reach the Server.
+// Gateway unit tests bypass host wiring, so they cannot prove this path.
 //
 // Deterministic + event-gated only (channels, short-deadline contexts): no
 // sleeps, no retries (rule://no-retries). testTimeout (helpers_test.go) bounds
@@ -33,21 +27,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// recordingRelay is a fake RunnerService Server standing in for the real
-// RelayCommsCall endpoint. It captures every RelayCommsCallRequest it receives
-// (under a mutex, so the test goroutine and the h2c handler goroutine race
-// safely) and returns a canned result echoing the call id, so the test can
-// prove the exact session id + call reached the Server and the result flowed
-// back. When started != nil it blocks the forward until release is closed or
-// the request context is cancelled — the in-flight state a test event-gates on
-// for the force-close scenario, mirroring gateway/socket_test.go's
-// blockingGateway. Enroll/PublishEvents/Sessions stay unimplemented (the
-// embedded Unimplemented handler) — this seam only exercises RelayCommsCall.
+// recordingRelay captures calls so the socket tests can verify forwarding.
+// Comms can block for teardown tests; Board returns a canned result.
 type recordingRelay struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 
-	mu       sync.Mutex
-	received []*compassv1internal.RelayCommsCallRequest
+	mu            sync.Mutex
+	received      []*compassv1internal.RelayCommsCallRequest
+	boardReceived []*compassv1internal.RelayBoardCallRequest
 
 	started   chan struct{} // non-nil => block the forward until release/ctx-cancel
 	release   chan struct{}
@@ -99,6 +86,31 @@ func (r *recordingRelay) RelayCommsCall(
 	}), nil
 }
 
+func (r *recordingRelay) RelayBoardCall(
+	_ context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest],
+) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
+	r.mu.Lock()
+	r.boardReceived = append(r.boardReceived, req.Msg)
+	r.mu.Unlock()
+
+	return connect.NewResponse(&compassv1internal.RelayBoardCallResponse{
+		Result: &compassv1internal.BoardCallResult{
+			CallId: req.Msg.GetCall().GetCallId(),
+			Result: &compassv1internal.BoardCallResult_SetIssueState{
+				SetIssueState: &compassv1internal.SetIssueStateResponse{
+					Issue: &compassv1.Issue{Id: "iss-board", State: compassv1.IssueState_ISSUE_STATE_DONE},
+				},
+			},
+		},
+	}), nil
+}
+
+func (r *recordingRelay) boardSnapshot() []*compassv1internal.RelayBoardCallRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*compassv1internal.RelayBoardCallRequest(nil), r.boardReceived...)
+}
+
 // snapshot returns a copy of the requests received so far, taken under the lock.
 func (r *recordingRelay) snapshot() []*compassv1internal.RelayCommsCallRequest {
 	r.mu.Lock()
@@ -139,16 +151,6 @@ func listenerPath(t *testing.T, h *agentHost, container string) string {
 	return l.Path()
 }
 
-// TestE2ERoundTripUnderBoundSession — the GREEN happy path. Contract: a call
-// arriving on the container's socket while a session is bound reaches the Server
-// carrying (a) the exact session id Start minted and (b) the agent's CallId
-// verbatim, and the Server's result flows back to the client. Proving the exact
-// session id reached RelayCommsCall IS the attribution proof at the Runner seam
-// (OQ-2: the Runner forwards the session id it structurally owns and asserts no
-// account). Mutation that reddens it: forwarding a wrong/empty session id
-// (Gateway reading the wrong container->session mapping), dropping/duplicating
-// the forward, or Gateway.Comms not returning the Server's result — each breaks
-// one of the four assertions below.
 func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	fake := &recordingRelay{}
 	h := newTransportFixture(t, fake)
@@ -194,6 +196,28 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	}
 	if mid := resp.Msg.GetPost().GetMessage().GetId(); mid != "msg-tc-1" {
 		t.Fatalf("result payload message id = %q, want the canned %q", mid, "msg-tc-1")
+	}
+	boardResp, err := client.Board(callCtx, connect.NewRequest(&compassv1internal.BoardCallRequest{
+		CallId: "tb-1",
+		Call: &compassv1internal.BoardCallRequest_SetIssueState{
+			SetIssueState: &compassv1internal.SetIssueStateRequest{
+				IssueId: "iss-board",
+				State:   compassv1.IssueState_ISSUE_STATE_DONE,
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Board over the socket = %v, want the round-trip result", err)
+	}
+	gotBoard := fake.boardSnapshot()
+	if len(gotBoard) != 1 || gotBoard[0].GetSessionId() != sessionID {
+		t.Fatalf("relayed Board calls = %+v, want exactly one carrying the Start-minted session id %q", gotBoard, sessionID)
+	}
+	if gotBoard[0].GetCall().GetCallId() != "tb-1" {
+		t.Fatalf("relayed Board call id = %q, want tb-1", gotBoard[0].GetCall().GetCallId())
+	}
+	if boardResp.Msg.GetCallId() != "tb-1" {
+		t.Fatalf("Board result call id = %q, want tb-1", boardResp.Msg.GetCallId())
 	}
 }
 

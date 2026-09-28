@@ -14,7 +14,6 @@ import (
 )
 
 type recordedBoardCall struct {
-	ctx context.Context
 	req *compassv1internal.RelayBoardCallRequest
 }
 
@@ -25,9 +24,9 @@ type fakeBoardRelay struct {
 }
 
 func (f *fakeBoardRelay) RelayBoardCall(
-	ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest],
+	_ context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest],
 ) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
-	f.calls = append(f.calls, recordedBoardCall{ctx: ctx, req: req.Msg})
+	f.calls = append(f.calls, recordedBoardCall{req: req.Msg})
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -81,6 +80,28 @@ func TestBoardHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 	}
 	if resp.Msg.GetCallId() != testCallID || resp.Msg.GetSetIssueState().GetIssue().GetId() != "iss-1" {
 		t.Fatalf("returned result = %+v, want the Server's board result", resp.Msg)
+	}
+}
+
+func TestBoardInBandErrorPassesThrough(t *testing.T) {
+	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
+	relay := &fakeBoardRelay{resp: &compassv1internal.RelayBoardCallResponse{
+		Result: &compassv1internal.BoardCallResult{
+			CallId: testCallID,
+			Result: &compassv1internal.BoardCallResult_Error{Error: &compassv1internal.BoardCallError{
+				Code:    "not_found",
+				Message: "issue does not exist",
+			}},
+		},
+	}}
+	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Board: relay})
+
+	resp, err := g.Board(context.Background(), connect.NewRequest(boardSetIssueStateCall()))
+	if err != nil {
+		t.Fatalf("Board with an in-band error = %v, want nil Go error", err)
+	}
+	if got := resp.Msg.GetError().GetCode(); got != "not_found" {
+		t.Fatalf("in-band error code = %q, want not_found", got)
 	}
 }
 
