@@ -77,7 +77,7 @@ export function isMultiForge(issues: readonly Issue[]): boolean {
 	return false;
 }
 
-/** The author label for a card / PR pane: the boarded artifact's Compass agent
+/** The author label for a PR pane: the boarded artifact's Compass agent
  *  as `@handle`. Only Compass artifacts from trusted agent accounts are boarded
  *  (Matt's 2026-07-31 ruling), so there is no untrusted owner-header spoof
  *  surface to hedge — the label is the bare handle, with no owner text and no

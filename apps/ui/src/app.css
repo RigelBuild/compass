@@ -2368,8 +2368,8 @@
 	display: block;
 	width: 11px;
 	height: 11px;
-	/* Margins sum to the 32px content box, leaving no half-pixel free space
-	 * to center the 11px SVG and smear its 1px cells. */
+	/* The 11px box plus integer margins fills the 32px content box, leaving
+	 * no free space for flex centering to smear its 1px SVG cells. */
 	margin: 10px 11px 11px 10px;
 }
 
