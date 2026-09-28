@@ -425,16 +425,16 @@ func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
 		t.Fatalf("sweeping /proc/self/environ as a file root gave exit %d, %q; want exit 0 with the needle, "+
 			"or the exclusion assertion below would be vacuous", code, truncate(out))
 	}
-	// The walk must actually reach environ, or a no-match proves nothing.
-	walk := "shopt -s globstar nullglob dotglob; for f in /proc/self/**/*; do " +
-		"[[ $f == /proc/self/environ ]] && { echo reached; break; }; done"
-	if out, _ := guestSh(t, m, id, walk); strings.TrimSpace(out) != "reached" {
-		t.Fatalf("the /proc/self walk never reached environ (%q); the exclusion assertion would be vacuous", truncate(out))
-	}
-
 	// "//proc/self" globs to "//proc/self/…", which only the slash collapse
 	// brings back under the /proc/* exclusion.
 	for _, root := range []string{"/proc/self", "//proc/self"} {
+		// Each walk must reach environ, or its no-match proves nothing.
+		walk := "shopt -s globstar nullglob dotglob; for f in " + shellQuote(root) + "/**/*; do " +
+			"[[ $f == " + shellQuote(root+"/environ") + " ]] && { echo reached; break; }; done"
+		if out, _ := guestSh(t, m, id, walk); strings.TrimSpace(out) != "reached" {
+			t.Fatalf("the %s walk never reached environ (%q); the exclusion assertion would be vacuous", root, truncate(out))
+		}
+
 		out, code := guestSh(t, m, id, sweepScript(needle, root))
 		if code != 1 || strings.Contains(out, needle) {
 			t.Fatalf("sweeping a %s directory root gave exit %d, %q; want exit 1 without the needle: "+
