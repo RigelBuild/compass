@@ -466,7 +466,7 @@ func (p *PodmanCLI) ListByOwner(ctx context.Context, prefix, runnerID string) ([
 		return nil, err
 	}
 	names := make([]WorkloadID, 0)
-	for _, name := range strings.Split(string(stdout), "\n") {
+	for name := range strings.SplitSeq(string(stdout), "\n") {
 		if strings.HasPrefix(name, prefix) {
 			names = append(names, WorkloadID(name))
 		}
