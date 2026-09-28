@@ -13,36 +13,11 @@ if (!root) {
 	throw new Error("missing #root element");
 }
 
-// Entry dispatch on the shell-injected launch mode (OQ-8), read synchronously
-// with NO IPC — the entry point must pick a boot path before any Go getter is
-// reachable. The mode difference stays confined to which connection PROVIDER
-// boot installs (§A1's one sanctioned divergence): `main()` below is uniform.
+// Dispatch on shell-injected mode before any IPC; main() stays uniform across
+// client, embedded, browser-dev, and fixture paths.
 //
-//   "client"  → bootNativeClient gates on the shell's armed connection (probe +
-//               connect screen), then boots through the SAME main() chain.
-//   "embedded" → the native embedded provider, resolved directly through the
-//               bridge transport (no client probe or connect screen).
-//   absent    → the UNCHANGED browser-dev path: envConnectionProvider.
-//   fixture   → the offline fixture boot (§A1), a third BROWSER-ONLY arm checked
-//               first: Vite statically replaces `import.meta.env.MODE`, so in a
-//               non-fixture build the branch dead-code-eliminates and the
-//               dynamically-imported boot-fixture chunk is never emitted.
-//
-// Boot resolves the connection through a ConnectionProvider. resolve() is async,
-// so the whole sequence runs inside a single async chain: bootConnection catches
-// a resolve throw at the boundary and paints the resolver's own message into
-// #root — a missing VITE_COMPASS_BASE_URL still throws by design
-// (live/connection.ts) and still lands on the same failure screen — and main()
-// carries on only when a connection resolved. Undefined means there is nothing
-// valid to dial (or, in client mode, the user cannot proceed), so we stop rather
-// than boot against a wrong default, and the gate/error screen is the whole UI.
-// A post-connection boot failure (createRoot/createAppStore/render throwing)
-// routes to the same painter so a swallowed `void` promise never leaves a blank
-// #root.
-// The `import.meta.env.MODE === "fixture"` comparison MUST stay INLINE: Vite
-// folds it to `if ("production" === "fixture")` in a non-fixture build, which
-// dead-code-eliminates this branch and prevents the boot-fixture chunk from
-// being emitted at all. Hoisting MODE to a variable defeats the fold (§A1).
+// Keep the fixture comparison inline: Vite folds it in production, eliminating
+// the fixture branch and its dynamically imported chunk.
 if (import.meta.env.MODE === "fixture") {
 	void import("./boot-fixture")
 		.then((m) => m.bootFixture(root))
@@ -74,30 +49,18 @@ if (import.meta.env.MODE === "fixture") {
 		});
 }
 
-// The post-connect boot sequence, async because learning the caller requires a
-// round-trip: build the clients, ask the server who we are (WhoAmI via
-// bootCaller), then build the store and render. bootCaller owns the failure
-// boundary — a WhoAmI rejection or an empty id means the server answered but we
-// could not learn "me", so it paints the boot-error screen and returns
-// undefined; the app genuinely cannot come up (the caller scopes every listing
-// and drives rail membership), so undefined stops boot here without rendering.
-// This boundary is distinct from a misconfigured env: the connection resolved
-// fine; the identity round-trip is what failed.
+// Resolve identity before building the store. A failed WhoAmI paints the boot
+// error screen and stops here because the app cannot scope listings without it.
 async function main(
 	root: HTMLElement,
 	connection: ResolvedConnection,
 ): Promise<void> {
-	// Product analytics, OFF by default: an unconfigured deployment (no PostHog
-	// project key) gets a no-op that never touches posthog. Correlation runs both
-	// ways and is best-effort in both: the inbound trace id is the LAST reply's
-	// (and absent entirely without an OTel provider), and the outbound session id
-	// is absent until a PostHog session exists. See composeBoot for why the
-	// construction order is load-bearing.
+	// Analytics is off without a project key. Trace and session correlation are
+	// best-effort; composeBoot's construction order is load-bearing.
 	const { analytics, clients } = composeBoot({ connection });
 
 	const callerId = await bootCaller(root, () => resolveCaller(clients.compass));
-	// Undefined is bootCaller's stop signal — it already painted the WhoAmI
-	// failure screen, so the app must not come up (no caller to scope it).
+	// bootCaller paints the WhoAmI failure screen; without an identity, stop boot.
 	if (!callerId) {
 		return;
 	}
@@ -106,25 +69,12 @@ async function main(
 	// distinct id. This stays AFTER bootCaller: the id is its output.
 	analytics.identify(callerId);
 
-	// One app-lifetime QueryClient — the server-state cache the query layer keys
-	// against (query record §A1). Built BEFORE the store so the store can hold it
-	// explicitly: the store's createRoot owner never sits under
-	// QueryClientProvider (that mounts inside render(), below), so store-internal
-	// queries pass this client directly rather than resolving it from context
-	// (§A3). Components read the SAME instance through the provider — two access
-	// paths, one cache, so invalidations and setQueryData from either side are
-	// one source of truth.
+	// One app-lifetime QueryClient is shared by store internals and components.
+	// The store runs outside QueryClientProvider, so it receives the client directly.
 	const queryClient = newAppQueryClient();
 
-	// The store is an app-lifetime singleton; createRoot gives its memos a stable
-	// owner (intentionally never disposed) so Solid doesn't warn about
-	// computations created before render() establishes a root. One unified store
-	// drives every surface: the board, the per-agent workspace, and the channel
-	// conversation.
-	//
-	// The owner also scopes the comms stream: the store registers an onCleanup
-	// that aborts it, so disposing this root (never, in the app) tears the
-	// subscription down. The caller was learned from the server via WhoAmI above.
+	// The app-lifetime store uses a stable Solid owner and drives every surface.
+	// Its cleanup aborts the comms stream if the owner is ever disposed.
 	const store = createRoot(() =>
 		createAppStore({
 			comms: clients.comms,

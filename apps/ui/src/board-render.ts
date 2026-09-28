@@ -1,7 +1,5 @@
-// Shared render derivations over the canonical Issue/PullRequest types (DL-069) — one home
-// for the total functions the card, the Done view, and the PR pane must agree on. One
-// deliberate exception: `authorLabel` is the PR pane's ARTIFACT-author label; the card
-// instead shows the issue's current assignee (a different fact). That divergence is intended.
+// Shared total render derivations keep board surfaces aligned; authorLabel is
+// the PR artifact author, while cards show the issue's current assignee.
 
 import type { PrLifecycle } from "./constants";
 import type {
