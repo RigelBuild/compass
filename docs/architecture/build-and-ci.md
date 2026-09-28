@@ -8,10 +8,7 @@ devenv      the dev shell — owns every toolchain (Go/bun/node/moon + the rest)
 moon        the task graph: what to build/test, caching, affected detection
 ```
 
-The headline property: **the same task graph runs remotely and locally.** Only
-the scheduler differs — GitHub Actions remotely, moon on one box locally. What
-keeps that true rather than aspirational is the version-parity gate below,
-which fails the build when the two toolchains diverge.
+The headline property: **the same task graph runs remotely and locally.** GitHub Actions schedules remote runs; moon schedules local ones. The version-parity gate below fails builds when toolchains diverge.
 
 ## Toolchains: devenv/nix
 
