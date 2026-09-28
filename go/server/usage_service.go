@@ -91,9 +91,6 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	case account.IsAgent():
 		scope, err = s.store.AgentSubtree(ctx, caller)
 		if err == nil {
-			if account.Agent == nil {
-				return nil, false, connect.NewError(connect.CodePermissionDenied, errors.New("caller account cannot read usage"))
-			}
 			scope, err = s.intersectOwnerScope(ctx, account.Agent.OwnerUserID, scope)
 		}
 	case account.User != nil && !admin:
