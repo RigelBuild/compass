@@ -372,10 +372,12 @@ CREATE TABLE channel_pins (
 -- (the plaintext token is returned once and never stored). subject_kind is 0
 -- account / 1 runner / 2 service; subject_id spans those id spaces. revoked_at
 -- is set on RevokeToken so ResolveTokenHash tells revoked from never-issued.
+-- tenant_id is the issuing tenant; the table stays un-RLS'd so lookup runs first.
 CREATE TABLE tokens (
     hash         BYTEA PRIMARY KEY,
     subject_kind SMALLINT NOT NULL CHECK (subject_kind IN (0, 1, 2)),
     subject_id   TEXT NOT NULL,
+    tenant_id    TEXT NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_at   TIMESTAMPTZ
 );

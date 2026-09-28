@@ -288,7 +288,7 @@ type Querier interface {
 	// SQL literals in internal/store/tokens.go; the hand-written Store methods keep
 	// their signatures, the ErrConflict/ErrNotFound/ErrTokenRevoked mapping, and the
 	// RowsAffected branching (RevokeToken is :execrows). ResolveTokenHash maps the
-	// generated row (subject_kind/subject_id/revoked) back to the domain Subject.
+	// generated row (subject_kind/subject_id/tenant_id/revoked) back to the domain Subject.
 	InsertTokenHash(ctx context.Context, arg InsertTokenHashParams) error
 	InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) error
 	InsertTranscriptEntry(ctx context.Context, arg InsertTranscriptEntryParams) (int64, error)

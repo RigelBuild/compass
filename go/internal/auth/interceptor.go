@@ -60,11 +60,11 @@ func CallerFrom(ctx context.Context) (store.AccountID, bool) {
 func BearerInterceptor(st *store.Store) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			account, err := resolveBearer(ctx, st, req.Header().Get(authorizationHeader))
+			account, tenant, err := resolveBearer(ctx, st, req.Header().Get(authorizationHeader))
 			if err != nil {
 				return nil, err
 			}
-			return next(withCaller(ctx, account), req)
+			return next(store.WithTenant(withCaller(ctx, account), tenant), req)
 		}
 	}
 }
@@ -75,7 +75,7 @@ func BearerInterceptor(st *store.Store) connect.UnaryInterceptorFunc {
 // WrapStreamingHandler; the client-stream leg is a pass-through (the network door
 // authenticates inbound handler calls, not the server's own outbound clients).
 func BearerStreamInterceptor(st *store.Store) connect.Interceptor {
-	return streamAuth{resolve: func(ctx context.Context, header string) (store.AccountID, error) {
+	return streamAuth{resolve: func(ctx context.Context, header string) (store.AccountID, store.TenantID, error) {
 		return resolveBearer(ctx, st, header)
 	}}
 }
@@ -127,25 +127,28 @@ func (a ambientStream) WrapStreamingHandler(next connect.StreamingHandlerFunc) c
 // resolveBearer extracts and resolves the bearer token from an Authorization
 // header value, returning the caller or a CodeUnauthenticated error. Shared by
 // the unary and streaming bearer interceptors so both doors reject identically.
-func resolveBearer(ctx context.Context, st *store.Store, header string) (store.AccountID, error) {
+func resolveBearer(ctx context.Context, st *store.Store, header string) (store.AccountID, store.TenantID, error) {
 	if header == "" {
-		return store.AccountID(""), connect.NewError(connect.CodeUnauthenticated, errMissingAuthorization)
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errMissingAuthorization)
 	}
 	token, ok := bearerToken(header)
 	if !ok {
-		return store.AccountID(""), connect.NewError(connect.CodeUnauthenticated, errNotBearer)
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errNotBearer)
 	}
 	subj, err := ResolveToken(ctx, st, token, store.SubjectAccount)
 	if err != nil {
 		// Oracle-safe: every resolution failure — unknown, revoked, or a cross-door
-		// (Runner) token — is one indistinguishable CodeUnauthenticated to the client,
-		// so the response never reveals which. The distinct sentinel is logged (debug)
-		// as a server-side audit signal only; it never reaches the wire.
+		// (Runner) token — is one indistinguishable CodeUnauthenticated to the client.
+		// The distinct sentinel is logged (debug) as a server-side audit signal only.
 		slog.DebugContext(ctx, "network door rejected bearer token", "reason", err)
-		return store.AccountID(""), connect.NewError(connect.CodeUnauthenticated, errInvalidToken)
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errInvalidToken)
 	}
-	// The account door's trivial typed wrap on the shared resolver's Subject.
-	return store.AccountID(subj.ID), nil
+	// An unscoped caller would silently fall back to the bootstrap tenant; fail closed.
+	if subj.Tenant == "" {
+		slog.DebugContext(ctx, "network door rejected bearer token", "reason", "token has empty tenant")
+		return store.AccountID(""), "", connect.NewError(connect.CodeUnauthenticated, errInvalidToken)
+	}
+	return store.AccountID(subj.ID), subj.Tenant, nil
 }
 
 // bearerToken extracts the token from an Authorization header value, accepting

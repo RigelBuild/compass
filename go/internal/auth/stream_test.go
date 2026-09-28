@@ -49,8 +49,9 @@ func runStreamInterceptor(interceptor connect.Interceptor, conn connect.Streamin
 // stream.go's WrapStreamingHandler — dropping it leaves the handler with no
 // caller).
 func TestBearerStreamInterceptorInjectsCallerForAValidToken(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	st, acct, _ := openTestStore(t)
+	tenant := st.EffectiveTenant(ctx)
 	token, err := IssueAccountToken(ctx, st, acct)
 	if err != nil {
 		t.Fatalf("IssueAccountToken: %v", err)
@@ -65,6 +66,9 @@ func TestBearerStreamInterceptorInjectsCallerForAValidToken(t *testing.T) {
 	}
 	if !rec.hasCaller || rec.caller != acct {
 		t.Fatalf("the injected caller is the token's account: got %v hasCaller=%v, want %v", rec.caller, rec.hasCaller, acct)
+	}
+	if rec.tenant != tenant {
+		t.Fatalf("the injected tenant = %q, want token tenant %q", rec.tenant, tenant)
 	}
 }
 

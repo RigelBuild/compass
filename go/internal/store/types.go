@@ -109,9 +109,11 @@ const (
 type Subject struct {
 	Kind SubjectKind
 	// ID is the AccountID (SubjectAccount), the Runner id (SubjectRunner), or a
-	// stable service name such as "llm-gateway" (SubjectService), as a bare
-	// string because it spans those id spaces.
+	// stable service name such as "llm-gateway" (SubjectService).
 	ID string
+	// Tenant is the tenant the token was issued under, set by ResolveTokenHash.
+	// PutTokenHash ignores it and stamps the issuing request's tenant.
+	Tenant TenantID
 }
 
 // Account is a communication-layer account: a human user, an owned agent, or the
