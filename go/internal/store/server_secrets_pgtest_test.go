@@ -44,10 +44,11 @@ func TestT0ServerSecretsShape(t *testing.T) {
 	}
 
 	// The load-bearing half: grants are NOT inherited from 0001's snapshot, so
-	// each table needs its own. Both tables are asserted with their OWN expected
+	// each table needs its own. Each table is asserted with their OWN expected
 	// privilege set, and server_key_state's withheld DELETE is asserted ABSENT —
 	// that omission is a deliberate least-privilege choice (the tripwire digest
-	// must not be droppable), so it is pinned, not left to chance.
+	// must not be droppable), so it is pinned, not left to chance. The usage
+	// prune horizon withholds INSERT and DELETE for the reason in 0001_init.sql.
 	for _, tc := range []struct {
 		tbl     string
 		granted []string

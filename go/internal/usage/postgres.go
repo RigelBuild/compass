@@ -119,7 +119,7 @@ func (p *Postgres) PruneTokenUsageBefore(ctx context.Context, beforeUnixMs int64
 		if err != nil {
 			return err
 		}
-		// A missing row would let a rebuild drop rollups the prune left eventless.
+		// Without the row the rebuild also fails, so the prune must not delete events.
 		if n == 0 {
 			return errors.New("prune horizon row is missing")
 		}

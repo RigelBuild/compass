@@ -164,6 +164,9 @@ func TestPostgresWritersWaitForUsageLock(t *testing.T) {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
 			got := series(t, s, ctx, q)
+			if slices.Equal(got, before) {
+				t.Fatalf("the %s left the series unchanged, so the held-lock check proved nothing", tc.name)
+			}
 			if len(got) != 1 || got[0].InputTokens != tc.wantInput {
 				t.Fatalf("after the %s, series = %+v, want one bucket of %d input tokens", tc.name, got, tc.wantInput)
 			}
