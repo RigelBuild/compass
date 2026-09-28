@@ -150,6 +150,7 @@ type stubStreamingRuntime struct {
 	execGate    chan struct{}                   // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md)
 	execEntered chan runtime.WorkloadID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
 	created     []runtime.WorkloadSpec
+	createErr   error // when set, Create fails with it — models `podman create` refusing a name already in use
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -165,9 +166,12 @@ func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
 
 func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "create")
+	if f.createErr != nil {
+		return "", f.createErr
+	}
 	f.created = append(f.created, spec)
-	f.mu.Unlock()
 	return runtime.WorkloadID("fake-id"), nil
 }
 func (f *stubStreamingRuntime) Start(context.Context, runtime.WorkloadID) error {
