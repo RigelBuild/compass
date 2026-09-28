@@ -11,12 +11,16 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
+	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 	"github.com/RigelBuild/compass/go/internal/usage"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestUsageSeriesScopesAccounts(t *testing.T) {
@@ -73,17 +77,17 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 		if err := usageStore.AppendTokenUsage(ctx, []usage.TokenUsageEvent{{
 			ID: fmt.Sprintf("event-%d", i), OccurredAtUnixMs: start, AgentAccountID: string(agent.ID),
 			OwnerUserID: string(owner), Provider: provider, Model: "m", InputTokens: int64(i + 1),
-			OutputTokens: int64(i + 2), TotalTokens: int64(i + 3), CostMicroUSD: int64((i + 1) * 10), Outcome: "ok",
+			OutputTokens: int64(i + 2), CacheReadTokens: int64(i + 3), CacheWriteTokens: int64(i + 4),
+			TotalTokens: int64(i + 5), CostMicroUSD: int64((i + 1) * 10), Outcome: "ok",
 		}}); err != nil {
 			t.Fatalf("AppendTokenUsage: %v", err)
 		}
 	}
-	svc := newUsageService(usageStore, st)
-	path, handler := compassv1connect.NewUsageServiceHandler(svc, connect.WithInterceptors(auth.BearerInterceptor(st), auth.NewAdminGate(admin.ID)))
+	base := &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 3_600_000, Granularity: compassv1.Granularity_GRANULARITY_HOUR}
+	path, handler := compassv1connect.NewUsageServiceHandler(newUsageService(usageStore, st), connect.WithInterceptors(auth.BearerInterceptor(st), auth.NewAdminGate(admin.ID)))
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
-	httpServer := newUsageH2CServer(t, mux)
-	client := newUsageH2CClient(t, httpServer)
+	client := newUsageH2CClient(t, newUsageH2CServer(t, mux))
 	tokens := make(map[store.AccountID]string)
 	for _, account := range []store.Account{admin, owner1, owner2, zeroOwner, a, b, c, d} {
 		token, err := auth.IssueAccountToken(ctx, st, account.ID)
@@ -92,64 +96,121 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 		}
 		tokens[account.ID] = token
 	}
-	base := &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 3_600_000, Granularity: compassv1.Granularity_GRANULARITY_HOUR}
-	for _, tc := range []struct {
-		name   string
-		caller store.AccountID
-		req    *compassv1.GetUsageSeriesRequest
-		want   int64
-		code   connect.Code
+	cases := []struct {
+		name       string
+		caller     store.AccountID
+		req        *compassv1.GetUsageSeriesRequest
+		wantInput  int64
+		wantCount  int
+		wantCode   connect.Code
+		wantBucket *compassv1.UsageBucket
 	}{
-		{name: "owner all agents", caller: owner1.ID, req: base, want: 6},
-		{name: "owner subtree", caller: owner1.ID, req: withUsageFilter(base, a.ID, true), want: 6},
-		{name: "owner exact agent", caller: owner1.ID, req: withUsageFilter(base, a.ID, false), want: 1},
-		{name: "owner rejects foreign agent", caller: owner1.ID, req: withUsageFilter(base, d.ID, false), code: connect.CodePermissionDenied},
-		{name: "agent subtree", caller: b.ID, req: base, want: 5},
-		{name: "agent cannot read ancestor", caller: b.ID, req: withUsageFilter(base, a.ID, false), code: connect.CodePermissionDenied},
-		{name: "admin all agents", caller: admin.ID, req: base, want: 10},
-		{name: "empty owner", caller: zeroOwner.ID, req: base, want: 0},
-		{name: "unspecified granularity", caller: owner1.ID, req: &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 1}, code: connect.CodeInvalidArgument},
-		{name: "invalid window", caller: owner1.ID, req: &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start, Granularity: compassv1.Granularity_GRANULARITY_HOUR}, code: connect.CodeInvalidArgument},
-		{name: "subtree requires agent", caller: owner1.ID, req: withUsageFilter(base, "", true), code: connect.CodeInvalidArgument},
-		{name: "provider filter", caller: admin.ID, req: withUsageProvider(base, "openai"), want: 4},
-	} {
+		{name: "owner all agents", caller: owner1.ID, req: base, wantInput: 6, wantCount: 1, wantBucket: &compassv1.UsageBucket{BucketStartUnixMs: start, InputTokens: 6, OutputTokens: 9, CacheReadTokens: 12, CacheWriteTokens: 15, CostMicroUsd: 60}},
+		{name: "owner mid-tree subtree", caller: owner1.ID, req: withUsageFilter(base, b.ID, true), wantInput: 5, wantCount: 1},
+		{name: "owner subtree", caller: owner1.ID, req: withUsageFilter(base, a.ID, true), wantInput: 6, wantCount: 1},
+		{name: "owner exact agent", caller: owner1.ID, req: withUsageFilter(base, a.ID, false), wantInput: 1, wantCount: 1},
+		{name: "owner rejects foreign agent", caller: owner1.ID, req: withUsageFilter(base, d.ID, false), wantCode: connect.CodePermissionDenied},
+		{name: "agent subtree", caller: b.ID, req: base, wantInput: 5, wantCount: 1},
+		{name: "agent selects child", caller: b.ID, req: withUsageFilter(base, c.ID, false), wantInput: 3, wantCount: 1},
+		{name: "agent selects child subtree", caller: b.ID, req: withUsageFilter(base, c.ID, true), wantInput: 3, wantCount: 1},
+		{name: "agent cannot read ancestor", caller: b.ID, req: withUsageFilter(base, a.ID, false), wantCode: connect.CodePermissionDenied},
+		{name: "admin all agents", caller: admin.ID, req: base, wantInput: 10, wantCount: 1},
+		{name: "admin exact filter", caller: admin.ID, req: withUsageFilter(base, c.ID, false), wantInput: 3, wantCount: 1},
+		{name: "admin subtree filter", caller: admin.ID, req: withUsageFilter(base, b.ID, true), wantInput: 5, wantCount: 1},
+		{name: "admin unknown agent", caller: admin.ID, req: withUsageFilter(base, "unknown-agent", false), wantCode: connect.CodeNotFound},
+		{name: "non-admin unknown agent", caller: owner1.ID, req: withUsageFilter(base, "unknown-agent", false), wantCode: connect.CodePermissionDenied},
+		{name: "non-admin rejects user id", caller: owner1.ID, req: withUsageFilter(base, owner1.ID, false), wantCode: connect.CodePermissionDenied},
+		{name: "empty owner", caller: zeroOwner.ID, req: base, wantCount: 0},
+		{name: "unspecified granularity", caller: owner1.ID, req: &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 1}, wantCode: connect.CodeInvalidArgument},
+		{name: "invalid window", caller: owner1.ID, req: &compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start, Granularity: compassv1.Granularity_GRANULARITY_HOUR}, wantCode: connect.CodeInvalidArgument},
+		{name: "subtree requires agent", caller: owner1.ID, req: withUsageFilter(base, "", true), wantCode: connect.CodeInvalidArgument},
+		{name: "provider filter", caller: admin.ID, req: withUsageProvider(base, "openai"), wantInput: 4, wantCount: 1},
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := connect.NewRequest(tc.req)
+			req := connect.NewRequest(proto.Clone(tc.req).(*compassv1.GetUsageSeriesRequest))
 			req.Header().Set("Authorization", "Bearer "+tokens[tc.caller])
 			resp, err := client.GetUsageSeries(ctx, req)
-			if tc.code != 0 {
-				if connect.CodeOf(err) != tc.code {
-					t.Fatalf("error = %v, code = %v, want %v", err, connect.CodeOf(err), tc.code)
+			if tc.wantCode != 0 {
+				if connect.CodeOf(err) != tc.wantCode {
+					t.Fatalf("error = %v, code = %v, want %v", err, connect.CodeOf(err), tc.wantCode)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("GetUsageSeries: %v", err)
 			}
-			if tc.want == 0 {
-				if len(resp.Msg.Buckets) != 0 {
-					t.Fatalf("buckets = %+v, want none", resp.Msg.Buckets)
-				}
-				return
+			if len(resp.Msg.Buckets) != tc.wantCount {
+				t.Fatalf("bucket count = %d, want %d (%+v)", len(resp.Msg.Buckets), tc.wantCount, resp.Msg.Buckets)
 			}
-			if len(resp.Msg.Buckets) != 1 || resp.Msg.Buckets[0].InputTokens != tc.want {
-				t.Fatalf("buckets = %+v, want one bucket with input tokens %d", resp.Msg.Buckets, tc.want)
+			if tc.wantCount > 0 && resp.Msg.Buckets[0].InputTokens != tc.wantInput {
+				t.Fatalf("input tokens = %d, want %d", resp.Msg.Buckets[0].InputTokens, tc.wantInput)
+			}
+			if tc.wantBucket != nil && !proto.Equal(resp.Msg.Buckets[0], tc.wantBucket) {
+				t.Fatalf("bucket = %+v, want %+v", resp.Msg.Buckets[0], tc.wantBucket)
 			}
 		})
 	}
 }
 
+func TestUsageSeriesNetworkDoor(t *testing.T) {
+	ctx := context.Background()
+	st, admin, owner := newNetworkStore(t)
+	agent, err := st.CreateAgent(ctx, owner, store.NewAgent{Handle: "usage", DisplayName: "usage"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	const start = int64(1_800_000_000_000)
+	if err := usage.NewPostgres(st).AppendTokenUsage(ctx, []usage.TokenUsageEvent{{
+		ID: "network-event", OccurredAtUnixMs: start, AgentAccountID: string(agent.ID), OwnerUserID: string(owner), Provider: "anthropic", Model: "m",
+		InputTokens: 17, OutputTokens: 19, CacheReadTokens: 23, CacheWriteTokens: 29, CostMicroUSD: 31, Outcome: "ok",
+	}}); err != nil {
+		t.Fatalf("AppendTokenUsage: %v", err)
+	}
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	svc := newService("usage-test", bus, st, nil, nil, nil, nil)
+	commsSvc := comms.NewComms(st, commsBus, admin)
+	secretsSvc := newSecretsService(st, nil, nil, nil)
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()}, svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildNetworkServer: %v", err)
+	}
+	httpServer := httptest.NewServer(srv.Handler)
+	t.Cleanup(httpServer.Close)
+	token, err := auth.IssueAccountToken(ctx, st, owner)
+	if err != nil {
+		t.Fatalf("IssueAccountToken: %v", err)
+	}
+	client := compassv1connect.NewUsageServiceClient(httpServer.Client(), httpServer.URL)
+	req := connect.NewRequest(&compassv1.GetUsageSeriesRequest{StartUnixMs: start, EndUnixMs: start + 3_600_000, Granularity: compassv1.Granularity_GRANULARITY_HOUR})
+	req.Header().Set("Authorization", "Bearer "+token)
+	resp, err := client.GetUsageSeries(ctx, req)
+	if err != nil {
+		t.Fatalf("network GetUsageSeries: %v", err)
+	}
+	if len(resp.Msg.Buckets) != 1 || resp.Msg.Buckets[0].InputTokens != 17 {
+		t.Fatalf("network buckets = %+v, want one bucket with 17 input tokens", resp.Msg.Buckets)
+	}
+}
+
 func withUsageFilter(req *compassv1.GetUsageSeriesRequest, id store.AccountID, subtree bool) *compassv1.GetUsageSeriesRequest {
-	copy := *req
+	copy := proto.Clone(req).(*compassv1.GetUsageSeriesRequest)
 	copy.AgentAccountId = string(id)
 	copy.IncludeSubtree = subtree
-	return &copy
+	return copy
 }
 
 func withUsageProvider(req *compassv1.GetUsageSeriesRequest, provider string) *compassv1.GetUsageSeriesRequest {
-	copy := *req
+	copy := proto.Clone(req).(*compassv1.GetUsageSeriesRequest)
 	copy.Provider = provider
-	return &copy
+	return copy
 }
 
 func newUsageH2CClient(t *testing.T, baseURL string) compassv1connect.UsageServiceClient {

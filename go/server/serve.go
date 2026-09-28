@@ -1003,7 +1003,8 @@ func buildDoors(
 	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	usageSocketPath, usageSocketHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
+			auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	udsMux := http.NewServeMux()
 	udsMux.Handle(socketPath, socketHandler)
 	udsMux.Handle(commsPath, commsHandler)
@@ -1027,7 +1028,8 @@ func buildDoors(
 		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		devUsagePath, devUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
-			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+			connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
+				auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		devMux := http.NewServeMux()
 		devMux.Handle(devPath, devHandler)
 		devMux.Handle(commsPath, commsHandler)
