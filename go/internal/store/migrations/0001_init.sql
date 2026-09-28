@@ -1089,91 +1089,6 @@ CREATE TABLE linear_agent_sessions (
     tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
--- ── Token usage (Plane-A) ────────────────────────────────────────────────────
--- token_usage_events: the append-only raw log of upstream model calls the LLM
--- gateway reports, idempotent on the server-assigned id. Retention deletes old
--- rows; the rollups keep their sums. No FK to accounts: a log row outlives its
--- account.
-CREATE TABLE token_usage_events (
-    tenant_id          TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
-    id                 TEXT        NOT NULL,
-    occurred_at        TIMESTAMPTZ NOT NULL,
-    agent_account_id   TEXT        NOT NULL,
-    owner_user_id      TEXT        NOT NULL,
-    session_id         TEXT        NOT NULL,
-    request_id         TEXT        NOT NULL,
-    provider           TEXT        NOT NULL,
-    model              TEXT        NOT NULL,
-    credential_id      TEXT        NOT NULL,
-    input_tokens       BIGINT      NOT NULL,
-    output_tokens      BIGINT      NOT NULL,
-    cache_read_tokens  BIGINT      NOT NULL,
-    cache_write_tokens BIGINT      NOT NULL,
-    total_tokens       BIGINT      NOT NULL,
-    cost_micro_usd     BIGINT      NOT NULL,
-    rate_version       TEXT        NOT NULL,
-    outcome            TEXT        NOT NULL CHECK (outcome IN ('ok', 'error', 'aborted')),
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, id)
-);
-
--- The rebuild re-rolls one tenant's events from the prune horizon on.
-CREATE INDEX token_usage_events_occurred_at_idx ON token_usage_events (tenant_id, occurred_at);
-
--- token_usage_rollups_hourly / _daily: the per-bucket sums of the events, keyed
--- like the in-memory reference. bucket_start is the UTC-aligned bucket start.
--- Rows outlive the events they sum, so a prune never touches them. bucket_start
--- follows tenant_id in the key because the series read and the rebuild range
--- over it.
-CREATE TABLE token_usage_rollups_hourly (
-    tenant_id          TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
-    bucket_start       TIMESTAMPTZ NOT NULL,
-    owner_user_id      TEXT        NOT NULL,
-    agent_account_id   TEXT        NOT NULL,
-    provider           TEXT        NOT NULL,
-    model              TEXT        NOT NULL,
-    input_tokens       BIGINT      NOT NULL,
-    output_tokens      BIGINT      NOT NULL,
-    cache_read_tokens  BIGINT      NOT NULL,
-    cache_write_tokens BIGINT      NOT NULL,
-    total_tokens       BIGINT      NOT NULL,
-    cost_micro_usd     BIGINT      NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id, provider, model)
-);
-
-CREATE TABLE token_usage_rollups_daily (
-    tenant_id          TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
-    bucket_start       TIMESTAMPTZ NOT NULL,
-    owner_user_id      TEXT        NOT NULL,
-    agent_account_id   TEXT        NOT NULL,
-    provider           TEXT        NOT NULL,
-    model              TEXT        NOT NULL,
-    input_tokens       BIGINT      NOT NULL,
-    output_tokens      BIGINT      NOT NULL,
-    cache_read_tokens  BIGINT      NOT NULL,
-    cache_write_tokens BIGINT      NOT NULL,
-    total_tokens       BIGINT      NOT NULL,
-    cost_micro_usd     BIGINT      NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id, provider, model)
-);
-
--- token_usage_prune_horizon: the one global row holding the UTC day the latest
--- prune cut at. Rollups before it may count pruned events, so a rebuild keeps
--- them. Not tenant-scoped, because a prune spans every tenant. It only moves
--- forward, and '-infinity' means no prune has run.
-CREATE TABLE token_usage_prune_horizon (
-    singleton  BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (singleton),
-    horizon    TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-INSERT INTO token_usage_prune_horizon (horizon) VALUES ('-infinity');
-
 -- ── Row-Level Security: tenant isolation (RIG-2861 T2 / RIG-3106) ────────────
 -- The enforcement half of managed multi-tenancy, folded inline (Matt-ruled:
 -- pre-live, no incremental migrations yet, so the ALTER/backfill/DROP-INDEX
@@ -1254,10 +1169,6 @@ END $$;
 -- pinned rather than incidental.
 REVOKE DELETE ON server_key_state FROM compass_app, compass_system;
 
--- token_usage_prune_horizon holds the one row the migration inserts. Re-inserting
--- it at '-infinity' would let a rebuild drop pruned-day rollups; UPDATE stays.
-REVOKE INSERT, DELETE ON token_usage_prune_horizon FROM compass_app, compass_system;
-
 -- ENABLE + FORCE RLS + the per-tenant policy on every tenant-owned table. The
 -- policy shape is the frozen T2 form: a scalar-subquery GUC read (evaluated once
 -- per statement), a non-empty guard (fail-closed on an unset/empty GUC), and
@@ -1277,8 +1188,7 @@ DECLARE
         'agent_forge_subscriptions', 'forge_authored_artifacts',
         'linear_agent_sessions',
         'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
-        'forge_state_transitions',
-        'token_usage_events', 'token_usage_rollups_hourly', 'token_usage_rollups_daily'
+        'forge_state_transitions'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -1360,10 +1270,7 @@ DECLARE
         'forge_repo_subscriptions',
         'forge_state_transitions',
         'server_secrets',
-        'server_key_state',
-        'token_usage_rollups_hourly',
-        'token_usage_rollups_daily',
-        'token_usage_prune_horizon'
+        'server_key_state'
     ];
 BEGIN
     FOREACH t IN ARRAY updated_at_tables LOOP
