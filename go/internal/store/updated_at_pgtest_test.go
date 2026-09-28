@@ -190,7 +190,7 @@ func TestUpdatedAtTriggerCatalogFloor(t *testing.T) {
 		if err := rows.Scan(&tbl); err != nil {
 			t.Fatalf("scan catalog row: %v", err)
 		}
-		t.Errorf("%s: declares updated_at but has no set_updated_at trigger — add it to updated_at_tables in 0001_init.sql, or the column can only ever equal created_at and every reader of it is reading a lie", tbl)
+		t.Errorf("%s: declares updated_at but has no set_updated_at trigger — create it in the migration that adds the table, or the column can only ever equal created_at and every reader of it is reading a lie", tbl)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate catalog rows: %v", err)
