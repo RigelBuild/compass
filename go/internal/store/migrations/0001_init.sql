@@ -1254,8 +1254,8 @@ END $$;
 -- pinned rather than incidental.
 REVOKE DELETE ON server_key_state FROM compass_app, compass_system;
 
--- token_usage_prune_horizon holds the one row the migration inserts. Deleting it,
--- or re-inserting it at '-infinity', would let a rebuild drop pruned-day rollups.
+-- token_usage_prune_horizon holds the one row the migration inserts. Re-inserting
+-- it at '-infinity' would let a rebuild drop pruned-day rollups; UPDATE stays.
 REVOKE INSERT, DELETE ON token_usage_prune_horizon FROM compass_app, compass_system;
 
 -- ENABLE + FORCE RLS + the per-tenant policy on every tenant-owned table. The
