@@ -216,6 +216,11 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if hostEngine, ok := h.engine.(hostStateEngine); ok {
 		return h.provisionHostGateway(ctx, spec, hostEngine)
 	}
+	// A socket already served belongs to a container that may still be running under
+	// this name, so a failure below must leave it up; only a socket made here is ours.
+	h.mu.Lock()
+	_, reused := h.sockets[spec.Name]
+	h.mu.Unlock()
 	listener, err := h.serveSocket(ctx, spec.Name)
 	if err != nil {
 		return "", err
@@ -230,7 +235,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		// Config could not be materialized; abort provision rather than launch a
 		// container with no config. Tear the socket down (mirror the Launch-
 		// failure cleanup) so it does not leak until host shutdown.
-		h.closeSocket(ctx, spec.Name)
+		if !reused {
+			h.closeSocket(ctx, spec.Name)
+		}
 		return "", fmt.Errorf("materializing agent config: %w", err)
 	}
 	spec.Mounts = append(spec.Mounts, runtime.Mount{HostPath: mount.HostPath, ContainerPath: agentConfigMountPath, ReadOnly: true})
@@ -238,7 +245,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if err != nil {
 		// Launch failed, so no container will ever mount this socket; tear it
 		// down rather than leak the listener + file until host shutdown.
-		h.closeSocket(ctx, spec.Name)
+		if !reused {
+			h.closeSocket(ctx, spec.Name)
+		}
 		return "", err
 	}
 	// Record the version materialized into this container's root, so the first
