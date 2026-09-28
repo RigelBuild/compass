@@ -1,8 +1,4 @@
-/* Compass ADE — dev UI styling. Dark, dense, board-first. An Orca-inspired
- * shell: a left folder tree of agents, a central Bridge (swimlane board) or
- * agent (ACP + terminals) view, and a right sidebar carrying the fleet
- * conversations (Supervisor · Status) above the issue files/VCS/PR
- * tabs, plus a bottom usage bar. All read one store. */
+/* Dark, dense, board-first styling for the dev shell. */
 
 /* app layout knobs (not DS tokens) — dimensions with no design-token
    counterpart; kept here and allowlisted by name in the D7 stylelint guard. */
@@ -2329,20 +2325,13 @@
 	display: block;
 	width: 11px;
 	height: 11px;
-	/* D2: an odd 11px box centered in the tab's 32px content box (34px −
-	 * 2×1px border, box-sizing: border-box) lands at (32 − 11) / 2 = 10.5px —
-	 * a half pixel that smears every 1px crispEdges cell across two device
-	 * pixels. Whole-integer margins that fill the content box exactly
-	 * (10 + 11 + 11 = 32 per axis) leave zero free space for centering to
-	 * split, so the box's offset is its whole-pixel margin (10px). */
+	/* Integer margins put this 11px box at whole pixels; centering would land
+	 * at 10.5px and smear the 1px SVG cells. */
 	margin: 10px 11px 11px 10px;
 }
 
-/* Seat the SVG at the box's top edge. An inline-level replaced box rides the
- * parent's text baseline, so the inherited line-height pushes the glyph 2px
- * down and out of its box — the whole-pixel margin above would then describe
- * the span, not the pixels. state-dot.css carries the same rule for the same
- * reason. */
+/* Block-level SVG alignment prevents the text baseline from shifting the glyph
+ * inside its box. */
 .r-tab .r-tab-icon[data-kind="glyph"] > svg {
 	display: block;
 }
@@ -3273,21 +3262,13 @@
 	font-weight: 400;
 }
 
-/* Markdown-rendered message body. `.msg-text` still carries the
- * mention-chip context and wrap behavior; `.markdown-content` overlays the
- * block-flow rules a real markdown tree needs (the base `.msg-text` is
- * `white-space: pre-wrap`, which is for plain text — reset it here so block
- * elements lay out normally while inline runs still wrap). */
+/* Reset pre-wrap for markdown block flow while preserving inline wrapping. */
 .markdown-content {
 	white-space: normal;
 }
 
-/* Tight vertical rhythm inside a message: paragraphs and lists get modest
- * spacing, and the first/last block hugs the message edges so a single-paragraph
- * message reads identically to the old plain-text render. solid-markdown wraps
- * its output in an unconditional `<div>` (its `options.class` wrapper), so the
- * real first/last block is a GRANDCHILD of `.markdown-content` — reset the outer
- * margins through that wrapper, not on the wrapper itself (which has no margin). */
+/* Keep markdown blocks compact; reset first/last block margins through the
+ * wrapper div because the blocks are its grandchildren. */
 .markdown-content p,
 .markdown-content ul,
 .markdown-content ol,
