@@ -326,6 +326,7 @@ type Token struct {
 	Hash        []byte
 	SubjectKind int16
 	SubjectID   string
+	TenantID    string
 	CreatedAt   pgtype.Timestamptz
 	RevokedAt   pgtype.Timestamptz
 }

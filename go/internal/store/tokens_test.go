@@ -20,12 +20,36 @@ func tokenHash(label string) [32]byte {
 	return sha256.Sum256([]byte(label))
 }
 
+func TestResolveTokenHashReturnsIssuingTenant(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	tenantID := seedTenant(t, s, "token-tenant")
+	tenantCtx := WithTenant(ctx, tenantID)
+	account, err := s.CreateUser(tenantCtx, NewUser{Handle: "token-tenant-user", DisplayName: "Token tenant user"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	hash := tokenHash("tenant-issued-token")
+	want := Subject{Kind: SubjectAccount, ID: string(account.ID), Tenant: tenantID}
+	if err := s.PutTokenHash(tenantCtx, hash, want); err != nil {
+		t.Fatalf("PutTokenHash: %v", err)
+	}
+	got, err := s.ResolveTokenHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("ResolveTokenHash: %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolved = %+v, want %+v", got, want)
+	}
+}
+
 func TestPutResolveRoundTripCarriesKind(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
 	hash := tokenHash("acct-token")
-	want := Subject{Kind: SubjectAccount, ID: "account-123"}
+	want := Subject{Kind: SubjectAccount, ID: "account-123", Tenant: s.EffectiveTenant(ctx)}
 	if err := s.PutTokenHash(ctx, hash, want); err != nil {
 		t.Fatalf("PutTokenHash: %v", err)
 	}
@@ -45,7 +69,7 @@ func TestPutResolveRoundTripCarriesServiceKind(t *testing.T) {
 	s := newTestStore(t)
 
 	hash := tokenHash("service-token")
-	want := Subject{Kind: SubjectService, ID: "llm-gateway"}
+	want := Subject{Kind: SubjectService, ID: "llm-gateway", Tenant: s.EffectiveTenant(ctx)}
 	if err := s.PutTokenHash(ctx, hash, want); err != nil {
 		t.Fatalf("PutTokenHash(service): %v", err)
 	}
