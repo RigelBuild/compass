@@ -390,6 +390,10 @@ const agentFor = (item: ActivityBarItem): Agent | undefined =>
 }
 ```
 
+**Superseded note (RIG-1329 / PR #1266):** The historical `.acp` selectors in
+this frozen CSS example are superseded. The dead selectors were removed in
+PR #1266; the frozen design body remains historical.
+
 Render: the `.r-activity` nav (`RightSidebar.tsx:409-427`) iterates
 `RIGHT_SIDEBAR_TAB_GROUPS` with a `.r-activity-divider` between groups; fleet
 tabs append `<StateDot state={agentFor(item).state} />`. The pane `Switch`
