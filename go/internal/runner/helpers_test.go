@@ -451,21 +451,24 @@ type captureLog struct {
 	dropped atomic.Uint64
 }
 
-// logLine is one captured record: its message plus the attributes the drain
-// stamps (session id and the drained text).
+// logLine captures a record's message, severity, and string attributes.
 type logLine struct {
 	msg   string
+	level slog.Level
 	attrs map[string]string
 }
 
+// newCaptureLog creates a channel-backed slog handler for drain assertions.
 func newCaptureLog() *captureLog {
-	return &captureLog{lines: make(chan logLine, 64)}
+	return &captureLog{lines: make(chan logLine, 128)}
 }
 
+// Enabled captures every slog level so tests can assert severity as well as message.
 func (c *captureLog) Enabled(context.Context, slog.Level) bool { return true }
 
+// Handle captures each record without blocking the drain goroutine.
 func (c *captureLog) Handle(_ context.Context, r slog.Record) error {
-	line := logLine{msg: r.Message, attrs: make(map[string]string, r.NumAttrs())}
+	line := logLine{msg: r.Message, level: r.Level, attrs: make(map[string]string, r.NumAttrs())}
 	r.Attrs(func(a slog.Attr) bool {
 		line.attrs[a.Key] = a.Value.String()
 		return true
@@ -473,26 +476,18 @@ func (c *captureLog) Handle(_ context.Context, r slog.Record) error {
 	select {
 	case c.lines <- line:
 	default:
-		// A full buffer must never block the unit under test, so the record is
-		// dropped — counted, so a downstream timeout can say why.
 		c.dropped.Add(1)
 	}
 	return nil
 }
 
-// WithAttrs / WithGroup intentionally drop attrs and groups: the drain stamps
-// every attribute inline on its Debug call, so nothing is lost today. A future
-// refactor to `log.With(...)` must implement these first, or the session_id
-// assertions will silently see an empty map.
+// WithAttrs and WithGroup are no-ops; assertions inspect inline attributes.
 func (c *captureLog) WithAttrs([]slog.Attr) slog.Handler { return c }
 func (c *captureLog) WithGroup(string) slog.Handler      { return c }
 
-// logger builds the slog.Logger the unit under test writes into.
 func (c *captureLog) logger() *slog.Logger { return slog.New(c) }
 
-// recvLine reads one captured log record with a fail-fast deadline. A timeout
-// reports any dropped records, so an undersized buffer diagnoses itself instead
-// of looking like a wedged drain.
+// recvLine waits for one captured record and fails on timeout.
 func (c *captureLog) recvLine(t *testing.T) logLine {
 	t.Helper()
 	select {
@@ -505,6 +500,16 @@ func (c *captureLog) recvLine(t *testing.T) logLine {
 		t.Fatal("timed out waiting for a diagnostic log line")
 		return logLine{}
 	}
+}
+
+func newStubStreamingRuntimeWithScript(t *testing.T, script string) *stubStreamingRuntime {
+	t.Helper()
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "podman-stub.sh")
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing streaming stub: %v", err)
+	}
+	return &stubStreamingRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog)}
 }
 
 // --- h2c transport -----------------------------------------------------------

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec" //nolint:depguard // runner exec: *exec.Cmd/*exec.ExitError types for the container agent stream lifecycle
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -113,23 +114,20 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 type AgentStream struct {
 	sessionID string
 	exec      *runtime.StreamingExec
-	// drains is signalled by both drain goroutines as they return. Stop waits on it
-	// before reaping: os/exec's Wait closes the pipes, so reaping first would race
-	// the drains off the end of the stream ("incorrect to call Wait before all
-	// reads from the pipe have completed").
+	// drains is signalled by both drain goroutines as they return. Stop joins
+	// them after Terminate closes their pipes, avoiding Wait racing the reads.
 	drains sync.WaitGroup
-	// stopDrains ends both drains on teardown even if the pipes never reach EOF,
-	// so a wedged read can't hold Stop past its bounded wait.
+	// stopDrains cancels the drain context during teardown when required.
 	stopDrains context.CancelFunc
-	// stopping is set by Stop before it reaps. The reap closes the pipes, so a
-	// drain's os.ErrClosed is ordinary during a deliberate stop and a genuine fault
-	// otherwise; the flag says which, where ctx cannot — Stop Terminates before it
-	// cancels, so the reap's ErrClosed always arrives while drainCtx is still live.
+	// stopping distinguishes Stop's intentional kill from an agent crash.
 	stopping atomic.Bool
-	// drainsReleased mirrors drainCtx.Done(): it closes when the drain context is
-	// cancelled, whichever path ends the exec — Stop's endDrains or StartAgent's
-	// reaper on self-exit. Held as a channel, not the context (containedctx forbids
-	// that in shipped state), so the ctx-node release is observable.
+	// processMu and processReaped ensure Wait is called only once.
+	processMu     sync.Mutex
+	processReaped bool
+	// stderrTail keeps bounded diagnostics for the unexpected-exit record.
+	stderrTail  []string
+	stderrBytes int
+	// drainsReleased mirrors drainCtx.Done() for lifecycle tests.
 	drainsReleased <-chan struct{}
 }
 
@@ -143,6 +141,7 @@ func (s *AgentStream) SessionID() string { return s.sessionID }
 // AgentStream lives until Stop or ctx cancellation terminates the in-container
 // agent.
 func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtime.WorkloadID, engine runtime.WorkloadRuntime, env AgentEnv, log *slog.Logger) (*AgentStream, error) {
+	parentCtx := ctx
 	if log == nil {
 		log = slog.Default()
 	}
@@ -162,11 +161,11 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	stream.drains.Add(2)
 	go func() {
 		defer stream.drains.Done()
-		stream.drainToLog(drainCtx, xs.IO.Stderr, "agent stderr", log)
+		stream.drainToLog(drainCtx, xs.IO.Stderr, "agent stderr", true, log)
 	}()
 	go func() {
 		defer stream.drains.Done()
-		stream.drainToLog(drainCtx, xs.IO.Stdout, "agent stdout", log)
+		stream.drainToLog(drainCtx, xs.IO.Stdout, "agent stdout", false, log)
 	}()
 
 	// Release the ctx node whichever way the exec ends. A self-exiting agent (pipes
@@ -175,6 +174,13 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	// drains and cancels once — idempotent with Stop's endDrains.
 	go func() {
 		stream.drains.Wait()
+		var err error
+		if stream.exec.Process != nil {
+			err = stream.waitProcess()
+		}
+		if !stream.stopping.Load() && parentCtx.Err() == nil {
+			logUnexpectedExit(log, stream, err)
+		}
 		stopDrains()
 	}()
 
@@ -203,13 +209,34 @@ const drainGrace = 5 * time.Second
 // still holds, since the drains end on that same close rather than mid-read;
 // the join is what makes their exit observable instead of merely likely.
 func (s *AgentStream) Stop() error {
+	return s.terminate()
+}
+
+func (s *AgentStream) terminate() error {
 	s.stopping.Store(true)
+	s.processMu.Lock()
+	defer s.processMu.Unlock()
+	if s.processReaped {
+		return nil
+	}
 	err := s.exec.Process.Terminate()
+	s.processReaped = true
 	s.endDrains()
 	if err != nil && !isDeliberateKill(err) {
 		return err
 	}
 	return nil
+}
+
+func (s *AgentStream) waitProcess() error {
+	s.processMu.Lock()
+	defer s.processMu.Unlock()
+	if s.processReaped {
+		return nil
+	}
+	err := s.exec.Process.Wait()
+	s.processReaped = true
+	return err
 }
 
 // endDrains cancels both drains and waits up to drainGrace for them to return.
@@ -257,6 +284,33 @@ func isDeliberateKill(err error) bool {
 	return ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL
 }
 
+const maxStderrTailLines = 20
+const maxStderrTailBytes = 16 * 1024
+
+func (s *AgentStream) retainStderrLine(line string) {
+	if len(line) > maxStderrTailBytes {
+		line = strings.Clone(line[len(line)-maxStderrTailBytes:])
+	}
+	s.stderrTail = append(s.stderrTail, line)
+	s.stderrBytes += len(line)
+	for len(s.stderrTail) > maxStderrTailLines || s.stderrBytes > maxStderrTailBytes {
+		s.stderrBytes -= len(s.stderrTail[0])
+		s.stderrTail[0] = ""
+		s.stderrTail = s.stderrTail[1:]
+	}
+}
+
+func logUnexpectedExit(log *slog.Logger, s *AgentStream, err error) {
+	attrs := []any{
+		slog.String("session_id", s.sessionID),
+		slog.String("stderr_tail", strings.Join(s.stderrTail, "\n")),
+	}
+	if err != nil {
+		attrs = append(attrs, slog.String("exit_result", err.Error()))
+	}
+	log.Error("agent exited unexpectedly", attrs...)
+}
+
 // maxLoggedLine bounds how much of one pipe line reaches the diagnostic log.
 // Past it the remainder is consumed and discarded rather than buffered, so a
 // pathological line costs a truncated log entry instead of unbounded memory.
@@ -282,7 +336,7 @@ const drainReaderSize = 64 * 1024
 // ctx is checked between lines rather than mid-read: a blocked read ends when
 // teardown closes the pipe, and Stop's join is bounded, so a cancel can never
 // hold teardown open. Closing the reader here instead would race the writer.
-func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string, log *slog.Logger) {
+func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string, retainTail bool, log *slog.Logger) {
 	sessionID := s.sessionID
 	r := bufio.NewReaderSize(pipe, drainReaderSize)
 	for {
@@ -295,7 +349,12 @@ func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string
 			if errors.Is(err, errLineTruncated) {
 				attrs = append(attrs, slog.Bool("truncated", true))
 			}
-			log.Debug(msg, attrs...)
+			if retainTail {
+				s.retainStderrLine(string(line))
+				log.Info(msg, attrs...)
+			} else {
+				log.Debug(msg, attrs...)
+			}
 		}
 		switch {
 		// The expected ends, tested FIRST: a truncated final line joins its error

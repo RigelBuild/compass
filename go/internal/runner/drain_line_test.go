@@ -223,7 +223,7 @@ func TestDrainToLogReportsGenuineReadFault(t *testing.T) {
 	// context.Background() as the test root — the rule's explicit test exemption.
 	s := &AgentStream{sessionID: "sess-fault"}
 	s.drainToLog(context.Background(), &failingReader{after: []byte("hello\n")},
-		"agent stdout", logs.logger())
+		"agent stdout", false, logs.logger())
 
 	var msgs []string
 	for draining := true; draining; {
@@ -259,7 +259,7 @@ func TestDrainToLogReportsFaultOnATruncatedLine(t *testing.T) {
 
 	// context.Background() as the test root — the rule's explicit test exemption.
 	s := &AgentStream{sessionID: "sess-trunc-fault"}
-	s.drainToLog(context.Background(), src, "agent stdout", logs.logger())
+	s.drainToLog(context.Background(), src, "agent stdout", false, logs.logger())
 
 	var msgs []string
 	for draining := true; draining; {
@@ -309,7 +309,7 @@ func TestDrainToLogIsSilentOnTeardown(t *testing.T) {
 	logs := newCaptureLog()
 
 	s := &AgentStream{sessionID: "sess-torn"}
-	s.drainToLog(ctx, &failingReader{after: []byte("hello\n")}, "agent stdout", logs.logger())
+	s.drainToLog(ctx, &failingReader{after: []byte("hello\n")}, "agent stdout", false, logs.logger())
 
 	select {
 	case l := <-logs.lines:
@@ -330,7 +330,7 @@ func TestDrainToLogIsSilentOnDeliberateStop(t *testing.T) {
 	s := &AgentStream{sessionID: "sess-stopped"}
 	s.stopping.Store(true)
 	s.drainToLog(context.Background(), &failingReader{after: []byte("hello\n"), err: os.ErrClosed},
-		"agent stdout", logs.logger())
+		"agent stdout", false, logs.logger())
 
 	for {
 		select {
@@ -355,7 +355,7 @@ func TestDrainToLogReportsPipeCloseWithoutAStop(t *testing.T) {
 	// context.Background() as the test root — the rule's explicit test exemption.
 	s := &AgentStream{sessionID: "sess-live"}
 	s.drainToLog(context.Background(), &failingReader{after: []byte("hello\n"), err: os.ErrClosed},
-		"agent stdout", logs.logger())
+		"agent stdout", false, logs.logger())
 
 	var msgs []string
 	for draining := true; draining; {

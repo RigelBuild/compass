@@ -9,6 +9,7 @@ package runner
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +226,9 @@ func TestStderrIsDrainedUnderItsOwnLabel(t *testing.T) {
 	if line.msg != "agent stderr" {
 		t.Fatalf("log msg = %q, want %q (stderr must not be labelled as stdout)", line.msg, "agent stderr")
 	}
+	if line.level != slog.LevelInfo {
+		t.Fatalf("stderr log level = %v, want Info", line.level)
+	}
 	if got := line.attrs["line"]; got != "panic: something broke" {
 		t.Fatalf("drained line = %q, want %q", got, "panic: something broke")
 	}
@@ -236,6 +240,102 @@ func TestStderrIsDrainedUnderItsOwnLabel(t *testing.T) {
 	// relaxed for test cleanup).
 	_ = engine.stderrW.Close()
 	engine.closeStdout()
+}
+
+func TestSelfExitLogsErrorWithStderrTail(t *testing.T) {
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\necho 'panic: agent failed' >&2\nexit 7\n")
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-crashed", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	if stream == nil {
+		t.Fatal("StartAgent returned nil stream")
+	}
+
+	<-stream.drainsReleased
+	var unexpected []logLine
+	for {
+		select {
+		case line := <-logs.lines:
+			if line.msg == "agent exited unexpectedly" {
+				unexpected = append(unexpected, line)
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	if len(unexpected) != 1 {
+		t.Fatalf("unexpected-exit records = %d, want 1", len(unexpected))
+	}
+	if got := unexpected[0].attrs["exit_result"]; got != "exit status 7" {
+		t.Fatalf("exit_result = %q, want exit status 7", got)
+	}
+	if got := unexpected[0].attrs["session_id"]; got != "sess-crashed" {
+		t.Fatalf("session_id = %q, want sess-crashed", got)
+	}
+	if got := unexpected[0].attrs["stderr_tail"]; got != "panic: agent failed" {
+		t.Fatalf("stderr_tail = %q, want panic line", got)
+	}
+	if unexpected[0].level != slog.LevelError {
+		t.Fatalf("unexpected-exit level = %v, want Error", unexpected[0].level)
+	}
+}
+
+func TestDeliberateStopDoesNotLogUnexpectedExit(t *testing.T) {
+	engine := newStubStreamingRuntime(t)
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-stopped", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	if err := stream.Stop(); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	for {
+		select {
+		case line := <-logs.lines:
+			if line.msg == "agent exited unexpectedly" {
+				t.Fatalf("deliberate Stop logged unexpected exit: %#v", line)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func TestCallerCancellationDoesNotLogUnexpectedExit(t *testing.T) {
+	engine := newStubStreamingRuntime(t)
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := link.StartAgent(ctx, "sess-cancelled", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		cancel()
+		t.Fatalf("StartAgent = %v", err)
+	}
+	cancel()
+	<-stream.drainsReleased
+	for {
+		select {
+		case line := <-logs.lines:
+			if line.msg == "agent exited unexpectedly" {
+				t.Fatalf("caller cancellation logged unexpected exit: %#v", line)
+			}
+		default:
+			return
+		}
+	}
 }
 
 // A bare trailing `\r` with NO newline is payload, not a terminator, and must
