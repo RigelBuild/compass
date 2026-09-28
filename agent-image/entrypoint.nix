@@ -173,7 +173,7 @@ let
 
     # The SDK plugin exposes this registry only in compiled binaries; the script
     # resolves its packages from the reconstructed workspace's installed tree.
-    COMPASS_AGENT_OUTFILE=$out/compass-agent bun $pkgDir/scripts/compile.ts
+    bun $pkgDir/scripts/compile.ts $out/compass-agent
     # The prebuilt addon ships in the per-system optionalDependency
     # `@oh-my-pi/pi-natives-linux-<arch>` (pinned in bun.lock, so in the FOD tree),
     # hoisted into `.bun/node_modules/@oh-my-pi/`. x64 carries two AVX2 variants

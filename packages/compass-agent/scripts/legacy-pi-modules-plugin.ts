@@ -1,13 +1,12 @@
+// Copy of upstream's legacy-pi-virtual-module.ts, with package-root resolution only.
+// Remove when upstream exposes a package-root option.
 import * as path from "node:path";
 
 export const LEGACY_PI_MODULES_SPECIFIER = "omp-legacy-pi-modules";
 const VIRTUAL_NAMESPACE = "omp-legacy-pi-modules-build";
-const TYPEBOX_MODULE_KEY = "typebox";
-const TYPEBOX_COMPAT_MODULE = "legacy-typebox.ts";
-const SKIPPED_WILDCARD_BASENAMES = new Set(["index"]);
-const MAIN_THREAD_UNSAFE_WILDCARD_BASENAMES = new Set(["worker-entry"]);
 
 interface BundledPackage {
+	readonly dir: string;
 	readonly name: string;
 	readonly identifier: string;
 	readonly rootShim: string | null;
@@ -15,32 +14,58 @@ interface BundledPackage {
 
 const BUNDLED_PACKAGES: readonly BundledPackage[] = [
 	{
+		dir: "agent",
 		name: "@oh-my-pi/pi-agent-core",
 		identifier: "PiAgentCore",
 		rootShim: null,
 	},
 	{
+		dir: "ai",
 		name: "@oh-my-pi/pi-ai",
 		identifier: "PiAi",
 		rootShim: "legacy-pi-ai-shim.ts",
 	},
 	{
+		dir: "coding-agent",
 		name: "@oh-my-pi/pi-coding-agent",
 		identifier: "PiCodingAgent",
 		rootShim: "legacy-pi-coding-agent-shim.ts",
 	},
-	{ name: "@oh-my-pi/pi-natives", identifier: "PiNatives", rootShim: null },
 	{
+		dir: "natives",
+		name: "@oh-my-pi/pi-natives",
+		identifier: "PiNatives",
+		rootShim: null,
+	},
+	{
+		dir: "tui",
 		name: "@oh-my-pi/pi-tui",
 		identifier: "PiTui",
 		rootShim: "legacy-pi-tui-shim.ts",
 	},
-	{ name: "@oh-my-pi/pi-utils", identifier: "PiUtils", rootShim: null },
+	{
+		dir: "utils",
+		name: "@oh-my-pi/pi-utils",
+		identifier: "PiUtils",
+		rootShim: null,
+	},
 ];
 
+const TYPEBOX_MODULE_KEY = "typebox";
+const TYPEBOX_COMPAT_MODULE = "legacy-typebox.ts";
+const SKIPPED_WILDCARD_BASENAMES = new Set(["index"]);
+const MAIN_THREAD_UNSAFE_WILDCARD_BASENAMES = new Set(["worker-entry"]);
+const codingAgentDir = path.dirname(
+	Bun.resolveSync("@oh-my-pi/pi-coding-agent/package.json", import.meta.dir),
+);
+
+/** One namespace module the binary must retain for legacy Pi extension imports. */
 export interface LegacyPiModuleEntry {
+	/** Canonical import key exposed to extensions. */
 	readonly key: string;
+	/** Unique identifier used by the virtual module's generated import. */
 	readonly binding: string;
+	/** Package or absolute source specifier compiled into the binary. */
 	readonly importSpecifier: string;
 }
 
@@ -51,9 +76,8 @@ interface WildcardPattern {
 	readonly sourceSuffix: string;
 }
 
-interface PackageManifest {
-	readonly name: string;
-	readonly exports?: unknown;
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function bindingForSubpath(identifier: string, subpath: string): string {
@@ -98,144 +122,49 @@ function parseWildcardPattern(
 
 function exportImportTarget(value: unknown): string | null {
 	if (typeof value === "string") return value;
-	if (
-		typeof value === "object" &&
-		value !== null &&
-		!Array.isArray(value) &&
-		"import" in value &&
-		typeof value.import === "string"
-	) {
-		return value.import;
-	}
+	if (isRecord(value) && typeof value.import === "string") return value.import;
 	return null;
 }
 
-async function readPackageManifest(
-	manifestPath: string,
-): Promise<PackageManifest | null> {
-	let manifest: unknown;
-	try {
-		manifest = await Bun.file(manifestPath).json();
-	} catch (error) {
-		if (
-			typeof error === "object" &&
-			error !== null &&
-			"code" in error &&
-			error.code === "ENOENT"
-		) {
-			return null;
-		}
-		throw error;
-	}
-	if (
-		typeof manifest !== "object" ||
-		manifest === null ||
-		Array.isArray(manifest) ||
-		!("name" in manifest) ||
-		typeof manifest.name !== "string"
-	) {
-		return null;
-	}
-	return {
-		name: manifest.name,
-		exports: "exports" in manifest ? manifest.exports : undefined,
-	};
+function shimSpecifier(file: string): string {
+	return path.join(codingAgentDir, "src", "extensibility", file);
 }
 
-async function resolvePackageRoot(
-	packageName: string,
-	fromDirectory: string,
-): Promise<string> {
-	let manifestPath: string | undefined;
-	try {
-		manifestPath = Bun.resolveSync(
-			`${packageName}/package.json`,
-			fromDirectory,
-		);
-	} catch {
-		// Some packages do not export package.json; resolve their entrypoint below.
-	}
-	if (manifestPath) {
-		const manifest = await readPackageManifest(manifestPath);
-		if (manifest?.name === packageName) return path.dirname(manifestPath);
-	}
-
-	const entrypoint = Bun.resolveSync(packageName, fromDirectory);
-	let directory = path.dirname(entrypoint);
-	while (true) {
-		const manifest = await readPackageManifest(
-			path.join(directory, "package.json"),
-		);
-		if (manifest?.name === packageName) return directory;
-		const parent = path.dirname(directory);
-		if (parent === directory) break;
-		directory = parent;
-	}
-	throw new Error(
-		`Cannot locate installed package root for ${packageName} from ${fromDirectory}`,
-	);
-}
-
-function isEnoent(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		error.code === "ENOENT"
-	);
-}
-
-interface EntryCollector {
-	readonly entries: LegacyPiModuleEntry[];
-	readonly keys: Set<string>;
-	readonly bindings: Set<string>;
-}
-
-function addEntry(
-	collector: EntryCollector,
-	key: string,
-	binding: string,
-	importSpecifier: string,
-): void {
-	if (collector.keys.has(key)) return;
-	if (collector.bindings.has(binding)) {
-		throw new Error(`Duplicate bundled Pi binding ${binding} for ${key}`);
-	}
-	collector.keys.add(key);
-	collector.bindings.add(binding);
-	collector.entries.push({ key, binding, importSpecifier });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function wildcardEntryForMatch(
-	match: string,
-	pattern: WildcardPattern,
-	packageName: string,
-	identifier: string,
-): LegacyPiModuleEntry | null {
-	if (!match.endsWith(pattern.sourceSuffix)) return null;
-	const basename = match.slice(0, match.length - pattern.sourceSuffix.length);
+function isExportedWildcardMatch(match: string, sourceSuffix: string): boolean {
+	if (!match.endsWith(sourceSuffix)) return false;
+	const basename = match.slice(0, match.length - sourceSuffix.length);
 	const segments = basename.split("/");
 	if (
 		segments.some(
 			(segment) => segment.startsWith(".") || segment.startsWith("_"),
 		)
-	)
-		return null;
-	if (!isSafeWildcardBasename(segments.at(-1) ?? "")) return null;
-	const subpath = `${pattern.exportPrefix}${basename}${pattern.exportSuffix}`;
-	return {
-		key: `${packageName}/${subpath}`,
-		binding: bindingForSubpath(identifier, subpath),
-		importSpecifier: `${packageName}/${subpath}`,
-	};
+	) {
+		return false;
+	}
+	return isSafeWildcardBasename(segments.at(-1) ?? "");
+}
+
+function addEntry(
+	entries: LegacyPiModuleEntry[],
+	seenKeys: Set<string>,
+	seenBindings: Set<string>,
+	key: string,
+	binding: string,
+	importSpecifier: string,
+): void {
+	if (seenKeys.has(key)) return;
+	if (seenBindings.has(binding)) {
+		throw new Error(`Duplicate bundled Pi binding ${binding} for ${key}`);
+	}
+	seenKeys.add(key);
+	seenBindings.add(binding);
+	entries.push({ key, binding, importSpecifier });
 }
 
 async function addWildcardEntries(
-	collector: EntryCollector,
+	entries: LegacyPiModuleEntry[],
+	seenKeys: Set<string>,
+	seenBindings: Set<string>,
 	packageRoot: string,
 	packageName: string,
 	identifier: string,
@@ -258,50 +187,68 @@ async function addWildcardEntries(
 		return;
 	if (pattern.exportPrefix === "" || pattern.exportPrefix === "/") return;
 
-	const sourceDirectory = path.join(packageRoot, pattern.sourcePrefix);
+	const sourceDir = path.join(packageRoot, pattern.sourcePrefix);
+	const glob = new Bun.Glob(`**/*${pattern.sourceSuffix}`);
 	const matches: string[] = [];
 	try {
-		const glob = new Bun.Glob(`**/*${pattern.sourceSuffix}`);
-		for await (const match of glob.scan({
-			cwd: sourceDirectory,
-			onlyFiles: true,
-		})) {
+		for await (const match of glob.scan({ cwd: sourceDir, onlyFiles: true })) {
 			matches.push(match.split(path.sep).join("/"));
 		}
 	} catch (error) {
-		if (isEnoent(error)) return;
+		if (
+			typeof error === "object" &&
+			error !== null &&
+			"code" in error &&
+			error.code === "ENOENT"
+		)
+			return;
 		throw error;
 	}
 	matches.sort();
 	for (const match of matches) {
-		const entry = wildcardEntryForMatch(
-			match,
-			pattern,
-			packageName,
-			identifier,
+		if (!isExportedWildcardMatch(match, pattern.sourceSuffix)) continue;
+		const basename = match.slice(0, match.length - pattern.sourceSuffix.length);
+		const subpath = `${pattern.exportPrefix}${basename}${pattern.exportSuffix}`;
+		const key = `${packageName}/${subpath}`;
+		addEntry(
+			entries,
+			seenKeys,
+			seenBindings,
+			key,
+			bindingForSubpath(identifier, subpath),
+			key,
 		);
-		if (entry)
-			addEntry(collector, entry.key, entry.binding, entry.importSpecifier);
 	}
 }
 
 async function addPackageEntries(
-	collector: EntryCollector,
+	entries: LegacyPiModuleEntry[],
+	seenKeys: Set<string>,
+	seenBindings: Set<string>,
 	pkg: BundledPackage,
-	codingAgentRoot: string,
 ): Promise<void> {
-	const packageRoot = await resolvePackageRoot(pkg.name, codingAgentRoot);
+	const packageRoot = path.dirname(
+		Bun.resolveSync(`${pkg.name}/package.json`, codingAgentDir),
+	);
 	const manifestPath = path.join(packageRoot, "package.json");
-	const manifest = await readPackageManifest(manifestPath);
-	if (!manifest)
+	const manifest: unknown = await Bun.file(manifestPath).json();
+	if (!isRecord(manifest) || typeof manifest.name !== "string") {
 		throw new Error(`Bundled Pi package manifest has no name: ${manifestPath}`);
+	}
 	const exportsField = isRecord(manifest.exports) ? manifest.exports : {};
 	const rootSpecifier = pkg.rootShim
-		? path.join(codingAgentRoot, "src", "extensibility", pkg.rootShim)
+		? shimSpecifier(pkg.rootShim)
 		: manifest.name;
-	addEntry(collector, manifest.name, `bundled${pkg.identifier}`, rootSpecifier);
+	addEntry(
+		entries,
+		seenKeys,
+		seenBindings,
+		manifest.name,
+		`bundled${pkg.identifier}`,
+		rootSpecifier,
+	);
 
-	for (const [exportKey] of Object.entries(exportsField)) {
+	for (const exportKey in exportsField) {
 		if (
 			!exportKey.startsWith("./") ||
 			exportKey === "." ||
@@ -309,47 +256,49 @@ async function addPackageEntries(
 		)
 			continue;
 		const subpath = exportKey.slice(2);
+		const key = `${manifest.name}/${subpath}`;
 		addEntry(
-			collector,
-			`${manifest.name}/${subpath}`,
+			entries,
+			seenKeys,
+			seenBindings,
+			key,
 			bindingForSubpath(pkg.identifier, subpath),
-			`${manifest.name}/${subpath}`,
+			key,
 		);
 	}
-	for (const [exportKey, exportValue] of Object.entries(exportsField)) {
+	for (const exportKey in exportsField) {
 		await addWildcardEntries(
-			collector,
+			entries,
+			seenKeys,
+			seenBindings,
 			packageRoot,
 			manifest.name,
 			pkg.identifier,
 			exportKey,
-			exportValue,
+			exportsField[exportKey],
 		);
 	}
 }
 
-/** Derive the bundled legacy Pi surface from the installed packages' exports. */
-export async function collectLegacyPiModuleEntries(
-	packageDirectory = path.resolve(import.meta.dir, ".."),
-): Promise<LegacyPiModuleEntry[]> {
-	const collector: EntryCollector = {
-		entries: [],
-		keys: new Set(),
-		bindings: new Set(),
-	};
-	const codingAgentRoot = await resolvePackageRoot(
-		"@oh-my-pi/pi-coding-agent",
-		packageDirectory,
-	);
-	for (const pkg of BUNDLED_PACKAGES)
-		await addPackageEntries(collector, pkg, codingAgentRoot);
+/** Derive the bundled legacy Pi surface from package exports. */
+export async function collectLegacyPiModuleEntries(): Promise<
+	LegacyPiModuleEntry[]
+> {
+	const entries: LegacyPiModuleEntry[] = [];
+	const seenKeys = new Set<string>();
+	const seenBindings = new Set<string>();
+	for (const pkg of BUNDLED_PACKAGES) {
+		await addPackageEntries(entries, seenKeys, seenBindings, pkg);
+	}
 	addEntry(
-		collector,
+		entries,
+		seenKeys,
+		seenBindings,
 		TYPEBOX_MODULE_KEY,
 		"bundledTypeBoxShim",
-		path.join(codingAgentRoot, "src", "extensibility", TYPEBOX_COMPAT_MODULE),
+		shimSpecifier(TYPEBOX_COMPAT_MODULE),
 	);
-	return collector.entries;
+	return entries;
 }
 
 export function renderLegacyPiVirtualModule(
@@ -376,19 +325,14 @@ export async function createLegacyPiModulesPlugin(): Promise<Bun.BunPlugin> {
 	const source = renderLegacyPiVirtualModule(
 		await collectLegacyPiModuleEntries(),
 	);
-	const packageDirectory = path.resolve(import.meta.dir, "..");
-	const codingAgentDirectory = path.dirname(
-		Bun.resolveSync("@oh-my-pi/pi-coding-agent", packageDirectory),
-	);
 	return {
-		name: "compass:legacy-pi-modules",
+		name: "omp:legacy-pi-modules",
 		setup(build) {
 			build.onResolve({ filter: /^@oh-my-pi\/[^/]+(?:\/.*)?$/ }, (args) => {
 				for (const directory of [
 					path.dirname(args.importer),
-					packageDirectory,
-					codingAgentDirectory,
-					path.join(codingAgentDirectory, "src"),
+					path.resolve(import.meta.dir, ".."),
+					codingAgentDir,
 				]) {
 					try {
 						return { path: Bun.resolveSync(args.path, directory) };
@@ -402,7 +346,7 @@ export async function createLegacyPiModulesPlugin(): Promise<Bun.BunPlugin> {
 			build.onLoad({ filter: /.*/, namespace: VIRTUAL_NAMESPACE }, () => ({
 				contents: source,
 				loader: "ts",
-				resolveDir: codingAgentDirectory,
+				resolveDir: codingAgentDir,
 			}));
 		},
 	};
