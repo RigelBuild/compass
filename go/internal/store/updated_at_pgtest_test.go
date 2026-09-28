@@ -4,10 +4,10 @@ package store
 
 // The set_updated_at trigger convention (RIG-3495), proven against real
 // Postgres. updated_at is maintained by ONE mechanism — the BEFORE UPDATE
-// trigger 0001_init.sql installs on every table carrying the column — and no
-// query file sets it by hand. These tests are the enforcement of that: they
-// fail if the trigger is missing, which is exactly what happens if someone
-// re-adds a table without an updated_at_tables entry, or drops the block.
+// trigger each migration installs on every table it creates with the column —
+// and no query file sets it by hand. These tests are the enforcement of that:
+// they fail if the trigger is missing, which is exactly what happens if a
+// migration adds such a table without its trigger, or drops the block.
 //
 // Three properties, each a distinct failure mode:
 //
@@ -152,7 +152,7 @@ func TestSecretsUpdatedAtIsLive(t *testing.T) {
 
 // TestUpdatedAtTriggerCatalogFloor is the catalog guard the three behavioural
 // tests above cannot be: they each pin ONE named table, so a FUTURE table that
-// declares updated_at and forgets its updated_at_tables entry is silently
+// declares updated_at and forgets its trigger is silently
 // untriggered — the exact rot RIG-3495 exists to prevent, reintroduced by
 // omission rather than by edit. This enumerates the live catalog instead of
 // trusting a hand-maintained list, the same self-auditing posture as

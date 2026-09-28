@@ -130,6 +130,16 @@ func applyV1Only(t *testing.T, dsn string) {
 		t.Fatalf("acquire for v1: %v", err)
 	}
 	defer conn.Release()
+	// 0001 edits cluster-global roles, so it must hold the same lock migrate
+	// holds, or a parallel package's Open can race it.
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		t.Fatalf("acquire migration lock: %v", err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+			t.Errorf("release migration lock: %v", err)
+		}
+	}()
 	if err := ensureMigrationsTable(ctx, conn); err != nil {
 		t.Fatal(err)
 	}

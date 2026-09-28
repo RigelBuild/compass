@@ -1,18 +1,15 @@
 # squawk — Postgres migration-safety linter for go/internal/store/migrations/.
 # Gate config for tools/sql-migration-gate/moon.yml.
 #
-# WHY THESE EXCLUSIONS: the sole migration (0001_init.sql) is a single collapsed
-# schema-bootstrap that runs ONCE against an empty, pre-live database inside a
-# transaction (see the migration runner + advisory lock). squawk's default rule
-# set is calibrated for INCREMENTAL migrations against a large LIVE production
-# table, where a full-table rewrite or a non-CONCURRENT index build takes a
-# blocking lock that stalls live traffic. On an empty pre-live DB that hazard
-# does not exist, so the rules below are accepted here. They stay OFF only for
-# this bootstrap posture — a future incremental migration against live data
-# would want them back (revisit this list when the first post-live migration
-# lands). The gate stays GREEN on the current file and RED on genuinely unsafe
-# NEW DDL (e.g. adding a NOT NULL column with no default), which these
-# exclusions do not silence.
+# WHY THESE EXCLUSIONS: every migration so far (0001_init.sql, then the
+# append-only files after it) creates tables that are empty when it runs, inside
+# one transaction (see the migration runner + advisory lock). squawk's default
+# rule set is calibrated for changes to a large LIVE table, where a full-table
+# rewrite or a non-CONCURRENT index build takes a blocking lock that stalls
+# traffic. On a new empty table that hazard does not exist, so the rules below
+# are accepted. Revisit this list when a migration first alters or indexes a
+# populated table. The gate stays RED on genuinely unsafe NEW DDL (e.g. adding
+# a NOT NULL column with no default), which these exclusions do not silence.
 
 pg_version = "16.0"
 
