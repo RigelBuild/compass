@@ -119,6 +119,10 @@ func (f *pipeRuntime) Resize(context.Context, runtime.WorkloadID, runtime.Resour
 	return nil
 }
 
+func (f *pipeRuntime) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
+	return nil, nil
+}
+
 func (f *pipeRuntime) record(call string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -225,6 +229,10 @@ func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.WorkloadID, _ 
 	}
 	f.mu.Unlock()
 	return err
+}
+
+func (f *stubStreamingRuntime) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
+	return nil, nil
 }
 func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) error {
 	f.record("remove")

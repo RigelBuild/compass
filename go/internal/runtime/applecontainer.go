@@ -68,6 +68,10 @@ func (a *AppleContainerCLI) Create(ctx context.Context, spec WorkloadSpec) (Work
 	return WorkloadID(strings.TrimSpace(string(stdout))), nil
 }
 
+func (*AppleContainerCLI) ListByNamePrefix(context.Context, string) ([]WorkloadID, error) {
+	return nil, nil
+}
+
 // appleCreateArgs assembles the argv for `container create`. Split out so the
 // argv assembly is unit-testable without spawning the CLI, the createArgs
 // discipline.

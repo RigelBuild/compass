@@ -48,6 +48,22 @@ func TestMountArgRelabel(t *testing.T) {
 	}
 }
 
+func TestListByNamePrefixUsesAllStatesAndFiltersExactPrefix(t *testing.T) {
+	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
+	script := "#!/bin/sh\nprintf '%s\\n' 'compass-agent-acct' 'compass-canary-x' 'compass-test-x'\n"
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	got, err := NewPodmanCLI().WithProgram(prog).ListByNamePrefix(t.Context(), "compass-agent-")
+	if err != nil {
+		t.Fatalf("ListByNamePrefix = %v", err)
+	}
+	want := []WorkloadID{"compass-agent-acct"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ListByNamePrefix = %v, want %v", got, want)
+	}
+}
+
 func TestExecOutputSuccessTracksExitCode(t *testing.T) {
 	tests := []struct {
 		name     string

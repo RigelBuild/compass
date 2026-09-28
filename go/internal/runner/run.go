@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -77,6 +78,43 @@ func validateRuntimeDir(dir string) error {
 	return nil
 }
 
+func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRuntime, runtimeDir string, log *slog.Logger) {
+	names, err := engine.ListByNamePrefix(ctx, AgentContainerNamePrefix)
+	if err != nil {
+		log.Warn("listing stale agent containers", slog.Any("error", err))
+	} else {
+		removed := 0
+		for _, name := range names {
+			if err := engine.Remove(ctx, name); err != nil {
+				log.Warn("removing stale agent container", slog.String("name", name.String()), slog.Any("error", err))
+				continue
+			}
+			removed++
+		}
+		if removed > 0 {
+			log.Info("removed stale agent containers", slog.Int("count", removed))
+		}
+	}
+	if runtimeDir == "" {
+		return
+	}
+	containerDir := filepath.Join(runtimeDir, agentSocketDir)
+	entries, err := os.ReadDir(containerDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Warn("listing stale agent socket directories", slog.Any("error", err))
+		}
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), AgentContainerNamePrefix) {
+			if err := os.RemoveAll(filepath.Join(containerDir, entry.Name())); err != nil {
+				log.Warn("removing stale agent socket directory", slog.String("name", entry.Name()), slog.Any("error", err))
+			}
+		}
+	}
+}
+
 // Run attaches the Runner to the Server and hosts agent sessions until ctx is
 // cancelled. It Dials (constructs the RunnerService client + enrolls), builds
 // the production SessionHost over the container engine, and runs the Sessions
@@ -92,6 +130,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	if err := validateRuntimeDir(cfg.RuntimeDir); err != nil {
 		return err
 	}
+	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, log)
 
 	link, err := Dial(ctx, cfg)
 	if err != nil {

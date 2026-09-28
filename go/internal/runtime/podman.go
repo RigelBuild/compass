@@ -377,6 +377,9 @@ type WorkloadRuntime interface {
 
 	// Remove removes a workload (force-kills if still running).
 	Remove(ctx context.Context, id WorkloadID) error
+	// ListByNamePrefix returns names of workloads whose names begin with prefix.
+	// Backends without persistent named workloads return an empty slice.
+	ListByNamePrefix(ctx context.Context, prefix string) ([]WorkloadID, error)
 
 	// Exists reports whether a workload with name currently exists (any state).
 	Exists(ctx context.Context, name string) (bool, error)
@@ -453,6 +456,21 @@ func (p *PodmanCLI) Create(ctx context.Context, spec WorkloadSpec) (WorkloadID, 
 		return "", err
 	}
 	return WorkloadID(strings.TrimSpace(string(stdout))), nil
+}
+
+// ListByNamePrefix lists containers with names beginning with prefix, in any state.
+func (p *PodmanCLI) ListByNamePrefix(ctx context.Context, prefix string) ([]WorkloadID, error) {
+	stdout, err := p.run(ctx, "podman ps", []string{"ps", "-a", "--filter", "name=^" + prefix, "--format", "{{.Names}}"})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]WorkloadID, 0)
+	for _, name := range strings.Split(string(stdout), "\n") {
+		if strings.HasPrefix(name, prefix) {
+			names = append(names, WorkloadID(name))
+		}
+	}
+	return names, nil
 }
 
 // createArgs assembles the argv for `podman create`. Split out so the argv

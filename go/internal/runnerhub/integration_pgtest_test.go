@@ -400,6 +400,10 @@ func (f *integStubRuntime) Resize(context.Context, runtime.WorkloadID, runtime.R
 	return nil
 }
 
+func (f *integStubRuntime) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
+	return nil, nil
+}
+
 // --- helpers -----------------------------------------------------------------
 
 // agentSocketPath is the host path the Runner serves a container's AgentGateway

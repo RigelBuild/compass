@@ -135,6 +135,69 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 	assertRecorded(t, engine.calls, "start")
 }
 
+type staleContainerRuntime struct {
+	*stubStreamingRuntime
+	containers map[runtime.WorkloadID]bool
+}
+
+func (f *staleContainerRuntime) ListByNamePrefix(_ context.Context, prefix string) ([]runtime.WorkloadID, error) {
+	var names []runtime.WorkloadID
+	for name := range f.containers {
+		if strings.HasPrefix(name.String(), prefix) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+func (f *staleContainerRuntime) Remove(ctx context.Context, id runtime.WorkloadID) error {
+	delete(f.containers, id)
+	return f.stubStreamingRuntime.Remove(ctx, id)
+}
+
+func (f *staleContainerRuntime) Create(ctx context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
+	if f.containers[runtime.WorkloadID(spec.Name)] {
+		return "", errors.New("container name already exists")
+	}
+	id, err := f.stubStreamingRuntime.Create(ctx, spec)
+	if err == nil {
+		f.containers[runtime.WorkloadID(spec.Name)] = true
+	}
+	return id, err
+}
+
+func TestStartupSweepRemovesStaleAgentsBeforeProvision(t *testing.T) {
+	ctx := context.Background()
+	engine := &staleContainerRuntime{
+		stubStreamingRuntime: newStubStreamingRuntime(t),
+		containers: map[runtime.WorkloadID]bool{
+			runtime.WorkloadID(AgentContainerNamePrefix + "acct-1"): true,
+			"compass-canary-x": true,
+		},
+	}
+	log := newCaptureLog()
+	sweepStaleAgentContainers(ctx, engine, filepath.Join(t.TempDir(), "r"), log.logger())
+	if engine.containers[runtime.WorkloadID(AgentContainerNamePrefix+"acct-1")] {
+		t.Fatal("startup sweep left the stale agent container")
+	}
+	if !engine.containers["compass-canary-x"] {
+		t.Fatal("startup sweep removed a container outside the agent prefix")
+	}
+
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: runtime.AgentSpec{
+		Name:      AgentContainerNamePrefix + "acct-1",
+		Image:     "compass-agent:latest",
+		Workspace: runtime.Workspace{CheckoutDir: "/work/repo", HomeDir: "/home/agent", UID: 1000},
+		Egress:    runtime.MustAllowEgress("github.com"),
+	}}, AgentHostConfig{RuntimeDir: shortRuntimeDir(t)}, discardLoggerRunner(), nil)
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"}); err != nil {
+		t.Fatalf("Provision after startup sweep = %v", err)
+	}
+}
+
 // A SpecBuilder error aborts Provision before Launch — a misconfigured request
 // must not create a container.
 func TestProvisionSpecBuilderErrorAborts(t *testing.T) {
