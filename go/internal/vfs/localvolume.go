@@ -403,7 +403,7 @@ func (m *LocalManager) ReconcileOrphans(ctx context.Context) error {
 }
 
 // stampOrphanLocked stamps only an existing, unstamped volume under its lock.
-// It must not recreate a root reaped between discovery and lock acquisition.
+// It must not recreate a reaped root or overwrite a suspended volume's stamp.
 func stampOrphanLocked(root string, discoveredAt time.Time) error {
 	// A volume reaped out from under this pass — between eachVolume's marker stat
 	// and this lock acquisition — is not an orphan to stamp. Without this guard
@@ -563,7 +563,7 @@ func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) erro
 	return errors.Join(errs...)
 }
 
-// metaDir is the volume metadata dir; its lock file is a sibling of the root.
+// metaDir stores volume metadata. The lock lives outside it, beside the root.
 func metaDir(root string) string { return filepath.Join(root, metaDirName) }
 
 // stampPath is the volume's close-stamp file.

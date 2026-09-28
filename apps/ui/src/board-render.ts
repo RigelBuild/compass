@@ -1,5 +1,5 @@
-// Shared total render derivations keep board surfaces aligned; authorLabel is
-// the PR artifact author, while cards show the issue's current assignee.
+// Shared render derivations keep board surfaces aligned; authorLabel is the PR
+// artifact author, while cards show the current assignee. This is intentional.
 
 import type { PrLifecycle } from "./constants";
 import type {
