@@ -30,6 +30,7 @@ import (
 	compassotel "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/usage"
 )
 
 // messageIDAttr is the span attribute PostMessage/RespondToAsk stamp the
@@ -201,7 +202,7 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	srv, err := buildNetworkServer(ctx, ServeConfig{
 		StateDir:          t.TempDir(),
 		CORSAllowedOrigin: corsOriginForTest,
-	}, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+	}, svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
@@ -250,7 +251,7 @@ func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
 	srv, err := buildNetworkServer(ctx, ServeConfig{
 		StateDir:          t.TempDir(),
 		CORSAllowedOrigin: corsOriginForTest,
-	}, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+	}, svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
@@ -316,7 +317,7 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
 	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()},
-		svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+		svc, commsSvc, secretsSvc, newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}

@@ -33,6 +33,7 @@ func gatedFileDescriptors() []protoreflect.FileDescriptor {
 	return []protoreflect.FileDescriptor{
 		compassv1.File_compass_v1_compass_proto,
 		compassv1.File_compass_v1_comms_proto,
+		compassv1.File_compass_v1_usage_proto,
 	}
 }
 
