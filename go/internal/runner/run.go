@@ -78,7 +78,8 @@ func validateRuntimeDir(dir string) error {
 	return nil
 }
 
-// sweepStaleAgentContainers runs before Dial because this process has created no containers yet, so every matching owned container is stale.
+// sweepStaleAgentContainers removes this Runner's agent containers left by a
+// crash or reboot. It runs before Dial: nothing here exists yet, so all are stale.
 func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRuntime, runtimeDir, runnerID string, log *slog.Logger) {
 	names, err := engine.ListByOwner(ctx, AgentContainerNamePrefix, runnerID)
 	if err != nil {

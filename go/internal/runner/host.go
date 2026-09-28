@@ -81,7 +81,9 @@ type agentHost struct {
 	runtimeDir string
 	// model is the model selector handed to every agent this Runner starts;
 	// empty leaves the agent on its own default.
-	model    string
+	model string
+	// runnerID labels every container this host creates, so the next start's
+	// sweep removes only this Runner's containers.
 	runnerID string
 
 	mu           sync.Mutex
@@ -131,7 +133,8 @@ type AgentHostConfig struct {
 	// AgentModel is the model selector every agent this host starts receives;
 	// empty leaves the agent on its default.
 	AgentModel string
-	RunnerID   string
+	// RunnerID is the Runner's own id, stamped as the ownership label.
+	RunnerID string
 }
 
 // NewSessionHost builds the production SessionHost over the link, the agent
