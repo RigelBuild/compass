@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/RigelBuild/compass/go/internal/runtime"
@@ -78,23 +80,29 @@ func validateRuntimeDir(dir string) error {
 	return nil
 }
 
-// sweepStaleAgentContainers removes this Runner's agent containers left by a
-// crash or reboot. It runs before Dial: nothing here exists yet, so all are stale.
+// sweepStaleAgentContainers removes this Runner's stale owned containers and
+// socket dirs after Dial verifies the Runner identity and before sessions start.
 func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRuntime, runtimeDir, runnerID string, log *slog.Logger) {
-	names, err := engine.ListByOwner(ctx, AgentContainerNamePrefix, runnerID)
-	if err != nil {
-		log.Warn("listing stale agent containers", slog.Any("error", err))
-	} else {
-		removed := 0
-		for _, name := range names {
-			if err := engine.Remove(ctx, name); err != nil {
-				log.Warn("removing stale agent container", slog.String("name", name.String()), slog.Any("error", err))
-				continue
+	if lister, ok := engine.(ownedWorkloadLister); ok {
+		names, err := lister.ListByOwner(ctx, AgentContainerNamePrefix, runnerID)
+		if err != nil {
+			log.Warn("listing stale agent containers", slog.Any("error", err))
+		} else {
+			var wg sync.WaitGroup
+			var removed atomic.Int64
+			for _, name := range names {
+				wg.Go(func() {
+					if err := engine.Remove(ctx, name); err != nil {
+						log.Warn("removing stale agent container", slog.String("name", name.String()), slog.Any("error", err))
+						return
+					}
+					removed.Add(1)
+				})
 			}
-			removed++
-		}
-		if removed > 0 {
-			log.Info("removed stale agent containers", slog.Int("count", removed))
+			wg.Wait()
+			if count := removed.Load(); count > 0 {
+				log.Info("removed stale agent containers", slog.Int64("count", count))
+			}
 		}
 	}
 	if runtimeDir == "" {
@@ -109,7 +117,7 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 		return
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), AgentContainerNamePrefix) {
+		if strings.HasPrefix(entry.Name(), AgentContainerNamePrefix) && entry.IsDir() {
 			if err := os.RemoveAll(filepath.Join(containerDir, entry.Name())); err != nil {
 				log.Warn("removing stale agent socket directory", slog.String("name", entry.Name()), slog.Any("error", err))
 			}
@@ -118,10 +126,10 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 }
 
 // Run attaches the Runner to the Server and hosts agent sessions until ctx is
-// cancelled. It Dials (constructs the RunnerService client + enrolls), builds
-// the production SessionHost over the container engine, and runs the Sessions
-// command loop. A returned error is a fatal attach/stream failure; a cancelled
-// ctx is a clean shutdown (nil).
+// cancelled. It Dials (constructs the RunnerService client + enrolls), sweeps
+// this Runner's stale agent state, builds the production SessionHost over the
+// container engine, and runs the Sessions command loop. A returned error is a
+// fatal attach/stream failure; a cancelled ctx is a clean shutdown (nil).
 func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
@@ -129,17 +137,21 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	if cfg.Engine == nil {
 		return errors.New("runner config requires a container engine")
 	}
+	if cfg.RunnerID == "" {
+		return errors.New("runner config requires a runner id")
+	}
 	if err := validateRuntimeDir(cfg.RuntimeDir); err != nil {
 		return err
 	}
-	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, cfg.RunnerID, log)
-
 	link, err := Dial(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, cfg.RunnerID, log)
+	if ctx.Err() != nil {
+		return nil
+	}
 	log.Info("runner enrolled", slog.String("runner_id", cfg.RunnerID), slog.Bool("reattached", link.Reattached()))
-
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(cfg.Engine, registry)
 	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
@@ -153,7 +165,6 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	if closer, ok := host.(interface{ Close(ctx context.Context) }); ok {
 		defer closer.Close(context.WithoutCancel(ctx))
 	}
-
 	// The Sessions loop blocks until the stream ends (ctx cancel = clean
 	// shutdown; any other end is the link dropping). The relay streams
 	// (PublishEvents) are driven per-session inside StartAgent, bound to ctx.

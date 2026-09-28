@@ -92,10 +92,6 @@ func (f *fakeRuntime) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) 
 	return nil
 }
 
-func (f *fakeRuntime) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
-	return nil, nil
-}
-
 func (f *fakeRuntime) record(call string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

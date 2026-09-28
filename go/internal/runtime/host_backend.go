@@ -449,11 +449,6 @@ func (h *HostRuntime) Exists(_ context.Context, name string) (bool, error) {
 	return false, nil
 }
 
-func (*HostRuntime) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
-	// Host process state is private to this Runner and has no persistent names after restart.
-	return nil, nil
-}
-
 // MountLabel returns "", nil. Degenerate: there is no container and no
 // per-container SELinux MCS category, so there is no label to relabel a config
 // dir into.

@@ -59,6 +59,9 @@ type WorkloadID string
 // String returns the raw workload id.
 func (c WorkloadID) String() string { return string(c) }
 
+// RunnerIDLabel identifies the Runner that owns a workload.
+const RunnerIDLabel = "compass.runner-id"
+
 // Mount is a host→container bind mount. ReadOnly maps to :ro and every mount
 // gets SELinux relabelling (:Z) so the substrate works on enforcing hosts.
 type Mount struct {
@@ -379,8 +382,6 @@ type WorkloadRuntime interface {
 
 	// Remove removes a workload (force-kills if still running).
 	Remove(ctx context.Context, id WorkloadID) error
-	// ListByOwner lists names beginning with prefix that carry the given Runner ID label.
-	ListByOwner(ctx context.Context, prefix, runnerID string) ([]WorkloadID, error)
 
 	// Exists reports whether a workload with name currently exists (any state).
 	Exists(ctx context.Context, name string) (bool, error)
@@ -461,7 +462,10 @@ func (p *PodmanCLI) Create(ctx context.Context, spec WorkloadSpec) (WorkloadID, 
 
 // ListByOwner lists containers with names beginning with prefix and the Runner ID label, in any state.
 func (p *PodmanCLI) ListByOwner(ctx context.Context, prefix, runnerID string) ([]WorkloadID, error) {
-	stdout, err := p.run(ctx, "podman ps", []string{"ps", "-a", "--filter", "label=compass.runner-id=" + runnerID, "--filter", "name=^" + prefix, "--format", "{{.Names}}"})
+	if runnerID == "" {
+		return nil, errors.New("runner id must not be empty")
+	}
+	stdout, err := p.run(ctx, "podman ps", []string{"ps", "-a", "--filter", "label=" + RunnerIDLabel + "=" + runnerID, "--filter", "name=^" + prefix, "--format", "{{.Names}}"})
 	if err != nil {
 		return nil, err
 	}

@@ -487,9 +487,9 @@ in
       cwd = "${config.devenv.root}/agent-image";
     };
 
-    # clean: sweep the deterministic-named agent containers and per-container
-    # socket dirs. Runner startup now handles this automatically; the task also
-    # remains available for an operator-requested clean slate.
+    # Runner startup sweeps only containers labelled with its own id. Unlabeled
+    # pre-label containers still need dogfood:clean; on a shared podman user this
+    # task removes every environment's agent containers.
     "dogfood:clean" = {
       exec = ''
         set -euo pipefail

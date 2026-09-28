@@ -77,7 +77,7 @@ func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (Ses
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
 	var n int
 	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
-	cfg := AgentHostConfig{RuntimeDir: t.TempDir(), AgentModel: model}
+	cfg := AgentHostConfig{RuntimeDir: t.TempDir(), AgentModel: model, RunnerID: "runner-1"}
 	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
 	return host, engine, registry
 }
@@ -113,9 +113,9 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 			UID:         1000,
 		},
 		Egress: runtime.MustAllowEgress("github.com"),
+		Labels: map[string]string{"custom": "kept", runtime.RunnerIDLabel: "old"},
 	}}
 	host, engine, registry := newHostFixture(t, specs)
-
 	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatalf("Provision = %v, want success", err)
@@ -126,10 +126,20 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 	if specs.last == nil || specs.last.GetAgentHandle() != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("SpecBuilder.BuildSpec was not called with the request; got %+v", specs.last)
 	}
-	// Launch ran (create+start on the engine) and registered the handle so a
-	// later Start resolves it by name.
+	// Launch registered the handle so a later Start resolves it by name.
 	if _, ok := registry.Resolve("atlas-agent-1"); !ok {
 		t.Fatal("launched container not registered; a later Start could not resolve it")
+	}
+	created := engine.createdSpecs()
+	if len(created) != 1 {
+		t.Fatalf("engine created %d containers, want 1", len(created))
+	}
+	wantLabels := map[string]string{"custom": "kept", runtime.RunnerIDLabel: "runner-1"}
+	if !reflect.DeepEqual(created[0].Labels, wantLabels) {
+		t.Fatalf("created labels = %v, want %v", created[0].Labels, wantLabels)
+	}
+	if !reflect.DeepEqual(specs.spec.Labels, map[string]string{"custom": "kept", runtime.RunnerIDLabel: "old"}) {
+		t.Fatalf("SpecBuilder labels mutated = %v", specs.spec.Labels)
 	}
 	assertRecorded(t, engine.calls, "create")
 	assertRecorded(t, engine.calls, "start")
@@ -137,10 +147,13 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 
 type staleContainerRuntime struct {
 	*stubStreamingRuntime
+	mu         sync.Mutex
 	containers map[runtime.WorkloadID]string
 }
 
 func (f *staleContainerRuntime) ListByOwner(_ context.Context, prefix, runnerID string) ([]runtime.WorkloadID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var names []runtime.WorkloadID
 	for name, owner := range f.containers {
 		if owner == runnerID && strings.HasPrefix(name.String(), prefix) {
@@ -151,17 +164,24 @@ func (f *staleContainerRuntime) ListByOwner(_ context.Context, prefix, runnerID 
 }
 
 func (f *staleContainerRuntime) Remove(ctx context.Context, id runtime.WorkloadID) error {
+	f.mu.Lock()
 	delete(f.containers, id)
+	f.mu.Unlock()
 	return f.stubStreamingRuntime.Remove(ctx, id)
 }
 
 func (f *staleContainerRuntime) Create(ctx context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
+	f.mu.Lock()
 	if _, ok := f.containers[runtime.WorkloadID(spec.Name)]; ok {
+		f.mu.Unlock()
 		return "", errors.New("container name already exists")
 	}
+	f.mu.Unlock()
 	id, err := f.stubStreamingRuntime.Create(ctx, spec)
 	if err == nil {
-		f.containers[runtime.WorkloadID(spec.Name)] = spec.Labels["compass.runner-id"]
+		f.mu.Lock()
+		f.containers[runtime.WorkloadID(spec.Name)] = spec.Labels[runtime.RunnerIDLabel]
+		f.mu.Unlock()
 	}
 	return id, err
 }

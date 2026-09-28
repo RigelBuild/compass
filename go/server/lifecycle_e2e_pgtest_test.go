@@ -653,10 +653,6 @@ func (f *e2eStubRuntime) Resize(context.Context, runtime.WorkloadID, runtime.Res
 	return nil
 }
 
-func (f *e2eStubRuntime) ListByOwner(context.Context, string, string) ([]runtime.WorkloadID, error) {
-	return nil, nil
-}
-
 // wasRemoved reports whether Remove was driven for the container (engine id ==
 // container name). Guarded because the dispatch loop calls Remove on its own
 // goroutine while the test reads.

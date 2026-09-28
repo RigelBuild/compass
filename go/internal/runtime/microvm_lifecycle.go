@@ -684,11 +684,6 @@ func (m *MicroVMRuntime) Exists(_ context.Context, name string) (bool, error) {
 	return false, nil
 }
 
-func (*MicroVMRuntime) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
-	// MicroVM workload ids are random and its name index is process-local.
-	return nil, nil
-}
-
 // AgentGatewayEndpoint resolves the named session and returns the host-side
 // AF_UNIX path the Runner serves its AgentGateway on — GatewaySocketPath over
 // the session's own vsock socket base and the fixed gateway port (record

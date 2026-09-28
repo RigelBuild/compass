@@ -80,10 +80,6 @@ func (r *scriptRunner) Resize(context.Context, WorkloadID, ResourceLimits) error
 	return nil
 }
 
-func (r *scriptRunner) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
-	return nil, nil
-}
-
 func (r *scriptRunner) specsSnapshot() []ExecSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()

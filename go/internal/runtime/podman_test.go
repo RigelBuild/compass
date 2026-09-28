@@ -50,7 +50,7 @@ func TestMountArgRelabel(t *testing.T) {
 
 func TestListByOwnerFiltersRunnerAndNamePrefix(t *testing.T) {
 	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
-	script := "#!/bin/sh\ncase \"$*\" in\n  *label=compass.runner-id=runner-1*name=^compass-agent-*) ;;\n  *) exit 42 ;;\nesac\nprintf '%s\\n' 'compass-agent-acct' 'compass-canary-x' 'compass-test-x'\n"
+	script := "#!/bin/sh\ncase \"$*\" in\n  *label=" + RunnerIDLabel + "=runner-1*name=^compass-agent-*) ;;\n  *) exit 42 ;;\nesac\nprintf '%s\\n' 'compass-agent-acct' 'compass-canary-x' 'compass-test-x'\n"
 	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing stub: %v", err)
 	}
@@ -61,6 +61,23 @@ func TestListByOwnerFiltersRunnerAndNamePrefix(t *testing.T) {
 	want := []WorkloadID{"compass-agent-acct"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("ListByOwner = %v, want %v", got, want)
+	}
+}
+
+func TestListByOwnerRejectsEmptyRunnerIDWithoutRunningPodman(t *testing.T) {
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "podman-stub.sh")
+	marker := filepath.Join(dir, "invoked")
+	script := "#!/bin/sh\n: > " + marker + "\n"
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	_, err := NewPodmanCLI().WithProgram(prog).ListByOwner(t.Context(), "compass-agent-", "")
+	if err == nil {
+		t.Fatal("ListByOwner with empty runner ID = nil, want an error")
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("podman stub invocation marker stat error = %v, want not-exist", err)
 	}
 }
 
@@ -109,8 +126,8 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 }
 
 func TestCreateArgsCarriesLabels(t *testing.T) {
-	args := createArgs(WorkloadSpec{Name: "agent", Image: "img", Labels: map[string]string{"compass.runner-id": "runner-1"}})
-	want := []string{"--label", "compass.runner-id=runner-1"}
+	args := createArgs(WorkloadSpec{Name: "agent", Image: "img", Labels: map[string]string{RunnerIDLabel: "runner-1"}})
+	want := []string{"--label", RunnerIDLabel + "=runner-1"}
 	for i := 0; i+len(want) <= len(args); i++ {
 		if slices.Equal(args[i:i+len(want)], want) {
 			return

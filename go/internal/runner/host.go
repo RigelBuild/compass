@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -50,6 +51,12 @@ type SpecBuilder interface {
 // socket the podman path uses. Provision/RefreshConfig type-assert to gate it.
 type vsockGatewayEngine interface {
 	AgentGatewayEndpoint(name string) (endpoint string, ok bool)
+}
+
+// ownedWorkloadLister is the optional container-backend probe the startup sweep
+// uses to remove workloads owned by this Runner.
+type ownedWorkloadLister interface {
+	ListByOwner(ctx context.Context, prefix, runnerID string) ([]runtime.WorkloadID, error)
 }
 
 // hostStateEngine is the unexported backend probe the host-process runtime
@@ -184,7 +191,11 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if err != nil {
 		return "", err
 	}
-	spec.Labels = map[string]string{"compass.runner-id": h.runnerID}
+	spec.Labels = maps.Clone(spec.Labels)
+	if spec.Labels == nil {
+		spec.Labels = make(map[string]string, 1)
+	}
+	spec.Labels[runtime.RunnerIDLabel] = h.runnerID
 	// Serialize all transitions on this container: a concurrent Remove/Start of
 	// the same name cannot interleave with this provision. Resolved from the spec
 	// name (the stable lifecycle key).
