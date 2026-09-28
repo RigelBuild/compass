@@ -53,6 +53,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/usage"
 )
 
 // TLSConfig carries operator-provisioned PEM paths for the authenticated TCP
@@ -840,6 +841,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// user-or-agent list). The hub is its SecretsVersion signaler; it shares the
 	// one resolver with FetchSecrets.
 	secretsSvc := newSecretsService(st, resolver, serverResolver, hub)
+	usageSvc := newUsageService(usage.NewPostgres(st), st)
 
 	// The forge read-side credentials, built BEFORE the doors because the network
 	// door mounts the board lane's webhook ingress and the Linear notify lane,
@@ -864,7 +866,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// responder. On a net-door build error the listeners this Serve bound are
 	// still ours to close.
 	// buildDoors takes BOTH instances — see its parameter docs for why.
-	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, linearBridge.ID, resolver, serverResolver,
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, admin.ID, linearBridge.ID, resolver, serverResolver,
 		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
@@ -966,6 +968,7 @@ func buildDoors(
 	svc *service,
 	commsSvc *comms.Comms,
 	secretsSvc *secretsService,
+	usageSvc *usageService,
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
@@ -1008,10 +1011,13 @@ func buildDoors(
 	// is the credential, and admin being a user satisfies the user-only writes.
 	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+	usageSocketPath, usageSocketHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
+		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	udsMux := http.NewServeMux()
 	udsMux.Handle(socketPath, socketHandler)
 	udsMux.Handle(commsPath, commsHandler)
 	udsMux.Handle(secretsSocketPath, secretsSocketHandler)
+	udsMux.Handle(usageSocketPath, usageSocketHandler)
 	udsServer := &http.Server{Handler: udsMux, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply; the network door below sets it
 
 	// Dev-only browser door: the same services with permissive CORS on the
@@ -1029,10 +1035,13 @@ func buildDoors(
 		// (a user) the handler reads for the user-only write authz.
 		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		devUsagePath, devUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
+			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		devMux := http.NewServeMux()
 		devMux.Handle(devPath, devHandler)
 		devMux.Handle(commsPath, commsHandler)
 		devMux.Handle(devSecretsPath, devSecretsHandler)
+		devMux.Handle(devUsagePath, devUsageHandler)
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
@@ -1052,7 +1061,7 @@ func buildDoors(
 	// drift apart and the recorded instance is always the delivered one.
 	netResolver := resolver
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook)
 		if err != nil {
 			return serveDoors{}, err
 		}

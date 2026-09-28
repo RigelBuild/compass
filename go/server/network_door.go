@@ -254,6 +254,7 @@ func buildNetworkServer(
 	svc *service,
 	commsSvc compassv1connect.CommsServiceHandler,
 	secretsSvc compassv1connect.SecretsServiceHandler,
+	usageSvc compassv1connect.UsageServiceHandler,
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
@@ -308,6 +309,9 @@ func buildNetworkServer(
 	// and the handler enforces the split — user-only writes, user-or-agent list.
 	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netSecretsPath, netSecretsHandler)
+	// UsageService uses the same authenticated chain and applies agent scope in its handler.
+	netUsagePath, netUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+	netMux.Handle(netUsagePath, netUsageHandler)
 
 	// The internal RunnerService door: the surface a Runner dials out to, mounted
 	// only here on the authenticated network door (a Runner is remote, over TLS).
