@@ -653,7 +653,7 @@ func (f *e2eStubRuntime) Resize(context.Context, runtime.WorkloadID, runtime.Res
 	return nil
 }
 
-func (f *e2eStubRuntime) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
+func (f *e2eStubRuntime) ListByOwner(context.Context, string, string) ([]runtime.WorkloadID, error) {
 	return nil, nil
 }
 

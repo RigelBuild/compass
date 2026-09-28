@@ -684,7 +684,7 @@ func (m *MicroVMRuntime) Exists(_ context.Context, name string) (bool, error) {
 	return false, nil
 }
 
-func (*MicroVMRuntime) ListByNamePrefix(context.Context, string) ([]WorkloadID, error) {
+func (*MicroVMRuntime) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
 	// MicroVM workload ids are random and its name index is process-local.
 	return nil, nil
 }

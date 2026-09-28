@@ -78,8 +78,9 @@ func validateRuntimeDir(dir string) error {
 	return nil
 }
 
-func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRuntime, runtimeDir string, log *slog.Logger) {
-	names, err := engine.ListByNamePrefix(ctx, AgentContainerNamePrefix)
+// sweepStaleAgentContainers runs before Dial because this process has created no containers yet, so every matching owned container is stale.
+func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRuntime, runtimeDir, runnerID string, log *slog.Logger) {
+	names, err := engine.ListByOwner(ctx, AgentContainerNamePrefix, runnerID)
 	if err != nil {
 		log.Warn("listing stale agent containers", slog.Any("error", err))
 	} else {
@@ -130,7 +131,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	if err := validateRuntimeDir(cfg.RuntimeDir); err != nil {
 		return err
 	}
-	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, log)
+	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, cfg.RunnerID, log)
 
 	link, err := Dial(ctx, cfg)
 	if err != nil {
@@ -143,6 +144,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
 		RuntimeDir: cfg.RuntimeDir,
 		AgentModel: cfg.AgentModel,
+		RunnerID:   cfg.RunnerID,
 	}, log, nil)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);

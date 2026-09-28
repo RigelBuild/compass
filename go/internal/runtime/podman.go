@@ -94,6 +94,8 @@ type WorkloadSpec struct {
 	// Name is the container name — the Runner's stable handle for this agent
 	// workstream.
 	Name string
+	// Labels are applied to the workload by backends that support container labels.
+	Labels map[string]string
 	// CapAdd is the Linux capabilities to add. The substrate adds only
 	// NET_ADMIN, and only so the entrypoint can arm the egress firewall; the
 	// agent itself runs as a non-root user with an empty capability set (see
@@ -377,9 +379,8 @@ type WorkloadRuntime interface {
 
 	// Remove removes a workload (force-kills if still running).
 	Remove(ctx context.Context, id WorkloadID) error
-	// ListByNamePrefix returns names of workloads whose names begin with prefix.
-	// Backends without persistent named workloads return an empty slice.
-	ListByNamePrefix(ctx context.Context, prefix string) ([]WorkloadID, error)
+	// ListByOwner lists names beginning with prefix that carry the given Runner ID label.
+	ListByOwner(ctx context.Context, prefix, runnerID string) ([]WorkloadID, error)
 
 	// Exists reports whether a workload with name currently exists (any state).
 	Exists(ctx context.Context, name string) (bool, error)
@@ -458,9 +459,9 @@ func (p *PodmanCLI) Create(ctx context.Context, spec WorkloadSpec) (WorkloadID, 
 	return WorkloadID(strings.TrimSpace(string(stdout))), nil
 }
 
-// ListByNamePrefix lists containers with names beginning with prefix, in any state.
-func (p *PodmanCLI) ListByNamePrefix(ctx context.Context, prefix string) ([]WorkloadID, error) {
-	stdout, err := p.run(ctx, "podman ps", []string{"ps", "-a", "--filter", "name=^" + prefix, "--format", "{{.Names}}"})
+// ListByOwner lists containers with names beginning with prefix and the Runner ID label, in any state.
+func (p *PodmanCLI) ListByOwner(ctx context.Context, prefix, runnerID string) ([]WorkloadID, error) {
+	stdout, err := p.run(ctx, "podman ps", []string{"ps", "-a", "--filter", "label=compass.runner-id=" + runnerID, "--filter", "name=^" + prefix, "--format", "{{.Names}}"})
 	if err != nil {
 		return nil, err
 	}
@@ -477,10 +478,8 @@ func (p *PodmanCLI) ListByNamePrefix(ctx context.Context, prefix string) ([]Work
 // assembly is unit-testable without spawning podman, mirroring
 // execStreamingArgs.
 func createArgs(spec WorkloadSpec) []string {
-	// Preallocate: 4 fixed tokens (create, --name+value, --userns) + 2 per
-	// cap/mount/env pair + image + command tokens, so the appends below don't
-	// reallocate.
-	args := make([]string, 0, 4+2*(len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env))+1+len(spec.Command))
+	// Preallocate for fixed tokens plus every repeated key/value option.
+	args := make([]string, 0, 4+2*(len(spec.Labels)+len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env))+1+len(spec.Command))
 	args = append(args,
 		"create",
 		"--name", spec.Name,
@@ -498,6 +497,9 @@ func createArgs(spec WorkloadSpec) []string {
 	}
 	for _, kv := range sortedEnv(spec.Env) {
 		args = append(args, "-e", kv.key+"="+kv.value)
+	}
+	for _, label := range sortedEnv(spec.Labels) {
+		args = append(args, "--label", label.key+"="+label.value)
 	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Command...)

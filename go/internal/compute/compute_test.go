@@ -135,8 +135,8 @@ func (e *recordingEngine) Resize(context.Context, runtime.WorkloadID, runtime.Re
 	return errors.New("recordingEngine: Resize unused")
 }
 
-func (e *recordingEngine) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
-	return nil, errors.New("recordingEngine: ListByNamePrefix unused")
+func (e *recordingEngine) ListByOwner(context.Context, string, string) ([]runtime.WorkloadID, error) {
+	return nil, errors.New("recordingEngine: ListByOwner unused")
 }
 
 // The in-place backend must delegate to the injected engine's Exec against the

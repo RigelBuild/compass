@@ -137,13 +137,13 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 
 type staleContainerRuntime struct {
 	*stubStreamingRuntime
-	containers map[runtime.WorkloadID]bool
+	containers map[runtime.WorkloadID]string
 }
 
-func (f *staleContainerRuntime) ListByNamePrefix(_ context.Context, prefix string) ([]runtime.WorkloadID, error) {
+func (f *staleContainerRuntime) ListByOwner(_ context.Context, prefix, runnerID string) ([]runtime.WorkloadID, error) {
 	var names []runtime.WorkloadID
-	for name := range f.containers {
-		if strings.HasPrefix(name.String(), prefix) {
+	for name, owner := range f.containers {
+		if owner == runnerID && strings.HasPrefix(name.String(), prefix) {
 			names = append(names, name)
 		}
 	}
@@ -156,12 +156,12 @@ func (f *staleContainerRuntime) Remove(ctx context.Context, id runtime.WorkloadI
 }
 
 func (f *staleContainerRuntime) Create(ctx context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
-	if f.containers[runtime.WorkloadID(spec.Name)] {
+	if _, ok := f.containers[runtime.WorkloadID(spec.Name)]; ok {
 		return "", errors.New("container name already exists")
 	}
 	id, err := f.stubStreamingRuntime.Create(ctx, spec)
 	if err == nil {
-		f.containers[runtime.WorkloadID(spec.Name)] = true
+		f.containers[runtime.WorkloadID(spec.Name)] = spec.Labels["compass.runner-id"]
 	}
 	return id, err
 }
@@ -170,18 +170,22 @@ func TestStartupSweepRemovesStaleAgentsBeforeProvision(t *testing.T) {
 	ctx := context.Background()
 	engine := &staleContainerRuntime{
 		stubStreamingRuntime: newStubStreamingRuntime(t),
-		containers: map[runtime.WorkloadID]bool{
-			runtime.WorkloadID(AgentContainerNamePrefix + "acct-1"): true,
-			"compass-canary-x": true,
+		containers: map[runtime.WorkloadID]string{
+			runtime.WorkloadID(AgentContainerNamePrefix + "acct-1"): "runner-1",
+			runtime.WorkloadID(AgentContainerNamePrefix + "other"):  "runner-2",
+			"compass-canary-x": "runner-1",
 		},
 	}
 	log := newCaptureLog()
-	sweepStaleAgentContainers(ctx, engine, filepath.Join(t.TempDir(), "r"), log.logger())
-	if engine.containers[runtime.WorkloadID(AgentContainerNamePrefix+"acct-1")] {
-		t.Fatal("startup sweep left the stale agent container")
+	sweepStaleAgentContainers(ctx, engine, filepath.Join(t.TempDir(), "r"), "runner-1", log.logger())
+	if _, ok := engine.containers[runtime.WorkloadID(AgentContainerNamePrefix+"acct-1")]; ok {
+		t.Fatal("startup sweep left the stale owned agent container")
 	}
-	if !engine.containers["compass-canary-x"] {
-		t.Fatal("startup sweep removed a container outside the agent prefix")
+	if owner := engine.containers[runtime.WorkloadID(AgentContainerNamePrefix+"other")]; owner != "runner-2" {
+		t.Fatalf("startup sweep changed other Runner's container owner to %q", owner)
+	}
+	if owner := engine.containers["compass-canary-x"]; owner != "runner-1" {
+		t.Fatalf("startup sweep removed non-agent container, owner = %q", owner)
 	}
 
 	registry := runtime.NewAgentRegistry()
@@ -192,7 +196,7 @@ func TestStartupSweepRemovesStaleAgentsBeforeProvision(t *testing.T) {
 		Image:     "compass-agent:latest",
 		Workspace: runtime.Workspace{CheckoutDir: "/work/repo", HomeDir: "/home/agent", UID: 1000},
 		Egress:    runtime.MustAllowEgress("github.com"),
-	}}, AgentHostConfig{RuntimeDir: shortRuntimeDir(t)}, discardLoggerRunner(), nil)
+	}}, AgentHostConfig{RuntimeDir: shortRuntimeDir(t), RunnerID: "runner-1"}, discardLoggerRunner(), nil)
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"}); err != nil {
 		t.Fatalf("Provision after startup sweep = %v", err)
 	}

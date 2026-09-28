@@ -81,7 +81,8 @@ type agentHost struct {
 	runtimeDir string
 	// model is the model selector handed to every agent this Runner starts;
 	// empty leaves the agent on its own default.
-	model string
+	model    string
+	runnerID string
 
 	mu           sync.Mutex
 	sessions     map[string]*liveSession
@@ -130,6 +131,7 @@ type AgentHostConfig struct {
 	// AgentModel is the model selector every agent this host starts receives;
 	// empty leaves the agent on its default.
 	AgentModel string
+	RunnerID   string
 }
 
 // NewSessionHost builds the production SessionHost over the link, the agent
@@ -152,6 +154,7 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		log:            log,
 		runtimeDir:     cfg.RuntimeDir,
 		model:          cfg.AgentModel,
+		runnerID:       cfg.RunnerID,
 		sessions:       map[string]*liveSession{},
 		sockets:        map[string]*gateway.SocketListener{},
 		nextID:         newID,
@@ -178,6 +181,7 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if err != nil {
 		return "", err
 	}
+	spec.Labels = map[string]string{"compass.runner-id": h.runnerID}
 	// Serialize all transitions on this container: a concurrent Remove/Start of
 	// the same name cannot interleave with this provision. Resolved from the spec
 	// name (the stable lifecycle key).

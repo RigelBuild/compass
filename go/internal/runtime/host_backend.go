@@ -449,7 +449,7 @@ func (h *HostRuntime) Exists(_ context.Context, name string) (bool, error) {
 	return false, nil
 }
 
-func (*HostRuntime) ListByNamePrefix(context.Context, string) ([]WorkloadID, error) {
+func (*HostRuntime) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
 	// Host process state is private to this Runner and has no persistent names after restart.
 	return nil, nil
 }

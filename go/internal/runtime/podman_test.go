@@ -48,19 +48,19 @@ func TestMountArgRelabel(t *testing.T) {
 	}
 }
 
-func TestListByNamePrefixUsesAllStatesAndFiltersExactPrefix(t *testing.T) {
+func TestListByOwnerFiltersRunnerAndNamePrefix(t *testing.T) {
 	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
-	script := "#!/bin/sh\nprintf '%s\\n' 'compass-agent-acct' 'compass-canary-x' 'compass-test-x'\n"
+	script := "#!/bin/sh\ncase \"$*\" in\n  *label=compass.runner-id=runner-1*name=^compass-agent-*) ;;\n  *) exit 42 ;;\nesac\nprintf '%s\\n' 'compass-agent-acct' 'compass-canary-x' 'compass-test-x'\n"
 	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing stub: %v", err)
 	}
-	got, err := NewPodmanCLI().WithProgram(prog).ListByNamePrefix(t.Context(), "compass-agent-")
+	got, err := NewPodmanCLI().WithProgram(prog).ListByOwner(t.Context(), "compass-agent-", "runner-1")
 	if err != nil {
-		t.Fatalf("ListByNamePrefix = %v", err)
+		t.Fatalf("ListByOwner = %v", err)
 	}
 	want := []WorkloadID{"compass-agent-acct"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("ListByNamePrefix = %v, want %v", got, want)
+		t.Fatalf("ListByOwner = %v, want %v", got, want)
 	}
 }
 
@@ -106,6 +106,17 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
 	}
+}
+
+func TestCreateArgsCarriesLabels(t *testing.T) {
+	args := createArgs(WorkloadSpec{Name: "agent", Image: "img", Labels: map[string]string{"compass.runner-id": "runner-1"}})
+	want := []string{"--label", "compass.runner-id=runner-1"}
+	for i := 0; i+len(want) <= len(args); i++ {
+		if slices.Equal(args[i:i+len(want)], want) {
+			return
+		}
+	}
+	t.Fatalf("createArgs = %q, want adjacent label arguments %q", args, want)
 }
 
 // createArgs must emit the userns remap token that maps the invoking host user

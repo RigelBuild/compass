@@ -92,7 +92,7 @@ func (f *fakeRuntime) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) 
 	return nil
 }
 
-func (f *fakeRuntime) ListByNamePrefix(context.Context, string) ([]WorkloadID, error) {
+func (f *fakeRuntime) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
 	return nil, nil
 }
 

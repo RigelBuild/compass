@@ -400,7 +400,7 @@ func (f *integStubRuntime) Resize(context.Context, runtime.WorkloadID, runtime.R
 	return nil
 }
 
-func (f *integStubRuntime) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
+func (f *integStubRuntime) ListByOwner(context.Context, string, string) ([]runtime.WorkloadID, error) {
 	return nil, nil
 }
 

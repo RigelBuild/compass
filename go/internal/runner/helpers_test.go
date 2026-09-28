@@ -119,7 +119,7 @@ func (f *pipeRuntime) Resize(context.Context, runtime.WorkloadID, runtime.Resour
 	return nil
 }
 
-func (f *pipeRuntime) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
+func (f *pipeRuntime) ListByOwner(context.Context, string, string) ([]runtime.WorkloadID, error) {
 	return nil, nil
 }
 
@@ -231,9 +231,10 @@ func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.WorkloadID, _ 
 	return err
 }
 
-func (f *stubStreamingRuntime) ListByNamePrefix(context.Context, string) ([]runtime.WorkloadID, error) {
+func (f *stubStreamingRuntime) ListByOwner(context.Context, string, string) ([]runtime.WorkloadID, error) {
 	return nil, nil
 }
+
 func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) error {
 	f.record("remove")
 	f.recordForID(id, "remove")

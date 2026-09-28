@@ -80,7 +80,7 @@ func (r *scriptRunner) Resize(context.Context, WorkloadID, ResourceLimits) error
 	return nil
 }
 
-func (r *scriptRunner) ListByNamePrefix(context.Context, string) ([]WorkloadID, error) {
+func (r *scriptRunner) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
 	return nil, nil
 }
 

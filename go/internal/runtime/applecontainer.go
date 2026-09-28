@@ -68,7 +68,7 @@ func (a *AppleContainerCLI) Create(ctx context.Context, spec WorkloadSpec) (Work
 	return WorkloadID(strings.TrimSpace(string(stdout))), nil
 }
 
-func (*AppleContainerCLI) ListByNamePrefix(context.Context, string) ([]WorkloadID, error) {
+func (*AppleContainerCLI) ListByOwner(context.Context, string, string) ([]WorkloadID, error) {
 	return nil, nil
 }
 
