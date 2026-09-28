@@ -8,7 +8,9 @@ Compass has two front doors, and most people should use the first one.
   on a machine you control. Choose this when you want agent sessions on your own
   hardware, a shared install for several clients, or your own data boundary.
 
-This guide covers the app, then self-hosting. For operational details—flags, systemd, database options—see [Self-hosting the Compass stack](./self-host.md).
+This guide covers the app, then self-hosting. For operational details — flags,
+systemd, database options — see
+[Self-hosting the Compass stack](./self-host.md).
 
 ## The app
 
