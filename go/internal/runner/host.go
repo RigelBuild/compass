@@ -54,7 +54,8 @@ type vsockGatewayEngine interface {
 }
 
 // ownedWorkloadLister is the optional container-backend probe the startup sweep
-// uses to remove workloads owned by this Runner.
+// uses to remove workloads owned by this Runner. Only podman implements it today;
+// other backends skip the container half of the sweep.
 type ownedWorkloadLister interface {
 	ListByOwner(ctx context.Context, prefix, runnerID string) ([]runtime.WorkloadID, error)
 }

@@ -283,3 +283,6 @@ func TestRunReturnsNilWhenSweepCancelsContext(t *testing.T) {
 		t.Fatal("Run did not enroll before starting the stale-state sweep")
 	}
 }
+
+// The sweep reaches podman only through a type assertion, so pin that it still holds.
+var _ ownedWorkloadLister = (*runtime.PodmanCLI)(nil)
