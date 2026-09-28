@@ -126,7 +126,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 	// the dir must be first on their PATH; compass-stack is invoked by full path.
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(binDir)
+	env := stackEnv(t, binDir)
 
 	// A short-path, free-port config resolved through the SAME resolveConfig the
 	// CLI uses (no duplicated config logic); the fixture's derived socket paths
@@ -283,17 +283,31 @@ func buildStackBinary(t *testing.T, binDir string) string {
 // children (looked up by bare name via exec.LookPath) to the freshly built
 // binaries. PATH is rebuilt (not merely re-appended) so there is exactly one
 // PATH entry and binDir is unambiguously first.
-func stackEnv(binDir string) []string {
+//
+// It also seeds a fixture-owned secret provider: compass-server fails closed
+// without an at-rest master key, and a CI runner has no ambient provider, so
+// the subprocess must carry its own rather than inherit one. An inherited
+// COMPASS_SECRET_PROVIDER is deliberately DISCARDED, not merely absent —
+// otherwise an operator's ambient provider would silently decide which key the
+// subprocess boots under, making the result depend on the dev box.
+func stackEnv(t *testing.T, binDir string) []string {
+	t.Helper()
+	provider := seedMasterKeyProvider(t)
 	base := os.Environ()
-	out := make([]string, 0, len(base)+1)
+	out := make([]string, 0, len(base)+2)
 	oldPath := ""
 	for _, e := range base {
 		if p, ok := strings.CutPrefix(e, "PATH="); ok {
 			oldPath = p
 			continue
 		}
+		if strings.HasPrefix(e, "COMPASS_SECRET_PROVIDER=") {
+			t.Logf("stackEnv: discarding the inherited COMPASS_SECRET_PROVIDER for the fixture's own throwaway dotenv provider")
+			continue
+		}
 		out = append(out, e)
 	}
+	out = append(out, "COMPASS_SECRET_PROVIDER="+provider)
 	return append(out, "PATH="+binDir+string(os.PathListSeparator)+oldPath)
 }
 
@@ -385,6 +399,9 @@ func waitServerAnswering(t *testing.T, deps stack.Deps, socketPath string) {
 // the production teardown checks (internal/stack/pgidfile.go pgidEntry,
 // adapters/groupsignal.go Alive).
 type recordedGroup struct {
+	// component is the recorded component name, carried purely so a liveness
+	// failure names which child survived instead of a bare pgid.
+	component string
 	pgid      int
 	startTime uint64
 }
@@ -421,7 +438,7 @@ func waitGroupsGone(t *testing.T, groups []recordedGroup, budget time.Duration) 
 				break
 			}
 			if !time.Now().Before(deadline) {
-				t.Fatalf("process group %d still alive %s after down; the cross-process teardown did not stop it", grp.pgid, budget)
+				t.Fatalf("recorded %s process group %d still alive %s after down; the cross-process teardown did not stop it", grp.component, grp.pgid, budget)
 			}
 			<-ticker.C
 		}
@@ -493,7 +510,9 @@ func parseLeaderStartTime(line string) (uint64, error) {
 // token. The record is
 //
 //	<version> <writerPid>
-//	<component> <pgid> <starttime>
+//	proc <component> <pgid> <starttime>   (v2 process entry)
+//	ctr <component> <name>                (v2 container entry, no process group)
+//	<component> <pgid> <starttime>        (v1, untagged — still read)
 //	...
 //
 // (internal/stack/pgidfile.go writePgidFile). The const/type are package-
@@ -511,6 +530,7 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 	}()
 
 	var groups []recordedGroup
+	containers := 0
 	sc := bufio.NewScanner(f)
 	line := 0
 	for sc.Scan() {
@@ -520,8 +540,28 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 			continue // header (line 1) or a blank line
 		}
 		fields := strings.Fields(text)
-		if len(fields) != 3 {
-			t.Fatalf("stack.pgids entry line %d malformed: %q", line, text)
+		if len(fields) == 0 {
+			continue
+		}
+		// v2 records tag entries: proc <component> <pgid> <starttime>,
+		// while ctr entries identify containers and have no process group.
+		switch fields[0] {
+		case "ctr":
+			if len(fields) != 3 {
+				t.Fatalf("stack.pgids container entry line %d malformed: %q", line, text)
+			}
+			containers++
+			continue
+		case "proc":
+			if len(fields) != 4 {
+				t.Fatalf("stack.pgids process entry line %d malformed: %q", line, text)
+			}
+			fields = fields[1:]
+		default:
+			// v1 records are untagged: <component> <pgid> <starttime>.
+			if len(fields) != 3 {
+				t.Fatalf("stack.pgids entry line %d malformed: %q", line, text)
+			}
 		}
 		pgid, err := strconv.Atoi(fields[1])
 		if err != nil {
@@ -531,10 +571,16 @@ func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 		if err != nil {
 			t.Fatalf("stack.pgids entry line %d has unparseable start time %q: %v", line, fields[2], err)
 		}
-		groups = append(groups, recordedGroup{pgid: pgid, startTime: startTime})
+		groups = append(groups, recordedGroup{component: fields[0], pgid: pgid, startTime: startTime})
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan stack.pgids record %q: %v", recordPath, err)
+	}
+	// Name the real cause rather than letting the caller's "no groups" message
+	// send a maintainer looking for a spawn failure: a record that parsed fine
+	// but held only container entries leaves nothing to probe.
+	if len(groups) == 0 && containers > 0 {
+		t.Fatalf("stack.pgids had %d entries, all container-kind; no process group to probe", containers)
 	}
 	return groups
 }
