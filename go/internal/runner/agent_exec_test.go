@@ -10,6 +10,7 @@ package runner
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -256,34 +257,33 @@ func TestSelfExitLogsErrorWithStderrTail(t *testing.T) {
 	if stream == nil {
 		t.Fatal("StartAgent returned nil stream")
 	}
-
-	<-stream.drainsReleased
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after the agent exited")
+	}
 	var unexpected []logLine
-	for {
+	for draining := true; draining; {
 		select {
 		case line := <-logs.lines:
 			if line.msg == "agent exited unexpectedly" {
 				unexpected = append(unexpected, line)
 			}
 		default:
-			goto drained
+			draining = false
 		}
 	}
-drained:
-	if len(unexpected) != 1 {
-		t.Fatalf("unexpected-exit records = %d, want 1", len(unexpected))
+	if len(unexpected) != 1 || unexpected[0].attrs["exit_result"] != "exit status 7" {
+		t.Fatalf("unexpected-exit records = %#v, want exactly one exit status 7", unexpected)
 	}
-	if got := unexpected[0].attrs["exit_result"]; got != "exit status 7" {
-		t.Fatalf("exit_result = %q, want exit status 7", got)
-	}
-	if got := unexpected[0].attrs["session_id"]; got != "sess-crashed" {
-		t.Fatalf("session_id = %q, want sess-crashed", got)
-	}
-	if got := unexpected[0].attrs["stderr_tail"]; got != "panic: agent failed" {
-		t.Fatalf("stderr_tail = %q, want panic line", got)
+	if unexpected[0].attrs["session_id"] != "sess-crashed" || unexpected[0].attrs["stderr_tail"] != "panic: agent failed" {
+		t.Fatalf("unexpected-exit attributes = %#v", unexpected[0].attrs)
 	}
 	if unexpected[0].level != slog.LevelError {
 		t.Fatalf("unexpected-exit level = %v, want Error", unexpected[0].level)
+	}
+	if err := stream.Stop(); err != nil {
+		t.Fatalf("Stop after self-exit = %v, want nil", err)
 	}
 }
 
@@ -291,7 +291,6 @@ func TestDeliberateStopDoesNotLogUnexpectedExit(t *testing.T) {
 	engine := newStubStreamingRuntime(t)
 	logs := newCaptureLog()
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	stream, err := link.StartAgent(ctx, "sess-stopped", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
@@ -301,14 +300,19 @@ func TestDeliberateStopDoesNotLogUnexpectedExit(t *testing.T) {
 	if err := stream.Stop(); err != nil {
 		t.Fatalf("Stop = %v", err)
 	}
-	for {
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after Stop")
+	}
+	for draining := true; draining; {
 		select {
 		case line := <-logs.lines:
 			if line.msg == "agent exited unexpectedly" {
 				t.Fatalf("deliberate Stop logged unexpected exit: %#v", line)
 			}
 		default:
-			return
+			draining = false
 		}
 	}
 }
@@ -317,7 +321,6 @@ func TestCallerCancellationDoesNotLogUnexpectedExit(t *testing.T) {
 	engine := newStubStreamingRuntime(t)
 	logs := newCaptureLog()
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := link.StartAgent(ctx, "sess-cancelled", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
 	if err != nil {
@@ -325,16 +328,157 @@ func TestCallerCancellationDoesNotLogUnexpectedExit(t *testing.T) {
 		t.Fatalf("StartAgent = %v", err)
 	}
 	cancel()
-	<-stream.drainsReleased
-	for {
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after caller cancellation")
+	}
+	for draining := true; draining; {
 		select {
 		case line := <-logs.lines:
 			if line.msg == "agent exited unexpectedly" {
 				t.Fatalf("caller cancellation logged unexpected exit: %#v", line)
 			}
 		default:
-			return
+			draining = false
 		}
+	}
+}
+
+func TestStopAndReaperShareSingleWait(t *testing.T) {
+	engine := newStubStreamingRuntime(t)
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-shared-wait", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- stream.Stop() }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop = %v", err)
+		}
+	case <-timeAfter():
+		t.Fatal("Stop did not finish with a concurrent reaper wait")
+	}
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after Stop")
+	}
+}
+
+func TestRetainStderrLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{name: "line count", lines: []string{"01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"}, want: []string{"06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"}},
+		{name: "byte budget", lines: []string{strings.Repeat("a", 6000), strings.Repeat("b", 6000), strings.Repeat("c", 6000)}, want: []string{strings.Repeat("b", 6000), strings.Repeat("c", 6000)}},
+		{name: "oversize line", lines: []string{strings.Repeat("x", 20*1024)}, want: []string{strings.Repeat("x", maxStderrTailBytes)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := &AgentStream{}
+			for _, line := range tt.lines {
+				stream.retainStderrLine(line, false)
+			}
+			got := make([]string, len(stream.stderrTail))
+			wantBytes := 0
+			for i, line := range stream.stderrTail {
+				got[i] = line.text
+				wantBytes += len(line.text)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("tail lengths = %v, want %v", lengths(got), lengths(tt.want))
+			}
+			if stream.stderrBytes != wantBytes || stream.stderrBytes > maxStderrTailBytes {
+				t.Fatalf("stderrBytes = %d, want sum %d and at most %d", stream.stderrBytes, wantBytes, maxStderrTailBytes)
+			}
+		})
+	}
+}
+
+func lengths(lines []string) []int {
+	out := make([]int, len(lines))
+	for i, line := range lines {
+		out[i] = len(line)
+	}
+	return out
+}
+
+func TestStderrInfoLinesAreClippedAndRateLimited(t *testing.T) {
+	logs := newCaptureLog()
+	stream := &AgentStream{sessionID: "sess-limited", stderrLimiter: newLineRateLimiter()}
+	retained := 0
+	line := strings.Repeat("x", maxInfoStderrLine+1) + "\n"
+	var input strings.Builder
+	for i := range stderrLineBurst + 2 {
+		if i > 0 {
+			input.WriteByte('\n')
+		}
+		input.WriteString(line[:len(line)-1])
+	}
+	stream.drainToLog(context.Background(), strings.NewReader(input.String()), "agent stderr", logs.logger(), func(text string, truncated bool) {
+		retained++
+		stream.retainStderrLine(text, truncated)
+	})
+	infoLines, debugLines := 0, 0
+	for draining := true; draining; {
+		select {
+		case record := <-logs.lines:
+			switch record.level {
+			case slog.LevelInfo:
+				infoLines++
+				if len(record.attrs["line"]) != maxInfoStderrLine || record.attrs["truncated"] != "true" {
+					t.Fatalf("Info stderr record = %#v, want clipped line with truncated=true", record)
+				}
+			case slog.LevelDebug:
+				debugLines++
+			case slog.LevelWarn:
+			default:
+				t.Fatalf("unexpected stderr record: %#v", record)
+			}
+			if record.msg == "agent stderr rate-limited" && record.attrs["dropped_lines"] != "2" {
+				t.Fatalf("rate-limit warning = %#v, want 2 dropped lines", record)
+			}
+		default:
+			draining = false
+		}
+	}
+	if infoLines != stderrLineBurst || debugLines != 2 {
+		t.Fatalf("Info lines = %d, Debug lines = %d; want %d and 2", infoLines, debugLines, stderrLineBurst)
+	}
+	if retained != stderrLineBurst+2 {
+		t.Fatalf("retained stderr lines = %d, want all %d lines", retained, stderrLineBurst+2)
+	}
+	if len(stream.stderrTail) > maxStderrTailLines || stream.stderrBytes > maxStderrTailBytes {
+		t.Fatalf("stderr tail exceeds bounds: %d lines, %d bytes", len(stream.stderrTail), stream.stderrBytes)
+	}
+}
+
+func TestStopAfterReapReturnsNil(t *testing.T) {
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nexit 7\n")
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-stopped-after-reap", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after the agent exited")
+	}
+	if err := stream.Stop(); err != nil {
+		t.Fatalf("Stop after natural reap = %v, want nil", err)
 	}
 }
 

@@ -463,10 +463,10 @@ func newCaptureLog() *captureLog {
 	return &captureLog{lines: make(chan logLine, 128)}
 }
 
-// Enabled captures every slog level so tests can assert severity as well as message.
+// Enabled captures every level so tests can assert severity as well as message.
 func (c *captureLog) Enabled(context.Context, slog.Level) bool { return true }
 
-// Handle captures each record without blocking the drain goroutine.
+// Handle publishes the record without ever blocking the drain under test.
 func (c *captureLog) Handle(_ context.Context, r slog.Record) error {
 	line := logLine{msg: r.Message, level: r.Level, attrs: make(map[string]string, r.NumAttrs())}
 	r.Attrs(func(a slog.Attr) bool {
@@ -476,18 +476,26 @@ func (c *captureLog) Handle(_ context.Context, r slog.Record) error {
 	select {
 	case c.lines <- line:
 	default:
+		// A full buffer must never block the unit under test, so the record is
+		// dropped — counted, so a downstream timeout can say why.
 		c.dropped.Add(1)
 	}
 	return nil
 }
 
-// WithAttrs and WithGroup are no-ops; assertions inspect inline attributes.
+// WithAttrs / WithGroup intentionally drop attrs and groups: the drain stamps
+// every attribute inline on its log call, so nothing is lost today. A future
+// refactor to `log.With(...)` must implement these first, or the session_id
+// assertions will silently see an empty map.
 func (c *captureLog) WithAttrs([]slog.Attr) slog.Handler { return c }
 func (c *captureLog) WithGroup(string) slog.Handler      { return c }
 
+// logger builds the slog.Logger the unit under test writes into.
 func (c *captureLog) logger() *slog.Logger { return slog.New(c) }
 
-// recvLine waits for one captured record and fails on timeout.
+// recvLine reads one captured log record with a fail-fast deadline. A timeout
+// reports any dropped records, so an undersized buffer diagnoses itself instead
+// of looking like a wedged drain.
 func (c *captureLog) recvLine(t *testing.T) logLine {
 	t.Helper()
 	select {
