@@ -167,7 +167,6 @@ type UsageBucket struct {
 	CacheWriteTokens  int64                  `protobuf:"varint,5,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
 	// Total cost in integer micro-USD.
 	CostMicroUsd  int64 `protobuf:"varint,6,opt,name=cost_micro_usd,json=costMicroUsd,proto3" json:"cost_micro_usd,omitempty"`
-	TotalTokens   int64 `protobuf:"varint,7,opt,name=total_tokens,json=totalTokens,proto3" json:"total_tokens,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -244,13 +243,6 @@ func (x *UsageBucket) GetCostMicroUsd() int64 {
 	return 0
 }
 
-func (x *UsageBucket) GetTotalTokens() int64 {
-	if x != nil {
-		return x.TotalTokens
-	}
-	return 0
-}
-
 type GetUsageSeriesResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Buckets       []*UsageBucket         `protobuf:"bytes,1,rep,name=buckets,proto3" json:"buckets,omitempty"`
@@ -307,15 +299,14 @@ const file_compass_v1_usage_proto_rawDesc = "" +
 	"\vgranularity\x18\x03 \x01(\x0e2\x17.compass.v1.GranularityR\vgranularity\x12(\n" +
 	"\x10agent_account_id\x18\x04 \x01(\tR\x0eagentAccountId\x12'\n" +
 	"\x0finclude_subtree\x18\x05 \x01(\bR\x0eincludeSubtree\x12\x1a\n" +
-	"\bprovider\x18\x06 \x01(\tR\bprovider\"\xa9\x02\n" +
+	"\bprovider\x18\x06 \x01(\tR\bprovider\"\x86\x02\n" +
 	"\vUsageBucket\x12/\n" +
 	"\x14bucket_start_unix_ms\x18\x01 \x01(\x03R\x11bucketStartUnixMs\x12!\n" +
 	"\finput_tokens\x18\x02 \x01(\x03R\vinputTokens\x12#\n" +
 	"\routput_tokens\x18\x03 \x01(\x03R\foutputTokens\x12*\n" +
 	"\x11cache_read_tokens\x18\x04 \x01(\x03R\x0fcacheReadTokens\x12,\n" +
 	"\x12cache_write_tokens\x18\x05 \x01(\x03R\x10cacheWriteTokens\x12$\n" +
-	"\x0ecost_micro_usd\x18\x06 \x01(\x03R\fcostMicroUsd\x12!\n" +
-	"\ftotal_tokens\x18\a \x01(\x03R\vtotalTokens\"K\n" +
+	"\x0ecost_micro_usd\x18\x06 \x01(\x03R\fcostMicroUsd\"K\n" +
 	"\x16GetUsageSeriesResponse\x121\n" +
 	"\abuckets\x18\x01 \x03(\v2\x17.compass.v1.UsageBucketR\abuckets*U\n" +
 	"\vGranularity\x12\x1b\n" +

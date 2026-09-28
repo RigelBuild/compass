@@ -73,7 +73,6 @@ func (s *usageService) GetUsageSeries(ctx context.Context, req *connect.Request[
 			CacheReadTokens:   bucket.CacheReadTokens,
 			CacheWriteTokens:  bucket.CacheWriteTokens,
 			CostMicroUsd:      bucket.CostMicroUSD,
-			TotalTokens:       bucket.TotalTokens,
 		})
 	}
 	return connect.NewResponse(&compassv1.GetUsageSeriesResponse{Buckets: out}), nil
@@ -91,6 +90,12 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	switch {
 	case account.IsAgent():
 		scope, err = s.store.AgentSubtree(ctx, caller)
+		if err == nil {
+			if account.Agent == nil {
+				return nil, false, connect.NewError(connect.CodePermissionDenied, errors.New("caller account cannot read usage"))
+			}
+			scope, err = s.intersectOwnerScope(ctx, account.Agent.OwnerUserID, scope)
+		}
 	case account.User != nil && !admin:
 		scope, err = s.store.AgentsByOwner(ctx, caller)
 	case account.User == nil:
@@ -99,10 +104,7 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	if err != nil {
 		return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving usage scope: %w", err))
 	}
-	ids := make([]string, 0, len(scope))
-	for _, agent := range scope {
-		ids = append(ids, string(agent.ID))
-	}
+	ids := accountIDs(scope)
 	if requested == "" {
 		return ids, admin, nil
 	}
@@ -133,9 +135,41 @@ func (s *usageService) agentFilter(ctx context.Context, caller store.AccountID, 
 	if err != nil {
 		return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving requested usage subtree: %w", err))
 	}
-	ids = make([]string, 0, len(descendants))
-	for _, descendant := range descendants {
-		ids = append(ids, string(descendant.ID))
+	if !admin {
+		owner := caller
+		if account.Agent != nil {
+			owner = account.Agent.OwnerUserID
+		}
+		descendants, err = s.intersectOwnerScope(ctx, owner, descendants)
+		if err != nil {
+			return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller usage owner scope: %w", err))
+		}
 	}
-	return ids, admin, nil
+	return accountIDs(descendants), admin, nil
+}
+
+func (s *usageService) intersectOwnerScope(ctx context.Context, owner store.AccountID, subtree []store.Account) ([]store.Account, error) {
+	owned, err := s.store.AgentsByOwner(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	ownedIDs := make(map[store.AccountID]struct{}, len(owned))
+	for _, agent := range owned {
+		ownedIDs[agent.ID] = struct{}{}
+	}
+	clipped := make([]store.Account, 0, len(subtree))
+	for _, agent := range subtree {
+		if _, ok := ownedIDs[agent.ID]; ok {
+			clipped = append(clipped, agent)
+		}
+	}
+	return clipped, nil
+}
+
+func accountIDs(accounts []store.Account) []string {
+	ids := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		ids = append(ids, string(account.ID))
+	}
+	return ids
 }

@@ -34,7 +34,6 @@ message UsageBucket {
   int64 cache_write_tokens = 5;
   // Total cost in integer micro-USD.
   int64 cost_micro_usd = 6;
-  int64 total_tokens = 7;
 }
 
 message GetUsageSeriesResponse {
