@@ -62,6 +62,18 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent d: %v", err)
 	}
+	// The store does not check that a parent has the same owner, so bad tree data is
+	// possible: a foreign-owned agent under b must never widen owner1's reads.
+	x, err := st.CreateAgent(ctx, owner2.ID, store.NewAgent{Handle: "x", DisplayName: "x", ParentAgentID: b.ID})
+	if err != nil {
+		t.Fatalf("CreateAgent x: %v", err)
+	}
+	if err := usage.NewPostgres(st).AppendTokenUsage(ctx, []usage.TokenUsageEvent{{
+		ID: "event-x", OccurredAtUnixMs: 1_800_000_000_000, AgentAccountID: string(x.ID), OwnerUserID: string(owner2.ID),
+		Provider: "anthropic", Model: "m", InputTokens: 100, Outcome: "ok",
+	}}); err != nil {
+		t.Fatalf("AppendTokenUsage x: %v", err)
+	}
 
 	usageStore := usage.NewPostgres(st)
 	const start = int64(1_800_000_000_000)
@@ -114,9 +126,11 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 		{name: "agent selects child", caller: b.ID, req: withUsageFilter(base, c.ID, false), wantInput: 3, wantCount: 1},
 		{name: "agent selects child subtree", caller: b.ID, req: withUsageFilter(base, c.ID, true), wantInput: 3, wantCount: 1},
 		{name: "agent cannot read ancestor", caller: b.ID, req: withUsageFilter(base, a.ID, false), wantCode: connect.CodePermissionDenied},
-		{name: "admin all agents", caller: admin.ID, req: base, wantInput: 10, wantCount: 1},
+		{name: "owner subtree excludes foreign descendant", caller: owner1.ID, req: withUsageFilter(base, b.ID, true), wantInput: 5, wantCount: 1},
+		{name: "agent scope excludes foreign descendant", caller: b.ID, req: withUsageFilter(base, b.ID, true), wantInput: 5, wantCount: 1},
+		{name: "admin all agents", caller: admin.ID, req: base, wantInput: 110, wantCount: 1},
 		{name: "admin exact filter", caller: admin.ID, req: withUsageFilter(base, c.ID, false), wantInput: 3, wantCount: 1},
-		{name: "admin subtree filter", caller: admin.ID, req: withUsageFilter(base, b.ID, true), wantInput: 5, wantCount: 1},
+		{name: "admin subtree filter", caller: admin.ID, req: withUsageFilter(base, b.ID, true), wantInput: 105, wantCount: 1},
 		{name: "admin unknown agent", caller: admin.ID, req: withUsageFilter(base, "unknown-agent", false), wantCode: connect.CodeNotFound},
 		{name: "non-admin unknown agent", caller: owner1.ID, req: withUsageFilter(base, "unknown-agent", false), wantCode: connect.CodePermissionDenied},
 		{name: "non-admin rejects user id", caller: owner1.ID, req: withUsageFilter(base, owner1.ID, false), wantCode: connect.CodePermissionDenied},
