@@ -29,21 +29,21 @@ Ledger-impact: appends DL-331..337 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reco
 Matt's rulings made during implementation. Each is a ledger row; the frozen
 prose below is not rewritten.
 
-- **Trace context crosses the fabric as a NATS header (DL-378, RIG-4014
+- **Trace context crosses the fabric as a NATS header (DL-377, RIG-4014
   option 1).** `Fabric.Publish` writes the W3C `traceparent` header in
   lowercase and the subscriber reads it case-insensitively. Subscriber
   callbacks gain a ctx carrying the extracted span. T2's Interfaces line reads
   `SubscribeKind(ctx, kind, fn func(context.Context, EventRef) error)` after
-  this and DL-379.
-- **A failed callback Naks (DL-379, RIG-4030 option 1).** The callback
+  this and DL-378.
+- **A failed callback Naks (DL-378, RIG-4030 option 1).** The callback
   returns an error: nil acks, an error Naks through `retryOrPark`, and the
   delivery consumer returns nil only for a missing row (`store.ErrNotFound`).
   Redelivery is an immediate Nak, so the five attempts cover a brief fault,
   not a Postgres failover; the recovery pass still backstops delivery.
-- **compass-server takes its NATS URL like its DSN (DL-380, RIG-4006
+- **compass-server takes its NATS URL like its DSN (DL-379, RIG-4006
   option 1).** `--nats-url` / `$COMPASS_NATS_URL`, forwarded by
   `stack.serverSpec`; each e2e stack runs its own in-process NATS server.
-- **A healthy event dropped at MaxDeliver is parked on the DLQ (DL-381,
+- **A healthy event dropped at MaxDeliver is parked on the DLQ (DL-380,
   RIG-4036 option 3).** The fabric subscribes to the JetStream
   max-deliveries advisory for its own consumers and republishes the stream
   message to `DLQSubject` with the park headers. This makes T4 (d)'s
