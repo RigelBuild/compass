@@ -100,6 +100,9 @@ type SocketListener struct {
 	// Stop/Start reuses the container and its socket), so without an explicit
 	// retirement the producer accumulates one session's state per cycle.
 	control *controlProducer
+	// gateway lets the Runner publish a lifecycle transition the agent cannot
+	// report itself, such as its own exit.
+	gateway *Gateway
 }
 
 // listenAgentSocket opens the per-container agent socket at path and serves h
