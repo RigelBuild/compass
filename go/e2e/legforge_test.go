@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -14,34 +15,46 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
+const (
+	forgeAgentLoopMarker = "forge-agent-loop-drive"
+	forgeLegRepo         = "owner/repo"
+)
+
+func init() {
+	args := func(v any) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			panic(fmt.Sprintf("marshal forge tool arguments: %v", err))
+		}
+		return string(raw)
+	}
+	registerSharedFixtureOption(
+		WithForgeStub(),
+		WithCannedMarkerScript(forgeAgentLoopMarker,
+			CannedToolCall("forge_create_issue", args(map[string]any{"repo": forgeLegRepo, "title": "forge leg issue", "body": "authored by the forge leg", "labels": []string{"e2e"}})),
+			CannedText("created"),
+			CannedToolCall("forge_get_issue", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber})),
+			CannedText("read"),
+			CannedToolCall("forge_comment_on_issue", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber, "body": "forge leg comment"})),
+			CannedText("commented"),
+			CannedToolCall("forge_transition_issue_state", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber, "state": "closed", "close_reason": "completed"})),
+			CannedText("closed"),
+			CannedToolCall("forge_get_issue", args(map[string]any{"repo": forgeLegRepo, "issue_number": forgeStubIssueNumber})),
+			CannedText("verified"),
+			CannedToolCall("forge_create_pull_request", args(map[string]any{"repo": forgeLegRepo, "title": "forge leg pull request", "body": "authored by the forge leg", "head_ref": "forge-leg", "base_ref": "main", "draft": true})),
+			CannedText("opened"),
+		),
+	)
+}
+
 func TestForgeThroughAgentLoop(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 	ctx := context.Background()
 	const handle = "forge-leg-agent"
-	const repo = "owner/repo"
-	args := func(v any) string {
-		raw, err := json.Marshal(v)
-		if err != nil {
-			t.Fatalf("marshal tool arguments: %v", err)
-		}
-		return string(raw)
-	}
-	f := NewFixture(ctx, t, WithForgeStub(), WithCannedScript(
-		CannedToolCall("forge_create_issue", args(map[string]any{"repo": repo, "title": "forge leg issue", "body": "authored by the forge leg", "labels": []string{"e2e"}})),
-		CannedText("created"),
-		CannedToolCall("forge_get_issue", args(map[string]any{"repo": repo, "issue_number": forgeStubIssueNumber})),
-		CannedText("read"),
-		CannedToolCall("forge_comment_on_issue", args(map[string]any{"repo": repo, "issue_number": forgeStubIssueNumber, "body": "forge leg comment"})),
-		CannedText("commented"),
-		CannedToolCall("forge_transition_issue_state", args(map[string]any{"repo": repo, "issue_number": forgeStubIssueNumber, "state": "closed", "close_reason": "completed"})),
-		CannedText("closed"),
-		CannedToolCall("forge_get_issue", args(map[string]any{"repo": repo, "issue_number": forgeStubIssueNumber})),
-		CannedText("verified"),
-		CannedToolCall("forge_create_pull_request", args(map[string]any{"repo": repo, "title": "forge leg pull request", "body": "authored by the forge leg", "head_ref": "forge-leg", "base_ref": "main", "draft": true})),
-		CannedText("opened"),
-	))
+	const repo = forgeLegRepo
+	f := sharedFixture(t)
 	agentID, err := f.CreateAgent(ctx, handle, "Forge Leg Agent")
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
@@ -73,7 +86,14 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
 	}
-	for i, prompt := range []string{"create an issue", "read the issue", "comment on the issue", "close the issue", "verify the issue", "create a pull request"} {
+	for i, prompt := range []string{
+		forgeAgentLoopMarker + " create an issue",
+		forgeAgentLoopMarker + " read the issue",
+		forgeAgentLoopMarker + " comment on the issue",
+		forgeAgentLoopMarker + " close the issue",
+		forgeAgentLoopMarker + " verify the issue",
+		forgeAgentLoopMarker + " create a pull request",
+	} {
 		if _, err := f.PostMessage(ctx, string(agent.Agent.HomeChannelID), "general", prompt); err != nil {
 			t.Fatalf("PostMessage trigger %d: %v", i+1, err)
 		}
