@@ -1801,6 +1801,8 @@ func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
 }
 
 // TestAlwaysSlowCallbackExhaustsMaxDeliver pins where an unbounded callback
+// ends: a healthy event whose every attempt outlives AckWait spends the whole
+// MaxDeliver budget, is dropped by the server, and is parked once from the advisory.
 func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
@@ -1909,7 +1911,10 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	if !strings.Contains(parked.Header.Get(dlqHeaderReason), "2 delivery attempts") {
 		t.Errorf("parked reason = %q, want it to name the 2 attempts", parked.Header.Get(dlqHeaderReason))
 	}
-	if n, _, err := dlq.Pending(); err != nil || n != 0 {
-		t.Fatalf("dlq pending after the park = %d (err %v), want 0: parked more than once", n, err)
+	// A second park would come from the other instance; give it a bounded window.
+	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelDup()
+	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
+		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
 	}
 }

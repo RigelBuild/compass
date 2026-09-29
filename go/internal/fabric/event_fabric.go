@@ -230,10 +230,11 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(con
 		return
 	}
 	// Detached from ctx so an event drained after Subscribe's ctx ends still
-	// runs live; bounded by AckWait, past which the server redelivers anyway.
+	// runs live. It ends a tenth before AckWait so a final-attempt park's Term
+	// reaches the server before its timer, which would otherwise park it again.
 	// The subscriber's span is stripped so only the publisher's trace carries.
 	base := trace.ContextWithSpanContext(context.WithoutCancel(ctx), trace.SpanContext{})
-	deliveryCtx, cancel := context.WithTimeout(otelx.ContextWithTraceparent(base, traceparent(msg.Headers())), f.cfg.ackWait())
+	deliveryCtx, cancel := context.WithTimeout(otelx.ContextWithTraceparent(base, traceparent(msg.Headers())), f.cfg.ackWait()*9/10)
 	err := invoke(deliveryCtx, fn, ref)
 	cancel()
 	if err != nil {
