@@ -927,3 +927,34 @@ func TestSelfExitReleasesTheDrainCtx(t *testing.T) {
 		t.Fatal("drain ctx never released after self-exit: the WithCancel node leaks on the Runner ctx for every session that exits without a Stop")
 	}
 }
+
+// A descendant that keeps the pipes open past the bounded drain join must not
+// read as a drain fault: the reaper cancels the drains before Wait closes the
+// pipes, so each ends as teardown. Only the unexpected-exit record is logged.
+func TestSelfExitWithInheritedPipeLogsNoDrainFault(t *testing.T) {
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nsleep 30 &\nexit 7\n")
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	// context.Background() as the test root — the rule's explicit test exemption.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-leaked", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	select {
+	case <-stream.reaped:
+	case <-time.After(2 * drainGrace):
+		t.Fatal("reaper did not finish within the bounded drain join")
+	}
+	for {
+		select {
+		case l := <-logs.lines:
+			if strings.Contains(l.msg, "drain ended early") {
+				t.Fatalf("logged %q (%v); a leaked pipe holder is teardown, not a drain fault", l.msg, l.attrs)
+			}
+		default:
+			return
+		}
+	}
+}

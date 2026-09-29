@@ -199,8 +199,10 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	go func() {
 		defer close(stream.reaped)
 		stream.waitDrains()
-		waitErr := stream.wait()
+		// Cancel before the reap closes the pipes, so a drain still held open by a
+		// descendant ends as teardown rather than logging a drain fault.
 		stream.stopDrains()
+		waitErr := stream.wait()
 		if shouldLogExit(ctx, waitErr) {
 			logUnexpectedExit(log, stream, waitErr)
 		}

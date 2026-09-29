@@ -227,6 +227,51 @@ func (p *controlProducer) Retire(sessionID string) {
 	s.mu.Unlock()
 }
 
+// Restart hands a session's control state to a fresh agent process: the old
+// subscription ends, first is stamped seq 1, and every unacked live op follows it
+// renumbered in order. The new process's ack cursor starts at 0, so the seqs
+// restart with it. An op the old process applied but never acked is redelivered,
+// at-least-once as on a reconnect. Doing this in one step keeps first ahead of any
+// concurrent Send and loses no op the old process never acked.
+func (p *controlProducer) Restart(sessionID string, first *compassv1internal.AgentControl) error {
+	stamped, ok := proto.Clone(first).(*compassv1internal.AgentControl)
+	if !ok {
+		return connect.NewError(connect.CodeInternal, errCloneFailed)
+	}
+	s, ok := p.existingSession(sessionID)
+	if !ok {
+		return connect.NewError(connect.CodeNotFound, errNoBoundSession)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sub++
+	s.live = false
+	if s.wake != nil {
+		close(s.wake)
+		s.wake = nil
+	}
+	ops := make([]retained, 0, len(s.ops)+1)
+	stamped.ControlSeq = 1
+	ops = append(ops, retained{seq: 1, op: stamped})
+	for _, r := range s.ops {
+		if replayPath(r.op) {
+			continue // a predecessor's barrier release belongs to the old process
+		}
+		op, ok := proto.Clone(r.op).(*compassv1internal.AgentControl)
+		if !ok {
+			return connect.NewError(connect.CodeInternal, errCloneFailed)
+		}
+		seq := uint64(len(ops) + 1)
+		op.ControlSeq = seq
+		ops = append(ops, retained{seq: seq, op: op})
+	}
+	s.ops = ops
+	s.nextSeq = uint64(len(ops))
+	s.cursor = 0
+	s.held = false
+	return nil
+}
+
 // Bind creates a session's control state. It is Retire's counterpart, and the
 // pair is the whole lifetime: the Runner starts a session, so the Runner
 // creates its state, and nothing else does.

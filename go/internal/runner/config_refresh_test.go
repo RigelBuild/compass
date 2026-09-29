@@ -379,6 +379,7 @@ func TestRefreshConfigNoLiveSessionsIsNoOp(t *testing.T) {
 // per-container root must literally contain the container name.
 // A version bump must not relaunch an ERRORED session: recovery is an explicit
 // Reload or resume Start, and a refresh silently reviving it would bypass both.
+// The bundle is still materialized so that recovery reads the current config.
 func TestRefreshConfigSkipsErroredSession(t *testing.T) {
 	host, engine, pub := newConfigRefreshFixture(t)
 	ctx := context.Background()
@@ -399,6 +400,12 @@ func TestRefreshConfigSkipsErroredSession(t *testing.T) {
 	}
 	if got := engine.launchCount(name); got != 1 {
 		t.Fatalf("container %s launched %d times, want 1 (Start only; ERRORED is not refreshed)", name, got)
+	} // Its config still moves forward, so an explicit recovery boots v-2.
+	host.mu.Lock()
+	got := host.configVersions[name]
+	host.mu.Unlock()
+	if got != "v-2" {
+		t.Fatalf("tracked config version = %q, want v-2 (ERRORED still materializes)", got)
 	}
 }
 

@@ -91,7 +91,7 @@ func assertNextPrompt(t *testing.T, stream *connect.ServerStreamForClient[compas
 	}
 }
 
-func TestPlainReloadSendsReplayCompleteFirst(t *testing.T) {
+func TestPlainReloadSendsReplayCompleteThenUnackedOps(t *testing.T) {
 	server := newCapturePublish()
 	h := newTransportFixture(t, server)
 	ctx := context.Background()
@@ -104,11 +104,17 @@ func TestPlainReloadSendsReplayCompleteFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
+	// Held by the old process, never acked: a config-driven Reload fires no Server
+	// sweep, so the Runner itself must carry it to the new process.
+	if err := h.Deliver(ctx, sessionID, &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_Prompt{Prompt: &compassv1internal.PromptControl{Input: "before-reload"}}}); err != nil {
+		t.Fatalf("Deliver before Reload = %v", err)
+	}
 	if err := h.Reload(ctx, sessionID); err != nil {
 		t.Fatalf("Reload = %v", err)
 	}
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	controlStream := assertFirstReplayComplete(t, client)
+	assertNextPrompt(t, controlStream, "before-reload")
 	if err := h.Deliver(ctx, sessionID, &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_Prompt{Prompt: &compassv1internal.PromptControl{Input: "plain-reload"}}}); err != nil {
 		t.Fatalf("Deliver after Reload = %v", err)
 	}
