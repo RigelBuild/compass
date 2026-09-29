@@ -398,11 +398,10 @@ type Hub struct {
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
 	runner *attachedRunner
-	// containerAccounts binds a provisioned container_name to the agent account
-	// it was provisioned for (recorded at Provision, from the request's
-	// agent_account_id). Start promotes the entry to sessionAccounts under the
-	// minted session_id; it lives here only for the Provision..Start window.
-	containerAccounts map[string]store.AccountID
+	// containerAccounts binds a provisioned container_name to its agent account and
+	// owning Runner. Start promotes the entry to sessionAccounts under the minted
+	// session_id; it lives here only for the Provision..Start window.
+	containerAccounts map[string]sessionBinding
 	// sessionAccounts binds a live session_id to its agent account and owning
 	// Runner — the authoritative map RelayCommsCall resolves against. Start adds,
 	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
@@ -464,7 +463,7 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		comms:             comms,
 		log:               log,
 		freshSessionID:    mintFreshSessionID,
-		containerAccounts: make(map[string]store.AccountID),
+		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
 	}

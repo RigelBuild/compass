@@ -63,7 +63,7 @@ func bindLiveSession(hub *Hub) {
 		account       = store.AccountID("acct-agent")
 	)
 	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer(containerName, account)
+	hub.bindContainer(containerName, account, testRunnerID)
 	hub.promoteSession(context.Background(), containerName, sessionID)
 }
 
@@ -546,7 +546,7 @@ func TestUnbindSessionFiresTerminalPresenceEdge(t *testing.T) {
 	hub := newHubOnly()
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
-	hub.bindContainer("c1", "acct-a")
+	hub.bindContainer("c1", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-a") // fires one promoted edge, not a lifecycle one
 
 	hub.unbindSession(context.Background(), "sess-a")
@@ -570,11 +570,11 @@ func TestUnbindStaleSessionFiresNoTerminalEdgeWhenRepointed(t *testing.T) {
 	hub := newHubOnly()
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
-	hub.bindContainer("c1", "acct-a")
+	hub.bindContainer("c1", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-old")
 	// A new container/session promotes onto the SAME account, re-pointing the
 	// reverse entry to sess-new (the newer live session).
-	hub.bindContainer("c2", "acct-a")
+	hub.bindContainer("c2", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c2", "sess-new")
 
 	// Unbind the stale session: its forward entry is dropped, but the reverse
@@ -601,9 +601,9 @@ func TestEnrollFiresTerminalPresenceEdgePerBoundAccountAndClears(t *testing.T) {
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("c1", "acct-a")
+	hub.bindContainer("c1", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-a")
-	hub.bindContainer("c2", "acct-b")
+	hub.bindContainer("c2", "acct-b", "runner-1")
 	hub.promoteSession(context.Background(), "c2", "sess-b")
 
 	// A Runner reconnect: enroll drops every binding and drives each previously-

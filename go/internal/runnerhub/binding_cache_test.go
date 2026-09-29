@@ -281,7 +281,7 @@ func TestFailClosedStoppedNeverSeenAndPostReconnect(t *testing.T) {
 	}
 
 	// Stopped: bound, then Stop's unbindSession removes it (durable delete too).
-	hub.bindContainer("cont-1", testAgentAccount)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "cont-1", "sess-stop")
 	if acct, ok := hub.accountForSession(context.Background(), "sess-stop"); !ok || acct != testAgentAccount {
 		t.Fatalf("accountForSession(sess-stop) before stop = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
@@ -339,7 +339,7 @@ func TestPeerBindingChangeEvictsOtherInstanceCache(t *testing.T) {
 	hubB.SetSessionBindingStore(bindingsB)
 	hubB.SetRoutingFabric(routing)
 	hubB.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hubB.bindContainer("cont-new", testAgentAccount)
+	hubB.bindContainer("cont-new", testAgentAccount, "runner-1")
 
 	// B re-points the account onto sess-new: displaces sess-old, publishes the
 	// two changes, which fan synchronously to hubA.OnBindingChange.
@@ -381,14 +381,14 @@ func TestDisplacedSessionResolvesNowhere(t *testing.T) {
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	// Bind the account to sess-old.
-	hub.bindContainer("cont-old", testAgentAccount)
+	hub.bindContainer("cont-old", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "cont-old", "sess-old")
 	if acct, ok := hub.accountForSession(context.Background(), "sess-old"); !ok || acct != testAgentAccount {
 		t.Fatalf("accountForSession(sess-old) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
 
 	// Re-point the SAME account onto sess-new: displaces sess-old.
-	hub.bindContainer("cont-new", testAgentAccount)
+	hub.bindContainer("cont-new", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "cont-new", "sess-new")
 
 	// sess-new resolves; sess-old resolves nowhere.
@@ -492,7 +492,7 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		hub.SetRoutingFabric(routing)
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
-		hub.bindContainer("cont-1", testAgentAccount)
+		hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 		hub.promoteSession(context.Background(), "cont-1", "sess-1")
 
 		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); !ok || acct != testAgentAccount {
@@ -509,7 +509,7 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		bindings := newFakeBindingStore()
 		hub.SetSessionBindingStore(bindings)
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-		hub.bindContainer("cont-1", testAgentAccount)
+		hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 		hub.promoteSession(context.Background(), "cont-1", "sess-1")
 
 		// The reconnect sweep now faults; the in-RAM snapshot must still drive it.
@@ -568,7 +568,7 @@ func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
 	bindings.bindings["sess-1"] = store.SessionBinding{SessionID: "sess-1", AccountID: "acct-stale", RunnerID: "runner-1"}
 	bindings.mu.Unlock()
 
-	hub.bindContainer("cont-1", testAgentAccount)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "cont-1", "sess-1")
 
 	// This instance resolves the NEW account from RAM.
@@ -601,7 +601,7 @@ func TestConcurrentResolveDuringAFaultingReapCannotResurrect(t *testing.T) {
 	}
 	hub.SetSessionBindingStore(bindings)
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("cont-1", testAgentAccount)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "cont-1", "sess-1")
 
 	// The reconnect's reap will fault, leaving the sess-1 row in place.

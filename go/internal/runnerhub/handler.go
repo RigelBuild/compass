@@ -278,22 +278,19 @@ func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Requ
 // account token is Unauthenticated here, the OQ7 cross-door rule); the
 // runnerSubjectFrom check is defense in depth, mirroring the other handlers.
 //
-// Binding authz (record §756-762): the request selects the binding to authorize
-// against, and that binding RESOLVES the agent account the read is scoped to (A9).
-// A session_id must be a live session bound to this Runner (rotation re-fetch); a
-// container_name must have a recorded container→account binding (the PROVISION-
-// time initial materialize, before any session exists). Under inject-all +
-// single-Runner, "bound to this Runner" == "present in the hub" (there is exactly
-// one Runner); AccountForLiveSession / AccountForContainer are those checks AND
-// yield the account. The agent identity comes from the hub binding, NEVER a
-// request field. A foreign/unknown selector is rejected CodePermissionDenied; a
-// missing selector is CodeInvalidArgument.
+// Binding authz is scoped to the authenticated Runner: the request selects a
+// binding only when that Runner owns the session or provisioned container, and
+// the binding resolves the agent account used for the A9-scoped read. The agent
+// identity comes from the hub binding, never a request field. A foreign or
+// unknown selector is rejected CodePermissionDenied; a missing selector is
+// CodeInvalidArgument.
 //
 // NO-LOG posture (record §770-772): the response carries live secret values
 // (ResolvedSecret.value/.version are [debug_redact] on the wire). This handler
 // logs neither the response nor the resolved set.
 func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subject, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
 	if h.resolver == nil {
@@ -309,13 +306,13 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	case sessionID != "" && containerName != "":
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets accepts a session_id or a container_name, not both"))
 	case sessionID != "":
-		account, ok := h.hub.AccountForLiveSession(sessionID)
+		account, ok := h.hub.AccountForLiveSession(subject.ID, sessionID)
 		if !ok {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("session %q is not a live session bound to this runner", sessionID))
 		}
 		agent = account
 	case containerName != "":
-		account, ok := h.hub.AccountForContainer(containerName)
+		account, ok := h.hub.AccountForContainer(subject.ID, containerName)
 		if !ok {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("container %q has no provisioned binding on this runner", containerName))
 		}
