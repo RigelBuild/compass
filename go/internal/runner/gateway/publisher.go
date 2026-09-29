@@ -76,9 +76,9 @@ func (c *seqCounter) rollback(seq uint64) {
 
 // sessionPublisher owns the one PublishEvents client-stream for a session and
 // stamps a monotonic RunnerSeq on every frame it forwards. It is opened by the
-// Publish handler at stream entry and closed at stream end; only Publish drives
-// it (durable conversation frames commit via CommitConversationFrame, off this
-// spine).
+// Publish handler at stream entry and closed at stream end. Runner lifecycle
+// reports also use one-shot publishers for transitions the agent cannot report;
+// durable conversation frames commit via CommitConversationFrame, off this spine.
 //
 // The counter is NOT owned here. A publisher is replaceable within one Gateway
 // (the session-change reset in acquirePublisher closes an orphan bound to a
@@ -104,8 +104,9 @@ type sessionPublisher struct {
 
 // newSessionPublisher opens the upstream PublishEvents client-stream for
 // sessionID and returns the publisher that drives it. ctx bounds the stream's
-// life (the socket-lifetime context, not a handler's request ctx). seq is the
-// Gateway's counter, carried across publishers so the sequence never restarts.
+// life: the Publish handler uses the socket-lifetime context, while lifecycle
+// reports use a bounded caller ctx. seq is the Gateway counter, carried across
+// publishers so the sequence never restarts.
 func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *seqCounter) *sessionPublisher {
 	return &sessionPublisher{
 		sessionID: sessionID,
@@ -142,10 +143,11 @@ func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 }
 
 // close closes the upstream stream and awaits its ack, mirroring the stdout
-// relay's CloseAndReceive at EOF (relay.go:168-171). Called by the Publish
-// handler when the agent's client-stream ends. Returns the ack error (nil on a
-// clean close) so the handler can classify it. Takes only this publisher's own
-// lock, so a slow ack cannot stall another publisher's Send.
+// relay's CloseAndReceive at EOF (relay.go:168-171). The Publish handler closes
+// its shared stream when the agent's client-stream ends; Runner lifecycle reports
+// close their one-shot streams after forwarding a terminal frame. Returns the
+// ack error (nil on a clean close) so the caller can classify it. Takes only this
+// publisher's own lock, so a slow ack cannot stall another publisher's Send.
 func (p *sessionPublisher) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -158,7 +160,8 @@ func (p *sessionPublisher) close() error {
 // spine). The upstream PublishEvents stream is opened against the socket-lifetime
 // context (g.baseCtx), NOT the calling handler's request context, so it outlives
 // any one request; the Publish handler owns the stream and closes it at stream
-// end via releasePublisher.
+// end via releasePublisher. Runner lifecycle reports bypass this shared publisher
+// and use bounded one-shot streams so they cannot close it.
 //
 // Session-change reset: a Gateway is retained for the container socket across
 // Stop→Start (host.go), so a publisher opened for a prior session can linger. If
@@ -204,11 +207,12 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 // publisher never Sends concurrently with its own close. A concurrent
 // acquirePublisher that observes g.pub==nil just opens a fresh one, and the
 // capture under the lock still gives single ownership, so pub is closed exactly
-// once. The only residue is a cross-stream reorder of already-sent frames that
-// the hub's loss-tolerant gap detector accepts by design: recordSeq flags only a
-// forward jump, so a delayed low seq neither flags a gap nor rewinds lastSeq.
-// This mirrors acquirePublisher, which already closes its stale publisher
-// outside the lock.
+// once. Lifecycle reports use distinct one-shot publishers and do not inspect or
+// close g.pub. The only residue is a cross-stream reorder of already-sent frames
+// that the hub's loss-tolerant gap detector accepts by design: recordSeq flags only
+// a forward jump, so a delayed low seq neither flags a gap nor rewinds lastSeq.
+// This mirrors acquirePublisher, which already closes its stale publisher outside
+// the lock.
 func (g *Gateway) releasePublisher() error {
 	g.pubMu.Lock()
 	pub := g.pub

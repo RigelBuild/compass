@@ -141,7 +141,13 @@ func (r *recordingRelay) snapshot() []*compassv1internal.RelayCommsCallRequest {
 // sockets land under a fresh t.TempDir runtime dir.
 func newTransportFixture(t *testing.T, relay compassv1internalconnect.RunnerServiceHandler) *agentHost {
 	t.Helper()
-	engine := newStubStreamingRuntime(t)
+	return newTransportFixtureWithEngine(t, relay, newStubStreamingRuntime(t))
+}
+
+// newTransportFixtureWithEngine is newTransportFixture over a caller-built
+// engine, for tests that script the agent child's exit.
+func newTransportFixtureWithEngine(t *testing.T, relay compassv1internalconnect.RunnerServiceHandler, engine *stubStreamingRuntime) *agentHost {
+	t.Helper()
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, relay))
