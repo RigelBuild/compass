@@ -1,6 +1,6 @@
 # Design: Order held delivery by turn sequence (RIG-4033)
 
-Ledger-impact: appends DL-383 for Matt's option-3 ruling (design-ledger-gate)
+Ledger-impact: appends DL-382 for Matt's option-3 ruling (design-ledger-gate)
 
 ## Problem / Intent
 
