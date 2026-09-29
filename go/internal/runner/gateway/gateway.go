@@ -295,6 +295,7 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 	// Hand the producer to the listener so the session lifecycle can retire a
 	// session's control state: the socket outlives any one session.
 	l.control = control
+	l.gateway = g
 	return l, nil
 }
 

@@ -175,7 +175,6 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		drainsReleased: drainCtx.Done(), reaped: make(chan struct{}), waitDone: make(chan struct{}),
 		log: log, beforeWait: l.beforeWait,
 	}
-
 	stderr := &stderrLogger{
 		limiter: newLineRateLimiter(),
 		onLine:  func(text string, truncated bool) { stream.retainStderrLine(text, truncated) },
@@ -194,9 +193,6 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		stream.drainToLog(drainCtx, xs.IO.Stdout, "agent stdout", log, nil)
 	}()
 
-	// The reaper: join the drains (pipes at EOF), reap once, log the exit unless it
-	// was a deliberate kill or the caller's ctx ended, then release the ctx node a
-	// self-exiting agent would otherwise leave attached until Runner shutdown.
 	go func() {
 		defer close(stream.reaped)
 		stream.drains.Wait()
