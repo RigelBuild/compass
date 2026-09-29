@@ -72,8 +72,21 @@ tasks:
       - '/devenv.lock'
       - '/devenv.yaml'
 
+  test:
+    # The layer-assembly fixtures: synthetic layers built in the sandbox, so no
+    # registry fetch and seconds rather than a full rootfs build.
+    command: 'nix build -f default.nix compass-guest-assembly-tests --no-link'
+    options:
+      cache: false
+      runInCI: true
+    inputs:
+      - 'assemble-layers.sh'
+      - 'assembly-tests.nix'
+      - 'default.nix'
+      - '/devenv.lock'
+
   ci:
-    deps: ['build']
+    deps: ['build', 'test']
     options:
       cache: false
       runInCI: true
