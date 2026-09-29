@@ -176,7 +176,7 @@ type Querier interface {
 	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
 	GetDMChannelByName(ctx context.Context, arg GetDMChannelByNameParams) (GetDMChannelByNameRow, error)
 	GetGlobalHandleID(ctx context.Context, handle string) (string, error)
-	// Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (name AND
+	// Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (top-level AND name AND
 	// VisibilityOwner) the CreateChannel create-guard keys on.
 	GetGroupNameVisibility(ctx context.Context, id string) (GetGroupNameVisibilityRow, error)
 	GetIssue(ctx context.Context, id string) (GetIssueRow, error)
