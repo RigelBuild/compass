@@ -290,6 +290,34 @@ func TestSelfExitLogsErrorWithStderrTail(t *testing.T) {
 	}
 }
 
+func TestSelfExitPublishesBeforeInheritedPipeEOF(t *testing.T) {
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nsleep 30 &\nexit 7\n")
+	server := newCapturePublish()
+	h := newTransportFixtureWithEngine(t, server, engine)
+	ctx := context.Background()
+	t.Cleanup(func() { h.Close(ctx) })
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-leaked-pipe")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	select {
+	case frame := <-server.frames:
+		if frame.GetSessionId() != sessionID || frame.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+			t.Fatalf("frame = %v, want ERRORED for %q", frame, sessionID)
+		}
+	case <-time.After(2 * drainGrace):
+		t.Fatal("ERRORED frame waited for the 30s descendant pipe holder")
+	}
+	status, err := h.Status(ctx, sessionID)
+	if err != nil || len(status) != 1 || status[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("Status after parent exit = %v, %v; want ERRORED", status, err)
+	}
+}
+
 func TestDeliberateStopDoesNotLogUnexpectedExit(t *testing.T) {
 	engine := newStubStreamingRuntime(t)
 	logs := newCaptureLog()
