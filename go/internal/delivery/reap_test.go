@@ -4,7 +4,7 @@ package delivery
 
 // RIG-1569 T3 — OnSessionsReaped (the hub's SessionReapSink) drops the
 // held-deliver registry entries for sessions whose hub bindings were cleared at
-// a Runner (re-)enroll, so a no-frame author death's entry does not leak.
+// a Runner (re-)enroll, so a pre-T9 link-loss entry does not leak.
 // White-box to drive c.hold and read c.held; sleep-free (synchronous delete).
 
 import "testing"
@@ -15,7 +15,7 @@ import "testing"
 func TestOnSessionsReapedDropsHeldEntries(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes (dispatcher/resolver/reads) are unused here — the reap is a pure in-memory delete with no dispatch/resolve/read path.
 
-	// Two authors hold pending delivers; a no-frame death would strand both.
+	// Two authors hold pending delivers; a pre-T9 link loss would strand both.
 	c.hold("sess-dead", "m1", "")
 	c.hold("sess-dead", "m2", "")
 	c.hold("sess-live", "m3", "")
