@@ -5,12 +5,19 @@ package runner
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
+	"connectrpc.com/connect"
+
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
@@ -282,6 +289,104 @@ func TestRunReturnsNilWhenSweepCancelsContext(t *testing.T) {
 	if rec.enrolled() == nil {
 		t.Fatal("Run did not enroll before starting the stale-state sweep")
 	}
+}
+
+type blockingRemoveTestEngine struct {
+	*pipeRuntime
+	listed  chan struct{}
+	entered chan struct{}
+	removed chan struct{}
+}
+
+func (e *blockingRemoveTestEngine) ListByOwner(context.Context, string, string) ([]runtime.WorkloadID, error) {
+	close(e.listed)
+	return []runtime.WorkloadID{"compass-agent-stale"}, nil
+}
+
+func (e *blockingRemoveTestEngine) Remove(ctx context.Context, _ runtime.WorkloadID) error {
+	close(e.entered)
+	<-ctx.Done()
+	close(e.removed)
+	return ctx.Err()
+}
+
+type sessionsStartedTestHandler struct {
+	recordingEnroll
+	sessions chan struct{}
+}
+
+func (h *sessionsStartedTestHandler) Sessions(context.Context, *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+	close(h.sessions)
+	return nil
+}
+
+func TestRunStartsSessionsBeforeStaleSweepDeadline(t *testing.T) {
+	handler := &sessionsStartedTestHandler{sessions: make(chan struct{})}
+	path, service := compassv1internalconnect.NewRunnerServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, service)
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = cleartextHTTP2()
+	server.Start()
+	t.Cleanup(server.Close)
+
+	engine := &blockingRemoveTestEngine{
+		pipeRuntime: newPipeRuntime(),
+		listed:      make(chan struct{}),
+		entered:     make(chan struct{}),
+		removed:     make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	runtimeDir := shortRuntimeDir(t)
+	httpClient := h2cHTTPClient(t)
+	go func() {
+		done <- Run(ctx, RunnerConfig{
+			RunnerID:   "runner-1",
+			ServerAddr: server.URL,
+			Token:      "tok",
+			Engine:     engine,
+			RuntimeDir: runtimeDir,
+			HTTPClient: httpClient,
+		}, nil, discardLoggerRunner())
+	}()
+
+	select {
+	case <-handler.sessions:
+	case <-time.After(staleContainerSweepTimeout + time.Second):
+		cancel()
+		select {
+		case <-engine.removed:
+		case <-time.After(testTimeout):
+			t.Fatal("stale cleanup did not unwind after cancellation")
+		}
+		select {
+		case <-done:
+		case <-time.After(testTimeout):
+			t.Fatal("Run did not return after cancellation")
+		}
+		t.Fatalf("Sessions did not start within %s while stale cleanup was blocked", staleContainerSweepTimeout+time.Second)
+	}
+	select {
+	case <-engine.entered:
+	case <-time.After(testTimeout):
+		cancel()
+		t.Fatal("stale Remove did not start")
+	}
+	select {
+	case <-engine.removed:
+	case <-time.After(testTimeout):
+		t.Fatal("stale cleanup did not stop at its deadline")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after bounded startup sweep = %v, want nil", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("Run did not return after Sessions completed")
+	}
+	cancel()
 }
 
 // The sweep reaches podman only through a type assertion, so pin that it still holds.

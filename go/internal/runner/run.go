@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -80,11 +81,18 @@ func validateRuntimeDir(dir string) error {
 	return nil
 }
 
+// staleContainerSweepTimeout gives best-effort startup cleanup a single bounded
+// budget. PodmanCLI also has a per-command timeout, but the sweep may remove
+// several containers concurrently.
+const staleContainerSweepTimeout = 5 * time.Second
+
 // sweepStaleAgentContainers removes this Runner's stale owned containers and
 // socket dirs after Dial verifies the Runner identity and before sessions start.
 func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRuntime, runtimeDir, runnerID string, log *slog.Logger) {
 	if lister, ok := engine.(ownedWorkloadLister); ok {
-		names, err := lister.ListByOwner(ctx, AgentContainerNamePrefix, runnerID)
+		sweepCtx, cancel := context.WithTimeout(ctx, staleContainerSweepTimeout)
+		defer cancel()
+		names, err := lister.ListByOwner(sweepCtx, AgentContainerNamePrefix, runnerID)
 		if err != nil {
 			log.Warn("listing stale agent containers", slog.Any("error", err))
 		} else {
@@ -92,7 +100,7 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 			var removed atomic.Int64
 			for _, name := range names {
 				wg.Go(func() {
-					if err := engine.Remove(ctx, name); err != nil {
+					if err := engine.Remove(sweepCtx, name); err != nil {
 						log.Warn("removing stale agent container", slog.String("name", name.String()), slog.Any("error", err))
 						return
 					}
