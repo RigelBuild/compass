@@ -172,6 +172,28 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 	if resp.Msg.GetCallId() != "vc-1" {
 		t.Fatalf("result call id = %q, want vc-1", resp.Msg.GetCallId())
 	}
+	boardResp, err := client.Board(callCtx, connect.NewRequest(&compassv1internal.BoardCallRequest{
+		CallId: "vb-1",
+		Call: &compassv1internal.BoardCallRequest_SetIssueState{
+			SetIssueState: &compassv1internal.SetIssueStateRequest{
+				IssueId: "iss-board",
+				State:   compassv1.IssueState_ISSUE_STATE_DONE,
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Board over the vsock-suffixed socket = %v, want the round-trip result", err)
+	}
+	gotBoard := fake.boardSnapshot()
+	if len(gotBoard) != 1 || gotBoard[0].GetSessionId() != sessionID {
+		t.Fatalf("relayed Board calls = %+v, want exactly one carrying session id %q", gotBoard, sessionID)
+	}
+	if gotBoard[0].GetCall().GetCallId() != "vb-1" {
+		t.Fatalf("relayed Board call id = %q, want vb-1", gotBoard[0].GetCall().GetCallId())
+	}
+	if boardResp.Msg.GetCallId() != "vb-1" {
+		t.Fatalf("Board result call id = %q, want vb-1", boardResp.Msg.GetCallId())
+	}
 }
 
 // TestVsockProvisionTeardownClosesListener pins teardown symmetry on the microVM
