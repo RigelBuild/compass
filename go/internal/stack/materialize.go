@@ -281,7 +281,7 @@ func cachedGuestTrusted(final, digest string, paths GuestPaths) bool {
 	if json.Unmarshal(manifestBytes, &manifest) != nil || validateGuestManifest(manifest) != nil {
 		return false
 	}
-	return verifyGuestAgainstManifest(paths, manifest) == nil
+	return verifyGuestAgainstManifest(paths, manifest) == nil && verifyGuestManifestFile(paths.Manifest, manifest) == nil
 }
 
 // materializeGuestArtifact is the fetch/verify/publish body, split from
@@ -565,10 +565,6 @@ func writeGuestBlob(body io.Reader, layer guestDescriptor, staging, name string)
 // asset, in layer order. Written atomically (temp + rename, the pgid-file
 // discipline) so a completed directory never holds a partial manifest.
 func writeGuestManifestFile(staging string, layers []guestDescriptor) error {
-	var b strings.Builder
-	for i, asset := range guestAssets {
-		fmt.Fprintf(&b, "%s  %s\n", strings.TrimPrefix(layers[i].Digest, guestDigestPrefix), asset.fileName)
-	}
 	tmp, err := os.CreateTemp(staging, guestManifestFile+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("create manifest temp in %q: %w", staging, err)
@@ -582,7 +578,7 @@ func writeGuestManifestFile(staging string, layers []guestDescriptor) error {
 		cleanup()
 		return fmt.Errorf("chmod manifest temp: %w", err)
 	}
-	if _, err := tmp.WriteString(b.String()); err != nil {
+	if _, err := tmp.WriteString(guestManifestFileContent(layers)); err != nil {
 		cleanup()
 		return fmt.Errorf("write manifest temp: %w", err)
 	}
@@ -769,4 +765,33 @@ func isLowerHex64(s string) bool {
 		}
 	}
 	return true
+}
+
+// guestManifestFileContent renders the sha256sum-format sidecar for layers.
+func guestManifestFileContent(layers []guestDescriptor) string {
+	var b strings.Builder
+	for i, asset := range guestAssets {
+		fmt.Fprintf(&b, "%s  %s\n", strings.TrimPrefix(layers[i].Digest, guestDigestPrefix), asset.fileName)
+	}
+	return b.String()
+}
+
+// verifyGuestManifestFile checks the sidecar the runner preflights against, so an
+// edited or missing one refetches instead of failing every later boot.
+func verifyGuestManifestFile(path string, manifest guestManifest) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat guest manifest %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("guest manifest %q has mode %s, want a regular file", path, info.Mode())
+	}
+	got, err := os.ReadFile(path) //nolint:gosec // G304: fixed basename inside the content-addressed cache
+	if err != nil {
+		return fmt.Errorf("read guest manifest %q: %w", path, err)
+	}
+	if string(got) != guestManifestFileContent(manifest.Layers) {
+		return fmt.Errorf("guest manifest %q does not match the authenticated layers", path)
+	}
+	return nil
 }

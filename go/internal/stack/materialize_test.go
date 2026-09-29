@@ -376,6 +376,16 @@ func TestMaterializeGuestAuthenticatedManifestCache(t *testing.T) {
 			writeFile(t, paths.Rootfs, []byte("forged"))
 			writeFile(t, paths.Manifest, []byte(strings.Repeat("0", 64)+"  rootfs.erofs\n"))
 		}},
+		{"removed manifest.sha256 is refetched", func(t *testing.T, _ *fakeRegistry, paths GuestPaths) {
+			t.Helper()
+			if err := os.Remove(paths.Manifest); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"edited manifest.sha256 with intact assets is refetched", func(t *testing.T, _ *fakeRegistry, paths GuestPaths) {
+			t.Helper()
+			writeFile(t, paths.Manifest, []byte(strings.Repeat("0", 64)+"  rootfs.erofs\n"))
+		}},
 		{"symlinked asset is rejected and re-fetched", func(t *testing.T, _ *fakeRegistry, paths GuestPaths) {
 			t.Helper()
 			moveBehindSymlink(t, paths.Rootfs)
