@@ -266,6 +266,24 @@ func validGuestRegistryHost(host string) error {
 	return nil
 }
 
+// cachedGuestTrusted reports whether a cache dir's raw manifest hashes to the
+// pinned digest and every asset still matches it; anything short means refetch.
+func cachedGuestTrusted(final, digest string, paths GuestPaths) bool {
+	manifestBytes, err := os.ReadFile(filepath.Join(final, guestRawManifestFile)) //nolint:gosec // G304: fixed basename inside the content-addressed cache
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(manifestBytes)
+	if guestDigestPrefix+hex.EncodeToString(sum[:]) != digest {
+		return false
+	}
+	var manifest guestManifest
+	if json.Unmarshal(manifestBytes, &manifest) != nil || validateGuestManifest(manifest) != nil {
+		return false
+	}
+	return verifyGuestAgainstManifest(paths, manifest) == nil
+}
+
 // materializeGuestArtifact is the fetch/verify/publish body, split from
 // materializeGuestImage so tests can aim it at an httptest registry without a
 // package-level client or scheme override.
@@ -285,23 +303,15 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 	}
 
 	finalInfo, err := os.Lstat(final)
-	if err == nil && finalInfo.IsDir() {
-		manifestBytes, readErr := os.ReadFile(filepath.Join(final, guestRawManifestFile)) //nolint:gosec // G304: fixed basename inside the content-addressed cache
-		if readErr == nil {
-			sum := sha256.Sum256(manifestBytes)
-			var manifest guestManifest
-			if guestDigestPrefix+hex.EncodeToString(sum[:]) == reg.digest && json.Unmarshal(manifestBytes, &manifest) == nil && validateGuestManifest(manifest) == nil && verifyGuestAgainstManifest(paths, manifest) == nil {
-				return paths, nil
-			}
+	switch {
+	case err == nil:
+		if finalInfo.IsDir() && cachedGuestTrusted(final, reg.digest, paths) {
+			return paths, nil
 		}
 		if err := os.RemoveAll(final); err != nil {
 			return GuestPaths{}, fmt.Errorf("materialise guest image %s: remove untrusted cache %q: %w", reg.digest, final, err)
 		}
-	} else if err == nil {
-		if err := os.RemoveAll(final); err != nil {
-			return GuestPaths{}, fmt.Errorf("materialise guest image %s: remove untrusted cache %q: %w", reg.digest, final, err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	case !errors.Is(err, os.ErrNotExist):
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: stat %q: %w", reg.digest, final, err)
 	}
 	transport := guestTransport()

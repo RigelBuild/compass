@@ -155,7 +155,7 @@ func TestMaterializeGuestHappyPath(t *testing.T) {
 	reg := newFakeRegistry(t, nil)
 	stateDir := t.TempDir()
 
-	paths, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir)
+	paths, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
 	if err != nil {
 		t.Fatalf("materializeGuestArtifact = %v, want nil", err)
 	}
@@ -193,7 +193,7 @@ func TestMaterializeGuestHappyPath(t *testing.T) {
 // so copying those through would write a manifest the runner cannot match.
 func TestMaterializeGuestManifestFileFeedsRunnerVerification(t *testing.T) {
 	reg := newFakeRegistry(t, nil)
-	paths, err := materializeGuestArtifact(context.Background(), reg.registry(), t.TempDir())
+	paths, err := materializeGuestArtifact(t.Context(), reg.registry(), t.TempDir())
 	if err != nil {
 		t.Fatalf("materializeGuestArtifact = %v, want nil", err)
 	}
@@ -229,7 +229,7 @@ func TestMaterializeGuestFailsClosedOnBlobMismatch(t *testing.T) {
 			tt.arrange(reg, digestOf(guestBlobBytes[tt.assetIdx]))
 			stateDir := t.TempDir()
 
-			_, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir)
+			_, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
 			if err == nil {
 				t.Fatal("materializeGuestArtifact = nil error, want a fail-closed mismatch")
 			}
@@ -250,7 +250,7 @@ func TestMaterializeGuestPartialFetchLeavesNothing(t *testing.T) {
 	delete(reg.blobs, digestOf(guestBlobBytes[1]))
 	stateDir := t.TempDir()
 
-	if _, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir); err == nil {
+	if _, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir); err == nil {
 		t.Fatal("materializeGuestArtifact = nil error, want the missing-blob failure")
 	}
 	assertNoMaterializedDir(t, stateDir, reg.digest)
@@ -274,7 +274,7 @@ func TestMaterializeGuestSecondCallIsVerifiedNoOp(t *testing.T) {
 	reg := newFakeRegistry(t, nil)
 	stateDir := t.TempDir()
 
-	first, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir)
+	first, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
 	if err != nil {
 		t.Fatalf("first materializeGuestArtifact = %v", err)
 	}
@@ -283,7 +283,7 @@ func TestMaterializeGuestSecondCallIsVerifiedNoOp(t *testing.T) {
 		t.Fatal("first call made no requests; the stub was never reached")
 	}
 
-	second, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir)
+	second, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
 	if err != nil {
 		t.Fatalf("second materializeGuestArtifact = %v, want a verified no-op", err)
 	}
@@ -342,96 +342,70 @@ func TestMaterializeGuestFailedStageLeavesNoFinalDirectory(t *testing.T) {
 	assertNoMaterializedDir(t, state, reg.digest)
 }
 
+// moveBehindSymlink relocates path elsewhere and leaves a symlink to it in place.
+func moveBehindSymlink(t *testing.T, path string) {
+	t.Helper()
+	outside := filepath.Join(t.TempDir(), filepath.Base(path))
+	if err := os.Rename(path, outside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMaterializeGuestAuthenticatedManifestCache(t *testing.T) {
-	t.Run("tampered manifest is rejected and re-fetched", func(t *testing.T) {
-		reg := newFakeRegistry(t, nil)
-		state := t.TempDir()
-		paths, err := materializeGuestArtifact(context.Background(), reg.registry(), state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		before := reg.requestCount()
-		alteredManifest := bytes.Replace(reg.manifest, []byte("0123456789abcdef"), []byte("fedcba9876543210"), 1)
-		if err := os.WriteFile(filepath.Join(filepath.Dir(paths.Kernel), guestRawManifestFile), alteredManifest, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := materializeGuestArtifact(context.Background(), reg.registry(), state); err != nil {
-			t.Fatal(err)
-		}
-		if reg.requestCount() <= before {
-			t.Fatal("tampered manifest cache was reused")
-		}
-	})
-	t.Run("forged sidecars do not authenticate replaced assets", func(t *testing.T) {
-		reg := newFakeRegistry(t, nil)
-		state := t.TempDir()
-		paths, err := materializeGuestArtifact(context.Background(), reg.registry(), state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		before := reg.requestCount()
-		if err := os.WriteFile(paths.Rootfs, []byte("forged"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(paths.Manifest, []byte(strings.Repeat("0", 64)+"  rootfs.erofs\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := materializeGuestArtifact(context.Background(), reg.registry(), state); err != nil {
-			t.Fatal(err)
-		}
-		if reg.requestCount() <= before {
-			t.Fatal("forged sidecars authenticated replaced asset")
-		}
-	})
-	t.Run("symlinked asset is rejected and re-fetched", func(t *testing.T) {
-		reg := newFakeRegistry(t, nil)
-		state := t.TempDir()
-		paths, err := materializeGuestArtifact(t.Context(), reg.registry(), state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		outside := filepath.Join(t.TempDir(), "asset")
-		if err := os.Rename(paths.Rootfs, outside); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(outside, paths.Rootfs); err != nil {
-			t.Fatal(err)
-		}
-		before := reg.requestCount()
-		if _, err := materializeGuestArtifact(t.Context(), reg.registry(), state); err != nil {
-			t.Fatal(err)
-		}
-		if reg.requestCount() <= before {
-			t.Fatal("symlinked asset cache was reused")
-		}
-	})
-	t.Run("symlinked cache directory is rejected and re-fetched", func(t *testing.T) {
-		reg := newFakeRegistry(t, nil)
-		state := t.TempDir()
-		paths, err := materializeGuestArtifact(t.Context(), reg.registry(), state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		final := filepath.Dir(paths.Kernel)
-		outside := filepath.Join(t.TempDir(), "cache")
-		if err := os.Rename(final, outside); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(outside, final); err != nil {
-			t.Fatal(err)
-		}
-		before := reg.requestCount()
-		if _, err := materializeGuestArtifact(t.Context(), reg.registry(), state); err != nil {
-			t.Fatal(err)
-		}
-		if reg.requestCount() <= before {
-			t.Fatal("symlinked cache directory was reused")
-		}
-	})
+	for _, tc := range []struct {
+		name   string
+		tamper func(t *testing.T, reg *fakeRegistry, paths GuestPaths)
+	}{
+		{"tampered manifest is rejected and re-fetched", func(t *testing.T, reg *fakeRegistry, paths GuestPaths) {
+			t.Helper()
+			altered := bytes.Replace(reg.manifest, []byte("0123456789abcdef"), []byte("fedcba9876543210"), 1)
+			writeFile(t, filepath.Join(filepath.Dir(paths.Kernel), guestRawManifestFile), altered)
+		}},
+		{"forged sidecars do not authenticate replaced assets", func(t *testing.T, _ *fakeRegistry, paths GuestPaths) {
+			t.Helper()
+			writeFile(t, paths.Rootfs, []byte("forged"))
+			writeFile(t, paths.Manifest, []byte(strings.Repeat("0", 64)+"  rootfs.erofs\n"))
+		}},
+		{"symlinked asset is rejected and re-fetched", func(t *testing.T, _ *fakeRegistry, paths GuestPaths) {
+			t.Helper()
+			moveBehindSymlink(t, paths.Rootfs)
+		}},
+		{"symlinked cache directory is rejected and re-fetched", func(t *testing.T, _ *fakeRegistry, paths GuestPaths) {
+			t.Helper()
+			moveBehindSymlink(t, filepath.Dir(paths.Kernel))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := newFakeRegistry(t, nil)
+			state := t.TempDir()
+			paths, err := materializeGuestArtifact(t.Context(), reg.registry(), state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.tamper(t, reg, paths)
+			before := reg.requestCount()
+			if _, err := materializeGuestArtifact(t.Context(), reg.registry(), state); err != nil {
+				t.Fatal(err)
+			}
+			if reg.requestCount() <= before {
+				t.Fatal("untrusted cache was reused")
+			}
+		})
+	}
 	t.Run("missing manifest and unreachable registry fails closed", func(t *testing.T) {
 		reg := newFakeRegistry(t, nil)
 		state := t.TempDir()
-		paths, err := materializeGuestArtifact(context.Background(), reg.registry(), state)
+		paths, err := materializeGuestArtifact(t.Context(), reg.registry(), state)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -439,7 +413,7 @@ func TestMaterializeGuestAuthenticatedManifestCache(t *testing.T) {
 			t.Fatal(err)
 		}
 		reg.server.Close()
-		_, err = materializeGuestArtifact(context.Background(), reg.registry(), state)
+		_, err = materializeGuestArtifact(t.Context(), reg.registry(), state)
 		if err == nil || !strings.Contains(err.Error(), filepath.Join(state, guestImageDirName)) {
 			t.Fatalf("error = %v, want path-naming fail closed error", err)
 		}
@@ -476,14 +450,14 @@ func TestMaterializeGuestExistingDirCorruptFailsClosed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := newFakeRegistry(t, nil)
 			stateDir := t.TempDir()
-			paths, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir)
+			paths, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
 			if err != nil {
 				t.Fatalf("seed materializeGuestArtifact = %v", err)
 			}
 			tt.corrupt(t, paths)
 			before := reg.requestCount()
 
-			if _, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir); err != nil {
+			if _, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir); err != nil {
 				t.Fatalf("materializeGuestArtifact repaired an untrusted cache: %v", err)
 			}
 			if got := reg.requestCount(); got <= before {
@@ -564,7 +538,7 @@ func TestMaterializeGuestRejectsWrongManifestShape(t *testing.T) {
 			reg := newFakeRegistry(t, tt.mutate)
 			stateDir := t.TempDir()
 
-			_, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir)
+			_, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
 			if err == nil {
 				t.Fatal("materializeGuestArtifact = nil error, want the manifest rejected")
 			}
@@ -614,7 +588,7 @@ func TestMaterializeGuestRetriesMidStreamDrop(t *testing.T) {
 		base.ServeHTTP(w, req)
 	})
 
-	paths, err := materializeGuestArtifact(context.Background(), reg.registry(), t.TempDir())
+	paths, err := materializeGuestArtifact(t.Context(), reg.registry(), t.TempDir())
 	if err != nil {
 		t.Fatalf("materializeGuestArtifact = %v, want the mid-stream drop retried to success", err)
 	}
@@ -638,7 +612,7 @@ func TestMaterializeGuestRejectsManifestDigestMismatch(t *testing.T) {
 	other := newFakeRegistry(t, func(m *guestManifest) { m.Annotations["org.opencontainers.image.revision"] = "deadbeefcafe" })
 	reg.manifest = other.manifest
 
-	_, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir)
+	_, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
 	if err == nil {
 		t.Fatal("materializeGuestArtifact = nil error, want the manifest identity rejected")
 	}
@@ -654,7 +628,7 @@ func TestMaterializeGuestDoesNotRetry4xx(t *testing.T) {
 	reg := newFakeRegistry(t, nil)
 	reg.digest = digestOf([]byte("a manifest this registry does not serve"))
 
-	if _, err := materializeGuestArtifact(context.Background(), reg.registry(), t.TempDir()); err == nil {
+	if _, err := materializeGuestArtifact(t.Context(), reg.registry(), t.TempDir()); err == nil {
 		t.Fatal("materializeGuestArtifact = nil error, want the 404 surfaced")
 	}
 	if got := reg.requestCount(); got != 1 {
@@ -684,7 +658,7 @@ func TestMaterializeGuestRetriesTransient5xx(t *testing.T) {
 		base.ServeHTTP(w, req)
 	})
 
-	if _, err := materializeGuestArtifact(context.Background(), reg.registry(), t.TempDir()); err != nil {
+	if _, err := materializeGuestArtifact(t.Context(), reg.registry(), t.TempDir()); err != nil {
 		t.Fatalf("materializeGuestArtifact = %v, want the transient 503 retried to success", err)
 	}
 }
