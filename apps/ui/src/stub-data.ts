@@ -539,8 +539,8 @@ export const STUB_AGENTS: Agent[] = [
 					"",
 					"  VITE v8.1.0  ready in 247 ms",
 					"",
-					"  ➜  Local:   http://localhost:5173/",
-					"  ➜  press h + enter to show help",
+					"  ->  Local:   http://localhost:5173/",
+					"  ->  press h + enter to show help",
 				],
 			},
 			{
@@ -549,9 +549,9 @@ export const STUB_AGENTS: Agent[] = [
 				running: false,
 				lines: [
 					"$ moon run compass-ui:ci",
-					"▪▪▪▪ compass-ui:typecheck (970ms)",
-					"▪▪▪▪ compass-ui:build (1.2s)",
-					"▪▪▪▪ compass-ui:test (816 pass)",
+					"#### compass-ui:typecheck (970ms)",
+					"#### compass-ui:build (1.2s)",
+					"#### compass-ui:test (816 pass)",
 					"Tasks: 6 completed",
 					"  green — typecheck + build + test",
 				],
@@ -736,7 +736,7 @@ export const STUB_AGENTS: Agent[] = [
 				running: false,
 				lines: [
 					"$ moon run root:lint",
-					"▪▪▪▪ root:lint (biome) (612ms)",
+					"#### root:lint (biome) (612ms)",
 					"Checked 214 files in 118ms. No fixes applied.",
 					"Tasks: 1 completed",
 				],
