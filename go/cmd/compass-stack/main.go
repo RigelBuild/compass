@@ -175,7 +175,7 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 	fs.StringVar(&f.natsExternal, "nats-external", "",
 		"Do not start the bundled NATS; point compass surfaces at this nats:// URL "+
 			"instead. The managed plane supplies its own broker.")
-	fs.StringVar(&f.gatewayImage, "gateway-image", stack.DefaultGatewayImage, "Container image for the bundled LLM gateway. Defaults empty until published; pass --gateway-image or use --gateway-external.")
+	fs.StringVar(&f.gatewayImage, "gateway-image", stack.DefaultGatewayImage, "Container image for the bundled LLM gateway. Required unless --gateway-external is set.")
 	fs.StringVar(&f.gatewayExternal, "gateway-external", "", "Do not start the bundled LLM gateway; use this external gateway URL instead.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,

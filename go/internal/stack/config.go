@@ -76,7 +76,7 @@ type Config struct {
 	// posture: NATS is provisioned as a bundled stack service, reachable on the
 	// fixed loopback client endpoint.
 	ExternalNatsURL string
-	// GatewayImage is the bundled LLM gateway image; empty until published.
+	// GatewayImage is the bundled LLM gateway image; required unless ExternalGatewayURL is set.
 	GatewayImage string
 	// ExternalGatewayURL opts out of starting the bundled gateway.
 	ExternalGatewayURL string

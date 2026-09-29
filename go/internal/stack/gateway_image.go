@@ -2,5 +2,6 @@
 
 package stack
 
-// DefaultGatewayImage is pinned by digest and empty until publication; installed up must pass --gateway-image or --gateway-external.
+// DefaultGatewayImage is the gateway image the installed stack runs, pinned by digest.
+// Empty means no default: up needs --gateway-image or --gateway-external.
 const DefaultGatewayImage = ""
