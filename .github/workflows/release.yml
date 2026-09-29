@@ -1152,7 +1152,11 @@ jobs:
 
           # An unreachable before-sha (force-push, GC'd object, fetch transient)
           # leaves no diff base. Publish rather than fail — the no-drop invariant.
-          if ! changed="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null)"; then
+          # --no-renames: a rename prints only its destination, which would hide
+          # a file moved OUT of the closure. -z output keeps NULs, which command
+          # substitution drops, so the names go to a file.
+          changed="$RUNNER_TEMP/runner-image-changed"
+          if ! git diff -z --no-renames --name-only "$BEFORE_SHA" "$HEAD_SHA" >"$changed" 2>/dev/null; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
             echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
             exit 0
@@ -1164,17 +1168,17 @@ jobs:
             case "$pattern" in
               *'/**')
                 prefix="${pattern%'/**'}/"
-                while IFS= read -r f; do
+                while IFS= read -r -d '' f; do
                   [ -n "$f" ] || continue
                   case "$f" in
                     "$prefix"*) should_publish=true ;;
                   esac
-                done <<< "$changed"
+                done <"$changed"
                 ;;
               *)
-                while IFS= read -r f; do
+                while IFS= read -r -d '' f; do
                   [ "$f" = "$pattern" ] && should_publish=true
-                done <<< "$changed"
+                done <"$changed"
                 ;;
             esac
             [ "$should_publish" = true ] && break
@@ -1210,6 +1214,27 @@ jobs:
           fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
+
+      - name: Put the pinned skopeo on PATH
+        if: steps.gate.outputs.should_publish == 'true'
+        # publish.ts tags the verified digest with skopeo. The same pinned skopeo
+        # release-image uses; take the output carrying bin/skopeo, since the
+        # derivation also ships a `-man` output.
+        run: |
+          set -euo pipefail
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
 
       - name: Start a rootless buildkitd
         if: steps.gate.outputs.should_publish == 'true'
@@ -1255,7 +1280,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
-        # BuildKit reads registry creds from a docker config file. Writing it
+        # BuildKit reads registry creds from a docker config file, and
+        # publish.ts passes the same file to skopeo as --authfile. Writing it
         # with a 0600 umask in a private dir keeps the token off argv and out of
         # any process listing.
         run: |
@@ -1282,10 +1308,11 @@ jobs:
 
       - name: Publish by digest and assert reproducibility
         if: steps.gate.outputs.should_publish == 'true'
-        # Re-runs the build with the push exporter (buildctl has no `push` verb),
-        # then fails unless the registry's digest equals the local one. The
-        # deployable `repo@sha256:…` lands in the step summary: GHCR has no
-        # server-side tag immutability, so nothing deployed resolves via a tag.
+        # Re-runs the build with the push exporter (buildctl has no `push` verb)
+        # to push by digest only, fails unless the registry's digest equals the
+        # local one, and only then tags it `:git-<sha12>`. The deployable
+        # `repo@sha256:…` lands in the step summary: GHCR has no server-side tag
+        # immutability, so nothing deployed resolves via a tag.
         run: |
           set -euo pipefail
           # `--short=12` returns the SHORTEST UNIQUE length that is >= 12, so a
@@ -1297,6 +1324,101 @@ jobs:
             --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12")"
           echo "published $ref"
           echo "runner image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+
+  release-runner-image:
+    name: release-runner-image
+    runs-on: ubuntu-latest
+    # Digest-re-tag the newest published closure image at or before the release sha
+    # to `:vX.Y.Z`. Never builds and never touches `:latest` (publish-runner-image owns it).
+    needs: release-pr
+    permissions:
+      contents: read
+      packages: write
+    # The runner package's own group: this must queue behind an in-flight
+    # per-push publish and never be dropped, so no cancel and a deep queue.
+    concurrency:
+      group: publish-runner-image
+      cancel-in-progress: false
+      queue: max
+    # A dispatch from a feature branch must never mint a release tag.
+    if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
+    # Same as release-image: the pinned skopeo may realise from source on a cache miss.
+    timeout-minutes: 90
+    steps:
+      # Full history: the resolver walks first-parent ancestors of the release sha.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-pr.outputs.sha }}
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # Caches named here, not via `accept-flake-config`, so a PR cannot add
+          # its own substituter and trusted key.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned skopeo on PATH
+        # The same pinned skopeo release-image uses; take the output carrying
+        # bin/skopeo, since the derivation also ships a `-man` output.
+        run: |
+          set -euo pipefail
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
+      - name: Put the pinned bun toolchain on PATH
+        # Resolve bun from gate-tools.nix so it matches the dev shell's exactly.
+        # `jq -r` renders a missing `.store` as the string `null`, so test for it.
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+
+      - name: Pin the registry auth file
+        # `skopeo login` and the resolver's skopeo calls are separate processes;
+        # an explicit path keeps them on the same creds file.
+        run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        # The runner package is private, so even the probes need auth. The
+        # token goes through env and stdin only, never argv.
+        run: |
+          skopeo \
+            login ghcr.io -u "$ACTOR" --password-stdin \
+            --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
+
+      - name: Digest-re-tag the newest ancestor image to the semver tag
+        # Resolves the source ancestor, fails if a skipped ancestor changed the
+        # runner closure (RUNNER_IMAGE_CLOSURE_PATHS, workflow env), then copies
+        # by digest, verifies the tag, and records it in the step summary.
+        env:
+          TAG_NAME: ${{ needs.release-pr.outputs.tag_name }}
+          RELEASE_SHA: ${{ needs.release-pr.outputs.sha }}
+        run: |
+          bun tools/runner-image/retag.ts \
+            --repo ghcr.io/rigelbuild/compass-runner \
+            --tag "$TAG_NAME" --release-sha "$RELEASE_SHA"
 
   publish-guest-image:
     name: publish-guest-image
