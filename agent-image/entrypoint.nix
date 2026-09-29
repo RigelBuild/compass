@@ -171,8 +171,10 @@ let
     cp -R ${nodeModules}/node_modules/. node_modules/
     cp -R ${nodeModules}/$pkgDir/node_modules/. $pkgDir/node_modules/
 
-    # The SDK plugin exposes this registry only in compiled binaries; the script
-    # resolves its packages from the reconstructed workspace's installed tree.
+    # scripts/compile.ts bakes the SDK's `omp-legacy-pi-modules` registry into the
+    # binary through Compass's local copy of the SDK build plugin, resolving roots
+    # from this reconstructed workspace's installed tree. The binary uses it to load
+    # legacy Pi extensions, so it must not be left external.
     bun $pkgDir/scripts/compile.ts $out/compass-agent
     # The prebuilt addon ships in the per-system optionalDependency
     # `@oh-my-pi/pi-natives-linux-<arch>` (pinned in bun.lock, so in the FOD tree),

@@ -1,4 +1,4 @@
-// Copy of upstream's legacy-pi-virtual-module.ts, with package-root resolution only.
+// Copy of upstream's legacy-pi-virtual-module.ts, resolving package roots from the installed coding-agent tree.
 // Remove when upstream exposes a package-root option.
 import * as path from "node:path";
 
@@ -6,7 +6,6 @@ export const LEGACY_PI_MODULES_SPECIFIER = "omp-legacy-pi-modules";
 const VIRTUAL_NAMESPACE = "omp-legacy-pi-modules-build";
 
 interface BundledPackage {
-	readonly dir: string;
 	readonly name: string;
 	readonly identifier: string;
 	readonly rootShim: string | null;
@@ -14,37 +13,31 @@ interface BundledPackage {
 
 const BUNDLED_PACKAGES: readonly BundledPackage[] = [
 	{
-		dir: "agent",
 		name: "@oh-my-pi/pi-agent-core",
 		identifier: "PiAgentCore",
 		rootShim: null,
 	},
 	{
-		dir: "ai",
 		name: "@oh-my-pi/pi-ai",
 		identifier: "PiAi",
 		rootShim: "legacy-pi-ai-shim.ts",
 	},
 	{
-		dir: "coding-agent",
 		name: "@oh-my-pi/pi-coding-agent",
 		identifier: "PiCodingAgent",
 		rootShim: "legacy-pi-coding-agent-shim.ts",
 	},
 	{
-		dir: "natives",
 		name: "@oh-my-pi/pi-natives",
 		identifier: "PiNatives",
 		rootShim: null,
 	},
 	{
-		dir: "tui",
 		name: "@oh-my-pi/pi-tui",
 		identifier: "PiTui",
 		rootShim: "legacy-pi-tui-shim.ts",
 	},
 	{
-		dir: "utils",
 		name: "@oh-my-pi/pi-utils",
 		identifier: "PiUtils",
 		rootShim: null,
@@ -329,15 +322,8 @@ export async function createLegacyPiModulesPlugin(): Promise<Bun.BunPlugin> {
 		name: "omp:legacy-pi-modules",
 		setup(build) {
 			build.onResolve({ filter: /^@oh-my-pi\/[^/]+(?:\/.*)?$/ }, (args) => {
-				for (const directory of [
-					path.dirname(args.importer),
-					path.resolve(import.meta.dir, ".."),
-					codingAgentDir,
-				]) {
-					try {
-						return { path: Bun.resolveSync(args.path, directory) };
-					} catch {}
-				}
+				if (args.importer !== LEGACY_PI_MODULES_SPECIFIER) return undefined;
+				return { path: Bun.resolveSync(args.path, codingAgentDir) };
 			});
 			build.onResolve({ filter: /^omp-legacy-pi-modules$/ }, () => ({
 				path: LEGACY_PI_MODULES_SPECIFIER,
@@ -346,7 +332,6 @@ export async function createLegacyPiModulesPlugin(): Promise<Bun.BunPlugin> {
 			build.onLoad({ filter: /.*/, namespace: VIRTUAL_NAMESPACE }, () => ({
 				contents: source,
 				loader: "ts",
-				resolveDir: codingAgentDir,
 			}));
 		},
 	};

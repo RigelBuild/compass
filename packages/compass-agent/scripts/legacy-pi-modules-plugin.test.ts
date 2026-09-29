@@ -5,7 +5,7 @@ import {
 } from "./legacy-pi-modules-plugin";
 
 describe("collectLegacyPiModuleEntries", () => {
-	test("includes each installed package, typebox, and nested wildcard exports", async () => {
+	test("includes installed package exports, including recursively discovered wildcard exports", async () => {
 		const entries = await collectLegacyPiModuleEntries();
 		const keys = entries.map((entry) => entry.key);
 		expect(keys).toEqual(
@@ -17,9 +17,15 @@ describe("collectLegacyPiModuleEntries", () => {
 				"@oh-my-pi/pi-tui",
 				"@oh-my-pi/pi-utils",
 				"typebox",
-				"@oh-my-pi/pi-coding-agent/web/search/providers/anthropic",
+				"@oh-my-pi/pi-coding-agent/slash-commands/helpers/active-oauth-account",
 			]),
 		);
+
+		for (const entry of entries) {
+			if (entry.importSpecifier.startsWith("/")) {
+				expect(await Bun.file(entry.importSpecifier).exists()).toBe(true);
+			}
+		}
 
 		const rendered = renderLegacyPiVirtualModule(entries);
 		for (const entry of entries) {
