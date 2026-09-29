@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,6 +53,13 @@ type vsockGatewayEngine interface {
 	AgentGatewayEndpoint(name string) (endpoint string, ok bool)
 }
 
+// ownedWorkloadLister is the optional container-backend probe the startup sweep
+// uses to remove workloads owned by this Runner; podman and apple-container implement it.
+// Other backends skip the container half of the sweep.
+type ownedWorkloadLister interface {
+	ListByOwner(ctx context.Context, prefix, runnerID string) ([]runtime.WorkloadID, error)
+}
+
 // hostStateEngine is the unexported backend probe the host-process runtime
 // satisfies: each agent runs as a direct host child with no bind mounts, so its
 // gateway socket and config tree live in the handle's private state dir, threaded
@@ -82,6 +90,9 @@ type agentHost struct {
 	// model is the model selector handed to every agent this Runner starts;
 	// empty leaves the agent on its own default.
 	model string
+	// runnerID labels every container this host creates, so the next start's
+	// sweep removes only this Runner's containers.
+	runnerID string
 
 	mu           sync.Mutex
 	sessions     map[string]*liveSession
@@ -130,6 +141,8 @@ type AgentHostConfig struct {
 	// AgentModel is the model selector every agent this host starts receives;
 	// empty leaves the agent on its default.
 	AgentModel string
+	// RunnerID is the Runner's own id, stamped as the ownership label.
+	RunnerID string
 }
 
 // NewSessionHost builds the production SessionHost over the link, the agent
@@ -152,6 +165,7 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		log:            log,
 		runtimeDir:     cfg.RuntimeDir,
 		model:          cfg.AgentModel,
+		runnerID:       cfg.RunnerID,
 		sessions:       map[string]*liveSession{},
 		sockets:        map[string]*gateway.SocketListener{},
 		nextID:         newID,
@@ -178,6 +192,11 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if err != nil {
 		return "", err
 	}
+	spec.Labels = maps.Clone(spec.Labels)
+	if spec.Labels == nil {
+		spec.Labels = make(map[string]string, 1)
+	}
+	spec.Labels[runtime.RunnerIDLabel] = h.runnerID
 	// Serialize all transitions on this container: a concurrent Remove/Start of
 	// the same name cannot interleave with this provision. Resolved from the spec
 	// name (the stable lifecycle key).
