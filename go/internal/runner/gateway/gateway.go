@@ -109,6 +109,12 @@ type ForgeRelay interface {
 	RelayForgeCall(ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest]) (*connect.Response[compassv1internal.RelayForgeCallResponse], error)
 }
 
+// BoardRelay forwards an agent board call to the Server under its bound session.
+// The Runner sends the call verbatim and asserts no actor.
+type BoardRelay interface {
+	RelayBoardCall(ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest]) (*connect.Response[compassv1internal.RelayBoardCallResponse], error)
+}
+
 // ConversationCommitter is the narrow slice of the generated RunnerServiceClient
 // the durable conversation path needs — just CommitConversationFrame. The real
 // client satisfies it; a test supplies a fake. Mirrors CommsRelay's narrowing of
@@ -141,6 +147,9 @@ type Gateway struct {
 	// of lifecycle's spawn/despawn forward. Same pure-forwarder posture: no
 	// account, session id the Runner structurally owns.
 	forge ForgeRelay
+	// board forwards one agent-initiated board call to the Server (RelayBoardCall).
+	// The Runner sends its bound session id and the call verbatim, without an actor.
+	board BoardRelay
 	// committer forwards ONE durable conversation frame to the Server for commit
 	// (CommitConversationFrame, the delivered-or-erred unary) and returns the
 	// commit outcome. Durable conversation frames leave the loss-tolerant Publish
@@ -188,8 +197,9 @@ var _ compassv1internalconnect.AgentGatewayHandler = (*Gateway)(nil)
 // Deps are the interchangeable interface dependencies of a container's Gateway,
 // bound by name so a transposition is a compile error rather than a silent
 // misroute. In production one concrete *link.client satisfies all of Relay,
-// Lifecycle, Events, and Committer, so a positional constructor let any two of
-// them swap with no compiler complaint; naming each field removes that trap.
+// Lifecycle, Forge, Board, Events, and Committer, so a positional constructor
+// let any two of them swap with no compiler complaint; naming each field
+// removes that trap.
 type Deps struct {
 	// Sessions resolves the container to its one bound session (1:1, fixed at Start).
 	Sessions SessionForContainer
@@ -199,6 +209,8 @@ type Deps struct {
 	Lifecycle LifecycleRelay
 	// Forge forwards an agent-initiated forge call to the Server (RelayForgeCall).
 	Forge ForgeRelay
+	// Board forwards an agent-initiated board call to the Server (RelayBoardCall).
+	Board BoardRelay
 	// Events forwards trace/session telemetry up the loss-tolerant PublishEvents stream.
 	Events EventRelay
 	// Committer forwards a durable conversation frame to the Server for commit (CommitConversationFrame).
@@ -210,9 +222,9 @@ type Deps struct {
 // deps carries the interchangeable interface dependencies: deps.Sessions
 // resolves the container to its live session, deps.Relay forwards a comms
 // call to the Server, deps.Lifecycle forwards a spawn/despawn call to the
-// Server, deps.Events forwards trace/session telemetry up PublishEvents, and
-// deps.Committer forwards a durable conversation frame to the Server for
-// commit.
+// Server, deps.Forge and deps.Board forward forge and board calls, deps.Events
+// forwards trace/session telemetry up PublishEvents, and deps.Committer
+// forwards a durable conversation frame to the Server for commit.
 // The control router defaults to a no-op; SetControlRouter injects the real one
 // once the control lane is wired.
 //
@@ -228,6 +240,7 @@ func NewGateway(baseCtx context.Context, containerName string, deps Deps) *Gatew
 		relay:         deps.Relay,
 		lifecycle:     deps.Lifecycle,
 		forge:         deps.Forge,
+		board:         deps.Board,
 		events:        deps.Events,
 		committer:     deps.Committer,
 		control:       noopControlRouter{},
@@ -248,13 +261,14 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // Serve creates the per-container agent socket at path and serves this
 // container's AgentGateway over it, returning the live listener. It composes the
 // container's Gateway (containerName bound to the socket, deps.Sessions resolving
-// it to the live session, deps.Relay + deps.Lifecycle + deps.Events forwarding to
-// the Server, deps.Committer committing durable conversation frames) onto the
-// owner-only Unix socket the SocketListener owns, with an explicit ReadMaxBytes
-// bound on every method (Global Constraints: a large agent-buffered message is a
-// stream/unary error, not an OOM). Called at Provision, before `podman run`, so
-// the bind-mount source is live when the container starts; the returned
-// listener's Close tears the socket down at container teardown.
+// it to the live session, deps forwarding comms, lifecycle, forge and board calls
+// and telemetry to the Server, deps.Committer committing durable conversation
+// frames) onto the owner-only Unix socket the SocketListener owns, with an
+// explicit ReadMaxBytes bound on every method (Global Constraints: a large
+// agent-buffered message is a stream/unary error, not an OOM). Called at
+// Provision, before `podman run`, so the bind-mount source is live when the
+// container starts; the returned listener's Close tears the socket down at
+// container teardown.
 func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketListener, error) {
 	// The socket-lifetime context: it outlives any one agent request and is
 	// cancelled when the listener closes at container teardown. The shared upstream
