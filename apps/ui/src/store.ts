@@ -6,7 +6,13 @@
 // runs `runCommsStream`, mirroring each reduced CommsState into the accessors. A
 // store built WITHOUT a client is offline: starts from `initialComms`, writes reject.
 
-import type { CommsClient, CompassClient } from "@compass/client";
+import {
+	type CommsClient,
+	type CompassClient,
+	CompassService,
+	type GetModelRegistryResponse,
+	type Transport,
+} from "@compass/client";
 import type { QueryClient } from "@tanstack/solid-query";
 import { useQuery } from "@tanstack/solid-query";
 import {
@@ -43,6 +49,7 @@ import { adaptMessage } from "./live/adapt";
 import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
 import { runEventStream } from "./live/events";
+import { createConnectQuery } from "./live/query";
 import { runCommsStream } from "./live/stream";
 import { joinAgents } from "./roster";
 import type { AgentSession } from "./session-events";
@@ -238,6 +245,46 @@ export function splitPaneOnce(
 		direction,
 	);
 	return [{ ...node, right }, insertedRight];
+}
+
+/** A candidate in a stable name's chain; order is its fallback order. */
+export interface ModelRegistryCandidate {
+	readonly provider: string;
+	readonly modelId: string;
+}
+
+/** A display row for one fleet stable model name. */
+export interface ModelRegistryRow {
+	readonly stableName: string;
+	readonly displayName: string;
+	readonly candidates: readonly ModelRegistryCandidate[];
+}
+
+/** Loading and result states for the read-only fleet model registry. */
+export type ModelRegistryState =
+	| { readonly status: "offline" }
+	| { readonly status: "pending" }
+	| { readonly status: "error"; readonly message: string }
+	| {
+			readonly status: "ready";
+			readonly version: bigint;
+			readonly entries: readonly ModelRegistryRow[];
+	  };
+
+/** Convert the RPC map into stable-name-sorted rows, retaining candidate order. */
+export function modelRegistryRows(
+	entries: NonNullable<GetModelRegistryResponse["registry"]>["entries"],
+): readonly ModelRegistryRow[] {
+	return Object.entries(entries)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([stableName, entry]) => ({
+			stableName,
+			displayName: entry.displayName,
+			candidates: entry.candidates.map(({ provider, modelId }) => ({
+				provider,
+				modelId,
+			})),
+		}));
 }
 
 /**
@@ -582,6 +629,8 @@ export interface AppStore {
 	/** The user's tracker wiring (kind + handle + Compass↔tracker mapping). */
 	trackerConfig: Accessor<TrackerConfig>;
 	setTrackerConfig: (cfg: TrackerConfig) => void;
+	/** Read-only fleet model registry state. */
+	modelRegistry: Accessor<ModelRegistryState>;
 }
 
 /** What `createAppStore` is handed at boot. The network clients and seeds are
@@ -599,6 +648,8 @@ export interface AppStoreOptions {
 	 *  store's owner has no provider ancestor, so a context read would throw
 	 *  `No QueryClient set` at boot (§A3). */
 	readonly queryClient: QueryClient;
+	/** The shared transport used to key and call the store's connect queries; absent means offline. */
+	readonly transport?: Transport;
 	/** The live comms client. Present → the store runs `runCommsStream` over it
 	 *  for its lifetime and every comms write is a real RPC. Absent → offline. */
 	readonly comms?: CommsClient;
@@ -779,6 +830,29 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			(path) => applyRoute(path),
 		);
 	};
+
+	// The read-only fleet model registry. Cached data wins over a failed refetch so a
+	// transient outage never blanks a loaded registry; memoized so rows map once per fetch.
+	const modelRegistryQuery = options.transport
+		? createConnectQuery(CompassService.method.getModelRegistry, () => ({}), {
+				transport: options.transport,
+				queryClient: options.queryClient,
+			})
+		: undefined;
+	const modelRegistry: Accessor<ModelRegistryState> = modelRegistryQuery
+		? createMemo((): ModelRegistryState => {
+				const data = modelRegistryQuery.data;
+				if (data)
+					return {
+						status: "ready",
+						version: data.version,
+						entries: modelRegistryRows(data.registry?.entries ?? {}),
+					};
+				if (modelRegistryQuery.isError)
+					return { status: "error", message: modelRegistryQuery.error.message };
+				return { status: "pending" };
+			})
+		: () => ({ status: "offline" });
 
 	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the user's
 	// personal queue, read through a query keyed on the tracker handle: a handle change
@@ -1963,5 +2037,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		assignedIssues,
 		trackerConfig,
 		setTrackerConfig,
+		modelRegistry,
 	};
 }
