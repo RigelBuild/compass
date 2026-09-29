@@ -392,5 +392,6 @@ func TestRunStartsSessionsBeforeStaleSweepDeadline(t *testing.T) {
 	cancel()
 }
 
-// The sweep reaches podman only through a type assertion, so pin that it still holds.
+// The sweep reaches container backends only through a type assertion.
 var _ ownedWorkloadLister = (*runtime.PodmanCLI)(nil)
+var _ ownedWorkloadLister = (*runtime.AppleContainerCLI)(nil)

@@ -15,6 +15,8 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -78,9 +80,8 @@ func (a *AppleContainerCLI) Create(ctx context.Context, spec WorkloadSpec) (Work
 // already works.
 func appleCreateArgs(spec WorkloadSpec) []string {
 	// Preallocate: 3 fixed tokens (create, --name+value) + 2 per
-	// cap/mount/env pair + image + command tokens, so the appends below don't
-	// reallocate.
-	args := make([]string, 0, 3+2*(len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env))+1+len(spec.Command))
+	// cap/mount/env/label pair + image + command tokens, so appends don't reallocate.
+	args := make([]string, 0, 3+2*(len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env)+len(spec.Labels))+1+len(spec.Command))
 	args = append(args, "create", "--name", spec.Name)
 	for _, capability := range spec.CapAdd {
 		args = append(args, "--cap-add", capability)
@@ -91,9 +92,46 @@ func appleCreateArgs(spec WorkloadSpec) []string {
 	for _, kv := range sortedEnv(spec.Env) {
 		args = append(args, "--env", kv.key+"="+kv.value)
 	}
+	for _, kv := range sortedEnv(spec.Labels) {
+		args = append(args, "--label", kv.key+"="+kv.value)
+	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Command...)
 	return args
+}
+
+// ListByOwner lists containers with this Runner's label and name prefix in any state.
+func (a *AppleContainerCLI) ListByOwner(ctx context.Context, prefix, runnerID string) ([]WorkloadID, error) {
+	if runnerID == "" {
+		return nil, errors.New("runner id must not be empty")
+	}
+	stdout, err := a.run(ctx, "container list", []string{"list", "--all", "--format", "json"})
+	if err != nil {
+		return nil, err
+	}
+	return filterAppleContainersByOwner(stdout, prefix, runnerID)
+}
+
+type appleContainerListEntry struct {
+	Configuration struct {
+		ID     string            `json:"id"`
+		Labels map[string]string `json:"labels"`
+	} `json:"configuration"`
+}
+
+func filterAppleContainersByOwner(data []byte, prefix, runnerID string) ([]WorkloadID, error) {
+	var entries []appleContainerListEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, fmt.Errorf("decode container list: %w", err)
+	}
+	ids := make([]WorkloadID, 0, len(entries))
+	for _, entry := range entries {
+		id := entry.Configuration.ID
+		if strings.HasPrefix(id, prefix) && entry.Configuration.Labels[RunnerIDLabel] == runnerID {
+			ids = append(ids, WorkloadID(id))
+		}
+	}
+	return ids, nil
 }
 
 // appleMountArg assembles a `host:container[:ro]` volume argument. No :Z
