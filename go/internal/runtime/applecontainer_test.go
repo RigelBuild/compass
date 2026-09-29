@@ -29,7 +29,7 @@ func TestAppleCreateArgsAssemblesCreateWithoutUserns(t *testing.T) {
 		UID:     1000,
 		CapAdd:  []string{"NET_ADMIN"},
 		Mounts:  []Mount{{HostPath: "/tmp/work", ContainerPath: "/work"}, {HostPath: "/tmp/cache", ContainerPath: "/src", ReadOnly: true}},
-		Env:     map[string]string{"HOME": "/home/agent", "COMPASS_WORKDIR": "/work"},
+		Labels:  map[string]string{RunnerIDLabel: "runner-1", "z-last": "z", "a-first": "a"},
 		Command: []string{"sleep", "infinity"},
 	})
 
@@ -38,8 +38,9 @@ func TestAppleCreateArgsAssemblesCreateWithoutUserns(t *testing.T) {
 		"--cap-add", "NET_ADMIN",
 		"--volume", "/tmp/work:/work",
 		"--volume", "/tmp/cache:/src:ro",
-		"--env", "COMPASS_WORKDIR=/work",
-		"--env", "HOME=/home/agent",
+		"--label", "a-first=a",
+		"--label", RunnerIDLabel + "=runner-1",
+		"--label", "z-last=z",
 		"compass-agent:latest", "sleep", "infinity",
 	}
 	if !slices.Equal(args, want) {
@@ -49,6 +50,62 @@ func TestAppleCreateArgsAssemblesCreateWithoutUserns(t *testing.T) {
 		if strings.Contains(arg, "userns") {
 			t.Fatalf("appleCreateArgs = %q, want no userns token (virtiofs translates identity at the boundary)", args)
 		}
+	}
+}
+
+func TestFilterAppleContainersByOwner(t *testing.T) {
+	data := []byte(`[
+		{"id":"outer-id","configuration":{"id":"compass-agent-owned","labels":{"compass.runner-id":"runner-1"}},"status":{}},
+		{"id":"other","configuration":{"id":"compass-agent-other","labels":{"compass.runner-id":"runner-2"}},"status":{}},
+		{"id":"no-label","configuration":{"id":"compass-agent-unlabelled","labels":{}},"status":{}},
+		{"id":"wrong-prefix","configuration":{"id":"compass-other-owned","labels":{"compass.runner-id":"runner-1"}},"status":{}}
+	]`)
+	got, err := filterAppleContainersByOwner(data, "compass-agent-", "runner-1")
+	if err != nil {
+		t.Fatalf("filterAppleContainersByOwner = %v", err)
+	}
+	want := []WorkloadID{"compass-agent-owned"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("filterAppleContainersByOwner = %v, want %v", got, want)
+	}
+}
+
+func TestFilterAppleContainersByOwnerRejectsMalformedJSON(t *testing.T) {
+	if _, err := filterAppleContainersByOwner([]byte(`[{`), "compass-agent-", "runner-1"); err == nil {
+		t.Fatal("filterAppleContainersByOwner malformed JSON = nil, want error")
+	}
+}
+
+func TestAppleListByOwnerRejectsEmptyRunnerIDWithoutRunningContainer(t *testing.T) {
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "container-stub.sh")
+	marker := filepath.Join(dir, "invoked")
+	script := "#!/bin/sh\n: > " + marker + "\n"
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	_, err := NewAppleContainerCLI(AppleContainerConfig{Program: prog}).ListByOwner(t.Context(), "compass-agent-", "")
+	if err == nil {
+		t.Fatal("ListByOwner with empty runner ID = nil, want an error")
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("container stub invocation marker stat error = %v, want not-exist", err)
+	}
+}
+
+func TestAppleListByOwnerUsesJSONListCommand(t *testing.T) {
+	prog := filepath.Join(t.TempDir(), "container-stub.sh")
+	script := "#!/bin/sh\n[ \"$*\" = \"list --all --format json\" ] || exit 42\nprintf '%s\\n' '[{\"configuration\":{\"id\":\"compass-agent-owned\",\"labels\":{\"compass.runner-id\":\"runner-1\"}}}]'\n"
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	got, err := NewAppleContainerCLI(AppleContainerConfig{Program: prog}).ListByOwner(t.Context(), "compass-agent-", "runner-1")
+	if err != nil {
+		t.Fatalf("ListByOwner = %v", err)
+	}
+	want := []WorkloadID{"compass-agent-owned"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ListByOwner = %v, want %v", got, want)
 	}
 }
 
