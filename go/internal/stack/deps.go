@@ -87,9 +87,11 @@ type Deps struct {
 	// launch, not at readiness. Nil on the --nats-external path, where no nats
 	// component starts; the core dereferences it only on the nats-readiness
 	// gate.
-	NatsProber       NatsProber
+	NatsProber NatsProber
+	// GatewayContainer starts the bundled LLM gateway; nil on --gateway-external.
 	GatewayContainer GatewayContainer
-	GatewayProber    GatewayProber
+	// GatewayProber is the gateway readiness gate; nil on --gateway-external.
+	GatewayProber GatewayProber
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 

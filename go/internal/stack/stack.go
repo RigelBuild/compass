@@ -117,6 +117,10 @@ func Up(ctx context.Context, cfg Config, deps Deps) (*Stack, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// Checked here, not in Validate: down and status must work without a gateway image.
+	if cfg.GatewayImage == "" && cfg.ExternalGatewayURL == "" {
+		return nil, errors.New("stack config: gateway image is required; pass --gateway-image or --gateway-external")
+	}
 
 	// Attach-if-live BEFORE taking the lock is a fast path, but the authoritative
 	// probe→spawn decision must be under the lock to close the TOCTOU. We take
@@ -490,6 +494,9 @@ func (s *Stack) startNats(ctx context.Context) error {
 	s.natsMonitorEndpoint = spec.MonitorEndpoint
 	return s.appendEntry(ComponentNats, pgidEntry{Kind: entryContainer, Component: ComponentNats, ContainerName: spec.Name})
 }
+
+// startGateway runs the gateway container and records its v2 container entry.
+// On --gateway-external it is a no-op.
 func (s *Stack) startGateway(ctx context.Context) error {
 	if s.cfg.ExternalGatewayURL != "" {
 		return nil
@@ -509,6 +516,7 @@ func (s *Stack) startGateway(ctx context.Context) error {
 	return s.appendEntry(ComponentGateway, pgidEntry{Kind: entryContainer, Component: ComponentGateway, ContainerName: spec.Name})
 }
 
+// waitGateway polls /healthz until the gateway answers or the budget elapses.
 func (s *Stack) waitGateway(ctx context.Context) error {
 	if s.cfg.ExternalGatewayURL != "" {
 		return nil

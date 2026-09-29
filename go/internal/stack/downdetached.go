@@ -169,7 +169,7 @@ type target struct {
 }
 
 // liveTargets returns the identity-matched live groups in reverse start order
-// (runner → server → nats → collector → postgres). Each recorded group is checked with
+// (runner → server → gateway → nats → collector → postgres). Each recorded group is checked with
 // GroupSignaller.Alive (existence AND start-time identity); a gone or recycled
 // group is omitted — never signaled.
 func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []target {

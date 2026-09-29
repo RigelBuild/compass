@@ -195,7 +195,7 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 			"manifest.sha256) to use as-is, skipping all fetching — the "+
 			"air-gapped path. Honors $COMPASS_GUEST_DIR; the flag wins. Mutually "+
 			"exclusive with --guest-artifact.")
-	fs.StringVar(&f.gatewayImage, "gateway-image", stack.DefaultGatewayImage, "Container image for the bundled LLM gateway. Defaults empty until published; pass --gateway-image or use --gateway-external.")
+	fs.StringVar(&f.gatewayImage, "gateway-image", stack.DefaultGatewayImage, "Container image for the bundled LLM gateway. Required unless --gateway-external is set.")
 	fs.StringVar(&f.gatewayExternal, "gateway-external", "", "Do not start the bundled LLM gateway; use this external gateway URL instead.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,

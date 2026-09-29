@@ -19,6 +19,7 @@ import (
 
 const gatewayHealthTimeout = 5 * time.Second
 
+// GatewayContainer is the podman-backed gateway child: start, teardown by name, and health probe.
 type GatewayContainer struct {
 	cli    containerCLI
 	health healthGetter
@@ -30,10 +31,13 @@ var (
 	_ stack.GatewayProber       = (*GatewayContainer)(nil)
 )
 
+// NewGatewayContainer builds the adapter over the host podman.
 func NewGatewayContainer() (*GatewayContainer, error) {
 	return &GatewayContainer{cli: newPodmanExec(), health: &httpHealthGetter{client: &http.Client{Timeout: gatewayHealthTimeout}}}, nil
 }
 
+// Start ensures the bearer token file, then runs the container detached.
+// It returns at launch; ProbeGateway is the readiness gate.
 func (c *GatewayContainer) Start(ctx context.Context, spec stack.GatewayContainerSpec) (stack.Process, error) {
 	if err := os.MkdirAll(spec.TokenDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating gateway token dir %q: %w", spec.TokenDir, err)
@@ -47,6 +51,7 @@ func (c *GatewayContainer) Start(ctx context.Context, spec stack.GatewayContaine
 	return &gatewayProcess{cli: c.cli, name: spec.Name, stopTimeout: spec.StopTimeout}, nil
 }
 
+// ensureGatewayToken keeps a non-empty token across restarts and mints a 0600 one otherwise.
 func ensureGatewayToken(path string) error {
 	b, err := os.ReadFile(path) //nolint:gosec // G304: path is the spec-built token file under the stack state dir
 	if err == nil && strings.TrimSpace(string(b)) != "" {
@@ -65,15 +70,21 @@ func ensureGatewayToken(path string) error {
 	return os.Chmod(path, 0o600)
 }
 
+// Exists reports presence; an engine error counts as present so teardown still runs.
 func (c *GatewayContainer) Exists(name string) bool {
 	present, err := c.cli.exists(context.Background(), name)
 	return err != nil || present
 }
+
+// Stop is the ContainerController graceful stop (`podman stop -t`).
 func (c *GatewayContainer) Stop(name string, timeout time.Duration) error {
 	return c.cli.stop(context.Background(), name, timeout)
 }
+
+// Remove is the ContainerController hard kill (`podman rm -f`).
 func (c *GatewayContainer) Remove(name string) error { return c.cli.remove(context.Background(), name) }
 
+// ProbeGateway returns nil once GET /healthz answers 200.
 func (c *GatewayContainer) ProbeGateway(ctx context.Context, endpoint string) error {
 	url := "http://" + endpoint + "/healthz"
 	code, err := c.health.get(ctx, url)
@@ -101,6 +112,7 @@ func gatewayRunArgs(spec stack.GatewayContainerSpec) []string {
 	return args
 }
 
+// gatewayProcess is the in-process handle; the container has no --rm, so SignalTerm also removes it.
 type gatewayProcess struct {
 	cli         containerCLI
 	name        string

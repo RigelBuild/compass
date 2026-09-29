@@ -49,6 +49,17 @@ func TestGatewayContainerSpecRejectsMissingStateDir(t *testing.T) {
 	}
 }
 
+func TestUpRejectsMissingGatewayImageBeforeSpawn(t *testing.T) {
+	cfg, h := newHarness(t)
+	cfg.GatewayImage = ""
+	if _, err := Up(context.Background(), cfg, h.deps); err == nil || !strings.Contains(err.Error(), "--gateway-image") {
+		t.Fatalf("Up error = %v", err)
+	}
+	if got := filterEvents(h.rec.snapshot()); len(got) != 0 {
+		t.Fatalf("started children before rejecting config: %v", got)
+	}
+}
+
 func TestGatewayContainerSpecRejectsMissingImage(t *testing.T) {
 	_, err := gatewayContainerSpec(Config{StateDir: "/state"})
 	if err == nil || !strings.Contains(err.Error(), "--gateway-image") || !strings.Contains(err.Error(), "--gateway-external") {
