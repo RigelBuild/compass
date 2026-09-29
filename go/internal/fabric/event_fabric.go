@@ -166,7 +166,7 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	if err != nil {
 		return nil, fmt.Errorf("fabric: consuming %q: %w", subject, err)
 	}
-	advisory, err := f.parkOnMaxDeliveries(ctx, stream, subject)
+	advisory, err := f.parkOnMaxDeliveries(ctx, subject)
 	if err != nil {
 		cc.Stop()
 		return nil, err
@@ -357,7 +357,13 @@ type maxDeliveriesAdvisory struct {
 // parkOnMaxDeliveries parks what the server drops at MaxDeliver. A callback that
 // returns nil but outlives AckWait every time is never Nak'd, so retryOrPark never
 // sees it; only this advisory does. A Term'd park emits no such advisory.
-func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, stream jetstream.Stream, subject string) (*nats.Subscription, error) {
+func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats.Subscription, error) {
+	// A private handle: the shared one from ensureStream has its cached info
+	// rewritten by Info(), which races this callback's GetMsg.
+	stream, err := f.js.Stream(ctx, f.cfg.streamName())
+	if err != nil {
+		return nil, fmt.Errorf("fabric: opening stream for the max-deliveries advisory: %w", err)
+	}
 	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES." + f.cfg.streamName() + "." + durableName(subject)
 	// Queue group: every instance on this consumer hears the advisory; one parks it.
 	sub, err := f.nc.QueueSubscribe(advisorySubject, durableName(subject), func(m *nats.Msg) {
