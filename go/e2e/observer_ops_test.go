@@ -49,9 +49,9 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	ownerID, err := f.CreateUser(ctx, "t1-observer-owner", "T1 Observer Owner")
 	if err != nil {
@@ -155,9 +155,9 @@ func TestAsObserverUnknownHandleIsNotFound(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + AsObserver
+	ctx := context.Background() // test root, threaded into AsObserver
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	compass, comms, err := f.AsObserver(ctx, "t1-no-such-account")
 	if err == nil {

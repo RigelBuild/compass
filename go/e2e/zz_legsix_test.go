@@ -1,9 +1,13 @@
 //go:build podman
 
+// The zz_ prefix sorts this file last: go test runs tests in file-name order, and
+// this leg's stack restart must follow every shared-fixture leg.
+
 package e2e
 
 import (
 	"context"
+	"flag"
 	"os/exec"
 	"testing"
 
@@ -47,11 +51,15 @@ import (
 // probes are dependency-free local shellouts (the podmanUsable convention,
 // fixture.go:477), not ctx-bounded RPC waits. No sleeps, no polling, no retries.
 func TestLegSixTeardownIdempotence(t *testing.T) {
+	if shuffle := flag.Lookup("test.shuffle"); shuffle != nil && shuffle.Value.String() != "off" {
+		t.Skipf("requires final file-ordered execution; -test.shuffle=%s", shuffle.Value.String())
+	}
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
+	closeSharedForLegSix()
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
 	// The persistent substrate: one root/stateDir/ports shared by both Ups, so
 	// run2's Up re-attaches the postgres cluster run1 initialized (the DB data

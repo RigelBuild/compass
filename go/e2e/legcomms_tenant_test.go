@@ -38,9 +38,7 @@ import (
 
 // The two tenants, their agents, and the two channels. Handles obey the account
 // handle grammar (store/handle.go:15 `^[a-z0-9][a-z0-9._-]*$`) and are t4-scoped
-// so they stay mutually distinct WITHIN this leg and name their subject in a
-// failure message. Cross-leg isolation is not theirs to provide: each test gets
-// its own NewFixture, hence its own stack, cluster and state dir.
+// so they stay distinct across tests sharing the same persistent database.
 const (
 	t4Owner1Handle = "t4-owner-1"
 	t4Owner2Handle = "t4-owner-2"
@@ -80,9 +78,9 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	// ---- setup: two owner tenants ----
 
