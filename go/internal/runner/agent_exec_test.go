@@ -947,6 +947,18 @@ func TestSelfExitWithInheritedPipeLogsNoDrainFault(t *testing.T) {
 	case <-time.After(2 * drainGrace):
 		t.Fatal("reaper did not finish within the bounded drain join")
 	}
+	// The reaper does not join the drains after Wait, so join them here: any
+	// drain-fault warning is then already captured when the scan runs.
+	drained := make(chan struct{})
+	go func() {
+		stream.drains.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-timeAfter():
+		t.Fatal("drains did not end after the reap")
+	}
 	for {
 		select {
 		case l := <-logs.lines:

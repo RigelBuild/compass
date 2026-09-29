@@ -496,7 +496,7 @@ func TestControlRedeliversPastAckCursor(t *testing.T) {
 	}
 
 	// Contiguously applied through op2; op4 applied out of order above it.
-	p.AckControl(testSession, seqs[1], []uint64{seqs[3]})
+	p.AckControl(testSession, p.Epoch(testSession), seqs[1], []uint64{seqs[3]})
 	stopFirst()
 
 	second := newControlStream()
@@ -528,7 +528,7 @@ func TestControlReplayBarrierHoldsLiveOps(t *testing.T) {
 	}
 	stream.none(t, "live op must be held behind the replay barrier")
 
-	p.ReleaseReplayBarrier(testSession)
+	p.ReleaseReplayBarrier(testSession, p.Epoch(testSession))
 
 	if got := stream.recv(t); got.GetPrompt().GetInput() != "live-during-replay" {
 		t.Errorf("released op = %q, want %q", got.GetPrompt().GetInput(), "live-during-replay")
@@ -556,7 +556,7 @@ func TestControlAckBeyondSentDoesNotWedgeSession(t *testing.T) {
 	stream.recv(t) // seq 1, the only op ever issued
 
 	// The agent acks a seq that was never assigned.
-	p.AckControl(testSession, 100, nil)
+	p.AckControl(testSession, p.Epoch(testSession), 100, nil)
 
 	if err := p.Send(testSession, prompt("after-bogus-ack")); err != nil {
 		t.Fatalf("Send after out-of-range ack: %v", err)
@@ -804,7 +804,7 @@ func TestControlReplayCompletePassesBarrier(t *testing.T) {
 
 	// The live op stays held until the ack releases it, and then arrives —
 	// asserted positively (ordering), not by a settle window.
-	p.ReleaseReplayBarrier(testSession)
+	p.ReleaseReplayBarrier(testSession, p.Epoch(testSession))
 	if in := stream.recv(t).GetPrompt().GetInput(); in != "live" {
 		t.Fatalf("after release got %q, want the held live op", in)
 	}
@@ -1009,7 +1009,7 @@ func TestControlRetentionCapRejectsSend(t *testing.T) {
 	}
 
 	// Acking frees room, so the cap is backpressure and not a permanent wedge.
-	p.AckControl(testSession, uint64(maxRetainedOps), nil)
+	p.AckControl(testSession, p.Epoch(testSession), uint64(maxRetainedOps), nil)
 	if err := p.Send(testSession, promptOp("after-ack")); err != nil {
 		t.Fatalf("Send after the ack freed room: %v", err)
 	}
@@ -1088,7 +1088,7 @@ func TestControlReplayCompleteSurvivesRetentionCap(t *testing.T) {
 
 	// So the ack releases the barrier and the retained live ops finally drain,
 	// in seq order, with nothing lost and nothing duplicated.
-	p.ReleaseReplayBarrier(testSession)
+	p.ReleaseReplayBarrier(testSession, p.Epoch(testSession))
 	for i := range maxRetainedOps {
 		op := stream.recv(t)
 		if op.GetPrompt() == nil {
@@ -1472,8 +1472,8 @@ func TestControlAckJumpDropsStrandedSeqs(t *testing.T) {
 	// received — the untrusted case AckControl documents. That prunes them, so
 	// the gap at 1 can never be filled by a delivery and the watermark can
 	// only advance by the jump, stranding the recorded 4 beneath it.
-	p.AckControl(testSession, 4, nil)
-	p.ReleaseReplayBarrier(testSession)
+	p.AckControl(testSession, p.Epoch(testSession), 4, nil)
+	p.ReleaseReplayBarrier(testSession, p.Epoch(testSession))
 
 	// Drive one more op through. Its delivery gates the drain: the loop ran
 	// its jump and sent before recv returns.
@@ -1559,7 +1559,7 @@ func TestControlRestartQueuesReplayCompleteThenUnackedOps(t *testing.T) {
 	}
 	old.recv(t)
 	old.recv(t)
-	p.AckControl(testSession, 1, nil)
+	p.AckControl(testSession, p.Epoch(testSession), 1, nil)
 	stopOld()
 
 	barrier := &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_ReplayComplete{ReplayComplete: &compassv1internal.ReplayComplete{}}}
@@ -1583,4 +1583,29 @@ func TestControlRestartQueuesReplayCompleteThenUnackedOps(t *testing.T) {
 		}
 	}
 	fresh.none(t, "the acked op must not be redelivered")
+}
+
+// An ack the replaced process sent before Restart, processed after it, names the
+// old numbering. It must not prune the renumbered ops, or the new process never
+// receives replay_complete and refuses every later deliver.
+func TestControlRestartFencesReplacedProcessAcks(t *testing.T) {
+	p := newTestProducer()
+	oldEpoch := p.Epoch(testSession)
+	for _, text := range []string{"a", "b", "c"} {
+		if err := p.Send(testSession, prompt(text)); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+	}
+	barrier := &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_ReplayComplete{ReplayComplete: &compassv1internal.ReplayComplete{}}}
+	if err := p.Restart(testSession, barrier); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	p.AckControl(testSession, oldEpoch, 3, nil)
+
+	fresh := newControlStream()
+	stop := p.subscribe(t, fresh)
+	defer stop()
+	if got := fresh.recv(t); got.GetReplayComplete() == nil || got.GetControlSeq() != 1 {
+		t.Fatalf("first op = %v, want replay_complete at seq 1 despite the stale ack", got)
+	}
 }
