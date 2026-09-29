@@ -271,6 +271,15 @@ func (l *SocketListener) RetireSession(sessionID string) {
 	l.control.Retire(sessionID)
 }
 
+// RestartSession hands the session's control state to a relaunched agent,
+// with op queued first and every unacked op after it (controlProducer.Restart).
+func (l *SocketListener) RestartSession(sessionID string, op *compassv1internal.AgentControl) error {
+	if l.control == nil {
+		return errors.New("gateway: socket listener has no control producer wired")
+	}
+	return l.control.Restart(sessionID, op)
+}
+
 // SendControl writes a server-relayed control op to the bound session's control
 // producer, the seam the dispatcher's Deliver arm reaches an agent through. A
 // listener whose producer was never wired cannot deliver, so it returns an

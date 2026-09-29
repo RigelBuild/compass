@@ -468,7 +468,18 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		h.retireOnExit(ctx, sessionID, name, stream)
 	}()
 
-	h.liftReplayBarrier(listener, sessionID, name)
+	// Lift the agent's replay barrier so the first idle-deliver is dispatched rather
+	// than refused: the barrier defaults closed and only replay_complete lifts it.
+	// Sent on EVERY served start (a file-based resume loads its transcript before
+	// subscribing); sent after the h.mu release, the per-container lock rules out races.
+	if served {
+		if err := listener.SendControl(sessionID, replayCompleteOp()); err != nil {
+			// A served listener always has a wired producer (gateway.Serve), so this
+			// is an unreachable wiring fault in production, not a reason to fail an
+			// already-recorded Start. Log and continue.
+			h.log.Error("sending replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
+		}
+	}
 	return sessionID, nil
 }
 
@@ -750,9 +761,6 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	h.mu.Lock()
 	targets := make([]target, 0, len(h.sessions))
 	for _, s := range h.sessions {
-		if s.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-			continue
-		}
 		targets = append(targets, target{
 			sessionID:     s.sessionID,
 			containerName: s.containerName,
@@ -775,24 +783,12 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	return nil
 }
 
-// liftReplayBarrier sends replay_complete so the first idle-deliver is dispatched
-// rather than refused: the barrier defaults closed and only replay_complete lifts
-// it. Sent on every served Start and Reload (a file-based resume loads its
-// transcript before subscribing); callers hold the per-container lock.
-func (h *agentHost) liftReplayBarrier(listener *gateway.SocketListener, sessionID, containerName string) {
-	if listener == nil {
-		return
-	}
-	op := &compassv1internal.AgentControl{
+// replayCompleteOp is the op that lifts a freshly started agent's replay barrier.
+func replayCompleteOp() *compassv1internal.AgentControl {
+	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_ReplayComplete{
 			ReplayComplete: &compassv1internal.ReplayComplete{},
 		},
-	}
-	if err := listener.SendControl(sessionID, op); err != nil {
-		// A served listener always has a wired producer (gateway.Serve), so this
-		// is an unreachable wiring fault in production, not a reason to fail an
-		// already-recorded Start. Log and continue.
-		h.log.Error("sending replay_complete", slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
 	}
 }
 
@@ -915,13 +911,6 @@ func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containe
 	defer unlock()
 
 	// A vsock-gateway backend serves config through no mount this refresh can touch:
-	h.mu.Lock()
-	s := h.sessions[sessionID]
-	if s == nil || s.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		h.mu.Unlock()
-		return nil
-	}
-	h.mu.Unlock()
 	// Provision skipped the config materialize+mount (§(f)), so h.configVersions was
 	// never seeded and every pass would churn the session mid-turn delivering nothing.
 	// Skip until the config-delivery slice gives the refresh something real (§(f), OQ-3).
@@ -946,6 +935,18 @@ func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containe
 		// already reads this config. Do not Reload — it would interrupt the
 		// agent mid-turn for no config change. The tracked version already
 		// matches, so there is nothing to record.
+		return nil
+	}
+	// An ERRORED session is recovered only by an explicit Reload or resume Start.
+	// Its config is still brought current, so that recovery boots the new bundle.
+	h.mu.Lock()
+	s := h.sessions[sessionID]
+	errored := s != nil && s.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED
+	h.mu.Unlock()
+	if errored {
+		h.mu.Lock()
+		h.configVersions[containerName] = mount.Version
+		h.mu.Unlock()
 		return nil
 	}
 	if err := h.reloadLocked(ctx, sessionID); err != nil {
@@ -1060,15 +1061,18 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 			return err
 		}
 	}
+	// Hand the control state to the new process before it launches: replay_complete
+	// becomes seq 1 and unacked ops follow, so no concurrent Deliver lands ahead of
+	// the barrier. An ERRORED session was retired at exit, so Bind recreates it.
 	h.mu.Lock()
 	listener, served := h.sockets[s.containerName]
-	if served {
-		if stream != nil {
-			listener.RetireSession(sessionID)
-		}
-		listener.BindSession(sessionID)
-	}
 	h.mu.Unlock()
+	if served {
+		listener.BindSession(sessionID)
+		if err := listener.RestartSession(sessionID, replayCompleteOp()); err != nil {
+			return err
+		}
+	}
 	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
 	if err != nil {
 		h.markErrored(ctx, sessionID, s.containerName, nil)
@@ -1083,7 +1087,6 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 		defer h.retireWG.Done()
 		h.retireOnExit(ctx, sessionID, s.containerName, stream)
 	}()
-	h.liftReplayBarrier(listener, sessionID, s.containerName)
 	return nil
 }
 

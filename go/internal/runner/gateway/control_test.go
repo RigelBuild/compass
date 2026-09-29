@@ -1543,3 +1543,44 @@ func TestControlServeRefusesRetiredSessionInResolveWindow(t *testing.T) {
 	}
 	stream.none(t, "a refused subscription must receive nothing")
 }
+
+// Restart hands a relaunched agent replay_complete first, then every op the old
+// process never acked, renumbered from 1 so the new process's cursor lines up.
+// An op sent after Restart follows them rather than jumping the barrier.
+func TestControlRestartQueuesReplayCompleteThenUnackedOps(t *testing.T) {
+	p := newTestProducer()
+	old := newControlStream()
+	stopOld := p.subscribe(t, old)
+	if err := p.Send(testSession, prompt("acked")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := p.Send(testSession, prompt("unacked")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	old.recv(t)
+	old.recv(t)
+	p.AckControl(testSession, 1, nil)
+	stopOld()
+
+	barrier := &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_ReplayComplete{ReplayComplete: &compassv1internal.ReplayComplete{}}}
+	if err := p.Restart(testSession, barrier); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if err := p.Send(testSession, prompt("after")); err != nil {
+		t.Fatalf("Send after Restart: %v", err)
+	}
+
+	fresh := newControlStream()
+	stop := p.subscribe(t, fresh)
+	defer stop()
+	if got := fresh.recv(t); got.GetReplayComplete() == nil || got.GetControlSeq() != 1 {
+		t.Fatalf("first op = %v, want replay_complete at seq 1", got)
+	}
+	for i, want := range []string{"unacked", "after"} {
+		got := fresh.recv(t)
+		if got.GetPrompt().GetInput() != want || got.GetControlSeq() != uint64(i+2) {
+			t.Fatalf("op %d = %q seq %d, want %q seq %d", i+2, got.GetPrompt().GetInput(), got.GetControlSeq(), want, i+2)
+		}
+	}
+	fresh.none(t, "the acked op must not be redelivered")
+}
