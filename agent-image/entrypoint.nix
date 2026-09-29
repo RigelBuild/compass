@@ -171,25 +171,11 @@ let
     cp -R ${nodeModules}/node_modules/. node_modules/
     cp -R ${nodeModules}/$pkgDir/node_modules/. $pkgDir/node_modules/
 
-    mkdir -p $out
-    # `omp-legacy-pi-modules` is an OPTIONAL dynamic import inside the SDK's
-    # legacy-compat shim (pi-coding-agent
-    # src/extensibility/plugins/legacy-pi-compat.ts:751), guarded at runtime and
-    # absent from our dependency closure. Left external so the bundler does not
-    # fail resolving a module the code already tolerates missing.
-    #
-    # `--compile` emits a STANDALONE executable (bun runtime + the whole
-    # resolved graph baked in), not an interpreted `cli.js`. This is what lets
-    # the runtime native-addon loader find its `.node` beside the binary: in
-    # compiled mode the loader's candidate list includes execDir =
-    # `dirname(process.execPath)` (pi-natives native/loader-state.js), so a
-    # `.node` copied next to the binary resolves cold, with no node_modules,
-    # no network, and from any cwd.
-    bun build $pkgDir/src/cli.ts \
-      --compile \
-      --external omp-legacy-pi-modules \
-      --outfile=$out/compass-agent
-
+    # scripts/compile.ts bakes the SDK's `omp-legacy-pi-modules` registry into the
+    # binary through Compass's local copy of the SDK build plugin, resolving roots
+    # from this reconstructed workspace's installed tree. The binary uses it to load
+    # legacy Pi extensions, so it must not be left external.
+    bun $pkgDir/scripts/compile.ts $out/compass-agent
     # The prebuilt addon ships in the per-system optionalDependency
     # `@oh-my-pi/pi-natives-linux-<arch>` (pinned in bun.lock, so in the FOD tree),
     # hoisted into `.bun/node_modules/@oh-my-pi/`. x64 carries two AVX2 variants

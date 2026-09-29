@@ -228,6 +228,8 @@ the `agent-image/toolchain.nix` assert) and a realise-time break (an
 `agent-image/entrypoint.nix` FOD-hash invalidation or a broken bundle), the
 full class.
 
+The Compass agent's compile script derives the SDK's lazy legacy-module registry from installed package exports and supplies it through a local Bun plugin. If the SDK adds a supported root option, Compass can remove this local plugin and use that option instead.
+
 The build is heavy — the image closure is the dominant CI cost, the reason
 the gate's timeout is 90m — but it is not paid on every PR. `moon ci` runs a
 PR's *affected* projects only, and the task's `inputs` scope it to the image
