@@ -138,14 +138,18 @@ func TestCommsListMessagesChannelResolution(t *testing.T) {
 	}
 }
 
-// The shared stub's positional script (registered by shared_fixture_test.go)
-// absorbs the session-start sweep turn, which draws an unmarked request before
-// either trigger; the marker route carries both reads.
+// The marker route carries both reads. The session-start sweep delivers the
+// home seed first as its own turn; routing it by the seed body keeps it off the
+// shared positional slot. Registered after listMessagesMarker, so the trigger
+// turns, whose history also holds the seed, still match the read route first.
 func init() {
-	registerSharedFixtureOption(WithCannedMarkerScript(listMessagesMarker,
-		CannedToolCall("comms_list_messages", fmt.Sprintf(`{"channel":%q}`, listMessagesChannel)),
-		CannedText(listMessagesSettleExplicit),
-		CannedToolCall("comms_list_messages", `{}`),
-		CannedText(listMessagesSettleOmitted),
-	))
+	registerSharedFixtureOption(
+		WithCannedMarkerScript(listMessagesMarker,
+			CannedToolCall("comms_list_messages", fmt.Sprintf(`{"channel":%q}`, listMessagesChannel)),
+			CannedText(listMessagesSettleExplicit),
+			CannedToolCall("comms_list_messages", `{}`),
+			CannedText(listMessagesSettleOmitted),
+		),
+		WithCannedMarkerReply(listMessagesHomeBody, "list messages seed settled"),
+	)
 }
