@@ -238,13 +238,15 @@ type fakeControlRouter struct {
 	releaseCalls []string
 }
 
-func (f *fakeControlRouter) AckControl(sessionID string, ackedSeq uint64, appliedAbove []uint64) {
+func (f *fakeControlRouter) AckControl(sessionID string, _, ackedSeq uint64, appliedAbove []uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ackCalls = append(f.ackCalls, controlAckCall{sessionID: sessionID, ackedSeq: ackedSeq, appliedAbove: appliedAbove})
 }
 
-func (f *fakeControlRouter) ReleaseReplayBarrier(sessionID string) {
+func (f *fakeControlRouter) Epoch(string) uint64 { return 0 }
+
+func (f *fakeControlRouter) ReleaseReplayBarrier(sessionID string, _ uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.releaseCalls = append(f.releaseCalls, sessionID)
