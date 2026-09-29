@@ -110,10 +110,6 @@ func Up(ctx context.Context, cfg Config, deps Deps) (*Stack, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	// Checked here, not in Validate: down and status must work without a gateway image.
-	if cfg.GatewayImage == "" && cfg.ExternalGatewayURL == "" {
-		return nil, errors.New("stack config: gateway image is required; pass --gateway-image or --gateway-external")
-	}
 
 	// Attach-if-live BEFORE taking the lock is a fast path, but the authoritative
 	// probe→spawn decision must be under the lock to close the TOCTOU. We take
@@ -163,6 +159,11 @@ func upLocked(ctx context.Context, cfg Config, deps Deps, lock *stackLock) (*Sta
 			return nil, fmt.Errorf("release lock after attach: %w", err)
 		}
 		return &Stack{cfg: cfg, deps: deps, attached: true}, nil
+	}
+
+	// Checked after the attach probe, not in Validate: status, attach, and down need no image.
+	if cfg.GatewayImage == "" && cfg.ExternalGatewayURL == "" {
+		return nil, errors.New("stack config: gateway image is required; pass --gateway-image or --gateway-external")
 	}
 
 	// Not live — spawn the chain. Accumulate started children so a mid-sequence
