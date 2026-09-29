@@ -36,10 +36,11 @@ func (c Config) microVM() bool {
 // --microvm-* path, so these names are the contract between what this file
 // writes and what the runner reads.
 const (
-	guestKernelFile   = "kernel"
-	guestRootfsFile   = "rootfs.erofs"
-	guestInitrdFile   = "initrd"
-	guestManifestFile = "manifest.sha256"
+	guestKernelFile      = "kernel"
+	guestRootfsFile      = "rootfs.erofs"
+	guestInitrdFile      = "initrd"
+	guestManifestFile    = "manifest.sha256"
+	guestRawManifestFile = "manifest.oci.json"
 	// guestImageDirName is the state-dir subdirectory the content-addressed
 	// per-digest directories live under.
 	guestImageDirName = "guest-image"
@@ -276,15 +277,26 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 	final := filepath.Join(root, strings.TrimPrefix(reg.digest, guestDigestPrefix))
 	paths := guestPathsIn(final)
 
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return GuestPaths{}, fmt.Errorf("materialise guest image %s: create %q: %w", reg.digest, root, err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil { //nolint:gosec // G302: directory permissions intentionally 0700
+		return GuestPaths{}, fmt.Errorf("materialise guest image %s: protect cache root %q: %w", reg.digest, root, err)
+	}
+
 	switch _, err := os.Stat(final); {
 	case err == nil:
-		// Mere existence is never trust: a truncated or tampered asset must
-		// fail closed rather than boot, and must not be overwritten either —
-		// the operator decides what to do with a corrupt content-addressed dir.
-		if err := verifyGuestDir(paths); err != nil {
-			return GuestPaths{}, fmt.Errorf("materialise guest image %s: existing %q failed verification: %w", reg.digest, final, err)
+		manifestBytes, readErr := os.ReadFile(filepath.Join(final, guestRawManifestFile)) //nolint:gosec // G304: fixed basename inside the content-addressed cache
+		if readErr == nil {
+			sum := sha256.Sum256(manifestBytes)
+			var manifest guestManifest
+			if guestDigestPrefix+hex.EncodeToString(sum[:]) == reg.digest && json.Unmarshal(manifestBytes, &manifest) == nil && validateGuestManifest(manifest) == nil && verifyGuestAgainstManifest(paths, manifest) == nil {
+				return paths, nil
+			}
 		}
-		return paths, nil
+		if err := os.RemoveAll(final); err != nil {
+			return GuestPaths{}, fmt.Errorf("materialise guest image %s: remove untrusted cache %q: %w", reg.digest, final, err)
+		}
 	case !errors.Is(err, os.ErrNotExist):
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: stat %q: %w", reg.digest, final, err)
 	}
@@ -293,12 +305,9 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: guestRequestTimeout}
 
-	manifest, err := fetchGuestManifest(ctx, client, reg)
+	manifest, rawManifest, err := fetchGuestManifest(ctx, client, reg)
 	if err != nil {
-		return GuestPaths{}, err
-	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return GuestPaths{}, fmt.Errorf("materialise guest image %s: create %q: %w", reg.digest, root, err)
+		return GuestPaths{}, fmt.Errorf("materialise guest image %s from cache %q: %w", reg.digest, final, err)
 	}
 	// The assets are staged in a SIBLING of the final directory so the publish
 	// step is one rename: a failed fetch leaves no partial final directory, and
@@ -321,6 +330,12 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 	}
 	if err := writeGuestManifestFile(staging, manifest.Layers); err != nil {
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: %w", reg.digest, err)
+	}
+	if err := verifyGuestAgainstManifest(guestPathsIn(staging), manifest); err != nil {
+		return GuestPaths{}, fmt.Errorf("materialise guest image %s: staged files failed verification: %w", reg.digest, err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, guestRawManifestFile), rawManifest, 0o600); err != nil {
+		return GuestPaths{}, fmt.Errorf("materialise guest image %s: write authenticated manifest: %w", reg.digest, err)
 	}
 	if err := os.Rename(staging, final); err != nil {
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: publish %q: %w", reg.digest, final, err)
@@ -361,7 +376,29 @@ type guestManifest struct {
 // from the bytes received. The digest IS the identity, so a registry or proxy
 // that answered with anything else fails closed here rather than having its
 // content written under the pinned digest's directory name.
-func fetchGuestManifest(ctx context.Context, client *http.Client, reg guestRegistry) (guestManifest, error) {
+func verifyGuestAgainstManifest(paths GuestPaths, manifest guestManifest) error {
+	assetPaths := paths.assets()
+	for i := range guestAssets {
+		path := assetPaths[i]
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("stat guest asset %q: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() != manifest.Layers[i].Size {
+			return fmt.Errorf("guest asset %q has mode %s and size %d, want regular file of size %d", path, info.Mode(), info.Size(), manifest.Layers[i].Size)
+		}
+		got, err := hashGuestFile(path)
+		if err != nil {
+			return err
+		}
+		if guestDigestPrefix+got != manifest.Layers[i].Digest {
+			return fmt.Errorf("guest asset %q hashes to %s, want %s", path, guestDigestPrefix+got, manifest.Layers[i].Digest)
+		}
+	}
+	return nil
+}
+
+func fetchGuestManifest(ctx context.Context, client *http.Client, reg guestRegistry) (guestManifest, []byte, error) {
 	url := reg.baseURL + "/v2/" + reg.repository + "/manifests/" + reg.digest
 	var raw []byte
 	err := doGuestGet(ctx, client, url, ociManifestMediaType, func(body io.Reader) error {
@@ -376,20 +413,20 @@ func fetchGuestManifest(ctx context.Context, client *http.Client, reg guestRegis
 		return nil
 	})
 	if err != nil {
-		return guestManifest{}, fmt.Errorf("fetch guest manifest %s: %w", reg.digest, err)
+		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: %w", reg.digest, err)
 	}
 	sum := sha256.Sum256(raw)
 	if got := guestDigestPrefix + hex.EncodeToString(sum[:]); got != reg.digest {
-		return guestManifest{}, fmt.Errorf("fetch guest manifest %s: registry answered manifest %s", reg.digest, got)
+		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: registry answered manifest %s", reg.digest, got)
 	}
 	var m guestManifest
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return guestManifest{}, fmt.Errorf("fetch guest manifest %s: parse: %w", reg.digest, err)
+		return guestManifest{}, nil, fmt.Errorf("fetch guest manifest %s: parse: %w", reg.digest, err)
 	}
 	if err := validateGuestManifest(m); err != nil {
-		return guestManifest{}, fmt.Errorf("guest manifest %s is not a compass guest artifact: %w", reg.digest, err)
+		return guestManifest{}, nil, fmt.Errorf("guest manifest %s is not a compass guest artifact: %w", reg.digest, err)
 	}
-	return m, nil
+	return m, raw, nil
 }
 
 // validateGuestManifest enforces the published artifact shape: a v2 manifest
@@ -621,35 +658,6 @@ func waitBackoff(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-// verifyGuestDir re-checks a materialised directory against the manifest it
-// shipped with: the manifest must name exactly the three assets, and each asset
-// must be a regular file hashing to its recorded digest. A hash match pins the
-// byte count too, so this subsumes a size check.
-func verifyGuestDir(paths GuestPaths) error {
-	recorded, err := readGuestManifestFile(paths.Manifest)
-	if err != nil {
-		return err
-	}
-	if len(recorded) != len(guestAssets) {
-		return fmt.Errorf("manifest %q records %d assets, want exactly %d", paths.Manifest, len(recorded), len(guestAssets))
-	}
-	assetPaths := paths.assets()
-	for i, asset := range guestAssets {
-		want, ok := recorded[asset.fileName]
-		if !ok {
-			return fmt.Errorf("manifest %q records no %s entry", paths.Manifest, asset.fileName)
-		}
-		got, err := hashGuestFile(assetPaths[i])
-		if err != nil {
-			return err
-		}
-		if got != want {
-			return fmt.Errorf("%s hashes to %s, want the recorded %s", assetPaths[i], got, want)
-		}
-	}
-	return nil
 }
 
 // readGuestManifestFile parses a materialised manifest.sha256 into a

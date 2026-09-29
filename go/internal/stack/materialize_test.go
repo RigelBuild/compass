@@ -37,8 +37,9 @@ type fakeRegistry struct {
 	corrupt  map[string]bool
 	truncate map[string]bool
 
-	mu       sync.Mutex
-	requests []string
+	observeBlob func()
+	mu          sync.Mutex
+	requests    []string
 }
 
 // guestBlobBytes is the per-asset layer content the stub serves. Small and
@@ -108,6 +109,9 @@ func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", ociManifestMediaType)
 		_, _ = w.Write(r.manifest) // test stub; a short write surfaces as the client's own error
 	case strings.HasPrefix(req.URL.Path, prefix+"blobs/"):
+		if r.observeBlob != nil {
+			r.observeBlob()
+		}
 		d := strings.TrimPrefix(req.URL.Path, prefix+"blobs/")
 		body, ok := r.blobs[d]
 		if !ok {
@@ -290,6 +294,111 @@ func TestMaterializeGuestSecondCallIsVerifiedNoOp(t *testing.T) {
 	}
 }
 
+func TestMaterializeGuestStagingDirectoryIsPrivate(t *testing.T) {
+	reg := newFakeRegistry(t, nil)
+	state := t.TempDir()
+	root := filepath.Join(state, guestImageDirName)
+	observed := false
+	reg.observeBlob = func() {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Errorf("read staging parent: %v", err)
+			return
+		}
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name(), ".staging-") {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(root, entry.Name()))
+			if err != nil {
+				t.Errorf("stat staging directory: %v", err)
+				return
+			}
+			observed = true
+			if got := info.Mode().Perm(); got != 0o700 {
+				t.Errorf("staging mode = %04o, want 0700", got)
+			}
+		}
+	}
+	if _, err := materializeGuestArtifact(t.Context(), reg.registry(), state); err != nil {
+		t.Fatal(err)
+	}
+	if !observed {
+		t.Fatal("no staging directory observed during blob fetch")
+	}
+}
+
+func TestMaterializeGuestFailedStageLeavesNoFinalDirectory(t *testing.T) {
+	reg := newFakeRegistry(t, nil)
+	for digest := range reg.blobs {
+		reg.corrupt[digest] = true
+		break
+	}
+	state := t.TempDir()
+	if _, err := materializeGuestArtifact(t.Context(), reg.registry(), state); err == nil {
+		t.Fatal("materializeGuestArtifact succeeded with a corrupt blob")
+	}
+	assertNoMaterializedDir(t, state, reg.digest)
+}
+
+func TestMaterializeGuestAuthenticatedManifestCache(t *testing.T) {
+	t.Run("tampered manifest is rejected and re-fetched", func(t *testing.T) {
+		reg := newFakeRegistry(t, nil)
+		state := t.TempDir()
+		paths, err := materializeGuestArtifact(context.Background(), reg.registry(), state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := reg.requestCount()
+		if err := os.WriteFile(filepath.Join(filepath.Dir(paths.Kernel), guestRawManifestFile), []byte("tampered"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := materializeGuestArtifact(context.Background(), reg.registry(), state); err != nil {
+			t.Fatal(err)
+		}
+		if reg.requestCount() <= before {
+			t.Fatal("tampered manifest cache was reused")
+		}
+	})
+	t.Run("forged sidecars do not authenticate replaced assets", func(t *testing.T) {
+		reg := newFakeRegistry(t, nil)
+		state := t.TempDir()
+		paths, err := materializeGuestArtifact(context.Background(), reg.registry(), state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := reg.requestCount()
+		if err := os.WriteFile(paths.Rootfs, []byte("forged"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(paths.Manifest, []byte(strings.Repeat("0", 64)+"  rootfs.erofs\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := materializeGuestArtifact(context.Background(), reg.registry(), state); err != nil {
+			t.Fatal(err)
+		}
+		if reg.requestCount() <= before {
+			t.Fatal("forged sidecars authenticated replaced asset")
+		}
+	})
+	t.Run("missing manifest and unreachable registry fails closed", func(t *testing.T) {
+		reg := newFakeRegistry(t, nil)
+		state := t.TempDir()
+		paths, err := materializeGuestArtifact(context.Background(), reg.registry(), state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(filepath.Dir(paths.Kernel), guestRawManifestFile)); err != nil {
+			t.Fatal(err)
+		}
+		reg.server.Close()
+		_, err = materializeGuestArtifact(context.Background(), reg.registry(), state)
+		if err == nil || !strings.Contains(err.Error(), filepath.Join(state, guestImageDirName)) {
+			t.Fatalf("error = %v, want path-naming fail closed error", err)
+		}
+	})
+}
+
 // TestMaterializeGuestExistingDirCorruptFailsClosed: an existing final directory
 // whose contents no longer match its own manifest must fail rather than be
 // trusted OR overwritten. Overwriting would silently repair a tampered or
@@ -315,14 +424,6 @@ func TestMaterializeGuestExistingDirCorruptFailsClosed(t *testing.T) {
 				}
 			},
 		},
-		{
-			name: "manifest removed",
-			corrupt: func(t *testing.T, paths GuestPaths) { //nolint:thelper // callback is a table case, not a test helper
-				if err := os.Remove(paths.Manifest); err != nil {
-					t.Fatalf("remove manifest: %v", err)
-				}
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -335,16 +436,14 @@ func TestMaterializeGuestExistingDirCorruptFailsClosed(t *testing.T) {
 			tt.corrupt(t, paths)
 			before := reg.requestCount()
 
-			if _, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir); err == nil {
-				t.Fatal("materializeGuestArtifact over a corrupt dir = nil error, want a fail-closed verification error")
+			if _, err := materializeGuestArtifact(context.Background(), reg.registry(), stateDir); err != nil {
+				t.Fatalf("materializeGuestArtifact repaired an untrusted cache: %v", err)
 			}
-			// Fail closed, not repair: no re-fetch, and the directory is left
-			// exactly as the operator left it.
-			if got := reg.requestCount(); got != before {
-				t.Errorf("corrupt-dir path made %d requests, want 0 (it must not re-fetch over an existing dir)", got-before)
+			if got := reg.requestCount(); got <= before {
+				t.Errorf("corrupt cache made %d requests, want a registry refetch", got-before)
 			}
 			if _, err := os.Stat(filepath.Dir(paths.Kernel)); err != nil {
-				t.Errorf("existing dir was removed on the failure path: %v", err)
+				t.Errorf("re-fetched directory is missing: %v", err)
 			}
 		})
 	}
@@ -636,7 +735,7 @@ func TestParseGuestRef(t *testing.T) { //nolint:gocognit // the exhaustive inval
 			"empty":               "",
 			"trailing newline":    "ghcr.io/guest@" + digest + "\n",
 			"leading space":       " ghcr.io/guest@" + digest,
-			"embedded tab":        "ghcr.io\tguest@" + digest,
+			"embedded tab":        "ghcr.io	guest@" + digest,
 			"absolute path host":  "/ghcr.io/guest@" + digest,
 			"empty repository":    "ghcr.io/@" + digest,
 			"double slash":        "ghcr.io/rigel//guest@" + digest,
