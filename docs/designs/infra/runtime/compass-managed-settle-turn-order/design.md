@@ -19,7 +19,7 @@ Session identity scopes the sequence. A session resume that preserves the sessio
 - Zero/missing sequence from an older peer follows the pre-decided compatibility rule: retain today's fire-everything settle behavior. Log that fallback once per session, not once per message or edge. Do not infer a turn from `at_unix_ms`.
 - Roles: the **agent** creates, persists/restores, increments and stamps both values; the **Runner** transports values and preserves them over reconnect; the **server** validates/consumes values, orders holds and bounds each settle fire. No server-side counter assignment.
 
-The existing producer/consumer seams establish those owners: `AgentSessionFrame` is currently `session_id/event/state` (`proto/compass/v1/compass.proto`); `Hub.deliverSession` relays the frame then calls `SettleSink.OnSessionSettled` (`go/internal/runnerhub/hub.go`); `delivery.Consumer.OnSessionSettled` queues a settle with `upTo: math.MaxInt64` (`go/internal/delivery/settle.go`); `onMessagePosted` calls `hold` for a live author (`go/internal/delivery/dispatch.go`). The agent mapper maps `agent_end` to READY (`packages/compass-agent/src/mapping.ts`), and agent-authored posts are wrapped as `MessagePosted` by `postedFrame` (`go/internal/comms/agent_conversation_pgtest_test.go`) and committed via `CommitAgentPost` (`go/internal/comms/agent_caller.go`).
+The existing producer/consumer seams establish those owners: `AgentSessionFrame` is currently `session_id/event/state` (`proto/compass/v1/compass.proto`); `Hub.deliverSession` relays the frame then calls `SettleSink.OnSessionSettled` (`go/internal/runnerhub/hub.go`); `delivery.Consumer.OnSessionSettled` queues a settle with `upTo: math.MaxInt64` (`go/internal/delivery/settle.go`); `onMessagePosted` calls `hold` for a live author (`go/internal/delivery/dispatch.go`). The agent mapper maps `agent_end` to READY (`packages/compass-agent/src/mapping.ts`); agent-originated conversation commits enter through `CommitAgentPost` (`go/internal/comms/agent_caller.go`), which is the production server edge for relayed posts.
 
 ## Alternatives considered
 
@@ -35,6 +35,13 @@ The existing producer/consumer seams establish those owners: `AgentSessionFrame`
 - Protobuf field additions are additive. Generated Go and TypeScript bindings are regenerated from proto; no hand edits to generated output.
 - Keep message-id dedup and existing recipient re-resolution, settle eligibility states, durable delivery cursor, and non-terminal DISCONNECTED semantics unchanged.
 - The delivery code being designed against is the cutover at bookmark `compass-managed/rig-3107-t6-rulings`; `main` does not yet include that code. The cutover record already names this amendment path under `## Post-freeze amendments`.
+
+## Rollout
+
+- **Agent:** compass-agent owns the TypeScript mapper and persistence/restoration of the session counter.
+- **Runner:** compass-runner owns relay; it transports both sequence values unchanged.
+- **Server:** compass-managed owns the delivery consumer and settle handling.
+- T1 must land before T2 can have effect. A mixed-version fleet keeps using the legacy fire-everything path when the sequence field is absent.
 
 ## Plan
 
