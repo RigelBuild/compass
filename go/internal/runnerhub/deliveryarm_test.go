@@ -647,3 +647,38 @@ func TestColdCacheTraceFramesCheckTheDurableOwner(t *testing.T) {
 func traceFrame() *compassv1internal.AgentFrame {
 	return &compassv1internal.AgentFrame{Frame: &compassv1internal.AgentFrame_Session{Session: &compassv1internal.SessionFrame{}}}
 }
+
+// When the durable owner can't be read (a store fault, or a refused read-through
+// such as a system-role ctx), the enrolled Runner's frames are dropped: an
+// unseen row may name another Runner.
+func TestUnverifiableOwnerDropsSessionFrames(t *testing.T) {
+	cases := map[string]struct {
+		ctx      context.Context
+		storeErr error
+	}{
+		"store fault":          {ctx: context.Background(), storeErr: errors.New("durable fault")},
+		"refused (system ctx)": {ctx: store.WithSystemRole(context.Background())},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			hub, life, tail := newHub()
+			bindings := newFakeBindingStore()
+			bindings.seed("sess-1") // owned by testRunnerID
+			bindings.resolveErr = tc.storeErr
+			hub.SetSessionBindingStore(bindings)
+			hub.enroll(context.Background(), "runner-2", store.Subject{Kind: store.SubjectRunner, ID: "runner-2"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+			for seq, frame := range []*compassv1internal.AgentFrame{traceFrame(), sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)} {
+				if err := hub.Deliver(tc.ctx, RunnerEvent{RunnerID: "runner-2", RunnerSeq: uint64(seq + 1), SessionID: "sess-1", Frame: frame}); err != nil {
+					t.Fatalf("Deliver = %v, want nil", err)
+				}
+			}
+			if got := tail.snapshot(); len(got) != 0 {
+				t.Fatalf("frame reached the tail %d times, want 0", len(got))
+			}
+			if got := life.snapshot(); len(got) != 0 {
+				t.Fatalf("frame published %d statuses, want 0", len(got))
+			}
+		})
+	}
+}

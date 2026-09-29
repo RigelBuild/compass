@@ -310,7 +310,12 @@ func (h *Hub) frameSession(ctx context.Context, runnerID, sessionID string, life
 		if !lifecycle && !enrolled {
 			return sessionBinding{}, false, false
 		}
-		binding, bound = h.resolveSessionBinding(ctx, sessionID)
+		var state bindingLookup
+		binding, state = h.lookupSessionBinding(ctx, sessionID)
+		if state == bindingUnverifiable {
+			return sessionBinding{}, false, false
+		}
+		bound = state == bindingFound
 	}
 	if bound {
 		return binding, true, binding.runnerID == runnerID
@@ -318,27 +323,50 @@ func (h *Hub) frameSession(ctx context.Context, runnerID, sessionID string, life
 	return binding, false, enrolled
 }
 
+// bindingLookup is the outcome of a cache-then-durable session binding read.
+type bindingLookup int
+
+const (
+	bindingFound bindingLookup = iota
+	bindingNotFound
+	// bindingUnverifiable: a refused read-through or a store fault, so a durable
+	// row naming another Runner may exist unseen.
+	bindingUnverifiable
+)
+
 // resolveSessionBinding is the shared cache-then-durable resolution behind both
-// resolvers above.
+// resolvers above. A not-found and an unverifiable read both fail closed here.
 func (h *Hub) resolveSessionBinding(ctx context.Context, sessionID string) (sessionBinding, bool) {
+	binding, state := h.lookupSessionBinding(ctx, sessionID)
+	return binding, state == bindingFound
+}
+
+// lookupSessionBinding is resolveSessionBinding keeping not-found apart from
+// unverifiable. With no store wired the cache is the only record, so a miss is
+// not-found.
+func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessionBinding, bindingLookup) {
 	h.mu.Lock()
 	if binding, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
-		return binding, true
+		return binding, bindingFound
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
 	reapStale := h.reapStale
 	h.mu.Unlock()
 
+	if bindings == nil {
+		return sessionBinding{}, bindingNotFound
+	}
 	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
-		return sessionBinding{}, false
+		return sessionBinding{}, bindingUnverifiable
 	}
 	account, runnerID, err := bindings.ResolveSessionBinding(ctx, sessionID)
+	if errors.Is(err, store.ErrNotFound) {
+		return sessionBinding{}, bindingNotFound
+	}
 	if err != nil {
-		// store.ErrNotFound (an unbound session) and any store fault both fail
-		// closed — the same CodeNotFound the caller mints today.
-		return sessionBinding{}, false
+		return sessionBinding{}, bindingUnverifiable
 	}
 	// Populate the forward cache so a subsequent comms call for this restarted
 	// session hits without a table round-trip. Re-check under the lock: a
@@ -348,11 +376,11 @@ func (h *Hub) resolveSessionBinding(ctx context.Context, sessionID string) (sess
 	h.mu.Lock()
 	if live, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
-		return live, true
+		return live, bindingFound
 	}
 	h.sessionAccounts[sessionID] = resolved
 	h.mu.Unlock()
-	return resolved, true
+	return resolved, bindingFound
 }
 
 // readThroughAllowed reports whether a cache-miss binding read may fall through
