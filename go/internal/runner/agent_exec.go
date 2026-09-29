@@ -247,7 +247,7 @@ func (s *AgentStream) terminate() error {
 	if killErr != nil {
 		// The reap says the agent is gone; a late kill error (e.g. a microVM Signal
 		// timeout) is not a Stop failure, as ChildHandle.Terminate treats it.
-		s.log.Debug("agent kill failed after exit", "session_id", s.sessionID, "err", killErr)
+		s.log.Debug("agent kill failed during stop", slog.String("session_id", s.sessionID), slog.Any("error", killErr))
 	}
 	// Reaped either way. A non-kill exit is the reaper's to log, so Stop reports
 	// nil whether it or the reaper reaped first.
@@ -293,8 +293,8 @@ func (s *AgentStream) endDrains() {
 }
 
 // isDeliberateKill reports whether err is the exit of a process we SIGKILLed on
-// purpose, so Stop treats it as success while still surfacing any other
-// failure. Two backends produce that outcome in two shapes:
+// purpose, so the reaper does not log a deliberate kill as an unexpected exit.
+// Two backends produce that outcome in two shapes:
 //
 //   - The microVM GuestExec ChildHandle waitFunc returns a portable
 //     *runtime.ExitStatusError; a remote guest child's exit cannot be reported

@@ -530,30 +530,31 @@ func TestStderrRateLimitWarningsAreThrottled(t *testing.T) {
 		}
 		return count
 	}
-	warnings := 0
-	for range 200 {
+	// Interleave drops and allows at one clock value: only the throttle keeps
+	// each allowed line after a drop from flushing its own Warn.
+	dropThenAllow := func() {
+		limiter.tokens = 0
+		writeLine()
+		limiter.tokens = 1
 		writeLine()
 	}
-	warnings += collectWarnings()
+	for range 5 {
+		dropThenAllow()
+	}
+	if got := collectWarnings(); got != 1 {
+		t.Fatalf("warnings within one second = %d, want 1", got)
+	}
 	clock = clock.Add(time.Second)
-	writeLine()
-	warnings += collectWarnings()
-	for range 200 {
-		writeLine()
+	limiter.lastRefill = clock
+	dropThenAllow()
+	if got := collectWarnings(); got != 1 {
+		t.Fatalf("warnings after the interval = %d, want 1", got)
 	}
-	warnings += collectWarnings()
-	clock = clock.Add(time.Second)
+	limiter.tokens = 0
 	writeLine()
-	warnings += collectWarnings()
-	for range 200 {
-		writeLine()
-	}
-	warnings += collectWarnings()
 	stderr.flushDropped(log, "sess-flood", true)
-	warnings += collectWarnings()
-
-	if warnings != 3 {
-		t.Fatalf("rate-limit warnings = %d, want 2 interval flushes and one final flush", warnings)
+	if got := collectWarnings(); got != 1 {
+		t.Fatalf("final flush warnings = %d, want 1", got)
 	}
 }
 
