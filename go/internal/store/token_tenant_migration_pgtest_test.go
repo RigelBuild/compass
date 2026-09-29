@@ -35,11 +35,12 @@ func TestTokenTenantMigrationBackfillsV1Tokens(t *testing.T) {
 	if _, err := pool.Exec(ctx, "INSERT INTO schema_migrations (version, name) VALUES (1, $1)", migs[0].name); err != nil {
 		t.Fatalf("record v1: %v", err)
 	}
+	// Decoys sort before and after "boot" by id and by age, so only a slug-keyed backfill picks it.
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ('boot', $1, 'Default', 1)",
+		"INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ('aaa', 'older', 'Older', 0), ('boot', $1, 'Default', 1), ('zzz', 'newer', 'Newer', 2)",
 		bootstrapTenantSlug,
 	); err != nil {
-		t.Fatalf("seed bootstrap tenant: %v", err)
+		t.Fatalf("seed tenants: %v", err)
 	}
 	hash := tokenHash("pre-0002-token")
 	if _, err := pool.Exec(ctx,
