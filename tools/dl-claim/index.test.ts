@@ -169,6 +169,17 @@ describe("claim", () => {
 		).not.toContain(consumed);
 	});
 
+	test("names the ids a rejected 200 body carried", async () => {
+		await expect(
+			claim(body, "token", {
+				fetchFn: async () =>
+					Response.json({
+						ids: [claimed[0], { id: "DL-378", date: "bad" }],
+					}),
+			}),
+		).rejects.toThrow("Returned: DL-377, DL-378.");
+	});
+
 	test("forwards the timeout deadline to the request", async () => {
 		let timeout = 0;
 		let signal: AbortSignal | null | undefined;
