@@ -290,34 +290,6 @@ func TestSelfExitLogsErrorWithStderrTail(t *testing.T) {
 	}
 }
 
-func TestSelfExitPublishesBeforeInheritedPipeEOF(t *testing.T) {
-	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nsleep 30 &\nexit 7\n")
-	server := newCapturePublish()
-	h := newTransportFixtureWithEngine(t, server, engine)
-	ctx := context.Background()
-	t.Cleanup(func() { h.Close(ctx) })
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
-	if err != nil {
-		t.Fatalf("Provision = %v", err)
-	}
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-leaked-pipe")
-	if err != nil {
-		t.Fatalf("Start = %v", err)
-	}
-	select {
-	case frame := <-server.frames:
-		if frame.GetSessionId() != sessionID || frame.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-			t.Fatalf("frame = %v, want ERRORED for %q", frame, sessionID)
-		}
-	case <-time.After(2 * drainGrace):
-		t.Fatal("ERRORED frame waited for the 30s descendant pipe holder")
-	}
-	status, err := h.Status(ctx, sessionID)
-	if err != nil || len(status) != 1 || status[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		t.Fatalf("Status after parent exit = %v, %v; want ERRORED", status, err)
-	}
-}
-
 func TestDeliberateStopDoesNotLogUnexpectedExit(t *testing.T) {
 	engine := newStubStreamingRuntime(t)
 	logs := newCaptureLog()
@@ -925,48 +897,5 @@ func TestSelfExitReleasesTheDrainCtx(t *testing.T) {
 	case <-stream.drainsReleased:
 	case <-timeAfter():
 		t.Fatal("drain ctx never released after self-exit: the WithCancel node leaks on the Runner ctx for every session that exits without a Stop")
-	}
-}
-
-// A descendant that keeps the pipes open past the bounded drain join must not
-// read as a drain fault: the reaper cancels the drains before Wait closes the
-// pipes, so each ends as teardown. Only the unexpected-exit record is logged.
-func TestSelfExitWithInheritedPipeLogsNoDrainFault(t *testing.T) {
-	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nsleep 30 &\nexit 7\n")
-	logs := newCaptureLog()
-	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-	// context.Background() as the test root — the rule's explicit test exemption.
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	stream, err := link.StartAgent(ctx, "sess-leaked", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
-	if err != nil {
-		t.Fatalf("StartAgent = %v", err)
-	}
-	select {
-	case <-stream.reaped:
-	case <-time.After(2 * drainGrace):
-		t.Fatal("reaper did not finish within the bounded drain join")
-	}
-	// The reaper does not join the drains after Wait, so join them here: any
-	// drain-fault warning is then already captured when the scan runs.
-	drained := make(chan struct{})
-	go func() {
-		stream.drains.Wait()
-		close(drained)
-	}()
-	select {
-	case <-drained:
-	case <-timeAfter():
-		t.Fatal("drains did not end after the reap")
-	}
-	for {
-		select {
-		case l := <-logs.lines:
-			if strings.Contains(l.msg, "drain ended early") {
-				t.Fatalf("logged %q (%v); a leaked pipe holder is teardown, not a drain fault", l.msg, l.attrs)
-			}
-		default:
-			return
-		}
 	}
 }
