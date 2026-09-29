@@ -167,14 +167,23 @@ func sweepScript(needle, roots string) string {
 	// The awk program: scan every FILENAME handed to this invocation, print
 	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
 	// the caller's `found` accumulator keeps grep's semantics across batches.
-	const awkProg = `index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
+	//
+	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk (agent-image ships
+	// pkgs.gawk) makes an unopenable input FATAL, aborting there and dropping
+	// later paths plus the batch's exit-status contribution. It covers OPEN
+	// errors only — a read error still aborts, why the scan below shows stderr.
+	const awkProg = `BEGINFILE { if (ERRNO) nextfile } ` +
+		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
 	return "export SWEEP_NEEDLE='" + needle + "'; " +
 		"shopt -s globstar nullglob dotglob; found=1; batch=(); " +
 		// scan() runs one awk over the accumulated batch and clears it. Guarded
 		// on a non-empty batch so a trailing flush with nothing pending does not
 		// invoke awk on zero files (which would read stdin and hang).
+		//
+		// stderr is NOT suppressed: it carries the one signal that separates a
+		// real negative from a dead probe.
 		"scan() { ((${#batch[@]})) || return 0; " +
-		"if awk '" + awkProg + "' \"${batch[@]}\" 2>/dev/null; then found=0; fi; batch=(); }; " +
+		"if awk '" + awkProg + "' \"${batch[@]}\"; then found=0; fi; batch=(); }; " +
 		"for root in " + roots + "; do " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
@@ -186,7 +195,10 @@ func sweepScript(needle, roots string) string {
 		"[[ -f $f && -r $f ]] || continue; " +
 		"batch+=(\"$f\"); " +
 		"((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")) && scan; " +
-		"done; done 2>/dev/null; scan; exit $found"
+		// One `done` closes the per-file loop, the next the per-root loop.
+		"done; " +
+		"done; " +
+		"scan; exit $found"
 }
 
 // TestMicroVMSweepScriptFindsItsNeedle is the non-vacuity control for
@@ -239,8 +251,11 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 	// Comfortably more than two full batches, so at least two mid-loop flushes
 	// happen before the trailing one.
 	fileCount := sweepBatchSize*2 + 25
+	// Zero-padded so the glob's lexicographic order matches numeric order in ANY
+	// collation. Unpadded, f425.txt sorts mid-run (index 362 in the guest's C
+	// locale), so the "final batch" row never reached the trailing flush it names.
 	plant := "mkdir -p /workspace/many && for i in $(seq 1 " + strconv.Itoa(fileCount) + "); do " +
-		"printf 'filler line %s\\n' \"$i\" > /workspace/many/f$i.txt; done && ls /workspace/many | wc -l"
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/many/f%03d.txt' \"$i\")\"; done && ls /workspace/many | wc -l"
 	out, code := guestSh(t, m, id, plant)
 	if code != 0 {
 		t.Fatalf("planting %d filler files: exit %d, %q", fileCount, code, truncate(out))
@@ -251,10 +266,10 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 
 	for _, tt := range []struct{ name, file, needle string }{
 		// Last file: only the TRAILING flush can find it.
-		{"in the final batch", "/workspace/many/f" + strconv.Itoa(fileCount) + ".txt", "SWEEP-BATCH-LAST-6c1e8f30"},
+		{"in the final batch", fmt.Sprintf("/workspace/many/f%03d.txt", fileCount), "SWEEP-BATCH-LAST-6c1e8f30"},
 		// First file: found by a MID-LOOP flush, so `found` must survive every
 		// later batch that matched nothing.
-		{"in the first batch", "/workspace/many/f1.txt", "SWEEP-BATCH-FIRST-91ad47b2"},
+		{"in the first batch", "/workspace/many/f001.txt", "SWEEP-BATCH-FIRST-91ad47b2"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if out, code := guestSh(t, m, id,
