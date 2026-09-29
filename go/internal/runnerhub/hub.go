@@ -105,14 +105,13 @@ type SessionStartSink interface {
 // SessionReapSink is notified at enroll (the Runner-reconnect teardown) of the
 // set of session ids whose hub bindings were just cleared, so a consumer holding
 // soft per-session state keyed by session id can drop it. The delivery consumer
-// (RIG-1569 T3) subscribes to reap its held-deliver registry entries for a
-// no-frame author death: such a death emits no terminal frame, so no settle edge
-// ever fires fireHeld to clear the entry, and it would otherwise persist until
-// process restart. The design specifies exactly this enroll-bounded reap
-// (design.md:172-175). Wired via SetSessionReapSink AFTER both the hub and the
-// consumer exist (breaking the construction cycle, exactly as SetSettleSink
-// does), and is nil-safe: a hub with no reap sink is today's behavior, so every
-// existing hub test is unchanged.
+// (RIG-1569 T3) uses this for a pre-T9 Runner link loss: unlike a Runner-observed
+// process exit, it has no terminal frame to settle held delivers, so the entry
+// would otherwise persist until process restart. The design specifies this
+// enroll-bounded reap (design.md:172-175). Wired via SetSessionReapSink AFTER
+// both the hub and consumer exist (breaking the construction cycle, exactly as
+// SetSettleSink does), and nil-safe: a hub with no reap sink is today's behavior,
+// so every existing hub test is unchanged.
 //
 // Like SessionStartSink the method takes NO ctx and must return promptly: it
 // only drops in-memory registry entries, never blocks the enroll goroutine on
@@ -338,8 +337,8 @@ type Hub struct {
 	// Nil until SetSessionStartSink; read under mu. Nil-safe (today's behavior).
 	sessionStart SessionStartSink
 	// reap is the delivery consumer's session-reap sink (RIG-1569 T3), notified at
-	// enroll with the cleared session ids so the consumer drops held-deliver entries a
-	// no-frame author death left behind. Nil until SetSessionReapSink; read under mu.
+	// enroll with the cleared session ids so the consumer drops held-deliver entries
+	// a pre-T9 Runner link loss left behind. Nil until SetSessionReapSink; read under mu.
 	reap SessionReapSink
 	// presence is the RIG-1569 T8 presence projection's sink, notified at
 	// deliverSession (lifecycle transition) and promoteSession (reconciliation). Nil
@@ -937,7 +936,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 		ramOffline = append(ramOffline, promotedPair{account: account, sessionID: sessionID})
 	}
 	// Snapshot the session ids whose bindings are about to be cleared, so the delivery
-	// consumer can reap held-deliver entries a no-frame author death left behind
+	// consumer can reap held-deliver entries a pre-T9 Runner link loss left behind
 	// (RIG-1569 T3). sessionAccounts and Consumer.held share the author session id key,
 	// so these are exactly the keys to drop. A first-ever enroll snapshots nothing.
 	ramReaped := make([]string, 0, len(h.sessionAccounts))

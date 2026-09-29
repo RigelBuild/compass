@@ -198,24 +198,25 @@ type Consumer struct {
 	// held is the pending-deliver registry (design.md:157-168), keyed by the
 	// AUTHOR's live session id: an agent-authored message posted while its author
 	// still streams is HELD here until that author's session settles
-	// (WORKING->READY) or reaches a terminal frame. The value is the ordered set
+	// (WORKING->READY) or reaches any terminal frame, including ERRORED reported
+	// by the Runner after an unrequested agent exit. The value is the ordered set
 	// of message ids held for that author, in post order, so a settle fires them
-	// ascending. A no-frame author death (no settle edge ever enqueues) leaves
+	// ascending. A pre-T9 Runner link loss (no settle edge ever enqueues) leaves
 	// its entry here until it is reaped: the reap happens in-process on the next
 	// Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped), which
 	// drops the entry for every session id whose hub binding enroll just cleared.
-	// So the common no-frame death is reaped at that next enroll rather than
-	// persisting until process restart. The reap is best-effort, NOT a hard
+	// So the common pre-T9 link-loss entry is reaped at that next enroll rather
+	// than persisting until process restart. The reap is best-effort, NOT a hard
 	// bound: the reaped set is exactly the session ids bound at enroll time, and a
-	// no-frame-dead session is never re-promoted (its id, once cleared, never
-	// re-enters the hub's session map), so a narrow race can still strand one
-	// entry until process restart — a Deliver that resolved the author LIVE an
-	// instant before enroll cleared the maps can hold(sess) just AFTER that
-	// enroll's reap, re-adding the dead session's entry; because that id never
-	// re-enrolls, no later enroll reaps it. Delivery correctness (no-loss) is
-	// unaffected either way — only the reap (a leak bound, not the delivery
-	// guarantee) is best-effort: the recipient still receives the message via the
-	// reconnect cursor sweep, independent of this registry.
+	// session can now be re-promoted after re-enroll. A narrow race can still
+	// strand one entry until a later settle or process restart — a Deliver that
+	// resolved the author LIVE an instant before enroll cleared the maps can
+	// hold(sess) just AFTER that enroll's reap, re-adding the entry; if that
+	// session is not re-promoted or settled, no later event clears it. Delivery
+	// correctness (no-loss) is unaffected either way — only the reap (a leak
+	// bound, not the delivery guarantee) is best-effort: the recipient still
+	// receives the message via the reconnect cursor sweep, independent of this
+	// registry.
 	held map[string][]heldEntry
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
