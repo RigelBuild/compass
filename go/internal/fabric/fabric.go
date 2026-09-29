@@ -249,6 +249,11 @@ type Fabric struct {
 	// substitute for it: that gate answers "may I start new work", this one
 	// answers "stop the work already running".
 	teardown chan struct{}
+
+	// consumerClosed, when set before Subscribe, is called once a subscription's
+	// consumer has fully drained and closed. Tests only: ctx-done teardown is
+	// asynchronous, so this is the event that says the old consumer is gone.
+	consumerClosed func()
 }
 
 // Compile-time proof Fabric satisfies every seam. Cheap here, and it fails the

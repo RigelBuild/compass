@@ -159,6 +159,12 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(E
 			close(done)
 		})
 	}
+	if hook := f.consumerClosed; hook != nil {
+		go func() {
+			<-cc.Closed()
+			hook()
+		}()
+	}
 	go func() {
 		select {
 		case <-ctx.Done():

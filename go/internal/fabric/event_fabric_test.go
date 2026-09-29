@@ -255,6 +255,10 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 func TestSubscribeStopsWhenContextIsDone(t *testing.T) {
 	t.Parallel()
 	f := newFabric(t, Config{})
+	// Both subscriptions share one durable consumer. Until the cancelled one's
+	// pull is closed, the server can hand it the next event, stalling it for AckWait.
+	closed := make(chan struct{}, 2)
+	f.consumerClosed = func() { closed <- struct{}{} }
 
 	subject, err := CommsSubject("t1", KindTopicUpserted)
 	if err != nil {
@@ -280,6 +284,11 @@ func TestSubscribeStopsWhenContextIsDone(t *testing.T) {
 	}
 
 	cancel()
+	select {
+	case <-closed:
+	case <-time.After(gate):
+		t.Fatalf("the cancelled subscription's consumer did not close within %s", gate)
+	}
 
 	// Gate on the replacement subscription receiving, exactly as the
 	// Unsubscribe test does.
