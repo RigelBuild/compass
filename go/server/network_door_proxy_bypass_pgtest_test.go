@@ -31,6 +31,9 @@ func forgedProxyHeaders(handle string) http.Header {
 	h.Set("X-Forwarded-For", "10.0.0.1")
 	h.Set("X-Remote-User", handle)
 	h.Set("Forwarded", "for=10.0.0.1;by=proxy;host=bridge.example")
+	h.Set("Tailscale-User-Login", handle+"@example.com")
+	h.Set("Tailscale-User-Name", handle)
+	h.Set("Tailscale-User-Profile-Pic", "https://example.com/"+handle+".png")
 	return h
 }
 
