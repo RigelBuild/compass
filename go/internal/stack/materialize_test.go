@@ -3,6 +3,7 @@
 package stack
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -350,7 +351,8 @@ func TestMaterializeGuestAuthenticatedManifestCache(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := reg.requestCount()
-		if err := os.WriteFile(filepath.Join(filepath.Dir(paths.Kernel), guestRawManifestFile), []byte("tampered"), 0o600); err != nil {
+		alteredManifest := bytes.Replace(reg.manifest, []byte("0123456789abcdef"), []byte("fedcba9876543210"), 1)
+		if err := os.WriteFile(filepath.Join(filepath.Dir(paths.Kernel), guestRawManifestFile), alteredManifest, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := materializeGuestArtifact(context.Background(), reg.registry(), state); err != nil {
@@ -379,6 +381,51 @@ func TestMaterializeGuestAuthenticatedManifestCache(t *testing.T) {
 		}
 		if reg.requestCount() <= before {
 			t.Fatal("forged sidecars authenticated replaced asset")
+		}
+	})
+	t.Run("symlinked asset is rejected and re-fetched", func(t *testing.T) {
+		reg := newFakeRegistry(t, nil)
+		state := t.TempDir()
+		paths, err := materializeGuestArtifact(t.Context(), reg.registry(), state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(t.TempDir(), "asset")
+		if err := os.Rename(paths.Rootfs, outside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, paths.Rootfs); err != nil {
+			t.Fatal(err)
+		}
+		before := reg.requestCount()
+		if _, err := materializeGuestArtifact(t.Context(), reg.registry(), state); err != nil {
+			t.Fatal(err)
+		}
+		if reg.requestCount() <= before {
+			t.Fatal("symlinked asset cache was reused")
+		}
+	})
+	t.Run("symlinked cache directory is rejected and re-fetched", func(t *testing.T) {
+		reg := newFakeRegistry(t, nil)
+		state := t.TempDir()
+		paths, err := materializeGuestArtifact(t.Context(), reg.registry(), state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		final := filepath.Dir(paths.Kernel)
+		outside := filepath.Join(t.TempDir(), "cache")
+		if err := os.Rename(final, outside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, final); err != nil {
+			t.Fatal(err)
+		}
+		before := reg.requestCount()
+		if _, err := materializeGuestArtifact(t.Context(), reg.registry(), state); err != nil {
+			t.Fatal(err)
+		}
+		if reg.requestCount() <= before {
+			t.Fatal("symlinked cache directory was reused")
 		}
 	})
 	t.Run("missing manifest and unreachable registry fails closed", func(t *testing.T) {

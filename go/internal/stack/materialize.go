@@ -284,8 +284,8 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: protect cache root %q: %w", reg.digest, root, err)
 	}
 
-	switch _, err := os.Stat(final); {
-	case err == nil:
+	finalInfo, err := os.Lstat(final)
+	if err == nil && finalInfo.IsDir() {
 		manifestBytes, readErr := os.ReadFile(filepath.Join(final, guestRawManifestFile)) //nolint:gosec // G304: fixed basename inside the content-addressed cache
 		if readErr == nil {
 			sum := sha256.Sum256(manifestBytes)
@@ -297,10 +297,13 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 		if err := os.RemoveAll(final); err != nil {
 			return GuestPaths{}, fmt.Errorf("materialise guest image %s: remove untrusted cache %q: %w", reg.digest, final, err)
 		}
-	case !errors.Is(err, os.ErrNotExist):
+	} else if err == nil {
+		if err := os.RemoveAll(final); err != nil {
+			return GuestPaths{}, fmt.Errorf("materialise guest image %s: remove untrusted cache %q: %w", reg.digest, final, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s: stat %q: %w", reg.digest, final, err)
 	}
-
 	transport := guestTransport()
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: guestRequestTimeout}
@@ -380,7 +383,7 @@ func verifyGuestAgainstManifest(paths GuestPaths, manifest guestManifest) error 
 	assetPaths := paths.assets()
 	for i := range guestAssets {
 		path := assetPaths[i]
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if err != nil {
 			return fmt.Errorf("stat guest asset %q: %w", path, err)
 		}
