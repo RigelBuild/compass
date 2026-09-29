@@ -229,6 +229,13 @@
         "typescript": "catalog:",
       },
     },
+    "tools/operator-cli-check": {
+      "name": "@compass/operator-cli-check",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/orion-ref-gate": {
       "name": "@compass/orion-ref-gate",
       "bin": {
@@ -528,6 +535,8 @@
     "@compass/macos-bundle": ["@compass/macos-bundle@workspace:tools/macos-bundle"],
 
     "@compass/microvm-boot-test": ["@compass/microvm-boot-test@workspace:tools/microvm-boot-test"],
+
+    "@compass/operator-cli-check": ["@compass/operator-cli-check@workspace:tools/operator-cli-check"],
 
     "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
 
