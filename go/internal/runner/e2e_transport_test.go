@@ -41,13 +41,15 @@ import (
 // back. When started != nil it blocks the forward until release is closed or
 // the request context is cancelled — the in-flight state a test event-gates on
 // for the force-close scenario, mirroring gateway/socket_test.go's
-// blockingGateway. Enroll/PublishEvents/Sessions stay unimplemented (the
-// embedded Unimplemented handler) — this seam only exercises RelayCommsCall.
+// blockingGateway. RelayBoardCall is captured the same way and answers a canned
+// result, proving host wiring reaches the Board leg. Enroll/PublishEvents/
+// Sessions stay unimplemented (the embedded Unimplemented handler).
 type recordingRelay struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 
-	mu       sync.Mutex
-	received []*compassv1internal.RelayCommsCallRequest
+	mu            sync.Mutex
+	received      []*compassv1internal.RelayCommsCallRequest
+	boardReceived []*compassv1internal.RelayBoardCallRequest
 
 	started   chan struct{} // non-nil => block the forward until release/ctx-cancel
 	release   chan struct{}
@@ -99,6 +101,31 @@ func (r *recordingRelay) RelayCommsCall(
 	}), nil
 }
 
+func (r *recordingRelay) RelayBoardCall(
+	_ context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest],
+) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
+	r.mu.Lock()
+	r.boardReceived = append(r.boardReceived, req.Msg)
+	r.mu.Unlock()
+
+	return connect.NewResponse(&compassv1internal.RelayBoardCallResponse{
+		Result: &compassv1internal.BoardCallResult{
+			CallId: req.Msg.GetCall().GetCallId(),
+			Result: &compassv1internal.BoardCallResult_SetIssueState{
+				SetIssueState: &compassv1internal.SetIssueStateResponse{
+					Issue: &compassv1.Issue{Id: "iss-board", State: compassv1.IssueState_ISSUE_STATE_DONE},
+				},
+			},
+		},
+	}), nil
+}
+
+func (r *recordingRelay) boardSnapshot() []*compassv1internal.RelayBoardCallRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*compassv1internal.RelayBoardCallRequest(nil), r.boardReceived...)
+}
+
 // snapshot returns a copy of the requests received so far, taken under the lock.
 func (r *recordingRelay) snapshot() []*compassv1internal.RelayCommsCallRequest {
 	r.mu.Lock()
@@ -147,8 +174,8 @@ func listenerPath(t *testing.T, h *agentHost, container string) string {
 // (OQ-2: the Runner forwards the session id it structurally owns and asserts no
 // account). Mutation that reddens it: forwarding a wrong/empty session id
 // (Gateway reading the wrong container->session mapping), dropping/duplicating
-// the forward, or Gateway.Comms not returning the Server's result — each breaks
-// one of the four assertions below.
+// the forward, Gateway.Comms not returning the Server's result, or the host not
+// wiring the Board relay — each breaks one of the assertions below.
 func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	fake := &recordingRelay{}
 	h := newTransportFixture(t, fake)
@@ -194,6 +221,28 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	}
 	if mid := resp.Msg.GetPost().GetMessage().GetId(); mid != "msg-tc-1" {
 		t.Fatalf("result payload message id = %q, want the canned %q", mid, "msg-tc-1")
+	}
+	boardResp, err := client.Board(callCtx, connect.NewRequest(&compassv1internal.BoardCallRequest{
+		CallId: "tb-1",
+		Call: &compassv1internal.BoardCallRequest_SetIssueState{
+			SetIssueState: &compassv1internal.SetIssueStateRequest{
+				IssueId: "iss-board",
+				State:   compassv1.IssueState_ISSUE_STATE_DONE,
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Board over the socket = %v, want the round-trip result", err)
+	}
+	gotBoard := fake.boardSnapshot()
+	if len(gotBoard) != 1 || gotBoard[0].GetSessionId() != sessionID {
+		t.Fatalf("relayed Board calls = %+v, want exactly one carrying the Start-minted session id %q", gotBoard, sessionID)
+	}
+	if gotBoard[0].GetCall().GetCallId() != "tb-1" {
+		t.Fatalf("relayed Board call id = %q, want tb-1", gotBoard[0].GetCall().GetCallId())
+	}
+	if boardResp.Msg.GetCallId() != "tb-1" {
+		t.Fatalf("Board result call id = %q, want tb-1", boardResp.Msg.GetCallId())
 	}
 }
 
