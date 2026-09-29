@@ -78,8 +78,10 @@ CANDIDATES.forEach(({ content }, index) => {
 
 // The flake half, as ONE nix eval over every candidate: getFlake re-evaluates
 // the whole flake per invocation, which turned a 24-row table into ~6 minutes.
-// Batching pays that cost once. nixpkgs is resolved from THIS repo's flake.lock
-// so the gate exercises the same lib.strings.trim the real build uses.
+// Batching pays that cost once. nixpkgs lib comes from THIS repo's flake.lock
+// node, so the gate runs the same lib.strings.trim the real build uses.
+// getFlake on the locked nixpkgs node, not on the repo: the repo form copies
+// the working tree, and a file another gate renames mid-copy fails the eval.
 
 // tryEval catches throw and assert — both of the guard's reject branches — so
 // success=false IS the reject verdict. It does NOT catch readFile I/O/encoding
@@ -102,8 +104,11 @@ const flakeVerdicts = (): Verdict[] | Error => {
 	const paths = CANDIDATES.map(
 		(_row, index) => `(/. + ${JSON.stringify(candidatePath(index))})`,
 	).join(" ");
+	const lock = `builtins.fromJSON (builtins.readFile ${JSON.stringify(join(repoRoot, "flake.lock"))})`;
 	const expr =
-		`let nixpkgs = (builtins.getFlake ${JSON.stringify(repoRoot)}).inputs.nixpkgs; ` +
+		`let lock = ${lock}; ` +
+		"node = (builtins.getAttr lock.nodes.root.inputs.nixpkgs lock.nodes).locked; " +
+		'nixpkgs = builtins.getFlake ("github:" + node.owner + "/" + node.repo + "/" + node.rev); ' +
 		`guard = candidate: ${flakeGuard}; ` +
 		"probe = p: let r = builtins.tryEval (guard p); " +
 		'in { inherit (r) success; stamp = if r.success then r.value else ""; }; ' +
