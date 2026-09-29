@@ -110,6 +110,19 @@ func TestUpAttachIfLive(t *testing.T) {
 	}
 }
 
+func TestUpAttachWithoutGatewayImage(t *testing.T) {
+	cfg, h := newHarness(t)
+	cfg.GatewayImage = ""
+	h.prober.forceLive = true
+	s, err := Up(context.Background(), cfg, h.deps)
+	if err != nil {
+		t.Fatalf("Up() = %v, want attach without a gateway image", err)
+	}
+	if !s.attached {
+		t.Fatal("Up should have attached to the live server")
+	}
+}
+
 func TestUpAttachVersionMismatch(t *testing.T) {
 	cfg, h := newHarness(t)
 	h.prober.forceLive = true
