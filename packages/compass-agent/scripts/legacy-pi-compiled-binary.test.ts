@@ -1,6 +1,4 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { copyFileSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -59,17 +57,17 @@ describe("compiled legacy Pi extension loading", () => {
 			);
 		}
 
-		const child = spawn(binaryPath, [], {
+		const child = Bun.spawn([binaryPath], {
 			cwd: tempDir,
 			env: { ...process.env, LEGACY_PI_EXTENSION_PATH: fixturePath },
-			stdio: ["ignore", "pipe", "pipe"],
+			stdout: "pipe",
+			stderr: "pipe",
 		});
-		const [stdout, stderr, closeResult] = await Promise.all([
+		const [stdout, stderr, exitCode] = await Promise.all([
 			new Response(child.stdout).text(),
 			new Response(child.stderr).text(),
-			once(child, "close"),
+			child.exited,
 		]);
-		const exitCode = closeResult[0];
 		expect(exitCode, `${stderr}\n${stdout}`).toBe(0);
 		const resultLine = stdout.trim().split("\n").at(-1);
 		if (!resultLine) throw new Error(`Probe produced no output: ${stderr}`);
