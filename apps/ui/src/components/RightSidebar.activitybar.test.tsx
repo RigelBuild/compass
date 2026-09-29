@@ -133,19 +133,20 @@ describe("RightSidebar activity bar tab icons", () => {
 		expect(margins.length).toBe(4);
 		const [mt, mr, mb, ml] = margins.map((m) => px(m));
 		// The 32px content box needs .r-tab to zero the UA button padding, which
-		// happy-dom does not apply, so it is asserted here, not computed.
-		const tabRules = [...css.matchAll(/\n(\.r-tab\b[^{]*)\{([^}]*)\}/g)];
-		const base = tabRules.find(([, sel]) => sel.trim() === ".r-tab");
-		expect(base?.[2]).toMatch(/(?:^|[;{\s])padding\s*:\s*0(?:px)?\s*;/);
-		// No state or descendant rule on the tab box may re-pad it.
-		const repad = tabRules.filter(
-			([, sel, body]) =>
-				sel.trim() !== ".r-tab" &&
-				!sel.includes(".r-tab-icon") &&
-				!sel.includes(".cx-state-dot") &&
-				/(?:^|[;{\s])padding/.test(body),
+		// happy-dom does not apply, so it is asserted here, not computed. Every
+		// rule on the tab box itself (states, @media, selector lists) is scanned.
+		const tabBoxRules = [
+			...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g),
+		].filter(([, sel]) =>
+			sel.split(",").some((s) => /^\.r-tab(?![\w-])[^\s>+~]*$/.test(s.trim())),
 		);
-		expect(repad.map(([, sel]) => sel.trim())).toEqual([]);
+		const paddings = tabBoxRules.flatMap(([, , body]) =>
+			[...body.matchAll(/(?:^|[;\s])(padding[\w-]*)\s*:\s*([^;]+);/g)].map(
+				([, prop, value]) => `${prop}: ${value.trim()}`,
+			),
+		);
+		expect(paddings.length).toBeGreaterThan(0);
+		expect(paddings.filter((p) => !/: 0(?:px)?$/.test(p))).toEqual([]);
 		// The 32px content box is filled exactly on each axis — no centering slack.
 		expect(ml + width + mr).toBe(32);
 		expect(mt + height + mb).toBe(32);
