@@ -146,6 +146,8 @@ type AgentStream struct {
 	// event tests and the host's self-exit handling wait on.
 	reaped        chan struct{}
 	stderrLimiter *lineRateLimiter
+	log           *slog.Logger
+	beforeWait    func()
 }
 
 // SessionID returns the Server-side session id this stream carries.
@@ -172,7 +174,7 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	stream := &AgentStream{
 		sessionID: sessionID, exec: xs, stopDrains: stopDrains,
 		drainsReleased: drainCtx.Done(), reaped: make(chan struct{}), waitDone: make(chan struct{}),
-		stderrLimiter: newLineRateLimiter(),
+		stderrLimiter: newLineRateLimiter(), log: log, beforeWait: l.beforeWait,
 	}
 
 	// Drain both pipes continuously so a full OS pipe buffer can never stall the
@@ -212,16 +214,15 @@ const drainGrace = 5 * time.Second
 
 // Stop terminates the in-container agent and waits for its exec to reap. Stop is
 // the deliberate-teardown path (StopAgentSession, and the first half of Reload),
-// so the SIGKILL it delivers is the intended outcome, not a failure: Wait on a
-// SIGKILLed child returns a "signal: killed" error, treated as success; any other
-// error (a real spawn/reap fault, or a non-signal exit) propagates.
+// so the SIGKILL it delivers is the intended outcome, not a failure. Once the
+// exec is reaped Stop returns nil: the agent is gone, and a non-kill exit is the
+// reaper's to log, so the result does not depend on which side reaped first.
 //
 // Order matters, and only one order terminates. The drains block in a read on
 // pipes only the child's death closes — a quiet agent produces no line for a
 // between-lines cancellation check to reach — so joining BEFORE the kill waits
 // on goroutines that cannot finish yet, and every teardown pays the full grace.
-// Kill first, then join. After a self-exit the reaper has already reaped and
-// logged, so Stop returns nil and a Reload proceeds instead of failing.
+// Kill first, then join.
 func (s *AgentStream) Stop() error {
 	return s.terminate()
 }
@@ -238,26 +239,36 @@ func (s *AgentStream) terminate() error {
 		return errors.New("runner: agent exec has no process handle")
 	}
 	killErr := s.exec.Process.Kill()
-	waitErr := s.wait()
+	s.reap()
 	s.endDrains()
-	if waitErr != nil && !isDeliberateKill(waitErr) {
-		return waitErr
+	if killErr != nil {
+		// The reap says the agent is gone; a late kill error (e.g. a microVM Signal
+		// timeout) is not a Stop failure, as ChildHandle.Terminate treats it.
+		s.log.Debug("agent kill failed after exit", "session_id", s.sessionID, "err", killErr)
 	}
-	if errors.Is(killErr, os.ErrProcessDone) {
-		return nil
-	}
-	return killErr
+	// Reaped either way. A non-kill exit is the reaper's to log, so Stop reports
+	// nil whether it or the reaper reaped first.
+	return nil
 }
 
 func (s *AgentStream) wait() error {
+	s.reap()
+	return s.waitErr
+}
+
+// reap runs the one shared Process.Wait; Stop uses it without the exit error,
+// which the reaper classifies and logs.
+func (s *AgentStream) reap() {
 	s.waitOnce.Do(func() {
+		if s.beforeWait != nil {
+			s.beforeWait()
+		}
 		if s.exec.Process != nil {
 			s.waitErr = s.exec.Process.Wait()
 		}
 		close(s.waitDone)
 	})
 	<-s.waitDone
-	return s.waitErr
 }
 
 // endDrains cancels both drains and waits up to drainGrace for them to return.

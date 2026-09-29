@@ -345,15 +345,24 @@ func TestCallerCancellationDoesNotLogUnexpectedExit(t *testing.T) {
 	}
 }
 
+// The child closes its pipes but keeps running, so the reaper is parked inside
+// Process.Wait when Stop runs. A lock held across Wait would deadlock Stop here.
 func TestStopAndReaperShareSingleWait(t *testing.T) {
-	engine := newStubStreamingRuntime(t)
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nexec >&- 2>&-\nexec sleep 120\n")
 	logs := newCaptureLog()
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	inWait := make(chan struct{})
+	link.beforeWait = func() { close(inWait) }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	stream, err := link.StartAgent(ctx, "sess-shared-wait", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
 	if err != nil {
 		t.Fatalf("StartAgent = %v", err)
+	}
+	select {
+	case <-inWait:
+	case <-timeAfter():
+		t.Fatal("reaper never reached Process.Wait")
 	}
 	stopped := make(chan error, 1)
 	go func() { stopped <- stream.Stop() }()
