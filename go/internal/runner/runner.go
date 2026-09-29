@@ -63,6 +63,9 @@ type ServerLink struct {
 	runnerID   string
 	token      string
 	reattached bool
+	// beforeWait, set only by tests, runs inside each stream's shared wait just
+	// before Process.Wait, so a test can hold the reaper there while Stop runs.
+	beforeWait func()
 }
 
 // Reattached reports whether enrollment re-attached an already-registered Runner
