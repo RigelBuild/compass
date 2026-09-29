@@ -296,24 +296,25 @@ func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID s
 // whether runnerID may publish it. An unbound session is allowed only from the
 // enrolled Runner: frames precede Start's bind, but an unverifiable owner (no
 // Runner enrolled, a refused read-through) must not let any token through.
-// Trace-only frames read the cache alone, keeping the hot stream off the store.
-func (h *Hub) frameSession(ctx context.Context, runnerID, sessionID string, durable bool) (binding sessionBinding, bound, allowed bool) {
-	if durable {
-		binding, bound = h.resolveSessionBinding(ctx, sessionID)
-	} else {
-		h.mu.Lock()
-		binding, bound = h.sessionAccounts[sessionID]
-		h.mu.Unlock()
-	}
+// A trace-only frame from a Runner that is not enrolled is dropped on a cache
+// miss without a store read, keeping a foreign output stream off the table.
+func (h *Hub) frameSession(ctx context.Context, runnerID, sessionID string, lifecycle bool) (binding sessionBinding, bound, allowed bool) {
 	if runnerID == "" {
-		return binding, bound, false
+		return sessionBinding{}, false, false
+	}
+	h.mu.Lock()
+	binding, bound = h.sessionAccounts[sessionID]
+	enrolled := h.runner != nil && h.runner.id == runnerID
+	h.mu.Unlock()
+	if !bound {
+		if !lifecycle && !enrolled {
+			return sessionBinding{}, false, false
+		}
+		binding, bound = h.resolveSessionBinding(ctx, sessionID)
 	}
 	if bound {
 		return binding, true, binding.runnerID == runnerID
 	}
-	h.mu.Lock()
-	enrolled := h.runner != nil && h.runner.id == runnerID
-	h.mu.Unlock()
 	return binding, false, enrolled
 }
 

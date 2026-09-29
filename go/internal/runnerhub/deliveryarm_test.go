@@ -596,28 +596,54 @@ func TestUnboundSessionFramesRequireTheEnrolledRunner(t *testing.T) {
 	}
 }
 
-// Trace-only frames are the high-volume stream; resolving their owner must not
-// read the binding table, while a lifecycle frame still reads through.
-func TestTraceFramesSkipTheDurableBindingRead(t *testing.T) {
+// A trace frame from a Runner that is not enrolled is dropped on a cache miss
+// without reading the binding table, so a foreign output stream costs no store work.
+func TestForeignTraceFramesSkipTheDurableBindingRead(t *testing.T) {
 	hub, _, tail := newHub()
 	bindings := newFakeBindingStore()
+	bindings.seed("sess-1")
 	hub.SetSessionBindingStore(bindings)
 	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
-	trace := &compassv1internal.AgentFrame{Frame: &compassv1internal.AgentFrame_Session{Session: &compassv1internal.SessionFrame{}}}
-	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 1, SessionID: "sess-1", Frame: trace}); err != nil {
-		t.Fatalf("Deliver(trace) = %v, want nil", err)
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: "runner-2", RunnerSeq: 1, SessionID: "sess-1", Frame: traceFrame()}); err != nil {
+		t.Fatalf("Deliver(foreign trace) = %v, want nil", err)
 	}
 	if bindings.resolveCalled {
-		t.Fatal("a trace-only frame read the binding table, want the cache only")
+		t.Fatal("a trace frame from a Runner that is not enrolled read the binding table")
+	}
+	if got := tail.snapshot(); len(got) != 0 {
+		t.Fatalf("foreign trace frame reached the tail %d times, want 0", len(got))
+	}
+}
+
+// With the cache cold (Server restart, or any enroll), the enrolled Runner's
+// trace frames still read the durable owner: a session another Runner owns is
+// not its to stream into, and its own session is accepted.
+func TestColdCacheTraceFramesCheckTheDurableOwner(t *testing.T) {
+	hub, _, tail := newHub()
+	bindings := newFakeBindingStore()
+	bindings.seed("sess-1") // owned by testRunnerID
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-2", store.Subject{Kind: store.SubjectRunner, ID: "runner-2"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: "runner-2", RunnerSeq: 1, SessionID: "sess-1", Frame: traceFrame()}); err != nil {
+		t.Fatalf("Deliver(enrolled foreign trace) = %v, want nil", err)
+	}
+	if got := tail.snapshot(); len(got) != 0 {
+		t.Fatalf("enrolled Runner's trace for another Runner's session reached the tail %d times, want 0", len(got))
+	}
+
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seed("sess-1") // the enroll reaped testRunnerID's rows; the owner re-promotes
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 2, SessionID: "sess-1", Frame: traceFrame()}); err != nil {
+		t.Fatalf("Deliver(owner trace) = %v, want nil", err)
 	}
 	if got := tail.snapshot(); len(got) != 1 {
-		t.Fatalf("trace frame reached the tail %d times, want 1", len(got))
+		t.Fatalf("owner's trace after a cold cache reached the tail %d times, want 1", len(got))
 	}
-	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 2, SessionID: "sess-1", Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)}); err != nil {
-		t.Fatalf("Deliver(lifecycle) = %v, want nil", err)
-	}
-	if !bindings.resolveCalled {
-		t.Fatal("a lifecycle frame never read through to the binding table")
-	}
+}
+
+// traceFrame is a trace-only session frame (no lifecycle state).
+func traceFrame() *compassv1internal.AgentFrame {
+	return &compassv1internal.AgentFrame{Frame: &compassv1internal.AgentFrame_Session{Session: &compassv1internal.SessionFrame{}}}
 }
