@@ -682,3 +682,28 @@ func TestUnverifiableOwnerDropsSessionFrames(t *testing.T) {
 		})
 	}
 }
+
+// With a store wired (production), a session with no durable row is a genuine
+// not-found: the enrolled Runner's pre-bind trace and lifecycle frames publish.
+func TestStoreNotFoundAcceptsEnrolledPreBindFrames(t *testing.T) {
+	hub, life, tail := newHub()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	frames := []*compassv1internal.AgentFrame{traceFrame(), sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)}
+	for seq, frame := range frames {
+		if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: uint64(seq + 1), SessionID: "sess-new", Frame: frame}); err != nil {
+			t.Fatalf("Deliver = %v, want nil", err)
+		}
+	}
+	if !bindings.resolveCalled {
+		t.Fatal("the durable binding was never read")
+	}
+	if got := tail.snapshot(); len(got) != 2 {
+		t.Fatalf("pre-bind frames reached the tail %d times, want 2", len(got))
+	}
+	if got := life.snapshot(); len(got) != 1 {
+		t.Fatalf("pre-bind lifecycle frame published %d statuses, want 1", len(got))
+	}
+}
