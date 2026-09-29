@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { render, waitFor } from "@solidjs/testing-library";
 import type { JSX } from "@solidjs/web";
 import * as realRuntime from "@wailsio/runtime";
@@ -1156,5 +1158,33 @@ describe("MarkdownText — highlight failure is contained", () => {
 		);
 		expect(container.textContent).not.toContain("BOUNDARY");
 		expect(container.textContent).toContain("sibling content");
+	});
+});
+
+describe("MarkdownText — block margins under app.css", () => {
+	// happy-dom resolves the cascade (no layout), so computed margins are real.
+	// The first and last blocks must sit flush with the message box.
+	test("the first and last top-level blocks have no outer margin", () => {
+		const style = document.createElement("style");
+		style.textContent = readFileSync(
+			join(import.meta.dir, "../app.css"),
+			"utf8",
+		);
+		document.head.appendChild(style);
+		try {
+			const { container } = render(() => (
+				<MarkdownText text={"first\n\nmiddle\n\nlast"} byHandle={byHandle()} />
+			));
+			const blocks = [
+				...(container.querySelector(".markdown-content")?.children ?? []),
+			];
+			expect(blocks.map((b) => b.tagName)).toEqual(["P", "P", "P"]);
+			expect(getComputedStyle(blocks[0]).marginTop).toBe("0px");
+			expect(getComputedStyle(blocks[2]).marginBottom).toBe("0px");
+			// The between-block spacing survives the reset.
+			expect(getComputedStyle(blocks[1]).marginTop).toBe("6px");
+		} finally {
+			style.remove();
+		}
 	});
 });

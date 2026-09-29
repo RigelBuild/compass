@@ -2294,6 +2294,7 @@
 	width: 34px;
 	height: 34px;
 	border: 1px solid transparent;
+	padding: 0; /* the glyph margins assume a 32px content box; drop UA button padding */
 	border-radius: var(--cx-radius-sm);
 	background: transparent;
 	color: var(--cx-text-faint);
@@ -3267,8 +3268,8 @@
 	white-space: normal;
 }
 
-/* Keep markdown blocks compact; reset first/last block margins through the
- * wrapper div because the blocks are its grandchildren. */
+/* Keep markdown blocks compact; the blocks are direct children of
+ * .markdown-content, so reset the outer margins of the first and last. */
 .markdown-content p,
 .markdown-content ul,
 .markdown-content ol,
@@ -3279,11 +3280,11 @@
 	margin: 6px 0;
 }
 
-.markdown-content > * > :first-child {
+.markdown-content > :first-child {
 	margin-top: 0;
 }
 
-.markdown-content > * > :last-child {
+.markdown-content > :last-child {
 	margin-bottom: 0;
 }
 
