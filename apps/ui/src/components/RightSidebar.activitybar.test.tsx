@@ -137,15 +137,25 @@ describe("RightSidebar activity bar tab icons", () => {
 		// rule on the tab box itself (states, @media, selector lists) is scanned.
 		const tabBoxRules = [
 			...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g),
-		].filter(([, sel]) =>
-			sel.split(",").some((s) => /^\.r-tab(?![\w-])[^\s>+~]*$/.test(s.trim())),
+		].map(([, sel, body]) => ({
+			sels: sel.split(",").map((s) => s.trim()),
+			body,
+		}));
+		// The tab box is the LAST compound (ancestor- or type-qualified too).
+		const onTabBox = tabBoxRules.filter(({ sels }) =>
+			sels.some((s) => /(?:^|[\s>+~])[\w-]*\.r-tab(?![\w-])[^\s>+~]*$/.test(s)),
 		);
-		const paddings = tabBoxRules.flatMap(([, , body]) =>
+		const paddings = onTabBox.flatMap(({ body }) =>
 			[...body.matchAll(/(?:^|[;\s])(padding[\w-]*)\s*:\s*([^;]+);/g)].map(
 				([, prop, value]) => `${prop}: ${value.trim()}`,
 			),
 		);
-		expect(paddings.length).toBeGreaterThan(0);
+		const resting = onTabBox.filter(({ sels }) => sels.includes(".r-tab"));
+		expect(
+			resting.some(({ body }) =>
+				/(?:^|[;\s])padding\s*:\s*0(?:px)?\s*;/.test(body),
+			),
+		).toBe(true);
 		expect(paddings.filter((p) => !/: 0(?:px)?$/.test(p))).toEqual([]);
 		// The 32px content box is filled exactly on each axis — no centering slack.
 		expect(ml + width + mr).toBe(32);
