@@ -321,6 +321,9 @@ func (h *sessionsStartedTestHandler) Sessions(context.Context, *connect.BidiStre
 }
 
 func TestRunStartsSessionsBeforeStaleSweepDeadline(t *testing.T) {
+	prev := staleContainerSweepTimeout
+	staleContainerSweepTimeout = 2 * time.Second
+	t.Cleanup(func() { staleContainerSweepTimeout = prev })
 	handler := &sessionsStartedTestHandler{sessions: make(chan struct{})}
 	path, service := compassv1internalconnect.NewRunnerServiceHandler(handler)
 	mux := http.NewServeMux()

@@ -82,9 +82,10 @@ func validateRuntimeDir(dir string) error {
 }
 
 // staleContainerSweepTimeout gives best-effort startup cleanup a single bounded
-// budget. PodmanCLI also has a per-command timeout, but the sweep may remove
-// several containers concurrently.
-const staleContainerSweepTimeout = 5 * time.Second
+// budget. It must exceed podman rm's 10s default stop grace: a stale agent runs
+// sleep infinity, which ignores SIGTERM, so every removal waits the full grace.
+// A var only so a test can shorten it; never reassigned in production.
+var staleContainerSweepTimeout = 30 * time.Second
 
 // sweepStaleAgentContainers removes this Runner's stale owned containers and
 // socket dirs after Dial verifies the Runner identity and before sessions start.
