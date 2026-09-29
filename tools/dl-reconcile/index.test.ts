@@ -129,6 +129,173 @@ describe("parseLedger", () => {
 	});
 });
 
+type LedgerOutcome =
+	| { kind: "rows"; count: number }
+	| { kind: "throws"; message: string };
+
+function outcome(run: () => number): LedgerOutcome {
+	try {
+		return { kind: "rows", count: run() };
+	} catch (error) {
+		return {
+			kind: "throws",
+			message: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+const ANCHORED_ROW = [
+	"| ID | Decision | Status | Record |",
+	"| --- | --- | --- | --- |",
+	"| DL-001 | real | Active (Matt, 2026-01-01) | [r](r.md) |",
+];
+
+describe("shared line classification", () => {
+	// Both counters read one classification pre-pass, so every fence and comment
+	// shape must resolve identically for the parser and the floor.
+	const cases: {
+		name: string;
+		lines: string[];
+		expected: LedgerOutcome;
+	}[] = [
+		{
+			name: "an unterminated fence",
+			lines: ["```", ...ANCHORED_ROW],
+			expected: {
+				kind: "throws",
+				message: "unterminated fenced block in design ledger",
+			},
+		},
+		{
+			name: "a DL row inside a closed fence",
+			lines: ["```", "| DL-900 | hidden | x | y |", "```", ...ANCHORED_ROW],
+			expected: { kind: "rows", count: 1 },
+		},
+		{
+			name: "a fence line carrying an info string",
+			lines: [
+				"```markdown",
+				"```json",
+				"| DL-900 | hidden | x | y |",
+				"```",
+				...ANCHORED_ROW,
+			],
+			expected: { kind: "rows", count: 1 },
+		},
+		{
+			name: "an unterminated HTML comment",
+			lines: ["<!--", ...ANCHORED_ROW],
+			expected: {
+				kind: "throws",
+				message: "unterminated HTML comment in design ledger",
+			},
+		},
+		{
+			name: "a commented-out whole table",
+			lines: [
+				...ANCHORED_ROW,
+				"",
+				"<!--",
+				"| ID | Decision | Status | Record |",
+				"| --- | --- | --- | --- |",
+				"| DL-905 | parked draft | Active (Matt, 2026-01-01) | [r](r.md) |",
+				"-->",
+			],
+			expected: { kind: "rows", count: 1 },
+		},
+		{
+			name: "a comment closer carrying trailing whitespace",
+			lines: ["<!--", "| DL-905 | parked | x | y |", "-->   ", ...ANCHORED_ROW],
+			expected: { kind: "rows", count: 1 },
+		},
+		{
+			name: "fence markers inside a comment",
+			lines: [
+				"<!--",
+				"```",
+				"| DL-905 | parked | x | y |",
+				"-->",
+				...ANCHORED_ROW,
+			],
+			expected: { kind: "rows", count: 1 },
+		},
+		{
+			name: "a comment opener inside a fence",
+			lines: [
+				"```markdown",
+				"<!--",
+				"| DL-900 | example | x | y |",
+				"```",
+				...ANCHORED_ROW,
+			],
+			expected: { kind: "rows", count: 1 },
+		},
+		{
+			name: "a single-line comment inside a table run",
+			lines: [
+				...ANCHORED_ROW,
+				"<!-- | DL-905 | parked | x | y | -->",
+				"| DL-002 | also real | Active (Matt, 2026-01-02) | [r](r.md) |",
+			],
+			expected: { kind: "rows", count: 2 },
+		},
+		{
+			name: "a multi-line comment inside a table run",
+			lines: [
+				...ANCHORED_ROW,
+				"<!--",
+				"| DL-905 | parked | x | y |",
+				"-->",
+				"| DL-002 | also real | Active (Matt, 2026-01-02) | [r](r.md) |",
+			],
+			expected: { kind: "rows", count: 2 },
+		},
+	];
+	for (const { name, lines, expected } of cases) {
+		test(`${name} resolves the same for both counters`, () => {
+			const text = lines.join("\n");
+			expect(outcome(() => parseLedger(text).length)).toEqual(expected);
+			expect(outcome(() => countRawLedgerRows(text))).toEqual(expected);
+		});
+	}
+
+	test("a commented-out table contributes no row to the posted body", () => {
+		const ledger = [
+			...ANCHORED_ROW,
+			"",
+			"<!--",
+			"| ID | Decision | Status | Record |",
+			"| --- | --- | --- | --- |",
+			"| DL-905 | parked draft | Active (Matt, 2026-01-01) | [r](r.md) |",
+			"-->",
+		].join("\n");
+		expect(buildRequestBody(ledger).landed).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+});
+
+describe("the ledger table anchor", () => {
+	// The floor carries no anchor by design, so a header the parser stops
+	// recognizing reads parser-zero against a non-zero floor: a loud mismatch
+	// rather than a silently empty snapshot.
+	for (const header of [
+		"| ID | Decision | Status | Records |",
+		"| **ID** | **Decision** | **Status** | **Record** |",
+		"| ID | Decision | Record | Status |",
+	]) {
+		test(`yields no rows under the near-miss header ${header}`, () => {
+			const text = [
+				header,
+				"| --- | --- | --- | --- |",
+				"| DL-001 | real | Active (Matt, 2026-01-01) | [r](r.md) |",
+			].join("\n");
+			expect(parseLedger(text)).toEqual([]);
+			expect(countRawLedgerRows(text)).toBe(1);
+		});
+	}
+});
+
 describe("reconcile", () => {
 	test("posts the exact request and body", async () => {
 		const requests: Request[] = [];
@@ -208,24 +375,23 @@ describe("reconcile", () => {
 		expect(called).toBe(false);
 	});
 
-	test("aborts the request at the configured deadline", async () => {
+	test("builds the deadline signal from the caller's timeout", async () => {
+		let requestedTimeout = 0;
 		let signal: AbortSignal | null | undefined;
 		const control = new AbortController();
 		await reconcile(buildRequestBody(""), "token", {
 			timeoutMs: 5,
-			timeoutSignal: () => control.signal,
+			timeoutSignal: (timeoutMs) => {
+				requestedTimeout = timeoutMs;
+				return control.signal;
+			},
 			fetchFn: async (_input, init) => {
 				signal = init?.signal;
 				return new Response(null, { status: 204 });
 			},
 		});
-		expect(signal?.aborted).toBe(false);
-		control.abort();
-		if (!signal?.aborted)
-			await new Promise<void>((resolve) =>
-				signal?.addEventListener("abort", () => resolve(), { once: true }),
-			);
-		expect(signal?.aborted).toBe(true);
+		expect(requestedTimeout).toBe(5);
+		expect(signal).toBe(control.signal);
 	});
 
 	test("defaults to a real firing deadline when none is injected", async () => {
