@@ -24,6 +24,7 @@ import {
 	releaseTag,
 	resolveAncestor,
 	sha12,
+	splitNulPaths,
 } from "./retag-core.ts";
 
 async function run(argv: readonly string[]): Promise<ProbeResult> {
@@ -48,9 +49,9 @@ async function skopeo(args: readonly string[]): Promise<string> {
 	return result.stdout;
 }
 
-/** A git call that must succeed. A failure here is missing history, not a
- * registry fault: the job must check out with fetch-depth 0. */
-async function git(args: readonly string[]): Promise<string[]> {
+/** A git call that must succeed, returning raw stdout. A failure here is
+ * missing history, not a registry fault: the job must check out with fetch-depth 0. */
+async function git(args: readonly string[]): Promise<string> {
 	const result = await run(["git", ...args]);
 	if (result.exitCode !== 0) {
 		throw new RetagError(
@@ -58,7 +59,7 @@ async function git(args: readonly string[]): Promise<string[]> {
 			EXIT.usage,
 		);
 	}
-	return result.stdout.split("\n").filter((line) => line.length > 0);
+	return result.stdout;
 }
 
 function arg(name: string): string | undefined {
@@ -80,13 +81,14 @@ async function main(): Promise<number> {
 	// Fail on a short or ref-shaped sha before git resolves it to something else.
 	sha12(releaseSha);
 
+	const ancestors = await git([
+		"rev-list",
+		"--first-parent",
+		`--max-count=${MAX_WALK}`,
+		releaseSha,
+	]);
 	const resolved = await resolveAncestor(
-		await git([
-			"rev-list",
-			"--first-parent",
-			`--max-count=${MAX_WALK}`,
-			releaseSha,
-		]),
+		ancestors.split("\n").filter((line) => line.length > 0),
 		(short) =>
 			run(["skopeo", "inspect", "--raw", `docker://${repo}:git-${short}`]),
 	);
@@ -96,10 +98,21 @@ async function main(): Promise<number> {
 	);
 	// Before any registry write: the ancestors the walk skipped must carry no
 	// closure change, or the resolved image lacks it.
+	// --no-renames: a rename prints only its destination, which hides a file
+	// moved OUT of the closure. -z keeps odd names whole.
 	assertNoClosureChange(
 		process.env.RUNNER_IMAGE_CLOSURE_PATHS ?? "",
 		resolved.sha12,
-		await git(["diff", "--name-only", resolved.commit, releaseSha]),
+		splitNulPaths(
+			await git([
+				"diff",
+				"-z",
+				"--no-renames",
+				"--name-only",
+				resolved.commit,
+				releaseSha,
+			]),
+		),
 	);
 
 	// Copy BY DIGEST so a re-push of the build tag between the probe and the
