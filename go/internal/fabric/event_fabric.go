@@ -2,6 +2,8 @@ package fabric
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -161,6 +163,11 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	if err != nil {
 		return nil, fmt.Errorf("fabric: consuming %q: %w", subject, err)
 	}
+	advisory, err := f.parkOnMaxDeliveries(ctx, stream, subject)
+	if err != nil {
+		cc.Stop()
+		return nil, err
+	}
 
 	// One teardown path (Unsubscribe, ctx done, or fabric closing), run once. Drain,
 	// not Stop: Stop DISCARDS the buffer, and on a durable shared consumer those
@@ -171,6 +178,9 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	stop := func() {
 		once.Do(func() {
 			cc.Drain()
+			if err := advisory.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrConnectionDraining) && !errors.Is(err, nats.ErrBadSubscription) {
+				f.log.WarnContext(ctx, "fabric: unsubscribing the max-deliveries advisory failed", "subject", subject, "error", err)
+			}
 			close(done)
 		})
 	}
@@ -304,22 +314,62 @@ func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error
 // The reason on the wire is sanitized and bounded (see sanitizeReason); the
 // full cause goes to the log, which has no wire limit.
 func (f *Fabric) park(ctx context.Context, msg jetstream.Msg, cause error) {
-	f.log.ErrorContext(ctx, "fabric: parking event on the dlq",
-		"subject", msg.Subject(), "dlq_subject", DLQSubject, "error", cause)
-
-	dlq := nats.NewMsg(DLQSubject)
-	dlq.Data = msg.Data()
-	dlq.Header.Set(dlqHeaderSubject, msg.Subject())
-	reason := sanitizeReason(cause.Error())
-	dlq.Header.Set(dlqHeaderReason, reason)
-	if err := f.nc.PublishMsg(dlq); err != nil {
-		f.log.ErrorContext(ctx, "fabric: publishing to the dlq failed; terminating the message anyway",
-			"subject", msg.Subject(), "error", err)
-	}
+	reason := f.publishDLQ(ctx, msg.Subject(), msg.Data(), cause)
 	if err := msg.TermWithReason(reason); err != nil {
 		f.log.ErrorContext(ctx, "fabric: terminating a parked message failed; it may redeliver until max_deliver",
 			"subject", msg.Subject(), "error", err)
 	}
+}
+
+// publishDLQ writes one DLQ record and returns the sanitized reason it carried.
+// Shared by both park paths so a DLQ consumer sees one header convention.
+func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, cause error) string {
+	f.log.ErrorContext(ctx, "fabric: parking event on the dlq",
+		"subject", subject, "dlq_subject", DLQSubject, "error", cause)
+	dlq := nats.NewMsg(DLQSubject)
+	dlq.Data = data
+	dlq.Header.Set(dlqHeaderSubject, subject)
+	reason := sanitizeReason(cause.Error())
+	dlq.Header.Set(dlqHeaderReason, reason)
+	if err := f.nc.PublishMsg(dlq); err != nil {
+		f.log.ErrorContext(ctx, "fabric: publishing to the dlq failed",
+			"subject", subject, "error", err)
+	}
+	return reason
+}
+
+// maxDeliveriesAdvisory is the server's notice that a consumer gave up on a
+// message after MaxDeliver attempts. Only the fields the park needs.
+type maxDeliveriesAdvisory struct {
+	StreamSeq  uint64 `json:"stream_seq"`
+	Deliveries uint64 `json:"deliveries"`
+}
+
+// parkOnMaxDeliveries parks what the server drops at MaxDeliver. A callback that
+// returns nil but outlives AckWait every time is never Nak'd, so retryOrPark never
+// sees it; only this advisory does. A Term'd park emits no such advisory.
+func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, stream jetstream.Stream, subject string) (*nats.Subscription, error) {
+	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES." + f.cfg.streamName() + "." + durableName(subject)
+	// Queue group: every instance on this consumer hears the advisory; one parks it.
+	sub, err := f.nc.QueueSubscribe(advisorySubject, durableName(subject), func(m *nats.Msg) {
+		var adv maxDeliveriesAdvisory
+		if err := json.Unmarshal(m.Data, &adv); err != nil {
+			f.log.WarnContext(ctx, "fabric: undecodable max-deliveries advisory", "subject", subject, "error", err)
+			return
+		}
+		raw, err := stream.GetMsg(context.WithoutCancel(ctx), adv.StreamSeq)
+		if err != nil {
+			f.log.WarnContext(ctx, "fabric: event dropped at max_deliver is no longer in the stream; not parked",
+				"subject", subject, "stream_seq", adv.StreamSeq, "error", err)
+			return
+		}
+		f.publishDLQ(ctx, raw.Subject, raw.Data,
+			fmt.Errorf("fabric: dropped by the server after %d delivery attempts (callback outlived ack_wait)", adv.Deliveries))
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fabric: subscribing to max-deliveries advisory for %q: %w", subject, err)
+	}
+	return sub, nil
 }
 
 // DLQ message headers, so a consumer of DLQSubject knows what the payload was

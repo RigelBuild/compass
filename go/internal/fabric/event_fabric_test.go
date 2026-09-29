@@ -1801,8 +1801,6 @@ func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
 }
 
 // TestAlwaysSlowCallbackExhaustsMaxDeliver pins where an unbounded callback
-// ends: a healthy event whose every attempt outlives AckWait spends the whole
-// MaxDeliver budget and is dropped by the server, not parked on DLQSubject.
 func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
@@ -1900,7 +1898,18 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	if err := raw.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flushing the raw connection: %v", err)
 	}
+	// Both instances hear the advisory; the queue group must park it exactly once.
+	parked, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("the event dropped at MaxDeliver was never parked: %v", err)
+	}
+	if got := parked.Header.Get(dlqHeaderSubject); got != "compass.t1.comms.message_posted" {
+		t.Errorf("parked original subject = %q, want the event's subject", got)
+	}
+	if !strings.Contains(parked.Header.Get(dlqHeaderReason), "2 delivery attempts") {
+		t.Errorf("parked reason = %q, want it to name the 2 attempts", parked.Header.Get(dlqHeaderReason))
+	}
 	if n, _, err := dlq.Pending(); err != nil || n != 0 {
-		t.Fatalf("dlq pending = %d (err %v), want 0: a slow healthy event is dropped, never parked", n, err)
+		t.Fatalf("dlq pending after the park = %d (err %v), want 0: parked more than once", n, err)
 	}
 }
