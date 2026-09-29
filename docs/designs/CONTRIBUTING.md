@@ -126,3 +126,17 @@ deletion — a move leaves the same dangling-link rot a deletion would. Two narr
 metadata edits ride the same standard and are likewise not freeze violations:
 normalizing a newly-governed record's `Status:` header to the gate grammar, and
 a one-line correction of a record's stale self-described location.
+
+## 7. Claim design-ledger IDs
+
+New `DECISIONS.md` rows MUST get IDs from the shared counter, not from a guessed
+next number. Concurrent PRs can otherwise claim the same ID. The reconcile
+workflow marks claimed IDs as landed after merge. Set `DL_CLAIM_TOKEN` before
+running:
+
+```sh
+bun tools/dl-claim --ref RIG-1234 --lane feature/design-record
+```
+
+Use `--count N` to claim more than one ID. Put each printed ID in its new row's
+`ID` cell, in the same PR as the record.

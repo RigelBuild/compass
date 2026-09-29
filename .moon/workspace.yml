@@ -199,6 +199,9 @@ projects:
   dl-reconcile: 'tools/dl-reconcile'
   # The post-build CLI artifact smoke gate: proves the operator binary was produced, is current, and runs.
   operator-cli-check: 'tools/operator-cli-check'
+  # The design-ledger ID claimer: mints IDs atomically from the shared counter.
+  # Registered so its typecheck and behavior tests ride the moon-driven CI sweep.
+  dl-claim: 'tools/dl-claim'
 
 # File hashing uses moon's in-process native walker (the v2.5+ default), NOT the
 # git shell-out. This is load-bearing: the git hasher (`git ls-files` then `git
