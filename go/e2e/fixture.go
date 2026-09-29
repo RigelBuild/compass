@@ -96,10 +96,9 @@ const expectedVersion = "e2e-test"
 // deployment key — every fixture is torn down with its data.
 const fixtureMasterKey = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-// Fixture is one test's live embedded stack plus the authenticated clients and
-// store handle the harness legs consume. It is produced by NewFixture, which
-// registers teardown on the test, so a consumer never manages the stack's
-// lifecycle directly.
+// Fixture is a live embedded stack plus authenticated clients and a store handle
+// for one test or the package-shared e2e legs. NewFixture registers teardown on
+// the test; the shared fixture has a run-scoped owner instead.
 type Fixture struct {
 	compass   compassServiceClient
 	comms     commsServiceClient
@@ -121,6 +120,10 @@ type Fixture struct {
 	// startup, so a consumer never closes it directly.
 	stub      *cannedModelServer
 	forgeStub *forgeStub
+	// agentModel and egressAllow are the runner flags this fixture configured,
+	// so a process-table check asserts what was actually forwarded.
+	agentModel  string
+	egressAllow []string
 	// now is the injectable wall-clock for the enrollment-readiness poll;
 	// defaults to time.Now. A test overrides it to drive the budget-timeout
 	// branch of waitRunnerEnrolled — the enrollment counterpart to the stack's
@@ -460,9 +463,9 @@ func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID s
 // before NewFixture is reached; here podman and the real image are assumed
 // present.
 //
-// opts default to none — NewFixture(ctx, t) is the plain H1/H2 fixture. Pass
-// WithCannedModel to stand up the RIG-1787 H3 deterministic model backend so a
-// real agent turn can settle with no live-model egress.
+// opts default to none — NewFixture(ctx, t) is the plain fixture. Pass
+// WithCannedModel to stand up a deterministic model backend so an agent turn can
+// settle without live-model egress.
 func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixture {
 	t.Helper()
 
@@ -618,17 +621,19 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	}
 
 	f := &Fixture{
-		compass:    compass,
-		comms:      comms,
-		stack:      st,
-		dsn:        dsn,
-		caPath:     caPath,
-		serverURL:  serverURL,
-		adminToken: adminToken,
-		runtimeDir: runtimeDir,
-		stub:       stub,
-		forgeStub:  forgeStub,
-		now:        time.Now,
+		compass:     compass,
+		comms:       comms,
+		stack:       st,
+		dsn:         dsn,
+		caPath:      caPath,
+		serverURL:   serverURL,
+		adminToken:  adminToken,
+		runtimeDir:  runtimeDir,
+		stub:        stub,
+		forgeStub:   forgeStub,
+		agentModel:  cfg.AgentModel,
+		egressAllow: cfg.EgressAllow,
+		now:         time.Now,
 	}
 
 	// stack.Up returns as soon as the compass-runner CHILD is spawned, but the

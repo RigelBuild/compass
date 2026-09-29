@@ -206,3 +206,15 @@ func TestRunRejectsOverBudgetRuntimeDirBeforeDialing(t *testing.T) {
 		t.Fatalf("Run error = %v, want the runtime-dir budget error (not a dial/context failure)", err)
 	}
 }
+
+func TestRunRejectsEmptyRunnerID(t *testing.T) {
+	err := Run(context.Background(), RunnerConfig{
+		ServerAddr: "http://127.0.0.1:1",
+		Token:      "t",
+		Engine:     newPipeRuntime(),
+		RuntimeDir: t.TempDir(),
+	}, nil, discardLoggerRunner())
+	if err == nil || !strings.Contains(err.Error(), "runner id") {
+		t.Fatalf("Run with empty runner ID = %v, want runner-id configuration error", err)
+	}
+}

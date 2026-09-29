@@ -37,9 +37,9 @@ func TestSeedSettledBeforeFixtureReturns(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + the store read
+	ctx := context.Background() // test root, threaded into the store read
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	st, err := store.Open(ctx, f.DSN())
 	if err != nil {

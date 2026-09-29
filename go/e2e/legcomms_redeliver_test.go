@@ -21,18 +21,8 @@ func TestCommsOfflineRedeliveryOnSessionStart(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
-
-	// Slot 0 settles lifetime 1's warm turn, driven only so the resume has a
-	// persisted transcript to reconstruct; slot 1 settles the resumed turn the
-	// sweep's redelivery of the offline message drives.
-	const warmReply = "canned lifetime-1 warm turn settled OK"
-	const redeliverReply = "canned redelivered turn settled OK"
-	f := NewFixture(ctx, t, WithCannedScript(
-		CannedText(warmReply),
-		CannedText(redeliverReply),
-	))
-
+	ctx := context.Background() // test root, threaded into sharedFixture + every primitive
+	f := sharedFixture(t)
 	accountID, err := f.CreateAgent(ctx, "comms-redeliver", "Comms Offline Redelivery")
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
@@ -75,7 +65,7 @@ func TestCommsOfflineRedeliveryOnSessionStart(t *testing.T) {
 	}
 	defer tail1.Close()
 
-	warmID, err := f.PostMessage(ctx, string(home), "general", "warm the session so it persists a transcript")
+	warmID, err := f.PostMessage(ctx, string(home), "general", "warm the session so it persists a transcript "+redeliverMarker)
 	if err != nil {
 		t.Fatalf("PostMessage (warm): %v", err)
 	}
@@ -100,7 +90,7 @@ func TestCommsOfflineRedeliveryOnSessionStart(t *testing.T) {
 		t.Fatalf("RemoveWorkspace (despawn boundary): %v", err)
 	}
 
-	offlineID, err := f.PostMessage(ctx, string(home), "general", "message accrued while the agent is offline")
+	offlineID, err := f.PostMessage(ctx, string(home), "general", "message accrued while the agent is offline "+redeliverMarker)
 	if err != nil {
 		t.Fatalf("PostMessage (offline): %v", err)
 	}
@@ -145,4 +135,17 @@ func TestCommsOfflineRedeliveryOnSessionStart(t *testing.T) {
 	if err := f.waitDeliveryCursorPast(ctx, st, acc.ID, home, store.MessageID(offlineID)); err != nil {
 		t.Fatalf("waitDeliveryCursorPast (offline redelivery): %v", err)
 	}
+}
+
+// redeliverMarker's slot 0 settles lifetime 1's warm turn, driven only so the
+// resume has a persisted transcript to reconstruct; slot 1 settles the resumed
+// turn the sweep's redelivery of the offline message drives.
+const (
+	redeliverMarker = "e2e-route-comms-offline-redelivery"
+	warmReply       = "canned lifetime-1 warm turn settled OK"
+	redeliverReply  = "canned redelivered turn settled OK"
+)
+
+func init() {
+	registerSharedFixtureOption(WithCannedMarkerScript(redeliverMarker, CannedText(warmReply), CannedText(redeliverReply)))
 }
