@@ -80,7 +80,9 @@ func (f *Fabric) Publish(ctx context.Context, subject string, ref EventRef) erro
 // failure Naks for immediate redelivery until NumDelivered
 // reaches MaxDeliver — total ATTEMPTS, not retries — at which point the message
 // is parked on DLQSubject and Term'd. An undecodable payload is parked
-// immediately: redelivering it can never succeed.
+// immediately: redelivering it can never succeed. A callback that outlives
+// AckWait on every attempt is dropped by the server at MaxDeliver; the fabric
+// parks it from the consumer's MAX_DELIVERIES advisory instead (no Term).
 func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	if err := f.checkOpen(); err != nil {
 		return nil, err
@@ -104,7 +106,8 @@ func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(context.
 // consumer (durableName hashes the wildcard subject to its own name, distinct
 // from any concrete-tenant consumer, so each matching event is claimed by
 // exactly one Server instance), the same explicit ack / Nak-to-MaxDeliver /
-// park-on-DLQSubject semantics, and the same drain on all three teardown
+// park-on-DLQSubject semantics (including the advisory park of a message the
+// server dropped at MaxDeliver), and the same drain on all three teardown
 // paths. Wildcard and concrete consumers are independent durables; see
 // SUBJECTS.md's "Its own durable consumer" property when migrating callers.
 //
@@ -229,9 +232,14 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(con
 		f.park(ctx, msg, fmt.Errorf("fabric: event ref %s/%s names subject %q but was delivered on %q", ref.Tenant, ref.Kind, want, got))
 		return
 	}
-	// Detached from ctx so an event drained after Subscribe's ctx ends still
-	// runs live. It ends a tenth before AckWait so a final-attempt park's Term
-	// reaches the server before its timer, which would otherwise park it again.
+	// A message buffered behind a slow callback has already spent part of its
+	// AckWait; resetting it here lines the server's timer up with the deadline
+	// below, so a ctx-respecting final attempt parks before the server drops it.
+	if err := msg.InProgress(); err != nil {
+		f.log.WarnContext(ctx, "fabric: resetting ack_wait before the callback failed", "subject", msg.Subject(), "error", err)
+	}
+	// Detached from ctx so an event drained after Subscribe's ctx ends still runs
+	// live; the 0.9 margin lets the final attempt's Term reach the server first.
 	// The subscriber's span is stripped so only the publisher's trace carries.
 	base := trace.ContextWithSpanContext(context.WithoutCancel(ctx), trace.SpanContext{})
 	deliveryCtx, cancel := context.WithTimeout(otelx.ContextWithTraceparent(base, traceparent(msg.Headers())), f.cfg.ackWait()*9/10)
