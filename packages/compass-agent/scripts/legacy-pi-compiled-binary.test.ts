@@ -59,7 +59,11 @@ describe("compiled legacy Pi extension loading", () => {
 
 		const child = Bun.spawn([binaryPath], {
 			cwd: tempDir,
-			env: { ...process.env, LEGACY_PI_EXTENSION_PATH: fixturePath },
+			env: {
+				...process.env,
+				HOME: tempDir,
+				LEGACY_PI_EXTENSION_PATH: fixturePath,
+			},
 			stdout: "pipe",
 			stderr: "pipe",
 		});
