@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  ci:
+    # No `check` task: the gate's subject is a binary that exists only after
+    # `devenv up` on a provisioned box, so moon has nothing to assert against.
+    # `devenv tasks run dogfood:check-cli` is its only real invocation.
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
