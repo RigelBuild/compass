@@ -352,12 +352,6 @@ func (p *controlProducer) AckControl(sessionID string, epoch, ackedSeq uint64, a
 	if !ok {
 		return // retired: no retention to prune, no barrier to lift
 	}
-	s.mu.Lock()
-	stale := s.epoch != epoch
-	s.mu.Unlock()
-	if stale {
-		return // a replaced process's ack names seqs this state no longer uses
-	}
 
 	// An ack naming nothing prunes nothing, the only shape production emits today, so the
 	// snapshot is skipped. When there IS something to intersect: snapshot the retained
@@ -378,6 +372,11 @@ func (p *controlProducer) AckControl(sessionID string, epoch, ackedSeq uint64, a
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Checked under the same lock as the prune, so a Restart cannot slip between
+	// them: a replaced process's ack names seqs this state no longer uses.
+	if s.epoch != epoch {
+		return
+	}
 	if ackedSeq > s.nextSeq {
 		ackedSeq = s.nextSeq
 	}
