@@ -362,11 +362,11 @@ func TestReconcileIgnoresMisVisibilityUserGroup(t *testing.T) {
 	s.SetCoordinationHook(h.reconcile)
 	manager := mustAgent(t, s, owner.ID, "manager")
 
-	// The user plants a top-level SHARED group named __coordination__ (the
-	// reserved segment is not guarded at the CreateChannelGroup boundary).
-	if _, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{
-		Name: "__coordination__", Visibility: VisibilityShared,
-	}); err != nil {
+	// A top-level SHARED __coordination__ can still exist via paths other than
+	// CreateChannelGroup, so plant it with raw SQL.
+	if _, err := s.pool.Exec(ctx,
+		"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1,$2,NULL,$3,$4)",
+		newID(), coordinationGroupName, string(owner.ID), int16(VisibilityShared)); err != nil {
 		t.Fatalf("plant shared __coordination__ group: %v", err)
 	}
 
