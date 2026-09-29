@@ -410,6 +410,52 @@ func TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError(t *testing.T) {
 	}
 }
 
+// TestMicroVMSweepScriptSkipsItsOwnProcEntries pins the self-match defenses in
+// sweepScript's doc: the walk skips /proc (after collapsing a leading "//"), and
+// the needle stays out of the searcher's cmdline by travelling in its
+// environment. A sweep that reads either reports a false escape.
+func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-proc-skip")
+
+	const needle = "SWEEP-PROC-SELF-3b9e61c4"
+	// A FILE root bypasses the exclusion, so this proves the self-match
+	// surface is live in the guest; otherwise the exit-1 check pins nothing.
+	if out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/environ")); code != 0 || !strings.Contains(out, needle) {
+		t.Fatalf("sweeping /proc/self/environ as a file root gave exit %d, %q; want exit 0 with the needle, "+
+			"or the exclusion assertion below would be vacuous", code, truncate(out))
+	}
+	// "//proc/self" globs to "//proc/self/…", which only the slash collapse
+	// brings back under the /proc/* exclusion.
+	for _, root := range []string{"/proc/self", "//proc/self"} {
+		// Each walk must reach environ, or its no-match proves nothing.
+		walk := "shopt -s globstar nullglob dotglob; for f in " + shellQuote(root) + "/**/*; do " +
+			"[[ $f == " + shellQuote(root+"/environ") + " ]] && { echo reached; break; }; done"
+		if out, _ := guestSh(t, m, id, walk); strings.TrimSpace(out) != "reached" {
+			t.Fatalf("the %s walk never reached environ (%q); the exclusion assertion would be vacuous", root, truncate(out))
+		}
+
+		out, code := guestSh(t, m, id, sweepScript(needle, root))
+		if code != 1 || strings.Contains(out, needle) {
+			t.Fatalf("sweeping a %s directory root gave exit %d, %q; want exit 1 without the needle: "+
+				"the walk must skip /proc, or the sweep reads its own environ and reports a false escape",
+				root, code, truncate(out))
+		}
+	}
+
+	// A FILE root is swept as-is, so awk reads its own cmdline here: it holds
+	// the needle only if the needle travels in argv.
+	if out, code := guestSh(t, m, id, sweepScript("awk", "/proc/self/cmdline")); code != 0 {
+		t.Fatalf("sweeping /proc/self/cmdline for the awk argv0 gave exit %d, %q; want exit 0, "+
+			"or the argv assertion below would be vacuous", code, truncate(out))
+	}
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/cmdline"))
+	if code != 1 || strings.Contains(out, needle) {
+		t.Fatalf("sweeping /proc/self/cmdline gave exit %d, %q; want exit 1 without the needle: "+
+			"the needle is in argv, so the sweep matches its own command line", code, truncate(out))
+	}
+}
+
 // TestMicroVMVolumeTraversalConfined is the path-traversal leg: the guest tries
 // to escape /workspace three ways and is confined every time, proven from both
 // sides of the boundary.
