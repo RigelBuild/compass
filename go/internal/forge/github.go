@@ -80,20 +80,43 @@ type GitHub struct {
 	// across the HTTP round-trip.
 	mu sync.Mutex
 
-	// resetAt is the rate-budget gate: when non-zero and now() is before it,
-	// the next call fails fast with ErrBudgetExhausted rather than burning the
-	// tail of the window. It is derived from the last response's
-	// x-ratelimit-reset (or a 403/429 Retry-After / reset signal). A zero value
-	// means the gate is OPEN. Absent/malformed headers leave it open (treat
-	// unknown budget as available — never wedge the gate). Once now() passes
-	// resetAt the gate re-opens, so a wedged window self-clears after the reset.
-	// Guarded by mu because the author client is shared between the poll driver
-	// and write-RPC goroutines (OQ-6).
-	resetAt time.Time
+	// resetAt is the rate-budget gate, one per GitHub rate-limit resource
+	// (REST core vs GraphQL are separate buckets, so draining one must not block
+	// the other). When non-zero and now() is before it, the next call on that
+	// resource fails fast with ErrBudgetExhausted rather than burning the tail of
+	// the window. It is derived from the last response's x-ratelimit-reset (or a
+	// 403/429 Retry-After / reset signal). A zero value means the gate is OPEN.
+	// Absent/malformed headers leave it open (treat unknown budget as available —
+	// never wedge the gate). Once now() passes resetAt the gate re-opens, so a
+	// wedged window self-clears after the reset. Guarded by mu.
+	resetAt [numRateResources]time.Time
 
 	// now is the clock seam (defaults to time.Now in NewGitHub); tests override
 	// it to drive the reset-time gate deterministically without real sleeps.
 	now func() time.Time
+}
+
+// rateResource is a GitHub rate-limit bucket, named by the x-ratelimit-resource
+// response header. Each has its own budget, so each has its own gate.
+type rateResource int
+
+const (
+	resourceCore rateResource = iota
+	resourceGraphQL
+	numRateResources
+)
+
+// resourceOf reads the bucket a response was charged to. A missing or unknown
+// header falls back to the caller's resource, so a GraphQL response never arms core.
+func resourceOf(resp *http.Response, fallback rateResource) rateResource {
+	switch resp.Header.Get("X-Ratelimit-Resource") {
+	case "core":
+		return resourceCore
+	case "graphql":
+		return resourceGraphQL
+	default:
+		return fallback
+	}
 }
 
 // reserve is the rate-budget floor: when x-ratelimit-remaining is at or under
@@ -164,7 +187,7 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 	// Gate check: an armed gate blocks until the injected clock passes resetAt,
 	// then re-opens so the next call issues a real request (whose response
 	// re-records the budget). A zero resetAt means the gate is open.
-	if hint, blocked := g.gateBlocked(); blocked {
+	if hint, blocked := g.gateBlocked(resourceCore); blocked {
 		return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, &RateLimitError{RetryAfter: hint})
 	}
 
@@ -198,18 +221,18 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 		// A 304's x-ratelimit-* headers reflect a healthy authorized bucket
 		// (the conditional request was not charged against the primary limit);
 		// record it for the NEXT call, then short-circuit before any body parse.
-		g.recordBudget(resp)
+		g.recordBudget(resp, resourceCore)
 		return ListPage{NotModified: true, RateLimitRemaining: remainingHeader(resp)}, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		// A 2xx's headers reflect a healthy bucket; record for the next call.
-		g.recordBudget(resp)
+		g.recordBudget(resp, resourceCore)
 		// fallthrough to body parse below
 	default:
 		// Error responses: mapErrorResponse owns the budget decision (it arms the gate
 		// on a true rate-limit signal). A bad-creds 403 carries a low nonzero remaining;
 		// recording it here would arm the gate against the token we are about to
 		// invalidate, suppressing the fresh-token retry the next batch is meant to make.
-		return ListPage{}, g.mapErrorResponse(resp)
+		return ListPage{}, g.mapErrorResponse(resp, resourceCore)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -281,7 +304,7 @@ func (r ghComment) toComment() Comment {
 
 // ghPull is the wire shape of a GitHub pull request (the create response). Only
 // the fields forge.PullRequest needs at create time are decoded; the read-side
-// roll-ups (Changed/Checks/Reviews/Threads) belong to RIG-1728's GetPullRequest.
+// roll-ups (Changed/Checks/Reviews/Threads) are GetPullRequest's (ghPullDetail).
 type ghPull struct {
 	Number  uint64 `json:"number"`
 	Title   string `json:"title"`
@@ -588,11 +611,15 @@ type ghReviewRow struct {
 	} `json:"user"`
 }
 
-// GetPullRequest fetches a pull request with its read roll-ups. It is a
-// composite of three GETs — the pull detail, the reviews list, and the checks
-// roll-up (folded off the head SHA the detail already carries, so the PR is not
-// re-fetched). Bodies are RAW.
+// GetPullRequest fetches a pull request with its read roll-ups: the pull detail
+// and reviews list over REST, then checksForPull for the checks roll-up (folded
+// off the detail's head SHA, so the PR is not re-fetched) together with the
+// review threads, which only GraphQL exposes. Bodies are RAW.
 func (g *GitHub) GetPullRequest(ctx context.Context, repo string, number uint64) (PullRequest, error) {
+	coord, err := newPullCoord(repo, number)
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("forge: github get pull request %q#%d: %w", repo, number, err)
+	}
 	base := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10)
 
 	var detail ghPullDetail
@@ -616,14 +643,12 @@ func (g *GitHub) GetPullRequest(ctx context.Context, repo string, number uint64)
 		})
 	}
 
-	checks, err := g.checksForSHA(ctx, repo, detail.Head.SHA)
+	checks, threads, err := g.checksForPull(ctx, coord, detail.Head.SHA, true)
 	if err != nil {
 		return PullRequest{}, fmt.Errorf("forge: github get pull request %q#%d: %w", repo, number, err)
 	}
 	pr.Checks = checks
-
-	// TODO(RIG-1728): review-thread resolution is GitHub GraphQL-only; the REST read path leaves Threads empty. The write path does not consume Threads; the board/ingestion PR-pane enrichment is RIG-1728's full read/projection scope.
-	pr.Threads = nil
+	pr.Threads = threads
 
 	return pr, nil
 }
@@ -666,14 +691,19 @@ type ghCommitPull struct {
 }
 
 // Checks returns the rolled-up CI/status state for a PR head. It first resolves
-// the head SHA (a minimal pull-detail fetch), then delegates to checksForSHA.
+// the head SHA (a minimal pull-detail fetch), then delegates to checksForPull,
+// the same helper GetPullRequest uses, so Required is set identically on both.
 func (g *GitHub) Checks(ctx context.Context, repo string, number uint64) (Checks, error) {
+	coord, err := newPullCoord(repo, number)
+	if err != nil {
+		return Checks{}, fmt.Errorf("forge: github checks %q#%d: %w", repo, number, err)
+	}
 	url := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10)
 	var detail ghPullDetail
 	if _, err := g.getJSON(ctx, url, &detail); err != nil {
 		return Checks{}, fmt.Errorf("forge: github checks %q#%d: %w", repo, number, err)
 	}
-	checks, err := g.checksForSHA(ctx, repo, detail.Head.SHA)
+	checks, _, err := g.checksForPull(ctx, coord, detail.Head.SHA, false)
 	if err != nil {
 		return Checks{}, fmt.Errorf("forge: github checks %q#%d: %w", repo, number, err)
 	}
@@ -699,7 +729,7 @@ func (g *GitHub) BodyLimit() int { return 65536 }
 func (g *GitHub) getJSON(ctx context.Context, url string, out any) (bool, error) {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
-	if hint, blocked := g.gateBlocked(); blocked {
+	if hint, blocked := g.gateBlocked(resourceCore); blocked {
 		return false, fmt.Errorf("GET %s: %w", url, &RateLimitError{RetryAfter: hint})
 	}
 
@@ -726,9 +756,9 @@ func (g *GitHub) getJSON(ctx context.Context, url string, out any) (bool, error)
 		// gate on a true rate-limit signal). A bad-creds 403 carries a low nonzero
 		// remaining; recording it here would arm the gate against the token we are
 		// about to invalidate (same reasoning as ListIssuesPage — no budget on error).
-		return false, g.mapErrorResponse(resp)
+		return false, g.mapErrorResponse(resp, resourceCore)
 	}
-	g.recordBudget(resp)
+	g.recordBudget(resp, resourceCore)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -775,8 +805,8 @@ func getAllPages[E, T any](ctx context.Context, g *GitHub, baseURL string, rows 
 // concatenated, never truncated to page 1). The roll-up State is "failure" if
 // ANY check is a terminal-bad outcome (failure or cancelled), else "pending" if
 // ANY is non-terminal or unknown, else "success" (only when every check is a
-// terminal pass; an empty set rolls up to success). Required is false everywhere:
-// TODO(RIG-1728): required-check status derives from branch protection (a separate API); the write path does not consume Required.
+// terminal pass; an empty set rolls up to success). Required is left false: it
+// is per pull request, not per SHA, so checksForPull sets it.
 func (g *GitHub) checksForSHA(ctx context.Context, repo, sha string) (Checks, error) {
 	commitBase := g.apiBase() + "/repos/" + repo + "/commits/" + sha
 
@@ -884,40 +914,46 @@ func rollupChecksState(checks []Check) string {
 	return checkStateSuccess
 }
 
-// gateBlocked reports whether the fail-fast budget gate is currently armed and,
-// when armed, the remaining wait until it re-opens (resetAt-now, clamped >= 0)
-// so the caller can surface the hint. It clears a gate whose reset instant has
-// passed (re-opening it) as a side effect. Guarded by mu — the gate is shared
-// between the poll driver and the write-RPC goroutines (OQ-6).
-func (g *GitHub) gateBlocked() (time.Duration, bool) {
+// gateBlocked reports whether the fail-fast budget gate for resource is
+// currently armed and, when armed, the remaining wait until it re-opens
+// (resetAt-now, clamped >= 0) so the caller can surface the hint. It clears a
+// gate whose reset instant has passed (re-opening it) as a side effect. Guarded
+// by mu — the gate is shared between the poll driver and the write-RPC
+// goroutines (OQ-6).
+func (g *GitHub) gateBlocked(resource rateResource) (time.Duration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.resetAt.IsZero() {
+	at := g.resetAt[resource]
+	if at.IsZero() {
 		return 0, false
 	}
 	now := g.now()
-	if now.Before(g.resetAt) {
-		return g.resetAt.Sub(now), true
+	if now.Before(at) {
+		return at.Sub(now), true
 	}
-	g.resetAt = time.Time{}
+	g.resetAt[resource] = time.Time{}
 	return 0, false
 }
 
-// doJSON carries the write-path plumbing once for every write method: the
-// resetAt fail-fast gate (a write burst respects the same reserve as the poll
-// driver, so it cannot starve it), token auth, budget recording, and error
-// mapping. It marshals in to a JSON request body and decodes a 2xx response
-// into out. The read path (ListIssuesPage) is intentionally NOT refactored onto
-// this in this slice (no RIG-1728 rework).
-//
-// method is the HTTP verb: the create/comment/review writes POST, and the state
-// transitions PATCH. Everything else about the exchange is identical — writes
-// are unconditional (no If-None-Match), so the verb is the only axis that
-// varies and one helper still carries the whole write path.
+// doJSON is the REST write path: doJSONOn against the core rate bucket.
 func (g *GitHub) doJSON(ctx context.Context, method, url string, in, out any) error {
+	return g.doJSONOn(ctx, resourceCore, method, url, in, out)
+}
+
+// doJSONOn carries the JSON-body plumbing once for every write method and the
+// GraphQL read (graphQL): resource's fail-fast gate (a write burst respects the
+// same reserve as the poll driver, so it cannot starve it), token auth, budget
+// recording, and error mapping. It marshals in to a JSON request body and
+// decodes a 2xx response into out. The REST reads use getJSON instead.
+//
+// method is the HTTP verb: the create/comment/review writes and the GraphQL
+// query POST, and the state transitions PATCH. Everything else about the
+// exchange is identical — these calls are unconditional (no If-None-Match), so
+// the verb and the rate bucket are the only axes that vary.
+func (g *GitHub) doJSONOn(ctx context.Context, resource rateResource, method, url string, in, out any) error {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
-	if hint, blocked := g.gateBlocked(); blocked {
+	if hint, blocked := g.gateBlocked(resource); blocked {
 		return fmt.Errorf("%s %s: %w", method, url, &RateLimitError{RetryAfter: hint})
 	}
 
@@ -950,9 +986,9 @@ func (g *GitHub) doJSON(ctx context.Context, method, url string, in, out any) er
 		// the gate on a true rate-limit signal). A bad-creds 403 carries a low
 		// nonzero remaining; recording it here would arm the gate against the
 		// token we are about to invalidate (same reasoning as the read path).
-		return g.mapErrorResponse(resp)
+		return g.mapErrorResponse(resp, resource)
 	}
-	g.recordBudget(resp)
+	g.recordBudget(resp, resource)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1018,29 +1054,31 @@ func (g *GitHub) queryParams(f IssueFilter, page int) url.Values {
 	return q
 }
 
-// recordBudget updates the fail-fast gate from a response's x-ratelimit-*
+// recordBudget updates the fail-fast gate of the bucket the response was
+// charged to (x-ratelimit-resource, else fallback) from its x-ratelimit-*
 // headers. remaining <= reserve arms the gate until x-ratelimit-reset (unix
 // seconds); absent/malformed headers leave it open (treat unknown budget as
 // available — never wedge the gate). A missing/unparseable reset with a
 // low remaining falls back to a bounded skip so the gate still self-clears.
-func (g *GitHub) recordBudget(resp *http.Response) {
+func (g *GitHub) recordBudget(resp *http.Response, fallback rateResource) {
+	resource := resourceOf(resp, fallback)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	raw := resp.Header.Get("X-Ratelimit-Remaining")
 	if raw == "" {
-		g.resetAt = time.Time{}
+		g.resetAt[resource] = time.Time{}
 		return
 	}
 	remaining, err := strconv.Atoi(raw)
 	if err != nil {
-		g.resetAt = time.Time{}
+		g.resetAt[resource] = time.Time{}
 		return
 	}
 	if remaining > reserve {
-		g.resetAt = time.Time{}
+		g.resetAt[resource] = time.Time{}
 		return
 	}
-	g.armGate(resetFromHeader(resp.Header.Get("X-Ratelimit-Reset")))
+	g.armGate(resource, resetFromHeader(resp.Header.Get("X-Ratelimit-Reset")))
 }
 
 // remainingHeader parses the x-ratelimit-remaining header into the observability
@@ -1059,14 +1097,14 @@ func remainingHeader(resp *http.Response) int {
 	return remaining
 }
 
-// armGate sets the reset-time gate. A zero at (no usable reset time) falls back
-// to a bounded skip from now() so the gate self-clears rather than wedging.
-// Caller MUST hold g.mu.
-func (g *GitHub) armGate(at time.Time) {
+// armGate sets resource's reset-time gate. A zero at (no usable reset time)
+// falls back to a bounded skip from now() so the gate self-clears rather than
+// wedging. Caller MUST hold g.mu.
+func (g *GitHub) armGate(resource rateResource, at time.Time) {
 	if at.IsZero() {
 		at = g.now().Add(defaultSkip)
 	}
-	g.resetAt = at
+	g.resetAt[resource] = at
 }
 
 // resetFromHeader parses an x-ratelimit-reset value (unix seconds) into an
@@ -1084,11 +1122,11 @@ func resetFromHeader(raw string) time.Time {
 
 // mapErrorResponse classifies a non-2xx/non-304 response. A 403/429 carrying
 // retry-after OR a zeroed x-ratelimit-remaining is a rate-limit skip
-// (ErrBudgetExhausted, arms the gate, no token re-resolve). A 401, or a 403
-// without rate-limit headers (bad-credentials/permission), is a *StatusError
-// AND invalidates the TokenSource so the next batch re-resolves. Any other
-// non-2xx is a *StatusError only.
-func (g *GitHub) mapErrorResponse(resp *http.Response) error {
+// (ErrBudgetExhausted, arms the gate of the bucket it names — else fallback —
+// no token re-resolve). A 401, or a 403 without rate-limit headers
+// (bad-credentials/permission), is a *StatusError AND invalidates the
+// TokenSource so the next batch re-resolves. Any other non-2xx is a *StatusError only.
+func (g *GitHub) mapErrorResponse(resp *http.Response, fallback rateResource) error {
 	body, _ := io.ReadAll(resp.Body) // best-effort: message is diagnostic; a read error just yields an empty message
 	var ge ghError
 	_ = json.Unmarshal(body, &ge) // best-effort decode of the diagnostic message; malformed body -> empty message
@@ -1102,7 +1140,7 @@ func (g *GitHub) mapErrorResponse(resp *http.Response) error {
 			// the bounded defaultSkip internally.
 			reset := g.rateLimitReset(resp)
 			g.mu.Lock()
-			g.armGate(reset)
+			g.armGate(resourceOf(resp, fallback), reset)
 			g.mu.Unlock()
 			var hint time.Duration
 			if !reset.IsZero() {

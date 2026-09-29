@@ -930,10 +930,12 @@ type graphQLResponse struct {
 }
 
 // graphQLError is one entry of the GraphQL `errors` array. The extensions.code
-// discriminates a rate-limit ("RATELIMITED") or auth ("AUTHENTICATION_ERROR")
-// failure from an ordinary one.
+// discriminates a Linear rate-limit ("RATELIMITED") or auth
+// ("AUTHENTICATION_ERROR") failure from an ordinary one; GitHub uses Type
+// instead (e.g. "RATE_LIMITED").
 type graphQLError struct {
 	Message    string `json:"message"`
+	Type       string `json:"type"`
 	Extensions struct {
 		Code string `json:"code"`
 	} `json:"extensions"`
