@@ -33,7 +33,7 @@ func TestControlAckAfterRetireDoesNotResurrectSession(t *testing.T) {
 	}
 
 	// The trailing ack, after the lifecycle's one and only Stop for this id.
-	p.AckControl(testSession, 1, nil)
+	p.AckControl(testSession, p.Epoch(testSession), 1, nil)
 
 	if got := p.sessionCount(); got != 0 {
 		t.Errorf("sessions after a post-Retire ack = %d, want 0: the ack resurrected the retired session, "+
@@ -49,7 +49,7 @@ func TestControlReleaseAfterRetireDoesNotResurrectSession(t *testing.T) {
 	}
 	p.Retire(testSession)
 
-	p.ReleaseReplayBarrier(testSession)
+	p.ReleaseReplayBarrier(testSession, p.Epoch(testSession))
 
 	if got := p.sessionCount(); got != 0 {
 		t.Errorf("sessions after a post-Retire ReplayCompleteAck = %d, want 0", got)
@@ -69,8 +69,8 @@ func TestControlPostRetireAcksDoNotAccumulateAcrossCycles(t *testing.T) {
 		if err := p.Send(id, promptOp("op")); err != nil {
 			t.Fatalf("Send on cycle %d: %v", i, err)
 		}
-		p.Retire(id)             // the lifecycle's Stop
-		p.AckControl(id, 1, nil) // the agent's trailing ack, after Stop
+		p.Retire(id)                          // the lifecycle's Stop
+		p.AckControl(id, p.Epoch(id), 1, nil) // the agent's trailing ack, after Stop
 	}
 
 	if got := p.sessionCount(); got != 0 {
@@ -200,7 +200,7 @@ func TestControlAckAppliesThroughTheBoundedSet(t *testing.T) {
 		ack = append(ack, uint64(maxRetainedOps*8+i))
 	}
 	ack = append(ack, 2)
-	p.AckControl(testSession, 1, ack)
+	p.AckControl(testSession, p.Epoch(testSession), 1, ack)
 
 	stream := newControlStream()
 	stop := p.subscribe(t, stream)
@@ -327,7 +327,7 @@ func TestEmptyAckDoesNotAllocateWithRetention(t *testing.T) {
 			}
 		}
 		return testing.AllocsPerRun(10, func() {
-			p.AckControl(testSession, 0, nil)
+			p.AckControl(testSession, p.Epoch(testSession), 0, nil)
 		})
 	}
 
