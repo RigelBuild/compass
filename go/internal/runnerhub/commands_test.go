@@ -180,7 +180,7 @@ func TestStartRelayCarriesFreshIDOnlyForFreshStart(t *testing.T) {
 func TestStartEmitsNoInitialSignal(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("c1", testAgentAccount)
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
 	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
@@ -247,8 +247,8 @@ func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
 func TestRemoveClearsContainerBinding(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("c1", testAgentAccount)
-	if _, ok := hub.AccountForContainer("c1"); !ok {
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
+	if _, ok := hub.AccountForContainer("runner-1", "c1"); !ok {
 		t.Fatal("precondition: container c1 should be bound after bindContainer")
 	}
 	router, _, _ := hub.routerFor("any")
@@ -263,7 +263,7 @@ func TestRemoveClearsContainerBinding(t *testing.T) {
 	if _, err := hub.Remove(context.Background(), "req-rm", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err != nil {
 		t.Fatalf("Remove = %v, want success", err)
 	}
-	if _, ok := hub.AccountForContainer("c1"); ok {
+	if _, ok := hub.AccountForContainer("runner-1", "c1"); ok {
 		t.Fatal("container c1 still bound after Remove, want the binding cleared (stale binding authorizes pre-exec secrets materialize)")
 	}
 }

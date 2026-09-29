@@ -25,18 +25,15 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// bindContainer records that container_name was provisioned for agentAccountID.
-// Called from Provision with the request's agent_account_id. Start later
-// promotes this to a session binding under the minted session_id. An empty
-// account or container is ignored — a provision that named no account cannot
-// bind one (the comms call it would later serve fails closed instead).
-func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID) {
-	if containerName == "" || agentAccountID == "" {
+// bindContainer records the account and Runner that provisioned containerName.
+// Start later promotes its account to a session binding. Empty values fail closed.
+func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID, runnerID string) {
+	if containerName == "" || agentAccountID == "" || runnerID == "" {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.containerAccounts[containerName] = agentAccountID
+	h.containerAccounts[containerName] = sessionBinding{account: agentAccountID, runnerID: runnerID}
 }
 
 // promoteSession moves the container's provisioned account binding onto the live
@@ -60,7 +57,8 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 		return
 	}
 	h.mu.Lock()
-	account, ok := h.containerAccounts[containerName]
+	binding, ok := h.containerAccounts[containerName]
+	account := binding.account
 	if !ok {
 		h.mu.Unlock()
 		return
@@ -492,36 +490,31 @@ func (h *Hub) OnBindingChange(change fabric.BindingChange) {
 	}
 }
 
-// AccountForLiveSession returns the agent account bound to sessionID in the hub,
-// with false when no live binding exists. It mirrors accountForSession's lock
-// discipline but skips the durable read-through: FetchSecrets authorizes a
-// re-fetch for a session the hub currently holds, and the returned account is
-// the identity the A9 scoped resolve reads. Under the inject-all + single-Runner
-// MVP a live binding in the hub IS a session bound to this Runner (there is
-// exactly one), so membership in sessionAccounts is the whole session-binding
-// authz; the per-Runner differentiation is the future multi-Runner seam
-// (record §761-762).
-func (h *Hub) AccountForLiveSession(sessionID string) (store.AccountID, bool) {
+// AccountForLiveSession returns the account for sessionID only when runnerID owns
+// the live binding. It checks the in-memory cache only: a miss does not read the
+// durable binding table because FetchSecrets permits re-fetches only for sessions
+// currently held by this hub.
+func (h *Hub) AccountForLiveSession(runnerID, sessionID string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	binding, ok := h.sessionAccounts[sessionID]
-	return binding.account, ok
+	if !ok || runnerID == "" || binding.runnerID != runnerID {
+		return "", false
+	}
+	return binding.account, true
 }
 
-// AccountForContainer returns the agent account bound to containerName in the
-// Provision..Start window (bindContainer, cleared by promoteSession at Start and
-// by clear() on re-enroll), with false when none is recorded. It is the
-// PROVISION-time analogue of AccountForLiveSession: FetchSecrets authorizes an
-// initial pre-exec materialize against it (no live session exists until Start)
-// and reads the returned account for the A9 scoped resolve. Under the inject-all
-// + single-Runner MVP a recorded binding IS a container provisioned on the one
-// enrolled Runner, so membership is the whole authz check (the per-Runner
-// differentiation is the same future multi-Runner seam, record §761-762).
-func (h *Hub) AccountForContainer(containerName string) (store.AccountID, bool) {
+// AccountForContainer returns the account for containerName only when runnerID
+// owns its Provision..Start binding. The check is limited to the in-memory binding
+// created at Provision and cleared at Start, Remove, or re-enroll.
+func (h *Hub) AccountForContainer(runnerID, containerName string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	account, ok := h.containerAccounts[containerName]
-	return account, ok
+	binding, ok := h.containerAccounts[containerName]
+	if !ok || runnerID == "" || binding.runnerID != runnerID {
+		return "", false
+	}
+	return binding.account, true
 }
 
 // errCommsUnavailable is the fail-closed cause when a hub with no CommsCaller

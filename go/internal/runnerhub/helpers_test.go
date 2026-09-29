@@ -175,7 +175,7 @@ func bindSession(hub *Hub, sessionID string) {
 		hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	}
 	container := "container-for-" + sessionID
-	hub.bindContainer(container, testAgentAccount)
+	hub.bindContainer(container, testAgentAccount, testRunnerID)
 	hub.promoteSession(context.Background(), container, sessionID)
 }
 
