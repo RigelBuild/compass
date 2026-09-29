@@ -24,6 +24,10 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 	if g.Name == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
 	}
+	// System groups own these names at top level; nested reuse is an ordinary group.
+	if g.ParentGroupID == "" && isReservedGroupName(g.Name) {
+		return ChannelGroup{}, fmt.Errorf("%w: group name %q is reserved", ErrInvalidArgument, g.Name)
+	}
 
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
