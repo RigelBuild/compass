@@ -29,6 +29,7 @@ func TestAppleCreateArgsAssemblesCreateWithoutUserns(t *testing.T) {
 		UID:     1000,
 		CapAdd:  []string{"NET_ADMIN"},
 		Mounts:  []Mount{{HostPath: "/tmp/work", ContainerPath: "/work"}, {HostPath: "/tmp/cache", ContainerPath: "/src", ReadOnly: true}},
+		Env:     map[string]string{"HOME": "/home/agent", "COMPASS_WORKDIR": "/work"},
 		Labels:  map[string]string{RunnerIDLabel: "runner-1", "z-last": "z", "a-first": "a"},
 		Command: []string{"sleep", "infinity"},
 	})
@@ -38,6 +39,8 @@ func TestAppleCreateArgsAssemblesCreateWithoutUserns(t *testing.T) {
 		"--cap-add", "NET_ADMIN",
 		"--volume", "/tmp/work:/work",
 		"--volume", "/tmp/cache:/src:ro",
+		"--env", "COMPASS_WORKDIR=/work",
+		"--env", "HOME=/home/agent",
 		"--label", "a-first=a",
 		"--label", RunnerIDLabel + "=runner-1",
 		"--label", "z-last=z",
