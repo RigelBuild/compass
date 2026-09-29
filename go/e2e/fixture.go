@@ -555,6 +555,8 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// NatsContainer anyway. Opt out via --nats-external so spawnChain skips
 		// startNats entirely.
 		ExternalNatsURL: "nats://127.0.0.1:4222",
+		// No agent here calls a model through the gateway, so skip the bundled child.
+		ExternalGatewayURL: "http://127.0.0.1:4100",
 	}
 
 	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a

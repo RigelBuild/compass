@@ -637,6 +637,8 @@ type harness struct {
 	collectorProber *stubCollectorProber
 	nats            *fakeNatsContainer
 	natsProber      *stubNatsProber
+	gateway         *fakeGatewayContainer
+	gatewayProber   *stubGatewayProber
 	deps            Deps
 }
 
@@ -663,6 +665,8 @@ func newHarness(t *testing.T) (Config, *harness) {
 	collector := newFakeCollectorContainer(rec)
 	collectorProber := &stubCollectorProber{rec: rec}
 	nats := newFakeNatsContainer(rec)
+	gateway := newFakeGatewayContainer(rec)
+	gatewayProber := &stubGatewayProber{rec: rec}
 	natsProber := &stubNatsProber{rec: rec}
 
 	// Stub the start-time reader so the pgid-capture path never touches /proc:
@@ -674,6 +678,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	h := &harness{
 		rec: rec, serverStarted: started,
 		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers, collector: collector, collectorProber: collectorProber, nats: nats, natsProber: natsProber,
+		gateway: gateway, gatewayProber: gatewayProber,
 	}
 	h.deps = Deps{
 		Supervisor:         sup,
@@ -688,6 +693,8 @@ func newHarness(t *testing.T) (Config, *harness) {
 		CollectorProber:    collectorProber,
 		NatsContainer:      nats,
 		NatsProber:         natsProber,
+		GatewayContainer:   gateway,
+		GatewayProber:      gatewayProber,
 		ExpectedVersion:    testVersion,
 	}
 	cfg := Config{
@@ -705,7 +712,8 @@ func newHarness(t *testing.T) (Config, *harness) {
 		// Same for the bundle-path nats image: natsContainerSpec rejects an empty
 		// NatsImage, so the harness pins a dummy ref. Tests exercising the
 		// --nats-external opt-out set ExternalNatsURL explicitly.
-		NatsImage: "nats:test",
+		NatsImage:    "nats:test",
+		GatewayImage: "gateway:test",
 	}
 	return cfg, h
 }
@@ -715,7 +723,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 func filterEvents(events []string) []string {
 	out := events[:0:0]
 	for _, e := range events {
-		if e == "probe" || e == "probe-db" || e == "probe-collector" || e == "probe-nats" {
+		if e == "probe" || e == "probe-db" || e == "probe-collector" || e == "probe-nats" || e == "probe-gateway" {
 			continue
 		}
 		out = append(out, e)

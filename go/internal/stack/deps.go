@@ -87,7 +87,9 @@ type Deps struct {
 	// launch, not at readiness. Nil on the --nats-external path, where no nats
 	// component starts; the core dereferences it only on the nats-readiness
 	// gate.
-	NatsProber NatsProber
+	NatsProber       NatsProber
+	GatewayContainer GatewayContainer
+	GatewayProber    GatewayProber
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 
@@ -135,6 +137,8 @@ const (
 	// renumber, since a persisted pgid record round-trips components by their
 	// String() name and a reorder would silently retag entries.
 	ComponentNats
+	// ComponentGateway is the bundled LLM gateway container child.
+	ComponentGateway
 )
 
 // String renders the component for logs and errors.
@@ -150,6 +154,8 @@ func (c Component) String() string {
 		return "otel-collector"
 	case ComponentNats:
 		return "nats"
+	case ComponentGateway:
+		return "llm-gateway"
 	default:
 		return "unknown-component"
 	}
@@ -273,6 +279,16 @@ type CollectorContainer interface {
 // container entry. A non-nil error means the container could not be launched.
 type NatsContainer interface {
 	Start(ctx context.Context, spec NatsContainerSpec) (Process, error)
+}
+
+// GatewayContainer starts the bundled gateway child.
+type GatewayContainer interface {
+	Start(ctx context.Context, spec GatewayContainerSpec) (Process, error)
+}
+
+// GatewayProber checks the bundled gateway readiness endpoint.
+type GatewayProber interface {
+	ProbeGateway(ctx context.Context, healthEndpoint string) error
 }
 
 // CertEnsurer ensures the TLS anchor (one PEM that is both the server's

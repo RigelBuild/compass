@@ -40,8 +40,10 @@ const (
 	// between launching NATS and its consumers. NATS boots fast — no cold init —
 	// and a single-node JetStream store recovers in under a second, so the budget
 	// is the same readyPollBudget tier as the collector.
-	natsReadyPollInterval = 100 * time.Millisecond
-	natsReadyPollBudget   = 30 * time.Second
+	natsReadyPollInterval    = 100 * time.Millisecond
+	natsReadyPollBudget      = 30 * time.Second
+	gatewayReadyPollInterval = 100 * time.Millisecond
+	gatewayReadyPollBudget   = 30 * time.Second
 )
 
 // Stack is a supervised embedded stack: the resolved config plus the child
@@ -75,7 +77,10 @@ type Stack struct {
 	// bundled nats published when it ran; empty on the opt-out path. startNats
 	// captures it off the spec it already builds so waitNats reads the readiness
 	// target without rebuilding the spec.
-	natsMonitorEndpoint string
+	natsMonitorEndpoint   string
+	gateway               Process
+	gatewayHealthEndpoint string
+	gatewayContainerName  string
 	// pgContainerName is the stable name of the container-backed postgres child
 	// when the container path ran (S4); empty on the process and external paths.
 	// It is the in-process Down's teardown identity for the container (the same
@@ -261,6 +266,15 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 
+	// 1e. Bundled LLM gateway, healthy before any agent can call it. On
+	// --gateway-external startGateway is a no-op; waitGateway is the gate.
+	if err := s.startGateway(ctx); err != nil {
+		return err
+	}
+	if err := s.waitGateway(ctx); err != nil {
+		return err
+	}
+
 	// 2. TLS anchor, expiry-aware (rotates when NotAfter is within the window).
 	cert, err := s.deps.Certs.EnsureCert(ctx, s.cfg.StateDir, s.deps.now())
 	if err != nil {
@@ -418,6 +432,49 @@ func (s *Stack) startNats(ctx context.Context) error {
 	s.natsMonitorEndpoint = spec.MonitorEndpoint
 	return s.appendEntry(ComponentNats, pgidEntry{Kind: entryContainer, Component: ComponentNats, ContainerName: spec.Name})
 }
+func (s *Stack) startGateway(ctx context.Context) error {
+	if s.cfg.ExternalGatewayURL != "" {
+		return nil
+	}
+	spec, err := gatewayContainerSpec(s.cfg)
+	if err != nil {
+		return err
+	}
+	if s.deps.GatewayContainer == nil {
+		return errors.New("start gateway: GatewayContainer dep is nil on the bundle path (ExternalGatewayURL unset but no gateway adapter wired)")
+	}
+	p, err := s.deps.GatewayContainer.Start(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("start gateway container: %w", err)
+	}
+	s.gateway, s.gatewayContainerName, s.gatewayHealthEndpoint = p, spec.Name, spec.HealthEndpoint
+	return s.appendEntry(ComponentGateway, pgidEntry{Kind: entryContainer, Component: ComponentGateway, ContainerName: spec.Name})
+}
+
+func (s *Stack) waitGateway(ctx context.Context) error {
+	if s.cfg.ExternalGatewayURL != "" {
+		return nil
+	}
+	if s.deps.GatewayProber == nil {
+		return errors.New("wait gateway: GatewayProber dep is nil on the bundle path (ExternalGatewayURL unset but no gateway adapter wired)")
+	}
+	deadline := s.deps.now().Add(gatewayReadyPollBudget)
+	ticker := time.NewTicker(gatewayReadyPollInterval)
+	defer ticker.Stop()
+	for {
+		if err := s.deps.GatewayProber.ProbeGateway(ctx, s.gatewayHealthEndpoint); err == nil {
+			return nil
+		}
+		if !s.deps.now().Before(deadline) {
+			return fmt.Errorf("gateway did not answer healthy within %s", gatewayReadyPollBudget)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
 
 // recordChild appends a spawned process child's teardown identity (pgid == pid,
 // plus the leader start-time token read at spawn) and rewrites the state-dir
@@ -559,7 +616,7 @@ func (s *Stack) waitNats(ctx context.Context) error {
 }
 
 // drainChildren signals and waits each owned child in reverse start order
-// (runner → server → nats → collector → postgres). It is safe to call with nil handles
+// (runner → server → gateway → nats → collector → postgres). It is safe to call with nil handles
 // (a mid-sequence failure) and on an attached stack (all nil).
 func (s *Stack) drainChildren(ctx context.Context) error {
 	var errs error
@@ -569,6 +626,7 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 	}{
 		{"compass-runner", s.runner},
 		{"compass-server", s.server},
+		{"llm-gateway", s.gateway},
 		{"nats", s.nats},
 		{"otel-collector", s.collector},
 		{"postgres", s.pg},
@@ -584,6 +642,6 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 			errs = errors.Join(errs, fmt.Errorf("wait %s: %w", c.name, err))
 		}
 	}
-	s.runner, s.server, s.nats, s.collector, s.pg = nil, nil, nil, nil, nil
+	s.runner, s.server, s.gateway, s.nats, s.collector, s.pg = nil, nil, nil, nil, nil, nil
 	return errs
 }
