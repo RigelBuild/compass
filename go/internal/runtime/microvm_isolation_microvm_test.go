@@ -310,9 +310,9 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 // the scan resume past an unopenable file, and that the resulting probe error
 // is sticky across batches.
 //
-// The root is /proc/1/mem, an OPEN failure for the agent uid; /proc/self/mem is
-// a READ failure gawk aborts on before BEGINFILE runs. Both exit 2, so the
-// needle surviving — not the status — is what proves the resume.
+// The root is /proc/1/mem, an OPEN failure for the agent uid. /proc/self/mem
+// opens and then fails the READ, which BEGINFILE cannot see. Both exit 2, so
+// the needle surviving — not the status — is what proves the resume.
 func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
 	env := microvmtest.Require(t)
 	m, id, _ := isolationSession(t, env, "iso-sweep-probe-error")
@@ -453,6 +453,37 @@ func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
 	if code != 1 || strings.Contains(out, needle) {
 		t.Fatalf("sweeping /proc/self/cmdline gave exit %d, %q; want exit 1 without the needle: "+
 			"the needle is in argv, so the sweep matches its own command line", code, truncate(out))
+	}
+}
+
+// TestMicroVMSweepScriptFailsClosedOnAReadError pins the READ-error residue
+// BEGINFILE cannot cover: gawk opens its own /proc/self/mem, fails the read, and
+// aborts the batch, so a needle queued behind it is never scanned.
+func TestMicroVMSweepScriptFailsClosedOnAReadError(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-read-error")
+
+	const needle = "SWEEP-READ-ERROR-4c8d20e7"
+	plant := "mkdir -p /workspace/read-error && printf '%s\\n' '" + needle + "' > /workspace/read-error/hit.txt"
+	if out, code := guestSh(t, m, id, plant); code != 0 {
+		t.Fatalf("planting the read-error needle: exit %d, %q", code, truncate(out))
+	}
+	// Control: the needle alone is found, so a lost needle below is the abort.
+	if out, code := guestSh(t, m, id, sweepScript(needle, "/workspace/read-error/hit.txt")); code != 0 {
+		t.Fatalf("the needle alone gave exit %d, %q, want 0", code, truncate(out))
+	}
+
+	// Same batch: gawk opens its own /proc/self/mem, fails the read, and aborts.
+	// The diagnostic proves the read path, since an open failure takes BEGINFILE
+	// and prints nothing. A scan() that reads the abort as "no match" exits 1.
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/mem", "/workspace/read-error/hit.txt"))
+	if !strings.Contains(out, "error reading input file") {
+		t.Fatalf("sweep output %q carries no gawk read-error diagnostic (exit %d); /proc/self/mem did not "+
+			"exercise the read-error path", truncate(out), code)
+	}
+	if code != 2 {
+		t.Fatalf("sweep exited %d after a read error, %q; want 2, or a dead probe reports as a clean no-match",
+			code, truncate(out))
 	}
 }
 
