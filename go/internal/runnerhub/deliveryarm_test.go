@@ -198,6 +198,7 @@ func TestDeliveryAckUnboundSessionIsNoOp(t *testing.T) {
 // sink (every pre-existing test) is unchanged, covered by the existing suite.
 func TestDeliverSessionFiresSettleSink(t *testing.T) {
 	hub, life, _ := newHub()
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	settle := &fakeSettleSink{}
 	hub.SetSettleSink(settle)
 
@@ -564,5 +565,59 @@ func TestPublishedFramesFromForeignRunnerAreDropped(t *testing.T) {
 	}
 	if got := del.forgeSnapshot(); len(got) != 0 {
 		t.Fatalf("foreign forge_notification_ack advanced %d revisions, want 0", len(got))
+	}
+}
+
+// An unbound session's frames are accepted only from the enrolled Runner: with
+// no Runner enrolled, or from any other token, the owner cannot be verified.
+func TestUnboundSessionFramesRequireTheEnrolledRunner(t *testing.T) {
+	state := sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+
+	hub, life, _ := newHub()
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 1, SessionID: "sess-new", Frame: state}); err != nil {
+		t.Fatalf("Deliver(no Runner enrolled) = %v, want nil", err)
+	}
+	if got := life.snapshot(); len(got) != 0 {
+		t.Fatalf("frame with no Runner enrolled published %d statuses, want 0", len(got))
+	}
+
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: "runner-2", RunnerSeq: 2, SessionID: "sess-new", Frame: state}); err != nil {
+		t.Fatalf("Deliver(unenrolled Runner) = %v, want nil", err)
+	}
+	if got := life.snapshot(); len(got) != 0 {
+		t.Fatalf("frame from a Runner that is not enrolled published %d statuses, want 0", len(got))
+	}
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 3, SessionID: "sess-new", Frame: state}); err != nil {
+		t.Fatalf("Deliver(enrolled Runner) = %v, want nil", err)
+	}
+	if got := life.snapshot(); len(got) != 1 {
+		t.Fatalf("enrolled Runner's pre-bind frame published %d statuses, want 1", len(got))
+	}
+}
+
+// Trace-only frames are the high-volume stream; resolving their owner must not
+// read the binding table, while a lifecycle frame still reads through.
+func TestTraceFramesSkipTheDurableBindingRead(t *testing.T) {
+	hub, _, tail := newHub()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	trace := &compassv1internal.AgentFrame{Frame: &compassv1internal.AgentFrame_Session{Session: &compassv1internal.SessionFrame{}}}
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 1, SessionID: "sess-1", Frame: trace}); err != nil {
+		t.Fatalf("Deliver(trace) = %v, want nil", err)
+	}
+	if bindings.resolveCalled {
+		t.Fatal("a trace-only frame read the binding table, want the cache only")
+	}
+	if got := tail.snapshot(); len(got) != 1 {
+		t.Fatalf("trace frame reached the tail %d times, want 1", len(got))
+	}
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 2, SessionID: "sess-1", Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)}); err != nil {
+		t.Fatalf("Deliver(lifecycle) = %v, want nil", err)
+	}
+	if !bindings.resolveCalled {
+		t.Fatal("a lifecycle frame never read through to the binding table")
 	}
 }

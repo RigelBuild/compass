@@ -25,6 +25,7 @@ import (
 // reattach window) would redden the state assertion.
 func TestDeliverSessionDisconnectedIsNotErrored(t *testing.T) {
 	hub, life, tail := newHub()
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerID:  testRunnerID,
@@ -58,6 +59,7 @@ func TestDeliverSessionDisconnectedIsNotErrored(t *testing.T) {
 // zero-status assertion.
 func TestDeliverSessionTraceOnlyPublishesNoLifecycle(t *testing.T) {
 	hub, life, tail := newHub()
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerID:  testRunnerID,

@@ -292,11 +292,29 @@ func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID s
 	return binding.account, true
 }
 
-// boundToOtherRunner reports whether sessionID is bound to a Runner other than
-// runnerID. An unbound session is not: frames legitimately precede Start's bind.
-func (h *Hub) boundToOtherRunner(ctx context.Context, runnerID, sessionID string) bool {
-	binding, ok := h.resolveSessionBinding(ctx, sessionID)
-	return ok && binding.runnerID != runnerID
+// frameSession resolves the binding a published session frame speaks for and
+// whether runnerID may publish it. An unbound session is allowed only from the
+// enrolled Runner: frames precede Start's bind, but an unverifiable owner (no
+// Runner enrolled, a refused read-through) must not let any token through.
+// Trace-only frames read the cache alone, keeping the hot stream off the store.
+func (h *Hub) frameSession(ctx context.Context, runnerID, sessionID string, durable bool) (binding sessionBinding, bound, allowed bool) {
+	if durable {
+		binding, bound = h.resolveSessionBinding(ctx, sessionID)
+	} else {
+		h.mu.Lock()
+		binding, bound = h.sessionAccounts[sessionID]
+		h.mu.Unlock()
+	}
+	if runnerID == "" {
+		return binding, bound, false
+	}
+	if bound {
+		return binding, true, binding.runnerID == runnerID
+	}
+	h.mu.Lock()
+	enrolled := h.runner != nil && h.runner.id == runnerID
+	h.mu.Unlock()
+	return binding, false, enrolled
 }
 
 // resolveSessionBinding is the shared cache-then-durable resolution behind both

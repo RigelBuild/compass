@@ -729,23 +729,25 @@ func (h *Hub) fireRunnerReady() {
 // SubscribeEvents. A session frame can carry a trace event, a lifecycle
 // transition, or both; UNSPECIFIED means "trace only, no transition".
 func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf *compassv1internal.SessionFrame) {
-	// A frame for a session bound to another Runner is dropped whole: its trace,
-	// lifecycle, settle and presence edges would all speak for that Runner's agent.
-	if h.boundToOtherRunner(ctx, runnerID, sessionID) {
+	state := sf.GetState()
+	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
+	// A frame the publishing Runner may not speak for is dropped whole: its trace,
+	// lifecycle, settle and presence edges would all speak for another Runner's agent.
+	binding, hasAccount, allowed := h.frameSession(ctx, runnerID, sessionID, lifecycle)
+	if !allowed {
 		h.log.Warn("dropped session frame from a Runner that does not own the session",
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
 		return
 	}
 	h.tail.RelaySessionFrame(sessionID, sf)
-	state := sf.GetState()
-	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+	if !lifecycle {
 		return
 	}
 	// Resolve the session's agent account and stamp it onto the published status — the
 	// DL-167 attribution join. A status published after a Runner reconnect cleared the
 	// maps carries none (the residual gap). runnerRuntimeIdentity reads tier/posture in
 	// a separate acquisition — the two can straddle a re-enroll, harmless one at a time.
-	account, hasAccount := h.accountForSession(ctx, sessionID)
+	account := binding.account
 	tier, egressPosture := h.runnerRuntimeIdentity()
 	status := &compassv1.AgentSessionStatus{SessionId: sessionID, State: state, RuntimeTier: tier, EgressPosture: egressPosture}
 	if hasAccount {

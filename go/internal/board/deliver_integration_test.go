@@ -9,12 +9,49 @@ package board
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/runnertest"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+// testRunnerID is the Runner the hub enrolls; published frames name it.
+const testRunnerID = "runner-1"
+
+// enrollHub enrolls testRunnerID over the real RunnerService door, the only way
+// a Runner attaches: the hub accepts an unbound session's frames only from it.
+func enrollHub(t *testing.T, hub *runnerhub.Hub) {
+	t.Helper()
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	resolve := func(context.Context, string, store.SubjectKind) (store.Subject, error) {
+		return store.Subject{Kind: store.SubjectRunner, ID: testRunnerID}, nil
+	}
+	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = runnertest.CleartextH2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	client := compassv1internalconnect.NewRunnerServiceClient(runnertest.H2CClient(t), srv.URL)
+	req := connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: testRunnerID})
+	req.Header().Set("Authorization", "Bearer runner-tok")
+	if _, err := client.Enroll(context.Background(), req); err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+}
 
 // noopTailSink is a do-nothing SessionTailSink: a session frame is also a trace
 // frame, so the hub relays it here; the seam under test does not assert on it.
@@ -42,6 +79,7 @@ func stateFrame(state compassv1.AgentSessionState) *compassv1internal.AgentFrame
 func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
 	brd, bus := newBoard(t)
 	hub := runnerhub.NewHub(brd, noopTailSink{}, nil, nil)
+	enrollHub(t, hub)
 
 	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
 	if err != nil {
@@ -50,6 +88,7 @@ func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
 	t.Cleanup(sub.Cancel)
 
 	if err := hub.Deliver(context.Background(), runnerhub.RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1,
 		SessionID: "s1",
 		Frame:     stateFrame(working),
@@ -80,6 +119,7 @@ func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
 func TestDeliverUnspecifiedFrameNeitherRecordsNorFans(t *testing.T) {
 	brd, bus := newBoard(t)
 	hub := runnerhub.NewHub(brd, noopTailSink{}, nil, nil)
+	enrollHub(t, hub)
 
 	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
 	if err != nil {
@@ -88,6 +128,7 @@ func TestDeliverUnspecifiedFrameNeitherRecordsNorFans(t *testing.T) {
 	t.Cleanup(sub.Cancel)
 
 	if err := hub.Deliver(context.Background(), runnerhub.RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1,
 		SessionID: "s1",
 		Frame:     stateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED),
@@ -101,6 +142,7 @@ func TestDeliverUnspecifiedFrameNeitherRecordsNorFans(t *testing.T) {
 
 	// Sentinel: a real WORKING frame must be the first bus event.
 	if err := hub.Deliver(context.Background(), runnerhub.RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2,
 		SessionID: "sentinel",
 		Frame:     stateFrame(working),
