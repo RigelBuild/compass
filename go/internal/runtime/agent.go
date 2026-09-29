@@ -30,6 +30,8 @@ type AgentSpec struct {
 	// Name is the stable container name — the Runner's handle for this
 	// workstream.
 	Name string
+	// Labels are set on container backends for Runner ownership and cleanup.
+	Labels map[string]string
 	// Image is the agent base image ref, supplied by the Runner's config
 	// (--image / $COMPASS_AGENT_IMAGE) — never a per-repo build result.
 	Image string
@@ -261,6 +263,7 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Work
 	container := WorkloadSpec{
 		Image:  spec.Image,
 		Name:   spec.Name,
+		Labels: spec.Labels,
 		CapAdd: []string{capNetAdmin},
 		Mounts: spec.Mounts,
 		UID:    spec.Workspace.UID,
