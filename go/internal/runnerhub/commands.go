@@ -152,7 +152,8 @@ func (h *Hub) Status(ctx context.Context, requestID string, req *compassv1.GetAg
 }
 
 // notifySessionStarted drives the cursor sweep after a successful explicit
-// Reload, whose Runner-side Retire+Bind discards unacked socket ops.
+// Reload. An ERRORED session lost its unacked socket ops when its exit retired
+// the control state; for a live session the agent drops duplicates by message id.
 func (h *Hub) notifySessionStarted(ctx context.Context, sessionID string) {
 	account, ok := h.accountForSession(ctx, sessionID)
 	if !ok {
