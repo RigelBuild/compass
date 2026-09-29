@@ -122,12 +122,18 @@ type controlSession struct {
 	// re-checks this under s.mu at the bind and refuses. Set once, never cleared.
 	retired bool
 	cursor  uint64 // highest contiguously-acked seq
+	// epoch identifies the agent process this state serves; Bind and Restart
+	// stamp a fresh one, so an ack from a replaced process is dropped.
+	epoch uint64
 }
 
 // controlProducer owns every session's control state for one Runner.
 type controlProducer struct {
 	mu       sync.Mutex
 	sessions map[string]*controlSession
+	// lastEpoch is the producer-wide epoch counter; 0 is never issued, so an
+	// unbound session's epoch matches no live state.
+	lastEpoch uint64
 	// onCycle is a test seam: nil in production; when set, a drainer calls it at the end
 	// of every send loop, before parking, with its own out-of-order set size. The set is
 	// a drainer local, invisible to delivery assertions. Guarded by p.mu on both sides;
@@ -238,12 +244,19 @@ func (p *controlProducer) Restart(sessionID string, first *compassv1internal.Age
 	if !ok {
 		return connect.NewError(connect.CodeInternal, errCloneFailed)
 	}
-	s, ok := p.existingSession(sessionID)
+	p.mu.Lock()
+	s, ok := p.sessions[sessionID]
+	if ok {
+		p.lastEpoch++
+	}
+	epoch := p.lastEpoch
+	p.mu.Unlock()
 	if !ok {
 		return connect.NewError(connect.CodeNotFound, errNoBoundSession)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.epoch = epoch
 	s.sub++
 	s.live = false
 	if s.wake != nil {
@@ -289,8 +302,21 @@ func (p *controlProducer) Bind(sessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, ok := p.sessions[sessionID]; !ok {
-		p.sessions[sessionID] = &controlSession{}
+		p.lastEpoch++
+		p.sessions[sessionID] = &controlSession{epoch: p.lastEpoch}
 	}
+}
+
+// Epoch is the session's current process epoch, captured by a Publish stream
+// when it opens so its acks can be fenced after a Restart. 0 when unbound.
+func (p *controlProducer) Epoch(sessionID string) uint64 {
+	s, ok := p.existingSession(sessionID)
+	if !ok {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.epoch
 }
 
 // signal nudges the CURRENT subscription's drainer without blocking; the
@@ -321,10 +347,16 @@ func (s *controlSession) signalLocked() {
 // enforces that, and the only ceiling on the wire is the 16MiB read cap — which
 // packed varints turn into millions of entries, each amplified into a map slot.
 // So the set is bounded here; see boundedAboveSet.
-func (p *controlProducer) AckControl(sessionID string, ackedSeq uint64, appliedAbove []uint64) {
+func (p *controlProducer) AckControl(sessionID string, epoch, ackedSeq uint64, appliedAbove []uint64) {
 	s, ok := p.existingSession(sessionID)
 	if !ok {
 		return // retired: no retention to prune, no barrier to lift
+	}
+	s.mu.Lock()
+	stale := s.epoch != epoch
+	s.mu.Unlock()
+	if stale {
+		return // a replaced process's ack names seqs this state no longer uses
 	}
 
 	// An ack naming nothing prunes nothing, the only shape production emits today, so the
@@ -402,12 +434,16 @@ func (p *controlProducer) HoldForReplay(sessionID string) {
 // ReleaseReplayBarrier is the ack-routing entry point for the replay barrier: the agent's
 // ReplayCompleteAck arrived on Publish, so held live ops may flow.
 // Agent-driven, so it must not create: see existingSession.
-func (p *controlProducer) ReleaseReplayBarrier(sessionID string) {
+func (p *controlProducer) ReleaseReplayBarrier(sessionID string, epoch uint64) {
 	s, ok := p.existingSession(sessionID)
 	if !ok {
 		return
 	}
 	s.mu.Lock()
+	if s.epoch != epoch {
+		s.mu.Unlock()
+		return
+	}
 	s.held = false
 	s.signalLocked()
 	s.mu.Unlock()
