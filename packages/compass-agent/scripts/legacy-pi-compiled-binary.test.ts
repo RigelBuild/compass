@@ -10,6 +10,7 @@ const tempDir = mkdtempSync(
 afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
 
 describe("compiled legacy Pi extension loading", () => {
+	// biome-ignore lint/plugin: 130s is a slow-body budget, not a crash guard: Bun.build compile plus a cold start overran bun's 5s default on CI, and the build has no intermediate signal to event-gate on; the probe itself gates on proc.exited.
 	test("loads a legacy-scope extension and keeps hashline grammar as text", async () => {
 		const binaryPath = path.join(tempDir, "legacy-pi-probe");
 		const fixturePath = path.join(
@@ -90,5 +91,5 @@ describe("compiled legacy Pi extension loading", () => {
 			"start: begin_patch file_patch+ end_patch",
 		);
 		expect(hashlineGrammar).not.toContain("$bunfs");
-	});
+	}, 130_000);
 });
