@@ -50,7 +50,7 @@ func relaySetIssueState(sessionID, callID string, req *compassv1internal.SetIssu
 func TestRelayBoardCallUnboundSessionFailsClosedNotFound(t *testing.T) {
 	hub, fake := newHubWithBoard()
 
-	_, err := hub.RelayBoardCall(context.Background(), relaySetIssueState("never-bound", "bc-1", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
+	_, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("never-bound", "bc-1", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
 	if err == nil {
 		t.Fatal("RelayBoardCall for an unbound session = nil error, want CodeNotFound (fail closed)")
 	}
@@ -75,7 +75,7 @@ func TestRelayBoardCallNilCallerIsUnavailableBeforeResolution(t *testing.T) {
 		hub := newHubOnly()  // no BoardCaller wired
 		bindLiveSession(hub) // a live binding exists, proving the nil guard precedes resolution
 
-		_, err := hub.RelayBoardCall(context.Background(), relaySetIssueState("sess-1", "bc-2", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
+		_, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("sess-1", "bc-2", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
 		if err == nil {
 			t.Fatal("RelayBoardCall on a caller-less hub = nil error, want CodeUnavailable")
 		}
@@ -86,7 +86,7 @@ func TestRelayBoardCallNilCallerIsUnavailableBeforeResolution(t *testing.T) {
 	t.Run("unbound session still Unavailable (nil-check precedes resolution)", func(t *testing.T) {
 		hub := newHubOnly() // no BoardCaller wired, no binding
 
-		_, err := hub.RelayBoardCall(context.Background(), relaySetIssueState("never-bound", "bc-2b", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
+		_, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("never-bound", "bc-2b", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
 		if err == nil {
 			t.Fatal("RelayBoardCall on a caller-less hub (unbound) = nil error, want CodeUnavailable")
 		}
@@ -107,7 +107,7 @@ func TestRelayBoardCallDelegatesUnderResolvedCallerAccount(t *testing.T) {
 	fake.resp = &compassv1internal.SetIssueStateResponse{Issue: &compassv1.Issue{Id: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}}
 	bindLiveSession(hub) // sess-1 -> acct-agent
 
-	_, err := hub.RelayBoardCall(context.Background(), relaySetIssueState("sess-1", "bc-3", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
+	_, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("sess-1", "bc-3", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
 	if err != nil {
 		t.Fatalf("RelayBoardCall(set_issue_state) = %v, want success", err)
 	}
@@ -134,7 +134,7 @@ func TestRelayBoardCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	fake.err = connect.NewError(connect.CodeNotFound, errors.New("issue \"iss-x\" does not exist"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayBoardCall(context.Background(), relaySetIssueState("sess-1", "bc-4", &compassv1internal.SetIssueStateRequest{IssueId: "iss-x", State: compassv1.IssueState_ISSUE_STATE_DONE}))
+	resp, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("sess-1", "bc-4", &compassv1internal.SetIssueStateRequest{IssueId: "iss-x", State: compassv1.IssueState_ISSUE_STATE_DONE}))
 	if err != nil {
 		t.Fatalf("RelayBoardCall with a tool error returned a Go error %v, want nil (in-band render)", err)
 	}
@@ -163,7 +163,7 @@ func TestRelayBoardCallEchoesCallIDOnSuccess(t *testing.T) {
 	fake.resp = &compassv1internal.SetIssueStateResponse{Issue: &compassv1.Issue{Id: "iss-1", State: compassv1.IssueState_ISSUE_STATE_IN_PROGRESS}}
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayBoardCall(context.Background(), relaySetIssueState("sess-1", "bc-5", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_IN_PROGRESS}))
+	resp, err := hub.RelayBoardCall(context.Background(), testRunnerID, relaySetIssueState("sess-1", "bc-5", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_IN_PROGRESS}))
 	if err != nil {
 		t.Fatalf("RelayBoardCall(set_issue_state) = %v, want success", err)
 	}
@@ -188,7 +188,7 @@ func TestRelayBoardCallUnsetOneofIsInBandInvalidArgument(t *testing.T) {
 	hub, fake := newHubWithBoard()
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayBoardCall(context.Background(), &compassv1internal.RelayBoardCallRequest{
+	resp, err := hub.RelayBoardCall(context.Background(), testRunnerID, &compassv1internal.RelayBoardCallRequest{
 		SessionId: "sess-1",
 		Call:      &compassv1internal.BoardCallRequest{CallId: "bc-6"}, // no set_issue_state variant set
 	})

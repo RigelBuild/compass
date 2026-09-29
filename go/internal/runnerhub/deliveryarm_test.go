@@ -148,6 +148,7 @@ func TestDeliveryAckAdvancesCursor(t *testing.T) {
 
 	// A valid ack: resolve channel, advance the cursor for the bound agent.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(delivery_ack) = %v, want nil (never a teardown)", err)
@@ -162,6 +163,7 @@ func TestDeliveryAckAdvancesCursor(t *testing.T) {
 
 	// An ack for an unknown message: fail-closed no-op, no advance, no teardown.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: deliveryAckFrame("ghost"),
 	}); err != nil {
 		t.Fatalf("Deliver(unknown ack) = %v, want nil (fail-closed no-op)", err)
@@ -180,6 +182,7 @@ func TestDeliveryAckUnboundSessionIsNoOp(t *testing.T) {
 	del.channels["m1"] = "chan-1"
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "never-bound", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, unbound) = %v, want nil", err)
@@ -195,11 +198,13 @@ func TestDeliveryAckUnboundSessionIsNoOp(t *testing.T) {
 // sink (every pre-existing test) is unchanged, covered by the existing suite.
 func TestDeliverSessionFiresSettleSink(t *testing.T) {
 	hub, life, _ := newHub()
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	settle := &fakeSettleSink{}
 	hub.SetSettleSink(settle)
 
 	// A lifecycle transition fires both the lifecycle publish and the settle sink.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {
@@ -215,6 +220,7 @@ func TestDeliverSessionFiresSettleSink(t *testing.T) {
 
 	// A trace-only frame (UNSPECIFIED) is not a settle edge: no settle fires.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: sessionTraceFrame("trace"),
 	}); err != nil {
 		t.Fatalf("Deliver(trace) = %v, want nil", err)
@@ -294,6 +300,7 @@ func TestDeliverSessionFiresPresenceSink(t *testing.T) {
 	// A lifecycle transition on the bound session fires the lifecycle edge with
 	// the resolved account.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
 	}); err != nil {
@@ -307,6 +314,7 @@ func TestDeliverSessionFiresPresenceSink(t *testing.T) {
 
 	// A trace-only frame is not a lifecycle edge: no further presence call.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: sessionTraceFrame("trace"),
 	}); err != nil {
 		t.Fatalf("Deliver(trace) = %v, want nil", err)
@@ -318,6 +326,7 @@ func TestDeliverSessionFiresPresenceSink(t *testing.T) {
 	// A lifecycle transition on an UNBOUND session publishes no presence (no
 	// account to attribute it to).
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 3, SessionID: "never-bound",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {
@@ -334,6 +343,7 @@ func TestDeliverSessionNilPresenceSinkIsSafe(t *testing.T) {
 	hub := newHubOnly()
 	bindSession(hub, "sess-1") // promoteSession with a nil presence sink
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {
@@ -479,6 +489,7 @@ func TestDeliveryAckStoreFaultIsNonFatal(t *testing.T) {
 	bindSession(hub, "sess-1")
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, store fault) = %v, want nil (non-fatal drop, not a teardown)", err)
@@ -498,6 +509,7 @@ func TestDeliveryAckDropsAreCounted(t *testing.T) {
 
 	// Drop 1: an ack for a session with no bound agent.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "never-bound", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, unbound) = %v, want nil", err)
@@ -505,6 +517,7 @@ func TestDeliveryAckDropsAreCounted(t *testing.T) {
 	// Drop 2: an ack for an unknown message under a bound session.
 	bindSession(hub, "sess-1")
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: deliveryAckFrame("ghost"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, unknown message) = %v, want nil", err)
@@ -516,5 +529,181 @@ func TestDeliveryAckDropsAreCounted(t *testing.T) {
 	// And the snapshot mirrors the accessor under one lock.
 	if diag := hub.FrameDiagnostics(); diag.DroppedAcks != 2 {
 		t.Fatalf("FrameDiagnostics.DroppedAcks = %d, want 2", diag.DroppedAcks)
+	}
+}
+
+// A second Runner's PublishEvents frames naming another Runner's session must
+// not speak for that agent: no status, tail relay, or cursor advance.
+func TestPublishedFramesFromForeignRunnerAreDropped(t *testing.T) {
+	hub, life, tail := newHub()
+	del := newFakeDeliveryStore()
+	hub.SetDeliveryStore(del)
+	bindSession(hub, "sess-1")
+	del.channels["m1"] = "chan-1"
+
+	frames := []*compassv1internal.AgentFrame{
+		sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED),
+		deliveryAckFrame("m1"),
+		forgeAckFrame("sub-1"),
+	}
+	for i, frame := range frames {
+		if err := hub.Deliver(context.Background(), RunnerEvent{
+			RunnerID:  "runner-2",
+			RunnerSeq: uint64(i + 1), SessionID: "sess-1", Frame: frame,
+		}); err != nil {
+			t.Fatalf("Deliver(foreign frame %d) = %v, want nil (dropped, never a teardown)", i, err)
+		}
+	}
+	if got := life.snapshot(); len(got) != 0 {
+		t.Fatalf("foreign session frame published %d statuses, want 0", len(got))
+	}
+	if got := tail.snapshot(); len(got) != 0 {
+		t.Fatalf("foreign session frame reached the session tail %d times, want 0", len(got))
+	}
+	if got := del.ackSnapshot(); len(got) != 0 {
+		t.Fatalf("foreign delivery_ack advanced %d cursors, want 0", len(got))
+	}
+	if got := del.forgeSnapshot(); len(got) != 0 {
+		t.Fatalf("foreign forge_notification_ack advanced %d revisions, want 0", len(got))
+	}
+}
+
+// An unbound session's frames are accepted only from the enrolled Runner: with
+// no Runner enrolled, or from any other token, the owner cannot be verified.
+func TestUnboundSessionFramesRequireTheEnrolledRunner(t *testing.T) {
+	state := sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+
+	hub, life, _ := newHub()
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 1, SessionID: "sess-new", Frame: state}); err != nil {
+		t.Fatalf("Deliver(no Runner enrolled) = %v, want nil", err)
+	}
+	if got := life.snapshot(); len(got) != 0 {
+		t.Fatalf("frame with no Runner enrolled published %d statuses, want 0", len(got))
+	}
+
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: "runner-2", RunnerSeq: 2, SessionID: "sess-new", Frame: state}); err != nil {
+		t.Fatalf("Deliver(unenrolled Runner) = %v, want nil", err)
+	}
+	if got := life.snapshot(); len(got) != 0 {
+		t.Fatalf("frame from a Runner that is not enrolled published %d statuses, want 0", len(got))
+	}
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 3, SessionID: "sess-new", Frame: state}); err != nil {
+		t.Fatalf("Deliver(enrolled Runner) = %v, want nil", err)
+	}
+	if got := life.snapshot(); len(got) != 1 {
+		t.Fatalf("enrolled Runner's pre-bind frame published %d statuses, want 1", len(got))
+	}
+}
+
+// A trace frame from a Runner that is not enrolled is dropped on a cache miss
+// without reading the binding table, so a foreign output stream costs no store work.
+func TestForeignTraceFramesSkipTheDurableBindingRead(t *testing.T) {
+	hub, _, tail := newHub()
+	bindings := newFakeBindingStore()
+	bindings.seed("sess-1")
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: "runner-2", RunnerSeq: 1, SessionID: "sess-1", Frame: traceFrame()}); err != nil {
+		t.Fatalf("Deliver(foreign trace) = %v, want nil", err)
+	}
+	if bindings.resolveCalled {
+		t.Fatal("a trace frame from a Runner that is not enrolled read the binding table")
+	}
+	if got := tail.snapshot(); len(got) != 0 {
+		t.Fatalf("foreign trace frame reached the tail %d times, want 0", len(got))
+	}
+}
+
+// With the cache cold (Server restart, or any enroll), the enrolled Runner's
+// trace frames still read the durable owner: a session another Runner owns is
+// not its to stream into, and its own session is accepted.
+func TestColdCacheTraceFramesCheckTheDurableOwner(t *testing.T) {
+	hub, _, tail := newHub()
+	bindings := newFakeBindingStore()
+	bindings.seed("sess-1") // owned by testRunnerID
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-2", store.Subject{Kind: store.SubjectRunner, ID: "runner-2"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: "runner-2", RunnerSeq: 1, SessionID: "sess-1", Frame: traceFrame()}); err != nil {
+		t.Fatalf("Deliver(enrolled foreign trace) = %v, want nil", err)
+	}
+	if got := tail.snapshot(); len(got) != 0 {
+		t.Fatalf("enrolled Runner's trace for another Runner's session reached the tail %d times, want 0", len(got))
+	}
+
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seed("sess-1") // the enroll reaped testRunnerID's rows; the owner re-promotes
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: 2, SessionID: "sess-1", Frame: traceFrame()}); err != nil {
+		t.Fatalf("Deliver(owner trace) = %v, want nil", err)
+	}
+	if got := tail.snapshot(); len(got) != 1 {
+		t.Fatalf("owner's trace after a cold cache reached the tail %d times, want 1", len(got))
+	}
+}
+
+// traceFrame is a trace-only session frame (no lifecycle state).
+func traceFrame() *compassv1internal.AgentFrame {
+	return &compassv1internal.AgentFrame{Frame: &compassv1internal.AgentFrame_Session{Session: &compassv1internal.SessionFrame{}}}
+}
+
+// When the durable owner can't be read (a store fault, or a refused read-through
+// such as a system-role ctx), the enrolled Runner's frames are dropped: an
+// unseen row may name another Runner.
+func TestUnverifiableOwnerDropsSessionFrames(t *testing.T) {
+	cases := map[string]struct {
+		ctx      context.Context
+		storeErr error
+	}{
+		"store fault":          {ctx: context.Background(), storeErr: errors.New("durable fault")},
+		"refused (system ctx)": {ctx: store.WithSystemRole(context.Background())},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			hub, life, tail := newHub()
+			bindings := newFakeBindingStore()
+			bindings.seed("sess-1") // owned by testRunnerID
+			bindings.resolveErr = tc.storeErr
+			hub.SetSessionBindingStore(bindings)
+			hub.enroll(context.Background(), "runner-2", store.Subject{Kind: store.SubjectRunner, ID: "runner-2"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+			for seq, frame := range []*compassv1internal.AgentFrame{traceFrame(), sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)} {
+				if err := hub.Deliver(tc.ctx, RunnerEvent{RunnerID: "runner-2", RunnerSeq: uint64(seq + 1), SessionID: "sess-1", Frame: frame}); err != nil {
+					t.Fatalf("Deliver = %v, want nil", err)
+				}
+			}
+			if got := tail.snapshot(); len(got) != 0 {
+				t.Fatalf("frame reached the tail %d times, want 0", len(got))
+			}
+			if got := life.snapshot(); len(got) != 0 {
+				t.Fatalf("frame published %d statuses, want 0", len(got))
+			}
+		})
+	}
+}
+
+// With a store wired (production), a session with no durable row is a genuine
+// not-found: the enrolled Runner's pre-bind trace and lifecycle frames publish.
+func TestStoreNotFoundAcceptsEnrolledPreBindFrames(t *testing.T) {
+	hub, life, tail := newHub()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	frames := []*compassv1internal.AgentFrame{traceFrame(), sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)}
+	for seq, frame := range frames {
+		if err := hub.Deliver(context.Background(), RunnerEvent{RunnerID: testRunnerID, RunnerSeq: uint64(seq + 1), SessionID: "sess-new", Frame: frame}); err != nil {
+			t.Fatalf("Deliver = %v, want nil", err)
+		}
+	}
+	if !bindings.resolveCalled {
+		t.Fatal("the durable binding was never read")
+	}
+	if got := tail.snapshot(); len(got) != 2 {
+		t.Fatalf("pre-bind frames reached the tail %d times, want 2", len(got))
+	}
+	if got := life.snapshot(); len(got) != 1 {
+		t.Fatalf("pre-bind lifecycle frame published %d statuses, want 1", len(got))
 	}
 }

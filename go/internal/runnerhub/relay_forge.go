@@ -72,6 +72,7 @@ func (h *Hub) SetForgeCaller(c ForgeCaller) {
 // miss / no-caller is a Connect error.
 func (h *Hub) RelayForgeCall(
 	ctx context.Context,
+	runnerID string,
 	req *compassv1internal.RelayForgeCallRequest,
 ) (*compassv1internal.RelayForgeCallResponse, error) {
 	h.mu.Lock()
@@ -81,7 +82,7 @@ func (h *Hub) RelayForgeCall(
 		return nil, connect.NewError(connect.CodeUnavailable, errForgeUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	account, ok := h.accountForSession(ctx, sessionID)
+	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.

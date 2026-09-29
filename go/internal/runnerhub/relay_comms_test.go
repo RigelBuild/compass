@@ -62,8 +62,57 @@ func bindLiveSession(hub *Hub) {
 		sessionID     = "sess-1"
 		account       = store.AccountID("acct-agent")
 	)
-	hub.bindContainer(containerName, account)
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer(containerName, account, testRunnerID)
 	hub.promoteSession(context.Background(), containerName, sessionID)
+}
+
+// A session owned by another Runner must read as unbound on every relay leg,
+// with the unknown-session error verbatim so its liveness is not observable.
+func TestRunnerRelayCallsRequireOwningRunner(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(*Hub, string) error
+	}{
+		{"comms", func(h *Hub, runnerID string) error {
+			_, err := h.RelayCommsCall(context.Background(), runnerID, relayPost("sess-1", "tc-owner", &compassv1.PostMessageRequest{}))
+			return err
+		}},
+		{"lifecycle", func(h *Hub, runnerID string) error {
+			_, err := h.RelayLifecycleCall(context.Background(), runnerID, relaySpawn("sess-1", "lc-owner", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+			return err
+		}},
+		{"board", func(h *Hub, runnerID string) error {
+			_, err := h.RelayBoardCall(context.Background(), runnerID, relaySetIssueState("sess-1", "bc-owner", &compassv1internal.SetIssueStateRequest{IssueId: "iss-1", State: compassv1.IssueState_ISSUE_STATE_TODO}))
+			return err
+		}},
+		{"forge", func(h *Hub, runnerID string) error {
+			_, err := h.RelayForgeCall(context.Background(), runnerID, relayCreateIssue("sess-1", "fc-owner", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+			return err
+		}},
+		{"transcript", func(h *Hub, runnerID string) error {
+			_, err := h.CommitConversationFrame(context.Background(), runnerID, transcriptReq("sess-1", "frame-owner", 1, false, `{"e":1}`))
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hub, _ := newHubWithComms()
+			hub.SetLifecycleCaller(&fakeLifecycleCaller{})
+			hub.SetBoardCaller(&fakeBoardCaller{})
+			hub.SetForgeCaller(&fakeForgeCaller{})
+			hub.SetTranscriptStore(&fakeTranscriptStore{})
+			bindLiveSession(hub)
+			foreignErr := tc.call(hub, "runner-2")
+			ownerErr := tc.call(hub, testRunnerID)
+			if status := connect.NewError(connect.CodeNotFound, errors.New("runnerhub: no agent account bound to session")); connect.CodeOf(foreignErr) != connect.CodeNotFound || foreignErr.Error() != status.Error() {
+				t.Fatalf("foreign Runner error = %v, want same NotFound as unknown session %v", foreignErr, status)
+			}
+			if got := connect.CodeOf(ownerErr); got == connect.CodeNotFound {
+				t.Fatalf("owning Runner call returned NotFound: %v", ownerErr)
+			}
+		})
+	}
 }
 
 // 1. An unknown session fails closed CodeNotFound and NEVER reaches the caller —
@@ -77,7 +126,7 @@ func bindLiveSession(hub *Hub) {
 func TestRelayCommsCallUnknownSessionFailsClosedNotFound(t *testing.T) {
 	hub, comms := newHubWithComms()
 
-	_, err := hub.RelayCommsCall(context.Background(), relayPost("never-bound", "tc-1", &compassv1.PostMessageRequest{
+	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("never-bound", "tc-1", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}},
 	}))
 	if err == nil {
@@ -104,7 +153,7 @@ func TestRelayCommsCallHappyPostForwardsUnderBoundAccountAndStampsCallID(t *test
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "chan-1"},
 		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello"}}},
 	}
-	resp, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-1", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-1", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(post) = %v, want success", err)
 	}
@@ -137,7 +186,7 @@ func TestRelayCommsCallHappyListForwardsUnderBoundAccountAndStampsCallID(t *test
 	req := &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: "chan-1"},
 	}
-	resp, err := hub.RelayCommsCall(context.Background(), relayList("sess-1", "tc-2", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayList("sess-1", "tc-2", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(list) = %v, want success", err)
 	}
@@ -170,7 +219,7 @@ func TestRelayCommsCallListToolErrorIsInBandNotStreamError(t *testing.T) {
 	comms.listErr = connect.NewError(connect.CodePermissionDenied, errors.New("list denied"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayList("sess-1", "tc-list-err", &compassv1.ListMessagesRequest{
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayList("sess-1", "tc-list-err", &compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: "chan-1"},
 	}))
 	if err != nil {
@@ -199,7 +248,7 @@ func TestRelayCommsCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	comms.postErr = connect.NewError(connect.CodeNotFound, errors.New("channel not found"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-3", &compassv1.PostMessageRequest{
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-3", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}},
 	}))
 	if err != nil {
@@ -233,7 +282,7 @@ func TestRelayCommsCallNilCommsIsUnavailable(t *testing.T) {
 	// Bind a session anyway to prove the nil-comms guard precedes resolution.
 	bindLiveSession(hub)
 
-	_, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-4", &compassv1.PostMessageRequest{
+	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-4", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}},
 	}))
 	if err == nil {
@@ -253,7 +302,7 @@ func TestRelayCommsCallUnsetOneofIsInBandInvalidArgument(t *testing.T) {
 	hub, comms := newHubWithComms()
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), &compassv1internal.RelayCommsCallRequest{
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, &compassv1internal.RelayCommsCallRequest{
 		SessionId: "sess-1",
 		Call:      &compassv1internal.CommsCallRequest{CallId: "tc-5"}, // no post/list variant set
 	})
@@ -291,7 +340,7 @@ func TestRelayCommsCallDropsBindingOnRunnerReconnect(t *testing.T) {
 	bindLiveSession(hub)
 
 	// Pre-reconnect: the bound session serves the call under its account.
-	if _, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-6", &compassv1.PostMessageRequest{
+	if _, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-6", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "before"}}},
 	})); err != nil {
 		t.Fatalf("pre-reconnect RelayCommsCall = %v, want success", err)
@@ -302,7 +351,7 @@ func TestRelayCommsCallDropsBindingOnRunnerReconnect(t *testing.T) {
 
 	// The SAME session_id now fails closed — the binding is gone, so no stale
 	// account is reachable.
-	_, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-7", &compassv1.PostMessageRequest{
+	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-7", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "after"}}},
 	}))
 	if err == nil {
@@ -328,7 +377,7 @@ func TestRelayCommsCallStoppedSessionFailsClosedNotFound(t *testing.T) {
 	bindLiveSession(hub)
 
 	// The session is live and serves a call.
-	if _, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-8", &compassv1.PostMessageRequest{
+	if _, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-8", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "live"}}},
 	})); err != nil {
 		t.Fatalf("pre-stop RelayCommsCall = %v, want success", err)
@@ -337,7 +386,7 @@ func TestRelayCommsCallStoppedSessionFailsClosedNotFound(t *testing.T) {
 	// Stop unbinds the session.
 	hub.unbindSession(context.Background(), "sess-1")
 
-	_, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-9", &compassv1.PostMessageRequest{
+	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPost("sess-1", "tc-9", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "after stop"}}},
 	}))
 	if err == nil {
@@ -441,7 +490,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	}
 	// And the fail-closed consequence: RelayCommsCall for that session is
 	// CodeNotFound, never an empty-account attribution to the caller.
-	_, callErr := hub.RelayCommsCall(ctx, relayPost("sess-live", "tc-10", &compassv1.PostMessageRequest{
+	_, callErr := hub.RelayCommsCall(ctx, testRunnerID, relayPost("sess-live", "tc-10", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}},
 	}))
 	if callErr == nil {
@@ -497,7 +546,7 @@ func TestUnbindSessionFiresTerminalPresenceEdge(t *testing.T) {
 	hub := newHubOnly()
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
-	hub.bindContainer("c1", "acct-a")
+	hub.bindContainer("c1", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-a") // fires one promoted edge, not a lifecycle one
 
 	hub.unbindSession(context.Background(), "sess-a")
@@ -521,11 +570,11 @@ func TestUnbindStaleSessionFiresNoTerminalEdgeWhenRepointed(t *testing.T) {
 	hub := newHubOnly()
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
-	hub.bindContainer("c1", "acct-a")
+	hub.bindContainer("c1", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-old")
 	// A new container/session promotes onto the SAME account, re-pointing the
 	// reverse entry to sess-new (the newer live session).
-	hub.bindContainer("c2", "acct-a")
+	hub.bindContainer("c2", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c2", "sess-new")
 
 	// Unbind the stale session: its forward entry is dropped, but the reverse
@@ -552,9 +601,9 @@ func TestEnrollFiresTerminalPresenceEdgePerBoundAccountAndClears(t *testing.T) {
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("c1", "acct-a")
+	hub.bindContainer("c1", "acct-a", "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-a")
-	hub.bindContainer("c2", "acct-b")
+	hub.bindContainer("c2", "acct-b", "runner-1")
 	hub.promoteSession(context.Background(), "c2", "sess-b")
 
 	// A Runner reconnect: enroll drops every binding and drives each previously-

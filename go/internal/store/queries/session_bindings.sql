@@ -112,8 +112,8 @@ ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
     SET session_id = EXCLUDED.session_id,
         runner_id  = EXCLUDED.runner_id;
 
--- name: SessionBindingAccount :one
-SELECT agent_account_id FROM session_bindings WHERE session_id = $1;
+-- name: SessionBinding :one
+SELECT agent_account_id, runner_id FROM session_bindings WHERE session_id = $1;
 
 -- name: SessionBindingForAccount :one
 SELECT session_id FROM session_bindings WHERE agent_account_id = $1;

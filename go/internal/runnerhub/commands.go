@@ -55,7 +55,7 @@ func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.Pr
 	// Start can promote it to a session binding RelayCommsCall resolves against.
 	// The Runner never asserts this account; it is the Server's own record, keyed
 	// by the container name. Live comms binding only, cleared on re-enroll.
-	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentHandle()))
+	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentHandle()), runnerID)
 	return resp, runnerID, nil
 }
 

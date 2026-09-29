@@ -58,7 +58,7 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 	bindLiveSession(hub)
 
 	req := &compassv1.GetRosterRequest{Scope: compassv1.RosterScope_ROSTER_SCOPE_SUBTREE}
-	resp, err := hub.RelayCommsCall(context.Background(), relayRoster("sess-1", "tc-r", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayRoster("sess-1", "tc-r", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(roster) = %v, want success", err)
 	}
@@ -91,7 +91,7 @@ func TestRelayCommsCallRosterArmErrorIsInBandNotStreamError(t *testing.T) {
 	comms.rosterErr = connect.NewError(connect.CodePermissionDenied, errors.New("roster denied"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayRoster("sess-1", "tc-roster-err", &compassv1.GetRosterRequest{
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayRoster("sess-1", "tc-roster-err", &compassv1.GetRosterRequest{
 		Scope: compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
 	}))
 	if err != nil {
@@ -121,7 +121,7 @@ func TestRelayCommsCallSetStatusArmWritesThenPublishesTruncated(t *testing.T) {
 	hub.SetPresenceSource(src)
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relaySetStatus("sess-1", "tc-s", "abcdefghij"))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relaySetStatus("sess-1", "tc-s", "abcdefghij"))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(set_status) = %v, want success", err)
 	}
@@ -158,7 +158,7 @@ func TestRelayCommsCallSetStatusArmNoPresenceSourceStillSucceeds(t *testing.T) {
 	hub, comms := newHubWithComms()
 	bindLiveSession(hub)
 
-	_, err := hub.RelayCommsCall(context.Background(), relaySetStatus("sess-1", "tc-s", "status"))
+	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relaySetStatus("sess-1", "tc-s", "status"))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(set_status, no presence source) = %v, want success", err)
 	}
@@ -183,7 +183,7 @@ func TestRelayCommsCallSetStatusArmWriteErrorDoesNotPublish(t *testing.T) {
 	hub.SetPresenceSource(src)
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relaySetStatus("sess-1", "tc-s", "status"))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relaySetStatus("sess-1", "tc-s", "status"))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(set_status, write error) = %v, want the failure rendered in-band", err)
 	}

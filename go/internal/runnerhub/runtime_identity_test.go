@@ -65,6 +65,7 @@ const identitySessionID = "sess-1"
 func deliverWorking(t *testing.T, hub *Hub, seq uint64) {
 	t.Helper()
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: seq, SessionID: identitySessionID,
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
 	}); err != nil {

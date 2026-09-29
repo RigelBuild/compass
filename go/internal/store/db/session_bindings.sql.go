@@ -181,15 +181,20 @@ func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBin
 	return err
 }
 
-const sessionBindingAccount = `-- name: SessionBindingAccount :one
-SELECT agent_account_id FROM session_bindings WHERE session_id = $1
+const sessionBinding = `-- name: SessionBinding :one
+SELECT agent_account_id, runner_id FROM session_bindings WHERE session_id = $1
 `
 
-func (q *Queries) SessionBindingAccount(ctx context.Context, sessionID string) (string, error) {
-	row := q.db.QueryRow(ctx, sessionBindingAccount, sessionID)
-	var agent_account_id string
-	err := row.Scan(&agent_account_id)
-	return agent_account_id, err
+type SessionBindingRow struct {
+	AgentAccountID string
+	RunnerID       string
+}
+
+func (q *Queries) SessionBinding(ctx context.Context, sessionID string) (SessionBindingRow, error) {
+	row := q.db.QueryRow(ctx, sessionBinding, sessionID)
+	var i SessionBindingRow
+	err := row.Scan(&i.AgentAccountID, &i.RunnerID)
+	return i, err
 }
 
 const sessionBindingForAccount = `-- name: SessionBindingForAccount :one

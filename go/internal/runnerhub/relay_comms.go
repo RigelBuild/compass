@@ -25,18 +25,15 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// bindContainer records that container_name was provisioned for agentAccountID.
-// Called from Provision with the request's agent_account_id. Start later
-// promotes this to a session binding under the minted session_id. An empty
-// account or container is ignored — a provision that named no account cannot
-// bind one (the comms call it would later serve fails closed instead).
-func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID) {
-	if containerName == "" || agentAccountID == "" {
+// bindContainer records the account and Runner that provisioned containerName.
+// Start later promotes its account to a session binding. Empty values fail closed.
+func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID, runnerID string) {
+	if containerName == "" || agentAccountID == "" || runnerID == "" {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.containerAccounts[containerName] = agentAccountID
+	h.containerAccounts[containerName] = sessionBinding{account: agentAccountID, runnerID: runnerID}
 }
 
 // promoteSession moves the container's provisioned account binding onto the live
@@ -60,7 +57,8 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 		return
 	}
 	h.mu.Lock()
-	account, ok := h.containerAccounts[containerName]
+	binding, ok := h.containerAccounts[containerName]
+	account := binding.account
 	if !ok {
 		h.mu.Unlock()
 		return
@@ -99,7 +97,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 
 	// Now update the maps under h.mu (store already written).
 	h.mu.Lock()
-	h.sessionAccounts[sessionID] = account
+	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: runnerID}
 	h.accountSessions[account] = sessionID
 	// The container->account entry has served its purpose; the session binding
 	// is now authoritative. Drop it so a container name reused across the
@@ -205,13 +203,13 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 		account     store.AccountID
 		wentOffline bool
 	)
-	if a, ok := h.sessionAccounts[sessionID]; ok {
+	if binding, ok := h.sessionAccounts[sessionID]; ok {
 		// Drop the reverse entry only if it still points at THIS session — a
 		// promoteSession for the account onto a newer session would have already
 		// repointed it, and a stale delete would then unbind the live one.
-		if h.accountSessions[a] == sessionID {
-			delete(h.accountSessions, a)
-			account = a
+		if h.accountSessions[binding.account] == sessionID {
+			delete(h.accountSessions, binding.account)
+			account = binding.account
 			wentOffline = true
 		}
 	}
@@ -274,37 +272,113 @@ func (h *Hub) unbindContainer(containerName string) {
 // this refusal; the guard is defence in depth against a future system-role
 // caller.
 func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.AccountID, bool) {
+	binding, ok := h.resolveSessionBinding(ctx, sessionID)
+	return binding.account, ok
+}
+
+// accountForRunnerSession is accountForSession for a Runner-originated call: a
+// session owned by another Runner reads as unbound, so a foreign Runner token
+// cannot act as that agent nor learn which session ids are live.
+func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID string) (store.AccountID, bool) {
+	if runnerID == "" {
+		return "", false
+	}
+	binding, ok := h.resolveSessionBinding(ctx, sessionID)
+	if !ok || binding.runnerID != runnerID {
+		return "", false
+	}
+	return binding.account, true
+}
+
+// frameSession resolves the binding a published session frame speaks for and
+// whether runnerID may publish it. An unbound session is allowed only from the
+// enrolled Runner: frames precede Start's bind, but an unverifiable owner (no
+// Runner enrolled, a refused read-through) must not let any token through.
+// A trace-only frame from a Runner that is not enrolled is dropped on a cache
+// miss without a store read, keeping a foreign output stream off the table.
+func (h *Hub) frameSession(ctx context.Context, runnerID, sessionID string, lifecycle bool) (binding sessionBinding, bound, allowed bool) {
+	if runnerID == "" {
+		return sessionBinding{}, false, false
+	}
 	h.mu.Lock()
-	if account, ok := h.sessionAccounts[sessionID]; ok {
+	binding, bound = h.sessionAccounts[sessionID]
+	enrolled := h.runner != nil && h.runner.id == runnerID
+	h.mu.Unlock()
+	if !bound {
+		if !lifecycle && !enrolled {
+			return sessionBinding{}, false, false
+		}
+		var state bindingLookup
+		binding, state = h.lookupSessionBinding(ctx, sessionID)
+		if state == bindingUnverifiable {
+			return sessionBinding{}, false, false
+		}
+		bound = state == bindingFound
+	}
+	if bound {
+		return binding, true, binding.runnerID == runnerID
+	}
+	return binding, false, enrolled
+}
+
+// bindingLookup is the outcome of a cache-then-durable session binding read.
+type bindingLookup int
+
+const (
+	bindingFound bindingLookup = iota
+	bindingNotFound
+	// bindingUnverifiable: a refused read-through or a store fault, so a durable
+	// row naming another Runner may exist unseen.
+	bindingUnverifiable
+)
+
+// resolveSessionBinding is the shared cache-then-durable resolution behind both
+// resolvers above. A not-found and an unverifiable read both fail closed here.
+func (h *Hub) resolveSessionBinding(ctx context.Context, sessionID string) (sessionBinding, bool) {
+	binding, state := h.lookupSessionBinding(ctx, sessionID)
+	return binding, state == bindingFound
+}
+
+// lookupSessionBinding is resolveSessionBinding keeping not-found apart from
+// unverifiable. With no store wired the cache is the only record, so a miss is
+// not-found.
+func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessionBinding, bindingLookup) {
+	h.mu.Lock()
+	if binding, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
-		return account, true
+		return binding, bindingFound
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
 	reapStale := h.reapStale
 	h.mu.Unlock()
 
-	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
-		return "", false
+	if bindings == nil {
+		return sessionBinding{}, bindingNotFound
 	}
-	account, err := bindings.ResolveSessionAccount(ctx, sessionID)
+	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
+		return sessionBinding{}, bindingUnverifiable
+	}
+	account, runnerID, err := bindings.ResolveSessionBinding(ctx, sessionID)
+	if errors.Is(err, store.ErrNotFound) {
+		return sessionBinding{}, bindingNotFound
+	}
 	if err != nil {
-		// store.ErrNotFound (an unbound session) and any store fault both fail
-		// closed — the same CodeNotFound the caller mints today.
-		return "", false
+		return sessionBinding{}, bindingUnverifiable
 	}
 	// Populate the forward cache so a subsequent comms call for this restarted
 	// session hits without a table round-trip. Re-check under the lock: a
 	// concurrent promote/unbind may have run, so a live map entry wins over the
 	// row just read (avoids clobbering a fresher binding with a staler one).
+	resolved := sessionBinding{account: account, runnerID: runnerID}
 	h.mu.Lock()
 	if live, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
-		return live, true
+		return live, bindingFound
 	}
-	h.sessionAccounts[sessionID] = account
+	h.sessionAccounts[sessionID] = resolved
 	h.mu.Unlock()
-	return account, true
+	return resolved, bindingFound
 }
 
 // readThroughAllowed reports whether a cache-miss binding read may fall through
@@ -408,44 +482,39 @@ func (h *Hub) OnBindingChange(change fabric.BindingChange) {
 	// reverse entry too — so neither direction serves a stale binding a peer just
 	// changed. The re-point guard mirrors unbindSession: a reverse entry the
 	// account has already moved onto a newer session is left alone.
-	if account, ok := h.sessionAccounts[sessionID]; ok {
-		if h.accountSessions[account] == sessionID {
-			delete(h.accountSessions, account)
+	if binding, ok := h.sessionAccounts[sessionID]; ok {
+		if h.accountSessions[binding.account] == sessionID {
+			delete(h.accountSessions, binding.account)
 		}
 		delete(h.sessionAccounts, sessionID)
 	}
 }
 
-// AccountForLiveSession returns the agent account bound to sessionID in the hub,
-// with false when no live binding exists. It mirrors accountForSession's lock
-// discipline but skips the durable read-through: FetchSecrets authorizes a
-// re-fetch for a session the hub currently holds, and the returned account is
-// the identity the A9 scoped resolve reads. Under the inject-all + single-Runner
-// MVP a live binding in the hub IS a session bound to this Runner (there is
-// exactly one), so membership in sessionAccounts is the whole session-binding
-// authz; the per-Runner differentiation is the future multi-Runner seam
-// (record §761-762).
-func (h *Hub) AccountForLiveSession(sessionID string) (store.AccountID, bool) {
+// AccountForLiveSession returns the account for sessionID only when runnerID owns
+// the live binding. It checks the in-memory cache only: a miss does not read the
+// durable binding table because FetchSecrets permits re-fetches only for sessions
+// currently held by this hub.
+func (h *Hub) AccountForLiveSession(runnerID, sessionID string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	account, ok := h.sessionAccounts[sessionID]
-	return account, ok
+	binding, ok := h.sessionAccounts[sessionID]
+	if !ok || runnerID == "" || binding.runnerID != runnerID {
+		return "", false
+	}
+	return binding.account, true
 }
 
-// AccountForContainer returns the agent account bound to containerName in the
-// Provision..Start window (bindContainer, cleared by promoteSession at Start and
-// by clear() on re-enroll), with false when none is recorded. It is the
-// PROVISION-time analogue of AccountForLiveSession: FetchSecrets authorizes an
-// initial pre-exec materialize against it (no live session exists until Start)
-// and reads the returned account for the A9 scoped resolve. Under the inject-all
-// + single-Runner MVP a recorded binding IS a container provisioned on the one
-// enrolled Runner, so membership is the whole authz check (the per-Runner
-// differentiation is the same future multi-Runner seam, record §761-762).
-func (h *Hub) AccountForContainer(containerName string) (store.AccountID, bool) {
+// AccountForContainer returns the account for containerName only when runnerID
+// owns its Provision..Start binding. The check is limited to the in-memory binding
+// created at Provision and cleared at Start, Remove, or re-enroll.
+func (h *Hub) AccountForContainer(runnerID, containerName string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	account, ok := h.containerAccounts[containerName]
-	return account, ok
+	binding, ok := h.containerAccounts[containerName]
+	if !ok || runnerID == "" || binding.runnerID != runnerID {
+		return "", false
+	}
+	return binding.account, true
 }
 
 // errCommsUnavailable is the fail-closed cause when a hub with no CommsCaller
@@ -469,12 +538,13 @@ var errTranscriptsUnavailable = errors.New("runnerhub: no transcript store wired
 // transport down.
 func (h *Hub) RelayCommsCall(
 	ctx context.Context,
+	runnerID string,
 	req *compassv1internal.RelayCommsCallRequest,
 ) (*compassv1internal.RelayCommsCallResponse, error) {
 	if h.comms == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
 	}
-	account, ok := h.accountForSession(ctx, req.GetSessionId())
+	account, ok := h.accountForRunnerSession(ctx, runnerID, req.GetSessionId())
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
@@ -539,6 +609,7 @@ func (h *Hub) RelayCommsCall(
 //     reads neither): shipped as "" and 0.
 func (h *Hub) CommitConversationFrame(
 	ctx context.Context,
+	runnerID string,
 	req *compassv1internal.CommitConversationFrameRequest,
 ) (*compassv1internal.CommitConversationFrameResponse, error) {
 	h.mu.Lock()
@@ -548,7 +619,7 @@ func (h *Hub) CommitConversationFrame(
 		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	if _, ok := h.accountForSession(ctx, sessionID); !ok {
+	if _, ok := h.accountForRunnerSession(ctx, runnerID, sessionID); !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
 		return nil, connect.NewError(
