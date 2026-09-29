@@ -152,7 +152,7 @@ func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 func TestReloadFiresSessionStartSink(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("c1", testAgentAccount)
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-reload")
 	sink := &fakeSessionStartSink{}
 	hub.SetSessionStartSink(sink)
