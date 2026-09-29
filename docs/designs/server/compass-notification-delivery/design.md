@@ -147,41 +147,29 @@ agent's turn-lifecycle edge to a SETTLED state: WORKING → READY (the
 `agent_end` transition, `compass/packages/compass-agent/src/mapping.ts:146`;
 presence IDLE) on normal turn-end, OR any TERMINAL state —
 STOPPED/ERRORED/DISCONNECTED — on abnormal end, extracted by the D4 pipeline
-when the author actually emits a terminal frame (`#emitStatus`,
-`compass/packages/compass-agent/src/agent.ts:138-141` →
-`SessionFrame.state` → `runnerhub/hub.go:443-453`, over the enum
-`compass.proto:169-180`). One source, now three consumers: board state,
-comms presence (D4), and this delivery-settle gate. Mechanism: on a
-`MessagePosted` from an agent author, the consumer registers a
-pending-deliver keyed by `(author_session, message_id)`; the same hub arm
-that extracts the WORKING → READY transition fires the held delivers
-for that author's session, re-reading the message's current (settled) block
-set at dispatch. If the author session instead reaches a terminal state while
-holding, the fire path turns on whether that transition surfaces as an
-agent-emitted terminal frame: a clean control-stream close (`STOPPED`) or a
-recoverable control-loop throw (`ERRORED`), both emitted by `#emitStatus`
-(`compass/packages/compass-agent/src/agent.ts:115-130`), fire the held set
-from each message's stored (last-known) block set — the exact post-hoc path
-used below for an author already stopped at post — and clear the registry
-entry. A no-frame author death emits nothing: a hard-kill (OOM / SIGKILL /
-segfault) bypasses `#emitStatus`, and a dropped Runner link surfaces as
-`DISCONNECTED` in T4 whose reattach-window / expiry→`ERRORED` machine is
-T9-deferred (`compass.proto:163-168`), so no terminal frame fires. For that
-path the held entry is soft in-memory state — neither fired nor cleared by an
-author trigger, but reaped when the author's session unbinds on the next
-Runner (re-)enroll (the hub clears the whole session map,
-`runnerhub/hub.go:542-549`) or on Server restart — and delivery falls to the
-cursor backstop below, not to this registry; the guarantee is no-loss, not
-no-leak. A message with no matching live author session (author already
-stopped at post) delivers immediately from its stored block set — the
-sweep/post-hoc path; there is no live turn to wait on. Cursor interaction
-(D2): a held, not-yet-fired deliver has never been dispatched, so its seq is
-not acked and is indistinguishable to the cursor from an undelivered message
-— the reconnect sweep simply redelivers it from stored (by then settled)
-blocks; consistent, no special case. (Forward note, scoped OUT of this
-record: Matt is separately considering agent↔agent channel mutexes/locks —
-an "… is typing" equivalent to prevent concurrent sends; nothing here
-designs it.)
+from the lifecycle frame (`SessionFrame.state` → `runnerhub/hub.go:443-453`,
+over the enum `compass.proto:169-180`). For an unexpected agent process exit,
+the Runner publishes ERRORED even when the agent cannot send its own terminal
+frame. One source, now three consumers: board state, comms presence (D4), and
+this delivery-settle gate. Mechanism: on a `MessagePosted` from an agent author,
+the consumer registers a pending-deliver keyed by `(author_session, message_id)`;
+the same hub arm that extracts WORKING → READY fires held delivers, re-reading
+the message's current (settled) block set at dispatch. A terminal state fires
+the held set from each message's stored (last-known) block set and clears the
+registry entry. A Runner-observed process exit therefore settles, including
+hard-kill, OOM, and segfault. Only a pre-T9 Runner link loss is frame-less: it
+surfaces as DISCONNECTED and has no process-exit frame to fire held delivers;
+the entry is reaped on the author's next Runner (re-)enroll or Server restart,
+and the recipient's reconnect cursor sweep remains the no-loss backstop. A
+message with no matching live author session (author already stopped at post)
+delivers immediately from its stored block set — the sweep/post-hoc path; there
+is no live turn to wait on. Cursor interaction (D2): a held, not-yet-fired
+deliver has never been dispatched, so its seq is not acked and is indistinguishable
+to the cursor from an undelivered message — the reconnect sweep simply redelivers
+it from stored (by then settled) blocks; consistent, no special case. (Forward
+note, scoped OUT of this record: Matt is separately considering agent↔agent
+channel mutexes/locks — an "… is typing" equivalent to prevent concurrent
+sends; nothing here designs it.)
 
 **The push leg mirrors #995's ratified shape.** A new `SessionsResponse` command
 variant carries `{session_id, AgentControl}` — the deliver (or steer) op fully
@@ -548,12 +536,12 @@ interrupt. This interaction rule is OQ-3, RATIFIED (Matt, 2026-07-29: steer
 only, as recommended). Timing: the author-settle gate (D1) applies to steer
 exactly as to deliver — a mid-stream, half-written `@`-mention must not fire
 a steer carrying half a message — so **author-settle gates BOTH deliver and
-steer**, including the terminal path: a held mention→steer whose author
-emits an agent-emitted terminal frame (`STOPPED`/`ERRORED`) mid-hold fires
-from the message's stored blocks with the registry entry cleared, exactly as
-D1's terminal settle does for deliver — and a no-frame author death falls to
-the same recipient reconnect-sweep backstop, no author-side force-fire. The
-only deliver-vs-steer difference is
+steer**, including the terminal path: a held mention→steer whose author reaches
+STOPPED or ERRORED fires from stored blocks with the registry entry cleared,
+exactly as D1's terminal settle does for deliver. A Runner-observed process exit
+publishes ERRORED even when the agent is silent. Only pre-T9 Runner link loss is
+frame-less; it falls to the recipient reconnect-sweep backstop. The only
+deliver-vs-steer difference is
 recipient-side: a steer interrupts the recipient mid-turn, a deliver
 coalesces to the recipient's turn-end (the 6.2 "wakes/steers NOW" contract
 is about the RECIPIENT'S turn,
@@ -724,9 +712,9 @@ home-channel disjunct included), per-session ordered dispatch + the sweep-time
 dispatch gate (D1 §Ordering), the deliver-on-settled gate (D1's author
 split: a pending-deliver registry keyed `(author_session, message_id)`,
 fired from the hub's WORKING → READY lifecycle arm re-reading settled
-blocks, or on an agent-emitted terminal frame (`STOPPED`/`ERRORED`) from
-stored blocks — registry entry cleared on fire, with a no-frame author death
-falling to the recipient sweep (D2)),
+blocks, or on a terminal frame (STOPPED/ERRORED) from stored blocks — registry
+entry cleared on fire. Runner-observed agent exit settles as ERRORED; only a
+pre-T9 Runner link loss is frame-less and falls to the recipient sweep (D2)),
 mention parsing at the settle edge (D5), resync→sweep fallback.
 RunnerHub side: the `DispatchControl` relay arm (Server→Runner) and the
 `delivery_ack` frame arm (Runner→Server → `AckDelivery` by `message_id`).
@@ -751,12 +739,11 @@ RunnerHub side: the `DispatchControl` relay arm (Server→Runner) and the
   set; an agent-authored message held at the author's WORKING state whose
   author then emits an `ERRORED` frame is delivered to a live recipient from
   stored blocks without waiting for the recipient to reconnect (and the
-  mention→steer equivalent); an agent-authored message held whose author dies
-  with no terminal frame (hard-kill / pre-T9 link-loss) is NOT force-delivered
-  by an author trigger — the recipient gets it via its own reconnect sweep and
-  the held registry entry is reaped on the author's next (re-)enroll; an
-  agent-authored message whose author has no live session delivers immediately
-  from stored blocks.
+  mention→steer equivalent); a Runner-observed agent exit, including a hard-kill,
+  emits ERRORED and settles held delivery; only pre-T9 Runner link loss is
+  frame-less, leaving delivery to the recipient's reconnect sweep and reaping
+  held state on the author's next (re-)enroll; an agent-authored message whose
+  author has no live session delivers immediately from stored blocks.
 
 ### T4 — Runner relay arm — **compass-runner**
 
@@ -994,14 +981,12 @@ non-load-bearing and merges on the recommendation. No open fork remains.
   `comms.proto:401-403`; `publishMessageUpdated` exists,
   `mapping.go:375-381`) — so an on-posted deliver hands a subscriber a
   snapshot of a half-finished turn. No wire settle flag exists, so the
-  settle signal is the author's turn-lifecycle edge to a SETTLED state —
-  WORKING → READY (`agent_end`) on normal turn-end, or an agent-emitted
-  terminal frame (STOPPED/ERRORED) on abnormal end, delivering held sets from
-  stored blocks (a no-frame author death falls to the recipient reconnect
-  sweep); human-authored messages settle at post; an author with no
-  live session delivers immediately from stored blocks. Folded into D1 (the
-  settle-gate
-  trigger + author split + D2-cursor interaction), D5 (author-settle gates
+  settle signal is the author's lifecycle edge — WORKING → READY (`agent_end`)
+  or terminal STOPPED/ERRORED from stored blocks. Runner-observed process exit
+  publishes ERRORED even if the agent cannot; only pre-T9 Runner-link loss is
+  frame-less and falls to the recipient reconnect sweep. Human-authored messages
+  settle at post; an author with no live session delivers immediately from stored
+  blocks. Folded into D1 (the settle-gate trigger + author split + D2-cursor
   steer too; mention parsing moves to the settle edge), T3/T6 (tests).
   Forward note, scoped OUT: Matt is separately considering a2a channel
   mutexes/locks (an "… is typing" equivalent); not designed here.
