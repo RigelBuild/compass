@@ -775,7 +775,7 @@ func (h *agentHost) provisionVsockGateway(ctx context.Context, spec runtime.Agen
 		h.teardownContainer(ctx, name)
 		return "", fmt.Errorf("resolving vsock gateway endpoint for container %q: backend reports no session", name)
 	}
-	deps := gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client}
+	deps := gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client}
 	h.log.InfoContext(ctx, "serving agent gateway over vsock path",
 		slog.String("container", name), slog.String("path", endpoint))
 	listener, err := gateway.Serve(ctx, endpoint, name, deps)
@@ -1022,7 +1022,7 @@ func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path strin
 		return listener, nil
 	}
 	h.mu.Unlock()
-	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client})
+	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client})
 	if err != nil {
 		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
 	}
