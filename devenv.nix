@@ -446,7 +446,7 @@ in
     # the build produced nothing — skipped, dropped from the closure, or failed.
     "dogfood:check-cli" = {
       exec = ''
-        bun "${config.devenv.root}/tools/dogfood-cli-check/index.ts"
+        bun "${config.devenv.root}/tools/operator-cli-check/index.ts"
       '';
       cwd = config.devenv.root;
       env = {

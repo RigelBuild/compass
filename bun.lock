@@ -169,13 +169,6 @@
         "typescript": "catalog:",
       },
     },
-    "tools/dogfood-cli-check": {
-      "name": "@compass/dogfood-cli-check",
-      "devDependencies": {
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
     "tools/font-coverage-gate": {
       "name": "@compass/font-coverage-gate",
       "bin": {
@@ -231,6 +224,13 @@
       "bin": {
         "microvm-boot-test": "./run.ts",
       },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "tools/operator-cli-check": {
+      "name": "@compass/operator-cli-check",
       "devDependencies": {
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -522,8 +522,6 @@
 
     "@compass/dl-reconcile": ["@compass/dl-reconcile@workspace:tools/dl-reconcile"],
 
-    "@compass/dogfood-cli-check": ["@compass/dogfood-cli-check@workspace:tools/dogfood-cli-check"],
-
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 
     "@compass/font-coverage-gate": ["@compass/font-coverage-gate@workspace:tools/font-coverage-gate"],
@@ -537,6 +535,8 @@
     "@compass/macos-bundle": ["@compass/macos-bundle@workspace:tools/macos-bundle"],
 
     "@compass/microvm-boot-test": ["@compass/microvm-boot-test@workspace:tools/microvm-boot-test"],
+
+    "@compass/operator-cli-check": ["@compass/operator-cli-check@workspace:tools/operator-cli-check"],
 
     "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
 
