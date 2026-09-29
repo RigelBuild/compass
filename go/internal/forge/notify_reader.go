@@ -106,7 +106,7 @@ var (
 // is present. On error it owns the budget decision via mapErrorResponse (no
 // budget record on error — the ListIssuesPage/getJSON rule).
 func (g *GitHub) getJSONCond(ctx context.Context, url, etag string, out any) (notModified bool, newETag string, hasNext bool, err error) {
-	if hint, blocked := g.gateBlocked(); blocked {
+	if hint, blocked := g.gateBlocked(resourceCore); blocked {
 		return false, "", false, fmt.Errorf("GET %s: %w", url, &RateLimitError{RetryAfter: hint})
 	}
 	token, terr := g.token.Token(ctx)
@@ -131,12 +131,12 @@ func (g *GitHub) getJSONCond(ctx context.Context, url, etag string, out any) (no
 
 	switch {
 	case resp.StatusCode == http.StatusNotModified:
-		g.recordBudget(resp)
+		g.recordBudget(resp, resourceCore)
 		return true, "", false, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		g.recordBudget(resp)
+		g.recordBudget(resp, resourceCore)
 	default:
-		return false, "", false, g.mapErrorResponse(resp)
+		return false, "", false, g.mapErrorResponse(resp, resourceCore)
 	}
 
 	body, berr := io.ReadAll(resp.Body)

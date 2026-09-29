@@ -116,7 +116,7 @@ type fixtureStep struct {
 // after (Extra) it, and the expected decoded domain value (Want). Prelude
 // covers a provider's resolve/probe round-trips (Linear team-id + actor probe);
 // Extra covers a composite read's follow-on fetches (GitHub GetPullRequest's
-// reviews + checks legs). The asserted request is the one at index len(Prelude).
+// reviews, check-run, status and GraphQL legs). The asserted request is the one at index len(Prelude).
 type fixtureResponse struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
