@@ -115,25 +115,19 @@ func guestSh(t *testing.T, m *MicroVMRuntime, id WorkloadID, script string) (str
 // (`ls`, `grep -r` on paths) needs its own forbidden strings, or the assertion
 // is vacuously true and the row proves nothing.
 type crossSessionAttempt struct {
-	script string
-	forbid []string
+	script              string
+	forbid              []string
+	probeErrorSensitive bool
 }
 
-// sweepBatchSize is how many paths one awk invocation is handed. The scan's
-// dominant cost is process creation, against the HARD 120s per-exec cap
-// (execDefaultTimeout, microvm_lifecycle.go). One-spawn-per-file over roots
-// including "/" ran the cross-tenant row at ~72s — ~60% of the cap, i.e. a flake
-// waiting for a loaded box. Batching collapses that fork cost to per-batch,
-// since awk takes many FILENAMEs per run and reports which file each match came
-// from itself.
+// sweepBatchSize is how many paths one awk invocation is handed. Process
+// creation is the scan's dominant cost, and each exec has a hard 120s cap
+// (execDefaultTimeout, microvm_lifecycle.go). Batching bounds that cost by the
+// number of batches: awk takes many FILENAMEs per run and reports which file
+// each match came from itself.
 //
-// Measured in-guest on this box over an identical 425-file tree, needle in the
-// last file: 644ms at batch size 1 versus 47ms at 200 — a 13.7x reduction, i.e.
-// batching removes essentially all of the ~1.5ms/file spawn overhead.
-//
-// 200 is bounded by the guest's ARG_MAX rather than by taste: paths average well
-// under 128 bytes, so a 200-path argv stays far inside the limit while cutting
-// spawns by two orders of magnitude.
+// Keep the batch bounded by ARG_MAX. Paths are short enough that 200 entries
+// leave ample argv headroom while avoiding one process per file.
 const sweepBatchSize = 200
 
 // sweepScript builds a recursive content search the guest can actually run. The
@@ -142,16 +136,17 @@ const sweepBatchSize = 200
 // confinement. bash's globstar walks the trees and awk does the matching, and
 // the exit status mirrors grep's: 0 when the needle was found, 1 when it was
 // not, so a caller can still assert the non-zero exit a confined command owes.
+// An input-open error exits 2 so the caller can distinguish a broken probe
+// from the expected no-match exit 1.
 //
 // Matching files are printed as `<path>:<line>`, so BOTH discriminators are
 // live: the secret body appears in the output if any file's content was read,
 // and the path appears if a file under another tenant's volume was reachable at
 // all.
 //
-// BATCHED, one awk per sweepBatchSize files rather than one per file: the
-// per-file variant spent nearly all its time forking (see sweepBatchSize) and
-// sat at ~60% of the 120s exec cap. awk is handed many FILENAMEs at once and
-// reports the matching one itself, so the output contract is unchanged.
+// BATCHED, one awk per sweepBatchSize files rather than one per file, to bound
+// process creation and execution time. awk is handed many FILENAMEs at once
+// and reports the matching one itself, so the output contract is unchanged.
 //
 // Two things stop the sweep from finding ITS OWN needle, which would be a false
 // escape report rather than a real one:
@@ -159,34 +154,59 @@ const sweepBatchSize = 200
 //   - The needle travels in an EXPORTED ENV VAR, never in argv. Passed as
 //     `awk -v`, it would land in the searcher's own /proc/self/cmdline, so the
 //     sweep would match the string it is looking for in its own command line.
-//   - /proc, /sys and /dev are skipped. They are synthetic kernel interfaces
-//     that cannot hold another tenant's volume, so excluding them removes the
-//     self-match surface (the environ/cmdline of the running searcher) without
-//     narrowing what the row actually probes.
-func sweepScript(needle, roots string) string {
+//   - /proc, /sys and /dev are skipped during the RECURSIVE WALK, removing the
+//     self-match surface (the searcher's own environ/cmdline) without narrowing
+//     what the row probes. A root named explicitly as a file is swept anyway,
+//     so never give a confinement row a /proc path as a FILE root: it would
+//     match its own environ and report a false escape.
+//
+// shellQuote returns one shell word that preserves s literally. The guest image
+// does not guarantee base64, so generated scripts use the POSIX single-quote
+// idiom for transport instead of relying on an optional decoder.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func shellQuoteWords(words ...string) string {
+	quoted := make([]string, 0, len(words))
+	for _, word := range words {
+		quoted = append(quoted, shellQuote(word))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func sweepScript(needle string, roots ...string) string {
+
 	// The awk program: scan every FILENAME handed to this invocation, print
 	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
 	// the caller's `found` accumulator keeps grep's semantics across batches.
-	const awkProg = `index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
-	return "export SWEEP_NEEDLE='" + needle + "'; " +
-		"shopt -s globstar nullglob dotglob; found=1; batch=(); " +
-		// scan() runs one awk over the accumulated batch and clears it. Guarded
-		// on a non-empty batch so a trailing flush with nothing pending does not
-		// invoke awk on zero files (which would read stdin and hang).
+	//
+	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk (agent-image ships
+	// pkgs.gawk) makes an unopenable input FATAL, aborting there and dropping
+	// later paths plus the batch's exit-status contribution. It covers OPEN
+	// errors only; read errors still abort too, and stderr stays unsuppressed so
+	// that signal remains visible.
+	const awkProg = `BEGINFILE { if (ERRNO != "") { probeError=1; nextfile } } ` +
+		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { if (probeError) exit 2; exit !hit }`
+	return "export SWEEP_NEEDLE=" + shellQuote(needle) + "; " +
+		"shopt -s globstar nullglob dotglob; found=1; probe_error=0; batch=(); " +
+		"queue() { batch+=(\"$1\"); if ((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")); then scan; fi; }; " +
 		"scan() { ((${#batch[@]})) || return 0; " +
-		"if awk '" + awkProg + "' \"${batch[@]}\" 2>/dev/null; then found=0; fi; batch=(); }; " +
-		"for root in " + roots + "; do " +
+		"awk '" + awkProg + "' \"${batch[@]}\"; status=$?; batch=(); " +
+		"case $status in 0) found=0;; 1) ;; *) probe_error=1;; esac; }; " +
+		"for root in " + shellQuoteWords(roots...) + "; do " +
+		"if [[ -f $root ]]; then queue \"$root\"; continue; fi; " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
-		// "//proc/self/environ", which a /proc/* pattern does NOT match — the
-		// sweep would then read its own environ and report finding the needle
-		// it was given, a false escape.
+		// "//proc/self/environ", which a /proc/* pattern does NOT match —
+		// the sweep would then read its own environ and report the
+		// needle it was given, a false escape.
 		"n=$f; while [[ $n == //* ]]; do n=${n#/}; done; " +
 		"case $n in /proc/*|/sys/*|/dev/*) continue;; esac; " +
-		"[[ -f $f && -r $f ]] || continue; " +
-		"batch+=(\"$f\"); " +
-		"((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")) && scan; " +
-		"done; done 2>/dev/null; scan; exit $found"
+		"[[ -f $f ]] || continue; queue \"$f\"; " +
+		"done; " +
+		"done; " +
+		"scan; if ((found == 0)); then exit 0; elif ((probe_error)); then exit 2; else exit 1; fi"
 }
 
 // TestMicroVMSweepScriptFindsItsNeedle is the non-vacuity control for
@@ -239,8 +259,11 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 	// Comfortably more than two full batches, so at least two mid-loop flushes
 	// happen before the trailing one.
 	fileCount := sweepBatchSize*2 + 25
+	// Zero-padded so the glob's lexicographic order matches numeric order in ANY
+	// collation. Unpadded, f425.txt sorts mid-run (index 362 in the guest's C
+	// locale), so the "final batch" row never reached the trailing flush it names.
 	plant := "mkdir -p /workspace/many && for i in $(seq 1 " + strconv.Itoa(fileCount) + "); do " +
-		"printf 'filler line %s\\n' \"$i\" > /workspace/many/f$i.txt; done && ls /workspace/many | wc -l"
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/many/f%03d.txt' \"$i\")\"; done && ls /workspace/many | wc -l"
 	out, code := guestSh(t, m, id, plant)
 	if code != 0 {
 		t.Fatalf("planting %d filler files: exit %d, %q", fileCount, code, truncate(out))
@@ -251,10 +274,10 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 
 	for _, tt := range []struct{ name, file, needle string }{
 		// Last file: only the TRAILING flush can find it.
-		{"in the final batch", "/workspace/many/f" + strconv.Itoa(fileCount) + ".txt", "SWEEP-BATCH-LAST-6c1e8f30"},
+		{"in the final batch", fmt.Sprintf("/workspace/many/f%03d.txt", fileCount), "SWEEP-BATCH-LAST-6c1e8f30"},
 		// First file: found by a MID-LOOP flush, so `found` must survive every
 		// later batch that matched nothing.
-		{"in the first batch", "/workspace/many/f1.txt", "SWEEP-BATCH-FIRST-91ad47b2"},
+		{"in the first batch", "/workspace/many/f001.txt", "SWEEP-BATCH-FIRST-91ad47b2"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if out, code := guestSh(t, m, id,
@@ -280,6 +303,187 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 			t.Logf("batched sweep over %d files (batch size %d) found the needle %s in %v: %q",
 				fileCount, sweepBatchSize, tt.name, elapsed.Round(time.Millisecond), strings.TrimSpace(truncate(out)))
 		})
+	}
+}
+
+// TestMicroVMSweepScriptSurvivesAnUnopenableInput proves BEGINFILE/ERRNO lets
+// the scan resume past an unopenable file, and that the resulting probe error
+// is sticky across batches.
+//
+// The root is /proc/1/mem, an OPEN failure for the agent uid. /proc/self/mem
+// opens and then fails the READ, which BEGINFILE cannot see. Both exit 2, so
+// the needle surviving — not the status — is what proves the resume.
+func TestMicroVMSweepScriptSurvivesAnUnopenableInput(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-probe-error")
+
+	const needle = "SWEEP-PROBE-ERROR-LATER-7a4f2d11"
+	const unopenable = "/proc/1/mem"
+	plant := "mkdir -p /workspace/probe-error && printf '%s\\n' '" + needle + "' > /workspace/probe-error/hit.txt"
+	if out, code := guestSh(t, m, id, plant); code != 0 {
+		t.Fatalf("planting the probe-error regression file: exit %d, %q", code, truncate(out))
+	}
+	// An openable root would make gawk abort on the read instead, which the
+	// needle assertion below catches loudly.
+	if _, code := guestSh(t, m, id, "exec 3< "+shellQuote(unopenable)); code == 0 {
+		t.Skipf("%s is openable here, so it cannot stand in for an unopenable input", unopenable)
+	}
+
+	// Both roots land in one batch, so the needle is only reported if the scan
+	// resumed past the unopenable input instead of aborting the whole batch.
+	out, code := guestSh(t, m, id, sweepScript(needle, unopenable, "/workspace/probe-error/hit.txt"))
+	if !strings.Contains(out, needle) {
+		t.Fatalf("the needle queued behind %s was lost (exit %d, %q); an unopenable input aborted the batch",
+			unopenable, code, truncate(out))
+	}
+	if code != 2 {
+		t.Fatalf("sweep exited %d after an unopenable input, want 2 so a broken probe stays distinguishable "+
+			"from a clean no-match. output %q", code, truncate(out))
+	}
+
+	// The error now sits in an earlier batch than a clean no-match one: a
+	// per-batch probe_error would report exit 1 and hide the dead probe.
+	const fillerCount = sweepBatchSize + 25
+	filler := "mkdir -p /workspace/probe-error-filler && for i in $(seq 1 " + strconv.Itoa(fillerCount) + "); do " +
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/probe-error-filler/f%03d.txt' \"$i\")\"; done" +
+		" && ls /workspace/probe-error-filler | wc -l"
+	// A shell for loop reports only its last iteration, so count the files: a
+	// short plant would leave every sweep below inside a single batch.
+	planted, code := guestSh(t, m, id, filler)
+	if code != 0 {
+		t.Fatalf("planting the stickiness filler: exit %d, %q", code, truncate(planted))
+	}
+	if got := strings.TrimSpace(planted); got != strconv.Itoa(fillerCount) {
+		t.Fatalf("planted %q filler files, want %d; the batch boundary would not be crossed", got, fillerCount)
+	}
+	if out, code := guestSh(t, m, id, sweepScript("ABSENT-"+needle, unopenable, "/workspace/probe-error-filler")); code != 2 {
+		t.Fatalf("sweep exited %d with a probe error in an earlier batch, want 2: the error must survive later "+
+			"clean batches, or a dead probe reports as a clean no-match. output %q", code, truncate(out))
+	}
+
+	// A hit AFTER the probe error must still win: suppressing a hit once the
+	// probe broke would misreport a real escape as a broken probe.
+	last := fmt.Sprintf("/workspace/probe-error-filler/f%03d.txt", fillerCount)
+	if out, code := guestSh(t, m, id, "printf '%s\\n' '"+needle+"' >> "+shellQuote(last)); code != 0 {
+		t.Fatalf("planting the later-batch needle: exit %d, %q", code, truncate(out))
+	}
+	out, code = guestSh(t, m, id, sweepScript(needle, unopenable, "/workspace/probe-error-filler"))
+	if code != 0 {
+		t.Fatalf("sweep exited %d with a real hit after an earlier probe error, want 0, or a genuine escape "+
+			"reports as a broken probe. output %q", code, truncate(out))
+	}
+	if !strings.Contains(out, needle) {
+		t.Fatalf("sweep output %q does not report the later-batch hit it exited 0 for", truncate(out))
+	}
+}
+
+// TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError pins the exit
+// precedence: a real hit outranks a probe error from a LATER batch. Filling the
+// first batch exactly puts the two in separate batches, which is what makes the
+// ordering observable — in one batch awk masks the hit and both orderings agree.
+func TestMicroVMSweepScriptReportsAHitFoundBeforeAProbeError(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-hit-precedence")
+
+	const needle = "SWEEP-HIT-BEFORE-PROBE-ERROR-3e91c7d2"
+	plant := "mkdir -p /workspace/hit-first && for i in $(seq 1 " + strconv.Itoa(sweepBatchSize) + "); do " +
+		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/hit-first/f%03d.txt' \"$i\")\"; done && " +
+		"printf '%s\\n' '" + needle + "' >> /workspace/hit-first/f001.txt"
+	if out, code := guestSh(t, m, id, plant); code != 0 {
+		t.Fatalf("planting the precedence files: exit %d, %q", code, truncate(out))
+	}
+
+	// Without a live probe error in the trailing batch both orderings exit 0,
+	// so the precedence assertion below would pin nothing.
+	if out, code := guestSh(t, m, id, sweepScript("ABSENT-"+needle, "/proc/1/mem")); code != 2 {
+		t.Fatalf("the probe-error root gave exit %d, want 2; the precedence assertion would be vacuous. "+
+			"output %q", code, truncate(out))
+	}
+
+	out, code := guestSh(t, m, id, sweepScript(needle, "/workspace/hit-first", "/proc/1/mem"))
+	if code != 0 {
+		t.Fatalf("sweep exited %d with a real hit in an earlier batch, want 0: a later probe error must not "+
+			"mask a hit, or a genuine escape reports as a broken probe. output %q", code, truncate(out))
+	}
+	if !strings.Contains(out, needle) {
+		t.Fatalf("sweep output %q does not report the hit it exited 0 for", truncate(out))
+	}
+}
+
+// TestMicroVMSweepScriptSkipsItsOwnProcEntries pins the self-match defenses in
+// sweepScript's doc: the walk skips /proc (after collapsing a leading "//"), and
+// the needle stays out of the searcher's cmdline by travelling in its
+// environment. A sweep that reads either reports a false escape.
+func TestMicroVMSweepScriptSkipsItsOwnProcEntries(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-proc-skip")
+
+	const needle = "SWEEP-PROC-SELF-3b9e61c4"
+	// A FILE root bypasses the exclusion, so this proves the self-match
+	// surface is live in the guest; otherwise the exit-1 check pins nothing.
+	if out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/environ")); code != 0 || !strings.Contains(out, needle) {
+		t.Fatalf("sweeping /proc/self/environ as a file root gave exit %d, %q; want exit 0 with the needle, "+
+			"or the exclusion assertion below would be vacuous", code, truncate(out))
+	}
+	// "//proc/self" globs to "//proc/self/…", which only the slash collapse
+	// brings back under the /proc/* exclusion.
+	for _, root := range []string{"/proc/self", "//proc/self"} {
+		// Each walk must reach environ, or its no-match proves nothing.
+		walk := "shopt -s globstar nullglob dotglob; for f in " + shellQuote(root) + "/**/*; do " +
+			"[[ $f == " + shellQuote(root+"/environ") + " ]] && { echo reached; break; }; done"
+		if out, _ := guestSh(t, m, id, walk); strings.TrimSpace(out) != "reached" {
+			t.Fatalf("the %s walk never reached environ (%q); the exclusion assertion would be vacuous", root, truncate(out))
+		}
+
+		out, code := guestSh(t, m, id, sweepScript(needle, root))
+		if code != 1 || strings.Contains(out, needle) {
+			t.Fatalf("sweeping a %s directory root gave exit %d, %q; want exit 1 without the needle: "+
+				"the walk must skip /proc, or the sweep reads its own environ and reports a false escape",
+				root, code, truncate(out))
+		}
+	}
+
+	// A FILE root is swept as-is, so awk reads its own cmdline here: it holds
+	// the needle only if the needle travels in argv.
+	if out, code := guestSh(t, m, id, sweepScript("awk", "/proc/self/cmdline")); code != 0 {
+		t.Fatalf("sweeping /proc/self/cmdline for the awk argv0 gave exit %d, %q; want exit 0, "+
+			"or the argv assertion below would be vacuous", code, truncate(out))
+	}
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/cmdline"))
+	if code != 1 || strings.Contains(out, needle) {
+		t.Fatalf("sweeping /proc/self/cmdline gave exit %d, %q; want exit 1 without the needle: "+
+			"the needle is in argv, so the sweep matches its own command line", code, truncate(out))
+	}
+}
+
+// TestMicroVMSweepScriptFailsClosedOnAReadError pins the READ-error residue
+// BEGINFILE cannot cover: gawk opens its own /proc/self/mem, fails the read, and
+// aborts the batch, so a needle queued behind it is never scanned.
+func TestMicroVMSweepScriptFailsClosedOnAReadError(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-read-error")
+
+	const needle = "SWEEP-READ-ERROR-4c8d20e7"
+	plant := "mkdir -p /workspace/read-error && printf '%s\\n' '" + needle + "' > /workspace/read-error/hit.txt"
+	if out, code := guestSh(t, m, id, plant); code != 0 {
+		t.Fatalf("planting the read-error needle: exit %d, %q", code, truncate(out))
+	}
+	// Control: the needle alone is found, so a lost needle below is the abort.
+	if out, code := guestSh(t, m, id, sweepScript(needle, "/workspace/read-error/hit.txt")); code != 0 {
+		t.Fatalf("the needle alone gave exit %d, %q, want 0", code, truncate(out))
+	}
+
+	// Same batch: gawk opens its own /proc/self/mem, fails the read, and aborts.
+	// The diagnostic proves the read path, since an open failure takes BEGINFILE
+	// and prints nothing. A scan() that reads the abort as "no match" exits 1.
+	out, code := guestSh(t, m, id, sweepScript(needle, "/proc/self/mem", "/workspace/read-error/hit.txt"))
+	if !strings.Contains(out, "error reading input file") {
+		t.Fatalf("sweep output %q carries no gawk read-error diagnostic (exit %d); /proc/self/mem did not "+
+			"exercise the read-error path", truncate(out), code)
+	}
+	if code != 2 {
+		t.Fatalf("sweep exited %d after a read error, %q; want 2, or a dead probe reports as a clean no-match",
+			code, truncate(out))
 	}
 }
 
@@ -412,20 +616,20 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 	// the NON-ZERO EXIT — a confined command must fail, not merely print nothing.
 	attempts := map[string]crossSessionAttempt{
 		"B's absolute host volume path": {
-			script: "cat " + filepath.Join(volumeB, "host-secret.txt") + " " + filepath.Join(volumeB, "guest-secret.txt"),
+			script: "cat " + shellQuote(filepath.Join(volumeB, "host-secret.txt")) + " " + shellQuote(filepath.Join(volumeB, "guest-secret.txt")),
 		},
 		"B's volume dir listing": {
 			// An `ls` that SUCCEEDED and listed B's secrets would pass a
 			// content check; the discriminator here is the FILENAMES plus the
 			// exit code.
-			script: "ls -la " + volumeB,
+			script: "ls -la " + shellQuote(volumeB),
 			forbid: []string{"host-secret.txt", "guest-secret.txt"},
 		},
 		"traversal toward B": {
 			script: "cat /workspace/../volume/host-secret.txt; cat /workspace/../../*/volume/*secret*",
 		},
 		"a symlink A plants to B": {
-			script: "ln -sf " + volumeB + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
+			script: "ln -sf " + shellQuote(volumeB) + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
 		},
 		"a content sweep of every tree A can name": {
 			// NOT `grep -r`: the guest ships no grep/find, so that row exited 127
@@ -437,8 +641,9 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 			// parent is included explicitly so the one tree that could hold the
 			// secret is walked.
 			script: sweepScript(tenantBSecret,
-				"/tmp /mnt /media /run /var /home /workspace "+filepath.Dir(volumeB)),
-			forbid: []string{volumeB},
+				"/tmp", "/mnt", "/media", "/run", "/var", "/home", "/workspace", filepath.Dir(volumeB)),
+			forbid:              []string{volumeB},
+			probeErrorSensitive: true,
 		},
 	}
 	for name, attempt := range attempts {
@@ -458,6 +663,10 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 					t.Fatalf("tenant A's %s NAMED %q — tenant B's volume is reachable from A.\noutput: %q",
 						name, forbidden, truncate(out))
 				}
+			}
+			if attempt.probeErrorSensitive && code >= 2 {
+				t.Errorf("cross-tenant attempt %q had probe error exit %d (output %q); the confinement probe is broken",
+					name, code, truncate(out))
 			}
 			if code == 0 {
 				t.Errorf("cross-tenant attempt %q exited 0 (output %q); a confined command must fail",
@@ -479,10 +688,10 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 	// let A try, and compare.
 	before := snapshotTree(t, volumeB)
 	for _, script := range []string{
-		"echo from-a > " + filepath.Join(volumeB, "pwned.txt"),
+		"echo from-a > " + shellQuote(filepath.Join(volumeB, "pwned.txt")),
 		"echo from-a > /workspace/b-link/pwned-link.txt",
-		"rm -f " + filepath.Join(volumeB, "host-secret.txt"),
-		"rm -rf " + volumeB,
+		"rm -f " + shellQuote(filepath.Join(volumeB, "host-secret.txt")),
+		"rm -rf " + shellQuote(volumeB),
 	} {
 		out, code := guestSh(t, mA, idA, script)
 		t.Logf("A write-into-B attempt %q -> exit %d, %q", script, code, strings.TrimSpace(out))
