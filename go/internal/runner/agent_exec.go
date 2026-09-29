@@ -115,10 +115,11 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 type AgentStream struct {
 	sessionID string
 	exec      *runtime.StreamingExec
-	// drains is signalled by both drain goroutines as they return. Stop waits on it
-	// after the reap: os/exec's Wait closes the pipes, so reaping first would race
-	// the drains off the end of the stream ("incorrect to call Wait before all
-	// reads from the pipe have completed") unless the drains end on that close.
+	// drains is signalled by both drain goroutines as they return. The reaper
+	// joins them before reaping: os/exec's Wait closes the pipes, so reaping first
+	// would race the drains off the end of the stream ("incorrect to call Wait
+	// before all reads from the pipe have completed") and lose the stderr tail. The
+	// join is bounded because a descendant may inherit either pipe indefinitely.
 	drains sync.WaitGroup
 	// stopDrains ends both drains on teardown even if the pipes never reach EOF,
 	// so a wedged read can't hold Stop past its bounded wait.
@@ -133,8 +134,10 @@ type AgentStream struct {
 	waitOnce sync.Once
 	waitDone chan struct{}
 	waitErr  error
-	// stderrTail keeps the last lines for the unexpected-exit record. Written only
-	// by the stderr drain; read by the reaper after drains.Wait (happens-before).
+	// stderrTail keeps the last lines for the unexpected-exit record. Written by
+	// the stderr drain and read by the reaper after a bounded drain join; the mutex
+	// covers a drain still running because a descendant outlived that join.
+	stderrMu    sync.Mutex
 	stderrTail  []stderrTailLine
 	stderrBytes int
 	// drainsReleased mirrors drainCtx.Done(): it closes when the drain context is
@@ -195,20 +198,21 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 
 	go func() {
 		defer close(stream.reaped)
-		stream.drains.Wait()
+		stream.waitDrains()
 		waitErr := stream.wait()
+		stream.stopDrains()
 		if shouldLogExit(ctx, waitErr) {
 			logUnexpectedExit(log, stream, waitErr)
 		}
-		stopDrains()
 	}()
 
 	return stream, nil
 }
 
-// drainGrace bounds how long Stop waits for the drains to finish before reaping.
-// A drain normally ends the instant the child's exit closes the pipe; the bound
-// exists so a pathological reader can delay teardown but never block it.
+// drainGrace bounds how long the reaper waits for the drains before reaping. A
+// drain normally ends the instant the child's exit closes the pipe; a descendant
+// may inherit the pipes past that exit, but must not hold exit reporting or
+// shutdown open indefinitely.
 const drainGrace = 5 * time.Second
 
 // Stop terminates the in-container agent and waits for its exec to reap. Stop is
@@ -224,6 +228,18 @@ const drainGrace = 5 * time.Second
 // Kill first, then join.
 func (s *AgentStream) Stop() error {
 	return s.terminate()
+}
+
+func (s *AgentStream) waitDrains() {
+	done := make(chan struct{})
+	go func() {
+		s.drains.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(drainGrace):
+	}
 }
 
 func (s *AgentStream) terminate() error {
@@ -328,6 +344,8 @@ type stderrTailLine struct {
 }
 
 func (s *AgentStream) retainStderrLine(line string, truncated bool) {
+	s.stderrMu.Lock()
+	defer s.stderrMu.Unlock()
 	if len(line) > maxStderrTailBytes {
 		start := len(line) - maxStderrTailBytes
 		for start < len(line) && !utf8.RuneStart(line[start]) {
@@ -347,6 +365,8 @@ func (s *AgentStream) retainStderrLine(line string, truncated bool) {
 }
 
 func (s *AgentStream) stderrTailText() string {
+	s.stderrMu.Lock()
+	defer s.stderrMu.Unlock()
 	lines := make([]string, len(s.stderrTail))
 	for i, line := range s.stderrTail {
 		lines[i] = line.text
