@@ -234,6 +234,9 @@ func TestReadVolumeQuotaOnRealPath(t *testing.T) {
 	if ratio := reading.UsedRatio(); ratio < 0 || ratio > 1 || math.IsNaN(ratio) {
 		t.Fatalf("UsedRatio() = %v on reading %s, want a finite ratio in [0,1]", ratio, reading)
 	}
+	if reading.Active() {
+		t.Fatalf("reading %s reports an active quota on the ordinary test filesystem; the Linux quota probe must preserve the negative assertion", reading)
+	}
 }
 
 // TestReadVolumeQuotaAbsentPath: a path that does not exist is a probe ERROR,
