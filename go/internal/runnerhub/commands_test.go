@@ -148,6 +148,36 @@ func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 		t.Fatalf("Start session id = %q, want sess-ok", got)
 	}
 }
+
+func TestReloadFiresSessionStartSink(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("c1", testAgentAccount)
+	hub.promoteSession(context.Background(), "c1", "sess-reload")
+	sink := &fakeSessionStartSink{}
+	hub.SetSessionStartSink(sink)
+	router, _, err := hub.routerFor("sess-reload")
+	if err != nil {
+		t.Fatalf("routerFor = %v", err)
+	}
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		if cmd.GetReload() == nil {
+			return nil
+		}
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Reload{Reload: &compassv1.ReloadAgentSessionResponse{}},
+		})
+		return nil
+	})
+	if _, err := hub.Reload(context.Background(), "req-reload", &compassv1.ReloadAgentSessionRequest{SessionId: "sess-reload"}); err != nil {
+		t.Fatalf("Reload = %v", err)
+	}
+	got := sink.snapshot()
+	if len(got) != 1 || got[0] != (startRecord{sessionID: "sess-reload", account: testAgentAccount}) {
+		t.Fatalf("session-start edges after Reload = %+v, want one edge for sess-reload", got)
+	}
+}
 func TestStartRelayCarriesFreshIDOnlyForFreshStart(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)

@@ -134,6 +134,7 @@ func (h *Hub) Reload(ctx context.Context, requestID string, req *compassv1.Reloa
 	if err != nil {
 		return nil, err
 	}
+	h.notifySessionStarted(ctx, req.GetSessionId())
 	return result.GetReload(), nil
 }
 
@@ -148,6 +149,21 @@ func (h *Hub) Status(ctx context.Context, requestID string, req *compassv1.GetAg
 		return nil, err
 	}
 	return result.GetStatus(), nil
+}
+
+// notifySessionStarted drives the cursor sweep after a successful explicit
+// Reload, whose Runner-side Retire+Bind discards unacked socket ops.
+func (h *Hub) notifySessionStarted(ctx context.Context, sessionID string) {
+	account, ok := h.accountForSession(ctx, sessionID)
+	if !ok {
+		return
+	}
+	h.mu.Lock()
+	sink := h.sessionStart
+	h.mu.Unlock()
+	if sink != nil {
+		sink.OnSessionStarted(sessionID, account)
+	}
 }
 
 // SessionState resolves a live session's lifecycle state through the Runner
