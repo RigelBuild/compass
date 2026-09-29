@@ -147,7 +147,8 @@ agent's turn-lifecycle edge to a SETTLED state: WORKING → READY (the
 `agent_end` transition, `compass/packages/compass-agent/src/mapping.ts:146`;
 presence IDLE) on normal turn-end, OR any TERMINAL state —
 STOPPED/ERRORED/DISCONNECTED — on abnormal end, extracted by the D4 pipeline
-from the lifecycle frame (`SessionFrame.state` → `runnerhub/hub.go:443-453`,
+from the lifecycle frame (`SessionFrame.state` → `deliverSession` in
+`go/internal/runnerhub/hub.go`, `state := sf.GetState()`,
 over the enum `compass.proto:169-180`). For an unexpected agent process exit,
 the Runner publishes ERRORED even when the agent cannot send its own terminal
 frame. One source, now three consumers: board state, comms presence (D4), and
@@ -427,7 +428,8 @@ non-load-bearing.
 emits lifecycle transitions today — `#emitStatus`
 (`compass/packages/compass-agent/src/agent.ts:138-141`) → `SessionFrame.state`
 → the RunnerHub extracts `AgentSessionStatus` onto `SubscribeEvents`
-(`runnerhub/hub.go:443-453`) — over the enum
+(`deliverSession` in `go/internal/runnerhub/hub.go`, `state := sf.GetState()`) —
+over the enum
 STARTING/READY/WORKING/STOPPED/ERRORED/DISCONNECTED
 (`compass/proto/compass/v1/compass.proto:169-180`). A separate heartbeat
 would add a liveness protocol the session stream already implies (a dropped
