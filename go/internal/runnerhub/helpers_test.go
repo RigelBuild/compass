@@ -166,6 +166,14 @@ const testAgentAccount store.AccountID = "acct-agent"
 // closed without it, so any conversation test that expects a write-through must
 // bind first.
 func bindSession(hub *Hub, sessionID string) {
+	// Promotion records the enrolled Runner as the owner, as in production where
+	// only an enrolled Runner can Start; re-enrolling would clear earlier binds.
+	hub.mu.Lock()
+	enrolled := hub.runner != nil
+	hub.mu.Unlock()
+	if !enrolled {
+		hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	}
 	container := "container-for-" + sessionID
 	hub.bindContainer(container, testAgentAccount)
 	hub.promoteSession(context.Background(), container, sessionID)

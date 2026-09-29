@@ -89,19 +89,19 @@ func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID str
 	return displaced, nil
 }
 
-func (f *fakeBindingStore) ResolveSessionAccount(ctx context.Context, sessionID string) (store.AccountID, error) {
+func (f *fakeBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolveCalled = true
 	f.resolveCtxSystemRole = store.IsSystemRole(ctx)
 	if f.resolveErr != nil {
-		return "", f.resolveErr
+		return "", "", f.resolveErr
 	}
 	b, ok := f.bindings[sessionID]
 	if !ok {
-		return "", store.ErrNotFound
+		return "", "", store.ErrNotFound
 	}
-	return b.AccountID, nil
+	return b.AccountID, b.RunnerID, nil
 }
 
 func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.AccountID) (string, error) {
@@ -245,6 +245,23 @@ func TestRestartResolvesPreRestartBindingBothDirections(t *testing.T) {
 	}
 }
 
+// After a Server restart the owner check must hold on the durable read-through,
+// not only on the in-RAM cache.
+func TestAccountForRunnerSessionReadThroughChecksOwner(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	bindings.seed("sess-1")
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	if _, ok := hub.accountForRunnerSession(context.Background(), "runner-2", "sess-1"); ok {
+		t.Fatal("foreign Runner resolved durable session binding, want false")
+	}
+	if account, ok := hub.accountForRunnerSession(context.Background(), testRunnerID, "sess-1"); !ok || account != testAgentAccount {
+		t.Fatalf("owner Runner resolved durable binding = (%q, %v), want (%s, true)", account, ok, testAgentAccount)
+	}
+}
+
 // TestFailClosedStoppedNeverSeenAndPostReconnect pins all three fail-closed
 // misses in one place, each returning ok=false (the CodeNotFound the caller
 // mints): a STOPPED session, a NEVER-SEEN session, and a session that predates a
@@ -309,7 +326,7 @@ func TestPeerBindingChangeEvictsOtherInstanceCache(t *testing.T) {
 	hubA := newHubOnly()
 	routing.subscribe(hubA.OnBindingChange)
 	hubA.mu.Lock()
-	hubA.sessionAccounts["sess-old"] = testAgentAccount
+	hubA.sessionAccounts["sess-old"] = sessionBinding{account: testAgentAccount, runnerID: testRunnerID}
 	hubA.accountSessions[testAgentAccount] = "sess-old"
 	hubA.mu.Unlock()
 
@@ -410,6 +427,7 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		if err := hub.Deliver(context.Background(), RunnerEvent{
+			RunnerID:  testRunnerID,
 			RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
 		}); err != nil {
 			t.Fatalf("Deliver(delivery_ack) = %v, want nil", err)
@@ -438,6 +456,7 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		if err := hub.Deliver(context.Background(), RunnerEvent{
+			RunnerID:  testRunnerID,
 			RunnerSeq: 1, SessionID: "sess-1", Frame: forgeAckFrame("sub-1"),
 		}); err != nil {
 			t.Fatalf("Deliver(forge_notification_ack) = %v, want nil", err)

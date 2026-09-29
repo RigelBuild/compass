@@ -527,7 +527,7 @@ type Querier interface {
 	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
 	SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error)
 	SessionBase(ctx context.Context, sessionID string) (int64, error)
-	SessionBindingAccount(ctx context.Context, sessionID string) (string, error)
+	SessionBinding(ctx context.Context, sessionID string) (SessionBindingRow, error)
 	SessionBindingForAccount(ctx context.Context, agentAccountID string) (string, error)
 	// The prior-value read of the bind, and the second of three statements the Store
 	// runs in ONE explicit transaction (beginTenantTx): the advisory lock above, this

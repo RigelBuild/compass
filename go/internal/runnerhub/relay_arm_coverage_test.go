@@ -34,7 +34,7 @@ func TestRelayCommsPinDispatchesAsBoundAccount(t *testing.T) {
 	bindLiveSession(hub)
 
 	req := &compassv1.UpdatePinnedBoardRequest{ChannelId: "ch-1"}
-	resp, err := hub.RelayCommsCall(context.Background(), relayPin("sess-1", "tc-pin", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPin("sess-1", "tc-pin", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(pin) = %v, want success", err)
 	}
@@ -63,7 +63,7 @@ func TestRelayCommsPinToolErrorIsInBandNotStreamError(t *testing.T) {
 	comms.pinErr = connect.NewError(connect.CodePermissionDenied, errors.New("pin denied"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayPin("sess-1", "tc-pin-err", &compassv1.UpdatePinnedBoardRequest{ChannelId: "ch-1"}))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayPin("sess-1", "tc-pin-err", &compassv1.UpdatePinnedBoardRequest{ChannelId: "ch-1"}))
 	if err != nil {
 		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band tool error", err)
 	}
@@ -258,7 +258,7 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 			hub, comms := newHubWithComms()
 			arm.seed(comms)
 			bindLiveSession(hub)
-			resp, err := hub.RelayCommsCall(context.Background(), arm.request)
+			resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, arm.request)
 			if err != nil {
 				t.Fatalf("RelayCommsCall(%s) = %v, want success", arm.name, err)
 			}

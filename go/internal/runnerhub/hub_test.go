@@ -25,8 +25,10 @@ import (
 // reattach window) would redden the state assertion.
 func TestDeliverSessionDisconnectedIsNotErrored(t *testing.T) {
 	hub, life, tail := newHub()
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1,
 		SessionID: "sess-1",
 		Frame:     sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED),
@@ -57,8 +59,10 @@ func TestDeliverSessionDisconnectedIsNotErrored(t *testing.T) {
 // zero-status assertion.
 func TestDeliverSessionTraceOnlyPublishesNoLifecycle(t *testing.T) {
 	hub, life, tail := newHub()
+	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1,
 		SessionID: "sess-1",
 		Frame:     sessionTraceFrame("trace-body"),
@@ -90,6 +94,7 @@ func TestDeliverUnknownFrameIsCountedNotDroppedNotError(t *testing.T) {
 	}
 	for i := uint64(1); i <= 3; i++ {
 		if err := hub.Deliver(context.Background(), RunnerEvent{
+			RunnerID:  testRunnerID,
 			RunnerSeq: i,
 			SessionID: "sess-1",
 			Frame:     &compassv1internal.AgentFrame{},
@@ -111,7 +116,7 @@ func TestDeliverUnknownFrameIsCountedNotDroppedNotError(t *testing.T) {
 // and not a panic — the relay must survive a malformed PublishEvents message.
 func TestDeliverNilFrameIsUnknownNotPanic(t *testing.T) {
 	hub := newHubOnly()
-	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerSeq: 1, SessionID: "s", Frame: nil}); err != nil {
+	if err := hub.Deliver(context.Background(), RunnerEvent{RunnerSeq: 1, SessionID: "s", RunnerID: testRunnerID, Frame: nil}); err != nil {
 		t.Fatalf("Deliver(nil frame) = %v, want nil", err)
 	}
 	if got := hub.UnknownFrames(); got != 1 {
@@ -151,6 +156,7 @@ func TestDeliverSequenceGapDetection(t *testing.T) {
 func deliverSeq(t *testing.T, hub *Hub, n uint64) {
 	t.Helper()
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: n,
 		SessionID: "seq-sess",
 		Frame:     sessionTraceFrame(""),

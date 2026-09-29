@@ -147,7 +147,8 @@ var errStreamClosed = errors.New("runner sessions stream closed")
 // the stream with the error so the Runner can retry the relay; a well-formed but
 // unknown frame is not an error (Deliver logs+counts it).
 func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
 	for stream.Receive() {
@@ -155,6 +156,7 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 		if err := h.hub.Deliver(ctx, RunnerEvent{
 			RunnerSeq: msg.GetRunnerSeq(),
 			SessionID: msg.GetSessionId(),
+			RunnerID:  subj.ID,
 			Frame:     msg.GetFrame(),
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -174,10 +176,11 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 // as a Connect CodeNotFound (surfaced to the Runner) and a comms tool failure as
 // the in-band CommsCallError variant of the result (never a stream teardown).
 func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest]) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayCommsCall(ctx, req.Msg)
+	resp, err := h.hub.RelayCommsCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -192,10 +195,11 @@ func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compa
 // none. An unresolved session is a Connect CodeNotFound; a tool failure is the
 // in-band LifecycleCallError variant (never a stream teardown).
 func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayLifecycleCall(ctx, req.Msg)
+	resp, err := h.hub.RelayLifecycleCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -211,10 +215,11 @@ func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[c
 // a tool failure is the in-band BoardCallError variant (never a stream
 // teardown).
 func (h *Handler) RelayBoardCall(ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest]) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayBoardCall(ctx, req.Msg)
+	resp, err := h.hub.RelayBoardCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -230,10 +235,11 @@ func (h *Handler) RelayBoardCall(ctx context.Context, req *connect.Request[compa
 // a tool failure is the in-band ForgeCallError variant (never a stream
 // teardown).
 func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest]) (*connect.Response[compassv1internal.RelayForgeCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayForgeCall(ctx, req.Msg)
+	resp, err := h.hub.RelayForgeCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -255,10 +261,11 @@ func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compa
 // Connect status error, because the Runner drives at-least-once purely off the
 // Connect code. seq is deferred and shipped as 0.
 func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.CommitConversationFrame(ctx, req.Msg)
+	resp, err := h.hub.CommitConversationFrame(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
