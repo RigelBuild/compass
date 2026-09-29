@@ -226,6 +226,7 @@ func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.WorkloadID, _ 
 	f.mu.Unlock()
 	return err
 }
+
 func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) error {
 	f.record("remove")
 	f.recordForID(id, "remove")

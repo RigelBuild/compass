@@ -19,8 +19,8 @@ import (
 // BOTH replies, proving the reconstructed body was loaded rather than a fresh
 // session started. Modeled EXACTLY on TestLegTwoRealTurn and
 // TestLegThreeFourSpawnAndMessaging: //go:build podman, the podmanUsable() skip
-// guard first, context.Background() as the test root, NewFixture(ctx, t,
-// WithCannedScript(...)), a container-reaping t.Cleanup registered before each
+// guard first, context.Background() as the test root, sharedFixture(t) with
+// this file's init()-registered canned route, a container-reaping t.Cleanup registered before each
 // container's session start, and store-side assertions via store.Open(ctx,
 // f.DSN()).
 //
@@ -35,20 +35,10 @@ func TestLegFivePersistAndResume(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
-
-	// Two DISTINCT canned replies: the pre-teardown turn settles on reply1, the
-	// resumed turn on reply2. Distinct strings are what let the lineage assertion
-	// prove the resumed session carried prior context — a fresh session would
-	// hold only reply2, so reply1's presence is the load-of-reconstructed-body
-	// proof.
-	const reply1 = "canned leg-5 pre-teardown turn settled OK"
-	const reply2 = "canned leg-5 resumed turn settled OK"
-	f := NewFixture(ctx, t, WithCannedScript(
-		CannedText(reply1),
-		CannedText(reply2),
-	))
-
+	ctx := context.Background() // test root, threaded into sharedFixture + every primitive
+	f := sharedFixture(t)
+	const reply1 = leg5Reply1
+	const reply2 = leg5Reply2
 	accountID, err := f.CreateAgent(ctx, "leg5-persistresume", "Leg Five Persist And Resume")
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
@@ -109,7 +99,7 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	}
 	defer tail1.Close()
 
-	post1ID, err := f.PostMessage(ctx, homeChannelID, "general", "say the pre-teardown reply and stop")
+	post1ID, err := f.PostMessage(ctx, homeChannelID, "general", "say the pre-teardown reply and stop "+leg5Marker)
 	if err != nil {
 		t.Fatalf("PostMessage(home, pre-teardown): %v", err)
 	}
@@ -185,7 +175,7 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	defer tail2.Close()
 
 	// Post 2 drives the resumed turn: same home channel, resolved once above.
-	if _, err := f.PostMessage(ctx, homeChannelID, "general", "say the resumed reply and stop"); err != nil {
+	if _, err := f.PostMessage(ctx, homeChannelID, "general", "say the resumed reply and stop "+leg5Marker); err != nil {
 		t.Fatalf("PostMessage(home, resumed): %v", err)
 	}
 
@@ -250,4 +240,19 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	if resumedSessionID != originalSessionID {
 		t.Fatalf("Resume returned %q, want the original session id %q; resume must REUSE the logical id as the live id so the durable transcript is one lineage", resumedSessionID, originalSessionID)
 	}
+}
+
+// leg5Marker routes two DISTINCT canned replies: the pre-teardown turn settles
+// on leg5Reply1, the resumed turn on leg5Reply2. Distinct strings are what let
+// the lineage assertion prove the resumed session carried prior context — a
+// fresh session would hold only leg5Reply2, so leg5Reply1's presence is the
+// load-of-reconstructed-body proof.
+const (
+	leg5Marker = "e2e-route-leg5-resume"
+	leg5Reply1 = "canned leg-5 pre-teardown turn settled OK"
+	leg5Reply2 = "canned leg-5 resumed turn settled OK"
+)
+
+func init() {
+	registerSharedFixtureOption(WithCannedMarkerScript(leg5Marker, CannedText(leg5Reply1), CannedText(leg5Reply2)))
 }

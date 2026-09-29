@@ -29,9 +29,9 @@ func TestHarnessCore(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root: NewFixture threads this into Up + teardown Down
+	ctx := context.Background() // test root, threaded into every RPC below
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	// 1. The stack is Ready — a spawned Ready stack is itself proof the whole
 	// cold-start chain ran (postgres up, server answering, token minted, real
@@ -95,23 +95,16 @@ func TestHarnessCore(t *testing.T) {
 	// confirm end-to-end that the live runner process carries them, reading its
 	// argv from the process table. Scoped to THIS fixture's unique runtime-dir so
 	// a foreign compass-runner on this shared box cannot satisfy the assertion.
-	assertRunnerHasConfiguredFlags(t, f.runtimeDir)
+	assertRunnerHasConfiguredFlags(t, f)
 
-	// 6. Down drains cleanly and leaves no child processes. A successful Down is
-	// the explicit teardown (the t.Cleanup guard only covers a failed test); after
-	// it, no compass-server/-runner/-postgres child spawned from binDir survives.
-	if err := f.Stack().Down(ctx); err != nil {
-		t.Fatalf("Down: %v", err)
-	}
-
-	// Health after Down must no longer be Ready — the server child is gone, so the
-	// GetServerInfo probe fails, which Health reports as Failed.
+	// 6. The shared stack remains Ready after these authenticated and rejected
+	// calls. TestMain owns its shutdown after every leg has finished.
 	post, err := f.Stack().Health(ctx)
 	if err != nil {
-		t.Fatalf("Health after Down: %v", err)
+		t.Fatalf("Health after RPC checks: %v", err)
 	}
-	if post.State == stack.StatusReady {
-		t.Fatal("stack still Ready after Down; the compass-server child was not stopped")
+	if post.State != stack.StatusReady {
+		t.Fatalf("stack state after RPC checks = %v (%s), want Ready", post.State, post.Detail)
 	}
 }
 
@@ -120,19 +113,17 @@ func TestHarnessCore(t *testing.T) {
 // --egress-allow to be present — end-to-end proof the A4 Config fields reached
 // the spawned runner, complementing the deterministic runnerSpec unit test.
 //
-// The match is scoped to runtimeDir — this fixture's unique
-// shortRoot(t,"h1")/rt path, forwarded to the runner as --runtime-dir. On a
-// shared box running a compass fleet, an unscoped scrape could match a foreign
-// compass-runner and either false-green (masking a real forward-path break in
-// THIS stack) or flaky-red on a concurrent runner with different flags; with
-// no-retries a flake has no net. Requiring the runtime-dir on the matched line
-// makes a foreign runner unable to satisfy it.
+// The match is scoped to runtimeDir — the shared fixture's unique run root,
+// forwarded to the runner as --runtime-dir. An unscoped scrape could match a
+// foreign compass-runner and either false-green or flake on a concurrent runner
+// with different flags.
 //
 // It reads argv via `ps` rather than racing the runner's async enrollment; the
 // runner process exists as soon as spawnChain's final step returned, which is
 // before Up returned Ready, so the process is present by the time this runs.
-func assertRunnerHasConfiguredFlags(t *testing.T, runtimeDir string) {
+func assertRunnerHasConfiguredFlags(t *testing.T, f *Fixture) {
 	t.Helper()
+	runtimeDir := f.runtimeDir
 	out, err := exec.Command("ps", "-eo", "args").CombinedOutput()
 	if err != nil {
 		t.Fatalf("ps -eo args: %v\n%s", err, out)
@@ -148,10 +139,10 @@ func assertRunnerHasConfiguredFlags(t *testing.T, runtimeDir string) {
 	if runnerLine == "" {
 		t.Fatalf("no live compass-runner process for this fixture (--runtime-dir %s) in the process table", runtimeDir)
 	}
-	if !strings.Contains(runnerLine, "--agent-model anthropic/claude-opus") {
+	if !strings.Contains(runnerLine, "--agent-model "+f.agentModel) {
 		t.Fatalf("runner argv missing configured --agent-model: %q", runnerLine)
 	}
-	if !strings.Contains(runnerLine, "--egress-allow api.anthropic.com,10.0.0.1") {
+	if !strings.Contains(runnerLine, "--egress-allow "+strings.Join(f.egressAllow, ",")) {
 		t.Fatalf("runner argv missing comma-joined --egress-allow: %q", runnerLine)
 	}
 }

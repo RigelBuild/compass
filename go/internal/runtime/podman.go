@@ -59,6 +59,9 @@ type WorkloadID string
 // String returns the raw workload id.
 func (c WorkloadID) String() string { return string(c) }
 
+// RunnerIDLabel identifies the Runner that owns a workload.
+const RunnerIDLabel = "compass.runner-id"
+
 // Mount is a host→container bind mount. ReadOnly maps to :ro and every mount
 // gets SELinux relabelling (:Z) so the substrate works on enforcing hosts.
 type Mount struct {
@@ -94,6 +97,8 @@ type WorkloadSpec struct {
 	// Name is the container name — the Runner's stable handle for this agent
 	// workstream.
 	Name string
+	// Labels are applied to the workload by backends that support container labels.
+	Labels map[string]string
 	// CapAdd is the Linux capabilities to add. The substrate adds only
 	// NET_ADMIN, and only so the entrypoint can arm the egress firewall; the
 	// agent itself runs as a non-root user with an empty capability set (see
@@ -455,14 +460,30 @@ func (p *PodmanCLI) Create(ctx context.Context, spec WorkloadSpec) (WorkloadID, 
 	return WorkloadID(strings.TrimSpace(string(stdout))), nil
 }
 
+// ListByOwner lists containers with names beginning with prefix and the Runner ID label, in any state.
+func (p *PodmanCLI) ListByOwner(ctx context.Context, prefix, runnerID string) ([]WorkloadID, error) {
+	if runnerID == "" {
+		return nil, errors.New("runner id must not be empty")
+	}
+	stdout, err := p.run(ctx, "podman ps", []string{"ps", "-a", "--filter", "label=" + RunnerIDLabel + "=" + runnerID, "--filter", "name=^" + prefix, "--format", "{{.Names}}"})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]WorkloadID, 0)
+	for name := range strings.SplitSeq(string(stdout), "\n") {
+		if strings.HasPrefix(name, prefix) {
+			names = append(names, WorkloadID(name))
+		}
+	}
+	return names, nil
+}
+
 // createArgs assembles the argv for `podman create`. Split out so the argv
 // assembly is unit-testable without spawning podman, mirroring
 // execStreamingArgs.
 func createArgs(spec WorkloadSpec) []string {
-	// Preallocate: 4 fixed tokens (create, --name+value, --userns) + 2 per
-	// cap/mount/env pair + image + command tokens, so the appends below don't
-	// reallocate.
-	args := make([]string, 0, 4+2*(len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env))+1+len(spec.Command))
+	// Preallocate for fixed tokens plus every repeated key/value option.
+	args := make([]string, 0, 4+2*(len(spec.Labels)+len(spec.CapAdd)+len(spec.Mounts)+len(spec.Env))+1+len(spec.Command))
 	args = append(args,
 		"create",
 		"--name", spec.Name,
@@ -480,6 +501,9 @@ func createArgs(spec WorkloadSpec) []string {
 	}
 	for _, kv := range sortedEnv(spec.Env) {
 		args = append(args, "-e", kv.key+"="+kv.value)
+	}
+	for _, label := range sortedEnv(spec.Labels) {
+		args = append(args, "--label", label.key+"="+label.value)
 	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Command...)

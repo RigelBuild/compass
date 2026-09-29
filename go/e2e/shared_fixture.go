@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -24,7 +25,11 @@ type sharedState struct {
 	f       *Fixture
 	err     error
 	opts    []fixtureOption
+	closed  bool
 	stoodUp bool
+	// env is the process environment before stand-up. The detached owner's
+	// t.Setenv cleanups never run, so shutdownShared restores it by hand.
+	env []string
 }
 
 var shared sharedState
@@ -64,15 +69,16 @@ func registerSharedFixtureOption(opts ...fixtureOption) {
 // sharedFixture returns the ONE stack every leg in this package shares: a
 // single stack.Up and a single root-supervisor seed per run rather than one per
 // leg. The caller's podmanUsable() guard still gates reaching it; it adds no
-// skip of its own.
-//
-// It takes no options by design — see registerSharedFixtureOption. A leg
-// needing routes nobody else may see calls NewFixture for its own stack.
+// skip of its own. It must not be called after the final zz_legsix_test.go test.
 func sharedFixture(t *testing.T) *Fixture {
 	t.Helper()
+	if shared.closed {
+		t.Fatalf("shared e2e fixture is unavailable after TestLegSixTeardownIdempotence; zz_legsix_test.go must run last")
+	}
 
 	shared.once.Do(func() {
 		shared.stoodUp = true
+		shared.env = os.Environ()
 		shared.f, shared.err = standUpShared(shared.opts...)
 	})
 	if shared.err != nil {
@@ -94,9 +100,8 @@ func sharedFixture(t *testing.T) *Fixture {
 // its own goroutine and the goroutine ending without a fixture reads as failure.
 //
 // The site is supplied rather than defaulted because shortRoot keys its root on
-// the PID alone: the default "h1" root is the very path every per-leg
-// NewFixture claims, so a per-leg cleanup would RemoveAll this stack's live
-// sockets mid-run. A distinct suffix keeps them disjoint, as the H6 site does.
+// the PID alone: the default root used by a plain NewFixture call is the same
+// path. A distinct suffix keeps them disjoint, as the H6 site does.
 func standUpShared(opts ...fixtureOption) (f *Fixture, err error) {
 	owner := &testing.T{}
 	ctx := context.Background() // run-root: the shared stack outlives every leg, so no leg's ctx can own it
@@ -184,10 +189,16 @@ func freeSharedPorts(n int) ([]int, error) {
 	return ports, nil
 }
 
-// shutdownShared tears the shared stack down. It MUST be called from TestMain
-// after m.Run() returns — the only lifetime that outlives every leg. It is a
-// no-op when no leg ever stood the fixture up. Teardown failures are reported
-// to stderr: the run's tests are already over, so there is nothing left to fail.
+// closeSharedForLegSix disables the shared stack before the final restart test.
+func closeSharedForLegSix() {
+	shared.closed = true
+	shutdownShared()
+}
+
+// shutdownShared tears the shared stack down. TestMain calls it after m.Run()
+// returns; TestLegSixTeardownIdempotence calls it first, as the last test. It is
+// a no-op when no leg stood the fixture up. Teardown failures are reported to
+// stderr: there is no test left to fail.
 func shutdownShared() {
 	if !shared.stoodUp || shared.f == nil {
 		return
@@ -197,17 +208,32 @@ func shutdownShared() {
 
 	// The detached T's own cleanups are unreachable, so Down, the canned stub,
 	// and the two directories NewFixture created are released by hand here.
-	ctx := context.Background() // run-root: m.Run has returned, so no test ctx survives to inherit
+	ctx := context.Background() // run-root: TestMain owns the shared stack beyond every leg
 	err := f.stack.Down(ctx)
 	if f.stub != nil {
 		err = errors.Join(err, f.stub.Close())
 	}
+	if f.forgeStub != nil {
+		f.forgeStub.srv.Close()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e shared fixture teardown: %v\n", err)
 	}
+	restoreEnv(shared.env)
 
 	// The site's root and state dir, neither of which registers a cleanup.
 	// Down has drained the children, so these are this run's alone.
 	_ = os.RemoveAll(filepath.Dir(f.runtimeDir))
 	_ = os.RemoveAll(filepath.Dir(f.caPath))
+}
+
+// restoreEnv resets the process environment to a snapshot from os.Environ.
+func restoreEnv(env []string) {
+	os.Clearenv()
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if err := os.Setenv(k, v); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e shared fixture env restore %s: %v\n", k, err)
+		}
+	}
 }
