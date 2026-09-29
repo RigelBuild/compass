@@ -9,11 +9,14 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 
@@ -345,6 +348,31 @@ func TestCallerCancellationDoesNotLogUnexpectedExit(t *testing.T) {
 	}
 }
 
+func TestShouldLogExit(t *testing.T) {
+	liveCtx := context.Background()
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	nonKillErr := errors.New("exit failed")
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{name: "nil error keeps current behavior", ctx: liveCtx, want: true},
+		{name: "deliberate kill", ctx: liveCtx, err: &runtime.ExitStatusError{Signal: syscall.SIGKILL}, want: false},
+		{name: "non-kill exit with live context", ctx: liveCtx, err: nonKillErr, want: true},
+		{name: "non-kill exit with cancelled context", ctx: cancelledCtx, err: nonKillErr, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldLogExit(tt.ctx, tt.err); got != tt.want {
+				t.Fatalf("shouldLogExit() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // The child closes its pipes but keeps running, so the reaper is parked inside
 // Process.Wait when Stop runs. A lock held across Wait would deadlock Stop here.
 func TestStopAndReaperShareSingleWait(t *testing.T) {
@@ -423,8 +451,16 @@ func lengths(lines []string) []int {
 
 func TestStderrInfoLinesAreClippedAndRateLimited(t *testing.T) {
 	logs := newCaptureLog()
-	stream := &AgentStream{sessionID: "sess-limited", stderrLimiter: newLineRateLimiter()}
+	clock := time.Unix(1_000, 0)
+	limiter := newLineRateLimiter()
+	limiter.now = func() time.Time { return clock }
+	limiter.lastRefill = clock
+	stream := &AgentStream{sessionID: "sess-limited"}
 	retained := 0
+	stderr := &stderrLogger{limiter: limiter, onLine: func(text string, truncated bool) {
+		retained++
+		stream.retainStderrLine(text, truncated)
+	}}
 	line := strings.Repeat("x", maxInfoStderrLine+1) + "\n"
 	var input strings.Builder
 	for i := range stderrLineBurst + 2 {
@@ -433,10 +469,7 @@ func TestStderrInfoLinesAreClippedAndRateLimited(t *testing.T) {
 		}
 		input.WriteString(line[:len(line)-1])
 	}
-	stream.drainToLog(context.Background(), strings.NewReader(input.String()), "agent stderr", logs.logger(), func(text string, truncated bool) {
-		retained++
-		stream.retainStderrLine(text, truncated)
-	})
+	stream.drainToLog(context.Background(), strings.NewReader(input.String()), "agent stderr", logs.logger(), stderr)
 	infoLines, debugLines := 0, 0
 	for draining := true; draining; {
 		select {
@@ -468,6 +501,114 @@ func TestStderrInfoLinesAreClippedAndRateLimited(t *testing.T) {
 	}
 	if len(stream.stderrTail) > maxStderrTailLines || stream.stderrBytes > maxStderrTailBytes {
 		t.Fatalf("stderr tail exceeds bounds: %d lines, %d bytes", len(stream.stderrTail), stream.stderrBytes)
+	}
+}
+
+func TestStderrRateLimitWarningsAreThrottled(t *testing.T) {
+	clock := time.Unix(1_000, 0)
+	limiter := &lineRateLimiter{
+		tokens: 0, lastRefill: clock.Add(-time.Second), now: func() time.Time { return clock },
+	}
+	stderr := &stderrLogger{limiter: limiter, onLine: func(string, bool) {}}
+	logs := newCaptureLog()
+	log := logs.logger()
+	writeLine := func() {
+		logDrainLine(log, "sess-flood", "agent stderr", "line", false, stderr)
+	}
+
+	collectWarnings := func() int {
+		count := 0
+		for draining := true; draining; {
+			select {
+			case record := <-logs.lines:
+				if record.msg == "agent stderr rate-limited" {
+					count++
+				}
+			default:
+				draining = false
+			}
+		}
+		return count
+	}
+	warnings := 0
+	for range 200 {
+		writeLine()
+	}
+	warnings += collectWarnings()
+	clock = clock.Add(time.Second)
+	writeLine()
+	warnings += collectWarnings()
+	for range 200 {
+		writeLine()
+	}
+	warnings += collectWarnings()
+	clock = clock.Add(time.Second)
+	writeLine()
+	warnings += collectWarnings()
+	for range 200 {
+		writeLine()
+	}
+	warnings += collectWarnings()
+	stderr.flushDropped(log, "sess-flood", true)
+	warnings += collectWarnings()
+
+	if warnings != 3 {
+		t.Fatalf("rate-limit warnings = %d, want 2 interval flushes and one final flush", warnings)
+	}
+}
+
+func TestStderrUTF8ClippingAndTailTruncation(t *testing.T) {
+	stream := &AgentStream{sessionID: "sess-utf8"}
+	tailLine := "€" + strings.Repeat("x", maxStderrTailBytes-2)
+	stream.retainStderrLine(tailLine, false)
+	if len(stream.stderrTail) != 1 {
+		t.Fatalf("stderr tail lines = %d, want 1", len(stream.stderrTail))
+	}
+	retained := stream.stderrTail[0]
+	if !utf8.ValidString(retained.text) {
+		t.Fatalf("tail cut produced invalid UTF-8: %q", retained.text[:min(len(retained.text), 16)])
+	}
+	if len(retained.text) != maxStderrTailBytes-2 {
+		t.Fatalf("tail kept %d bytes, want %d", len(retained.text), maxStderrTailBytes-2)
+	}
+	if !retained.truncated {
+		t.Fatal("tail truncated = false, want true after the byte-budget clamp")
+	}
+	if got, want := stream.stderrTailText(), retained.text+" [truncated]"; got != want {
+		t.Fatalf("stderrTailText() suffix = %q, want %q", got[len(got)-len(" [truncated]"):], " [truncated]")
+	}
+
+	clock := time.Unix(1_000, 0)
+	limiter := newLineRateLimiter()
+	limiter.now = func() time.Time { return clock }
+	limiter.lastRefill = clock
+	stderr := &stderrLogger{limiter: limiter, onLine: func(string, bool) {}}
+	logs := newCaptureLog()
+	text := strings.Repeat("x", maxInfoStderrLine-1) + "€z"
+	logDrainLine(logs.logger(), "sess-utf8", "agent stderr", text, false, stderr)
+	var info *logLine
+	for draining := true; draining; {
+		select {
+		case record := <-logs.lines:
+			if record.level == slog.LevelInfo {
+				info = &record
+			}
+		default:
+			draining = false
+		}
+	}
+	if info == nil {
+		t.Fatal("missing Info stderr record")
+	}
+	clipped := info.attrs["line"]
+	if !utf8.ValidString(clipped) {
+		t.Fatalf("Info cut produced invalid UTF-8: %q", clipped)
+	}
+	if len(clipped) != maxInfoStderrLine-1 {
+		t.Fatalf("Info line kept %d bytes, want %d", len(clipped), maxInfoStderrLine-1)
+	}
+	if info.attrs["truncated"] != "true" {
+		t.Fatalf("Info truncated = %q, want true", info.attrs["truncated"])
 	}
 }
 

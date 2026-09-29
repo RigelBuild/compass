@@ -144,10 +144,9 @@ type AgentStream struct {
 	drainsReleased <-chan struct{}
 	// reaped closes when the reaper finishes (reap + exit classification), the
 	// event tests and the host's self-exit handling wait on.
-	reaped        chan struct{}
-	stderrLimiter *lineRateLimiter
-	log           *slog.Logger
-	beforeWait    func()
+	reaped     chan struct{}
+	log        *slog.Logger
+	beforeWait func()
 }
 
 // SessionID returns the Server-side session id this stream carries.
@@ -174,7 +173,12 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	stream := &AgentStream{
 		sessionID: sessionID, exec: xs, stopDrains: stopDrains,
 		drainsReleased: drainCtx.Done(), reaped: make(chan struct{}), waitDone: make(chan struct{}),
-		stderrLimiter: newLineRateLimiter(), log: log, beforeWait: l.beforeWait,
+		log: log, beforeWait: l.beforeWait,
+	}
+
+	stderr := &stderrLogger{
+		limiter: newLineRateLimiter(),
+		onLine:  func(text string, truncated bool) { stream.retainStderrLine(text, truncated) },
 	}
 
 	// Drain both pipes continuously so a full OS pipe buffer can never stall the
@@ -183,8 +187,7 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	stream.drains.Add(2)
 	go func() {
 		defer stream.drains.Done()
-		stream.drainToLog(drainCtx, xs.IO.Stderr, "agent stderr", log,
-			func(text string, truncated bool) { stream.retainStderrLine(text, truncated) })
+		stream.drainToLog(drainCtx, xs.IO.Stderr, "agent stderr", log, stderr)
 	}()
 	go func() {
 		defer stream.drains.Done()
@@ -198,7 +201,7 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		defer close(stream.reaped)
 		stream.drains.Wait()
 		waitErr := stream.wait()
-		if !isDeliberateKill(waitErr) && ctx.Err() == nil {
+		if shouldLogExit(ctx, waitErr) {
 			logUnexpectedExit(log, stream, waitErr)
 		}
 		stopDrains()
@@ -316,6 +319,10 @@ func isDeliberateKill(err error) bool {
 	return ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL
 }
 
+func shouldLogExit(ctx context.Context, waitErr error) bool {
+	return !isDeliberateKill(waitErr) && ctx.Err() == nil
+}
+
 const maxStderrTailLines = 20
 const maxStderrTailBytes = 16 * 1024
 
@@ -385,14 +392,15 @@ type stderrLineSink func(text string, truncated bool)
 type lineRateLimiter struct {
 	tokens     float64
 	lastRefill time.Time
+	now        func() time.Time
 }
 
 func newLineRateLimiter() *lineRateLimiter {
-	return &lineRateLimiter{tokens: stderrLineBurst, lastRefill: time.Now()}
+	return &lineRateLimiter{tokens: stderrLineBurst, lastRefill: time.Now(), now: time.Now}
 }
 
 func (l *lineRateLimiter) allow() bool {
-	now := time.Now()
+	now := l.now()
 	l.tokens = min(float64(stderrLineBurst), l.tokens+now.Sub(l.lastRefill).Seconds()*stderrLinesPerSecond)
 	l.lastRefill = now
 	if l.tokens < 1 {
@@ -400,6 +408,28 @@ func (l *lineRateLimiter) allow() bool {
 	}
 	l.tokens--
 	return true
+}
+
+// stderrLogger is one stderr drain's tail sink and Info rate limiter. Only that
+// drain's goroutine touches it, so it needs no lock.
+type stderrLogger struct {
+	limiter      *lineRateLimiter
+	droppedLines int
+	lastFlush    time.Time
+	onLine       stderrLineSink
+}
+
+func (s *stderrLogger) flushDropped(log *slog.Logger, sessionID string, final bool) {
+	if s == nil || s.droppedLines == 0 {
+		return
+	}
+	now := s.limiter.now()
+	if !final && !s.lastFlush.IsZero() && now.Sub(s.lastFlush) < time.Second {
+		return
+	}
+	log.Warn("agent stderr rate-limited", slog.String("session_id", sessionID), slog.Int("dropped_lines", s.droppedLines))
+	s.droppedLines = 0
+	s.lastFlush = now
 }
 
 // drainToLog copies one of the agent's pipes to the diagnostic log line by line
@@ -416,25 +446,18 @@ func (l *lineRateLimiter) allow() bool {
 // ctx is checked between lines rather than mid-read: a blocked read ends when
 // teardown closes the pipe, and Stop's join is bounded, so a cancel can never
 // hold teardown open. Closing the reader here instead would race the writer.
-// onLine, when set, receives every line (the stderr tail) before rate limiting.
-func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string, log *slog.Logger, onLine stderrLineSink) {
+// stderr, when set, receives every line (the tail) and rate-limits the Info copy.
+func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string, log *slog.Logger, stderr *stderrLogger) {
 	sessionID := s.sessionID
 	r := bufio.NewReaderSize(pipe, drainReaderSize)
-	droppedLines := 0
-	flushDropped := func() {
-		if droppedLines > 0 {
-			log.Warn("agent stderr rate-limited", slog.String("session_id", sessionID), slog.Int("dropped_lines", droppedLines))
-			droppedLines = 0
-		}
-	}
-	defer flushDropped()
+	defer stderr.flushDropped(log, s.sessionID, true)
 	for {
 		if ctx.Err() != nil {
 			return // teardown: the pipe is being closed under us.
 		}
 		line, err := readBoundedLine(r, maxLoggedLine)
 		if len(line) > 0 || err == nil {
-			s.logDrainLine(log, sessionID, msg, string(line), errors.Is(err, errLineTruncated), onLine, &droppedLines, flushDropped)
+			logDrainLine(log, s.sessionID, msg, string(line), errors.Is(err, errLineTruncated), stderr)
 		}
 		switch {
 		// The expected ends, tested FIRST: a truncated final line joins its error
@@ -464,8 +487,8 @@ func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string
 	}
 }
 
-func (s *AgentStream) logDrainLine(log *slog.Logger, sessionID, msg, text string, truncated bool, onLine stderrLineSink, droppedLines *int, flushDropped func()) {
-	if onLine == nil {
+func logDrainLine(log *slog.Logger, sessionID, msg, text string, truncated bool, stderr *stderrLogger) {
+	if stderr == nil {
 		attrs := []any{slog.String("session_id", sessionID), slog.String("line", text)}
 		if truncated {
 			attrs = append(attrs, slog.Bool("truncated", true))
@@ -473,19 +496,19 @@ func (s *AgentStream) logDrainLine(log *slog.Logger, sessionID, msg, text string
 		log.Debug(msg, attrs...)
 		return
 	}
-	onLine(text, truncated)
+	stderr.onLine(text, truncated)
 	logText := clipLine(text, maxInfoStderrLine)
 	truncated = truncated || len(logText) < len(text)
 	attrs := []any{slog.String("session_id", sessionID), slog.String("line", logText)}
 	if truncated {
 		attrs = append(attrs, slog.Bool("truncated", true))
 	}
-	if s.stderrLimiter.allow() {
+	if stderr.limiter.allow() {
 		log.Info(msg, attrs...)
-		flushDropped()
+		stderr.flushDropped(log, sessionID, false)
 		return
 	}
-	*droppedLines++
+	stderr.droppedLines++
 	log.Debug(msg, attrs...)
 }
 
