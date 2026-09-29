@@ -2469,6 +2469,10 @@ jobs:
         #     UNTAGGED and runs under a bare `go test`, so an `ok`-line grep alone
         #     could pass on that file while the real podman legs silently skipped
         #     — the skip-string check above is what closes that gap.
+        #   - the per-leg PASS names come from the TestComms prefix over every
+        #     e2e test file, so a new comms leg cannot land unguarded whatever
+        #     its filename. The loop reads a HERESTRING, not a pipe: a
+        #     `printf | while` refactor would swallow its exit and pass vacuously.
         run: |
           skip=$(sed -n 's/.*t\.Skip("\(rootless podman[^";]*\)[^"]*").*/\1/p' \
             e2e/harness_test.go)
@@ -2486,6 +2490,19 @@ jobs:
             exit 1
           fi
           echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
+          test_names=$(sed -nE 's/^[[:space:]]*func[[:space:]]+(TestComms[A-Za-z0-9_]*)[[:space:]]*\(.*/\1/p' \
+            e2e/*_test.go | sort -u)
+          if [ -z "$test_names" ]; then
+            echo "::error::could not derive any TestComms* names from go/e2e/*_test.go"
+            exit 1
+          fi
+          while IFS= read -r test_name; do
+            if ! grep -qE "^--- PASS: ${test_name}( |$)" /tmp/e2e.log; then
+              echo "::error::deterministic e2e did not report PASS for $test_name"
+              exit 1
+            fi
+          done <<< "$test_names"
+          echo "dogfood e2e: every source-derived TestComms* leg reported PASS"
 
   rollup:
     name: rollup
