@@ -34,6 +34,7 @@ func TestDeliverSessionStampsAgentAccountFromBinding(t *testing.T) {
 
 	// A live-session transition carries the bound account.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {
@@ -43,6 +44,7 @@ func TestDeliverSessionStampsAgentAccountFromBinding(t *testing.T) {
 	// (deliverSession runs before any unbindSession) — the case DL-167 says bites
 	// hardest, so it must still carry the account.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED),
 	}); err != nil {
@@ -62,6 +64,7 @@ func TestDeliverSessionStampsAgentAccountFromBinding(t *testing.T) {
 
 	// A session the hub never bound resolves to no account — the residual gap.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 3, SessionID: "never-bound",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {

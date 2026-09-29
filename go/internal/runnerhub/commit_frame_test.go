@@ -132,7 +132,7 @@ func TestCommitConversationFrameNilTranscriptStoreIsUnavailable(t *testing.T) {
 	hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
 	bindLiveSession(hub)
 
-	_, err := hub.CommitConversationFrame(context.Background(), transcriptReq("sess-1", "key-1", 1, false, `{"e":1}`))
+	_, err := hub.CommitConversationFrame(context.Background(), testRunnerID, transcriptReq("sess-1", "key-1", 1, false, `{"e":1}`))
 	if err == nil {
 		t.Fatal("CommitConversationFrame on a transcript-store-less hub = nil error, want CodeUnavailable")
 	}
@@ -152,7 +152,7 @@ func TestCommitConversationFrameNilTranscriptStoreIsUnavailable(t *testing.T) {
 func TestCommitConversationFrameUnboundSessionFailsClosedNotFound(t *testing.T) {
 	hub, ts := newHubWithTranscripts()
 
-	_, err := hub.CommitConversationFrame(context.Background(), transcriptReq("never-bound", "key-1", 1, false, `{"e":1}`))
+	_, err := hub.CommitConversationFrame(context.Background(), testRunnerID, transcriptReq("never-bound", "key-1", 1, false, `{"e":1}`))
 	if err == nil {
 		t.Fatal("CommitConversationFrame for an unbound session = nil error, want CodeNotFound (fail closed)")
 	}
@@ -173,7 +173,7 @@ func TestCommitConversationFrameNoTranscriptVariantIsInvalidArgument(t *testing.
 	hub, ts := newHubWithTranscripts()
 	bindLiveSession(hub)
 
-	_, err := hub.CommitConversationFrame(context.Background(), unsetFrameReq("sess-1", "key-1"))
+	_, err := hub.CommitConversationFrame(context.Background(), testRunnerID, unsetFrameReq("sess-1", "key-1"))
 	if err == nil {
 		t.Fatal("CommitConversationFrame with an unset frame variant = nil error, want CodeInvalidArgument")
 	}
@@ -196,7 +196,7 @@ func TestCommitConversationFrameHappyTranscriptForwardsVerbatim(t *testing.T) {
 	bindLiveSession(hub)
 
 	const entryJSON = `{"kind":"assistant","turn":7}`
-	resp, err := hub.CommitConversationFrame(context.Background(), transcriptReq("sess-1", "idem-key-1", 42, true, entryJSON))
+	resp, err := hub.CommitConversationFrame(context.Background(), testRunnerID, transcriptReq("sess-1", "idem-key-1", 42, true, entryJSON))
 	if err != nil {
 		t.Fatalf("CommitConversationFrame(transcript) = %v, want success", err)
 	}
@@ -254,7 +254,7 @@ func TestCommitConversationFrameMapsStoreErrorCodes(t *testing.T) {
 			ts.appendErr = tc.storeErr
 			bindLiveSession(hub)
 
-			resp, err := hub.CommitConversationFrame(context.Background(), transcriptReq("sess-1", "key-1", 1, false, `{"e":1}`))
+			resp, err := hub.CommitConversationFrame(context.Background(), testRunnerID, transcriptReq("sess-1", "key-1", 1, false, `{"e":1}`))
 			if err == nil {
 				t.Fatal("CommitConversationFrame with a store error = nil error, want a Connect status error (never a committed=false nil-error ack)")
 			}

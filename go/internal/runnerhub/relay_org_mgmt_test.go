@@ -64,7 +64,7 @@ func TestRelayCommsCallCreateChannelArmForwardsUnderBoundAccount(t *testing.T) {
 	bindLiveSession(hub)
 
 	req := &compassv1.CreateChannelRequest{Name: "room"}
-	resp, err := hub.RelayCommsCall(context.Background(), relayCreateChannel("sess-1", "tc-cc", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayCreateChannel("sess-1", "tc-cc", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(create_channel) = %v, want success", err)
 	}
@@ -94,7 +94,7 @@ func TestRelayCommsCallUpdateMembersArmForwardsUnderBoundAccount(t *testing.T) {
 	bindLiveSession(hub)
 
 	req := &compassv1.UpdateChannelMembersRequest{ChannelId: "ch-1", AddMemberHandles: []string{"a-2"}}
-	resp, err := hub.RelayCommsCall(context.Background(), relayUpdateMembers("sess-1", "tc-um", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayUpdateMembers("sess-1", "tc-um", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(update_members) = %v, want success", err)
 	}
@@ -125,7 +125,7 @@ func TestRelayCommsCallCreateChannelGroupArmForwardsUnderBoundAccount(t *testing
 	bindLiveSession(hub)
 
 	req := &compassv1.CreateChannelGroupRequest{Name: "team"}
-	resp, err := hub.RelayCommsCall(context.Background(), relayCreateChannelGroup("sess-1", "tc-cg", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayCreateChannelGroup("sess-1", "tc-cg", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(create_channel_group) = %v, want success", err)
 	}
@@ -156,7 +156,7 @@ func TestRelayCommsCallCreateChannelToolErrorIsInBandNotStreamError(t *testing.T
 	comms.createChannelErr = connect.NewError(connect.CodeNotFound, errors.New("group not found"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayCreateChannel("sess-1", "tc-cc-err", &compassv1.CreateChannelRequest{Name: "room"}))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayCreateChannel("sess-1", "tc-cc-err", &compassv1.CreateChannelRequest{Name: "room"}))
 	if err != nil {
 		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band tool error", err)
 	}
@@ -181,7 +181,7 @@ func TestRelayCommsCallUpdateMembersToolErrorIsInBandNotStreamError(t *testing.T
 	comms.updateMembersErr = connect.NewError(connect.CodeNotFound, errors.New("channel not found"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayUpdateMembers("sess-1", "tc-um-err", &compassv1.UpdateChannelMembersRequest{ChannelId: "ch-x", AddMemberHandles: []string{"a-2"}}))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayUpdateMembers("sess-1", "tc-um-err", &compassv1.UpdateChannelMembersRequest{ChannelId: "ch-x", AddMemberHandles: []string{"a-2"}}))
 	if err != nil {
 		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band tool error", err)
 	}
@@ -205,7 +205,7 @@ func TestRelayCommsCallCreateChannelGroupToolErrorIsInBandNotStreamError(t *test
 	comms.createChannelGroupErr = connect.NewError(connect.CodeNotFound, errors.New("parent group not found"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayCreateChannelGroup("sess-1", "tc-cg-err", &compassv1.CreateChannelGroupRequest{Name: "team"}))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayCreateChannelGroup("sess-1", "tc-cg-err", &compassv1.CreateChannelGroupRequest{Name: "team"}))
 	if err != nil {
 		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band tool error", err)
 	}

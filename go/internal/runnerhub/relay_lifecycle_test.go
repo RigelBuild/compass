@@ -59,7 +59,7 @@ func relayDespawn(sessionID, callID string, despawn *compassv1internal.DespawnPe
 func TestRelayLifecycleCallUnboundSessionFailsClosedNotFound(t *testing.T) {
 	hub, fake := newHubWithLifecycle()
 
-	_, err := hub.RelayLifecycleCall(context.Background(), relaySpawn("never-bound", "lc-1", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+	_, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("never-bound", "lc-1", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
 	if err == nil {
 		t.Fatal("RelayLifecycleCall for an unbound session = nil error, want CodeNotFound (fail closed)")
 	}
@@ -84,7 +84,7 @@ func TestRelayLifecycleCallNilCallerIsUnavailableBeforeResolution(t *testing.T) 
 		hub := newHubOnly()  // no LifecycleCaller wired
 		bindLiveSession(hub) // a live binding exists, proving the nil guard precedes resolution
 
-		_, err := hub.RelayLifecycleCall(context.Background(), relaySpawn("sess-1", "lc-2", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+		_, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("sess-1", "lc-2", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
 		if err == nil {
 			t.Fatal("RelayLifecycleCall on a caller-less hub = nil error, want CodeUnavailable")
 		}
@@ -95,7 +95,7 @@ func TestRelayLifecycleCallNilCallerIsUnavailableBeforeResolution(t *testing.T) 
 	t.Run("unbound session still Unavailable (nil-check precedes resolution)", func(t *testing.T) {
 		hub := newHubOnly() // no LifecycleCaller wired, no binding
 
-		_, err := hub.RelayLifecycleCall(context.Background(), relaySpawn("never-bound", "lc-2b", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+		_, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("never-bound", "lc-2b", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
 		if err == nil {
 			t.Fatal("RelayLifecycleCall on a caller-less hub (unbound) = nil error, want CodeUnavailable")
 		}
@@ -116,7 +116,7 @@ func TestRelayLifecycleCallDelegatesUnderResolvedCallerAccount(t *testing.T) {
 	fake.spawnResp = &compassv1internal.SpawnPeerResponse{AgentAccountId: "acct-new", ContainerName: "c-new", SessionId: "sess-new"}
 	bindLiveSession(hub) // sess-1 -> acct-agent
 
-	_, err := hub.RelayLifecycleCall(context.Background(), relaySpawn("sess-1", "lc-3", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+	_, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("sess-1", "lc-3", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
 	if err != nil {
 		t.Fatalf("RelayLifecycleCall(spawn) = %v, want success", err)
 	}
@@ -140,7 +140,7 @@ func TestRelayLifecycleCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	fake.spawnErr = connect.NewError(connect.CodeAlreadyExists, errors.New("handle already taken"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayLifecycleCall(context.Background(), relaySpawn("sess-1", "lc-4", &compassv1internal.SpawnPeerRequest{Handle: "dup"}))
+	resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("sess-1", "lc-4", &compassv1internal.SpawnPeerRequest{Handle: "dup"}))
 	if err != nil {
 		t.Fatalf("RelayLifecycleCall with a tool error returned a Go error %v, want nil (in-band render)", err)
 	}
@@ -175,7 +175,7 @@ func TestRelayLifecycleCallDespawnToolErrorIsInBand(t *testing.T) {
 	fake.despawnErr = connect.NewError(connect.CodeNotFound, errors.New("peer not found"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayLifecycleCall(context.Background(), relayDespawn("sess-1", "lc-4b", &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-victim"}))
+	resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relayDespawn("sess-1", "lc-4b", &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-victim"}))
 	if err != nil {
 		t.Fatalf("RelayLifecycleCall with a despawn tool error returned a Go error %v, want nil (in-band render)", err)
 	}
@@ -198,7 +198,7 @@ func TestRelayLifecycleCallEchoesCallIDOnSuccess(t *testing.T) {
 	fake.spawnResp = &compassv1internal.SpawnPeerResponse{AgentAccountId: "acct-new"}
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayLifecycleCall(context.Background(), relaySpawn("sess-1", "lc-5", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+	resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("sess-1", "lc-5", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
 	if err != nil {
 		t.Fatalf("RelayLifecycleCall(spawn) = %v, want success", err)
 	}
@@ -222,7 +222,7 @@ func TestRelayLifecycleCallDispatchesSpawnVsDespawn(t *testing.T) {
 		fake.spawnResp = &compassv1internal.SpawnPeerResponse{AgentAccountId: "acct-new"}
 		bindLiveSession(hub)
 
-		resp, err := hub.RelayLifecycleCall(context.Background(), relaySpawn("sess-1", "lc-6a", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
+		resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relaySpawn("sess-1", "lc-6a", &compassv1internal.SpawnPeerRequest{Handle: "peer"}))
 		if err != nil {
 			t.Fatalf("RelayLifecycleCall(spawn) = %v, want success", err)
 		}
@@ -239,7 +239,7 @@ func TestRelayLifecycleCallDispatchesSpawnVsDespawn(t *testing.T) {
 		fake.despawnResp = &compassv1internal.DespawnPeerResponse{}
 		bindLiveSession(hub)
 
-		resp, err := hub.RelayLifecycleCall(context.Background(), relayDespawn("sess-1", "lc-6b", &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-victim"}))
+		resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, relayDespawn("sess-1", "lc-6b", &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-victim"}))
 		if err != nil {
 			t.Fatalf("RelayLifecycleCall(despawn) = %v, want success", err)
 		}
@@ -279,7 +279,7 @@ func TestRelayLifecycleCallUnsetOneofIsInBandInvalidArgument(t *testing.T) {
 	hub, fake := newHubWithLifecycle()
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayLifecycleCall(context.Background(), &compassv1internal.RelayLifecycleCallRequest{
+	resp, err := hub.RelayLifecycleCall(context.Background(), testRunnerID, &compassv1internal.RelayLifecycleCallRequest{
 		SessionId: "sess-1",
 		Call:      &compassv1internal.LifecycleCallRequest{CallId: "lc-7"}, // no spawn/despawn variant set
 	})

@@ -148,6 +148,7 @@ func TestDeliveryAckAdvancesCursor(t *testing.T) {
 
 	// A valid ack: resolve channel, advance the cursor for the bound agent.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(delivery_ack) = %v, want nil (never a teardown)", err)
@@ -162,6 +163,7 @@ func TestDeliveryAckAdvancesCursor(t *testing.T) {
 
 	// An ack for an unknown message: fail-closed no-op, no advance, no teardown.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: deliveryAckFrame("ghost"),
 	}); err != nil {
 		t.Fatalf("Deliver(unknown ack) = %v, want nil (fail-closed no-op)", err)
@@ -180,6 +182,7 @@ func TestDeliveryAckUnboundSessionIsNoOp(t *testing.T) {
 	del.channels["m1"] = "chan-1"
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "never-bound", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, unbound) = %v, want nil", err)
@@ -200,6 +203,7 @@ func TestDeliverSessionFiresSettleSink(t *testing.T) {
 
 	// A lifecycle transition fires both the lifecycle publish and the settle sink.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {
@@ -215,6 +219,7 @@ func TestDeliverSessionFiresSettleSink(t *testing.T) {
 
 	// A trace-only frame (UNSPECIFIED) is not a settle edge: no settle fires.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: sessionTraceFrame("trace"),
 	}); err != nil {
 		t.Fatalf("Deliver(trace) = %v, want nil", err)
@@ -294,6 +299,7 @@ func TestDeliverSessionFiresPresenceSink(t *testing.T) {
 	// A lifecycle transition on the bound session fires the lifecycle edge with
 	// the resolved account.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
 	}); err != nil {
@@ -307,6 +313,7 @@ func TestDeliverSessionFiresPresenceSink(t *testing.T) {
 
 	// A trace-only frame is not a lifecycle edge: no further presence call.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: sessionTraceFrame("trace"),
 	}); err != nil {
 		t.Fatalf("Deliver(trace) = %v, want nil", err)
@@ -318,6 +325,7 @@ func TestDeliverSessionFiresPresenceSink(t *testing.T) {
 	// A lifecycle transition on an UNBOUND session publishes no presence (no
 	// account to attribute it to).
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 3, SessionID: "never-bound",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {
@@ -334,6 +342,7 @@ func TestDeliverSessionNilPresenceSinkIsSafe(t *testing.T) {
 	hub := newHubOnly()
 	bindSession(hub, "sess-1") // promoteSession with a nil presence sink
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
 		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
 	}); err != nil {
@@ -479,6 +488,7 @@ func TestDeliveryAckStoreFaultIsNonFatal(t *testing.T) {
 	bindSession(hub, "sess-1")
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, store fault) = %v, want nil (non-fatal drop, not a teardown)", err)
@@ -498,6 +508,7 @@ func TestDeliveryAckDropsAreCounted(t *testing.T) {
 
 	// Drop 1: an ack for a session with no bound agent.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "never-bound", Frame: deliveryAckFrame("m1"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, unbound) = %v, want nil", err)
@@ -505,6 +516,7 @@ func TestDeliveryAckDropsAreCounted(t *testing.T) {
 	// Drop 2: an ack for an unknown message under a bound session.
 	bindSession(hub, "sess-1")
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: deliveryAckFrame("ghost"),
 	}); err != nil {
 		t.Fatalf("Deliver(ack, unknown message) = %v, want nil", err)
@@ -516,5 +528,41 @@ func TestDeliveryAckDropsAreCounted(t *testing.T) {
 	// And the snapshot mirrors the accessor under one lock.
 	if diag := hub.FrameDiagnostics(); diag.DroppedAcks != 2 {
 		t.Fatalf("FrameDiagnostics.DroppedAcks = %d, want 2", diag.DroppedAcks)
+	}
+}
+
+// A second Runner's PublishEvents frames naming another Runner's session must
+// not speak for that agent: no status, tail relay, or cursor advance.
+func TestPublishedFramesFromForeignRunnerAreDropped(t *testing.T) {
+	hub, life, tail := newHub()
+	del := newFakeDeliveryStore()
+	hub.SetDeliveryStore(del)
+	bindSession(hub, "sess-1")
+	del.channels["m1"] = "chan-1"
+
+	frames := []*compassv1internal.AgentFrame{
+		sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_STOPPED),
+		deliveryAckFrame("m1"),
+		forgeAckFrame("sub-1"),
+	}
+	for i, frame := range frames {
+		if err := hub.Deliver(context.Background(), RunnerEvent{
+			RunnerID:  "runner-2",
+			RunnerSeq: uint64(i + 1), SessionID: "sess-1", Frame: frame,
+		}); err != nil {
+			t.Fatalf("Deliver(foreign frame %d) = %v, want nil (dropped, never a teardown)", i, err)
+		}
+	}
+	if got := life.snapshot(); len(got) != 0 {
+		t.Fatalf("foreign session frame published %d statuses, want 0", len(got))
+	}
+	if got := tail.snapshot(); len(got) != 0 {
+		t.Fatalf("foreign session frame reached the session tail %d times, want 0", len(got))
+	}
+	if got := del.ackSnapshot(); len(got) != 0 {
+		t.Fatalf("foreign delivery_ack advanced %d cursors, want 0", len(got))
+	}
+	if got := del.forgeSnapshot(); len(got) != 0 {
+		t.Fatalf("foreign forge_notification_ack advanced %d revisions, want 0", len(got))
 	}
 }

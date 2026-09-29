@@ -38,6 +38,9 @@ type RunnerEvent struct {
 	RunnerSeq uint64
 	// SessionID is the Server-side session id the frame belongs to.
 	SessionID string
+	// RunnerID is the authenticated subject of the publishing Runner; a frame
+	// naming a session another Runner owns resolves as unbound.
+	RunnerID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
 }
@@ -187,11 +190,11 @@ type SessionBindingStore interface {
 	// the prior session the hub must evict from both maps. It runs on the
 	// request ctx (tenant-scoped), so the write lands under the acting tenant.
 	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced string, err error)
-	// ResolveSessionAccount resolves the agent account a live session speaks
-	// for — the cache-miss read behind accountForSession. store.ErrNotFound is
-	// the fail-closed miss (mapped to ok=false), byte-identical to today's
-	// CodeNotFound.
-	ResolveSessionAccount(ctx context.Context, sessionID string) (store.AccountID, error)
+	// ResolveSessionBinding resolves the agent account and owning Runner a live
+	// session speaks for — the cache-miss read behind accountForSession.
+	// store.ErrNotFound is the fail-closed miss (mapped to ok=false),
+	// byte-identical to today's CodeNotFound.
+	ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error)
 	// SessionForAccount resolves the live session bound to an account — the
 	// cache-miss read behind SessionForAccount (the reverse direction). Same
 	// fail-closed store.ErrNotFound contract.
@@ -400,11 +403,11 @@ type Hub struct {
 	// agent_account_id). Start promotes the entry to sessionAccounts under the
 	// minted session_id; it lives here only for the Provision..Start window.
 	containerAccounts map[string]store.AccountID
-	// sessionAccounts binds a live session_id to its agent account — the authoritative
-	// map RelayCommsCall resolves against. Start adds, Stop removes, a Runner reconnect
-	// drops ALL, so a re-minted id fails closed (CodeNotFound) not inheriting a stale
-	// account (OQ-2). Single-Runner MVP: reconnect clears the whole map.
-	sessionAccounts map[string]store.AccountID
+	// sessionAccounts binds a live session_id to its agent account and owning
+	// Runner — the authoritative map RelayCommsCall resolves against. Start adds,
+	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
+	// (CodeNotFound) not inheriting a stale account (OQ-2).
+	sessionAccounts map[string]sessionBinding
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
 	// consumer (RIG-1569 T3) resolves a subscribed account to its live session to
@@ -439,6 +442,12 @@ type attachedRunner struct {
 	egressPosture compassv1.EgressPosture
 }
 
+// sessionBinding is one live session's principal and the Runner that owns it.
+type sessionBinding struct {
+	account  store.AccountID
+	runnerID string
+}
+
 // NewHub constructs a hub over the two write-through sinks and the agent-comms
 // caller. comms executes agent-initiated comms calls under the account a session
 // resolves to (RelayCommsCall); it may be nil for a hub that never serves comms
@@ -456,7 +465,7 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		log:               log,
 		freshSessionID:    mintFreshSessionID,
 		containerAccounts: make(map[string]store.AccountID),
-		sessionAccounts:   make(map[string]store.AccountID),
+		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
 	}
 }
@@ -620,7 +629,7 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
-		h.deliverSession(ctx, ev.SessionID, f.Session)
+		h.deliverSession(ctx, ev.RunnerID, ev.SessionID, f.Session)
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
@@ -719,7 +728,14 @@ func (h *Hub) fireRunnerReady() {
 // the frame carries a lifecycle transition, extracts the AgentSessionStatus onto
 // SubscribeEvents. A session frame can carry a trace event, a lifecycle
 // transition, or both; UNSPECIFIED means "trace only, no transition".
-func (h *Hub) deliverSession(ctx context.Context, sessionID string, sf *compassv1internal.SessionFrame) {
+func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf *compassv1internal.SessionFrame) {
+	// A frame for a session bound to another Runner is dropped whole: its trace,
+	// lifecycle, settle and presence edges would all speak for that Runner's agent.
+	if h.boundToOtherRunner(ctx, runnerID, sessionID) {
+		h.log.Warn("dropped session frame from a Runner that does not own the session",
+			slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
+		return
+	}
 	h.tail.RelaySessionFrame(sessionID, sf)
 	state := sf.GetState()
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
@@ -778,7 +794,7 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 	// BEFORE the system-role escalation below. The binding read is single-valued only
 	// because RLS narrows it to one tenant; a BYPASSRLS read could return a row from an
 	// ARBITRARY tenant. Resolving here keeps it tenant-scoped and fail-closed.
-	agent, ok := h.accountForSession(ctx, ev.SessionID)
+	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")
 		return
@@ -827,7 +843,7 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	// account on the REQUEST ctx, BEFORE the system-role escalation, so the
 	// binding read stays tenant-scoped and cannot return a foreign tenant's row
 	// under BYPASSRLS. Only the cursor advance below runs under the system role.
-	agent, ok := h.accountForSession(ctx, ev.SessionID)
+	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")
 		return

@@ -99,7 +99,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 
 	// Now update the maps under h.mu (store already written).
 	h.mu.Lock()
-	h.sessionAccounts[sessionID] = account
+	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: runnerID}
 	h.accountSessions[account] = sessionID
 	// The container->account entry has served its purpose; the session binding
 	// is now authoritative. Drop it so a container name reused across the
@@ -205,13 +205,13 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 		account     store.AccountID
 		wentOffline bool
 	)
-	if a, ok := h.sessionAccounts[sessionID]; ok {
+	if binding, ok := h.sessionAccounts[sessionID]; ok {
 		// Drop the reverse entry only if it still points at THIS session — a
 		// promoteSession for the account onto a newer session would have already
 		// repointed it, and a stale delete would then unbind the live one.
-		if h.accountSessions[a] == sessionID {
-			delete(h.accountSessions, a)
-			account = a
+		if h.accountSessions[binding.account] == sessionID {
+			delete(h.accountSessions, binding.account)
+			account = binding.account
 			wentOffline = true
 		}
 	}
@@ -274,10 +274,38 @@ func (h *Hub) unbindContainer(containerName string) {
 // this refusal; the guard is defence in depth against a future system-role
 // caller.
 func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.AccountID, bool) {
+	binding, ok := h.resolveSessionBinding(ctx, sessionID)
+	return binding.account, ok
+}
+
+// accountForRunnerSession is accountForSession for a Runner-originated call: a
+// session owned by another Runner reads as unbound, so a foreign Runner token
+// cannot act as that agent nor learn which session ids are live.
+func (h *Hub) accountForRunnerSession(ctx context.Context, runnerID, sessionID string) (store.AccountID, bool) {
+	if runnerID == "" {
+		return "", false
+	}
+	binding, ok := h.resolveSessionBinding(ctx, sessionID)
+	if !ok || binding.runnerID != runnerID {
+		return "", false
+	}
+	return binding.account, true
+}
+
+// boundToOtherRunner reports whether sessionID is bound to a Runner other than
+// runnerID. An unbound session is not: frames legitimately precede Start's bind.
+func (h *Hub) boundToOtherRunner(ctx context.Context, runnerID, sessionID string) bool {
+	binding, ok := h.resolveSessionBinding(ctx, sessionID)
+	return ok && binding.runnerID != runnerID
+}
+
+// resolveSessionBinding is the shared cache-then-durable resolution behind both
+// resolvers above.
+func (h *Hub) resolveSessionBinding(ctx context.Context, sessionID string) (sessionBinding, bool) {
 	h.mu.Lock()
-	if account, ok := h.sessionAccounts[sessionID]; ok {
+	if binding, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
-		return account, true
+		return binding, true
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
@@ -285,26 +313,27 @@ func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.Ac
 	h.mu.Unlock()
 
 	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
-		return "", false
+		return sessionBinding{}, false
 	}
-	account, err := bindings.ResolveSessionAccount(ctx, sessionID)
+	account, runnerID, err := bindings.ResolveSessionBinding(ctx, sessionID)
 	if err != nil {
 		// store.ErrNotFound (an unbound session) and any store fault both fail
 		// closed — the same CodeNotFound the caller mints today.
-		return "", false
+		return sessionBinding{}, false
 	}
 	// Populate the forward cache so a subsequent comms call for this restarted
 	// session hits without a table round-trip. Re-check under the lock: a
 	// concurrent promote/unbind may have run, so a live map entry wins over the
 	// row just read (avoids clobbering a fresher binding with a staler one).
+	resolved := sessionBinding{account: account, runnerID: runnerID}
 	h.mu.Lock()
 	if live, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
 		return live, true
 	}
-	h.sessionAccounts[sessionID] = account
+	h.sessionAccounts[sessionID] = resolved
 	h.mu.Unlock()
-	return account, true
+	return resolved, true
 }
 
 // readThroughAllowed reports whether a cache-miss binding read may fall through
@@ -408,9 +437,9 @@ func (h *Hub) OnBindingChange(change fabric.BindingChange) {
 	// reverse entry too — so neither direction serves a stale binding a peer just
 	// changed. The re-point guard mirrors unbindSession: a reverse entry the
 	// account has already moved onto a newer session is left alone.
-	if account, ok := h.sessionAccounts[sessionID]; ok {
-		if h.accountSessions[account] == sessionID {
-			delete(h.accountSessions, account)
+	if binding, ok := h.sessionAccounts[sessionID]; ok {
+		if h.accountSessions[binding.account] == sessionID {
+			delete(h.accountSessions, binding.account)
 		}
 		delete(h.sessionAccounts, sessionID)
 	}
@@ -428,8 +457,8 @@ func (h *Hub) OnBindingChange(change fabric.BindingChange) {
 func (h *Hub) AccountForLiveSession(sessionID string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	account, ok := h.sessionAccounts[sessionID]
-	return account, ok
+	binding, ok := h.sessionAccounts[sessionID]
+	return binding.account, ok
 }
 
 // AccountForContainer returns the agent account bound to containerName in the
@@ -469,12 +498,13 @@ var errTranscriptsUnavailable = errors.New("runnerhub: no transcript store wired
 // transport down.
 func (h *Hub) RelayCommsCall(
 	ctx context.Context,
+	runnerID string,
 	req *compassv1internal.RelayCommsCallRequest,
 ) (*compassv1internal.RelayCommsCallResponse, error) {
 	if h.comms == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
 	}
-	account, ok := h.accountForSession(ctx, req.GetSessionId())
+	account, ok := h.accountForRunnerSession(ctx, runnerID, req.GetSessionId())
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
@@ -539,6 +569,7 @@ func (h *Hub) RelayCommsCall(
 //     reads neither): shipped as "" and 0.
 func (h *Hub) CommitConversationFrame(
 	ctx context.Context,
+	runnerID string,
 	req *compassv1internal.CommitConversationFrameRequest,
 ) (*compassv1internal.CommitConversationFrameResponse, error) {
 	h.mu.Lock()
@@ -548,7 +579,7 @@ func (h *Hub) CommitConversationFrame(
 		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	if _, ok := h.accountForSession(ctx, sessionID); !ok {
+	if _, ok := h.accountForRunnerSession(ctx, runnerID, sessionID); !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
 		return nil, connect.NewError(
