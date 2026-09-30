@@ -14,6 +14,8 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
+// Every fixture here takes WithForgeStub: the server declares the forge secrets
+// as required, and only the stub seeds them when the leg runs without the shared stack.
 func TestLegS3ArchiveRestartResume(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here")
@@ -22,7 +24,7 @@ func TestLegS3ArchiveRestartResume(t *testing.T) {
 	t.Run("flush", func(t *testing.T) {
 		const reply = "s3 flush turn complete"
 		objectStore := WithObjectStore(startGarageFixture(t))
-		f := NewFixture(ctx, t, objectStore, WithCannedScript(CannedText(reply)))
+		f := NewFixture(ctx, t, objectStore, WithForgeStub(), WithCannedScript(CannedText(reply)))
 		accountID, err := f.CreateAgent(ctx, "s3-flush", "S3 flush")
 		if err != nil {
 			t.Fatalf("CreateAgent: %v", err)
@@ -77,7 +79,7 @@ func runS3Resume(t *testing.T, ctx context.Context, wholeStack bool) {
 	const handle, reply1, reply2 = "s3-resume", "s3 first reply", "s3 second reply"
 	objectStore := WithObjectStore(startGarageFixture(t))
 	site := newPersistentSite(t)
-	f := NewFixture(ctx, t, objectStore, WithSite(site), WithCannedScript(CannedText("s3 unrouted turn")), WithCannedMarkerScript(s3Marker, CannedText(reply1), CannedText(reply2)))
+	f := NewFixture(ctx, t, objectStore, WithForgeStub(), WithSite(site), WithCannedScript(CannedText("s3 unrouted turn")), WithCannedMarkerScript(s3Marker, CannedText(reply1), CannedText(reply2)))
 	accountID, err := f.CreateAgent(ctx, handle, "S3 resume")
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
@@ -129,7 +131,7 @@ func runS3Resume(t *testing.T, ctx context.Context, wholeStack bool) {
 			t.Fatalf("Stack.Down: %v", err)
 		}
 		// Stack exposes no server-only restart, so the whole stack restarts.
-		f = NewFixture(ctx, t, objectStore, WithSite(site), WithCannedScript(CannedText("s3 unrouted turn")), WithCannedMarkerScript(s3Marker, CannedText(reply2)))
+		f = NewFixture(ctx, t, objectStore, WithForgeStub(), WithSite(site), WithCannedScript(CannedText("s3 unrouted turn")), WithCannedMarkerScript(s3Marker, CannedText(reply2)))
 		if st, err = store.Open(ctx, f.DSN()); err != nil {
 			t.Fatalf("store.Open after restart: %v", err)
 		}
