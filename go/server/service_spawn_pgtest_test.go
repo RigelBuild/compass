@@ -10,6 +10,8 @@ package server
 import (
 	"context"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +32,7 @@ func TestSpawnAgentRunsProvisionThenStart(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background()
 
-	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-happy"}))
+	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-happy"}))
 	if err != nil {
 		t.Fatalf("SpawnAgent = %v, want success", err)
 	}
@@ -43,6 +45,11 @@ func TestSpawnAgentRunsProvisionThenStart(t *testing.T) {
 
 	if got := f.runner.provisionCount(); got != 1 {
 		t.Fatalf("Provision commands = %d, want 1; commands: %v", got, f.runner.commands())
+	}
+	// The Runner keys the container on the account id, so the relay carries the
+	// resolved id rather than the submitted handle.
+	if want := "provision " + string(f.agentID); !slices.Contains(f.runner.commands(), want) {
+		t.Fatalf("Runner commands = %v, want %q (the resolved account id)", f.runner.commands(), want)
 	}
 	if !sawStartFor(f, fakeContainer) {
 		t.Fatalf("no Start for %q on the wire; commands: %v", fakeContainer, f.runner.commands())
@@ -62,11 +69,11 @@ func TestSpawnAgentIsIdempotentOnRepeatedClientRequestId(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background()
 
-	first, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-dup"}))
+	first, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-dup"}))
 	if err != nil {
 		t.Fatalf("first SpawnAgent = %v, want success", err)
 	}
-	second, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-dup"}))
+	second, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-dup"}))
 	if err != nil {
 		t.Fatalf("retry SpawnAgent = %v, want idempotent success", err)
 	}
@@ -76,6 +83,62 @@ func TestSpawnAgentIsIdempotentOnRepeatedClientRequestId(t *testing.T) {
 	}
 	if got := f.runner.provisionCount(); got != 1 {
 		t.Fatalf("Provision commands = %d, want 1 (the retry must join, not re-provision); commands: %v", got, f.runner.commands())
+	}
+}
+
+// TestSpawnAgentRetryAfterRenameJoins pins that the spawn memo keys on the
+// RESOLVED account, not the submitted spelling: after the agent is renamed, a
+// retry under its new handle with the same client_request_id joins the first
+// spawn and drives no second Provision.
+//
+// Mutation: keying spawnKey on the submitted handle makes the renamed retry a
+// memo miss, so it re-provisions and the "exactly one Provision" assertion
+// reddens.
+func TestSpawnAgentRetryAfterRenameJoins(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background()
+
+	first, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-rename"}))
+	if err != nil {
+		t.Fatalf("first SpawnAgent = %v, want success", err)
+	}
+	// No store rename API exists; rename in the resolution index directly.
+	execSQL(t, ctx, f.dsn, "UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(f.agentID), "atlas-renamed")
+
+	second, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: "admin/atlas-renamed", ClientRequestId: "spawn-rename"}))
+	if err != nil {
+		t.Fatalf("retry SpawnAgent under the new handle = %v, want idempotent success", err)
+	}
+	if second.Msg.GetSessionId() != first.Msg.GetSessionId() {
+		t.Fatalf("retry session id = %q, want the first %q (a second spawn ran)", second.Msg.GetSessionId(), first.Msg.GetSessionId())
+	}
+	if got := f.runner.provisionCount(); got != 1 {
+		t.Fatalf("Provision commands = %d, want 1 (the renamed retry must join); commands: %v", got, f.runner.commands())
+	}
+}
+
+// TestSpawnAgentUnresolvedHandleIsNotFound pins the admin door's resolution
+// contract on the composite spawn: a bare handle and an unknown `owner/agent`
+// return CodeNotFound naming the SUBMITTED handle, before any Runner command.
+//
+// Mutation: defaulting a bare handle to an owner, or casting the handle to an
+// id, reddens the code or zero-Provision assertion.
+func TestSpawnAgentUnresolvedHandleIsNotFound(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background()
+	f.runner.forget() // discard the attach probe
+
+	for _, handle := range []string{"atlas", "admin/nobody", "nobody/atlas", string(f.agentID)} {
+		_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: handle, ClientRequestId: "spawn-miss"}))
+		if code := connect.CodeOf(err); code != connect.CodeNotFound {
+			t.Fatalf("SpawnAgent(%q) code = %v, want CodeNotFound", handle, code)
+		}
+		if want := strconv.Quote(handle); !strings.Contains(err.Error(), want) {
+			t.Fatalf("SpawnAgent(%q) error = %q, want it to name the submitted handle %s", handle, err.Error(), want)
+		}
+	}
+	if got := f.runner.provisionCount(); got != 0 {
+		t.Fatalf("Provision commands = %d, want 0; commands: %v", got, f.runner.commands())
 	}
 }
 
@@ -103,7 +166,7 @@ func TestSpawnAgentRejectsWhenAgentAlreadyLive(t *testing.T) {
 		AgentAccountId: string(f.agentID),
 	})
 
-	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-reject"}))
+	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-reject"}))
 	if err == nil {
 		t.Fatal("SpawnAgent for a live agent = nil error, want CodeAlreadyExists")
 	}
@@ -136,7 +199,7 @@ func TestSpawnAgentFailedRetryReattempts(t *testing.T) {
 	ctx := context.Background()
 
 	f.runner.setFailStart(true) // the Runner refuses Start: the first spawn fails mid-chain.
-	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-reattempt"}))
+	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-reattempt"}))
 	if err == nil {
 		t.Fatal("first SpawnAgent with a failing Start = nil error, want the failure surfaced")
 	}
@@ -144,7 +207,7 @@ func TestSpawnAgentFailedRetryReattempts(t *testing.T) {
 	// The Runner now accepts Start; a retry of the SAME id must re-attempt and
 	// succeed, proving the failed memo entry was dropped rather than replayed.
 	f.runner.setFailStart(false)
-	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-reattempt"}))
+	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-reattempt"}))
 	if err != nil {
 		t.Fatalf("retry SpawnAgent after a failed first = %v, want re-attempt success (a retained failure would replay the error)", err)
 	}
@@ -184,18 +247,18 @@ func TestSpawnAgentCrossAccountSameCridIsDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
-	other, err := f.store.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "borealis", DisplayName: "Borealis"})
+	_, err = f.store.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "borealis", DisplayName: "Borealis"})
 	if err != nil {
 		t.Fatalf("CreateAgent(second): %v", err)
 	}
 
-	if _, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-shared"})); err != nil {
+	if _, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-shared"})); err != nil {
 		t.Fatalf("first-account SpawnAgent = %v, want success", err)
 	}
 	// The second account reuses the SAME client_request_id. With correct
 	// (account, id) keying it does NOT join, so it drives its own Provision; the
 	// crid-alone bug would join and return the first's result with no Provision.
-	_, err = f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(other.ID), ClientRequestId: "spawn-shared"}))
+	_, err = f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: "admin/borealis", ClientRequestId: "spawn-shared"}))
 	// A distinct spawn reaching Provision is the tooth; the fake's shared
 	// container name then trips a placement conflict, which is fine — a JOIN
 	// (the bug) would instead have returned nil error with no second Provision.
@@ -228,7 +291,7 @@ func TestSpawnAgentMemoEvictsSuccessAfterTTL(t *testing.T) {
 		return nil // the captured fn is fired by the test, not a real timer.
 	}
 
-	if _, err := f.svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-evict"})); err != nil {
+	if _, err := f.svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-evict"})); err != nil {
 		t.Fatalf("SpawnAgent = %v, want success", err)
 	}
 
