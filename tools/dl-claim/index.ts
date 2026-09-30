@@ -134,7 +134,7 @@ async function readServiceError(
 // 400/401/429 are rejected before the counter advances; any other failure
 // after sending may have consumed ids, so a blind rerun burns more.
 const MAYBE_MINTED =
-	" Ids may already be consumed: find this lane's claims via GET /status?repo=compass before retrying.";
+	" Ids may already be consumed; do not rerun. Find this lane's claims with `curl -H \"Authorization: Bearer $DL_CLAIM_TOKEN\" 'https://dl.rigel.build/status?repo=compass'`.";
 
 function formatServiceError(status: number, code: string | undefined): Error {
 	const hint =
@@ -175,21 +175,32 @@ async function readClaimedIds(
 	} catch {
 		throw new Error(`claim response is not valid JSON.${MAYBE_MINTED}`);
 	}
-	if (
-		typeof payload !== "object" ||
-		payload === null ||
-		!("ids" in payload) ||
-		!Array.isArray(payload.ids) ||
-		payload.ids.length !== count
-	) {
+	const ids =
+		typeof payload === "object" &&
+		payload !== null &&
+		"ids" in payload &&
+		Array.isArray(payload.ids)
+			? payload.ids
+			: undefined;
+	const returned = (ids ?? [])
+		.map((entry: unknown) =>
+			typeof entry === "object" && entry !== null && "id" in entry
+				? String(entry.id)
+				: "",
+		)
+		.filter((id: string) => /^DL-\d+$/.test(id));
+	const seen = returned.length > 0 ? ` Returned: ${returned.join(", ")}.` : "";
+	if (ids === undefined || ids.length !== count) {
 		throw new Error(
-			`claim response must contain the requested number of ids.${MAYBE_MINTED}`,
+			`claim response must contain the requested number of ids.${seen}${MAYBE_MINTED}`,
 		);
 	}
-	if (!payload.ids.every(isClaimedId)) {
-		throw new Error(`claim response contains a malformed id.${MAYBE_MINTED}`);
+	if (!ids.every(isClaimedId)) {
+		throw new Error(
+			`claim response contains a malformed id.${seen}${MAYBE_MINTED}`,
+		);
 	}
-	return payload.ids;
+	return ids;
 }
 
 export async function claim(
