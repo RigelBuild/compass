@@ -52,6 +52,33 @@ func TestSetChannelPolicyUpdatesAndEchoes(t *testing.T) {
 	}
 }
 
+// TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound: owner_handle is
+// viewer-scoped, so an invisible agent must miss exactly like an unknown one.
+func TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+	mustAgent(t, st, other.ID, "hidden")
+
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := created.Msg.GetChannel().GetId()
+
+	for _, handle := range []string{"ghost", "other/ghost", "other/hidden"} {
+		_, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+			ChannelId:   chID,
+			PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+			OwnerHandle: handle,
+		}))
+		connectNotFoundFor(t, err, handle, "SetChannelPolicy owner "+handle)
+	}
+}
+
 // TestPostMessageOwnerOnlyNonOwnerIsPermissionDenied: members can see the
 // channel, so owner-only refusals map to CodePermissionDenied without a leak.
 func TestPostMessageOwnerOnlyNonOwnerIsPermissionDenied(t *testing.T) {

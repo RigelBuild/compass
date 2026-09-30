@@ -113,7 +113,11 @@ func (c *Comms) resolveVisibleAgentHandle(ctx context.Context, caller store.Acco
 // qualifier that resolves to nothing is store.ErrNotFound (indistinguishable
 // from an unknown agent once notFoundHandle re-keys it to the submitted handle).
 func (c *Comms) agentOwnerNamespace(ctx context.Context, caller store.AccountID, qh store.QualifiedHandle) (store.AccountID, error) {
-	if qh.Owner == "" {
+	// Branch on the separator, not on Owner: "/x" must miss, not resolve bare.
+	if qh.Malformed() {
+		return "", store.ErrNotFound
+	}
+	if !qh.Qualified() {
 		return c.store.ResolveOwner(ctx, caller)
 	}
 	owner, err := c.store.UserByHandle(ctx, qh.Owner)

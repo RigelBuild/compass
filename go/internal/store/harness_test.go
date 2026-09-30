@@ -17,6 +17,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 )
 
@@ -53,6 +55,17 @@ func openStore(t *testing.T, dsn string) *Store {
 	s, err := Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("store Open: %v", err)
+	}
+	t.Cleanup(s.Close)
+	return s
+}
+
+// newTracedTestStore is newTestStore with tracer on every pooled connection.
+func newTracedTestStore(t *testing.T, tracer pgx.QueryTracer) *Store {
+	t.Helper()
+	s, err := OpenTraced(context.Background(), pgtest.RequireDSN(t), tracer)
+	if err != nil {
+		t.Fatalf("store OpenTraced: %v", err)
 	}
 	t.Cleanup(s.Close)
 	return s

@@ -84,6 +84,21 @@ func TestCreateChannelAsAccountInvisibleGroupIsNotFound(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeNotFound, "CreateChannelAsAccount in invisible group")
 }
 
+// TestCreateChannelAsAccountUnknownMemberHandleIsNotFound: the agent adapter
+// shares CreateChannel's atomic member resolution and its NOT_FOUND.
+func TestCreateChannelAsAccountUnknownMemberHandleIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+
+	_, err := svc.CreateChannelAsAccount(ctx, agent.ID, &compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberHandles: []string{"ghost"},
+	})
+	connectNotFoundFor(t, err, "ghost", "CreateChannelAsAccount with an unresolvable member handle")
+}
+
 // TestUpdateChannelMembersAsAccountAddsMember: an agent adds a member to a channel
 // it authored (and so can mutate) → the updated Channel carries the new member,
 // and a ChannelChanged is fanned out (parity with the human caller's path).
@@ -143,7 +158,7 @@ func TestUpdateChannelMembersAsAccountUnknownMemberHandleIsNotFound(t *testing.T
 		ChannelId:        string(ch.ID),
 		AddMemberHandles: []string{"ghost"},
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount with an unresolvable member handle")
+	connectNotFoundFor(t, err, "ghost", "UpdateChannelMembersAsAccount with an unresolvable member handle")
 }
 
 // TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound: an agent adds
@@ -173,7 +188,7 @@ func TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound(t *testing
 		ChannelId:        string(ch.ID),
 		AddMemberHandles: []string{otherAgent.Handle},
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount with a foreign-owner (invisible) member handle")
+	connectNotFoundFor(t, err, otherAgent.Handle, "UpdateChannelMembersAsAccount with a foreign-owner (invisible) member handle")
 }
 
 // TestUpdateChannelMembersAsAccountEmptyAccountIsNoActor: an empty account →

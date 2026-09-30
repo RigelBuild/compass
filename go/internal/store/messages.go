@@ -151,6 +151,7 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 
 	m.ID = MessageID(row.ID)
 	m.TopicID = topicID
+	m.AuthorHandle = row.AuthorHandle
 	m.At = time.UnixMilli(row.AtUnixMs).UTC()
 	return m, nil
 }
@@ -363,7 +364,7 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 		}
 		return Message{}, fmt.Errorf("store: update message blocks as author: %w", err)
 	}
-	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AtUnixMs, row.Blocks)
+	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AuthorHandle, row.AtUnixMs, row.Blocks)
 }
 
 // MessageAskIDs returns the ask_id of every ask block on the message, in block
@@ -557,7 +558,7 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	if len(found) == 0 {
 		return Message{}, Message{}, fmt.Errorf("%w: ask %q", ErrNotFound, askID)
 	}
-	msg, err := messageFromParts(found[0].ID, found[0].TopicID, found[0].AuthorAccountID, found[0].AtUnixMs, found[0].Blocks)
+	msg, err := messageFromParts(found[0].ID, found[0].TopicID, found[0].AuthorAccountID, found[0].AuthorHandle, found[0].AtUnixMs, found[0].Blocks)
 	if err != nil {
 		return Message{}, Message{}, err
 	}
@@ -729,14 +730,13 @@ func (s *Store) getMessageByRequestID(ctx context.Context, author AccountID, cli
 	if len(rows) == 0 {
 		return Message{}, fmt.Errorf("%w: deduped message for key %q", ErrNotFound, clientRequestID)
 	}
-	return messageFromParts(rows[0].ID, rows[0].TopicID, rows[0].AuthorAccountID, rows[0].AtUnixMs, rows[0].Blocks)
+	return messageFromParts(rows[0].ID, rows[0].TopicID, rows[0].AuthorAccountID, rows[0].AuthorHandle, rows[0].AtUnixMs, rows[0].Blocks)
 }
 
-// messageFromParts reconstructs a domain Message from the shared five-column
-// projection (id, topic_id, author_account_id, at_unix_ms, blocks) every message
-// read returns, decoding the JSONB block set. It replaces the former scanMessages
-// helper now that sqlc emits a typed row per query rather than a pgx.Rows cursor.
-func messageFromParts(id, topicID, author string, atMS int64, blocksJSON []byte) (Message, error) {
+// messageFromParts reconstructs a domain Message from the shared six-column
+// projection (id, topic_id, author_account_id, author_handle, at_unix_ms, blocks)
+// every message read returns, decoding the JSONB block set.
+func messageFromParts(id, topicID, author, authorHandle string, atMS int64, blocksJSON []byte) (Message, error) {
 	blocks, err := unmarshalBlocks(blocksJSON)
 	if err != nil {
 		return Message{}, err
@@ -745,6 +745,7 @@ func messageFromParts(id, topicID, author string, atMS int64, blocksJSON []byte)
 		ID:              MessageID(id),
 		TopicID:         topicID,
 		AuthorAccountID: AccountID(author),
+		AuthorHandle:    authorHandle,
 		At:              time.UnixMilli(atMS).UTC(),
 		Blocks:          blocks,
 	}, nil
@@ -761,7 +762,7 @@ func messagesFromListRows(rows []db.ListMessagesRow) ([]Message, error) {
 	}
 	out := make([]Message, 0, len(rows))
 	for _, r := range rows {
-		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AtUnixMs, r.Blocks)
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks)
 		if err != nil {
 			return nil, err
 		}
@@ -776,7 +777,7 @@ func messagesFromSearchRows(rows []db.SearchMessagesRow) ([]Message, error) {
 	}
 	out := make([]Message, 0, len(rows))
 	for _, r := range rows {
-		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AtUnixMs, r.Blocks)
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks)
 		if err != nil {
 			return nil, err
 		}
