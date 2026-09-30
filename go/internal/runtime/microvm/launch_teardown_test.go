@@ -3,6 +3,7 @@
 package microvm
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -319,6 +320,29 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 
 	if err := waitForSockets(t.Context(), []string{socket}, []*child{c}, socketReadyTimeout); err != nil {
 		t.Fatalf("waitForSockets over a LIVE daemon that bound its socket = %v, want nil", err)
+	}
+}
+
+// t.Context() is cancelled before cleanups run, so a Shutdown in t.Cleanup
+// reaps a daemon whose launch ctx is gone. A clean exit then yields ctx.Err().
+func TestReapToleratesACancelledLaunchContext(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	c := &child{
+		name:    "virtiofsd",
+		logPath: filepath.Join(dir, "virtiofsd.log"),
+		cmd:     exec.CommandContext(ctx, "/bin/sh", "-c", "exec sleep 0.2"),
+	}
+	// A no-op Cancel lets the daemon exit 0 after ctx is done; Wait then reports
+	// ctx.Err() (the os/exec Cmd.Cancel contract).
+	c.cmd.Cancel = func() error { return nil }
+	if err := startChild(c); err != nil {
+		t.Fatalf("startChild: %v", err)
+	}
+	cancel()
+	<-c.exited
+	if err := reap(c); err != nil {
+		t.Fatalf("reap after the launch ctx was cancelled = %v, want nil", err)
 	}
 }
 
