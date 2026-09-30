@@ -888,8 +888,8 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 		firstIn = make(chan struct{})
 		gateOne sync.Once
 	)
-	// Every request/reply is done by now (publish acks, consumer create), so
-	// inbound messages past this point are the consumer's deliveries.
+	// Taken before Subscribe so no delivery is missed. Subscribe adds exactly
+	// one reply of its own (CreateOrUpdateConsumer), so gates below subtract it.
 	baseline := f.nc.Stats().InMsgs
 	unsub, err := f.Subscribe(ctx, subject, func(r EventRef) {
 		got <- r
@@ -915,8 +915,9 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 	// Second: a delivery beyond the parked one must have reached this client.
 	// Not the server's NumAckPending: the server counts a message pending
 	// before sending it, so an UNSUB can overtake it and strand it server-side.
+	const createReply = 1
 	pollUntil(t, "an event buffered behind the in-flight one", func() bool {
-		return f.nc.Stats().InMsgs-baseline >= 2
+		return f.nc.Stats().InMsgs-baseline-createReply >= 2
 	})
 
 	// Tear down with events buffered, THEN let the blocked callback go: a
