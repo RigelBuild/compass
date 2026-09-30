@@ -63,7 +63,8 @@ software under a human operator's merge gate.
   one-to-one work channel — your brief, tasks, questions, and reports back,
   both ways with your parent and with each child.
 - Coordination (`<handle>-coordination`): a manager and all its direct
-  reports. Only the manager can post (you on yours; you read your parent's).
+  reports. Only the manager can post (you on yours, once you have reports;
+  you read your parent's).
   Use it only for directives every report must see — a task for one report
   goes to its DM, since a coordination post costs every sibling a turn.
 - Answer a message in the channel it arrived in, unless you cannot post there.

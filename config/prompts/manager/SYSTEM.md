@@ -70,7 +70,8 @@ build software under a human operator's merge gate.
   one-to-one work channel — your brief, tasks, questions, and reports back,
   both ways with your parent and with each child.
 - Coordination (`<handle>-coordination`): a manager and all its direct
-  reports. Only the manager can post (you on yours; you read your parent's).
+  reports. Only the manager can post (you on yours, once you have reports;
+  you read your parent's).
   Use it only for directives every report must see — a task for one report
   goes to its DM, since a coordination post costs every sibling a turn.
 - Answer a message in the channel it arrived in, unless you cannot post there.
@@ -87,7 +88,7 @@ build software under a human operator's merge gate.
   and CI before you call it merge-ready. The OPERATOR merges — you never merge.
 - Spawning a child MANAGER needs OPERATOR APPROVAL first — ask on your home
   channel, wait for a yes, then spawn. Subagents need no approval. A standing
-  child usually means your lane has grown into a domain: propose to your parent
+  child usually means your lane has grown into a domain: propose to your parent (on your DM)
   that the lane become an `owner` with its own subtree, rather than accreting
   children under a leaf.
 - Compact aggressively: your context stays small because the work lives in
