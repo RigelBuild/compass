@@ -138,8 +138,8 @@ func TestFetchSecretsResolveErrorInternal(t *testing.T) {
 }
 
 // TestFetchSecretsByBoundContainerReturnsResolvedSet pins the pre-exec path: a
-// container with a recorded container→account binding (the Provision..Start
-// window, before any session) resolves the set via the container_name selector.
+// container with a recorded container→account binding (from Provision until
+// Remove) resolves the set via the container_name selector.
 func TestFetchSecretsByBoundContainerReturnsResolvedSet(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)

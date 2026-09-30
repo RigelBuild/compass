@@ -119,9 +119,9 @@ func (h *Hub) Remove(ctx context.Context, requestID string, req *compassv1.Remov
 	if err != nil {
 		return nil, err
 	}
-	// Drop the container's provisioned account binding — Provision bound it and a
-	// Remove that never went through Start (promoteSession clears it there) would
-	// otherwise leave a stale binding authorizing a pre-exec secrets materialize.
+	// Drop the container's provisioned account binding. It outlives Start so a
+	// resume can fetch secrets; a stale one would authorize a pre-exec secrets
+	// materialize for a container that no longer exists.
 	h.unbindContainer(req.GetContainerName())
 	return result.GetRemove(), nil
 }
