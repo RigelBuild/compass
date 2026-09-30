@@ -23,6 +23,9 @@ type SessionEvent struct {
 	AgentSession     AgentSession  `json:"agentSession"`
 	PromptContext    string        `json:"promptContext"`
 	AgentActivity    AgentActivity `json:"agentActivity"`
+	// DeliveryID is the Linear-Delivery header, set by the receiver; a replay of
+	// one payload repeats it, so it keys the post's dedup.
+	DeliveryID string `json:"-"`
 }
 
 // AgentSession is the session subject of the event.
