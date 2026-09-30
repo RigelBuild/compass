@@ -36,7 +36,7 @@ func routingGroupID(t *testing.T, s *Store, adminID AccountID) ChannelGroupID {
 }
 
 // TestEnsureLinearRoutingChannelSkipsSharedGroup: a planted SHARED __linear__ group
-// holding a linear-routing channel is never adopted by the ensure or the keyed read.
+// holding a routing channel is never adopted by the ensure or the keyed read.
 func TestEnsureLinearRoutingChannelSkipsSharedGroup(t *testing.T) {
 	s := newTestStore(t)
 	admin, supervisor, bridge := routingParties(t, s)
