@@ -222,9 +222,7 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if hostEngine, ok := h.engine.(hostStateEngine); ok {
 		return h.provisionHostGateway(ctx, spec, hostEngine)
 	}
-	// A socket already served belongs to a container that may still be running under
-	// this name, so a failure below must leave it up; only a socket made here is ours.
-	listener, created, err := h.serveSocket(ctx, spec.Name)
+	listener, err := h.serveSocket(ctx, spec.Name)
 	if err != nil {
 		return "", err
 	}
@@ -238,9 +236,7 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		// Config could not be materialized; abort provision rather than launch a
 		// container with no config. Tear the socket down (mirror the Launch-
 		// failure cleanup) so it does not leak until host shutdown.
-		if created {
-			h.closeSocket(ctx, spec.Name)
-		}
+		h.closeSocket(ctx, spec.Name)
 		return "", fmt.Errorf("materializing agent config: %w", err)
 	}
 	spec.Mounts = append(spec.Mounts, runtime.Mount{HostPath: mount.HostPath, ContainerPath: agentConfigMountPath, ReadOnly: true})
@@ -248,9 +244,7 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if err != nil {
 		// Launch failed, so no container will ever mount this socket; tear it
 		// down rather than leak the listener + file until host shutdown.
-		if created {
-			h.closeSocket(ctx, spec.Name)
-		}
+		h.closeSocket(ctx, spec.Name)
 		return "", err
 	}
 	// Record the version materialized into this container's root, so the first
@@ -877,7 +871,7 @@ func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.Agent
 	h.mu.Lock()
 	h.hostTransports[name] = transport
 	h.mu.Unlock()
-	if _, _, err := h.serveSocketAt(ctx, name, transport.socketPath); err != nil {
+	if _, err := h.serveSocketAt(ctx, name, transport.socketPath); err != nil {
 		// The socket never came up; forget the transport (closeSocket) and tear
 		// the launched container down so no agent runs with no reachable Runner.
 		h.closeSocket(ctx, name)
@@ -1153,28 +1147,28 @@ func (h *agentHost) configMaterializerFor(containerName string) *ConfigMateriali
 // recording the listener so Provision can mount it and teardown can Close it. A
 // container already serving is a no-op (idempotent retry). The Gateway forwards to
 // the Server over the Runner's own RunnerService client, resolving container→session.
-func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gateway.SocketListener, bool, error) {
+func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gateway.SocketListener, error) {
 	return h.serveSocketAt(ctx, containerName, filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile))
 }
 
 // serveSocketAt is serveSocket with an explicit socket path: container tiers pass the
 // fixed RuntimeDir socket, the host tier a path in the handle's state dir (no mount).
 // Idempotency is identical: a container already serving keeps its live listener.
-func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, bool, error) {
+func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, error) {
 	h.mu.Lock()
 	if listener, served := h.sockets[containerName]; served {
 		h.mu.Unlock()
-		return listener, false, nil
+		return listener, nil
 	}
 	h.mu.Unlock()
 	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client})
 	if err != nil {
-		return nil, false, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
+		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
 	}
 	h.mu.Lock()
 	h.sockets[containerName] = listener
 	h.mu.Unlock()
-	return listener, true, nil
+	return listener, nil
 }
 
 // closeSocket tears down and forgets the container's agent socket, draining any
