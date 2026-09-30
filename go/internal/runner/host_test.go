@@ -142,6 +142,42 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 	assertRecorded(t, engine.calls, "start")
 }
 
+// A re-Provision onto a name that is still launched must be rejected before it
+// touches anything: no socket churn, no config materialize, no engine create.
+// The failing config fetch makes a late check observable: it would close the
+// live socket and return the materialize error instead of the sentinel.
+func TestReprovisionOfLaunchedNameIsRejectedUntouched(t *testing.T) {
+	host, engine, pub := newHostFixtureWithPublish(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, errors.New("config fetch down")))
+	creates := countCalls(engine.callsSnapshot(), "create")
+
+	_, err = host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if !errors.Is(err, errAlreadyProvisioned) {
+		t.Fatalf("re-Provision of a launched name = %v, want errAlreadyProvisioned", err)
+	}
+	if !socketServed(t, host, name) {
+		t.Fatal("live container's socket closed by a rejected re-Provision")
+	}
+	if got := countCalls(engine.callsSnapshot(), "create"); got != creates {
+		t.Fatalf("engine create calls = %d after rejected re-Provision, want %d", got, creates)
+	}
+}
+
+func countCalls(calls []string, want string) int {
+	n := 0
+	for _, c := range calls {
+		if c == want {
+			n++
+		}
+	}
+	return n
+}
+
 type staleContainerRuntime struct {
 	*stubStreamingRuntime
 	mu         sync.Mutex

@@ -187,9 +187,9 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 // Provision so a call arriving before Start binds a session fails closed rather
 // than finding no listener. Launch registers the handle so a later Start
 // resolves it by name. The dispatcher's request-id dedup makes a provision retry
-// idempotent (no duplicate container) before this runs; a genuine spec/launch
-// failure surfaces here, and a socket already serving that container name is
-// reused rather than double-served (idempotent retry).
+// idempotent (no duplicate container) before this runs. A name already launched
+// on this Runner is rejected with errAlreadyProvisioned before any socket,
+// config or engine work, so a stray re-Provision cannot disturb the live one.
 func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (string, error) {
 	spec, err := h.specs.BuildSpec(req, accountID)
 	if err != nil {
@@ -205,6 +205,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	// name (the stable lifecycle key).
 	unlock := h.lockContainer(spec.Name)
 	defer unlock()
+	if _, launched := h.registry.Resolve(spec.Name); launched {
+		return "", fmt.Errorf("provisioning %q: %w", spec.Name, errAlreadyProvisioned)
+	}
 	// microVM serves the AgentGateway over a per-session vsock path not knowable
 	// until Launch mints the session runtime dir, so it inverts order: Launch first,
 	// then serve — and refuses the socket/config bind mounts (record §(c)/§(f)).
