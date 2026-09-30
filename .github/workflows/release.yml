@@ -1250,6 +1250,17 @@ jobs:
           runc=$(nix build --no-link --print-out-paths nixpkgs#runc)
           echo "$buildkit/bin" >>"$GITHUB_PATH"
           export PATH="$buildkit/bin:$rootlesskit/bin:$runc/bin:$PATH"
+          # ubuntu-24.04 denies unprivileged userns to unprofiled binaries; allow
+          # it for this exact store path only, not host-wide via the sysctl.
+          profile="/etc/apparmor.d/rootlesskit-nix"
+          sudo tee "$profile" >/dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          $rootlesskit/bin/rootlesskit flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r "$profile"
           addr="unix://$RUNNER_TEMP/buildkit.sock"
           log="$RUNNER_TEMP/buildkitd.log"
           # Redirect the daemon's output to a file: discarding it turns a startup
