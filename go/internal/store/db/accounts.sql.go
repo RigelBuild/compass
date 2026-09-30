@@ -258,96 +258,6 @@ func (q *Queries) GetAgentParent(ctx context.Context, accountID string) (pgtype.
 	return parent_agent_id, err
 }
 
-const getGlobalHandleID = `-- name: GetGlobalHandleID :one
-SELECT ah.account_id
-FROM account_handles ah
-WHERE ah.owner_user_id IS NULL AND ah.handle = $1
-  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)
-`
-
-func (q *Queries) GetGlobalHandleID(ctx context.Context, handle string) (string, error) {
-	row := q.db.QueryRow(ctx, getGlobalHandleID, handle)
-	var account_id string
-	err := row.Scan(&account_id)
-	return account_id, err
-}
-
-const getVisibleAgentHandleID = `-- name: GetVisibleAgentHandleID :one
-SELECT ah.account_id
-FROM account_handles ah
-WHERE ah.owner_user_id = $2 AND ah.handle = $3
-  AND EXISTS (
-      SELECT 1
-      FROM accounts a
-      LEFT JOIN user_accounts u ON u.account_id = a.id
-      LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-      LEFT JOIN system_accounts sy ON sy.account_id = a.id
-      WHERE (
-              a.id = $1
-           OR u.account_id IS NOT NULL
-           OR ag.owner_user_id = $1
-           OR EXISTS (
-               SELECT 1
-               FROM channel_members cm_self
-               JOIN channel_members cm_them ON cm_them.channel_id = cm_self.channel_id
-               WHERE cm_self.account_id = $1 AND cm_them.account_id = a.id
-           )
-            )
-        AND a.id = ah.account_id
-  )
-`
-
-type GetVisibleAgentHandleIDParams struct {
-	ID          string
-	OwnerUserID pgtype.Text
-	Handle      string
-}
-
-func (q *Queries) GetVisibleAgentHandleID(ctx context.Context, arg GetVisibleAgentHandleIDParams) (string, error) {
-	row := q.db.QueryRow(ctx, getVisibleAgentHandleID, arg.ID, arg.OwnerUserID, arg.Handle)
-	var account_id string
-	err := row.Scan(&account_id)
-	return account_id, err
-}
-
-const getVisibleGlobalHandleID = `-- name: GetVisibleGlobalHandleID :one
-SELECT ah.account_id
-FROM account_handles ah
-WHERE ah.owner_user_id IS NULL AND ah.handle = $2
-  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)
-  AND EXISTS (
-      SELECT 1
-      FROM accounts a
-      LEFT JOIN user_accounts u ON u.account_id = a.id
-      LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-      LEFT JOIN system_accounts sy ON sy.account_id = a.id
-      WHERE (
-              a.id = $1
-           OR u.account_id IS NOT NULL
-           OR ag.owner_user_id = $1
-           OR EXISTS (
-               SELECT 1
-               FROM channel_members cm_self
-               JOIN channel_members cm_them ON cm_them.channel_id = cm_self.channel_id
-               WHERE cm_self.account_id = $1 AND cm_them.account_id = a.id
-           )
-            )
-        AND a.id = ah.account_id
-  )
-`
-
-type GetVisibleGlobalHandleIDParams struct {
-	ID     string
-	Handle string
-}
-
-func (q *Queries) GetVisibleGlobalHandleID(ctx context.Context, arg GetVisibleGlobalHandleIDParams) (string, error) {
-	row := q.db.QueryRow(ctx, getVisibleGlobalHandleID, arg.ID, arg.Handle)
-	var account_id string
-	err := row.Scan(&account_id)
-	return account_id, err
-}
-
 const insertAccount = `-- name: InsertAccount :exec
 
 INSERT INTO accounts (id, handle, display_name, tenant_id)
@@ -535,6 +445,38 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, id string) ([]ListVis
 	return items, nil
 }
 
+const resolveGlobalHandles = `-- name: ResolveGlobalHandles :many
+SELECT ah.handle, ah.account_id
+FROM account_handles ah
+WHERE ah.owner_user_id IS NULL AND ah.handle = ANY($1::text[])
+  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)
+`
+
+type ResolveGlobalHandlesRow struct {
+	Handle    string
+	AccountID string
+}
+
+func (q *Queries) ResolveGlobalHandles(ctx context.Context, dollar_1 []string) ([]ResolveGlobalHandlesRow, error) {
+	rows, err := q.db.Query(ctx, resolveGlobalHandles, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResolveGlobalHandlesRow
+	for rows.Next() {
+		var i ResolveGlobalHandlesRow
+		if err := rows.Scan(&i.Handle, &i.AccountID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resolveOwner = `-- name: ResolveOwner :one
 SELECT COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)::text AS owner
 `
@@ -544,6 +486,119 @@ func (q *Queries) ResolveOwner(ctx context.Context, accountID string) (string, e
 	var owner string
 	err := row.Scan(&owner)
 	return owner, err
+}
+
+const resolveVisibleAgentHandles = `-- name: ResolveVisibleAgentHandles :many
+SELECT ah.owner_user_id, ah.handle, ah.account_id
+FROM account_handles ah
+WHERE (ah.owner_user_id, ah.handle) IN (SELECT unnest($2::text[]), unnest($3::text[]))
+  AND EXISTS (
+      SELECT 1
+      FROM accounts a
+      LEFT JOIN user_accounts u ON u.account_id = a.id
+      LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+      LEFT JOIN system_accounts sy ON sy.account_id = a.id
+      WHERE (
+              a.id = $1
+           OR u.account_id IS NOT NULL
+           OR ag.owner_user_id = $1
+           OR EXISTS (
+               SELECT 1
+               FROM channel_members cm_self
+               JOIN channel_members cm_them ON cm_them.channel_id = cm_self.channel_id
+               WHERE cm_self.account_id = $1 AND cm_them.account_id = a.id
+           )
+            )
+        AND a.id = ah.account_id
+  )
+`
+
+type ResolveVisibleAgentHandlesParams struct {
+	ID      string
+	Column2 []string
+	Column3 []string
+}
+
+type ResolveVisibleAgentHandlesRow struct {
+	OwnerUserID pgtype.Text
+	Handle      string
+	AccountID   string
+}
+
+func (q *Queries) ResolveVisibleAgentHandles(ctx context.Context, arg ResolveVisibleAgentHandlesParams) ([]ResolveVisibleAgentHandlesRow, error) {
+	rows, err := q.db.Query(ctx, resolveVisibleAgentHandles, arg.ID, arg.Column2, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResolveVisibleAgentHandlesRow
+	for rows.Next() {
+		var i ResolveVisibleAgentHandlesRow
+		if err := rows.Scan(&i.OwnerUserID, &i.Handle, &i.AccountID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const resolveVisibleGlobalHandles = `-- name: ResolveVisibleGlobalHandles :many
+SELECT ah.handle, ah.account_id
+FROM account_handles ah
+WHERE ah.owner_user_id IS NULL AND ah.handle = ANY($2::text[])
+  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)
+  AND EXISTS (
+      SELECT 1
+      FROM accounts a
+      LEFT JOIN user_accounts u ON u.account_id = a.id
+      LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+      LEFT JOIN system_accounts sy ON sy.account_id = a.id
+      WHERE (
+              a.id = $1
+           OR u.account_id IS NOT NULL
+           OR ag.owner_user_id = $1
+           OR EXISTS (
+               SELECT 1
+               FROM channel_members cm_self
+               JOIN channel_members cm_them ON cm_them.channel_id = cm_self.channel_id
+               WHERE cm_self.account_id = $1 AND cm_them.account_id = a.id
+           )
+            )
+        AND a.id = ah.account_id
+  )
+`
+
+type ResolveVisibleGlobalHandlesParams struct {
+	ID      string
+	Column2 []string
+}
+
+type ResolveVisibleGlobalHandlesRow struct {
+	Handle    string
+	AccountID string
+}
+
+func (q *Queries) ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error) {
+	rows, err := q.db.Query(ctx, resolveVisibleGlobalHandles, arg.ID, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResolveVisibleGlobalHandlesRow
+	for rows.Next() {
+		var i ResolveVisibleGlobalHandlesRow
+		if err := rows.Scan(&i.Handle, &i.AccountID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const seedHomeChannelMembers = `-- name: SeedHomeChannelMembers :exec

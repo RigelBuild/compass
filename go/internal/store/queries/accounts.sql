@@ -112,16 +112,16 @@ UPDATE agent_accounts
 SET parent_agent_id = NULLIF($2, '')
 WHERE account_id = $1;
 
--- name: GetGlobalHandleID :one
-SELECT ah.account_id
+-- name: ResolveGlobalHandles :many
+SELECT ah.handle, ah.account_id
 FROM account_handles ah
-WHERE ah.owner_user_id IS NULL AND ah.handle = $1
+WHERE ah.owner_user_id IS NULL AND ah.handle = ANY($1::text[])
   AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id);
 
--- name: GetVisibleGlobalHandleID :one
-SELECT ah.account_id
+-- name: ResolveVisibleGlobalHandles :many
+SELECT ah.handle, ah.account_id
 FROM account_handles ah
-WHERE ah.owner_user_id IS NULL AND ah.handle = $2
+WHERE ah.owner_user_id IS NULL AND ah.handle = ANY($2::text[])
   AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)
   AND EXISTS (
       SELECT 1
@@ -143,10 +143,10 @@ WHERE ah.owner_user_id IS NULL AND ah.handle = $2
         AND a.id = ah.account_id
   );
 
--- name: GetVisibleAgentHandleID :one
-SELECT ah.account_id
+-- name: ResolveVisibleAgentHandles :many
+SELECT ah.owner_user_id, ah.handle, ah.account_id
 FROM account_handles ah
-WHERE ah.owner_user_id = $2 AND ah.handle = $3
+WHERE (ah.owner_user_id, ah.handle) IN (SELECT unnest($2::text[]), unnest($3::text[]))
   AND EXISTS (
       SELECT 1
       FROM accounts a
