@@ -654,22 +654,23 @@ func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
 // non-default handle already naming a non-admin account fails rather than
 // elevating it, and a pre-existing @compass row of the wrong shape fails rather
 // than being silently adopted — neither reserved account is ever quietly reused.
-func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig) (admin, system store.Account, err error) {
+// The @linear bridge is returned for the Linear responder and its routing seed.
+func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig) (admin, system, linearBridge store.Account, err error) {
 	admin, err = st.BootstrapAdmin(ctx, store.NewUser{Handle: cfg.resolvedAdminHandle(), DisplayName: bootstrapAdminDisplayName})
 	if err != nil {
-		return store.Account{}, store.Account{}, fmt.Errorf("bootstrapping admin account: %w", err)
+		return store.Account{}, store.Account{}, store.Account{}, fmt.Errorf("bootstrapping admin account: %w", err)
 	}
 	system, err = st.EnsureSystemAccount(ctx)
 	if err != nil {
-		return store.Account{}, store.Account{}, fmt.Errorf("seeding system account: %w", err)
+		return store.Account{}, store.Account{}, store.Account{}, fmt.Errorf("seeding system account: %w", err)
 	}
 	slog.Default().Info("system account seeded", "account_id", system.ID, "handle", system.Handle)
-	linearBridge, err := st.EnsureLinearBridgeAccount(ctx)
+	linearBridge, err = st.EnsureLinearBridgeAccount(ctx)
 	if err != nil {
-		return store.Account{}, store.Account{}, fmt.Errorf("seeding linear bridge account: %w", err)
+		return store.Account{}, store.Account{}, store.Account{}, fmt.Errorf("seeding linear bridge account: %w", err)
 	}
 	slog.Default().Info("linear bridge account seeded", "account_id", linearBridge.ID, "handle", linearBridge.Handle)
-	return admin, system, nil
+	return admin, system, linearBridge, nil
 }
 
 // Serve binds the compass.v1 service to cfg.SocketPath and drives it until ctx
@@ -758,7 +759,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// sender @compass, reserved Linear bridge sender @linear. Created
 	// unconditionally so AdminGate always has an admin id and the Linear responder
 	// finds its bridge author. Idempotent find-or-create; wrong-shape rows fail startup.
-	admin, systemAccount, err := seedBootstrapAccounts(ctx, st, cfg)
+	admin, systemAccount, linearBridge, err := seedBootstrapAccounts(ctx, st, cfg)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
@@ -814,12 +815,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (RIG-1577)
 	// construction cycles; see wireHubServiceCycles in sinks.go.
 	wireHubServiceCycles(hub, commsSvc, st, issueBrd)
-	// Seed the root Manager "supervisor" on first launch (RIG-1820). The seed
-	// needs a Runner command stream, not up at boot, so it hangs off the hub's
-	// runner-ready hook, fired once a Runner's Sessions stream attaches.
-	// Idempotent, so a reconnect re-fire is safe. adminID owns the supervisor.
-	seedLog := slog.Default()
-	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, commsSvc, admin.ID, systemAccount.ID, seedLog) })
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
 	// it mounts on every account door behind the same bearer + admin-gate chain
 	// (classified authenticatedOpen; the handler enforces user-only writes and the
@@ -835,12 +830,22 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
+	// Seed the root Manager "supervisor" on first launch (RIG-1820). The seed
+	// needs a Runner command stream, not up at boot, so it hangs off the hub's
+	// runner-ready hook, fired once a Runner's Sessions stream attaches.
+	// Idempotent, so a reconnect re-fire is safe. adminID owns the supervisor.
+	// Set after the forge wiring, which decides whether the Linear routing channel is seeded.
+	seedLog := slog.Default()
+	hub.SetRunnerReadyHook(func() {
+		seedRootSupervisor(ctx, st, svc, commsSvc, admin.ID, systemAccount.ID, linearRoutingBridge(forgeWiring.linearTokens, linearBridge.ID), seedLog)
+	})
 
 	// Assemble the three compass.v1 doors (shipped socket, optional dev loopback,
-	// optional authenticated network) plus the Linear notify lane. On a net-door
-	// build error the listeners this Serve bound are still ours to close.
+	// optional authenticated network) plus the Linear notify lane and session
+	// responder. On a net-door build error the listeners this Serve bound are
+	// still ours to close.
 	// buildDoors takes BOTH instances — see its parameter docs for why.
-	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver, serverResolver,
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, linearBridge.ID, resolver, serverResolver,
 		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
@@ -877,6 +882,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// The board + GitHub notify lanes are nil when the GitHub App is absent; the
 	// Linear notify lane is nil when Linear is not configured. A nil lane starts nothing.
 	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, forgeWiring.notifyLane, doors.linearNotify)
+	// The Linear session responder drains on the same group; nil when Linear is off.
+	startLinearResponder(gctx, g, doors.linearResponder)
 	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
@@ -923,6 +930,8 @@ type serveDoors struct {
 	// client-credentials pair undeclared). Serve starts its arm + reconciler on
 	// the serve group.
 	linearNotify *forgeNotifyLane
+	// linearResponder drains verified Linear session events; nil when Linear is off.
+	linearResponder *linearagent.Dispatcher
 }
 
 // buildDoors assembles the three compass.v1 doors off the already-built service
@@ -940,6 +949,7 @@ func buildDoors(
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
+	linearBridgeID store.AccountID,
 	// resolver is the CONTAINER user-secret resolver (the DB-backed StoreResolver
 	// reading `secrets`), threaded to buildNetworkServer -> the FetchSecrets
 	// delivery path. serverResolver reads `server_secrets` and is threaded ONLY to
@@ -1006,21 +1016,9 @@ func buildDoors(
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
-	// Linear agent-notification lane (RIG-2732 T7): App-INDEPENDENT, gated on the
-	// shared client-credentials token source (nil when Linear is unconfigured).
-	// Built beside the webhook handler so its sink threads into the wiring;
-	// returned in serveDoors so Serve starts its arm + reconciler.
-	linearNotifyLane := buildLinearNotifyLane(st, hub, linearTokens, slog.Default())
-	var linearDataSink ForgeEventSink
-	if linearNotifyLane != nil {
-		linearDataSink = linearNotifyLane.sink
-	}
-
-	// Linear webhook ingress (RIG-2732 T7d): a shared POST /webhooks/linear
-	// handler built iff the Linear webhook secret is declared (App-INDEPENDENT).
-	// Its sink is linearDataSink; nil when the notify lane is off. serverResolver:
-	// the webhook secret is a SERVER secret (buildNetworkServer keeps CONTAINER).
-	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, serverResolver, linearDataSink, slog.Default())
+	// The Linear half: notify lane, session responder, and the webhook feeding both.
+	// serverResolver: the webhook secret is a SERVER secret (the net door keeps CONTAINER).
+	linear, err := buildLinearWiring(ctx, cfg, st, hub, commsSvc, serverResolver, adminID, linearBridgeID, linearTokens)
 	if err != nil {
 		return serveDoors{}, err
 	}
@@ -1034,7 +1032,7 @@ func buildDoors(
 	// drift apart and the recorded instance is always the delivered one.
 	netResolver := resolver
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linearWebhookHandler)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook)
 		if err != nil {
 			return serveDoors{}, err
 		}
@@ -1044,7 +1042,10 @@ func buildDoors(
 	// netResolver records WHICH instance reached the container delivery path; a
 	// swap here is silent and severe: runnerhub's FetchSecrets would serve
 	// `server_secrets`, handing every deployment secret to every agent container.
-	return serveDoors{uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver, linearNotify: linearNotifyLane}, nil
+	return serveDoors{
+		uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver,
+		linearNotify: linear.notify, linearResponder: linear.responder,
+	}, nil
 }
 
 // drainSet is the shutdown-side view of what Serve built: the two buses whose
@@ -1295,23 +1296,18 @@ func buildBoardWebhookWiring(
 // /webhooks/linear route. A resolve FAULT fails startup (the same fail-fast as
 // forgeSecretDeclared); an absent name is the clean off-state, not an error.
 //
-// dataSink is the data-change arm's sink, injected-and-nil-for-now by driver
-// decision (DL-302): feeding the GitHub-coordinate notify+board fanoutSink would
-// mis-route Linear events (Linear subs looked up under a GitHub coordinate), so
-// the handler's data branch acks-and-drops on a nil sink until a
-// Linear-provider-bound notify lane injects a real sink here. The session arm is
-// left unwired (nil sessionSink -> the handler logs-and-drops session events
-// with a 200): the RIG-2717 responder assembly, a separate in-flight lane, wires
-// a real *linearagent.Dispatcher once it assembles one in Serve. The secret is
-// TTL-cached (newCachedWebhookSecret): /webhooks/linear is an internet-facing,
-// unauthenticated endpoint whose secret is resolved on EVERY request BEFORE the
-// HMAC check, so an uncached resolve would let a garbage POST force a full
-// secretspec Load ahead of authentication.
+// dataSink feeds the Linear notify lane and sessionSink the session responder;
+// each is nil when Linear is not configured, and the handler then acks-and-drops
+// that arm with a 200. The secret is TTL-cached (newCachedWebhookSecret):
+// /webhooks/linear is an internet-facing, unauthenticated endpoint whose secret
+// is resolved on EVERY request BEFORE the HMAC check, so an uncached resolve
+// would let a garbage POST force a full secretspec Load ahead of authentication.
 func buildLinearWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
 	resolver secrets.Resolver,
 	dataSink ForgeEventSink,
+	sessionSink SessionEventSink,
 	log *slog.Logger,
 ) (http.Handler, error) {
 	name := cfg.Forge.LinearWebhookSecretName
@@ -1326,7 +1322,7 @@ func buildLinearWebhookWiring(
 		return nil, nil //nolint:nilnil // a set-but-undeclared name is the operator's off-state; the write path's forgeSecretDeclared treats an absent optional name the same way.
 	}
 	secret := newCachedWebhookSecret(resolver, name)
-	_, handler := NewLinearWebhookHandler(secret, dataSink, nil, log)
+	_, handler := NewLinearWebhookHandler(secret, dataSink, sessionSink, log)
 	return handler, nil
 }
 

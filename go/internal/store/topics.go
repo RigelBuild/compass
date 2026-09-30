@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -105,6 +106,24 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 		return Topic{}, fmt.Errorf("store: commit update topic: %w", err)
 	}
 	return topicFromRow(topic), nil
+}
+
+// GetOrCreateTopic returns the id of the topic named name in channelID, minting
+// it on first use; it shares the append path's race-safe get-or-create.
+func (s *Store) GetOrCreateTopic(ctx context.Context, channelID, name string, author AccountID) (string, error) {
+	if channelID == "" || name == "" {
+		return "", fmt.Errorf("%w: get-or-create topic needs a channel and a name", ErrInvalidArgument)
+	}
+	var topicID string
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		id, err := resolveTopicForAppend(ctx, tx, channelID, TopicRef{Name: name, Create: true}, author, time.Now().UnixMilli())
+		topicID = id
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return topicID, nil
 }
 
 // applyTopicRename renames topic topicID (in channelID) to newName, or merges it

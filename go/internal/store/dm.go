@@ -244,21 +244,16 @@ func verifyReconcileDMTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 	return nil
 }
 
-// isReservedDMGroupTx reports whether groupID is a reserved per-owner DM group —
-// the discriminator the CreateChannel create-guard (R3 primary defense) keys on:
-// the fixed reserved name AND VisibilityOwner (symmetric with the coordination
-// group's visibility-discriminated get-half). A group id that names no group is
-// not reserved (false, nil) — the caller's own not-found handling covers an
-// unknown group. Because only the OpenDM path writes into a group this predicate
-// matches, guarding CreateChannel against it makes squatting a dm--… name
-// impossible with no in-advance existence check.
-func isReservedDMGroupTx(ctx context.Context, tx pgx.Tx, groupID ChannelGroupID) (bool, error) {
+// isReservedGroupTx matches the system-written groups (owner DM, admin Linear routing) as their
+// get-halves do, by reserved name AND VisibilityOwner; an unknown group id is not reserved.
+func isReservedGroupTx(ctx context.Context, tx pgx.Tx, groupID ChannelGroupID) (bool, error) {
 	switch row, err := db.New(tx).GetGroupNameVisibility(ctx, string(groupID)); {
 	case err == nil:
-		return row.TopLevel && row.Name == dmGroupName && ChannelGroupVisibility(row.Visibility) == VisibilityOwner, nil
+		reservedName := row.Name == dmGroupName || row.Name == linearRoutingGroupName
+		return row.TopLevel && reservedName && ChannelGroupVisibility(row.Visibility) == VisibilityOwner, nil
 	case noRows(err):
 		return false, nil
 	default:
-		return false, fmt.Errorf("store: resolve dm group discriminator: %w", err)
+		return false, fmt.Errorf("store: resolve reserved group discriminator: %w", err)
 	}
 }

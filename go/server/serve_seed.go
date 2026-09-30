@@ -26,6 +26,10 @@ const (
 	rootSupervisorRole        = "supervisor"
 )
 
+// errTreeNotEmpty is createRootSupervisor's "operator-built root" outcome: the seed
+// adopts nothing, so it must say so when Linear needs the supervisor as its fallback.
+var errTreeNotEmpty = errors.New("root-supervisor seed: agent tree already has an operator-built root")
+
 // spawnableRoles is the closed Manager-role taxonomy a spawn request may name:
 // supervisor (owns the whole tree — intake, incidents, broadcasts, first
 // contact), owner (owns a product/service/domain), manager (owns one lane). The
@@ -96,8 +100,9 @@ var setupThreadBody string
 // RIG-1820 covers first-launch seed and the never-started re-drive above.
 //
 // A failure is logged, not fatal: the server stays up and the next Runner
-// reconnect re-fires the seed.
-func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *comms.Comms, adminID, compassID store.AccountID, log *slog.Logger) {
+// reconnect re-fires the seed. A non-empty linearBridgeID also ensures the Linear
+// routing channel once the supervisor exists; empty means Linear is off.
+func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *comms.Comms, adminID, compassID, linearBridgeID store.AccountID, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, seedTimeout)
 	defer cancel()
 
@@ -111,13 +116,17 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 		// handle, so assert the found agent is actually THIS admin's root before
 		// re-driving it — else a non-admin-owned agent holding the reserved handle
 		// would be auto-provisioned. Keeps the "adopts nothing it did not seed" contract.
-		if supervisor.Agent == nil || supervisor.Agent.OwnerUserID != adminID || supervisor.Agent.ParentAgentID != "" {
+		if !isAdminRootSupervisor(supervisor, adminID) {
 			log.Error("root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
 				"agent_account_id", supervisor.ID)
+			warnNoLinearRoutingTarget(log, linearBridgeID, "the supervisor handle is not the admin's root agent")
 			return
 		}
 	case errors.Is(err, store.ErrNotFound):
 		created, ok, cerr := createRootSupervisor(ctx, st, adminID, log)
+		if errors.Is(cerr, errTreeNotEmpty) {
+			warnNoLinearRoutingTarget(log, linearBridgeID, "the agent tree has an operator-built root")
+		}
 		if cerr != nil || !ok {
 			return // createRootSupervisor logged the reason (or the tree was non-empty).
 		}
@@ -125,6 +134,14 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	default:
 		log.Error("root-supervisor seed: looking up supervisor failed; skipping seed", "err", err)
 		return
+	}
+
+	// Ensured before the spawn: routing needs only the rows, not a live session.
+	if linearBridgeID != "" {
+		if _, err := st.EnsureLinearRoutingChannel(ctx, adminID, supervisor.ID, linearBridgeID); err != nil {
+			log.Error("root-supervisor seed: ensuring the linear routing channel failed; will retry on next enroll",
+				"agent_account_id", supervisor.ID, "err", err)
+		}
 	}
 
 	// Provision + Start under the fixed idempotency key. reject-on-live + the
@@ -159,6 +176,21 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	postSetupThread(ctx, cm, st, compassID, supervisor, log)
 }
 
+// isAdminRootSupervisor is the ownership assertion on a supervisor-handle lookup:
+// handles are global, so only the admin's own root agent is the supervisor.
+func isAdminRootSupervisor(acct store.Account, adminID store.AccountID) bool {
+	return acct.Agent != nil && acct.Agent.OwnerUserID == adminID && acct.Agent.ParentAgentID == ""
+}
+
+// warnNoLinearRoutingTarget flags a seed that returns before the routing channel exists:
+// with Linear on, cold delegations and bare @mentions then have no routing target.
+func warnNoLinearRoutingTarget(log *slog.Logger, linearBridgeID store.AccountID, reason string) {
+	if linearBridgeID == "" {
+		return
+	}
+	log.Warn("root-supervisor seed: cold Linear delegations have no routing target", "reason", reason)
+}
+
 // postSetupThread posts the platform's Setup thread as @compass into the
 // supervisor's home channel, giving the seeded root supervisor its first turn. It
 // first makes @compass an (unsubscribed) member of that channel — PostMessage
@@ -191,8 +223,8 @@ func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, comp
 
 // createRootSupervisor creates the root supervisor agent, but only on an EMPTY
 // tree (no root under the admin). It returns (agent, true, nil) when it created
-// one, and (zero, false, nil) when it created nothing — either the tree already
-// held a root (operator-built), or a concurrent seed won the unique-handle race
+// one, (zero, false, errTreeNotEmpty) when the tree already held an operator-built
+// root, and (zero, false, nil) when a concurrent seed won the unique-handle race
 // (that winner drives the start). The caller starts the supervisor only on a
 // true. Any real error is returned with created=false.
 func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.AccountID, log *slog.Logger) (store.Account, bool, error) {
@@ -202,8 +234,7 @@ func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.Ac
 		return store.Account{}, false, err
 	}
 	if roots > 0 {
-		// The tree is not empty (operator built a root), so seed nothing.
-		return store.Account{}, false, nil
+		return store.Account{}, false, errTreeNotEmpty
 	}
 	agent, err := st.CreateAgent(ctx, adminID, store.NewAgent{
 		Handle:      rootSupervisorHandle,

@@ -176,10 +176,15 @@ type Querier interface {
 	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
 	GetDMChannelByName(ctx context.Context, arg GetDMChannelByNameParams) (GetDMChannelByNameRow, error)
 	GetGlobalHandleID(ctx context.Context, handle string) (string, error)
-	// Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (top-level AND name AND
+	// Feeds isReservedGroupTx: the reserved-group discriminator (top-level AND a reserved name AND
 	// VisibilityOwner) the CreateChannel create-guard keys on.
 	GetGroupNameVisibility(ctx context.Context, id string) (GetGroupNameVisibilityRow, error)
 	GetIssue(ctx context.Context, id string) (GetIssueRow, error)
+	GetLinearRoutingChannel(ctx context.Context, arg GetLinearRoutingChannelParams) (GetLinearRoutingChannelRow, error)
+	// Linear routing channel queries: the admin's reserved __linear__ group and the one
+	// routing channel inside it, keyed by (group, name) so a planted look-alike is never adopted.
+	// Visibility-discriminated like GetOwnerDMGroup: a planted wider __linear__ group is never adopted.
+	GetLinearRoutingGroup(ctx context.Context, arg GetLinearRoutingGroupParams) (string, error)
 	GetMessageBlocks(ctx context.Context, id string) ([]byte, error)
 	GetMessageByRequestID(ctx context.Context, arg GetMessageByRequestIDParams) ([]GetMessageByRequestIDRow, error)
 	// Peer-DM channel queries (sqlc adoption T6, RIG-3034; dm.go was added to the
@@ -259,6 +264,9 @@ type Querier interface {
 	// zero rows, never a raised unique-violation).
 	InsertDMChannel(ctx context.Context, arg InsertDMChannelParams) (string, error)
 	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
+	// ON CONFLICT DO NOTHING keeps a lost race from poisoning the tx; the caller re-selects.
+	InsertLinearRoutingChannel(ctx context.Context, arg InsertLinearRoutingChannelParams) (string, error)
+	InsertLinearRoutingGroup(ctx context.Context, arg InsertLinearRoutingGroupParams) error
 	InsertMessage(ctx context.Context, arg InsertMessageParams) (InsertMessageRow, error)
 	// InsertModelRegistry seeds the FIRST registry (the caller read no row, expected
 	// version 0). ON CONFLICT DO NOTHING makes it a CAS: it lands only when the
@@ -349,6 +357,7 @@ type Querier interface {
 	LockChannelForPins(ctx context.Context, id string) (LockChannelForPinsRow, error)
 	LockChannelMandatoryKind(ctx context.Context, id string) (LockChannelMandatoryKindRow, error)
 	LockChannelPolicy(ctx context.Context, id string) (LockChannelPolicyRow, error)
+	LockLinearRouting(ctx context.Context, dollar_1 pgtype.Text) error
 	LockOwnerCoordination(ctx context.Context, dollar_1 pgtype.Text) error
 	LockOwnerDM(ctx context.Context, dollar_1 pgtype.Text) error
 	// Session-binding queries (RIG-3108 / RIG-2861 §T4): the durable
@@ -439,6 +448,8 @@ type Querier interface {
 	// bundle is a fleet-wide singleton row (singleton = TRUE).
 	PutAgentConfig(ctx context.Context, arg PutAgentConfigParams) error
 	ReassertDMMandatory(ctx context.Context, id string) error
+	// The bridge posts as a non-owner, so owner-only or owned drift would refuse every cold delegation.
+	ReassertLinearRoutingShape(ctx context.Context, arg ReassertLinearRoutingShapeParams) error
 	// Agent-placement queries (sqlc adoption T5, RIG-3034). These replace the inline
 	// SQL literals in internal/store/agent_placements.go; the hand-written Store
 	// methods keep their signatures and map the placement rows into the

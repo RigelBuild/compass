@@ -241,6 +241,13 @@ Set a provider value and no flag and Linear stays off silently:
 warning needs exactly one of the two to resolve, so neither resolving logs
 nothing at all.
 
+When the Linear client-credentials pair and `--forge-linear-webhook-secret` are
+both configured, `--public-url` (or `$COMPASS_PUBLIC_URL`) is required: it is
+the public base URL of the "Open in Compass" deep links the Linear responder
+posts, and the server fails to boot without it. Register the Linear webhook at
+`<public-url>/webhooks/linear`. A deployment already running the Linear lane
+must set it before upgrading.
+
 ### Choosing a provider
 
 The right `secretspec` provider depends on your deployment shape. On a box an
