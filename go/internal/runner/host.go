@@ -1144,23 +1144,16 @@ func (h *agentHost) configMaterializerFor(containerName string) *ConfigMateriali
 }
 
 // serveSocket creates and serves the per-container agent socket for containerName,
-// recording the listener so Provision can mount it and teardown can Close it. A
-// container already serving is a no-op (idempotent retry). The Gateway forwards to
-// the Server over the Runner's own RunnerService client, resolving container→session.
+// recording the listener so Provision can mount it and teardown can Close it.
+// Provision's registry guard means no socket is already served for the name. The
+// Gateway forwards to the Server over the Runner's own RunnerService client.
 func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gateway.SocketListener, error) {
 	return h.serveSocketAt(ctx, containerName, filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile))
 }
 
 // serveSocketAt is serveSocket with an explicit socket path: container tiers pass the
 // fixed RuntimeDir socket, the host tier a path in the handle's state dir (no mount).
-// Idempotency is identical: a container already serving keeps its live listener.
 func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, error) {
-	h.mu.Lock()
-	if listener, served := h.sockets[containerName]; served {
-		h.mu.Unlock()
-		return listener, nil
-	}
-	h.mu.Unlock()
 	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client})
 	if err != nil {
 		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
