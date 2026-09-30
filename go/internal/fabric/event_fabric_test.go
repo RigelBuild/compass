@@ -860,9 +860,8 @@ func TestParkReasonIsSanitizedAndBounded(t *testing.T) {
 // Draining runs them through the callback and acks them instead.
 //
 // The buffer is established positively rather than by sleeping: the callback
-// blocks on the first event, and the test waits for the server to report all n
-// as delivered-unacked before tearing down, so all n are provably in this
-// client's hands.
+// blocks on the first event, and the test waits until this client's
+// connection has received a second one before tearing down.
 func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
@@ -889,6 +888,9 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 		firstIn = make(chan struct{})
 		gateOne sync.Once
 	)
+	// Every request/reply is done by now (publish acks, consumer create), so
+	// inbound messages past this point are the consumer's deliveries.
+	baseline := f.nc.Stats().InMsgs
 	unsub, err := f.Subscribe(ctx, subject, func(r EventRef) {
 		got <- r
 		// Only the first delivery blocks; that is enough to let the rest pile
@@ -907,28 +909,14 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 	defer unsub()
 
 	// Two gates, in order. First: the callback must actually be parked on
-	// `release`. NumAckPending counts what the SERVER handed out, which can
-	// exceed one before any callback ran, so gating on it alone lets teardown
-	// race ahead of the first delivery. `firstIn` is closed by the callback.
+	// `release`. `firstIn` is closed by the callback.
 	<-firstIn
 
-	// Second: the server must have handed out more than that one delivery, so a
-	// buffer exists for teardown to drain. Not all n: NumAckPending races
-	// JetStream's prefetch, so on a loaded box the rest may not be pushed yet.
-	stream, err := f.ensureStream(ctx)
-	if err != nil {
-		t.Fatalf("ensureStream: %v", err)
-	}
-	cons, err := stream.Consumer(ctx, durableName(subject))
-	if err != nil {
-		t.Fatalf("Consumer(%q): %v", durableName(subject), err)
-	}
+	// Second: a delivery beyond the parked one must have reached this client.
+	// Not the server's NumAckPending: the server counts a message pending
+	// before sending it, so an UNSUB can overtake it and strand it server-side.
 	pollUntil(t, "an event buffered behind the in-flight one", func() bool {
-		info, err := cons.Info(ctx)
-		if err != nil {
-			t.Fatalf("consumer Info: %v", err)
-		}
-		return info.NumAckPending > 1
+		return f.nc.Stats().InMsgs-baseline >= 2
 	})
 
 	// Tear down with events buffered, THEN let the blocked callback go: a
