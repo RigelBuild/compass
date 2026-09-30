@@ -113,63 +113,54 @@ func TestWakeAgentPriorSessionResumes(t *testing.T) {
 	}
 }
 
-// TestWakeAgentLostContainerReprovisionsAndResumes: after a redeploy the placement
-// names a container the Runner no longer has. The wake re-provisions the same
-// account, moves the placement, and resumes the prior session in the new container.
-func TestWakeAgentLostContainerReprovisionsAndResumes(t *testing.T) {
-	ctx := t.Context()
-	f, lc := newWakeFixture(t)
+// TestWakeAgentLostContainerReprovisions: after a redeploy the placement names a
+// container the Runner no longer has. The wake re-provisions the same account (the
+// Runner derives the same name) and retries the start there, on both wake paths.
+func TestWakeAgentLostContainerReprovisions(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		priorSess  bool
+		wantResume string
+	}{
+		{name: "resume", priorSess: true, wantResume: "sess-wake-lost"},
+		{name: "fresh start", priorSess: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			f, lc := newWakeFixture(t)
+			if tc.priorSess {
+				if err := f.store.RecordAgentSession(ctx, tc.wantResume, f.agentID); err != nil {
+					t.Fatalf("RecordAgentSession: %v", err)
+				}
+				if err := f.store.AppendTranscriptEntry(ctx, tc.wantResume, 1, true, `{"header":true}`, "k1"); err != nil {
+					t.Fatalf("append checkpoint: %v", err)
+				}
+			}
+			if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
+				t.Fatalf("RecordAgentPlacement: %v", err)
+			}
+			f.runner.setLostContainers(fakeContainer)
+			f.runner.forget()
 
-	const (
-		logical   = "sess-wake-lost"
-		staleName = "compass-agent-stale"
-		freshName = "compass-agent-fresh"
-	)
-	if err := f.store.RecordAgentSession(ctx, logical, f.agentID); err != nil {
-		t.Fatalf("RecordAgentSession: %v", err)
-	}
-	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, staleName); err != nil {
-		t.Fatalf("RecordAgentPlacement: %v", err)
-	}
-	if err := f.store.AppendTranscriptEntry(ctx, logical, 1, true, `{"header":true}`, "k1"); err != nil {
-		t.Fatalf("append checkpoint: %v", err)
-	}
-	f.runner.setLostContainers(staleName)
-	f.runner.setContainerNames(freshName)
-	f.runner.forget()
+			lc.WakeAgent(ctx, f.agentID)
 
-	lc.WakeAgent(ctx, f.agentID)
-
-	if n := f.runner.provisionCount(); n != 1 {
-		t.Fatalf("Provision count = %d, want 1 (re-provision the lost container); commands: %v", n, f.runner.commands())
-	}
-	var prov *compassv1.ProvisionAgentWorkspaceRequest
-	var start *compassv1.StartAgentSessionRequest
-	f.runner.mu.Lock()
-	for _, c := range f.runner.seen {
-		if p := c.GetProvision(); p != nil {
-			prov = p
-		}
-		if s := c.GetStart(); s != nil {
-			start = s
-		}
-	}
-	f.runner.mu.Unlock()
-	if prov.GetAgentHandle() != string(f.agentID) {
-		t.Fatalf("re-provision handle = %q, want the same account %q", prov.GetAgentHandle(), f.agentID)
-	}
-	_, container, err := f.store.PlacementForAgent(ctx, f.agentID)
-	if err != nil {
-		t.Fatalf("PlacementForAgent: %v", err)
-	}
-	if container != freshName {
-		t.Fatalf("placement container = %q, want %q (moved to the re-provisioned container)", container, freshName)
-	}
-	if start.GetContainerName() != freshName || start.GetResumeSessionId() != logical {
-		t.Fatalf("last Start = container %q resume %q, want %q resume %q", start.GetContainerName(), start.GetResumeSessionId(), freshName, logical)
-	}
-	if body, _ := relayedStartResumeBody(t, f.runner); body != `{"header":true}` {
-		t.Fatalf("resume body = %q, want the reconstructed transcript", body)
+			prov, starts := f.runner.provisionAndStarts()
+			if f.runner.provisionCount() != 1 || prov.GetAgentHandle() != string(f.agentID) {
+				t.Fatalf("want one re-provision of %q; commands: %v", f.agentID, f.runner.commands())
+			}
+			if len(starts) != 2 {
+				t.Fatalf("Starts = %d, want 2 (the lost one, then the retry); commands: %v", len(starts), f.runner.commands())
+			}
+			if got := starts[1]; got.GetContainerName() != fakeContainer || got.GetResumeSessionId() != tc.wantResume {
+				t.Fatalf("retry Start = container %q resume %q, want %q resume %q", got.GetContainerName(), got.GetResumeSessionId(), fakeContainer, tc.wantResume)
+			}
+			if _, container, err := f.store.PlacementForAgent(ctx, f.agentID); err != nil || container != fakeContainer {
+				t.Fatalf("placement after wake = %q, %v; want %q kept", container, err, fakeContainer)
+			}
+			if f.runner.sawRemove(fakeContainer) {
+				t.Fatal("wake removed the re-provisioned container")
+			}
+		})
 	}
 }
 
