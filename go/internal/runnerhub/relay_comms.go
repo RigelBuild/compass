@@ -26,7 +26,8 @@ import (
 )
 
 // bindContainer records the resolved account and Runner that provisioned
-// containerName. Start later promotes its account to a session binding. Empty values fail closed.
+// containerName. Every Start on the container reads it; Remove and re-enroll
+// clear it. Empty values fail closed.
 func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID, runnerID string) {
 	if containerName == "" || agentAccountID == "" || runnerID == "" {
 		return
@@ -233,13 +234,9 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 	}
 }
 
-// unbindContainer drops a container's provisioned account binding. Called from
-// Remove, the teardown counterpart to Provision (which binds via bindContainer):
-// on a Provision->Remove path that never reached Start, promoteSession never
-// cleared the entry, so without this a stale container->account binding would
-// linger and keep authorizing a pre-exec FetchSecrets materialize
-// (HasContainerBinding) against a container that no longer exists. A no-op on
-// the normal lifecycle (Start's promoteSession already cleared it).
+// unbindContainer drops a container's provisioned account binding. Remove is the
+// only normal-lifecycle clear, so without it the binding would keep authorizing a
+// pre-exec FetchSecrets (AccountForContainer) for a container that is gone.
 func (h *Hub) unbindContainer(containerName string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

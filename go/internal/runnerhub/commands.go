@@ -116,13 +116,12 @@ func (h *Hub) Remove(ctx context.Context, requestID string, req *compassv1.Remov
 		RequestId: orNewRequestID(requestID),
 		Command:   &compassv1internal.SessionsResponse_Remove{Remove: req},
 	})
+	// Unbind even when the relay fails: the Runner may have removed the container
+	// before the reply was lost, and a retried Remove is idempotent.
+	h.unbindContainer(req.GetContainerName())
 	if err != nil {
 		return nil, err
 	}
-	// Drop the container's provisioned account binding. It outlives Start so a
-	// resume can fetch secrets; a stale one would authorize a pre-exec secrets
-	// materialize for a container that no longer exists.
-	h.unbindContainer(req.GetContainerName())
 	return result.GetRemove(), nil
 }
 
