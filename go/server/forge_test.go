@@ -342,6 +342,39 @@ func TestForgeGetIssueReadBodyHasNoOwnerHeader(t *testing.T) {
 	}
 }
 
+// list_issues honors its wire contract: limit 0 returns the default 30, a set
+// limit returns at most that many, and a limit past 100 is capped. The provider
+// walks every page, so without the clamp one call rendered ~600KB into the agent.
+func TestForgeListIssuesAppliesLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit uint32
+		want  int
+	}{
+		{"zero uses default 30", 0, 30},
+		{"explicit limit", 5, 5},
+		{"over the cap is 100", 500, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+			for i := range 150 {
+				author.ListIssuesResult = append(author.ListIssuesResult, forge.Issue{Number: uint64(150 - i)})
+			}
+			call := &compassv1internal.ForgeCallRequest{
+				Call: &compassv1internal.ForgeCallRequest_ListIssues{ListIssues: &compassv1internal.ListIssuesRequest{Repo: testRepo, Limit: tc.limit}},
+			}
+			issues := svc.ExecuteForgeCallAsAccountMust(t, call).GetIssues().GetIssues()
+			if len(issues) != tc.want {
+				t.Fatalf("list_issues limit=%d returned %d issues, want %d", tc.limit, len(issues), tc.want)
+			}
+			if issues[0].GetNumber() != 150 {
+				t.Fatalf("first issue = #%d, want #150: the clamp must keep the provider's leading rows", issues[0].GetNumber())
+			}
+		})
+	}
+}
+
 // --- tests: guards ----------------------------------------------------------
 
 // TestEmptyCallerIsConnectErrorWithZeroProviderCalls pins that an empty caller
