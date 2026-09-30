@@ -361,7 +361,7 @@ func TestStartAgentSessionResumeS3FallbackReconstructsEvictedEntries(t *testing.
 
 	obj := newMemObjectStore()
 	f.store.SetObjectStore(obj)
-	f.store.SetSafetyValveCapBytesForTest(40) // well below the payload sizes below
+	f.store.SetSafetyValveCapBytes(40) // well below the payload sizes below
 
 	const logical = "sess-logical-valve"
 	if err := f.store.RecordAgentSession(ctx, logical, f.agentID); err != nil {

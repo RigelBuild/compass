@@ -86,6 +86,8 @@ type ServeConfig struct {
 	// store's nil object-store guard fails a flush loudly only if one is ever
 	// attempted. Mirrors the DATABASE_DSN flag/env precedence at the CLI.
 	S3 S3Config
+	// TranscriptSafetyValveCapBytes overrides the store hot-tail cap when positive.
+	TranscriptSafetyValveCapBytes int
 	// Listen, when set, is the TCP address the authenticated network door binds
 	// (e.g. "0.0.0.0:8443"). Empty on the socket-only shipped path. When set, TLS
 	// is required — a bearer token over cleartext is credential disclosure.
@@ -640,6 +642,9 @@ func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
 			return nil, fmt.Errorf("constructing s3 object store: %w", err)
 		}
 		st.SetObjectStore(objStore)
+	}
+	if cfg.TranscriptSafetyValveCapBytes > 0 {
+		st.SetSafetyValveCapBytes(cfg.TranscriptSafetyValveCapBytes)
 	}
 	return st, nil
 }

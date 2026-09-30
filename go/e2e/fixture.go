@@ -154,6 +154,8 @@ type fixtureConfig struct {
 	onUp        func(*stack.Stack)
 	forge       bool
 	objectStore *garageFixture
+	// safetyValveCap, when positive, lowers the server's transcript hot-tail cap.
+	safetyValveCap int
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
@@ -250,6 +252,11 @@ func WithStackObserver(onUp func(*stack.Stack)) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.onUp = onUp
 	}
+}
+
+// WithSafetyValveCap sets the transcript hot-tail cap in bytes.
+func WithSafetyValveCap(n int) fixtureOption {
+	return func(fc *fixtureConfig) { fc.safetyValveCap = n }
 }
 
 // WithForgeStub makes NewFixture stand up the deterministic forge stub backend.
@@ -603,6 +610,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		cfg.S3Region = "garage"
 		cfg.S3UseTLS = false
 	}
+	cfg.TranscriptSafetyValveCapBytes = fc.safetyValveCap
 
 	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a
 	// models.yml pointing the agent's custom openai-completions provider at it,

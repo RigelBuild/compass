@@ -97,12 +97,8 @@ func (s *Store) SetObjectStore(os ObjectStore) {
 	s.objectStore = os
 }
 
-// SetSafetyValveCapBytesForTest lowers the safety-valve size cap so a test can
-// trip the valve without writing a huge transcript. The ForTest suffix marks it
-// test-only: production tunes the cap at Open via defaultSafetyValveCapBytes, and
-// this setter exists solely so out-of-package tests (e.g. the server resume
-// pgtest) can exercise the S3 fallback leg end-to-end.
-func (s *Store) SetSafetyValveCapBytesForTest(n int) {
+// SetSafetyValveCapBytes changes the hot-tail safety-valve cap in bytes.
+func (s *Store) SetSafetyValveCapBytes(n int) {
 	s.safetyValveCapBytes = n
 }
 

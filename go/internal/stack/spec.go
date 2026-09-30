@@ -4,6 +4,7 @@ package stack
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -43,6 +44,9 @@ func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 		if cfg.S3UseTLS {
 			env = append(env, "COMPASS_S3_USE_TLS=true")
 		}
+	}
+	if cfg.TranscriptSafetyValveCapBytes > 0 {
+		env = append(env, "COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES="+strconv.Itoa(cfg.TranscriptSafetyValveCapBytes))
 	}
 	return ProcessSpec{Component: ComponentServer, Args: args, Env: env}
 }
