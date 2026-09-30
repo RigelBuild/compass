@@ -48,11 +48,13 @@ const (
 // handles this process owns. An attached stack (a live server was already
 // answering) owns no children — Down on it only releases the lock.
 type Stack struct {
-	cfg       Config
-	deps      Deps
-	lock      *stackLock
-	server    Process
-	runner    Process
+	cfg    Config
+	deps   Deps
+	lock   *stackLock
+	server Process
+	runner Process
+	// cert is the TLS anchor spawnChain issued, reused when the runner restarts.
+	cert      CertResult
 	pg        Process
 	collector Process
 	nats      Process
@@ -205,6 +207,29 @@ func (s *Stack) Down(ctx context.Context) error {
 	return err
 }
 
+// RestartRunner replaces the owned runner process without stopping the server.
+func (s *Stack) RestartRunner(ctx context.Context) error {
+	if s.attached || s.runner == nil {
+		return errors.New("stack: runner is not owned")
+	}
+	// Check the record first so a bad record fails before anything is torn down.
+	if len(s.pgids) == 0 || s.pgids[len(s.pgids)-1].Component != ComponentRunner {
+		return errors.New("stack: runner teardown record is missing")
+	}
+	if err := s.runner.Signal(SignalTerm); err != nil {
+		return fmt.Errorf("stop runner: %w", err)
+	}
+	if err := s.runner.Wait(ctx); err != nil {
+		return fmt.Errorf("wait for runner: %w", err)
+	}
+	s.runner = nil
+	s.pgids = s.pgids[:len(s.pgids)-1]
+	if err := writePgidFile(s.cfg.StateDir, pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}); err != nil {
+		return fmt.Errorf("persist runner stop: %w", err)
+	}
+	return s.startRunner(ctx)
+}
+
 // Health probes current readiness by asking the server over the socket. An
 // answering probe is Ready (or Attached, for a stack that never spawned); a
 // failing probe is Failed with the probe error as the detail.
@@ -218,6 +243,24 @@ func (s *Stack) Health(ctx context.Context) (Status, error) {
 		state = StatusAttached
 	}
 	return Status{State: state, Detail: "server version " + info.Version}, nil
+}
+
+// startRunner mints the enrollment token, checks the agent image, and spawns
+// and records compass-runner (token via env only).
+func (s *Stack) startRunner(ctx context.Context) error {
+	token, err := s.deps.Tokens.EnsureToken(ctx, s.cfg.StateDir, embeddedRunnerID)
+	if err != nil {
+		return fmt.Errorf("ensure runner token: %w", err)
+	}
+	if err := s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage); err != nil {
+		return fmt.Errorf("ensure agent image: %w", err)
+	}
+	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, s.cert, token))
+	if err != nil {
+		return fmt.Errorf("start compass-runner: %w", err)
+	}
+	s.runner = runner
+	return s.recordChild(ComponentRunner, runner)
 }
 
 // spawnChain runs the cold-start sequence in order. Each spawned child is
@@ -266,6 +309,7 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ensure tls anchor: %w", err)
 	}
+	s.cert = cert
 
 	// 3. compass-server (socket / listen / tls / database).
 	server, err := s.deps.Supervisor.Start(ctx, serverSpec(s.cfg, cert))
@@ -283,28 +327,8 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 
-	// 5. Runner enrollment token (idempotent, 0600), minted for the embedded
-	// runner id the runner spawn cross-checks against.
-	token, err := s.deps.Tokens.EnsureToken(ctx, s.cfg.StateDir, embeddedRunnerID)
-	if err != nil {
-		return fmt.Errorf("ensure runner token: %w", err)
-	}
-
-	// 6. Agent image present in the local store.
-	if err := s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage); err != nil {
-		return fmt.Errorf("ensure agent image: %w", err)
-	}
-
-	// 7. compass-runner (token via env only).
-	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, cert, token))
-	if err != nil {
-		return fmt.Errorf("start compass-runner: %w", err)
-	}
-	s.runner = runner
-	if err := s.recordChild(ComponentRunner, runner); err != nil {
-		return err
-	}
-	return nil
+	// 5-7. Runner token, agent image, then compass-runner.
+	return s.startRunner(ctx)
 }
 
 // startPostgres brings up the private store-of-record via the path Config

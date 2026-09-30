@@ -32,6 +32,13 @@ type Config struct {
 	// SecretProvider is the secretspec provider URI forwarded to compass-server.
 	// Empty leaves the server's own env/default resolution unchanged.
 	SecretProvider string
+	// S3 fields configure the server-side transcript archive. Empty endpoint disables archiving.
+	S3Endpoint  string
+	S3Bucket    string
+	S3AccessKey string
+	S3SecretKey string
+	S3Region    string
+	S3UseTLS    bool
 	// PostgresImage selects how the private store-of-record postgres is brought
 	// up (S4 / DL-257). Non-empty is the installed-stack default: a
 	// container-backed postgres run from this image ref (the pinned stock

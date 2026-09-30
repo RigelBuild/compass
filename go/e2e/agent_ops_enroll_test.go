@@ -39,6 +39,13 @@ func TestClassifyEnrollProbe(t *testing.T) {
 			wantErr:   false,
 		},
 		{
+			name:      "unavailable sessions stream not attached retries",
+			err:       connect.NewError(connect.CodeUnavailable, errors.New(`no live runner sessions stream for command "x"`)),
+			wantReady: false,
+			wantRetry: true,
+			wantErr:   false,
+		},
+		{
 			name:      "internal error is surfaced",
 			err:       connect.NewError(connect.CodeInternal, errors.New("boom")),
 			wantReady: false,
