@@ -99,11 +99,9 @@ func (e surplusAskError) Error() string {
 
 // PostAsAccount executes one agent-initiated PostMessage as account. It sets the
 // account on the context (WithActor) and delegates to the same PostMessage
-// handler path a human caller takes, so authz (D9), idempotency
-// (client_request_id), and MessagePosted fan-out are identical. An empty
-// channel_id resolves to the account's home channel before the call. A
-// non-member channel collapses to the same CodeNotFound a human gets — the
-// agent never learns a channel it cannot see exists.
+// handler path a human caller takes, so authz (D9), idempotency, and fan-out match.
+// Non-members get CodeNotFound; visible non-owners on OWNER_ONLY get
+// CodePermissionDenied because membership already reveals the channel.
 func (c *Comms) PostAsAccount(
 	ctx context.Context,
 	account store.AccountID,
@@ -229,14 +227,10 @@ func (c *Comms) ListAsAccountByName(
 	return c.ListAsAccount(ctx, account, resolved)
 }
 
-// UpdatePinnedBoardAsAccount executes one agent-initiated UpdatePinnedBoard as
-// account, mirroring PostAsAccount: WithActor + the shared UpdatePinnedBoard
-// handler path, so the board authz (post_policy), the pure-pointer store ops,
-// and the ChannelChanged fan-out are identical to a human caller's. A non-member
-// or non-owner (on OWNER_ONLY) channel collapses to the same CodeNotFound a
-// human gets — the agent never learns a board it cannot mutate exists. The pin
-// request always names its channel explicitly (the board is not the agent's home
-// channel by default), so there is no home-channel defaulting here.
+// UpdatePinnedBoardAsAccount executes one agent-initiated board update as account
+// via the shared handler path. Non-members get CodeNotFound; a visible member
+// who is not the owner of an OWNER_ONLY channel gets CodePermissionDenied.
+// The request always names its channel explicitly, so there is no home default.
 func (c *Comms) UpdatePinnedBoardAsAccount(
 	ctx context.Context,
 	account store.AccountID,

@@ -2,10 +2,8 @@
 
 package comms
 
-// UpdatePinnedBoard handler contracts at the RPC edge (RIG-1723 T6): authorizes
-// against post_policy (a non-owner collapsing to the SAME CodeNotFound a non-
-// member gets — no oracle), maps the op oneof to the pure-pointer store call
-// (pin / CAS replace / unpin), and emits ChannelChanged. Real store + bus.
+// UpdatePinnedBoard handler contracts at the RPC edge: non-owner members of an
+// OWNER_ONLY channel get CodePermissionDenied; non-members remain CodeNotFound.
 
 import (
 	"context"
@@ -153,11 +151,9 @@ func TestUpdatePinnedBoardCapRejectedInBand(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeFailedPrecondition, "cap+1 fresh pin")
 }
 
-// TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsNotFound: a member who is not the
-// owner mutating an OWNER_ONLY board is refused with CodeNotFound — the exact
-// code a non-member gets, so the policy leaks no oracle (mirrors PostMessage's
-// OWNER_ONLY enforcement).
-func TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsNotFound(t *testing.T) {
+// TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsPermissionDenied: visible members
+// get CodePermissionDenied when they cannot mutate an OWNER_ONLY board.
+func TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsPermissionDenied(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
@@ -182,10 +178,9 @@ func TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsNotFound(t *testing.T) {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
 
-	// The non-owner member is refused with the same NotFound a non-member gets.
+	// A visible non-owner member receives the distinct permission denial.
 	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(chID, msg, "")))
-	connectCodeIs(t, err, connect.CodeNotFound, "non-owner pin on OWNER_ONLY channel")
-
+	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner pin on OWNER_ONLY channel")
 	// The owner, by contrast, may mutate the OWNER_ONLY board.
 	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(chID, msg, ""))); err != nil {
 		t.Fatalf("owner pin on OWNER_ONLY channel: %v", err)
@@ -324,38 +319,28 @@ func TestUpdatePinnedBoardMembershipRevokedMidFlightIsNotFound(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeNotFound, "pin by a member whose membership was revoked")
 }
 
-// TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsNotFound: on an OWNER_ONLY channel
-// a non-owner member's pin is refused with CodeNotFound by the store's in-tx
-// post_policy gate (read under the FOR UPDATE lock, mirroring PostMessage), the
-// in-tx analogue of the edge-authz OWNER_ONLY test. Reverting the store's in-tx
-// post_policy check lets the non-owner pin succeed → this test fails.
-func TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsNotFound(t *testing.T) {
+// TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsPermissionDenied pins the store's
+// in-tx OWNER_ONLY check under the channel-row lock.
+func TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsPermissionDenied(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 	other := mustUser(t, st, "other")
-
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
-		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberHandles: []string{other.Handle},
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, MemberHandles: []string{other.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	chID := created.Msg.GetChannel().GetId()
 	msg := pinnableMessage(t, st, store.ChannelID(chID), owner.ID, "target")
-
 	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
-		ChannelId:   chID,
-		PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
-		OwnerHandle: owner.Handle,
+		ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY, OwnerHandle: owner.Handle,
 	})); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-
-	// The non-owner member is refused by the in-tx post_policy gate.
 	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(chID, msg, "")))
-	connectCodeIs(t, err, connect.CodeNotFound, "non-owner pin on OWNER_ONLY channel (in-tx gate)")
+	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner pin on OWNER_ONLY channel (in-tx gate)")
 }
 
 // TestUpdatePinnedBoardNonOwnerMemberOnOpenSucceeds: on an OPEN channel any

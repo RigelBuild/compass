@@ -2,14 +2,9 @@
 
 package store
 
-// Channel-policy store contracts (RIG-1722 T4, design.md:488-528): the post
-// policy (OWNER_ONLY rejects a non-owner with the SAME ErrNotFound a non-member
-// gets — no oracle), the mandatory-subscription flag (an explicit unsubscribe is
-// refused, and the D1 read-side delivers to a member whose row says
-// subscribed=false), and SetChannelPolicy's transactional seed of every member's
-// delivery cursor when the mandatory flag is newly set (no un-seeded delivery
-// target). These are properties only a real Postgres proves (the enforcement SQL
-// and the in-txn seed), so the file is pgtest-tagged.
+// Channel-policy store contracts: OWNER_ONLY rejects non-owner members with
+// ErrPermissionDenied, while non-members remain ErrNotFound.
+// The in-txn policy enforcement and cursor seeding require real Postgres.
 import (
 	"context"
 	"testing"
@@ -29,10 +24,8 @@ func mustPolicyChannel(t *testing.T, s *Store, owner AccountID, name string, p C
 	return ch
 }
 
-// TestPostMessageOwnerOnlyRejectsNonOwnerInBand pins the OWNER_ONLY post gate: a
-// member who is not the owner is refused with ErrNotFound — the exact error a
-// non-member gets — so the policy leaks no oracle (a member who may not post is
-// indistinguishable from a non-member).
+// TestPostMessageOwnerOnlyRejectsNonOwnerInBand pins the OWNER_ONLY post gate:
+// a visible member who cannot post gets a distinct permission denial.
 func TestPostMessageOwnerOnlyRejectsNonOwnerInBand(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -42,13 +35,14 @@ func TestPostMessageOwnerOnlyRejectsNonOwnerInBand(t *testing.T) {
 		PostPolicy:     ChannelPostPolicyOwnerOnly,
 		OwnerAccountID: owner.ID,
 	}, other.ID)
-
-	// `other` is a member (read access) but not the owner: its post is refused
-	// with the same not-found a non-member would get.
 	_, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: other.ID, Blocks: []MessageBlock{textBlock("not allowed")},
 	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
-	sentinelIs(t, err, ErrNotFound, "non-owner post on OWNER_ONLY channel")
+	sentinelIs(t, err, ErrPermissionDenied, "non-owner post on OWNER_ONLY channel")
+	want := "store: permission denied: channel \"locked\" is owner-only: only its owner can post"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
 }
 
 // TestPostMessageOwnerOnlyOwnerPostLands is the positive companion: the owner's

@@ -575,16 +575,10 @@ func (c *Comms) GetRoster(
 // the live projection stays current, mirroring SetChannelPolicy's write-through.
 //
 // Authz is the channel's post_policy (design.md:626-629): on OWNER_ONLY only
-// owner_account_id may mutate the board; on OPEN any member may. A non-owner on
-// an OWNER_ONLY channel is refused with the SAME CodeNotFound a non-member gets
-// — the no-oracle in-band rejection, consistent with PostMessage's OWNER_ONLY
-// enforcement (store/messages.go:80-82) so the policy leaks no existence signal.
-// The authoritative who-may-act decision is made in the store's board txn, under
-// the channels-row FOR UPDATE lock (membership + post_policy, mirroring
-// PostMessage), so it is serialized against a concurrent membership/policy change
-// — no TOCTOU. The handler does not pre-check authz on a non-tx snapshot; it
-// relies on the store call returning ErrNotFound (mapped to CodeNotFound via
-// edgeError), which preserves the exact no-oracle client contract.
+// owner_account_id may mutate the board; on OPEN any member may. A non-member
+// gets CodeNotFound; a member who is not the owner gets CodePermissionDenied.
+// The store decides under the channels-row FOR UPDATE lock, so the handler does
+// not pre-check authz on a non-tx snapshot (no TOCTOU).
 func (c *Comms) UpdatePinnedBoard(
 	ctx context.Context,
 	req *connect.Request[compassv1.UpdatePinnedBoardRequest],

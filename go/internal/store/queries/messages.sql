@@ -9,7 +9,7 @@
 -- same way via messageFromParts.
 
 -- name: GetChannelPostPolicy :one
-SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id
+SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id, name
 FROM channels WHERE id = $1;
 
 -- name: InsertMessage :one
