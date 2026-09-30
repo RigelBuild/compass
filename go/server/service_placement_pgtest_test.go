@@ -709,23 +709,8 @@ func (r *recordingRunner) serve(
 		if r.withholdStop && cmd.GetStop() != nil {
 			continue // record it, but never answer: the wedged-Runner shape
 		}
-		if reply := r.lostStartReply(cmd); reply != nil {
+		if reply := r.startErrorReply(cmd); reply != nil {
 			if err := r.send(stream, reply); err != nil {
-				done <- err
-				return
-			}
-			continue
-		}
-		if cmd.GetStart() != nil && r.failStarted() {
-			// Answer Start with a RunnerError instead of a session id: the
-			// mid-chain spawn failure the rollback test drives.
-			if err := r.send(stream, &compassv1internal.SessionsRequest{
-				RequestId: cmd.GetRequestId(),
-				Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
-					Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING,
-					Message: "start refused (test)",
-				}},
-			}); err != nil {
 				done <- err
 				return
 			}
@@ -802,6 +787,27 @@ func (r *recordingRunner) record(cmd *compassv1internal.SessionsResponse) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seen = append(r.seen, cmd)
+	if cmd.GetProvision() != nil {
+		// A real Provision re-creates the container, so it is no longer lost.
+		r.lostContainers = nil
+	}
+}
+
+// provisionAndStarts returns the last recorded Provision and every Start, in order.
+func (r *recordingRunner) provisionAndStarts() (*compassv1.ProvisionAgentWorkspaceRequest, []*compassv1.StartAgentSessionRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var prov *compassv1.ProvisionAgentWorkspaceRequest
+	var starts []*compassv1.StartAgentSessionRequest
+	for _, c := range r.seen {
+		if p := c.GetProvision(); p != nil {
+			prov = p
+		}
+		if s := c.GetStart(); s != nil {
+			starts = append(starts, s)
+		}
+	}
+	return prov, starts
 }
 
 // forget drops every recorded command — used once, to discard the attach probe
@@ -919,20 +925,24 @@ func (r *recordingRunner) isLost(name string) bool {
 	return r.lostContainers[name]
 }
 
-// lostStartReply is the NOT_FOUND a restarted Runner answers a Start on a lost container
-// with; nil for any other command.
-func (r *recordingRunner) lostStartReply(cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
+// startErrorReply is the RunnerError the fake answers a Start with: NOT_FOUND for a lost
+// container (a restarted Runner), ALREADY_RUNNING under failStart; nil otherwise.
+func (r *recordingRunner) startErrorReply(cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
 	st := cmd.GetStart()
-	if st == nil || !r.isLost(st.GetContainerName()) {
+	if st == nil {
 		return nil
 	}
-	return &compassv1internal.SessionsRequest{
-		RequestId: cmd.GetRequestId(),
-		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
-			Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND,
-			Message: "session unknown to runner",
-		}},
+	var re *compassv1internal.RunnerError
+	switch {
+	case r.isLost(st.GetContainerName()):
+		re = &compassv1internal.RunnerError{Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND, Message: "session unknown to runner"}
+	case r.failStarted():
+		// The mid-chain spawn failure the rollback test drives.
+		re = &compassv1internal.RunnerError{Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING, Message: "start refused (test)"}
+	default:
+		return nil
 	}
+	return &compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId(), Result: &compassv1internal.SessionsRequest_Error{Error: re}}
 }
 
 // setStartGate installs a gate the serve loop blocks each Start on until the gate

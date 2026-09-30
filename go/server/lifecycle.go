@@ -568,8 +568,9 @@ func (l *lifecycleService) reprovision(ctx context.Context, agent store.AccountI
 		return "", fmt.Errorf("re-provisioning lost container %q: %w", stale, err)
 	}
 	container := resp.GetContainerName()
+	// No rollback: the Runner derives the name from the account, so it usually equals the
+	// stale row's, and releasing that row would leave the agent permanently unplaced.
 	if err := l.store.RecordAgentPlacement(ctx, agent, runnerID, container); err != nil {
-		l.rollbackSpawn(ctx, container, "")
 		return "", fmt.Errorf("recording re-provisioned placement: %w", err)
 	}
 	slog.InfoContext(ctx, "agent wake: re-provisioned lost container", "agent_account_id", agent, "stale_container", stale, "container_name", container)
