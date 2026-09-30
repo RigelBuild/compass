@@ -593,7 +593,7 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 	// buildLinearWebhookWiring is the consumer buildDoors routes the SERVER
 	// instance to. Fed the server set it mounts a handler; fed the container
 	// set it silently returns the off-state, which is failure mode (b).
-	handler, err := buildLinearWebhookWiring(ctx, cfg, server, &recordingSink{}, nil)
+	handler, err := buildLinearWebhookWiring(ctx, cfg, server, &recordingSink{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLinearWebhookWiring(server): %v", err)
 	}
@@ -601,7 +601,7 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 		t.Fatal("server resolver did not mount the Linear webhook handler")
 	}
 
-	offHandler, err := buildLinearWebhookWiring(ctx, cfg, container, &recordingSink{}, nil)
+	offHandler, err := buildLinearWebhookWiring(ctx, cfg, container, &recordingSink{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLinearWebhookWiring(container): %v", err)
 	}
@@ -687,6 +687,9 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 	resolved, ok := svc.providers.resolve(&compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR})
 	if !ok {
 		t.Fatal("no Linear write coordinate registered with a configured token source")
+	}
+	if resolved.host != forge.LinearHost {
+		t.Fatalf("Linear coordinate resolved host %q, want %q (the DL-055 row rejects an empty host)", resolved.host, forge.LinearHost)
 	}
 	writeLinear, ok := resolved.author.(*forge.Linear)
 	if !ok {

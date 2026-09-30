@@ -99,7 +99,7 @@ func newSeedHarness(t *testing.T) *seedHarness {
 		seedDone:  make(chan struct{}),
 	}
 	hub.SetRunnerReadyHook(func() {
-		seedRootSupervisor(context.Background(), st, svc, commsSvc, admin.ID, system.ID, slog.New(slog.DiscardHandler))
+		seedRootSupervisor(context.Background(), st, svc, commsSvc, admin.ID, system.ID, "", slog.New(slog.DiscardHandler))
 		h.seedOnce.Do(func() { close(h.seedDone) })
 	})
 	return h
@@ -329,7 +329,7 @@ func TestSeedSetupThreadIdempotentOnReFire(t *testing.T) {
 
 	// Re-fire the seed directly (the supervisor is now live, so SpawnAgent joins
 	// the completed spawn or rejects on-live — both arms reach postSetupThread).
-	seedRootSupervisor(ctx, h.store, h.svc, h.commsSvc, h.adminID, h.compassID, slog.New(slog.DiscardHandler))
+	seedRootSupervisor(ctx, h.store, h.svc, h.commsSvc, h.adminID, h.compassID, "", slog.New(slog.DiscardHandler))
 
 	if n := setupMessageCount(t, ctx, h.dsn, home, h.compassID); n != 1 {
 		t.Fatalf("Setup messages after a seed re-fire = %d, want still 1 (the scoped key dedups)", n)

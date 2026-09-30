@@ -40,10 +40,8 @@ const (
 	linearTypeComment = "Comment"
 )
 
-// SessionEventSink receives a verified Linear session event for asynchronous
-// dispatch. *linearagent.Dispatcher satisfies it via Enqueue (dispatcher.go:145).
-// Defined locally so the server can wire a real dispatcher OR pass nil when the
-// RIG-2717 responder is not assembled — the handler logs-and-drops in that case.
+// SessionEventSink is the session responder's intake (*linearagent.Dispatcher);
+// nil when Linear is not configured, and the handler then logs-and-drops.
 type SessionEventSink interface {
 	// Enqueue offers a verified session event to the dispatcher without
 	// blocking; a full queue returns linearagent.ErrQueueFull, which the handler
@@ -65,7 +63,7 @@ type linearWebhookHandler struct {
 // NewLinearWebhookHandler returns the POST /webhooks/linear handler and the
 // path it mounts at. secret lazily resolves the Linear webhook secret (TTL-cached by the
 // caller); dataSink receives every accepted data-change event; sessionSink
-// receives session events (nil when the responder is unassembled — session
+// receives session events (nil when Linear is not configured — session
 // events are then logged-and-dropped). Mirrors NewGitHubWebhookHandler's
 // nil-log default and field init.
 func NewLinearWebhookHandler(
@@ -173,9 +171,8 @@ func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.Response
 		return
 	}
 	if h.sessionSink == nil {
-		// The RIG-2717 responder assembly wires a real dispatcher here; until
-		// then session events are acked-and-dropped so Linear does not retry.
-		h.log.WarnContext(ctx, "linear session responder not wired, dropping event",
+		// Linear is not configured: ack so Linear does not retry an event nothing handles.
+		h.log.WarnContext(ctx, "linear session responder not configured, dropping event",
 			"action", ev.Action, "session", ev.AgentSession.ID)
 		w.WriteHeader(http.StatusOK)
 		return

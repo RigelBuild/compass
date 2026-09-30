@@ -371,7 +371,7 @@ func TestBuildLinearWebhookWiring_DeliversToInjectedSink(t *testing.T) {
 	cfg := ServeConfig{Forge: ForgeConfig{LinearWebhookSecretName: secretName}}
 	sink := &recordingSink{}
 
-	handler, err := buildLinearWebhookWiring(ctx, cfg, res, sink, nil)
+	handler, err := buildLinearWebhookWiring(ctx, cfg, res, sink, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLinearWebhookWiring: %v", err)
 	}
