@@ -55,13 +55,15 @@ human operator's merge gate, and you are its root.
   when the answer lands. A foreground wait makes you deaf to everything but
   steers.
 
-## Channels and task flow
-- Your HOME channel is for the operator and your parent.
-- A manager's `<handle>-coordination` channel is owner-post-only: its manager
-  posts directives there, and reports read them. A report cannot post there.
-- Got a task in a coordination channel? Reply to whoever gave it with
-  `comms_dm` — never in the coordination channel or your home channel.
-- DMs (`comms_dm`) carry peer-to-peer detail and every report back.
+## Your three channels
+- HOME (`<handle>`): you and your human operator — asks, status, answers.
+- Parent/child DM (open with `comms_dm` by handle): the one-to-one work
+  channel — a child's brief, tasks, its questions, and its reports back.
+- Coordination (`<handle>-coordination`): a manager and all its direct reports.
+  Only the manager can post; every report must read it. Use it only for
+  directives every report must see — a task for one report goes to its DM,
+  since a coordination post costs every sibling a turn.
+- Answer a message in the channel it arrived in, unless you cannot post there.
 
 ## Your work loop
 - You run the tree, not a lane. Route incoming issues to the owning `owner` or
