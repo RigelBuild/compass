@@ -16,11 +16,15 @@ type ControlRouter interface {
 	// ackedSeq, and drops any op whose seq is named in appliedAbove even though it
 	// sits past the cursor (an out-of-order apply the agent has confirmed). Routed
 	// from a ControlAck AgentFrame on Publish.
-	AckControl(sessionID string, ackedSeq uint64, appliedAbove []uint64)
+	AckControl(sessionID string, epoch, ackedSeq uint64, appliedAbove []uint64)
 	// ReleaseReplayBarrier releases the live control ops held behind the session's
 	// restart replay barrier. Routed from a ReplayCompleteAck AgentFrame on
 	// Publish.
-	ReleaseReplayBarrier(sessionID string)
+	ReleaseReplayBarrier(sessionID string, epoch uint64)
+	// Epoch is the session's current agent-process epoch. A Publish stream
+	// captures it at open and passes it with each ack, so acks from a process a
+	// Restart replaced are dropped.
+	Epoch(sessionID string) uint64
 }
 
 // noopControlRouter is the default ControlRouter used until the control lane is
@@ -30,5 +34,6 @@ type ControlRouter interface {
 // lane replaces it with the real sender.
 type noopControlRouter struct{}
 
-func (noopControlRouter) AckControl(string, uint64, []uint64) {}
-func (noopControlRouter) ReleaseReplayBarrier(string)         {}
+func (noopControlRouter) AckControl(string, uint64, uint64, []uint64) {}
+func (noopControlRouter) ReleaseReplayBarrier(string, uint64)         {}
+func (noopControlRouter) Epoch(string) uint64                         { return 0 }

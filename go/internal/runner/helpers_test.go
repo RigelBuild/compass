@@ -149,7 +149,9 @@ type stubStreamingRuntime struct {
 	callsByID   map[runtime.WorkloadID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
 	execGate    chan struct{}                   // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md)
 	execEntered chan runtime.WorkloadID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
+	execErr     error                           // when set, ExecStreaming fails before starting the child
 	created     []runtime.WorkloadSpec
+	createErr   error // when set, Create fails with it — models `podman create` refusing a name already in use
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -165,9 +167,12 @@ func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
 
 func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "create")
+	if f.createErr != nil {
+		return "", f.createErr
+	}
 	f.created = append(f.created, spec)
-	f.mu.Unlock()
 	return runtime.WorkloadID("fake-id"), nil
 }
 func (f *stubStreamingRuntime) Start(context.Context, runtime.WorkloadID) error {
@@ -178,12 +183,14 @@ func (f *stubStreamingRuntime) Exec(context.Context, runtime.WorkloadID, runtime
 	f.record("exec")
 	return runtime.ExecOutput{}, nil
 }
+
 func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "exec_streaming")
 	f.execSpecs = append(f.execSpecs, spec)
 	gate := f.execGate
 	entered := f.execEntered
+	execErr := f.execErr
 	f.mu.Unlock()
 	// Signal that a relaunch reached the agent launch (a real event the test
 	// gates on), then park until released or ctx is cancelled — so a
@@ -199,6 +206,9 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Wor
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if execErr != nil {
+		return nil, execErr
 	}
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
