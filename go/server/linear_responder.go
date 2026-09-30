@@ -120,7 +120,7 @@ func buildLinearWiring(
 	if notify != nil {
 		dataSink = notify.sink
 	}
-	responder := buildLinearResponder(cfg, st, cm, adminID, bridgeID, tokens)
+	responder := buildLinearResponder(cfg, st, cm, adminID, bridgeID, tokens, "")
 	// A nil *Dispatcher boxed in the interface is non-nil, so off must stay a nil interface.
 	var sessionSink SessionEventSink
 	if responder != nil {
@@ -140,8 +140,8 @@ func buildLinearWiring(
 }
 
 // buildLinearResponder assembles the session dispatcher over the shared Linear
-// token source; nil when Linear is not configured.
-func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, adminID, bridgeID store.AccountID, tokens *linearagent.TokenSource) *linearagent.Dispatcher {
+// token source; nil when Linear is not configured. An empty graphQLURL is Linear's own.
+func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, adminID, bridgeID store.AccountID, tokens *linearagent.TokenSource, graphQLURL string) *linearagent.Dispatcher {
 	if tokens == nil {
 		return nil
 	}
@@ -154,7 +154,7 @@ func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, adm
 		Members:      st,
 		Topics:       st,
 		Associations: st,
-		Client:       linearagent.NewClient(tokens, &http.Client{Timeout: linearAPITimeout}, ""),
+		Client:       linearagent.NewClient(tokens, &http.Client{Timeout: linearAPITimeout}, graphQLURL),
 		DeepLinkFor:  func(channelID string) string { return deepLinkFor(cfg.PublicURL, channelID) },
 		Bridge:       bridgeID,
 	})
