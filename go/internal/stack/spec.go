@@ -35,10 +35,16 @@ func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 	if cfg.SecretProvider != "" {
 		args = append(args, "--secret-provider", cfg.SecretProvider)
 	}
-	return ProcessSpec{
-		Component: ComponentServer,
-		Args:      args,
+	env := []string{}
+	if cfg.S3Endpoint != "" {
+		env = append(env, "COMPASS_S3_ENDPOINT="+cfg.S3Endpoint, "COMPASS_S3_BUCKET="+cfg.S3Bucket,
+			"COMPASS_S3_ACCESS_KEY="+cfg.S3AccessKey, "COMPASS_S3_SECRET_KEY="+cfg.S3SecretKey,
+			"COMPASS_S3_REGION="+cfg.S3Region)
+		if cfg.S3UseTLS {
+			env = append(env, "COMPASS_S3_USE_TLS=true")
+		}
 	}
+	return ProcessSpec{Component: ComponentServer, Args: args, Env: env}
 }
 
 // runnerSpec builds the compass-runner child spec (devenv.nix:497-502): it dials

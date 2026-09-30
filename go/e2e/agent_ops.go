@@ -641,7 +641,10 @@ func classifyEnrollProbe(err error) (ready bool, retry bool, cerr error) {
 	if err == nil {
 		return true, false, nil
 	}
-	if connect.CodeOf(err) == connect.CodeUnavailable && strings.Contains(err.Error(), "no runner enrolled") {
+	// A runner that enrolled but has not attached its sessions stream yet (or is
+	// reattaching after a restart) is still not ready.
+	if connect.CodeOf(err) == connect.CodeUnavailable &&
+		(strings.Contains(err.Error(), "no runner enrolled") || strings.Contains(err.Error(), "no live runner sessions stream")) {
 		return false, true, nil
 	}
 	return false, false, fmt.Errorf("runner enrollment probe (StopAgentSession): %w", err)

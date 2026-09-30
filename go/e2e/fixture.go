@@ -128,7 +128,8 @@ type Fixture struct {
 	// defaults to time.Now. A test overrides it to drive the budget-timeout
 	// branch of waitRunnerEnrolled — the enrollment counterpart to the stack's
 	// s.deps.now() seam.
-	now func() time.Time
+	now    func() time.Time
+	garage *garageFixture
 }
 
 // fixtureConfig holds the optional knobs a caller flips through fixtureOption
@@ -150,13 +151,13 @@ type fixtureConfig struct {
 	// onUp, when non-nil, receives the live stack immediately after a successful
 	// Up (WithStackObserver), so a caller with a detached t can still reap the
 	// children if a later construction gate aborts. nil is the default.
-	onUp  func(*stack.Stack)
-	forge bool
+	onUp        func(*stack.Stack)
+	forge       bool
+	objectStore *garageFixture
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
-// existing two-arg call sites (H2's primitives test) byte-identical while
-// letting the real-turn test opt into canned mode.
+// existing two-arg call sites and enables optional real services.
 type fixtureOption func(*fixtureConfig)
 
 // WithCannedModel makes NewFixture stand up the deterministic canned model
@@ -219,6 +220,11 @@ func WithCannedMarkerScript(marker string, turns ...CannedTurn) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.cannedMarkers = append(fc.cannedMarkers, newCannedMarkerScript(marker, turns...))
 	}
+}
+
+// WithObjectStore points the server at g, so two Ups over one site share one archive.
+func WithObjectStore(g *garageFixture) fixtureOption {
+	return func(fc *fixtureConfig) { fc.objectStore = g }
 }
 
 // WithSite makes NewFixture reuse a persistent site (root/stateDir/ports) rather
@@ -530,6 +536,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		forgeStub = configureForgeStub(t, secretsPath)
 	}
 
+	var garage *garageFixture
 	cfg := stack.Config{
 		StateDir:       stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
 		SocketPath:     serverSock,
@@ -558,6 +565,15 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// NatsContainer anyway. Opt out via --nats-external so spawnChain skips
 		// startNats entirely.
 		ExternalNatsURL: "nats://127.0.0.1:4222",
+	}
+	if fc.objectStore != nil {
+		garage = fc.objectStore
+		cfg.S3Endpoint = garage.endpoint
+		cfg.S3Bucket = garage.bucket
+		cfg.S3AccessKey = garage.accessKey
+		cfg.S3SecretKey = garage.secretKey
+		cfg.S3Region = "garage"
+		cfg.S3UseTLS = false
 	}
 
 	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a
@@ -634,6 +650,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		agentModel:  cfg.AgentModel,
 		egressAllow: cfg.EgressAllow,
 		now:         time.Now,
+		garage:      garage,
 	}
 
 	// stack.Up returns as soon as the compass-runner CHILD is spawned, but the
