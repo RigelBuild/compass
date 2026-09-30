@@ -24,8 +24,8 @@ func TestFailedReprovisionKeepsLiveContainerSocket(t *testing.T) {
 	ctx := context.Background()
 	t.Cleanup(func() { h.Close(ctx) })
 
-	req := &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"}
-	name, err := h.Provision(ctx, req)
+	req := &compassv1.ProvisionAgentWorkspaceRequest{}
+	name, err := h.Provision(ctx, req, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -41,7 +41,7 @@ func TestFailedReprovisionKeepsLiveContainerSocket(t *testing.T) {
 	engine.mu.Lock()
 	engine.createErr = errors.New(`"podman create" failed (exit 125): the container name is already in use`)
 	engine.mu.Unlock()
-	if _, err := h.Provision(ctx, req); err == nil {
+	if _, err := h.Provision(ctx, req, "acct-1"); err == nil {
 		t.Fatal("re-Provision onto a taken name = nil, want the create error")
 	}
 	if _, err := os.Stat(path); err != nil {

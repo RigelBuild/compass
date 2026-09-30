@@ -47,7 +47,7 @@ func TestProvisionRelaySurfacesOperatorFaultAsFailedPrecondition(t *testing.T) {
 		return nil
 	})
 
-	_, _, err = hub.Provision(context.Background(), "req-op", &compassv1.ProvisionAgentWorkspaceRequest{})
+	_, _, err = hub.Provision(context.Background(), "req-op", "", &compassv1.ProvisionAgentWorkspaceRequest{})
 	if err == nil {
 		t.Fatal("Provision failing on an operator-fault error = nil, want FailedPrecondition")
 	}

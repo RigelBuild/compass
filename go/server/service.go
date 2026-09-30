@@ -520,14 +520,11 @@ func (s *service) provisionAgent(
 	msg *compassv1.ProvisionAgentWorkspaceRequest,
 ) (*compassv1.ProvisionAgentWorkspaceResponse, error) {
 	relay := proto.CloneOf(msg)
-	// The Runner hop carries the resolved account id: the Runner, its container
-	// bind, and the hub's dedup key all read agent_handle as an id.
-	relay.AgentHandle = string(acc.ID)
 	// SERVER-AUTHORITATIVE persona and role: overwrite whatever the client sent
 	// with the store's values, so a caller cannot inject a system or role prompt.
 	relay.Persona = acc.Agent.Persona
 	relay.Role = acc.Agent.Role
-	resp, runnerID, err := s.hub.Provision(ctx, relay.GetClientRequestId(), relay)
+	resp, runnerID, err := s.hub.Provision(ctx, relay.GetClientRequestId(), acc.ID, relay)
 	if err != nil {
 		return nil, err
 	}

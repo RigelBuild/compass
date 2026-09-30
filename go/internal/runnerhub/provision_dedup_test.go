@@ -77,10 +77,11 @@ func TestProvisionSameClientRequestIdDedups(t *testing.T) {
 		// A fully-specified workspace: the dedup id now binds to the agent
 		// account, so both callers must send the identical request for the retry
 		// to join. Same id + same account = one derived dedup id = one command.
-		req := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "0123456789abcdef0123456789abcdef"}
+		const acct = store.AccountID("0123456789abcdef0123456789abcdef")
+		req := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "matt/ada"}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func() {
-			resp, _, err := hub.Provision(context.Background(), id, req)
+			resp, _, err := hub.Provision(context.Background(), id, acct, req)
 			outcomes <- provisionOutcome{resp, err}
 		}
 
@@ -138,7 +139,7 @@ func TestProvisionEmptyClientRequestIdDoesNotDedup(t *testing.T) {
 		req := &compassv1.ProvisionAgentWorkspaceRequest{}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func() {
-			resp, _, err := hub.Provision(context.Background(), "", req)
+			resp, _, err := hub.Provision(context.Background(), "", "0123456789abcdef0123456789abcdef", req)
 			outcomes <- provisionOutcome{resp, err}
 		}
 
@@ -198,17 +199,16 @@ func TestProvisionSameIdDifferentAccountDoesNotDedup(t *testing.T) {
 		defer router.detach(errStreamClosed)
 
 		const id = "dup" // the SAME client_request_id for both callers
-		reqA := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-		// different account, same id:
-		reqB := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+		// The same public request for both; only the server-resolved account differs.
+		req := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "matt/ada"}
 		outcomes := make(chan provisionOutcome, 2)
-		call := func(req *compassv1.ProvisionAgentWorkspaceRequest) {
-			resp, _, err := hub.Provision(context.Background(), id, req)
+		call := func(acct store.AccountID) {
+			resp, _, err := hub.Provision(context.Background(), id, acct, req)
 			outcomes <- provisionOutcome{resp, err}
 		}
 
-		go call(reqA)
-		go call(reqB)
+		go call("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		go call("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 		// Both durably blocked: same id but different accounts must derive
 		// distinct dedup ids, so NEITHER joined the other.
 		synctest.Wait()
@@ -226,7 +226,7 @@ func TestProvisionSameIdDifferentAccountDoesNotDedup(t *testing.T) {
 		containers := map[string]string{}
 		for _, c := range cmds {
 			rid := c.GetRequestId()
-			container := "container-for-" + c.GetProvision().GetAgentHandle()
+			container := "container-for-" + c.GetAgentAccountId()
 			containers[rid] = container
 			router.complete(&compassv1internal.SessionsRequest{
 				RequestId: rid,

@@ -414,8 +414,7 @@ func (l *lifecycleService) provisionAndStart(
 	role string,
 	req *compassv1internal.SpawnPeerRequest,
 ) (*compassv1internal.SpawnPeerResponse, error) {
-	resp, runnerID, err := l.hub.Provision(ctx, req.GetClientRequestId(), &compassv1.ProvisionAgentWorkspaceRequest{
-		AgentHandle:     string(agentID),
+	resp, runnerID, err := l.hub.Provision(ctx, req.GetClientRequestId(), agentID, &compassv1.ProvisionAgentWorkspaceRequest{
 		ClientRequestId: req.GetClientRequestId(),
 		Persona:         persona,
 		Role:            role,

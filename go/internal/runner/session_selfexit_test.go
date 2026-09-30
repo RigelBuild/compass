@@ -26,7 +26,7 @@ func TestSelfExitKeepsErroredSessionReloadable(t *testing.T) {
 	h := newTransportFixtureWithEngine(t, server, engine)
 	ctx := context.Background()
 	t.Cleanup(func() { h.Close(ctx) })
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -96,7 +96,7 @@ func TestPlainReloadSendsReplayCompleteThenUnackedOps(t *testing.T) {
 	h := newTransportFixture(t, server)
 	ctx := context.Background()
 	t.Cleanup(func() { h.Close(ctx) })
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSelfExitAllowsResumeStart(t *testing.T) {
 	h := newTransportFixtureWithEngine(t, server, engine)
 	ctx := context.Background()
 	t.Cleanup(func() { h.Close(ctx) })
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -165,7 +165,7 @@ func TestFreshStartReplacesErroredSession(t *testing.T) {
 	h := newTransportFixtureWithEngine(t, server, engine)
 	ctx := context.Background()
 	t.Cleanup(func() { h.Close(ctx) })
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -193,7 +193,7 @@ func TestSelfExitCodeZeroPublishesErrored(t *testing.T) {
 	h := newTransportFixtureWithEngine(t, server, engine)
 	ctx := context.Background()
 	t.Cleanup(func() { h.Close(ctx) })
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestStopReloadRemovePublishNoRunnerTerminal(t *testing.T) {
 			h := newTransportFixture(t, server)
 			ctx := context.Background()
 			t.Cleanup(func() { h.Close(ctx) })
-			name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+			name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 			if err != nil {
 				t.Fatalf("Provision = %v", err)
 			}
@@ -258,7 +258,7 @@ func TestReloadDuringReaperKeepsNewStream(t *testing.T) {
 			<-releaseWait
 		})
 	}
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -330,7 +330,7 @@ func TestOldStreamExitAfterReloadDoesNotErrorNewSession(t *testing.T) {
 		})
 		return done
 	}
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -379,7 +379,7 @@ func TestReloadStartFailureMarksErroredAndResumeWorks(t *testing.T) {
 	h := newTransportFixtureWithEngine(t, server, engine)
 	ctx := context.Background()
 	t.Cleanup(func() { h.Close(ctx) })
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
