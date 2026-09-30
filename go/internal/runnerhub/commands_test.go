@@ -297,6 +297,31 @@ func TestRemoveClearsContainerBinding(t *testing.T) {
 	}
 }
 
+// A Remove whose reply is lost may still have removed the container, and the
+// binding now outlives Start, so it must be dropped on a failed relay too.
+func TestFailedRemoveStillClearsContainerBinding(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
+	router, _, _ := hub.routerFor("any")
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+				Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL, Message: "reply lost",
+			}},
+		})
+		return nil
+	})
+
+	if _, err := hub.Remove(context.Background(), "req-rm", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err == nil {
+		t.Fatal("Remove = nil, want the relayed error")
+	}
+	if _, ok := hub.AccountForContainer("runner-1", "c1"); ok {
+		t.Fatal("container c1 still bound after a failed Remove; the binding would keep authorizing secrets for a removed container")
+	}
+}
+
 // A resume Start fetches secrets by container_name before exec, so the binding must
 // outlive the first Start. It was dropped there, and every resume after a Stop or an
 // agent self-exit then failed permission_denied until Remove + Provision.
