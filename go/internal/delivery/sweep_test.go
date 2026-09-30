@@ -185,10 +185,8 @@ func TestSessionStartIgnoresEmptyBinding(t *testing.T) {
 	}
 }
 
-// RIG-2486 T1 (sweep coverage): the reconnect/start sweep denormalizes the
-// author's handle onto each redelivered deliver op. Redelivery is exactly where
-// from_handle is load-bearing — an idle/reconnecting peer receives the deliver via
-// the sweep, not the live fan-out. Mirrors TestDeliverAndSteerCarryAuthorFromHandle.
+// RIG-2880: the reconnect sweep preserves the author handle from its store row
+// on the delivered wire Message and DeliverControl.
 func TestSweepSessionCarriesAuthorFromHandle(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -198,20 +196,17 @@ func TestSweepSessionCarriesAuthorFromHandle(t *testing.T) {
 	reads.owed[recipient] = map[store.ChannelID][]store.Message{
 		ch: {textMessage("owed-1", author, "first")},
 	}
-	// The author's account resolves its handle for the denormalized from_handle.
-	reads.accounts[author] = store.Account{ID: author, Handle: "matt"}
 	res.bind(recipient, "sess-recip")
 	startConsumer(t, c)
 
 	c.OnSessionStarted("sess-recip", recipient)
 	disp.waitForDispatches(t, 1)
-
 	got := disp.snapshot()
 	if len(got) != 1 || got[0].kind != opDeliver || got[0].messageID != "owed-1" {
 		t.Fatalf("dispatch = %+v, want one deliver of owed-1", got)
 	}
-	if got[0].fromHandle != "matt" {
-		t.Fatalf("from_handle = %q on swept deliver, want matt", got[0].fromHandle)
+	if got[0].fromHandle != "matt" || got[0].messageAuthorHandle != "matt" {
+		t.Fatalf("swept author handles = (%q, %q), want (matt, matt)", got[0].messageAuthorHandle, got[0].fromHandle)
 	}
 }
 

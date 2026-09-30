@@ -98,9 +98,9 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 	// The observer credential works for an authenticatedOpen CommsService read,
 	// and the RESPONSE is what carries the visibility teeth — not merely that
 	// the RPC did not error.
-	observerCompass, observerComms, err := f.AsObserver(ctx, ownerID)
+	observerCompass, observerComms, err := f.AsObserver(ctx, "t1-observer-owner")
 	if err != nil {
-		t.Fatalf("AsObserver(%s): %v", ownerID, err)
+		t.Fatalf("AsObserver(t1-observer-owner): %v", err)
 	}
 	listCtx, cancelList := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelList()
@@ -138,7 +138,7 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 	denyCtx, cancelDeny := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelDeny()
 	_, err = observerCompass.IssueToken(denyCtx, connect.NewRequest(&compassv1.IssueTokenRequest{
-		AccountHandle: ownerID,
+		AccountHandle: "t1-observer-owner",
 	}))
 	if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
 		t.Fatalf("observer bearer on the adminOnly IssueToken = %v, want CodePermissionDenied (the observer must NOT be the admin)", code)

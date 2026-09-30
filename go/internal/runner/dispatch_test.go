@@ -96,6 +96,8 @@ type fakeSessionHost struct {
 	// shape of TestCloseJoinsConcurrentTeardowns in host_test.go).
 	provisionExiting  chan struct{}
 	provisionExitGate chan struct{}
+	// lastProvisionAccount records the account id the dispatcher handed Provision.
+	lastProvisionAccount string
 }
 
 func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessionRequest, _, _ string) (string, error) {
@@ -105,8 +107,9 @@ func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessio
 	return f.sessionID, f.startErr
 }
 
-func (f *fakeSessionHost) Provision(ctx context.Context, _ *compassv1.ProvisionAgentWorkspaceRequest) (string, error) {
+func (f *fakeSessionHost) Provision(ctx context.Context, _ *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (string, error) {
 	f.mu.Lock()
+	f.lastProvisionAccount = accountID
 	f.provisionCalls++
 	f.provisionLive++
 	if f.provisionLive > f.provisionPeak {
@@ -329,13 +332,18 @@ func TestExecuteMapsEachVariantToItsResult(t *testing.T) {
 		{
 			name: "provision",
 			cmd: &compassv1internal.SessionsResponse{
-				RequestId: "r2",
-				Command:   &compassv1internal.SessionsResponse_Provision{Provision: &compassv1.ProvisionAgentWorkspaceRequest{}},
+				RequestId:      "r2",
+				AgentAccountId: "acct-envelope",
+				Command:        &compassv1internal.SessionsResponse_Provision{Provision: &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "matt/ada"}},
 			},
 			check: func(t *testing.T, res *compassv1internal.SessionsRequest) {
 				t.Helper()
 				if res.GetProvision().GetContainerName() != "cont-x" {
 					t.Fatalf("provision result container = %q, want cont-x", res.GetProvision().GetContainerName())
+				}
+				// The id comes from the envelope, never from the request's handle.
+				if host.lastProvisionAccount != "acct-envelope" {
+					t.Fatalf("host.Provision got account %q, want acct-envelope (the envelope's agent_account_id)", host.lastProvisionAccount)
 				}
 			},
 		},

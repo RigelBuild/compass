@@ -9,6 +9,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -109,6 +110,29 @@ func TestOpenDMCrossOwnerIsIndistinguishableNotFound(t *testing.T) {
 	// the same-owner check remaps it to NOT_FOUND naming the submitted handle.
 	_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "other/foreign"}))
 	connectCodeIs(t, err, connect.CodeNotFound, "OpenDM(cross-owner owner-qualified handle)")
+}
+
+// TestOpenDMMalformedQualifierIsNotFound (OQ-7 grammar): a leading '/' or a
+// nested '/' is a NOT_FOUND naming the submitted handle. "/bob" must never
+// resolve as the bare same-owner peer bob.
+//
+// Mutation: branching on a non-empty Owner instead of the separator opens a DM
+// with bob for "/bob", reddening the nil-error check.
+func TestOpenDMMalformedQualifierIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	alice := mustAgent(t, st, owner.ID, "alice")
+	mustAgent(t, st, owner.ID, "bob")
+
+	for _, peer := range []string{"/bob", "owner/bob/x", "owner/", "/"} {
+		_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peer}))
+		connectCodeIs(t, err, connect.CodeNotFound, "OpenDM("+peer+")")
+		var ce *connect.Error
+		if !errors.As(err, &ce) || ce.Message() != notFoundFor(peer) {
+			t.Fatalf("OpenDM(%q) error = %v, want message %q naming the submitted handle", peer, err, notFoundFor(peer))
+		}
+	}
 }
 
 // TestOpenDMSelfIsInvalidArgument: a handle that resolves to the caller itself is

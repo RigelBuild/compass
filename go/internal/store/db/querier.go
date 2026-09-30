@@ -151,6 +151,7 @@ type Querier interface {
 	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
 	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
+	GetAccountHandle(ctx context.Context, accountID string) (string, error)
 	GetAgentOwner(ctx context.Context, accountID string) (string, error)
 	GetAgentParent(ctx context.Context, accountID string) (pgtype.Text, error)
 	GetAgentWorkspaceID(ctx context.Context, agentAccountID string) (string, error)
@@ -162,9 +163,8 @@ type Querier interface {
 	// and commit their own txns), the ON CONFLICT idempotency signalling
 	// (errMessageInsertConflict), the JSONB block (de)serialization, and the D9
 	// not-found/forbidden error mapping — all hand-written around these generated
-	// calls. Every message read shares the id/topic_id/author_account_id/at_unix_ms/
-	// blocks projection (the former scanMessages order) so the Go maps each row the
-	// same way via messageFromParts.
+	// calls. Every message read shares the id/topic_id/author_account_id/author_handle/
+	// at_unix_ms/blocks projection so the Go maps each row through messageFromParts.
 	GetChannelPostPolicy(ctx context.Context, id string) (GetChannelPostPolicyRow, error)
 	GetCoordinationChannelByName(ctx context.Context, arg GetCoordinationChannelByNameParams) (GetCoordinationChannelByNameRow, error)
 	// Coordination-store queries (sqlc adoption T3, RIG-3034). These replace the
@@ -175,7 +175,6 @@ type Querier interface {
 	// DeleteChannelMember (channels.sql) — the statements are identical.
 	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
 	GetDMChannelByName(ctx context.Context, arg GetDMChannelByNameParams) (GetDMChannelByNameRow, error)
-	GetGlobalHandleID(ctx context.Context, handle string) (string, error)
 	// Feeds isReservedGroupTx: the reserved-group discriminator (top-level AND a reserved name AND
 	// VisibilityOwner) the CreateChannel create-guard keys on.
 	GetGroupNameVisibility(ctx context.Context, id string) (GetGroupNameVisibilityRow, error)
@@ -209,8 +208,6 @@ type Querier interface {
 	GetTopic(ctx context.Context, id string) (Topic, error)
 	GetTopicByName(ctx context.Context, arg GetTopicByNameParams) (GetTopicByNameRow, error)
 	GetTopicChannel(ctx context.Context, id string) (string, error)
-	GetVisibleAgentHandleID(ctx context.Context, arg GetVisibleAgentHandleIDParams) (string, error)
-	GetVisibleGlobalHandleID(ctx context.Context, arg GetVisibleGlobalHandleIDParams) (string, error)
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)
@@ -505,10 +502,13 @@ type Querier interface {
 	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)
 	ResolveAckMessage(ctx context.Context, arg ResolveAckMessageParams) (int64, error)
 	ResolveCoordinationManager(ctx context.Context, id string) (ResolveCoordinationManagerRow, error)
+	ResolveGlobalHandles(ctx context.Context, dollar_1 []string) ([]ResolveGlobalHandlesRow, error)
 	ResolveOwner(ctx context.Context, accountID string) (string, error)
 	ResolveTokenHash(ctx context.Context, hash []byte) (ResolveTokenHashRow, error)
 	ResolveTopicForUpdate(ctx context.Context, arg ResolveTopicForUpdateParams) (string, error)
 	ResolveTopicRenameTarget(ctx context.Context, arg ResolveTopicRenameTargetParams) (string, error)
+	ResolveVisibleAgentHandles(ctx context.Context, arg ResolveVisibleAgentHandlesParams) ([]ResolveVisibleAgentHandlesRow, error)
+	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ReviveTopic(ctx context.Context, id string) error
 	RevokeToken(ctx context.Context, hash []byte) (int64, error)
 	SafetyValveSegments(ctx context.Context, arg SafetyValveSegmentsParams) ([]SafetyValveSegmentsRow, error)

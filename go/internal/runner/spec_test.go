@@ -79,7 +79,7 @@ func TestBuildSpecFillsWorkspaceFromDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
-	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: strings.Repeat("a", 32)})
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{}, strings.Repeat("a", 32))
 	if err != nil {
 		t.Fatalf("BuildSpec = %v", err)
 	}
@@ -101,7 +101,7 @@ func TestBuildSpecMapsPersona(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
-	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: strings.Repeat("a", 32), Persona: "You are Ada."})
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{Persona: "You are Ada."}, strings.Repeat("a", 32))
 	if err != nil {
 		t.Fatalf("BuildSpec = %v", err)
 	}
@@ -118,7 +118,7 @@ func TestBuildSpecMapsRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
-	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: strings.Repeat("a", 32), Role: "manager"})
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{Role: "manager"}, strings.Repeat("a", 32))
 	if err != nil {
 		t.Fatalf("BuildSpec = %v", err)
 	}
@@ -134,7 +134,7 @@ func TestBuildSpecDerivesName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
-	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("BuildSpec = %v", err)
 	}
@@ -161,9 +161,10 @@ func TestBuildSpecRejectsEmptyAgentAccountID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
-	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: ""})
+	// A well-formed id in agent_handle must not stand in for a missing account id.
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}, "")
 	if err == nil {
-		t.Fatal("BuildSpec with empty agent_account_id = nil error, want an account-id rejection")
+		t.Fatal("BuildSpec with empty agent_account_id = nil error, want an account-id rejection (no fallback to agent_handle)")
 	}
 	if !strings.Contains(err.Error(), "agent account id") {
 		t.Fatalf("BuildSpec error = %v, want the agent-account-id validation error (not a repo failure)", err)
@@ -217,7 +218,7 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {
-			spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: tc.accountID})
+			spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{}, tc.accountID)
 			if err == nil {
 				t.Fatalf("BuildSpec with agent_account_id %q = nil error, want a path-element rejection", tc.accountID)
 			}
@@ -232,7 +233,7 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 
 	// The ordinary minted shape still builds, so the guard refuses traversal
 	// rather than every id.
-	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: strings.Repeat("f", 32)})
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{}, strings.Repeat("f", 32))
 	if err != nil {
 		t.Fatalf("BuildSpec with a 32-hex account id: %v", err)
 	}

@@ -99,7 +99,7 @@ func (s *Store) OwedMentions(ctx context.Context, agent AccountID) (map[ChannelI
 	}
 	out := make(map[ChannelID][]Message)
 	for _, r := range rows {
-		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AtUnixMs, r.Blocks)
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks)
 		if err != nil {
 			return nil, err
 		}
@@ -193,7 +193,7 @@ func (s *Store) UnroutedMentionMessages(ctx context.Context, afterSeq int64, lim
 	}
 	var out []MessageWithChannel
 	for _, r := range rows {
-		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AtUnixMs, r.Blocks)
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks)
 		if err != nil {
 			return nil, err
 		}
@@ -377,7 +377,7 @@ func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[C
 	}
 	out := make(map[ChannelID][]Message)
 	for _, r := range rows {
-		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AtUnixMs, r.Blocks)
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks)
 		if err != nil {
 			return nil, err
 		}

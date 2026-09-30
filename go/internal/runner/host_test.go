@@ -37,21 +37,22 @@ import (
 // asked to build and returns a scripted spec (or error), so Provision's wiring
 // to Launch is asserted without deriving a real image/egress spec.
 type fakeSpecBuilder struct {
-	spec runtime.AgentSpec
-	err  error
-	last *compassv1.ProvisionAgentWorkspaceRequest
+	spec        runtime.AgentSpec
+	err         error
+	last        *compassv1.ProvisionAgentWorkspaceRequest
+	lastAccount string
 }
 
-func (b *fakeSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
+func (b *fakeSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (runtime.AgentSpec, error) {
 	b.last = req
+	b.lastAccount = accountID
 	if b.err != nil {
 		return runtime.AgentSpec{}, b.err
 	}
-	// Echo the request's account onto the returned spec, as the real BuildSpec
-	// does (spec.go:98) — so the account threads Provision→spec→handle→session
-	// and the Status stamp (host.go:384/533/537) is exercised end-to-end.
+	// Echo the account onto the returned spec, as the real BuildSpec does, so
+	// the account threads Provision→spec→handle→session and the Status stamp.
 	spec := b.spec
-	spec.AgentAccountID = req.GetAgentHandle()
+	spec.AgentAccountID = accountID
 	return spec, nil
 }
 
@@ -116,15 +117,15 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 		Labels: map[string]string{"custom": "kept", runtime.RunnerIDLabel: "old"},
 	}}
 	host, engine, registry := newHostFixture(t, specs)
-	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if name != "atlas-agent-1" {
 		t.Fatalf("Provision returned name %q, want the spec's container name", name)
 	}
-	if specs.last == nil || specs.last.GetAgentHandle() != "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("SpecBuilder.BuildSpec was not called with the request; got %+v", specs.last)
+	if specs.last == nil || specs.lastAccount != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("SpecBuilder.BuildSpec was not called with the account id; got %q", specs.lastAccount)
 	}
 	// Launch registered the handle so a later Start resolves it by name.
 	if _, ok := registry.Resolve("atlas-agent-1"); !ok {
@@ -217,7 +218,7 @@ func TestStartupSweepRemovesStaleAgentsBeforeProvision(t *testing.T) {
 		Workspace: runtime.Workspace{CheckoutDir: "/work/repo", HomeDir: "/home/agent", UID: 1000},
 		Egress:    runtime.MustAllowEgress("github.com"),
 	}}, AgentHostConfig{RuntimeDir: shortRuntimeDir(t), RunnerID: "runner-1"}, discardLoggerRunner(), nil)
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
 		t.Fatalf("Provision after startup sweep = %v", err)
 	}
 }
@@ -228,7 +229,7 @@ func TestProvisionSpecBuilderErrorAborts(t *testing.T) {
 	specs := &fakeSpecBuilder{err: errors.New("no repo in request")}
 	host, engine, _ := newHostFixture(t, specs)
 
-	_, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
+	_, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, "")
 	if err == nil {
 		t.Fatal("Provision with a failing spec builder = nil, want the build error")
 	}
@@ -247,7 +248,7 @@ func TestProvisionMaterializesConfigAndMountsBeforeLaunch(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
 	host, engine, _ := newHostFixture(t, specs)
 
-	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
+	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, "")
 	if err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
@@ -299,7 +300,7 @@ func TestProvisionConfigMaterializeErrorAborts(t *testing.T) {
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner(), nil)
 
-	_, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
+	_, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, "")
 	if err == nil {
 		t.Fatal("Provision with a failing config materialize = nil, want the materialize error")
 	}
@@ -330,7 +331,7 @@ func TestProvisionToleratesNoConfigSurface(t *testing.T) {
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner(), nil)
 
-	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
+	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, "")
 	if err != nil {
 		t.Fatalf("Provision with no config surface = %v, want success (provision anyway)", err)
 	}
@@ -372,7 +373,7 @@ type seqSpecBuilder struct {
 	n     int
 }
 
-func (b *seqSpecBuilder) BuildSpec(*compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
+func (b *seqSpecBuilder) BuildSpec(*compassv1.ProvisionAgentWorkspaceRequest, string) (runtime.AgentSpec, error) {
 	spec := b.specs[b.n%len(b.specs)]
 	b.n++
 	return spec, nil
@@ -393,10 +394,10 @@ func TestProvisionPerContainerConfigRootsAreDistinct(t *testing.T) {
 	specs := &seqSpecBuilder{specs: []runtime.AgentSpec{specA, specB}}
 	host, engine, _ := newHostFixture(t, specs)
 
-	if _, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+	if _, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, ""); err != nil {
 		t.Fatalf("Provision A = %v, want success", err)
 	}
-	if _, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+	if _, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, ""); err != nil {
 		t.Fatalf("Provision B = %v, want success", err)
 	}
 
@@ -449,7 +450,7 @@ func TestStartTwiceSameContainerIsAlreadyRunning(t *testing.T) {
 	host, _, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	first, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -517,7 +518,7 @@ func TestRemoveTearsDownContainerAndRetiresSession(t *testing.T) {
 	host, engine, registry := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -555,7 +556,7 @@ func TestRemoveIsIdempotent(t *testing.T) {
 	host, engine, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -592,7 +593,7 @@ func TestRemoveClosesSocketWhenHandleAlreadyGone(t *testing.T) {
 	host, engine, registry := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -627,7 +628,7 @@ func TestRemoveClosesSocketWhenTeardownFails(t *testing.T) {
 	host, engine, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -659,7 +660,7 @@ func TestFailedTeardownLeavesContainerResolvableForRetry(t *testing.T) {
 	host, engine, registry := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -731,7 +732,7 @@ func TestCloseTearsDownProvisionedButNotStartedContainer(t *testing.T) {
 	host, engine, _ := newConfigRefreshFixture(t)
 	ctx := context.Background()
 
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "a"})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "a")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -905,7 +906,7 @@ func TestStatusStampsTheTierAndEgressPosture(t *testing.T) {
 		func() string { n++; return "sess-" + string(rune('0'+n)) })
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -941,7 +942,7 @@ func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 	host, _, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1005,7 +1006,7 @@ func TestReloadReusesSessionId(t *testing.T) {
 	host, _, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1064,7 +1065,7 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1101,7 +1102,7 @@ func TestStartOmitsModelWhenRunnerHasNoneConfigured(t *testing.T) {
 	host, engine, _ := newHostFixtureWithModel(t, specs, "")
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1129,7 +1130,7 @@ func TestReloadRelaunchesWithTheSameAgentEnv(t *testing.T) {
 	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1173,7 +1174,7 @@ func TestReloadWithDeregisteredContainerIsSessionUnknown(t *testing.T) {
 	host, engine, registry := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1264,7 +1265,7 @@ func TestStartMaterializesSecretsBeforeExec(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1295,7 +1296,7 @@ func TestStartFetchesSecretsByContainer(t *testing.T) {
 	host, _, pub := newHostFixtureWithPublish(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1328,7 +1329,7 @@ func TestStartAgentExecCarriesNoEnvFile(t *testing.T) {
 	host, engine, _ := newHostFixtureWithPublish(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1356,7 +1357,7 @@ func TestStartToleratesNoSecretsSurface(t *testing.T) {
 	pub.setFetchErr(connect.NewError(connect.CodeFailedPrecondition, errors.New("no secret resolver wired")))
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session")
@@ -1390,7 +1391,7 @@ func TestStartFailsClosedOnFetchError(t *testing.T) {
 			pub.setFetchErr(connect.NewError(tc.code, errors.New(tc.name)))
 			ctx := context.Background()
 
-			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 				t.Fatalf("Provision = %v", err)
 			}
 			if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session"); err == nil {
@@ -1436,7 +1437,7 @@ func TestStartWithResumeBodyMaterializesSessionFile(t *testing.T) {
 	host, engine := newHostFixtureWithRecordingExec(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	const resumeID = "sess-abc123"
@@ -1492,7 +1493,7 @@ func TestStartWithoutResumeDoesNotMaterializeOrSetEnv(t *testing.T) {
 	host, engine := newHostFixtureWithRecordingExec(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "test-session"); err != nil {
@@ -1520,7 +1521,7 @@ func TestStartFreshMissingServerIDFailsClosed(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
 	host, _, _ := newHostFixture(t, specs)
 	ctx := context.Background()
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -1540,7 +1541,7 @@ func TestStartResumeBodyWithoutIDStartsFresh(t *testing.T) {
 	host, engine := newHostFixtureWithRecordingExec(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	// Body set, id empty: the body must be dropped, not materialized.
@@ -1568,7 +1569,7 @@ func TestStartResumeWriteFailureFailsStart(t *testing.T) {
 	host, engine := newHostFixtureWithRecordingExec(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	// Fail ONLY the resume-write Exec. The secrets env-file materialize also
@@ -1625,7 +1626,7 @@ func TestStartRejectsResumeIDTraversal(t *testing.T) {
 			host, engine := newHostFixtureWithRecordingExec(t, specs)
 			ctx := context.Background()
 
-			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 				t.Fatalf("Provision = %v", err)
 			}
 			_, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: id}, "body", "")
@@ -1661,7 +1662,7 @@ func TestStartResumeIDDotStaysInResumeDir(t *testing.T) {
 			host, engine := newHostFixtureWithRecordingExec(t, specs)
 			ctx := context.Background()
 
-			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
 				t.Fatalf("Provision = %v", err)
 			}
 			if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: id}, "body", ""); err != nil {
