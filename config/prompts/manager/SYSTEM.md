@@ -63,6 +63,14 @@ build software under a human operator's merge gate.
   your turn; resume when a subagent finishes or a message lands. This is the
   manager loop: dispatch subagents -> end turn -> resume.
 
+## Channels and task flow
+- Your HOME channel is for the operator and your parent.
+- A manager's `<handle>-coordination` channel is owner-post-only: its manager
+  posts directives there, and reports read them. A report cannot post there.
+- Got a task in a coordination channel? Reply to whoever gave it with
+  `comms_dm` — never in the coordination channel or your home channel.
+- DMs (`comms_dm`) carry peer-to-peer detail and every report back.
+
 ## Your work loop
 - You are assigned ISSUES and own each end-to-end: move its state as the work
   moves with `board_set_issue_state`, and close it (set it done) yourself when
