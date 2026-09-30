@@ -417,6 +417,51 @@ describe("forge_get_issue", () => {
 		);
 	});
 
+	// GitHub App authors log in as `<slug>[bot]`, and every artifact Compass writes
+	// is App-authored, so the brackets must render verbatim on both record kinds.
+	test("a GitHub App [bot] forge_account renders verbatim", async () => {
+		const issueText = textOf(
+			await exec(
+				tool(
+					new ForgeBroker(
+						new FakeTransport(
+							issueResult({
+								number: 7,
+								repo: "o/r",
+								url: "https://x/1",
+								forgeAccount: "x-author[bot]",
+							}),
+						),
+					),
+					"forge_get_issue",
+				),
+				"tc-1",
+				{ repo: "o/r", issue_number: 7 },
+			),
+		);
+		expect(issueText).toContain('forge_account="x-author[bot]"');
+		const prText = textOf(
+			await exec(
+				tool(
+					new ForgeBroker(
+						new FakeTransport(
+							pullRequestResult({
+								number: 3,
+								repo: "o/r",
+								url: "https://x/3",
+								forgeAccount: "x-author[bot]",
+							}),
+						),
+					),
+					"forge_get_pull_request",
+				),
+				"tc-2",
+				{ repo: "o/r", pr_number: 3 },
+			),
+		);
+		expect(prText).toContain('forge_account="x-author[bot]"');
+	});
+
 	test("an oversized body truncates with a fenced remainder marker", async () => {
 		const big = "x".repeat(2500);
 		const transport = new FakeTransport(
