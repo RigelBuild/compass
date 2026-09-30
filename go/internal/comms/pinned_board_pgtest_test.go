@@ -7,6 +7,7 @@ package comms
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -181,6 +182,9 @@ func TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsPermissionDenied(t *testing.T) {
 	// A visible non-owner member receives the distinct permission denial.
 	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(chID, msg, "")))
 	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner pin on OWNER_ONLY channel")
+	if want := `channel "room" is owner-only: only its owner can change the pinned board`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err, want)
+	}
 	// The owner, by contrast, may mutate the OWNER_ONLY board.
 	if _, err := svc.UpdatePinnedBoard(WithActor(ctx, owner.ID), connect.NewRequest(pinReq(chID, msg, ""))); err != nil {
 		t.Fatalf("owner pin on OWNER_ONLY channel: %v", err)

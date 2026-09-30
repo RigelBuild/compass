@@ -7,10 +7,10 @@ package comms
 
 import (
 	"context"
-
-	"connectrpc.com/connect"
 	"strings"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
