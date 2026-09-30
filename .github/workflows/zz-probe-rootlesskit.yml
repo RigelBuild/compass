@@ -1,0 +1,39 @@
+name: zz-probe-rootlesskit
+on:
+  pull_request:
+    paths: [.github/workflows/zz-probe-rootlesskit.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - name: Without profile (expect the denial)
+        run: |
+          rootlesskit=$(nix build --no-link --print-out-paths nixpkgs#rootlesskit)
+          if "$rootlesskit/bin/rootlesskit" true; then echo "UNEXPECTED: ran without profile"; else echo "denied as expected"; fi
+      - name: With the release.yml profile
+        run: |
+          set -euo pipefail
+          buildkit=$(nix build --no-link --print-out-paths nixpkgs#buildkit)
+          rootlesskit=$(nix build --no-link --print-out-paths nixpkgs#rootlesskit)
+          runc=$(nix build --no-link --print-out-paths nixpkgs#runc)
+          export PATH="$buildkit/bin:$rootlesskit/bin:$runc/bin:$PATH"
+          profile="/etc/apparmor.d/rootlesskit-nix"
+          sudo tee "$profile" >/dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          $rootlesskit/bin/rootlesskit flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r "$profile"
+          addr="unix://$RUNNER_TEMP/buildkit.sock"
+          log="$RUNNER_TEMP/buildkitd.log"
+          "$rootlesskit/bin/rootlesskit" "$buildkit/bin/buildkitd" --addr "$addr" >"$log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if buildctl --addr "$addr" debug workers; then echo PROBE-OK; exit 0; fi
+            sleep 1
+          done
+          cat "$log"; exit 1
