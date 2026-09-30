@@ -662,6 +662,9 @@ type recordingRunner struct {
 	// coalesce onto it. The command is RECORDED before the wait, so a start that
 	// should have coalesced is still counted. Read under mu for a clean handoff.
 	startGate chan struct{}
+	// lostContainers answers a Start on any listed container with NOT_FOUND: the
+	// Runner that restarted and no longer has the placement's container. Read under mu.
+	lostContainers map[string]bool
 }
 
 // serve runs the dispatch loop. Like the seam test's loop it opens with one
@@ -705,6 +708,13 @@ func (r *recordingRunner) serve(
 		}
 		if r.withholdStop && cmd.GetStop() != nil {
 			continue // record it, but never answer: the wedged-Runner shape
+		}
+		if reply := r.lostStartReply(cmd); reply != nil {
+			if err := r.send(stream, reply); err != nil {
+				done <- err
+				return
+			}
+			continue
 		}
 		if cmd.GetStart() != nil && r.failStarted() {
 			// Answer Start with a RunnerError instead of a session id: the
@@ -891,6 +901,38 @@ func (r *recordingRunner) setContainerNames(names ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.containerNames = append([]string(nil), names...)
+}
+
+// setLostContainers marks containers the Runner no longer has; a Start on one fails NOT_FOUND.
+func (r *recordingRunner) setLostContainers(names ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lostContainers = map[string]bool{}
+	for _, n := range names {
+		r.lostContainers[n] = true
+	}
+}
+
+func (r *recordingRunner) isLost(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lostContainers[name]
+}
+
+// lostStartReply is the NOT_FOUND a restarted Runner answers a Start on a lost container
+// with; nil for any other command.
+func (r *recordingRunner) lostStartReply(cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
+	st := cmd.GetStart()
+	if st == nil || !r.isLost(st.GetContainerName()) {
+		return nil
+	}
+	return &compassv1internal.SessionsRequest{
+		RequestId: cmd.GetRequestId(),
+		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+			Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND,
+			Message: "session unknown to runner",
+		}},
+	}
 }
 
 // setStartGate installs a gate the serve loop blocks each Start on until the gate

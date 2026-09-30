@@ -113,6 +113,66 @@ func TestWakeAgentPriorSessionResumes(t *testing.T) {
 	}
 }
 
+// TestWakeAgentLostContainerReprovisionsAndResumes: after a redeploy the placement
+// names a container the Runner no longer has. The wake re-provisions the same
+// account, moves the placement, and resumes the prior session in the new container.
+func TestWakeAgentLostContainerReprovisionsAndResumes(t *testing.T) {
+	ctx := t.Context()
+	f, lc := newWakeFixture(t)
+
+	const (
+		logical   = "sess-wake-lost"
+		staleName = "compass-agent-stale"
+		freshName = "compass-agent-fresh"
+	)
+	if err := f.store.RecordAgentSession(ctx, logical, f.agentID); err != nil {
+		t.Fatalf("RecordAgentSession: %v", err)
+	}
+	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, staleName); err != nil {
+		t.Fatalf("RecordAgentPlacement: %v", err)
+	}
+	if err := f.store.AppendTranscriptEntry(ctx, logical, 1, true, `{"header":true}`, "k1"); err != nil {
+		t.Fatalf("append checkpoint: %v", err)
+	}
+	f.runner.setLostContainers(staleName)
+	f.runner.setContainerNames(freshName)
+	f.runner.forget()
+
+	lc.WakeAgent(ctx, f.agentID)
+
+	if n := f.runner.provisionCount(); n != 1 {
+		t.Fatalf("Provision count = %d, want 1 (re-provision the lost container); commands: %v", n, f.runner.commands())
+	}
+	var prov *compassv1.ProvisionAgentWorkspaceRequest
+	var start *compassv1.StartAgentSessionRequest
+	f.runner.mu.Lock()
+	for _, c := range f.runner.seen {
+		if p := c.GetProvision(); p != nil {
+			prov = p
+		}
+		if s := c.GetStart(); s != nil {
+			start = s
+		}
+	}
+	f.runner.mu.Unlock()
+	if prov.GetAgentHandle() != string(f.agentID) {
+		t.Fatalf("re-provision handle = %q, want the same account %q", prov.GetAgentHandle(), f.agentID)
+	}
+	_, container, err := f.store.PlacementForAgent(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("PlacementForAgent: %v", err)
+	}
+	if container != freshName {
+		t.Fatalf("placement container = %q, want %q (moved to the re-provisioned container)", container, freshName)
+	}
+	if start.GetContainerName() != freshName || start.GetResumeSessionId() != logical {
+		t.Fatalf("last Start = container %q resume %q, want %q resume %q", start.GetContainerName(), start.GetResumeSessionId(), freshName, logical)
+	}
+	if body, _ := relayedStartResumeBody(t, f.runner); body != `{"header":true}` {
+		t.Fatalf("resume body = %q, want the reconstructed transcript", body)
+	}
+}
+
 // TestWakeAgentNeverStartedFreshStarts pins the no-prior-session fallback: an
 // OFFLINE agent that has NEVER had a session recorded, but DOES have a placement,
 // is woken by a FRESH hub.Start (no resume body) and its new session is recorded.
