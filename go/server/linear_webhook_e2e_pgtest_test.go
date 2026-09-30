@@ -240,13 +240,25 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 	if err := st.RecordAgentPlacement(ctx, manager.ID, "runner-1", "compass-"+string(manager.ID)); err != nil {
 		t.Fatalf("RecordAgentPlacement: %v", err)
 	}
-	if err := st.RecordAuthoredArtifact(ctx, store.AuthoredArtifact{
-		Provider: store.ForgeProviderLinear, Host: forge.LinearHost, Repo: "RIG",
-		Kind: store.ForgeArtifactKindIssue, Number: 101,
-		AgentAccountID: manager.ID, OwnerUserID: admin.ID,
-		CreatedAtUnixMS: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("RecordAuthoredArtifact: %v", err)
+	// Authored rows: RIG-101 by the live manager; RIG-404 by an unplaced (despawned) peer
+	// under it; RIG-405 by an agent with no live ancestor at all.
+	peer, err := st.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "lane-peer", DisplayName: "Lane Peer", ParentAgentID: manager.ID})
+	if err != nil {
+		t.Fatalf("CreateAgent(peer): %v", err)
+	}
+	orphan, err := st.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "orphan", DisplayName: "Orphan"})
+	if err != nil {
+		t.Fatalf("CreateAgent(orphan): %v", err)
+	}
+	for number, author := range map[uint64]store.AccountID{101: manager.ID, 404: peer.ID, 405: orphan.ID} {
+		if err := st.RecordAuthoredArtifact(ctx, store.AuthoredArtifact{
+			Provider: store.ForgeProviderLinear, Host: forge.LinearHost, Repo: "RIG",
+			Kind: store.ForgeArtifactKindIssue, Number: number,
+			AgentAccountID: author, OwnerUserID: admin.ID,
+			CreatedAtUnixMS: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("RecordAuthoredArtifact(RIG-%d): %v", number, err)
+		}
 	}
 
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
@@ -388,6 +400,7 @@ func TestLinearWebhookE2E(t *testing.T) {
 
 	t.Run("created_recorded_owner", w.scenarioCreatedRecordedOwner)
 	t.Run("created_unstamped_routes_to_supervisor", w.scenarioCreatedUnstamped)
+	t.Run("created_despawned_author_walks_up", w.scenarioDespawnedAuthor)
 	t.Run("replayed_delivery_posts_once", w.scenarioReplay)
 	t.Run("prompted_lands_in_same_topic", w.scenarioPrompted)
 	t.Run("graphql_401_remints_once", w.scenario401)
@@ -463,6 +476,34 @@ func (w *linE2EWire) scenarioCreatedUnstamped(t *testing.T) {
 	}
 	if row.ManagerAccountID != w.supervisor.ID || row.ChannelID != w.routingCh || msg.TopicID != row.TopicID {
 		t.Errorf("association = %+v (post topic %s), want supervisor %s in routing channel %s", row, msg.TopicID, w.supervisor.ID, w.routingCh)
+	}
+}
+
+// scenarioDespawnedAuthor: a despawned author's issue lands with its nearest live
+// ancestor; with no live ancestor it ends at the supervisor in the routing channel.
+func (w *linE2EWire) scenarioDespawnedAuthor(t *testing.T) {
+	for _, tc := range []struct {
+		identifier  string
+		wantManager store.AccountID
+		wantChannel store.ChannelID
+	}{
+		{"RIG-404", w.manager.ID, w.manager.Agent.HomeChannelID},
+		{"RIG-405", w.supervisor.ID, w.routingCh},
+	} {
+		sessionID := uuid.NewString()
+		text := "<issue>" + tc.identifier + " prompt context " + sessionID + "</issue>"
+		body := linE2ESessionBody(t, "created", sessionID, linearagent.Issue{ID: "issue-" + tc.identifier, Identifier: tc.identifier}, text, time.Now())
+		if code := w.deliverSigned(t, body); code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", tc.identifier, code)
+		}
+		msg := w.waitForMessage(t, tc.wantChannel, text)
+		row, err := w.st.LinearAgentSession(t.Context(), sessionID)
+		if err != nil {
+			t.Fatalf("%s: LinearAgentSession: %v", tc.identifier, err)
+		}
+		if row.ManagerAccountID != tc.wantManager || row.ChannelID != tc.wantChannel || msg.TopicID != row.TopicID {
+			t.Errorf("%s: association = %+v (post topic %s), want manager %s in channel %s", tc.identifier, row, msg.TopicID, tc.wantManager, tc.wantChannel)
+		}
 	}
 }
 
