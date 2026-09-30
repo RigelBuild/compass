@@ -80,8 +80,8 @@ func TestLinearRoutingSeedAndFallbackTarget(t *testing.T) {
 	}
 }
 
-// plantRoutingLookalikes plants a stranger's linear-routing channel in the admin's
-// SHARED __linear__ group and an admin-owned ungrouped linear-routing channel.
+// plantRoutingLookalikes plants a stranger's routing channel in the admin's
+// SHARED __linear__ group and an admin-owned ungrouped routing channel.
 func plantRoutingLookalikes(t *testing.T, st *store.Store, adminID store.AccountID) []store.ChannelID {
 	t.Helper()
 	ctx := t.Context()
