@@ -182,6 +182,28 @@ func TestHandleReclaimBothTiers(t *testing.T) {
 	}
 }
 
+// TestAccountHandleReadsResolutionIndex: AccountHandle returns the
+// account_handles row, so it follows an index rename that leaves the
+// accounts.handle display column behind; an unknown id is ErrNotFound.
+//
+// Mutation: reading accounts.handle instead returns the stale "matt" after the
+// rename, reddening the "matt-renamed" assertion.
+func TestAccountHandleReadsResolutionIndex(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	user := mustUser(t, s, "matt")
+	if _, err := s.pool.Exec(ctx,
+		"UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(user.ID), "matt-renamed"); err != nil {
+		t.Fatalf("rename user handle: %v", err)
+	}
+	got, err := s.AccountHandle(ctx, user.ID)
+	if err != nil || got != "matt-renamed" {
+		t.Fatalf("AccountHandle(matt) = (%q, %v), want (%q, nil)", got, err, "matt-renamed")
+	}
+	_, err = s.AccountHandle(ctx, "no-such-account")
+	sentinelIs(t, err, ErrNotFound, "AccountHandle(unknown)")
+}
+
 // ---- T2: AccountsByHandles resolver ----
 
 // qh is a terse QualifiedHandle constructor mirroring ParseQualifiedHandle, so a

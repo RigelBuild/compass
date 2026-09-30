@@ -234,7 +234,7 @@ func e2eDespawnPeer(t *testing.T, w *e2eWire, peerID store.AccountID, peerContai
 	ctx := w.ctx
 	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
 		CallId: "despawn-call-1",
-		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: string(peerID)}},
+		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: "peer-1"}},
 	}))
 	if err != nil {
 		t.Fatalf("Lifecycle(despawn) over the socket = %v, want the round-trip result", err)
@@ -330,10 +330,11 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	peerBID := store.AccountID(peerBResp.GetAgentAccountId())
 	peerBContainer := peerBResp.GetContainerName()
 	// The supervisor (owner A's agent) despawns owner B's peer over its OWN
-	// socket.
+	// socket, naming it owner-qualified (`owner-b/peer-b`), since a bare handle
+	// resolves only in the caller owner's namespace.
 	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
 		CallId: "foreign-despawn-1",
-		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: string(peerBID)}},
+		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: userB.Handle + "/peer-b"}},
 	}))
 	if err != nil {
 		t.Fatalf("Lifecycle(foreign despawn) over the socket = %v, want an in-band result", err)
@@ -353,12 +354,11 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	if got := e.GetCode(); got != connect.CodeNotFound.String() {
 		t.Fatalf("foreign despawn code = %q, want %q (indistinguishable not-found/forbidden merge)", got, connect.CodeNotFound.String())
 	}
-	// Cross-check indistinguishability against a genuinely unknown id over the
+	// Cross-check indistinguishability against a genuinely unknown handle over the
 	// same wire: both must return the SAME in-band not_found.
 	unknownResp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
 		CallId: "unknown-despawn-1",
-		// well-formed, never minted:
-		Call: &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: "ffffffffffffffffffffffffffffffff"}},
+		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: "never-minted"}},
 	}))
 	if err != nil {
 		t.Fatalf("Lifecycle(unknown despawn) = %v, want an in-band result", err)

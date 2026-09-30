@@ -219,6 +219,19 @@ func (q *Queries) GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByO
 	return i, err
 }
 
+const getAccountHandle = `-- name: GetAccountHandle :one
+SELECT handle
+FROM account_handles
+WHERE account_id = $1
+`
+
+func (q *Queries) GetAccountHandle(ctx context.Context, accountID string) (string, error) {
+	row := q.db.QueryRow(ctx, getAccountHandle, accountID)
+	var handle string
+	err := row.Scan(&handle)
+	return handle, err
+}
+
 const getAgentOwner = `-- name: GetAgentOwner :one
 SELECT owner_user_id
 FROM agent_accounts
