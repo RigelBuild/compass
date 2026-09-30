@@ -59,13 +59,14 @@ func (q *Queries) FindAskMessage(ctx context.Context, arg FindAskMessageParams) 
 
 const getChannelPostPolicy = `-- name: GetChannelPostPolicy :one
 
-SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id
+SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id, name
 FROM channels WHERE id = $1
 `
 
 type GetChannelPostPolicyRow struct {
 	PostPolicy     int16
 	OwnerAccountID string
+	Name           string
 }
 
 // Message-domain queries (sqlc adoption T4, RIG-3034). These replace the inline
@@ -80,7 +81,7 @@ type GetChannelPostPolicyRow struct {
 func (q *Queries) GetChannelPostPolicy(ctx context.Context, id string) (GetChannelPostPolicyRow, error) {
 	row := q.db.QueryRow(ctx, getChannelPostPolicy, id)
 	var i GetChannelPostPolicyRow
-	err := row.Scan(&i.PostPolicy, &i.OwnerAccountID)
+	err := row.Scan(&i.PostPolicy, &i.OwnerAccountID, &i.Name)
 	return i, err
 }
 

@@ -82,13 +82,14 @@ func (q *Queries) InsertChannelPin(ctx context.Context, arg InsertChannelPinPara
 
 const lockChannelForPins = `-- name: LockChannelForPins :one
 
-SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id
+SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id, name
 FROM channels WHERE id = $1 FOR UPDATE
 `
 
 type LockChannelForPinsRow struct {
 	PostPolicy     int16
 	OwnerAccountID string
+	Name           string
 }
 
 // Channel-pins (pinned board) queries (sqlc adoption T3, RIG-3034). These
@@ -98,7 +99,7 @@ type LockChannelForPinsRow struct {
 func (q *Queries) LockChannelForPins(ctx context.Context, id string) (LockChannelForPinsRow, error) {
 	row := q.db.QueryRow(ctx, lockChannelForPins, id)
 	var i LockChannelForPinsRow
-	err := row.Scan(&i.PostPolicy, &i.OwnerAccountID)
+	err := row.Scan(&i.PostPolicy, &i.OwnerAccountID, &i.Name)
 	return i, err
 }
 

@@ -62,16 +62,16 @@ func (s *Store) PinMessage(ctx context.Context, ch ChannelID, msg MessageID, rep
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
-	postPolicy, ownerAcct, err := lockChannelForPins(ctx, tx, ch)
+	lock, err := lockChannelForPins(ctx, tx, ch)
 	if err != nil {
 		return nil, err
 	}
 
 	// Board-mutation authz IN this tx under the FOR UPDATE lock, BEFORE the pin
 	// write: `by` must be a member and, on OWNER_ONLY, the owner — the same
-	// two-gate no-oracle check PostMessage runs. The row lock serializes it
+	// two-gate check PostMessage runs. The row lock serializes it
 	// against a concurrent membership/policy change so it cannot race the write.
-	if err := requireBoardMutator(ctx, tx, ch, by, postPolicy, ownerAcct); err != nil {
+	if err := requireBoardMutator(ctx, tx, ch, by, lock); err != nil {
 		return nil, err
 	}
 
@@ -115,15 +115,15 @@ func (s *Store) UnpinMessage(ctx context.Context, ch ChannelID, msg MessageID, b
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
-	postPolicy, ownerAcct, err := lockChannelForPins(ctx, tx, ch)
+	lock, err := lockChannelForPins(ctx, tx, ch)
 	if err != nil {
 		return nil, err
 	}
 
 	// Same in-tx, under-lock authz as PinMessage: `by` must be a member and, on
-	// OWNER_ONLY, the owner — refused with the no-oracle ErrNotFound otherwise,
-	// serialized by the row lock against a concurrent membership/policy change.
-	if err := requireBoardMutator(ctx, tx, ch, by, postPolicy, ownerAcct); err != nil {
+	// OWNER_ONLY, the owner; serialized by the row lock against a concurrent
+	// membership/policy change.
+	if err := requireBoardMutator(ctx, tx, ch, by, lock); err != nil {
 		return nil, err
 	}
 	if err := db.New(tx).DeleteChannelPin(ctx, db.DeleteChannelPinParams{
@@ -155,31 +155,26 @@ func (s *Store) PinnedEntries(ctx context.Context, ch ChannelID) ([]PinnedEntry,
 // authz all ride it) and, in the same locking round-trip, reads the row's
 // post_policy and owner so the caller can gate the mutator under the lock without
 // a second query. An unknown channel matches zero rows and is ErrNotFound.
-func lockChannelForPins(ctx context.Context, tx pgx.Tx, ch ChannelID) (postPolicy int32, ownerAcct string, err error) {
+func lockChannelForPins(ctx context.Context, tx pgx.Tx, ch ChannelID) (db.LockChannelForPinsRow, error) {
 	row, err := db.New(tx).LockChannelForPins(ctx, string(ch))
 	if err != nil {
 		if noRows(err) {
-			return 0, "", fmt.Errorf("%w: channel %q", ErrNotFound, ch)
+			return db.LockChannelForPinsRow{}, fmt.Errorf("%w: channel %q", ErrNotFound, ch)
 		}
-		return 0, "", fmt.Errorf("store: lock channel for pins: %w", err)
+		return db.LockChannelForPinsRow{}, fmt.Errorf("store: lock channel for pins: %w", err)
 	}
-	return int32(row.PostPolicy), row.OwnerAccountID, nil
+	return row, nil
 }
 
 // requireBoardMutator enforces board-mutation authz for `by` under the caller's
-// held channels-row FOR UPDATE lock, mirroring PostMessage's two-gate no-oracle
-// check (store/messages.go:80-82): `by` must be a member of ch (else ErrNotFound,
-// the not-found/forbidden merge), and on an OWNER_ONLY channel only the owner may
-// mutate — a non-owner member is refused with the SAME ErrNotFound a non-member
-// gets, so the policy leaks no existence oracle. postPolicy/ownerAcct come from
-// the locking SELECT lockChannelForPins already ran, so the check is serialized
-// against a concurrent membership/policy change committing between gate and write.
-func requireBoardMutator(ctx context.Context, tx pgx.Tx, ch ChannelID, by AccountID, postPolicy int32, ownerAcct string) error {
+// held channels-row FOR UPDATE lock. A member can see the channel, so a distinct
+// owner-only denial leaks nothing; membership still returns ErrNotFound.
+func requireBoardMutator(ctx context.Context, tx pgx.Tx, ch ChannelID, by AccountID, lock db.LockChannelForPinsRow) error {
 	if err := requireChannelMember(ctx, tx, by, ch); err != nil {
 		return err
 	}
-	if ChannelPostPolicy(postPolicy) == ChannelPostPolicyOwnerOnly && string(by) != ownerAcct {
-		return fmt.Errorf("%w: channel %q", ErrNotFound, ch)
+	if ChannelPostPolicy(lock.PostPolicy) == ChannelPostPolicyOwnerOnly && string(by) != lock.OwnerAccountID {
+		return fmt.Errorf("%w: channel %q is owner-only: only its owner can change the pinned board", ErrPermissionDenied, lock.Name)
 	}
 	return nil
 }
