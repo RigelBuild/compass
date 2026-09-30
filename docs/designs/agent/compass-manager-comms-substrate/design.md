@@ -119,6 +119,10 @@ visibility.** Two additive fields on `Channel` (`comms.proto:204-221`):
   zero value; `OWNER_ONLY = 1` — only `owner_account_id` may post; the server
   rejects any other `PostMessage`/`comms_post_message` with the same in-band
   error a non-member gets).
+
+  > **Amended (DL-383, Matt 2026-09-30).** A member who is not the owner gets
+  > PermissionDenied naming the channel as owner-only; only a non-member gets
+  > NotFound. A member can already read the channel, so the code leaks nothing.
 - `owner_account_id` — the owning account (the Manager agent for a
   coordination channel; a human/root account for #announcements-class
   channels). Server-set at provision; channels without a post policy leave it
@@ -501,8 +505,8 @@ type ChannelPolicy struct {
 // CreateChannel gains policy; NewChannel struct extends with ChannelPolicy.
 
 // go/internal/comms
-// PostMessage: post_policy=OWNER_ONLY && actor != owner_account_id → the same
-// in-band not-found/permission error a non-member gets (no oracle).
+// PostMessage: post_policy=OWNER_ONLY && actor != owner_account_id → a member
+// gets PermissionDenied (owner-only); a non-member gets NotFound (amended, DL-383).
 // UpdateChannelMembers: unsubscribe_account_ids on a mandatory_subscription
 // channel → InvalidArgument; owner_account_id/policy fields are server-set,
 // never client-mutable via UpdateChannelMembers.

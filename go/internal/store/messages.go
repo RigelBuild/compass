@@ -58,10 +58,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 		return Message{}, false, err
 	}
 
-	// T4 post policy: on an OWNER_ONLY channel, only owner_account_id may post.
-	// A non-owner is refused with the SAME ErrNotFound a non-member gets, so the
-	// policy leaks no oracle. Checked in this tx as the membership gate and the
-	// insert, under the committed policy.
+	// A member can already see the channel, so this distinct denial leaks nothing.
 	policy, err := db.New(tx).GetChannelPostPolicy(ctx, channelID)
 	if err != nil {
 		if noRows(err) {
@@ -71,7 +68,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	}
 	if ChannelPostPolicy(policy.PostPolicy) == ChannelPostPolicyOwnerOnly &&
 		string(m.AuthorAccountID) != policy.OwnerAccountID {
-		return Message{}, false, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+		return Message{}, false, fmt.Errorf("%w: channel %q is owner-only: only its owner can post", ErrPermissionDenied, policy.Name)
 	}
 
 	at := time.Now().UTC()
