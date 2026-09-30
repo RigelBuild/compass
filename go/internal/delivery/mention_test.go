@@ -244,10 +244,8 @@ func TestSteerCarriesMessage(t *testing.T) {
 	}
 }
 
-// RIG-2486 T1: the author's handle is denormalized onto BOTH the steer and deliver
-// ops, resolved once via GetAccount from author_account_id. The agent emits
-// from_handle off the control without a roster lookup. RED before the build sites
-// populated FromHandle: both ops carried an empty from_handle.
+// TestDeliverAndSteerCarryAuthorFromHandle forwards the wire message's author
+// handle to both controls without an account lookup.
 func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -257,14 +255,13 @@ func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
 	reads.members[ch] = []store.AccountID{agentA, agentB}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
-	// The author's account resolves its handle for the denormalized from_handle.
-	reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
+	msg := wireText("m1", human, "hey @aa")
+	msg.AuthorHandle = "matt"
 	res.bind(agentA, "sess-a")
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
 
-	// @aa steers agent-a; agent-b (subscribed, unmentioned) gets a plain deliver.
-	c.bus.Publish(postedResponse(wireText("m1", human, "hey @aa")))
+	c.bus.Publish(postedResponse(msg))
 	disp.waitForDispatches(t, 2)
 
 	got := disp.snapshot()
@@ -278,21 +275,20 @@ func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	}
 }
 
-// RIG-2486 T1: a from_handle resolution MISS (the author account is not found)
-// is logged and yields an empty from_handle — it never blocks the delivery. The
-// deliver still dispatches; only its from_handle is empty.
-func TestFromHandleMissDeliversWithEmptyHandle(t *testing.T) {
+// An empty wire author handle remains empty on DeliverControl.
+func TestEmptyAuthorHandleDeliversAsEmptyFromHandle(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 	const human store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
 	reads.subscribers[ch] = []store.AccountID{agentA}
-	// No reads.accounts entry for the author: GetAccount is ErrNotFound.
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
-	c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+	msg := wireText("m1", human, "hi")
+	msg.AuthorHandle = ""
+	c.bus.Publish(postedResponse(msg))
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -300,7 +296,7 @@ func TestFromHandleMissDeliversWithEmptyHandle(t *testing.T) {
 		t.Fatalf("dispatch = %+v, want one deliver of m1", got)
 	}
 	if got[0].fromHandle != "" {
-		t.Fatalf("from_handle = %q on a store miss, want empty", got[0].fromHandle)
+		t.Fatalf("from_handle = %q on an empty wire author handle, want empty", got[0].fromHandle)
 	}
 }
 
@@ -317,7 +313,6 @@ func TestDeliverAndSteerCarrySourceChannelAndTopicNames(t *testing.T) {
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
 	reads.members[ch] = []store.AccountID{agentA, agentB}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
-	reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
 	// The message's topic ("topic-1", the wireText default) resolves to its
 	// source channel+topic names.
 	reads.seedTopicNames("topic-1", "engineering", "general")
@@ -341,9 +336,8 @@ func TestDeliverAndSteerCarrySourceChannelAndTopicNames(t *testing.T) {
 }
 
 // RIG-2956 T0: a source-name resolution MISS (the topic is not found) is logged
-// and yields EMPTY channel+topic names — it never blocks the delivery, exactly
-// as a from_handle miss degrades. The deliver still dispatches; only its source
-// names are empty.
+// and yields EMPTY channel+topic names — it never blocks the delivery. The
+// deliver still dispatches; only its source names are empty.
 func TestSourceNameMissDeliversWithEmptyNames(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
