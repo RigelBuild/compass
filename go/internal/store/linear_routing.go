@@ -14,9 +14,9 @@ import (
 // CreateChannel refuses it, so only EnsureLinearRoutingChannel writes a channel there.
 const linearRoutingGroupName = "__linear__"
 
-// LinearRoutingChannelName names the channel where a Linear session no Manager owns
-// lands for the root supervisor to triage.
-const LinearRoutingChannelName = "linear-routing"
+// LinearRoutingChannelName names the supervisor's general routing channel, where a Linear
+// session no Manager owns (and later alert sources) lands for triage.
+const LinearRoutingChannelName = "routing"
 
 // EnsureLinearRoutingChannel get-or-creates the admin's routing channel under a per-admin
 // advisory lock and reconciles it on both paths: mandatory, members present, cursors seeded.
