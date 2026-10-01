@@ -195,7 +195,6 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-first"); err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
-	before := segmentCount(t, ctx, f.DSN(), sessionID)
 	if err := signalGarage(ctx, "STOP", f.garage.name); err != nil {
 		t.Fatalf("pause Garage: %v", err)
 	}
@@ -204,9 +203,9 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn during outage: %v", err)
 	}
-	// Read while Garage is still paused: blocked PUTs complete once it resumes.
-	if got := segmentCount(t, ctx, f.DSN(), sessionID); got != before {
-		t.Fatalf("segments during outage = %d, want %d", got, before)
+	// The first turn's flushes may still land, so check only entries from the outage turn.
+	if n := segmentsCoveringMarker(t, ctx, f.DSN(), sessionID, "marker durability-second"); n != 0 {
+		t.Fatalf("segments covering the outage turn while Garage was frozen = %d, want 0", n)
 	}
 	if err := signalGarage(ctx, "CONT", f.garage.name); err != nil {
 		t.Fatalf("unpause Garage: %v", err)
@@ -268,15 +267,24 @@ func waitSafetyValveSegment(t *testing.T, ctx context.Context, dsn, sessionID st
 	}
 }
 
-func segmentCount(t *testing.T, ctx context.Context, dsn, sessionID string) int {
+// segmentsCoveringMarker counts archive segments spanning the PG entry carrying marker.
+// A missing entry was pruned to S3 by a flush, so it fails the caller too.
+func segmentsCoveringMarker(t *testing.T, ctx context.Context, dsn, sessionID, marker string) int {
 	t.Helper()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open segment count pool: %v", err)
 	}
 	defer pool.Close()
+	var seq int64
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(MIN(entry_seq), 0) FROM agent_session_transcript_entries WHERE session_id=$1 AND strpos(entry_json, $2) > 0`, sessionID, marker).Scan(&seq); err != nil {
+		t.Fatalf("find marker entry: %v", err)
+	}
+	if seq == 0 {
+		t.Fatalf("no PG transcript entry carries %q; it was flushed or never written", marker)
+	}
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_session_archive_segments WHERE session_id=$1`, sessionID).Scan(&count); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_session_archive_segments WHERE session_id=$1 AND $2 BETWEEN min_entry_seq AND max_entry_seq`, sessionID, seq).Scan(&count); err != nil {
 		t.Fatalf("count segments: %v", err)
 	}
 	return count
