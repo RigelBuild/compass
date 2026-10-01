@@ -596,6 +596,7 @@ func firstNonEmpty(vals ...string) string {
 	}
 	return ""
 }
+
 // positiveCap prefers a positive flag, then a positive env value; 0 keeps the store default.
 func positiveCap(flagValue int, envValue string) int {
 	if flagValue > 0 {

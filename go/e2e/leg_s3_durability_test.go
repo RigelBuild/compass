@@ -196,11 +196,11 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 		t.Fatalf("first turn: %v", err)
 	}
 	before := segmentCount(t, ctx, f.DSN(), sessionID)
-	if err := podmanAction(ctx, "pause", f.garage.name); err != nil {
+	if err := signalGarage(ctx, "STOP", f.garage.name); err != nil {
 		t.Fatalf("pause Garage: %v", err)
 	}
-	// Unpause even if an assertion fails; a frozen Garage stalls fixture teardown.
-	t.Cleanup(func() { _ = podmanAction(ctx, "unpause", f.garage.name) })
+	// Resume even if an assertion fails; SIGCONT on a running process is a no-op, so the error is moot.
+	t.Cleanup(func() { _ = signalGarage(ctx, "CONT", f.garage.name) })
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn during outage: %v", err)
 	}
@@ -208,7 +208,7 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if got := segmentCount(t, ctx, f.DSN(), sessionID); got != before {
 		t.Fatalf("segments during outage = %d, want %d", got, before)
 	}
-	if err := podmanAction(ctx, "unpause", f.garage.name); err != nil {
+	if err := signalGarage(ctx, "CONT", f.garage.name); err != nil {
 		t.Fatalf("unpause Garage: %v", err)
 	}
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
@@ -454,9 +454,10 @@ func assertArchiveHasReply(t *testing.T, ctx context.Context, f *Fixture, sessio
 	}
 }
 
-func podmanAction(ctx context.Context, action, name string) error {
-	if out, err := exec.CommandContext(ctx, "podman", action, name).CombinedOutput(); err != nil {
-		return fmt.Errorf("podman %s %s: %w: %s", action, name, err, out)
+// signalGarage freezes (STOP) or resumes (CONT) Garage; podman pause needs cgroups that CI lacks.
+func signalGarage(ctx context.Context, signal, name string) error {
+	if out, err := exec.CommandContext(ctx, "podman", "kill", "--signal", signal, name).CombinedOutput(); err != nil {
+		return fmt.Errorf("podman kill --signal %s %s: %w: %s", signal, name, err, out)
 	}
 	return nil
 }
