@@ -371,7 +371,8 @@ view's path and applies hash changes to it (A2). Layout persists to
   memory-history test: navigate tab A to `/done`, switch to tab B on `/`,
   navigate B to `/backlog`, then go back once. B shows `/`, tab A still shows
   `/done`, and the history length grew by exactly the two navigations. Going
-  back once more crosses the tab switch: tab A is focused and shows `/done`.
+  back once more crosses the tab switch onto the entry before A's navigation,
+  because the switch replaced A's `/done` entry: tab A is focused and shows `/`.
   Back onto an entry whose view was closed, and back onto an entry with no
   view id in its state, both apply the path to the focused view.
 
