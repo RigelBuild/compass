@@ -229,7 +229,8 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		PublicURL:         firstNonEmpty(*f.publicURL, os.Getenv("COMPASS_PUBLIC_URL")),
 		// ENV-ONLY knob (Matt 2026-08-28): the OTLP exporter and the enable-gate
 		// read one source, so no --otel-endpoint flag. Empty = tracing off.
-		OtelEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		OtelEndpoint:                  os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		TranscriptSafetyValveCapBytes: positiveCap(*f.transcriptSafetyValveCapBytes, os.Getenv("COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES")),
 	}, false, nil
 }
 
@@ -253,23 +254,24 @@ func logOnDrainSignal() func() {
 // flags. Registered as a group by registerServeFlags so buildServeConfig stays
 // short and the flag→field assembly reads as one block (mirrors forgeFlags).
 type serveFlags struct {
-	socket            *string
-	devHTTP           *string
-	listen            *string
-	tlsCert           *string
-	tlsKey            *string
-	database          *string
-	s3Endpoint        *string
-	s3Bucket          *string
-	s3AccessKey       *string
-	s3SecretKey       *string
-	s3Region          *string
-	s3UseTLS          *bool
-	stateDir          *string
-	secretProvider    *string
-	adminHandle       *string
-	corsAllowedOrigin *string
-	publicURL         *string
+	socket                        *string
+	devHTTP                       *string
+	listen                        *string
+	tlsCert                       *string
+	tlsKey                        *string
+	database                      *string
+	s3Endpoint                    *string
+	s3Bucket                      *string
+	s3AccessKey                   *string
+	s3SecretKey                   *string
+	s3Region                      *string
+	s3UseTLS                      *bool
+	transcriptSafetyValveCapBytes *int
+	stateDir                      *string
+	secretProvider                *string
+	adminHandle                   *string
+	corsAllowedOrigin             *string
+	publicURL                     *string
 }
 
 // registerServeFlags declares the core compass-server flags on the given FlagSet
@@ -334,6 +336,8 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 				"responder's \"Open in Compass\" deep links. Falls back to "+
 				"$COMPASS_PUBLIC_URL. No default: a deployment that consumes "+
 				"Linear webhooks must set it."),
+		transcriptSafetyValveCapBytes: fs.Int("transcript-safety-valve-cap-bytes", 0,
+			"Hot-tail safety-valve cap in bytes. Defaults to $COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES."),
 	}
 }
 
@@ -591,6 +595,18 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// positiveCap prefers a positive flag, then a positive env value; 0 keeps the store default.
+func positiveCap(flagValue int, envValue string) int {
+	if flagValue > 0 {
+		return flagValue
+	}
+	value, err := strconv.Atoi(envValue)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
 }
 
 // envTrue reports whether an env value is a truthy toggle ("1"/"true", any case).

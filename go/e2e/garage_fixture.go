@@ -17,7 +17,7 @@ import (
 
 const garageImage = "docker.io/dxflrs/garage:v2.1.0@sha256:850490b7aef237f30859c7deeae8a7c99121cccbdf13dc57d6d10ae6e3e3694d"
 
-type garageFixture struct{ endpoint, bucket, accessKey, secretKey string }
+type garageFixture struct{ name, endpoint, bucket, accessKey, secretKey string }
 
 func startGarageFixture(t *testing.T) *garageFixture {
 	t.Helper()
@@ -67,7 +67,7 @@ admin_token = %q
 	bucket := "compass-e2e"
 	run("bucket", "create", bucket)
 	run("bucket", "allow", "--read", "--write", bucket, "--key", id)
-	return &garageFixture{endpoint: fmt.Sprintf("127.0.0.1:%d", port), bucket: bucket, accessKey: id, secretKey: secret}
+	return &garageFixture{name: name, endpoint: fmt.Sprintf("127.0.0.1:%d", port), bucket: bucket, accessKey: id, secretKey: secret}
 }
 
 // awaitGarageNodeID polls until the server has written its node key; garage
