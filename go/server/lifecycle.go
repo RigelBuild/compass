@@ -575,7 +575,7 @@ func (l *lifecycleService) reprovision(ctx context.Context, agent store.AccountI
 	if acct.Agent == nil {
 		return "", fmt.Errorf("%w: account %q is not an agent", store.ErrNotFound, agent)
 	}
-	resp, runnerID, err := l.hub.Provision(ctx, "", &compassv1.ProvisionAgentWorkspaceRequest{
+	resp, runnerID, err := l.hub.Provision(ctx, "", agent, &compassv1.ProvisionAgentWorkspaceRequest{
 		AgentHandle: string(agent),
 		Persona:     acct.Agent.Persona,
 		Role:        acct.Agent.Role,
