@@ -181,7 +181,7 @@ func runS3Restart(t *testing.T, ctx context.Context, wholeStack bool) {
 	if !historyContains(t, ctx, f, st, sessionID, "durability first reply") {
 		t.Fatal("first reply missing from PG tail and S3 archive after restart")
 	}
-	assertArchiveHasReply(t, ctx, f, sessionID)
+	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
 	assertArchiveKindPresent(t, ctx, f.DSN(), sessionID, "safety_valve")
 }
 
@@ -199,6 +199,8 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if err := podmanAction(ctx, "pause", f.garage.name); err != nil {
 		t.Fatalf("pause Garage: %v", err)
 	}
+	// Unpause even if an assertion fails; a frozen Garage stalls fixture teardown.
+	t.Cleanup(func() { _ = podmanAction(ctx, "unpause", f.garage.name) })
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn during outage: %v", err)
 	}
@@ -212,8 +214,25 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn after outage: %v", err)
 	}
-	waitSafetyValveSegment(t, ctx, f.DSN(), sessionID)
-	assertArchiveHasReply(t, ctx, f, sessionID)
+	waitArchiveContains(t, ctx, f, sessionID, "durability second reply")
+}
+
+// waitArchiveContains polls until want lands in an S3 segment, proving flushes resume after an outage.
+func waitArchiveContains(t *testing.T, ctx context.Context, f *Fixture, sessionID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(settleTimeout)
+	ticker := time.NewTicker(transcriptPollInterval)
+	defer ticker.Stop()
+	for !archiveContains(t, ctx, f, sessionID, want) {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("%q did not reach the S3 archive within %s", want, settleTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for archive: %v", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func runS3TurnSettled(ctx context.Context, f *Fixture, sessionID, channel, marker string) error {
@@ -408,7 +427,7 @@ func resumeS3AndVerify(t *testing.T, ctx context.Context, f *Fixture, st *store.
 	if err := runS3Turn(ctx, f, st, resumed, channel, "durability-second", "durability second reply"); err != nil {
 		t.Fatalf("resumed turn: %v", err)
 	}
-	assertArchiveHasReply(t, ctx, f, sessionID)
+	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
 }
 
 func assertNoSessionEnd(t *testing.T, ctx context.Context, dsn, sessionID string) {
@@ -427,44 +446,19 @@ func assertNoSessionEnd(t *testing.T, ctx context.Context, dsn, sessionID string
 	}
 }
 
-func assertArchiveHasReply(t *testing.T, ctx context.Context, f *Fixture, sessionID string) {
+// assertArchiveHasReply requires want in an archived S3 object, not just in the PG tail.
+func assertArchiveHasReply(t *testing.T, ctx context.Context, f *Fixture, sessionID, want string) {
 	t.Helper()
-	pool, err := pgxpool.New(ctx, f.DSN())
-	if err != nil {
-		t.Fatalf("open durability query pool: %v", err)
-	}
-	defer pool.Close()
-	rows, err := pool.Query(ctx, `SELECT kind, min_entry_seq, max_entry_seq FROM agent_session_archive_segments WHERE session_id=$1 ORDER BY min_entry_seq`, sessionID)
-	if err != nil {
-		t.Fatalf("query archive segments: %v", err)
-	}
-	defer rows.Close()
-	var ranges []string
-	for rows.Next() {
-		var kind string
-		var min, max int64
-		if err := rows.Scan(&kind, &min, &max); err != nil {
-			t.Fatalf("scan segment: %v", err)
-		}
-		ranges = append(ranges, fmt.Sprintf("%s[%d..%d]", kind, min, max))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate segments: %v", err)
-	}
-	if len(ranges) == 0 {
-		t.Fatal("archive manifest has no segments")
-	}
-	var key string
-	if err := pool.QueryRow(ctx, `SELECT object_key FROM agent_session_archive_segments WHERE session_id=$1 ORDER BY min_entry_seq LIMIT 1`, sessionID).Scan(&key); err != nil {
-		t.Fatalf("query archive object key: %v", err)
-	}
-	if _, err := garageS3Client(t, f.garage).StatObject(ctx, f.garage.bucket, key, minio.StatObjectOptions{}); err != nil {
-		t.Fatalf("archive object %q: %v", key, err)
+	if !archiveContains(t, ctx, f, sessionID, want) {
+		t.Fatalf("no archived S3 segment for session %s contains %q", sessionID, want)
 	}
 }
 
 func podmanAction(ctx context.Context, action, name string) error {
-	return exec.CommandContext(ctx, "podman", action, name).Run()
+	if out, err := exec.CommandContext(ctx, "podman", action, name).CombinedOutput(); err != nil {
+		return fmt.Errorf("podman %s %s: %w: %s", action, name, err, out)
+	}
+	return nil
 }
 
 func historyContains(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, sessionID, want string) bool {
@@ -478,6 +472,11 @@ func historyContains(t *testing.T, ctx context.Context, f *Fixture, st *store.St
 			return true
 		}
 	}
+	return archiveContains(t, ctx, f, sessionID, want)
+}
+
+func archiveContains(t *testing.T, ctx context.Context, f *Fixture, sessionID, want string) bool {
+	t.Helper()
 	pool, err := pgxpool.New(ctx, f.DSN())
 	if err != nil {
 		t.Fatalf("open history pool: %v", err)
