@@ -117,11 +117,12 @@ survives anywhere. `SpawnAgent` (`go/server/spawn.go:87`) and
 `ProvisionAgentWorkspace` (`go/server/service.go:139`) name an owned agent →
 `AgentByHandle`, owner-qualified (an admin/UI caller supplies the `owner/`
 qualifier explicitly; there is no agent-session `callerOwner` to default from on
-this door); `IssueToken` (`service.go:416`) names a user OR agent → the general
-`AccountsByHandles` singular path. Resolution slots in before the existing
-`GetAccount` id lookups (`service.go:152,425`; `spawn.go:103,153,158`).
-IssueToken-by-handle also lets the IaC path name a bot account by `@handle`
-rather than a looked-up id.
+this door); `IssueToken` (`go/server/service.go`) names a user OR agent → a bare
+handle via `UserByHandle`, `owner/agent` via `UserByHandle` then
+`AgentByHandle`, with no D9 visibility clip (amended 2026-09-25, ruling 9).
+Resolution slots in before the existing `GetAccount` id lookups
+(`service.go:152,425`; `spawn.go:103,153,158`). IssueToken-by-handle also lets
+the IaC path name a bot account by `@handle` rather than a looked-up id.
 
 Two store lookups back the resolvers, both re-pointed at `account_handles` (the
 handle column moves off `accounts` per §"The storage contract"):
@@ -562,9 +563,12 @@ The three admin/ops request fields (inventory rows 14–16) resolve at the
 CompassService handler edge, mirroring T3's comms edge. `SpawnAgent`
 (`go/server/spawn.go:87`) and `ProvisionAgentWorkspace`
 (`go/server/service.go:139`) resolve `agent_handle` via `AgentByHandle`;
-`IssueToken` (`service.go:416`) resolves `account_handle` via the singular
-`AccountsByHandles` path (it may name a user or an agent). Because this is the
-adminOnly door with no agent session, the caller supplies the `owner/` qualifier
+`IssueToken` (`go/server/service.go`) resolves `account_handle` without the D9
+clip (ruling 9): a bare handle via `UserByHandle`, `owner/agent` via
+`UserByHandle` then `AgentByHandle`, the same lookups Spawn and Provision use (it
+may name a user or an agent; amended 2026-09-25, originally the
+`AccountsByHandles` path). Because this is the adminOnly door with no agent
+session, the caller supplies the `owner/` qualifier
 explicitly — there is no `callerOwner` default. Resolution slots in before the
 existing `GetAccount` id lookups (`spawn.go:103,153,158`; `service.go:152` for
 Provision — the `hub.Provision` relay at `:166` then consumes the resolved id —
@@ -652,6 +656,9 @@ confirm at freeze):
   edge (RIG-2796), not handle reservation. The handle column stays on
   `accounts` for display only; `account_handles` is the resolution key.
 
+Amendment (2026-09-25, ruling 9) adds **DL-375**: the adminOnly door resolves
+handles without the D9 visibility clip.
+
 ## Rulings (Open Questions — all closed)
 
 Matt ratified the storage/format contract on 2026-08-26 ("LGTM, can start"),
@@ -706,3 +713,11 @@ comment f59001de). All are closed below; the record is ready to freeze.
    caller's own agent; on a bare-handle collision the user/system global index
    wins (a human is never shadowed by one of your agents), so address your own
    agent that collides with a username by qualifying it (`matt/compass-ux`).
+9. **IssueToken visibility (RIG-4019) — RULED no clip on the admin door
+   (option A, 2026-09-25).** § T8 first named `AccountsByHandles`, which clips
+   by the viewer's D9 visibility. On the adminOnly door the viewer is the admin,
+   so the clip would turn a token for an unrelated user's agent into NOT_FOUND,
+   removing a power the id-keyed door always had. D9 governs what a comms caller can see;
+   issuing a token is an operator action. IssueToken therefore uses the same
+   unclipped `UserByHandle`/`AgentByHandle` lookups as Spawn and Provision. A
+   system account is still refused with PERMISSION_DENIED. Ledger: DL-375.
