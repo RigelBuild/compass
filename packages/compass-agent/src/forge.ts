@@ -54,7 +54,7 @@ import {
 	TransitionPullRequestStateRequestSchema,
 	UnsubscribeForgeRequestSchema,
 } from "./compassv1";
-import { attr, flat, ref } from "./render-guard";
+import { attr, flat, login, ref } from "./render-guard";
 
 /**
  * The one transport method the forge tools consume — a structural subset of
@@ -401,7 +401,7 @@ function renderIssueRecord(issue: Issue, fence: string): string[] {
 		`repo="${ref(issue.repo, fence)}"`,
 		`state="${attr(issue.forgeState, fence)}"`,
 		`url="${ref(issue.url, fence)}"`,
-		`forge_account="${attr(issue.forgeAccount, fence)}"`,
+		`forge_account="${login(issue.forgeAccount, fence)}"`,
 	];
 	// Attribution is parsed, not authenticated (the framing line says so): render
 	// the Compass agent handle only when the translation parsed one.
@@ -425,7 +425,7 @@ function renderPrRecord(pr: PullRequest, fence: string): string[] {
 		`head="${ref(pr.headRef, fence)}"`,
 		`base="${ref(pr.baseRef, fence)}"`,
 		`draft="${attr(String(pr.draft), fence)}"`,
-		`forge_account="${attr(pr.forgeAccount, fence)}"`,
+		`forge_account="${login(pr.forgeAccount, fence)}"`,
 	];
 	if (pr.checks) openerAttrs.push(`checks="${attr(pr.checks.state, fence)}"`);
 	if (pr.agent)

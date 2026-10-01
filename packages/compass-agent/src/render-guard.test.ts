@@ -8,7 +8,7 @@
 // line break — the exact breakouts the guards exist to deny.
 
 import { describe, expect, test } from "bun:test";
-import { ref } from "./render-guard";
+import { login, ref } from "./render-guard";
 
 describe("ref render guard", () => {
 	test("passes a well-formed permalink, repo slug, and query/fragment url", () => {
@@ -69,5 +69,32 @@ describe("ref render guard", () => {
 	test("names the fence in a render pass and omits it without one", () => {
 		expect(ref('x"y', "abc12345")).toBe("(malformed abc12345)");
 		expect(ref('x"y')).toBe("(malformed)");
+	});
+});
+
+describe("login render guard", () => {
+	test("passes a plain login and a GitHub App [bot] login", () => {
+		for (const ok of [
+			"octocat",
+			"x-author[bot]",
+			"rigelbuild-compass-dev[bot]",
+		]) {
+			expect(login(ok, "abc12345")).toBe(ok);
+		}
+	});
+
+	test("admits only the exact [bot] suffix, never other brackets or breakouts", () => {
+		for (const bad of [
+			"x[bot]y",
+			"[bot]",
+			"x[admin]",
+			"x[bot]]",
+			'x[bot]"',
+			"x[bot]\n",
+			"x<bot>",
+			"",
+		]) {
+			expect(login(bad, "abc12345")).toBe("(malformed abc12345)");
+		}
 	});
 });
