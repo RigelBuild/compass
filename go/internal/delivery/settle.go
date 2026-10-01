@@ -351,3 +351,34 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 		}
 	}
 }
+
+// OnSessionLost is the hub's SessionLostSink: the Runner refused a deliver because
+// sessionID's container is gone and the hub released its binding. It only enqueues;
+// the loop wakes the account, re-provisioning the container on the wake path.
+func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID) {
+	if sessionID == "" || account == "" {
+		return
+	}
+	c.mu.Lock()
+	c.lostQueue = append(c.lostQueue, account)
+	c.mu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+// drainLost wakes every account queued by OnSessionLost under the loop's ctx.
+func (c *Consumer) drainLost(ctx context.Context) {
+	for {
+		c.mu.Lock()
+		if len(c.lostQueue) == 0 {
+			c.mu.Unlock()
+			return
+		}
+		account := c.lostQueue[0]
+		c.lostQueue = c.lostQueue[1:]
+		c.mu.Unlock()
+		c.wake(ctx, account)
+	}
+}
