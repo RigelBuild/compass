@@ -26,10 +26,10 @@ const spawnToolName = "agents_spawn_peer"
 // mentionMarker is a stable substring of the leg-4 @-mention body (mentionText,
 // defined at the leg-4 post below) used to route BOTH mention-driven turns — the
 // mentioned peer's steer-driven turn and the subscribed spawner's deliver-driven
-// turn — off the positional canned script via WithCannedMarkerReply, so the
+// turn — off the spawner's canned route via WithCannedMarkerReply, so the
 // spawner's 2-turn spawn+settle script stays drawn only by its own turns. It
 // must stay a substring of mentionText, asserted at the split assertion.
-const mentionMarker = "please take a look"
+const mentionMarker = "e2e-route-leg34-mention"
 
 // TestLegThreeFourSpawnAndMessaging is the full legs-3/4 scenario over the real
 // stack (design.md:634-665): a canned turn issues Lifecycle(Spawn) so a fresh
@@ -37,7 +37,8 @@ const mentionMarker = "please take a look"
 // @mention and the mentioned peer gets a STEER while an unmentioned subscriber
 // gets a DELIVER (leg 4). Modeled EXACTLY on TestLegTwoRealTurn: //go:build
 // podman, the podmanUsable() skip guard first, context.Background() as the test
-// root, NewFixture(ctx, t, WithCannedScript(...)), container-reaping t.Cleanup
+// root, sharedFixture(t) with this file's init()-registered canned routes,
+// container-reaping t.Cleanup
 // registered before the settling wait, and store-side assertions via
 // store.Open(ctx, f.DSN()).
 //
@@ -52,52 +53,9 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
-	// The peer the scripted spawn mints: a unique handle the leg-3 assertions
-	// resolve the fresh account and its container by. The peer stays idle by
-	// default (no live-model egress: the peer has no canned backend of its own;
-	// it simply provisions and idles, like the leg-2 primitives path).
-	const peerHandle = "leg34-peer"
-	const peerDisplayName = "Leg Three-Four Peer"
-	// The peer's role and persona: agents_spawn_peer requires both (non-blank),
-	// so the scripted spawn must carry them or the tool rejects the call before
-	// the agent loop runs Lifecycle(Spawn). Both are server-authoritative and
-	// tolerant on the agent side — an unconfigured role prompt falls back to the
-	// default block-0 (readMountedRolePrompt), so "manager" needs no materialized
-	// prompt here; persona is free-text.
-	const peerRole = "manager"
-	const peerPersona = "Leg-3/4 e2e peer: idle standby, no lane."
-	// The spawn tool's arguments, serialized JSON (the OpenAI tool-call
-	// contract). Built from the consts above so the minted handle/display name
-	// cannot drift from what the leg-3 assertions resolve. Field names are the
-	// spawnParameters wire schema (lifecycle.ts): handle, role, persona,
-	// display_name.
-	spawnArgsJSON := fmt.Sprintf(
-		`{"handle":%q,"role":%q,"persona":%q,"display_name":%q}`,
-		peerHandle, peerRole, peerPersona, peerDisplayName,
-	)
-	// The assistant text the closing turn settles on, asserted present in the
-	// spawner's transcript (the same transcript-contains-canned-reply proof as
-	// leg-2).
-	const settleReply = "peer spawned, standing by"
-
-	// A 2-turn script: turn 0 issues the spawn tool-call (so the agent loop runs
-	// Lifecycle(Spawn)); turn 1 is a clean text settle after the tool result
-	// returns. The leg-4 @-mention (mentionText) drives a turn on the mentioned
-	// peer (via steer) AND on the subscribed spawner (via deliver), both dialing
-	// this shared backend; routing them off the positional script with a marker
-	// on the mention body keeps the 2-turn script above drawn ONLY by the
-	// spawner's own spawn+settle turns. mentionMarker is a stable substring of
-	// mentionText (asserted below); off-script marker turns settle cleanly and
-	// carry no assertion, so their reply text only needs to settle.
-	f := NewFixture(ctx, t,
-		WithCannedScript(
-			CannedToolCall(spawnToolName, spawnArgsJSON),
-			CannedText(settleReply),
-		),
-		WithCannedMarkerReply(mentionMarker, "canned mention turn settled OK"),
-	)
+	f := sharedFixture(t)
 
 	// The spawner agent: created, provisioned, and started exactly as leg-2. Its
 	// turn issues the spawn.
@@ -130,7 +88,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 			return
 		}
 		defer st.Close()
-		peer, err := adminAgentByHandle(ctx, st, peerHandle)
+		peer, err := adminAgentByHandle(ctx, st, leg34PeerHandle)
 		if err != nil {
 			return
 		}
@@ -170,7 +128,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentByHandle(spawner): %v", err)
 	}
-	if _, err := f.PostMessage(ctx, string(spawner.Agent.HomeChannelID), "general", "spawn a peer and stand by"); err != nil {
+	if _, err := f.PostMessage(ctx, string(spawner.Agent.HomeChannelID), "general", "spawn a peer and stand by "+leg34SpawnMarker); err != nil {
 		t.Fatalf("PostMessage(home): %v", err)
 	}
 
@@ -185,12 +143,12 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// ── Leg 3: fresh peer account (F2 ownership) + a second real container ──
 
 	// The spawn minted a fresh agent account resolvable by its handle.
-	peer, err := adminAgentByHandle(ctx, st, peerHandle)
+	peer, err := adminAgentByHandle(ctx, st, leg34PeerHandle)
 	if err != nil {
-		t.Fatalf("AgentByHandle(%q): %v — the scripted spawn did not mint the peer account (design.md:655-659)", peerHandle, err)
+		t.Fatalf("AgentByHandle(%q): %v — the scripted spawn did not mint the peer account (design.md:655-659)", leg34PeerHandle, err)
 	}
 	if !peer.IsAgent() {
-		t.Fatalf("resolved account %q is not an agent", peerHandle)
+		t.Fatalf("resolved account %q is not an agent", leg34PeerHandle)
 	}
 	// F2 ownership: the peer inherits the spawner's owner (SpawnPeerRequest is
 	// owned by the caller agent's owner, agent_gateway.proto:135). The spawner is
@@ -241,7 +199,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// mention grammar is `@` + handle (consumer.go:310-318), so "@leg34-peer"
 	// routes to the peer. The channel is the peer's home channel (minted at
 	// CreateAgent); the topic is the channel's home topic "general".
-	const mentionText = "@leg34-peer please take a look"
+	const mentionText = "@leg34-peer please take a look " + mentionMarker
 	messageID, err := f.PostMessage(ctx, string(peer.Agent.HomeChannelID), "general", mentionText)
 	if err != nil {
 		t.Fatalf("PostMessage(@mention): %v", err)
@@ -306,7 +264,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 		t.Fatalf("LatestSessionForAccount(peer): %v", err)
 	}
 	if !ok {
-		t.Fatalf("peer %q has no recorded session — the spawn did not start the peer's session", peerHandle)
+		t.Fatalf("peer %q has no recorded session — the spawn did not start the peer's session", leg34PeerHandle)
 	}
 
 	// injectionLog accumulates every (opKind, messageID) a recipient's tail is
@@ -431,4 +389,56 @@ func firstBlockText(m *compassv1.Message) string {
 		}
 	}
 	return ""
+}
+
+// The peer the scripted spawn mints: a unique handle the leg-3 assertions
+// resolve the fresh account and its container by. The peer stays idle by
+// default (no live-model egress: the peer has no canned backend of its own;
+// it simply provisions and idles, like the leg-2 primitives path).
+const leg34PeerHandle = "leg34-peer"
+const leg34PeerDisplayName = "Leg Three-Four Peer"
+
+// The peer's role and persona: agents_spawn_peer requires both (non-blank),
+// so the scripted spawn must carry them or the tool rejects the call before
+// the agent loop runs Lifecycle(Spawn). Both are server-authoritative and
+// tolerant on the agent side — an unconfigured role prompt falls back to the
+// default block-0 (readMountedRolePrompt), so "manager" needs no materialized
+// prompt here; persona is free-text.
+const leg34PeerRole = "manager"
+const leg34PeerPersona = "Leg-3/4 e2e peer: idle standby, no lane."
+
+// The spawn tool's arguments, serialized JSON (the OpenAI tool-call
+// contract). Built from the consts above so the minted handle/display name
+// cannot drift from what the leg-3 assertions resolve. Field names are the
+// spawnParameters wire schema (lifecycle.ts): handle, role, persona,
+// display_name.
+var leg34SpawnArgsJSON = fmt.Sprintf(
+	`{"handle":%q,"role":%q,"persona":%q,"display_name":%q}`,
+	leg34PeerHandle, leg34PeerRole, leg34PeerPersona, leg34PeerDisplayName,
+)
+
+// The assistant text the closing turn settles on, asserted present in the
+// spawner's transcript (the same transcript-contains-canned-reply proof as
+// leg-2).
+const leg34SettleReply = "peer spawned, standing by"
+
+const leg34SpawnMarker = "e2e-route-leg34-spawn"
+
+// A 2-turn script: turn 0 issues the spawn tool-call (so the agent loop runs
+// Lifecycle(Spawn)); turn 1 is a clean text settle after the tool result
+// returns, routed by leg34SpawnMarker on the spawner's prompt. The leg-4 @-mention (mentionText) drives a turn on the mentioned
+// peer (via steer) AND on the subscribed spawner (via deliver), both dialing
+// this shared backend; routing them off the spawn route with a marker
+// on the mention body keeps the 2-turn script above drawn ONLY by the
+// spawner's own spawn+settle turns. mentionMarker is a stable substring of
+// mentionText (asserted below); off-script marker turns settle cleanly and
+// carry no assertion, so their reply text only needs to settle.
+func init() {
+	registerSharedFixtureOption(
+		WithCannedMarkerScript(leg34SpawnMarker,
+			CannedToolCall(spawnToolName, leg34SpawnArgsJSON),
+			CannedText(leg34SettleReply),
+		),
+		WithCannedMarkerReply(mentionMarker, "canned mention turn settled OK"),
+	)
 }

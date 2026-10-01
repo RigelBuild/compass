@@ -21,7 +21,7 @@ package e2e
 // spawning the app binary.
 //
 // podmanUsable-guarded so a container-less sandbox SKIPS rather than fails. The
-// only waits are the fixture's own event-gated readiness (NewFixture blocks on
+// only waits are the fixture's own event-gated readiness (stand-up blocks on
 // runner enrollment) and per-RPC deadlines derived from the test-root ctx. No
 // time.Sleep, no polling, no retries.
 
@@ -46,9 +46,9 @@ func TestClientModeHeadlessChain(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every RPC below
+	ctx := context.Background() // test root, threaded into every RPC below
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	// ── Item 1: real-server happy path over the client bridge ──
 	//

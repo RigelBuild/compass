@@ -33,20 +33,21 @@ func (q *Queries) GetDMChannelByName(ctx context.Context, arg GetDMChannelByName
 }
 
 const getGroupNameVisibility = `-- name: GetGroupNameVisibility :one
-SELECT name, visibility FROM channel_groups WHERE id = $1
+SELECT name, visibility, (parent_group_id IS NULL)::boolean AS top_level FROM channel_groups WHERE id = $1
 `
 
 type GetGroupNameVisibilityRow struct {
 	Name       string
 	Visibility int16
+	TopLevel   bool
 }
 
-// Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (name AND
+// Feeds isReservedGroupTx: the reserved-group discriminator (top-level AND a reserved name AND
 // VisibilityOwner) the CreateChannel create-guard keys on.
 func (q *Queries) GetGroupNameVisibility(ctx context.Context, id string) (GetGroupNameVisibilityRow, error) {
 	row := q.db.QueryRow(ctx, getGroupNameVisibility, id)
 	var i GetGroupNameVisibilityRow
-	err := row.Scan(&i.Name, &i.Visibility)
+	err := row.Scan(&i.Name, &i.Visibility, &i.TopLevel)
 	return i, err
 }
 

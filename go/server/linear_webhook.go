@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 )
 
@@ -28,6 +30,10 @@ const (
 	// the webhook secret (RIG-2717 design §134).
 	linearSignatureHeader = "Linear-Signature"
 
+	// linearDeliveryHeader is Linear's per-delivery UUID, repeated on a retry; the
+	// dispatcher keys its post dedup on it.
+	linearDeliveryHeader = "Linear-Delivery"
+
 	// linearWebhookSkew bounds how stale a webhookTimestamp may be before the
 	// delivery is acked-and-dropped (RIG-2717 §145): the timestamp is inside the
 	// signed body, so a replay is already signature-valid; a stale timestamp is
@@ -40,10 +46,8 @@ const (
 	linearTypeComment = "Comment"
 )
 
-// SessionEventSink receives a verified Linear session event for asynchronous
-// dispatch. *linearagent.Dispatcher satisfies it via Enqueue (dispatcher.go:145).
-// Defined locally so the server can wire a real dispatcher OR pass nil when the
-// RIG-2717 responder is not assembled — the handler logs-and-drops in that case.
+// SessionEventSink is the session responder's intake (*linearagent.Dispatcher);
+// nil when Linear is not configured, and the handler then logs-and-drops.
 type SessionEventSink interface {
 	// Enqueue offers a verified session event to the dispatcher without
 	// blocking; a full queue returns linearagent.ErrQueueFull, which the handler
@@ -65,7 +69,7 @@ type linearWebhookHandler struct {
 // NewLinearWebhookHandler returns the POST /webhooks/linear handler and the
 // path it mounts at. secret lazily resolves the Linear webhook secret (TTL-cached by the
 // caller); dataSink receives every accepted data-change event; sessionSink
-// receives session events (nil when the responder is unassembled — session
+// receives session events (nil when Linear is not configured — session
 // events are then logged-and-dropped). Mirrors NewGitHubWebhookHandler's
 // nil-log default and field init.
 func NewLinearWebhookHandler(
@@ -152,7 +156,7 @@ func (h *linearWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	switch env.Type {
 	case linearTypeSession:
-		h.serveSession(ctx, w, body)
+		h.serveSession(ctx, w, r, body)
 	case linearTypeIssue, linearTypeComment:
 		h.serveData(ctx, w, body)
 	default:
@@ -165,17 +169,20 @@ func (h *linearWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // the data branch, Enqueue is itself non-blocking (a bounded try-send) and its
 // return maps to the status code, so the status is written AFTER Enqueue: a full
 // queue is a 500 (Linear retries), everything else a 200.
-func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.ResponseWriter, body []byte) {
+func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.ResponseWriter, r *http.Request, body []byte) {
 	ev, err := linearagent.ParseSessionEvent(body)
 	if err != nil {
 		h.log.WarnContext(ctx, "linear session event parse error", "err", err)
 		w.WriteHeader(http.StatusOK) // verified-but-malformed: ack-and-drop.
 		return
 	}
+	// The header is outside the signed body, so only a well-formed UUID may key dedup.
+	if id := r.Header.Get(linearDeliveryHeader); uuid.Validate(id) == nil {
+		ev.DeliveryID = id
+	}
 	if h.sessionSink == nil {
-		// The RIG-2717 responder assembly wires a real dispatcher here; until
-		// then session events are acked-and-dropped so Linear does not retry.
-		h.log.WarnContext(ctx, "linear session responder not wired, dropping event",
+		// Linear is not configured: ack so Linear does not retry an event nothing handles.
+		h.log.WarnContext(ctx, "linear session responder not configured, dropping event",
 			"action", ev.Action, "session", ev.AgentSession.ID)
 		w.WriteHeader(http.StatusOK)
 		return

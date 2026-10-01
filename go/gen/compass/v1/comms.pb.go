@@ -3,12 +3,12 @@
 // agents are first-class accounts in a management hierarchy. Channels nest in
 // channel groups, so a user's space (e.g. group "matt" → channel
 // "coordination", the path "matt.coordination") carries group-level
-// permissions. An agent's interactive surface — its ACP UI: the conversation
-// (text and structured asks) plus terminal and file panes — renders in the
-// agent's channel; the AgentWorkspace is the observation pane over that session
-// (D5), its access a projection of channel membership. All
-// comms flow through this layer, so audit and search are properties of the
-// substrate, not a separate pipeline (D1).
+// permissions. An agent's interactive surface — the session conversation (text
+// and structured asks) plus terminal and file panes — renders in the agent's
+// channel; the AgentWorkspace is the observation pane over that session (D5),
+// its access a projection of channel membership. All comms flow through this
+// layer, so audit and search are properties of the substrate, not a separate
+// pipeline (D1).
 //
 // This lives alongside compass.proto in the same owned `compass.v1` package as
 // an additive surface (new file, new service) that evolves the contract from a
@@ -942,16 +942,16 @@ func (x *PinnedEntry) GetPinnedByAccountId() string {
 	return ""
 }
 
-// An agent's interactive surface: the observation pane for one agent account —
-// the ACP conversation plus the terminal and file panes the ADE hosts. Demoted
-// to the observation pane (D5, fork f): no longer a message container, and its
-// access is a projection of the agent's channel membership rather than a
-// separate participant ACL.
+// An agent's interactive surface: the session observation pane for one agent
+// account, including the conversation, terminal, and file panes the ADE hosts.
+// Demoted to the observation pane (D5, fork f): no longer a message container,
+// and its access is a projection of the agent's channel membership rather than
+// a separate participant ACL.
 type AgentWorkspace struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Server-assigned stable id.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// The agent account whose ACP session this surface renders.
+	// The agent account whose session this surface renders.
 	AgentAccountId string `protobuf:"bytes,2,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -1096,8 +1096,8 @@ func (x *Topic) GetArchived() bool {
 }
 
 // A message in a channel — the persisted unit of the comms layer, held in the
-// Server store of record (D12). An agent's ACP turn is a channel message whose
-// blocks stream in and update as the session runs (see MessageUpdated).
+// Server store of record (D12). An agent turn is a channel message whose blocks
+// stream in and update as the session runs (see MessageUpdated).
 type Message struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Server-assigned stable id.
@@ -1111,8 +1111,11 @@ type Message struct {
 	// The posting account (a user or an agent).
 	AuthorAccountId string `protobuf:"bytes,3,opt,name=author_account_id,json=authorAccountId,proto3" json:"author_account_id,omitempty"`
 	AtUnixMs        int64  `protobuf:"varint,4,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
-	// Ordered content; mirrors ACP session/update blocks (D5).
-	Blocks        []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	// Ordered content; the block sequence a streaming agent turn appends to (D5).
+	Blocks []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	// The author's bare handle, for display only: not unique across owners (two
+	// owners' agents can share one) and not an address. author_account_id is the stable key.
+	AuthorHandle  string `protobuf:"bytes,6,opt,name=author_handle,json=authorHandle,proto3" json:"author_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1182,11 +1185,18 @@ func (x *Message) GetBlocks() []*MessageBlock {
 	return nil
 }
 
+func (x *Message) GetAuthorHandle() string {
+	if x != nil {
+		return x.AuthorHandle
+	}
+	return ""
+}
+
 // One content block in a message: the durable conversation the comms layer
-// persists. `text` is settled markdown; `ask` is a structured question the ACP
-// surface needs (D5). The execution trace (thought / tool calls / plans /
-// diffs) is delivered as opaque OMP-native session data on a dedicated stream,
-// not as comms blocks.
+// persists. `text` is settled markdown; `ask` is a structured question the
+// session surface needs (D5). The execution trace (thought / tool calls / plans
+// / diffs) is delivered as opaque OMP-native session data on a dedicated
+// stream, not as comms blocks.
 type MessageBlock struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Block:
@@ -3884,8 +3894,8 @@ func (x *UpdatePinnedBoardResponse) GetChannel() *Channel {
 
 type OpenAgentWorkspaceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The agent account to open the workspace (ACP surface) for. A `@handle`; the
-	// server resolves it to an account id; unknown → NOT_FOUND.
+	// The agent account to open the workspace (session surface) for. A `@handle`;
+	// the server resolves it to an account id; unknown → NOT_FOUND.
 	AgentHandle   string `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4942,14 +4952,15 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12+\n" +
 	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\x121\n" +
 	"\x15created_by_account_id\x18\x05 \x01(\tR\x12createdByAccountId\x12\x1a\n" +
-	"\barchived\x18\x06 \x01(\bR\barchived\"\xb0\x01\n" +
+	"\barchived\x18\x06 \x01(\bR\barchived\"\xd5\x01\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\btopic_id\x18\x02 \x01(\tR\atopicId\x12*\n" +
 	"\x11author_account_id\x18\x03 \x01(\tR\x0fauthorAccountId\x12\x1c\n" +
 	"\n" +
 	"at_unix_ms\x18\x04 \x01(\x03R\batUnixMs\x120\n" +
-	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\"\x8f\x01\n" +
+	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\x12#\n" +
+	"\rauthor_handle\x18\x06 \x01(\tR\fauthorHandle\"\x8f\x01\n" +
 	"\fMessageBlock\x12\x14\n" +
 	"\x04text\x18\x01 \x01(\tH\x00R\x04text\x12#\n" +
 	"\x03ask\x18\x02 \x01(\v2\x0f.compass.v1.AskH\x00R\x03ask\x12;\n" +

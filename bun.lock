@@ -159,6 +159,26 @@
         "typescript": "catalog:",
       },
     },
+    "tools/dl-claim": {
+      "name": "@compass/dl-claim",
+      "bin": {
+        "dl-claim": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "tools/dl-reconcile": {
+      "name": "@compass/dl-reconcile",
+      "bin": {
+        "dl-reconcile": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/font-coverage-gate": {
       "name": "@compass/font-coverage-gate",
       "bin": {
@@ -214,6 +234,13 @@
       "bin": {
         "microvm-boot-test": "./run.ts",
       },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "tools/operator-cli-check": {
+      "name": "@compass/operator-cli-check",
       "devDependencies": {
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -503,6 +530,10 @@
 
     "@compass/design-ledger-gate": ["@compass/design-ledger-gate@workspace:tools/design-ledger-gate"],
 
+    "@compass/dl-claim": ["@compass/dl-claim@workspace:tools/dl-claim"],
+
+    "@compass/dl-reconcile": ["@compass/dl-reconcile@workspace:tools/dl-reconcile"],
+
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 
     "@compass/font-coverage-gate": ["@compass/font-coverage-gate@workspace:tools/font-coverage-gate"],
@@ -516,6 +547,8 @@
     "@compass/macos-bundle": ["@compass/macos-bundle@workspace:tools/macos-bundle"],
 
     "@compass/microvm-boot-test": ["@compass/microvm-boot-test@workspace:tools/microvm-boot-test"],
+
+    "@compass/operator-cli-check": ["@compass/operator-cli-check@workspace:tools/operator-cli-check"],
 
     "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
 

@@ -107,7 +107,7 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 	h, engine := newVsockGatewayFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
@@ -172,6 +172,28 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 	if resp.Msg.GetCallId() != "vc-1" {
 		t.Fatalf("result call id = %q, want vc-1", resp.Msg.GetCallId())
 	}
+	boardResp, err := client.Board(callCtx, connect.NewRequest(&compassv1internal.BoardCallRequest{
+		CallId: "vb-1",
+		Call: &compassv1internal.BoardCallRequest_SetIssueState{
+			SetIssueState: &compassv1internal.SetIssueStateRequest{
+				IssueId: "iss-board",
+				State:   compassv1.IssueState_ISSUE_STATE_DONE,
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Board over the vsock-suffixed socket = %v, want the round-trip result", err)
+	}
+	gotBoard := fake.boardSnapshot()
+	if len(gotBoard) != 1 || gotBoard[0].GetSessionId() != sessionID {
+		t.Fatalf("relayed Board calls = %+v, want exactly one carrying session id %q", gotBoard, sessionID)
+	}
+	if gotBoard[0].GetCall().GetCallId() != "vb-1" {
+		t.Fatalf("relayed Board call id = %q, want vb-1", gotBoard[0].GetCall().GetCallId())
+	}
+	if boardResp.Msg.GetCallId() != "vb-1" {
+		t.Fatalf("Board result call id = %q, want vb-1", boardResp.Msg.GetCallId())
+	}
 }
 
 // TestVsockProvisionTeardownClosesListener pins teardown symmetry on the microVM
@@ -181,7 +203,7 @@ func TestVsockProvisionTeardownClosesListener(t *testing.T) {
 	h, engine := newVsockGatewayFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -221,7 +243,7 @@ func TestVsockProvisionServeFailureTearsDownSession(t *testing.T) {
 		t.Fatalf("pre-occupying suffixed path: %v", err)
 	}
 
-	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err == nil {
 		t.Fatal("Provision with an unservable suffixed path = nil, want a Serve error")
 	}
@@ -243,7 +265,7 @@ func TestVsockProvisionResolveMissTearsDownSession(t *testing.T) {
 	engine.missing = true
 	ctx := context.Background()
 
-	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	_, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err == nil {
 		t.Fatal("Provision with an unresolvable endpoint = nil, want an error")
 	}
@@ -275,7 +297,7 @@ func TestVsockRefreshConfigSkipsProbedSession(t *testing.T) {
 	// the gate present it is never reached (the probe short-circuits first).
 	_ = stubRelabelAnyRoot(t)
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}

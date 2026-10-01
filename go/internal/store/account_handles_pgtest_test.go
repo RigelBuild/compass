@@ -21,8 +21,12 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/pgtest"
 )
 
 // ---- T0: uniqueness invariants ----
@@ -182,6 +186,28 @@ func TestHandleReclaimBothTiers(t *testing.T) {
 	}
 }
 
+// TestAccountHandleReadsResolutionIndex: AccountHandle returns the
+// account_handles row, so it follows an index rename that leaves the
+// accounts.handle display column behind; an unknown id is ErrNotFound.
+//
+// Mutation: reading accounts.handle instead returns the stale "matt" after the
+// rename, reddening the "matt-renamed" assertion.
+func TestAccountHandleReadsResolutionIndex(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	user := mustUser(t, s, "matt")
+	if _, err := s.pool.Exec(ctx,
+		"UPDATE account_handles SET handle = $2 WHERE account_id = $1", string(user.ID), "matt-renamed"); err != nil {
+		t.Fatalf("rename user handle: %v", err)
+	}
+	got, err := s.AccountHandle(ctx, user.ID)
+	if err != nil || got != "matt-renamed" {
+		t.Fatalf("AccountHandle(matt) = (%q, %v), want (%q, nil)", got, err, "matt-renamed")
+	}
+	_, err = s.AccountHandle(ctx, "no-such-account")
+	sentinelIs(t, err, ErrNotFound, "AccountHandle(unknown)")
+}
+
 // ---- T2: AccountsByHandles resolver ----
 
 // qh is a terse QualifiedHandle constructor mirroring ParseQualifiedHandle, so a
@@ -311,5 +337,102 @@ func TestAccountsByHandlesEmptyInputNoOp(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("AccountsByHandles(empty) = %v, want empty map", got)
+	}
+}
+
+// TestAccountsByHandlesMalformedQualifierIsMiss (OQ-7 grammar): a separator with
+// an empty owner, an empty agent segment, or a nested '/' is a clean miss naming
+// the submitted spelling. "/alice" and "/compass-ux" must never fall back to the
+// bare arm, where the user and the caller's own agent would resolve.
+//
+// Mutation: branching on a non-empty Owner instead of the separator resolves the
+// two leading-'/' spellings bare and reddens their ErrNotFound assertions.
+func TestAccountsByHandlesMalformedQualifierIsMiss(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	matt := mustUser(t, s, "matt")
+	mustUser(t, s, "alice")
+	mustAgent(t, s, matt.ID, "compass-ux")
+
+	for _, raw := range []string{"/alice", "/compass-ux", "matt/compass-ux/x", "matt/", "/"} {
+		t.Run(raw, func(t *testing.T) {
+			got, err := s.AccountsByHandles(ctx, matt.ID, matt.ID, []QualifiedHandle{qh(raw)})
+			sentinelIs(t, err, ErrNotFound, raw)
+			if got != nil {
+				t.Fatalf("AccountsByHandles(%q) hits = %v, want none on an atomic miss", raw, got)
+			}
+			want := fmt.Sprintf("%v: handle %q", ErrNotFound, raw)
+			if err.Error() != want {
+				t.Fatalf("AccountsByHandles(%q) error = %q, want %q", raw, err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestAccountsByHandlesBareCollisionUserWins (OQ-7): when a user and the caller's
+// own agent share a handle, the bare spelling resolves to the user and the
+// owner-qualified spelling to the agent.
+func TestAccountsByHandlesBareCollisionUserWins(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	matt := mustUser(t, s, "matt")
+	user := mustUser(t, s, "atlas")
+	agent := mustAgent(t, s, matt.ID, "atlas")
+
+	got, err := s.AccountsByHandles(ctx, matt.ID, matt.ID, []QualifiedHandle{qh("atlas"), qh("matt/atlas")})
+	if err != nil {
+		t.Fatalf("AccountsByHandles(atlas, matt/atlas): %v", err)
+	}
+	if got["atlas"] != user.ID {
+		t.Errorf("bare atlas = %q, want the user %q (global index wins a bare collision)", got["atlas"], user.ID)
+	}
+	if got["matt/atlas"] != agent.ID {
+		t.Errorf("matt/atlas = %q, want matt's agent %q", got["matt/atlas"], agent.ID)
+	}
+}
+
+// TestAccountsByHandlesQueryCountBounded (§T2 "one query per namespace"): a mixed
+// batch that hits every arm costs exactly three queries however many handles it
+// carries, and still names every miss in submitted order.
+//
+// Mutation: a per-handle loop spends up to two queries per handle (10 here).
+func TestAccountsByHandlesQueryCountBounded(t *testing.T) {
+	ctx := context.Background()
+	counter := &pgtest.SQLCQueryCounter{}
+	s := newTracedTestStore(t, counter)
+	matt := mustUser(t, s, "matt")
+	mustUser(t, s, "alice")
+	mustAgent(t, s, matt.ID, "ux")
+	mustAgent(t, s, matt.ID, "ux-two")
+
+	handles := []QualifiedHandle{
+		qh("alice"),            // bare user
+		qh("ux"),               // bare own agent
+		qh("matt/ux-two"),      // qualified agent
+		qh("ghost"),            // bare miss
+		qh("nobody/ux"),        // unknown owner
+		qh("matt/ghost-agent"), // qualified agent miss
+	}
+	counter.Reset()
+	_, err := s.AccountsByHandles(ctx, matt.ID, matt.ID, handles)
+	queries := counter.Count()
+
+	want := fmt.Sprintf("%v: handle %q", ErrNotFound, "ghost, nobody/ux, matt/ghost-agent")
+	if err == nil || err.Error() != want {
+		t.Fatalf("AccountsByHandles error = %v, want %q", err, want)
+	}
+	if queries != 3 {
+		t.Fatalf("AccountsByHandles ran %d queries for %d handles, want 3 (one per namespace)", queries, len(handles))
+	}
+
+	// No caller namespace: a bare handle that exists only as matt's agent must
+	// miss, and the agent arm must not run at all.
+	counter.Reset()
+	_, err = s.AccountsByHandles(ctx, matt.ID, "", []QualifiedHandle{qh("ux")})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AccountsByHandles(no callerOwner, ux) error = %v, want ErrNotFound", err)
+	}
+	if n := counter.Count(); n != 1 {
+		t.Fatalf("AccountsByHandles(no callerOwner) ran %d queries, want 1 (global only)", n)
 	}
 }

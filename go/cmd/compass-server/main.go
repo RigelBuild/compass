@@ -381,6 +381,7 @@ func resolveNetworkDoor(listen, tlsCert, tlsKey string) (string, *server.TLSConf
 type forgeFlags struct {
 	repos                  *string
 	host                   *string
+	ca                     *string
 	appID                  *string
 	installationID         *string
 	appKeySecret           *string
@@ -406,6 +407,7 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 		host: fs.String("forge-host", "",
 			"Forge host the board lane binds (github.com or a GHES host; the API base "+
 				"derives from it). Defaults to $COMPASS_FORGE_HOST, then github.com."),
+		ca: fs.String("forge-ca", "", "PEM CA bundle trusted by GitHub forge clients. Defaults to $COMPASS_FORGE_CA."),
 		appID: fs.String("forge-app-id", "",
 			"PRIMARY GitHub App id (numeric): serves board reads, notify reads, author "+
 				"writes, board, and webhooks (2-App topology). Defaults to "+
@@ -461,6 +463,7 @@ func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 	return resolveForge(forgeInputs{
 		repos:                  firstNonEmpty(*f.repos, os.Getenv("COMPASS_FORGE_REPOS")),
 		host:                   firstNonEmpty(*f.host, os.Getenv("COMPASS_FORGE_HOST")),
+		ca:                     firstNonEmpty(*f.ca, os.Getenv("COMPASS_FORGE_CA")),
 		appID:                  firstNonEmpty(*f.appID, os.Getenv("COMPASS_FORGE_APP_ID")),
 		installationID:         firstNonEmpty(*f.installationID, os.Getenv("COMPASS_FORGE_INSTALLATION_ID")),
 		appKeySecret:           firstNonEmpty(*f.appKeySecret, os.Getenv("COMPASS_FORGE_APP_KEY_SECRET")),
@@ -480,6 +483,7 @@ func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 type forgeInputs struct {
 	repos                  string
 	host                   string
+	ca                     string
 	appID                  string
 	installationID         string
 	appKeySecret           string
@@ -522,6 +526,7 @@ func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 	}
 	return server.ForgeConfig{
 		Host:                     in.host,
+		ForgeCAPath:              in.ca,
 		SeedRepos:                seed,
 		LinearClientIDSecretName: in.linearClientID,
 		LinearClientSecretName:   in.linearClientSecret,

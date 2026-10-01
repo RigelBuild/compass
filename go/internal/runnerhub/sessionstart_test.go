@@ -61,7 +61,7 @@ func TestPromoteSessionFiresStartSink(t *testing.T) {
 
 	// The Provision->Start promotion path: record the container's account, then
 	// promote it onto the minted session id.
-	hub.bindContainer("c1", testAgentAccount)
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-1")
 
 	got := sink.snapshot()
@@ -100,7 +100,7 @@ func TestPromoteSessionNoBindingFiresNothing(t *testing.T) {
 func TestPromoteSessionNilStartSinkStillBinds(t *testing.T) {
 	hub := newHubOnly() // no SetSessionStartSink
 
-	hub.bindContainer("c1", testAgentAccount)
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "c1", "sess-1")
 
 	// The binding is live in both directions — promoteSession did its job with no

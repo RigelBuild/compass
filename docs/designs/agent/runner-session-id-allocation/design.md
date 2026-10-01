@@ -7,14 +7,14 @@ Issue: RIG-3696 (P1, parent RIG-2861).
 A fresh `StartAgentSession` must not reuse an identifier after a Runner restart. The old Runner-local `monotonicIDs` counter restarted from zero in each process, while durable session and binding rows survived. A reused ID could make a new lifetime resolve to an old account. The security invariant is therefore:
 
 > A `session_id` selects a Server-owned account binding. It never carries an account, and a fresh lifetime never reuses a prior lifetime's ID.
-Terminology is fixed throughout this record: a **relay request ID** is the Server-generated input to DL-371 derivation; an **operation ID** identifies one Server-to-Runner operation and its retry record; a **caller request ID** is client-supplied correlation data and is never a mint input. The public `session_id` is the durable logical key returned after promotion. The internal `fresh_session_id` is the Server-to-Runner value for a new lifetime and is never caller-selectable. An actor is the account's authorized subscriber; an authorized subscriber is not inferred from Runner data. “Fresh” means a new lifetime, “public” means returned by the public API, and “derived” means computed from the relay request ID.
+Terminology is fixed throughout this record: a **relay request ID** is the Server-generated input to DL-384 derivation; an **operation ID** identifies one Server-to-Runner operation and its retry record; a **caller request ID** is client-supplied correlation data and is never a mint input. The public `session_id` is the durable logical key returned after promotion. The internal `fresh_session_id` is the Server-to-Runner value for a new lifetime and is never caller-selectable. An actor is the account's authorized subscriber; an authorized subscriber is not inferred from Runner data. “Fresh” means a new lifetime, “public” means returned by the public API, and “derived” means computed from the relay request ID.
 The planned target behavior, pending the implementation PR, makes the Server the authority for a fresh ID. The Runner receives that `fresh_session_id` on the internal `SessionsResponse` envelope, never mints a fallback, and echoes the selected ID in its start result. A resume reuses the already-authorized logical `resume_session_id`; it does not create a second logical session. The shipped baseline does not yet provide this server-minted envelope path.
 
 ## Decisions
 
 ### Security contract gap closure: planned wire and authorization changes
 
-The current wire is not sufficient for the target behavior: `SessionsResponse` has only `request_id`, its start command uses the public start request, and the request/response pair lacks the internal result fields required below. The implementation PR MUST make these additive, internal-only contract changes without changing the shipped baseline or the DL-371 derivation:
+The current wire is not sufficient for the target behavior: `SessionsResponse` has only `request_id`, its start command uses the public start request, and the request/response pair lacks the internal result fields required below. The implementation PR MUST make these additive, internal-only contract changes without changing the shipped baseline or the DL-384 derivation:
 
 | Message | Required field (tag) | Contract |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ SHA256("compass.session-id.v1" ||
 ```
 
 The digest is encoded as 64 lowercase hexadecimal characters. The domain label
-and length prefix are frozen by DL-371. No container name, account ID, or
+and length prefix are frozen by DL-384. No container name, account ID, or
 mutable retry metadata is included. A retry that reuses the same normalized
 Server relay request ID therefore derives the same logical ID. A distinct
 relay request ID derives a distinct ID.
@@ -88,7 +88,7 @@ substitutes one.
 
 ### Retry, persistence, crash recovery, and retention
 
-The Server persists one operation reservation before dispatch. Its schema keeps separate fields for `operation_id` (one Server-to-Runner attempt), `relay_request_id` (the sole DL-371 input), `fresh_session_id` (derived value), `retry_handle_digest` (opaque retry selector), and `caller_request_id` (correlation only, nullable and never unique). It also stores the authenticated tuple `(account_id, actor_id, runner_id, container_name, container_attempt_id)`, enrollment revision, state, failure class, timestamps, and the public result once promoted. Unique constraints on operation identity, relay ID, reserved fresh ID, and handle digest prevent duplicate ownership. The promoted binding has a unique logical `session_id`; a reservation is not a public binding.
+The Server persists one operation reservation before dispatch. Its schema keeps separate fields for `operation_id` (one Server-to-Runner attempt), `relay_request_id` (the sole DL-384 input), `fresh_session_id` (derived value), `retry_handle_digest` (opaque retry selector), and `caller_request_id` (correlation only, nullable and never unique). It also stores the authenticated tuple `(account_id, actor_id, runner_id, container_name, container_attempt_id)`, enrollment revision, state, failure class, timestamps, and the public result once promoted. Unique constraints on operation identity, relay ID, reserved fresh ID, and handle digest prevent duplicate ownership. The promoted binding has a unique logical `session_id`; a reservation is not a public binding.
 
 Create, handle lookup/join, reservation, reconciliation, and promotion are single database transactions. The caller-facing retry-handle lookup is authorized against the persisted tuple. Unknown, foreign, stale, and expired handles all return the same external `NotFound` status, metadata, and response shape; no check failure is disclosed.
 
@@ -127,7 +127,7 @@ The rollout admits the pair only when both revisions are the target revision tha
 
 ## Acceptance tests (planned target behavior; pending implementation PR)
 
-- A known-vector test asserts the exact DL-371 lowercase digest for a fixed Server relay request ID, same-operation retry equality, and distinct-operation inequality.
+- A known-vector test asserts the exact DL-384 lowercase digest for a fixed Server relay request ID, same-operation retry equality, and distinct-operation inequality.
 - A caller-input test rejects non-empty caller request, fresh, account, or attempt values with `InvalidArgument` before allocation, reservation, or dispatch; only the Server-owned operation identity supplies derivation input.
 - An envelope test proves the internal message carries the Server operation ID, derived `fresh_session_id`, and attempt fence, while public requests cannot set internal fields.
 - An echo-validation test requires exact ID, operation, and authenticated attempt echoes before one binding is promoted; missing or altered values return an internal error and create no binding.

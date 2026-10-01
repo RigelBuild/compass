@@ -103,7 +103,7 @@ func relayCreateIssue(sessionID, callID string, req *compassv1internal.CreateIss
 func TestRelayForgeCallUnboundSessionFailsClosedNotFound(t *testing.T) {
 	hub, fake := newHubWithForge()
 
-	_, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("never-bound", "fc-1", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+	_, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("never-bound", "fc-1", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
 	if err == nil {
 		t.Fatal("RelayForgeCall for an unbound session = nil error, want CodeNotFound (fail closed)")
 	}
@@ -128,7 +128,7 @@ func TestRelayForgeCallNilCallerIsUnavailableBeforeResolution(t *testing.T) {
 		hub := newHubOnly()  // no ForgeCaller wired
 		bindLiveSession(hub) // a live binding exists, proving the nil guard precedes resolution
 
-		_, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("sess-1", "fc-2", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+		_, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-2", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
 		if err == nil {
 			t.Fatal("RelayForgeCall on a caller-less hub = nil error, want CodeUnavailable")
 		}
@@ -139,7 +139,7 @@ func TestRelayForgeCallNilCallerIsUnavailableBeforeResolution(t *testing.T) {
 	t.Run("unbound session still Unavailable (nil-check precedes resolution)", func(t *testing.T) {
 		hub := newHubOnly() // no ForgeCaller wired, no binding
 
-		_, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("never-bound", "fc-2b", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+		_, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("never-bound", "fc-2b", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
 		if err == nil {
 			t.Fatal("RelayForgeCall on a caller-less hub (unbound) = nil error, want CodeUnavailable")
 		}
@@ -165,7 +165,7 @@ func TestRelayForgeCallDelegatesUnderResolvedCallerAccount(t *testing.T) {
 	}
 	bindLiveSession(hub) // sess-1 -> acct-agent
 
-	_, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("sess-1", "fc-3", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+	_, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-3", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
 	if err != nil {
 		t.Fatalf("RelayForgeCall(create_issue) = %v, want success", err)
 	}
@@ -195,7 +195,7 @@ func TestRelayForgeCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	fake.err = connect.NewError(connect.CodeNotFound, errors.New("repo \"o/x\" does not exist"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("sess-1", "fc-4", &compassv1internal.CreateIssueRequest{Repo: "o/x", Title: "t"}))
+	resp, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-4", &compassv1internal.CreateIssueRequest{Repo: "o/x", Title: "t"}))
 	if err != nil {
 		t.Fatalf("RelayForgeCall with a tool error returned a Go error %v, want nil (in-band render)", err)
 	}
@@ -225,7 +225,7 @@ func TestRelayForgeCallEchoesCallIDOnSuccess(t *testing.T) {
 	}
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("sess-1", "fc-5", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+	resp, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-5", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
 	if err != nil {
 		t.Fatalf("RelayForgeCall(create_issue) = %v, want success", err)
 	}
@@ -248,7 +248,7 @@ func TestRelayForgeCallNilResultIsInternalErrorInBand(t *testing.T) {
 	fake.err = nil
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("sess-1", "fc-6", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+	resp, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-6", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
 	if err != nil {
 		t.Fatalf("RelayForgeCall with a nil-result caller returned a Go error %v, want nil (in-band render)", err)
 	}

@@ -61,14 +61,14 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 		reads.subscribers[ch] = []store.AccountID{agentA, agentB}
 		reads.members[ch] = []store.AccountID{agentA, agentB}
 		reads.handles["aa"] = agentAccount(agentA, "aa")
-		reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
 		res.bind(agentA, "sess-a")
 		res.bind(agentB, "sess-b")
 		startConsumer(t, c)
 
 		ctx, want := spanTraceparent(t)
-		// @aa steers agent-a; agent-b (subscribed, unmentioned) gets a deliver.
-		publishCtxResponse(c.bus, ctx, wireText("m1", human, "hey @aa"))
+		msg := wireText("m1", human, "hey @aa")
+		msg.AuthorHandle = "matt"
+		publishCtxResponse(c.bus, ctx, msg)
 		disp.waitForDispatches(t, 2)
 
 		got := disp.snapshot()
@@ -90,7 +90,6 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 
 		reads.subscribers[ch] = []store.AccountID{agentA}
 		reads.members[ch] = []store.AccountID{agentA}
-		reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
 		res.bind(agentA, "sess-a")
 		startConsumer(t, c)
 
@@ -185,7 +184,6 @@ func TestDispatchNeverBlocksWithoutProviderOrSpan(t *testing.T) {
 	const agentA store.AccountID = "agent-a"
 
 	reads.subscribers[ch] = []store.AccountID{agentA}
-	reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
@@ -225,7 +223,6 @@ func TestDispatchMetricIncrementsWithOpKindOnly(t *testing.T) {
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
 	reads.members[ch] = []store.AccountID{agentA, agentB}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
-	reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
 	res.bind(agentA, "sess-a")
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)

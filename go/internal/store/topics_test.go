@@ -145,6 +145,44 @@ func TestListTopicsChannelMembershipGated(t *testing.T) {
 	sentinelIs(t, err, ErrNotFound, "unknown channel ListTopics")
 }
 
+// TestGetOrCreateTopicIdempotentPerChannel pins that a repeat returns the first
+// call's topic, and that the same name in another channel is a distinct topic.
+func TestGetOrCreateTopicIdempotentPerChannel(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	author := mustUser(t, s, "author")
+	chA := mustChannel(t, s, author.ID)
+	chB := mustChannel(t, s, author.ID)
+
+	first, err := s.GetOrCreateTopic(ctx, string(chA.ID), "RIG-2717", author.ID)
+	if err != nil {
+		t.Fatalf("GetOrCreateTopic(first): %v", err)
+	}
+	topics, err := s.ListTopics(ctx, string(author.ID), string(chA.ID), false)
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	if len(topics) != 1 || topics[0].ID != first || topics[0].Name != "RIG-2717" {
+		t.Fatalf("ListTopics = %+v, want the one minted topic %q", topics, first)
+	}
+
+	again, err := s.GetOrCreateTopic(ctx, string(chA.ID), "RIG-2717", author.ID)
+	if err != nil {
+		t.Fatalf("GetOrCreateTopic(repeat): %v", err)
+	}
+	if again != first {
+		t.Errorf("repeat id = %q, want %q (get, not a second create)", again, first)
+	}
+
+	other, err := s.GetOrCreateTopic(ctx, string(chB.ID), "RIG-2717", author.ID)
+	if err != nil {
+		t.Fatalf("GetOrCreateTopic(other channel): %v", err)
+	}
+	if other == first {
+		t.Errorf("other-channel id = %q, want a distinct topic (topics are per channel)", other)
+	}
+}
+
 // TestUpdateTopicRenameInPlace pins the non-colliding rename: a rename to a
 // fresh name changes the name and leaves the messages under the same topic id.
 func TestUpdateTopicRenameInPlace(t *testing.T) {

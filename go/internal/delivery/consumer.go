@@ -81,8 +81,7 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// source-name denormalization stamped onto the deliver/steer control so the
 	// recipient renders the source channel+topic without a roster lookup (RIG-2956
 	// T0). An unknown topic id is store.ErrNotFound, which the caller logs and
-	// treats as empty names — never a delivery block, exactly as GetAccount's
-	// from_handle miss degrades.
+	// treats as empty names — never a delivery block.
 	TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
 	// ChannelAgentMembers resolves every agent MEMBER of a channel (subscribe
@@ -128,11 +127,6 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// CountOwedMentions returns the total owed_mention row count — the startup
 	// visibility log (T2 observability).
 	CountOwedMentions(ctx context.Context) (int, error)
-	// GetAccount resolves an account by id, used to denormalize the author's
-	// handle onto the deliver/steer control (RIG-2486 T1 from_handle). An unknown
-	// id is store.ErrNotFound, which the caller logs and treats as an empty
-	// handle — never a delivery block.
-	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
 	// MarkMentionsRouted stamps messageID's settle-edge mention pass complete
 	// (mentions_routed_at = now, unix ms) — the recovery scan's mark after it
 	// replays a message's mention pass, and the live path's mark (T3). Idempotent:
@@ -198,24 +192,25 @@ type Consumer struct {
 	// held is the pending-deliver registry (design.md:157-168), keyed by the
 	// AUTHOR's live session id: an agent-authored message posted while its author
 	// still streams is HELD here until that author's session settles
-	// (WORKING->READY) or reaches a terminal frame. The value is the ordered set
+	// (WORKING->READY) or reaches any terminal frame, including ERRORED reported
+	// by the Runner after an unrequested agent exit. The value is the ordered set
 	// of message ids held for that author, in post order, so a settle fires them
-	// ascending. A no-frame author death (no settle edge ever enqueues) leaves
+	// ascending. A pre-T9 Runner link loss (no settle edge ever enqueues) leaves
 	// its entry here until it is reaped: the reap happens in-process on the next
 	// Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped), which
 	// drops the entry for every session id whose hub binding enroll just cleared.
-	// So the common no-frame death is reaped at that next enroll rather than
-	// persisting until process restart. The reap is best-effort, NOT a hard
+	// So the common pre-T9 link-loss entry is reaped at that next enroll rather
+	// than persisting until process restart. The reap is best-effort, NOT a hard
 	// bound: the reaped set is exactly the session ids bound at enroll time, and a
-	// no-frame-dead session is never re-promoted (its id, once cleared, never
-	// re-enters the hub's session map), so a narrow race can still strand one
-	// entry until process restart — a Deliver that resolved the author LIVE an
-	// instant before enroll cleared the maps can hold(sess) just AFTER that
-	// enroll's reap, re-adding the dead session's entry; because that id never
-	// re-enrolls, no later enroll reaps it. Delivery correctness (no-loss) is
-	// unaffected either way — only the reap (a leak bound, not the delivery
-	// guarantee) is best-effort: the recipient still receives the message via the
-	// reconnect cursor sweep, independent of this registry.
+	// session can now be re-promoted after re-enroll. A narrow race can still
+	// strand one entry until a later settle or process restart — a Deliver that
+	// resolved the author LIVE an instant before enroll cleared the maps can
+	// hold(sess) just AFTER that enroll's reap, re-adding the entry; if that
+	// session is not re-promoted or settled, no later event clears it. Delivery
+	// correctness (no-loss) is unaffected either way — only the reap (a leak
+	// bound, not the delivery guarantee) is best-effort: the recipient still
+	// receives the message via the reconnect cursor sweep, independent of this
+	// registry.
 	held map[string][]heldEntry
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
@@ -442,8 +437,7 @@ func steerOp(msg *compassv1.Message, fromHandle, channelName, topicName, tracepa
 // agent renders the source without a roster lookup (RIG-2956 T0). A missing
 // topic id or a store miss is logged and yields empty names: the names are a
 // render signal, never a delivery precondition, so a name miss must not block
-// the dispatch — the exact log-and-continue posture authorHandle applies to the
-// from_handle.
+// the dispatch.
 func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (channelName, topicName string) {
 	topicID := msg.GetTopicId()
 	if topicID == "" {
@@ -456,26 +450,6 @@ func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (cha
 		return "", ""
 	}
 	return channelName, topicName
-}
-
-// authorHandle resolves a wire message's author account id to its handle — the
-// value denormalized onto the deliver/steer control as the SessionInjection
-// from_handle (RIG-2486 T1). A missing author id or a store miss is logged and
-// yields an empty handle: the from_handle is an observation signal, never a
-// delivery precondition, so a handle miss must not block the dispatch (matches
-// the log-and-continue posture the mention/subscriber resolvers already use).
-func (c *Consumer) authorHandle(ctx context.Context, msg *compassv1.Message) string {
-	author := store.AccountID(msg.GetAuthorAccountId())
-	if author == "" {
-		return ""
-	}
-	acc, err := c.st.GetAccount(ctx, author)
-	if err != nil {
-		c.log.ErrorContext(ctx, "delivery: resolve author handle for injection from_handle",
-			"error", err, "message_id", msg.GetId(), "author", string(author))
-		return ""
-	}
-	return acc.Handle
 }
 
 // mentionRE matches one `@`-mention token: `@` then a handle. The handle is

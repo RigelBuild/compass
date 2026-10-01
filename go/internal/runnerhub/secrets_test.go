@@ -53,7 +53,8 @@ func (f *fakeResolverSecrets) ResolveFor(_ context.Context, agent store.AccountI
 // kind-gate contract the seam tests already rely on.
 func runnerResolverForFetch() *fakeResolver {
 	return &fakeResolver{tokens: map[string]resolverEntry{
-		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}},
+		"runner-tok":         {subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}},
+		"foreign-runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-2"}},
 	}}
 }
 
@@ -142,7 +143,7 @@ func TestFetchSecretsResolveErrorInternal(t *testing.T) {
 func TestFetchSecretsByBoundContainerReturnsResolvedSet(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("cont-1", testAgentAccount)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v", Version: "v1"}}}
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
@@ -153,6 +154,41 @@ func TestFetchSecretsByBoundContainerReturnsResolvedSet(t *testing.T) {
 	}
 	if got := resp.Msg.GetSecrets(); len(got) != 1 || got[0].GetName() != "A" {
 		t.Fatalf("resolved set = %+v, want the single secret A", got)
+	}
+}
+
+// TestFetchSecretsRejectsForeignRunner pins owner checks on both selector paths
+// over the RunnerService wire using valid tokens for two distinct Runner subjects.
+func TestFetchSecretsRejectsForeignRunner(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		request *compassv1internal.FetchSecretsRequest
+	}{
+		{name: "session", request: &compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}},
+		{name: "container", request: &compassv1internal.FetchSecretsRequest{ContainerName: "cont-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := newHubOnly()
+			hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+			hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+			bindSession(hub, "sess-1")
+			resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
+			url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+
+			foreign := newRawRunnerClient(t, url, "foreign-runner-tok")
+			_, err := foreign.FetchSecrets(context.Background(), connect.NewRequest(tc.request))
+			if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
+				t.Fatalf("foreign Runner FetchSecrets code = %v, want PermissionDenied", got)
+			}
+			if resolver.resolveCalls != 0 {
+				t.Fatalf("resolver called %d times for foreign Runner, want 0", resolver.resolveCalls)
+			}
+
+			owner := newRawRunnerClient(t, url, "runner-tok")
+			if _, err := owner.FetchSecrets(context.Background(), connect.NewRequest(tc.request)); err != nil {
+				t.Fatalf("owner Runner FetchSecrets = %v, want success", err)
+			}
+		})
 	}
 }
 
@@ -199,7 +235,7 @@ func TestFetchSecretsMissingSelectorInvalidArgument(t *testing.T) {
 func TestFetchSecretsBothSelectorsInvalidArgument(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.bindContainer("cont-1", testAgentAccount)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	bindSession(hub, "sess-1")
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)

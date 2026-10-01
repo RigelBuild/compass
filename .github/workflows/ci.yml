@@ -1075,11 +1075,26 @@ jobs:
     env:
       TMPDIR: /tmp
     steps:
+      - name: Verify dispatched PR provenance before secrets
+        id: dispatch_provenance
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr }}
+        run: |
+          head_repo=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name')
+          if [ "$head_repo" != "$GH_REPO" ]; then
+            echo "::error::refusing secret-bearing Forge dispatch for PR #$PR_NUMBER from $head_repo"
+            exit 1
+          fi
+          echo 'trusted=true' >>"$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The forge-affected git diff needs the base branch history.
           fetch-depth: 0
-          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # Base-repoint re-trigger checks out the recomputed merge ref; empty
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
@@ -1202,7 +1217,8 @@ jobs:
           github.event_name == 'push' ||
           github.event_name == 'schedule' ||
           (github.event_name == 'workflow_dispatch' &&
-           github.event.inputs.pr != '')
+           github.event.inputs.pr != '' &&
+           steps.dispatch_provenance.outputs.trusted == 'true')
         env:
           LINEAR_FORGE_CLIENT_ID: ${{ secrets.LINEAR_FORGE_CLIENT_ID }}
           LINEAR_FORGE_CLIENT_SECRET: ${{ secrets.LINEAR_FORGE_CLIENT_SECRET }}
@@ -1238,7 +1254,8 @@ jobs:
           github.event_name == 'push' ||
           github.event_name == 'schedule' ||
           (github.event_name == 'workflow_dispatch' &&
-           github.event.inputs.pr != '')
+           github.event.inputs.pr != '' &&
+           steps.dispatch_provenance.outputs.trusted == 'true')
         env:
           # The T2 env contract (design §358-362, §431-436), post-RIG-3096 App
           # cutover: the GitHub live legs authenticate as two GitHub Apps — the
@@ -1303,7 +1320,8 @@ jobs:
           github.event_name == 'push' ||
           github.event_name == 'schedule' ||
           (github.event_name == 'workflow_dispatch' &&
-           github.event.inputs.pr != '')
+           github.event.inputs.pr != '' &&
+           steps.dispatch_provenance.outputs.trusted == 'true')
         run: |
           src=internal/forge/livegithub_test.go
           ghskip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' "$src")
@@ -2029,9 +2047,10 @@ jobs:
     #   - GitHub's `$GITHUB_PATH` / `$GITHUB_OUTPUT` are runner-created files owned
     #     by root (mode 644). The steps below append to them (toolchain bin dirs,
     #     the image_affected flag), which the non-root podman user cannot do — so
-    #     the wrapper first `chmod`s the per-step file-command dir writable while
-    #     it is still root, then execs the body as podman. Doing this in the
-    #     wrapper (not a step) is what lets every step keep using the standard
+    #     the wrapper first `chown`s the per-step file-command files to podman while
+    #     it is still root, leaving the directory root-owned so the runner keeps
+    #     creating each step's files there, then execs the body as podman. Doing
+    #     this in the wrapper (not a step) is what lets every step keep using the
     #     `>>"$GITHUB_PATH"` idiom unchanged.
     #   - `sudo -u podman -E` preserves the runner env across the user switch
     #     (the `$GITHUB_*` vars, `$GITHUB_BASE_REF` for moon's detection); `-E` is
@@ -2100,7 +2119,7 @@ jobs:
         #     runner's .NET path parser ("Second path fragment must not be a
         #     drive or UNC name"). It lands in /usr/bin (always on the runner's
         #     PATH) and is written here, while root, because it must exist before
-        #     the first podman step and only root can install it and chmod the
+        #     the first podman step and only root can install it and chown the
         #     runner's file-command files.
         shell: bash -e {0}
         run: |
@@ -2119,11 +2138,11 @@ jobs:
           cat >/usr/bin/podman-step <<'WRAP'
           #!/usr/bin/env bash
           # Run one GitHub step as the rootless podman user. The runner spawns
-          # this as root; make the per-step file-command files (owned root, 644)
-          # writable so the podman body can append to $GITHUB_PATH/$GITHUB_OUTPUT,
+          # this as root; hand the per-step file-command files (owned root, 644)
+          # to podman so the body can append to $GITHUB_PATH/$GITHUB_OUTPUT,
           # then drop to podman preserving env, fixing PATH, and pinning HOME.
           set -e
-          [ -n "$RUNNER_TEMP" ] && chmod -R a+rw "$RUNNER_TEMP/_runner_file_commands" 2>/dev/null || true
+          [ -n "$RUNNER_TEMP" ] && find "$RUNNER_TEMP/_runner_file_commands" -type f -exec chown podman:podman {} + 2>/dev/null || true
           exec sudo -u podman -E env "PATH=$PATH:/usr/local/bin:/usr/bin:/bin" HOME=/home/podman /usr/bin/bash -e "$1"
           WRAP
           chmod 0755 /usr/bin/podman-step
@@ -2451,6 +2470,10 @@ jobs:
         #     UNTAGGED and runs under a bare `go test`, so an `ok`-line grep alone
         #     could pass on that file while the real podman legs silently skipped
         #     — the skip-string check above is what closes that gap.
+        #   - the per-leg PASS names come from the TestComms prefix over every
+        #     e2e test file, so a new comms leg cannot land unguarded whatever
+        #     its filename. The loop reads a HERESTRING, not a pipe: a
+        #     `printf | while` refactor would swallow its exit and pass vacuously.
         run: |
           skip=$(sed -n 's/.*t\.Skip("\(rootless podman[^";]*\)[^"]*").*/\1/p' \
             e2e/harness_test.go)
@@ -2468,6 +2491,19 @@ jobs:
             exit 1
           fi
           echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
+          test_names=$(sed -nE 's/^[[:space:]]*func[[:space:]]+(TestComms[A-Za-z0-9_]*)[[:space:]]*\(.*/\1/p' \
+            e2e/*_test.go | sort -u)
+          if [ -z "$test_names" ]; then
+            echo "::error::could not derive any TestComms* names from go/e2e/*_test.go"
+            exit 1
+          fi
+          while IFS= read -r test_name; do
+            if ! grep -qE "^--- PASS: ${test_name}( |$)" /tmp/e2e.log; then
+              echo "::error::deterministic e2e did not report PASS for $test_name"
+              exit 1
+            fi
+          done <<< "$test_names"
+          echo "dogfood e2e: every source-derived TestComms* leg reported PASS"
 
   rollup:
     name: rollup
@@ -2624,6 +2660,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.pr == '' &&
+      github.ref == 'refs/heads/main' &&
       inputs.regen == 'forge'
     # The top-level `permissions: contents: read` is the floor; this job widens
     # its own to open a PR: contents:write to push the regen branch,
@@ -2762,9 +2799,13 @@ jobs:
     # is what makes a bare dispatch fire ONLY the forge lane and leave this one
     # off; see the forge lane's `if:` for why the `inputs` context is the form
     # to copy here.
+    # The `refs/heads/main` conjunct matches the forge lane's: a dispatch names
+    # an arbitrary ref, and the dispatched ref's own copy of this file runs, so
+    # without it an arbitrary branch executes with contents+pull-requests write.
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.pr == '' &&
+      github.ref == 'refs/heads/main' &&
       inputs.regen == 'visual'
     # The top-level `permissions: contents: read` is the floor; widened exactly
     # as the forge lane's: contents:write to push the regen branch,

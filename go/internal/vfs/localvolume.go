@@ -259,13 +259,8 @@ func (m *LocalManager) Attach(ctx context.Context, v Volume) (string, error) {
 	return resolved.HostRoot, nil
 }
 
-// requireVolumeRoot reports ErrVolumeNotFound unless root is still a directory.
-// Called under the per-volume lock by Attach and Stamp, it is the authoritative
-// existence check: the volume cannot be reaped while the caller holds the lock,
-// so a root that is present here stays present for the rest of the critical
-// section. A root that is ABSENT here was reaped by the Expire the caller was
-// blocked behind, and must surface as the typed not-found signal so the
-// provision path cold-materializes instead of mounting a deleted path.
+// requireVolumeRoot checks existence under the per-volume lock. A missing root
+// means Expire reaped it while the caller waited and must return typed not-found.
 func requireVolumeRoot(root, sessionID string) error {
 	info, err := os.Stat(root)
 	switch {
@@ -407,11 +402,8 @@ func (m *LocalManager) ReconcileOrphans(ctx context.Context) error {
 	})
 }
 
-// stampOrphanLocked writes the discovery stamp for an orphan under the held
-// per-volume lock, after confirming under that lock that the volume is still
-// unstamped. An already-stamped volume is left exactly as its teardown wrote
-// it: this pass exists only to make UNSTAMPED volumes reachable by the reaper,
-// and rewriting a suspended session's stamp would make it reapable.
+// stampOrphanLocked stamps only an existing, unstamped volume under its lock.
+// It must not recreate a root reaped between discovery and lock acquisition.
 func stampOrphanLocked(root string, discoveredAt time.Time) error {
 	// A volume reaped out from under this pass — between eachVolume's marker stat
 	// and this lock acquisition — is not an orphan to stamp. Without this guard
@@ -475,18 +467,8 @@ func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) erro
 	})
 }
 
-// reapLocked reads the stamp under the held per-volume lock, and deletes the
-// volume subtree only if that under-lock read says it is eligible. This is the
-// only place a volume is destroyed (P2-GC-c), and it is reachable only with the
-// lock held (invariant (b)): reading the stamp here rather than at the call
-// site is what guarantees the verdict cannot be stale, because a concurrent
-// Attach must hold this same lock to clear a stamp.
-//
-// It removes ONLY the volume root. The lock file the caller is holding is a
-// sibling of that root, not a path inside it, so this removal cannot unlink the
-// inode the lock lives on — which is what keeps the lock excluding a blocked
-// Attach across the reap, and lets that Attach observe the absence and return
-// ErrVolumeNotFound (see lockVolume and Attach).
+// reapLocked checks eligibility under the held lock before deleting the volume.
+// The lock file is a sibling, so RemoveAll cannot unlink the held lock inode.
 func reapLocked(root string, now time.Time, olderThan time.Duration) error {
 	stamp, err := readStamp(root)
 	if err != nil {
@@ -501,11 +483,8 @@ func reapLocked(root string, now time.Time, olderThan time.Duration) error {
 	return nil
 }
 
-// eligible reports whether a stamp makes its volume reap-eligible: it must
-// exist (an unstamped volume is a live session's), carry IntentClosed exactly
-// (IntentSuspended — and any unrecognized intent, which a corrupt stamp could
-// carry — pins the volume rather than risking a wrong reap), and be older than
-// the retention window.
+// eligible requires an existing IntentClosed stamp older than the retention
+// window; unknown intents stay pinned rather than risking an incorrect reap.
 func eligible(stamp *closeStamp, now time.Time, olderThan time.Duration) bool {
 	if stamp == nil || stamp.Intent != IntentClosed {
 		return false
@@ -513,36 +492,25 @@ func eligible(stamp *closeStamp, now time.Time, olderThan time.Duration) bool {
 	return now.Sub(stamp.StampedAt) > olderThan
 }
 
-// Snapshot returns the not-implemented sentinel: the verb is reserved in
-// VolumeManager, but the snapshot store, the reflink/rsync copy primitive, and
-// the (AgentAccountID, repo) index the provision path reads are W2's to land
-// behind this signature. Honest failure over a silent no-op — a caller must not
-// read an empty VolumeSnapshotID as a stored snapshot.
+// Snapshot returns the reserved verb's sentinel; an empty ID is not a stored
+// snapshot.
 func (m *LocalManager) Snapshot(ctx context.Context, v Volume) (VolumeSnapshotID, error) {
 	return "", ErrSnapshotNotImplemented
 }
 
-// Archive returns the not-implemented sentinel: the verb's consumer is D4's
-// cold-idle (OQ-2), so P2 freezes the signature and defers the object-store
-// implementation.
+// Archive returns the reserved verb's sentinel; the object-store implementation
+// is not part of this backend.
 func (m *LocalManager) Archive(ctx context.Context, v Volume) (ArchiveRef, error) {
 	return "", ErrArchiveNotImplemented
 }
 
-// Restore returns the not-implemented sentinel, for the same reason as Archive
-// (OQ-2): a caller must not read a zero Volume as a rehydrated one.
+// Restore returns the reserved verb's sentinel, not a rehydrated volume.
 func (m *LocalManager) Restore(ctx context.Context, ref ArchiveRef) (Volume, error) {
 	return Volume{}, ErrRestoreNotImplemented
 }
 
-// volumeRoot resolves a session's volume root, rejecting any session id that
-// could escape the base dir or collide with the lock-file namespace. Session
-// ids reaching this package are already sanitized internal ids, so this is
-// defense in depth on the one operation that deletes a subtree: the base dir is
-// the only place this package may ever create or reap, and a `..` or a
-// separator in a session id would break that. A session id ENDING in
-// lockFileSuffix is rejected too: its volume root would be another session's
-// sibling lock-file path, so a reap of one would target the other's lock.
+// volumeRoot rejects IDs that escape the base dir or collide with a sibling
+// lock-file path; callers already provide sanitized internal IDs.
 func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("%w: empty", ErrInvalidSessionID)
@@ -559,23 +527,8 @@ func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 	return filepath.Join(m.baseDir, sessionID), nil
 }
 
-// eachVolume runs fn against every volume root under the base dir, joining
-// per-volume errors instead of aborting on the first: one unreadable or locked
-// volume must not pin every volume behind it.
-//
-// Volume identity here is STRUCTURAL, not positional: an entry is one of this
-// package's volumes only if it is a directory AND contains the metaDirName
-// marker dir that CreateVolume writes. That marker is the volume-identity
-// token, not merely the stamp's container — a directory under the base dir
-// without it does not belong to this package and is never stamped or reaped.
-// The base dir is not this package's exclusively: the frozen record places W2's
-// snapshot store as a sibling subtree under the same base dir keyed by
-// VolumeSnapshotID, and without this check the first ReconcileOrphans would
-// stamp that store closed and the next Expire past the window would silently
-// delete it. Crash orphans keep their marker (CreateVolume wrote it before the
-// crash), so reconciliation of genuine orphans is unaffected. Non-directory
-// entries are skipped for the same reason — the sibling per-volume lock files
-// live in this dir (see lockVolume), and a stray file is not a volume.
+// eachVolume visits only marked volume directories and joins per-volume errors.
+// The marker excludes other subtrees sharing the base dir from stamping/reaping.
 func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) error) error {
 	entries, err := os.ReadDir(m.baseDir)
 	if err != nil {
@@ -610,9 +563,7 @@ func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) erro
 	return errors.Join(errs...)
 }
 
-// metaDir is the volume's metadata dir, where the close-stamp lives. The
-// per-volume lock file is deliberately NOT here — it is a sibling of the volume
-// root (see lockVolume).
+// metaDir is the volume metadata dir; its lock file is a sibling of the root.
 func metaDir(root string) string { return filepath.Join(root, metaDirName) }
 
 // stampPath is the volume's close-stamp file.
@@ -686,12 +637,8 @@ func writeStamp(root string, stamp closeStamp) error {
 	return syncDir(dir)
 }
 
-// syncDir fsyncs a directory so a rename committed inside it is durable, not
-// merely atomic. The staged file's own bytes are fsynced by writeAndClose; the
-// directory entry the rename created needs its own fsync, which is the standard
-// durable-rename pairing. Both the open and the close are reported: a
-// half-reported fsync would put the "never WRONG" claim on ReconcileOrphans
-// back on hope.
+// syncDir makes a committed rename durable. The file bytes are synced by
+// writeAndClose; reporting close errors prevents claiming durability on failure.
 func syncDir(dir string) error {
 	d, err := os.Open(dir) //nolint:gosec // G304: path is this package's own metadata dir under the operator-configured base dir, derived from a volume root, never caller-supplied
 	if err != nil {
@@ -707,14 +654,8 @@ func syncDir(dir string) error {
 	return errors.Join(errs...)
 }
 
-// writeAndClose writes data to f, pins the owner-only mode independent of the
-// Runner's umask, fsyncs it, and closes it — reporting every failure. The
-// fsync is what makes the staged bytes durable before writeStamp renames them
-// into place, so a host crash in the writeback window cannot lose a stamp (see
-// writeStamp for why losing an IntentSuspended stamp fails WRONG). The Close
-// error is handled, not discarded: on a written file it can carry the flush
-// failure that means the bytes never landed, which for a stamp would mean a
-// volume the reaper mis-judges.
+// writeAndClose applies owner-only mode, syncs the staged file, and reports
+// write, sync, and close failures so an incomplete stamp cannot be mistaken as durable.
 func writeAndClose(f *os.File, data []byte) error {
 	name := f.Name()
 	writeErr := func() error {

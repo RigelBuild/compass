@@ -41,7 +41,7 @@ func TestWakeAgentLiveIsNoOp(t *testing.T) {
 
 	// Make the agent LIVE through the real Provision->Start promotion path the
 	// hub drives: bindContainer then promoteSession bind (agent -> live session).
-	if _, _, err := f.hub.Provision(ctx, "prov-live", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID)}); err != nil {
+	if _, _, err := f.hub.Provision(ctx, "prov-live", f.agentID, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if _, err := f.hub.Start(ctx, "start-live", &compassv1.StartAgentSessionRequest{ContainerName: fakeContainer}); err != nil {
@@ -110,6 +110,57 @@ func TestWakeAgentPriorSessionResumes(t *testing.T) {
 	// BindLifetime snapshotted the rebase base as the stored max (2).
 	if base := boundBase(t, ctx, f.dsn, logical); base != 2 {
 		t.Fatalf("resume bound base = %d, want 2 (BindLifetime ran on the resume path)", base)
+	}
+}
+
+// TestWakeAgentLostContainerReprovisions: after a redeploy the placement names a
+// container the Runner no longer has. The wake re-provisions the same account (the
+// Runner derives the same name) and retries the start there, on both wake paths.
+func TestWakeAgentLostContainerReprovisions(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		priorSess  bool
+		wantResume string
+	}{
+		{name: "resume", priorSess: true, wantResume: "sess-wake-lost"},
+		{name: "fresh start", priorSess: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			f, lc := newWakeFixture(t)
+			if tc.priorSess {
+				if err := f.store.RecordAgentSession(ctx, tc.wantResume, f.agentID); err != nil {
+					t.Fatalf("RecordAgentSession: %v", err)
+				}
+				if err := f.store.AppendTranscriptEntry(ctx, tc.wantResume, 1, true, `{"header":true}`, "k1"); err != nil {
+					t.Fatalf("append checkpoint: %v", err)
+				}
+			}
+			if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
+				t.Fatalf("RecordAgentPlacement: %v", err)
+			}
+			f.runner.setLostContainers(fakeContainer)
+			f.runner.forget()
+
+			lc.WakeAgent(ctx, f.agentID)
+
+			prov, starts := f.runner.provisionAndStarts()
+			if f.runner.provisionCount() != 1 || prov.GetAgentHandle() != string(f.agentID) {
+				t.Fatalf("want one re-provision of %q; commands: %v", f.agentID, f.runner.commands())
+			}
+			if len(starts) != 2 {
+				t.Fatalf("Starts = %d, want 2 (the lost one, then the retry); commands: %v", len(starts), f.runner.commands())
+			}
+			if got := starts[1]; got.GetContainerName() != fakeContainer || got.GetResumeSessionId() != tc.wantResume {
+				t.Fatalf("retry Start = container %q resume %q, want %q resume %q", got.GetContainerName(), got.GetResumeSessionId(), fakeContainer, tc.wantResume)
+			}
+			if _, container, err := f.store.PlacementForAgent(ctx, f.agentID); err != nil || container != fakeContainer {
+				t.Fatalf("placement after wake = %q, %v; want %q kept", container, err, fakeContainer)
+			}
+			if f.runner.sawRemove(fakeContainer) {
+				t.Fatal("wake removed the re-provisioned container")
+			}
+		})
 	}
 }
 
@@ -245,7 +296,7 @@ func TestWakeAgentSingleflightCoalescesToOneStart(t *testing.T) {
 	// leader's StartResume->promoteSession promotes the agent LIVE. That closes the
 	// residual race: a follower reaching wakeGroup.Do just after the leader releases
 	// finds the agent live at the not-live pre-check and no-ops.
-	if _, _, err := f.hub.Provision(ctx, "prov-sf", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID)}); err != nil {
+	if _, _, err := f.hub.Provision(ctx, "prov-sf", f.agentID, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
 		t.Fatalf("Provision (bind container): %v", err)
 	}
 	f.runner.forget()

@@ -308,6 +308,13 @@ message SessionsResponse {
   // Tag 14: the next free tag after resume_body = 13. A fresh tag, never a
   // reused one.
   string fresh_session_id = 14;
+  // agent_account_id — the server-resolved agent account id for a `provision`
+  // command, a TOP-LEVEL sibling outside the command oneof like fresh_session_id.
+  // INTERNAL-ONLY: the public `provision` request is relayed verbatim, so its
+  // agent_handle keeps its one meaning (the owner-qualified handle) and never
+  // carries an id. Set only on a provision; the Runner rejects a provision
+  // without it. Tag 15: the next free tag after fresh_session_id = 14.
+  string agent_account_id = 15;
 }
 
 // ResumeBody — the INTERNAL resume-body carrier attached to SessionsResponse on

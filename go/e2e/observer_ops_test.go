@@ -49,9 +49,9 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	ownerID, err := f.CreateUser(ctx, "t1-observer-owner", "T1 Observer Owner")
 	if err != nil {
@@ -98,9 +98,9 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 	// The observer credential works for an authenticatedOpen CommsService read,
 	// and the RESPONSE is what carries the visibility teeth — not merely that
 	// the RPC did not error.
-	observerCompass, observerComms, err := f.AsObserver(ctx, ownerID)
+	observerCompass, observerComms, err := f.AsObserver(ctx, "t1-observer-owner")
 	if err != nil {
-		t.Fatalf("AsObserver(%s): %v", ownerID, err)
+		t.Fatalf("AsObserver(t1-observer-owner): %v", err)
 	}
 	listCtx, cancelList := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelList()
@@ -138,7 +138,7 @@ func TestObserverAndSetupPrimitives(t *testing.T) {
 	denyCtx, cancelDeny := context.WithTimeout(ctx, rpcTimeout)
 	defer cancelDeny()
 	_, err = observerCompass.IssueToken(denyCtx, connect.NewRequest(&compassv1.IssueTokenRequest{
-		AccountHandle: ownerID,
+		AccountHandle: "t1-observer-owner",
 	}))
 	if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
 		t.Fatalf("observer bearer on the adminOnly IssueToken = %v, want CodePermissionDenied (the observer must NOT be the admin)", code)
@@ -155,9 +155,9 @@ func TestAsObserverUnknownHandleIsNotFound(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + AsObserver
+	ctx := context.Background() // test root, threaded into AsObserver
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	compass, comms, err := f.AsObserver(ctx, "t1-no-such-account")
 	if err == nil {

@@ -10,6 +10,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -18,6 +19,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/comms"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -331,13 +333,14 @@ func TestSpawnSameHandleDifferentOwnerCreatesDistinctPeer(t *testing.T) {
 }
 
 // TestDespawnDifferentOwnerIsIndistinguishableNotFound pins the load-bearing
-// despawn authz merge: a caller despawning a peer owned by a DIFFERENT user gets
-// the EXACT same CodeNotFound as despawning an unknown id — so a foreign peer's
-// existence can never be probed.
+// despawn authz merge: within one input form, a foreign-owner peer, a non-agent
+// account, and an unknown handle all get the EXACT same CodeNotFound and message
+// — so a foreign peer's (or user's) existence can never be probed.
 //
 // Mutation: returning a distinct code (e.g. PermissionDenied) for a
-// foreign-but-existing target reddens the "same code as unknown" assertion — the
-// existence probe the merge exists to prevent.
+// foreign-but-existing target reddens the "same as unknown" assertions; honoring
+// a foreign `owner/` qualifier despawns owner B's peer, and that success reddens
+// the despawnErr fatal.
 func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
@@ -351,52 +354,82 @@ func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent(caller-b) = %v", err)
 	}
-	peerB, err := f.lc.SpawnAsAccount(ctx, callerB.ID, &compassv1internal.SpawnPeerRequest{
+	if _, err := f.lc.SpawnAsAccount(ctx, callerB.ID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-b",
 		ClientRequestId: "spawn-peer-b",
 		Role:            "manager",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("owner-B spawn = %v, want success", err)
 	}
 
-	// The fixture caller (owner A) tries to despawn owner B's peer.
-	_, foreignErr := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: peerB.GetAgentAccountId()})
-	if foreignErr == nil {
-		t.Fatal("despawn of a foreign-owner peer = success, want CodeNotFound (never touch a foreign peer)")
+	despawnErr := func(handle string) error {
+		t.Helper()
+		_, err := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: handle})
+		if err == nil {
+			t.Fatalf("despawn %q = success, want CodeNotFound", handle)
+		}
+		return err
+	}
+	assertSame := func(form string, want error, others map[string]error) {
+		t.Helper()
+		if connect.CodeOf(want) != connect.CodeNotFound {
+			t.Fatalf("%s: code = %v, want CodeNotFound", form, connect.CodeOf(want))
+		}
+		for name, got := range others {
+			if connect.CodeOf(got) != connect.CodeOf(want) {
+				t.Fatalf("%s: %s code = %v, unknown code = %v, want identical", form, name, connect.CodeOf(got), connect.CodeOf(want))
+			}
+			if got.Error() != want.Error() {
+				t.Fatalf("%s: %s message = %q, unknown message = %q, want byte-identical", form, name, got.Error(), want.Error())
+			}
+		}
 	}
 
-	// The same caller despawns an entirely unknown id.
-	_, unknownErr := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-does-not-exist"})
-	if unknownErr == nil {
-		t.Fatal("despawn of an unknown id = success, want CodeNotFound")
-	}
+	// Bare form: owner B's peer, the caller's own owner (a user, not an agent),
+	// and a never-minted handle.
+	assertSame("bare", despawnErr("does-not-exist"), map[string]error{
+		"foreign":   despawnErr("peer-b"),
+		"non-agent": despawnErr("admin"),
+	})
+	// Qualified form: owner B's real peer under owner B's real handle, an unknown
+	// owner, an empty owner, and an empty agent handle.
+	assertSame("qualified", despawnErr("nobody/does-not-exist"), map[string]error{
+		"foreign":             despawnErr("userb/peer-b"),
+		"foreign-owner-own":   despawnErr("userb/caller-b"),
+		"own-owner-unknown":   despawnErr("admin/does-not-exist"),
+		"wrong-owner-own-agt": despawnErr("userb/atlas"),
+		"empty-owner":         despawnErr("/atlas"),
+		"empty-handle":        despawnErr("admin/"),
+	})
 
-	if fc, uc := connect.CodeOf(foreignErr), connect.CodeOf(unknownErr); fc != uc || fc != connect.CodeNotFound {
-		t.Fatalf("foreign code = %v, unknown code = %v, want both CodeNotFound (indistinguishable)", fc, uc)
+	// Owner B's peer is untouched.
+	peerB, err := f.store.AgentByHandle(ctx, userB.ID, "peer-b")
+	if err != nil {
+		t.Fatalf("AgentByHandle(userb, peer-b) = %v", err)
 	}
-	if fm, um := foreignErr.Error(), unknownErr.Error(); fm != um {
-		t.Fatalf("foreign message = %q, unknown message = %q, want identical (indistinguishable even by text)", fm, um)
+	if _, _, err := f.store.PlacementForAgent(ctx, peerB.ID); err != nil {
+		t.Fatalf("PlacementForAgent(peer-b) after foreign despawns = %v, want still placed", err)
 	}
 }
 
-// TestDespawnSelfIsInvalidArgument pins the self-despawn refusal through the real
-// store path (the store-free lane covers the guard ordering; this covers it end
-// to end): a caller despawning ITS OWN id gets CodeInvalidArgument.
+// TestDespawnSelfIsInvalidArgument pins the self-despawn refusal on the RESOLVED
+// id: a caller despawning its own handle, bare or owner-qualified, gets
+// CodeInvalidArgument.
 //
-// Mutation: removing the target==caller guard makes this fall through to the
-// owner check and (since caller owns itself) attempt teardown — reddening the
-// invalid_argument assertion.
+// Mutation: removing the target==caller guard lets a self-target past the
+// resolver and into teardown — reddening the invalid_argument assertion.
 func TestDespawnSelfIsInvalidArgument(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
 
-	_, err := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: string(f.agentID)})
-	if err == nil {
-		t.Fatal("despawn of self = success, want CodeInvalidArgument")
-	}
-	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
-		t.Fatalf("despawn-self code = %v, want CodeInvalidArgument", got)
+	for _, handle := range []string{"atlas", "admin/atlas"} {
+		_, err := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: handle})
+		if err == nil {
+			t.Fatalf("despawn of self by %q = success, want CodeInvalidArgument", handle)
+		}
+		if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+			t.Fatalf("despawn-self by %q code = %v, want CodeInvalidArgument", handle, got)
+		}
 	}
 }
 
@@ -426,7 +459,7 @@ func TestDespawnSameOwnerSiblingSucceeds(t *testing.T) {
 		t.Fatalf("CreateAgent(other-sib) = %v", err)
 	}
 
-	if _, err := f.lc.DespawnAsAccount(ctx, other.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: target.GetAgentAccountId()}); err != nil {
+	if _, err := f.lc.DespawnAsAccount(ctx, other.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: "sibling"}); err != nil {
 		t.Fatalf("same-owner sibling despawn = %v, want success (owner authority, not spawner)", err)
 	}
 
@@ -442,6 +475,7 @@ func TestDespawnSameOwnerSiblingSucceeds(t *testing.T) {
 // TestDespawnSecondTimeIsIdempotentSuccess pins that a repeat despawn of an
 // already-torn-down peer SUCCEEDS (placement-absent idempotent path), never
 // not_found — the same already-stopped-succeeds contract StopAgentSession has.
+// The repeat names the peer owner-qualified, so both input forms resolve a hit.
 //
 // Mutation: treating a placement-absent target as not_found reddens the second
 // despawn's success assertion.
@@ -449,20 +483,21 @@ func TestDespawnSecondTimeIsIdempotentSuccess(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
 
-	target, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+	if _, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-twice",
 		ClientRequestId: "spawn-twice",
 		Role:            "manager",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("spawn = %v, want success", err)
 	}
-	req := &compassv1internal.DespawnPeerRequest{AgentHandle: target.GetAgentAccountId()}
 
-	if _, err := f.lc.DespawnAsAccount(ctx, f.agentID, req); err != nil {
+	if _, err := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: "peer-twice"}); err != nil {
 		t.Fatalf("first despawn = %v, want success", err)
 	}
-	if _, err := f.lc.DespawnAsAccount(ctx, f.agentID, req); err != nil {
+	if !f.runner.sawRemove(fakeContainer) {
+		t.Fatalf("first despawn never sent a Remove (commands: %v)", f.runner.commands())
+	}
+	if _, err := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: "admin/peer-twice"}); err != nil {
 		t.Fatalf("second despawn of an already-torn-down peer = %v, want idempotent success (not not_found)", err)
 	}
 }
@@ -480,7 +515,7 @@ func TestRemoveAgentWorkspaceHandler(t *testing.T) {
 	ctx := context.Background()
 
 	// Provision a real placement to release.
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID), ClientRequestId: "prov-rm"})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: "prov-rm"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 	if _, _, err := f.store.PlacementForAgent(ctx, f.agentID); err != nil {
@@ -549,7 +584,7 @@ func TestDespawnCallerNotAnAgentIsInternal(t *testing.T) {
 	}
 
 	// Target differs from the caller so the self-despawn guard does not fire first.
-	_, err = f.lc.DespawnAsAccount(ctx, user.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-some-other-id"})
+	_, err = f.lc.DespawnAsAccount(ctx, user.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: "some-other-agent"})
 	if err == nil {
 		t.Fatal("despawn by a non-agent caller = success, want CodeInternal (errCallerNotAgent)")
 	}
@@ -558,6 +593,86 @@ func TestDespawnCallerNotAnAgentIsInternal(t *testing.T) {
 	}
 	if !errors.Is(err, errCallerNotAgent) {
 		t.Fatalf("non-agent-caller despawn err = %v, want wrapping errCallerNotAgent", err)
+	}
+}
+
+// TestDespawnResolverQueryShapeIsConstantPerForm pins the constant query shape:
+// within one input form every outcome runs the same sqlc queries, so latency
+// cannot tell a foreign or non-agent target from an unknown one. A qualified
+// despawn also never looks up the foreign owner it names, since that lookup would
+// reveal whether the foreign user exists.
+//
+// The own hit is the caller itself: it resolves a hit and stops at the self
+// guard, so teardown queries (which only a hit reaches) stay out of the count.
+//
+// Mutation: resolving the qualifier with UserByHandle(qh.Owner) adds a query to
+// the qualified form; resolving the target before the caller drops one from a miss.
+func TestDespawnResolverQueryShapeIsConstantPerForm(t *testing.T) {
+	ctx := context.Background() // test root context
+	counter := &pgtest.SQLCQueryCounter{}
+	st, err := store.OpenTraced(ctx, pgtest.RequireDSN(t), counter)
+	if err != nil {
+		t.Fatalf("store OpenTraced: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: "admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	caller, err := st.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "atlas", DisplayName: "Atlas"})
+	if err != nil {
+		t.Fatalf("CreateAgent(atlas): %v", err)
+	}
+	other, err := st.CreateUser(ctx, store.NewUser{Handle: "other", DisplayName: "Other"})
+	if err != nil {
+		t.Fatalf("CreateUser(other): %v", err)
+	}
+	if _, err := st.CreateAgent(ctx, other.ID, store.NewAgent{Handle: "x", DisplayName: "X"}); err != nil {
+		t.Fatalf("CreateAgent(other/x): %v", err)
+	}
+	// No outcome here reaches teardown, so no Runner hub is needed.
+	lc := newLifecycleService(st, nil, nil)
+
+	forms := []struct {
+		name    string
+		want    []string
+		handles map[string]string // outcome -> submitted handle
+	}{
+		{
+			name: "bare",
+			want: []string{"GetAgentOwner", "GetAccountByOwnerHandle"},
+			handles: map[string]string{
+				"own hit":   "atlas",
+				"unknown":   "ghost",
+				"foreign":   "x",
+				"non-agent": "admin",
+			},
+		},
+		{
+			name: "qualified",
+			want: []string{"GetAgentOwner", "GetAccountHandle", "GetAccountByOwnerHandle"},
+			handles: map[string]string{
+				"own hit":         "admin/atlas",
+				"unknown":         "admin/ghost",
+				"foreign":         "other/x",
+				"unknown-owner":   "nobody/x",
+				"non-agent":       "admin/admin",
+				"foreign-non-agt": "other/other",
+			},
+		},
+	}
+	for _, form := range forms {
+		for outcome, handle := range form.handles {
+			counter.Reset()
+			_, err := lc.DespawnAsAccount(ctx, caller.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: handle})
+			if err == nil {
+				t.Fatalf("%s %s: despawn %q = success, want a refusal", form.name, outcome, handle)
+			}
+			if got := counter.Names(); !slices.Equal(got, form.want) {
+				t.Fatalf("%s %s: despawn %q ran %v, want %v", form.name, outcome, handle, got, form.want)
+			}
+		}
 	}
 }
 

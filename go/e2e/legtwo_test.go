@@ -24,9 +24,9 @@ func TestLegTwoPrimitives(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	accountID, err := f.CreateAgent(ctx, "leg2-primitives", "Leg Two Primitives")
 	if err != nil {
@@ -67,7 +67,7 @@ func TestLegTwoPrimitives(t *testing.T) {
 // H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn cannot complete without a
 // deterministic model backend, so on the bare stack the settle would hang and
 // the transcript stay empty. H3 (RIG-1787) lands that backend — the canned stub
-// the fixture stands up via WithCannedModel — so this same scenario now runs
+// routed by leg2RealTurnMarker — so this same scenario now runs
 // GREEN with zero live-model egress.
 //
 // The turn is driven entirely by the canned stub (a fixed scripted reply). The
@@ -81,13 +81,10 @@ func TestLegTwoRealTurn(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into sharedFixture + every primitive
 
-	// The exact assistant reply the canned stub settles every turn on; asserted
-	// present in the persisted transcript below.
-	const cannedReply = "canned leg-2 turn settled OK"
-	f := NewFixture(ctx, t, WithCannedModel(cannedReply))
-
+	f := sharedFixture(t)
+	const cannedReply = leg2RealTurnReply
 	accountID, err := f.CreateAgent(ctx, "leg2-realturn", "Leg Two Real Turn")
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
@@ -140,7 +137,7 @@ func TestLegTwoRealTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
 	}
-	if _, err := f.PostMessage(ctx, string(acc.Agent.HomeChannelID), "general", "say hello and stop"); err != nil {
+	if _, err := f.PostMessage(ctx, string(acc.Agent.HomeChannelID), "general", "say hello and stop "+leg2RealTurnMarker); err != nil {
 		t.Fatalf("PostMessage(home): %v", err)
 	}
 
@@ -163,4 +160,16 @@ func TestLegTwoRealTurn(t *testing.T) {
 	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, cannedReply); err != nil {
 		t.Fatalf("awaitTranscriptPersisted: %v", err)
 	}
+}
+
+// leg2RealTurnMarker routes TestLegTwoRealTurn's prompt on the shared canned
+// stub; leg2RealTurnReply is the exact assistant reply, asserted present in the
+// persisted transcript.
+const (
+	leg2RealTurnMarker = "e2e-route-leg2-real-turn"
+	leg2RealTurnReply  = "canned leg-2 turn settled OK"
+)
+
+func init() {
+	registerSharedFixtureOption(WithCannedMarkerReply(leg2RealTurnMarker, leg2RealTurnReply))
 }

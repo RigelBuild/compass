@@ -50,6 +50,7 @@ var errBoardUnavailable = errors.New("runnerhub: no board caller wired to serve 
 // split: only a resolution miss / no-caller is a Connect error.
 func (h *Hub) RelayBoardCall( //nolint:dupl // deliberate structural mirror of RelayLifecycleCall (relay_lifecycle.go): the sibling relay legs each spell out the same fail-closed guard order (nil-caller CodeUnavailable, unbound-session CodeNotFound, in-band tool error) so the security-critical resolution edge reads identically per leg — collapsing them into one generic helper is the "second convention" this leg is required not to invent.
 	ctx context.Context,
+	runnerID string,
 	req *compassv1internal.RelayBoardCallRequest,
 ) (*compassv1internal.RelayBoardCallResponse, error) {
 	h.mu.Lock()
@@ -58,7 +59,7 @@ func (h *Hub) RelayBoardCall( //nolint:dupl // deliberate structural mirror of R
 	if caller == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errBoardUnavailable)
 	}
-	account, ok := h.accountForSession(ctx, req.GetSessionId())
+	account, ok := h.accountForRunnerSession(ctx, runnerID, req.GetSessionId())
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.

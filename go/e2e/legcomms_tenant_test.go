@@ -38,9 +38,7 @@ import (
 
 // The two tenants, their agents, and the two channels. Handles obey the account
 // handle grammar (store/handle.go:15 `^[a-z0-9][a-z0-9._-]*$`) and are t4-scoped
-// so they stay mutually distinct WITHIN this leg and name their subject in a
-// failure message. Cross-leg isolation is not theirs to provide: each test gets
-// its own NewFixture, hence its own stack, cluster and state dir.
+// so they stay distinct across tests sharing the same persistent database.
 const (
 	t4Owner1Handle = "t4-owner-1"
 	t4Owner2Handle = "t4-owner-2"
@@ -80,9 +78,9 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
-	f := NewFixture(ctx, t)
+	f := sharedFixture(t)
 
 	// ---- setup: two owner tenants ----
 
@@ -97,13 +95,13 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 
 	// Observer bearers for both tenants. These are the credentials every
 	// assertion below rides; the admin bearer would make all three vacuous.
-	_, owner1Comms, err := f.AsObserver(ctx, owner1ID)
+	_, owner1Comms, err := f.AsObserver(ctx, t4Owner1Handle)
 	if err != nil {
-		t.Fatalf("AsObserver(owner-1 %s): %v", owner1ID, err)
+		t.Fatalf("AsObserver(owner-1 %s): %v", t4Owner1Handle, err)
 	}
-	_, owner2Comms, err := f.AsObserver(ctx, owner2ID)
+	_, owner2Comms, err := f.AsObserver(ctx, t4Owner2Handle)
 	if err != nil {
-		t.Fatalf("AsObserver(owner-2 %s): %v", owner2ID, err)
+		t.Fatalf("AsObserver(owner-2 %s): %v", t4Owner2Handle, err)
 	}
 
 	// One agent under EACH owner, never started (no Provision, no StartSession —
@@ -277,9 +275,10 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 	// owner's agent (comms/comms.go:683-685) and remaps it to the NOT_FOUND an
 	// unknown handle gets. Called directly on the generated client AsObserver
 	// returns — no fixture wrapper.
-	_, agent1Comms, err := f.AsObserver(ctx, agent1ID)
+	agent1Handle := t4Owner1Handle + "/" + t4Agent1Handle
+	_, agent1Comms, err := f.AsObserver(ctx, agent1Handle)
 	if err != nil {
-		t.Fatalf("AsObserver(owner-1's agent %s): %v", agent1ID, err)
+		t.Fatalf("AsObserver(owner-1's agent %s): %v", agent1Handle, err)
 	}
 
 	crossOwnerPeer := t4Owner2Handle + "/" + t4Agent2Handle

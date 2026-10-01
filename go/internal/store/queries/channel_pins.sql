@@ -4,7 +4,7 @@
 -- flow stay exactly as they were and wrap these generated calls.
 
 -- name: LockChannelForPins :one
-SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id
+SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id, name
 FROM channels WHERE id = $1 FOR UPDATE;
 
 -- name: MessageInChannel :one

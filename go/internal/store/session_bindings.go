@@ -165,26 +165,25 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 	return displaced, nil
 }
 
-// ResolveSessionAccount resolves the agent account a live session speaks for —
-// the relay's read on every inbound comms call, where the request carries only
-// the session id.
+// ResolveSessionBinding resolves the account and Runner a live session speaks
+// for — the relay's read on every inbound Runner-originated call.
 //
 // An unbound session is ErrNotFound, and that is FAIL-CLOSED by design: this
-// resolves the scope a comms call runs under, so a miss must never surface as an
+// resolves the scope a call runs under, so a miss must never surface as an
 // empty AccountID with a nil error. A zero-value account id would flow onward as
 // a real (wrong) principal instead of stopping the call.
-func (s *Store) ResolveSessionAccount(ctx context.Context, sessionID string) (AccountID, error) {
+func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (AccountID, string, error) {
 	if sessionID == "" {
-		return "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+		return "", "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	accountID, err := s.q.SessionBindingAccount(ctx, sessionID)
+	row, err := s.q.SessionBinding(ctx, sessionID)
 	if err != nil {
 		if noRows(err) {
-			return "", fmt.Errorf("%w: session %q is not bound", ErrNotFound, sessionID)
+			return "", "", fmt.Errorf("%w: session %q is not bound", ErrNotFound, sessionID)
 		}
-		return "", fmt.Errorf("store: resolve session account: %w", err)
+		return "", "", fmt.Errorf("store: resolve session binding: %w", err)
 	}
-	return AccountID(accountID), nil
+	return AccountID(row.AgentAccountID), row.RunnerID, nil
 }
 
 // SessionForAccount resolves the live session bound to an agent account — the

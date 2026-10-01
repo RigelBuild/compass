@@ -15,6 +15,8 @@ import (
 	"errors"
 	"testing"
 
+	"connectrpc.com/connect"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -56,7 +58,7 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 	bindLiveSession(hub)
 
 	req := &compassv1.GetRosterRequest{Scope: compassv1.RosterScope_ROSTER_SCOPE_SUBTREE}
-	resp, err := hub.RelayCommsCall(context.Background(), relayRoster("sess-1", "tc-r", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayRoster("sess-1", "tc-r", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(roster) = %v, want success", err)
 	}
@@ -78,6 +80,35 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 	}
 }
 
+// TestRelayCommsCallRosterArmErrorIsInBandNotStreamError: a roster caller
+// failure is rendered as a CommsCallError while RelayCommsCall itself remains
+// successful and preserves the request call_id.
+//
+// Mutation: dropping caller error handling makes the in-band roster error absent,
+// so this test fails.
+func TestRelayCommsCallRosterArmErrorIsInBandNotStreamError(t *testing.T) {
+	hub, comms := newHubWithComms()
+	comms.rosterErr = connect.NewError(connect.CodePermissionDenied, errors.New("roster denied"))
+	bindLiveSession(hub)
+
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayRoster("sess-1", "tc-roster-err", &compassv1.GetRosterRequest{
+		Scope: compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
+	}))
+	if err != nil {
+		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band roster error", err)
+	}
+	toolErr := resp.GetResult().GetError()
+	if toolErr == nil {
+		t.Fatal("response has no in-band CommsCallError, want the roster failure rendered in-band")
+	}
+	if got := toolErr.GetCode(); got != connect.CodePermissionDenied.String() {
+		t.Fatalf("in-band error code = %q, want %q", got, connect.CodePermissionDenied.String())
+	}
+	if got := resp.GetResult().GetCallId(); got != "tc-roster-err" {
+		t.Fatalf("response call_id = %q, want tc-roster-err", got)
+	}
+}
+
 // TestRelayCommsCallSetStatusArmWritesThenPublishesTruncated: a set_status call
 // forwards the activity to SetStatusAsAccount (the durable write) under the bound
 // account, and THEN publishes the SERVER-TRUNCATED value returned by that write —
@@ -90,7 +121,7 @@ func TestRelayCommsCallSetStatusArmWritesThenPublishesTruncated(t *testing.T) {
 	hub.SetPresenceSource(src)
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relaySetStatus("sess-1", "tc-s", "abcdefghij"))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relaySetStatus("sess-1", "tc-s", "abcdefghij"))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(set_status) = %v, want success", err)
 	}
@@ -127,7 +158,7 @@ func TestRelayCommsCallSetStatusArmNoPresenceSourceStillSucceeds(t *testing.T) {
 	hub, comms := newHubWithComms()
 	bindLiveSession(hub)
 
-	_, err := hub.RelayCommsCall(context.Background(), relaySetStatus("sess-1", "tc-s", "status"))
+	_, err := hub.RelayCommsCall(context.Background(), testRunnerID, relaySetStatus("sess-1", "tc-s", "status"))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(set_status, no presence source) = %v, want success", err)
 	}
@@ -152,7 +183,7 @@ func TestRelayCommsCallSetStatusArmWriteErrorDoesNotPublish(t *testing.T) {
 	hub.SetPresenceSource(src)
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relaySetStatus("sess-1", "tc-s", "status"))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relaySetStatus("sess-1", "tc-s", "status"))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(set_status, write error) = %v, want the failure rendered in-band", err)
 	}

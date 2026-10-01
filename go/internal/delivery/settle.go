@@ -68,7 +68,8 @@ func (c *Consumer) OnSessionStarted(sessionID string, account store.AccountID) {
 // delivers (design.md:148-168, 312-315):
 //   - READY (agent_end, the normal WORKING->READY turn-end) fires from the
 //     message's current (settled) blocks.
-//   - STOPPED / ERRORED (agent-emitted terminal frames) fire from stored blocks.
+//   - STOPPED / ERRORED fire from stored blocks. ERRORED may come from the
+//     Runner after an unexpected exit, even when the agent is silent.
 //   - DISCONNECTED is NOT a settle — it is the bounded-reattach window; firing on
 //     it would collapse DISCONNECTED to ERRORED, which the design forbids.
 //   - STARTING / WORKING / UNSPECIFIED are not settle edges.
@@ -86,16 +87,15 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 // drainSettles fires every queued author-settle edge under the loop's ctx. Each
 // edge fires the messages held for that author session, in post order, from each
 // message's CURRENT (settled) stored blocks (design.md:158-168), then clears the
-// registry entry — a no-frame author death never enqueues an edge, so its held
-// entry is left in place until it is reaped. The reap happens in-process on the
-// next Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped),
-// which drops the entry for every session id enroll just cleared — so the common
-// no-frame death is reaped at that next enroll rather than persisting until
-// process restart. The reap is best-effort, not a hard bound: a no-frame-dead
-// session is never re-promoted, so a narrow race (a Deliver that resolved the
-// author LIVE an instant before enroll cleared the maps re-holds the dead
-// session just AFTER that enroll's reap) can still strand one entry until process
-// restart, since that id never re-enrolls to be reaped again. No-loss is
+// registry entry. A pre-T9 Runner link loss has no Runner-observed process exit,
+// so no settle edge fires to clear its held entry; it is left in place until it
+// is reaped. The reap happens in-process on the next Runner (re-)enroll via the
+// hub's SessionReapSink (OnSessionsReaped), which drops the entry for every
+// session id enroll just cleared. The reap is best-effort, not a hard bound: a
+// Deliver that resolved the author LIVE just before enroll cleared the maps can
+// re-hold the session just AFTER that enroll's reap. The same logical id can now
+// be re-promoted after re-enroll, and a later settle can clear the entry; if it
+// is not re-promoted or settled, it can remain until process restart. No-loss is
 // unaffected regardless — the reconnect sweep still delivers the message
 // (design.md:168-176); only the leak bound, not the delivery guarantee, is
 // best-effort.
@@ -191,7 +191,7 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 				continue
 			}
 			cn, tn := c.sourceNames(ctx, wire)
-			ops = append(ops, pinOp{op: deliverOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx)), messageID: entry.MessageID})
+			ops = append(ops, pinOp{op: deliverOp(wire, wire.GetAuthorHandle(), cn, tn, otelx.Traceparent(ctx)), messageID: entry.MessageID})
 		}
 	}
 	gate := c.gateFor(sessionID)
@@ -242,7 +242,7 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 				continue
 			}
 			cn, tn := c.sourceNames(ctx, wire)
-			ops = append(ops, steerOpEntry{op: steerOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx)), messageID: m.ID})
+			ops = append(ops, steerOpEntry{op: steerOp(wire, wire.GetAuthorHandle(), cn, tn, otelx.Traceparent(ctx)), messageID: m.ID})
 		}
 	}
 	if len(ops) > 0 {
@@ -290,14 +290,18 @@ func (c *Consumer) fireHeld(ctx context.Context, authorSession string) {
 }
 
 // OnSessionsReaped drops the held-deliver registry entries for sessions whose
-// hub bindings were cleared at a Runner (re-)enroll (SessionReapSink). A
-// no-frame author death emits no terminal frame, so no settle edge ever fires
+// hub bindings were cleared at a Runner (re-)enroll (SessionReapSink). A pre-T9
+// Runner link loss has no Runner-observed process exit, so no settle edge fires
 // fireHeld to clear its entry; this enroll-bounded reap realizes the design's
-// promised cleanup (design.md:172-175) so the registry does not leak an entry
-// per no-frame death until process restart. No-loss is unaffected: any message
-// still owed is redelivered by the recipient's reconnect cursor sweep. Pure
-// in-memory work under c.mu — it does not enqueue onto the consumer loop or
-// touch the store, so it is safe to run directly on the hub's enroll goroutine.
+// promised cleanup (design.md:172-175). The reap is best-effort, not a hard
+// bound: a concurrent Deliver that resolved the author LIVE just before enroll
+// cleared the maps can re-hold the session just AFTER that enroll's reap. The
+// same logical id may be re-promoted after re-enroll; a later settle can clear
+// the entry, but if the session is not re-promoted or settled the entry may
+// remain until process restart. No-loss is unaffected: any message still owed
+// is redelivered by the recipient's reconnect cursor sweep. Pure in-memory work
+// under c.mu — it does not enqueue onto the consumer loop or touch the store, so
+// it is safe to run directly on the hub's enroll goroutine.
 func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -339,7 +343,7 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 		for i := range msgs {
 			wire := comms.MessageToWire(msgs[i])
 			cn, tn := c.sourceNames(ctx, wire)
-			op := deliverOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx))
+			op := deliverOp(wire, wire.GetAuthorHandle(), cn, tn, otelx.Traceparent(ctx))
 			if err := c.dispatch.DispatchControl(ctx, sessionID, op); err != nil {
 				c.log.WarnContext(ctx, "delivery: sweep dispatch failed, leaving to next sweep",
 					"error", err, "session_id", sessionID, "message_id", string(msgs[i].ID))

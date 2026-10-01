@@ -147,7 +147,8 @@ var errStreamClosed = errors.New("runner sessions stream closed")
 // the stream with the error so the Runner can retry the relay; a well-formed but
 // unknown frame is not an error (Deliver logs+counts it).
 func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
 	for stream.Receive() {
@@ -155,6 +156,7 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 		if err := h.hub.Deliver(ctx, RunnerEvent{
 			RunnerSeq: msg.GetRunnerSeq(),
 			SessionID: msg.GetSessionId(),
+			RunnerID:  subj.ID,
 			Frame:     msg.GetFrame(),
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -174,10 +176,11 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 // as a Connect CodeNotFound (surfaced to the Runner) and a comms tool failure as
 // the in-band CommsCallError variant of the result (never a stream teardown).
 func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest]) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayCommsCall(ctx, req.Msg)
+	resp, err := h.hub.RelayCommsCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -192,10 +195,11 @@ func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compa
 // none. An unresolved session is a Connect CodeNotFound; a tool failure is the
 // in-band LifecycleCallError variant (never a stream teardown).
 func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayLifecycleCall(ctx, req.Msg)
+	resp, err := h.hub.RelayLifecycleCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -211,10 +215,11 @@ func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[c
 // a tool failure is the in-band BoardCallError variant (never a stream
 // teardown).
 func (h *Handler) RelayBoardCall(ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest]) (*connect.Response[compassv1internal.RelayBoardCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayBoardCall(ctx, req.Msg)
+	resp, err := h.hub.RelayBoardCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -230,10 +235,11 @@ func (h *Handler) RelayBoardCall(ctx context.Context, req *connect.Request[compa
 // a tool failure is the in-band ForgeCallError variant (never a stream
 // teardown).
 func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest]) (*connect.Response[compassv1internal.RelayForgeCallResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.RelayForgeCall(ctx, req.Msg)
+	resp, err := h.hub.RelayForgeCall(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -255,10 +261,11 @@ func (h *Handler) RelayForgeCall(ctx context.Context, req *connect.Request[compa
 // Connect status error, because the Runner drives at-least-once purely off the
 // Connect code. seq is deferred and shipped as 0.
 func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
-	resp, err := h.hub.CommitConversationFrame(ctx, req.Msg)
+	resp, err := h.hub.CommitConversationFrame(ctx, subj.ID, req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -271,22 +278,19 @@ func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Requ
 // account token is Unauthenticated here, the OQ7 cross-door rule); the
 // runnerSubjectFrom check is defense in depth, mirroring the other handlers.
 //
-// Binding authz (record §756-762): the request selects the binding to authorize
-// against, and that binding RESOLVES the agent account the read is scoped to (A9).
-// A session_id must be a live session bound to this Runner (rotation re-fetch); a
-// container_name must have a recorded container→account binding (the PROVISION-
-// time initial materialize, before any session exists). Under inject-all +
-// single-Runner, "bound to this Runner" == "present in the hub" (there is exactly
-// one Runner); AccountForLiveSession / AccountForContainer are those checks AND
-// yield the account. The agent identity comes from the hub binding, NEVER a
-// request field. A foreign/unknown selector is rejected CodePermissionDenied; a
-// missing selector is CodeInvalidArgument.
+// Binding authz is scoped to the authenticated Runner: the request selects a
+// binding only when that Runner owns the session or provisioned container, and
+// the binding resolves the agent account used for the A9-scoped read. The agent
+// identity comes from the hub binding, never a request field. A foreign or
+// unknown selector is rejected CodePermissionDenied; a missing selector is
+// CodeInvalidArgument.
 //
 // NO-LOG posture (record §770-772): the response carries live secret values
 // (ResolvedSecret.value/.version are [debug_redact] on the wire). This handler
 // logs neither the response nor the resolved set.
 func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
-	if _, ok := runnerSubjectFrom(ctx); !ok {
+	subject, ok := runnerSubjectFrom(ctx)
+	if !ok {
 		return nil, errUnauthenticated
 	}
 	if h.resolver == nil {
@@ -302,13 +306,13 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	case sessionID != "" && containerName != "":
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets accepts a session_id or a container_name, not both"))
 	case sessionID != "":
-		account, ok := h.hub.AccountForLiveSession(sessionID)
+		account, ok := h.hub.AccountForLiveSession(subject.ID, sessionID)
 		if !ok {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("session %q is not a live session bound to this runner", sessionID))
 		}
 		agent = account
 	case containerName != "":
-		account, ok := h.hub.AccountForContainer(containerName)
+		account, ok := h.hub.AccountForContainer(subject.ID, containerName)
 		if !ok {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("container %q has no provisioned binding on this runner", containerName))
 		}

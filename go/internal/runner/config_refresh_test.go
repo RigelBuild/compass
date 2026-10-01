@@ -79,9 +79,9 @@ func (r *configFanoutRuntime) launchCount(id string) int {
 // provision several distinct containers through one host.
 type accountSpecBuilder struct{}
 
-func (accountSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
+func (accountSpecBuilder) BuildSpec(_ *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (runtime.AgentSpec, error) {
 	spec := liveSpec()
-	spec.Name = "cont-" + req.GetAgentHandle()
+	spec.Name = "cont-" + accountID
 	return spec, nil
 }
 
@@ -124,7 +124,7 @@ func shortRuntimeDir(t *testing.T) string {
 func provisionAndStart(t *testing.T, host *agentHost, account string) string {
 	t.Helper()
 	ctx := context.Background()
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: account})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, account)
 	if err != nil {
 		t.Fatalf("Provision(%s) = %v", account, err)
 	}
@@ -377,6 +377,38 @@ func TestRefreshConfigNoLiveSessionsIsNoOp(t *testing.T) {
 
 // A relabel-target path check keeps the destDir substring assertion honest: the
 // per-container root must literally contain the container name.
+// A version bump must not relaunch an ERRORED session: recovery is an explicit
+// Reload or resume Start, and a refresh silently reviving it would bypass both.
+// The bundle is still materialized so that recovery reads the current config.
+func TestRefreshConfigSkipsErroredSession(t *testing.T) {
+	host, engine, pub := newConfigRefreshFixture(t)
+	ctx := context.Background()
+
+	pub.setConfigBundle(configBundleAt(t, "v-1"))
+	name := provisionAndStart(t, host, "a")
+	host.mu.Lock()
+	for _, s := range host.sessions {
+		s.state = compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED
+	}
+	host.mu.Unlock()
+
+	pub.setConfigBundle(configBundleAt(t, "v-2"))
+	engine.labels[name] = "system_u:object_r:container_file_t:s0:c10,c20"
+	stubRelabelAnyRoot(t)
+	if err := host.RefreshConfig(ctx); err != nil {
+		t.Fatalf("RefreshConfig = %v, want nil", err)
+	}
+	if got := engine.launchCount(name); got != 1 {
+		t.Fatalf("container %s launched %d times, want 1 (Start only; ERRORED is not refreshed)", name, got)
+	} // Its config still moves forward, so an explicit recovery boots v-2.
+	host.mu.Lock()
+	got := host.configVersions[name]
+	host.mu.Unlock()
+	if got != "v-2" {
+		t.Fatalf("tracked config version = %q, want v-2 (ERRORED still materializes)", got)
+	}
+}
+
 func TestRefreshConfigRootPathContainsContainerName(t *testing.T) {
 	host, engine, pub := newConfigRefreshFixture(t)
 	ctx := context.Background()

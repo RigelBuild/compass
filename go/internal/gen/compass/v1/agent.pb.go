@@ -682,12 +682,9 @@ type SteerControl struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The mention message to steer into the session.
 	Message *v1.Message `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	// The steering author's handle, denormalized onto the steer op so the agent
-	// emits the SessionInjection observation's from_handle without a roster
-	// lookup on the injection path (RIG-2486 T1) — mirrors DeliverControl's
-	// topic_name denorm rationale below. The comms Message carries only
-	// `author_account_id` (an id, not a handle), so the handle is denormalized
-	// here; the Server resolves it once when wrapping the AgentControl.
+	// The steering author's handle, mirroring the message's `author_handle` so
+	// the agent emits the SessionInjection observation's from_handle without a
+	// roster lookup on the injection path (RIG-2486 T1).
 	FromHandle string `protobuf:"bytes,2,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
 	// The W3C `traceparent` of the Server's active span when it wrapped this
 	// control, denormalized so the agent joins its turn to the message's
@@ -702,8 +699,8 @@ type SteerControl struct {
 	// both — without a lookup per steer (mirrors from_handle above and
 	// DeliverControl's topic_name/channel_name; peer-DM record DL-292). The ids
 	// are carried transitively by the Message; only the names are denormalized
-	// here. A name-resolve miss degrades exactly as from_handle does — it never
-	// blocks a steer — so each is EMPTY on a resolve miss.
+	// here. A name-resolve miss never blocks a steer, so each is EMPTY on a
+	// resolve miss.
 	TopicName     string `protobuf:"bytes,4,opt,name=topic_name,json=topicName,proto3" json:"topic_name,omitempty"`
 	ChannelName   string `protobuf:"bytes,5,opt,name=channel_name,json=channelName,proto3" json:"channel_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -867,12 +864,9 @@ type DeliverControl struct {
 	// carried transitively by `message.topic_id`; only the name is denormalized
 	// here.
 	TopicName string `protobuf:"bytes,2,opt,name=topic_name,json=topicName,proto3" json:"topic_name,omitempty"`
-	// The delivering author's handle, denormalized onto the deliver op so the
-	// agent emits the SessionInjection observation's from_handle without a roster
-	// lookup on the injection path (RIG-2486 T1) — same rationale as topic_name
-	// above. The comms Message carries only `author_account_id` (an id, not a
-	// handle), so the handle is denormalized here; the Server resolves it once
-	// when wrapping the AgentControl.
+	// The delivering author's handle, mirroring the message's `author_handle` so
+	// the agent emits the SessionInjection observation's from_handle without a
+	// roster lookup on the injection path (RIG-2486 T1).
 	FromHandle string `protobuf:"bytes,3,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
 	// The W3C `traceparent` of the Server's active span when it wrapped this
 	// control, denormalized so the agent joins its turn to the message's
@@ -887,8 +881,8 @@ type DeliverControl struct {
 	// without a channel lookup per delivery (mirrors the topic_name denorm
 	// rationale above; peer-DM record DL-292). The channel *id* is already
 	// carried transitively by `message.channel_id`; only the name is
-	// denormalized here. A name-resolve miss degrades exactly as from_handle
-	// does — it never blocks a delivery — so this is EMPTY on a resolve miss.
+	// denormalized here. A name-resolve miss never blocks a delivery, so this is
+	// EMPTY on a resolve miss.
 	ChannelName   string `protobuf:"bytes,5,opt,name=channel_name,json=channelName,proto3" json:"channel_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

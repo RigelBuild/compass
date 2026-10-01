@@ -46,6 +46,7 @@ func TestForgeNotificationAckAdvancesDeliveredRevision(t *testing.T) {
 	bindSession(hub, "sess-1") // binds sess-1 -> testAgentAccount
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: forgeAckFrame("sub-1"),
 	}); err != nil {
 		t.Fatalf("Deliver(forge_notification_ack) = %v, want nil (never a teardown)", err)
@@ -73,6 +74,7 @@ func TestForgeNotificationAckUnboundSessionIsNoOp(t *testing.T) {
 	hub.SetDeliveryStore(del)
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "never-bound", Frame: forgeAckFrame("sub-1"),
 	}); err != nil {
 		t.Fatalf("Deliver(forge ack, unbound) = %v, want nil", err)
@@ -95,6 +97,7 @@ func TestForgeNotificationAckEmptySubscriptionIDIsNoOp(t *testing.T) {
 	bindSession(hub, "sess-1")
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: forgeAckFrame(""),
 	}); err != nil {
 		t.Fatalf("Deliver(forge ack, empty sub id) = %v, want nil", err)
@@ -121,6 +124,7 @@ func TestForgeNotificationAckStoreFaultIsNonFatalAndCounted(t *testing.T) {
 	bindSession(hub, "sess-1")
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: forgeAckFrame("sub-foreign"),
 	}); err != nil {
 		t.Fatalf("Deliver(forge ack, store fault) = %v, want nil (non-fatal drop, not a teardown)", err)
@@ -138,6 +142,7 @@ func TestForgeNotificationAckNilStoreIsSilentNoOp(t *testing.T) {
 	bindSession(hub, "sess-1")
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1", Frame: forgeAckFrame("sub-1"),
 	}); err != nil {
 		t.Fatalf("Deliver(forge ack, nil store) = %v, want nil", err)

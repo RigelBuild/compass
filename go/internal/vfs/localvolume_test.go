@@ -130,11 +130,8 @@ func TestAttachReturnsAStablePath(t *testing.T) {
 	}
 }
 
-// TestLookupRoundTripsAndTypesNotFound pins the resolve half of the provision
-// path's resolve-or-create: a created volume round-trips with its HostRoot, and
-// an absent session is an errors.Is-detectable ErrVolumeNotFound — an
-// error-shaped signal the provision path turns into a cold create, never a
-// silent recreate here.
+// TestLookupRoundTripsAndTypesNotFound verifies resolution and typed not-found
+// behavior without silently creating a missing volume.
 func TestLookupRoundTripsAndTypesNotFound(t *testing.T) {
 	m := newManager(t)
 	created := mustCreate(t, m, "sess-lookup")
@@ -159,14 +156,8 @@ func TestLookupRoundTripsAndTypesNotFound(t *testing.T) {
 	}
 }
 
-// TestVolumeRootRejectsTraversal guards the one operation that deletes a
-// subtree: a session id carrying a separator or a traversal element must never
-// resolve to a path outside the base dir, and a session id ENDING in
-// lockFileSuffix must never resolve at all — its volume root would BE another
-// session's sibling lock-file path, so a reap of one would target the other's
-// lock. Each case asserts the typed ErrInvalidSessionID rather than merely a
-// non-nil error, so a rejection for an unrelated reason cannot pass for the
-// guard.
+// TestVolumeRootRejectsTraversal verifies invalid IDs cannot escape the base
+// dir or collide with another session's lock file.
 func TestVolumeRootRejectsTraversal(t *testing.T) {
 	m := newManager(t)
 	badIDs := []string{
@@ -234,14 +225,8 @@ func TestReattachAfterRunnerRestartIsStable(t *testing.T) {
 	}
 }
 
-// TestMountedRootIsWritableByCreatingUser asserts the keep-id ownership
-// invariant's observable half: the volume root is created by the invoking host
-// user and is writable by it. Under the container's keep-id remap that user maps
-// to the agent uid in-container, which is what satisfies ensureCheckoutDir's
-// "CheckoutDir's parent must be writable by the agent uid" precondition
-// (go/internal/runtime/agent.go:354-357). A base dir or subtree created with a
-// mode the creating user cannot write would break every launch on the volume
-// path.
+// TestMountedRootIsWritableByCreatingUser verifies the invoking user can
+// create the checkout directory and its contents under the volume root.
 func TestMountedRootIsWritableByCreatingUser(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-writable")
@@ -288,12 +273,8 @@ func TestStampRecordsCallerIntent(t *testing.T) {
 	}
 }
 
-// TestAttachClearsAPastDeadlineStamp is invariant (a): a reopened
-// closed-but-unexpired session must not carry a past-deadline stamp into its
-// new life. The observable contract is that the volume SURVIVES an Expire that
-// would have reaped it before the Attach — a backend that returned the path
-// without clearing the stamp would lose a live session's tree on the very next
-// reaper pass.
+// TestAttachClearsAPastDeadlineStamp verifies a reopened volume survives the
+// next expiry pass.
 func TestAttachClearsAPastDeadlineStamp(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-reopened")
@@ -317,11 +298,8 @@ func TestAttachClearsAPastDeadlineStamp(t *testing.T) {
 	}
 }
 
-// TestExpireReapsOnlyClosedPastDeadline is the reaper's whole eligibility
-// contract in one table: five volumes covering every state a volume can be in,
-// with exactly one eligible. Each surviving row fails on a distinct plausible
-// bug — treating unstamped as closed, ignoring the intent bit, ignoring the
-// retention window, or reading a stale stamp across an Attach.
+// TestExpireReapsOnlyClosedPastDeadline covers each eligibility state; each
+// survivor distinguishes a separate plausible reaper bug.
 func TestExpireReapsOnlyClosedPastDeadline(t *testing.T) {
 	const retention = 14 * 24 * time.Hour
 	old := 30 * 24 * time.Hour
@@ -413,13 +391,8 @@ func TestExpireReapsOnlyClosedPastDeadline(t *testing.T) {
 	}
 }
 
-// TestReconcileOrphansStampsUnstampedVolumesAtDiscovery is the crash-
-// reconciliation contract. A crash between container-remove and stamp-write
-// leaves an unstamped closed volume that Expire — which reads unstamped as
-// live — could never reach. The startup pass stamps it closed at DISCOVERY
-// time, so it survives one full retention window from discovery (fails safe,
-// never open), invariant (a) still undoes the discovery stamp if the session is
-// re-provisioned first, and it is reaped once the discovery deadline passes.
+// TestReconcileOrphansStampsUnstampedVolumesAtDiscovery verifies crash orphans
+// receive a full retention window from discovery before they can be reaped.
 func TestReconcileOrphansStampsUnstampedVolumesAtDiscovery(t *testing.T) {
 	m := newManager(t)
 	orphan := mustCreate(t, m, "sess-orphan")
@@ -525,17 +498,8 @@ func TestReconcileOrphansSkipsAVolumeBeingAttached(t *testing.T) {
 	}
 }
 
-// TestReaperIgnoresNonVolumeDirs pins volume identity as STRUCTURAL: only a
-// directory carrying the metaDirName marker CreateVolume writes is one of this
-// package's volumes. A directory under the base dir without that marker belongs
-// to someone else and must never be stamped or reaped.
-//
-// This is not hypothetical. The frozen record places W2's snapshot store as a
-// sibling subtree under the same base dir keyed by VolumeSnapshotID — a
-// non-volume directory in exactly this position. A scan that treated every
-// directory entry as a volume root would have ReconcileOrphans stamp that store
-// closed at discovery and Expire silently delete it one retention window later:
-// a W1-armed landmine that detonates when W2 lands.
+// TestReaperIgnoresNonVolumeDirs verifies only marked volume directories are
+// reaped; unrelated directories under the base dir must remain untouched.
 func TestReaperIgnoresNonVolumeDirs(t *testing.T) {
 	m := newManager(t)
 
@@ -582,20 +546,8 @@ func TestReaperIgnoresNonVolumeDirs(t *testing.T) {
 	}
 }
 
-// TestReconcileOrphansDoesNotResurrectAReapedRoot pins onto the third mutator
-// the guard its two siblings (Attach, Stamp) already carry: a volume reaped out
-// from under a reconcile pass — between eachVolume's marker stat and this pass's
-// lock acquisition — must NOT be re-stamped. Without the guard, writeStamp's
-// os.MkdirAll resurrects the reaped root's shell, Lookup then SUCCEEDS on a dead
-// session, and the provision path warm-Attaches an EMPTY volume instead of
-// cold-materializing — silently defeating the not-found-is-an-observable-signal
-// contract Lookup documents.
-//
-// The reap is applied directly and stampOrphanLocked driven on the absent root:
-// a fully-removed root is no longer a base-dir entry eachVolume would visit, so
-// the window the guard closes is only reachable by running the mutator against a
-// root that vanished after discovery — which is exactly the deterministic form
-// of that race.
+// TestReconcileOrphansDoesNotResurrectAReapedRoot verifies a volume removed
+// after discovery is not recreated by reconciliation.
 func TestReconcileOrphansDoesNotResurrectAReapedRoot(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-reaped-mid-reconcile")

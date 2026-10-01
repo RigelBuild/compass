@@ -39,7 +39,7 @@ func TestRelayCommsCallOpenDMArmForwardsUnderBoundAccount(t *testing.T) {
 	bindLiveSession(hub)
 
 	req := &compassv1.OpenDMRequest{PeerHandle: "peer"}
-	resp, err := hub.RelayCommsCall(context.Background(), relayOpenDM("sess-1", "tc-dm", req))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayOpenDM("sess-1", "tc-dm", req))
 	if err != nil {
 		t.Fatalf("RelayCommsCall(open_dm) = %v, want success", err)
 	}
@@ -74,7 +74,7 @@ func TestRelayCommsCallOpenDMToolErrorIsInBandNotStreamError(t *testing.T) {
 	comms.openDMErr = connect.NewError(connect.CodeNotFound, errors.New("handle \"peer\" not found"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayCommsCall(context.Background(), relayOpenDM("sess-1", "tc-dm-err", &compassv1.OpenDMRequest{PeerHandle: "peer"}))
+	resp, err := hub.RelayCommsCall(context.Background(), testRunnerID, relayOpenDM("sess-1", "tc-dm-err", &compassv1.OpenDMRequest{PeerHandle: "peer"}))
 	if err != nil {
 		t.Fatalf("RelayCommsCall returned a stream error %v, want in-band tool error", err)
 	}

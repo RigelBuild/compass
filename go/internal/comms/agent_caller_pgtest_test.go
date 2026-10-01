@@ -54,6 +54,9 @@ func TestPostAsAccountAttributesToAgentAccount(t *testing.T) {
 	if got := resp.GetMessage().GetAuthorAccountId(); got != string(agent.ID) {
 		t.Fatalf("posted message author = %q, want the agent account %q (not admin)", got, agent.ID)
 	}
+	if got := resp.GetMessage().GetAuthorHandle(); got != agent.Handle {
+		t.Fatalf("posted message author handle = %q, want %q", got, agent.Handle)
+	}
 
 	// Read it back as the agent (a member) — it persisted under the agent.
 	listed, err := svc.ListAsAccount(ctx, agent.ID, &compassv1.ListMessagesRequest{
@@ -68,6 +71,9 @@ func TestPostAsAccountAttributesToAgentAccount(t *testing.T) {
 			found = true
 			if got := m.GetAuthorAccountId(); got != string(agent.ID) {
 				t.Fatalf("stored message author = %q, want the agent account %q", got, agent.ID)
+			}
+			if got := m.GetAuthorHandle(); got != agent.Handle {
+				t.Fatalf("stored message author handle = %q, want %q", got, agent.Handle)
 			}
 		}
 	}

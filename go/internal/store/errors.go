@@ -41,12 +41,9 @@ var (
 	// the door can tell a withdrawn credential from an unknown one.
 	ErrTokenRevoked = errors.New("store: token revoked")
 
-	// ErrPermissionDenied is returned when the caller is not authorized to
-	// perform an operation on a row it can address: a ReparentAgent where the
-	// caller is neither the moved agent's owner nor an agent of that owner
-	// (clause 0), or where the proposed parent belongs to a different owner
-	// (clause 1). Distinct from ErrNotFound so the edge can map it to
-	// PERMISSION_DENIED (agent-trees record §Server validation).
+	// ErrPermissionDenied covers unauthorized operations on addressable rows,
+	// including OWNER_ONLY posts and pinned-board changes by non-owner members.
+	// Distinct from ErrNotFound so the edge maps it to PERMISSION_DENIED.
 	ErrPermissionDenied = errors.New("store: permission denied")
 
 	// ErrFailedPrecondition is returned when an operation is well-formed and

@@ -27,26 +27,10 @@ import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
 
-// The Compass ADE shell — an Orca-inspired layout over the compass.v1 surface
-// (docs/specs/product/compass.md). A CSS grid: a topbar, a left agent-folder
-// tree, a central Bridge (swimlane board) / agent (ACP + terminals) view, a
-// right sidebar (fleet conversations + files/VCS/PR), and a bottom usage bar.
-// The board is primary; the "channel" and "agent" surfaces render as center
-// matches within the same shell (single Switch), reached via the store.
-//
-// This is the dev walking-skeleton made fully explorable: every surface reads
-// the in-memory stub (stub-data.ts) through one store (store.ts), so it renders
-// and is clickable in `vite dev` with no daemon and no Wails IPC. When the
-// daemon grows the real board / agent / ACP / audit streams, the store's
-// accessors swap the fixture for the generated @compass/client and the
-// components stay as-is.
+// Compass shell: routed center view with persistent navigation and usage chrome.
 
-// App is the router ROOT LAYOUT (record A1): the shell chrome (topbar,
-// sidebars, UsageBar) stays outside the routed region, and the `<main>` center
-// renders `props.children` — the surface the matched route mounts. App lives
-// inside the router tree, so it wires the store's router seam here: it feeds
-// `useNavigate()` + a reactive `useLocation().pathname` into `bindRouter`,
-// which installs the single-writer route-sync effect (store.ts applyRoute).
+// App owns the shell layout; the matched route renders in its center region.
+// Bind the store router seam to the active router location and navigation.
 const App: Component<RouteSectionProps> = (props) => {
 	const store = useStore();
 	const navigate = useNavigate();

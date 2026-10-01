@@ -98,6 +98,7 @@ describe("diffRows", () => {
 		]);
 	});
 
+	// biome-ignore lint/plugin: CPU-bound 2000-line diff with no event to gate on; 60s sits far above any correct run, 5s did not under CI load
 	test("large input under budget: full granularity drops unchanged lines", () => {
 		// old and new share every even-indexed line and differ on every
 		// odd-indexed line (changed lines interleaved with unchanged). The shared
@@ -118,7 +119,7 @@ describe("diffRows", () => {
 		// non-fallback path.
 		const shared0 = rows.filter((r) => r.text === "shared-0");
 		expect(shared0.length).toBe(0);
-	});
+	}, 60_000);
 
 	test("over-budget fallback: disjoint input yields coarse all-dels-then-all-adds", () => {
 		// Fully disjoint 2000-line inputs sharing no line: edit distance D ≈ 4000.

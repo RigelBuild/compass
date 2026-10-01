@@ -639,15 +639,18 @@ func (vm *VM) WaitVMMExit(timeout time.Duration) bool {
 	}
 }
 
-// waitResult swallows the ExitError a deliberately-killed process yields (a
-// signalled or non-zero exit is expected on teardown) but propagates a genuine
-// wait failure.
+// waitResult swallows the outcomes a teardown expects (a signalled or non-zero
+// exit, or the launch ctx already done) but propagates a genuine wait failure.
 func waitResult(name string, err error) error {
 	if err == nil {
 		return nil
 	}
 	if _, ok := errors.AsType[*exec.ExitError](err); ok {
 		return nil // killed/non-zero exit is the expected teardown outcome
+	}
+	// exec.Cmd.Wait returns ctx.Err() when the process exited cleanly after its ctx was done.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
 	}
 	return fmt.Errorf("waiting for %s: %w", name, err)
 }

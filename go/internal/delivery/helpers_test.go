@@ -73,29 +73,30 @@ const (
 // the delivered message's id, and the op kind (deliver vs steer), each pulled
 // from the control op.
 type dispatchRecord struct {
-	sessionID   string
-	messageID   string
-	kind        opKind
-	fromHandle  string
-	channelName string
-	topicName   string
-	traceparent string
+	sessionID           string
+	messageID           string
+	kind                opKind
+	fromHandle          string
+	messageAuthorHandle string
+	channelName         string
+	topicName           string
+	traceparent         string
 }
 
 // classifyOp reports the op kind, carried message id, denormalized author
 // from_handle, denormalized source channel+topic names, and traceparent of a
 // dispatched control, so the recorder can tell a steer from a deliver and assert
 // on the fields both ops carry.
-func classifyOp(op *compassv1internal.AgentControl) (kind opKind, messageID, fromHandle, channelName, topicName, traceparent string) {
+func classifyOp(op *compassv1internal.AgentControl) (kind opKind, messageID, fromHandle, authorHandle, channelName, topicName, traceparent string) {
 	switch {
 	case op.GetSteer() != nil:
 		s := op.GetSteer()
-		return opSteer, s.GetMessage().GetId(), s.GetFromHandle(), s.GetChannelName(), s.GetTopicName(), s.GetTraceparent()
+		return opSteer, s.GetMessage().GetId(), s.GetFromHandle(), s.GetMessage().GetAuthorHandle(), s.GetChannelName(), s.GetTopicName(), s.GetTraceparent()
 	case op.GetDeliver() != nil:
 		d := op.GetDeliver()
-		return opDeliver, d.GetMessage().GetId(), d.GetFromHandle(), d.GetChannelName(), d.GetTopicName(), d.GetTraceparent()
+		return opDeliver, d.GetMessage().GetId(), d.GetFromHandle(), d.GetMessage().GetAuthorHandle(), d.GetChannelName(), d.GetTopicName(), d.GetTraceparent()
 	default:
-		return opOther, "", "", "", "", ""
+		return opOther, "", "", "", "", "", ""
 	}
 }
 
@@ -144,8 +145,8 @@ func (d *fakeDispatcher) DispatchControl(_ context.Context, sessionID string, op
 		d.mu.Unlock()
 		return err
 	}
-	kind, messageID, fromHandle, channelName, topicName, traceparent := classifyOp(op)
-	d.calls = append(d.calls, dispatchRecord{sessionID: sessionID, messageID: messageID, kind: kind, fromHandle: fromHandle, channelName: channelName, topicName: topicName, traceparent: traceparent})
+	kind, messageID, fromHandle, messageAuthorHandle, channelName, topicName, traceparent := classifyOp(op)
+	d.calls = append(d.calls, dispatchRecord{sessionID: sessionID, messageID: messageID, kind: kind, fromHandle: fromHandle, messageAuthorHandle: messageAuthorHandle, channelName: channelName, topicName: topicName, traceparent: traceparent})
 	d.mu.Unlock()
 	signalObserved(d.recorded)
 	return nil
@@ -289,8 +290,7 @@ type fakeReads struct {
 	subscribers map[store.ChannelID][]store.AccountID // channel -> subscribed agents (author NOT pre-excluded)
 	members     map[store.ChannelID][]store.AccountID // channel -> agent members (author NOT pre-excluded)
 	agents      map[store.AccountID]bool
-	handles     map[string]store.Account          // lowercased handle -> resolved account (unknown -> ErrNotFound)
-	accounts    map[store.AccountID]store.Account // account id -> account (GetAccount; unknown -> ErrNotFound)
+	handles     map[string]store.Account // lowercased handle -> resolved account (unknown -> ErrNotFound)
 	messages    map[string]store.Message
 	// topicNames resolves a topic id to its (channelName, topicName) — the source
 	// denorm the deliver/steer op carries (TopicChannelNames). Absent -> the fake
@@ -352,7 +352,6 @@ func newFakeReads() *fakeReads {
 		members:       map[store.ChannelID][]store.AccountID{},
 		agents:        map[store.AccountID]bool{},
 		handles:       map[string]store.Account{},
-		accounts:      map[store.AccountID]store.Account{},
 		messages:      map[string]store.Message{},
 		topicNames:    map[string]struct{ channelName, topicName string }{},
 		owed:          map[store.AccountID]map[store.ChannelID][]store.Message{},
@@ -559,20 +558,6 @@ func (f *fakeReads) ResolveOwner(_ context.Context, caller store.AccountID) (sto
 	return caller, nil
 }
 
-// GetAccount resolves an account by id from the seeded accounts map — the store
-// read that denormalizes the author's handle onto the deliver/steer control
-// (RIG-2486 T1). An unseeded id is store.ErrNotFound, mirroring the store's
-// fail-closed lookup, so a test can exercise the log-and-empty handle-miss path.
-func (f *fakeReads) GetAccount(_ context.Context, id store.AccountID) (store.Account, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	acc, ok := f.accounts[id]
-	if !ok {
-		return store.Account{}, store.ErrNotFound
-	}
-	return acc, nil
-}
-
 func (f *fakeReads) IsAgentAccount(_ context.Context, account store.AccountID) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -724,6 +709,7 @@ func textMessage(id string, author store.AccountID, body string) store.Message {
 		ID:              store.MessageID(id),
 		TopicID:         "topic-1",
 		AuthorAccountID: author,
+		AuthorHandle:    "matt",
 		Blocks:          []store.MessageBlock{{Text: &body}},
 	}
 }
@@ -744,6 +730,7 @@ func wireText(id string, author store.AccountID, body string) *compassv1.Message
 		Id:              id,
 		TopicId:         "topic-1",
 		AuthorAccountId: string(author),
+		AuthorHandle:    "matt",
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
 	}
 }
@@ -760,6 +747,7 @@ func wireTextBlocks(id string, author store.AccountID, bodies ...string) *compas
 		Id:              id,
 		TopicId:         "topic-1",
 		AuthorAccountId: string(author),
+		AuthorHandle:    "matt",
 		Blocks:          blocks,
 	}
 }

@@ -103,11 +103,12 @@ describe("RightSidebar activity bar tab icons", () => {
 	// no layout, so real geometry is NOT observable here. This is a PROXY: it
 	// parses app.css and asserts the mechanism that guarantees the offset — the
 	// glyph box is an integer 11px square whose integer margins fill .r-tab's
-	// 32px content box (34px − 2×1px border, box-sizing: border-box) EXACTLY on
-	// each axis. With zero free space, flex centering has no slack to halve, so
-	// the box's offset is its whole-pixel margin, not the 10.5px a centered 11px
-	// box would take. It proves the declared geometry is whole-pixel; it does NOT
-	// prove the browser rasterizes it there (that is the T6 visual baseline).
+	// 32px content box (34px − 2×1px border, box-sizing: border-box, padding
+	// 0) EXACTLY on each axis. With zero free space, flex centering has no slack
+	// to halve, so the box's offset is its whole-pixel margin, not the 10.5px a
+	// centered 11px box would take. It proves the declared geometry is
+	// whole-pixel; it does NOT prove the browser rasterizes it there (that is
+	// the T6 visual baseline).
 	test("the glyph box CSS pins a whole-pixel offset in the 34px tab (D2 proxy)", () => {
 		const css = readFileSync(join(import.meta.dir, "../app.css"), "utf8");
 		const rule = css.match(
@@ -131,6 +132,31 @@ describe("RightSidebar activity bar tab icons", () => {
 		const margins = (decl("margin") ?? "").split(/\s+/);
 		expect(margins.length).toBe(4);
 		const [mt, mr, mb, ml] = margins.map((m) => px(m));
+		// The 32px content box needs .r-tab to zero the UA button padding, which
+		// happy-dom does not apply, so it is asserted here, not computed. Every
+		// rule on the tab box itself (states, @media, selector lists) is scanned.
+		const tabBoxRules = [
+			...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g),
+		].map(([, sel, body]) => ({
+			sels: sel.split(",").map((s) => s.trim()),
+			body,
+		}));
+		// The tab box is the LAST compound (ancestor- or type-qualified too).
+		const onTabBox = tabBoxRules.filter(({ sels }) =>
+			sels.some((s) => /(?:^|[\s>+~])[\w-]*\.r-tab(?![\w-])[^\s>+~]*$/.test(s)),
+		);
+		const paddings = onTabBox.flatMap(({ body }) =>
+			[...body.matchAll(/(?:^|[;\s])(padding[\w-]*)\s*:\s*([^;]+);/g)].map(
+				([, prop, value]) => `${prop}: ${value.trim()}`,
+			),
+		);
+		const resting = onTabBox.filter(({ sels }) => sels.includes(".r-tab"));
+		expect(
+			resting.some(({ body }) =>
+				/(?:^|[;\s])padding\s*:\s*0(?:px)?\s*;/.test(body),
+			),
+		).toBe(true);
+		expect(paddings.filter((p) => !/: 0(?:px)?$/.test(p))).toEqual([]);
 		// The 32px content box is filled exactly on each axis — no centering slack.
 		expect(ml + width + mr).toBe(32);
 		expect(mt + height + mb).toBe(32);

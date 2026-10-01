@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -41,7 +43,7 @@ const (
 // spec. Keeping it a seam means Provision is fully wired to AgentRuntime.Launch
 // without T4 hard-coding image/egress derivation that later tiers own.
 type SpecBuilder interface {
-	BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error)
+	BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (runtime.AgentSpec, error)
 }
 
 // vsockGatewayEngine is the unexported backend probe the microVM runtime
@@ -50,6 +52,13 @@ type SpecBuilder interface {
 // socket the podman path uses. Provision/RefreshConfig type-assert to gate it.
 type vsockGatewayEngine interface {
 	AgentGatewayEndpoint(name string) (endpoint string, ok bool)
+}
+
+// ownedWorkloadLister is the optional container-backend probe the startup sweep
+// uses to remove workloads owned by this Runner; podman and apple-container implement it.
+// Other backends skip the container half of the sweep.
+type ownedWorkloadLister interface {
+	ListByOwner(ctx context.Context, prefix, runnerID string) ([]runtime.WorkloadID, error)
 }
 
 // hostStateEngine is the unexported backend probe the host-process runtime
@@ -82,12 +91,18 @@ type agentHost struct {
 	// model is the model selector handed to every agent this Runner starts;
 	// empty leaves the agent on its own default.
 	model string
+	// runnerID labels every container this host creates, so the next start's
+	// sweep removes only this Runner's containers.
+	runnerID string
 
-	mu           sync.Mutex
-	sessions     map[string]*liveSession
-	sockets      map[string]*gateway.SocketListener
-	nextID       func() string
-	materializer *runtime.SecretMaterializer
+	mu       sync.Mutex
+	sessions map[string]*liveSession
+	sockets  map[string]*gateway.SocketListener
+	nextID   func() string
+	// afterExitCheck is a test seam between detecting exit and acquiring the
+	// container lock; its returned func runs when retireOnExit returns. Nil in production.
+	afterExitCheck func() func()
+	materializer   *runtime.SecretMaterializer
 	// configVersions is the last config bundle version materialized per container,
 	// keyed by container name — compared on a ConfigVersion update so an agent is
 	// Reloaded only when the version moved. Recorded after Reload succeeds, so a
@@ -103,6 +118,11 @@ type agentHost struct {
 	// name. Empty for podman/microVM (fixed mount paths). Set at Provision, removed
 	// at teardown (closeSocket).
 	hostTransports map[string]hostAgentTransport
+	retireWG       sync.WaitGroup
+	// closing ends retireOnExit waits at Close, so a reaper stuck on an unclosed
+	// pipe cannot hold shutdown open.
+	closing   chan struct{}
+	closeOnce sync.Once
 }
 
 // liveSession is one running agent session: its container and the relay stream
@@ -130,6 +150,8 @@ type AgentHostConfig struct {
 	// AgentModel is the model selector every agent this host starts receives;
 	// empty leaves the agent on its default.
 	AgentModel string
+	// RunnerID is the Runner's own id, stamped as the ownership label.
+	RunnerID string
 }
 
 // NewSessionHost builds the production SessionHost over the link, the agent
@@ -152,7 +174,9 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		log:            log,
 		runtimeDir:     cfg.RuntimeDir,
 		model:          cfg.AgentModel,
+		runnerID:       cfg.RunnerID,
 		sessions:       map[string]*liveSession{},
+		closing:        make(chan struct{}),
 		sockets:        map[string]*gateway.SocketListener{},
 		nextID:         newID,
 		materializer:   runtime.NewSecretMaterializer(engine, log),
@@ -173,11 +197,16 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 // idempotent (no duplicate container) before this runs; a genuine spec/launch
 // failure surfaces here, and a socket already serving that container name is
 // reused rather than double-served (idempotent retry).
-func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest) (string, error) {
-	spec, err := h.specs.BuildSpec(req)
+func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (string, error) {
+	spec, err := h.specs.BuildSpec(req, accountID)
 	if err != nil {
 		return "", err
 	}
+	spec.Labels = maps.Clone(spec.Labels)
+	if spec.Labels == nil {
+		spec.Labels = make(map[string]string, 1)
+	}
+	spec.Labels[runtime.RunnerIDLabel] = h.runnerID
 	// Serialize all transitions on this container: a concurrent Remove/Start of
 	// the same name cannot interleave with this provision. Resolved from the spec
 	// name (the stable lifecycle key).
@@ -197,7 +226,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if hostEngine, ok := h.engine.(hostStateEngine); ok {
 		return h.provisionHostGateway(ctx, spec, hostEngine)
 	}
-	listener, err := h.serveSocket(ctx, spec.Name)
+	// A socket already served belongs to a container that may still be running under
+	// this name, so a failure below must leave it up; only a socket made here is ours.
+	listener, created, err := h.serveSocket(ctx, spec.Name)
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +242,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		// Config could not be materialized; abort provision rather than launch a
 		// container with no config. Tear the socket down (mirror the Launch-
 		// failure cleanup) so it does not leak until host shutdown.
-		h.closeSocket(ctx, spec.Name)
+		if created {
+			h.closeSocket(ctx, spec.Name)
+		}
 		return "", fmt.Errorf("materializing agent config: %w", err)
 	}
 	spec.Mounts = append(spec.Mounts, runtime.Mount{HostPath: mount.HostPath, ContainerPath: agentConfigMountPath, ReadOnly: true})
@@ -219,7 +252,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if err != nil {
 		// Launch failed, so no container will ever mount this socket; tear it
 		// down rather than leak the listener + file until host shutdown.
-		h.closeSocket(ctx, spec.Name)
+		if created {
+			h.closeSocket(ctx, spec.Name)
+		}
 		return "", err
 	}
 	// Record the version materialized into this container's root, so the first
@@ -300,12 +335,15 @@ func (h *agentHost) Close(ctx context.Context) {
 		})
 	}
 	wg.Wait()
+	h.closeOnce.Do(func() { close(h.closing) })
+	h.retireWG.Wait()
 }
 
 // Start resolves the launched container by name and starts the agent relay in
 // it. A container already hosting a live session returns errAlreadyRunning.
 // Fresh starts require a non-empty server-minted freshSessionID; resumes use
-// resume_session_id and ignore freshSessionID.
+// resume_session_id and ignore freshSessionID. An ERRORED session may be
+// recovered by Reload or by resume Start under the same session id.
 func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody, freshSessionID string) (string, error) {
 	name := req.GetContainerName()
 	// Serialize transitions on this container across the whole Start: the
@@ -325,11 +363,16 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 
 	h.mu.Lock()
 	for _, s := range h.sessions {
-		if s.containerName == name {
+		if s.containerName == name && s.state != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 			h.mu.Unlock()
 			return "", errAlreadyRunning
 		}
 	}
+	// Reusing the logical id as the map key means a resume racing a still-live
+	// prior lifetime would clobber its liveSession entry, orphaning its stream.
+	// The single-orchestrator precondition keeps this unreachable; guard so a
+	// violation fails loud rather than leaking the prior stream. An ERRORED entry
+	// has no live stream and can be replaced during explicit recovery.
 	// A resume reuses its authorized logical id. Fresh starts must use the id
 	// minted by the Server; accepting a local fallback would reintroduce reuse
 	// after Runner restarts.
@@ -340,11 +383,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			return "", errors.New("fresh session start missing server-minted session id")
 		}
 		sessionID = freshSessionID
-	} else if _, live := h.sessions[sessionID]; live {
-		// Reusing the logical id as the map key means a resume racing a still-live
-		// prior lifetime would clobber its liveSession entry, orphaning its stream.
-		// The single-orchestrator precondition keeps this unreachable; guard so a
-		// violation fails loud rather than leaking the prior stream.
+	} else if existing, live := h.sessions[sessionID]; live && existing.state != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 		h.mu.Unlock()
 		return "", errAlreadyRunning
 	}
@@ -416,6 +455,16 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	}
 
 	h.mu.Lock()
+	// A fresh id replaces an ERRORED session on this container; keep one entry per
+	// container so Remove and Status never see the stale one.
+	for id, prior := range h.sessions {
+		if prior.containerName == name && id != sessionID {
+			delete(h.sessions, id)
+			if listener, served := h.sockets[name]; served {
+				listener.RetireSession(id)
+			}
+		}
+	}
 	h.sessions[sessionID] = &liveSession{
 		sessionID:      sessionID,
 		containerName:  name,
@@ -431,19 +480,19 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	if served {
 		listener.BindSession(sessionID)
 	}
+	h.retireWG.Add(1)
 	h.mu.Unlock()
+	go func() {
+		defer h.retireWG.Done()
+		h.retireOnExit(ctx, sessionID, name, stream)
+	}()
 
 	// Lift the agent's replay barrier so the first idle-deliver is dispatched rather
 	// than refused: the barrier defaults closed and only replay_complete lifts it.
 	// Sent on EVERY served start (a file-based resume loads its transcript before
 	// subscribing); sent after the h.mu release, the per-container lock rules out races.
 	if served {
-		op := &compassv1internal.AgentControl{
-			Control: &compassv1internal.AgentControl_ReplayComplete{
-				ReplayComplete: &compassv1internal.ReplayComplete{},
-			},
-		}
-		if err := listener.SendControl(sessionID, op); err != nil {
+		if err := listener.SendControl(sessionID, replayCompleteOp()); err != nil {
 			// A served listener always has a wired producer (gateway.Serve), so this
 			// is an unreachable wiring fault in production, not a reason to fail an
 			// already-recorded Start. Log and continue.
@@ -483,6 +532,9 @@ func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 	}
 	h.mu.Unlock()
 	if !ok {
+		return nil
+	}
+	if s.stream == nil {
 		return nil
 	}
 	return s.stream.Stop()
@@ -536,7 +588,7 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 	// child and joins its drains). A stop error is logged, never returned: the
 	// container teardown below is the operation that must complete, and a failed
 	// exec-stop must not leave the container running.
-	if retired != nil {
+	if retired != nil && retired.stream != nil {
 		if err := retired.stream.Stop(); err != nil {
 			h.log.Warn("stopping agent exec during container remove",
 				slog.String("container", containerName), slog.String("session_id", retired.sessionID), slog.Any("error", err))
@@ -616,6 +668,10 @@ func (h *agentHost) Deliver(_ context.Context, sessionID string, op *compassv1in
 	h.mu.Lock()
 	s, ok := h.sessions[sessionID]
 	if !ok {
+		h.mu.Unlock()
+		return errSessionUnknown
+	}
+	if s.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 		h.mu.Unlock()
 		return errSessionUnknown
 	}
@@ -746,6 +802,15 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	return nil
 }
 
+// replayCompleteOp is the op that lifts a freshly started agent's replay barrier.
+func replayCompleteOp() *compassv1internal.AgentControl {
+	return &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_ReplayComplete{
+			ReplayComplete: &compassv1internal.ReplayComplete{},
+		},
+	}
+}
+
 // statusOf stamps a live session with the tier and egress posture of the
 // backend this Runner resolved. Both are Runner-wide, not per-session: the
 // Runner reports them because it is the component that picked the backend, so a
@@ -775,7 +840,7 @@ func (h *agentHost) provisionVsockGateway(ctx context.Context, spec runtime.Agen
 		h.teardownContainer(ctx, name)
 		return "", fmt.Errorf("resolving vsock gateway endpoint for container %q: backend reports no session", name)
 	}
-	deps := gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client}
+	deps := gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client}
 	h.log.InfoContext(ctx, "serving agent gateway over vsock path",
 		slog.String("container", name), slog.String("path", endpoint))
 	listener, err := gateway.Serve(ctx, endpoint, name, deps)
@@ -816,7 +881,7 @@ func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.Agent
 	h.mu.Lock()
 	h.hostTransports[name] = transport
 	h.mu.Unlock()
-	if _, err := h.serveSocketAt(ctx, name, transport.socketPath); err != nil {
+	if _, _, err := h.serveSocketAt(ctx, name, transport.socketPath); err != nil {
 		// The socket never came up; forget the transport (closeSocket) and tear
 		// the launched container down so no agent runs with no reachable Runner.
 		h.closeSocket(ctx, name)
@@ -891,6 +956,18 @@ func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containe
 		// matches, so there is nothing to record.
 		return nil
 	}
+	// An ERRORED session is recovered only by an explicit Reload or resume Start.
+	// Its config is still brought current, so that recovery boots the new bundle.
+	h.mu.Lock()
+	s := h.sessions[sessionID]
+	errored := s != nil && s.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED
+	h.mu.Unlock()
+	if errored {
+		h.mu.Lock()
+		h.configVersions[containerName] = mount.Version
+		h.mu.Unlock()
+		return nil
+	}
 	if err := h.reloadLocked(ctx, sessionID); err != nil {
 		// Reload failed: do NOT advance the tracked version, so the next signal still
 		// sees a change and retries. Materialize already flipped `current` on disk
@@ -924,6 +1001,59 @@ func (h *agentHost) lockContainer(name string) (unlock func()) {
 	return lock.Unlock
 }
 
+const publishGrace = 2 * time.Second
+
+// retireOnExit reports every unrequested agent exit as ERRORED. A duplicate
+// terminal from the agent is expected and harmless; the Server settles idempotently.
+func (h *agentHost) retireOnExit(ctx context.Context, sessionID, containerName string, stream *AgentStream) {
+	select {
+	case <-stream.waitDone:
+	case <-h.closing:
+		return
+	}
+	if stream.stopping.Load() || ctx.Err() != nil {
+		return
+	}
+	if h.afterExitCheck != nil {
+		done := h.afterExitCheck()
+		defer done()
+	}
+	// The container lock orders exit publication against Start/Reload; the timeout
+	// bounds this wait so an unresponsive Server cannot hold lifecycle operations.
+	unlock := h.lockContainer(containerName)
+	defer unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	h.markErrored(ctx, sessionID, containerName, stream)
+}
+
+// markErrored keeps the session available for explicit Reload or resume Start.
+// The caller holds the container transition lock through the bounded publish.
+func (h *agentHost) markErrored(ctx context.Context, sessionID, containerName string, stream *AgentStream) {
+	h.mu.Lock()
+	s, ok := h.sessions[sessionID]
+	if !ok || (stream != nil && s.stream != stream) {
+		h.mu.Unlock()
+		return
+	}
+	s.state = compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED
+	s.stream = nil
+	listener, served := h.sockets[containerName]
+	if served {
+		listener.RetireSession(sessionID)
+	}
+	h.mu.Unlock()
+	if !served {
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, publishGrace)
+	defer cancel()
+	if err := listener.PublishSessionState(publishCtx, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
+		h.log.Error("reporting agent exit to server", slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
+	}
+}
+
 // reloadLocked performs the in-place agent relaunch assuming the caller holds the
 // session's container transition lock. It re-resolves the session and handle (a
 // session dropped since the lock was taken is a true no-op), runs Stop + StartAgent,
@@ -938,25 +1068,44 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	// Re-resolve the handle BEFORE stopping, so the relaunch carries the same identity
 	// the original Start did and a session whose container was dropped is rejected
 	// while its agent still runs — a true no-op, never a stopped agent left behind a
-	// session the live set still reports READY.
+	// session the live set still reports READY. A missing stream is valid for an
+	// ERRORED session and skips only the stop step below.
 	handle, ok := h.registry.Resolve(s.containerName)
-	if !ok {
+	if !ok || handle == nil {
 		return errSessionUnknown
 	}
-	if handle == nil {
-		return errSessionUnknown
+	stream := s.stream
+	if stream != nil {
+		if err := stream.Stop(); err != nil {
+			return err
+		}
 	}
-	if err := s.stream.Stop(); err != nil {
-		return err
+	// Hand the control state to the new process before it launches: replay_complete
+	// becomes seq 1 and unacked ops follow, so no concurrent Deliver lands ahead of
+	// the barrier. An ERRORED session was retired at exit, so Bind recreates it.
+	h.mu.Lock()
+	listener, served := h.sockets[s.containerName]
+	h.mu.Unlock()
+	if served {
+		listener.BindSession(sessionID)
+		if err := listener.RestartSession(sessionID, replayCompleteOp()); err != nil {
+			return err
+		}
 	}
 	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
 	if err != nil {
+		h.markErrored(ctx, sessionID, s.containerName, nil)
 		return err
 	}
 	h.mu.Lock()
 	s.stream = stream
 	s.state = compassv1.AgentSessionState_AGENT_SESSION_STATE_READY
+	h.retireWG.Add(1)
 	h.mu.Unlock()
+	go func() {
+		defer h.retireWG.Done()
+		h.retireOnExit(ctx, sessionID, s.containerName, stream)
+	}()
 	return nil
 }
 
@@ -1008,28 +1157,28 @@ func (h *agentHost) configMaterializerFor(containerName string) *ConfigMateriali
 // recording the listener so Provision can mount it and teardown can Close it. A
 // container already serving is a no-op (idempotent retry). The Gateway forwards to
 // the Server over the Runner's own RunnerService client, resolving container→session.
-func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gateway.SocketListener, error) {
+func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gateway.SocketListener, bool, error) {
 	return h.serveSocketAt(ctx, containerName, filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile))
 }
 
 // serveSocketAt is serveSocket with an explicit socket path: container tiers pass the
 // fixed RuntimeDir socket, the host tier a path in the handle's state dir (no mount).
 // Idempotency is identical: a container already serving keeps its live listener.
-func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, error) {
+func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, bool, error) {
 	h.mu.Lock()
 	if listener, served := h.sockets[containerName]; served {
 		h.mu.Unlock()
-		return listener, nil
+		return listener, false, nil
 	}
 	h.mu.Unlock()
-	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client})
+	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client})
 	if err != nil {
-		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
+		return nil, false, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
 	}
 	h.mu.Lock()
 	h.sockets[containerName] = listener
 	h.mu.Unlock()
-	return listener, nil
+	return listener, true, nil
 }
 
 // closeSocket tears down and forgets the container's agent socket, draining any

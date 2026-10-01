@@ -38,6 +38,9 @@ func (g *Gateway) Publish(
 	}
 
 	pub := g.acquirePublisher(sessionID)
+	// Captured once: a Restart after this stream opened means these acks come from
+	// the replaced process and must not touch the new process's control state.
+	epoch := g.control.Epoch(sessionID)
 
 	for stream.Receive() {
 		frame := stream.Msg().GetFrame()
@@ -52,7 +55,7 @@ func (g *Gateway) Publish(
 		// routed to the control lane, never relayed upstream.
 		switch f := frame.GetFrame().(type) {
 		case *compassv1internal.AgentFrame_ReplayCompleteAck:
-			g.control.ReleaseReplayBarrier(sessionID)
+			g.control.ReleaseReplayBarrier(sessionID, epoch)
 			continue
 		case *compassv1internal.AgentFrame_ControlAck:
 			if f == nil {
@@ -64,7 +67,7 @@ func (g *Gateway) Publish(
 				// skew; skip it like an empty frame rather than tear the stream.
 				continue
 			}
-			g.control.AckControl(sessionID, ack.GetAckedSeq(), ack.GetAppliedAbove())
+			g.control.AckControl(sessionID, epoch, ack.GetAckedSeq(), ack.GetAppliedAbove())
 			continue
 		}
 		// Trace/session telemetry: forward Runner-sequenced. A durable conversation

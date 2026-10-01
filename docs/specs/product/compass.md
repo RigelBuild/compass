@@ -1,17 +1,16 @@
 # Compass
 
-Living source-of-truth for how **Compass** currently behaves and is built. The
-point-in-time design rationale — the ADE vision (the Dispatcher, the Bridge,
-per-agent containers, the three-tier Client→Server→Runner architecture) — lives
-in the design corpus, indexed by the decision ledger
-([`../../designs/DECISIONS.md`](../../designs/DECISIONS.md)) with
-the surviving milestone rationale in the
-[architecture lineage](../../designs/meta/compass-architecture-lineage/design.md)
-record; this spec describes only what the code exposes today.
+Living source of truth for **Compass** behavior and build. Historical rationale
+— the ADE vision (the Dispatcher, the Bridge, per-agent containers, the
+three-tier Client→Server→Runner architecture) — lives in the design corpus,
+indexed by the decision ledger
+([`../../designs/DECISIONS.md`](../../designs/DECISIONS.md)) and
+[architecture lineage](../../designs/meta/compass-architecture-lineage/design.md);
+this spec describes only what the code exposes today.
 
 Interface- and security-critical behavior is stated as `### Requirement:` +
-`#### Scenario:` contracts (RFC 2119 SHALL/MUST, Given/When/Then). Prose frames
-the model.
+`#### Scenario:` contracts (RFC 2119 SHALL/MUST, Given/When/Then); prose
+frames the model.
 
 ## Overview
 
@@ -396,6 +395,11 @@ session SHALL transition to `DISCONNECTED` — live session truth is temporarily
 unreachable but not lost — and a bounded reattach window SHALL govern recovery.
 A reattach within the window resumes the session; window expiry falls to
 `ERRORED`, after which the no-auto-reconnect policy applies.
+> **Implementation status (RIG-4075):** The Runner observes an unexpected agent
+> process exit and publishes `ERRORED`, including when the agent cannot send its
+> own terminal frame. The Runner retains the session for `ReloadAgentSession`.
+> Only a Runner-link loss before T9 has no process-exit frame; its bounded
+> reattach-window behavior remains governed by the T9 implementation status below.
 
 #### Scenario: A Runner disconnect moves its sessions to DISCONNECTED, not ERRORED
 

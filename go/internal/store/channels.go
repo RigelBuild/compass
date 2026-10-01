@@ -24,6 +24,10 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 	if g.Name == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
 	}
+	// System groups own these names at top level; nested reuse is an ordinary group.
+	if g.ParentGroupID == "" && isReservedGroupName(g.Name) {
+		return ChannelGroup{}, fmt.Errorf("%w: group name %q is reserved", ErrInvalidArgument, g.Name)
+	}
 
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
@@ -119,12 +123,10 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		}
 	}
 
-	// R3 primary defense: the manual create path may not target a reserved
-	// per-owner DM group (only OpenDM writes there), which makes squatting a
-	// deterministic dm--… name impossible. Rejection is the merged ErrNotFound,
-	// so a stranger cannot probe the reserved namespace.
+	// R3 primary defense: the manual create path may not target a reserved system group, so a
+	// reserved channel name cannot be squatted; the merged ErrNotFound keeps it unprobeable.
 	if c.GroupID != "" {
-		reserved, err := isReservedDMGroupTx(ctx, tx, c.GroupID)
+		reserved, err := isReservedGroupTx(ctx, tx, c.GroupID)
 		if err != nil {
 			return Channel{}, err
 		}

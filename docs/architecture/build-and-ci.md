@@ -8,10 +8,9 @@ devenv      the dev shell — owns every toolchain (Go/bun/node/moon + the rest)
 moon        the task graph: what to build/test, caching, affected detection
 ```
 
-The headline property: **the same task graph runs remotely and locally.** Only
-the scheduler differs — GitHub Actions remotely, moon on one box locally. What
-keeps that true rather than aspirational is the version-parity gate below,
-which fails the build when the two toolchains diverge.
+The headline property: **the same task graph runs remotely and locally.**
+GitHub Actions schedules remote runs; moon schedules local ones. The
+version-parity gate below fails builds when toolchains diverge.
 
 ## Toolchains: devenv/nix
 
@@ -228,6 +227,8 @@ that publishes still builds — both an eval-time break (a bun-pin drift against
 the `agent-image/toolchain.nix` assert) and a realise-time break (an
 `agent-image/entrypoint.nix` FOD-hash invalidation or a broken bundle), the
 full class.
+
+The Compass agent's compile script derives the SDK's lazy legacy-module registry from installed package exports and supplies it through a local Bun plugin. If the SDK adds a supported root option, Compass can remove this local plugin and use that option instead.
 
 The build is heavy — the image closure is the dominant CI cost, the reason
 the gate's timeout is 90m — but it is not paid on every PR. `moon ci` runs a

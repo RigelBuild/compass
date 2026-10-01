@@ -38,6 +38,9 @@ type RunnerEvent struct {
 	RunnerSeq uint64
 	// SessionID is the Server-side session id the frame belongs to.
 	SessionID string
+	// RunnerID is the authenticated subject of the publishing Runner; a frame
+	// naming a session another Runner owns resolves as unbound.
+	RunnerID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
 }
@@ -102,14 +105,13 @@ type SessionStartSink interface {
 // SessionReapSink is notified at enroll (the Runner-reconnect teardown) of the
 // set of session ids whose hub bindings were just cleared, so a consumer holding
 // soft per-session state keyed by session id can drop it. The delivery consumer
-// (RIG-1569 T3) subscribes to reap its held-deliver registry entries for a
-// no-frame author death: such a death emits no terminal frame, so no settle edge
-// ever fires fireHeld to clear the entry, and it would otherwise persist until
-// process restart. The design specifies exactly this enroll-bounded reap
-// (design.md:172-175). Wired via SetSessionReapSink AFTER both the hub and the
-// consumer exist (breaking the construction cycle, exactly as SetSettleSink
-// does), and is nil-safe: a hub with no reap sink is today's behavior, so every
-// existing hub test is unchanged.
+// (RIG-1569 T3) uses this for a pre-T9 Runner link loss: unlike a Runner-observed
+// process exit, it has no terminal frame to settle held delivers, so the entry
+// would otherwise persist until process restart. The design specifies this
+// enroll-bounded reap (design.md:172-175). Wired via SetSessionReapSink AFTER
+// both the hub and consumer exist (breaking the construction cycle, exactly as
+// SetSettleSink does), and nil-safe: a hub with no reap sink is today's behavior,
+// so every existing hub test is unchanged.
 //
 // Like SessionStartSink the method takes NO ctx and must return promptly: it
 // only drops in-memory registry entries, never blocks the enroll goroutine on
@@ -187,11 +189,11 @@ type SessionBindingStore interface {
 	// the prior session the hub must evict from both maps. It runs on the
 	// request ctx (tenant-scoped), so the write lands under the acting tenant.
 	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced string, err error)
-	// ResolveSessionAccount resolves the agent account a live session speaks
-	// for — the cache-miss read behind accountForSession. store.ErrNotFound is
-	// the fail-closed miss (mapped to ok=false), byte-identical to today's
-	// CodeNotFound.
-	ResolveSessionAccount(ctx context.Context, sessionID string) (store.AccountID, error)
+	// ResolveSessionBinding resolves the agent account and owning Runner a live
+	// session speaks for — the cache-miss read behind accountForSession.
+	// store.ErrNotFound is the fail-closed miss (mapped to ok=false),
+	// byte-identical to today's CodeNotFound.
+	ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error)
 	// SessionForAccount resolves the live session bound to an account — the
 	// cache-miss read behind SessionForAccount (the reverse direction). Same
 	// fail-closed store.ErrNotFound contract.
@@ -335,8 +337,8 @@ type Hub struct {
 	// Nil until SetSessionStartSink; read under mu. Nil-safe (today's behavior).
 	sessionStart SessionStartSink
 	// reap is the delivery consumer's session-reap sink (RIG-1569 T3), notified at
-	// enroll with the cleared session ids so the consumer drops held-deliver entries a
-	// no-frame author death left behind. Nil until SetSessionReapSink; read under mu.
+	// enroll with the cleared session ids so the consumer drops held-deliver entries
+	// a pre-T9 Runner link loss left behind. Nil until SetSessionReapSink; read under mu.
 	reap SessionReapSink
 	// presence is the RIG-1569 T8 presence projection's sink, notified at
 	// deliverSession (lifecycle transition) and promoteSession (reconciliation). Nil
@@ -395,16 +397,16 @@ type Hub struct {
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
 	runner *attachedRunner
-	// containerAccounts binds a provisioned container_name to the agent account
-	// it was provisioned for (recorded at Provision, from the request's
-	// agent_account_id). Start promotes the entry to sessionAccounts under the
-	// minted session_id; it lives here only for the Provision..Start window.
-	containerAccounts map[string]store.AccountID
-	// sessionAccounts binds a live session_id to its agent account — the authoritative
-	// map RelayCommsCall resolves against. Start adds, Stop removes, a Runner reconnect
-	// drops ALL, so a re-minted id fails closed (CodeNotFound) not inheriting a stale
-	// account (OQ-2). Single-Runner MVP: reconnect clears the whole map.
-	sessionAccounts map[string]store.AccountID
+	// containerAccounts binds a provisioned container_name to its agent account and
+	// owning Runner, from the resolved account id the caller passes Hub.Provision.
+	// Start promotes the entry to sessionAccounts under the minted session_id; it
+	// lives here only for the Provision..Start window.
+	containerAccounts map[string]sessionBinding
+	// sessionAccounts binds a live session_id to its agent account and owning
+	// Runner — the authoritative map RelayCommsCall resolves against. Start adds,
+	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
+	// (CodeNotFound) not inheriting a stale account (OQ-2).
+	sessionAccounts map[string]sessionBinding
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
 	// consumer (RIG-1569 T3) resolves a subscribed account to its live session to
@@ -439,6 +441,12 @@ type attachedRunner struct {
 	egressPosture compassv1.EgressPosture
 }
 
+// sessionBinding is one live session's principal and the Runner that owns it.
+type sessionBinding struct {
+	account  store.AccountID
+	runnerID string
+}
+
 // NewHub constructs a hub over the two write-through sinks and the agent-comms
 // caller. comms executes agent-initiated comms calls under the account a session
 // resolves to (RelayCommsCall); it may be nil for a hub that never serves comms
@@ -455,8 +463,8 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		comms:             comms,
 		log:               log,
 		freshSessionID:    mintFreshSessionID,
-		containerAccounts: make(map[string]store.AccountID),
-		sessionAccounts:   make(map[string]store.AccountID),
+		containerAccounts: make(map[string]sessionBinding),
+		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
 	}
 }
@@ -620,7 +628,7 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
-		h.deliverSession(ctx, ev.SessionID, f.Session)
+		h.deliverSession(ctx, ev.RunnerID, ev.SessionID, f.Session)
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
@@ -719,17 +727,26 @@ func (h *Hub) fireRunnerReady() {
 // the frame carries a lifecycle transition, extracts the AgentSessionStatus onto
 // SubscribeEvents. A session frame can carry a trace event, a lifecycle
 // transition, or both; UNSPECIFIED means "trace only, no transition".
-func (h *Hub) deliverSession(ctx context.Context, sessionID string, sf *compassv1internal.SessionFrame) {
-	h.tail.RelaySessionFrame(sessionID, sf)
+func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf *compassv1internal.SessionFrame) {
 	state := sf.GetState()
-	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
+	// A frame the publishing Runner may not speak for is dropped whole: its trace,
+	// lifecycle, settle and presence edges would all speak for another Runner's agent.
+	binding, hasAccount, allowed := h.frameSession(ctx, runnerID, sessionID, lifecycle)
+	if !allowed {
+		h.log.Warn("dropped session frame from a Runner that does not own the session",
+			slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
+		return
+	}
+	h.tail.RelaySessionFrame(sessionID, sf)
+	if !lifecycle {
 		return
 	}
 	// Resolve the session's agent account and stamp it onto the published status — the
 	// DL-167 attribution join. A status published after a Runner reconnect cleared the
 	// maps carries none (the residual gap). runnerRuntimeIdentity reads tier/posture in
 	// a separate acquisition — the two can straddle a re-enroll, harmless one at a time.
-	account, hasAccount := h.accountForSession(ctx, sessionID)
+	account := binding.account
 	tier, egressPosture := h.runnerRuntimeIdentity()
 	status := &compassv1.AgentSessionStatus{SessionId: sessionID, State: state, RuntimeTier: tier, EgressPosture: egressPosture}
 	if hasAccount {
@@ -778,7 +795,7 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 	// BEFORE the system-role escalation below. The binding read is single-valued only
 	// because RLS narrows it to one tenant; a BYPASSRLS read could return a row from an
 	// ARBITRARY tenant. Resolving here keeps it tenant-scoped and fail-closed.
-	agent, ok := h.accountForSession(ctx, ev.SessionID)
+	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")
 		return
@@ -827,7 +844,7 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	// account on the REQUEST ctx, BEFORE the system-role escalation, so the
 	// binding read stays tenant-scoped and cannot return a foreign tenant's row
 	// under BYPASSRLS. Only the cursor advance below runs under the system role.
-	agent, ok := h.accountForSession(ctx, ev.SessionID)
+	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")
 		return
@@ -920,7 +937,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 		ramOffline = append(ramOffline, promotedPair{account: account, sessionID: sessionID})
 	}
 	// Snapshot the session ids whose bindings are about to be cleared, so the delivery
-	// consumer can reap held-deliver entries a no-frame author death left behind
+	// consumer can reap held-deliver entries a pre-T9 Runner link loss left behind
 	// (RIG-1569 T3). sessionAccounts and Consumer.held share the author session id key,
 	// so these are exactly the keys to drop. A first-ever enroll snapshots nothing.
 	ramReaped := make([]string, 0, len(h.sessionAccounts))

@@ -149,7 +149,9 @@ type stubStreamingRuntime struct {
 	callsByID   map[runtime.WorkloadID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
 	execGate    chan struct{}                   // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md)
 	execEntered chan runtime.WorkloadID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
+	execErr     error                           // when set, ExecStreaming fails before starting the child
 	created     []runtime.WorkloadSpec
+	createErr   error // when set, Create fails with it — models `podman create` refusing a name already in use
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -165,9 +167,12 @@ func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
 
 func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "create")
+	if f.createErr != nil {
+		return "", f.createErr
+	}
 	f.created = append(f.created, spec)
-	f.mu.Unlock()
 	return runtime.WorkloadID("fake-id"), nil
 }
 func (f *stubStreamingRuntime) Start(context.Context, runtime.WorkloadID) error {
@@ -178,12 +183,14 @@ func (f *stubStreamingRuntime) Exec(context.Context, runtime.WorkloadID, runtime
 	f.record("exec")
 	return runtime.ExecOutput{}, nil
 }
+
 func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "exec_streaming")
 	f.execSpecs = append(f.execSpecs, spec)
 	gate := f.execGate
 	entered := f.execEntered
+	execErr := f.execErr
 	f.mu.Unlock()
 	// Signal that a relaunch reached the agent launch (a real event the test
 	// gates on), then park until released or ctx is cancelled — so a
@@ -199,6 +206,9 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Wor
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if execErr != nil {
+		return nil, execErr
 	}
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
@@ -226,6 +236,7 @@ func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.WorkloadID, _ 
 	f.mu.Unlock()
 	return err
 }
+
 func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) error {
 	f.record("remove")
 	f.recordForID(id, "remove")
@@ -451,21 +462,24 @@ type captureLog struct {
 	dropped atomic.Uint64
 }
 
-// logLine is one captured record: its message plus the attributes the drain
-// stamps (session id and the drained text).
+// logLine captures a record's message, severity, and string attributes.
 type logLine struct {
 	msg   string
+	level slog.Level
 	attrs map[string]string
 }
 
+// newCaptureLog creates a channel-backed slog handler for drain assertions.
 func newCaptureLog() *captureLog {
-	return &captureLog{lines: make(chan logLine, 64)}
+	return &captureLog{lines: make(chan logLine, 128)}
 }
 
+// Enabled captures every level so tests can assert severity as well as message.
 func (c *captureLog) Enabled(context.Context, slog.Level) bool { return true }
 
+// Handle publishes the record without ever blocking the drain under test.
 func (c *captureLog) Handle(_ context.Context, r slog.Record) error {
-	line := logLine{msg: r.Message, attrs: make(map[string]string, r.NumAttrs())}
+	line := logLine{msg: r.Message, level: r.Level, attrs: make(map[string]string, r.NumAttrs())}
 	r.Attrs(func(a slog.Attr) bool {
 		line.attrs[a.Key] = a.Value.String()
 		return true
@@ -481,7 +495,7 @@ func (c *captureLog) Handle(_ context.Context, r slog.Record) error {
 }
 
 // WithAttrs / WithGroup intentionally drop attrs and groups: the drain stamps
-// every attribute inline on its Debug call, so nothing is lost today. A future
+// every attribute inline on its log call, so nothing is lost today. A future
 // refactor to `log.With(...)` must implement these first, or the session_id
 // assertions will silently see an empty map.
 func (c *captureLog) WithAttrs([]slog.Attr) slog.Handler { return c }
@@ -505,6 +519,16 @@ func (c *captureLog) recvLine(t *testing.T) logLine {
 		t.Fatal("timed out waiting for a diagnostic log line")
 		return logLine{}
 	}
+}
+
+func newStubStreamingRuntimeWithScript(t *testing.T, script string) *stubStreamingRuntime {
+	t.Helper()
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "podman-stub.sh")
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing streaming stub: %v", err)
+	}
+	return &stubStreamingRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog)}
 }
 
 // --- h2c transport -----------------------------------------------------------

@@ -1,0 +1,14 @@
+{
+	"name": "@compass/dl-claim",
+	"private": true,
+	"type": "module",
+	"description": "Claim Compass design-ledger IDs from the shared counter.",
+	"module": "index.ts",
+	"bin": {
+		"dl-claim": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

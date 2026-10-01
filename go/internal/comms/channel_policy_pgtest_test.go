@@ -2,13 +2,12 @@
 
 package comms
 
-// SetChannelPolicy handler + policy enforcement at the RPC edge (RIG-1722 T4):
-// the handler sets the policy and echoes the channel; an OWNER_ONLY non-owner
-// post is CodeNotFound (no-oracle rejection); an unsubscribe on a mandatory
-// channel is CodeInvalidArgument. In-process via WithActor against a real store.
+// SetChannelPolicy handler + policy enforcement at the RPC edge. OWNER_ONLY
+// non-owner posts map to CodePermissionDenied; non-members remain CodeNotFound.
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -53,15 +52,40 @@ func TestSetChannelPolicyUpdatesAndEchoes(t *testing.T) {
 	}
 }
 
-// TestPostMessageOwnerOnlyNonOwnerIsNotFound: a non-owner member posting to an
-// OWNER_ONLY channel gets CodeNotFound at the edge — the same code a non-member
-// gets, so the policy leaks no oracle.
-func TestPostMessageOwnerOnlyNonOwnerIsNotFound(t *testing.T) {
+// TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound: owner_handle is
+// viewer-scoped, so an invisible agent must miss exactly like an unknown one.
+func TestSetChannelPolicyUnknownOrInvisibleOwnerHandleIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 	other := mustUser(t, st, "other")
+	mustAgent(t, st, other.ID, "hidden")
 
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := created.Msg.GetChannel().GetId()
+
+	for _, handle := range []string{"ghost", "other/ghost", "other/hidden"} {
+		_, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+			ChannelId:   chID,
+			PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+			OwnerHandle: handle,
+		}))
+		connectNotFoundFor(t, err, handle, "SetChannelPolicy owner "+handle)
+	}
+}
+
+// TestPostMessageOwnerOnlyNonOwnerIsPermissionDenied: members can see the
+// channel, so owner-only refusals map to CodePermissionDenied without a leak.
+func TestPostMessageOwnerOnlyNonOwnerIsPermissionDenied(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		MemberHandles: []string{other.Handle},
@@ -70,17 +94,35 @@ func TestPostMessageOwnerOnlyNonOwnerIsNotFound(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	chID := created.Msg.GetChannel().GetId()
-
 	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
-		ChannelId:   chID,
-		PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+		ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
 		OwnerHandle: owner.Handle,
 	})); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
-
 	_, err = svc.PostMessage(WithActor(ctx, other.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
-	connectCodeIs(t, err, connect.CodeNotFound, "non-owner post on OWNER_ONLY channel")
+	connectCodeIs(t, err, connect.CodePermissionDenied, "non-owner post on OWNER_ONLY channel")
+	if got, want := err.Error(), "permission_denied: store: permission denied: channel \"room\" is owner-only: only its owner can post"; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want message %q", got, want)
+	}
+}
+
+// TestPostMessageOwnerOnlyNonMemberIsNotFound preserves the membership-first gate.
+func TestPostMessageOwnerOnlyNonMemberIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	outsider := mustUser(t, st, "outsider")
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := created.Msg.GetChannel().GetId()
+	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{ChannelId: chID, PostPolicy: compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY, OwnerHandle: owner.Handle})); err != nil {
+		t.Fatalf("SetChannelPolicy: %v", err)
+	}
+	_, err = svc.PostMessage(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
+	connectCodeIs(t, err, connect.CodeNotFound, "non-member post on OWNER_ONLY channel")
 }
 
 // TestUpdateChannelMembersUnsubscribeMandatoryIsInvalidArgument: an unsubscribe

@@ -19,9 +19,9 @@ import (
 // server, and that the resulting message fans out on the comms bus authored by
 // the agent itself (not the human trigger). Modeled EXACTLY on
 // TestLegThreeFourSpawnAndMessaging: //go:build podman, the podmanUsable() skip
-// guard first, context.Background() as the test root, NewFixture(ctx, t,
-// WithCannedScript(...)), a container-reaping t.Cleanup registered before
-// StartSession, store-side reads via store.Open(ctx, f.DSN()), tail-before-post
+// guard first, context.Background() as the test root, sharedFixture(t) with
+// this file's init()-registered canned route, a container-reaping t.Cleanup
+// registered before StartSession, store-side reads via store.Open(ctx, f.DSN()), tail-before-post
 // ordering, and a subscribe-before-post live-fan observation.
 //
 // It is PRESENT-BUT-SKIPPED on a container-less sandbox, exactly as the sibling
@@ -34,46 +34,9 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
-	ctx := context.Background() // test root, threaded into NewFixture + every primitive
+	ctx := context.Background() // test root, threaded into every primitive
 
-	// The distinctive post the canned turn will make through the agent loop. A
-	// unique topic + body so the fan-out assertion selects THIS message off the
-	// comms bus and cannot collide with the human trigger post.
-	const postTopic = "e2e-comms-leg"
-	const postBody = "comms leg: posting from the agent loop"
-	// The poster's handle. Its home channel is minted under the same name
-	// (store/accounts.go:337 names the home channel for the agent's handle), so
-	// this const doubles as the channel NAME the scripted post must target.
-	const posterHandle = "comms-leg-poster"
-	// The comms tool's arguments, serialized JSON (the OpenAI tool-call
-	// contract). Built from the consts above so the asserted values cannot drift
-	// from what the script issues. Field names are the postParameters wire schema
-	// (comms.ts): text, topic, channel, create_topic. As of the peer-DM cutover
-	// (record R2/R5) post has NO home default — `channel` is REQUIRED and carries
-	// the target channel NAME (here the poster's own home channel, whose name is
-	// its handle), and a name-miss topic needs create_topic:true (postTopic names
-	// no existing topic on the freshly-minted home channel, so it must mint).
-	postArgsJSON := fmt.Sprintf(
-		`{"text":%q,"topic":%q,"channel":%q,"create_topic":true}`,
-		postBody, postTopic, posterHandle,
-	)
-	// The assistant text the closing turn settles on after the tool result
-	// returns — a clean text settle, mirroring the sibling's settleReply. Unlike
-	// the sibling, it is deliberately NOT asserted in the transcript: the comms
-	// fan-out + author assertion below is a strictly stronger proof that the tool
-	// executed, so it is the proof of record here. This const only gives turn 1
-	// something to settle on.
-	const settleReply = "posted, standing by"
-
-	// A 2-turn script: turn 0 issues the comms_post_message tool-call (so the
-	// agent loop runs the real PostMessage); turn 1 is a clean text settle after
-	// the tool result returns.
-	f := NewFixture(ctx, t,
-		WithCannedScript(
-			CannedToolCall("comms_post_message", postArgsJSON),
-			CannedText(settleReply),
-		),
-	)
+	f := sharedFixture(t)
 
 	// The poster agent: created, provisioned, and started exactly as the
 	// sibling's spawner. Its turn issues the comms post.
@@ -137,7 +100,7 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	// session and is delivered via the live fan-out, which fires the poster's
 	// first turn (the one that issues the comms_post_message tool-call) — the turn
 	// AwaitTurnSettled waits on. Must precede the settle wait.
-	if _, err := f.PostMessage(ctx, string(poster.Agent.HomeChannelID), "general", "post a message and stand by"); err != nil {
+	if _, err := f.PostMessage(ctx, string(poster.Agent.HomeChannelID), "general", "post a message and stand by "+commsToolMarker); err != nil {
 		t.Fatalf("PostMessage(home trigger): %v", err)
 	}
 
@@ -176,4 +139,51 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	// topic NAME, so there is nothing on the wire to compare against
 	// poster.Agent.HomeChannelID or postTopic. Body + author is the correct
 	// assertion ceiling here.
+}
+
+// The distinctive post the canned turn will make through the agent loop. A
+// unique topic + body so the fan-out assertion selects THIS message off the
+// comms bus and cannot collide with the human trigger post.
+const postTopic = "e2e-comms-leg"
+const postBody = "comms leg: posting from the agent loop"
+
+// The poster's handle. Its home channel is minted under the same name
+// (store/accounts.go:337 names the home channel for the agent's handle), so
+// this const doubles as the channel NAME the scripted post must target.
+const posterHandle = "comms-leg-poster"
+
+// The comms tool's arguments, serialized JSON (the OpenAI tool-call
+// contract). Built from the consts above so the asserted values cannot drift
+// from what the script issues. Field names are the postParameters wire schema
+// (comms.ts): text, topic, channel, create_topic. As of the peer-DM cutover
+// (record R2/R5) post has NO home default — `channel` is REQUIRED and carries
+// the target channel NAME (here the poster's own home channel, whose name is
+// its handle), and a name-miss topic needs create_topic:true (postTopic names
+// no existing topic on the freshly-minted home channel, so it must mint).
+var postArgsJSON = fmt.Sprintf(
+	`{"text":%q,"topic":%q,"channel":%q,"create_topic":true}`,
+	postBody, postTopic, posterHandle,
+)
+
+// The assistant text the closing turn settles on after the tool result
+// returns — a clean text settle, mirroring the sibling's settleReply. Unlike
+// the sibling, it is deliberately NOT asserted in the transcript: the comms
+// fan-out + author assertion below is a strictly stronger proof that the tool
+// executed, so it is the proof of record here. This const only gives turn 1
+// something to settle on.
+const settleReply = "posted, standing by"
+
+// commsToolMarker routes this leg's prompt to its 2-turn script on the shared
+// canned stub: turn 0 issues the comms_post_message tool-call (so the agent loop
+// runs the real PostMessage); turn 1 is a clean text settle after the tool
+// result returns.
+const commsToolMarker = "e2e-route-comms-post-tool"
+
+func init() {
+	registerSharedFixtureOption(
+		WithCannedMarkerScript(commsToolMarker,
+			CannedToolCall("comms_post_message", postArgsJSON),
+			CannedText(settleReply),
+		),
+	)
 }

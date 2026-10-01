@@ -9,9 +9,14 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 
@@ -225,6 +230,9 @@ func TestStderrIsDrainedUnderItsOwnLabel(t *testing.T) {
 	if line.msg != "agent stderr" {
 		t.Fatalf("log msg = %q, want %q (stderr must not be labelled as stdout)", line.msg, "agent stderr")
 	}
+	if line.level != slog.LevelInfo {
+		t.Fatalf("stderr log level = %v, want Info", line.level)
+	}
 	if got := line.attrs["line"]; got != "panic: something broke" {
 		t.Fatalf("drained line = %q, want %q", got, "panic: something broke")
 	}
@@ -236,6 +244,393 @@ func TestStderrIsDrainedUnderItsOwnLabel(t *testing.T) {
 	// relaxed for test cleanup).
 	_ = engine.stderrW.Close()
 	engine.closeStdout()
+}
+
+func TestSelfExitLogsErrorWithStderrTail(t *testing.T) {
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\necho 'panic: agent failed' >&2\nexit 7\n")
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-crashed", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	if stream == nil {
+		t.Fatal("StartAgent returned nil stream")
+	}
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after the agent exited")
+	}
+	var unexpected []logLine
+	for draining := true; draining; {
+		select {
+		case line := <-logs.lines:
+			if line.msg == "agent exited unexpectedly" {
+				unexpected = append(unexpected, line)
+			}
+		default:
+			draining = false
+		}
+	}
+	if len(unexpected) != 1 || unexpected[0].attrs["exit_result"] != "exit status 7" {
+		t.Fatalf("unexpected-exit records = %#v, want exactly one exit status 7", unexpected)
+	}
+	if unexpected[0].attrs["session_id"] != "sess-crashed" || unexpected[0].attrs["stderr_tail"] != "panic: agent failed" {
+		t.Fatalf("unexpected-exit attributes = %#v", unexpected[0].attrs)
+	}
+	if unexpected[0].level != slog.LevelError {
+		t.Fatalf("unexpected-exit level = %v, want Error", unexpected[0].level)
+	}
+	if err := stream.Stop(); err != nil {
+		t.Fatalf("Stop after self-exit = %v, want nil", err)
+	}
+}
+
+func TestDeliberateStopDoesNotLogUnexpectedExit(t *testing.T) {
+	engine := newStubStreamingRuntime(t)
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-stopped", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	if err := stream.Stop(); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after Stop")
+	}
+	for draining := true; draining; {
+		select {
+		case line := <-logs.lines:
+			if line.msg == "agent exited unexpectedly" {
+				t.Fatalf("deliberate Stop logged unexpected exit: %#v", line)
+			}
+		default:
+			draining = false
+		}
+	}
+}
+
+func TestCallerCancellationDoesNotLogUnexpectedExit(t *testing.T) {
+	engine := newStubStreamingRuntime(t)
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := link.StartAgent(ctx, "sess-cancelled", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		cancel()
+		t.Fatalf("StartAgent = %v", err)
+	}
+	cancel()
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after caller cancellation")
+	}
+	for draining := true; draining; {
+		select {
+		case line := <-logs.lines:
+			if line.msg == "agent exited unexpectedly" {
+				t.Fatalf("caller cancellation logged unexpected exit: %#v", line)
+			}
+		default:
+			draining = false
+		}
+	}
+}
+
+func TestShouldLogExit(t *testing.T) {
+	liveCtx := context.Background()
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	nonKillErr := errors.New("exit failed")
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{name: "nil error keeps current behavior", ctx: liveCtx, want: true},
+		{name: "deliberate kill", ctx: liveCtx, err: &runtime.ExitStatusError{Signal: syscall.SIGKILL}, want: false},
+		{name: "non-kill exit with live context", ctx: liveCtx, err: nonKillErr, want: true},
+		{name: "non-kill exit with cancelled context", ctx: cancelledCtx, err: nonKillErr, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldLogExit(tt.ctx, tt.err); got != tt.want {
+				t.Fatalf("shouldLogExit() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The child closes its pipes but keeps running, so the reaper is parked inside
+// Process.Wait when Stop runs. A lock held across Wait would deadlock Stop here.
+func TestStopAndReaperShareSingleWait(t *testing.T) {
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nexec >&- 2>&-\nexec sleep 120\n")
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	inWait := make(chan struct{})
+	link.beforeWait = func() { close(inWait) }
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-shared-wait", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	select {
+	case <-inWait:
+	case <-timeAfter():
+		t.Fatal("reaper never reached Process.Wait")
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- stream.Stop() }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop = %v", err)
+		}
+	case <-timeAfter():
+		t.Fatal("Stop did not finish with a concurrent reaper wait")
+	}
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after Stop")
+	}
+}
+
+func TestRetainStderrLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{name: "line count", lines: []string{"01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"}, want: []string{"06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"}},
+		{name: "byte budget", lines: []string{strings.Repeat("a", 6000), strings.Repeat("b", 6000), strings.Repeat("c", 6000)}, want: []string{strings.Repeat("b", 6000), strings.Repeat("c", 6000)}},
+		{name: "oversize line", lines: []string{strings.Repeat("x", 20*1024)}, want: []string{strings.Repeat("x", maxStderrTailBytes)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := &AgentStream{}
+			for _, line := range tt.lines {
+				stream.retainStderrLine(line, false)
+			}
+			got := make([]string, len(stream.stderrTail))
+			wantBytes := 0
+			for i, line := range stream.stderrTail {
+				got[i] = line.text
+				wantBytes += len(line.text)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("tail lengths = %v, want %v", lengths(got), lengths(tt.want))
+			}
+			if stream.stderrBytes != wantBytes || stream.stderrBytes > maxStderrTailBytes {
+				t.Fatalf("stderrBytes = %d, want sum %d and at most %d", stream.stderrBytes, wantBytes, maxStderrTailBytes)
+			}
+		})
+	}
+}
+
+func lengths(lines []string) []int {
+	out := make([]int, len(lines))
+	for i, line := range lines {
+		out[i] = len(line)
+	}
+	return out
+}
+
+func TestStderrInfoLinesAreClippedAndRateLimited(t *testing.T) {
+	logs := newCaptureLog()
+	clock := time.Unix(1_000, 0)
+	limiter := newLineRateLimiter()
+	limiter.now = func() time.Time { return clock }
+	limiter.lastRefill = clock
+	stream := &AgentStream{sessionID: "sess-limited"}
+	retained := 0
+	stderr := &stderrLogger{limiter: limiter, onLine: func(text string, truncated bool) {
+		retained++
+		stream.retainStderrLine(text, truncated)
+	}}
+	line := strings.Repeat("x", maxInfoStderrLine+1) + "\n"
+	var input strings.Builder
+	for i := range stderrLineBurst + 2 {
+		if i > 0 {
+			input.WriteByte('\n')
+		}
+		input.WriteString(line[:len(line)-1])
+	}
+	stream.drainToLog(context.Background(), strings.NewReader(input.String()), "agent stderr", logs.logger(), stderr)
+	infoLines, debugLines := 0, 0
+	for draining := true; draining; {
+		select {
+		case record := <-logs.lines:
+			switch record.level {
+			case slog.LevelInfo:
+				infoLines++
+				if len(record.attrs["line"]) != maxInfoStderrLine || record.attrs["truncated"] != "true" {
+					t.Fatalf("Info stderr record = %#v, want clipped line with truncated=true", record)
+				}
+			case slog.LevelDebug:
+				debugLines++
+			case slog.LevelWarn:
+			default:
+				t.Fatalf("unexpected stderr record: %#v", record)
+			}
+			if record.msg == "agent stderr rate-limited" && record.attrs["dropped_lines"] != "2" {
+				t.Fatalf("rate-limit warning = %#v, want 2 dropped lines", record)
+			}
+		default:
+			draining = false
+		}
+	}
+	if infoLines != stderrLineBurst || debugLines != 2 {
+		t.Fatalf("Info lines = %d, Debug lines = %d; want %d and 2", infoLines, debugLines, stderrLineBurst)
+	}
+	if retained != stderrLineBurst+2 {
+		t.Fatalf("retained stderr lines = %d, want all %d lines", retained, stderrLineBurst+2)
+	}
+	if len(stream.stderrTail) > maxStderrTailLines || stream.stderrBytes > maxStderrTailBytes {
+		t.Fatalf("stderr tail exceeds bounds: %d lines, %d bytes", len(stream.stderrTail), stream.stderrBytes)
+	}
+}
+
+func TestStderrRateLimitWarningsAreThrottled(t *testing.T) {
+	clock := time.Unix(1_000, 0)
+	limiter := &lineRateLimiter{
+		tokens: 0, lastRefill: clock.Add(-time.Second), now: func() time.Time { return clock },
+	}
+	stderr := &stderrLogger{limiter: limiter, onLine: func(string, bool) {}}
+	logs := newCaptureLog()
+	log := logs.logger()
+	writeLine := func() {
+		logDrainLine(log, "sess-flood", "agent stderr", "line", false, stderr)
+	}
+
+	collectWarnings := func() int {
+		count := 0
+		for draining := true; draining; {
+			select {
+			case record := <-logs.lines:
+				if record.msg == "agent stderr rate-limited" {
+					count++
+				}
+			default:
+				draining = false
+			}
+		}
+		return count
+	}
+	// Interleave drops and allows at one clock value: only the throttle keeps
+	// each allowed line after a drop from flushing its own Warn.
+	dropThenAllow := func() {
+		limiter.tokens = 0
+		writeLine()
+		limiter.tokens = 1
+		writeLine()
+	}
+	for range 5 {
+		dropThenAllow()
+	}
+	if got := collectWarnings(); got != 1 {
+		t.Fatalf("warnings within one second = %d, want 1", got)
+	}
+	clock = clock.Add(time.Second)
+	limiter.lastRefill = clock
+	dropThenAllow()
+	if got := collectWarnings(); got != 1 {
+		t.Fatalf("warnings after the interval = %d, want 1", got)
+	}
+	limiter.tokens = 0
+	writeLine()
+	stderr.flushDropped(log, "sess-flood", true)
+	if got := collectWarnings(); got != 1 {
+		t.Fatalf("final flush warnings = %d, want 1", got)
+	}
+}
+
+func TestStderrUTF8ClippingAndTailTruncation(t *testing.T) {
+	stream := &AgentStream{sessionID: "sess-utf8"}
+	tailLine := "€" + strings.Repeat("x", maxStderrTailBytes-2)
+	stream.retainStderrLine(tailLine, false)
+	if len(stream.stderrTail) != 1 {
+		t.Fatalf("stderr tail lines = %d, want 1", len(stream.stderrTail))
+	}
+	retained := stream.stderrTail[0]
+	if !utf8.ValidString(retained.text) {
+		t.Fatalf("tail cut produced invalid UTF-8: %q", retained.text[:min(len(retained.text), 16)])
+	}
+	if len(retained.text) != maxStderrTailBytes-2 {
+		t.Fatalf("tail kept %d bytes, want %d", len(retained.text), maxStderrTailBytes-2)
+	}
+	if !retained.truncated {
+		t.Fatal("tail truncated = false, want true after the byte-budget clamp")
+	}
+	if got, want := stream.stderrTailText(), retained.text+" [truncated]"; got != want {
+		t.Fatalf("stderrTailText() suffix = %q, want %q", got[len(got)-len(" [truncated]"):], " [truncated]")
+	}
+
+	clock := time.Unix(1_000, 0)
+	limiter := newLineRateLimiter()
+	limiter.now = func() time.Time { return clock }
+	limiter.lastRefill = clock
+	stderr := &stderrLogger{limiter: limiter, onLine: func(string, bool) {}}
+	logs := newCaptureLog()
+	text := strings.Repeat("x", maxInfoStderrLine-1) + "€z"
+	logDrainLine(logs.logger(), "sess-utf8", "agent stderr", text, false, stderr)
+	var info *logLine
+	for draining := true; draining; {
+		select {
+		case record := <-logs.lines:
+			if record.level == slog.LevelInfo {
+				info = &record
+			}
+		default:
+			draining = false
+		}
+	}
+	if info == nil {
+		t.Fatal("missing Info stderr record")
+	}
+	clipped := info.attrs["line"]
+	if !utf8.ValidString(clipped) {
+		t.Fatalf("Info cut produced invalid UTF-8: %q", clipped)
+	}
+	if len(clipped) != maxInfoStderrLine-1 {
+		t.Fatalf("Info line kept %d bytes, want %d", len(clipped), maxInfoStderrLine-1)
+	}
+	if info.attrs["truncated"] != "true" {
+		t.Fatalf("Info truncated = %q, want true", info.attrs["truncated"])
+	}
+}
+
+func TestStopAfterReapReturnsNil(t *testing.T) {
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nexit 7\n")
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stream, err := link.StartAgent(ctx, "sess-stopped-after-reap", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+	select {
+	case <-stream.reaped:
+	case <-timeAfter():
+		t.Fatal("reaper did not finish after the agent exited")
+	}
+	if err := stream.Stop(); err != nil {
+		t.Fatalf("Stop after natural reap = %v, want nil", err)
+	}
 }
 
 // A bare trailing `\r` with NO newline is payload, not a terminator, and must
@@ -344,7 +739,7 @@ func TestStopReapsBeforeJoiningTheDrains(t *testing.T) {
 	// context.Background() as the test root — the rule's explicit test exemption.
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}

@@ -100,6 +100,9 @@ type SocketListener struct {
 	// Stop/Start reuses the container and its socket), so without an explicit
 	// retirement the producer accumulates one session's state per cycle.
 	control *controlProducer
+	// gateway lets the Runner publish a lifecycle transition the agent cannot
+	// report itself, such as its own exit.
+	gateway *Gateway
 }
 
 // listenAgentSocket opens the per-container agent socket at path and serves h
@@ -266,6 +269,15 @@ func (l *SocketListener) RetireSession(sessionID string) {
 		return
 	}
 	l.control.Retire(sessionID)
+}
+
+// RestartSession hands the session's control state to a relaunched agent,
+// with op queued first and every unacked op after it (controlProducer.Restart).
+func (l *SocketListener) RestartSession(sessionID string, op *compassv1internal.AgentControl) error {
+	if l.control == nil {
+		return errors.New("gateway: socket listener has no control producer wired")
+	}
+	return l.control.Restart(sessionID, op)
 }
 
 // SendControl writes a server-relayed control op to the bound session's control

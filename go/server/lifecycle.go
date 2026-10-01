@@ -39,8 +39,8 @@ type lifecycleService struct {
 	store *store.Store
 	hub   *runnerhub.Hub
 	// dm opens the manager<->new-peer DM at spawn time (R8). Nil for instances
-	// that never spawn (the waker, the store-free self-despawn test), in which
-	// case autoOpenSpawnDM returns an empty name.
+	// that never spawn (the waker), in which case autoOpenSpawnDM returns an
+	// empty name.
 	dm dmOpener
 	// wakeGroup coalesces concurrent WakeAgent calls for the SAME agent onto one
 	// start (RIG-1641 T3 cost control, §Decisions OQ-2): a burst of messages at
@@ -112,9 +112,9 @@ var spawnChainTimeout = 60 * time.Second
 var errCannotDespawnSelf = errors.New("cannot despawn self")
 
 // errPeerNotFound is the in-band cause a despawn returns for EVERY unauthorized
-// or unknown target — unknown id, non-agent id, and foreign-owner peer all
-// collapse to this one message so the caller can never distinguish a peer it may
-// not touch from one that does not exist (the not-found/forbidden merge).
+// or unknown target — unknown handle, non-agent handle, and foreign-owner peer
+// all collapse to this one message so the caller can never distinguish a peer it
+// may not touch from one that does not exist (the not-found/forbidden merge).
 // CodeNotFound.
 var errPeerNotFound = errors.New("peer not found")
 
@@ -240,11 +240,12 @@ func (l *lifecycleService) SpawnAsAccount(
 // DespawnAsAccount tears down a peer's compute (container + session), NOT its
 // identity: the account row is durable. Authority is the OWNER's, not the
 // spawner's — any agent may despawn a sibling its owner owns, but never a foreign
-// peer. Guards, each fail-closed: self-despawn -> CodeInvalidArgument; unknown,
-// non-agent, or foreign-owner target -> the SAME indistinguishable CodeNotFound.
-// Idempotent past the guards: a target with no live placement is already torn
-// down and succeeds without a Remove (the same already-stopped-succeeds contract
-// StopAgentSession has).
+// peer. The target is an agent handle, bare (the caller owner's namespace) or
+// `owner/agent`. Guards, each fail-closed: self-despawn -> CodeInvalidArgument;
+// unknown, non-agent, or foreign-owner target -> the SAME indistinguishable
+// CodeNotFound. Idempotent past the guards: a target with no live placement is
+// already torn down and succeeds without a Remove (the same
+// already-stopped-succeeds contract StopAgentSession has).
 func (l *lifecycleService) DespawnAsAccount(
 	ctx context.Context,
 	caller store.AccountID,
@@ -253,15 +254,8 @@ func (l *lifecycleService) DespawnAsAccount(
 	ctx, cancel := context.WithTimeout(ctx, spawnChainTimeout)
 	defer cancel()
 
-	target := store.AccountID(req.GetAgentHandle())
-	if target == caller {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
-	}
-
-	// Owner check, fail-closed and indistinguishable — and caller-FIRST to close a
-	// latency side-channel: resolving the caller before the target means both the
-	// unknown-target and foreign-owner paths run exactly two AgentOwner queries, so
-	// the outcomes differ only by an O(1) compare, never by round-trip count.
+	// Caller-FIRST closes a latency side-channel: every target outcome within one
+	// input form then runs the same query count and differs only by O(1) compares.
 	callerOwner, err := l.store.AgentOwner(ctx, caller)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -269,16 +263,12 @@ func (l *lifecycleService) DespawnAsAccount(
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner: %w", err))
 	}
-	targetOwner, err := l.store.AgentOwner(ctx, target)
+	target, err := l.resolveDespawnTarget(ctx, callerOwner, req.GetAgentHandle())
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errPeerNotFound)
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving target owner: %w", err))
+		return nil, err
 	}
-	if targetOwner != callerOwner {
-		// A peer the caller's owner does not own: indistinguishable from unknown.
-		return nil, connect.NewError(connect.CodeNotFound, errPeerNotFound)
+	if target == caller {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
 	}
 
 	// Authorized. Stop the target's live session first (best-effort, bounded so a
@@ -310,6 +300,33 @@ func (l *lifecycleService) DespawnAsAccount(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("releasing agent placement: %w", err))
 	}
 	return &compassv1internal.DespawnPeerResponse{}, nil
+}
+
+// resolveDespawnTarget resolves a despawn agent handle to an agent id the caller's
+// owner owns. Each input form runs a constant query shape whatever the outcome,
+// and a foreign qualifier is never looked up, since that would reveal whether the
+// foreign user exists. Every miss is the one errPeerNotFound.
+func (l *lifecycleService) resolveDespawnTarget(ctx context.Context, callerOwner store.AccountID, raw string) (store.AccountID, error) {
+	qh := store.ParseQualifiedHandle(raw)
+	ownerMatches := true
+	if qh.Qualified() {
+		ownerHandle, err := l.store.AccountHandle(ctx, callerOwner)
+		if err != nil {
+			return "", connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner handle: %w", err))
+		}
+		ownerMatches = qh.Owner == ownerHandle
+	}
+	acc, err := l.store.AgentByHandle(ctx, callerOwner, qh.Handle)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+			return "", connect.NewError(connect.CodeNotFound, errPeerNotFound)
+		}
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("resolving target handle: %w", err))
+	}
+	if !ownerMatches || acc.Agent.OwnerUserID != callerOwner {
+		return "", connect.NewError(connect.CodeNotFound, errPeerNotFound)
+	}
+	return acc.ID, nil
 }
 
 // autoOpenSpawnDM opens the manager<->new-peer DM (R8) and returns its channel
@@ -397,8 +414,7 @@ func (l *lifecycleService) provisionAndStart(
 	role string,
 	req *compassv1internal.SpawnPeerRequest,
 ) (*compassv1internal.SpawnPeerResponse, error) {
-	resp, runnerID, err := l.hub.Provision(ctx, req.GetClientRequestId(), &compassv1.ProvisionAgentWorkspaceRequest{
-		AgentHandle:     string(agentID),
+	resp, runnerID, err := l.hub.Provision(ctx, req.GetClientRequestId(), agentID, &compassv1.ProvisionAgentWorkspaceRequest{
 		ClientRequestId: req.GetClientRequestId(),
 		Persona:         persona,
 		Role:            role,
@@ -535,13 +551,46 @@ func (l *lifecycleService) resumeSession(ctx context.Context, agent store.Accoun
 	if err != nil {
 		return fmt.Errorf("reconstructing session body: %w", err)
 	}
-	if _, err := l.hub.StartResume(ctx, "", &compassv1.StartAgentSessionRequest{
-		ContainerName:   container,
-		ResumeSessionId: sessionID,
-	}, body); err != nil {
+	req := &compassv1.StartAgentSessionRequest{ContainerName: container, ResumeSessionId: sessionID}
+	_, err = l.hub.StartResume(ctx, "", req, body)
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		if req.ContainerName, err = l.reprovision(ctx, agent, container); err != nil {
+			return err
+		}
+		_, err = l.hub.StartResume(ctx, "", req, body)
+	}
+	if err != nil {
 		return fmt.Errorf("relaying resume start: %w", err)
 	}
 	return nil
+}
+
+// reprovision re-creates the container for an agent whose placement names one the
+// Runner no longer has (a redeploy or Runner restart), and moves the placement to it.
+func (l *lifecycleService) reprovision(ctx context.Context, agent store.AccountID, stale string) (string, error) {
+	acct, err := l.store.GetAccount(ctx, agent)
+	if err != nil {
+		return "", fmt.Errorf("reading account to re-provision: %w", err)
+	}
+	if acct.Agent == nil {
+		return "", fmt.Errorf("%w: account %q is not an agent", store.ErrNotFound, agent)
+	}
+	resp, runnerID, err := l.hub.Provision(ctx, "", agent, &compassv1.ProvisionAgentWorkspaceRequest{
+		AgentHandle: string(agent),
+		Persona:     acct.Agent.Persona,
+		Role:        acct.Agent.Role,
+	})
+	if err != nil {
+		return "", fmt.Errorf("re-provisioning lost container %q: %w", stale, err)
+	}
+	container := resp.GetContainerName()
+	// No rollback: the Runner derives the name from the account, so it usually equals the
+	// stale row's, and releasing that row would leave the agent permanently unplaced.
+	if err := l.store.RecordAgentPlacement(ctx, agent, runnerID, container); err != nil {
+		return "", fmt.Errorf("recording re-provisioned placement: %w", err)
+	}
+	slog.InfoContext(ctx, "agent wake: re-provisioned lost container", "agent_account_id", agent, "stale_container", stale, "container_name", container)
+	return container, nil
 }
 
 // freshStart is the no-prior-session fallback: an agent that has never had a
@@ -560,6 +609,11 @@ func (l *lifecycleService) freshStart(ctx context.Context, agent store.AccountID
 		return wakeOutcomeFailed
 	}
 	startResp, err := l.hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{ContainerName: container})
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		if container, err = l.reprovision(ctx, agent, container); err == nil {
+			startResp, err = l.hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{ContainerName: container})
+		}
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "agent wake: fresh start failed", "agent_account_id", agent, "container_name", container, "error", err)
 		return wakeOutcomeFailed

@@ -4,6 +4,10 @@ package e2e
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"os"
@@ -21,6 +25,58 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack/adapters"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+func dotenvForgeValue(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `"`, `\"`)
+	v = strings.ReplaceAll(v, "\n", `\n`)
+	return `"` + v + `"`
+}
+
+func forgePEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate forge key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+}
+
+func configureForgeStub(t *testing.T, secretsPath string) *forgeStub {
+	t.Helper()
+	stub := newForgeStub(t)
+	primary, reviewer := forgePEM(t), forgePEM(t)
+	file, err := os.OpenFile(secretsPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open forge secrets: %v", err)
+	}
+	_, writeErr := fmt.Fprintf(file, "SERVER_FORGE_APP_PRIVATE_KEY=%s\nSERVER_FORGE_APP_WEBHOOK_SECRET=forge-stub-webhook\nSERVER_FORGE_REVIEWER_APP_PRIVATE_KEY=%s\n", dotenvForgeValue(string(primary)), dotenvForgeValue(string(reviewer)))
+	closeErr := file.Close()
+	if writeErr != nil {
+		t.Fatalf("append forge secrets: %v", writeErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close forge secrets: %v", closeErr)
+	}
+	// Scrub every ambient knob that could redirect the leg off the loopback
+	// stub. The S3 and OTLP names are env-only fallbacks the server reads
+	// directly, so an operator's shell would otherwise reach a real endpoint.
+	for _, name := range []string{
+		"COMPASS_FORGE_REPOS", "COMPASS_FORGE_HOST", "COMPASS_FORGE_APP_ID", "COMPASS_FORGE_INSTALLATION_ID",
+		"COMPASS_FORGE_APP_KEY_SECRET", "COMPASS_FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID",
+		"COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET",
+		"COMPASS_FORGE_LINEAR_CLIENT_ID", "COMPASS_FORGE_LINEAR_CLIENT_SECRET", "COMPASS_FORGE_LINEAR_WEBHOOK_SECRET",
+		"COMPASS_SECRET_PROVIDER", "LINEAR_FORGE_CLIENT_ID", "LINEAR_FORGE_CLIENT_SECRET", "LINEAR_FORGE_WEBHOOK_SECRET",
+		"COMPASS_S3_ENDPOINT", "COMPASS_S3_BUCKET", "COMPASS_S3_ACCESS_KEY", "COMPASS_S3_SECRET_KEY",
+		"COMPASS_S3_REGION", "COMPASS_S3_USE_TLS", "OTEL_EXPORTER_OTLP_ENDPOINT",
+	} {
+		t.Setenv(name, "")
+	}
+	for k, v := range map[string]string{"COMPASS_FORGE_HOST": stub.Host(), "COMPASS_FORGE_APP_ID": "1001", "COMPASS_FORGE_INSTALLATION_ID": "1", "COMPASS_FORGE_APP_KEY_SECRET": "FORGE_APP_PRIVATE_KEY", "COMPASS_FORGE_APP_WEBHOOK_SECRET": "FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID": "1002", "COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID": "2", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET": "FORGE_REVIEWER_APP_PRIVATE_KEY", "COMPASS_FORGE_CA": stub.CAPath()} {
+		t.Setenv(k, v)
+	}
+	return stub
+}
 
 // agentImage is the REAL agent image the dogfood stack runs — present in the
 // local containers-storage on the dev/CI box, never a public stand-in. The
@@ -40,10 +96,9 @@ const expectedVersion = "e2e-test"
 // deployment key — every fixture is torn down with its data.
 const fixtureMasterKey = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-// Fixture is one test's live embedded stack plus the authenticated clients and
-// store handle the harness legs consume. It is produced by NewFixture, which
-// registers teardown on the test, so a consumer never manages the stack's
-// lifecycle directly.
+// Fixture is a live embedded stack plus authenticated clients and a store handle
+// for one test or the package-shared e2e legs. NewFixture registers teardown on
+// the test; the shared fixture has a run-scoped owner instead.
 type Fixture struct {
 	compass   compassServiceClient
 	comms     commsServiceClient
@@ -63,12 +118,18 @@ type Fixture struct {
 	// stub is the canned model backend when the fixture was built with
 	// WithCannedModel, else nil. Its lifecycle rides a t.Cleanup registered at
 	// startup, so a consumer never closes it directly.
-	stub *cannedModelServer
+	stub      *cannedModelServer
+	forgeStub *forgeStub
+	// agentModel and egressAllow are the runner flags this fixture configured,
+	// so a process-table check asserts what was actually forwarded.
+	agentModel  string
+	egressAllow []string
 	// now is the injectable wall-clock for the enrollment-readiness poll;
 	// defaults to time.Now. A test overrides it to drive the budget-timeout
 	// branch of waitRunnerEnrolled — the enrollment counterpart to the stack's
 	// s.deps.now() seam.
-	now func() time.Time
+	now    func() time.Time
+	garage *garageFixture
 }
 
 // fixtureConfig holds the optional knobs a caller flips through fixtureOption
@@ -90,12 +151,13 @@ type fixtureConfig struct {
 	// onUp, when non-nil, receives the live stack immediately after a successful
 	// Up (WithStackObserver), so a caller with a detached t can still reap the
 	// children if a later construction gate aborts. nil is the default.
-	onUp func(*stack.Stack)
+	onUp        func(*stack.Stack)
+	forge       bool
+	objectStore *garageFixture
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
-// existing two-arg call sites (H2's primitives test) byte-identical while
-// letting the real-turn test opt into canned mode.
+// existing two-arg call sites and enables optional real services.
 type fixtureOption func(*fixtureConfig)
 
 // WithCannedModel makes NewFixture stand up the deterministic canned model
@@ -160,6 +222,11 @@ func WithCannedMarkerScript(marker string, turns ...CannedTurn) fixtureOption {
 	}
 }
 
+// WithObjectStore points the server at g, so two Ups over one site share one archive.
+func WithObjectStore(g *garageFixture) fixtureOption {
+	return func(fc *fixtureConfig) { fc.objectStore = g }
+}
+
 // WithSite makes NewFixture reuse a persistent site (root/stateDir/ports) rather
 // than minting fresh ephemeral ones — the RIG-1790 H6 cross-restart substrate.
 // Two NewFixture calls over the SAME site drive two stack lifecycles that share
@@ -183,6 +250,11 @@ func WithStackObserver(onUp func(*stack.Stack)) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.onUp = onUp
 	}
+}
+
+// WithForgeStub makes NewFixture stand up the deterministic forge stub backend.
+func WithForgeStub() fixtureOption {
+	return func(fc *fixtureConfig) { fc.forge = true }
 }
 
 // Compass is the authenticated CompassService client dialed at the loopback TLS
@@ -212,6 +284,9 @@ func (f *Fixture) CAPath() string { return f.caPath }
 // authed clients carry. Never log it.
 func (f *Fixture) AdminToken() string { return f.adminToken }
 
+// ForgeStub returns the fixture's forge stub backend, when configured.
+func (f *Fixture) ForgeStub() *forgeStub { return f.forgeStub }
+
 // RuntimeDir is this fixture's unique runner runtime-dir (shortRoot/rt). Exposed
 // so a process-hygiene assertion can scope its /proc scan to this fixture's own
 // child processes rather than matching unrelated host processes.
@@ -235,21 +310,15 @@ func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
 // An account the server cannot resolve is NOT_FOUND, surfaced as the returned
 // error (never a panic — the caller, a test, decides fatality).
 //
-// The argument accepts EITHER spelling — an account id or a handle — because the
-// two surfaces disagree: IssueTokenRequest.account_handle is documented as a
-// handle (compass.proto:758-763) but the server consumes it as an account ID
-// (service.go:420-425 feeds store.AccountID(...) straight into GetAccount, which
-// keys on accounts.id), while CommsService's member/owner fields resolve strictly
-// through account_handles.handle. So this resolves the ref to an id over
-// ListAccounts first. An unresolvable ref is passed through UNCHANGED so the
-// SERVER decides the code — that keeps NOT_FOUND the server's answer rather than
-// a locally-synthesized one.
+// The argument accepts an account id, a bare handle, or an `owner/agent` handle,
+// and is mapped to the wire handle IssueTokenRequest.account_handle takes (see
+// wireHandle); `owner/agent` passes through as-is. An unresolvable ref is passed
+// through UNCHANGED so the SERVER decides the code — that keeps NOT_FOUND the
+// server's answer rather than a locally-synthesized one.
 func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassServiceClient, commsServiceClient, error) {
-	// Best-effort id resolution; a miss (unknown ref, or a list error) leaves the
-	// caller's spelling intact for the server to reject.
-	target := handle
-	if acc, err := f.lookupAccount(ctx, handle); err == nil {
-		target = acc.GetId()
+	target, err := f.wireHandle(ctx, handle)
+	if err != nil {
+		target = handle
 	}
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -270,12 +339,46 @@ func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassService
 	return compass, comms, nil
 }
 
+// wireHandle maps an account ref (an id or a bare handle) to the handle the admin
+// door takes: a user's bare handle, or `owner/agent` for an agent. A ref already
+// spelled `owner/agent` passes through unchanged. Legs hold ids from
+// CreateAgent/CreateUser, so the fixture does the mapping in one place.
+func (f *Fixture) wireHandle(ctx context.Context, ref string) (string, error) {
+	// Already the `owner/agent` wire form: nothing to map.
+	if strings.Contains(ref, "/") {
+		return ref, nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	if err != nil {
+		return "", fmt.Errorf("ListAccounts RPC: %w", err)
+	}
+	byID := make(map[string]*compassv1.Account, len(resp.Msg.GetAccounts()))
+	for _, acc := range resp.Msg.GetAccounts() {
+		byID[acc.GetId()] = acc
+	}
+	for _, acc := range resp.Msg.GetAccounts() {
+		if acc.GetId() != ref && acc.GetHandle() != ref {
+			continue
+		}
+		agent := acc.GetAgent()
+		if agent == nil {
+			return acc.GetHandle(), nil
+		}
+		owner, ok := byID[agent.GetOwnerUserId()]
+		if !ok {
+			return "", fmt.Errorf("owner %q of agent %q is not visible", agent.GetOwnerUserId(), ref)
+		}
+		return owner.GetHandle() + "/" + acc.GetHandle(), nil
+	}
+	return "", fmt.Errorf("no visible account matching %q (by id or handle)", ref)
+}
+
 // lookupAccount resolves an account ref — an id OR a handle — to its Account
 // over ListAccounts (the only account read CommsService exposes; there is no
-// GetAccount RPC). It exists because the id/handle spelling required differs per
-// request field (see AsObserver), so a fixture wrapper taking one spelling has to
-// be able to reach the other. An unmatched ref is store-shaped ErrNotFound-like:
-// a plain error naming the ref, for the caller to wrap or ignore.
+// GetAccount RPC). An unmatched ref is store-shaped ErrNotFound-like: a plain
+// error naming the ref, for the caller to wrap or ignore.
 func (f *Fixture) lookupAccount(ctx context.Context, ref string) (*compassv1.Account, error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -394,9 +497,9 @@ func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID s
 // before NewFixture is reached; here podman and the real image are assumed
 // present.
 //
-// opts default to none — NewFixture(ctx, t) is the plain H1/H2 fixture. Pass
-// WithCannedModel to stand up the RIG-1787 H3 deterministic model backend so a
-// real agent turn can settle with no live-model egress.
+// opts default to none — NewFixture(ctx, t) is the plain fixture. Pass
+// WithCannedModel to stand up a deterministic model backend so an agent turn can
+// settle without live-model egress.
 func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixture {
 	t.Helper()
 
@@ -445,15 +548,23 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 
 	// The server resolves the master key at boot and fails closed, so the fixture
-	// seeds its own provider instead of inheriting one. This dotenv is the WHOLE
-	// declared set because the fixture configures no forge, and buildManifest
-	// marks every declared name required — one more would fail the Load wholesale.
+	// seeds its own provider instead of inheriting one. buildManifest marks every
+	// declared name required, so this file must carry the master key plus exactly
+	// the forge names declareServerSecretNames declares — configureForgeStub
+	// appends those three below when WithForgeStub is set, and a declared name
+	// with no line here fails the Load wholesale.
 	// t.TempDir, not root: root is shared per-PID across ephemeral legs.
 	secretsPath := filepath.Join(t.TempDir(), "secrets.env")
 	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+fixtureMasterKey+"\n"), 0o600); err != nil {
 		t.Fatalf("write secrets file: %v", err)
 	}
 
+	var forgeStub *forgeStub
+	if fc.forge {
+		forgeStub = configureForgeStub(t, secretsPath)
+	}
+
+	var garage *garageFixture
 	cfg := stack.Config{
 		StateDir:       stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
 		SocketPath:     serverSock,
@@ -482,6 +593,15 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// NatsContainer anyway. Opt out via --nats-external so spawnChain skips
 		// startNats entirely.
 		ExternalNatsURL: "nats://127.0.0.1:4222",
+	}
+	if fc.objectStore != nil {
+		garage = fc.objectStore
+		cfg.S3Endpoint = garage.endpoint
+		cfg.S3Bucket = garage.bucket
+		cfg.S3AccessKey = garage.accessKey
+		cfg.S3SecretKey = garage.secretKey
+		cfg.S3Region = "garage"
+		cfg.S3UseTLS = false
 	}
 
 	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a
@@ -545,16 +665,20 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	}
 
 	f := &Fixture{
-		compass:    compass,
-		comms:      comms,
-		stack:      st,
-		dsn:        dsn,
-		caPath:     caPath,
-		serverURL:  serverURL,
-		adminToken: adminToken,
-		runtimeDir: runtimeDir,
-		stub:       stub,
-		now:        time.Now,
+		compass:     compass,
+		comms:       comms,
+		stack:       st,
+		dsn:         dsn,
+		caPath:      caPath,
+		serverURL:   serverURL,
+		adminToken:  adminToken,
+		runtimeDir:  runtimeDir,
+		stub:        stub,
+		forgeStub:   forgeStub,
+		agentModel:  cfg.AgentModel,
+		egressAllow: cfg.EgressAllow,
+		now:         time.Now,
+		garage:      garage,
 	}
 
 	// stack.Up returns as soon as the compass-runner CHILD is spawned, but the
