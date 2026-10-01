@@ -94,6 +94,7 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	c.SetAgentWaker(newLifecycleService(st, hub, nil))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)
+	hub.SetSessionLostSink(c)
 	hub.SetDeliveryStore(st)
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -417,4 +418,47 @@ func owedMessageIDs(owed map[store.ChannelID][]store.Message) []string {
 		}
 	}
 	return out
+}
+
+// TestDeliverToLostSessionWakesAndRedelivers: an agent's container dies while the
+// Runner stays connected, so a deliver to the still-bound session is refused
+// NOT_FOUND. The server must drop the binding, wake the agent (re-provisioning the
+// container), and deliver the owed message to the new session.
+func TestDeliverToLostSessionWakesAndRedelivers(t *testing.T) {
+	w := newMentionE2EWire(t)
+	agent := w.seedAgentMember(t, "deadmember", true)
+	container := containerFor("deadmember")
+	const deadSess, newSess = "sess-dead-1", "sess-dead-2"
+
+	w.runner.setContainerNames(container)
+	w.runner.setStartIDs(deadSess)
+	if _, _, err := w.hub.Provision(w.ctx, "", agent.ID, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if _, err := w.hub.Start(w.ctx, "", &compassv1.StartAgentSessionRequest{ContainerName: container}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got, ok := w.hub.SessionForAccount(w.ctx, agent.ID); !ok || got != deadSess {
+		t.Fatalf("precondition: SessionForAccount = (%q, %v), want (%q, true)", got, ok, deadSess)
+	}
+
+	// The container dies: the Runner forgets both the session and the container.
+	w.runner.setLostSessions(deadSess)
+	w.runner.setLostContainers(container)
+	w.runner.setContainerNames(container)
+	w.runner.setStartIDs(newSess, newSess)
+	w.runner.forget()
+
+	msgID := w.post(t, "are you still there")
+
+	got := waitForControlDelivers(t, w.runner, newSess, 1)
+	if got[0].kind != controlDeliver || got[0].messageID != msgID {
+		t.Fatalf("redelivery = %+v, want {deliver, %s}", got[0], msgID)
+	}
+	if n := w.runner.provisionCount(); n != 1 {
+		t.Fatalf("Provisions = %d, want 1 (the lost container re-created); commands: %v", n, w.runner.commands())
+	}
+	if sess, ok := w.hub.SessionForAccount(w.ctx, agent.ID); !ok || sess != newSess {
+		t.Fatalf("SessionForAccount after wake = (%q, %v), want (%q, true)", sess, ok, newSess)
+	}
 }

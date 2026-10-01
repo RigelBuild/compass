@@ -221,6 +221,9 @@ type Consumer struct {
 	// settleQueue: a slice (never lost) plus the shared notify wakeup, so the
 	// hook appends and signals without blocking the hub's Start goroutine.
 	startQueue []startEvent
+	// lostQueue buffers accounts whose session the Runner reported gone; the loop wakes
+	// each, and the woken session's start sweep redelivers what is owed.
+	lostQueue []store.AccountID
 	// notify wakes the loop when settleQueue OR startQueue grows. Buffered(1)
 	// with a non-blocking send, so many edges between drains collapse to one
 	// wakeup and the hook never blocks.
@@ -348,6 +351,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		case <-c.notify:
 			c.drainSettles(ctx)
 			c.drainStarts(ctx)
+			c.drainLost(ctx)
 		case event, ok := <-sub.Live:
 			if !ok {
 				if sub.Lagged() {

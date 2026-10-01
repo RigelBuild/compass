@@ -653,6 +653,9 @@ type recordingRunner struct {
 	// lostContainers answers a Start on any listed container with NOT_FOUND: the
 	// Runner that restarted and no longer has the placement's container. Read under mu.
 	lostContainers map[string]bool
+	// lostSessions answers a control deliver to any listed session with NOT_FOUND: a
+	// session whose container died under a still-connected Runner. Read under mu.
+	lostSessions map[string]bool
 }
 
 // serve runs the dispatch loop. Like the seam test's loop it opens with one
@@ -688,6 +691,15 @@ func (r *recordingRunner) serve(
 			}
 		}
 		if cmd.GetDeliverControl() != nil {
+			if sid := cmd.GetDeliverControl().GetSessionId(); r.isLostSession(sid) {
+				if err := r.send(stream, &compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId(), Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+					Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND, Message: "session unknown to runner",
+				}}}); err != nil {
+					done <- err
+					return
+				}
+				continue
+			}
 			// A send-only control deliver (RIG-1569 §5): a real Runner answers a
 			// SUCCESSFUL deliver with NO result (success rides a later
 			// delivery_ack), so record it and send nothing — the RIG-1641 T4 e2e
@@ -905,6 +917,22 @@ func (r *recordingRunner) setLostContainers(names ...string) {
 	for _, n := range names {
 		r.lostContainers[n] = true
 	}
+}
+
+// setLostSessions marks sessions the Runner no longer knows; a deliver to one fails NOT_FOUND.
+func (r *recordingRunner) setLostSessions(ids ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lostSessions = map[string]bool{}
+	for _, id := range ids {
+		r.lostSessions[id] = true
+	}
+}
+
+func (r *recordingRunner) isLostSession(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lostSessions[id]
 }
 
 func (r *recordingRunner) isLost(name string) bool {

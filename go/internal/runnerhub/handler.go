@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
@@ -116,6 +117,14 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
+	// Off the receive loop: the release does store work, and the stream ctx dies with the stream.
+	router.setSessionUnknown(func(sessionID string) {
+		go func() {
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lostSessionTimeout)
+			defer cancel()
+			h.hub.dropLostSession(dctx, subj.ID, sessionID)
+		}()
+	})
 	router.attach(stream.Send)
 	defer router.detach(errStreamClosed)
 
@@ -140,6 +149,9 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 // errStreamClosed is the cause in-flight commands fail with when the Runner's
 // Sessions stream ends — the router detaches and every pending call observes it.
 var errStreamClosed = errors.New("runner sessions stream closed")
+
+// lostSessionTimeout bounds the binding release after a NotFound deliver refusal.
+const lostSessionTimeout = 30 * time.Second
 
 // PublishEvents feeds each relayed frame the Runner streams into Deliver — the
 // sole entry point Runner events take into the Server. It reads until the Runner

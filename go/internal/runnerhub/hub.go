@@ -123,6 +123,13 @@ type SessionReapSink interface {
 	OnSessionsReaped(sessionIDs []string)
 }
 
+// SessionLostSink is told when the Runner reports a bound session unknown (its
+// container died), after the hub dropped the binding, so the account can be woken.
+// Must return promptly; called with h.mu released.
+type SessionLostSink interface {
+	OnSessionLost(sessionID string, account store.AccountID)
+}
+
 // PresenceSink is notified of the two hub-side edges the RIG-1569 T8 presence
 // projection (design record D4) is fed by: a session lifecycle transition at the
 // deliverSession arm (the SAME arm SettleSink rides, right after the
@@ -340,6 +347,8 @@ type Hub struct {
 	// enroll with the cleared session ids so the consumer drops held-deliver entries
 	// a pre-T9 Runner link loss left behind. Nil until SetSessionReapSink; read under mu.
 	reap SessionReapSink
+	// lost is notified after dropLostSession releases a dead session. Read under mu.
+	lost SessionLostSink
 	// presence is the RIG-1569 T8 presence projection's sink, notified at
 	// deliverSession (lifecycle transition) and promoteSession (reconciliation). Nil
 	// until SetPresenceSink; read under mu. Nil-safe (today's behavior).
@@ -504,6 +513,13 @@ func (h *Hub) SetSessionReapSink(reap SessionReapSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.reap = reap
+}
+
+// SetSessionLostSink wires the delivery consumer to wake an agent whose session died.
+func (h *Hub) SetSessionLostSink(lost SessionLostSink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lost = lost
 }
 
 // SetPresenceSink wires the RIG-1569 T8 presence component as the hub's presence
