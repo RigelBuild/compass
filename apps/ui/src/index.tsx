@@ -13,8 +13,8 @@ if (!root) {
 	throw new Error("missing #root element");
 }
 
-// Dispatch on shell-injected mode before any IPC; main() stays uniform across
-// client, embedded, browser-dev, and fixture paths.
+// Dispatch on fixture build mode, then shell-injected mode, before IPC.
+// Client, embedded, and browser-dev share main(); fixture mounts offline.
 //
 // Keep the fixture comparison inline: Vite folds it in production, eliminating
 // the fixture branch and its dynamically imported chunk.
@@ -30,6 +30,8 @@ if (import.meta.env.MODE === "fixture") {
 			);
 		});
 } else {
+	// Undefined means bootConnection painted a resolve error; client mode stays
+	// pending behind its connect gate. The catch handles other boot rejections.
 	const bootConnectionForMode = bootForMode(shellMode(), root);
 	void bootConnectionForMode()
 		.then((connection) => {
