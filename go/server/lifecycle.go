@@ -551,13 +551,46 @@ func (l *lifecycleService) resumeSession(ctx context.Context, agent store.Accoun
 	if err != nil {
 		return fmt.Errorf("reconstructing session body: %w", err)
 	}
-	if _, err := l.hub.StartResume(ctx, "", &compassv1.StartAgentSessionRequest{
-		ContainerName:   container,
-		ResumeSessionId: sessionID,
-	}, body); err != nil {
+	req := &compassv1.StartAgentSessionRequest{ContainerName: container, ResumeSessionId: sessionID}
+	_, err = l.hub.StartResume(ctx, "", req, body)
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		if req.ContainerName, err = l.reprovision(ctx, agent, container); err != nil {
+			return err
+		}
+		_, err = l.hub.StartResume(ctx, "", req, body)
+	}
+	if err != nil {
 		return fmt.Errorf("relaying resume start: %w", err)
 	}
 	return nil
+}
+
+// reprovision re-creates the container for an agent whose placement names one the
+// Runner no longer has (a redeploy or Runner restart), and moves the placement to it.
+func (l *lifecycleService) reprovision(ctx context.Context, agent store.AccountID, stale string) (string, error) {
+	acct, err := l.store.GetAccount(ctx, agent)
+	if err != nil {
+		return "", fmt.Errorf("reading account to re-provision: %w", err)
+	}
+	if acct.Agent == nil {
+		return "", fmt.Errorf("%w: account %q is not an agent", store.ErrNotFound, agent)
+	}
+	resp, runnerID, err := l.hub.Provision(ctx, "", agent, &compassv1.ProvisionAgentWorkspaceRequest{
+		AgentHandle: string(agent),
+		Persona:     acct.Agent.Persona,
+		Role:        acct.Agent.Role,
+	})
+	if err != nil {
+		return "", fmt.Errorf("re-provisioning lost container %q: %w", stale, err)
+	}
+	container := resp.GetContainerName()
+	// No rollback: the Runner derives the name from the account, so it usually equals the
+	// stale row's, and releasing that row would leave the agent permanently unplaced.
+	if err := l.store.RecordAgentPlacement(ctx, agent, runnerID, container); err != nil {
+		return "", fmt.Errorf("recording re-provisioned placement: %w", err)
+	}
+	slog.InfoContext(ctx, "agent wake: re-provisioned lost container", "agent_account_id", agent, "stale_container", stale, "container_name", container)
+	return container, nil
 }
 
 // freshStart is the no-prior-session fallback: an agent that has never had a
@@ -576,6 +609,11 @@ func (l *lifecycleService) freshStart(ctx context.Context, agent store.AccountID
 		return wakeOutcomeFailed
 	}
 	startResp, err := l.hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{ContainerName: container})
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		if container, err = l.reprovision(ctx, agent, container); err == nil {
+			startResp, err = l.hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{ContainerName: container})
+		}
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "agent wake: fresh start failed", "agent_account_id", agent, "container_name", container, "error", err)
 		return wakeOutcomeFailed
