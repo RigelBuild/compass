@@ -861,3 +861,22 @@ func commsCallError(err error) *compassv1internal.CommsCallError {
 		Message: err.Error(),
 	}
 }
+
+// dropLostSession releases sessionID after runnerID refused a deliver to it as
+// unknown, then reports the account so it can be woken. Only the owning Runner's
+// refusal counts, so a foreign Runner cannot unbind another's session.
+func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
+	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
+	if !ok {
+		return
+	}
+	h.unbindSession(ctx, sessionID)
+	h.mu.Lock()
+	lost := h.lost
+	h.mu.Unlock()
+	h.log.Warn("runner reports bound session unknown; released binding to wake the agent",
+		"session_id", sessionID, "agent_account_id", account)
+	if lost != nil {
+		lost.OnSessionLost(sessionID, account)
+	}
+}

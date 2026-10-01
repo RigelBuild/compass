@@ -77,7 +77,7 @@ type commandRouter struct {
 	// lifetime delivers — the RIG-1610 leak. Bounded LRU; eviction is safe since a
 	// real refusal arrives within one round-trip and is present at lookup, while
 	// only successes grow old unremoved. Accessed under mu (onEvict=nil).
-	deliverRefusals *expirable.LRU[string, struct{}]
+	deliverRefusals *expirable.LRU[string, string]
 	// refusedDelivers counts observed deliver refusals (RESOURCE_EXHAUSTED and
 	// any other RunnerError landing on a send1 id) — the diagnostic that a
 	// refusal was seen and the cursor left unadvanced for the D2 sweep to
@@ -87,6 +87,9 @@ type commandRouter struct {
 	// (enroll); nil falls back to slog.Default at use so a bare newCommandRouter
 	// (tests) still logs safely.
 	log *slog.Logger
+	// onSessionUnknown runs when the Runner refuses a deliver because the session is gone,
+	// so the hub can drop the stale binding; nil (tests) skips it.
+	onSessionUnknown func(sessionID string)
 }
 
 // pendingCall is one outstanding command awaiting its result. done closes when
@@ -114,7 +117,7 @@ func newCommandRouter() *commandRouter {
 		// ttl=0: no expiry, a pure size-bounded LRU (deliverRefusalsMax). The set
 		// is advisory, so eviction is safe — an evicted id is a long-past
 		// successful deliver that never has a refusal to look up.
-		deliverRefusals: expirable.NewLRU[string, struct{}](deliverRefusalsMax, nil, 0),
+		deliverRefusals: expirable.NewLRU[string, string](deliverRefusalsMax, nil, 0),
 	}
 }
 
@@ -142,6 +145,13 @@ func (r *commandRouter) attach(send func(*compassv1internal.SessionsResponse) er
 	r.sender = s
 	r.mu.Unlock()
 	go r.runSender(s, send)
+}
+
+// setSessionUnknown installs the hook complete() fires on a NotFound deliver refusal.
+func (r *commandRouter) setSessionUnknown(fn func(sessionID string)) {
+	r.mu.Lock()
+	r.onSessionUnknown = fn
+	r.mu.Unlock()
 }
 
 // detach tears down the live attachment: it nils and closes the outbound queue
@@ -336,7 +346,7 @@ func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 	// Add returns whether it evicted an LRU victim (a bool, not an error); not
 	// actionable — an evicted id is a long-past successful deliver that will
 	// never be looked up for a refusal.
-	_ = r.deliverRefusals.Add(id, struct{}{})
+	_ = r.deliverRefusals.Add(id, cmd.GetDeliverControl().GetSessionId())
 	if !r.enqueue(outFrame{cmd: cmd, class: frameDeliver}) {
 		// The queue is full: no command will reach the Runner, so no refusal can
 		// arrive for it — drop the refusal entry. The cursor was never advanced
@@ -382,10 +392,11 @@ func (r *commandRouter) complete(result *compassv1internal.SessionsRequest) {
 		close(call.done)
 		return
 	}
-	// Remove returns whether the id was registered (present); a send-only deliver
-	// awaiting a possible refusal. Removing here clears the entry as its refusal
-	// lands, in the same critical section the map lookup+delete occupied.
-	isDeliver := r.deliverRefusals.Remove(id)
+	// A registered id is a send-only deliver awaiting a possible refusal; its value is
+	// the target session. Clear it in the same critical section as the lookup.
+	sessionID, isDeliver := r.deliverRefusals.Peek(id)
+	r.deliverRefusals.Remove(id)
+	onUnknown := r.onSessionUnknown
 	r.mu.Unlock()
 	if !isDeliver {
 		return
@@ -402,6 +413,9 @@ func (r *commandRouter) complete(result *compassv1internal.SessionsRequest) {
 	if runnerErr := result.GetError(); runnerErr != nil {
 		log.Warn("deliver refused by runner; cursor left unadvanced for the reconnect sweep",
 			"request_id", id, "code", runnerErr.GetCode().String(), "message", runnerErr.GetMessage())
+		if runnerErr.GetCode() == compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND && onUnknown != nil && sessionID != "" {
+			onUnknown(sessionID)
+		}
 	} else {
 		log.Warn("deliver returned an unexpected non-error result; cursor left unadvanced",
 			"request_id", id)

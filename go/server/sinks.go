@@ -123,6 +123,7 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *ev
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)
 	hub.SetSessionReapSink(c)
+	hub.SetSessionLostSink(c)
 	hub.SetDeliveryStore(st)
 	g.Go(func() error { return c.Run(gctx) })
 }
