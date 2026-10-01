@@ -326,6 +326,9 @@ from the focused view. There is still one view per window.
   interface AppStore {
     focusedView: Accessor<ViewScope>; // chrome reads selection through this
   }
+  // apps/ui/src/components/ViewHost.tsx: provides ViewContext and renders
+  // the scope's route from appRoutes (A2).
+  export const ViewHost: Component<{ scope: ViewScope }>;
   ```
 
 - Red-green test: mount two `ViewHost`s in one store on `/agent/a` and
@@ -367,7 +370,10 @@ view's path and applies hash changes to it (A2). Layout persists to
   hash that is not in the restored layout opens as the focused tab. A
   memory-history test: navigate tab A to `/done`, switch to tab B on `/`,
   navigate B to `/backlog`, then go back once. B shows `/`, tab A still shows
-  `/done`, and the history length grew by exactly the two navigations.
+  `/done`, and the history length grew by exactly the two navigations. Going
+  back once more crosses the tab switch: tab A is focused and shows `/done`.
+  Back onto an entry whose view was closed, and back onto an entry with no
+  view id in its state, both apply the path to the focused view.
 
 ### T4 — Tab strip UI, keep-alive and sidebar open modes
 
@@ -412,7 +418,7 @@ within 0.2–0.8 and persist it. Pointer and chord focus between panes. A 1px
 ## Tasks
 
 - [ ] T1 — `parseRoute` / `routePath`, `ViewScope`, `ViewContext`, `useView()`
-- [ ] T2 — surfaces on `useView()`; agent-workspace state and `agentSession` per view; store routed accessors derived from the focused view
+- [ ] T2 — `ViewHost`; surfaces on `useView()`; agent-workspace state and `agentSession` per view; store routed accessors derived from the focused view
 - [ ] T3 — `reduceLayout`, hash sync to the focused view, `sessionStorage` persistence
 - [ ] T4 — tab strip replacing `.view-tabs`, keep-alive, `Mod`+click / middle-click open-in-tab, e2e + visual baseline
 - [ ] T5 — `W` leader rows, tab/pane commands, palette entries
@@ -431,7 +437,8 @@ within 0.2–0.8 and persist it. Pointer and chord focus between panes. A 1px
    behavior, and no change for a one-tab user); (b) always a new tab, with dedupe
    (tabs pile up fast, and the 10-tab cap is hit in minutes). Recommend (a).
 3. **Splits ship with tabs in Beta, or later.** (Load-bearing for milestone
-   planning, not for the design.) T6 depends only on T3, so it can move out
+   planning, not for the design.) T6 is the last task and needs T2–T5
+   (`ViewHost`, the tab strip and the `w v` chord), so it can be deferred
    alone. Recommend both in Beta; T1–T2 are the expensive part and are shared.
 4. **Layout restore across an app restart.** (Non-load-bearing, deferred.) It
    needs a per-window identity that survives a restart. The multi-window record
