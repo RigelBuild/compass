@@ -685,7 +685,11 @@ func (s *forgeService) listIssues(ctx context.Context, call *compassv1internal.F
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	raws, err := rf.author.ListIssues(ctx, req.GetRepo(), forge.IssueFilter{State: req.GetState(), Labels: req.GetLabels()})
+	state := req.GetState()
+	if state == "" {
+		state = "open" // the gateway contract; GitHub's own empty default is "all"
+	}
+	raws, err := rf.author.ListIssues(ctx, req.GetRepo(), forge.IssueFilter{State: state, Labels: req.GetLabels()})
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "list_issues"}))
 	}
