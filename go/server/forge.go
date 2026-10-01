@@ -689,11 +689,27 @@ func (s *forgeService) listIssues(ctx context.Context, call *compassv1internal.F
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "list_issues"}))
 	}
+	if limit := listIssuesLimit(req.GetLimit()); len(raws) > limit {
+		raws = raws[:limit]
+	}
 	resp := &compassv1internal.ListIssuesResponse{Issues: make([]*compassv1.Issue, 0, len(raws))}
 	for _, iss := range raws {
 		resp.Issues = append(resp.Issues, translateIssue(iss, rf, req.GetRepo()))
 	}
 	return &compassv1internal.ForgeCallResult{Result: &compassv1internal.ForgeCallResult_Issues{Issues: resp}}
+}
+
+// listIssuesLimit applies ListIssuesRequest.limit's contract: 0 is the default
+// page of 30, and anything past 100 is capped.
+func listIssuesLimit(limit uint32) int {
+	switch {
+	case limit == 0:
+		return 30
+	case limit > 100:
+		return 100
+	default:
+		return int(limit)
+	}
 }
 
 // trackedIssue returns the projection's canonical Issue at the coordinate if the
