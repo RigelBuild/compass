@@ -19,6 +19,11 @@ export const attr = (v: string, fence?: string): string =>
 			? "(malformed)"
 			: `(malformed ${fence})`;
 
+// `login` guards a forge account: `attr`'s shape plus GitHub's App suffix `[bot]`, which
+// every Compass-authored artifact carries. Only that exact suffix; no other bracket passes.
+export const login = (v: string, fence?: string): string =>
+	/^[\w.:-]+(\[bot\])?$/.test(v) ? v : attr(v, fence);
+
 // `attr` guards a tag attribute; `flat` guards a marker LINE — an untrusted value must not
 // split the one-line `[ask]`/`[answered]` record or forge structure inside it. Tab and space
 // survive for display fidelity; every other control, format (BOM, bidi overrides) and space
