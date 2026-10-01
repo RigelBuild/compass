@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/google/uuid"
-
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -24,7 +22,7 @@ const externalURLLabel = "Open in Compass"
 
 // clientRequestIDPrefix namespaces the comms-rail idempotency key the dispatcher
 // stamps on every PostAsAccount so a redelivered webhook never double-posts
-// (§Part 1 message-level dedup). The full key is "linear-delivery:<uuid>".
+// (§Part 1 message-level dedup). The full key is "linear-delivery:<Linear-Delivery id>".
 const clientRequestIDPrefix = "linear-delivery:"
 
 // ErrQueueFull is returned by Enqueue when the bounded channel is full. The HTTP
@@ -90,9 +88,6 @@ type DispatcherParams struct {
 	DeepLinkFor func(channelID string) string
 	// Bridge is the seeded @linear bridge system account id (T3a).
 	Bridge store.AccountID
-	// NewRequestID mints the uuid half of a client_request_id. Injectable for
-	// deterministic tests; defaults to uuid.NewString.
-	NewRequestID func() string
 }
 
 // Dispatcher drains a bounded channel of verified session events on a single
@@ -102,40 +97,34 @@ type DispatcherParams struct {
 // moves on. There is NO relay: the dispatcher does not observe or mirror agent
 // output; the return path is the two `created` emits only (§Part 3).
 type Dispatcher struct {
-	ch           chan *SessionEvent
-	resolve      ResolveFunc
-	poster       CommsPoster
-	members      Memberships
-	topics       Topics
-	assoc        Associations
-	client       Client
-	deepLinkFor  func(channelID string) string
-	bridge       store.AccountID
-	newRequestID func() string
+	ch          chan *SessionEvent
+	resolve     ResolveFunc
+	poster      CommsPoster
+	members     Memberships
+	topics      Topics
+	assoc       Associations
+	client      Client
+	deepLinkFor func(channelID string) string
+	bridge      store.AccountID
 }
 
 // NewDispatcher builds a Dispatcher from params. Buffer defaults to 1 when
-// non-positive; NewRequestID defaults to uuid.NewString.
+// non-positive.
 func NewDispatcher(p DispatcherParams) *Dispatcher {
 	buf := p.Buffer
 	if buf <= 0 {
 		buf = 1
 	}
-	newRequestID := p.NewRequestID
-	if newRequestID == nil {
-		newRequestID = uuid.NewString
-	}
 	return &Dispatcher{
-		ch:           make(chan *SessionEvent, buf),
-		resolve:      p.Resolve,
-		poster:       p.Poster,
-		members:      p.Members,
-		topics:       p.Topics,
-		assoc:        p.Associations,
-		client:       p.Client,
-		deepLinkFor:  p.DeepLinkFor,
-		bridge:       p.Bridge,
-		newRequestID: newRequestID,
+		ch:          make(chan *SessionEvent, buf),
+		resolve:     p.Resolve,
+		poster:      p.Poster,
+		members:     p.Members,
+		topics:      p.Topics,
+		assoc:       p.Associations,
+		client:      p.Client,
+		deepLinkFor: p.DeepLinkFor,
+		bridge:      p.Bridge,
 	}
 }
 
@@ -230,7 +219,7 @@ func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error 
 	}}); err != nil {
 		return err
 	}
-	return d.post(ctx, homeChannel, topicID, ev.PromptContext)
+	return d.post(ctx, homeChannel, topicID, ev.PromptContext, clientRequestID(ctx, ev))
 }
 
 // handlePrompted routes a follow-up to the recorded conversation: look up the
@@ -241,7 +230,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 	row, err := d.assoc.LinearAgentSession(ctx, ev.AgentSession.ID)
 	switch {
 	case err == nil:
-		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Body)
+		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Body, clientRequestID(ctx, ev))
 	case errors.Is(err, store.ErrNotFound):
 		manager, homeChannel, resErr := d.resolve(ctx, ev)
 		if resErr != nil {
@@ -263,20 +252,20 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 		}); upErr != nil {
 			return upErr
 		}
-		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Body)
+		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Body, clientRequestID(ctx, ev))
 	default:
 		return err
 	}
 }
 
-// post writes one message as the @linear bridge account into channel/topic with
-// a fresh dedup client_request_id.
-func (d *Dispatcher) post(ctx context.Context, channelID, topicID, body string) error {
+// post writes one message as the @linear bridge account into channel/topic under
+// the event's dedup client_request_id.
+func (d *Dispatcher) post(ctx context.Context, channelID, topicID, body, clientRequestID string) error {
 	_, err := d.poster.PostAsAccount(ctx, d.bridge, &compassv1.PostMessageRequest{
 		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
 		Topic:           &compassv1.PostMessageRequest_TopicId{TopicId: topicID},
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
-		ClientRequestId: d.clientRequestID(),
+		ClientRequestId: clientRequestID,
 	})
 	return err
 }
@@ -290,9 +279,15 @@ func (d *Dispatcher) emitError(ctx context.Context, sessionID string, cause erro
 	}
 }
 
-// clientRequestID mints the comms-rail idempotency key: "linear-delivery:<uuid>".
-func (d *Dispatcher) clientRequestID() string {
-	return clientRequestIDPrefix + d.newRequestID()
+// clientRequestID keys an event's one post on its Linear-Delivery id, so a replayed
+// delivery collapses onto the stored row. No id means an empty key: the post is not deduped.
+func clientRequestID(ctx context.Context, ev *SessionEvent) string {
+	if ev.DeliveryID == "" {
+		slog.WarnContext(ctx, "linearagent dispatcher: session event has no valid Linear-Delivery id; replay dedup off",
+			"linear_session_id", ev.AgentSession.ID)
+		return ""
+	}
+	return clientRequestIDPrefix + ev.DeliveryID
 }
 
 // topicName is the issue identifier when present, else the session id.
