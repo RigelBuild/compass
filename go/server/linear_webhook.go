@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 )
 
@@ -27,6 +29,10 @@ const (
 	// linearSignatureHeader carries the HMAC-SHA256 hex of the raw body under
 	// the webhook secret (RIG-2717 design §134).
 	linearSignatureHeader = "Linear-Signature"
+
+	// linearDeliveryHeader is Linear's per-delivery UUID, repeated on a retry; the
+	// dispatcher keys its post dedup on it.
+	linearDeliveryHeader = "Linear-Delivery"
 
 	// linearWebhookSkew bounds how stale a webhookTimestamp may be before the
 	// delivery is acked-and-dropped (RIG-2717 §145): the timestamp is inside the
@@ -150,7 +156,7 @@ func (h *linearWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	switch env.Type {
 	case linearTypeSession:
-		h.serveSession(ctx, w, body)
+		h.serveSession(ctx, w, r, body)
 	case linearTypeIssue, linearTypeComment:
 		h.serveData(ctx, w, body)
 	default:
@@ -163,12 +169,16 @@ func (h *linearWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // the data branch, Enqueue is itself non-blocking (a bounded try-send) and its
 // return maps to the status code, so the status is written AFTER Enqueue: a full
 // queue is a 500 (Linear retries), everything else a 200.
-func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.ResponseWriter, body []byte) {
+func (h *linearWebhookHandler) serveSession(ctx context.Context, w http.ResponseWriter, r *http.Request, body []byte) {
 	ev, err := linearagent.ParseSessionEvent(body)
 	if err != nil {
 		h.log.WarnContext(ctx, "linear session event parse error", "err", err)
 		w.WriteHeader(http.StatusOK) // verified-but-malformed: ack-and-drop.
 		return
+	}
+	// The header is outside the signed body, so only a well-formed UUID may key dedup.
+	if id := r.Header.Get(linearDeliveryHeader); uuid.Validate(id) == nil {
+		ev.DeliveryID = id
 	}
 	if h.sessionSink == nil {
 		// Linear is not configured: ack so Linear does not retry an event nothing handles.
