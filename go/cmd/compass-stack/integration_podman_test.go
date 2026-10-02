@@ -184,6 +184,8 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 		// no broker, so opt out rather than bundle a NATS these subtests never
 		// exercise. The bundled-nats path deserves its own podman-gated test.
 		natsExternal: "nats://127.0.0.1:4222",
+		// No agent here calls a model, so skip the bundled gateway too.
+		gatewayExternal: "http://127.0.0.1:4100",
 	})
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)

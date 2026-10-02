@@ -122,8 +122,11 @@ type configFlags struct {
 	natsExternal    string
 	// natsExternalSet records whether --nats-external was explicitly passed, for
 	// the same explicit-empty reject otelExternalSet drives.
-	natsExternalSet bool
-	linger          bool
+	natsExternalSet    bool
+	gatewayImage       string
+	gatewayExternal    string
+	gatewayExternalSet bool
+	linger             bool
 }
 
 // newFlagSet builds a flag.FlagSet for one subcommand, registering the config
@@ -172,6 +175,8 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 	fs.StringVar(&f.natsExternal, "nats-external", "",
 		"Do not start the bundled NATS; point compass surfaces at this nats:// URL "+
 			"instead. The managed plane supplies its own broker.")
+	fs.StringVar(&f.gatewayImage, "gateway-image", stack.DefaultGatewayImage, "Container image for the bundled LLM gateway. Required unless --gateway-external is set.")
+	fs.StringVar(&f.gatewayExternal, "gateway-external", "", "Do not start the bundled LLM gateway; use this external gateway URL instead.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,
 			"Leave the stack running after this process exits (records Config.Linger).")
@@ -191,6 +196,9 @@ func markExplicitFlags(fs *flag.FlagSet, f *configFlags) {
 		}
 		if fl.Name == "nats-external" {
 			f.natsExternalSet = true
+		}
+		if fl.Name == "gateway-external" {
+			f.gatewayExternalSet = true
 		}
 	})
 }
@@ -264,6 +272,9 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 	if f.natsExternalSet && f.natsExternal == "" {
 		return stack.Config{}, errors.New("--nats-external requires an explicit nats:// URL: point compass surfaces at your own broker (omit the flag to bundle one)")
 	}
+	if f.gatewayExternalSet && f.gatewayExternal == "" {
+		return stack.Config{}, errors.New("--gateway-external requires an explicit URL")
+	}
 
 	cfg := stack.Config{
 		StateDir:             f.stateDir,
@@ -278,6 +289,8 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		ExternalOTLPEndpoint: f.otelExternal,
 		NatsImage:            f.natsImage,
 		ExternalNatsURL:      f.natsExternal,
+		GatewayImage:         f.gatewayImage,
+		ExternalGatewayURL:   f.gatewayExternal,
 		Linger:               f.linger,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -380,6 +393,16 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 		deps.NatsProber = nc
 		if deps.Containers == nil {
 			deps.Containers = nc
+		}
+	}
+	if cfg.ExternalGatewayURL == "" {
+		gc, err := adapters.NewGatewayContainer()
+		if err != nil {
+			return stack.Deps{}, err
+		}
+		deps.GatewayContainer, deps.GatewayProber = gc, gc
+		if deps.Containers == nil {
+			deps.Containers = gc
 		}
 	}
 	return deps, nil
