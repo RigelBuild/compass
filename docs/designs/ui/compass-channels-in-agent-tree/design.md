@@ -1,7 +1,5 @@
 # Compass channels in the agent tree
 
-Status: Active
-
 Tracker: RIG-1622
 
 This record is filed under `ui` because the change is driven by the
@@ -297,11 +295,14 @@ that needs tree membership is created as a new TREE channel.
 **Decided (Matt, 2026-10-02): the reverse direction, TREE→EXPLICIT, is
 allowed.** It is how a tree channel becomes a hand-membered or shared
 one. The conversion mints the channel's current derived participant set
-as stored `channel_members` rows, then flips the mode; it cannot bypass
-either TREE refusal, because those guard against entering TREE, not
-leaving it. Becoming SHARED also clears `parent_agent_id` (leg 2: shared
-spaces never live in a tree). The conversion RPC is follow-up work,
-tracked outside this plan.
+as stored `channel_members` rows, each taking its `subscribed` value from
+that account's `channel_subscriptions` override row (default when none),
+then deletes the override rows and flips the mode; otherwise every
+subscriber silently stops receiving delivery. It cannot bypass either
+TREE refusal, because those guard entering TREE, not leaving it.
+Becoming SHARED also clears `parent_agent_id` (leg 2: shared spaces never
+live in a tree). The conversion RPC is follow-up work, tracked outside
+this plan.
 
 Sketch of the new probe (the recursive-CTE precedent is the `ancestry`
 CTE, `channels.sql:130-137`):
@@ -768,15 +769,14 @@ these five, and the rest of this record uses these five names for them:
 - **Shared spaces** at the root: sections for SHARED groups — the badge
   branch that already exists at `LeftSidebar.tsx:341`.
 - **The root band**: one section for everything the agent tree did not
-  claim and the shared-spaces band does not cover — channels in OWNER
-  groups and ungrouped channels alike. This band is NOT optional
-  and is the common case, because OWNER is the DEFAULT group visibility
-  (`CHANNEL_GROUP_VISIBILITY_OWNER = 0`, `comms.proto:226`;
-  `VisibilityOwner ChannelGroupVisibility = 0`,
-  `go/internal/store/types.go:64`), so every group a user creates
-  without asking for SHARED lands here rather than in shared spaces.
-  Read the shared-spaces filter as selecting INTO that band, never
-  as excluding OWNER-grouped channels from the sidebar.
+  claim and the shared-spaces band does not cover — ungrouped channels,
+  plus any leftover OWNER-grouped channel. New work creates no OWNER
+  groups (Open Questions 1, 5), so that second population is leftover
+  data, not the common case; the band still renders it rather than
+  dropping it, since OWNER is the default group visibility
+  (`CHANNEL_GROUP_VISIBILITY_OWNER = 0`, `comms.proto:226`). Read the
+  shared-spaces filter as selecting INTO that band, never as excluding
+  OWNER-grouped channels from the sidebar.
 - **Direct messages**, unchanged: the existing DM subsection
   (`LeftSidebar.tsx:358-359`) stays its own band; a DM's surface is not a
   tree concern (1:1 agent DMs are already excluded from the channel list,
@@ -922,8 +922,8 @@ Dead residue removed in the same slice:
 
 - The header button `<button type="button" class="icon-btn" title="New
   folder">` (`LeftSidebar.tsx:437`) has no click handler — nothing in the
-  component wires it. T7 deletes it; a per-agent-row "new channel here"
-  affordance is deferred (Open Questions).
+  component wires it. T7 deletes it with no replacement: agents manage
+  channels, so the user gets no create affordance (Open Questions 4).
 - `app.css` retains folder-tree classes with live consumers only inside the
   agent tree: `.folder-caret` (`apps/ui/src/app.css:270`),
   `.folder-caret.collapsed` (`:280`), `.folder-badge` (`:284`),
