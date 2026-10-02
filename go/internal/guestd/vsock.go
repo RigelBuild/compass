@@ -25,7 +25,7 @@ const shutdownTimeout = 5 * time.Second
 // hostCID is AF_VSOCK's well-known CID for the host (VMADDR_CID_HOST). The
 // supervisor accepts control connections ONLY from the host; any other peer CID
 // (including the in-guest loopback CID 1, VMADDR_CID_LOCAL) is refused before a
-// single HTTP byte is read (§(e), frozen microvm-runner.md:158-164).
+// single HTTP byte is read (§(e), microvm-runner.md:158-164).
 const hostCID = 2
 
 // peerAllowed is the pure accept/refuse decision for an accepted vsock peer,

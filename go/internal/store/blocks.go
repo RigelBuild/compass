@@ -119,7 +119,7 @@ func validateAskQuestions(a *Ask) error {
 	for _, q := range a.Questions {
 		// Recommended is a zero-based index into Options (types.go). Write-path
 		// input hygiene only, NOT a read invariant: read-back doesn't re-enforce
-		// it — the frozen design renders an OOB index as "no highlight" (T6). A
+		// it — the design renders an OOB index as "no highlight" (T6). A
 		// free-text-only question with any Recommended set is invalid on write.
 		if q.Recommended != nil && (*q.Recommended < 0 || int(*q.Recommended) >= len(q.Options)) {
 			return fmt.Errorf("%w: ask question %q recommended index %d out of range for %d options", ErrInvalidArgument, q.QuestionID, *q.Recommended, len(q.Options))

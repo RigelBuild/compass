@@ -4,7 +4,7 @@ This document is the per-surface composition spec for the Compass ADE. Where
 `components.md` owns the component vocabulary — the `.cx-*` classes, their
 `data-*` variants, and the `--cx-*` tokens each consumes — this document owns how
 those contracts compose into the surfaces a user actually lives in. The
-information architecture is frozen upstream; structure comes from the IA
+information architecture is set upstream; structure comes from the IA
 records, look and navigation come from here.
 
 Each surface is specified along five facets:
@@ -455,7 +455,7 @@ designed to admit both later without rework — a tab strip or a splitter hosts 
 same window-scoped views — but neither ships in the dogfood scope.
 
 **Cross-lane seam.** Hosting these views in real OS windows depends on the native
-shell. The frozen compass-native record (`compass-native-app/design.md`, DL-110)
+shell. The compass-native record (`compass-native-app/design.md`, DL-110)
 is single-window today: one window loading the built UI. This decomposition
 expands that scope, so compass-native's shell record needs a multi-window
 amendment (RIG-1684's lane) before the views can be hosted in separate OS

@@ -107,7 +107,7 @@ type LocalManager struct {
 	baseDir string
 }
 
-// LocalManager is the P2 backend behind the frozen seam; the assertion keeps the
+// LocalManager is the P2 backend behind the VolumeManager seam; the assertion keeps the
 // two in lockstep at compile time.
 var _ VolumeManager = (*LocalManager)(nil)
 

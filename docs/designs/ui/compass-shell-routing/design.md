@@ -10,7 +10,7 @@ The Compass ADE shell dispatches its six surfaces from an in-memory signal —
 "agent" | "bridge" | "backlog" | "done" | "settings"`, store.ts:75-81) — with
 zero URL routing anywhere in `apps/ui` (no `window.location` / `location.hash`
 / `hashchange` / `history.pushState` / `@solidjs/router` usage; grep-confirmed
-empty). RIG-1655's frozen deep-link `#/channel/<channelId>/topic/<topicId>`
+empty). RIG-1655's deep-link `#/channel/<channelId>/topic/<topicId>`
 (compass-zulip-threading-model §D5, design.md:272-273 "Deep-link route
 `#/channel/<channelId>/topic/<topicId>`"; §T5 design.md:704) and general
 shareable/bookmarkable/back-button navigation require real URL routing. This
@@ -24,7 +24,7 @@ the *how*, not the library choice. Rationale as ruled:
 
 - Official/first-party Solid router, tiny, zero framework lock-in above the
   transport boundary.
-- `HashRouter` emits exactly the frozen route shape
+- `HashRouter` emits exactly the RIG-1655 route shape
   (`#/channel/<channelId>/topic/<topicId>`) and needs no server — the app is a
   client-only SPA loaded in a Wails v3 native webview (DL-110); no server
   renders HTML (`index.tsx:65-72` is a plain client
@@ -44,7 +44,7 @@ selection that today lives only in signals:
 | --- | --- | --- |
 | `/` | `<Bridge />` (`view() === "bridge"`, App.tsx:111-113) | Default surface, matching the boot default `createSignal<View>("bridge")` (store.ts:654). |
 | `/channel/:channelId` | `<ChannelView />` (App.tsx:114-116) | `:channelId` replaces bare `selectedChannelId` for this surface. |
-| `/channel/:channelId/topic/:topicId` | Topic view — **RIG-1655 T5, not this record** | Reserved here so the frozen deep-link nests under the channel segment; T5 adds the `<Route>`. |
+| `/channel/:channelId/topic/:topicId` | Topic view — **RIG-1655 T5, not this record** | Reserved here so the RIG-1655 deep-link nests under the channel segment; T5 adds the `<Route>`. |
 | `/agent/:agentId` | `<AgentView />` (Switch fallback, App.tsx:110) | The fallback becomes an explicit param route. |
 | `/backlog` | `<BacklogView />` (App.tsx:117-119) | |
 | `/done` | `<DoneView />` (App.tsx:120-122) | |
@@ -52,7 +52,7 @@ selection that today lives only in signals:
 | `*` (catch-all) | Redirect to `/` | An unknown/stale deep-link lands on the board, never a blank screen. |
 
 Under HashRouter these render as `#/`, `#/channel/<id>`, `#/agent/<id>`, etc.
-— the `#/channel/<channelId>/topic/<topicId>` string is exactly the frozen
+— the `#/channel/<channelId>/topic/<topicId>` string is exactly the
 RIG-1655 route.
 
 The shell chrome (topbar, sidebars, `UsageBar`) stays outside the routed
@@ -319,11 +319,11 @@ webview (DL-110); there is no server rendering HTML to hook.
 
 Path routing needs a server that answers every deep route with the app shell;
 in a webview loading a static bundle, a refresh on `/channel/x` 404s or blanks.
-HashRouter is precisely why RIG-1655's frozen route is spelled `#/...`.
+HashRouter is precisely why RIG-1655's route is spelled `#/...`.
 
 ### Keep in-memory dispatch (status quo) — rejected
 
-Cannot satisfy the frozen deep-link `#/channel/<channelId>/topic/<topicId>`
+Cannot satisfy the deep-link `#/channel/<channelId>/topic/<topicId>`
 (zulip-threading design.md:272-273), nor bookmarks/back-button/shareable URLs.
 
 ### Hand-rolled hashchange listener — rejected

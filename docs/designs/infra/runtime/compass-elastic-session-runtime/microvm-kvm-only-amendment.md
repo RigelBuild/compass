@@ -79,12 +79,12 @@ timeline:
 - `design.md:892-894` (OQ-5, the resolved inter-tenant-boundary decision):
   "Through Dogfood + trusted-tenant Beta the rootless container remains the
   running boundary; I1 lands the microVM before it becomes the sole
-  runtime." This stays exactly as frozen, and `microvm-runner.md:60-65` restates
+  runtime." This stays as ruled, and `microvm-runner.md:60-65` restates
   it: the container is the running boundary **through Beta**, then removed. The
   container is a transitional bootstrap, not a KVM-absent fallback — the two are
   different roles, and only the fallback role is retired here.
 - The microVM boundary itself (OQ-5 / Task I1's core), the seams, the volume
-  lifecycle, and every other frozen decision are unchanged.
+  lifecycle, and every other parent decision are unchanged.
 
 ## Alternatives considered
 

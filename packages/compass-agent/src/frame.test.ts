@@ -1,5 +1,5 @@
 // ProtojsonLineSink: the frame → wire-bytes boundary. Each test defends the
-// frozen wire contract — one newline-terminated JSON line per frame, keyed by
+// wire contract — one newline-terminated JSON line per frame, keyed by
 // the exact `AgentFrame` oneof field, payload round-tripping through protojson.
 // The oneof field name IS the wire discriminator, so it is asserted literally.
 
@@ -32,7 +32,7 @@ function parseLine(frame: OutboundFrame): Record<string, unknown> {
 	return JSON.parse(line) as Record<string, unknown>;
 }
 
-describe("ProtojsonLineSink — one line, frozen oneof key per frame kind", () => {
+describe("ProtojsonLineSink — one line, oneof key per frame kind", () => {
 	// The wire discriminator: each domain frame kind maps to exactly one
 	// AgentFrame oneof field. protobuf-es `toJson` renders oneof fields in
 	// canonical proto3-JSON camelCase (the cross-language interop default; Go

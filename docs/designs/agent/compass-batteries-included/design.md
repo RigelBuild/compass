@@ -516,7 +516,7 @@ recommendation; the record is designed against the recommendation.
    implementer-subagent turn, and the earlier "harmless" reading was FALSE:
    two of these rules are not merely a token cost, they are actively WRONG on
    a subagent. `hold-your-lane` ("done means merged … hold your lane … don't
-   pick up new work") contradicts the implementer's frozen hands contract
+   pick up new work") contradicts the implementer's hands contract
    (execute one briefed slice, report, then yield — RIG-1732 T2);
    `decision-authority` routes a design fork to the operator "on the home
    channel" — a channel the subagent mechanically CANNOT reach, because the

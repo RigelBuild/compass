@@ -518,7 +518,7 @@ func classifyConnectErr(err error) (kind, message string) {
 		return connectKindBadURL, "Could not reach the server at this URL"
 	}
 
-	// The sealed mapping is frozen by the design record (T5.3): only
+	// The sealed mapping follows the design record (T5.3): only
 	// CodeUnauthenticated is bad-token, deadline is folded into bad-url above,
 	// and every other code — CodePermissionDenied (403 on a revoked token),
 	// CodeUnavailable with no net/tls cause, etc. — is the explicit `other`

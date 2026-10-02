@@ -22,7 +22,7 @@
 
 ## Problem / Intent
 
-Compass's built-and-frozen threading is the Slack model: a channel is a flat
+Compass's built threading is the Slack model: a channel is a flat
 stream of root messages, and replies hang one level off a root via
 `Message.parent_message_id` (`proto/compass/v1/comms.proto:250` — `string
 parent_message_id = 7;` under the comment "The message this one replies to,
@@ -34,7 +34,7 @@ container of **named topics**, and every message belongs to a topic. Topics
 aggregate messages into self-contained conversations, giving agents a place to
 self-organize and stay focused, and giving the human a legible per-conversation
 index of what is going on. This record designs that inversion end to end
-(proto, store, delivery, agent tools, UI) as a supersession of the frozen
+(proto, store, delivery, agent tools, UI) as a supersession of the
 Slack chain named above.
 
 The ratified core intent (Matt, 2026-08-02): **agents call comms tools
@@ -181,7 +181,7 @@ go. The delta:
 
 ### D3 — Delivery: cursor stays per-(agent, channel), resolved through the topic join
 
-DL-072 froze the durable cursor "per `(agent_account_id, channel_id)` on
+DL-072 keys the durable cursor "per `(agent_account_id, channel_id)` on
 `messages.seq`" (DECISIONS.md:125; DDL at
 `0006_delivery_cursors.sql:10-24`). **This record keeps that keying** (F4) even
 though a message no longer stores its channel: the cursor's channel is
@@ -202,7 +202,7 @@ Instead:
   held deliveries at the recipient's turn-settle edge coalesce into one digest
   per topic (rather than one flat per-channel digest), so an agent waking up
   sees "3 messages in ‘retry policy’, 1 in ‘deploy Friday’" — the legibility
-  point of the whole model, applied to agents. Ownership per the frozen RT-3
+  point of the whole model, applied to agents. Ownership per the RT-3
   contract: the **agent owns the turn-end coalescing queue** ("the
   CompassAgent **queues** it and, at turn end, issues the queued set as a
   single `prompt`", compass-0.6/design.md:1454-1466); the server owns only the
@@ -234,7 +234,7 @@ thread." The delta (clarifies DL-028):
 - New read tool `comms_list_topics(channel_id?)` so an agent can survey the
   live conversations before posting — the self-organization affordance.
 - Home default (clarifies DL-029; F5, ruled): the **home channel** stays the
-  authz default exactly as frozen; there is **no distinguished home topic**
+  authz default, unchanged; there is **no distinguished home topic**
   and no default or fallback topic of any kind. An untargeted
   mention/delivery lands in whatever topic the triggering message lives in;
   every post names a topic — when no existing topic applies, the agent
@@ -283,7 +283,7 @@ whole Slack surface — `ThreadView`, `ThreadStream`, `ThreadPanel`, the
 
 ### D6 — Asks (clarifies DL-037)
 
-DL-037 froze "Standalone channel asks are answerable wherever they are asked
+DL-037 decided "Standalone channel asks are answerable wherever they are asked
 (first-responder-wins)" (DECISIONS.md:145). Unchanged in substance: an ask is
 carried by a message, a message lives in a topic, so an ask is **visible in
 its topic and answerable channel-wide, first-responder-wins**. Topic scoping
@@ -427,7 +427,7 @@ use for organization. This is the status quo with a costume.
   stage-tagged (`fmt.Errorf("store: begin append message: %w", err)` shape,
   `messages.go`); `ctx` first parameter on every store/comms method.
 - **Proto tree has one writer**: compass-repo lane authors `.proto` text and
-  runs the single buf.gen across all gen lanes (the convention frozen in
+  runs the single buf.gen across all gen lanes (the convention set in
   compass-notification-delivery T1); other lanes co-design shape by DM, never
   edit proto files.
 - **Delivery stays at-least-once per session** (DL-072 inheritance): the

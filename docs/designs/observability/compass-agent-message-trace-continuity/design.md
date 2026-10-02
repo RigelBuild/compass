@@ -2,7 +2,7 @@
 
 Linear: RIG-2508 (follow-on; the sibling record deferred this).
 Sibling record: `docs/designs/observability/compass-agent-loop-otel/design.md`
-(FROZEN; merged in PR #561 at `2740d2d3`). This record does NOT reopen its OQ1
+(merged in PR #561 at `2740d2d3`). This record does NOT reopen its OQ1
 ruling (b): two independent providers to one collector.
 
 ## Ruling (Matt, 2026-08-27)
@@ -324,7 +324,7 @@ Plan).
   (`packages/compass-agent/package.json:22`); the W3C parser is first-party;
   test spans use the house `InMemorySpanExporter` pattern
   (`src/transport/outbound-spans.test.ts`).
-- **Sibling record stays frozen; OQ1(b) not reopened.** Loop spans stay on
+- **OQ1(b) not reopened.** Loop spans stay on
   the global provider; the transport keeps its scoped provider. The wire
   string is provider-independent, so this composes with (b) untouched.
 - **Lane ownership is explicit per task.** Agent-side (bridge, CompassAgent

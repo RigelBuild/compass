@@ -89,9 +89,9 @@ work has to run where the hardware and the session are. See Open Questions.
 
 #### `WorkloadRuntime` implementation
 
-`WorkloadRuntime` is frozen at S1 (`go/internal/runtime/podman.go:348-396`;
-the closing comment at `:399`: "WorkloadRuntime is frozen (the Resize
-reservation above)"). The host backend implements it; it does not amend it.
+The host backend implements `WorkloadRuntime`
+(`go/internal/runtime/podman.go:348-396`) as-is; it does not
+amend it.
 The nine methods, per the interface doc comments, and their host-process
 semantics — including where the mapping is degenerate:
 
@@ -191,7 +191,7 @@ Two consequences the plan carries (T1a):
 #### Agent transport: the socket and config paths
 
 `WorkloadRuntime` does not deliver the agent its gateway socket or its config;
-the Runner's `Provision` does, by bind-mount, to two paths that are frozen
+the Runner's `Provision` does, by bind-mount, to two paths that are fixed
 constants on **both** sides of the rendezvous. A host process has no bind
 mounts, so this is the one part of the tier that no `WorkloadRuntime`
 implementation can supply — it needs its own Provision leg.
@@ -256,7 +256,7 @@ contract test":
 
 ```ts
 describe("AGENT_CONFIG_MOUNT_PATH", () => {
-    test("is the frozen /run/compass/agent-config contract path", () => {
+    test("is the fixed /run/compass/agent-config contract path", () => {
         expect(AGENT_CONFIG_MOUNT_PATH).toBe("/run/compass/agent-config");
     });
 ```
@@ -287,11 +287,11 @@ env-overridable:
   `MainDeps.configMount` is documented as "Overridable ONLY so a test can point
   the reader at a tempdir fixture instead of the container path"
   (`cli.ts:586-590`) — this promotes that from a test-only dependency seam to a
-  first-class environment input, which is a change to the frozen contract and is
-  named as such.
+  first-class environment input, a change to the path contract, named
+  as such.
 
-This is a change to the `compass-agent` package's frozen path contract and to
-its two pinned contract tests. It is deliberate and scoped: the frozen value
+This changes the `compass-agent` package's path contract and its two pinned
+contract tests. It is scoped: today's value
 stays the default, and only the host tier ever supplies an override. The
 alternative (a Provision-side probe seam alone, mirroring `vsockGatewayEngine`)
 is rejected in Alternatives considered — a Provision-side probe can only change
@@ -553,7 +553,7 @@ tell the user something true about their own setup.
 
 ### A dedicated `HostRuntime` interface instead of implementing `WorkloadRuntime`
 
-Rejected. `WorkloadRuntime` is frozen at S1 and `SelectBackend` is the sole
+Rejected. `SelectBackend` is the sole
 selection point; a parallel interface would fork the `AgentRuntime` lifecycle
 façade (Launch → provision → credentials) that all tiers share, for no gain —
 the degenerate methods are few and honestly documentable. The microVM backend
@@ -599,9 +599,9 @@ probe leg is necessary but not sufficient, and the record takes both.
 - **Do not weaken the container tiers.** The podman/microVM egress path
   (`armEgress`, `EgressArmedInGuest`) is untouched; the host tier adds a
   distinct unenforced posture beside it, never a change to arming.
-- **`WorkloadRuntime` is frozen at S1.** The host backend implements the
-  9-method interface as-is (`go/internal/runtime/podman.go:348-396`); no
-  interface amendment.
+- **The host backend implements `WorkloadRuntime` as-is.** The
+  9-method interface (`go/internal/runtime/podman.go:348-396`) needs no
+  amendment for this tier.
 - **No dependency on gateway-credentials at-rest encryption.** That record's
   T0–T5 are all unimplemented
   (`docs/designs/server/compass-gateway-credentials-at-rest-encryption.md`,
@@ -621,7 +621,7 @@ probe leg is necessary but not sufficient, and the record takes both.
   (`go/internal/agentuid/agentuid.go:13`) — that constant names the uid baked
   into the agent image and has no Runner-side override. Root is still refused
   (`go/internal/runner/spec.go:59-60`).
-- **Container-tier agent behaviour stays byte-identical.** The two frozen
+- **Container-tier agent behaviour stays byte-identical.** The two
   agent-side path constants (`packages/compass-agent/src/cli.ts:91`,
   `config-reader.ts:53`) become env-overridable with today's literals as
   defaults; only the host tier ever supplies an override, and the existing
@@ -666,7 +666,7 @@ probe leg is necessary but not sufficient, and the record takes both.
   append no mounts, and thread both paths to the agent as env vars on the
   starting streaming exec. `AGENT_SOCKET_PATH` and `AGENT_CONFIG_MOUNT_PATH`
   become env-overridable, defaulting to today's literals. **This touches the
-  `compass-agent` package's frozen path contract and its two pinned contract
+  `compass-agent` package's path contract and its two pinned contract
   tests** (`cli.test.ts:113-117`, `config-reader.test.ts:67-70`), which keep
   pinning the defaults and each gain an override case.
   Interfaces: consumes the leg-selection seam (`host.go:191-193`) and the
@@ -718,7 +718,7 @@ probe leg is necessary but not sufficient, and the record takes both.
 
 ## Tasks
 
-- [ ] T1 — `HostRuntime` backend implementing the frozen `WorkloadRuntime`,
+- [ ] T1 — `HostRuntime` backend implementing `WorkloadRuntime`,
       registered in `SelectBackend` as `host`
 - [ ] T1a — host-tier uid derivation: `Workspace.UID` from `os.Geteuid()`, not
       `agentuid.AgentUID`; `AsUser` rejects any other uid; launch proven on a
@@ -797,9 +797,9 @@ probe leg is necessary but not sufficient, and the record takes both.
   (`go/internal/runtime/agent.go:155`) also keeps its name — it is the
   per-agent lifecycle façade over a backend, and that name is accurate.
 
-  The S1 freeze (`go/internal/runtime/podman.go` freeze comment) reserves the
-  **method set** — "a backend that self-arms egress does NOT grow a verb here"
-  — not the identifier, so the rename is legal under it. No signature, method
+  The podman.go note beside the interface covers the
+  **method set** — "a backend that self-arms egress does NOT grow a verb" —
+  not the identifier. No signature, method
   set, or behaviour changed.
 
 ## Ledger delta
@@ -839,7 +839,7 @@ invented here):
   `Workload*` (`WorkloadRuntime`/`WorkloadID`/`WorkloadSpec`/`InWorkloadError`)
   because the interface spans four backends — podman, microVM, Apple
   `container`, host process — only some of which are containers, and the podman
-  path is slated to go away. Ruled by Matt. The S1 freeze covers the method
-  set, not the identifier; no signature or behaviour changed. Genuine
+  path is slated to go away. Ruled by Matt. No signature, method set, or
+  behaviour changed. Genuine
   containers keep the old vocabulary (`ContainerController`, `ContainerRef`,
   the testcontainer specs, the `container_name` wire field).

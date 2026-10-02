@@ -1,6 +1,6 @@
 # Compass ADE — Ask-in-channel (first-responder-wins)
 
-Sibling to the frozen 0.7 record
+Sibling to the 0.7 record
 (`../compass-0.7-channel-workspace/design.md`, merged) and the pending
 `../compass-threading-ui/design.md`. Scope: the compass-ui stub +
 store seam only — the "dumb multi-user ask" Matt ruled for the MVP.

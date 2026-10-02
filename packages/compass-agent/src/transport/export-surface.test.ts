@@ -1,4 +1,4 @@
-// The export-surface containment test: the frozen rule of the parent adoption
+// The export-surface containment test: the rule of the parent adoption
 // record (docs/designs/repo/compass-agent-effect-adoption/design.md, Global
 // Constraints — "the public `.d.ts` stays free of the `effect` package") made
 // mechanical, extended by this record
