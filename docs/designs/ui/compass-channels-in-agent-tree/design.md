@@ -281,20 +281,27 @@ the same projection, not a reconstruction of it. The expansion at
 `channels.go:160` still runs — the authz needs it — it just no longer
 feeds the return value.
 
-**Invariant: `membership_mode` is immutable after create.** This is
-load-bearing, not a deferred nicety: it is the sole reason the two TREE
-policy refusals above cannot be bypassed by creating an EXPLICIT
-channel, setting `OWNER_ONLY` or `mandatory_subscription` on it, and
-then converting it to TREE. Today the property holds by absence of a
-writer — T1 adds `membership_mode` to `CreateChannelRequest` only, and
-`SetChannelPolicy` writes the post policy, the owner and the mandatory
-flag and nothing else (`UpdateChannelPolicy`, `channels.go:777-782`) —
-and "safe because no writer exists" is exactly the property a later task
-deletes without noticing. So it is stated here as an invariant and
-guarded: no RPC may write `membership_mode` after the create, and
-`ReparentChannel` moves placement only. T2 pins it with a test. Open
-Question 3 records the conversion FORK; the invariant itself is not
-open.
+**Invariant: `membership_mode` never goes EXPLICIT→TREE.** This is
+load-bearing: it is the sole reason the two TREE policy refusals above
+cannot be bypassed by creating an EXPLICIT channel, setting `OWNER_ONLY`
+or `mandatory_subscription` on it, and then converting it to TREE. Today
+the property holds by absence of a writer — T1 adds `membership_mode` to
+`CreateChannelRequest` only, and `SetChannelPolicy` writes the post
+policy, the owner and the mandatory flag and nothing else
+(`UpdateChannelPolicy`, `channels.go:777-782`) — and "safe because no
+writer exists" is exactly the property a later task deletes without
+noticing. So it is guarded: no RPC may set TREE after the create, and
+`ReparentChannel` moves placement only. T2 pins it with a test. A channel
+that needs tree membership is created as a new TREE channel.
+
+**Decided (Matt, 2026-10-02): the reverse direction, TREE→EXPLICIT, is
+allowed.** It is how a tree channel becomes a hand-membered or shared
+one. The conversion mints the channel's current derived participant set
+as stored `channel_members` rows, then flips the mode; it cannot bypass
+either TREE refusal, because those guard against entering TREE, not
+leaving it. Becoming SHARED also clears `parent_agent_id` (leg 2: shared
+spaces never live in a tree). The conversion RPC is follow-up work,
+tracked outside this plan.
 
 Sketch of the new probe (the recursive-CTE precedent is the `ancestry`
 CTE, `channels.sql:130-137`):
@@ -715,15 +722,12 @@ the explicit arm, so an attach never subtracts access.
   with a green test suite. T2 carries the exact DDL and its acceptance
   case. This is a standing hazard for every future table, not a quirk of
   this one.
-- **Data**: no rewrite of `channel_groups` rows. Reserved groups
-  (`__dm__`, `__coordination__`) keep working untouched. Existing
-  user-created grouped channels keep `group_id` and render in the band
-  leg 5 names for their group's visibility — SHARED groups in the
-  shared-spaces band, OWNER groups in the root band — until a user
-  attaches them to an agent via the
-  new reparent RPC; home channels relocate under their agents purely by
-  UI derivation (no data change). Every existing channel is
-  `membership_mode = 0` by default — behaviour-preserving.
+- **Data**: no data migration (Matt, 2026-10-02: Compass carries no real
+  work yet). Reserved groups (`__dm__`, `__coordination__`) keep working
+  untouched. Existing user-created channels and OWNER groups on the dev
+  instance are deleted by hand after this lands, not reparented. Home
+  channels relocate under their agents purely by UI derivation (no data
+  change). Every existing channel is `membership_mode = 0` by default.
 - **Wire**: purely additive — two new fields on `Channel`, two on
   `CreateChannelRequest`, one new enum, one new RPC. Nothing removed or
   renumbered, so no `reserved` statements and no breaking wire change
@@ -1100,8 +1104,8 @@ Store writes:
   input fields, and MUST NOT set them on the literal as a shortcut,
   because a fifth `Channel` construction site is the defect, not the
   missing assignment.
-- `membership_mode` is immutable after create (leg 3 invariant): no
-  store write may change it, pinned by a test.
+- `membership_mode` never moves EXPLICIT→TREE (leg 3 invariant): no
+  store write in this plan sets TREE after create, pinned by a test.
 - `Store.ReparentChannel` enforcing every invariant in Approach leg 3
   **in the order leg 3 lists them**: the participant-plus-same-owner
   authz gate with the `ErrNotFound` merge FIRST, then the
@@ -1755,51 +1759,23 @@ acceptance; the assertions on both sides are.
 
 ## Open Questions
 
-The two forks the draft carried — derived-versus-stored membership, and
-the owner-set read grant — are decided by Matt and folded into Approach
-legs 2 and 3 above. They are settled; do not reopen them here.
+None open. The forks the draft carried are decided by Matt and folded into
+the Approach legs: derived-versus-stored membership and the owner-set read
+grant (2026-09-07), and the five residual questions (2026-10-02) recorded
+below.
 
-Two further items the draft filed as load-bearing questions are decisions,
-not forks, and are recorded as such rather than listed below. (a) A SHARED
-channel cannot hang on an agent: Approach leg 2 states it, and the T2 CHECK
-`channels_group_xor_agent` makes it structural — an agent-attached channel
-has `group_id IS NULL`, so no SHARED-group arm exists to fire. A question a
-CHECK constraint answers is not open. (b) Groups are frozen as machinery
-plus shared-spaces-only, with user-facing nesting retired: Approach leg 1
-decides it and T7 implements it; `CreateChannelGroup`/`ListChannelGroups`
-(`comms.proto:50,53`) stay servable, the UI just offers no affordance. The
-residual forks below are what is actually open.
-
-1. **Load-bearing — does the owner-set read grant extend to OWNER-grouped
-   channels?** The ruling says agents under an owner read "all channels
-   from that owner", but this record applies the new disjunct to
-   agent-attached channels only, where the anchor resolves the owner; an
-   OWNER-grouped channel's owner is resolvable via its group, so the
-   extension is mechanical but widens read access for existing data. It is
-   deferred to the ACL record, which re-cuts this surface anyway.
-   Assumption designed against: agent-attached only in this record.
-2. **Non-load-bearing — should the later ACL record relax the
-   SHARED-on-an-agent refusal?** This record refuses it structurally (the
-   CHECK). Whether the ACL record should permit a shared space to hang in
-   the tree, and under what visibility, is deferred there.
-   Assumption designed against: stays refused.
-3. **Non-load-bearing — mode conversion.** Can an EXPLICIT channel become
-   TREE, or the reverse, after create? v1 refuses, and the refusal is a
-   stated invariant in Approach leg 3, not a gap here: `membership_mode`
-   is immutable after create, guarded and tested (T2), because it is
-   what makes the two TREE policy refusals unbypassable. What is open is
-   only whether a LATER record should add conversion, which needs a
-   member-rows migration story (drop rows on EXPLICIT→TREE? mint the
-   derived set on TREE→EXPLICIT?) that no current need justifies.
-   Assumption designed against: immutable, per the leg-3 invariant.
-4. **Non-load-bearing — replacement for the dead `New folder` button.**
-   Delete outright, or replace with a per-agent-row "new channel here"
-   affordance calling `CreateChannel` with `parent_agent_handle`? The plan
-   deletes it in T7 and defers the create affordance to a follow-up
-   record. Assumption designed against: delete.
-5. **Non-load-bearing — should existing user-created OWNER groups be
-   auto-migrated?** The plan leaves their channels in the root band until
-   manually reparented (no data migration). A one-shot server-side
-   migration mapping a user's group channels under a chosen agent would
-   need a group→agent mapping no data supplies. Assumption designed
-   against: no auto-migration.
+1. **Owner-grouped channels are not a separate concept.** Every agent has
+   an owning user, so a channel attached to an agent is owned by that
+   agent's user, and the leg-2 read grant resolves through the anchor. No
+   extension to OWNER groups is needed; the UI offers no OWNER-group
+   surface (T7).
+2. **Shared spaces never live in the tree.** They stay in SHARED groups at
+   the tree root, so no user's tree ever crosses another's. The T2 CHECK
+   `channels_group_xor_agent` stays a permanent rule, not a v1 limit.
+3. **Mode conversion is one-way.** TREE→EXPLICIT is allowed (leg 3); EXPLICIT→TREE
+   never is. A new tree channel is created instead.
+4. **The `New folder` button is deleted** with no replacement. Agents
+   manage channels; the user tells agents what to do. Per-channel ACL
+   controls may come later, in their own record.
+5. **No migration.** Existing channels and groups on the dev instance are
+   cleaned up by hand after merge (leg 4).
