@@ -33,6 +33,94 @@ function splitLedgerCells(line: string): string[] {
 }
 
 type Fence = { marker: "`" | "~"; length: number };
+type HtmlBlock = { end: RegExp | null; blankTerminated: boolean };
+
+const HTML_BLOCK_TAGS = [
+	"address",
+	"article",
+	"aside",
+	"base",
+	"basefont",
+	"blockquote",
+	"body",
+	"caption",
+	"center",
+	"col",
+	"colgroup",
+	"dd",
+	"details",
+	"dialog",
+	"dir",
+	"div",
+	"dl",
+	"dt",
+	"fieldset",
+	"figcaption",
+	"figure",
+	"footer",
+	"form",
+	"frame",
+	"frameset",
+	"h[1-6]",
+	"head",
+	"header",
+	"hr",
+	"html",
+	"iframe",
+	"legend",
+	"li",
+	"link",
+	"main",
+	"menu",
+	"menuitem",
+	"meta",
+	"nav",
+	"noframes",
+	"ol",
+	"optgroup",
+	"option",
+	"p",
+	"param",
+	"search",
+	"section",
+	"summary",
+	"table",
+	"tbody",
+	"td",
+	"tfoot",
+	"th",
+	"thead",
+	"title",
+	"tr",
+	"track",
+	"ul",
+].join("|");
+
+const HTML_BLOCKS: {
+	start: RegExp;
+	end: RegExp | null;
+	blankTerminated: boolean;
+}[] = [
+	{
+		start: /^ {0,3}<(?:script|pre|style)(?:\s|>|\/)/i,
+		end: /^ {0,3}<\/(?:script|pre|style)\s*>/i,
+		blankTerminated: false,
+	},
+	{ start: /^ {0,3}<!--/, end: /-->/, blankTerminated: false },
+	{ start: /^ {0,3}<\?/, end: /\?>/, blankTerminated: false },
+	{ start: /^ {0,3}<![A-Z]/, end: />/, blankTerminated: false },
+	{ start: /^ {0,3}<!\[CDATA\[/, end: /\]\]>/, blankTerminated: false },
+	{
+		start: new RegExp(`^ {0,3}</(?:${HTML_BLOCK_TAGS})(?:\\s|/?>)`, "i"),
+		end: null,
+		blankTerminated: true,
+	},
+	{
+		start: new RegExp(`^ {0,3}<(?:${HTML_BLOCK_TAGS})(?:\\s|/?>)`, "i"),
+		end: null,
+		blankTerminated: true,
+	},
+];
 
 function updateFence(
 	line: string,
@@ -70,29 +158,129 @@ function updateFence(
  * construct the other misses. The POST is an authoritative full snapshot, so
  * an unterminated block throws here, before either counter reads a line.
  */
+function isLedgerRowLine(line: string): boolean {
+	return /^ {0,3}\|\s*DL-\d+\s*\|/.test(line);
+}
+
+function classifyHtmlLine(
+	line: string,
+	index: number,
+	html: HtmlBlock | null,
+): {
+	html: HtmlBlock | null;
+	content: string;
+} | null {
+	if (html === null) return null;
+	if (isLedgerRowLine(line))
+		throw new Error(`ledger row on line ${index + 1} is inside an HTML block`);
+	if (html.end?.test(line) || (html.blankTerminated && line.trim() === ""))
+		return { html: null, content: "" };
+	return { html, content: "" };
+}
+
+function findHtmlBlock(line: string): HtmlBlock | null {
+	const block = HTML_BLOCKS.find(({ start }) => start.test(line));
+	return block
+		? { end: block.end, blankTerminated: block.blankTerminated }
+		: null;
+}
+
+function classifyHtmlStart(
+	line: string,
+	index: number,
+	fence: Fence | null,
+): {
+	html: HtmlBlock | null;
+	content: string;
+} | null {
+	if (fence !== null || /^ {0,3}<!--/.test(line)) return null;
+	const html = findHtmlBlock(line);
+	if (html === null) return null;
+	if (isLedgerRowLine(line))
+		throw new Error(`ledger row on line ${index + 1} is inside an HTML block`);
+	return { html: html.end?.test(line) ? null : html, content: "" };
+}
+
+type LineState = {
+	fence: Fence | null;
+	html: HtmlBlock | null;
+	inComment: boolean;
+	listItem: boolean;
+	barePipeInterrupted: boolean;
+};
+
+function classifyLine(
+	line: string,
+	index: number,
+	lines: string[],
+	state: LineState,
+): string {
+	if (state.inComment) {
+		if (line.includes("-->")) state.inComment = false;
+		return "";
+	}
+	if (state.fence === null && /^ {0,3}<!--/.test(line)) {
+		state.inComment = !line.includes("-->");
+		return "";
+	}
+	const existingHtml = classifyHtmlLine(line, index, state.html);
+	if (existingHtml !== null) {
+		state.html = existingHtml.html;
+		return existingHtml.content;
+	}
+	const htmlStart = classifyHtmlStart(line, index, state.fence);
+	if (htmlStart !== null) {
+		state.html = htmlStart.html;
+		return htmlStart.content;
+	}
+	const updated = updateFence(line, state.fence);
+	state.fence = updated.fence;
+	if (updated.handled || state.fence !== null) return "";
+	if (isLedgerRowLine(line))
+		return classifyLedgerRow(line, index, lines, state);
+	if (line.trim() === "|") state.barePipeInterrupted = true;
+	if (line.trim() === "") state.listItem = false;
+	else if (/^ {0,3}(?:[-+*]|\d+[.)])\s/.test(line)) state.listItem = true;
+	return line;
+}
+
+function classifyLedgerRow(
+	line: string,
+	index: number,
+	lines: string[],
+	state: LineState,
+): string {
+	if (lines[index - 1]?.trim() === "|")
+		throw new Error(
+			`ledger row on line ${index + 1} follows an interrupted table`,
+		);
+	if (state.listItem)
+		throw new Error(
+			`ledger row on line ${index + 1} is absorbed by a list item`,
+		);
+	if (state.barePipeInterrupted)
+		throw new Error(
+			`ledger row on line ${index + 1} follows an interrupted table`,
+		);
+	return line;
+}
+
 function blankNonContentLines(text: string): string[] {
-	let fence: Fence | null = null;
-	let inComment = false;
-	const classified = text.split("\n").map((line) => {
-		if (inComment) {
-			// CommonMark comments do not nest, so the first `-->` closes this
-			// one however it reads — matching what the renderer shows.
-			if (line.includes("-->")) inComment = false;
-			return "";
-		}
-		// CommonMark HTML block type 2: opens on `<!--` indented at most 3
-		// spaces, and runs through the line carrying `-->`, trailing text included.
-		if (fence === null && /^ {0,3}<!--/.test(line)) {
-			inComment = !line.includes("-->");
-			return "";
-		}
-		const updated = updateFence(line, fence);
-		fence = updated.fence;
-		return updated.handled || fence !== null ? "" : line;
-	});
-	if (fence !== null)
+	const state: LineState = {
+		fence: null,
+		html: null,
+		inComment: false,
+		listItem: false,
+		barePipeInterrupted: false,
+	};
+	const lines = text.split("\n");
+	const classified = lines.map((line, index) =>
+		classifyLine(line, index, lines, state),
+	);
+	if (state.fence !== null)
 		throw new Error("unterminated fenced block in design ledger");
-	if (inComment) throw new Error("unterminated HTML comment in design ledger");
+	if (state.inComment)
+		throw new Error("unterminated HTML comment in design ledger");
 	return classified;
 }
 
