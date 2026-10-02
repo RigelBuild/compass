@@ -375,6 +375,29 @@ func TestForgeListIssuesAppliesLimit(t *testing.T) {
 	}
 }
 
+// list_issues with no state asks the provider for open issues, per the gateway
+// contract; GitHub's own empty-state default is "all", which returned closed rows.
+func TestForgeListIssuesEmptyStateMeansOpen(t *testing.T) {
+	for _, tc := range []struct{ state, want string }{
+		{"", "open"},
+		{"closed", "closed"},
+		{"all", "all"},
+	} {
+		t.Run("state="+tc.state, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			svc, _ := newForgeServiceForTest(t, author, forge.NewFakeProvider("gh-reviewer"))
+			call := &compassv1internal.ForgeCallRequest{
+				Call: &compassv1internal.ForgeCallRequest_ListIssues{ListIssues: &compassv1internal.ListIssuesRequest{Repo: testRepo, State: tc.state}},
+			}
+			svc.ExecuteForgeCallAsAccountMust(t, call)
+			calls := author.Calls()
+			if len(calls) != 1 || calls[0].Filter.State != tc.want {
+				t.Fatalf("provider calls = %+v, want one ListIssues with State %q", calls, tc.want)
+			}
+		})
+	}
+}
+
 // --- tests: guards ----------------------------------------------------------
 
 // TestEmptyCallerIsConnectErrorWithZeroProviderCalls pins that an empty caller
