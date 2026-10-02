@@ -643,7 +643,7 @@ and C2's shell smoke (fixture: early settled code fence + ≥1s continued
 streaming) confirms the flash is gone and measures the residual selection loss.
 Selection-during-active-stream loss is accepted as a marginal case (selecting
 inside a token-by-token-growing message is a moving target). **Escalation, not
-part of the frozen default:** if C2 shows selection loss actually bites in
+part of the ruled default:** if C2 shows selection loss actually bites in
 practice, Arm 2 (re-port the fine-grained walker under the new API —
 Alternatives § Reconcile, full identity, at the cost of re-owning the deleted
 AST renderer) is the fallback. Arm 1 (accept the flash) was rejected — the

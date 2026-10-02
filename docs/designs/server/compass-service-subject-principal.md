@@ -3,14 +3,14 @@
 Tracking: RIG-2863 / RIG-3122 (parent RIG-1715, RIG-2845)
 
 Ledger: DL-327 (this PR), Topology & tiers. Amends the two-kind token-subject
-seal frozen by the retired v0.6 milestone record (see Problem / Intent); no
-rows superseded. Per the corpus convention, the frozen record is amended by
+seal set by the retired v0.6 milestone record (see Problem / Intent); no
+rows superseded. Per the corpus convention, the merged record is amended by
 this NEW record, never rewritten.
 
 ## Problem / Intent
 
 The token-subject model is sealed to exactly two principal classes. The seal
-lives in code, citing its frozen record:
+lives in code, citing its record:
 
 - `go/internal/store/types.go:90-91` — "Sealed to exactly these two
   (design.md: 1175-1183)." with the two consts at `types.go:94-99`:
@@ -49,7 +49,7 @@ that authenticates back to the Server.
 
 ## Approach
 
-**Matt-ruled (frozen; this record captures the ruling, it does not reopen
+**Matt-ruled (this record captures the ruling; it does not reopen
 it):** `SubjectService = 2` is ONE principal CLASS for all supervised compute
 tiers — the LLM gateway now, an MCP gateway later — NOT a kind per tier.
 

@@ -58,7 +58,7 @@ provision. Removing the head-of-line blocking requires concurrency.
   establishes server-side ("this test drives many concurrent dispatches over
   the real mounted handler under -race, so a regression that dropped sendMu
   reddens here").
-- **Frozen dial-out inversion untouched.** The Runner still dials out; no new
+- **Dial-out inversion untouched.** The Runner still dials out; no new
   inbound RPC, no new stream. This change is entirely Runner-local goroutine
   structure.
 - **No wire/proto change.** The Server router already correlates out-of-order
@@ -655,7 +655,7 @@ Provisions become N concurrent podman launches, each up to
 `defaultCommandTimeout` (120s, `podman.go:329`) of CPU/disk/network — a
 Runner-host resource-exhaustion surface that did not exist under the serial
 loop. The exposure is real because Provision is agent-triggerable in a loop
-(spawn/despawn record) and the frozen trust model has the Runner trust the
+(spawn/despawn record) and the trust model has the Runner trust the
 Server, so a misbehaving Server or a reconnect storm widens the same surface;
 `waitCall` even leaves a timed-out call in flight Runner-side
 (`router.go:226-231`), so a caller giving up does not stop the work. The

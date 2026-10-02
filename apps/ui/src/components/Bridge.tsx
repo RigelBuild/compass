@@ -116,7 +116,7 @@ type StopAction =
  *  with the PR's own facts. The card body selects the owning issue (staying on
  *  the PRs tab); a `.card-issue-link` chip in the card top selects AND flips to
  *  the Issues tab. Badges are `compact` (glyph-only): the board card is the same
- *  cramped gutter as the issue card, and the frozen reference render shows
+ *  cramped gutter as the issue card, and the design's reference render shows
  *  glyph-only PR badges — deliberate, not an accident. */
 const PrCard: Component<{
 	row: PrRow;

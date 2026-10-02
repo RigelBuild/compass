@@ -537,7 +537,7 @@ Interfaces:
 
 ## Decisions
 
-Batched to Matt; **ruled 2026-07-22**. All four folded here as frozen
+Batched to Matt; **ruled 2026-07-22**. All four folded here as the
 decisions this record merges on.
 
 ### DL-Q1 — Same-PR flip is enforced mechanically in v1 (RESOLVED — Matt, 2026-07-22)
@@ -590,7 +590,7 @@ explicitly waived in the population PR.
 
 ### DL-Q4 — Ship product-only now (RESOLVED — Matt, 2026-07-22)
 
-`platform/` records are cited as frozen constraints from product records
+`platform/` records are cited as constraints from product records
 (e.g. `compass-0.6/design.md:1112-1114` conforms to
 `../../platform/go-toolchain-default.md`), so cross-domain supersession will
 eventually exist. **Ruled: product-only now** (matches the ratified shape and

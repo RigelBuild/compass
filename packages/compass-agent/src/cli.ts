@@ -64,7 +64,7 @@ export const AGENT_SOCKET_PATH = "/run/compass/agent.sock";
 
 /**
  * The gateway-socket path this agent dials: the `COMPASS_AGENT_SOCKET_PATH`
- * env override when set, else the frozen `AGENT_SOCKET_PATH` default.
+ * env override when set, else the fixed `AGENT_SOCKET_PATH` default.
  *
  * The container tiers bind-mount the socket at the fixed default and set no
  * override, so they resolve `AGENT_SOCKET_PATH` unchanged. The host-process tier
@@ -686,7 +686,7 @@ export async function main(
 	// The Runner-mounted agent-config bundle (design §CD-3): read the mount and map
 	// it to the createAgentSession surfaces below; unconfigured yields every field
 	// empty, so NONE is injected. Test seam wins when set; else the
-	// COMPASS_AGENT_CONFIG_MOUNT_PATH override, defaulting to the frozen mount path.
+	// COMPASS_AGENT_CONFIG_MOUNT_PATH override, defaulting to the fixed mount path.
 	const configMount = deps.configMount ?? resolveConfigMountPath(env);
 	const mounted = await loadMountedConfig(configMount);
 	// The bundle hash, for one observability line. Non load-bearing: absent → no

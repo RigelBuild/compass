@@ -1,7 +1,7 @@
 # Compass agent forge tools
 
 Design for the TypeScript agent-side leg of the forge surface: a `forge()`
-method on the frozen `RunnerTransport` seam plus a native tool set (`forge.ts`)
+method on the `RunnerTransport` seam plus a native tool set (`forge.ts`)
 that exposes all twelve `ForgeCallRequest` arms to the containerized first-party
 agent, one tool per arm (the two subscription arms ship now but return the
 server's in-band `unimplemented` until the `agent_forge_subscriptions` store
@@ -13,7 +13,7 @@ the direct forge sibling of the comms-tools record
 its T3) and the lifecycle tools (`packages/compass-agent/src/lifecycle.ts`):
 same broker shape, same identity model, same registration path. Everything
 below the agent — the Server write chokepoint, the hub relay, the Runner
-gateway leg, and the proto carrier — is COMPLETE and frozen elsewhere
+gateway leg, and the proto carrier — is COMPLETE and designed elsewhere
 ([`compass-forge-write-path/design.md`](../../server/compass-forge-write-path/design.md));
 this record consumes it and designs nothing on the Go side.
 
@@ -135,7 +135,7 @@ else.
   `gen/compass/v1/forge_pb.ts` `CommentRef`/`ReviewRef`;
   `gen/compass/v1/compass_pb.ts` `Issue`/`PullRequest`). This record adds NO
   proto and regenerates nothing.
-- **The transport seam is frozen and the client exists.** `RunnerTransport`
+- **The transport seam and the client exist.** `RunnerTransport`
   (`packages/compass-agent/src/transport/index.ts`) is the agent's handle on
   the `AgentGateway` RPCs over the per-container Unix socket
   ([`compass-agent-runner-transport/design.md`](../compass-agent-runner-transport/design.md)
@@ -347,7 +347,7 @@ as the only audit trail. Unlike comms (which enforces channel membership),
 forge enforces nothing — the containment here is prompt-level, not
 authz-level. The mitigation is one per-write prompt-guidance line ("operate
 only on the repositories your task names") plus the DL-050 attribution trail;
-hard scope enforcement is A8's frozen deferral, not reopened here.
+hard scope enforcement is A8's deferral, not reopened here.
 
 ## Alternatives considered
 
@@ -419,7 +419,7 @@ Every task below inherits these; they are not repeated per task.
   compass-agent:lint`), tests via `compass-agent:test`, markdownlint for this
   record (MD013 disabled repo-wide).
 - **Frozen-record convention:** this record freezes on merge; later changes
-  supersede by citation. It consumes — never re-decides — the frozen
+  supersede by citation. It consumes — never re-decides — the
   transport record (DL-015/016/017), the forge write path (DL-200…DL-206),
   DL-049 (sibling `ForgeCall*` family), DL-050/DL-052 (stamping/credentials),
   DL-069/DL-092 (canonical types on the wire), and DL-202 (ForgeRef

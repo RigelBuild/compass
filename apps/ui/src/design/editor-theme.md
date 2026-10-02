@@ -3,7 +3,7 @@
 The embedded code editor and any Shiki-highlighted content share the chrome
 palette: syntax on the `--cx-ed-*` semantic tokens resolves to the same Night
 Owl primitives the surrounding UI uses, so an editor pane is indistinguishable
-in palette from the chrome around it (frozen record D8).
+in palette from the chrome around it (design record D8).
 
 This side owns **the palette mapping** — the `--cx-ed-*` token set in
 `tokens.css` and the resolved Shiki theme artifact. Wiring the theme into an

@@ -1369,7 +1369,7 @@ test("F3: abandoning the for-await (iterator return()) aborts the pump AND cance
 
 // What DOES discriminate them is the source's OUTBOUND behaviour: how many times it opens `Control`
 // and the AbortSignal it threads into each open. Both are public surface (`transport` is an
-// injected collaborator of the frozen C4 factory), so observing them is black-box. This wraps a
+// injected collaborator of the C4 factory), so observing them is black-box. This wraps a
 // real transport to report:
 
 //   - control() call count, counted CLIENT-side, so a re-open with an already-aborted signal still

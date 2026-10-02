@@ -138,7 +138,7 @@ type ConfigMount struct {
 // container's MCS category AFTER writing and BEFORE the flip, or a confined agent
 // gets EACCES.
 //
-// The mcsLabel parameter resolves a contract point: the frozen record's prose
+// The mcsLabel parameter resolves a contract point: the design record's prose
 // puts the chcon inside Materialize on the update path only, between unpack and
 // the flip, but the literal Materialize(ctx) signature can't distinguish
 // provision from update — so the label is threaded as a parameter (empty =

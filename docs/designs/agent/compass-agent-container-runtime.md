@@ -134,7 +134,7 @@ a parallel path:
   subscribes its SDK event stream … consumes decoded `AgentControl` ops from
   the ControlSource and drives the SDK (`prompt`/`steer`/`setTools`/
   `setSystemPrompt`)" (`packages/compass-agent/src/agent.ts:3-7`).
-  The frozen control oneof is
+  The control oneof is
   `{prompt; steer; ask_answer; config; replay; replay_complete}`
   (`src/control.ts:6-12`); the typed domain union lives at `control.ts:30-53`;
   outbound frames ride `FrameSink` (`src/frame.ts:50-52`). This is the
@@ -154,14 +154,14 @@ a parallel path:
   `AuthStorage` manager over it (`constructor(store: AuthCredentialStore, …)`,
   `auth-storage.d.ts:596-604`), and the SQLite-backed
   `SqliteAuthCredentialStore` (`auth-storage.d.ts:1064-1067`).
-- **Transport spine** — Runner↔Server is the frozen internal `RunnerService`:
+- **Transport spine** — Runner↔Server is the internal `RunnerService`:
   "container lifecycle commands **and** Server→Runner config-version signals
   ride the `Sessions` bidi stream (the only Server→Runner path); agent events
   ride `PublishEvents` (Runner→Server only)"
   (`compass-0.6/design.md:960-966`). Note: `RunnerService` is **designed, not
   yet in the Go tree** (grep of `go` for
   `RunnerService|FetchSecrets|Sessions|Enroll` this run: no Go handler
-  matches; the wire shape is frozen in
+  matches; the wire shape is specified in
   `docs/designs/platform/go-toolchain-default.md:905-981`, T8). The
   secret-fetch surface below is a delta on that held contract, not on live
   code.
@@ -371,7 +371,7 @@ Where a secret lands determines how it rotates:
   `secretsChanged`, carrying the rotated secret names, never values). The
   control seam is built for exactly this: the agent consumes decoded
   `AgentControl` ops from stdin and drives the SDK (`agent.ts:3-7`; union at
-  `control.ts:30-53`). The frozen oneof has six variants (`control.ts:6-12`),
+  `control.ts:30-53`). The oneof has six variants (`control.ts:6-12`),
   so a seventh is an **additive contract delta held for review** —
   `AgentControl` is deliberately not yet in the generated proto
   (`proto/compass/v1/agent.proto:73-85`: "It is deliberately NOT
@@ -859,7 +859,7 @@ ride the seed), so the restart is a per-case call, not an automatic step.
     `CompassAgent.#applyControl` re-reads/announces per name (names only,
     never values).
   - Proto (held for review, additive): a seventh `AgentControl` oneof
-    variant `SecretsChanged secrets_changed = 7` — an amendment to the frozen
+    variant `SecretsChanged secrets_changed = 7` — an amendment to the
     six-variant oneof (`control.ts:6-12` — authoritative; the
     `agent.proto:73-85` comment is stale, listing five variants — OQ4).
   - Go (Runner): `func (m *SecretMaterializer) Rotate(ctx context.Context, handle *AgentHandle, fresh []secrets.ResolvedSecret) (changedFiles, removedFiles []string, needsRestart bool, err error)`.
@@ -1083,8 +1083,8 @@ above, not re-opened here.
    per-call semantics (`agent.d.ts:66-70`) give live rotation either way.
    The sqlite store remains the natural upgrade when OAuth credentials
    (refresh state) arrive.
-4. **`SecretsChanged` amends a frozen oneof** (load-bearing for T6): the
-   `AgentControl` contract is frozen at six variants (`control.ts:6-12` —
+4. **`SecretsChanged` adds a seventh oneof variant** (load-bearing for T6): the
+   `AgentControl` contract has six variants (`control.ts:6-12` —
    the authoritative statement; the `agent.proto:73-85` comment lists only
    five variants, missing `ask_answer`, and is stale — flag it for
    correction in the impl PR); this record needs a seventh. The proto

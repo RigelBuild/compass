@@ -2,13 +2,13 @@
 
 Tracking: RIG-2863 (parent RIG-1715)
 
-Addendum to the frozen record
+Addendum to the merged record
 [`compass-server-llm-gateway`](./compass-server-llm-gateway/design.md)
 (§Credential storage and rotation, L312–373). Scope: encryption-at-rest for the
 `gateway_credentials` value store ONLY. This record does not re-open the
 store's shape, the CAS `version` discipline, the scope column, the
-RPC-vs-Postgres-direct wiring, or the stack-token channel — those stay as the
-frozen record decided. Ships as its own PR; frozen on merge; the
+RPC-vs-Postgres-direct wiring, or the stack-token channel — those stay as
+that record decided. Ships as its own PR; frozen on merge; the
 credential-store build proceeds against it.
 One deliberate scope expansion, Matt-ruled (D6/T0): server-only secrets get a
 physically SEPARATE `server_secrets` store (mechanism C1) — a new table plus
@@ -36,7 +36,7 @@ invariant. The invariant it breaks is stated at
 > "Values live only in the provider and this process's memory during a
 > resolve; they are never persisted by Compass and never logged."
 
-The frozen record specifies the new store's shape ("api_key and OAuth-shaped
+The gateway record specifies the new store's shape ("api_key and OAuth-shaped
 payloads (access/refresh/expiry), a monotonic `version` per row supplying the
 CAS substrate, and a scope column", design.md:324-326) but says nothing about
 encryption at rest. A security red-team flagged this HIGH (CWE-311/312/522/532):
@@ -975,7 +975,7 @@ is declared into it) and T1.
 
 ### T3 — Schema: ciphertext columns on gateway_credentials
 
-The `gateway_credentials` migration (owned by the store build the frozen
+The `gateway_credentials` migration (owned by the store build the gateway
 record plans) carries, for the value payload:
 
 - `Interfaces:` columns `value_ciphertext BYTEA NOT NULL`,
@@ -1001,10 +1001,10 @@ record plans) carries, for the value payload:
 
 Every write path (initial credential save, gateway OAuth-refresh write-back
 per design.md:367-371) seals before INSERT/UPDATE; every read path opens
-after SELECT. This sits server-side under the RPC surface the frozen record
+after SELECT. This sits server-side under the RPC surface the gateway record
 recommends (design.md:348-358), so the TS gateway never sees the key or the
 crypto — it receives plaintext credentials over the stack-token-authenticated
-RPC exactly as the frozen record already specifies.
+RPC exactly as the gateway record already specifies.
 
 - `Interfaces:` the store's credential accessors take/return the decrypted
   payload type (per D5: secret fields unexported with accessors, or
@@ -1017,7 +1017,7 @@ RPC exactly as the frozen record already specifies.
   identity, never the CAS `version` counter (which increments per write).
   Without AAD an attacker with DB write access can swap two rows'
   ciphertext+nonce pairs and both still authenticate — a cross-tenant
-  credential substitution crossing exactly the boundary the frozen record
+  credential substitution crossing exactly the boundary the gateway record
   names ("the isolation boundary is the per-tenant pool scoping enforced
   server-side", design.md:333-337). Writes stamp the current `key_version`;
   reads select the key by the row's `key_version` (v1: single live key — a

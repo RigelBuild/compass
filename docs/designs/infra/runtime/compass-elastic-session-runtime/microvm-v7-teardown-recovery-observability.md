@@ -9,13 +9,13 @@ per-child core V7's death detection rides is #912's shape, cited below from
 its workspace; V7 must land after V6 merges.
 
 Ledger impact: none. V7 details failure handling and metrics the parent's
-§(f)/(g) already froze — "the backend supervises its per-session process set
+§(f)/(g) already set — "the backend supervises its per-session process set
 (VMM, virtiofsd, net backend, guest …)" (microvm-runner.md:240-241), "Healthy
 VMs found at restart are **killed and rebooted on next request, not adopted**"
 (microvm-runner.md:258-259) — plus a metric-naming translation (§(d)) that is
 an implementation-convention fact, not a new cross-cutting decision. There is
 no `DECISIONS.md` under `docs/designs/infra/` (V5's precedent), and
-`docs/designs/DECISIONS.md` is untouched. Two rulings DO land on that frozen
+`docs/designs/DECISIONS.md` is untouched. Two rulings DO land on the parent's
 supervised-set sentence rather than merely detailing it — the guest (OQ-10)
 and the net backend (OQ-6) both leave V7's session-fatal handling — and both
 are graded load-bearing and carried to the human for an explicit ruling
@@ -670,7 +670,7 @@ session down "through the AgentRuntime (stop + remove + deregister)",
 stage "stop", `Remove` would never be reached, and the session-table entry
 and its runtime dir would leak PERMANENTLY — the one state the whole
 reap-and-teardown design exists to prevent, reachable through the ordinary
-API. It would also contradict three things at once: the frozen parent's
+API. It would also contradict three things at once: the parent's
 "`Remove` is idempotent on an already-dead VM" (microvm-runner.md:248), the
 "Idempotent Remove, unchanged" paragraph above, whose premise is that a dead
 session removes cleanly, and today's deliberately tolerant `Stop`, which
@@ -715,7 +715,7 @@ of that one sentence, and both are surfaced:
   — it does not set `deadCause`, does not call `vm.Shutdown`, and does not
   make the session refuse anything. `DeathWatch` therefore no longer closes
   after one send; see its contract above. The fatality ruling is OQ-6
-  (load-bearing: it rules on frozen text), and the body designs against its
+  (load-bearing: it rules on the parent's text), and the body designs against its
   recommendation, matrix-literal non-fatality WITH observation.
 - **The guest.** `DeathWatch` observes host children only, so a guest that
   kernel-panics and hangs under a live VMM is a zombie session nothing
@@ -759,10 +759,10 @@ nil-guarded and off the hot path's critical section.
 | `compass.microvm.orphans.reaped` | Int64Counter | `{process}` | `process` = `vmm`\|`virtiofsd`\|`passt`, `outcome` = `killed`\|`possibly_live` | Orphan processes killed by `ReapOrphans`; the `possibly_live` series counts §(b) step 3's dangling-intent arm, where a child may be running with no pid on disk |
 | `compass.microvm.peer.deaths` | Int64Counter | `{death}` | `process` = `passt` | Non-fatal peer-daemon deaths observed by the session monitor (§(c)): the net backend's death is reported, never a teardown |
 
-The PSS gauge is fleet-summed per process kind while the parent's frozen
+The PSS gauge is fleet-summed per process kind while the parent's
 line reads "per-VM RSS" (microvm-runner.md:266) — whether that sentence
 means the aggregate or a per-VM series is OQ-9 (load-bearing, a ruling on
-frozen text). The body assumes OQ-9's recommendation: the aggregate gauge
+the parent's text). The body assumes OQ-9's recommendation: the aggregate gauge
 stays, per-session PSS rides a low-frequency INFO log line (logs are exempt
 from the cardinality rule, below), and V8's benchmark sources per-VM
 numbers from the harness calling `PSS()` directly, never from a metric.
@@ -932,7 +932,7 @@ about instrument validity.
   "the supervisor handshake state is in-process and not reconstructable
   across a Runner restart" (microvm-runner.md:258-261) — the exec-gate nonce
   binding, the `guestVM` seam handle, and the reaper channels all live in the
-  dead process. Rejected without an OQ; the parent froze it.
+  dead process. Rejected without an OQ; the parent's reason still holds.
 - **Keep passt's `--pid` self-written pidfile and host-write only the other
   two** ((a)). Two formats in one dir, and passt's bare-pid file cannot carry
   the starttime the reuse defense needs — the reaper would have a
@@ -993,7 +993,7 @@ about instrument validity.
   per-session copy of a constant is drift surface with no reader. Rejected.
 - **Restart a dead virtiofsd under a live VM** ((c)). "no remount-and-hope"
   (microvm-runner.md:249-251): the guest's mount is stale and the handshake
-  state unprovable; the parent froze fatal-to-the-session. Rejected.
+  state unprovable; the parent ruled fatal-to-the-session. Rejected.
 - **Prometheus-style underscore metric names** ((d)). The parent's names are
   illustrative; the codebase convention is dotted OTel through the global
   meter (`consumer.go:269-272`). An executor following the parent literally
@@ -1088,7 +1088,7 @@ Every task below inherits these.
   message changes; the one shared touchpoint (the `backend`-labelled session
   counter in the Runner host) reads the backend name through an unexported
   probe and changes no podman behavior.
-- **Frozen `WorkloadRuntime` interface untouched.** `ReapOrphans` and the
+- **`WorkloadRuntime` interface untouched.** `ReapOrphans` and the
   backend-name probe are `*MicroVMRuntime` methods / unexported interface
   assertions — the V3/V4-ratified single-method-probe discipline
   (`main.go:185-203`).
@@ -1512,7 +1512,7 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
     (W2) is the `reap` hook;
   - `go/internal/runtime`: `func (m *MicroVMRuntime) BackendName() string { return "microvm" }`
     and `func (p *PodmanCLI) BackendName() string { return "podman" }` —
-    NOT on the frozen interface;
+    NOT on the `WorkloadRuntime` interface;
   - `go/internal/runner/host.go`: `agentHost` resolves the backend name
     once at construction via `interface{ BackendName() string }` (unknown ⇒
     `"unknown"`, never a per-call probe) and mints
@@ -1635,7 +1635,7 @@ recommendation.
   form — not a fourth file), and `<RunRoot>/microvm/.runner.lock` sits
   beside the per-session dirs as the Runner-scoped `flock` target (§(b)
   step 0). **Recommendation:** ratify all of it as (benign,
-  naming/dead-file/mechanism) deviations from a sketch, not from a frozen
+  naming/dead-file/mechanism) deviations from a sketch, not from a ruled
   behavior.
 - **OQ-2 (load-bearing) — "every existing session metric gains a `backend`
   label" is vacuous today; V7 mints the first such metric instead.** A
@@ -1671,7 +1671,7 @@ recommendation.
   of `selectEngine`; keep instrument creation at construction time, with no
   lazy-on-first-record path (§(d) states the single posture).
 - **OQ-4 (non-load-bearing) — the parent's "virtiofsd restarts" metric is
-  translated to a teardown-cause series.** Under §(f)'s frozen
+  translated to a teardown-cause series.** Under §(f)'s
   fatal-no-restart posture (microvm-runner.md:249-251) a virtiofsd death is
   a session teardown, never a restart, so a restart counter would be
   constant zero by design. `compass.microvm.teardowns{cause=virtiofsd_death}`
@@ -1695,12 +1695,12 @@ recommendation.
   reap is what the lock prevents, and refusing startup over a
   still-draining predecessor would be the box outage this option rejects.
 - **OQ-6 (LOAD-BEARING) — the net backend leaves the parent's supervised
-  set; this rules on frozen text.** State the divergence plainly, because
+  set; this rules on the parent's text.** State the divergence plainly, because
   it is larger than a fatality question: the parent's §(f) preamble
   supervises the per-session process set including the "net backend"
   (microvm-runner.md:240-241), and V7 removes passt from session-FATAL
   handling entirely. That is the same class of change as OQ-10's dropping
-  the guest — the other member of that one frozen sentence — which this
+  the guest — the other member of that one parent sentence — which this
   record grades load-bearing and sends to the human; grading passt lower
   was an inconsistency, and it is corrected here.
 
@@ -1719,8 +1719,8 @@ recommendation.
   session down (§(c), §(d)).
 
   Options: (i) matrix-literal non-fatal, WITH the observation arm (what
-  the body designs against); (ii) extend the frozen matrix and treat passt
-  as fatal too (symmetric with virtiofsd, but widens frozen text and
+  the body designs against); (ii) extend the parent's matrix and treat passt
+  as fatal too (symmetric with virtiofsd, but widens the matrix and
   converts a degraded session into a killed one); (iii) non-fatal and
   unobserved (what an earlier draft implied — rejected here as removing
   passt from the supervised set outright). **Recommendation:** (i); revisit

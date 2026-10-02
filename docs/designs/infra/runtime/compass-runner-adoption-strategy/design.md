@@ -14,7 +14,7 @@ Owner: compass-obs (design) → compass-runner (impl, runtime/sequencing)
 
 ## Problem / Intent
 
-The runtime corpus froze a microVM trajectory (DL-259 self-host KVM stack,
+The runtime corpus set a microVM trajectory (DL-259 self-host KVM stack,
 the KVM-only no-fallback amendment, DL-235 client-only app) while podman
 remains the shipping production default, and the adoption question — how a
 new user actually gets onto Compass — was never written down as a contract.
@@ -77,7 +77,7 @@ KVM-machine clause (DL-259), records the deferred reversal of a second
   same podman tier — and defers the whole app-architecture reversal
   (un-retiring supervision, config, bundle) to that record.
 - **The KVM-only amendment is AMENDED with a self-host carve-out.** This
-  record reopens a frozen decision, and says so honestly: the amendment
+  record changes an earlier ruling: the amendment
   ruled that "the runtime is KVM-only" with no degrade-to-container
   fallback, and that "A KVM-absent host does not get a lesser boundary; it
   does not run" (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-kvm-only-amendment.md:96-97`).
@@ -92,10 +92,10 @@ KVM-machine clause (DL-259), records the deferred reversal of a second
   who don't want to pay a kvm premium"). A pointer-amendment in the
   KVM-only amendment's own directory
   (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-self-host-carveout-amendment.md`)
-  records this carve-out beside the frozen amendment it amends, so a reader
+  records this carve-out beside the amendment it amends, so a reader
   grounding there is not left with a silent absolute.
 
-The elastic-session record already froze the transitional container path
+The elastic-session record already set the transitional container path
 that an untrusted-multi-tenant deployment eventually removes in favor of
 microVM-only
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md:403-405`:
@@ -116,7 +116,7 @@ maturing (the V-series work). The engineering invariant is that Compass
 never ships without a working runner — the proven backend stays the floor
 until a replacing backend clears a stated production-readiness bar (OQ-1).
 
-**An untrusted-multi-tenant deployment ends at microVM-only.** The frozen
+**An untrusted-multi-tenant deployment ends at microVM-only.** The
 corpus already fixes that end state (`microvm-runner.md:403-405`, quoted
 above); when and how a hosted multi-tenant service sequences its move off
 the transitional container path is a managed-plane rollout decision, out of
@@ -165,7 +165,7 @@ Grounding the current state:
   spawned. Everything above depends on the interface"), backend selection is
   constructor-time (`go/internal/runtime/microvm.go:117`:
   `func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error)`), and
-  the frozen record pins byte-identical container behavior during
+  the microVM runner record pins byte-identical container behavior during
   coexistence
   (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md:397-402`:
   "While both backends coexist (D2), selecting the container backend yields
@@ -197,7 +197,7 @@ the single-tenant case in its purest form — there is no untrusted tenant
 to isolate, so the podman boundary that is legitimate on a self-host box
 is equally legitimate locally. And on the user's own box, restricted-tier
 subscription sign-in is allowed (their box, their IP, their risk, the
-frozen RIG-3050 posture) — a zero-friction on-ramp for a user who signs in
+RIG-3050 posture) — a zero-friction on-ramp for a user who signs in
 with an existing subscription.
 
 The always-on-server argument survives as the GRADUATION motivation, not
@@ -231,7 +231,7 @@ removes the KVM premium at the self-host front door — cheap VPS tiers
 mostly do not expose `/dev/kvm`, and a single-tenant operator gains little
 from a hardware boundary that exists to isolate untrusted tenants. The
 standing two-backend maintenance surface is the acknowledged price, bounded
-by the frozen `WorkloadRuntime` seam and the now-permanent byte-identical
+by the shared `WorkloadRuntime` seam and the now-permanent byte-identical
 parity constraint.
 
 ### Guided onboarding: embedded-local front door, then self-host
@@ -351,7 +351,7 @@ task (T2), not frozen prose here.
   (`go/internal/runtime/microvm.go:110-113`) — and, per the trust-model
   split, stays permanently for self-host.
 - **Other runtime backends behind the seam — deferred, not declined-forever.**
-  The `WorkloadRuntime` interface is frozen precisely so a new backend is one
+  The `WorkloadRuntime` interface exists so a new backend is one
   `SelectBackend` case plus an implementation, no caller churn
   (`go/internal/runtime/podman.go`: "Everything above depends on the
   interface, so a libpod-REST backend can replace it without touching a
@@ -374,7 +374,7 @@ task (T2), not frozen prose here.
     a separate concern from this record's per-session runner backend and
     Linux/systemd-only (no bearing on the macOS front door). Its own
     follow-up.
-  - **A generic Docker socket backend** — declined for now, not frozen out:
+  - **A generic Docker socket backend** — declined for now, not ruled out:
     it is the daemon model against this substrate's hard rootless/no-daemon
     invariant (`podman.go`: "Rootless is a hard requirement … no daemon, no
     root, no rootful fallback"), and Docker has no `--userns=keep-id:uid=`
@@ -430,7 +430,7 @@ in this record.
 ### T1 — microVM production-readiness bar + the microVM-only pinning path
 
 - **Owner:** compass-runner (runtime lane).
-- **Do:** freeze the checklist (proposed bar in OQ-1) that certifies the
+- **Do:** settle the checklist (proposed bar in OQ-1) that certifies the
   microVM backend production-ready. The microVM-only pinning path this
   record called for has since landed in the runtime lane and is **consumed
   here, not built here**: `verifyBackendPreflight`
@@ -458,13 +458,13 @@ in this record.
   (`go/cmd/compass-stack/preflight.go`). This is the green-preflight
   deliverable that §Guided onboarding names as T1's, and on which T2's
   podman-tier `preflight` instructions are blocked until it lands.
-- **Interfaces:** consumes the frozen `WorkloadRuntime` interface and
+- **Interfaces:** consumes the `WorkloadRuntime` interface and
   `SelectBackend(cfg BackendConfig) (WorkloadRuntime, error)`
   (`go/internal/runtime/microvm.go:117`); consumes the landed startup
   preflight surface (`verifyBackendPreflight`, above) and the microVM e2e/CI
   suites
   (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md`).
-  Produces the frozen OQ-1 readiness bar.
+  Produces the ruled OQ-1 readiness bar.
 - **Deps:** the microVM V-series tasks in
   `compass-elastic-session-runtime/` reaching the OQ-1 bar — the
   pinning/preflight waves owned by
@@ -507,7 +507,7 @@ in this record.
 
 ## Tasks
 
-- [ ] **T1** Readiness bar frozen (OQ-1 ruled). The microVM-only pinning
+- [ ] **T1** Readiness bar set (OQ-1 ruled). The microVM-only pinning
   path (backend pinned behind the `VerifyMicroVMSupport` startup hard gate)
   and the podman/microVM preflight split have already landed in the runtime
   lane — consumed here, not built here; podman backend retained permanently

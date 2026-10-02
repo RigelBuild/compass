@@ -52,7 +52,7 @@ as a *requirement*; it does not establish that a `drop: ["ALL"]` +
 host-rootless model silently assumed.
 
 **This is a grant-tuning question, not a feasibility one.** The composition is
-already verified to boot on Linux with `/dev/kvm`: the frozen
+already verified to boot on Linux with `/dev/kvm`: the
 [microVM CI/dev enablement](../../infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md)
 record runs KVM-backed boot tests as a required leg on GitHub Actions'
 `ubuntu-latest`. What a pod adds over that environment is confinement — a
@@ -149,7 +149,7 @@ verification.
 
   One filesystem grant IS required. **[INFERENCE]** `/dev/kvm` is typically
   `root:kvm 0660` — **measured `crw-rw---- root:kvm` on the compass dev box
-  (2026-09-12)**, which supersedes the `crw-rw-rw-` reading in the frozen
+  (2026-09-12)**, which supersedes the `crw-rw-rw-` reading in the
   microVM CI/dev enablement record; the grant is inert under a world-readable
   mode and required under `0660`, so R7 must record the node's actual mode —
   and device injection grants a *cgroup allowance*, not
@@ -470,7 +470,7 @@ record already anticipates.
 
 The ruling *would* reopen only if some component required a Linux **capability**
 or `privileged: true`. No mechanism in the composition is known to: cloud-
-hypervisor, virtiofsd and passt are ordinary user binaries by the frozen
+hypervisor, virtiofsd and passt are ordinary user binaries by the
 runtime record's Global Constraint. Treat that as the low-probability tail, not
 the expected case.
 

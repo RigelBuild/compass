@@ -2,7 +2,7 @@
 
 package runtime
 
-// Fills the eight MicroVMRuntime lifecycle verbs behind the frozen
+// Fills the eight MicroVMRuntime lifecycle verbs behind the
 // WorkloadRuntime signatures. //go:build unix because the microvm package it
 // drives is unix-only; the untagged runtime package still type-checks backend
 // selection everywhere.
@@ -414,7 +414,7 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id WorkloadID) error {
 // before the exec gate opens (§(b)/(c)). AgentRuntime.provision probes for this
 // marker (the unexported inGuestEgressArmer, agent.go) and skips its host-side
 // armEgress exec — which on this backend would run capability-less and fail.
-// Deliberately NOT a verb on the frozen WorkloadRuntime interface (podman.go).
+// Deliberately NOT a verb on the WorkloadRuntime interface (podman.go).
 func (m *MicroVMRuntime) EgressArmedInGuest() bool { return true }
 
 // awaitHealthy polls the guest's Health until it reports net_provisioned &&
@@ -689,7 +689,7 @@ func (m *MicroVMRuntime) Exists(_ context.Context, name string) (bool, error) {
 // the session's own vsock socket base and the fixed gateway port (record
 // §(b)/§(c)/§(e)). An unknown name returns ("", false). It keys on spec.Name
 // like Exists, so the Runner's stable handle resolves. Deliberately NOT a verb
-// on the frozen WorkloadRuntime interface: agentHost probes for it via an
+// on the WorkloadRuntime interface: agentHost probes for it via an
 // unexported single-method assertion, so the podman backend (which lacks it) is
 // unaffected (record §(c), Global Constraints).
 func (m *MicroVMRuntime) AgentGatewayEndpoint(name string) (string, bool) {
@@ -713,7 +713,7 @@ func (m *MicroVMRuntime) MountLabel(_ context.Context, _ WorkloadID) (string, er
 }
 
 // Resize mirrors PodmanCLI.Resize: it returns the shared ErrResizeNotImplemented
-// sentinel until C3 fills in resize-in-place behind the S1-frozen seam (the
+// sentinel until C3 fills in resize-in-place behind the reserved seam (the
 // C3/D5 deferral, record §(c)). It is not a microVM-specific unimplemented
 // verb, so it shares the podman backend's sentinel.
 func (m *MicroVMRuntime) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) error {

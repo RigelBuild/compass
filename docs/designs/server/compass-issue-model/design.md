@@ -49,7 +49,7 @@ layers deep:
   replacing the local `Workstream` shape.
 
 The attribution semantics the server implements at ingestion are already
-frozen: PR #995 (`compass-server-ownership-layer/design.md`, Status: Active,
+decided: PR #995 (`compass-server-ownership-layer/design.md`, Status: Active,
 design.md:3) defines the owner-header discipline — the `compass:owner` header
 stamped at one chokepoint on write, parsed and stripped from the body on read,
 with the parsed result treated as untrusted display metadata (DL-050; #995
@@ -60,7 +60,7 @@ the Compass machinery the canonical types add. And #995 is **entirely unbuilt
 in code today** (its own preconditions record "zero existing forge
 integration", #995 design.md:194-195; no forge message exists under
 `proto/compass/v1/` — verified by grep this run), so this record designs
-against #995's frozen attribution **semantics**, with a fixture seeding
+against #995's attribution **semantics**, with a fixture seeding
 canonical-shaped objects until the server ingestion and RPCs land.
 
 This record is that delta: the canonical `compass.v1` `Issue`/`PullRequest`
@@ -361,7 +361,7 @@ Two things to be precise about, because the existing projection is a
 - **Distinct state axes.** `board.Projection` projects `AgentSessionStatus` —
   the agent *process* lifecycle (STARTING/READY/WORKING/…,
   compass.proto:169-180) — and "adds no proto surface" (projection.go:8-9)
-  because it reuses that frozen payload. The issue projection projects the
+  because it reuses that existing payload. The issue projection projects the
   issue lifecycle (Backlog→…→Done→Archived, DL-033 + DL-091) — a different axis on a
   different object — and therefore DOES add proto surface: the canonical
   messages above. One session key = one agent; one canonical Issue = one
@@ -437,7 +437,7 @@ of the machinery fields (all server-side, so the UI reads finished truth):
   priority field, else defaulted; there is no separate priority editor in
   v1. Wire type: `string`
   (`"urgent" | "high" | "medium" | "low"`), NOT deferred — a candidate enum
-  is a future additive tightening, but v1 freezes `string` so the contract is
+  is a future tightening, but v1 uses `string` so the contract is
   complete.
 - `assignee` — set by the Dispatcher/agent-session binding server-side (the
   agent working the issue); empty when unassigned. Distinct from `agent`
@@ -682,7 +682,7 @@ separate field (`forge_account`), which the `verified` cross-check reads.
 - **Which PR the card renders.** An issue now carries `repeated prs`, so the
   card/board summary and the Done row render the issue's **primary PR** via one
   total selector, shared by the card, DoneView, and the RightSidebar PR pane.
-  Its precedence is frozen here (no PR timestamp exists on the wire — the
+  Its precedence is set here (no PR timestamp exists on the wire — the
   no-64-bit sweep removed them — so selection is by open-ness and `prs`
   ordering, not recency): the first `OPEN` PR in `prs` order, else the first
   `MERGED`, else the last element. `prs` ordering is a server contract —
@@ -1004,7 +1004,7 @@ identically.
   the separate `forge_account` field.
 - **Extends #995's semantics, never rewrites them.** The owner-header
   stamp/parse discipline, the untrusted-metadata rule, and the DL-055
-  ownership index are #995's frozen decisions and this record builds on them
+  ownership index are #995's decisions and this record builds on them
   unchanged. #995's earlier sketch of forge-proxy proto messages is
   reconciled to this model in a sibling amendment to that record; this record
   depends on no forge proto message existing.
@@ -1015,7 +1015,7 @@ identically.
   pattern, the store-context read path, and the fixture-seam convention
   (tracker.ts:19-23, store.ts:426-430).
 - **Additive proto only:** new messages, oneof variants, and RPCs behind the
-  buf breaking gate (compass.proto:116-117); no frozen payload changes.
+  buf breaking gate (compass.proto:116-117); no changes to existing payloads.
 - **No functionality regression — with four carve-outs, all forced by Matt's
   corrections.** Board, Backlog/promote, Done/archive, tracker projection, and
   the Settings mapping editor otherwise behave identically. The four
