@@ -49,8 +49,15 @@ type Comment struct {
 	Body string `json:"body"`
 }
 
-// AgentActivity carries the activity body on prompt-style events.
+// AgentActivity is the activity on prompt-style events. Linear's
+// AgentActivityWebhookPayload nests the user's text at content.body.
 type AgentActivity struct {
+	Content ActivityBody `json:"content"`
+}
+
+// ActivityBody is the "prompt" content of a user-authored activity.
+type ActivityBody struct {
+	Type string `json:"type"`
 	Body string `json:"body"`
 }
 

@@ -301,7 +301,7 @@ func linE2ESessionBody(t *testing.T, action, sessionID string, issue linearagent
 		AgentSession:     linearagent.AgentSession{ID: sessionID, Issue: issue},
 	}
 	if action == "prompted" {
-		ev.AgentActivity.Body = text
+		ev.AgentActivity.Content.Body = text
 	} else {
 		ev.PromptContext = text
 	}

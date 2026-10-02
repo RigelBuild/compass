@@ -230,7 +230,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 	row, err := d.assoc.LinearAgentSession(ctx, ev.AgentSession.ID)
 	switch {
 	case err == nil:
-		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Body, clientRequestID(ctx, ev))
+		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Content.Body, clientRequestID(ctx, ev))
 	case errors.Is(err, store.ErrNotFound):
 		manager, homeChannel, resErr := d.resolve(ctx, ev)
 		if resErr != nil {
@@ -252,7 +252,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 		}); upErr != nil {
 			return upErr
 		}
-		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Body, clientRequestID(ctx, ev))
+		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Content.Body, clientRequestID(ctx, ev))
 	default:
 		return err
 	}

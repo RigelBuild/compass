@@ -326,7 +326,7 @@ func TestDispatcherPromptedFollowUp(t *testing.T) {
 		Action:        "prompted",
 		DeliveryID:    "delivery-2",
 		AgentSession:  AgentSession{ID: "sess-1"},
-		AgentActivity: AgentActivity{Body: "the follow-up prompt"},
+		AgentActivity: AgentActivity{Content: ActivityBody{Body: "the follow-up prompt"}},
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 		Action:        "prompted",
 		DeliveryID:    "delivery-9",
 		AgentSession:  AgentSession{ID: "sess-orphan"},
-		AgentActivity: AgentActivity{Body: "orphaned follow-up"},
+		AgentActivity: AgentActivity{Content: ActivityBody{Body: "orphaned follow-up"}},
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
