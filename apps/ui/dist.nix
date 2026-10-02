@@ -2,6 +2,9 @@
   pkgs,
   lib,
   version,
+  # A deployment that serves the UI on a different origin from the door bakes
+  # the door here; null keeps the default of resolving it at boot.
+  baseUrl ? null,
 }:
 # The Compass web UI (`apps/ui`) built to a static `dist/` in the nix store —
 # the `compass-ui:build` moon task's output (`bunx vite build`, `apps/ui/moon.yml`
@@ -222,8 +225,7 @@ let
   # nonexistent path and a clean checkout has run neither `bun install` nor a
   # build.
   # Matches `.env`, `.env.local`, `.env.development`, … anywhere in the tree.
-  dotenvFiles =
-    dir: lib.fileset.fileFilter (f: lib.hasPrefix ".env" f.name) dir;
+  dotenvFiles = dir: lib.fileset.fileFilter (f: lib.hasPrefix ".env" f.name) dir;
 
   uiSrc = lib.fileset.toSource {
     root = ./.;
@@ -312,6 +314,7 @@ pkgs.runCommand "compass-ui-${version}"
     # them at boot instead of baking a wrong one. `--mode production` states the
     # intent explicitly since this lane does not go through `bunx`.
     unset VITE_COMPASS_BASE_URL VITE_COMPASS_TOKEN
+    ${lib.optionalString (baseUrl != null) "export VITE_COMPASS_BASE_URL=${lib.escapeShellArg baseUrl}"}
     bun ../../node_modules/vite/bin/vite.js build --mode production
     cd ../..
 
