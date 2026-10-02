@@ -1014,6 +1014,95 @@ func TestVolumeLockSurvivesAReap(t *testing.T) {
 // pins that acquiring a lock creates NOTHING inside the volume root. A
 // lockVolume that resurrected the metadata dir inside a reaped root would make
 // Attach's under-lock existence check see a live volume with no contents.
+func TestExpireReclaimsOrphanLockFilesOnlyWhenUncontended(t *testing.T) {
+	m := newManager(t)
+	makeLock := func(id string) Volume {
+		v := mustCreate(t, m, id)
+		l, err := tryLockVolume(t.Context(), v.HostRoot)
+		if err != nil || l == nil {
+			t.Fatalf("lock %s: %v", id, err)
+		}
+		if err := l.release(); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	a := makeLock("sess-lock-orphan-a")
+	if err := os.RemoveAll(a.HostRoot); err != nil {
+		t.Fatal(err)
+	}
+	b := makeLock("sess-lock-orphan-b")
+	c := makeLock("sess-lock-orphan-c")
+	if err := os.RemoveAll(c.HostRoot); err != nil {
+		t.Fatal(err)
+	}
+	held, err := tryLockVolume(t.Context(), c.HostRoot)
+	if err != nil || held == nil {
+		t.Fatalf("hold c: %v", err)
+	}
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, a.HostRoot+lockFileSuffix) {
+		t.Fatal("orphan lock A remains")
+	}
+	if !exists(t, b.HostRoot) || !exists(t, b.HostRoot+lockFileSuffix) {
+		t.Fatal("live lock B was reclaimed")
+	}
+	if !exists(t, c.HostRoot+lockFileSuffix) {
+		t.Fatal("contended lock C was reclaimed")
+	}
+	if err := held.release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, c.HostRoot+lockFileSuffix) {
+		t.Fatal("uncontended orphan C remains")
+	}
+}
+
+func TestReapLeavesNoOrphanLockInTheCommonCase(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-lock-reap")
+	l, err := tryLockVolume(t.Context(), v.HostRoot)
+	if err != nil || l == nil {
+		t.Fatalf("lock: %v", err)
+	}
+	if err := l.release(); err != nil {
+		t.Fatal(err)
+	}
+	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, v.HostRoot) || exists(t, reapingPath(v.HostRoot)) || exists(t, v.HostRoot+lockFileSuffix) {
+		t.Fatal("reap left root, leftover, or lock")
+	}
+}
+
+func TestExpireReclaimsTheLockAfterSweepingALeftover(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-lock-leftover")
+	l, err := tryLockVolume(t.Context(), v.HostRoot)
+	if err != nil || l == nil {
+		t.Fatalf("lock: %v", err)
+	}
+	if err := l.release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(v.HostRoot, reapingPath(v.HostRoot)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, reapingPath(v.HostRoot)) || exists(t, v.HostRoot+lockFileSuffix) {
+		t.Fatal("leftover or orphan lock survived sweep")
+	}
+}
+
 func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-lock-placement")
@@ -1069,5 +1158,8 @@ func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 	}
 	if exists(t, live.HostRoot) {
 		t.Error("Expire did not reap the eligible volume")
+	}
+	if exists(t, live.HostRoot+lockFileSuffix) {
+		t.Error("Expire left the reclaimed volume lock")
 	}
 }

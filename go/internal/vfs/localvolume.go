@@ -37,7 +37,7 @@ import (
 // metaDirName is the per-volume metadata dir inside a volume root: it holds the
 // close-stamp, and it is also this package's VOLUME-IDENTITY TOKEN — a
 // directory under the base dir that does not contain it is not a volume this
-// package owns, and is never scanned, stamped, or reaped (see eachVolume). It
+// package owns, and is never scanned, stamped, or reaped (see scanBaseDir). It
 // lives INSIDE the volume root so that reaping the volume reaps its stamp in
 // the stamp travels with the renamed tree and is never read again. The
 // per-volume lock file deliberately does NOT live here (see lockFileSuffix): a
@@ -435,6 +435,7 @@ func stampOrphanLocked(root string, discoveredAt time.Time) error {
 // A per-volume failure does not abort the pass: errors are accumulated and
 // joined, so one unreadable volume cannot pin the storage of every volume
 // behind it.
+// Expire also sweeps reaping leftovers and reclaims orphan lock files.
 func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) error {
 	now := time.Now()
 	return m.scanBaseDir(ctx, func(kind entryKind, root string) error {
@@ -452,10 +453,30 @@ func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) erro
 				return err
 			}
 			removeErr := os.RemoveAll(reapingPath(root))
-			if removeErr != nil {
+			if removeErr == nil {
+				removeErr = reclaimLockLocked(root)
+			} else {
 				removeErr = fmt.Errorf("vfs: sweeping reaping leftover %q: %w", reapingPath(root), removeErr)
 			}
 			return errors.Join(removeErr, lock.release())
+		case entryLock:
+			rootExists, err := pathExists(root)
+			if err != nil {
+				return err
+			}
+			leftoverExists, err := pathExists(reapingPath(root))
+			if err != nil {
+				return err
+			}
+			if rootExists || leftoverExists {
+				return nil
+			}
+			lock, err := tryLockVolume(ctx, root)
+			if err != nil || lock == nil {
+				return err
+			}
+			reclaimErr := reclaimLockLocked(root)
+			return errors.Join(reclaimErr, lock.release())
 		default:
 			return nil
 		}
@@ -481,7 +502,42 @@ func reapLocked(root string, now time.Time, olderThan time.Duration) error {
 	if err := os.RemoveAll(reapingPath(root)); err != nil {
 		return fmt.Errorf("vfs: removing reaped volume %q: %w", reapingPath(root), err)
 	}
+	return reclaimLockLocked(root)
+}
+
+// reclaimLockLocked removes the lock only after confirming both session paths are
+// absent under the lock. Its unlink is the critical section's final mutation.
+func reclaimLockLocked(root string) error {
+	rootExists, err := pathExists(root)
+	if err != nil {
+		return err
+	}
+	leftoverExists, err := pathExists(reapingPath(root))
+	if err != nil {
+		return err
+	}
+	if rootExists || leftoverExists {
+		return nil
+	}
+	err = os.Remove(root + lockFileSuffix)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("vfs: reclaiming orphan volume lock %q: %w", root+lockFileSuffix, err)
+	}
 	return nil
+}
+
+func pathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("vfs: checking session path %q: %w", path, err)
+	}
+	return true, nil
 }
 
 // eligible requires an existing IntentClosed stamp older than the retention
@@ -511,7 +567,7 @@ func (m *LocalManager) Restore(ctx context.Context, ref ArchiveRef) (Volume, err
 }
 
 // volumeRoot rejects IDs that escape the base dir or collide with a sibling
-// lock-file path; callers already provide sanitized internal IDs.
+// lock-file or reaping path; callers already provide sanitized internal IDs.
 func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("%w: empty", ErrInvalidSessionID)
@@ -587,7 +643,7 @@ func (m *LocalManager) scanBaseDir(ctx context.Context, visit func(entryKind, st
 	return errors.Join(errs...)
 }
 
-// eachVolume visits only marked volume directories.
+// eachVolume filters scanBaseDir to marked volume directories.
 func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) error) error {
 	return m.scanBaseDir(ctx, func(kind entryKind, root string) error {
 		if kind == entryVolume {
@@ -742,7 +798,8 @@ type volumeLock struct {
 
 // lockVolume acquires the session's sibling lock. Acquisitions use non-blocking
 // flock and verify the held inode against the current path, so a waiter cannot
-// keep using an inode unlinked by H3's orphan-lock reclaim.
+// keep using an inode unlinked by Expire. Lock-file unlink is terminal: it requires
+// an under-lock absence proof and is the final mutation before release.
 const (
 	lockPollInitial = time.Millisecond
 	lockPollMax     = 50 * time.Millisecond
@@ -756,7 +813,7 @@ func tryLockVolume(ctx context.Context, root string) (*volumeLock, error) {
 			return l, err
 		}
 		if !mismatch {
-			return nil, nil
+			return nil, nil //nolint:nilnil // non-blocking callers use nil,nil to skip a contended volume.
 		}
 	}
 }
