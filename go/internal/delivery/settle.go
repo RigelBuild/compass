@@ -382,3 +382,41 @@ func (c *Consumer) drainLost(ctx context.Context) {
 		c.wake(ctx, account)
 	}
 }
+
+// OnRunnerReady is called when a Runner's command stream attaches. A mention made
+// while no Runner could serve it left an owed row and a failed wake; the loop now
+// wakes every owed agent. WakeAgent skips live agents and coalesces duplicates.
+func (c *Consumer) OnRunnerReady() {
+	c.mu.Lock()
+	c.owedRewake = true
+	c.mu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+// drainOwedRewake wakes every agent with an owed mention, once per OnRunnerReady.
+func (c *Consumer) drainOwedRewake(ctx context.Context) {
+	c.mu.Lock()
+	run := c.owedRewake
+	c.owedRewake = false
+	c.mu.Unlock()
+	if !run {
+		return
+	}
+	accounts, err := c.st.OwedMentionAccounts(ctx)
+	if err != nil {
+		c.log.WarnContext(ctx, "delivery: list owed mention accounts on runner ready", "error", err)
+		return
+	}
+	// Off the loop: each wake is a Runner round trip, and a restart can owe many.
+	go func() {
+		for _, account := range accounts {
+			if ctx.Err() != nil {
+				return
+			}
+			c.wake(ctx, account)
+		}
+	}()
+}

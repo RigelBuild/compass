@@ -105,3 +105,8 @@ SELECT EXISTS(
 	WHERE cm.account_id = $1
 	  AND cm.channel_id = $2
 	  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription));
+
+-- The accounts still owed a mention: a wake that failed before any Runner could
+-- serve it is retried for these once one attaches.
+-- name: OwedMentionAccounts :many
+SELECT DISTINCT agent_account_id FROM owed_mentions ORDER BY agent_account_id;

@@ -122,6 +122,32 @@ func (q *Queries) MarkMentionsRouted(ctx context.Context, arg MarkMentionsRouted
 	return err
 }
 
+const owedMentionAccounts = `-- name: OwedMentionAccounts :many
+SELECT DISTINCT agent_account_id FROM owed_mentions ORDER BY agent_account_id
+`
+
+// The accounts still owed a mention: a wake that failed before any Runner could
+// serve it is retried for these once one attaches.
+func (q *Queries) OwedMentionAccounts(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, owedMentionAccounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var agent_account_id string
+		if err := rows.Scan(&agent_account_id); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_account_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const owedMentions = `-- name: OwedMentions :many
 SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
 FROM owed_mentions om

@@ -401,3 +401,16 @@ func (s *Store) InSweepSet(ctx context.Context, agent AccountID, channel Channel
 	}
 	return in, nil
 }
+
+// OwedMentionAccounts lists every agent with at least one owed mention.
+func (s *Store) OwedMentionAccounts(ctx context.Context) ([]AccountID, error) {
+	rows, err := s.q.OwedMentionAccounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: list owed mention accounts: %w", err)
+	}
+	out := make([]AccountID, len(rows))
+	for i, r := range rows {
+		out[i] = AccountID(r)
+	}
+	return out, nil
+}

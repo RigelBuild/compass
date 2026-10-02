@@ -433,6 +433,9 @@ type Querier interface {
 	MessageInChannel(ctx context.Context, arg MessageInChannelParams) (int32, error)
 	MessagesHeadSeq(ctx context.Context) (int64, error)
 	MoveMessagesToTopic(ctx context.Context, arg MoveMessagesToTopicParams) error
+	// The accounts still owed a mention: a wake that failed before any Runner could
+	// serve it is retried for these once one attaches.
+	OwedMentionAccounts(ctx context.Context) ([]string, error)
 	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
