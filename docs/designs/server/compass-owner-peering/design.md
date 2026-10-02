@@ -333,7 +333,7 @@ Interfaces:
 
 ## Open Questions
 
-Five forks are load-bearing. Each is designed against its recommendation above; a different ruling changes the named tasks only.
+Five forks were load-bearing. Matt ruled 2026-10-02 (RIG-4079): every recommendation stands, so the record is frozen as designed above.
 
 ### OQ-1 (load-bearing) — Edge shape, and whether a recipient can decline
 
@@ -351,7 +351,7 @@ Decline/block options (option 1 has no recipient-owned row, so a request sits as
 
 Recommendation: shape 1, decline 1. Under all shapes the edge keys on `user_accounts.account_id`, so rename and reclaim behave as §The edge states.
 
-Decision needed: confirm shape 1 and decline 1, or pick shape 2 (which gives decline 3 for free).
+Ruled: shape 1, decline 1.
 
 ### OQ-2 (load-bearing) — What a peering grants
 
@@ -374,7 +374,7 @@ Decision needed: confirm shape 1 and decline 1, or pick shape 2 (which gives dec
 
 Recommendation: (a) 1, (b) 1, (c) 1.
 
-Decision needed: confirm (a) 1, (b) 1, and (c) 1; or pick (b) 2 and accept the enumeration in DL-373; or add (b) 3 now; or pick (c) 2.
+Ruled: (a) 1, (b) 1, (c) 1.
 
 ### OQ-3 (load-bearing) — Error a caller sees with no edge
 
@@ -386,7 +386,7 @@ Options:
 
 Recommendation: option 1.
 
-Decision needed: confirm option 1.
+Ruled: option 1.
 
 ### OQ-4 (load-bearing) — Cross-owner DM key shape
 
@@ -398,7 +398,7 @@ The DM name is the resume key (`GetDMChannelByName` under `UpsertDMChannelTx`, a
 
 Recommendation: option 1.
 
-Decision needed: confirm option 1, or pick 3 and accept the upsert change.
+Ruled: option 1.
 
 ### OQ-5 (load-bearing) — Revoke semantics for existing channels
 
@@ -411,7 +411,7 @@ Membership outlives a revoke, and membership alone drives every delivery read to
 
 Recommendation: option 1.
 
-Decision needed: confirm option 1, or pick 2 or 3 and accept the one-direction limit and the mandatory-channel and co-member gaps.
+Ruled: option 1.
 
 ### OQ-6 (non-load-bearing, deferred) — Peering UI and stream event
 
