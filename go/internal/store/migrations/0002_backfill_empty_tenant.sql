@@ -27,11 +27,12 @@ UPDATE agent_session_archive_segments g
 -- A binding is live routing state. Re-home a '' binding only when its tenant
 -- holds no binding for that account or session; drop it otherwise.
 UPDATE session_bindings b
-   SET tenant_id = a.tenant_id
-  FROM agent_accounts a
- WHERE b.tenant_id = '' AND a.account_id = b.agent_account_id
+   SET tenant_id = (SELECT a.tenant_id FROM agent_accounts a WHERE a.account_id = b.agent_account_id)
+ WHERE b.tenant_id = ''
    AND NOT EXISTS (
-       SELECT 1 FROM session_bindings o
+       SELECT 1
+         FROM session_bindings o
+         JOIN agent_accounts a ON a.account_id = b.agent_account_id
         WHERE o.tenant_id = a.tenant_id
           AND (o.agent_account_id = b.agent_account_id OR o.session_id = b.session_id));
 
