@@ -557,6 +557,10 @@ type Querier interface {
 	// A MISS is not an error: a first-ever bind returns pgx.ErrNoRows and the Store
 	// maps that to the empty displaced id.
 	SessionBindingForUpdate(ctx context.Context, agentAccountID string) (string, error)
+	// The one query here meant for the system role: a Runner-originated call carries
+	// no tenant, so the hub reads the session's tenant cross-tenant, then acts under it.
+	// :many so a session id minted in two tenants is refused, not resolved arbitrarily.
+	SessionBindingTenants(ctx context.Context, arg SessionBindingTenantsParams) ([]string, error)
 	SessionMaxEntrySeq(ctx context.Context, sessionID string) (int64, error)
 	SessionTranscript(ctx context.Context, sessionID string) ([]SessionTranscriptRow, error)
 	// Agent-activity queries (sqlc adoption T5, RIG-3034). These replace the inline

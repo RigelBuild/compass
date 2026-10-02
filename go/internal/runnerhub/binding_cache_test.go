@@ -151,6 +151,15 @@ func (f *fakeBindingStore) EffectiveTenant(context.Context) store.TenantID {
 const testRunnerID = "runner-1"
 
 // seed inserts a binding directly (test setup), bypassing the displacement path.
+func (f *fakeBindingStore) SessionBindingTenant(_ context.Context, sessionID, runnerID string) (store.TenantID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if b, ok := f.bindings[sessionID]; ok && b.RunnerID == runnerID {
+		return f.tenant, nil
+	}
+	return "", store.ErrNotFound
+}
+
 func (f *fakeBindingStore) seed(sessionID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

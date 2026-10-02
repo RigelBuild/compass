@@ -140,3 +140,9 @@ DELETE FROM session_bindings WHERE session_id = $1;
 DELETE FROM session_bindings
  WHERE runner_id = $1
 RETURNING session_id, agent_account_id;
+
+-- The one query here meant for the system role: a Runner-originated call carries
+-- no tenant, so the hub reads the session's tenant cross-tenant, then acts under it.
+-- :many so a session id minted in two tenants is refused, not resolved arbitrarily.
+-- name: SessionBindingTenants :many
+SELECT tenant_id FROM session_bindings WHERE session_id = $1 AND runner_id = $2;
