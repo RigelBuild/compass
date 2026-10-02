@@ -493,6 +493,16 @@ func (f *fakeReads) CountOwedMentions(_ context.Context) (int, error) {
 	return n, nil
 }
 
+func (f *fakeReads) OwedMentionAccounts(_ context.Context) ([]store.AccountID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]store.AccountID, 0, len(f.owedMentions))
+	for agent := range f.owedMentions {
+		out = append(out, agent)
+	}
+	return out, nil
+}
+
 // SweepChannels returns the seeded D1 disjunct channel set for agent — the pin
 // sweep's channel enumeration, mirroring the store read.
 func (f *fakeReads) SweepChannels(_ context.Context, agent store.AccountID) ([]store.ChannelID, error) {

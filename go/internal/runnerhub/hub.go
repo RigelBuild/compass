@@ -130,6 +130,12 @@ type SessionLostSink interface {
 	OnSessionLost(sessionID string, account store.AccountID)
 }
 
+// RunnerReadySink is told each time a Runner command stream attaches, so work that
+// failed while no Runner could serve it is retried. Must return promptly.
+type RunnerReadySink interface {
+	OnRunnerReady()
+}
+
 // SessionEndSink archives the transcript tail of a session the hub saw end without
 // Stop (a lost container or a re-enroll reap). ctx is scoped to the session tenant.
 // It may block on object-store I/O, so the hub calls it off its locks and loops.
@@ -360,6 +366,7 @@ type Hub struct {
 	// lost is notified after dropLostSession releases a dead session. Read under mu.
 	lost  SessionLostSink
 	ended SessionEndSink
+	ready RunnerReadySink
 	// presence is the RIG-1569 T8 presence projection's sink, notified at
 	// deliverSession (lifecycle transition) and promoteSession (reconciliation). Nil
 	// until SetPresenceSink; read under mu. Nil-safe (today's behavior).
@@ -524,6 +531,13 @@ func (h *Hub) SetSessionReapSink(reap SessionReapSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.reap = reap
+}
+
+// SetRunnerReadySink wires the delivery consumer to retry owed wakes on attach.
+func (h *Hub) SetRunnerReadySink(ready RunnerReadySink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ready = ready
 }
 
 // SetSessionEndSink wires the transcript archive for sessions that end without Stop.
@@ -742,7 +756,11 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 func (h *Hub) fireRunnerReady() {
 	h.mu.Lock()
 	hook := h.runnerReadyHook
+	ready := h.ready
 	h.mu.Unlock()
+	if ready != nil {
+		ready.OnRunnerReady()
+	}
 	if hook == nil {
 		return
 	}
