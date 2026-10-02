@@ -31,7 +31,7 @@ func TestLegS3DurabilityValves(t *testing.T) {
 		{"valve_server_restart", runS3ServerRestart},
 		{"valve_runner_restart", runS3RunnerRestart},
 		{"s3_outage", runS3Outage},
-		{"crash_leaves_no_session_end", runS3CrashNoSessionEnd},
+		{"crash_archives_session_end", runS3CrashArchivesSessionEnd},
 	} {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t, ctx) })
 	}
@@ -112,7 +112,6 @@ func runS3AgentCrash(t *testing.T, ctx context.Context) {
 	if err := podmanRemoveForce(ctx, container); err != nil {
 		t.Fatalf("crash agent container %q: %v", container, err)
 	}
-	assertNoSessionEnd(t, ctx, f.DSN(), sessionID)
 	resumeS3AndVerify(t, ctx, f, st, "s3-valve-agent-crash", sessionID, channel)
 }
 
@@ -248,20 +247,25 @@ func runS3TurnSettled(ctx context.Context, f *Fixture, sessionID, channel, marke
 
 func waitSafetyValveSegment(t *testing.T, ctx context.Context, dsn, sessionID string) {
 	t.Helper()
+	waitSegmentKind(t, ctx, dsn, sessionID, "safety_valve")
+}
+
+func waitSegmentKind(t *testing.T, ctx context.Context, dsn, sessionID, kind string) {
+	t.Helper()
 	deadline := time.Now().Add(settleTimeout)
 	ticker := time.NewTicker(transcriptPollInterval)
 	defer ticker.Stop()
 	for {
-		if segmentCountByKind(t, ctx, dsn, sessionID, "safety_valve") > 0 {
+		if segmentCountByKind(t, ctx, dsn, sessionID, kind) > 0 {
 			return
 		}
 		if !time.Now().Before(deadline) {
 			assertArchiveAndCheckpointDiagnostics(t, ctx, dsn, sessionID)
-			t.Fatalf("safety_valve segment did not appear within %s", settleTimeout)
+			t.Fatalf("%s segment did not appear within %s", kind, settleTimeout)
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("waiting for safety_valve segment: %v", ctx.Err())
+			t.Fatalf("waiting for %s segment: %v", kind, ctx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -382,10 +386,11 @@ func assertSafetyValveEviction(t *testing.T, ctx context.Context, f *Fixture, se
 	}
 }
 
-// Crash does not archive the tail; archive-on-crash remains a design decision.
-func runS3CrashNoSessionEnd(t *testing.T, ctx context.Context) {
+// A lost container is detected on the next deliver; the hub then archives the tail
+// as session_end without pruning it, so the woken session still resumes from PG.
+func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 	t.Helper()
-	f, st, _, container, joined := runS3DurabilityBase(t, ctx, "s3-crash-no-end", nil)
+	f, _, _, container, joined := runS3DurabilityBase(t, ctx, "s3-crash-end", nil)
 	sessionID, channel := splitDurabilityIDs(t, joined)
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-first"); err != nil {
 		t.Fatalf("first turn: %v", err)
@@ -393,21 +398,14 @@ func runS3CrashNoSessionEnd(t *testing.T, ctx context.Context) {
 	if err := podmanRemoveForce(ctx, container); err != nil {
 		t.Fatalf("crash agent container: %v", err)
 	}
-	assertNoSessionEnd(t, ctx, f.DSN(), sessionID)
-	var minHotSeq int64
-	pool, err := pgxpool.New(ctx, f.DSN())
-	if err != nil {
-		t.Fatalf("open crash tail pool: %v", err)
+	if _, err := f.PostMessage(ctx, channel, "general", "marker durability-after-crash"); err != nil {
+		t.Fatalf("post after crash: %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(MIN(entry_seq), 0) FROM agent_session_transcript_entries WHERE session_id=$1`, sessionID).Scan(&minHotSeq); err != nil {
-		pool.Close()
-		t.Fatalf("query crash hot tail min: %v", err)
+	waitSegmentKind(t, ctx, f.DSN(), sessionID, "session_end")
+	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
+	if segmentCountByKind(t, ctx, f.DSN(), sessionID, "superseded") != 0 {
+		t.Fatal("detected-end archive pruned the tail as superseded")
 	}
-	pool.Close()
-	if minHotSeq == 0 {
-		t.Fatal("crash left no transcript entries in PostgreSQL hot tail")
-	}
-	resumeS3AndVerify(t, ctx, f, st, "s3-crash-no-end", sessionID, channel)
 }
 
 func resumeS3AndVerify(t *testing.T, ctx context.Context, f *Fixture, st *store.Store, accountHandle, sessionID, channel string) {
@@ -436,22 +434,6 @@ func resumeS3AndVerify(t *testing.T, ctx context.Context, f *Fixture, st *store.
 		t.Fatalf("resumed turn: %v", err)
 	}
 	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
-}
-
-func assertNoSessionEnd(t *testing.T, ctx context.Context, dsn, sessionID string) {
-	t.Helper()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("open assertion pool: %v", err)
-	}
-	defer pool.Close()
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_session_archive_segments WHERE session_id=$1 AND kind='session_end'`, sessionID).Scan(&count); err != nil {
-		t.Fatalf("query session_end segments: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("session_end segments after crash = %d, want 0", count)
-	}
 }
 
 // assertArchiveHasReply requires want in an archived S3 object, not just in the PG tail.

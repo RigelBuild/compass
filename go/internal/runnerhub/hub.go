@@ -130,6 +130,13 @@ type SessionLostSink interface {
 	OnSessionLost(sessionID string, account store.AccountID)
 }
 
+// SessionEndSink archives the transcript tail of a session the hub saw end without
+// Stop (a lost container or a re-enroll reap). ctx is scoped to the session tenant.
+// It may block on object-store I/O, so the hub calls it off its locks and loops.
+type SessionEndSink interface {
+	OnSessionEnded(ctx context.Context, sessionID string)
+}
+
 // PresenceSink is notified of the two hub-side edges the RIG-1569 T8 presence
 // projection (design record D4) is fed by: a session lifecycle transition at the
 // deliverSession arm (the SAME arm SettleSink rides, right after the
@@ -351,7 +358,8 @@ type Hub struct {
 	// a pre-T9 Runner link loss left behind. Nil until SetSessionReapSink; read under mu.
 	reap SessionReapSink
 	// lost is notified after dropLostSession releases a dead session. Read under mu.
-	lost SessionLostSink
+	lost  SessionLostSink
+	ended SessionEndSink
 	// presence is the RIG-1569 T8 presence projection's sink, notified at
 	// deliverSession (lifecycle transition) and promoteSession (reconciliation). Nil
 	// until SetPresenceSink; read under mu. Nil-safe (today's behavior).
@@ -516,6 +524,13 @@ func (h *Hub) SetSessionReapSink(reap SessionReapSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.reap = reap
+}
+
+// SetSessionEndSink wires the transcript archive for sessions that end without Stop.
+func (h *Hub) SetSessionEndSink(end SessionEndSink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ended = end
 }
 
 // SetSessionLostSink wires the delivery consumer to wake an agent whose session died.
@@ -1028,6 +1043,9 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	// in-memory registry entries and returns promptly.
 	if reap != nil {
 		reap.OnSessionsReaped(reapedSessions)
+	}
+	for _, sessionID := range reapedSessions {
+		h.archiveEnded(ctx, sessionID)
 	}
 	return reattached
 }
