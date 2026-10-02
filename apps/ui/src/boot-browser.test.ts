@@ -167,6 +167,16 @@ describe("bootBrowser", () => {
 		expect((await booted)?.token).toBe(VALID);
 	});
 
+	test("a door under another path on the same host does not share this door's token", async () => {
+		localStorage.setItem(KEY, VALID);
+		const root = document.createElement("div");
+
+		void bootBrowser(root, deps({ ...ENV, baseUrl: `${DOOR}/other` }));
+		await screenShows(root, "This server needs a token");
+
+		expect(presented).toEqual([null]);
+	});
+
 	test("a token stored for another door is never presented to this one", async () => {
 		localStorage.setItem("compass.token.https://other.example:8443", VALID);
 		const root = document.createElement("div");

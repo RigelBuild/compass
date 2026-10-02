@@ -2,10 +2,12 @@
 // bearer pasted for one server is never presented to another. Best-effort: a missing or
 // throwing store (privacy mode) means the token lives only for this page load.
 
-// Origin-only, so a trailing slash or env-vs-origin switch for one door finds the same token.
+// Normalized origin + path (no trailing slash): one door keeps one token across URL
+// spellings, while doors sharing a host under different paths stay separate.
 function keyFor(baseUrl: string): string {
 	try {
-		return `compass.token.${new URL(baseUrl).origin}`;
+		const url = new URL(baseUrl);
+		return `compass.token.${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 	} catch {
 		return `compass.token.${baseUrl}`;
 	}
