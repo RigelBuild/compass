@@ -19,11 +19,10 @@ export interface ConnectionProvider {
 	resolve(): Promise<ResolvedConnection>;
 }
 
-/** The default (browser dev) provider: wraps the Vite-env resolver unchanged and
- *  leaves `fetchImpl` undefined so the transport uses the platform `fetch`. The
- *  env-required-var throw is preserved — `connectionFromEnv()` still throws on a
- *  missing VITE_COMPASS_BASE_URL, and boot catches that at the same boundary it
- *  always has (bootConnection → the failure screen). Nothing native leaks here. */
+/** The browser provider: wraps the Vite-env/origin resolver and leaves
+ *  `fetchImpl` undefined so the transport uses the platform `fetch`. It throws
+ *  when no door URL can be resolved; boot-browser.ts catches that through
+ *  bootConnection and layers the stored-token gate on top. */
 export function envConnectionProvider(): ConnectionProvider {
 	return {
 		async resolve(): Promise<ResolvedConnection> {

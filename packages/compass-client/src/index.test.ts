@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { Code, ConnectError } from "@connectrpc/connect";
 import * as connectWeb from "@connectrpc/connect-web";
 import {
 	bearerAuthInterceptor,
@@ -16,6 +17,7 @@ import {
 	createCompassWebTransport,
 	createRouterTransport,
 	GetServerInfoResponseSchema,
+	isUnauthenticated,
 	parseTraceResponse,
 	posthogSessionHeader,
 	SubscribeCommsResponseSchema,
@@ -959,5 +961,33 @@ describe("callInterceptors installs only what was asked for", () => {
 		await interceptors[2]?.(last.next as never)(last.req as never);
 		expect(last.req.header.get(posthogSessionHeader)).toBe("sess-1");
 		expect(last.req.header.get("authorization")).toBeNull();
+	});
+});
+
+describe("isUnauthenticated", () => {
+	// A real router door rejecting WhoAmI, so the classifier reads the error the
+	// transport actually raises rather than a hand-built object.
+	const rejectWith = (code: Code) =>
+		createCompassClient(
+			createRouterTransport(({ service }) => {
+				service(CompassService, {
+					whoAmI: () => {
+						throw new ConnectError("rejected", code);
+					},
+				});
+			}),
+		).whoAmI({});
+
+	test("is true for an Unauthenticated rejection", async () => {
+		const error = await rejectWith(Code.Unauthenticated).catch((e) => e);
+		expect(isUnauthenticated(error)).toBe(true);
+	});
+
+	test("is false for other codes and non-connect errors", async () => {
+		for (const code of [Code.PermissionDenied, Code.Unavailable]) {
+			const error = await rejectWith(code).catch((e) => e);
+			expect(isUnauthenticated(error)).toBe(false);
+		}
+		expect(isUnauthenticated(new Error("boom"))).toBe(false);
 	});
 });

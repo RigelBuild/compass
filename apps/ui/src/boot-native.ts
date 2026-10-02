@@ -4,6 +4,14 @@
 // ok → resolve the native provider and hand off; any failure → connect screen, retry in place.
 
 import {
+	BUTTON_STYLE,
+	DETAIL_STYLE,
+	HEADING_STYLE,
+	INPUT_STYLE,
+	SCREEN_STYLE,
+	URL_STYLE,
+} from "./boot-styles";
+import {
 	type ConnectResult,
 	nativeConnectionProvider,
 	shellConnect,
@@ -24,42 +32,6 @@ const defaultNativeBootDeps: NativeBootDeps = {
 	shellConnect,
 	nativeConnectionProvider,
 };
-
-// The bare-page styling the gate shares with `renderBootError` (boot.ts): this
-// screen runs before any stylesheet is guaranteed loaded, so it inlines the few
-// declarations that keep it legible. Kept in sync in spirit with boot.ts, not
-// imported, because the two screens differ in layout (this one has inputs).
-const SCREEN_STYLE = [
-	"margin:0",
-	"padding:2rem",
-	"font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace",
-	"color:#e6e6e6",
-	"background:#1a1a1a",
-	"min-height:100vh",
-].join(";");
-const HEADING_STYLE = "margin:0 0 1rem;font-size:1rem";
-const URL_STYLE = ["margin:0 0 1.5rem", "color:#9c9c9c"].join(";");
-const DETAIL_STYLE = [
-	"margin:0 0 1rem",
-	"white-space:pre-wrap",
-	"color:#ff9c9c",
-].join(";");
-const INPUT_STYLE = [
-	"width:100%",
-	"box-sizing:border-box",
-	"padding:0.5rem",
-	"font:inherit",
-	"color:#e6e6e6",
-	"background:#111",
-	"border:1px solid #444",
-	"border-radius:4px",
-].join(";");
-const BUTTON_STYLE = [
-	"margin-top:1rem",
-	"padding:0.5rem 1rem",
-	"font:inherit",
-	"cursor:pointer",
-].join(";");
 
 /** The per-failure-kind screen copy (design failure-state table). `heading` is
  *  the one-line theme; `hint` is the actionable follow-up. `other` shows the

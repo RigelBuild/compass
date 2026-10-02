@@ -4,6 +4,8 @@
 
 import {
 	type Client,
+	Code,
+	ConnectError,
 	createClient,
 	type Interceptor,
 	type Transport,
@@ -304,6 +306,13 @@ export type { Transport } from "@connectrpc/connect";
 // door without importing @connectrpc/connect directly (the fence blocks that).
 // Dev/test-only; the shipped app dials `createCompassWebTransport`.
 export { createRouterTransport } from "@connectrpc/connect";
+
+/** True when `error` is the server rejecting the request's credential (missing,
+ *  unknown, or revoked bearer). Lets UI code branch on auth failure without
+ *  importing @connectrpc/connect (the fence blocks that). */
+export function isUnauthenticated(error: unknown): boolean {
+	return ConnectError.from(error).code === Code.Unauthenticated;
+}
 
 // The four per-client factories below deliberately do NOT take a `sessionId`
 // option, so a client built through any of them sends no `X-POSTHOG-SESSION-ID`

@@ -49,7 +49,7 @@ export function renderBootError(
 
 /** Resolve the connection through its provider, or paint the failure into `root`
  *  and return undefined. The async mirror of `bootCaller`: `resolve` is a thunk
- *  over a ConnectionProvider (index.tsx passes
+ *  over a ConnectionProvider (boot-browser.ts passes
  *  `() => envConnectionProvider().resolve()`), so this stays pure over its inputs
  *  (a root + a thunk) and unit-testable without `import.meta`. Returning
  *  undefined rather than a fallback is the point: the caller has no connection to
