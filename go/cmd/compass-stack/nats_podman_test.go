@@ -90,7 +90,7 @@ func TestNatsUpDown(t *testing.T) {
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
 	out, err := mustRunStack(upCtx, t, stackBin, env,
-		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--linger")...)
+		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--gateway-external", "http://127.0.0.1:4100", "--linger")...)
 	if err != nil {
 		t.Fatalf("compass-stack up (bundled NATS): %v\n%s", err, out)
 	}
@@ -161,7 +161,7 @@ func TestExternalNatsUpDown(t *testing.T) {
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
 	out, err := mustRunStack(upCtx, t, stackBin, env,
-		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--nats-external", "nats://127.0.0.1:4222", "--linger")...)
+		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--nats-external", "nats://127.0.0.1:4222", "--gateway-external", "http://127.0.0.1:4100", "--linger")...)
 	if err != nil {
 		t.Fatalf("compass-stack up (--nats-external): %v\n%s", err, out)
 	}

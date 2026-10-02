@@ -98,7 +98,7 @@ func TestContainerPostgresUpDown(t *testing.T) {
 	// up with the pinned container image.
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
-	out, err := mustRunStack(upCtx, t, stackBin, env, cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--linger")...)
+	out, err := mustRunStack(upCtx, t, stackBin, env, cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--gateway-external", "http://127.0.0.1:4100", "--linger")...)
 	if err != nil {
 		t.Fatalf("compass-stack up (container postgres): %v\n%s", err, out)
 	}
@@ -166,7 +166,7 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
-	out, err := mustRunStack(upCtx, t, stackBin, env, cfg.args("up", "--database-external", "--otel-external", "127.0.0.1:4317", "--linger")...)
+	out, err := mustRunStack(upCtx, t, stackBin, env, cfg.args("up", "--database-external", "--otel-external", "127.0.0.1:4317", "--gateway-external", "http://127.0.0.1:4100", "--linger")...)
 	if err != nil {
 		t.Fatalf("compass-stack up (external db): %v\n%s", err, out)
 	}
@@ -261,13 +261,14 @@ func newContainerFixture(t *testing.T, root string) containerFixture {
 		RuntimeDir:  runtimeDir,
 	}
 	deps, err := buildDeps(stack.Config{
-		StateDir:        cfg.StateDir,
-		SocketPath:      cfg.SocketPath,
-		ListenAddr:      cfg.ListenAddr,
-		DatabaseDSN:     cfg.DatabaseDSN,
-		AgentImage:      cfg.AgentImage,
-		RuntimeDir:      cfg.RuntimeDir,
-		ExternalNatsURL: "nats://127.0.0.1:4222",
+		StateDir:           cfg.StateDir,
+		SocketPath:         cfg.SocketPath,
+		ListenAddr:         cfg.ListenAddr,
+		DatabaseDSN:        cfg.DatabaseDSN,
+		AgentImage:         cfg.AgentImage,
+		RuntimeDir:         cfg.RuntimeDir,
+		ExternalNatsURL:    "nats://127.0.0.1:4222",
+		ExternalGatewayURL: "http://127.0.0.1:4100",
 	})
 	if err != nil {
 		t.Fatalf("buildDeps: %v", err)
