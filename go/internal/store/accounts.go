@@ -991,8 +991,9 @@ func (s *Store) visibleAgentHandleIDs(ctx context.Context, viewer AccountID, key
 // caller", comms.proto:48-49; this is the store's conservative realization,
 // flagged for review): the caller always sees itself and every user account (the
 // first-class member directory the management hierarchy needs), and sees an agent
-// account only when it owns that agent or shares a channel with it — so an
-// owner-scoped agent never leaks to an unrelated account. The predicate is
+// account only when it owns that agent, shares its owner (an agent caller sees
+// its owner's whole fleet), or shares a channel with it — so an owner-scoped
+// agent never leaks to an unrelated owner's account. The predicate is
 // textually shared across the ListVisibleAccounts, AccountVisibleTo, and the two
 // visible-handle queries (queries/accounts.sql) so the stream edge's per-event
 // account filter cannot drift from this list read (the anti-drift guarantee the
