@@ -78,6 +78,10 @@ var _ runnerhub.LifecycleCaller = (*lifecycleService)(nil)
 //     caller and no RequireAgentSessionSubscriber); no prior session → a fresh
 //     hub.Start; no placement → a logged no-op.
 func (l *lifecycleService) WakeAgent(ctx context.Context, agent store.AccountID) {
+	ctx, ok := l.wakeCtx(ctx, agent)
+	if !ok {
+		return
+	}
 	// 1. Not-live pre-check (cost control): a live agent is already awake, so
 	// there is nothing to resume. No-op, no log line — a wake is only an attempt
 	// against an OFFLINE agent.
@@ -627,4 +631,19 @@ func (l *lifecycleService) freshStart(ctx context.Context, agent store.AccountID
 		return wakeOutcomeFailed
 	}
 	return wakeOutcomeFreshStarted
+}
+
+// wakeCtx scopes a wake to the agent's tenant. The delivery loop wakes under the
+// system role, which sets no tenant, so rows the wake writes (agent_sessions,
+// bindings) would land with an empty tenant_id, invisible to every tenant.
+func (l *lifecycleService) wakeCtx(ctx context.Context, agent store.AccountID) (context.Context, bool) {
+	if !store.IsSystemRole(ctx) {
+		return ctx, true
+	}
+	tenant, err := l.store.AccountTenant(ctx, agent)
+	if err != nil {
+		slog.ErrorContext(ctx, "agent wake: resolving tenant failed", "agent_account_id", agent, "error", err)
+		return ctx, false
+	}
+	return store.WithTenant(store.WithoutSystemRole(ctx), tenant), true
 }

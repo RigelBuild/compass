@@ -209,3 +209,8 @@ SELECT EXISTS (
           )
       AND a.id = $2
 );
+
+-- The tenant an account belongs to. A system-role caller (the delivery loop) reads
+-- it to act for that account under its own tenant.
+-- name: AccountTenant :one
+SELECT tenant_id FROM accounts WHERE id = $1;

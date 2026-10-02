@@ -49,6 +49,12 @@ func WithSystemRole(ctx context.Context) context.Context {
 	return context.WithValue(ctx, systemRoleKey{}, true)
 }
 
+// WithoutSystemRole clears the system-role mark, so store calls on the returned
+// ctx are tenant-scoped again. Pair it with WithTenant.
+func WithoutSystemRole(ctx context.Context) context.Context {
+	return context.WithValue(ctx, systemRoleKey{}, false)
+}
+
 // isSystemRole reports whether ctx is the cross-tenant system path.
 func isSystemRole(ctx context.Context) bool {
 	v, _ := ctx.Value(systemRoleKey{}).(bool)

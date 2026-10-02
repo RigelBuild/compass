@@ -11,6 +11,9 @@ import (
 )
 
 type Querier interface {
+	// The tenant an account belongs to. A system-role caller (the delivery loop) reads
+	// it to act for that account under its own tenant.
+	AccountTenant(ctx context.Context, id string) (string, error)
 	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
 	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
 	ActivityFor(ctx context.Context, dollar_1 []string) ([]ActivityForRow, error)

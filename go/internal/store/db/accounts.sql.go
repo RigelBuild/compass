@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const accountTenant = `-- name: AccountTenant :one
+SELECT tenant_id FROM accounts WHERE id = $1
+`
+
+// The tenant an account belongs to. A system-role caller (the delivery loop) reads
+// it to act for that account under its own tenant.
+func (q *Queries) AccountTenant(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, accountTenant, id)
+	var tenant_id string
+	err := row.Scan(&tenant_id)
+	return tenant_id, err
+}
+
 const accountVisibleTo = `-- name: AccountVisibleTo :one
 SELECT EXISTS (
     SELECT 1
