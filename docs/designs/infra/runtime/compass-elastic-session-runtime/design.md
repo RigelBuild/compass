@@ -128,7 +128,7 @@ The record's central thesis:
 5. **Go-through-the-seams is the load-bearing discipline.** The elastic/burst
    and suspend-idle work lands incrementally behind three seams (below) with
    trivial fused-model configurations first, so each hardening axis is an
-   implementation swap behind a frozen interface, never a big-bang rewrite.
+   implementation swap behind an interface, never a big-bang rewrite.
    Every bypass — a direct `exec`, a raw-disk assumption outside the volume —
    deletes that migration path (Global Constraint 2).
 
@@ -195,7 +195,7 @@ the engine behind the `WorkloadRuntime` interface
 interface, so a libpod-REST backend can replace it without touching a caller."
 The hardening work reuses that discipline:
 
-- **`WorkloadRuntime` — existing verbs frozen, extended additively.** It
+- **`WorkloadRuntime` — existing verbs unchanged, extended additively.** It
   remains the engine seam (create/start/exec/stop against a `WorkloadID`,
   `go/internal/runtime/podman.go:286-324`), including `ExecStreaming`
   (`go/internal/runtime/podman.go:299-307`) for the long-lived agent process.
@@ -203,12 +203,12 @@ The hardening work reuses that discipline:
   `podman update`-class cgroup limit change), naming a concrete cgroup-limit
   type distinct from the `ComputeSpec.Resources ResourceClass` policy enum
   below — so resize reaches the engine *through* the seam, never by shelling
-  past it (Global Constraint 2). The verb is **frozen into the interface at
+  past it (Global Constraint 2). The verb is **added to the interface at
   S1** (additively reserved, the same discipline as the reserved streaming
   variant), so I1's microVM backend and every fake carry it from the start;
-  C3 fills in only the resize *behavior* behind the already-frozen seam — no
-  interface change lands after S1. "Frozen" means no existing verb's
-  signature changes. (Rootless `podman update` needs cgroups v2 + systemd
+  C3 fills in only the resize *behavior* behind the seam S1 already
+  completed — so C3 needs no interface change. S1 changes no existing verb's
+  signature. (Rootless `podman update` needs cgroups v2 + systemd
   delegation; where the box lacks it, C3's resize backend falls back to burst
   — the capability hedge already in C3.)
 - **`VirtualFS` — a thin source-of-tree seam.** It abstracts *where the
@@ -230,8 +230,8 @@ The hardening work reuses that discipline:
   `Exec` is completion-shaped; a **streaming variant is reserved in the seam
   now** (live stdio + kill/wait handle, mirroring how `WorkloadRuntime`
   splits `Exec`/`ExecStreaming`, `go/internal/runtime/podman.go:293-307`) for
-  RIG-1720's agent-launched dev servers, even if unimplemented, so freezing
-  the seam does not force a breaking change later.
+  RIG-1720's agent-launched dev servers, even if unimplemented, so adding the
+  dev-server path later needs no seam change.
 
 There is no placement seam for the agent process itself: the agent runs in
 the session environment, period. (A separate lightweight edit-only placement
@@ -505,8 +505,8 @@ built:
 
 ### S1 — the seams, landed with their fused in-container configurations (lane: infra)
 
-Freeze the two new Go seams and land their trivial fused-model
-configurations end to end, with `WorkloadRuntime`'s existing verbs frozen:
+Land the two new Go seams and their trivial fused-model
+configurations end to end, with `WorkloadRuntime`'s existing verbs unchanged:
 
 - **`VirtualFS`** — the thin source-of-tree seam plus its checkout backend.
   At S1 the destination is **today's clone-dir workspace** (the genuinely
@@ -532,7 +532,7 @@ configurations end to end, with `WorkloadRuntime`'s existing verbs frozen:
   VFS. The materialization *destination* is binding state of the `VirtualFS`
   instance (constructed with the target root — the clone-dir at S1, the
   session volume at P2), not a `Materialize` parameter, so P2 swaps the
-  destination behind the frozen signature. `VolumeSnapshotID` is frozen at S1
+  destination behind the same signature. `VolumeSnapshotID` is fixed at S1
   as an **opaque string** (its production shape is P2's to define). Produces
   `go/internal/compute.ComputeRuntime`:
   `Exec(ctx, ComputeSpec) (runtime.ExecOutput, error)` with
@@ -550,7 +550,7 @@ configurations end to end, with `WorkloadRuntime`'s existing verbs frozen:
   until the streaming variant lands. `SpecBuilder`
   (`go/internal/runner/host.go:46-48`) derives the `WorkspaceSource`.
   `WorkloadRuntime` also gains the additively-reserved
-  `Resize(ctx, id WorkloadID, limits ResourceLimits) error` — frozen here,
+  `Resize(ctx, id WorkloadID, limits ResourceLimits) error` — added here,
   unimplemented until C3 — so I1's microVM backend and every fake carry the
   full surface from the start and C3 lands no interface change.
   `ResourceLimits{CPUShares int, MemoryBytes int64}` is the concrete
@@ -820,7 +820,7 @@ order):
       `compute.ComputeRuntime` elastic-compute seam (in-environment
       passthrough backend, reserved streaming variant, fail-closed
       routing-policy shell) + provision wiring + `WorkspaceSource` variant;
-      `WorkloadRuntime` existing verbs frozen, `Resize` added additively.
+      `WorkloadRuntime` existing verbs unchanged, `Resize` added additively.
 - [ ] **I1** [infra] — microVM inter-tenant boundary: microVM OCI runtime
       (krun/libkrun or kata) behind `WorkloadRuntime` via podman `--runtime`,
       microVM-bootable rootfs image, guest-netns egress arming, virtio-fs
@@ -874,7 +874,7 @@ Nothing pinned in the Approach is re-opened here.
 4. **[load-bearing] RIG-1720 streaming-exec seam shape.** `ComputeRuntime`
    reserves a streaming variant (live stdio + kill/wait handle) for
    agent-launched dev servers; the port-exposure and lifecycle wiring are
-   RIG-1720's scope. **Recommendation:** freeze the reserved signature in S1
+   RIG-1720's scope. **Recommendation:** reserve the signature in S1
    mirroring `WorkloadRuntime.ExecStreaming`
    (`go/internal/runtime/podman.go:299-307`); implement nothing here.
 5. **[resolved — decided, now task I1] Inter-tenant isolation boundary =

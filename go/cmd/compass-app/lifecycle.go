@@ -1,6 +1,6 @@
 //go:build (linux && gtk4) || darwin
 
-// The embedded-mode app QUIT lifecycle. Two behaviors sit on the frozen DL-108
+// The embedded-mode app QUIT lifecycle. Two behaviors implement the DL-108
 // contract:
 //
 //   - Linger (the DEFAULT, and PASSIVE): on a plain app quit (window close, OS

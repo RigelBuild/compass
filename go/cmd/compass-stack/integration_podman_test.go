@@ -8,7 +8,7 @@ package main
 // buildDeps wiring the six real adapters — against REAL initdb/postgres/podman/
 // compass-server/compass-runner, proving the whole embedded stack stands up.
 //
-// The frozen gate (design.md:437-442): `up` reaches Health=Ready (server
+// The gate (design.md:437-442): `up` reaches Health=Ready (server
 // answering AND the runner spawned with an image present), `down` drains
 // cleanly, a second `up` ATTACHES instead of double-spawning, and two concurrent
 // `up`s produce exactly one stack.

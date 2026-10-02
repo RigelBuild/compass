@@ -4,12 +4,12 @@ Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: RIG-2111 (live board doesn't match the company-site reference render);
 after the RIG-2034 DS-token cutover (merged, main `18e988b5`). Two adjacent
 concerns are split into their own lanes/PRs, not folded here: the state-dot
-pixel-art glyph adoption → RIG-2118 (mechanical frozen-spec adoption, global
+pixel-art glyph adoption → RIG-2118 (mechanical spec adoption, global
 across surfaces); review/CI badge semantic clarity → RIG-2117 (its own design
 pass — see T4). This record is the board-structure re-clothe and ships on the
 current state-dots.
 Governing spec: `apps/ui/src/design/surfaces.md` §"Bridge — the Issues and PRs
-board" (L196–268, frozen T6/RIG-1816)
+board" (L196–268, from T6/RIG-1816)
 Reference render: the canonical Rigel company-site board reference render (the
 brand reference for this surface — see
 [`docs/specs/brand/surfaces.md`](../../../specs/brand/surfaces.md) §"The board
@@ -20,7 +20,7 @@ reference render")
 The live Bridge board (`apps/ui/src/components/Bridge.tsx`) renders on the
 merged `--cx-*` tier but still wears its pre-DS clothing: GitHub-board-style
 bordered cells, rounded priority-striped cards, a plain 13px toolbar heading,
-and a PRs tab that is a grouped list rather than the board the frozen spec
+and a PRs tab that is a grouped list rather than the board the spec
 describes. The canonical Rigel company-site board reference render is the
 excellence bar the surfaces spec names as "the starting point … not a redraw"
 (`surfaces.md:202-203`). This record lifts the reference's visual structure
@@ -140,7 +140,7 @@ The reference is lifted at three levels:
    `--cx-bg-panel` (the reference's `.bridge-lane { background:
    var(--rigel-panel) }`, the reference render), and the board frame on
    a single outer `--cx-border` border. Same optics, sticky-safe mechanics.
-2. **Composition** — the frozen `surfaces.md` §Composition contract
+2. **Composition** — the `surfaces.md` §Composition contract
    (`surfaces.md:224-234`): cells are `.cx-card` on the panel tier; selection
    is `--cx-bg-selected` plus the accent left rule, never a raised background;
    the column-head tint consumes `--cx-issue-*` at low alpha in the lane head
@@ -165,12 +165,12 @@ Where the DS and the reference disagree on primitive shape (the DS `.cx-card`
 carries `--cx-radius-md` and motion-token transitions,
 `design/components/card.css:11,17-19`; the reference card is square,
 the reference render), **the DS wins on shape** — the reference guides
-structure, spacing, and hierarchy; frozen DS components govern primitive shape.
+structure, spacing, and hierarchy; DS components govern primitive shape.
 Where **no DS component governs the element** (the CI/review pips, the seg
 control), the reference's shape wins (OQ-1, generalizing the draft's pip-only
 carve-out).
 
-The PRs view is the one structural change (D1): `surfaces.md:206-210` freezes
+The PRs view is the one structural change (D1): `surfaces.md:206-210` specifies
 "both are the same swimlane grid, only the columns differ — … PRs use the
 PR-lifecycle columns (In progress, In review, Ready to merge, Merged)", and the
 reference renders exactly that (the reference render). The live
@@ -263,7 +263,7 @@ re-run.
 
 Wire `design/components/card.css` into the cascade (import in `App.tsx` after
 `base.css`, before `app.css`, preserving the load-bearing order the cutover
-froze), flip the `IssueCard` container from `class="card"` +
+set), flip the `IssueCard` container from `class="card"` +
 `classList={{ selected }}` (`IssueCard.tsx:46-48`) to `class="cx-card"` +
 `data-selected`, drop the priority left-stripe (selection owns the left rule
 per `card.css:33-37`), and restyle the `card-issue`/`card-title` sub-part

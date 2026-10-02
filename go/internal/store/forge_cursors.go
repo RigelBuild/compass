@@ -120,7 +120,7 @@ func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSu
 // reconciler's per-pass target enumeration across all coordinates. No rows is a
 // nil slice, not an error.
 //
-// Repo-only keyed (no provider/host), matching the frozen repo-keyed ingest
+// Repo-only keyed (no provider/host), matching the repo-keyed ingest
 // seam. In a github.com-only deployment repo is unambiguous; if multi-host is
 // ever enabled, two coordinates sharing a repo string (e.g. github.com and a GHE
 // host both carrying "a/b") would collapse to one entry here and to an ambiguous

@@ -115,7 +115,7 @@ PATH — its only devenv invocations run the vendored fork's CLI by path
 `agent-image/moon.yml:44`; `devenv.nix:484`). The Renovate job therefore
 builds that same fork (the flake exports the CLI as
 `packages.<system>.devenv`, `forks/devenv/flake.nix:113-115`) and shims it
-onto PATH. This is FORCED by the frozen fork posture, not a fresh choice: the
+onto PATH. This follows from the fork posture, not a fresh choice: the
 image pipeline pins to "the vendored fork's own CLI … so it cannot diverge
 from the fork source" (`devenv.nix:465-468`;
 `docs/designs/agent/compass-forks-reversal/design.md:125-134` — "The
@@ -436,7 +436,7 @@ devenv runs ("pinned to the vendored fork's own CLI … so it cannot diverge
 from the fork source", `devenv.nix:465-468`; "The fork's own CLI is invoked
 by path everywhere the image is built",
 `docs/designs/agent/compass-forks-reversal/design.md:125-134`) — exactly
-the divergence the frozen fork posture exists to eliminate. The vendored-fork
+the divergence the fork posture exists to eliminate. The vendored-fork
 shim in B costs one `nix build` (cache-bounded) and keeps a single devenv.
 
 ## Plan

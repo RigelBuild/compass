@@ -45,7 +45,7 @@ export const priorityBatchRetries = Metric.counter(
 
 // Flush shape: why each cycled batch was sent. `reason` is a static set, so the
 // arms are pre-tagged like trace_frames_lost. The namespace defaults to "" —
-// production yields the frozen name; a test passes a private prefix.
+// production yields the bare name; a test passes a private prefix.
 export const batchesFlushedBy = (
 	namespace = "",
 ): Record<"full" | "drain" | "short", Metric.Metric.Counter<number>> => {

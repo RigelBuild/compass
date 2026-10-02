@@ -6,7 +6,7 @@
 //
 // It is a semantics ledger, not a behavior test of our code: every case pins one
 // property of `effect` itself, with a header naming the design mechanism that
-// rests on it. Where a fact contradicts the frozen record, the case pins the
+// rests on it. Where a fact contradicts the design record, the case pins the
 // TRUE behavior and says so in its header — the record is a spec, and a spec that
 // misreads the library is a bug the executor surfaces, not silently honors.
 //
@@ -69,7 +69,7 @@ test("Queue.sliding effectful offer drops the OLDEST element on overflow", async
 	expect(survivors).toEqual([3, 4, 5]);
 });
 
-// CONTRADICTS THE FROZEN RECORD — pinned deliberately. The record's T3 mapping
+// CONTRADICTS THE DESIGN RECORD — pinned deliberately. The record's T3 mapping
 // (design.md, trace-lane row) specifies Queue.unsafeOffer for the sync emit()
 // path and states it "always returns true (never signals eviction)" with
 // drop-oldest semantics. In effect 3.22.1 that is FALSE: unsafeOffer bypasses the

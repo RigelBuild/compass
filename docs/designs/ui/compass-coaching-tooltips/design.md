@@ -154,7 +154,7 @@ via `<ShortcutChip chord={…}>` (`ShortcutChip.tsx:14-23`) exactly as the
 `PrimaryAction` resolves its command and renders `<ShortcutChip>`
 right-aligned … The chord comes from `shortcutFor(command, platform)`
 (keymap.ts), never a hand-authored string" (`commands.ts:97-100`). This is the
-first consumer of that frozen contract. Platform comes from `detectPlatform()`
+first consumer of that contract. Platform comes from `detectPlatform()`
 (`dispatch.ts:81-84`), matching every existing chip site (`App.tsx:64`,
 `LeftSidebar.tsx:431`, `Palette.tsx:86`).
 

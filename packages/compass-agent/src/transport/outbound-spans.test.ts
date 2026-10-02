@@ -190,7 +190,7 @@ test("an always-failing durable send records ERROR status on the durable_send sp
 	// Mutation: moving the withSpan OUTSIDE Effect.exit → the failure is
 	// absorbed before the span sees it → status stays unset → red.
 	// The ladder is [50,200,800,2000]ms of the CODE's own backoff sleeps
-	// (frozen exported const, not shortenable); the 10s timeout covers the
+	// (an exported const with no test override); the 10s timeout covers the
 	// ~3.05s of real backoff with no test-authored timer.
 	const exporter = new InMemorySpanExporter();
 	const runtime = recordingRuntime(exporter);
