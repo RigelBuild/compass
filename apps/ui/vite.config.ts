@@ -7,6 +7,9 @@ import solid from "vite-plugin-solid";
 // no dev proxy is needed here.
 export default defineConfig({
 	plugins: [solid()],
+	// Relative asset URLs: the bundle is also served under a sub-path (`/ui/`),
+	// and hash routing keeps every view at the one document path.
+	base: "./",
 	// Pin the dev-server port so the URL is copy-paste stable across restarts;
 	// strictPort fails loudly rather than silently drifting to 5174 if taken.
 	server: { port: 5173, strictPort: true },
