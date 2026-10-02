@@ -12,6 +12,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 )
@@ -109,7 +112,9 @@ func TestStartLinearResponderShutdownIsClean(t *testing.T) {
 			parent, cancel := tc.parent()
 			defer cancel()
 			g, gctx := errgroup.WithContext(parent)
-			startLinearResponder(gctx, g, linearagent.NewDispatcher(linearagent.DispatcherParams{Buffer: 1}))
+			bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+			defer bus.Close()
+			startLinearResponder(gctx, g, linearagent.NewDispatcher(linearagent.DispatcherParams{Buffer: 1}), bus)
 			if err := g.Wait(); err != nil {
 				t.Fatalf("serve group = %v, want nil (shutdown is not a serve error)", err)
 			}
