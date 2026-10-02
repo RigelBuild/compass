@@ -102,8 +102,8 @@ const HTML_BLOCKS: {
 	blankTerminated: boolean;
 }[] = [
 	{
-		start: /^ {0,3}<(?:script|pre|style)(?:\s|>|\/)/i,
-		end: /^ {0,3}<\/(?:script|pre|style)\s*>/i,
+		start: /^ {0,3}<(?:script|pre|style|textarea)(?:\s|>|\/)/i,
+		end: /<\/(?:script|pre|style|textarea)>/i,
 		blankTerminated: false,
 	},
 	{ start: /^ {0,3}<!--/, end: /-->/, blankTerminated: false },
@@ -239,8 +239,15 @@ function classifyLine(
 	if (isLedgerRowLine(line))
 		return classifyLedgerRow(line, index, lines, state);
 	if (line.trim() === "|") state.barePipeInterrupted = true;
-	if (line.trim() === "") state.listItem = false;
-	else if (/^ {0,3}(?:[-+*]|\d+[.)])\s/.test(line)) state.listItem = true;
+	if (line.trim() === "") {
+		state.listItem = false;
+		state.barePipeInterrupted = false;
+	} else if (/^ {0,3}(?:[-+*]|\d+[.)])\s/.test(line)) state.listItem = true;
+	else if (
+		/^ {0,3}#{1,6}(?:\s|$)/.test(line) ||
+		/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)
+	)
+		state.listItem = false;
 	return line;
 }
 

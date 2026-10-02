@@ -177,6 +177,26 @@ describe("shared line classification", () => {
 			{ id: "DL-001", surface: "designs", ref: "none" },
 		]);
 	});
+	test("resets a stray pipe interruption at a blank line", () => {
+		const text = ["|", "", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+
+	test("closes a single-line pre block before a ledger table", () => {
+		const text = ["<pre>x</pre>", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+
+	test("clears list context at a heading before a ledger table", () => {
+		const text = ["- item", "# Heading", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
 	// Both counters read one classification pre-pass, so no fence or comment
 	// shape resolves for one and not the other. The floor carries no table
 	// anchor, so it still reads high where a classified-out region interrupts a
