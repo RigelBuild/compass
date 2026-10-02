@@ -365,14 +365,14 @@ async function assertExists(path: string, what: string): Promise<void> {
  * `hdiutil info` both leave the build untouched — a cleanup that reds a green
  * system is worse than the leak.
  */
-async function detachStaleAttachments(target: {
-	imagePath: string;
-	volumeName: string;
-}): Promise<void> {
-	const info = await $`hdiutil info -plist`.quiet().nothrow();
+export async function detachStaleAttachments(
+	target: { imagePath: string; volumeName: string },
+	runProbe: typeof probe = probe,
+): Promise<void> {
+	const info = await runProbe(["hdiutil", "info", "-plist"]);
 	if (info.exitCode !== 0) return;
-	for (const mount of staleMountPoints(info.stdout.toString(), target)) {
-		await $`hdiutil detach ${mount} -force`.quiet().nothrow();
+	for (const mount of staleMountPoints(info.stdout, target)) {
+		await runProbe(["hdiutil", "detach", mount, "-force"]);
 	}
 }
 
