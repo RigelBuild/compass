@@ -234,3 +234,14 @@ jj workspace forget ws-router && rm -rf ../ws-router   # teardown: forget, then 
 | Tear down a workspace (then `rm -rf` it) | `jj workspace forget <name>` |
 | Undo the last jj operation | `jj undo` |
 | Rewind the repo to an earlier state | `jj --no-pager op log` then `jj op restore <op-id>` |
+
+## Submission and handoff
+
+Fetch and rebase onto current `main@origin` before every submit. Re-check each
+affected head and its relevant checks after rebasing. A stack is one linear line;
+submit its top so dependencies travel together, and describe each PR's base when
+handing off a stack. The operator owns the final merge. Do not submit after
+approval changes the reviewed head; obtain a fresh review after any such update.
+
+The detailed version-control invariants follow DL-142. Do not bypass the
+`jj-vine submit` path with direct pushes.
