@@ -14,7 +14,7 @@ reference and this record's citations into `compass-agent-trees/design.md`
 resolve at merge time.
 
 **This is a de-special-casing record.** It designs the presentation layer the
-agent-trees record names and defers: DL-095 froze that the agent tree is
+agent-trees record names and defers: DL-095 ruled that the agent tree is
 Compass's organizing primitive, that no agent is special-cased, and that
 "pinning is layered on top, never a hole in the structure"
 (`compass-agent-trees/design.md` §The tree replaces the user-defined folder
@@ -59,7 +59,7 @@ IssueTab;`), and the shell boots onto one of them
 conversation (D6)" / `createSignal<RightSidebarTab>("supervisor")`).
 
 Matt ruled (2026-08-01): make sidebar pins configurable, **so we can
-de-special-case the supervisor and warden**. Under DL-095's frozen frame —
+de-special-case the supervisor and warden**. Under DL-095's frame —
 no agent is special-cased; every agent lives in the derived tree; pinning is
 a separate presentation layer, never a hole in the tree — a hardcoded
 two-agent fleet group is exactly the special-casing being retired. The
@@ -71,7 +71,7 @@ conversation tab there, defaulting to none, with no baked-in pair.
 
 ### Pins are presentation over the tree, never structure
 
-The frozen premise (DL-095, cited above) does the framing work: the agent
+DL-095's premise (cited above) does the framing work: the agent
 tree carries *every* agent; a pin never removes an agent from the tree and
 never grants it model-level privilege. A pin is one thing only — a
 user-chosen shortcut that surfaces an agent's conversation as an always-visible
@@ -207,7 +207,7 @@ that is its own record.
 
 - **Presentation only.** Pins do not touch the agent tree, do not touch
   `parent_agent_id`, and are never a hole in the tree — a pinned agent is
-  also in the tree (DL-095, frozen). No server model change ships in this
+  also in the tree (DL-095). No server model change ships in this
   record.
 - **Roles are RIG-1623.** The `supervisor`/`warden` *role* vocabulary
   survives this record untouched — e.g. the tree row's role pip
@@ -248,7 +248,7 @@ common abstraction now is speculative generality with one real consumer.
 
 ### Global Constraints
 
-- **No built-in privileged agent** (Matt, 2026-08-01; frame frozen by
+- **No built-in privileged agent** (Matt, 2026-08-01; frame set by
   DL-095): no agent account id, agent name, or role appears as a constant,
   union literal, or default in the pin/tab model. The default pin set is
   empty.
@@ -267,7 +267,7 @@ common abstraction now is speculative generality with one real consumer.
   in the right sidebar's fleet tabs",
   `compass/apps/ui/src/stub-data.ts:1242-1245`), so landing T2-T5 first
   would leave those agents with no hardcoded tab and no tree row to pin
-  from — a de-facto hole the frozen premise forbids. This record's code
+  from — a de-facto hole the DL-095 premise forbids. This record's code
   lands after Record C's tree-derivation task, which puts every agent
   (supervisor and warden included) in the tree the pin affordance offers.
 - **Vocabulary**: *pin / unpin*, *pin set*, *pinned agent tab*. "Fleet

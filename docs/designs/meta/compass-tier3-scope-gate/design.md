@@ -92,13 +92,13 @@ the main zone actually holds focus.
 - Every new global-chord contract needs a **production-wiring test**: mount
   the real App via `mountApp`, press the chord, observe the store — not a
   unit stub alone.
-- **This modifies a frozen contract.** `dispatch.ts` was frozen by RIG-2130
-  RD-2 and explicitly left unmodified by RIG-2456 ("`apps/ui/src/keyboard/
+- **This changes `dispatch.ts`.** RIG-2130 RD-2 set its shape, and
+  RIG-2456 left it unmodified ("`apps/ui/src/keyboard/
   dispatch.ts` is **not modified**", `compass-keyboard-spine-app-root/
-  design.md:38-42`) and by RD-4 ("`dispatch.ts` stays frozen"). Amending a
-  frozen contract requires its own record + PR + review — this record is
-  that amendment, and the flipped RD-4 pin test (T2) is the visible,
-  reviewable proof that the contract changed deliberately.
+  design.md:38-42`), as did RD-4 ("`dispatch.ts` stays frozen"). This
+  record makes the change, and the flipped RD-4 pin test (T2) is the
+  visible, reviewable proof that the behavior changed
+  deliberately.
 - Ledger: new decisions are record-local (Decisions below); the driver
   assembles DL rows into `DECISIONS.md` at PR-assembly time (DL ids are global
   across all sections; the true max on main is DL-226, `DECISIONS.md:154`, so
@@ -410,7 +410,7 @@ registrations safe); enforce commit order T1 → T3.
 ## Cross-record note
 
 - RIG-2482 (keyboard-shortcuts overlay) and RIG-2483 (command palette) both
-  cite this record as **external frozen substrate**, the same way they cite
+  cite this record as **external substrate**, the same way they cite
   the merged RIG-2456 spine — they consume the D4 rule, they do not redefine
   it.
 - The two siblings depend on this record differently:

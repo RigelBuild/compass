@@ -16,7 +16,7 @@ import (
 // two producers — T4's webhook ApplyEvent (this file) and T5's sweep full-fetch
 // rebuild — and its digest (SnapshotRevision) MUST be byte-identical across both
 // for the same artifact state (the cross-producer canonicalization invariant,
-// design.md:517-533). The field set is grounded strictly on what the frozen
+// design.md:517-533). The field set is grounded strictly on what the
 // forge.ForgeEvent currency (T2) carries, so both producers can reproduce it:
 //   - State: the forge state string, ALREADY canonicalized at parse time
 //     (closed+merged -> "merged" in both arms: gitHubPRState, mapLinearState).
@@ -30,7 +30,7 @@ import (
 //   - HighWaterNumber: the container-scope high-water artifact number (OPENED).
 //
 // FORK (surfaced, not invented): the design prose also lists "labels, etc." and
-// "label ordering / truncation" in the snapshot. The frozen ForgeEvent currency
+// "label ordering / truncation" in the snapshot. The ForgeEvent currency
 // carries NO title/body/labels (notify_event.go:17-49), so the webhook arm
 // cannot populate them — UPDATE (and REVIEW) are therefore snapshot-NEUTRAL here
 // (notify-only, like a duplicate comment). When T5's full-fetch rebuild adds

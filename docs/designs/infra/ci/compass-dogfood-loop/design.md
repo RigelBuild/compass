@@ -308,7 +308,7 @@ container-spawn + session-start today. But spawn+idle does NOT satisfy the
 ruled acceptance ("runs an agent turn"), and a real turn needs BOTH a
 credential in the container AND the provider host in `--egress-allow`
 (Approach §4). The production cred path IS being built: the RIG-1327 secrets
-materializer (ITEM 7 — FetchSecrets → the runner writes the frozen
+materializer (ITEM 7 — FetchSecrets → the runner writes
 `auth-seed.json`) is the writer the compass-server lane owns, so the real-turn
 leg sequences AFTER ITEM 7 rather than needing a throwaway seed. How and when
 the turn becomes real is D1 (sequencing) + D2 (LiteLLM proxy, key via user
@@ -593,7 +593,7 @@ were batched to Matt at the design-PR gate and ruled as noted.
    "runs a turn" acceptance completes once the RIG-1327 secrets materializer
    (compass-server lane) and the driver (T5) land. A real turn needs three
    coupled pieces, all deferred to that chain: (i) the provider credential —
-   the frozen 0600 `$HOME/.compass/auth-seed.json` the RIG-1327 materializer
+   the 0600 `$HOME/.compass/auth-seed.json` the RIG-1327 materializer
    writes (`packages/compass-agent/src/cli.ts:47-50,98-102`;
    `cli.test.ts:110-111`); (ii) the provider host in `--egress-allow` (default
    is pure default-deny, `go/internal/runtime/egress.go:29-31`,

@@ -635,7 +635,7 @@ describe("prCount", () => {
 		expect(prCount(all, new Set<string>())).toBe(0);
 	});
 
-	// Frozen-contract edge (Record B §T2): unscoped prCount is prRows(all).length —
+	// Contract edge (Record B §T2): unscoped prCount is prRows(all).length —
 	// it counts every open-PR row and is deliberately NOT agent-aware (the signature
 	// takes no agent set). prRowGroups, by contrast, only emits rows whose assignee
 	// is null or matches a known agent, so an issue with a non-null assignee that is

@@ -129,8 +129,8 @@ func (e *recordingEngine) MountLabel(context.Context, runtime.WorkloadID) (strin
 
 // Resize is a forward-declared stub: the container-runtime seam reserves a
 // Resize verb the in-place backend never calls, so the fake carries it to stay
-// a total implementation of the engine interface as that interface freezes the
-// verb in.
+// a total implementation of the engine interface, which carries the
+// verb.
 func (e *recordingEngine) Resize(context.Context, runtime.WorkloadID, runtime.ResourceLimits) error {
 	return errors.New("recordingEngine: Resize unused")
 }

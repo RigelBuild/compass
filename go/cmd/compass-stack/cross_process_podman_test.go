@@ -3,7 +3,7 @@
 package main
 
 // T4.3 gate — the scripted, headless (no-webview), CROSS-PROCESS teardown proof
-// the frozen native-app design requires (design.md:465-491: "Manual QA + a
+// the native-app design requires (design.md:465-491: "Manual QA + a
 // scripted compass-stack-level CI variant (headless, no webview)"). It closes
 // the gap TestStackIntegration leaves: that test proves up→Ready→down but ONLY
 // in-process (one process owns the child handles). The real app path is
@@ -15,8 +15,8 @@ package main
 // as SEPARATE processes end to end, exactly as the app does.
 //
 // It is a pure test-only addition: it changes no production code under
-// internal/stack or cmd/compass-stack/main.go (the teardown mechanism is frozen
-// and already reviewed in PR #248) and reuses the in-process test's helpers
+// internal/stack or cmd/compass-stack/main.go (the teardown mechanism landed
+// and was reviewed in PR #248) and reuses the in-process test's helpers
 // (shortRoot, freePorts, buildBinariesFromModuleRoot, podmanUsable, newFixture
 // via resolveConfig/buildDeps, assertServerGone, assertPostgresGone,
 // agentImage/probeTimeout) that live in integration_podman_test.go, same package.

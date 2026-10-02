@@ -88,12 +88,12 @@ func TestVersion(t *testing.T) {
 			}
 		}
 	}
-	// Positively pin the frozen SHA-256 algorithm: the version of "" is the
+	// Positively pin the SHA-256 algorithm: the version of "" is the
 	// bare SHA-256 of the empty string. Safe to pin now that the version is
 	// never logged (no confirmation-oracle exposure).
 	const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	if got := Version(""); got != emptySHA256 {
-		t.Errorf("Version(\"\") = %q, want %q (frozen SHA-256 of empty)", got, emptySHA256)
+		t.Errorf("Version(\"\") = %q, want %q (SHA-256 of empty)", got, emptySHA256)
 	}
 }
 

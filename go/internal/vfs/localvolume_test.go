@@ -941,7 +941,7 @@ func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 		t.Fatalf("releasing the volume lock: %v", err)
 	}
 
-	// The stamp, by contrast, stays INSIDE the volume root (the frozen record
+	// The stamp, by contrast, stays INSIDE the volume root (the design record
 	// places it there), and eachVolume iterates directories only, so the
 	// sibling lock file is never mistaken for a volume.
 	live := mustCreate(t, m, "sess-stamped")

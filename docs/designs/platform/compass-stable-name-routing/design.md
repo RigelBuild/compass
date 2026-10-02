@@ -4,18 +4,18 @@ Ledger-impact: none (platform surface is ungoverned by the design ledger — no
 DECISIONS.md delta).
 
 Status: draft for freeze (red-teamed + folded; narrowed to stable-name
-provider routing only — model SELECTION is owned by the frozen RIG-2936
+provider routing only — model SELECTION is owned by the RIG-2936
 profile record + OMP's built-in `modelRoles`; Matt's freeze-gate rulings
 on OQ-1/OQ-2/OQ-3/OQ-4/OQ-5 are all folded — the stable-name registry
 is server-side operator config in a versioned Server store behind an
 operator-scoped `compass.v1` write RPC, a scope-driven refinement of the
 earlier VC'd-content ruling now that the record is routing-only — the
-frozen RIG-2936 delivery boundary holds, and the container-listing /
+RIG-2936 delivery boundary holds, and the container-listing /
 bundle-hash sub-seam (OQ-2) is ruled belt-and-suspenders (gateway
 discovery + static cold-boot seed, composed-hash option A): NO
 load-bearing open forks remain — the record is freeze-ready).
-Composes with the frozen RIG-1715 gateway record
-(`docs/designs/platform/compass-server-llm-gateway/design.md`), the frozen
+Composes with the RIG-1715 gateway record
+(`docs/designs/platform/compass-server-llm-gateway/design.md`), the
 RIG-2936 per-Manager profile record
 (`docs/designs/agent/compass-per-agent-overrides/design.md`), the
 config-delivery record
@@ -43,7 +43,7 @@ model-stack axis, `compass-per-agent-overrides/design.md:1204-1211`), and
 OMP's built-in `modelRoles` map carries the tier defaults. This record
 supplies only the stable-name VOCABULARY those profile fields reference and
 the upstream ROUTING of those names — narrowing the RIG-2845 scope the
-frozen RIG-2936 DL-288 boundary named (taxonomy + routing,
+RIG-2936 DL-288 boundary named (taxonomy + routing,
 `compass-per-agent-overrides/design.md:469-474`) to its routing half.
 
 ## Global Constraints
@@ -249,7 +249,7 @@ decisions). Three layers:
    `DeleteAgentConfig`
    (`compass-agent-config-delivery/design.md:173-178`) — editable via
    operator tooling, no config-repo PR + CI publish required. A
-   profile's `models.manager`/`models.agents` fields (RIG-2936's frozen
+   profile's `models.manager`/`models.agents` fields (RIG-2936's
    schema, `profiles/<name>/profile.yml` in the fleet config bundle,
    `compass-per-agent-overrides/design.md:177-218`) name models in this
    record's stable-name vocabulary. Agents never author any of it: "The
@@ -257,7 +257,7 @@ decisions). Three layers:
    Layer 2, `compass-per-agent-overrides/design.md:494-501`) — the write
    RPC is operator-scoped, exactly like CD-1's.
 2. **Selection delivery (RIG-2936-owned — do not rebuild).** How a chosen
-   profile's model fields reach a session is frozen in RIG-2936 T6:
+   profile's model fields reach a session is specified in RIG-2936 T6:
    `models.manager` → the session `modelPattern` ("the profile is the sole
    model source for a Compass-provisioned session, superseding the
    Runner-global `COMPASS_MODEL`") and `models.agents` →
@@ -349,7 +349,7 @@ gateway-side.
 ## Plan
 
 Ordering: P2 → P1 → P4; P5 (docs/defaults) parallel after P2. P3 is
-dissolved — model delivery is RIG-2936 T6's (frozen); its residue (the
+dissolved — model delivery is RIG-2936 T6's; its residue (the
 stable-name vocabulary + the container-registry listing) is carried by
 P1/P2.
 P1 depends on RIG-1715 T2/T3 (pool resolver + tenant identity) having
@@ -559,7 +559,7 @@ Interfaces:
 ### P3 — dissolved: delivery is RIG-2936 T6's; the vocabulary residue moves to P1/P2
 
 The prior P3 — Runner resolution of a policy store into `COMPASS_MODEL` +
-merged `modelRoles` — is SUPERSEDED by the frozen RIG-2936 T6 render: the
+merged `modelRoles` — is SUPERSEDED by the RIG-2936 T6 render: the
 entrypoint resolves `COMPASS_PROFILE` against the mounted
 `profiles/<name>/profile.yml` and renders `models.manager` → the session
 `modelPattern` (the sole model source for a Compass-provisioned session,
@@ -797,7 +797,7 @@ Interfaces:
   operator review.
 - **Delivery seam — RIG-2936-owned.** Per-Manager profile selection +
   propagation (`models.manager` → the session `modelPattern`;
-  `models.agents` → `task.agentModelOverrides`) is frozen in RIG-2936
+  `models.agents` → `task.agentModelOverrides`) is specified in RIG-2936
   (DL-283/DL-284/DL-288,
   `compass-per-agent-overrides/design.md:890-900,469-474`); this record
   supplies the vocabulary those fields reference and never re-specifies
