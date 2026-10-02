@@ -133,6 +133,7 @@ WHERE ah.owner_user_id IS NULL AND ah.handle = ANY($2::text[])
               a.id = $1
            OR u.account_id IS NOT NULL
            OR ag.owner_user_id = $1
+           OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
            OR EXISTS (
                SELECT 1
                FROM channel_members cm_self
@@ -157,6 +158,7 @@ WHERE (ah.owner_user_id, ah.handle) IN (SELECT unnest($2::text[]), unnest($3::te
               a.id = $1
            OR u.account_id IS NOT NULL
            OR ag.owner_user_id = $1
+           OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
            OR EXISTS (
                SELECT 1
                FROM channel_members cm_self
@@ -180,6 +182,7 @@ WHERE (
         a.id = $1
      OR u.account_id IS NOT NULL
      OR ag.owner_user_id = $1
+     OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
      OR EXISTS (
          SELECT 1
          FROM channel_members cm_self
@@ -200,6 +203,7 @@ SELECT EXISTS (
             a.id = $1
          OR u.account_id IS NOT NULL
          OR ag.owner_user_id = $1
+         OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
          OR EXISTS (
              SELECT 1
              FROM channel_members cm_self

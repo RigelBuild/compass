@@ -527,3 +527,51 @@ func TestGetRosterClipsCallerInvisibleTreeMember(t *testing.T) {
 		t.Errorf("caller-invisible tree member %q leaked into the roster", hidden.Handle)
 	}
 }
+
+// An agent caller sees every agent of its own owner, including a grandchild it
+// shares no channel with. Another owner's agent stays clipped.
+func TestGetRosterAgentCallerSeesSameOwnerGrandchild(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+
+	supervisor := mustAgent(t, st, owner.ID, "supervisor")
+	manager := mustChildAgent(t, st, owner.ID, "manager", supervisor.ID)
+	grandchild := mustChildAgent(t, st, owner.ID, "grandchild", manager.ID)
+	foreign := mustAgent(t, st, other.ID, "foreign")
+
+	for _, scope := range []compassv1.RosterScope{
+		compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
+		compassv1.RosterScope_ROSTER_SCOPE_OWNER,
+	} {
+		resp, err := svc.GetRoster(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+			Scope:         scope,
+			VantageHandle: supervisor.Handle,
+		}))
+		if err != nil {
+			t.Fatalf("GetRoster(%v): %v", scope, err)
+		}
+		got := rosterByID(resp.Msg.GetEntries())
+		for _, want := range []store.Account{manager, grandchild} {
+			if _, ok := got[string(want.ID)]; !ok {
+				t.Errorf("%v: supervisor missing same-owner %q", scope, want.Handle)
+			}
+		}
+		if _, ok := got[string(foreign.ID)]; ok {
+			t.Errorf("%v: another owner's agent %q leaked", scope, foreign.Handle)
+		}
+	}
+
+	visible, err := st.ListAccounts(ctx, supervisor.ID)
+	if err != nil {
+		t.Fatalf("ListAccounts(supervisor): %v", err)
+	}
+	ids := map[store.AccountID]bool{}
+	for _, a := range visible {
+		ids[a.ID] = true
+	}
+	if !ids[grandchild.ID] || ids[foreign.ID] {
+		t.Errorf("ListAccounts(supervisor): grandchild=%v foreign=%v, want true/false", ids[grandchild.ID], ids[foreign.ID])
+	}
+}
