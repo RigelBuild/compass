@@ -49,19 +49,23 @@ export async function bootBrowser(
 		return undefined;
 	}
 	const stored = loadToken(env.baseUrl);
-	const conn = { ...env, token: stored ?? env.token };
-	try {
-		await deps.probe(conn);
-		return conn;
-	} catch (error) {
-		if (!isUnauthenticated(error)) {
+	// Stored first (the user last proved it), then the build-time bearer, then none.
+	const candidates = [...new Set([stored, env.token])].filter(Boolean);
+	for (const token of candidates.length ? candidates : [undefined]) {
+		const conn = { ...env, token };
+		try {
+			await deps.probe(conn);
 			return conn;
+		} catch (error) {
+			if (!isUnauthenticated(error)) {
+				return conn;
+			}
+			if (token === stored) {
+				clearToken(env.baseUrl);
+			}
 		}
 	}
-	if (stored) {
-		clearToken(env.baseUrl);
-	}
-	return awaitToken(root, env, deps, stored !== undefined || !!env.token);
+	return awaitToken(root, env, deps, candidates.length > 0);
 }
 
 /** Show the token screen until the door accepts a pasted token, then store it. */
@@ -110,8 +114,10 @@ function awaitToken(
 				error instanceof Error ? error.message : String(error),
 			);
 		};
+		// One probe at a time: a second success would store a token other than the one booted.
+		let inFlight = false;
 		const syncDisabled = (): void => {
-			button.disabled = input.value.trim().length === 0;
+			button.disabled = inFlight || input.value.trim().length === 0;
 		};
 		input.addEventListener("input", syncDisabled);
 		paint(rejected ? REJECTED : "This server needs a token", PASTE_HINT);
@@ -120,9 +126,10 @@ function awaitToken(
 		screen.addEventListener("submit", (event) => {
 			event.preventDefault();
 			const token = input.value.trim();
-			if (!token) {
+			if (!token || inFlight) {
 				return;
 			}
+			inFlight = true;
 			button.disabled = true;
 			input.value = "";
 			const conn = { ...env, token };
@@ -134,6 +141,7 @@ function awaitToken(
 					resolve(conn);
 				},
 				(error: unknown) => {
+					inFlight = false;
 					paintFailure(error);
 					syncDisabled();
 				},

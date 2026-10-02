@@ -206,6 +206,38 @@ describe("bootBrowser", () => {
 		expect(presented).toEqual([`Bearer ${VALID}`]);
 	});
 
+	test("a rejected stored token falls back to the build-time bearer", async () => {
+		localStorage.setItem(KEY, "revoked");
+		const root = document.createElement("div");
+
+		const conn = await bootBrowser(root, deps({ ...ENV, token: VALID }));
+
+		expect(conn?.token).toBe(VALID);
+		expect(presented).toEqual(["Bearer revoked", `Bearer ${VALID}`]);
+		expect(localStorage.getItem(KEY)).toBeNull();
+	});
+
+	test("a token stored under the bare origin is found for a trailing-slash door", async () => {
+		localStorage.setItem(KEY, VALID);
+		const root = document.createElement("div");
+
+		const conn = await bootBrowser(root, deps({ ...ENV, baseUrl: `${DOOR}/` }));
+
+		expect(conn?.token).toBe(VALID);
+	});
+
+	test("typing during an in-flight probe cannot start a second one", async () => {
+		const root = document.createElement("div");
+		void bootBrowser(root, deps());
+		await screenShows(root, "This server needs a token");
+
+		submit(root, "wrong");
+		submit(root, "second");
+		await screenShows(root, "The server rejected this token");
+
+		expect(presented).toEqual([null, "Bearer wrong"]);
+	});
+
 	test("a missing door paints the env failure and returns undefined", async () => {
 		const root = document.createElement("div");
 

@@ -2,7 +2,14 @@
 // bearer pasted for one server is never presented to another. Best-effort: a missing or
 // throwing store (privacy mode) means the token lives only for this page load.
 
-const keyFor = (baseUrl: string): string => `compass.token.${baseUrl}`;
+// Origin-only, so a trailing slash or env-vs-origin switch for one door finds the same token.
+function keyFor(baseUrl: string): string {
+	try {
+		return `compass.token.${new URL(baseUrl).origin}`;
+	} catch {
+		return `compass.token.${baseUrl}`;
+	}
+}
 
 function storage(): Storage | undefined {
 	try {
