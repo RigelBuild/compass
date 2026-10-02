@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { parseLedger as parseGateLedger } from "../design-ledger-gate/index.ts";
 import {
 	assertReconcilableLedger,
 	buildRequestBody,
@@ -128,6 +130,42 @@ describe("parseLedger", () => {
 			{ id: "DL-001", surface: "designs", ref: "none" },
 		]);
 	});
+});
+
+describe("cross-tool parser contract", () => {
+	const fixtures = [
+		{
+			name: "plain ledger",
+			text: "| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-001 | plain | Active | [r](r.md) |",
+		},
+		{
+			name: "fenced example rows",
+			text: "```markdown\n| DL-999 | example | x | y |\n```\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-002 | real | Active | [r](r.md) |",
+		},
+		{
+			name: "escaped pipes",
+			text: "| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-003 | left \\| right | Active | [r](r.md) |",
+		},
+		{
+			name: "HTML comment blocks",
+			text: "<!--\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-998 | hidden | x | y |\n-->\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-004 | visible | Active | [r](r.md) |",
+		},
+		{
+			name: "real decision ledger",
+			text: readFileSync(
+				new URL("../../docs/designs/DECISIONS.md", import.meta.url),
+				"utf8",
+			),
+		},
+	];
+
+	for (const fixture of fixtures) {
+		test(fixture.name, () => {
+			const gateIds = parseGateLedger(fixture.text).map((row) => row.id);
+			const reconcileIds = parseLedger(fixture.text).map((row) => row.id);
+			expect(gateIds).toEqual(reconcileIds);
+		});
+	}
 });
 
 type LedgerOutcome =
