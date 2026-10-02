@@ -2,10 +2,10 @@
 #
 # compass-app-bundle (app-bundle/): builds the versioned Compass native-app
 # release tarball (compass-app-<version>-linux-amd64.tar.gz) — the gtk4 shell
-# (compass-app), the three embedded sidecars (compass-stack, compass-server,
-# compass-runner), the UI dist, the desktop file, and LICENSE. No postgres
-# tooling (embedded's postgres is a container, §A4). build.sh owns the
-# realize/build/stage/sanity/tar pipeline.
+# (compass-app), the four embedded sidecars (compass-stack, compass-server,
+# compass-runner, compass-clear-token), the UI dist, the desktop file, and
+# LICENSE. No postgres tooling (embedded's postgres is a container, §A4).
+# build.sh owns the realize/build/stage/sanity/tar pipeline.
 #
 # A heavy-nix-build-as-moon-project, mirroring agent-image/: the build realizes
 # the WebKitGTK cc/pkg-config closure, so it is registered in .moon/workspace.yml
@@ -39,7 +39,7 @@ tasks:
     outputs:
       - 'compass-app-*-linux-amd64.tar.gz'
     # The packaging closure. `/go/**` covers the gtk4 shell's source AND the
-    # three sidecars' (cmd + the internal packages they import), excluding tests;
+    # four sidecars' (cmd + the internal packages they import), excluding tests;
     # the UI dist is covered through the compass-ui:build deps edge (no
     # /apps/ui/src/** belt — moon schedules dependents of affected projects). A
     # leading `/` is workspace-root-relative; the bare globs are this project's
