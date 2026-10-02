@@ -115,13 +115,17 @@ pkgs.runCommand "compass-guest-assembly-tests" { } ''
   mkdir -p "e8/--directory=.." e8/escaped
   tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --no-recursion \
     --transform='s|^\./||' -C e8 -cf - "./--directory=.." escaped | gzip -n > e8.tgz
-  tar -tzf e8.tgz | grep -qx -- '--directory=../\?' || fail "(e) e8 fixture lacks the option-like name"
+  # List to a file: grep -q exits at the first match, so a piped tar can die on a
+  # write error and fail the pipeline under pipefail even though the name is there.
+  tar -tzf e8.tgz > e8.list
+  grep -qx -- '--directory=../\?' e8.list || fail "(e) e8 fixture lacks the option-like name"
   expect_break "option-like member name" assemble unpack "$(mktemp -d)" e8.tgz
 
   mkdir -p "e9/ --directory=.." e9/escaped
   tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --no-recursion \
     --transform='s|^\./||' -C e9 -cf - "./ --directory=.." escaped | gzip -n > e9.tgz
-  tar -tzf e9.tgz | grep -qx -- ' --directory=../\?' || fail "(e) e9 fixture lacks the leading-space name"
+  tar -tzf e9.tgz > e9.list
+  grep -qx -- ' --directory=../\?' e9.list || fail "(e) e9 fixture lacks the leading-space name"
   expect_break "option-like member name" assemble unpack "$(mktemp -d)" e9.tgz
 
   # (f) a leading space is part of the name, so that directory's mode restores.
