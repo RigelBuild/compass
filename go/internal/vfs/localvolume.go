@@ -39,7 +39,7 @@ import (
 // directory under the base dir that does not contain it is not a volume this
 // package owns, and is never scanned, stamped, or reaped (see eachVolume). It
 // lives INSIDE the volume root so that reaping the volume reaps its stamp in
-// one os.RemoveAll — no orphan stamp can outlive the volume it describes. The
+// the stamp travels with the renamed tree and is never read again. The
 // per-volume lock file deliberately does NOT live here (see lockFileSuffix): a
 // lock inside the reaped subtree cannot serialize against the reap itself. The
 // dotted, package-prefixed name keeps it clear of any path a checkout would
@@ -56,6 +56,7 @@ const (
 	// dir: <baseDir>/<sessionID><lockFileSuffix>. Outside the reaped subtree by
 	// construction — see lockVolume for why that placement is load-bearing.
 	lockFileSuffix = ".compass-vfs.lock"
+	reapingSuffix  = ".compass-vfs.reaping"
 	// stampTempPattern names the staging file for an atomic stamp write. It
 	// lives in the same dir as its target so the rename is same-filesystem.
 	stampTempPattern = "close-stamp-*.json.tmp"
@@ -436,22 +437,33 @@ func stampOrphanLocked(root string, discoveredAt time.Time) error {
 // behind it.
 func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) error {
 	now := time.Now()
-	return m.eachVolume(ctx, func(root string) error {
-		lock, err := tryLockVolume(ctx, root)
-		if err != nil {
-			return err
+	return m.scanBaseDir(ctx, func(kind entryKind, root string) error {
+		switch kind {
+		case entryVolume:
+			lock, err := tryLockVolume(ctx, root)
+			if err != nil || lock == nil {
+				return err
+			}
+			reapErr := reapLocked(root, now, olderThan)
+			return errors.Join(reapErr, lock.release())
+		case entryReaping:
+			lock, err := tryLockVolume(ctx, root)
+			if err != nil || lock == nil {
+				return err
+			}
+			removeErr := os.RemoveAll(reapingPath(root))
+			if removeErr != nil {
+				removeErr = fmt.Errorf("vfs: sweeping reaping leftover %q: %w", reapingPath(root), removeErr)
+			}
+			return errors.Join(removeErr, lock.release())
+		default:
+			return nil
 		}
-		if lock == nil {
-			return nil // a live Attach holds it; skip, do not reap.
-		}
-		reapErr := reapLocked(root, now, olderThan)
-		releaseErr := lock.release()
-		return errors.Join(reapErr, releaseErr)
 	})
 }
 
-// reapLocked checks eligibility under the held lock before deleting the volume.
-// The lock file is a sibling, so RemoveAll cannot unlink the held lock inode.
+// reapLocked checks eligibility under the held lock, then renames the root.
+// Rename is the destruction point; RemoveAll only cleans the unreachable tree.
 func reapLocked(root string, now time.Time, olderThan time.Duration) error {
 	stamp, err := readStamp(root)
 	if err != nil {
@@ -460,8 +472,14 @@ func reapLocked(root string, now time.Time, olderThan time.Duration) error {
 	if !eligible(stamp, now, olderThan) {
 		return nil
 	}
-	if err := os.RemoveAll(root); err != nil {
+	if err := os.RemoveAll(reapingPath(root)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("vfs: clearing stale reaping leftover %q: %w", reapingPath(root), err)
+	}
+	if err := os.Rename(root, reapingPath(root)); err != nil {
 		return fmt.Errorf("vfs: reaping expired volume %q: %w", root, err)
+	}
+	if err := os.RemoveAll(reapingPath(root)); err != nil {
+		return fmt.Errorf("vfs: removing reaped volume %q: %w", reapingPath(root), err)
 	}
 	return nil
 }
@@ -507,43 +525,76 @@ func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 	if strings.HasSuffix(sessionID, lockFileSuffix) {
 		return "", fmt.Errorf("%w: %q collides with the volume lock-file namespace %q", ErrInvalidSessionID, sessionID, lockFileSuffix)
 	}
+	if strings.HasSuffix(sessionID, reapingSuffix) {
+		return "", fmt.Errorf("%w: %q collides with the volume reaping namespace %q", ErrInvalidSessionID, sessionID, reapingSuffix)
+	}
 	return filepath.Join(m.baseDir, sessionID), nil
 }
 
-// eachVolume visits only marked volume directories and joins per-volume errors.
-// The marker excludes other subtrees sharing the base dir from stamping/reaping.
-func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) error) error {
+// entryKind classifies base-dir entries by reserved name before structure.
+type entryKind int
+
+const (
+	entryForeign entryKind = iota
+	entryVolume
+	entryLock
+	entryReaping
+)
+
+// reapingPath returns the fixed sibling name for a renamed volume tree.
+func reapingPath(root string) string { return root + reapingSuffix }
+
+// scanBaseDir visits package-owned volume, lock, and reaping entries.
+func (m *LocalManager) scanBaseDir(ctx context.Context, visit func(entryKind, string) error) error {
 	entries, err := os.ReadDir(m.baseDir)
 	if err != nil {
 		return fmt.Errorf("vfs: scanning volume base dir %q: %w", m.baseDir, err)
 	}
 	var errs []error
 	for _, entry := range entries {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			errs = append(errs, ctxErr)
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
 			break
 		}
-		if !entry.IsDir() {
-			continue
-		}
-		root := filepath.Join(m.baseDir, entry.Name())
-		marker, statErr := os.Stat(filepath.Join(root, metaDirName))
-		if statErr != nil {
-			if !errors.Is(statErr, os.ErrNotExist) {
-				// Surfaced, not swallowed: an unreadable marker must not be
-				// silently read as either "a volume" or "not a volume".
-				errs = append(errs, fmt.Errorf("vfs: inspecting volume marker in %q: %w", root, statErr))
+		name := entry.Name()
+		var kind entryKind
+		var root string
+		switch {
+		case strings.HasSuffix(name, lockFileSuffix) && !entry.IsDir():
+			kind, root = entryLock, filepath.Join(m.baseDir, strings.TrimSuffix(name, lockFileSuffix))
+		case strings.HasSuffix(name, reapingSuffix) && entry.IsDir():
+			kind, root = entryReaping, filepath.Join(m.baseDir, strings.TrimSuffix(name, reapingSuffix))
+		case entry.IsDir():
+			candidate := filepath.Join(m.baseDir, name)
+			marker, statErr := os.Stat(filepath.Join(candidate, metaDirName))
+			if statErr != nil {
+				if !errors.Is(statErr, os.ErrNotExist) {
+					errs = append(errs, fmt.Errorf("vfs: inspecting volume marker in %q: %w", candidate, statErr))
+				}
+				continue
 			}
+			if !marker.IsDir() {
+				continue
+			}
+			kind, root = entryVolume, candidate
+		default:
 			continue
 		}
-		if !marker.IsDir() {
-			continue
-		}
-		if err := fn(root); err != nil {
+		if err := visit(kind, root); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// eachVolume visits only marked volume directories.
+func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) error) error {
+	return m.scanBaseDir(ctx, func(kind entryKind, root string) error {
+		if kind == entryVolume {
+			return fn(root)
+		}
+		return nil
+	})
 }
 
 // metaDir stores volume metadata. The lock lives outside it, beside the root.

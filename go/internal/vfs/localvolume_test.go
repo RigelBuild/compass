@@ -165,7 +165,11 @@ func TestVolumeRootRejectsTraversal(t *testing.T) {
 		// The lock-namespace collision cases: without volumeRoot's
 		// HasSuffix check these resolve to a path in the lock namespace.
 		"sess-x" + lockFileSuffix,
+		"sess-x" + reapingSuffix,
+		reapingSuffix,
 		lockFileSuffix,
+		"sess-x" + reapingSuffix,
+		reapingSuffix,
 	}
 	for _, bad := range badIDs {
 		if _, err := m.CreateVolume(t.Context(), bad); !errors.Is(err, ErrInvalidSessionID) {
@@ -809,6 +813,153 @@ func TestLockAcquisitionConvergesOnTheLiveInode(t *testing.T) {
 // would open a NEW inode and lock that, letting two actors hold "the" volume
 // lock at once and making any under-lock existence check worthless. Holding the
 // lock across a reap must therefore still exclude a second acquisition.
+func TestReapIsAtomicUnderPartialRemoveFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission failure cannot be forced as root")
+	}
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-partial-reap")
+	pinned := filepath.Join(v.HostRoot, "pinned")
+	if err := os.Mkdir(pinned, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pinned, "held"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := func() {
+		for _, p := range []string{pinned, filepath.Join(reapingPath(v.HostRoot), "pinned")} {
+			if exists(t, p) {
+				if err := os.Chmod(p, 0o700); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+	}
+	t.Cleanup(cleanup)
+	if err := os.Chmod(pinned, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err == nil {
+		t.Fatal("Expire succeeded despite pinned subtree")
+	}
+	if _, err := m.Lookup(t.Context(), v.SessionID); !errors.Is(err, ErrVolumeNotFound) {
+		t.Fatalf("Lookup = %v, want not-found", err)
+	}
+	if _, err := m.Attach(t.Context(), v); !errors.Is(err, ErrVolumeNotFound) {
+		t.Fatalf("Attach = %v, want not-found", err)
+	}
+	if !exists(t, reapingPath(v.HostRoot)) || !exists(t, filepath.Join(reapingPath(v.HostRoot), "pinned", "held")) {
+		t.Fatal("partial removal did not leave inert renamed tree")
+	}
+	if err := os.Chmod(filepath.Join(reapingPath(v.HostRoot), "pinned"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, reapingPath(v.HostRoot)) {
+		t.Fatal("leftover survived retry")
+	}
+}
+
+func TestReapRenameFailureLeavesVolumeIntact(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission failure cannot be forced as root")
+	}
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-rename-failure")
+	lock, err := tryLockVolume(t.Context(), v.HostRoot)
+	if err != nil || lock == nil {
+		t.Fatalf("lock: %v", err)
+	}
+	if err := lock.release(); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(v.HostRoot, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	if err := os.Chmod(m.BaseDir(), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(m.BaseDir(), 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err == nil {
+		t.Fatal("Expire succeeded with read-only base dir")
+	}
+	if !exists(t, v.HostRoot) || !exists(t, sentinel) || !exists(t, stampPath(v.HostRoot)) {
+		t.Fatal("failed rename modified volume")
+	}
+	if _, err := m.Lookup(t.Context(), v.SessionID); err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+}
+
+func TestExpireSweepsAReapingLeftoverWhateverItsStamp(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-sweep-leftover")
+	stampAged(t, v, IntentSuspended, time.Second)
+	if err := os.Rename(v.HostRoot, reapingPath(v.HostRoot)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, reapingPath(v.HostRoot)) {
+		t.Fatal("suspended leftover survived sweep")
+	}
+	v = mustCreate(t, m, v.SessionID)
+	if err := os.Rename(v.HostRoot, reapingPath(v.HostRoot)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateVolume(t.Context(), v.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(t, v.HostRoot) || exists(t, reapingPath(v.HostRoot)) {
+		t.Fatal("sweep removed live volume or left stale tree")
+	}
+	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	if err := os.Rename(v.HostRoot, reapingPath(v.HostRoot)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateVolume(t.Context(), v.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, v.HostRoot) || exists(t, reapingPath(v.HostRoot)) {
+		t.Fatal("clear-leftover/reap did not remove both trees")
+	}
+}
+
+func TestReconcileOrphansIgnoresAReapingLeftover(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-reconcile-leftover")
+	if err := os.Rename(v.HostRoot, reapingPath(v.HostRoot)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReconcileOrphans(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	stamp, err := readStamp(reapingPath(v.HostRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stamp != nil {
+		t.Fatal("ReconcileOrphans stamped leftover")
+	}
+}
+
 func TestVolumeLockSurvivesAReap(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-reaped-under-lock")
