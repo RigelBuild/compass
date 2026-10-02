@@ -29,7 +29,7 @@ Ledger-impact: appends DL-331..337 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reco
 Matt's rulings made during implementation. Each is a ledger row; the frozen
 prose below is not rewritten.
 
-- **Trace context crosses the fabric as a NATS header (DL-377, RIG-4014
+- **Trace context crosses the fabric as a NATS header (DL-385, RIG-4014
   option 1).** `Fabric.Publish` writes the W3C `traceparent` header in
   lowercase and the subscriber reads it case-insensitively. Subscriber
   callbacks gain a ctx carrying the extracted span. T2's Interfaces line reads
