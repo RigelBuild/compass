@@ -16,10 +16,10 @@ import (
 // Stop ends the agent's child process; it does not close the socket, the HTTP
 // server, or the agent's Publish stream, so an ack already in flight lands
 // after the retirement. If that rebuilt the map entry, nothing would ever
-// retire it again — the lifecycle already ran its one Stop for that id, and the
-// next cycle mints a fresh one. The map would grow by one resurrected session
-// per Stop/Start: the unbounded growth Retire exists to stop, reinstated by the
-// untrusted side.
+// retire it again — the lifecycle already ran its one Stop for that id, and
+// the next cycle receives a fresh server-issued id. The map would grow by one
+// resurrected session per Stop/Start: the unbounded growth Retire exists to
+// stop, reinstated by the untrusted side.
 //
 // RED against the creating lookup: the count comes back 1.
 func TestControlAckAfterRetireDoesNotResurrectSession(t *testing.T) {
@@ -57,8 +57,8 @@ func TestControlReleaseAfterRetireDoesNotResurrectSession(t *testing.T) {
 }
 
 // Modelling the real shape: the Runner reuses one container across Stop/Start,
-// minting a fresh session id per cycle, and each cycle's agent emits one
-// trailing ack. Every resurrection is permanent, so they accumulate.
+// receiving a fresh server-issued session id per cycle, and each cycle's agent
+// emits one trailing ack. Every resurrection is permanent, so they accumulate.
 func TestControlPostRetireAcksDoNotAccumulateAcrossCycles(t *testing.T) {
 	const cycles = 50
 
@@ -212,7 +212,7 @@ func TestControlAckAppliesThroughTheBoundedSet(t *testing.T) {
 // Stop the same way an ack does: Gateway.Control resolves the session id, then
 // Stop retires it, and only then does the handler reach serve. Creating on
 // demand there rebuilt the entry — and permanently, since the lifecycle spends
-// its one Stop for that id and the next cycle mints a fresh one.
+// its one Stop for that id and the next cycle receives a fresh server-issued id.
 //
 // Bind and Retire are now the whole lifetime, so an id the Runner does not
 // know is refused rather than minted.

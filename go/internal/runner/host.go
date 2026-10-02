@@ -8,12 +8,10 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -98,7 +96,6 @@ type agentHost struct {
 	mu       sync.Mutex
 	sessions map[string]*liveSession
 	sockets  map[string]*gateway.SocketListener
-	nextID   func() string
 	// afterExitCheck is a test seam between detecting exit and acquiring the
 	// container lock; its returned func runs when retireOnExit returns. Nil in production.
 	afterExitCheck func() func()
@@ -157,13 +154,10 @@ type AgentHostConfig struct {
 // NewSessionHost builds the production SessionHost over the link, the agent
 // runtime + registry (so a launched container resolves by name), the container
 // engine, the spec builder Provision derives its AgentSpec from, and the host's
-// own config. newID mints session ids; nil uses a monotonic counter.
-func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtime.AgentRegistry, engine runtime.WorkloadRuntime, specs SpecBuilder, cfg AgentHostConfig, log *slog.Logger, newID func() string) SessionHost {
+// own config.
+func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtime.AgentRegistry, engine runtime.WorkloadRuntime, specs SpecBuilder, cfg AgentHostConfig, log *slog.Logger) SessionHost {
 	if log == nil {
 		log = slog.Default()
-	}
-	if newID == nil {
-		newID = monotonicIDs()
 	}
 	return &agentHost{
 		link:           link,
@@ -178,7 +172,6 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		sessions:       map[string]*liveSession{},
 		closing:        make(chan struct{}),
 		sockets:        map[string]*gateway.SocketListener{},
-		nextID:         newID,
 		materializer:   runtime.NewSecretMaterializer(engine, log),
 		configVersions: map[string]string{},
 		containerLocks: map[string]*sync.Mutex{},
@@ -380,7 +373,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	if sessionID == "" {
 		if freshSessionID == "" {
 			h.mu.Unlock()
-			return "", errors.New("fresh session start missing server-minted session id")
+			return "", errFreshSessionIDMissing
 		}
 		sessionID = freshSessionID
 	} else if existing, live := h.sessions[sessionID]; live && existing.state != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
@@ -1199,18 +1192,5 @@ func (h *agentHost) closeSocket(ctx context.Context, containerName string) {
 	}
 	if err := listener.Close(ctx); err != nil {
 		h.log.Warn("closing agent socket", slog.String("container", containerName), slog.Any("error", err))
-	}
-}
-
-// monotonicIDs returns a session-id minter — a simple monotonic counter,
-// sufficient for the single-Runner MVP where ids are Runner-local.
-func monotonicIDs() func() string {
-	var mu sync.Mutex
-	var n uint64
-	return func() string {
-		mu.Lock()
-		defer mu.Unlock()
-		n++
-		return "sess-" + strconv.FormatUint(n, 10)
 	}
 }

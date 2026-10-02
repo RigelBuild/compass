@@ -91,9 +91,7 @@ func newVsockGatewayFixture(t *testing.T, relay compassv1internalconnect.RunnerS
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, relay))
 	specs := &fakeSpecBuilder{spec: liveSpec()}
-	var n int
-	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
-	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
 	return host.(*agentHost), engine
 }
 
