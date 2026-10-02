@@ -1,4 +1,4 @@
--- 0002_token_usage: the Plane-A token-usage store — the raw event log, its
+-- 0003_token_usage: the Plane-A token-usage store — the raw event log, its
 -- hourly and daily rollups, and the global prune horizon.
 --
 -- Migrations are append-only: 0001_init.sql is frozen, so this file cannot add

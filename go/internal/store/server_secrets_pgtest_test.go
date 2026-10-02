@@ -60,7 +60,7 @@ func TestT0ServerSecretsShape(t *testing.T) {
 	// privilege set, and server_key_state's withheld DELETE is asserted ABSENT —
 	// that omission is a deliberate least-privilege choice (the tripwire digest
 	// must not be droppable), so it is pinned, not left to chance. The usage
-	// prune horizon withholds INSERT and DELETE for the reason in 0002_token_usage.sql.
+	// prune horizon withholds INSERT and DELETE for the reason in 0003_token_usage.sql.
 	for _, tc := range []struct {
 		tbl     string
 		granted []string
