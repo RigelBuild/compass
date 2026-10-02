@@ -263,7 +263,7 @@
 	margin: 4px 4px 8px;
 }
 
-.folder-caret {
+.tree-caret {
 	color: var(--cx-text-faint);
 	font-size: 9px;
 	width: 11px;
@@ -273,11 +273,11 @@
 	transition: transform 0.12s;
 }
 
-.folder-caret.collapsed {
+.tree-caret.collapsed {
 	transform: rotate(-90deg);
 }
 
-.folder-badge {
+.tree-badge {
 	font-size: 10px;
 	color: var(--cx-text-faint);
 	font-variant-numeric: tabular-nums;
@@ -294,7 +294,7 @@
 	min-width: 0;
 }
 
-.folder-children {
+.tree-children {
 	margin-left: 11px;
 	padding-left: 6px;
 	border-left: 1px solid var(--cx-border);

@@ -407,13 +407,4 @@ describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
 		const bridge = buttons.find((b) => b.textContent?.includes("Bridge"));
 		expect(bridge?.getAttribute("aria-keyshortcuts")).toBeTruthy();
 	});
-
-	test("the keep-native new-folder button still carries its native title (sweep boundary held)", () => {
-		const { container } = mountSidebar();
-		const newFolder = [
-			...container.querySelectorAll<HTMLElement>("button.icon-btn"),
-		].find((b) => b.getAttribute("title") === "New folder");
-		expect(newFolder).toBeDefined();
-		expect(newFolder?.getAttribute("title")).toBe("New folder");
-	});
 });

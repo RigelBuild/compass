@@ -56,7 +56,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 					</span>
 				</Show>
 				<Show when={props.badge !== undefined}>
-					<span class="folder-badge">{props.badge}</span>
+					<span class="tree-badge">{props.badge}</span>
 				</Show>
 				<Show when={a().activity}>
 					<span class="agent-activity" title={a().activity}>
@@ -108,7 +108,7 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 					aria-label={`${collapsed() ? "Expand" : "Collapse"} ${props.node.agent.account.handle}'s agents`}
 					onClick={() => store.toggleAgent(agentId())}
 				>
-					<span class={["folder-caret", { collapsed: collapsed() }]}>
+					<span class={["tree-caret", { collapsed: collapsed() }]}>
 						<Glyph name="disclosure-open" />
 					</span>
 				</button>
@@ -118,7 +118,7 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 				/>
 			</div>
 			<Show when={!collapsed()}>
-				<div class="folder-children">
+				<div class="tree-children">
 					<For each={props.node.children}>
 						{(child) => <Node node={child} />}
 					</For>
@@ -449,9 +449,6 @@ export const LeftSidebar: Component = () => {
 		<aside class="left" aria-label="Agents">
 			<div class="left-head">
 				<span class="label">Workspace</span>
-				<button type="button" class="icon-btn" title="New folder">
-					+
-				</button>
 			</div>
 			<CoachTip>
 				<CoachTipTrigger
