@@ -117,16 +117,18 @@ func (a *fakeAssoc) LinearAgentSession(_ context.Context, _ string) (store.Linea
 // "external-url", "error") and signals thoughts/errors on channels a test gates
 // on.
 type recordingClient struct {
-	mu     sync.Mutex
-	events []string
-	bodies []string
-	errCh  chan struct{}
+	mu       sync.Mutex
+	events   []string
+	bodies   []string
+	sessions []string
+	errCh    chan struct{}
 }
 
-func (c *recordingClient) CreateActivity(_ context.Context, _ string, content ActivityContent) error {
+func (c *recordingClient) CreateActivity(_ context.Context, sessionID string, content ActivityContent) error {
 	c.mu.Lock()
 	c.events = append(c.events, content.Type)
 	c.bodies = append(c.bodies, content.Body)
+	c.sessions = append(c.sessions, sessionID)
 	c.mu.Unlock()
 	if content.Type == "error" && c.errCh != nil {
 		c.errCh <- struct{}{}
@@ -134,11 +136,30 @@ func (c *recordingClient) CreateActivity(_ context.Context, _ string, content Ac
 	return nil
 }
 
-func (c *recordingClient) UpdateSession(_ context.Context, _ string, _ []ExternalURL) error {
+func (c *recordingClient) UpdateSession(_ context.Context, sessionID string, _ []ExternalURL) error {
 	c.mu.Lock()
 	c.events = append(c.events, "external-url")
+	c.sessions = append(c.sessions, sessionID)
 	c.mu.Unlock()
 	return nil
+}
+
+// count is how many activities of type kind were emitted.
+func (c *recordingClient) count(kind string) int {
+	return len(c.sessionsFor(kind))
+}
+
+// sessionsFor lists the session id of every activity of type kind, in order.
+func (c *recordingClient) sessionsFor(kind string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for i, ev := range c.events {
+		if ev == kind {
+			out = append(out, c.sessions[i])
+		}
+	}
+	return out
 }
 
 func (c *recordingClient) seq() []string {
@@ -500,4 +521,71 @@ func newTestDispatcher(t *testing.T, deps dispatcherDeps) *Dispatcher {
 		DeepLinkFor:  func(ch string) string { return "https://compass.rigel.build/c/" + ch },
 		Bridge:       testBridge,
 	})
+}
+
+// managerPost builds the comms bus event for a message in topic by author.
+func managerPost(topic, author string) *compassv1.SubscribeCommsResponse {
+	return &compassv1.SubscribeCommsResponse{Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
+		MessagePosted: &compassv1.MessagePosted{Message: &compassv1.Message{TopicId: topic, AuthorAccountId: author}},
+	}}
+}
+
+// TestDispatcherManagerReplyEmitsResponse pins RIG-4163: the Manager's first post
+// in a session's topic emits one `response`, so Linear leaves "Thinking". Posts by
+// anyone else, in other topics, or after the response emit nothing more.
+func TestDispatcherManagerReplyEmitsResponse(t *testing.T) {
+	comms := &recordingComms{posted: make(chan struct{}, 1)}
+	client := &recordingClient{}
+	d := newTestDispatcher(t, dispatcherDeps{
+		res:    &fakeResolver{manager: "mgr-1", homeChannel: "chan-1"},
+		comms:  comms,
+		topics: &fakeTopics{topicID: "topic-1"},
+		assoc:  &fakeAssoc{},
+		client: client,
+	})
+	stop := runDispatcher(t, d)
+	defer stop()
+	if err := d.Enqueue(&SessionEvent{Action: "created", AgentSession: AgentSession{ID: "sess-1"}}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	<-comms.posted
+
+	d.OnCommsEvent(t.Context(), managerPost("topic-1", string(testBridge))) // the bridge's own prompt post
+	d.OnCommsEvent(t.Context(), managerPost("topic-other", "mgr-1"))
+	d.OnCommsEvent(t.Context(), managerPost("topic-1", "mgr-1"))
+	d.OnCommsEvent(t.Context(), managerPost("topic-1", "mgr-1")) // a second reply
+	if got := client.count("response"); got != 1 {
+		t.Fatalf("response activities = %d, want exactly 1 (first Manager reply only)", got)
+	}
+	if got := client.sessionsFor("response"); len(got) != 1 || got[0] != "sess-1" {
+		t.Fatalf("response sessions = %v, want [sess-1]", got)
+	}
+}
+
+// TestDispatcherPromptRearmsResponse pins that a follow-up prompt re-arms the
+// response: Linear goes back to "Thinking" on a prompt, so the next reply ends it.
+func TestDispatcherPromptRearmsResponse(t *testing.T) {
+	comms := &recordingComms{posted: make(chan struct{}, 1)}
+	client := &recordingClient{}
+	d := newTestDispatcher(t, dispatcherDeps{
+		res:    &fakeResolver{manager: "mgr-1", homeChannel: "chan-1"},
+		comms:  comms,
+		topics: &fakeTopics{topicID: "topic-1"},
+		assoc: &fakeAssoc{lookupRow: store.LinearAgentSessionRow{
+			LinearSessionID: "sess-1", ManagerAccountID: "mgr-1", ChannelID: "chan-1", TopicID: "topic-1",
+		}},
+		client: client,
+	})
+	stop := runDispatcher(t, d)
+	defer stop()
+
+	d.OnCommsEvent(t.Context(), managerPost("topic-1", "mgr-1")) // not armed yet
+	if err := d.Enqueue(&SessionEvent{Action: "prompted", AgentSession: AgentSession{ID: "sess-1"}}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	<-comms.posted
+	d.OnCommsEvent(t.Context(), managerPost("topic-1", "mgr-1"))
+	if got := client.count("response"); got != 1 {
+		t.Fatalf("response activities = %d, want 1 (only the reply after the prompt)", got)
+	}
 }

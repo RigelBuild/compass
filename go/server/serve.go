@@ -888,7 +888,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Linear notify lane is nil when Linear is not configured. A nil lane starts nothing.
 	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, forgeWiring.notifyLane, doors.linearNotify)
 	// The Linear session responder drains on the same group; nil when Linear is off.
-	startLinearResponder(gctx, g, doors.linearResponder)
+	startLinearResponder(gctx, g, doors.linearResponder, commsBus)
 	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
