@@ -21,7 +21,7 @@ Matt ruled scope enforcement mandatory for Beta, including clone/push/pull. Dogf
 
 Add `account_forge_scopes`, keyed by tenant, account, forge provider, host, and repo. Exact repo rows grant one repo; `*` grants the coordinate. A store check accepts an agent's own or owning user's grant. Seed initial grants declaratively from ForgeConfig and expose store grant/revoke operations; agents never manage their own grants.
 
-At `ExecuteForgeCallAsAccount` in `go/server/forge.go`, check the resolved coordinate and repo before each coordinate-keyed write. For create operations, check after the F3 dedup lookup: a memo hit returns an existing artifact and performs no write. Comment, review, and subscribe operations check after target resolution. `unsubscribeForge` is caller-scoped by subscription id in the store and has no repo coordinate to check. Keep reads ungated in this slice. Test the oneof arm classification and ensure every coordinate write is gated.
+At `ExecuteForgeCallAsAccount` in `go/server/forge.go`, check the resolved coordinate and repo before each coordinate-keyed write. For create operations, check after the F3 dedup lookup: a memo hit returns an existing artifact and performs no write. Comment, review, subscribe, and state-transition operations (`transitionIssueState`, `transitionPullRequestState`) check after target resolution. `unsubscribeForge` is caller-scoped by subscription id in the store and has no repo coordinate to check. Keep reads ungated in this slice. Test the oneof arm classification and ensure every coordinate write is gated.
 
 For git access, mint a GitHub App installation token restricted through GitHub's `repositories`/`repository_ids` field to the account's granted repos. The credential is delivered as `SecretGH` through `Host.Start` → `FetchSecretsByContainer` → `materializer.Install`, preserving the existing Runner pull and hosts.yml materialization flow. Wildcard means no repository narrowing beyond the installation. The token's permissions remain bounded by the App installation. A per-account mint must be separate from `appTokenSource.mint`, which caches one token per installation; set an explicit mint rate budget and avoid minting on every fetch.
 
@@ -47,7 +47,7 @@ Create the tenant-isolated table and methods. Normalize GitHub repo names at gra
 
 Interfaces: extend `forgeStore` with `HasForgeScope`; add `forgeService.requireForgeScope`.
 
-Gate create arms after dedup, and comment/review/subscribe arms after target resolution. Preserve caller-scoped unsubscribe. Return the fixed in-band not-found error. Add default-lane tests for allowed and rejected writes, zero provider calls on rejection, create memo hits, subscribe, unsubscribe ownership, store errors, and a descriptor-based arm classification/signature cross-check.
+Gate create arms after dedup, and comment/review/subscribe/transition arms after target resolution. Preserve caller-scoped unsubscribe. Return the fixed in-band not-found error. Add default-lane tests for allowed and rejected writes (including issue and PR state transitions), zero provider calls on rejection, create memo hits, subscribe, unsubscribe ownership, store errors, and a descriptor-based arm classification/signature cross-check.
 
 ### T3 — Configure grants and enforcement
 
@@ -89,3 +89,4 @@ Ledger-impact: adds one row (Comms & tools); refines A8 without superseding the 
 - **OQ-6 — Git credential fallback:** the App path is shipped. Decide whether Beta may run without the App and, if so, whether to warn, fail startup, or accept a deployment-wide fine-grained PAT. No App sequencing question remains.
 - **OQ-7 — Read/clone scope:** should the GitHub credential include only the workstream repo plus write grants, or a distinct read set for dependencies? Recommendation: one write set plus workstream repo; this loses access to ungranted read-only dependencies.
 - **OQ-8 — Workstream repository association:** RIG-1527 removed repo carriage; no server-side workstream repo is available. Reintroducing an association reverses that decision and blocks T4/T5. Decide whether and how to record the association before implementation. Recommendation: server-side spawn-target record, not a new provision proto field.
+- OQ-4 (read arms) and OQ-5 (wildcard grammar) were non-load-bearing and are settled above: reads stay ungated, and `*` is the only wildcard.
