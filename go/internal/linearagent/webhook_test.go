@@ -136,7 +136,7 @@ func TestParseSessionEvent(t *testing.T) {
 			"guidance": ""
 		},
 		"promptContext": "follow-up",
-		"agentActivity": {"body": "user prompt text"}
+		"agentActivity": {"content": {"type": "prompt", "body": "user prompt text"}}
 	}`)
 
 	ev2, err := ParseSessionEvent(prompted)
@@ -146,8 +146,8 @@ func TestParseSessionEvent(t *testing.T) {
 	if ev2.Action != "prompted" {
 		t.Fatalf("prompted action mismatch: %q", ev2.Action)
 	}
-	if ev2.AgentActivity.Body != "user prompt text" {
-		t.Fatalf("agentActivity.body mismatch: %q", ev2.AgentActivity.Body)
+	if ev2.AgentActivity.Content.Body != "user prompt text" {
+		t.Fatalf("agentActivity.content.body mismatch: %q", ev2.AgentActivity.Content.Body)
 	}
 	if len(ev2.AgentSession.PreviousComments) != 1 ||
 		ev2.AgentSession.PreviousComments[0].ID != "cmt_1" {
