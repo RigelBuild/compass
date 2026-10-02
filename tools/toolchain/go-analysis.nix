@@ -43,11 +43,24 @@ let
           inherit (pin) owner repo hash;
         } // (if pin ? tag then { inherit (pin) tag; } else { inherit (pin) rev; }));
       });
+
+  # golangci-lint takes a Go-versioned builder arg (buildGo126Module, …) that
+  # moves with every nixpkgs bump, so read it from the package's own signature.
+  goVersionedBuilderArg =
+    pkg:
+    let
+      args = builtins.filter (n: builtins.match "buildGo[0-9]+Module" n != null) (
+        builtins.attrNames (pkgs.lib.functionArgs pkg.override)
+      );
+    in
+    assert pkgs.lib.assertMsg (builtins.length args == 1)
+      "${pkg.pname}: expected exactly one buildGo<N>Module arg, found ${builtins.toJSON args}";
+    builtins.head args;
 in
 {
   golangci-lint = rebuild {
     pkg = pkgs.golangci-lint;
-    builderArg = "buildGo126Module";
+    builderArg = goVersionedBuilderArg pkgs.golangci-lint;
     pin = pins.golangci-lint;
   };
   govulncheck = rebuild {
