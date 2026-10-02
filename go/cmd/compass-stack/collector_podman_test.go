@@ -97,7 +97,7 @@ func TestCollectorUpDown(t *testing.T) {
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
 	out, err := mustRunStack(upCtx, t, stackBin, env,
-		cfg.args("up", "--postgres-image", pgImagePinned, "--collector-image", collectorImagePinned, "--linger")...)
+		cfg.args("up", "--postgres-image", pgImagePinned, "--collector-image", collectorImagePinned, "--gateway-external", "http://127.0.0.1:4100", "--linger")...)
 	if err != nil {
 		t.Fatalf("compass-stack up (bundled collector): %v\n%s", err, out)
 	}
@@ -169,7 +169,7 @@ func TestExternalOTLPUpDown(t *testing.T) {
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
 	out, err := mustRunStack(upCtx, t, stackBin, env,
-		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--linger")...)
+		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--gateway-external", "http://127.0.0.1:4100", "--linger")...)
 	if err != nil {
 		t.Fatalf("compass-stack up (--otel-external): %v\n%s", err, out)
 	}
