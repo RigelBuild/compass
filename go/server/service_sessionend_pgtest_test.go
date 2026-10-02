@@ -9,6 +9,7 @@ package server
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -176,4 +177,55 @@ func (f *serverFakeObjectStore) GetSegment(_ context.Context, key string) ([]byt
 		return nil, store.ErrNotFound
 	}
 	return body, nil
+}
+
+// TestReenrollReapArchivesSessionEnd pins archive-on-detected-end: a session the
+// re-enroll reap removes (it ended without Stop) gets one session_end segment over
+// its whole tail, and the PG tail is kept for a later resume.
+func TestReenrollReapArchivesSessionEnd(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background() // the test root context
+	f.store.SetObjectStore(newServerFakeObjectStore())
+	// Provision binds the container to the agent, so Start binds the session and the
+	// reap has a row to remove.
+	if _, _, err := f.hub.Provision(ctx, "", f.agentID, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	startBoundSession(t, f, ctx)
+	if got, ok := f.hub.SessionForAccount(ctx, f.agentID); !ok || got != fakeSessionID {
+		t.Fatalf("precondition: SessionForAccount = (%q, %v), want (%q, true)", got, ok, fakeSessionID)
+	}
+	for seq := uint64(1); seq <= 2; seq++ {
+		if err := f.store.AppendTranscriptEntry(ctx, fakeSessionID, seq, seq == 1, `{"e":1}`, "reap-k"+string(rune('0'+seq))); err != nil {
+			t.Fatalf("append %d: %v", seq, err)
+		}
+	}
+
+	// The same Runner id dials again: a re-enroll, which reaps every binding it held.
+	attachFakeRunner(t, f.store, f.hub, false)
+
+	conn := connectPG(t, ctx, f.dsn)
+	deadline := timeAfter()
+	for {
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM agent_session_archive_segments WHERE session_id = $1 AND kind = 'session_end'`, fakeSessionID).Scan(&n); err != nil {
+			t.Fatalf("count session_end segments: %v", err)
+		}
+		if n > 0 {
+			segs := sessionEndSegments(t, ctx, f.dsn, fakeSessionID)
+			if len(segs) != 1 || segs[0].minSeq != 1 || segs[0].maxSeq != 2 {
+				t.Fatalf("session_end segments = %+v, want one span [1..2]", segs)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("session_end segments = %d after the re-enroll reap, want 1 within %s", n, testTimeout)
+		default:
+		}
+		runtime.Gosched()
+	}
+	if got := transcriptRowCount(t, ctx, f.dsn, fakeSessionID); got != 2 {
+		t.Fatalf("transcript rows = %d, want 2 (session_end never prunes)", got)
+	}
 }

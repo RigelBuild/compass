@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"time"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
@@ -872,6 +873,7 @@ func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
 	h.mu.Lock()
 	lost := h.lost
 	h.mu.Unlock()
+	h.archiveEnded(ctx, sessionID)
 	h.log.Warn("runner reports bound session unknown; released binding to wake the agent",
 		"session_id", sessionID, "agent_account_id", account)
 	if lost != nil {
@@ -909,3 +911,23 @@ func (h *Hub) runnerSessionCtx(ctx context.Context, runnerID, sessionID string) 
 	}
 	return ctx, true
 }
+
+// archiveEnded hands a session that ended without Stop to the transcript archive.
+// It runs detached and bounded: the caller is a Runner stream loop, and an
+// object-store PUT must not stall it nor die with the stream.
+func (h *Hub) archiveEnded(ctx context.Context, sessionID string) {
+	h.mu.Lock()
+	ended := h.ended
+	h.mu.Unlock()
+	if ended == nil || sessionID == "" {
+		return
+	}
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionEndArchiveTimeout)
+	go func() {
+		defer cancel()
+		ended.OnSessionEnded(actx, sessionID)
+	}()
+}
+
+// sessionEndArchiveTimeout bounds one detached session-end archive.
+const sessionEndArchiveTimeout = 2 * time.Minute

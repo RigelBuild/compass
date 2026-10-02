@@ -63,6 +63,7 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 	// seam (SessionResumeSnapshot + ReadArchiveSegment), wired here beside the
 	// write seam so the one store instance serves both legs.
 	hub.SetTranscriptReader(st)
+	hub.SetSessionEndSink(sessionEndArchiver{st: st})
 	return hub
 }
 

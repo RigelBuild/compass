@@ -5,6 +5,7 @@ package runnerhub
 import (
 	"context"
 	"testing"
+	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -43,5 +44,49 @@ func TestDropLostSessionOnlyForOwningRunner(t *testing.T) {
 	}
 	if len(sink.lost) != 1 || sink.lost[0] != testAgentAccount {
 		t.Fatalf("lost = %v, want [%s]", sink.lost, testAgentAccount)
+	}
+}
+
+type chanEndSink chan string
+
+func (c chanEndSink) OnSessionEnded(_ context.Context, sessionID string) { c <- sessionID }
+
+func recvEnded(t *testing.T, c chanEndSink) string {
+	t.Helper()
+	select {
+	case s := <-c:
+		return s
+	case <-time.After(10 * time.Second):
+		t.Fatal("no session-end archive within 10s")
+		return ""
+	}
+}
+
+// A session that ends without Stop is archived: on a lost-session drop by its owning
+// Runner, and on each binding the re-enroll reap removes. A foreign refusal is not.
+func TestSessionEndedWithoutStopIsArchived(t *testing.T) {
+	ctx := t.Context()
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	ended := make(chanEndSink, 4)
+	hub.SetSessionEndSink(ended)
+	subj := runnerSubject()
+	tier, egress := compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED
+	hub.enroll(ctx, "runner-1", subj, tier, egress)
+
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-lost")
+	hub.dropLostSession(ctx, "runner-other", "sess-lost")
+	hub.dropLostSession(ctx, "runner-1", "sess-lost")
+	if got := recvEnded(t, ended); got != "sess-lost" {
+		t.Fatalf("archived %q after the lost drop, want sess-lost", got)
+	}
+
+	hub.bindContainer("cont-2", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-2", "sess-reaped")
+	hub.enroll(ctx, "runner-1", subj, tier, egress)
+	if got := recvEnded(t, ended); got != "sess-reaped" {
+		t.Fatalf("archived %q after the re-enroll reap, want sess-reaped (the foreign refusal must not archive)", got)
 	}
 }
