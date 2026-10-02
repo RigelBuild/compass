@@ -1,6 +1,5 @@
 # Design: Forge scope enforcement — API writes + git operations (A8, Beta tier)
 
-Status: Draft
 Owner lane: compass-server (the A5 git-operation leg crosses into
 compass-runner at the credential-provision seam — flagged per task). Refs:
 RIG-2679 (this record), RIG-2672 (multi-forge widened the blast radius),
