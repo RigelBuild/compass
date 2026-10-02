@@ -4,10 +4,9 @@ package runner
 
 // agentHost.Stop must retire the stopped session's control state on the
 // container's socket. The socket outlives the session (Stop/Start reuses the
-// container and its listener) and the Runner mints a fresh session id per cycle,
-// so nothing but this teardown call would ever release the state — without it
-// the served producer accumulates one session's worth per cycle for the life of
-// the Runner process.
+// container and its listener), so nothing but this teardown call would ever
+// release the state — without it the served producer accumulates one session's
+// worth per cycle for the life of the Runner process.
 //
 // WHERE THE HALVES LIVE. The leak itself — the producer's session map going
 // 1 -> 0 — is asserted in gateway/retire_wiring_test.go, because `control` and

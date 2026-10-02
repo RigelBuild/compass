@@ -167,7 +167,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 		RuntimeDir: cfg.RuntimeDir,
 		AgentModel: cfg.AgentModel,
 		RunnerID:   cfg.RunnerID,
-	}, log, nil)
+	}, log)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);
 	// close them all on shutdown, draining any in-flight call.
