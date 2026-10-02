@@ -216,6 +216,9 @@ type SessionBindingStore interface {
 	// EffectiveTenant names the tenant a request-scoped call resolves against,
 	// so a post-write BindingChange publishes on that tenant's routing subject.
 	EffectiveTenant(ctx context.Context) store.TenantID
+	// SessionBindingTenant names the tenant binding sessionID to runnerID. The hub
+	// calls it under the system role: the Runner door carries no tenant.
+	SessionBindingTenant(ctx context.Context, sessionID, runnerID string) (store.TenantID, error)
 }
 
 // RoutingFabric is the binding-cache invalidation seam (RIG-3108 / §T4): a
@@ -811,6 +814,11 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 	// BEFORE the system-role escalation below. The binding read is single-valued only
 	// because RLS narrows it to one tenant; a BYPASSRLS read could return a row from an
 	// ARBITRARY tenant. Resolving here keeps it tenant-scoped and fail-closed.
+	ctx, scoped := h.runnerSessionCtx(ctx, ev.RunnerID, ev.SessionID)
+	if !scoped {
+		h.countDroppedAck(ev, "acking session is bound in several tenants")
+		return
+	}
 	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")
@@ -860,6 +868,11 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	// account on the REQUEST ctx, BEFORE the system-role escalation, so the
 	// binding read stays tenant-scoped and cannot return a foreign tenant's row
 	// under BYPASSRLS. Only the cursor advance below runs under the system role.
+	ctx, scoped := h.runnerSessionCtx(ctx, ev.RunnerID, ev.SessionID)
+	if !scoped {
+		h.countDroppedAck(ev, "acking session is bound in several tenants")
+		return
+	}
 	agent, ok := h.accountForRunnerSession(ctx, ev.RunnerID, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")

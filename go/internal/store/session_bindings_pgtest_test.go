@@ -1116,3 +1116,32 @@ func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *t
 	}
 	t.Logf("%d iterations: the displaced session was reported to exactly one caller every time", iterations)
 }
+
+// TestSessionBindingTenantResolvesAcrossTenantsUnderSystemRole pins the read a
+// Runner-originated call scopes itself with: under the system role it names the
+// binding's tenant, a session minted in two tenants on one runner is a conflict,
+// and a pair nobody binds is not-found.
+func TestSessionBindingTenantResolvesAcrossTenantsUnderSystemRole(t *testing.T) {
+	s := newTestStore(t)
+	tenantB := seedTenant(t, s, "tenant-b")
+	ctxA := context.Background()
+	ctxB := WithTenant(context.Background(), tenantB)
+	sys := WithSystemRole(context.Background())
+
+	agentA := mustAgent(t, s, mustUser(t, s, "owner-a").ID, "agent-a")
+	agentB := seedTenantAgent(t, ctxB, s, "agent-b")
+	mustBind(t, ctxB, s, "sess-b", agentB.ID, "runner-1")
+
+	got, err := s.SessionBindingTenant(sys, "sess-b", "runner-1")
+	if err != nil || got != tenantB {
+		t.Fatalf("SessionBindingTenant(sess-b) = (%q, %v), want (%q, nil)", got, err, tenantB)
+	}
+	if _, err := s.SessionBindingTenant(sys, "sess-b", "runner-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionBindingTenant(sess-b, foreign runner) err = %v, want ErrNotFound", err)
+	}
+
+	mustBind(t, ctxA, s, "sess-b", agentA.ID, "runner-1")
+	if _, err := s.SessionBindingTenant(sys, "sess-b", "runner-1"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("SessionBindingTenant(sess-b bound in two tenants) err = %v, want ErrConflict", err)
+	}
+}

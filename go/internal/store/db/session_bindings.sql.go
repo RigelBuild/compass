@@ -237,3 +237,35 @@ func (q *Queries) SessionBindingForUpdate(ctx context.Context, agentAccountID st
 	err := row.Scan(&session_id)
 	return session_id, err
 }
+
+const sessionBindingTenants = `-- name: SessionBindingTenants :many
+SELECT tenant_id FROM session_bindings WHERE session_id = $1 AND runner_id = $2
+`
+
+type SessionBindingTenantsParams struct {
+	SessionID string
+	RunnerID  string
+}
+
+// The one query here meant for the system role: a Runner-originated call carries
+// no tenant, so the hub reads the session's tenant cross-tenant, then acts under it.
+// :many so a session id minted in two tenants is refused, not resolved arbitrarily.
+func (q *Queries) SessionBindingTenants(ctx context.Context, arg SessionBindingTenantsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, sessionBindingTenants, arg.SessionID, arg.RunnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var tenant_id string
+		if err := rows.Scan(&tenant_id); err != nil {
+			return nil, err
+		}
+		items = append(items, tenant_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
