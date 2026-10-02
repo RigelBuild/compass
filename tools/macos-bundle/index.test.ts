@@ -540,6 +540,7 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 		const lines: string[] = [];
 		const delays: number[] = [];
 		let creates = 0;
+		let detaches = 0;
 		await createOrThrow(
 			busy,
 			async () => `diagnosis ${creates}`,
@@ -550,6 +551,9 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 					return success;
 				},
 				imagePath: "/tmp/nonexistent-test-image.dmg",
+				detach: async () => {
+					detaches++;
+				},
 				sleep: async (ms) => {
 					delays.push(ms);
 				},
@@ -557,10 +561,12 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 		);
 		expect({
 			creates,
+			detaches,
 			delays,
 			diagnoses: lines.filter((line) => line.startsWith("diagnosis")).length,
 		}).toEqual({
 			creates: 1,
+			detaches: 1,
 			delays: [5_000],
 			diagnoses: 1,
 		});
@@ -569,6 +575,7 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 		const lines: string[] = [];
 		const delays: number[] = [];
 		let creates = 0;
+		let detaches = 0;
 		await expect(
 			createOrThrow(
 				busy,
@@ -580,6 +587,9 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 						return busy;
 					},
 					imagePath: "/tmp/nonexistent-test-image.dmg",
+					detach: async () => {
+						detaches++;
+					},
 					sleep: async (ms) => {
 						delays.push(ms);
 					},
@@ -588,16 +598,19 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 		).rejects.toThrow("Resource busy");
 		expect({
 			creates,
+			detaches,
 			delays,
 			diagnoses: lines.filter((line) => line === "DIAGNOSIS").length,
 		}).toEqual({
 			creates: 2,
+			detaches: 2,
 			delays: [5_000, 15_000],
 			diagnoses: 3,
 		});
 	});
 	test("non-busy failure does not retry", async () => {
 		let creates = 0;
+		let detaches = 0;
 		await expect(
 			createOrThrow(
 				{ exitCode: 1, stderr: "permission denied" },
@@ -609,11 +622,14 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 						return success;
 					},
 					imagePath: "/tmp/nonexistent-test-image.dmg",
+					detach: async () => {
+						detaches++;
+					},
 					sleep: async () => {},
 				},
 			),
 		).rejects.toThrow("permission denied");
-		expect(creates).toBe(0);
+		expect({ creates, detaches }).toEqual({ creates: 0, detaches: 0 });
 	});
 });
 

@@ -24,7 +24,7 @@
 // Contents/MacOS/<name> BESIDE the shell, where resolveStackBin's sibling probe
 // finds it. No compass-postgres — embedded's postgres is a container (DL-260).
 
-import { cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { $ } from "bun";
 
@@ -306,6 +306,7 @@ export async function createOrThrow(
 					stderr: { toString(): string };
 				}>;
 				imagePath: string;
+				detach: () => Promise<void>;
 				sleep: (ms: number) => Promise<void>;
 		  }
 		| undefined = undefined,
@@ -320,7 +321,7 @@ export async function createOrThrow(
 		if (!options || !stderr.includes("Resource busy") || attempt >= 2) {
 			throw new Error(headline);
 		}
-		await probe(["hdiutil", "detach", options.imagePath, "-force"]);
+		await options.detach();
 		await rm(options.imagePath, { force: true });
 		await options.sleep(attempt === 0 ? 5_000 : 15_000);
 		result = await options.create();
@@ -574,19 +575,24 @@ async function main(): Promise<void> {
 	await $`codesign --sign - --force --deep ${appDir}`;
 
 	await rm(args.out, { force: true });
-	await detachStaleAttachments({ imagePath: args.out, volumeName: "Compass" });
+	// hdiutil reports resolved paths (/tmp is /private/tmp on macOS), so match on that.
+	const imagePath = join(await realpath(dirname(args.out)), basename(args.out));
+	const detachImage = () =>
+		detachStaleAttachments({ imagePath, volumeName: "Compass" });
+	await detachImage();
 	const create = async () =>
-		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`
+		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${imagePath}`
 			.quiet()
 			.nothrow();
 	const created = await settleAndCreate(stageRoot, create);
 	await createOrThrow(
 		created,
-		() => diagnoseBusy(stageRoot, args.out),
+		() => diagnoseBusy(stageRoot, imagePath),
 		console.error,
 		{
 			create,
-			imagePath: args.out,
+			imagePath,
+			detach: detachImage,
 			sleep: (ms) => {
 				// biome-ignore lint/plugin: Required retry backoff for transient filesystem contention.
 				return Bun.sleep(ms);
