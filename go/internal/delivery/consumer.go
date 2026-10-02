@@ -127,6 +127,9 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// CountOwedMentions returns the total owed_mention row count — the startup
 	// visibility log (T2 observability).
 	CountOwedMentions(ctx context.Context) (int, error)
+	// OwedMentionAccounts lists every agent still owed a mention, for the wake
+	// retried once a Runner can serve it.
+	OwedMentionAccounts(ctx context.Context) ([]store.AccountID, error)
 	// MarkMentionsRouted stamps messageID's settle-edge mention pass complete
 	// (mentions_routed_at = now, unix ms) — the recovery scan's mark after it
 	// replays a message's mention pass, and the live path's mark (T3). Idempotent:
@@ -224,6 +227,9 @@ type Consumer struct {
 	// lostQueue buffers accounts whose session the Runner reported gone; the loop wakes
 	// each, and the woken session's start sweep redelivers what is owed.
 	lostQueue []store.AccountID
+	// owedRewake is set when a Runner command stream attaches: a wake that failed
+	// while none could serve it is retried for every agent still owed a mention.
+	owedRewake bool
 	// notify wakes the loop when settleQueue OR startQueue grows. Buffered(1)
 	// with a non-blocking send, so many edges between drains collapse to one
 	// wakeup and the hook never blocks.
@@ -352,6 +358,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			c.drainSettles(ctx)
 			c.drainStarts(ctx)
 			c.drainLost(ctx)
+			c.drainOwedRewake(ctx)
 		case event, ok := <-sub.Live:
 			if !ok {
 				if sub.Lagged() {

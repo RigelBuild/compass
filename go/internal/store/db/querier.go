@@ -11,6 +11,9 @@ import (
 )
 
 type Querier interface {
+	// The tenant an account belongs to. A system-role caller (the delivery loop) reads
+	// it to act for that account under its own tenant.
+	AccountTenant(ctx context.Context, id string) (string, error)
 	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
 	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
 	ActivityFor(ctx context.Context, dollar_1 []string) ([]ActivityForRow, error)
@@ -433,6 +436,9 @@ type Querier interface {
 	MessageInChannel(ctx context.Context, arg MessageInChannelParams) (int32, error)
 	MessagesHeadSeq(ctx context.Context) (int64, error)
 	MoveMessagesToTopic(ctx context.Context, arg MoveMessagesToTopicParams) error
+	// The accounts still owed a mention: a wake that failed before any Runner could
+	// serve it is retried for these once one attaches.
+	OwedMentionAccounts(ctx context.Context) ([]string, error)
 	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
@@ -557,6 +563,10 @@ type Querier interface {
 	// A MISS is not an error: a first-ever bind returns pgx.ErrNoRows and the Store
 	// maps that to the empty displaced id.
 	SessionBindingForUpdate(ctx context.Context, agentAccountID string) (string, error)
+	// The one query here meant for the system role: a Runner-originated call carries
+	// no tenant, so the hub reads the session's tenant cross-tenant, then acts under it.
+	// :many so a session id minted in two tenants is refused, not resolved arbitrarily.
+	SessionBindingTenants(ctx context.Context, arg SessionBindingTenantsParams) ([]string, error)
 	SessionMaxEntrySeq(ctx context.Context, sessionID string) (int64, error)
 	SessionTranscript(ctx context.Context, sessionID string) ([]SessionTranscriptRow, error)
 	// Agent-activity queries (sqlc adoption T5, RIG-3034). These replace the inline

@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"time"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
@@ -860,6 +861,10 @@ func commsCallError(err error) *compassv1internal.CommsCallError {
 // unknown, then reports the account so it can be woken. Only the owning Runner's
 // refusal counts, so a foreign Runner cannot unbind another's session.
 func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
+	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
+	if !scoped {
+		return
+	}
 	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
 	if !ok {
 		return
@@ -868,9 +873,61 @@ func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
 	h.mu.Lock()
 	lost := h.lost
 	h.mu.Unlock()
+	h.archiveEnded(ctx, sessionID)
 	h.log.Warn("runner reports bound session unknown; released binding to wake the agent",
 		"session_id", sessionID, "agent_account_id", account)
 	if lost != nil {
 		lost.OnSessionLost(sessionID, account)
 	}
 }
+
+// runnerSessionCtx scopes a Runner-originated ctx to the tenant that binds
+// sessionID to runnerID. Runners are shared across tenants, so the door sets none;
+// without this, binding reads and deletes run under the bootstrap tenant. The
+// tenant is read under the system role; everything after runs tenant-scoped.
+// An ambiguous session fails closed. A miss or a store fault keeps ctx, whose
+// own binding read then fails closed for a non-bootstrap session.
+func (h *Hub) runnerSessionCtx(ctx context.Context, runnerID, sessionID string) (context.Context, bool) {
+	if _, ok := store.TenantFromContext(ctx); ok {
+		return ctx, true
+	}
+	h.mu.Lock()
+	bindings := h.bindings
+	h.mu.Unlock()
+	if bindings == nil || runnerID == "" || sessionID == "" {
+		return ctx, true
+	}
+	tenant, err := bindings.SessionBindingTenant(store.WithSystemRole(ctx), sessionID, runnerID)
+	switch {
+	case err == nil:
+		return store.WithTenant(ctx, tenant), true
+	case errors.Is(err, store.ErrConflict):
+		h.log.Error("session bound in several tenants; refusing the runner call",
+			"session_id", sessionID, "runner_id", runnerID)
+		return ctx, false
+	case !errors.Is(err, store.ErrNotFound):
+		h.log.Warn("resolve session tenant failed; continuing unscoped",
+			"session_id", sessionID, "error", err)
+	}
+	return ctx, true
+}
+
+// archiveEnded hands a session that ended without Stop to the transcript archive.
+// It runs detached and bounded: the caller is a Runner stream loop, and an
+// object-store PUT must not stall it nor die with the stream.
+func (h *Hub) archiveEnded(ctx context.Context, sessionID string) {
+	h.mu.Lock()
+	ended := h.ended
+	h.mu.Unlock()
+	if ended == nil || sessionID == "" {
+		return
+	}
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionEndArchiveTimeout)
+	go func() {
+		defer cancel()
+		ended.OnSessionEnded(actx, sessionID)
+	}()
+}
+
+// sessionEndArchiveTimeout bounds one detached session-end archive.
+const sessionEndArchiveTimeout = 2 * time.Minute

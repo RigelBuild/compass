@@ -276,3 +276,26 @@ func (s *Store) DeleteSessionBindingsForRunner(ctx context.Context, runnerID str
 	})
 	return bindings, nil
 }
+
+// SessionBindingTenant names the tenant whose binding maps sessionID to runnerID.
+// It is the system-role read a Runner-originated call needs first: the Runner
+// door carries no tenant, so the hub resolves it here, then acts under WithTenant.
+// ErrNotFound when no tenant binds the pair; ErrConflict when several do, so an
+// ambiguous session never resolves to an arbitrary tenant.
+func (s *Store) SessionBindingTenant(ctx context.Context, sessionID, runnerID string) (TenantID, error) {
+	if sessionID == "" || runnerID == "" {
+		return "", fmt.Errorf("%w: session id and runner id are required", ErrInvalidArgument)
+	}
+	tenants, err := s.q.SessionBindingTenants(ctx, db.SessionBindingTenantsParams{SessionID: sessionID, RunnerID: runnerID})
+	if err != nil {
+		return "", fmt.Errorf("store: resolve session binding tenant: %w", err)
+	}
+	switch len(tenants) {
+	case 0:
+		return "", fmt.Errorf("%w: session %q is not bound to runner %q", ErrNotFound, sessionID, runnerID)
+	case 1:
+		return TenantID(tenants[0]), nil
+	default:
+		return "", fmt.Errorf("%w: session %q is bound in %d tenants", ErrConflict, sessionID, len(tenants))
+	}
+}

@@ -52,6 +52,15 @@ type mentionE2EWire struct {
 // PostMessage's D9 membership gate admits the post.
 func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	t.Helper()
+	w := newMentionE2EWireNoRunner(t)
+	w.runner = attachFakeRunner(t, w.store, w.hub, false)
+	return w
+}
+
+// newMentionE2EWireNoRunner is newMentionE2EWire before any Runner attaches: the
+// gap after a Server restart, before the Runner re-enrolls.
+func newMentionE2EWireNoRunner(t *testing.T) *mentionE2EWire {
+	t.Helper()
 	ctx := context.Background() // the test root context (rule://go-thread-context _test.go exemption)
 	dsn := pgtest.RequireDSN(t)
 	st, err := store.Open(ctx, dsn)
@@ -86,7 +95,6 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	brd := board.NewProjection(bus)
 	tail := newSessionTail()
 	hub := newRunnerHub(st, brd, tail, commsSvc, slog.New(slog.DiscardHandler))
-	runner := attachFakeRunner(t, st, hub, false)
 
 	// The production delivery wire (sinks.go:142-155), assembled inline with the
 	// REAL resume-based waker (newLifecycleService), not a fake.
@@ -95,6 +103,7 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)
 	hub.SetSessionLostSink(c)
+	hub.SetRunnerReadySink(c)
 	hub.SetDeliveryStore(st)
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -123,7 +132,6 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 		hub:      hub,
 		comms:    commsSvc,
 		consumer: c,
-		runner:   runner,
 		dsn:      dsn,
 		adminID:  admin.ID,
 		channel:  ch.ID,
@@ -460,5 +468,49 @@ func TestDeliverToLostSessionWakesAndRedelivers(t *testing.T) {
 	}
 	if sess, ok := w.hub.SessionForAccount(w.ctx, agent.ID); !ok || sess != newSess {
 		t.Fatalf("SessionForAccount after wake = (%q, %v), want (%q, true)", sess, ok, newSess)
+	}
+}
+
+// TestMentionBeforeRunnerEnrollsWakesOnAttach: a mention made after a restart but
+// before the Runner re-enrolls fails its wake (no Runner to serve it). Once a Runner
+// command stream attaches, the owed agent is woken.
+func TestMentionBeforeRunnerEnrollsWakesOnAttach(t *testing.T) {
+	w := newMentionE2EWireNoRunner(t)
+	agent := w.seedAgentMember(t, "gapwake", false)
+	w.post(t, "@gapwake are you there")
+	// Routing settles on the consumer loop, so the owed row lands asynchronously.
+	deadline := timeAfter()
+	for {
+		owed, err := w.store.OwedMentions(w.ctx, agent.ID)
+		if err != nil {
+			t.Fatalf("OwedMentions: %v", err)
+		}
+		if len(owed) == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("owed mention channels = %d, want 1 before any Runner attaches", len(owed))
+		default:
+		}
+		runtime.Gosched()
+	}
+
+	// The wake fires during attach, before the harness clears its probe bookkeeping,
+	// so assert the durable session the fresh start records, not the command log.
+	w.runner = attachFakeRunner(t, w.store, w.hub, false)
+	deadline = timeAfter()
+	for {
+		if _, ok, err := w.store.LatestSessionForAccount(w.ctx, agent.ID); err != nil {
+			t.Fatalf("LatestSessionForAccount: %v", err)
+		} else if ok {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no session started for the owed agent after the Runner attached")
+		default:
+		}
+		runtime.Gosched()
 	}
 }

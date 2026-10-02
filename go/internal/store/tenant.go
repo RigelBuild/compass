@@ -70,3 +70,16 @@ func (s *Store) resolveTenant(ctx context.Context) TenantID {
 func (s *Store) EffectiveTenant(ctx context.Context) TenantID {
 	return s.resolveTenant(ctx)
 }
+
+// AccountTenant returns the tenant an account belongs to. ErrNotFound when the
+// account is not visible to ctx (call it under the system role to see all).
+func (s *Store) AccountTenant(ctx context.Context, account AccountID) (TenantID, error) {
+	t, err := s.q.AccountTenant(ctx, string(account))
+	if err != nil {
+		if noRows(err) {
+			return "", fmt.Errorf("%w: account %q", ErrNotFound, account)
+		}
+		return "", fmt.Errorf("store: account tenant: %w", err)
+	}
+	return TenantID(t), nil
+}
