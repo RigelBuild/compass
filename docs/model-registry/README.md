@@ -15,19 +15,19 @@ The design is in
 
 [`day-1.json`](./day-1.json) is the day-1 registry. It is a complete
 `PutModelRegistry` request body. Every model id in it exists in the
-`@oh-my-pi/pi-catalog` 18.0.11 model catalog that Compass pins.
+`@oh-my-pi/pi-catalog` model catalog from 18.4.12 on.
 
 | Stable name | Candidates, in order |
 | --- | --- |
-| `claude-opus-4-8` | `anthropic` → `openrouter` → `amazon-bedrock` |
-| `gpt-5-5` | `openai-codex` → `openai` → `openrouter` |
-| `gemini-3-1-pro` | `google` → `openrouter` |
+| `claude-opus-5-5` | `anthropic` → `openrouter` → `amazon-bedrock` |
+| `claude-fable-5-1` | `anthropic` → `openrouter` → `amazon-bedrock` |
+| `gpt-6-luna` | `openai-codex` → `openai` → `openrouter` → `amazon-bedrock` |
+| `gpt-6-sol` | `openai-codex` → `openai` → `openrouter` → `amazon-bedrock` |
 
 The first candidate of each entry is a day-1 gateway provider: `anthropic`
-(OAuth or API key), `openai-codex` (ChatGPT OAuth), `openai` (API key), or
-`google` (API key). OpenRouter and Bedrock are alternates. They let one
-OpenRouter key or one AWS account serve a stable name when you hold no
-first-party credential for it.
+(OAuth or API key) or `openai-codex` (ChatGPT OAuth). `openai` (API key),
+OpenRouter, and Bedrock are alternates. They let one key or one AWS account
+serve a stable name when you hold no first-party credential for it.
 
 ## Recommended model per role
 
@@ -36,20 +36,17 @@ own models. Pick the row for the credentials you hold. The value goes in a
 profile's `models.manager` or `models.agents.<name>` selector. Add `:high` or
 another reasoning level after the name when you want one.
 
-| Provider you hold | Manager roles (supervisor, owner, manager) | Implementer subagent |
-| --- | --- | --- |
-| OpenAI (ChatGPT OAuth or API key) | `gpt-5-5` | `gpt-5-5` |
-| Anthropic (OAuth or API key) | `claude-opus-4-8` | `claude-opus-4-8` |
-| Google (API key) | `gemini-3-1-pro` | `gemini-3-1-pro` |
-| OpenRouter only | `gpt-5-5` | `gpt-5-5` |
-| Bedrock only | `claude-opus-4-8` | `claude-opus-4-8` |
-| OpenAI and Anthropic | `gpt-5-5` | `gpt-5-5` |
+| Provider you hold | Manager roles (supervisor, owner, manager) | Planning and design | Implementer subagent |
+| --- | --- | --- | --- |
+| Anthropic and OpenAI | `claude-opus-5-5` | `claude-fable-5-1` | `gpt-6-luna` |
+| Anthropic only | `claude-opus-5-5` | `claude-fable-5-1` | `claude-opus-5-5` |
+| OpenAI only | `gpt-6-sol` | `gpt-6-sol` | `gpt-6-luna` |
+| OpenRouter or Bedrock only | `claude-opus-5-5` | `claude-fable-5-1` | `gpt-6-luna` |
 
-These values follow the fleet's current practice: the OpenAI Codex tier first,
-then the Anthropic Opus tier. Bedrock carries no `gpt-5-5` candidate, so a
-Bedrock-only fleet uses the Opus tier. The goal these values serve is
-long-running coding agents, where a low hallucination rate counts as much as
-raw capability.
+These values follow the fleet's current practice: Opus 5.5 manages, Fable 5.1
+plans and designs, and GPT-6 Luna implements. An OpenAI-only fleet uses GPT-6
+Sol for the judgment roles. The goal these values serve is long-running coding
+agents, where a low hallucination rate counts as much as raw capability.
 
 Per-role model evaluations will replace these values with measured numbers.
 When they land, the change is a registry write (below), not a new release.

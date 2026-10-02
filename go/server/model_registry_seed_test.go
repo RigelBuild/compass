@@ -34,19 +34,27 @@ func TestDay1ModelRegistrySeedPassesDoor(t *testing.T) {
 
 	// The docs page tables list these chains; keep the two in step by hand.
 	want := map[string][]store.ModelCandidate{
-		"claude-opus-4-8": {
-			{Provider: "anthropic", ModelID: "claude-opus-4-8"},
-			{Provider: "openrouter", ModelID: "anthropic/claude-opus-4.8"},
-			{Provider: "amazon-bedrock", ModelID: "global.anthropic.claude-opus-4-8"},
+		"claude-opus-5-5": {
+			{Provider: "anthropic", ModelID: "claude-opus-5-5"},
+			{Provider: "openrouter", ModelID: "anthropic/claude-opus-5.5"},
+			{Provider: "amazon-bedrock", ModelID: "global.anthropic.claude-opus-5-5"},
 		},
-		"gpt-5-5": {
-			{Provider: "openai-codex", ModelID: "gpt-5.5"},
-			{Provider: "openai", ModelID: "gpt-5.5"},
-			{Provider: "openrouter", ModelID: "openai/gpt-5.5"},
+		"claude-fable-5-1": {
+			{Provider: "anthropic", ModelID: "claude-fable-5-1"},
+			{Provider: "openrouter", ModelID: "anthropic/claude-fable-5.1"},
+			{Provider: "amazon-bedrock", ModelID: "global.anthropic.claude-fable-5-1"},
 		},
-		"gemini-3-1-pro": {
-			{Provider: "google", ModelID: "gemini-3.1-pro-preview"},
-			{Provider: "openrouter", ModelID: "google/gemini-3.1-pro-preview"},
+		"gpt-6-luna": {
+			{Provider: "openai-codex", ModelID: "gpt-6-luna"},
+			{Provider: "openai", ModelID: "gpt-6-luna"},
+			{Provider: "openrouter", ModelID: "openai/gpt-6-luna"},
+			{Provider: "amazon-bedrock", ModelID: "global.openai.gpt-6-luna"},
+		},
+		"gpt-6-sol": {
+			{Provider: "openai-codex", ModelID: "gpt-6-sol"},
+			{Provider: "openai", ModelID: "gpt-6-sol"},
+			{Provider: "openrouter", ModelID: "openai/gpt-6-sol"},
+			{Provider: "amazon-bedrock", ModelID: "global.openai.gpt-6-sol"},
 		},
 	}
 	if len(reg.Entries) != len(want) {
