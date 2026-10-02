@@ -16,6 +16,7 @@ package vfs
 // a volume is never reaped in the window between the reaper reading a stamp and a
 // concurrent Attach clearing it. Attach takes the same lock, RE-VERIFIES the
 // volume exists, and the lock file lives OUTSIDE the volume root on a stable inode.
+// Lock waits are bounded by the caller's context.
 
 // (c) The stamp carries close-vs-suspend intent from the caller. A suspended
 // session's volume is never eligible however old, because suspend uses the same
@@ -202,18 +203,11 @@ func (m *LocalManager) Lookup(ctx context.Context, sessionID string) (Volume, er
 // attached-live and still carrying a past-deadline stamp. A stamp that is
 // already absent is already-clear, not an error.
 //
-// Existence is decided UNDER the lock, and that is the load-bearing part. An
-// Attach that arrives exactly at a volume's expiry deadline blocks on the lock
-// Expire is holding, and the Expire it is waiting behind may reap the volume
-// before releasing. The unlocked pre-check below is therefore a fast path only,
-// NOT the authority: its verdict is already stale by the time the lock is won.
-// Re-stating the check under the lock is what turns that race into an honest
-// ErrVolumeNotFound — which the provision path converts into a cold
-// CreateVolume plus materialize — rather than a nil error carrying the path of
-// a directory that no longer exists. It is only authoritative because the lock
-// file lives OUTSIDE the reaped subtree (see lockVolume): a lock inside the
-// volume root would be unlinked by the reap, so the winning Attach would hold a
-// lock on a dead inode that excludes nobody.
+// Existence is decided UNDER the lock. An Attach at its expiry deadline waits
+// for the context-bounded lock. Expire may acquire it between polls, reap, and
+// release; Attach then returns ErrVolumeNotFound and the provision path cold-
+// materializes. The unlocked pre-check is only a fast path; the under-lock check
+// is authoritative because the lock file remains outside the reaped subtree.
 //
 // Both error paths JOIN the lock-release error, exactly as Stamp does. A
 // release that failed would leave the flock held for this process's lifetime,
@@ -229,17 +223,11 @@ func (m *LocalManager) Attach(ctx context.Context, v Volume) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Block rather than skip: an Attach racing the reaper must win the volume,
-	// not abandon a launch. Expire holds the lock only for the duration of one
-	// volume's re-verify-and-reap, so the wait is bounded.
-	lock, err := lockVolume(resolved.HostRoot, true)
+	// The wait is context-bounded; a relaunch may lose to an Expire poll and take
+	// the ErrVolumeNotFound cold path.
+	lock, err := lockVolume(ctx, resolved.HostRoot)
 	if err != nil {
 		return "", err
-	}
-	if lock == nil {
-		// Unreachable with block=true, which never reports contention; guard
-		// anyway so a future non-blocking caller cannot nil-deref.
-		return "", fmt.Errorf("vfs: session %q: volume lock unavailable", v.SessionID)
 	}
 	existErr := requireVolumeRoot(resolved.HostRoot, v.SessionID)
 	var clearErr error
@@ -303,14 +291,9 @@ func (m *LocalManager) Stamp(ctx context.Context, v Volume, intent CloseIntent) 
 	if err != nil {
 		return err
 	}
-	lock, err := lockVolume(resolved.HostRoot, true)
+	lock, err := lockVolume(ctx, resolved.HostRoot)
 	if err != nil {
 		return err
-	}
-	if lock == nil {
-		// Unreachable with block=true; guarded so a future non-blocking caller
-		// cannot nil-deref.
-		return fmt.Errorf("vfs: session %q: volume lock unavailable", v.SessionID)
 	}
 	writeErr := requireVolumeRoot(resolved.HostRoot, v.SessionID)
 	if writeErr == nil {
@@ -389,7 +372,7 @@ func (m *LocalManager) ReadStamp(ctx context.Context, v Volume) (intent CloseInt
 func (m *LocalManager) ReconcileOrphans(ctx context.Context) error {
 	discoveredAt := time.Now()
 	return m.eachVolume(ctx, func(root string) error {
-		lock, err := lockVolume(root, false)
+		lock, err := tryLockVolume(ctx, root)
 		if err != nil {
 			return err
 		}
@@ -454,7 +437,7 @@ func stampOrphanLocked(root string, discoveredAt time.Time) error {
 func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) error {
 	now := time.Now()
 	return m.eachVolume(ctx, func(root string) error {
-		lock, err := lockVolume(root, false)
+		lock, err := tryLockVolume(ctx, root)
 		if err != nil {
 			return err
 		}
@@ -706,64 +689,136 @@ type volumeLock struct {
 	f *os.File
 }
 
-// lockVolume acquires the volume's per-volume advisory lock (invariant (b)) on
-// a dedicated lock file that is a FILE SIBLING of the volume root —
-// <baseDir>/<sessionID><lockFileSuffix>, never a path inside the root. An OS
-// advisory lock — not an in-process mutex — because the two contenders may be
-// different processes: a restarted Runner's expiry driver and a live Runner's
-// Attach, or a hand-run reaper beside the service.
-//
-// The placement OUTSIDE the volume root is load-bearing, not cosmetic. flock is
-// a lock on an INODE, reached through an open fd, and reapLocked's
-// os.RemoveAll(root) unlinks everything inside the root. With the lock file in
-// the root's metadata dir, a reap would unlink the very inode a blocked Attach
-// was waiting on: that Attach would then unblock holding an exclusive lock on a
-// dead inode, and the next lockVolume — after a cold CreateVolume recreated the
-// root — would open a NEW inode and lock that, so two actors would hold "the"
-// volume lock simultaneously and mutual exclusion would be gone across a
-// reap+recreate. On the sibling path the inode is stable across any number of
-// reap/recreate cycles, which is what lets Attach and Stamp treat an under-lock
-// os.Stat of the root as authoritative.
-//
-// For the same reason lockVolume creates ONLY the lock file. Its parent, the
-// base dir, already exists from NewLocalManager; it must never MkdirAll
-// anything inside the volume root, because acquiring a lock that RESURRECTS an
-// empty metadata dir inside a reaped root would make the under-lock existence
-// check see a live volume that no longer has any contents.
-//
-// Accepted tradeoff: a sibling lock file outlives its volume's reap — one
-// empty, zero-content, owner-only file per session id ever seen on this box,
-// which eachVolume skips (it iterates directories only) and which a later
-// lockVolume simply reuses. That leak is the price of a stable lock inode, and
-// it is the right trade: the alternative loses mutual exclusion. A future
-// maintenance pass could unlink orphan lock files whose volume root is absent,
-// but only while not under contention (unlinking a lock file someone holds
-// recreates exactly the two-inode split described above); that pass is out of
-// P2 scope.
-func lockVolume(root string, block bool) (*volumeLock, error) {
+// lockVolume acquires the session's sibling lock. Acquisitions use non-blocking
+// flock and verify the held inode against the current path, so a waiter cannot
+// keep using an inode unlinked by H3's orphan-lock reclaim.
+const (
+	lockPollInitial = time.Millisecond
+	lockPollMax     = 50 * time.Millisecond
+)
+
+func tryLockVolume(ctx context.Context, root string) (*volumeLock, error) {
 	path := root + lockFileSuffix
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, stampFileMode) //nolint:gosec // G304: path is this package's own lock file under the operator-configured base dir, derived from a traversal-checked session id, never caller input
+	for {
+		l, mismatch, err := lockAttempt(ctx, path)
+		if err != nil || l != nil {
+			return l, err
+		}
+		if !mismatch {
+			return nil, nil
+		}
+	}
+}
+
+func lockVolume(ctx context.Context, root string) (*volumeLock, error) {
+	path := root + lockFileSuffix
+	var f *os.File
+	delay := lockPollInitial
+	for {
+		if err := ctx.Err(); err != nil {
+			if f != nil {
+				return nil, errors.Join(err, closeLockFile(path, f))
+			}
+			return nil, err
+		}
+		if f == nil {
+			var err error
+			f, err = openLockFile(path)
+			if err != nil {
+				return nil, err
+			}
+		}
+		l, mismatch, err := lockAttemptOnFile(ctx, path, f)
+		if err != nil {
+			return nil, err
+		}
+		if l != nil {
+			return l, nil
+		}
+		if mismatch {
+			if err := closeLockFile(path, f); err != nil {
+				return nil, err
+			}
+			f = nil
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, errors.Join(ctx.Err(), closeLockFile(path, f))
+		case <-timer.C:
+		}
+		if delay < lockPollMax {
+			delay *= 2
+			if delay > lockPollMax {
+				delay = lockPollMax
+			}
+		}
+	}
+}
+
+func lockAttempt(ctx context.Context, path string) (*volumeLock, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	f, err := openLockFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	l, mismatch, err := lockAttemptOnFile(ctx, path, f)
+	if mismatch && err == nil {
+		if err := closeLockFile(path, f); err != nil {
+			return nil, false, err
+		}
+	}
+	return l, mismatch, err
+}
+
+func openLockFile(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, stampFileMode) //nolint:gosec // path derives from a traversal-checked session ID under the configured base dir
 	if err != nil {
 		return nil, fmt.Errorf("vfs: opening volume lock %q: %w", path, err)
 	}
-	how := syscall.LOCK_EX
-	if !block {
-		how |= syscall.LOCK_NB
+	return f, nil
+}
+
+func lockAttemptOnFile(ctx context.Context, path string, f *os.File) (*volumeLock, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, errors.Join(err, closeLockFile(path, f))
 	}
-	if err := syscall.Flock(int(f.Fd()), how); err != nil {
-		closeErr := f.Close()
-		if closeErr != nil {
-			closeErr = fmt.Errorf("vfs: closing volume lock %q: %w", path, closeErr)
+	err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			if ctx.Err() != nil {
+				return nil, false, errors.Join(ctx.Err(), closeLockFile(path, f))
+			}
+			return nil, false, nil
 		}
-		if !block && (errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)) {
-			// Contended: the caller skips this volume. Report the close failure
-			// if there was one — a leaked fd is a real defect — but not the
-			// expected contention.
-			return nil, closeErr
-		}
-		return nil, errors.Join(fmt.Errorf("vfs: locking volume %q: %w", path, err), closeErr)
+		return nil, false, errors.Join(fmt.Errorf("vfs: locking volume %q: %w", path, err), closeLockFile(path, f))
 	}
-	return &volumeLock{f: f}, nil
+	fdInfo, err := f.Stat()
+	if err != nil {
+		return nil, false, errors.Join(fmt.Errorf("vfs: verifying volume lock %q: %w", path, err), closeLockFile(path, f))
+	}
+	pathInfo, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, errors.Join(fmt.Errorf("vfs: verifying volume lock %q: %w", path, err), closeLockFile(path, f))
+	}
+	if !os.SameFile(fdInfo, pathInfo) {
+		return nil, true, nil
+	}
+	return &volumeLock{f: f}, false, nil
+}
+
+func closeLockFile(path string, f *os.File) error {
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("vfs: closing volume lock %q: %w", path, err)
+	}
+	return nil
 }
 
 // release drops the advisory lock and closes its fd. Both failures are

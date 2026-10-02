@@ -1,13 +1,13 @@
 package vfs
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -471,7 +471,7 @@ func TestReconcileOrphansSkipsAVolumeBeingAttached(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-attaching")
 
-	lock, err := lockVolume(v.HostRoot, false)
+	lock, err := tryLockVolume(t.Context(), v.HostRoot)
 	if err != nil {
 		t.Fatalf("acquiring the stand-in Attach lock: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestExpireSkipsALockedVolume(t *testing.T) {
 	stampAged(t, held, IntentClosed, 30*24*time.Hour)
 	stampAged(t, free, IntentClosed, 30*24*time.Hour)
 
-	lock, err := lockVolume(held.HostRoot, false)
+	lock, err := tryLockVolume(t.Context(), held.HostRoot)
 	if err != nil {
 		t.Fatalf("acquiring the stand-in Attach lock: %v", err)
 	}
@@ -670,187 +670,133 @@ func TestCloseIntentZeroValueIsClosed(t *testing.T) {
 	}
 }
 
-// heldFlockField is the `MAJ:MIN:INO` field string the kernel prints for the
-// held per-volume lock, read out of /proc/locks itself rather than recomputed
-// from a path formula or reassembled from device-number math.
-//
-// Reading the kernel's own rendering is what makes the gate below an exact
-// match. The held lock appears in /proc/locks as its own (non-`->`) FLOCK row
-// carrying the very field string its blocked waiters' rows carry, so comparing
-// that string end to end compares device AND inode without this test ever
-// having to know how the kernel formats a dev_t. The row is identified by the
-// inode off the lock's own fd — whatever path the implementation chose for
-// it — plus this process's pid, which together cannot match another process's
-// unrelated lock.
-func heldFlockField(t *testing.T, l *volumeLock) string {
-	t.Helper()
-	info, err := l.f.Stat()
-	if err != nil {
-		t.Fatalf("stat held volume lock: %v", err)
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		t.Skipf("no syscall.Stat_t for the lock file on this platform (%T); the race gate needs the lock's inode", info.Sys())
-	}
-	inoSuffix := ":" + strconv.FormatUint(st.Ino, 10)
-	pid := strconv.Itoa(os.Getpid())
-
-	data, err := os.ReadFile("/proc/locks")
-	if err != nil {
-		t.Skipf("cannot read /proc/locks (%v); the race gate needs the kernel's blocked-waiter record", err)
-	}
-	// A held row: `301: FLOCK  ADVISORY  WRITE 3173818 00:3c:775 0 EOF` — the
-	// MAJ:MIN:INO field is index 5, the owning pid index 4.
-	for line := range strings.SplitSeq(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 6 || fields[1] != "FLOCK" || fields[4] != pid {
-			continue
-		}
-		if strings.HasSuffix(fields[5], inoSuffix) {
-			return fields[5]
-		}
-	}
-	t.Fatalf("no held FLOCK row in /proc/locks for pid %s inode %s; the race gate cannot identify the lock it must wait on", pid, inoSuffix[1:])
-	return ""
-}
-
-// waitForBlockedFlock blocks until the kernel reports a process WAITING on the
-// flock identified by field (a `MAJ:MIN:INO` string from heldFlockField), and
-// fails the test if that never happens.
-//
-// This is the event gate that makes TestAttachRacingAReapDoesNotReturnAReaped-
-// Path deterministic instead of timing-dependent. A blocked flock has no
-// user-space completion signal — the waiter is parked inside the syscall, so
-// there is no channel to receive and no WaitGroup to wait — but Linux publishes
-// the blocked waiter itself in /proc/locks as a `-> FLOCK` continuation row on
-// the lock being contended. Polling until that row appears waits on the actual
-// event ("the Attach goroutine is now parked on the flock"), so the test drives
-// the exact blocked-then-reap interleaving every run rather than hoping a sleep
-// was long enough; a genuine failure to reach that state fails loudly here
-// instead of silently degrading into the other interleaving.
-//
-// The tick between polls is the bounded-poll tick, not a timing assumption:
-// the loop re-reads the condition every iteration and still fails loudly at the
-// deadline, so nothing here depends on a duration being "long enough". It only
-// keeps this from being a core-burning spin whose own contention can delay the
-// very scheduling it is waiting for under -race.
-func waitForBlockedFlock(t *testing.T, field string) {
-	t.Helper()
-	const tick = 500 * time.Microsecond
-	if _, err := os.ReadFile("/proc/locks"); err != nil {
-		t.Skipf("cannot read /proc/locks (%v); the race gate needs the kernel's blocked-waiter record", err)
-	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		data, err := os.ReadFile("/proc/locks")
-		if err != nil {
-			t.Fatalf("reading /proc/locks: %v", err)
-		}
-		if hasBlockedFlockWaiter(string(data), field) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no process ever blocked on an flock over %s; the race gate never engaged", field)
-		}
-		time.Sleep(tick) //nolint:forbidigo // irreducible poll-tick: a blocked flock is parked inside the syscall with NO user-space completion signal (no channel, no WaitGroup), so /proc/locks polling is the only observation of the event; the condition is re-read every iteration and the deadline fails loudly, so the tick paces the poll and is never itself the thing waited on
-	}
-}
-
-// hasBlockedFlockWaiter reports whether /proc/locks content carries a blocked
-// flock waiter for the lock whose kernel-printed MAJ:MIN:INO field is field. A
-// waiter row is the `-> ` continuation of the lock it is queued behind, e.g.
-//
-//	292: -> FLOCK  ADVISORY  WRITE 1759984 00:20:507753071 0 EOF
-//
-// The comparison is over the WHOLE MAJ:MIN:INO field, never the inode alone:
-// dropping MAJ:MIN would match an unrelated flock waiter on another device
-// whose inode number happens to be equal, and a spurious early match here
-// would release the reap before the Attach goroutine has parked — silently
-// degrading this load-bearing gate into the other (still-passing) interleaving,
-// a false green exactly as the test it gates promises it will not produce.
-func hasBlockedFlockWaiter(locks, field string) bool {
-	for line := range strings.SplitSeq(locks, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 7 || fields[1] != "->" || fields[2] != "FLOCK" {
-			continue
-		}
-		if fields[6] == field {
-			return true
-		}
-	}
-	return false
-}
-
-// TestAttachRacingAReapDoesNotReturnAReapedPath is the regression test for the
-// TOCTOU race between a relaunch and the reaper tick. A session that relaunches
-// exactly at its expiry deadline runs Attach's pre-check (root present), then
-// blocks on the per-volume lock the reaper holds; the reaper re-verifies
-// eligibility under that lock, reaps the tree, and releases. The Attach that
-// then wins the lock MUST NOT report success with the path of a directory that
-// no longer exists — the provision path would mount a dead path and silently
-// lose the warm `target/`/sccache tree with nothing signalling the loss. It
-// must return ErrVolumeNotFound so the provision path cold-materializes.
-//
-// The interleaving is driven deterministically: the stand-in reaper takes the
-// lock first, and the reap happens only once the kernel reports the Attach
-// goroutine actually parked on that lock (see waitForBlockedFlock). Both
-// interleavings are asserted correct, so the gate decides which bug this
-// exercises, never whether correct code passes.
 func TestAttachRacingAReapDoesNotReturnAReapedPath(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-relaunch-at-deadline")
-
-	// The sentinel stands in for the warm derived state the whole volume
-	// mechanism exists to preserve: if Attach hands back a path without this
-	// file, the caller mounted a reaped tree.
 	sentinel := filepath.Join(v.HostRoot, "target-artifact")
 	if err := os.WriteFile(sentinel, []byte("warm build cache"), 0o600); err != nil {
-		t.Fatalf("writing the warm-tree sentinel: %v", err)
+		t.Fatal(err)
 	}
 	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	synctest.Test(t, func(t *testing.T) {
+		reaper, err := tryLockVolume(t.Context(), v.HostRoot)
+		if err != nil || reaper == nil {
+			t.Fatalf("acquiring stand-in reaper lock: %v", err)
+		}
+		type result struct {
+			path string
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() { path, err := m.Attach(t.Context(), v); done <- result{path, err} }()
+		synctest.Wait()
+		if err := os.RemoveAll(v.HostRoot); err != nil {
+			t.Fatal(err)
+		}
+		if err := reaper.release(); err != nil {
+			t.Fatal(err)
+		}
+		got := <-done
+		if !errors.Is(got.err, ErrVolumeNotFound) && (got.err != nil || exists(t, filepath.Join(got.path, "target-artifact"))) {
+			t.Fatalf("Attach = (%q, %v), want not-found or intact path", got.path, got.err)
+		}
+	})
+}
 
-	// Stand in for the reaper mid-pass: Expire holds exactly this lock across
-	// its under-lock re-verify and its os.RemoveAll.
-	reaper, err := lockVolume(v.HostRoot, false)
-	if err != nil {
-		t.Fatalf("acquiring the stand-in reaper lock: %v", err)
-	}
-	if reaper == nil {
-		t.Fatal("stand-in reaper lock reported contention on a fresh volume")
-	}
-	lockField := heldFlockField(t, reaper)
+// TestAttachRacingAReapDoesNotReturnAReapedPath gates on Attach being parked in
+// its context-aware poll before the reaper removes the tree.
+func TestAttachReturnsCtxErrWhileLockIsHeld(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-cancel-lock")
+	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	synctest.Test(t, func(t *testing.T) {
+		held, err := tryLockVolume(t.Context(), v.HostRoot)
+		if err != nil || held == nil {
+			t.Fatalf("acquire lock: %v", err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { _, err := m.Attach(ctx, v); done <- err }()
+		synctest.Wait()
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Attach error = %v, want context.Canceled", err)
+		}
+		stamp, err := readStamp(v.HostRoot)
+		if err != nil || stamp == nil || stamp.Intent != IntentClosed {
+			t.Fatalf("stamp changed during canceled Attach: %#v, %v", stamp, err)
+		}
+		if !exists(t, v.HostRoot) {
+			t.Fatal("canceled Attach removed root")
+		}
+		ctx2, cancel2 := context.WithCancel(t.Context())
+		done2 := make(chan error, 1)
+		go func() { done2 <- m.Stamp(ctx2, v, IntentClosed) }()
+		synctest.Wait()
+		cancel2()
+		if err := <-done2; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Stamp error = %v, want context.Canceled", err)
+		}
+		stamp, err = readStamp(v.HostRoot)
+		if err != nil || stamp == nil {
+			t.Fatalf("Stamp changed disk state: %#v, %v", stamp, err)
+		}
+		if err := held.release(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
 
-	type attachResult struct {
-		path string
-		err  error
+func TestAttachWithCancelledCtxTouchesNoLock(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-cancel-before-lock")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := m.Attach(ctx, v); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Attach error = %v, want context.Canceled", err)
 	}
-	done := make(chan attachResult, 1)
-	go func() {
-		path, err := m.Attach(t.Context(), v)
-		done <- attachResult{path: path, err: err}
-	}()
+	if exists(t, v.HostRoot+lockFileSuffix) {
+		t.Fatal("canceled Attach created a lock file")
+	}
+}
 
-	// Gate on the kernel's own record that the Attach goroutine is parked on
-	// the lock, so the reap below lands in the window the bug lives in.
-	waitForBlockedFlock(t, lockField)
-
-	if err := os.RemoveAll(v.HostRoot); err != nil {
-		t.Fatalf("reaping the volume root: %v", err)
-	}
-	if err := reaper.release(); err != nil {
-		t.Fatalf("releasing the stand-in reaper lock: %v", err)
-	}
-
-	got := <-done
-	switch {
-	case errors.Is(got.err, ErrVolumeNotFound):
-		// Correct: the reap is reported as an error-shaped signal the provision
-		// path turns into a cold CreateVolume plus materialize.
-	case got.err != nil:
-		t.Fatalf("Attach racing a reap = %v, want ErrVolumeNotFound", got.err)
-	case !exists(t, filepath.Join(got.path, "target-artifact")):
-		t.Fatalf("Attach returned %q with a nil error, but the volume was reaped: the caller would mount a dead path and lose the warm tree with nothing signalling it", got.path)
-	}
+func TestLockAcquisitionConvergesOnTheLiveInode(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-inode-reclaim")
+	synctest.Test(t, func(t *testing.T) {
+		held, err := tryLockVolume(t.Context(), v.HostRoot)
+		if err != nil || held == nil {
+			t.Fatalf("acquire holder: %v", err)
+		}
+		done := make(chan *volumeLock, 1)
+		go func() { l, _ := lockVolume(t.Context(), v.HostRoot); done <- l }()
+		synctest.Wait()
+		if err := os.Remove(v.HostRoot + lockFileSuffix); err != nil {
+			t.Fatal(err)
+		}
+		if err := held.release(); err != nil {
+			t.Fatal(err)
+		}
+		waiter := <-done
+		if waiter == nil {
+			t.Fatal("waiter returned nil lock")
+		}
+		defer waiter.release()
+		fdInfo, err := waiter.f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pathInfo, err := os.Stat(v.HostRoot + lockFileSuffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(fdInfo, pathInfo) {
+			t.Fatal("waiter holds an unlinked inode")
+		}
+		if l, err := tryLockVolume(t.Context(), v.HostRoot); err != nil || l != nil {
+			t.Fatalf("fresh acquisition = (%v, %v), want contention", l, err)
+		}
+	})
 }
 
 // TestVolumeLockSurvivesAReap pins the placement the fix rests on: the
@@ -867,7 +813,7 @@ func TestVolumeLockSurvivesAReap(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-reaped-under-lock")
 
-	held, err := lockVolume(v.HostRoot, false)
+	held, err := tryLockVolume(t.Context(), v.HostRoot)
 	if err != nil {
 		t.Fatalf("acquiring the volume lock: %v", err)
 	}
@@ -881,7 +827,7 @@ func TestVolumeLockSurvivesAReap(t *testing.T) {
 
 	// Still held: a second non-blocking acquisition must report contention
 	// ((nil, nil)), proving it reached the same surviving inode.
-	second, err := lockVolume(v.HostRoot, false)
+	second, err := tryLockVolume(t.Context(), v.HostRoot)
 	if err != nil {
 		t.Fatalf("second lockVolume after the reap: %v", err)
 	}
@@ -897,7 +843,7 @@ func TestVolumeLockSurvivesAReap(t *testing.T) {
 	if _, err := m.CreateVolume(t.Context(), v.SessionID); err != nil {
 		t.Fatalf("recreating the volume: %v", err)
 	}
-	afterRecreate, err := lockVolume(v.HostRoot, false)
+	afterRecreate, err := tryLockVolume(t.Context(), v.HostRoot)
 	if err != nil {
 		t.Fatalf("lockVolume after the recreate: %v", err)
 	}
@@ -924,7 +870,7 @@ func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 		t.Fatalf("reaping the volume root: %v", err)
 	}
 
-	lock, err := lockVolume(v.HostRoot, false)
+	lock, err := tryLockVolume(t.Context(), v.HostRoot)
 	if err != nil {
 		t.Fatalf("acquiring the volume lock on a reaped volume: %v", err)
 	}
@@ -952,7 +898,7 @@ func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 	// Materialize the sibling lock file, then release it: a still-held lock
 	// would make Expire SKIP the volume, which would pass this check for the
 	// wrong reason.
-	siblingLock, err := lockVolume(live.HostRoot, false)
+	siblingLock, err := tryLockVolume(t.Context(), live.HostRoot)
 	if err != nil {
 		t.Fatalf("creating the sibling lock file for the iteration check: %v", err)
 	}
