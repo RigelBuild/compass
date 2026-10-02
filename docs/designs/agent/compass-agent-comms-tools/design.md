@@ -3,11 +3,11 @@
 Design for how the containerized first-party Compass agent gains tools to
 **use** the comms surface it is observed through: post a message to a channel
 (including a threaded reply), and read a channel's recent messages. The
-**transport** those tools ride is no longer decided here — it was split out and
-frozen as the agent↔Runner call transport record
+**transport** those tools ride is no longer decided here — it was split out
+into the agent↔Runner call transport record
 [`compass-agent-runner-transport/design.md`](../compass-agent-runner-transport/design.md)
 (Matt's ruling: off stdio, a dedicated per-container Unix socket behind the
-`RunnerCallTransport` seam). This record **consumes** that frozen transport and
+`RunnerCallTransport` seam). This record **consumes** that transport and
 designs the two contract legs it cites but does not define — the Runner→Server
 `RelayCommsCall` RPC and the Server-side execution handler — plus the agent-side
 tools and their identity/authz model. Companion to the
@@ -43,7 +43,7 @@ arbitrary channel it belongs to, reply in a thread, or read what teammates
 posted. This record designs the agent-facing comms tools and the two
 Runner→Server + Server-side contract legs that carry a tool call to
 `CommsService` and attribute it to the agent's account. The agent→Runner
-carrier itself is the frozen transport
+carrier itself is the transport
 ([`compass-agent-runner-transport/design.md`](../compass-agent-runner-transport/design.md));
 this record rides its `RunnerCallTransport` seam and does not re-decide it.
 
@@ -59,11 +59,11 @@ this record rides its `RunnerCallTransport` seam and does not re-decide it.
   has no daemon RPC transport: "it never reaches the daemon over gRPC, so it
   imports the message *types* + the @bufbuild/protobuf codec, not the
   @connectrpc transport the biome fence restricts"
-  (`packages/compass-agent/src/compassv1.ts:12-14`). The frozen transport record
+  (`packages/compass-agent/src/compassv1.ts:12-14`). The transport record
   keeps stdio exactly this shape — telemetry out, control in — and adds the
   comms call/response on a *separate* channel (the socket), so this substrate
   fact is unchanged.
-- **The comms call rides the frozen socket transport, not stdio.** The
+- **The comms call rides the socket transport, not stdio.** The
   agent↔Runner call transport is `AgentGateway` — a Connect/gRPC service the
   agent dials over a per-container bind-mounted Unix socket (internal protos,
   local hop), abstracted agent-side behind the `RunnerCallTransport` seam
@@ -82,7 +82,7 @@ this record rides its `RunnerCallTransport` seam and does not re-decide it.
   rationale — "blast-radius containment"
   (`docs/designs/agent/compass-agent-container-runtime.md:77`, `:206-217`) —
   and per-agent restriction stays "a future opt-in" (`:216-217`). A Unix socket
-  is not a network address, so the frozen transport opens no port and disturbs
+  is not a network address, so the socket transport opens no port and disturbs
   no egress posture; nothing in this record's comms legs relies on or perturbs
   it either.
 - **The Runner↔Server seam is Runner-dials-out.** `RunnerService` has three
@@ -121,7 +121,7 @@ request-response / Runner-brokered socket), recommending the stdio option.
 **Matt superseded that**: the agent↔Runner call transport is Runner-sole, off
 stdio, behind the `RunnerCallTransport` seam, with a bind-mounted per-container
 Unix socket as the concrete impl (a future network transport is an additive
-impl of the same seam). That decision is frozen in its own record
+impl of the same seam). That decision lives in its own record
 ([`compass-agent-runner-transport/design.md`](../compass-agent-runner-transport/design.md)),
 which also gives an explicit **disposition table** for this record's original
 tasks (its §"Supersede-by-citation + comms-tools task disposition"). This record
@@ -189,7 +189,7 @@ common case ("reply in my own channel") needs no id plumbing into the
 container.
 
 **What is spoof-proof, stated precisely.** The agent presents no account
-identity and no token — under the frozen transport it dials a per-container
+identity and no token — under the socket transport it dials a per-container
 socket, and the Runner structurally owns which container (hence which one
 bound session, 1:1) the call arrived on
 (`../compass-agent-runner-transport/design.md` Decision #4). The Runner
@@ -218,7 +218,7 @@ prompt/steer/askAnswer/config/replay/replayComplete only), and the stdin
 decoder is parked. Push delivery tells the agent something arrived; it does
 not let the agent page history, fetch a thread's parent, or re-read context —
 that is inherently pull. So MVP ships `comms_list_messages` as a pull tool and
-leaves RT-3's deliver lane exactly where the frozen v0.6 record put it
+leaves RT-3's deliver lane exactly where the v0.6 record put it
 (unchanged, unblocked, later). The comms call/result path is the socket
 transport, entirely separate from the stdin `deliver` lane — this record
 neither builds nor blocks RT-3.
@@ -226,7 +226,7 @@ neither builds nor blocks RT-3.
 ## Alternatives considered
 
 - **The transport fork (direct client / stdio request-response / brokered
-  socket)** — decided in the frozen transport record, not here. That record
+  socket)** — decided in the transport record, not here. That record
   carries the full three-way tradeoff and Matt's ruling (the dedicated
   per-container Unix socket behind the `RunnerCallTransport` seam); this record
   does not re-open it.
@@ -236,7 +236,7 @@ neither builds nor blocks RT-3.
 - **A push-only read model (wait for `deliver`)** — rejected for MVP: deliver
   is unbuilt and cannot serve history/thread-context reads (see Read model).
 - **A bespoke `CommsBroker` correlation map (pending-by-`call_id`)** — no longer
-  needed: the frozen transport is a Connect unary, so correlation, deadlines,
+  needed: the transport is a Connect unary, so correlation, deadlines,
   and cancellation are the client's, not a hand-rolled pending table. The broker
   collapses to a thin adapter delegating to `transport.comms()`; this dissolves
   the earlier pending-entry-cleanup / duplicate-id hazards a hand-rolled map
@@ -262,7 +262,7 @@ Every task below inherits these; they are not repeated per task.
   (this and the not-yet-built RIG-1310 outbound ask derivation) both only
   raise, neither answers.
 - **Egress seal preserved.** No new network path out of the agent container.
-  The comms transport is the frozen per-container Unix socket
+  The comms transport is the per-container Unix socket
   (`../compass-agent-runner-transport/design.md`), a local hop, not a network
   address; the nft mechanism and the future default-deny opt-in
   (`compass-agent-container-runtime.md:206-217`) are untouched. No bearer
@@ -463,7 +463,7 @@ In `packages/compass-agent/src/`:
 - New `comms.ts`:
 
   ```ts
-  // A thin adapter over the frozen RunnerCallTransport seam
+  // A thin adapter over the RunnerCallTransport seam
   // (../compass-agent-runner-transport/design.md §The seam). No pending map,
   // no stdin pump: the Connect unary owns correlation, deadlines, and
   // cancellation. broker.call() delegates straight to transport.comms().
@@ -710,7 +710,7 @@ here.
 
 ## Tasks
 
-Land as small PRs, stacked on the frozen transport record's tasks where noted.
+Land as small PRs, stacked on the transport record's tasks where noted.
 
 - [ ] T1 — Proto: `RunnerService.RelayCommsCall` + `RelayCommsCallRequest` /
   `RelayCommsCallResponse` (consuming the transport record's `CommsCall*`);
@@ -735,8 +735,8 @@ Land as small PRs, stacked on the frozen transport record's tasks where noted.
 
 Batched for the human; each carried this record's recommendation. **Matt
 ratified all six on 2026-07-22 — every recommendation accepted (LGTM), folded
-below as the frozen decisions this record merges on.** The transport fork that
-was this record's keystone is now decided (frozen transport record); the
+below as the ratified decisions this record merges on.** The transport fork that
+was this record's keystone is now decided (transport record); the
 mid-turn-consumption question it raised is dissolved by the socket.
 
 ### OQ-1 (RESOLVED — Matt, 2026-07-22) — Extending the "frozen" three-RPC RunnerService shape

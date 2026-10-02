@@ -19,7 +19,7 @@ const (
 )
 
 // workloadTierNamer is a backend that names its own tier. Like the egress
-// markers, it is deliberately NOT a verb on the frozen WorkloadRuntime
+// markers, it is deliberately NOT a verb on the WorkloadRuntime
 // interface (podman.go): callers probe for it. A WorkloadRuntime decorator must
 // re-expose Tier, or the session surface loses the tier it reports.
 type workloadTierNamer interface {

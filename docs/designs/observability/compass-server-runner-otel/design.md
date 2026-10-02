@@ -1,6 +1,6 @@
 # Design: compass-server + compass-runner OTel emission and end-to-end trace continuity (T4b, RIG-2685)
 
-Sibling record of the frozen observability-architecture design
+Sibling record of the observability-architecture design
 ([`../compass-observability-architecture/design.md`](../compass-observability-architecture/design.md),
 §T4b at `design.md:635-660`), which permits T4b "in a sibling doc under this
 design if it grows large" (`design.md:641-643`). Matt ratified the scope
@@ -20,7 +20,7 @@ bundled fan-in collector (PR #672) has a single producer and a user turn is
 observable only inside the agent process. T4b gives both Go binaries
 (compass-server, compass-runner) OTel SDK trace AND metric emission to that
 collector, and propagates W3C `traceparent` context across the
-server → runner → agent process boundaries against the frozen #649 contract —
+server → runner → agent process boundaries per the #649 contract —
 so one user turn is ONE connected trace that TERMINATES at the turn boundary
 (replies branch into linked new traces, never one unbounded trace).
 
@@ -30,7 +30,7 @@ Two legs, one record. **Emission** establishes the (currently nonexistent) Go
 OTel convention as a single new bootstrap package; **propagation** stamps the
 server's active span context onto the steer/deliver control ops as a W3C
 `traceparent` string, relayed verbatim by the runner and continued by the
-agent (compass-agent #649, frozen at f468431e).
+agent (compass-agent #649, merged at f468431e).
 
 ### Emission: one bootstrap package, `go/internal/otel`
 
@@ -123,7 +123,7 @@ at impl PR time.**
 
 ### Propagation: server-origin stamping, runner relay, agent continuation
 
-The #649 contract is FROZEN (merged f468431e): the server is the trace ORIGIN
+The #649 contract (merged f468431e): the server is the trace ORIGIN
 (OQ1=(b)); it serializes its CURRENT active span context into an additive
 proto3 `string traceparent` on the INTERNAL control ops at control-wrap time;
 the runner RELAYS the string; the agent CONTINUES off it. Never mint a fresh
@@ -172,7 +172,7 @@ causality is in scope:
 All four are buf-breaking-safe pure adds; `moon run compass-proto:gen`
 regenerates both stacks.
 
-**The bus gap — the one genuinely new seam.** The frozen contract requires an
+**The bus gap — the one genuinely new seam.** The #649 contract requires an
 ACTIVE span at control-wrap time, but the wrap site is the delivery consumer
 (`deliverOp`/`steerOp`, `consumer.go:374-395`), whose goroutine is rooted on
 the serve ctx (`consumer.go:255 Run(ctx)`), not on the PostMessage request
@@ -294,7 +294,7 @@ structural, not a timeout:
   message transitively trigger?") but never one eternal trace. No artificial hop
   cap is needed for correctness, because nothing accumulates in a single trace; a
   cap would be a query-side product choice, not a plumbing requirement.
-- **Consistent with frozen #649.** The fresh root for an agent post is minted
+- **Consistent with #649.** The fresh root for an agent post is minted
   SERVER-side at its `RelayCommsCall` execution — "the server is origin" reads
   naturally as "the server-side execution of the post is the origin." #649's
   "never mint a fresh root at PostMessage or the agent" governs the DELIVERY
@@ -434,7 +434,7 @@ server-minted, never client-minted. This is a produced surface of T2 below.
 - **Never fail or block a delivery on trace machinery.** Empty `traceparent`
   when no active span; malformed input no-ops agent-side; a span error is
   never a dispatch error.
-- **Frozen #649 wire contract.** Field numbers exactly as verified above; W3C
+- **#649 wire contract.** Field numbers exactly as verified above; W3C
   grammar exactly `00-<32hex>-<16hex>-<2hex>`; server is origin, runner
   relays, agent continues; never mint a fresh root ON THE DELIVERY PATH (a
   delivered message never resets its trace). A NEW post IS a new turn: its

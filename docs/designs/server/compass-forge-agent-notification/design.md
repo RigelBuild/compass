@@ -483,8 +483,8 @@ The flush is also where the W3 forge delivery ack is emitted (T6).
   sweep covers every gap class with machinery we already designed.
 - **Riding the comms bus / delivery consumer for the notify step.**
   Rejected, unchanged from the prior draft: the delivery consumer is
-  comms-semantic (message settle gates, seq cursors); the frozen delivery
-  record already ruled the composition point — "the poller's notify step
+  comms-semantic (message settle gates, seq cursors), and the delivery
+  record places the composition point in the poller — "the poller's notify step
   calls the same dispatch the comms consumer calls … and advances its own
   per-subscriber cursor" (`compass-notification-delivery/design.md:574-577`).
 

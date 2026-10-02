@@ -152,7 +152,7 @@ drives it). It is T0 because every DM tool consumes it.
 ### Decision R5 — `create_topic: true` gates topic creation EVERYWHERE
 
 **This explicitly AMENDS the zulip-threading-model record's get-or-create
-ruling** (frozen there as: "`topic` is a **required string, the topic name**
+ruling** (ruled there as: "`topic` is a **required string, the topic name**
 (get-or-create via `PostMessageRequest.topic_name`)" and "get-or-create makes
 a typo cost one stray topic (renameable), never a lost message",
 `compass-zulip-threading-model/design.md:225-232`). Matt's rationale for the
@@ -332,7 +332,7 @@ must not name an owner account"). Both agents and both owners post.
 The squat hazard the red-team found: the reserved DM group is plantable —
 `requireGroupCreateAuthz` (`authz.go:87-104`) authorizes channel creation in
 a group owned by the actor's owning user, so any same-owner agent (or the
-human) could use the frozen org-mgmt `comms_create_channel` arm to plant
+human) could use the org-mgmt `comms_create_channel` arm to plant
 `dm--a--b` there with a hostile kind/policy/member-set, and a blind-adopt
 resume would resolve every future `open_dm(a,b)` to it forever (the
 deterministic name IS the key; the DM path cannot suffix around it).
@@ -399,7 +399,7 @@ server-resolved caller").
 tool (resolves OQ-1 tool-shape).** A new `CommsService.OpenDM` RPC (public,
 so the UI/human path gets the same resolve-or-create) + an `open_dm` arm on
 `CommsCallRequest`/`CommsCallResult` (arms 2-6 / 2-7 live today,
-`agent_gateway.proto:106-131`; the frozen org-mgmt record claims 7-9
+`agent_gateway.proto:106-131`; the org-mgmt record claims 7-9
 request-side / 8-10 result-side, so this record takes **10 / 11** as a FLOOR).
 Arm numbers need not be contiguous: 10/11 assumes org-mgmt lands first; if it
 slips, leaving 7-9 as gaps is fine, but `open_dm` takes whatever the next-free
@@ -447,7 +447,7 @@ calls the same store open path after the spawn chain succeeds, and
 verified live: `agent_account_id = 1; container_name = 2; session_id = 3`,
 `agent_gateway.proto:174-178`; both response-build sites
 `lifecycle.go:323-327` and `:383-387` populate it). Returned by NAME per R1.
-This composes with the frozen spawn-despawn record's contract untouched
+This composes with the spawn-despawn record's contract untouched
 (additive field, spawn semantics unchanged); it reuses R7's server op — one
 resolve-or-create, three entry points. The spawner can task its peer on the
 very next tool call.
@@ -462,7 +462,7 @@ unknown target and an other-owner target return the SAME in-band
 deferred (OQ-3).
 
 **First-message delivery + turn-drive.** Once the DM exists mandatory, the
-first post into it rides the frozen D1/D2 rails unchanged. The old record
+first post into it rides the D1/D2 rails unchanged. The old record
 gated the end-to-end loop on "RIG-2956 Defect-2 (peer turn-drive)" — that was
 the MISDIAGNOSIS: forensics proved delivery and turn-drive both work (the
 peer replied; the reply mis-routed). RIG-2956 is now the T0 reply-routing
@@ -505,7 +505,7 @@ DM (bounded only by what a pgtest can drive without a live model turn).
 ## Global Constraints
 
 - **Amendment, not rewrite — with two explicit amendments.** This record
-  composes with the frozen compass-agent-org-mgmt-tools,
+  composes with the merged compass-agent-org-mgmt-tools,
   compass-manager-comms-substrate, compass-agent-spawn-despawn,
   compass-handle-addressing-cutover, and compass-agent-trees records. It
   explicitly AMENDS compass-zulip-threading-model in exactly two ruled
@@ -609,10 +609,10 @@ The general channel+topic cutover every later task consumes. Three moves:
 **Coordination gate (T0 ↔ RIG-2956).** T0 is both this record's foundation
 (T1-T6 consume its additive proto tags + its required-channel tool contract)
 AND tracker RIG-2956, which Matt drives separately. To prevent drift: RIG-2956
-MUST land the exact seam this record freezes — the control-op field numbers
+MUST land the exact seam this record specifies — the control-op field numbers
 (`DeliverControl.channel_name = 5`, `SteerControl.topic_name = 4`/`channel_name
 = 5`), the `comms_post_message` required-channel / no-home-default contract, and
-the `create_topic` gate — or this record is re-frozen to match before T1
+the `create_topic` gate — or this record is amended to match before T1
 proceeds. T1+ executors block on **T0 merge**, not on RIG-2956 being "in
 progress"; the corrected field numbers are mirrored into the RIG-2956 issue so
 the highest-risk drift (a divergent wire tag) cannot happen silently.

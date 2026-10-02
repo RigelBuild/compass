@@ -1150,7 +1150,7 @@ are ruled and live in §Resolved decisions below.
 - **Corpus axis vs the harness instruction-slice cut (was OQ-6 —
   reconciled).** Matt's cut of the per-agent instruction-slice field stands
   FOR THE PER-SPAWN-TUPLE SHAPE it was ruled on: no per-spawn instruction
-  dial, shared-corpus-first (frozen harness ledger DL-063). The profile
+  dial, shared-corpus-first (harness ledger DL-063). The profile
   superset's `corpus` axis is a FRESH, Compass-owned, schema'd-but-deferred
   design — operator-authored profile contents selecting from the shared
   VC'd corpus at profile granularity, not a per-spawn free variable — and

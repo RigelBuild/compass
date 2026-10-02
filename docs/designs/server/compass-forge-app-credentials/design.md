@@ -62,7 +62,7 @@ global budget; installation tokens are short-lived (1 h, minted on demand —
 `githubapp.go:67-69`: "RS256 App JWT (~10 min) -> POST
 /app/installations/{id}/access_tokens -> cached until ~5 min before the 1 h
 expiry") where the PATs are long-lived static secrets. The read path already
-proved the model (RIG-2883: the board-webhook-ingestion record froze "remove
+proved the model (RIG-2883: the board-webhook-ingestion record decided "remove
 the static-PAT fallback; the GitHub App is the only GitHub credential",
 `compass-forge-board-webhook-ingestion/design.md:54-55`); the write path is the
 straggler.
@@ -93,12 +93,12 @@ PAT values, not App tokens. Defaults: `GITHUB_FORGE_TOKEN` (author,
 (`serve.go:245-248`) requires both write secret NAMEs declared, independent of
 the App gate.
 
-**The two-identity rule is frozen; the token TYPE is not.** DL-201
+**Two identities are required; the token TYPE is open.** DL-201
 (`docs/designs/DECISIONS.md:168`): "The arm executes under a DISTINCT reviewer
 GitHub identity — a second `server_only` declared secret". The write-path
 record (`compass-forge-write-path/design.md:275-283`) grounds why: "GitHub
 rejects APPROVE and REQUEST_CHANGES from the PR's own author with a 422".
-DL-201 freezes two IDENTITIES, not PAT-vs-App — the token type behind each
+DL-201 decides two IDENTITIES, not PAT-vs-App — the token type behind each
 identity is exactly what this record decides. Attribution is invariant either
 way: "The StampOwner header stays uniform: the stamp carries the ACTING agent
 regardless of which credential posts" (`compass-forge-write-path/design.md:282-283`,

@@ -6,7 +6,7 @@ package runtime
 // UNTAGGED (no //go:build line) precisely because it needs none of those: the
 // podman and microVM legs are build-tagged and gated on an engine/KVM being
 // present, so in most CI jobs the shared contract runs against NOTHING. This leg
-// gives the frozen 9-method contract actual continuous coverage on every runner.
+// gives the 9-method contract actual continuous coverage on every runner.
 //
 // The host backend's uid rule is its one structural divergence from the engine
 // legs, and it drives every caps choice here. A host child cannot switch user:

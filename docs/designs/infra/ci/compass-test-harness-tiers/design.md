@@ -21,7 +21,7 @@ CI-only PR. This record designs L2 (one shared long-lived stack across legs)
 and L3 (one shared external postgres), which are the same consolidation viewed
 from the runtime side and the dominant remaining levers.
 
-## Ruled context (frozen — this record designs against it, not over it)
+## Ruled context
 
 - **DL-257 / RIG-2743, Option A (Matt; #578 merged 2026-08-26, re-confirmed on
   RIG-2853):** the embedded/bundled `postgres:18` container

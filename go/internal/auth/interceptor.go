@@ -12,7 +12,7 @@ import (
 )
 
 // authorizationHeader carries the bearer credential on the network door, matching
-// the frozen token wire form ("authorization: Bearer <token>"). http.Header
+// the token wire form ("authorization: Bearer <token>"). http.Header
 // canonicalizes the key, so "Authorization" is the lookup form. The Bearer scheme
 // name is matched case-insensitively (see bearerToken), not by a fixed prefix.
 const authorizationHeader = "Authorization"
@@ -26,7 +26,7 @@ type callerKey struct{}
 // withCaller returns a child context carrying account as the authenticated caller
 // for both readers on the network door: the auth AdminGate reads it via
 // CallerFrom (callerKey), and the comms service handlers read it via
-// comms.actorFromContext — the frozen T3 seam (comms/context.go), set through
+// comms.actorFromContext — the T3 seam (comms/context.go), set through
 // comms.WithActor. Setting both is load-bearing: without the comms.WithActor
 // half, an authenticated comms RPC on the network door would fall back to the
 // bootstrap-admin identity (comms attributes the admin when no actor is set),

@@ -149,7 +149,7 @@ Why this wins the fork:
 - **CI cost** — the heavy WebKitGTK closure is exactly the one M4 already
   realizes in CI; the nix substituter cache makes repeat realizations cheap,
   and A4 gates the build per-PR anyway.
-- **Runs where T6's gate runs** — the frozen gate is "the artifact launches on
+- **Runs where T6's gate runs** — the parent's gate is "the artifact launches on
   the dev box and passes the T4 smoke" (`compass-native-app/design.md:533-534`).
   Store-rpathed binaries launch there without any library staging, exactly as
   the M4 cc/rpath work proved on a non-NixOS runner (`gtk-e2e-env.nix:68-77`).
@@ -240,7 +240,7 @@ packaging closure: `/go/**` (excluding `**/*_test.go`, so `go/server/`,
 just cmd/internal) + `/go/go.{mod,sum}`, `/apps/ui/**` (the dist, via the
 dependency), `/tools/toolchain/gtk-closure.nix`,
 `/tools/toolchain/versions/go.nix` (a Go pin bump rebuilds every binary),
-`/devenv.lock`, and the project's own script/nix files. That maps the frozen
+`/devenv.lock`, and the project's own script/nix files. That maps the parent's
 gate onto the existing two-speed CI (`ci.yml:25-36`) with no ci.yml edit — moon
 discovers registered projects (`ci.yml:14-18`):
 
@@ -512,7 +512,7 @@ the epic batch context; every task below inherits them:
   cumulatively (`ci.yml:221-231`), so once the PR has touched the inputs
   every later commit on it still schedules the task.
 - **Interfaces:** consumes T6.3's project + the existing `ci.yml:220-241`
-  affected/full split. Produces the frozen "CI green building the bundle from a
+  affected/full split. Produces the parent's "CI green building the bundle from a
   clean checkout" gate on main + nightly.
 - **Gate (test cycle):** the PR's `CI` rollup green with the bundle task
   scheduled and passing; after merge, the next main-push full sweep runs it
@@ -556,7 +556,7 @@ the epic batch context; every task below inherits them:
 
 `compass-postgres` LookPaths `postgres`/`initdb`/`createdb` at runtime
 (`compass-postgres/main.go:187,282,317`); the bundle ships none of them, and
-the frozen T6 spec is silent. Two coherent shapes:
+the parent's T6 spec is silent. Two coherent shapes:
 
 - **(a) Bundle it (recommended):** `bundle-env.nix` adds the devenv.lock-pinned
   bare `postgresql` (the exact parity attr `devenv.nix:108-113` mandates) and

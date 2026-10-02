@@ -2,10 +2,10 @@
 
 [microvm-runner.md](./microvm-runner.md) (its Plan § V5,
 microvm-runner.md:534-552; Approach (e), microvm-runner.md:211-236) and its
-frozen KVM-absent hard-fail decision D3 (microvm-runner.md:693-703).
+KVM-absent hard-fail decision D3 (microvm-runner.md:693-703).
 Authoritative issue scope: RIG-2496.
 
-Ledger impact: none. V5 details the hard-fail posture D3 already froze
+Ledger impact: none. V5 details the hard-fail posture D3 already set
 ("`VerifyMicroVMSupport` (V5) fails Runner startup with an error naming the
 missing capability and pointing at the fix", microvm-runner.md:693-697) plus
 the V1-review-flagged startup reorder RIG-2496 carries; nothing here is a new
@@ -85,18 +85,18 @@ broken engine isn't sent chasing tokens first):
    *per selected backend*;
 4. everything else unchanged.
 
-**How main picks the preflight.** The frozen `WorkloadRuntime` interface
+**How main picks the preflight.** The `WorkloadRuntime` interface
 gains nothing (the V3/V4-ratified discipline: capability probes are unexported
 single-method interface assertions, never interface verbs —
-microvm-v4-gateway-over-vsock.md § Global Constraints, "Frozen
-`WorkloadRuntime` interface untouched"). `main.go` grows one extracted,
+microvm-v4-gateway-over-vsock.md § Global Constraints, "`WorkloadRuntime`
+interface untouched"). `main.go` grows one extracted,
 hermetically testable helper:
 
 ```go
 // verifyBackendPreflight runs the selected engine's startup preflight: the
 // podman userns-remap check iff the engine is the podman backend, the microVM
 // support check iff it is the microVM backend. Probed via unexported
-// single-method interfaces so the frozen WorkloadRuntime interface is
+// single-method interfaces so the WorkloadRuntime interface is
 // untouched and a test fake can present either capability.
 func verifyBackendPreflight(ctx context.Context, engine runtime.WorkloadRuntime) error
 ```
@@ -266,7 +266,7 @@ since it resolves a parent conditional to "no check" rather than a check.
 
 ### (d) Image verification: presence always; content hash against an optional manifest
 
-The parent freezes "the guest kernel + rootfs image assets are present and
+The parent requires "the guest kernel + rootfs image assets are present and
 hash-verified" (microvm-runner.md:223-224), and the guest-image build was
 made bit-reproducible *for* this: "pinning it … makes the image a pure
 function of the closure — what lets V5's preflight hash-verify the asset"
@@ -355,7 +355,7 @@ Two candidate shapes for the canary's boot path:
     vmm/virtiofsd/passt, `launch.go:457-487`), read after the echo while the
     VM is live — PSS, not summed RSS/VmHWM, because guest RAM is one shared
     mapping and PSS divides shared pages among mappers (`launch.go:457-462`);
-    the field keeps the parent-frozen name `GuestRSSBytes` with a doc comment
+    the field keeps the parent's name `GuestRSSBytes` with a doc comment
     stating the PSS basis. `PSS` is reachable because `BootCanary` is
     in-package and the `guestVM` seam already carries it
     (`microvm_lifecycle.go:99-113`). PSS read errors on the sandboxed helpers
@@ -429,7 +429,7 @@ KVM leg's assert-ran guard counts a real `microvmtest.Require` caller. V5's
 `BootCanary` is a different artifact: a production `*MicroVMRuntime` method
 that really boots. Disambiguation, so a future reader never conflates them:
 
-- The method keeps the parent-frozen name `BootCanary`
+- The method keeps the parent's name `BootCanary`
   (microvm-runner.md:545-547); its doc comment names the distinction and
   cross-references `canary_microvm_test.go` explicitly (and vice versa: W3
   adds one sentence to the smoke test's header pointing at `BootCanary`).
@@ -476,7 +476,7 @@ Every task below inherits these.
   today's `VerifyUsernsRemapSupport` call with today's semantics; no podman
   argv, check, or message changes. Existing hermetic runner suites run
   unchanged.
-- **Frozen `WorkloadRuntime` interface untouched.** Preflight and canary are
+- **`WorkloadRuntime` interface untouched.** Preflight and canary are
   `*MicroVMRuntime` methods reached from `main` via unexported single-method
   probe interfaces — the V3/V4-ratified discipline
   (microvm-v4-gateway-over-vsock.md § Global Constraints).
@@ -676,7 +676,7 @@ recommendation.
   preflight gate" (`preflight.go:15-26`). **Recommendation:** (a); T9 keeps
   only `decidePodman` + its print/exit surface, header note updated.
 - **OQ-3 (load-bearing) — image hash verification is manifest-based and the
-  manifest is optional in V5.** The parent freezes "present and
+  manifest is optional in V5.** The parent requires "present and
   hash-verified" (microvm-runner.md:223-224) and the image build is
   bit-reproducible for it (`guest-image/default.nix:375-380,419-435`) — but
   no lane ships an expected-digest artifact today, and the Runner gets bare
@@ -690,7 +690,7 @@ recommendation.
   the guest-image/release lane's manifest emission filed as a **named
   follow-up issue at the freeze→file→dispatch gate**, with manifest-mandatory
   tied to that issue's close — a concrete forcing event, not an open-ended
-  "revisited later", so the parent's frozen "hash-verified" has a mechanism
+  "revisited later", so the parent's "hash-verified" has a mechanism
   back to true. (The negative premise — no lane emits a digest manifest today
   — was reconfirmed this session by a `grep` of `guest-image/` finding only
   nix-internal `narHash`/`vendorHash`, `default.nix:55,99`, no expected-digest
@@ -761,13 +761,13 @@ recommendation.
   the on-demand surface lands with the V8 benchmark harness that consumes the
   same `CanaryReport`.
 - **OQ-10 (non-load-bearing) — `GuestRSSBytes` reports PSS, not RSS, under a
-  parent-frozen field name.** The parent's Interfaces sketch names the field
+  parent-named field.** The parent's Interfaces sketch names the field
   `GuestRSSBytes` (microvm-runner.md:545-547); §(e) fills it with summed
   proportional-set-size (PSS), not resident-set-size, because guest RAM is one
   shared mapping and PSS is the honest per-VM share (`launch.go:459-464`). The
-  name is kept for parent-surface stability with a doc comment stating the PSS
+  name is kept to match the parent's sketch, with a doc comment stating the PSS
   basis, and the value undercounts by the passt share (`PR_SET_DUMPABLE=0`,
-  `launch.go:470-483`). Redefining a frozen field's meaning is flagged rather
-  than done silently. **Recommendation:** keep the frozen name; document the
+  `launch.go:470-483`). Redefining a field's meaning is flagged rather
+  than done silently. **Recommendation:** keep the name; document the
   PSS basis + the passt undercount; revisit the name with V8 if its benchmark
   needs a different basis.

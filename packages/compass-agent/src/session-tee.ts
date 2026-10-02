@@ -42,10 +42,10 @@ type TitleUpdate = Parameters<SessionStorageBackend["writeFull"]>[3];
 // Bounded, escalating backoff for the backend's own transcript-send retry (ms). The sink
 // already retries transient errors and only REJECTS on definitive give-up; this is the
 // SECOND, coarser tier R4 mandates — after the last delay the send is unrecoverable and the
-// session fails closed. Cap is length. Tuning, not frozen (design.md:777).
+// session fails closed. Cap is length. A tuning value (design.md:777).
 export const TEE_EMIT_BACKOFF_MS: readonly number[] = [100, 500, 2000, 5000];
 
-/** Tuning knobs; all optional so the frozen `(sink, sessionDir)` shape holds. */
+/** Tuning knobs; all optional, so the plain call is `(sink, sessionDir)`. */
 export interface TranscriptTeeOptions {
 	/** Override the escalating retry schedule (tests inject a fast one). */
 	readonly emitBackoffMs?: readonly number[];

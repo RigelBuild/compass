@@ -133,8 +133,8 @@ type CommsCallRequest struct {
 	// would grow an unbounded conversation tree. W3C format
 	// `00-<32hex trace-id>-<16hex span-id>-<2hex flags>`; EMPTY on a human-seeded
 	// first turn (no triggering message). Field 10 leaves 7-9 for the in-flight
-	// org-management oneof arms (RIG-2673); numbers are frozen (DL-186/OQ-1b).
-	// Server-side link per
+	// org-management oneof arms (RIG-2673); numbers stay in place, renamed never
+	// renumbered (OQ-1b). Server-side link per
 	// docs/designs/observability/compass-server-runner-otel/design.md.
 	TriggerTraceparent string `protobuf:"bytes,10,opt,name=trigger_traceparent,json=triggerTraceparent,proto3" json:"trigger_traceparent,omitempty"`
 	unknownFields      protoimpl.UnknownFields
@@ -2817,7 +2817,7 @@ type BoardCallRequest_SetIssueState struct {
 
 func (*BoardCallRequest_SetIssueState) isBoardCallRequest_Call() {}
 
-// Set an issue's canonical lifecycle state. Carries the full frozen
+// Set an issue's canonical lifecycle state. Carries the full
 // UpdateIssueState semantics re-homed (compass-issue-model/design.md:474-511):
 // any of the eight real states is a legal target (any-to-any; DL-033's arrows
 // are normative flow, not server-enforced), ISSUE_STATE_UNSPECIFIED is an
@@ -3254,7 +3254,7 @@ func (*PostConversationFrameResponse) Descriptor() ([]byte, []int) {
 }
 
 // The Control subscribe request carries no session id: the per-container socket
-// the call arrives on IS the session identity (frozen Decision #4).
+// the call arrives on IS the session identity (design Decision #4).
 type ControlSubscribeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields

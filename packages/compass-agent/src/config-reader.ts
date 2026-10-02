@@ -37,7 +37,7 @@ export const AGENT_CONFIG_MOUNT_PATH = "/run/compass/agent-config";
 
 /**
  * The agent-config mount root this agent reads through: the
- * `COMPASS_AGENT_CONFIG_MOUNT_PATH` env override when set, else the frozen
+ * `COMPASS_AGENT_CONFIG_MOUNT_PATH` env override when set, else the fixed
  * `AGENT_CONFIG_MOUNT_PATH` default.
  *
  * The container tiers bind-mount the bundle at the fixed default and set no
