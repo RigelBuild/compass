@@ -408,8 +408,8 @@ type Hub struct {
 	runner *attachedRunner
 	// containerAccounts binds a provisioned container_name to its agent account and
 	// owning Runner, from the resolved account id the caller passes Hub.Provision.
-	// Start promotes the entry to sessionAccounts under the minted session_id; it
-	// lives here only for the Provision..Start window.
+	// It authorizes every Start's pre-exec secrets fetch, so it lives from
+	// Provision until Remove or re-enroll.
 	containerAccounts map[string]sessionBinding
 	// sessionAccounts binds a live session_id to its agent account and owning
 	// Runner — the authoritative map RelayCommsCall resolves against. Start adds,

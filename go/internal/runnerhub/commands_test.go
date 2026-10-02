@@ -267,10 +267,9 @@ func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
 }
 
 // Remove clears the container's provisioned account binding — the teardown
-// counterpart to Provision's bindContainer. On a Provision->Remove path that
-// never reached Start (promoteSession clears it there), a lingering binding would
-// keep authorizing a pre-exec FetchSecrets materialize (AccountForContainer) for
-// a container that no longer exists.
+// counterpart to Provision's bindContainer. The binding outlives Start, so without
+// this a lingering binding would keep authorizing a pre-exec FetchSecrets
+// materialize (AccountForContainer) for a container that no longer exists.
 //
 // Mutation: dropping the unbindContainer call in Remove leaves AccountForContainer
 // true after teardown and reddens this.
@@ -295,6 +294,64 @@ func TestRemoveClearsContainerBinding(t *testing.T) {
 	}
 	if _, ok := hub.AccountForContainer("runner-1", "c1"); ok {
 		t.Fatal("container c1 still bound after Remove, want the binding cleared (stale binding authorizes pre-exec secrets materialize)")
+	}
+}
+
+// A Remove whose reply is lost may still have removed the container, and the
+// binding now outlives Start, so it must be dropped on a failed relay too.
+func TestFailedRemoveStillClearsContainerBinding(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
+	router, _, _ := hub.routerFor("any")
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+				Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL, Message: "reply lost",
+			}},
+		})
+		return nil
+	})
+
+	if _, err := hub.Remove(context.Background(), "req-rm", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err == nil {
+		t.Fatal("Remove = nil, want the relayed error")
+	}
+	if _, ok := hub.AccountForContainer("runner-1", "c1"); ok {
+		t.Fatal("container c1 still bound after a failed Remove; the binding would keep authorizing secrets for a removed container")
+	}
+}
+
+// A resume Start fetches secrets by container_name before exec, so the binding must
+// outlive the first Start. It was dropped there, and every resume after a Stop or an
+// agent self-exit then failed permission_denied until Remove + Provision.
+func TestContainerBindingSurvivesStartForResume(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("c1", testAgentAccount, "runner-1")
+	router, _, _ := hub.routerFor("any")
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		result := &compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId()}
+		if cmd.GetStop() != nil {
+			result.Result = &compassv1internal.SessionsRequest_Stop{Stop: &compassv1.StopAgentSessionResponse{}}
+		} else {
+			result.Result = &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-1"}}
+		}
+		go router.complete(result)
+		return nil
+	})
+
+	if _, err := hub.Start(context.Background(), "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "c1"}); err != nil {
+		t.Fatalf("Start = %v, want success", err)
+	}
+	if _, err := hub.Stop(context.Background(), "req-stop", &compassv1.StopAgentSessionRequest{SessionId: "sess-1"}); err != nil {
+		t.Fatalf("Stop = %v, want success", err)
+	}
+	if acct, ok := hub.AccountForContainer("runner-1", "c1"); !ok || acct != testAgentAccount {
+		t.Fatalf("AccountForContainer after Start+Stop = (%q, %v), want (%s, true): a resume Start needs it to fetch secrets", acct, ok, testAgentAccount)
+	}
+	if _, ok := hub.AccountForContainer("runner-2", "c1"); ok {
+		t.Fatal("a different Runner resolved c1; the binding must stay scoped to its owning Runner")
 	}
 }
 

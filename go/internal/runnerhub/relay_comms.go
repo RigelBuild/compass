@@ -26,7 +26,8 @@ import (
 )
 
 // bindContainer records the resolved account and Runner that provisioned
-// containerName. Start later promotes its account to a session binding. Empty values fail closed.
+// containerName. Every Start on the container reads it; Remove and re-enroll
+// clear it. Empty values fail closed.
 func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID, runnerID string) {
 	if containerName == "" || agentAccountID == "" || runnerID == "" {
 		return
@@ -36,7 +37,7 @@ func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID
 	h.containerAccounts[containerName] = sessionBinding{account: agentAccountID, runnerID: runnerID}
 }
 
-// promoteSession moves the container's provisioned account binding onto the live
+// promoteSession binds the container's provisioned account to the live
 // session_id Start minted. Called from Start after the Runner returns the
 // session id. If the container had no recorded account (a provision that named
 // none, or a container from before this leg existed), no session binding is
@@ -99,11 +100,8 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	h.mu.Lock()
 	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: runnerID}
 	h.accountSessions[account] = sessionID
-	// The container->account entry has served its purpose; the session binding
-	// is now authoritative. Drop it so a container name reused across the
-	// Runner's life cannot resurrect a stale account (reconnect clears both maps
-	// anyway; this keeps the pre-Start map tight in the meantime).
-	delete(h.containerAccounts, containerName)
+	// Keep the container->account entry: a resume Start on this container fetches
+	// secrets by container_name before exec. Remove and re-enroll clear it.
 	// Evict the displaced session from the forward map: the account moved off it,
 	// so it now resolves nowhere. Guard displaced != sessionID for the rebind
 	// case (an account re-pointed onto the SAME session displaces itself, and
@@ -236,13 +234,9 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 	}
 }
 
-// unbindContainer drops a container's provisioned account binding. Called from
-// Remove, the teardown counterpart to Provision (which binds via bindContainer):
-// on a Provision->Remove path that never reached Start, promoteSession never
-// cleared the entry, so without this a stale container->account binding would
-// linger and keep authorizing a pre-exec FetchSecrets materialize
-// (HasContainerBinding) against a container that no longer exists. A no-op on
-// the normal lifecycle (Start's promoteSession already cleared it).
+// unbindContainer drops a container's provisioned account binding. Remove is the
+// only normal-lifecycle clear, so without it the binding would keep authorizing a
+// pre-exec FetchSecrets (AccountForContainer) for a container that is gone.
 func (h *Hub) unbindContainer(containerName string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -505,8 +499,8 @@ func (h *Hub) AccountForLiveSession(runnerID, sessionID string) (store.AccountID
 }
 
 // AccountForContainer returns the account for containerName only when runnerID
-// owns its Provision..Start binding. The check is limited to the in-memory binding
-// created at Provision and cleared at Start, Remove, or re-enroll.
+// owns its provisioned binding. The check is limited to the in-memory binding
+// created at Provision and cleared at Remove or re-enroll.
 func (h *Hub) AccountForContainer(runnerID, containerName string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
