@@ -2761,14 +2761,23 @@ jobs:
         run: |
           go test -tags livegithub -run TestLiveUpdateFixtures -update -timeout 10m ./internal/forge/...
 
+      # A GITHUB_TOKEN-opened PR gets no pull_request CI (GitHub's recursion
+      # guard), so open it with the same per-run App token release.yml mints.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
       - name: Open a bot PR with the regenerated fixtures
         # The regenerated testdata/ is a working-tree diff; this opens a bot PR
         # carrying it for human review — the one bot-opens-a-PR credential path
         # (design §394-398). create-pull-request stages the diff onto a fresh
-        # branch and opens the PR via the job's widened permissions above; it is
-        # SHA-pinned like every other action in this file, its trust anchor.
+        # branch and opens the PR with the App token above; it is SHA-pinned
+        # like every other action in this file, its trust anchor.
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
+          token: ${{ steps.app-token.outputs.token }}
           branch: forge-fixture-regen-${{ github.run_id }}
           title: 'test(forge): regenerate forge golden fixtures'
           commit-message: 'test(forge): regenerate forge golden fixtures'
@@ -2926,6 +2935,13 @@ jobs:
         # dispatched to replace.
         run: bunx playwright test e2e/visual-smoke.spec.ts --update-snapshots=all
 
+      # App token for the same reason as the forge lane: a GITHUB_TOKEN PR gets no CI.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
       - name: Open a bot PR with the regenerated baselines
         # The rewritten __screens__ PNGs are a working-tree diff; this opens a
         # bot PR carrying them for image review, the same bot-opens-a-PR
@@ -2939,6 +2955,7 @@ jobs:
         # to `base: main`.
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
+          token: ${{ steps.app-token.outputs.token }}
           branch: visual-baseline-regen-${{ github.run_id }}
           title: 'test(ui): regenerate visual regression baselines'
           commit-message: 'test(ui): regenerate visual regression baselines'
