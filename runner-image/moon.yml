@@ -70,3 +70,4 @@ tasks:
       - '/go/internal/**'
       - '/guest-image/**'
       - '/tools/toolchain/microvm-vmm-env.nix'
+      - '/version.txt'
