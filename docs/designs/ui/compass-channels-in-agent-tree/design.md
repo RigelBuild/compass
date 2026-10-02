@@ -296,9 +296,11 @@ that needs tree membership is created as a new TREE channel.
 allowed.** It is how a tree channel becomes a hand-membered or shared
 one. The conversion mints the channel's current derived participant set
 as stored `channel_members` rows, each taking its `subscribed` value from
-that account's `channel_subscriptions` override row (default when none),
-then deletes the override rows and flips the mode; otherwise every
-subscriber silently stops receiving delivery. It cannot bypass either
+that account's `channel_subscriptions` override row (default when none)
+and keeping the D2 delivery cursor the TREE subscribe already seeded
+(seeding one where a subscribed account lacks it), then deletes the
+override rows and flips the mode; otherwise subscribers silently stop
+receiving, or replay, delivery. It cannot bypass either
 TREE refusal, because those guard entering TREE, not leaving it.
 Becoming SHARED also clears `parent_agent_id` (leg 2: shared spaces never
 live in a tree). The conversion RPC is follow-up work, tracked outside
@@ -1671,7 +1673,7 @@ collapses independently, plus the `"Agent workspaces"` toggle assertion
 at `:203`) is what leg 5's ONE section reverses, and its New-folder pin
 (`:411-418`, "the keep-native new-folder button still carries its
 native title (sweep boundary held)", asserting a `button.icon-btn` with
-`title === "New folder"` exists) is what Open Question 4's delete
+`title === "New folder"` exists) is what the decided delete (Open Questions 4)
 reverses. `LeftSidebar.live.test.tsx` is NOT affected: it asserts only
 `.tree-agent` / `.tree-empty` rows inside the agent band (`:103`,
 `:110`, `:126`, `:169`) and never locates a section header.
