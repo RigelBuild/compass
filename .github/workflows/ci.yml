@@ -2662,12 +2662,6 @@ jobs:
       github.event.inputs.pr == '' &&
       github.ref == 'refs/heads/main' &&
       inputs.regen == 'forge'
-    # The top-level `permissions: contents: read` is the floor; this job widens
-    # its own to open a PR: contents:write to push the regen branch,
-    # pull-requests:write to open the PR against it.
-    permissions:
-      contents: write
-      pull-requests: write
     timeout-minutes: 90
     env:
       # Same short temp root as the moon battery: the live suite binds AF_UNIX sockets
@@ -2810,18 +2804,12 @@ jobs:
     # to copy here.
     # The `refs/heads/main` conjunct matches the forge lane's: a dispatch names
     # an arbitrary ref, and the dispatched ref's own copy of this file runs, so
-    # without it an arbitrary branch executes with contents+pull-requests write.
+    # without it an arbitrary branch mints the App token that pushes and opens PRs.
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.pr == '' &&
       github.ref == 'refs/heads/main' &&
       inputs.regen == 'visual'
-    # The top-level `permissions: contents: read` is the floor; widened exactly
-    # as the forge lane's: contents:write to push the regen branch,
-    # pull-requests:write to open the PR against it.
-    permissions:
-      contents: write
-      pull-requests: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
