@@ -168,8 +168,6 @@ func TestVolumeRootRejectsTraversal(t *testing.T) {
 		"sess-x" + reapingSuffix,
 		reapingSuffix,
 		lockFileSuffix,
-		"sess-x" + reapingSuffix,
-		reapingSuffix,
 	}
 	for _, bad := range badIDs {
 		if _, err := m.CreateVolume(t.Context(), bad); !errors.Is(err, ErrInvalidSessionID) {
@@ -674,6 +672,8 @@ func TestCloseIntentZeroValueIsClosed(t *testing.T) {
 	}
 }
 
+// TestAttachRacingAReapDoesNotReturnAReapedPath gates on Attach being parked in
+// its context-aware poll before the reaper removes the tree.
 func TestAttachRacingAReapDoesNotReturnAReapedPath(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-relaunch-at-deadline")
@@ -707,8 +707,6 @@ func TestAttachRacingAReapDoesNotReturnAReapedPath(t *testing.T) {
 	})
 }
 
-// TestAttachRacingAReapDoesNotReturnAReapedPath gates on Attach being parked in
-// its context-aware poll before the reaper removes the tree.
 func TestAttachReturnsCtxErrWhileLockIsHeld(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-cancel-lock")
@@ -803,16 +801,6 @@ func TestLockAcquisitionConvergesOnTheLiveInode(t *testing.T) {
 	})
 }
 
-// TestVolumeLockSurvivesAReap pins the placement the fix rests on: the
-// per-volume lock file lives OUTSIDE the volume root, so reaping the root
-// cannot unlink the inode the lock is held on.
-//
-// That is what makes mutual exclusion hold across a reap+recreate. flock locks
-// an inode; a lock file inside the reaped subtree would be unlinked by the
-// reap, so a later lockVolume — after a cold CreateVolume recreated the root —
-// would open a NEW inode and lock that, letting two actors hold "the" volume
-// lock at once and making any under-lock existence check worthless. Holding the
-// lock across a reap must therefore still exclude a second acquisition.
 func TestReapIsAtomicUnderPartialRemoveFailure(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission failure cannot be forced as root")
@@ -851,6 +839,12 @@ func TestReapIsAtomicUnderPartialRemoveFailure(t *testing.T) {
 	}
 	if !exists(t, reapingPath(v.HostRoot)) || !exists(t, filepath.Join(reapingPath(v.HostRoot), "pinned", "held")) {
 		t.Fatal("partial removal did not leave inert renamed tree")
+	}
+	if err := m.ReconcileOrphans(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, reapingPath(v.HostRoot)+lockFileSuffix) {
+		t.Fatal("ReconcileOrphans treated the reaping leftover as a volume")
 	}
 	if err := os.Chmod(filepath.Join(reapingPath(v.HostRoot), "pinned"), 0o700); err != nil {
 		t.Fatal(err)
@@ -960,6 +954,16 @@ func TestReconcileOrphansIgnoresAReapingLeftover(t *testing.T) {
 	}
 }
 
+// TestVolumeLockSurvivesAReap pins the placement the fix rests on: the
+// per-volume lock file lives OUTSIDE the volume root, so reaping the root
+// cannot unlink the inode the lock is held on.
+//
+// That is what makes mutual exclusion hold across a reap+recreate. flock locks
+// an inode; a lock file inside the reaped subtree would be unlinked by the
+// reap, so a later lockVolume — after a cold CreateVolume recreated the root —
+// would open a NEW inode and lock that, letting two actors hold "the" volume
+// lock at once and making any under-lock existence check worthless. Holding the
+// lock across a reap must therefore still exclude a second acquisition.
 func TestVolumeLockSurvivesAReap(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-reaped-under-lock")
@@ -1010,10 +1014,39 @@ func TestVolumeLockSurvivesAReap(t *testing.T) {
 	}
 }
 
-// TestVolumeLockFileIsOutsideTheVolumeRoot pins the placement structurally, and
-// pins that acquiring a lock creates NOTHING inside the volume root. A
-// lockVolume that resurrected the metadata dir inside a reaped root would make
-// Attach's under-lock existence check see a live volume with no contents.
+// A contended tryLockVolume must close the fd it opened; Expire hits this on
+// every pass that meets a held lock.
+func TestTryLockVolumeClosesItsFdOnContention(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-contended-fd")
+	held, err := tryLockVolume(t.Context(), v.HostRoot)
+	if err != nil || held == nil {
+		t.Fatalf("holding lock: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := held.release(); err != nil {
+			t.Error(err)
+		}
+	})
+	openFds := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Skipf("fd count unavailable: %v", err)
+		}
+		return len(entries)
+	}
+	before := openFds()
+	for range 50 {
+		if l, err := tryLockVolume(t.Context(), v.HostRoot); err != nil || l != nil {
+			t.Fatalf("tryLockVolume = (%v, %v), want contention", l, err)
+		}
+	}
+	// Slack for runtime-owned fds; a leak adds one per attempt.
+	if after := openFds(); after-before > 5 {
+		t.Fatalf("open fds grew from %d to %d over 50 contended attempts", before, after)
+	}
+}
+
 func TestExpireReclaimsOrphanLockFilesOnlyWhenUncontended(t *testing.T) {
 	m := newManager(t)
 	makeLock := func(id string) Volume {
@@ -1103,6 +1136,10 @@ func TestExpireReclaimsTheLockAfterSweepingALeftover(t *testing.T) {
 	}
 }
 
+// TestVolumeLockFileIsOutsideTheVolumeRoot pins the placement structurally, and
+// pins that acquiring a lock creates NOTHING inside the volume root. A
+// lockVolume that resurrected the metadata dir inside a reaped root would make
+// Attach's under-lock existence check see a live volume with no contents.
 func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-lock-placement")

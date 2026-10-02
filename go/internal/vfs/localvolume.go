@@ -875,7 +875,7 @@ func lockAttempt(ctx context.Context, path string) (*volumeLock, bool, error) {
 		return nil, false, err
 	}
 	l, mismatch, err := lockAttemptOnFile(ctx, path, f)
-	if mismatch && err == nil {
+	if l == nil && err == nil {
 		if err := closeLockFile(path, f); err != nil {
 			return nil, false, err
 		}
