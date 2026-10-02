@@ -313,8 +313,9 @@ pkgs.runCommand "compass-ui-${version}"
     # door+bearer come from the build-time environment; unset, the app resolves
     # them at boot instead of baking a wrong one. `--mode production` states the
     # intent explicitly since this lane does not go through `bunx`.
-    unset VITE_COMPASS_BASE_URL VITE_COMPASS_TOKEN
-    ${lib.optionalString (baseUrl != null) "export VITE_COMPASS_BASE_URL=${lib.escapeShellArg baseUrl}"}
+    unset VITE_COMPASS_BASE_URL VITE_COMPASS_TOKEN${
+      lib.optionalString (baseUrl != null) "\nexport VITE_COMPASS_BASE_URL=${lib.escapeShellArg baseUrl}"
+    }
     bun ../../node_modules/vite/bin/vite.js build --mode production
     cd ../..
 
