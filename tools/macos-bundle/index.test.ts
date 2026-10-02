@@ -14,6 +14,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import {
 	createOrThrow,
+	detachStaleAttachments,
 	formatBusyDiagnosis,
 	formatCreateFailure,
 	imageHolderPids,
@@ -661,6 +662,22 @@ describe("settleBeforeCreate", () => {
 		} finally {
 			await rm(stage, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("detachStaleAttachments", () => {
+	test("timed-out info is ignored and skips detach", async () => {
+		const calls: string[][] = [];
+		await expect(
+			detachStaleAttachments(
+				{ imagePath: TARGET.imagePath, volumeName: TARGET.volumeName },
+				async (cmd) => {
+					calls.push(cmd);
+					return { exitCode: "timed out", stdout: "", stderr: "" };
+				},
+			),
+		).resolves.toBeUndefined();
+		expect(calls).toEqual([["hdiutil", "info", "-plist"]]);
 	});
 });
 
