@@ -1,8 +1,8 @@
 import { bootConnection } from "./boot";
+import { bootBrowser } from "./boot-browser";
 import { bootNativeClient } from "./boot-native";
 import { nativeConnectionProvider } from "./daemon-transport";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
-import { envConnectionProvider } from "./live/provider";
 import { type ShellMode, shellServerUrl } from "./shell-globals";
 
 /** The launch mode `bootForMode` dispatches on: the shell-injected `ShellMode`,
@@ -14,7 +14,7 @@ export type BootModeDeps = {
 		root: HTMLElement,
 	) => Promise<ResolvedConnection | undefined>;
 	embeddedConnectionProvider: () => ConnectionProvider;
-	envConnectionProvider: () => ConnectionProvider;
+	bootBrowser: (root: HTMLElement) => Promise<ResolvedConnection | undefined>;
 	bootConnection: (
 		root: HTMLElement,
 		resolve: () => Promise<ResolvedConnection>,
@@ -29,7 +29,7 @@ export const defaultDeps: BootModeDeps = {
 	// which rejects a relative URL. Matches the packages/compass-client convention.
 	embeddedConnectionProvider: () =>
 		nativeConnectionProvider(shellServerUrl() ?? "http://compass.localhost"),
-	envConnectionProvider,
+	bootBrowser,
 	bootConnection,
 };
 
@@ -48,7 +48,6 @@ export function bootForMode(
 					deps.embeddedConnectionProvider().resolve(),
 				);
 		default:
-			return () =>
-				deps.bootConnection(root, () => deps.envConnectionProvider().resolve());
+			return () => deps.bootBrowser(root);
 	}
 }
