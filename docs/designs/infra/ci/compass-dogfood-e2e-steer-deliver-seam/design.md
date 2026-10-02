@@ -1,6 +1,6 @@
 # Compass dogfood e2e — steer/deliver split observation seam
 
-Extends the frozen dogfood-e2e harness contract
+Extends the dogfood-e2e harness contract
 ([`../compass-dogfood-e2e/design.md`](../compass-dogfood-e2e/design.md), §A5
 legs 3-4, which frames the deliverable as "a reusable e2e harness"). This record
 covers only the remaining leg-4 assertion RIG-1788 owes: proving, **over the real
@@ -161,13 +161,13 @@ product signal rather than test-only scaffolding — directly Matt's "invest in 
 best harness" principle (the emit is a one-line sibling of the existing
 `deliveryAck`, on the FrameSink path that ack already rides). The one real cost is a
 **public** proto surface (`SessionEvent.SessionInjection`): op-kind becomes
-client-visible. This reverses **no** frozen decision. The frozen parent frames the
+client-visible. This reverses **no** decision of the parent. The parent frames the
 split only as its observable outcome — "steer reaches the mentioned peer's real
 session, deliver reaches the unmentioned one" (`../compass-dogfood-e2e/design.md:664`)
 — and takes **no** position on whether the op-kind is client-visible; the only
 "recipient-side / internal" characterization is a code-comment gloss
 (`go/internal/delivery/consumer.go:309`), not a design ruling. So the public signal
-decides a question the parent left open rather than overriding one it closed, and it
+decides a question the parent left open, and it
 doubles as a genuine product signal (a session tail showing "steered by @X" vs
 "delivered from @Y"). Options (1) and (3) are not taken; they remain recorded
 above as the rejected alternatives.
@@ -227,7 +227,7 @@ In dependency order — T2 depends on T1, T3 on T1+T2.
   (positive), then read the retained injection frames and assert peer-1 saw no
   `deliver` and the spawner no `steer` for that id within the window
   (exclusion). **Exclusion is window-scoped**, not an absolute negative: the
-  frozen design permits a steered-but-unacked message to be sweep-redelivered as
+  current design permits a steered-but-unacked message to be sweep-redelivered as
   a plain deliver later (`go/internal/delivery/settle.go:241` builds a
   `deliverOp` for every owed message), so an absolute "never a deliver" would
   assert a guarantee the system does not make. The existing leg-3 (spawn +
@@ -279,7 +279,7 @@ In dependency order — T2 depends on T1, T3 on T1+T2.
 Note on ledgers: this record lives out of tree
 (`docs/designs/platform/`), which the design-ledger-gate governs only for the
 **product** corpus (`docs/designs/product/DECISIONS.md`). A platform record adds
-no DECISIONS row and declares no ledger delta, mirroring its frozen parent
+no DECISIONS row and declares no ledger delta, mirroring its parent
 ([`../compass-dogfood-e2e/design.md`](../compass-dogfood-e2e/design.md) note on
 ledgers). Ledger-impact: none.
 

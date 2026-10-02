@@ -198,8 +198,8 @@ type CompassServiceClient interface {
 	// rejected (not-found), never leaked (design: architecture-lineage).
 	//
 	// The streamed response is AgentSessionFrame, not the `SubscribeAgentSessionResponse`
-	// that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (design: architecture-lineage) and
-	// a wrapper would change the frozen wire shape. Ignore
+	// that RPC_RESPONSE_STANDARD_NAME wants: the design (architecture-lineage) names it, and
+	// a wrapper would change the wire shape. Ignore
 	// the rule for this one RPC only — every other RPC keeps it armed.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SubscribeAgentSession(context.Context, *connect.Request[v1.SubscribeAgentSessionRequest]) (*connect.ServerStreamForClient[v1.AgentSessionFrame], error)
@@ -602,8 +602,8 @@ type CompassServiceHandler interface {
 	// rejected (not-found), never leaked (design: architecture-lineage).
 	//
 	// The streamed response is AgentSessionFrame, not the `SubscribeAgentSessionResponse`
-	// that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (design: architecture-lineage) and
-	// a wrapper would change the frozen wire shape. Ignore
+	// that RPC_RESPONSE_STANDARD_NAME wants: the design (architecture-lineage) names it, and
+	// a wrapper would change the wire shape. Ignore
 	// the rule for this one RPC only — every other RPC keeps it armed.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SubscribeAgentSession(context.Context, *connect.Request[v1.SubscribeAgentSessionRequest], *connect.ServerStream[v1.AgentSessionFrame]) error

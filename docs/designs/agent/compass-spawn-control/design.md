@@ -302,7 +302,7 @@ multiple cards — Matt confirmed agents need multiple workstreams — so an
 agent-keyed map would bleed one card's pill onto siblings). The binding
 carries its `agentAccountId` for the RPC. Bindings are store-internal
 wire-lifecycle bookkeeping, not a fixture-shape change: the compass board's
-`Issue` (`stub-data.ts:202-240`) and `Agent` shapes stay frozen.
+`Issue` (`stub-data.ts:202-240`) and `Agent` shapes stay unchanged.
 *(Terminology port note: the ancestor record's UI had a `Workstream` type; the compass
 board renders `Issue` cards (`board.ts:39-56`, `components/IssueCard.tsx`)
 and has no `Workstream` symbol. This record keeps "workstream" for the
@@ -404,7 +404,7 @@ Every task below inherits these; task briefs do not restate them.
   reason when absent — the shipped `stopAgent` shape (`store.ts:1816-1849`),
   never a silent no-op. (Amends the walking-skeleton constraint;
   DL-165.)
-- **Fixture shapes stay frozen**: no new fields on `Issue` / `Agent` in
+- **Fixture shapes stay unchanged**: no new fields on `Issue` / `Agent` in
   `stub-data.ts`; wire-lifecycle bookkeeping lives in the store's
   `SessionBinding` map.
 - **Tests: `moon run compass-ui:test`** = `bun test --conditions browser`
@@ -432,7 +432,7 @@ provisioning-vs-starting split and no client-side retry-id state.
 
 ```ts
 /** One started workstream's wire-lifecycle bookkeeping. Store-internal —
- *  never a fixture shape (stub-data.ts Issue/Agent stay frozen). Keyed by
+ *  never a fixture shape (stub-data.ts Issue/Agent stay unchanged). Keyed by
  *  workstreamId (= Issue.id) in the store map (per DL-164: the board is
  *  workstream-keyed and an agent owns multiple cards, so an agent key would
  *  bleed one start's pill onto the agent's other cards). A binding exists

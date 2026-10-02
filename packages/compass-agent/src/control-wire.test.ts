@@ -1,7 +1,7 @@
 // AgentControl wire contract: the inbound control envelope's protojson shape is
 // what the Runner's Control producer encodes and the agent's ControlSource
 // decodes, so a drift here silently breaks control classification. Each test
-// defends a frozen wire fact — the camelCase oneof discriminator per variant,
+// defends a wire fact — the camelCase oneof discriminator per variant,
 // `controlSeq` as a top-level ENVELOPE field (not nested in the oneof), and the
 // two agent→Runner ack frames' scalar shapes (uint64 → protojson string). Same
 // philosophy as frame.test.ts for the outbound AgentFrame.
@@ -132,7 +132,7 @@ describe("AgentControl ack frames — scalar shapes survive the wire", () => {
 	});
 });
 
-describe("AgentFrame — ack variants carry the frozen oneof discriminator", () => {
+describe("AgentFrame — ack variants carry the oneof discriminator", () => {
 	// The two agent→Runner ack frames ride the Publish spine as AgentFrame
 	// variants (agent.proto oneof: replay_complete_ack = 4, control_ack = 5).
 	// The oneof field name IS the wire discriminator C2 routes off, so it is

@@ -14,7 +14,7 @@ hand-rolled **DL-183/DL-262 pgid** mechanism `compass-stack` ships today) is
 part of this decision, with the Docker-socket engine recorded as
 considered-and-declined at the stack layer. Scope is bring-up order,
 teardown, restart policy, crash recovery, boot-start, and rootless posture
-of the stack services ONLY — the per-session runner backend is frozen out of
+of the stack services ONLY — the per-session runner backend is out of
 scope (RIG-3070: podman permanent for self-host, microVM behind the seam;
 see `ui/compass-native-embedded-revival/design.md:71-74`), as is the macOS
 *embedded runner* backend (sibling RIG-3238 Apple-container record). One
@@ -123,7 +123,7 @@ The substrate invariant is rootless podman
 > ```
 
 and the stack's own postgres container couples the keep-id user mapping to the
-frozen DSN contract
+S4 DSN contract
 (`go/internal/stack/adapters/postgres_container.go:44-48`):
 
 > ```go
@@ -188,8 +188,8 @@ supervisor, not a container daemon.
    native)") cannot ride systemd on macOS at all, and dev/devenv +
    non-systemd Linux hosts also can't — so the DL-183 path cannot retire
    while those tiers exist. One supervision model beats two. DL-183/DL-262
-   are load-bearing, frozen, and tested (`DECISIONS.md:281`, `:295`); the
-   invariants are non-negotiable in the frozen teardown record
+   are load-bearing and tested (`DECISIONS.md:281`, `:295`); the
+   invariants are non-negotiable in the teardown record
    (`ui/compass-stack-cross-process-teardown/design.md:299-301`):
 
    > ```text
@@ -360,7 +360,7 @@ on another lane, not a supervision fork here.
   crash recovery, sdnotify readiness. Why it loses: Linux/systemd-only, so
   it structurally cannot meet the ruled all-platforms bar (no systemd on
   macOS) AND the DL-183 mechanism survives anyway (two models); retires a
-  tested frozen mechanism; requires re-plumbing the imperative cold
+  tested mechanism; requires re-plumbing the imperative cold
   sequence into oneshot pre-units; displaces the DL-259-named
   `compass-stack up` entry point. What it would win: per-service `Restart=`
   crash recovery, boot-start, journald logs, a declarative standard

@@ -15,7 +15,7 @@ one-way newline-delimited `AgentFrame` stream relayed verbatim to `PublishEvents
 whose only current writer is a one-shot `sh -s` script feed
 (`go/internal/runtime/agent.go:262-278`) — so overloading it with
 request/response correlation would abuse a pipe built for fire-and-forget frames.
-This record freezes a dedicated, Runner-sole call transport behind a seam, with a
+This record specifies a dedicated, Runner-sole call transport behind a seam, with a
 Unix-socket-per-container concrete impl.
 
 **Scope boundary (load-bearing).** This record designs the **agent→Runner
@@ -100,7 +100,7 @@ The dependent comms-tools record recommends its transport fork as option (B),
 that: the correlated call rides a dedicated socket transport, NOT stdio. Because
 that record's task list is now a mix of live / dead / re-carried, this record
 gives its explicit disposition so a reader executing comms-tools after this
-freezes knows exactly which tasks stand:
+merges knows exactly which tasks stand:
 
 | comms-tools task | Fate under this record | Why |
 | --- | --- | --- |
@@ -525,7 +525,7 @@ the socket is cleaned up at container teardown.
 
 Load-bearing residual forks, each with a recommendation, PARKED for Matt's
 morning ruling (overnight posture — designed against the recommended assumption,
-not blocked on `ask`). The five Decisions above are frozen and are NOT reopened
+not blocked on `ask`). The five Decisions above are Matt's rulings and are NOT reopened
 here.
 
 - **OQ-2 (LOAD-BEARING, security) — Confirm the Runner→Server attribution model.**
@@ -553,8 +553,8 @@ here.
   scope (it may still be wanted later for other control, but not for comms
   results); make T5's live-turn E2E the proof, not a `resolve()` shortcut.
 - **OQ-4 — New proto file vs additive RPCs on an existing internal service?**
-  `AgentGateway` CANNOT be added to `RunnerService` (opposite direction, frozen
-  three-RPC shape, `proto/compass/v1/runner.proto:17-58`).
+  `AgentGateway` CANNOT be added to `RunnerService` (opposite direction,
+  `proto/compass/v1/runner.proto:17-58`).
   *Recommendation:* a NEW internal file `proto/compass/v1/agent_gateway.proto` in
   the `compass.v1` package, routed through the two internal gen lanes and excluded
   from `buf.gen.yaml` — keeps the agent→Runner direction its own reviewable

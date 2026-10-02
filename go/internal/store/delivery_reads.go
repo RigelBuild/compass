@@ -19,7 +19,7 @@ import (
 // is flagged subscribed, OR the channel is that agent's home channel, OR the
 // channel is mandatory_subscription (T4, design.md:521-522) — every member of a
 // mandatory channel is a delivery target regardless of its stored subscribed
-// flag. The home-channel and mandatory disjuncts are frozen-model-fidelity
+// flag. The home-channel and mandatory disjuncts are model-fidelity
 // repairs, not optimizations — a member row flipped subscribed=false MUST still
 // deliver on a home or mandatory channel, so the query enforces the guarantee
 // read-side, independent of the stored flag. The JOIN to agent_accounts is what

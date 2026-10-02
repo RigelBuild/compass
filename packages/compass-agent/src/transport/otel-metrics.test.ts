@@ -9,7 +9,7 @@
 // the metric and `Metric.value` reads the delta back SYNCHRONOUSLY, with no live
 // MetricReader, exporter, or network. This is the exact pattern otel-layer.test.ts
 // uses (:64-67). Each case reads a baseline, forces the event, and asserts the
-// delta AND that the frozen hand-rolled counters (droppedTraceCount /
+// delta AND that the hand-rolled counters (droppedTraceCount /
 // failedPriorityCount) are unchanged — the additive-not-replacement invariant.
 //
 // No wall-clock timer, no poll (ts-no-test-timers): failure is driven by the fake
@@ -116,7 +116,7 @@ test("a trace overflow increments trace_frames_lost{reason=overflow}, additive t
 	for (let i = 0; i < TRACE_QUEUE_CAP + overflow; i++) {
 		spine.enqueueTrace(traceFrame());
 	}
-	// The metric caught every overflow drop, and the frozen hand-rolled counter
+	// The metric caught every overflow drop, and the hand-rolled counter
 	// reports the SAME count — metric is additive, not a replacement.
 	expect(counterCount(traceFramesLostOverflow) - before).toBe(overflow);
 	expect(spine.droppedTraceCount()).toBe(overflow);
@@ -360,7 +360,7 @@ test("a saturated batch flushes as reason=full, exclusively", async () => {
 		count: 1,
 		sum: PUBLISH_BATCH_MAX,
 	});
-	// The frozen boundary configuration: the top finite bound is the cap, so a
+	// The boundary configuration: the top finite bound is the cap, so a
 	// saturated batch is the largest value the histogram can resolve exactly.
 	expect(histBounds(batchSizeBy(ns).trace)).toEqual([
 		1,

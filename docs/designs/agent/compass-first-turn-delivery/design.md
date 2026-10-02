@@ -18,7 +18,7 @@ turn rides the dropped field).
 
 ## Approach
 
-### The frozen ruling (design HOW, not WHETHER)
+### Matt's ruling (design HOW, not WHETHER)
 
 Matt, verbatim:
 
@@ -318,7 +318,7 @@ validation, Setup-thread creation trigger (root-manager first
 `StartAgentSession`), thread content/versioning, and its ledger rows. This
 record's DL-187 row (below) freezes the shape so the interim cannot regress
 into a prompt-field revival. Matt has ruled (OQ-C): the `@compass` reserved
-alias is the frozen system-sender mechanism, used for ANY system-level message
+alias is the system-sender mechanism, used for ANY system-level message
 sender (not just the root-manager Setup thread) — "the @compass alias will be
 used for any system-level messages, so we can freeze it now." The follow-up
 record inherits the mechanism and details only its representation + the Setup

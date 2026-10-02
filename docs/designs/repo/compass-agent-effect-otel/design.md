@@ -18,7 +18,7 @@ trace/metric/log export at all (verified: zero `otel`/`OTLP` references under
 `packages/compass-agent`). `@effect/opentelemetry` turns the fiber seams the
 migration just created into OTel spans and the hand-rolled counters into OTel
 metrics — inside the existing containment boundary, exported to the house
-Grafana stack. This record decides how, preserving the parent record's frozen
+Grafana stack. This record decides how, preserving the parent record's
 containment rule: zero `effect` (and zero `@effect/opentelemetry`) types in
 any exported signature.
 
@@ -188,7 +188,7 @@ later record once a concrete dashboard needs one.
 
 The existing exported methods `droppedTraceCount()` / `failedPriorityCount()`
 (`publish-spine.ts:78,83`) STAY — tests consume them
-(`frame-sink.test.ts:315,389`) and they are the frozen `PublishSpine` shape.
+(`frame-sink.test.ts:315,389`) and they are part of the `PublishSpine` shape.
 Metrics are additive, driven from the same increment sites.
 
 ### Decision 2a — flush-shape instrumentation (RIG-3694 amendment)
@@ -466,7 +466,7 @@ the parent record modeled for `effect` 3.22.1.
 
 ## Global Constraints
 
-- **Containment (frozen, parent record):** no `effect`,
+- **Containment (parent record):** no `effect`,
   `@effect/opentelemetry`, or `@opentelemetry/*` type in any signature
   exported from `src/transport/` (the package exports `RunnerTransport`
   (`index.ts:64`) and `createUnixSocketTransport` (`index.ts:94`) plus the
@@ -537,7 +537,7 @@ error and disposes cleanly.
 the same PR adds a test (or a lint fence) asserting the `src/transport/`
 package export surface — `index.ts` / the emitted `.d.ts` — contains no type
 from `effect`, `@effect/opentelemetry`, or `@opentelemetry/*`. This turns the
-parent record's frozen rule ("the public `.d.ts` stays free of the `effect`
+parent record's rule ("the public `.d.ts` stays free of the `effect`
 package", `docs/designs/repo/compass-agent-effect-adoption/design.md`
 Global Constraints) from remembered convention into a red test.
 

@@ -115,7 +115,7 @@ passes only the append-shaped persona overlay
 [...defaultPrompt, persona]` from `COMPASS_PERSONA`,
 `go/internal/runner/agent_exec.go:83`). Switching the role block to
 `customSystemPrompt` is a one-option change at an entrypoint we own — content
-delivery rides the frozen config bundle (DL-078/080), no new plumbing. One
+delivery rides the config bundle (DL-078/080), no new plumbing. One
 caveat carried from config-passthrough CP-3: when `customSystemPrompt` is
 passed, the gate `callerControlsCustomPrompt` (`system-prompt.ts:653-658`)
 suppresses the checkout's project-level `SYSTEM.md` walk-up — desirable here (a
@@ -268,7 +268,7 @@ rules/skills (name + one-liner every turn, body on demand via
 | jj stacked-PR workflow (adapt Matt's `jj` skill; Compass = jj-colocated); review loop (adapt `review`); design-first procedure (adapt `design`) | **skills** (adapted) |
 | Server/Runner/Agent/Container reference; living specs | **skills** `compass-architecture`, `living-specs` — deferrable, see Open Questions |
 
-**Name-by-function tenet (frozen):** a Manager is named for the team/department
+**Name-by-function tenet:** a Manager is named for the team/department
 it is — CI Manager, Observability Manager, Payments Manager — never for the tool
 it uses (no `aws`/`grafana` agents). The function is stable; tools are an
 implementation detail. Composes with RIG-1724 roles: the role sets capability;
@@ -756,7 +756,7 @@ Every task below inherits these:
   (`jj`, `review`, `design`; `never-block`, `own-your-issue`,
   `red-green-testing`): keep the invariant, re-ground the mechanics in Compass
   tools.
-- **GC-8 — No new delivery plumbing.** Content rides the frozen config-delivery
+- **GC-8 — No new delivery plumbing.** Content rides the config-delivery
   spine (DL-078/080/081); per-role bundle keying stays the named RIG-1724 seam.
 
 ## Plan

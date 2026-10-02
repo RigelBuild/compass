@@ -3,7 +3,7 @@
 //
 // The design record is
 // docs/designs/infra/runtime/compass-managed-multitenancy/design.md (§T3, §Q3,
-// §T4). The two seams §T3 freezes are [EventFabric] (comms/delivery event
+// §T4). The two seams §T3 specifies are [EventFabric] (comms/delivery event
 // fan-out) and [RunnerFabric] (Server→Runner command push and Runner→Server
 // event fan-in); [RoutingFabric] (§T4 binding-cache invalidation) is the third.
 // [Fabric] implements all three over a single [nats.Conn], so each Runner and

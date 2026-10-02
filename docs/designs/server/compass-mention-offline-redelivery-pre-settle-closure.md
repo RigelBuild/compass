@@ -49,10 +49,10 @@ population with NO owed row ever written:
 
 The subscribed/home/mandatory population has the cursor sweep — computed from
 durable state — as its backstop in both windows; the mention-gap population
-has none. RIG-1641 accepted this explicitly (frozen record §Decisions OQ-5,
+has none. RIG-1641 accepted this explicitly (RIG-1641 record §Decisions OQ-5,
 `compass-mention-offline-redelivery.md:715-722`: "accept the residual
 pre-settle window for MVP […] tracked as a follow-up: RIG-2490") and scoped
-its no-loss invariant at the settle edge (frozen record :413-422).
+its no-loss invariant at the settle edge (RIG-1641 record :413-422).
 
 Intent: extend the no-loss invariant from the settle edge back to the
 message-post COMMIT — a committed mention of a channel agent member is never
@@ -175,7 +175,7 @@ re-processes a handled mention. The only residual at-least-once window is a
 crash between processing a message and setting its marker: the next scan
 reprocesses it, and the duplicate effects are absorbed by the existing dedup
 layers — the agent-side per-session message_id dedup for a duplicate steer
-(frozen record :423-427; populated within any live session) and
+(RIG-1641 record :423-427; populated within any live session) and
 `RecordOwedMention`'s PK upsert (`delivery_cursors.go:92-94`). This is
 exactly the existing at-least-once delivery contract, never at-most-once.
 
@@ -189,7 +189,7 @@ correct-by-construction rather than load-bearing — see RD-2 and T1.
 subscribed recipients) needs nothing here: its durable backstop in both
 windows is the cursor sweep itself (`UndeliveredMessages` is computed from
 durable state; `sweepAllLive` on overrun, `sweepSession` on start), and its
-wake is pure latency (frozen record §Decisions OQ-3/OQ-6). The scan is scoped
+wake is pure latency (RIG-1641 record §Decisions OQ-3/OQ-6). The scan is scoped
 to mentions because mentions are the only signal derived from the in-memory
 event rather than from durable state.
 
@@ -245,22 +245,22 @@ flowchart TD
   mention pass completes; a fault in between leaves it NULL and re-scannable.
   Duplicate effects are absorbed by the existing dedup layers
   (`RecordOwedMention`'s PK upsert `delivery_cursors.go:92-94`; agent-side
-  per-session message_id dedup, frozen record :423-427). No mechanism here
+  per-session message_id dedup, RIG-1641 record :423-427). No mechanism here
   may trade loss for dedup — in particular, never mark before the pass runs.
 - **Never fail the post / the consumer.** The scan is recovery machinery: a
   scan error is logged loudly and the consumer proceeds (today's behavior
   minus the closure) — it must not wedge `Run` (`consumer.go:243`) or turn a
-  recoverable overrun into a crash loop. Frozen "mention routing can never
+  recoverable overrun into a crash loop. "Mention routing can never
   fail a post" holds unchanged.
 - **Tests:** pgtest, `-tags pgtest` (+`unix` for delivery/server), DSN
   `postgres://postgres:compass-test@localhost:33970/compass?sslmode=disable`.
   The acceptance test (from the issue) is a pgtest that PROVABLY severs the
   bus event (fresh-bus construction, T4 — never a timing assumption) and
   still delivers on next start.
-- **Frozen contracts untouched:** steer-only precedence, the D2 cursor shape,
+- **Unchanged:** steer-only precedence, the D2 cursor shape,
   `AckDelivery`'s restructured owed-clear (`delivery_cursors.go:228-258`),
-  the `AgentWaker` seam (`consumer.go:232-234`), and everything RIG-1641
-  froze. This record adds a recovery pass plus one column write on the live
+  the `AgentWaker` seam (`consumer.go:232-234`), and everything else RIG-1641
+  decided. This record adds a recovery pass plus one column write on the live
   settle edge; it changes no live-path delivery semantics.
 
 ## Plan
@@ -520,7 +520,7 @@ second policy surface (prohibited) and would break the live gap-population
 case: a live member outside the sweep set whose event was dropped is reached
 only by the live-steer arm (`dispatch.go:146-149`). Residual at-least-once —
 a crash between processing and marking ⇒ one duplicate pass — is absorbed by
-the agent-side per-session dedup (frozen record :423-427) and
+the agent-side per-session dedup (RIG-1641 record :423-427) and
 `RecordOwedMention`'s upsert (`delivery_cursors.go:92-94`).
 
 ### Non-load-bearing deferrals (explicit)

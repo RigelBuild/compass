@@ -121,8 +121,8 @@ func durableName(subject string) string {
 }
 
 // ensureStream creates or updates the comms stream, idempotently, and caches it.
-// Called lazily from the first Publish/Subscribe rather than from New because the
-// frozen New(cfg Config) signature carries no context — deriving the topology
+// Called lazily from the first Publish/Subscribe rather than from New because
+// New(cfg Config) takes no context — deriving the topology
 // call from the first caller's ctx keeps the cancellation chain intact instead of
 // rooting a fresh one.
 //
