@@ -498,12 +498,10 @@ func TestMentionBeforeRunnerEnrollsWakesOnAttach(t *testing.T) {
 
 	// The wake fires during attach, before the harness clears its probe bookkeeping,
 	// so assert the durable session the fresh start records, not the command log.
-	// Read under the system role, as the wake path does: a wake from the delivery
-	// loop records its session without a tenant.
 	w.runner = attachFakeRunner(t, w.store, w.hub, false)
 	deadline = timeAfter()
 	for {
-		if _, ok, err := w.store.LatestSessionForAccount(store.WithSystemRole(w.ctx), agent.ID); err != nil {
+		if _, ok, err := w.store.LatestSessionForAccount(w.ctx, agent.ID); err != nil {
 			t.Fatalf("LatestSessionForAccount: %v", err)
 		} else if ok {
 			return
