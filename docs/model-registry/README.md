@@ -1,10 +1,10 @@
 # Model registry: recommended models and day-1 defaults
 
-A profile names a model by its **stable name**, such as `claude-opus-4-8`.
+A profile names a model by its **stable name**, such as `claude-opus-5-5`.
 The Server's model registry maps each stable name to an ordered list of
 `(provider, model id)` candidates. The gateway uses the first candidate whose
 provider you hold a credential for. A selector that contains a `/`, such as
-`anthropic/claude-opus-4-8`, skips the registry and names one exact model.
+`anthropic/claude-opus-5-5`, skips the registry and names one exact model.
 Until the gateway resolver ships, the Server stores the registry but requests
 do not yet route through it.
 
@@ -15,7 +15,8 @@ The design is in
 
 [`day-1.json`](./day-1.json) is the day-1 registry. It is a complete
 `PutModelRegistry` request body. Every model id in it exists in the
-`@oh-my-pi/pi-catalog` model catalog from 18.4.12 on.
+`@oh-my-pi/pi-catalog` model catalog from 18.4.12 on, so the gateway that
+resolves it must ship that catalog or newer.
 
 | Stable name | Candidates, in order |
 | --- | --- |
