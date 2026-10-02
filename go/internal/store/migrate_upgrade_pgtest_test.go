@@ -44,8 +44,12 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, "SELECT max(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 2 {
-		t.Fatalf("schema version after upgrade = %d, want 2", version)
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	if want := migs[len(migs)-1].version; version != want {
+		t.Fatalf("schema version after upgrade = %d, want %d", version, want)
 	}
 
 	for _, tbl := range []string{"token_usage_events", "token_usage_rollups_hourly", "token_usage_rollups_daily"} {
