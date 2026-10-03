@@ -19,6 +19,7 @@ func (s *Store) PutTokenHash(ctx context.Context, hash [32]byte, subj Subject) e
 		Hash:        hash[:],
 		SubjectKind: int16(subj.Kind), //nolint:gosec // G115: SubjectKind is a CHECK-constrained 0/1/2 enum (tokens.subject_kind), always within int16
 		SubjectID:   subj.ID,
+		TenantID:    string(s.resolveTenant(ctx)),
 	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: token hash already stored", ErrConflict)
@@ -44,7 +45,7 @@ func (s *Store) ResolveTokenHash(ctx context.Context, hash [32]byte) (Subject, e
 	if row.Revoked {
 		return Subject{}, ErrTokenRevoked
 	}
-	return Subject{Kind: SubjectKind(row.SubjectKind), ID: row.SubjectID}, nil
+	return Subject{Kind: SubjectKind(row.SubjectKind), ID: row.SubjectID, Tenant: TenantID(row.TenantID)}, nil
 }
 
 // RevokeToken marks a token hash revoked (design.md:1183). Idempotent: revoking
