@@ -30,11 +30,12 @@ func newWakeFixture(t *testing.T) (placementFixture, *lifecycleService) {
 }
 
 // TestWakeAgentLiveIsNoOp pins the not-live pre-check: an agent with a LIVE
-// session is already awake, so WakeAgent pushes no Start and does no resume.
+// session is already awake, so WakeAgent pushes no Start, does no resume, and
+// logs outcome=already-live so the skip is visible.
 //
-// Mutation: dropping the SessionForAccount not-live guard would run the resume
-// chain against a live agent — a redundant start — reddening the "no Start"
-// assertion.
+// Mutation: dropping the CachedSessionForAccount not-live guard would run the
+// resume chain against a live agent — a redundant start — reddening the "no
+// Start" assertion.
 func TestWakeAgentLiveIsNoOp(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -47,15 +48,24 @@ func TestWakeAgentLiveIsNoOp(t *testing.T) {
 	if _, err := f.hub.Start(ctx, "start-live", &compassv1.StartAgentSessionRequest{ContainerName: fakeContainer}); err != nil {
 		t.Fatalf("Start = %v, want success", err)
 	}
-	if _, live := f.hub.SessionForAccount(context.Background(), f.agentID); !live {
+	if _, live := f.hub.CachedSessionForAccount(f.agentID); !live {
 		t.Fatal("precondition: agent should be live after Provision+Start")
 	}
 	f.runner.forget() // drop the setup commands; assert only on the wake
 
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	sb := &syncBuffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(sb, nil)))
+
 	lc.WakeAgent(ctx, f.agentID)
 
+	slog.SetDefault(prev)
 	if n := f.runner.startCount(); n != 0 {
 		t.Fatalf("WakeAgent(live agent) pushed %d Start(s), want 0 (a live agent is nothing to wake); commands: %v", n, f.runner.commands())
+	}
+	if logs := sb.String(); !strings.Contains(logs, "outcome=already-live") {
+		t.Fatalf("wake of a live agent logged %q, want outcome=already-live", logs)
 	}
 }
 
@@ -110,6 +120,96 @@ func TestWakeAgentPriorSessionResumes(t *testing.T) {
 	// BindLifetime snapshotted the rebase base as the stored max (2).
 	if base := boundBase(t, ctx, f.dsn, logical); base != 2 {
 		t.Fatalf("resume bound base = %d, want 2 (BindLifetime ran on the resume path)", base)
+	}
+}
+
+// RIG-4223: a session_bindings row this hub never promoted names a dead session.
+// The wake must still resume, not read the row back as live and skip silently.
+// Reverting the pre-check to hub.SessionForAccount resolves the row and reddens it.
+func TestWakeAgentStaleBindingRowStillResumes(t *testing.T) {
+	ctx := context.Background() // test root
+	f, lc := newWakeFixture(t)
+
+	const logical = "sess-wake-stale"
+	if err := f.store.RecordAgentSession(ctx, logical, f.agentID); err != nil {
+		t.Fatalf("RecordAgentSession: %v", err)
+	}
+	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
+		t.Fatalf("RecordAgentPlacement: %v", err)
+	}
+	if err := f.store.AppendTranscriptEntry(ctx, logical, 1, true, `{"header":true}`, "k1"); err != nil {
+		t.Fatalf("append checkpoint: %v", err)
+	}
+	if _, err := f.store.RecordSessionBinding(ctx, "sess-dead", f.agentID, fakeRunnerID); err != nil {
+		t.Fatalf("RecordSessionBinding: %v", err)
+	}
+	// Checked on the store, not the hub: a hub read-through would warm the cache.
+	if got, err := f.store.SessionForAccount(ctx, f.agentID); err != nil || got != "sess-dead" {
+		t.Fatalf("precondition: durable row = (%q, %v), want sess-dead", got, err)
+	}
+	f.runner.forget()
+
+	// Own the global logger for the wake so the outcome is an observed fact.
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	sb := &syncBuffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(sb, nil)))
+
+	lc.WakeAgent(ctx, f.agentID)
+
+	slog.SetDefault(prev)
+	if n := f.runner.startCount(); n != 1 {
+		t.Fatalf("WakeAgent(stale binding row) pushed %d Starts, want 1 (the dead session must be resumed); commands: %v", n, f.runner.commands())
+	}
+	if logs := sb.String(); !strings.Contains(logs, "agent wake") || strings.Contains(logs, "outcome=already-live") {
+		t.Fatalf("wake logged %q, want an agent wake line that is not outcome=already-live", logs)
+	}
+}
+
+// A wake for an agent live on a Runner but not in this hub's cache (another Server
+// promoted it) resumes, and the Runner refuses with ALREADY_RUNNING. No container is
+// touched, but BindLifetime already re-based the live session (witnessed below).
+func TestWakeAgentLiveElsewhereIsRefusedByRunner(t *testing.T) {
+	ctx := context.Background() // test root
+	f, lc := newWakeFixture(t)
+
+	const logical = "sess-live-elsewhere"
+	if err := f.store.RecordAgentSession(ctx, logical, f.agentID); err != nil {
+		t.Fatalf("RecordAgentSession: %v", err)
+	}
+	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
+		t.Fatalf("RecordAgentPlacement: %v", err)
+	}
+	if err := f.store.AppendTranscriptEntry(ctx, logical, 1, true, `{"header":true}`, "k1"); err != nil {
+		t.Fatalf("append checkpoint: %v", err)
+	}
+	f.runner.setFailStart(true) // the Runner already hosts a live session on the container
+	f.runner.forget()
+
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	sb := &syncBuffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(sb, nil)))
+
+	lc.WakeAgent(ctx, f.agentID)
+
+	slog.SetDefault(prev)
+	if n := f.runner.startCount(); n != 1 {
+		t.Fatalf("WakeAgent pushed %d Starts, want 1 (one refused resume, no retry or re-provision); commands: %v", n, f.runner.commands())
+	}
+	if n := f.runner.provisionCount(); n != 0 {
+		t.Fatalf("WakeAgent provisioned %d times, want 0: ALREADY_RUNNING must not re-provision the live container", n)
+	}
+	if logs := sb.String(); !strings.Contains(logs, "outcome=failed") || !strings.Contains(logs, "already_exists") {
+		t.Fatalf("wake logged %q, want outcome=failed carrying already_exists", logs)
+	}
+	if got := sessionRowCount(t, ctx, f.dsn, logical); got != 1 {
+		t.Fatalf("session rows for %q = %d, want 1 (a refused resume records nothing)", logical, got)
+	}
+	// Witness, not a guarantee: the bind runs before the Runner refuses, so the live
+	// session's base moves to the stored max. Binding only after acceptance flips this.
+	if base := boundBase(t, ctx, f.dsn, logical); base != 1 {
+		t.Fatalf("base after refused resume = %d, want 1 (BindLifetime ran before the refusal)", base)
 	}
 }
 
