@@ -92,6 +92,7 @@ env:
 
 jobs:
   release-pr:
+    environment: main
     name: release-pr
     runs-on: ubuntu-latest
     # workflow_dispatch accepts any ref, and release-please defaults its
