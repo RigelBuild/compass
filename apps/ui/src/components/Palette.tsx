@@ -38,6 +38,7 @@ import {
 import { detectPlatform } from "../keyboard/dispatch";
 import { fuzzyScore } from "../keyboard/fuzzy";
 import { shortcutFor } from "../keyboard/keymap";
+import type { LiveClients } from "../live/client";
 import "../design/components/palette.css";
 import {
 	destinationSurfaceRows,
@@ -64,10 +65,12 @@ interface PaletteOption {
 	run(): void;
 }
 
-export const Palette: Component = () => {
+export const Palette: Component<{
+	clients?: Pick<LiveClients, "comms" | "compass">;
+}> = (props) => {
 	const store = useStore();
 	const platform = detectPlatform();
-	const providers = createStoreDestinationProviders(store);
+	const providers = createStoreDestinationProviders(store, props.clients);
 
 	const [query, setQuery] = createSignal("");
 	// The latest-wins generation counter: bumped per keystroke, captured at issue

@@ -17,6 +17,7 @@ export const KIND_LABELS: Record<DestinationKind, string> = {
 	channel: "Channels",
 	topic: "Topics",
 	issue: "Issues",
+	message: "Messages",
 	pr: "Pull requests",
 };
 
@@ -27,6 +28,7 @@ export const KIND_ORDER: readonly DestinationKind[] = [
 	"topic",
 	"issue",
 	"pr",
+	"message",
 ];
 
 export interface DestinationSurfaceRow {
