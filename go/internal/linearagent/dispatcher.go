@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -19,6 +20,10 @@ const ackThoughtBody = "Compass received the session; opening in Compass\u2026"
 // externalURLLabel is the label on the session external URL entry — the
 // "Open in Compass" deep link to the resolved Manager's home channel (§Part 3).
 const externalURLLabel = "Open in Compass"
+
+// replyResponseBody is the `response` emitted on the Manager's first reply after
+// a prompt; a `response` is what ends Linear's "Thinking" state (RIG-4163).
+const replyResponseBody = "Compass replied in the conversation; open it in Compass to continue."
 
 // clientRequestIDPrefix namespaces the comms-rail idempotency key the dispatcher
 // stamps on every PostAsAccount so a redelivered webhook never double-posts
@@ -94,8 +99,8 @@ type DispatcherParams struct {
 // goroutine, routing each to a Manager, emitting the Linear-side return path,
 // and posting into Compass. It never crashes on a per-event failure — a bad
 // event is logged (and an `error` activity emitted to Linear) and the loop
-// moves on. There is NO relay: the dispatcher does not observe or mirror agent
-// output; the return path is the two `created` emits only (§Part 3).
+// moves on. It does not mirror agent output: beyond the two `created` emits, it
+// emits one `response` on the Manager's first reply after each prompt.
 type Dispatcher struct {
 	ch          chan *SessionEvent
 	resolve     ResolveFunc
@@ -106,6 +111,17 @@ type Dispatcher struct {
 	client      Client
 	deepLinkFor func(channelID string) string
 	bridge      store.AccountID
+
+	// awaiting maps a session's topic to the reply that ends its "Thinking"
+	// state. In memory: a restart drops it, leaving that one session in Thinking.
+	mu       sync.Mutex
+	awaiting map[string]awaitedReply
+}
+
+// awaitedReply is the Manager reply a session's topic is armed for.
+type awaitedReply struct {
+	sessionID string
+	manager   store.AccountID
 }
 
 // NewDispatcher builds a Dispatcher from params. Buffer defaults to 1 when
@@ -125,6 +141,29 @@ func NewDispatcher(p DispatcherParams) *Dispatcher {
 		client:      p.Client,
 		deepLinkFor: p.DeepLinkFor,
 		bridge:      p.Bridge,
+		awaiting:    make(map[string]awaitedReply),
+	}
+}
+
+// OnCommsEvent emits one `response` on the Manager's first post in an armed
+// session topic, then disarms it. Called from the comms bus tail; the Linear
+// emit is best-effort and only logged on failure.
+func (d *Dispatcher) OnCommsEvent(ctx context.Context, resp *compassv1.SubscribeCommsResponse) {
+	msg := resp.GetMessagePosted().GetMessage()
+	if msg == nil {
+		return
+	}
+	d.mu.Lock()
+	want, ok := d.awaiting[msg.GetTopicId()]
+	if !ok || string(want.manager) != msg.GetAuthorAccountId() {
+		d.mu.Unlock()
+		return
+	}
+	delete(d.awaiting, msg.GetTopicId())
+	d.mu.Unlock()
+	if err := d.client.CreateActivity(ctx, want.sessionID, ActivityContent{Type: "response", Body: replyResponseBody}); err != nil {
+		slog.ErrorContext(ctx, "linearagent dispatcher: response activity failed",
+			"linear_session_id", want.sessionID, "error", err)
 	}
 }
 
@@ -151,6 +190,14 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			d.handle(ctx, ev)
 		}
 	}
+}
+
+// armReply waits for the Manager's next post in topicID to end sessionID's
+// "Thinking" state. Armed before the prompt post so a fast reply cannot slip by.
+func (d *Dispatcher) armReply(topicID, sessionID string, manager store.AccountID) {
+	d.mu.Lock()
+	d.awaiting[topicID] = awaitedReply{sessionID: sessionID, manager: manager}
+	d.mu.Unlock()
 }
 
 // handle processes one event, converting any failure (including a panic in a
@@ -219,6 +266,7 @@ func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error 
 	}}); err != nil {
 		return err
 	}
+	d.armReply(topicID, ev.AgentSession.ID, manager)
 	return d.post(ctx, homeChannel, topicID, ev.PromptContext, clientRequestID(ctx, ev))
 }
 
@@ -230,6 +278,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 	row, err := d.assoc.LinearAgentSession(ctx, ev.AgentSession.ID)
 	switch {
 	case err == nil:
+		d.armReply(row.TopicID, ev.AgentSession.ID, row.ManagerAccountID)
 		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Content.Body, clientRequestID(ctx, ev))
 	case errors.Is(err, store.ErrNotFound):
 		manager, homeChannel, resErr := d.resolve(ctx, ev)
@@ -252,6 +301,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 		}); upErr != nil {
 			return upErr
 		}
+		d.armReply(topicID, ev.AgentSession.ID, manager)
 		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Content.Body, clientRequestID(ctx, ev))
 	default:
 		return err
