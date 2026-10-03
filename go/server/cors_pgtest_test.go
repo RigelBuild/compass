@@ -47,7 +47,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin)
 
 	cfg := ServeConfig{
 		StateDir:          t.TempDir(), // bootstrap-admin token file lands here (0600)

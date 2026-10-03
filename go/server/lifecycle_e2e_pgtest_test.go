@@ -477,7 +477,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	brd := board.NewProjection(bus)
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
 	hub := newRunnerHub(st, brd, newSessionTail(), commsSvc, discardLogE2E())
 
 	// Wire the lifecycleService as the hub's LifecycleCaller — the serve.go:250

@@ -274,10 +274,10 @@ resolve the tenant from ctx with the bootstrap fallback.
   and `CommsSubject(tenant string, kind EventKind) (string, error)` +
   `fabric.KindMessagePosted` (PR3);
   `store.TenantFromContext(ctx context.Context) (store.TenantID, bool)`
-  (`go/internal/store/context.go:23`). Produces: a new exported
-  `func (s *Store) ResolveTenant(ctx context.Context) TenantID` (promoting the
-  unexported `resolveTenant`, `go/internal/store/tenant.go:54-58`, so comms
-  gets the same set-or-bootstrap-fallback semantics the store's writes use);
+  (`go/internal/store/context.go:23`). Produces: comms resolves the tenant
+  through the exported `func (s *Store) EffectiveTenant(ctx context.Context)
+  TenantID` (which RIG-3108 added after this record froze, with the same
+  set-or-bootstrap-fallback semantics as the unexported `resolveTenant`);
   `comms.NewComms` gains a `fabric fabric.EventFabric` parameter (nil-safe:
   nil ⇒ bus-only, so unit tests and any not-yet-wired assembly keep working);
   `publishMessagePosted(ctx, m)` extended with the fabric publish + the
@@ -448,7 +448,7 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
 
 ## Tasks
 
-- [ ] T1: fabric publish in `publishMessagePosted` + `Store.ResolveTenant` +
+- [ ] T1: fabric publish in `publishMessagePosted` + `Store.EffectiveTenant` +
       failure counter (tests a–d)
 - [ ] T2: consumer trigger cutover — `SubscribeKind` in, bus tail out, per
       OQ-1/OQ-2/OQ-3 rulings; fabric serial-callback contract doc + no-overlap
