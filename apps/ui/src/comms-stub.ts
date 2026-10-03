@@ -112,6 +112,10 @@ export interface Channel {
 	 *  subscribe toggle is hidden entirely: the model says every member is
 	 *  force-subscribed, so offering an unsubscribe control would be a lie. */
 	mandatorySubscription?: boolean;
+	/** Parent agent whose tree owns this channel, when attached. */
+	parentAgentId?: string;
+	/** Whether membership is explicit or derived from the agent tree. */
+	membershipMode?: "explicit" | "tree";
 	/** The channel's pinned board, ordered by `position` (comms.proto
 	 *  pinned_entries). A pure pointer set over existing messages; the strip in
 	 *  the channel header resolves each `messageId` against the loaded messages.

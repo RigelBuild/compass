@@ -11,44 +11,24 @@ import { STUB_AGENTS } from "../stub-data";
 import { testQueryClient } from "../test-support";
 import { LeftSidebar } from "./LeftSidebar";
 
-// RED acceptance spec for T5 (design.md §578-613): the reshaped LeftSidebar —
-// the Bridge/Backlog/Done/Settings links, then a collapsible **Channels**
-// section (member channels + browse/join, moved from ChannelSidebar)
-// ABOVE a collapsible **Agent workspaces** section (the existing folder tree).
-// It fails today because LeftSidebar renders the tree directly with no section
-// chrome and no channel rows: every assertion below is an
-// absence-of-section-surface / unwired-row failure, never a module-load error
-// (LeftSidebar.tsx already exists and imports fine). An implementer makes it
-// green next by building `ChannelsSection` / `AgentsSection` and wiring the rows
-// to `openChannel` (§602-604).
+// T7 acceptance: one Channels section contains the agent tree, channel bands,
+// direct messages, and the unchanged browse/discover list.
 //
-// Fixture ground truth (grepped from comms-stub.ts / stub-data.ts, quoted here):
-//   - Standalone rail channels (kind "channel", membership !== "none"):
-//     ch-announcements, ch-coordination, ch-svc-compass ("svc.compass", unread
-//     5), ch-svc-ci-build. ch-random is membership "none" → the browse list.
-//   - 1:1 agent home DMs (kind "dm", one per board agent, name = handle) — must
-//     NOT list under Channels (§589); the agent workspace is their surface. compass-ui
-//     ("acc-compass-ui") is a `.tree-agent` leaf in the Agent workspaces tree instead.
-
-// The Channels rail lists standalone channels but NOT 1:1 agent DMs (kind "dm").
-// Derived from the fixture so a reshuffle can't stale the count.
-const RAIL_ROWS = STUB_CHANNELS.filter(
-	(c) => c.membership !== "none" && c.kind !== "dm",
-).length;
-// The excluded set — proves the exclusion below is non-trivial (there ARE 1:1
-// agent DMs in the fixture that a naive `dmChannels` render would leak in).
-const AGENT_DM_ROWS = STUB_CHANNELS.filter((c) => c.kind === "dm").length;
+// The test fixture has joined standalone channels, home DMs, and a browse channel.
 
 // Mount LeftSidebar over a real store through the app's StoreContext (index.tsx
 // wires it as `<StoreContext value={store}>`). The store is built inside
 // render's reactive root so its memos are owned and disposed on the library's
 // per-test cleanup; the reference is captured so tests drive store actions and
 // re-query the live DOM.
-function mountSidebar(): { store: AppStore; container: HTMLElement } {
+function mountSidebar(initialComms = STUB_COMMS_STATE): {
+	store: AppStore;
+	container: HTMLElement;
+} {
 	let store!: AppStore;
 	const { container } = render(() => {
 		store = createAppStore({
-			initialComms: STUB_COMMS_STATE,
+			initialComms,
 			queryClient: testQueryClient(),
 		});
 		return (
@@ -76,60 +56,28 @@ const findToggle = (
 const railRows = (container: HTMLElement): HTMLElement[] => [
 	...container.querySelectorAll<HTMLElement>(".ch-row:not(.browse-row)"),
 ];
-const railNames = (container: HTMLElement): (string | null)[] =>
-	railRows(container).map(
-		(r) => r.querySelector(".ch-name")?.textContent ?? null,
-	);
 
 describe("LeftSidebar (T5)", () => {
-	// Contract (§610): the two sections collapse/expand independently — collapsing
-	// Channels hides its rows while the agent tree stays, and vice-versa. Driven
-	// through the header toggles; asserted through BOTH the store's
-	// isSectionCollapsed AND the DOM. A single-slot / shared-flag section would
-	// fail the "one collapsed, the other still shown" legs.
-	test("both sections collapse and expand independently", () => {
+	test("the combined Channels section collapses and expands as one tree", () => {
 		const { store, container } = mountSidebar();
-
-		// Both expanded by default: rail rows and agent leaves both present.
 		expect(store.isSectionCollapsed("channels")).toBe(false);
-		expect(store.isSectionCollapsed("agents")).toBe(false);
 		expect(railRows(container).length).toBeGreaterThan(0);
 		expect(container.querySelectorAll(".tree-agent").length).toBeGreaterThan(0);
-
-		// Collapse Channels — only the channel rows disappear; the tree stays.
-		const chHead = findToggle(container, "Channels");
-		expect(chHead).toBeDefined();
-		if (!chHead) throw new Error("Channels section header not rendered");
-		fireEvent.click(chHead);
+		const head = findToggle(container, "Channels");
+		expect(head).toBeDefined();
+		if (!head) throw new Error("Channels section header not rendered");
+		fireEvent.click(head);
 		flush();
-
 		expect(store.isSectionCollapsed("channels")).toBe(true);
-		expect(store.isSectionCollapsed("agents")).toBe(false);
 		expect(container.querySelectorAll(".ch-row").length).toBe(0);
-		expect(container.querySelectorAll(".tree-agent").length).toBeGreaterThan(0);
-
-		// Collapse Agent workspaces too — now the tree disappears.
-		const agHead = findToggle(container, "Agent workspaces");
-		expect(agHead).toBeDefined();
-		if (!agHead)
-			throw new Error("Agent workspaces section header not rendered");
-		fireEvent.click(agHead);
-		flush();
-
-		expect(store.isSectionCollapsed("agents")).toBe(true);
 		expect(container.querySelectorAll(".tree-agent").length).toBe(0);
-
-		// Re-expand Channels only — channels return, agents stay collapsed.
-		const chHead2 = findToggle(container, "Channels");
-		expect(chHead2).toBeDefined();
-		if (!chHead2) throw new Error("Channels section header vanished");
-		fireEvent.click(chHead2);
+		const expanded = findToggle(container, "Channels");
+		if (!expanded) throw new Error("Channels section header vanished");
+		fireEvent.click(expanded);
 		flush();
-
 		expect(store.isSectionCollapsed("channels")).toBe(false);
-		expect(store.isSectionCollapsed("agents")).toBe(true);
 		expect(railRows(container).length).toBeGreaterThan(0);
-		expect(container.querySelectorAll(".tree-agent").length).toBe(0);
+		expect(container.querySelectorAll(".tree-agent").length).toBeGreaterThan(0);
 	});
 
 	// Contract (§611): the Channels section lists standalone channels, including
@@ -145,32 +93,7 @@ describe("LeftSidebar (T5)", () => {
 		expect(compass?.querySelector(".ch-unread")?.textContent).toBe("5");
 	});
 
-	// Contract (§589, §611): 1:1 agent home DMs do NOT list under Channels — the
-	// rail row count is exactly the standalone set, and no row's label is a bare
-	// agent handle. The same handle ("compass-ui") DOES appear as an agent leaf
-	// in the tree, proving the exclusion is about the DM row, not the agent.
-	test("excludes 1:1 agent DMs from the Channels section", () => {
-		const { container } = mountSidebar();
-
-		// Precondition: the fixture actually has 1:1 agent DMs to exclude, so a
-		// leak would change the count.
-		expect(AGENT_DM_ROWS).toBeGreaterThan(0);
-
-		// Exactly the standalone set — not standalone + the ~10 agent home DMs.
-		expect(railRows(container).length).toBe(RAIL_ROWS);
-
-		// No rail row is the bare "compass-ui" DM…
-		expect(railNames(container)).not.toContain("compass-ui");
-		// …but "compass-ui" IS an agent leaf in the Agent workspaces tree.
-		const treeNames = [...container.querySelectorAll(".tree-agent .name")].map(
-			(n) => n.textContent,
-		);
-		expect(treeNames).toContain("compass-ui");
-	});
-
-	// Contract (§586-587, §602): clicking a channel row routes to the channel
-	// view with that channel selected — via the new `openChannel` wiring on the
-	// row's select button.
+	// Channel child-row behavior is covered by the same ChannelRow used in the rail.
 	test("a channel-row click routes to the channel view", () => {
 		const { store, container } = mountSidebar();
 
@@ -188,14 +111,11 @@ describe("LeftSidebar (T5)", () => {
 		expect(store.selectedChannelId()).toBe("ch-svc-compass");
 	});
 
-	// Contract (§588): clicking an agent leaf inside the Agent workspaces section
-	// routes to that agent's workspace. Requires the section chrome (RED now) and
-	// preserves the leaf's existing routing.
+	// Agent row click behavior remains available in the unified section.
 	test("an agent-leaf click routes to the agent workspace", () => {
 		const { store, container } = mountSidebar();
 
-		// The Agent workspaces section exists (RED now — no section chrome yet).
-		expect(findToggle(container, "Agent workspaces")).toBeDefined();
+		expect(findToggle(container, "Channels")).toBeDefined();
 
 		const ui = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui");
 		expect(ui).toBeDefined();
@@ -212,7 +132,93 @@ describe("LeftSidebar (T5)", () => {
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
 	});
+	test("a childless agent with a home channel has no descendant badge", () => {
+		const { container } = mountSidebar();
+		const agentRow = [
+			...container.querySelectorAll<HTMLElement>(".tree-agent-row"),
+		].find(
+			(row) => row.querySelector(".name")?.textContent === "compass-server-acp",
+		);
+		expect(agentRow).toBeDefined();
+		expect(agentRow?.querySelector(".tree-badge")).toBeNull();
+	});
 
+	test("home channels render once under their agent and outside root bands", () => {
+		const { container } = mountSidebar();
+		const rows = [...container.querySelectorAll<HTMLElement>(".ch-row")].filter(
+			(row) => row.querySelector(".ch-name")?.textContent === "compass-ui",
+		);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.closest(".tree-children")).not.toBeNull();
+		expect(rows[0]?.closest(".rail-section")).toBeNull();
+	});
+
+	test("tree-membership channels render under their parent", () => {
+		const treeChannel = {
+			id: "ch-tree-test",
+			name: "tree-test",
+			kind: "channel" as const,
+			memberAccountIds: [],
+			membership: "joined" as const,
+			postPolicy: "open" as const,
+			membershipMode: "tree" as const,
+			parentAgentId: "acc-compass-ui",
+		};
+		const state = {
+			...STUB_COMMS_STATE,
+			channels: [...STUB_CHANNELS, treeChannel],
+		};
+		const { container } = mountSidebar(state);
+		const treeRow = [
+			...container.querySelectorAll<HTMLElement>(".tree-children .ch-row"),
+		].find((row) => row.querySelector(".ch-name")?.textContent === "tree-test");
+		expect(treeRow).toBeDefined();
+	});
+
+	test("an attached channel with no membership appears in browse, not under its agent", () => {
+		const treeChannel = {
+			id: "ch-tree-none",
+			name: "tree-none",
+			kind: "channel" as const,
+			memberAccountIds: [],
+			membership: "none" as const,
+			postPolicy: "open" as const,
+			membershipMode: "tree" as const,
+			parentAgentId: "acc-compass-ui",
+		};
+		const state = {
+			...STUB_COMMS_STATE,
+			channels: [...STUB_CHANNELS, treeChannel],
+		};
+		const { container } = mountSidebar(state);
+		expect(
+			[...container.querySelectorAll(".tree-children .ch-name")].some(
+				(name) => name.textContent === "tree-none",
+			),
+		).toBe(false);
+		const browseHead = findToggle(container, "browse channels");
+		if (!browseHead) throw new Error("browse channels header not rendered");
+		fireEvent.click(browseHead);
+		flush();
+		expect(
+			[...container.querySelectorAll(".browse-row .ch-name")].some(
+				(name) => name.textContent === "tree-none",
+			),
+		).toBe(true);
+	});
+
+	test("owner-grouped channels render in the trailing root band", () => {
+		const { container } = mountSidebar();
+		const coordination = railRows(container).find(
+			(row) => row.querySelector(".ch-name")?.textContent === "coordination",
+		);
+		expect(coordination).toBeDefined();
+		expect(
+			coordination
+				?.closest(".rail-section")
+				?.querySelector(".rail-section-head")?.textContent,
+		).toBe("channels");
+	});
 	// Matt's ruling: join/subscribe are NOT wired to the wire yet — there is no
 	// join/subscribe RPC, and the old local-only mutation silently reverted the
 	// moment the next SubscribeComms snapshot re-derived membership from the
