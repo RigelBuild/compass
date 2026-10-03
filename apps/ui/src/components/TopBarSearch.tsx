@@ -2,6 +2,7 @@ import {
 	type Component,
 	createEffect,
 	createSignal,
+	For,
 	onCleanup,
 	Show,
 } from "solid-js";
@@ -14,6 +15,7 @@ import type {
 import {
 	type DestinationSurfaceRow,
 	destinationSurfaceRows,
+	SEARCH_DEBOUNCE_MS,
 } from "../keyboard/destination-surface";
 import {
 	createStoreDestinationProviders,
@@ -23,7 +25,7 @@ import { createRovingGroup } from "../keyboard/roving";
 
 export const TopBarSearch: Component = () => {
 	const store = useStore();
-	const providers = createStoreDestinationProviders(store, undefined);
+	const providers = createStoreDestinationProviders(store);
 	const [query, setQuery] = createSignal("");
 	const [destinations, setDestinations] = createSignal<Map<
 		DestinationKind,
@@ -40,7 +42,9 @@ export const TopBarSearch: Component = () => {
 			generation += 1;
 			const mine = generation;
 			currentGeneration = mine;
-			const timer = window.setTimeout(() => {
+			// This production debounce coalesces keystrokes before querying providers.
+			// biome-ignore lint/style/noRestrictedGlobals: intentional 150ms search debounce
+			const timer = setTimeout(() => {
 				void queryDestinations(providers, input, mine, () => currentGeneration)
 					.then((result) => {
 						if (mine === currentGeneration && result !== null)
@@ -49,7 +53,7 @@ export const TopBarSearch: Component = () => {
 					.catch(() => {
 						if (mine === currentGeneration) setDestinations(null);
 					});
-			}, 150);
+			}, SEARCH_DEBOUNCE_MS);
 			return () => clearTimeout(timer);
 		},
 	);
@@ -120,24 +124,26 @@ export const TopBarSearch: Component = () => {
 			/>
 			<Show when={query().trim().length > 0}>
 				<div class="topbar-search-panel" role="listbox">
-					{rows().map((row) => (
-						<>
-							<Show when={row.groupStart}>
-								<div class="topbar-search-group" role="presentation">
-									{row.groupLabel}
-								</div>
-							</Show>
-							<button
-								class="topbar-search-row"
-								role="option"
-								type="button"
-								onMouseDown={(event) => event.preventDefault()}
-								onClick={() => select(row)}
-							>
-								{row.title}
-							</button>
-						</>
-					))}
+					<For each={rows()}>
+						{(row) => (
+							<>
+								<Show when={row.groupStart}>
+									<div class="topbar-search-group" role="presentation">
+										{row.groupLabel}
+									</div>
+								</Show>
+								<button
+									class="topbar-search-row"
+									role="option"
+									type="button"
+									onMouseDown={(event) => event.preventDefault()}
+									onClick={() => select(row)}
+								>
+									{row.title}
+								</button>
+							</>
+						)}
+					</For>
 				</div>
 			</Show>
 		</div>

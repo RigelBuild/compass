@@ -39,9 +39,13 @@ import { detectPlatform } from "../keyboard/dispatch";
 import { fuzzyScore } from "../keyboard/fuzzy";
 import { shortcutFor } from "../keyboard/keymap";
 import "../design/components/palette.css";
-import { destinationSurfaceRows } from "../keyboard/destination-surface";
+import {
+	destinationSurfaceRows,
+	SEARCH_DEBOUNCE_MS,
+} from "../keyboard/destination-surface";
 import { ShortcutChip } from "./ShortcutChip";
 
+// Kobalte's own section nodes share an empty key, so group headers stay inline.
 /** A rendered palette result — an action (command) or a navigation destination.
  *  Merged into one Kobalte option list so keyboard traversal spans both modes. */
 interface PaletteOption {
@@ -64,7 +68,7 @@ interface PaletteOption {
 export const Palette: Component = () => {
 	const store = useStore();
 	const platform = detectPlatform();
-	const providers = createStoreDestinationProviders(store, undefined);
+	const providers = createStoreDestinationProviders(store);
 
 	const [query, setQuery] = createSignal("");
 	// The latest-wins generation counter: bumped per keystroke, captured at issue
@@ -144,17 +148,21 @@ export const Palette: Component = () => {
 			const mine = generation;
 			currentGen = mine;
 			setLoading(true);
-			const timer = window.setTimeout(() => {
+			// This production debounce coalesces keystrokes before querying providers.
+			// biome-ignore lint/style/noRestrictedGlobals: intentional 150ms search debounce
+			const timer = setTimeout(() => {
 				void queryDestinations(providers, input, mine, () => currentGen)
 					.then((result) => {
+						// A stale resolve must apply nothing; a newer query owns the surface.
 						if (mine !== currentGen) return;
 						if (result !== null) setDestinations(result);
 						setLoading(false);
 					})
 					.catch(() => {
+						// Keep loading from sticking on a future throw; this surface has no ErrorBoundary.
 						if (mine === currentGen) setLoading(false);
 					});
-			}, 150);
+			}, SEARCH_DEBOUNCE_MS);
 			return () => clearTimeout(timer);
 		},
 	);

@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
+import { flush as flushSync } from "solid-js";
+import { SEARCH_DEBOUNCE_MS } from "../keyboard/destination-surface";
 import { flush, mountApp } from "../test-router";
 
 // The command palette's rendered contract (RIG-2483). Mounts the full shell so
@@ -30,20 +32,19 @@ const input = (c: HTMLElement) =>
 function focusBoardStop(container: HTMLElement): void {
 	container.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')?.focus();
 }
-
+beforeEach(() => jest.useFakeTimers());
 afterEach(() => {
 	cleanup();
+	jest.useRealTimers();
 	setPlatform("other");
 });
 
-// Palette query execution now includes the shared 150ms upstream debounce.
 async function settle(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	window.setTimeout(resolve, 175);
-	await promise;
+	jest.advanceTimersByTime(0);
+	await flush();
+	jest.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
 	await flush();
 }
-
 describe("Palette (RIG-2483)", () => {
 	test("action mode: a query filters the registry, board main-scoped commands rank above global when opened from the board", async () => {
 		setPlatform("other");
@@ -71,6 +72,7 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("keyword-only match: a keyword hit surfaces a command whose title misses (A3)", async () => {
+		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -89,6 +91,7 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("toggle no-recapture: reopen-from-board still ranks main above global after a Mod+K toggle-close", async () => {
+		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		focusBoardStop(container);
@@ -120,6 +123,7 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("a command row renders its shortcut chip derived from the keymap", async () => {
+		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -143,6 +147,7 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("navigation mode: destination groups render and selection navigates via the store", async () => {
+		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -169,6 +174,7 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("empty state renders when both modes miss", async () => {
+		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -184,6 +190,7 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("board commands' chips surface in the palette while the board is mounted", async () => {
+		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		expect(container.querySelector(".bridge")).not.toBeNull();
@@ -206,15 +213,23 @@ describe("Palette (RIG-2483)", () => {
 		);
 	});
 
-	test("navigation mode: loading settles after the debounced destination query", async () => {
+	test("a .cx-palette-loading row (chase-light bar) shows while destination providers are in flight", async () => {
 		setPlatform("other");
+		jest.useFakeTimers();
 		const { store, container } = mountApp("/");
 		store.openPalette();
 		await flush();
 		fireEvent.input(input(container) as HTMLInputElement, {
 			target: { value: "set" },
 		});
-		await settle();
+		flushSync();
+		const loadingRow = container.querySelector(".cx-palette-loading");
+		expect(loadingRow).not.toBeNull();
+		expect(
+			loadingRow?.querySelector('.cx-loader[data-topology="bar"]'),
+		).not.toBeNull();
+		jest.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+		await flush();
 		expect(container.querySelector(".cx-palette-loading")).toBeNull();
 	});
 
