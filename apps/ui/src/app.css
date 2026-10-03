@@ -104,6 +104,59 @@
 .topbar-spacer {
 	flex: 1;
 }
+.topbar-search {
+	position: relative;
+	min-width: 180px;
+}
+
+.topbar-search-input {
+	width: 240px;
+	padding: 5px 8px;
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-sm);
+	background: var(--cx-bg);
+	color: var(--cx-text);
+}
+
+.topbar-search-input:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: 1px;
+	border-color: var(--cx-border-focus);
+}
+
+.topbar-search-panel {
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 0;
+	z-index: var(--cx-z-overlay);
+	min-width: 100%;
+	max-height: 320px;
+	overflow-y: auto;
+	border: 1px solid var(--cx-border);
+	background: var(--cx-bg-panel);
+	box-shadow: var(--cx-elev-2);
+}
+
+.topbar-search-group {
+	padding: 5px 8px 2px;
+	color: var(--cx-text-dim);
+	font-size: 11px;
+}
+
+.topbar-search-row {
+	display: block;
+	width: 100%;
+	padding: 5px 8px;
+	border: 0;
+	background: transparent;
+	color: var(--cx-text);
+	text-align: left;
+}
+
+.topbar-search-row:hover,
+.topbar-search-row[aria-selected="true"] {
+	background: var(--cx-bg-hover);
+}
 
 .daemon {
 	display: flex;
