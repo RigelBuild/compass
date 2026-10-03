@@ -909,6 +909,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	startCommsConsumers(gctx, g, commsBus, fab, st, hub, hubLog)
 	// A daily prune bounds the raw usage log; the rollups keep their sums.
 	startUsageRetention(gctx, g, st, cfg.UsageEventRetention, hubLog)
+	// Close orphaned compute intervals on startup and once per hour; binding
+	// transitions normally close intervals in their own transaction.
+	startComputeUsageSweeper(gctx, g, st, hubLog)
 	// Drain member of the same group: wake on gctx cancellation, then hand off to
 	// drainDoors. A drain that overruns (a handler still wedged mid-replay)
 	// surfaces as the error rather than a false clean shutdown; a real serve
