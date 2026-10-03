@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/RigelBuild/compass/go/internal/store/db"
@@ -50,12 +51,10 @@ type SessionBinding struct {
 // DeleteSessionBindingsForRunner's returned rows exist for. A displaced session
 // left unreaped holds deliveries for an account that has already moved on.
 //
-// So the bind is THREE statements in one explicit transaction, and that is the
-// whole reason this method opens a tx at all: a per-account advisory lock, then
-// the prior-value read under FOR UPDATE, then the write. A concurrent bind for
-// the same account parks on the advisory lock until this transaction commits, so
-// it cannot interleave between this read and this write — the two binds
-// serialize, and each caller is told the session IT actually displaced.
+// The bind uses one explicit transaction: a per-account advisory lock, a prior
+// row read, any interval close/start events, and the new binding write. Concurrent
+// binds serialize at the advisory lock, so each caller gets the correct displaced
+// session and no event can commit without its binding transition.
 //
 // A single statement could not give that. The `prev` CTE this replaces read the
 // statement-start snapshot while the upsert's ON CONFLICT DO UPDATE blocked on
@@ -134,21 +133,43 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 		return "", fmt.Errorf("store: lock session binding account: %w", err)
 	}
 
-	displaced, err := qtx.SessionBindingForUpdate(ctx, string(accountID))
+	prior, err := qtx.SessionBindingForUpdate(ctx, string(accountID))
 	if err != nil && !noRows(err) {
 		return "", fmt.Errorf("store: read prior session binding: %w", err)
 	}
 	if noRows(err) {
-		// No prior binding: nothing to displace. Scan left displaced at its zero
-		// value, which is already the empty session id this method reports for
-		// "the account held none".
-		displaced = ""
+		prior = db.SessionBindingForUpdateRow{}
+	}
+	displaced := prior.SessionID
+
+	intervalID := prior.UsageIntervalID
+	if prior.SessionID != sessionID {
+		if intervalID != "" {
+			if err := qtx.EndComputeUsageInterval(ctx, db.EndComputeUsageIntervalParams{
+				IntervalID:     intervalID,
+				AgentAccountID: string(accountID),
+				SessionID:      prior.SessionID,
+				RunnerID:       prior.RunnerID,
+			}); err != nil {
+				return "", fmt.Errorf("store: end displaced compute usage interval: %w", err)
+			}
+		}
+		intervalID = uuid.NewString()
+		if err := qtx.StartComputeUsageInterval(ctx, db.StartComputeUsageIntervalParams{
+			IntervalID:     intervalID,
+			AgentAccountID: string(accountID),
+			SessionID:      sessionID,
+			RunnerID:       runnerID,
+		}); err != nil {
+			return "", fmt.Errorf("store: start compute usage interval: %w", err)
+		}
 	}
 
 	if err := qtx.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
-		SessionID:      sessionID,
-		AgentAccountID: string(accountID),
-		RunnerID:       runnerID,
+		SessionID:       sessionID,
+		AgentAccountID:  string(accountID),
+		RunnerID:        runnerID,
+		UsageIntervalID: intervalID,
 	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return "", fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, accountID)
@@ -158,7 +179,6 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 		}
 		return "", fmt.Errorf("store: record session binding: %w", err)
 	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("store: commit record session binding: %w", err)
 	}

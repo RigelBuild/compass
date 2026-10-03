@@ -12,7 +12,21 @@ import (
 )
 
 const deleteSessionBinding = `-- name: DeleteSessionBinding :exec
-DELETE FROM session_bindings WHERE session_id = $1
+WITH d AS (
+    DELETE FROM session_bindings AS b
+     WHERE b.session_id = $1
+    RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
+              b.session_id, b.runner_id
+)
+INSERT INTO compute_usage_events (
+    tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+    owner_user_id, session_id, runner_id
+)
+SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', now(),
+       d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
+  FROM d
+  JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+ON CONFLICT DO NOTHING
 `
 
 func (q *Queries) DeleteSessionBinding(ctx context.Context, sessionID string) error {
@@ -21,9 +35,24 @@ func (q *Queries) DeleteSessionBinding(ctx context.Context, sessionID string) er
 }
 
 const deleteSessionBindingsForRunner = `-- name: DeleteSessionBindingsForRunner :many
-DELETE FROM session_bindings
- WHERE runner_id = $1
-RETURNING session_id, agent_account_id
+WITH d AS (
+    DELETE FROM session_bindings AS b
+     WHERE b.runner_id = $1
+    RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
+              b.session_id, b.runner_id
+), ins AS (
+    INSERT INTO compute_usage_events (
+        tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+        owner_user_id, session_id, runner_id
+    )
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', now(),
+           d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
+      FROM d
+      JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+    ON CONFLICT DO NOTHING
+    RETURNING 1
+)
+SELECT d.session_id, d.agent_account_id FROM d
 `
 
 type DeleteSessionBindingsForRunnerRow struct {
@@ -66,6 +95,37 @@ func (q *Queries) DeleteSessionBindingsForRunner(ctx context.Context, runnerID s
 	return items, nil
 }
 
+const endComputeUsageInterval = `-- name: EndComputeUsageInterval :exec
+INSERT INTO compute_usage_events (
+    id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
+    session_id, runner_id
+)
+SELECT gen_random_uuid()::text, $1::text, 'end', now(),
+       a.account_id, a.owner_user_id, $2::text, $3::text
+  FROM agent_accounts AS a
+ WHERE a.account_id = $4::text
+ON CONFLICT (tenant_id, interval_id, kind) DO NOTHING
+`
+
+type EndComputeUsageIntervalParams struct {
+	IntervalID     string
+	SessionID      string
+	RunnerID       string
+	AgentAccountID string
+}
+
+// The account owner is read in SQL so callers continue to supply only the
+// session binding identity.
+func (q *Queries) EndComputeUsageInterval(ctx context.Context, arg EndComputeUsageIntervalParams) error {
+	_, err := q.db.Exec(ctx, endComputeUsageInterval,
+		arg.IntervalID,
+		arg.SessionID,
+		arg.RunnerID,
+		arg.AgentAccountID,
+	)
+	return err
+}
+
 const lockSessionBindingAccount = `-- name: LockSessionBindingAccount :exec
 
 SELECT pg_advisory_xact_lock(hashtext('binding:' || $1 || ':' || $2))
@@ -82,11 +142,9 @@ type LockSessionBindingAccountParams struct {
 // map these rows into the SessionBinding domain struct (the AccountID newtype is
 // done inline in the Go, as agent_placements does).
 //
-// No query here names tenant_id, and on the REQUEST path that is complete: the
-// store arms every statement with SET LOCAL ROLE compass_app + the
-// compass.tenant_id GUC (tenant_tx.go), so the RLS policy (0001_init.sql) scopes
-// reads to the acting tenant and the tenant_id column DEFAULTs to that GUC on
-// insert. That is how every other query file here is written.
+// These request-path queries rely on SET LOCAL ROLE compass_app and the
+// compass.tenant_id GUC for RLS and tenant defaults. Delete queries carry the
+// deleted binding's tenant_id into their end-event insert explicitly.
 //
 // It is NOT complete under WithSystemRole (tenant_tx.go), which arms the
 // BYPASSRLS compass_system role and NO tenant GUC. Every query here then runs
@@ -150,34 +208,30 @@ func (q *Queries) LockSessionBindingAccount(ctx context.Context, arg LockSession
 }
 
 const recordSessionBinding = `-- name: RecordSessionBinding :exec
-INSERT INTO session_bindings (agent_account_id, session_id, runner_id)
-VALUES ($1, $2, $3)
+INSERT INTO session_bindings (agent_account_id, session_id, runner_id, usage_interval_id)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
     SET session_id = EXCLUDED.session_id,
-        runner_id  = EXCLUDED.runner_id
+        runner_id = EXCLUDED.runner_id,
+        usage_interval_id = EXCLUDED.usage_interval_id
 `
 
 type RecordSessionBindingParams struct {
-	AgentAccountID string
-	SessionID      string
-	RunnerID       string
+	AgentAccountID  string
+	SessionID       string
+	RunnerID        string
+	UsageIntervalID string
 }
 
-// The bind. Keyed on the ACCOUNT (see the table comment): the hub's 1:1
-// accountSessions map this replaces treats re-pointing an account at a newer
-// session as an assignment, not a collision, so this is an upsert on
-// (tenant_id, agent_account_id) and never refuses a re-point.
-//
 // What it DISPLACED comes from SessionBindingForUpdate above, not from a
-// RETURNING here: ON CONFLICT DO UPDATE's RETURNING sees the POST-update row, and
-// the pre-update one is unreachable from this statement (`OLD`-aliased RETURNING
-// is Postgres 18+; this targets 16). The two statements are nonetheless one
-// operation, because they share a transaction and the row lock the read took —
-// which is the property the caller needs. It reaps the displaced session from the
-// delivery held-deliver registry, and reaping a session that is once again live
-// would strand a live agent's deliveries.
+// RETURNING here. The binding update and event writes share the Store tx.
 func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error {
-	_, err := q.db.Exec(ctx, recordSessionBinding, arg.AgentAccountID, arg.SessionID, arg.RunnerID)
+	_, err := q.db.Exec(ctx, recordSessionBinding,
+		arg.AgentAccountID,
+		arg.SessionID,
+		arg.RunnerID,
+		arg.UsageIntervalID,
+	)
 	return err
 }
 
@@ -209,18 +263,21 @@ func (q *Queries) SessionBindingForAccount(ctx context.Context, agentAccountID s
 }
 
 const sessionBindingForUpdate = `-- name: SessionBindingForUpdate :one
-SELECT b.session_id
-  FROM session_bindings b
+SELECT b.session_id, b.usage_interval_id, b.runner_id
+  FROM session_bindings AS b
  WHERE b.agent_account_id = $1
    FOR UPDATE
 `
 
-// The prior-value read of the bind, and the second of three statements the Store
-// runs in ONE explicit transaction (beginTenantTx): the advisory lock above, this
-// read, then the upsert below. FOR UPDATE takes a row lock on the binding this
-// bind is about to overwrite, so the read and the write cannot be separated by a
-// concurrent bind — that caller is already parked on the advisory lock, and would
-// park here too.
+type SessionBindingForUpdateRow struct {
+	SessionID       string
+	UsageIntervalID string
+	RunnerID        string
+}
+
+// The prior-value read follows the account advisory lock. It shares a tx with
+// event writes and the binding upsert. FOR UPDATE also protects against a writer
+// that reaches the row without taking the advisory lock.
 //
 // The single-statement form this replaces (a `prev` CTE beside the upsert) could
 // not do that: under READ COMMITTED the CTE reads the statement-start snapshot
@@ -231,11 +288,13 @@ SELECT b.session_id
 //
 // A MISS is not an error: a first-ever bind returns pgx.ErrNoRows and the Store
 // maps that to the empty displaced id.
-func (q *Queries) SessionBindingForUpdate(ctx context.Context, agentAccountID string) (string, error) {
+// The prior binding, including the original Runner and interval identity. The
+// Store closes a displaced interval before it writes a replacement binding.
+func (q *Queries) SessionBindingForUpdate(ctx context.Context, agentAccountID string) (SessionBindingForUpdateRow, error) {
 	row := q.db.QueryRow(ctx, sessionBindingForUpdate, agentAccountID)
-	var session_id string
-	err := row.Scan(&session_id)
-	return session_id, err
+	var i SessionBindingForUpdateRow
+	err := row.Scan(&i.SessionID, &i.UsageIntervalID, &i.RunnerID)
+	return i, err
 }
 
 const sessionBindingTenants = `-- name: SessionBindingTenants :many
@@ -268,4 +327,35 @@ func (q *Queries) SessionBindingTenants(ctx context.Context, arg SessionBindingT
 		return nil, err
 	}
 	return items, nil
+}
+
+const startComputeUsageInterval = `-- name: StartComputeUsageInterval :exec
+INSERT INTO compute_usage_events (
+    id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
+    session_id, runner_id
+)
+SELECT gen_random_uuid()::text, $1::text, 'start', now(),
+       a.account_id, a.owner_user_id, $2::text, $3::text
+  FROM agent_accounts AS a
+ WHERE a.account_id = $4::text
+ON CONFLICT (tenant_id, interval_id, kind) DO NOTHING
+`
+
+type StartComputeUsageIntervalParams struct {
+	IntervalID     string
+	SessionID      string
+	RunnerID       string
+	AgentAccountID string
+}
+
+// Event writes share RecordSessionBinding's transaction, so neither half of an
+// interval can commit without its binding transition.
+func (q *Queries) StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) error {
+	_, err := q.db.Exec(ctx, startComputeUsageInterval,
+		arg.IntervalID,
+		arg.SessionID,
+		arg.RunnerID,
+		arg.AgentAccountID,
+	)
+	return err
 }
