@@ -171,6 +171,49 @@ func TestWakeAgentStaleBindingRowStillResumes(t *testing.T) {
 	}
 }
 
+// A wake for an agent live on a Runner this hub has not cached (another Server
+// instance promoted it) resumes, and the Runner refuses with ALREADY_RUNNING
+// (agentHost.Start's live-session check). The live session is untouched: the
+// wake logs outcome=failed and records no new session row.
+func TestWakeAgentLiveElsewhereIsRefusedHarmlessly(t *testing.T) {
+	ctx := context.Background() // test root
+	f, lc := newWakeFixture(t)
+
+	const logical = "sess-live-elsewhere"
+	if err := f.store.RecordAgentSession(ctx, logical, f.agentID); err != nil {
+		t.Fatalf("RecordAgentSession: %v", err)
+	}
+	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
+		t.Fatalf("RecordAgentPlacement: %v", err)
+	}
+	if err := f.store.AppendTranscriptEntry(ctx, logical, 1, true, `{"header":true}`, "k1"); err != nil {
+		t.Fatalf("append checkpoint: %v", err)
+	}
+	f.runner.setFailStart(true) // the Runner already hosts a live session on the container
+	f.runner.forget()
+
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	sb := &syncBuffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(sb, nil)))
+
+	lc.WakeAgent(ctx, f.agentID)
+
+	slog.SetDefault(prev)
+	if n := f.runner.startCount(); n != 1 {
+		t.Fatalf("WakeAgent pushed %d Starts, want 1 (one refused resume, no retry or re-provision); commands: %v", n, f.runner.commands())
+	}
+	if n := f.runner.provisionCount(); n != 0 {
+		t.Fatalf("WakeAgent provisioned %d times, want 0: ALREADY_RUNNING must not re-provision the live container", n)
+	}
+	if logs := sb.String(); !strings.Contains(logs, "outcome=failed") || !strings.Contains(logs, "already_exists") {
+		t.Fatalf("wake logged %q, want outcome=failed carrying already_exists", logs)
+	}
+	if got := sessionRowCount(t, ctx, f.dsn, logical); got != 1 {
+		t.Fatalf("session rows for %q = %d, want 1 (a refused resume records nothing)", logical, got)
+	}
+}
+
 // TestWakeAgentLostContainerReprovisions: after a redeploy the placement names a
 // container the Runner no longer has. The wake re-provisions the same account (the
 // Runner derives the same name) and retries the start there, on both wake paths.
