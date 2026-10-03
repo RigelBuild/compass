@@ -14,6 +14,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/linearagent"
@@ -160,16 +163,20 @@ func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, adm
 	})
 }
 
-// startLinearResponder drains the session queue on the serve group; nil starts nothing.
-func startLinearResponder(gctx context.Context, g *errgroup.Group, d *linearagent.Dispatcher) {
+// startLinearResponder drains the session queue and tails the comms bus for the
+// Manager reply that ends a Linear session's "Thinking"; nil starts nothing.
+func startLinearResponder(gctx context.Context, g *errgroup.Group, d *linearagent.Dispatcher, commsBus *events.Bus[*compassv1.SubscribeCommsResponse]) {
 	if d == nil {
 		return
 	}
 	g.Go(func() error {
-		// Run returns only once gctx ends, so any exit is shutdown, not a serve error.
-		_ = d.Run(gctx)
+		// Run ends only with gctx, so its ctx error is shutdown, not a serve error.
+		if err := d.Run(gctx); err != nil && gctx.Err() == nil {
+			return err
+		}
 		return nil
 	})
+	g.Go(func() error { return d.TailComms(gctx, commsBus) })
 }
 
 // linearRoutingBridge is the bridge the seed puts in the routing channel, or empty

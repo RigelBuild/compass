@@ -374,6 +374,12 @@ message-level mirroring. It is a thin addition to the dispatcher, not a
 restructuring of the receive/route/map path, and is out of scope for this
 record.
 
+**Amendment (RIG-4163, Matt chose B):** Linear keeps a session in "Thinking"
+until it sees a `response`. The dispatcher now tails the comms bus and emits one
+`response` on the resolved Manager's first post in the session topic after each
+`created` or `prompted`. It mirrors no message content. The arm lives in memory,
+so a server restart between prompt and reply leaves that session in "Thinking".
+
 ### Part 4 — Linear-side auth (client_credentials, re-mint on 401)
 
 The two Linear-side emits (the ack `thought` and the session external-URL

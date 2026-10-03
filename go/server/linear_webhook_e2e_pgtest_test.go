@@ -202,6 +202,7 @@ func (f *fakeLinearAPI) callsFor(sessionID string) []linE2ECall {
 // linE2EWire is the assembled loop: store, comms, dispatcher, ingress, fake Linear.
 type linE2EWire struct {
 	st         *store.Store
+	cm         *comms.Comms
 	linear     *fakeLinearAPI
 	handler    http.Handler
 	secret     []byte
@@ -273,7 +274,7 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	g, gctx := errgroup.WithContext(runCtx)
-	startLinearResponder(gctx, g, d)
+	startLinearResponder(gctx, g, d, commsBus)
 	t.Cleanup(func() {
 		cancel()
 		if err := g.Wait(); err != nil {
@@ -285,7 +286,7 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 	// The mount path is the network door's concern; this test drives the handler directly.
 	_, handler := NewLinearWebhookHandler(func(context.Context) ([]byte, error) { return secret, nil }, nil, d, nil)
 	return &linE2EWire{
-		st: st, linear: linear, handler: handler, secret: secret,
+		st: st, cm: cm, linear: linear, handler: handler, secret: secret,
 		adminID: admin.ID, bridgeID: bridge.ID, supervisor: supervisor, manager: manager, routingCh: routingCh,
 	}
 }
@@ -403,6 +404,7 @@ func TestLinearWebhookE2E(t *testing.T) {
 	t.Run("created_despawned_author_walks_up", w.scenarioDespawnedAuthor)
 	t.Run("replayed_delivery_posts_once", w.scenarioReplay)
 	t.Run("prompted_lands_in_same_topic", w.scenarioPrompted)
+	t.Run("manager_reply_emits_one_response", w.scenarioManagerReply)
 	t.Run("graphql_401_remints_once", w.scenario401)
 	t.Run("tampered_signature_rejected", w.scenarioTampered)
 	t.Run("stale_timestamp_dropped", w.scenarioStale)
@@ -612,4 +614,58 @@ func (w *linE2EWire) scenarioStale(t *testing.T) {
 	}
 	w.barrier(t)
 	w.assertNothingHappened(t, sessionID, text)
+}
+
+func (w *linE2EWire) scenarioManagerReply(t *testing.T) {
+	first := w.openManagerSession(t)
+	w.managerReply(t, first, "reply 0")
+	w.managerReply(t, first, "reply 1")
+	// The tail handles the bus in order, so once a later session's response
+	// lands, both replies above have been seen.
+	later := w.openManagerSession(t)
+	w.managerReply(t, later, "later reply")
+	linE2EWaitUntil(t, "the later session's response", func() bool { return w.responses(later.LinearSessionID) == 1 })
+	if got := w.responses(first.LinearSessionID); got != 1 {
+		t.Errorf("response activities = %d, want 1 (first Manager reply only)", got)
+	}
+}
+
+// openManagerSession delivers a `created` owned by the manager and returns its association.
+func (w *linE2EWire) openManagerSession(t *testing.T) store.LinearAgentSessionRow {
+	t.Helper()
+	sessionID := uuid.NewString()
+	created := "<issue>RIG-101 prompt context " + sessionID + "</issue>"
+	owned := linearagent.Issue{ID: "issue-101", Identifier: "RIG-101"}
+	if code := w.deliverSigned(t, linE2ESessionBody(t, "created", sessionID, owned, created, time.Now())); code != http.StatusOK {
+		t.Fatalf("created status = %d, want 200", code)
+	}
+	w.waitForMessage(t, w.manager.Agent.HomeChannelID, created)
+	row, err := w.st.LinearAgentSession(t.Context(), sessionID)
+	if err != nil {
+		t.Fatalf("LinearAgentSession: %v", err)
+	}
+	return row
+}
+
+// managerReply posts text as the manager into the session's topic.
+func (w *linE2EWire) managerReply(t *testing.T, row store.LinearAgentSessionRow, text string) {
+	t.Helper()
+	if _, err := w.cm.PostAsAccount(t.Context(), w.manager.ID, &compassv1.PostMessageRequest{
+		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(row.ChannelID)},
+		Topic:     &compassv1.PostMessageRequest_TopicId{TopicId: row.TopicID},
+		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
+	}); err != nil {
+		t.Fatalf("manager reply %q: %v", text, err)
+	}
+}
+
+// responses counts the `response` activities Linear received for sessionID.
+func (w *linE2EWire) responses(sessionID string) int {
+	n := 0
+	for _, c := range w.linear.callsFor(sessionID) {
+		if c.Content.Type == "response" {
+			n++
+		}
+	}
+	return n
 }
