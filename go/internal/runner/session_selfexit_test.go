@@ -141,14 +141,14 @@ func TestReloadAfterAckedBarrierSendsFreshReplayComplete(t *testing.T) {
 	}
 	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	first := assertFirstReplayComplete(t, client)
-	ack := client.Publish(ctx)
-	if err := ack.Send(&compassv1internal.PublishFrameRequest{Frame: &compassv1internal.AgentFrame{
+	publish := client.Publish(ctx)
+	if err := publish.Send(&compassv1internal.PublishFrameRequest{Frame: &compassv1internal.AgentFrame{
 		Frame: &compassv1internal.AgentFrame_ControlAck{ControlAck: &compassv1internal.ControlAck{AckedSeq: first.Msg().GetControlSeq()}},
 	}}); err != nil {
 		t.Fatalf("send ack: %v", err)
 	}
 	// The handler returns only after applying every frame, so the ack is in.
-	if _, err := ack.CloseAndReceive(); err != nil {
+	if _, err := publish.CloseAndReceive(); err != nil {
 		t.Fatalf("close ack stream: %v", err)
 	}
 	if err := h.Reload(ctx, sessionID); err != nil {
