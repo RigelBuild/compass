@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/RigelBuild/compass/go/internal/otel"
+	"github.com/RigelBuild/compass/go/internal/usage"
 	"github.com/RigelBuild/compass/go/server"
 )
 
@@ -220,6 +221,12 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		return server.ServeConfig{}, false, err
 	}
 
+	usageRetention, err := resolveUsageEventRetention(
+		firstNonEmpty(*f.usageRetention, os.Getenv("COMPASS_USAGE_EVENT_RETENTION")))
+	if err != nil {
+		return server.ServeConfig{}, false, err
+	}
+
 	return server.ServeConfig{
 		SocketPath:        socketPath,
 		Version:           version,
@@ -239,6 +246,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		// read one source, so no --otel-endpoint flag. Empty = tracing off.
 		OtelEndpoint:                  os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		TranscriptSafetyValveCapBytes: positiveCap(*f.transcriptSafetyValveCapBytes, os.Getenv("COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES")),
+		UsageEventRetention:           usageRetention,
 	}, false, nil
 }
 
@@ -281,6 +289,7 @@ type serveFlags struct {
 	adminHandle                   *string
 	corsAllowedOrigin             *string
 	publicURL                     *string
+	usageRetention                *string
 }
 
 // registerServeFlags declares the core compass-server flags on the given FlagSet
@@ -350,6 +359,11 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 				"Linear webhooks must set it."),
 		transcriptSafetyValveCapBytes: fs.Int("transcript-safety-valve-cap-bytes", 0,
 			"Hot-tail safety-valve cap in bytes. Defaults to $COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES."),
+		usageRetention: fs.String("usage-event-retention", "",
+			"How long raw token-usage events are kept before the daily prune "+
+				"deletes them, as a Go duration (e.g. 720h). The hourly and daily "+
+				"usage totals are kept. Falls back to $COMPASS_USAGE_EVENT_RETENTION, "+
+				"then 2160h (90 days). 0 disables the prune."),
 	}
 }
 
@@ -390,6 +404,22 @@ func resolveNetworkDoor(listen, tlsCert, tlsKey string) (string, *server.TLSConf
 				"(missing %s); pass all three to enable it or none for the "+
 				"socket-only default", strings.Join(missing, ", "))
 	}
+}
+
+// resolveUsageEventRetention parses the retention window (flag, then env). Empty
+// keeps the default; 0 is kept, because it is the operator's opt-out.
+func resolveUsageEventRetention(v string) (time.Duration, error) {
+	if v == "" {
+		return usage.DefaultRetention, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --usage-event-retention %q: %w", v, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid --usage-event-retention %q: it must not be negative; 0 disables the prune", v)
+	}
+	return d, nil
 }
 
 // forgeFlags holds the RIG-1810/RIG-2883 forge CLI flag pointers, registered as
