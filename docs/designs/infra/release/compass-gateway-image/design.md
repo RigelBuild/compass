@@ -159,7 +159,7 @@ result in compass (RIG-4209 option A). Matt ruled for option B.
   addresses a build. The lane writes `:git-<sha12>` and no other tag. `sha12`
   is the first 12 characters of the compass commit (`cut -c1-12`, never
   `--short`).
-- Repo: `ghcr.io/rigelbuild/compass-gateway` (an assumption, OQ-2).
+- Repo: `ghcr.io/rigelbuild/compass-gateway` (an assumption, OQ-1).
 - `fork-pin.json` `commit` is 40 lowercase hex characters and an ancestor of
   RigelBuild/oh-my-pi `main`.
 - Exit codes, numbered as in the runner and guest lanes: usage 2,
@@ -311,7 +311,7 @@ compass-agent image, so the stack pulls with no registry login.
 
 ## Open Questions
 
-- **OQ-2 — Package name and visibility.** Not load-bearing.
+- **OQ-1 — Package name and visibility.** Not load-bearing.
   `ghcr.io/rigelbuild/compass-gateway` is the RIG-4209 proposal, not yet
   confirmed. Public visibility follows the compass-agent image ruling.
   Renaming before T3 lands costs one string.
