@@ -11,8 +11,9 @@ package runnerhub
 // fake-double style as deliveryarm_test.go — so each pins one contract a
 // plausible regression would break:
 //
-//   - a Server RESTART resolves a pre-restart session from the durable row,
-//     both directions;
+//   - a Server RESTART reaps the Runner's pre-restart rows on its first enroll;
+//   - a cold cache resolves a post-enroll binding from the durable row, both
+//     directions;
 //   - a stopped / never-seen / post-RECONNECT session fails closed;
 //   - a binding change on one instance evicts a peer instance's cache;
 //   - a displaced session (an account re-pointed onto a new one) resolves
@@ -28,6 +29,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
@@ -223,34 +225,54 @@ func runnerSubject() store.Subject {
 	return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}
 }
 
-// TestRestartResolvesPreRestartBindingBothDirections is the availability
-// property this whole PR exists for. A Server restart brings up a FRESH hub with
-// EMPTY maps, then the Runner (whose sessions are still alive) enrolls for the
-// FIRST time on that hub — so no durable reap runs and the pre-restart rows
-// survive. Both resolvers must then fall through the cache miss to the durable
-// table: accountForSession (session->account) AND SessionForAccount
-// (account->session), the two directions delivery + comms depend on.
-func TestRestartResolvesPreRestartBindingBothDirections(t *testing.T) {
+// TestFirstEnrollReapsPreRestartBindings is the RIG-4223 regression. A Server
+// restart brings up a FRESH hub, and the Runner enrolls for the first time on it
+// (reattached=false). The Runner's pre-restart sessions are dead: it exits when
+// its Sessions stream drops and sweeps its containers at startup. So the first
+// enroll must reap the surviving rows too, or a wake reads a dead session back
+// as live and silently no-ops.
+func TestFirstEnrollReapsPreRestartBindings(t *testing.T) {
 	hub := newHubOnly()
+	reap := &fakeSessionReapSink{}
+	hub.SetSessionReapSink(reap)
 	bindings := newFakeBindingStore()
 	bindings.seed("sess-1")
 	hub.SetSessionBindingStore(bindings)
 
-	// A FIRST enroll on a fresh hub (the restart case): reattached is false, so
-	// enroll does NOT reap the durable rows — they are still valid.
 	if reattached := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); reattached {
-		t.Fatal("first enroll on a fresh hub reported reattached=true, want false (no durable reap)")
+		t.Fatal("first enroll on a fresh hub reported reattached=true, want false")
 	}
 
-	// Forward: session -> account, resolved from the durable row (map is empty).
+	if _, ok := bindings.bindings["sess-1"]; ok {
+		t.Fatal("the pre-restart row for sess-1 survived the first enroll; it names a dead session")
+	}
+	if account, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
+		t.Fatalf("accountForSession(sess-1) after restart = (%q, true), want ok=false", account)
+	}
+	if sessionID, ok := hub.SessionForAccount(context.Background(), testAgentAccount); ok {
+		t.Fatalf("SessionForAccount(%s) after restart = (%q, true), want ok=false — a wake would skip the dead agent", testAgentAccount, sessionID)
+	}
+	if calls := reap.snapshot(); len(calls) != 1 || !slices.Equal(calls[0], []string{"sess-1"}) {
+		t.Fatalf("reap edges = %v, want one naming sess-1 (held delivers for the dead session must be dropped)", calls)
+	}
+}
+
+// A row bound after enroll (another Server instance promoted it) resolves from
+// the durable table in both directions on a cold cache.
+func TestColdCacheResolvesPostEnrollBindingBothDirections(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seed("sess-1")
+
 	account, ok := hub.accountForSession(context.Background(), "sess-1")
 	if !ok || account != testAgentAccount {
-		t.Fatalf("accountForSession(sess-1) after restart = (%q, %v), want (%s, true) — the pre-restart binding must resolve from the durable table", account, ok, testAgentAccount)
+		t.Fatalf("accountForSession(sess-1) = (%q, %v), want (%s, true) — the binding must resolve from the durable table", account, ok, testAgentAccount)
 	}
-	// Reverse: account -> session, the delivery consumer's direction.
 	sessionID, ok := hub.SessionForAccount(context.Background(), testAgentAccount)
 	if !ok || sessionID != "sess-1" {
-		t.Fatalf("SessionForAccount(%s) after restart = (%q, %v), want (sess-1, true) — the reverse binding must resolve from the durable table too", testAgentAccount, sessionID, ok)
+		t.Fatalf("SessionForAccount(%s) = (%q, %v), want (sess-1, true) — the reverse binding must resolve from the durable table too", testAgentAccount, sessionID, ok)
 	}
 }
 
@@ -259,9 +281,9 @@ func TestRestartResolvesPreRestartBindingBothDirections(t *testing.T) {
 func TestAccountForRunnerSessionReadThroughChecksOwner(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
-	bindings.seed("sess-1")
 	hub.SetSessionBindingStore(bindings)
 	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seed("sess-1")
 
 	if _, ok := hub.accountForRunnerSession(context.Background(), "runner-2", "sess-1"); ok {
 		t.Fatal("foreign Runner resolved durable session binding, want false")
@@ -344,10 +366,10 @@ func TestPeerBindingChangeEvictsOtherInstanceCache(t *testing.T) {
 	// record fires), and the shared routing fabric.
 	hubB := newHubOnly()
 	bindingsB := newFakeBindingStore()
-	bindingsB.seed("sess-old")
 	hubB.SetSessionBindingStore(bindingsB)
 	hubB.SetRoutingFabric(routing)
 	hubB.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindingsB.seed("sess-old")
 	hubB.bindContainer("cont-new", testAgentAccount, "runner-1")
 
 	// B re-points the account onto sess-new: displaces sess-old, publishes the
@@ -426,7 +448,6 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 	t.Run("delivery_ack", func(t *testing.T) {
 		hub := newHubOnly()
 		bindings := newFakeBindingStore()
-		bindings.seed("sess-1")
 		hub.SetSessionBindingStore(bindings)
 		del := newFakeDeliveryStore()
 		del.channels["m1"] = "chan-1"
@@ -434,6 +455,7 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 		// Enrolled Runner + empty maps (no bindSession) => the ack's account
 		// resolve is a cache MISS that falls through to the read-through table.
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+		bindings.seed("sess-1")
 
 		if err := hub.Deliver(context.Background(), RunnerEvent{
 			RunnerID:  testRunnerID,
@@ -458,11 +480,11 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 	t.Run("forge_notification_ack", func(t *testing.T) {
 		hub := newHubOnly()
 		bindings := newFakeBindingStore()
-		bindings.seed("sess-1")
 		hub.SetSessionBindingStore(bindings)
 		del := newFakeDeliveryStore()
 		hub.SetDeliveryStore(del)
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+		bindings.seed("sess-1")
 
 		if err := hub.Deliver(context.Background(), RunnerEvent{
 			RunnerID:  testRunnerID,
@@ -603,17 +625,19 @@ func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
 // deterministic rather than hoping the scheduler produces it.
 func TestConcurrentResolveDuringAFaultingReapCannotResurrect(t *testing.T) {
 	hub := newHubOnly()
-	bindings := &blockingBindingStore{
-		fakeBindingStore: newFakeBindingStore(),
-		entered:          make(chan struct{}),
-		release:          make(chan struct{}),
-	}
-	hub.SetSessionBindingStore(bindings)
+	plain := newFakeBindingStore()
+	hub.SetSessionBindingStore(plain)
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(context.Background(), "cont-1", "sess-1")
 
-	// The reconnect's reap will fault, leaving the sess-1 row in place.
+	// Park only the reconnect's reap; it will fault, leaving the sess-1 row in place.
+	bindings := &blockingBindingStore{
+		fakeBindingStore: plain,
+		entered:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	hub.SetSessionBindingStore(bindings)
 	bindings.deleteForRunnerErr = errors.New("durable fault")
 
 	done := make(chan struct{})
