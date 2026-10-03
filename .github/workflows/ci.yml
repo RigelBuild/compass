@@ -2787,11 +2787,12 @@ jobs:
     # apps/ui/e2e/__screens__ PNG from the fixture-mode UI under CI's PINNED
     # Chromium, then opens a BOT PR carrying the rewritten baselines for image
     # review. It exists because the visual gate compares against committed
-    # pixels: a baseline captured on a dev box differs from CI's Chromium by
-    # font rasterization alone, so the only baselines the gate can trust are
-    # ones this lane produced. Like the forge lane it is a SEPARATE job, never a
-    # step in the moon battery, and the required `rollup` check above does not
-    # `needs:` it — a regen dispatch must not post or disturb gate contexts.
+    # pixels and needs to know where they came from: a CI capture is attested by
+    # this run, while a dev-box capture under the same pins is byte-identical yet
+    # unattested, so no reader can tell it apart. Like the forge lane it is a
+    # SEPARATE job, never a step in the moon battery, and the required `rollup`
+    # check above does not `needs:` it — a regen dispatch must not post or
+    # disturb gate contexts.
     #
     # Same workflow_dispatch + empty-`pr` gate as the forge lane, plus the
     # `regen` discriminator that keeps the two mutually exclusive (see the
