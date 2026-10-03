@@ -19,6 +19,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/comms"
+	"github.com/RigelBuild/compass/go/internal/usage"
 )
 
 // corsAllowOrigin is the response header the CORS middleware echoes the allowed
@@ -58,7 +59,8 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
-	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+	usageSvc := newUsageService(usage.NewPostgres(st), st)
+	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}

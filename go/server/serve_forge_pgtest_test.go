@@ -26,6 +26,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/usage"
 )
 
 const forgeTestHost = "github.com"
@@ -525,8 +526,9 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 	hub := newRunnerHub(st, brd, tail, commsSvc, slog.Default())
 	svc := newService("test", bus, st, hub, brd, issueBrd, tail)
 	secretsSvc := newSecretsService(st, container, server, nil)
+	usageSvc := newUsageService(usage.NewPostgres(st), st)
 
-	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, "",
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, admin.ID, "",
 		container, server, nil, netListener, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildDoors: %v", err)
