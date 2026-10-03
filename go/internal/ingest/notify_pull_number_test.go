@@ -50,10 +50,9 @@ func TestRouteResolvesPullNumberForCheckSuite(t *testing.T) {
 			wantNumber:   77,
 		},
 		{
-			name:      "no pull request for the sha fails closed",
+			name:      "no pull request for the sha is skipped without error",
 			ev:        checkSuiteEvent("orphan"),
 			pulls:     &fakePullNumbers{err: forge.ErrNoPullRequestForSHA},
-			wantErr:   true,
 			wantCalls: 1,
 			wantSHA:   "orphan",
 		},
@@ -132,6 +131,9 @@ func TestRouteResolvesPullNumberForCheckSuite(t *testing.T) {
 			}
 			if tc.wantDispatch > 0 && d.sent[0].GetNumber() != tc.wantNumber {
 				t.Errorf("notified Number = %d, want %d", d.sent[0].GetNumber(), tc.wantNumber)
+			}
+			if tc.wantDispatch == 0 && len(st.upserts) != 0 {
+				t.Errorf("upserted %d cursors, want 0 for an unrouted event", len(st.upserts))
 			}
 		})
 	}
