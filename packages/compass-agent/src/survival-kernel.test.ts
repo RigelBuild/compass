@@ -12,15 +12,15 @@ const kernel = "KERNEL-SENTINEL evidence and safe tool arguments";
 const rolePrompt = "ROLE-SENTINEL manager role";
 const persona = "PERSONA-SENTINEL lane context";
 const kernelRule = {
-	name: "survival-kernel",
+	name: "evidence-and-safe-tool-args",
 	description: "Role-invariant evidence and safe tool arguments",
 	alwaysApply: true,
 	content: kernel,
-	path: "/rules/survival-kernel.md",
+	path: "/rules/evidence-and-safe-tool-args.md",
 	_source: {
 		provider: "compass-config",
 		providerName: "compass config",
-		path: "/rules/survival-kernel.md",
+		path: "/rules/evidence-and-safe-tool-args.md",
 		level: "user" as const,
 	},
 };
