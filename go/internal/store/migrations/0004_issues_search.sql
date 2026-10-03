@@ -1,12 +1,8 @@
--- 0004_issues_search: weighted full-text search over the board issue fields.
---
--- Migrations are append-only: 0001_init.sql is frozen, so this file adds the
--- generated search column and index here and grants the helper function to the
--- roles that 0001 created. No new tenant policy is needed; issues already has
--- 0001's forced tenant isolation policy.
+-- 0004_issues_search adds weighted full-text search to the issue board.
+-- 0001_init.sql is frozen; this append-only migration grants the helper to both
+-- roles and relies on 0001's existing issue tenant-isolation policy.
 
--- CREATE OR REPLACE of this function does not recompute stored search_tsv
--- rows, so any change to its output needs an explicit issues backfill.
+-- CREATE OR REPLACE does not recompute stored rows; changing output needs a backfill.
 CREATE FUNCTION compass_labels_text(labels TEXT[]) RETURNS TEXT
     LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
     SET search_path = pg_catalog
