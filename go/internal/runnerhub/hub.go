@@ -980,10 +980,10 @@ type promotedPair struct {
 // whether it re-attached (OQ6, single-Runner MVP). It drops ALL agent-comms bindings
 // (OQ-2): a restarted Runner could re-mint a still-bound id, so clearing forces a
 // re-minted id to CodeNotFound until bound anew. RIG-3108: the maps are a read-through
-// cache over session_bindings whose rows survive process death. EVERY enroll durably
-// reaps this Runner's rows and drives OFFLINE + reap edges from them: a Runner enrolls
-// once per process and then sweeps its stale containers, so no pre-enroll session of
-// it survives, even on a fresh hub after a Server restart. The reap runs request-scoped by RLS.
+// cache over session_bindings whose rows survive process death. Every enroll reaps
+// this Runner's rows and drives OFFLINE + reap edges from them: a Runner enrolls once
+// per process and sweeps its stale containers, so none of its pre-enroll sessions live.
+// The enroll ctx carries no tenant, so the reap reaches only the bootstrap tenant's rows.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool) {
 	h.mu.Lock()
 	reattached = h.runner != nil

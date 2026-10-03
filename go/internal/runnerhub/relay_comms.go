@@ -251,8 +251,8 @@ func (h *Hub) unbindContainer(containerName string) {
 //
 // RIG-3108: the map is a read-through cache. A hit returns immediately. A miss
 // falls through to the durable binding table ONLY when a Runner is currently
-// enrolled AND the ctx is request-scoped. Every enroll durably reaps that Runner's
-// rows, so a session that predates the enroll stays a fail-closed miss, while a
+// enrolled AND the ctx is request-scoped. Every enroll reaps that Runner's bootstrap-
+// tenant rows, so such a session that predates the enroll stays a fail-closed miss, while a
 // binding another Server instance recorded after it resolves from the row. With no
 // Runner enrolled the gate skips the table round-trip. store.ErrNotFound (and any
 // store fault) maps to ok=false, so CodeNotFound behaviour is byte-identical to today.

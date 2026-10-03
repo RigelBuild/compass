@@ -225,12 +225,10 @@ func runnerSubject() store.Subject {
 	return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}
 }
 
-// TestFirstEnrollReapsPreRestartBindings is the RIG-4223 regression. A Server
-// restart brings up a FRESH hub, and the Runner enrolls for the first time on it
-// (reattached=false). The Runner's pre-restart sessions are dead: it exits when
-// its Sessions stream drops and sweeps its containers at startup. So the first
-// enroll must reap the surviving rows too, or a wake reads a dead session back
-// as live and silently no-ops.
+// RIG-4223: a Server restart brings up a fresh hub, so the Runner's enroll is a
+// first one. Its pre-restart sessions are dead (the Runner exits with its stream
+// and sweeps containers), so the first enroll must reap their rows too, or a wake
+// reads a dead session back as live and silently no-ops.
 func TestFirstEnrollReapsPreRestartBindings(t *testing.T) {
 	hub := newHubOnly()
 	reap := &fakeSessionReapSink{}
@@ -549,6 +547,22 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 
 		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
 			t.Fatalf("accountForSession(sess-1) = (%q, true) after a reconnect, want fail-closed: a reap fault must not leave a dead session resolvable", acct)
+		}
+	})
+
+	t.Run("first enroll with a reap fault keeps read-through refused", func(t *testing.T) {
+		hub := newHubOnly()
+		bindings := newFakeBindingStore()
+		bindings.seed("sess-1")
+		bindings.deleteForRunnerErr = faultErr
+		hub.SetSessionBindingStore(bindings)
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
+			t.Fatalf("accountForSession(sess-1) = (%q, true), want fail-closed: the unreaped pre-restart row names a dead session", acct)
+		}
+		if sess, ok := hub.SessionForAccount(context.Background(), testAgentAccount); ok {
+			t.Fatalf("SessionForAccount = (%q, true), want fail-closed: the unreaped pre-restart row names a dead session", sess)
 		}
 	})
 
