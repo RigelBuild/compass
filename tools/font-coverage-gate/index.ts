@@ -2,13 +2,10 @@
 // uses a character absent from the branded font faces.
 //
 // WHY this exists: the e2e chromium env (tools/toolchain/chromium-e2e-env.nix,
-// fontDirs) pins Space Mono + Departure Mono (the two branded faces) plus
-// Unifont/unifont_upper purely as a COVERAGE FALLBACK, so an uncovered glyph
-// renders a real (dual-width, off-grid) shape instead of baking tofu into a
-// visual baseline. RIG-3742 / T8 removes the Unifont pin. That is only safe
-// once nothing renders a character the branded faces lack — a claim that was an
-// eyeball pass over a hand-written census, proven wrong twice. This gate makes
-// it checkable: it parses the real font cmaps and scans the rendered UI source.
+// fontDirs) pins only Space Mono + Departure Mono, with no coverage fallback,
+// so a rendered character the branded faces lack bakes tofu into a visual
+// baseline. This gate keeps that from happening: it parses the real font cmaps
+// and scans the rendered UI source.
 //
 // Body text resolves --rigel-mono (Space Mono); --rigel-display (Departure
 // Mono) is used by exactly one CSS rule. So the effective coverage a rendered
