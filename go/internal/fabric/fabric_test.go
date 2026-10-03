@@ -3,7 +3,9 @@ package fabric
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -206,6 +208,87 @@ func TestNewUnreachableURL(t *testing.T) {
 	}
 }
 
+// credentialURLs are NATS URLs whose secrets (every "pw"/"tok" token) must never
+// reach a log: seed lists, tokens, scheme-less entries, and credentials holding
+// raw reserved characters that url.Parse misreads or rejects.
+var credentialURLs = []string{
+	"nats://u:pw1@127.0.0.1:1,nats://u:pw2@127.0.0.1:1",
+	"nats://tok3n@127.0.0.1:1",
+	"svc:pw3@127.0.0.1:1",
+	"nats://Zm9v/pw4+cXV4@127.0.0.1:1",
+	"nats://u:pw5?x@127.0.0.1:1",
+	"nats://u:#pw6@127.0.0.1:1",
+	"pw7:a://b@127.0.0.1:1",
+	"nats://u:pw8%zz@127.0.0.1:1",
+	"nats://u:pw9^x@127.0.0.1:1",
+	"nats://u:pwA#x@127.0.0.1:1",
+	"nats://u:pwB,x@127.0.0.1:1",
+	"nats://tokC,en@127.0.0.1:1",
+}
+
+var credentialSecrets = []string{"pw1", "pw2", "pw3", "pw4", "pw5", "pw6", "pw7", "pw8", "pw9", "pwA", "pwB", "tok3n", "tokC"}
+
+func assertNoSecret(t *testing.T, raw, got string) {
+	t.Helper()
+	for _, secret := range credentialSecrets {
+		if strings.Contains(got, secret) {
+			t.Errorf("for %q: %q leaks %q", raw, got, secret)
+		}
+	}
+}
+
+// A boot failure must not print the operator's NATS credentials, including
+// through nats.go's own URL parse error.
+func TestNewConnectErrorRedactsCredentials(t *testing.T) {
+	t.Parallel()
+	for _, raw := range credentialURLs {
+		_, err := New(Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second)}})
+		if err == nil {
+			t.Fatalf("New(%q) against an unreachable server: want an error, got nil", raw)
+		}
+		assertNoSecret(t, raw, err.Error())
+	}
+}
+
+// With credentials in the URL, New still names the fixed-text causes an operator
+// acts on: nothing reachable, and a rejected password.
+func TestNewCredentialedURLKeepsActionableCause(t *testing.T) {
+	t.Parallel()
+	_, err := New(Config{URL: "nats://u:pw1@127.0.0.1:1", Options: []nats.Option{nats.Timeout(2 * time.Second)}})
+	if !errors.Is(err, nats.ErrNoServers) {
+		t.Errorf("unreachable credentialed URL: err = %v, want nats.ErrNoServers", err)
+	}
+
+	srv := natsserver.RunServer(&server.Options{
+		Port: -1, Username: "u", Password: "right", NoLog: true, NoSigs: true,
+	})
+	t.Cleanup(srv.Shutdown)
+	raw := fmt.Sprintf("nats://u:pw2@127.0.0.1:%d", srv.Addr().(*net.TCPAddr).Port)
+	_, err = New(Config{URL: raw, Options: []nats.Option{nats.Timeout(2 * time.Second), nats.NoReconnect()}})
+	if !errors.Is(err, nats.ErrAuthorization) {
+		t.Errorf("wrong password: err = %v, want nats.ErrAuthorization", err)
+	}
+	if err != nil {
+		assertNoSecret(t, raw, err.Error())
+	}
+}
+
+func TestRedactURLHidesEveryCredentialForm(t *testing.T) {
+	t.Parallel()
+	for _, raw := range credentialURLs {
+		assertNoSecret(t, raw, redactURL(raw))
+	}
+	for raw, want := range map[string]string{
+		"nats://h1:4222,nats://h2:4222": "nats://h1:4222,nats://h2:4222",
+		"tls://u:p@h:4222":              "tls://<redacted>@h:4222",
+		"":                              "",
+	} {
+		if got := redactURL(raw); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 // TestFabricImplementsEverySeamOverOneConnection defends the record's
 // one-connection-per-party contract. That *Fabric satisfies all three
 // interfaces is a compile-time assertion in fabric.go; what a test can add is
@@ -245,6 +328,160 @@ func TestFabricImplementsEverySeamOverOneConnection(t *testing.T) {
 	}
 }
 
+// TestOnReconnectAfterServerRestart pins that a real reconnect fires both a
+// registered hook and a caller's own ReconnectHandler: the caller's option must
+// be chained, not allowed to replace the fabric's and disarm OnReconnect.
+func TestOnReconnectAfterServerRestart(t *testing.T) {
+	logs := &capturingLogger{}
+	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	srv := natsserver.RunServer(&server.Options{
+		Port: -1, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
+	})
+	port := srv.Addr().(*net.TCPAddr).Port
+	url := fmt.Sprintf("nats://127.0.0.1:%d", port)
+	callerReconnected := make(chan struct{}, 1)
+	f := newFabric(t, Config{URL: url, Log: log, Options: []nats.Option{
+		nats.ReconnectHandler(func(*nats.Conn) {
+			select {
+			case callerReconnected <- struct{}{}:
+			default:
+			}
+		}),
+	}})
+	reconnected := make(chan struct{}, 1)
+	unsub, err := f.OnReconnect(func() {
+		select {
+		case reconnected <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	defer unsub()
+	srv.Shutdown()
+	restarted := natsserver.RunServer(&server.Options{
+		Port: port, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
+	})
+	defer restarted.Shutdown()
+	for what, ch := range map[string]chan struct{}{"OnReconnect hook": reconnected, "caller ReconnectHandler": callerReconnected} {
+		select {
+		case <-ch:
+		case <-time.After(gate):
+			t.Fatalf("%s did not fire after server restart", what)
+		}
+	}
+	if out := logs.String(); !strings.Contains(out, "fabric: nats reconnected") {
+		t.Fatalf("reconnect log missing: %q", out)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close after reconnect: %v", err)
+	}
+}
+
+func TestOnReconnectUnsubscribe(t *testing.T) {
+	t.Parallel()
+	f := newFabric(t, Config{})
+	var dropped, kept atomic.Int64
+	unsub, err := f.OnReconnect(func() { dropped.Add(1) })
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	unsubKept, err := f.OnReconnect(func() { kept.Add(1) })
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	defer unsubKept()
+	unsub()
+	unsub() // Idempotent: a second call must not remove anyone else's hook.
+	f.runReconnectHooks()
+	if got := dropped.Load(); got != 0 {
+		t.Fatalf("unsubscribed callback ran %d times, want 0", got)
+	}
+	if got := kept.Load(); got != 1 {
+		t.Fatalf("still-registered callback ran %d times, want 1", got)
+	}
+}
+
+// TestReconnectHookPanicIsContained pins that a panicking hook, running on the
+// fabric's own goroutine, neither takes the process down nor starves the hooks
+// registered after it — those are other consumers' sweeps.
+func TestReconnectHookPanicIsContained(t *testing.T) {
+	t.Parallel()
+	f := newFabric(t, Config{Log: quietLogger(t)})
+	unsubBad, err := f.OnReconnect(func() { panic("hook bug") })
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	defer unsubBad()
+	sibling := make(chan struct{}, 1)
+	unsubGood, err := f.OnReconnect(func() { sibling <- struct{}{} })
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	defer unsubGood()
+	f.signalReconnect()
+	select {
+	case <-sibling:
+	case <-time.After(gate):
+		t.Fatal("sibling hook did not run after a panicking hook")
+	}
+}
+
+// TestReconnectSignalsCoalesce pins the 1-slot wake-up: while a hook runs, any
+// number of further reconnects leave at most one pending run, and signalling
+// never blocks the NATS callback goroutine that calls it.
+func TestReconnectSignalsCoalesce(t *testing.T) {
+	t.Parallel()
+	f := newFabric(t, Config{})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unsub, err := f.OnReconnect(func() {
+		entered <- struct{}{}
+		<-release
+	})
+	if err != nil {
+		t.Fatalf("OnReconnect: %v", err)
+	}
+	defer unsub()
+	waitEntered := func(what string) {
+		t.Helper()
+		select {
+		case <-entered:
+		case <-time.After(gate):
+			t.Fatalf("hook did not start for %s", what)
+		}
+	}
+
+	f.signalReconnect()
+	waitEntered("the first reconnect")
+	// The hook goroutine is parked in the hook, so nothing drains the signal
+	// channel while the burst lands.
+	for range 5 {
+		f.signalReconnect()
+	}
+	release <- struct{}{}
+	waitEntered("the coalesced burst")
+	// Parked in the second run: had the burst queued, more runs would be pending.
+	if pending := len(f.reconnectSignal); pending != 0 {
+		t.Fatalf("%d reconnect runs still pending after a burst, want 0 (coalesced into one)", pending)
+	}
+	close(release)
+}
+
+func TestOnReconnectRejectsNilAndClosedFabric(t *testing.T) {
+	f := newFabric(t, Config{})
+	if _, err := f.OnReconnect(nil); err == nil {
+		t.Fatal("OnReconnect(nil): want error")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := f.OnReconnect(func() {}); !errors.Is(err, errClosed) {
+		t.Fatalf("OnReconnect after Close: want errClosed, got %v", err)
+	}
+}
+
 // TestCloseIsIdempotentAndFailsClosed defends two things at once: Close can be
 // called twice (a deferred Close beside an explicit one is not a bug), and
 // post-Close work is refused rather than silently no-oping — a Publish that
@@ -270,10 +507,10 @@ func TestCloseIsIdempotentAndFailsClosed(t *testing.T) {
 	if err := f.Publish(ctx, subject, EventRef{Tenant: "t-closed", Kind: KindMessagePosted, RowID: "m1"}); !errors.Is(err, errClosed) {
 		t.Fatalf("Publish after Close: want errClosed, got %v", err)
 	}
-	if _, err := f.Subscribe(ctx, subject, func(EventRef) {}); !errors.Is(err, errClosed) {
+	if _, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) {}); !errors.Is(err, errClosed) {
 		t.Fatalf("Subscribe after Close: want errClosed, got %v", err)
 	}
-	if _, err := f.SubscribeKind(ctx, KindMessagePosted, func(EventRef) {}); !errors.Is(err, errClosed) {
+	if _, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) {}); !errors.Is(err, errClosed) {
 		t.Fatalf("SubscribeKind after Close: want errClosed, got %v", err)
 	}
 	if err := f.SendCommand(ctx, "r1", nil); !errors.Is(err, errClosed) {
