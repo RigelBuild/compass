@@ -1,20 +1,19 @@
-/**
- * Store-backed destination providers for the command palette's navigation mode
- * (RIG-2483, A4/D9). One provider per `DestinationKind` — agents, channels,
- * topics, views, issues, prs — each reading a reactive store accessor and
- * mapping its rows to `Destination`s whose `navigate()` routes through the
- * store's own action seam (so a palette jump and a click share one home).
+/** Destination providers for the command palette's navigation mode (RIG-2483, A4/D9).
+ * One provider per `DestinationKind` — agents, channels, topics, views, issues,
+ * PRs, and messages. Most read reactive store accessors; message search is a
+ * remote provider backed by the live comms client.
  *
  * Providers are `Promise`-returning by contract (`DestinationProvider.query`);
- * the store-backed ones resolve synchronously-wrapped today, but the issue
- * provider rides the async tracker seam and later kinds may be genuinely async,
- * so `queryDestinations` is race-safe now via the latest-wins generation guard.
+ * store-backed ones resolve synchronously-wrapped today, while issue and message
+ * providers are async, so `queryDestinations` uses a latest-wins generation guard.
  *
- * Filtering + ranking is the in-house `fuzzyScore` (D2) over the destination
- * title; an empty query passes everything (score 0). `score` is stamped on each
+ * Filtering + ranking is the in-house `fuzzyScore` (D2) over destination titles;
+ * an empty query passes everything (score 0). `score` is stamped on each
  * `Destination` so the surface can order within a kind.
  */
 
+import type { Message } from "@compass/client";
+import type { LiveClients } from "../live/client";
 import type { AppStore } from "../store";
 import type {
 	Destination,
@@ -57,13 +56,57 @@ const VIEW_TARGETS: readonly { id: string; title: string }[] = [
 	{ id: "settings", title: "Settings" },
 ];
 
+function mapMessageHit(
+	message: Message,
+	store: AppStore,
+	rank: number,
+): Destination[] {
+	const topic = store
+		.topics()
+		.find((candidate) => candidate.id === message.topicId);
+	// Search hits lack channel ids, so an off-set topic cannot be routed safely.
+	if (!topic) return [];
+	const textTitle = message.blocks
+		.filter((block) => block.block.case === "text")
+		.flatMap((block) =>
+			block.block.case === "text" ? block.block.value.split(/\r?\n/) : [],
+		)
+		.map((line) => line.trim())
+		.find((line) => line.length > 0);
+	const askTitle = message.blocks
+		.filter((block) => block.block.case === "ask")
+		.flatMap((block) =>
+			block.block.case === "ask"
+				? block.block.value.questions.map((question) =>
+						question.question.trim(),
+					)
+				: [],
+		)
+		.find((question) => question.length > 0);
+	const firstLine = textTitle ?? askTitle;
+	if (!firstLine) return [];
+	const title =
+		firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine;
+	// The server returns best-match-first; score by rank so the group sort keeps it.
+	const score = -rank;
+	return [
+		{
+			id: message.id,
+			title,
+			kind: "message",
+			score,
+			navigate: () => store.openTopic(message.topicId),
+		},
+	];
+}
+
 /**
- * Build every store-backed destination provider (all six kinds ship, D9). Each
- * provider's `query` resolves against the store's live accessors at call time,
- * so a streamed roster/issue update is reflected on the next keystroke.
+ * Build every store-backed destination provider. Live search clients are absent
+ * in fixture mode; local providers still resolve from the store's accessors.
  */
 export function createStoreDestinationProviders(
 	store: AppStore,
+	clients?: Pick<LiveClients, "comms" | "compass">,
 ): DestinationProvider[] {
 	return [
 		{
@@ -147,6 +190,20 @@ export function createStoreDestinationProviders(
 						},
 					),
 				),
+		},
+		{
+			id: "messages",
+			query: async (input) => {
+				const query = input.trim();
+				if (!query || !clients) return [];
+				const response = await clients.comms.searchMessages({
+					query,
+					limit: 50,
+				});
+				return response.messages.flatMap((message, rank) =>
+					mapMessageHit(message, store, rank),
+				);
+			},
 		},
 	];
 }

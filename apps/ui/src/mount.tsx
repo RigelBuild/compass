@@ -16,6 +16,7 @@ import { render } from "@solidjs/web";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import App from "./App";
 import { StoreContext } from "./context";
+import type { LiveClients } from "./live/client";
 import { appRoutes } from "./routes";
 import type { AppStore } from "./store";
 
@@ -40,13 +41,14 @@ export function mountShell(
 	root: HTMLElement,
 	store: AppStore,
 	queryClient: QueryClient,
+	clients?: Pick<LiveClients, "comms" | "compass">,
 ): () => void {
 	const Router = createRouter({ routes: appRoutes, history: hashHistory() });
 	return render(
 		() => (
 			<StoreContext value={store}>
 				<QueryClientProvider client={queryClient}>
-					<Router>{(props) => <App {...props} />}</Router>
+					<Router>{(props) => <App {...props} clients={clients} />}</Router>
 				</QueryClientProvider>
 			</StoreContext>
 		),
