@@ -8,3 +8,8 @@ INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ($1, $2,
 
 -- name: TenantIDBySlug :one
 SELECT id FROM tenants WHERE slug = $1;
+
+-- ListTenantIDs lists every tenant. tenants has no row-level security, so the
+-- app role sees them all without the BYPASSRLS system role.
+-- name: ListTenantIDs :many
+SELECT id FROM tenants ORDER BY id;

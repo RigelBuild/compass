@@ -169,6 +169,12 @@ With `--database-external` the stack only connects to the `--database` DSN you
 name; it never starts, stops, or owns that instance's lifecycle. The flag is the
 opt-out switch and `--database` (or `$COMPASS_DATABASE_DSN`) carries the DSN.
 
+The server keeps each raw token-usage event (one row per upstream model call)
+for 90 days by default, and deletes older events once a day. Set the window with
+`--usage-event-retention` (or `$COMPASS_USAGE_EVENT_RETENTION`) as a Go duration
+such as `720h`; `0` keeps every event. The hourly and daily usage totals built
+from those events are always kept.
+
 ## Secrets
 
 Compass keeps its secret *values* in your configured `secretspec` provider, not
