@@ -483,7 +483,8 @@ in
     # mint-runner-token: register the `dogfood` runner and write its enrollment
     # token 0600 to the state dir. Reads the same DSN the server uses so store
     # precedence matches. Runs after the server is ready (its probe gates on the
-    # migrated store). Idempotent: re-registers the same token when the file exists.
+    # migrated store). Idempotent: keeps a token registered to this runner id,
+    # re-registers one the store lost, and rotates one held by another subject.
     "dogfood:mint-runner-token" = {
       exec = ''
         set -euo pipefail
