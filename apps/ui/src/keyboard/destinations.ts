@@ -15,6 +15,7 @@
  * `Destination` so the surface can order within a kind.
  */
 
+import type { LiveClients } from "../live/client";
 import type { AppStore } from "../store";
 import type {
 	Destination,
@@ -64,6 +65,7 @@ const VIEW_TARGETS: readonly { id: string; title: string }[] = [
  */
 export function createStoreDestinationProviders(
 	store: AppStore,
+	_clients?: Pick<LiveClients, "comms" | "compass">,
 ): DestinationProvider[] {
 	return [
 		{

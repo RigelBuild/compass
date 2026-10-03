@@ -1,6 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
+// Palette search tests use overridable debounce and in-flight assertions.
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { flush as flushSync } from "solid-js";
+import {
+	resetSearchDebounceForTest,
+	setSearchDebounceMsForTest,
+} from "../keyboard/destination-surface";
+import * as destinationsModule from "../keyboard/destinations";
 import { flush, mountApp } from "../test-router";
 
 // The command palette's rendered contract (RIG-2483). Mounts the full shell so
@@ -31,24 +37,48 @@ const input = (c: HTMLElement) =>
 function focusBoardStop(container: HTMLElement): void {
 	container.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')?.focus();
 }
-
+beforeEach(() => setSearchDebounceMsForTest(0));
 afterEach(() => {
 	cleanup();
+	resetSearchDebounceForTest();
 	setPlatform("other");
 });
 
-// Kobalte Search debounces onInputChange through a 0ms setTimeout, so the query
-// signal updates on a macrotask — `flush()` (microtasks) alone won't see it.
-// `settle` waits one macrotask then drains the microtask queue.
 async function settle(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
-	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield (setTimeout(0)) to observe Kobalte Search's 0ms-debounced onInputChange; not a timed wait
+	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield for debounce observation; not a timed wait
 	setTimeout(resolve, 0);
 	await promise;
 	await flush();
 }
-
 describe("Palette (RIG-2483)", () => {
+	test("clicking Focus global search from the palette preserves search focus", async () => {
+		const { container, store } = mountApp("/");
+		store.openPalette();
+		await flush();
+		const focusSearch = rows(container).find((row) =>
+			row.textContent?.includes("Focus global search"),
+		);
+		expect(focusSearch).toBeDefined();
+		fireEvent.click(focusSearch as HTMLElement);
+		await flush();
+		await Promise.resolve();
+		expect(document.activeElement).toBe(
+			container.querySelector(".topbar-search-input"),
+		);
+	});
+	test("palette close does not steal focus moved by a command", async () => {
+		const { container, store } = mountApp("/");
+		store.openPalette();
+		await flush();
+		const search = container.querySelector<HTMLInputElement>(
+			".topbar-search-input",
+		);
+		search?.focus();
+		store.closePalette();
+		await flush();
+		expect(document.activeElement).toBe(search);
+	});
 	test("action mode: a query filters the registry, board main-scoped commands rank above global when opened from the board", async () => {
 		setPlatform("other");
 		const { store, container } = mountApp("/");
@@ -215,27 +245,47 @@ describe("Palette (RIG-2483)", () => {
 		const { store, container } = mountApp("/");
 		store.openPalette();
 		await flush();
-
 		fireEvent.input(input(container) as HTMLInputElement, {
 			target: { value: "set" },
 		});
-		// The input change re-runs the navigation split effect, whose apply phase
-		// sets loading=true and kicks off the async provider fetch. Flush the
-		// reactive scheduler SYNCHRONOUSLY (v2 signal writes are flush-deferred) so
-		// the loading row renders — WITHOUT awaiting a microtask, so the async
-		// resolution (a Promise.allSettled chain) has not landed yet and the
-		// in-flight window is observable. (Search 2.x resolves the input change on
-		// the reactive tick, not the 0ms debounce macrotask 0.13.x used.)
+		// Sync flush only: observe the in-flight window before providers resolve.
 		flushSync();
 		const loadingRow = container.querySelector(".cx-palette-loading");
 		expect(loadingRow).not.toBeNull();
 		expect(
 			loadingRow?.querySelector('.cx-loader[data-topology="bar"]'),
 		).not.toBeNull();
-
-		// It clears once the providers resolve.
+		await settle();
 		await flush();
 		expect(container.querySelector(".cx-palette-loading")).toBeNull();
+	});
+	test("debounces a typing burst to one provider query", async () => {
+		const seen: string[] = [];
+		const querySpy = spyOn(
+			destinationsModule,
+			"createStoreDestinationProviders",
+		);
+		querySpy.mockImplementation(() => [
+			{
+				id: "seen",
+				query: async (value) => {
+					seen.push(value);
+					return [];
+				},
+			},
+		]);
+		const { store, container } = mountApp("/");
+		store.openPalette();
+		await flush();
+		for (const value of ["s", "se", "set"]) {
+			fireEvent.input(input(container) as HTMLInputElement, {
+				target: { value },
+			});
+			flushSync();
+		}
+		await settle();
+		expect(seen.filter((value) => value !== "")).toEqual(["set"]);
+		querySpy.mockRestore();
 	});
 
 	test("the LeftSidebar view buttons carry aria-keyshortcuts in WAI-ARIA tokens; the display chord moved to a CoachTip (RIG-2530), so no native title", () => {
