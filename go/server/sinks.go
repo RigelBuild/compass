@@ -9,6 +9,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/presence"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/usage"
 )
 
 // The lifecycle sink is the Bridge board (internal/board): a session lifecycle
@@ -180,6 +182,13 @@ func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *board
 		g.Go(func() error { return lane.arm.Run(gctx) })
 		g.Go(func() error { return lane.reconciler.Run(gctx) })
 	}
+}
+
+// startUsageRetention starts the token-usage retention sweeper on the serve
+// group. The raw log grows with activity; the rollups keep the history.
+func startUsageRetention(gctx context.Context, g *errgroup.Group, st *store.Store, retention time.Duration, log *slog.Logger) {
+	w := usage.NewRetentionSweeper(usage.NewPostgres(st), usage.RetentionConfig{Retention: retention, Log: log})
+	g.Go(func() error { return w.Run(gctx) })
 }
 
 // logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve
