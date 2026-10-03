@@ -777,10 +777,9 @@ func (h *Hub) fireRunnerReady() {
 	}()
 }
 
-// deliverSession routes a session frame to the observation-pane tail and, when
-// the frame carries a lifecycle transition, extracts the AgentSessionStatus onto
-// SubscribeEvents. A session frame can carry a trace event, a lifecycle
-// transition, or both; UNSPECIFIED means "trace only, no transition".
+// deliverSession routes session frames to the observation pane, publishes lifecycle
+// transitions, and retires an owned session when its Runner reports ERRORED.
+// UNSPECIFIED means "trace only, no transition".
 func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf *compassv1internal.SessionFrame) {
 	state := sf.GetState()
 	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
@@ -826,6 +825,11 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	h.mu.Unlock()
 	if presence != nil && hasAccount {
 		presence.OnSessionLifecycle(account, sessionID, state)
+	}
+	// A Runner-published ERRORED state is the lost-session edge when the Runner
+	// observes an agent exit before any in-flight deliver can be refused.
+	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
+		h.dropLostSession(ctx, runnerID, sessionID)
 	}
 }
 

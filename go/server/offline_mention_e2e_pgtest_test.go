@@ -472,6 +472,63 @@ func TestDeliverToLostSessionWakesAndRedelivers(t *testing.T) {
 	}
 }
 
+// TestErroredSessionWakesAndRedeliversOwedMessage covers a Runner reporting the
+// dead session after its silently dropped control deliver can no longer refuse it.
+func TestErroredSessionWakesAndRedeliversOwedMessage(t *testing.T) {
+	w := newMentionE2EWire(t)
+	agent := w.seedAgentMember(t, "erroredmember", true)
+	container := containerFor("erroredmember")
+	const deadSess, newSess = "sess-errored-1", "sess-errored-2"
+
+	w.runner.setContainerNames(container)
+	w.runner.setStartIDs(deadSess)
+	if _, _, err := w.hub.Provision(w.ctx, "", agent.ID, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if _, err := w.hub.Start(w.ctx, "", &compassv1.StartAgentSessionRequest{ContainerName: container}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got, ok := w.hub.SessionForAccount(w.ctx, agent.ID); !ok || got != deadSess {
+		t.Fatalf("precondition: SessionForAccount = (%q, %v), want (%q, true)", got, ok, deadSess)
+	}
+
+	w.runner.forget()
+	msgID := w.post(t, "message delivered into the lost session")
+	dropped := waitForControlDelivers(t, w.runner, deadSess, 1)
+	if dropped[0].kind != controlDeliver || dropped[0].messageID != msgID {
+		t.Fatalf("initial deliver = %+v, want {deliver, %s}", dropped[0], msgID)
+	}
+	if n := w.runner.startCount(); n != 0 {
+		t.Fatalf("Starts before ERRORED = %d, want 0 while the session is live", n)
+	}
+
+	w.runner.setLostContainers(container)
+	w.runner.setContainerNames(container)
+	w.runner.setStartIDs(newSess)
+	errored := &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_Session{
+			Session: &compassv1internal.SessionFrame{
+				State: compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED,
+			},
+		},
+	}
+	if err := w.hub.Deliver(w.ctx, runnerhub.RunnerEvent{
+		RunnerID:  fakeRunnerID,
+		SessionID: deadSess,
+		Frame:     errored,
+	}); err != nil {
+		t.Fatalf("Deliver owning ERRORED frame: %v", err)
+	}
+
+	redelivered := waitForControlDelivers(t, w.runner, newSess, 1)
+	if len(redelivered) != 1 || redelivered[0].kind != controlDeliver || redelivered[0].messageID != msgID {
+		t.Fatalf("redelivery = %+v, want exactly {deliver, %s} on %s", redelivered, msgID, newSess)
+	}
+	if got, ok := w.hub.SessionForAccount(w.ctx, agent.ID); !ok || got != newSess {
+		t.Fatalf("SessionForAccount after ERRORED wake = (%q, %v), want (%q, true)", got, ok, newSess)
+	}
+}
+
 // TestMentionBeforeRunnerEnrollsWakesOnAttach: a mention made after a restart but
 // before the Runner re-enrolls fails its wake (no Runner to serve it). Once a Runner
 // command stream attaches, the owed agent is woken.

@@ -47,6 +47,46 @@ func TestDropLostSessionOnlyForOwningRunner(t *testing.T) {
 	}
 }
 
+func TestErroredSessionDropsBindingAndReportsLoss(t *testing.T) {
+	ctx := context.Background()
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	sink := &recordingLostSink{}
+	hub.SetSessionLostSink(sink)
+	ended := make(chanEndSink, 1)
+	hub.SetSessionEndSink(ended)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+
+	frame := sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+	if err := hub.Deliver(ctx, RunnerEvent{RunnerID: "runner-other", SessionID: "sess-1", Frame: frame}); err != nil {
+		t.Fatalf("Deliver foreign ERRORED frame: %v", err)
+	}
+	if _, ok := hub.accountForSession(ctx, "sess-1"); !ok || len(sink.lost) != 0 {
+		t.Fatalf("foreign ERRORED frame: bound=%v lost=%v, want bound and no wake", ok, sink.lost)
+	}
+	select {
+	case got := <-ended:
+		t.Fatalf("foreign ERRORED frame archived %q, want no session end", got)
+	default:
+	}
+
+	if err := hub.Deliver(ctx, RunnerEvent{RunnerID: "runner-1", SessionID: "sess-1", Frame: frame}); err != nil {
+		t.Fatalf("Deliver owning ERRORED frame: %v", err)
+	}
+	if _, ok := hub.accountForSession(ctx, "sess-1"); ok {
+		t.Fatal("owning ERRORED frame left sess-1 bound")
+	}
+	if len(sink.lost) != 1 || sink.lost[0] != testAgentAccount {
+		t.Fatalf("lost = %v, want [%s]", sink.lost, testAgentAccount)
+	}
+	if got := recvEnded(t, ended); got != "sess-1" {
+		t.Fatalf("archived %q after owning ERRORED frame, want sess-1", got)
+	}
+}
+
 type chanEndSink chan string
 
 func (c chanEndSink) OnSessionEnded(_ context.Context, sessionID string) { c <- sessionID }
