@@ -39,11 +39,6 @@ func TestDay1ModelRegistrySeedPassesDoor(t *testing.T) {
 			{Provider: "openrouter", ModelID: "anthropic/claude-opus-5.5"},
 			{Provider: "amazon-bedrock", ModelID: "global.anthropic.claude-opus-5-5"},
 		},
-		"claude-fable-5-1": {
-			{Provider: "anthropic", ModelID: "claude-fable-5-1"},
-			{Provider: "openrouter", ModelID: "anthropic/claude-fable-5.1"},
-			{Provider: "amazon-bedrock", ModelID: "global.anthropic.claude-fable-5-1"},
-		},
 		"gpt-6-luna": {
 			{Provider: "openai-codex", ModelID: "gpt-6-luna"},
 			{Provider: "openai", ModelID: "gpt-6-luna"},

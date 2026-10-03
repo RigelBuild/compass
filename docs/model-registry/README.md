@@ -21,7 +21,6 @@ resolves it must ship that catalog or newer.
 | Stable name | Candidates, in order |
 | --- | --- |
 | `claude-opus-5-5` | `anthropic` → `openrouter` → `amazon-bedrock` |
-| `claude-fable-5-1` | `anthropic` → `openrouter` → `amazon-bedrock` |
 | `gpt-6-luna` | `openai-codex` → `openai` → `openrouter` → `amazon-bedrock` |
 | `gpt-6-sol` | `openai-codex` → `openai` → `openrouter` → `amazon-bedrock` |
 
@@ -39,15 +38,16 @@ another reasoning level after the name when you want one.
 
 | Provider you hold | Manager roles (supervisor, owner, manager) | Planning and design | Implementer subagent |
 | --- | --- | --- | --- |
-| Anthropic and OpenAI | `claude-opus-5-5` | `claude-fable-5-1` | `gpt-6-luna` |
-| Anthropic only | `claude-opus-5-5` | `claude-fable-5-1` | `claude-opus-5-5` |
+| Anthropic and OpenAI | `claude-opus-5-5` | `claude-opus-5-5:xhigh` | `gpt-6-luna` |
+| Anthropic only | `claude-opus-5-5` | `claude-opus-5-5:xhigh` | `claude-opus-5-5` |
 | OpenAI only | `gpt-6-sol` | `gpt-6-sol` | `gpt-6-luna` |
-| OpenRouter or Bedrock only | `claude-opus-5-5` | `claude-fable-5-1` | `gpt-6-luna` |
+| OpenRouter or Bedrock only | `claude-opus-5-5` | `claude-opus-5-5:xhigh` | `gpt-6-luna` |
 
-These values follow the fleet's current practice: Opus 5.5 manages, Fable 5.1
-plans and designs, and GPT-6 Luna implements. An OpenAI-only fleet uses GPT-6
-Sol for the judgment roles. The goal these values serve is long-running coding
-agents, where a low hallucination rate counts as much as raw capability.
+These values follow the fleet's current practice: Opus 5.5 manages, plans,
+and designs, at a higher reasoning level for planning and design, and GPT-6
+Luna implements. An OpenAI-only fleet uses GPT-6 Sol for the judgment roles.
+The goal these values serve is long-running coding agents, where a low
+hallucination rate counts as much as raw capability.
 
 Per-role model evaluations will replace these values with measured numbers.
 When they land, the change is a registry write (below), not a new release.
