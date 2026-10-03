@@ -907,8 +907,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// projection on the comms bus, both on the serve group rooted on gctx
 	// (cancels at shutdown; presence also ends when drainDoors closes the bus).
 	startCommsConsumers(gctx, g, commsBus, fab, st, hub, hubLog)
-	// Bound the raw token-usage log: a daily prune drops the events past the
-	// retention window, and the rollups keep their sums.
+	// A daily prune bounds the raw usage log; the rollups keep their sums.
 	startUsageRetention(gctx, g, st, cfg.UsageEventRetention, hubLog)
 	// Drain member of the same group: wake on gctx cancellation, then hand off to
 	// drainDoors. A drain that overruns (a handler still wedged mid-replay)
