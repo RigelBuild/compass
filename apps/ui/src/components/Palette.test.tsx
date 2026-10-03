@@ -1,7 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+// Palette search tests use overridable debounce and in-flight assertions.
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { flush as flushSync } from "solid-js";
-import { setSearchDebounceMsForTest } from "../keyboard/destination-surface";
+import {
+	resetSearchDebounceForTest,
+	setSearchDebounceMsForTest,
+} from "../keyboard/destination-surface";
+import * as destinationsModule from "../keyboard/destinations";
 import { flush, mountApp } from "../test-router";
 
 // The command palette's rendered contract (RIG-2483). Mounts the full shell so
@@ -35,18 +40,43 @@ function focusBoardStop(container: HTMLElement): void {
 beforeEach(() => setSearchDebounceMsForTest(0));
 afterEach(() => {
 	cleanup();
-	setSearchDebounceMsForTest(150);
+	resetSearchDebounceForTest();
 	setPlatform("other");
 });
 
 async function settle(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
-	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield for provider debounce; not a timed wait
+	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield for debounce observation; not a timed wait
 	setTimeout(resolve, 0);
 	await promise;
 	await flush();
 }
 describe("Palette (RIG-2483)", () => {
+	test("running Focus global search from the palette preserves search focus", async () => {
+		const { container, store } = mountApp("/");
+		const prior = container.querySelector<HTMLElement>(".topbar .view-tab");
+		prior?.focus();
+		store.openPalette();
+		await flush();
+		store.keyboard.registry.get("search.focusGlobal" as never)?.run();
+		store.closePalette();
+		await flush();
+		expect(document.activeElement).toBe(
+			container.querySelector(".topbar-search-input"),
+		);
+	});
+	test("palette close does not steal focus moved by a command", async () => {
+		const { container, store } = mountApp("/");
+		store.openPalette();
+		await flush();
+		const search = container.querySelector<HTMLInputElement>(
+			".topbar-search-input",
+		);
+		search?.focus();
+		store.closePalette();
+		await flush();
+		expect(document.activeElement).toBe(search);
+	});
 	test("action mode: a query filters the registry, board main-scoped commands rank above global when opened from the board", async () => {
 		setPlatform("other");
 		const { store, container } = mountApp("/");
@@ -216,6 +246,7 @@ describe("Palette (RIG-2483)", () => {
 		fireEvent.input(input(container) as HTMLInputElement, {
 			target: { value: "set" },
 		});
+		// Sync flush only: observe the in-flight window before providers resolve.
 		flushSync();
 		const loadingRow = container.querySelector(".cx-palette-loading");
 		expect(loadingRow).not.toBeNull();
@@ -225,6 +256,34 @@ describe("Palette (RIG-2483)", () => {
 		await settle();
 		await flush();
 		expect(container.querySelector(".cx-palette-loading")).toBeNull();
+	});
+	test("debounces a typing burst to one provider query", async () => {
+		const seen: string[] = [];
+		const querySpy = spyOn(
+			destinationsModule,
+			"createStoreDestinationProviders",
+		);
+		querySpy.mockImplementation(() => [
+			{
+				id: "seen",
+				query: async (value) => {
+					seen.push(value);
+					return [];
+				},
+			},
+		]);
+		const { store, container } = mountApp("/");
+		store.openPalette();
+		await flush();
+		for (const value of ["s", "se", "set"]) {
+			fireEvent.input(input(container) as HTMLInputElement, {
+				target: { value },
+			});
+			flushSync();
+		}
+		await settle();
+		expect(seen.filter((value) => value !== "")).toEqual(["set"]);
+		querySpy.mockRestore();
 	});
 
 	test("the LeftSidebar view buttons carry aria-keyshortcuts in WAI-ARIA tokens; the display chord moved to a CoachTip (RIG-2530), so no native title", () => {

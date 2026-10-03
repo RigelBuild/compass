@@ -45,7 +45,6 @@ import {
 } from "../keyboard/destination-surface";
 import { ShortcutChip } from "./ShortcutChip";
 
-// Kobalte's own section nodes share an empty key, so group headers stay inline.
 /** A rendered palette result — an action (command) or a navigation destination.
  *  Merged into one Kobalte option list so keyboard traversal spans both modes. */
 interface PaletteOption {
@@ -105,8 +104,8 @@ export const Palette: Component = () => {
 				context: cmd.scope,
 				shortcut: shortcutFor(cmd.id, platform),
 				run: () => {
-					cmd.run();
 					store.closePalette();
+					cmd.run();
 				},
 				score,
 				// A command whose scope matches the captured open-time zone ranks in
@@ -148,8 +147,8 @@ export const Palette: Component = () => {
 			const mine = generation;
 			currentGen = mine;
 			setLoading(true);
-			// This production debounce coalesces keystrokes before querying providers.
-			// biome-ignore lint/style/noRestrictedGlobals: intentional 150ms search debounce
+			// Coalesce typing before provider searches.
+			// biome-ignore lint/style/noRestrictedGlobals: intentional search debounce
 			const timer = setTimeout(() => {
 				void queryDestinations(providers, input, mine, () => currentGen)
 					.then((result) => {
@@ -213,7 +212,7 @@ export const Palette: Component = () => {
 					itemComponent={(props) => (
 						<>
 							<Show when={props.item.rawValue.groupStart}>
-								<li class="cx-palette-group" role="presentation">
+								<li class="cx-palette-group">
 									{props.item.rawValue.groupLabel}
 								</li>
 							</Show>

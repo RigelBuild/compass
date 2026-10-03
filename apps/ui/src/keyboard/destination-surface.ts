@@ -1,9 +1,15 @@
+/** Shared destination grouping and debounce controls for search surfaces. */
 import type { Destination, DestinationKind } from "./commands";
 
-export let SEARCH_DEBOUNCE_MS = 150;
+const DEFAULT_SEARCH_DEBOUNCE_MS = 150;
+export let SEARCH_DEBOUNCE_MS = DEFAULT_SEARCH_DEBOUNCE_MS;
 
 export function setSearchDebounceMsForTest(ms: number): void {
 	SEARCH_DEBOUNCE_MS = ms;
+}
+
+export function resetSearchDebounceForTest(): void {
+	SEARCH_DEBOUNCE_MS = DEFAULT_SEARCH_DEBOUNCE_MS;
 }
 export const KIND_LABELS: Record<DestinationKind, string> = {
 	view: "Views",

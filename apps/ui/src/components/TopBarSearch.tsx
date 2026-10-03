@@ -23,18 +23,39 @@ import {
 } from "../keyboard/destinations";
 import { createRovingGroup } from "../keyboard/roving";
 
+const FOCUS_GLOBAL = "search.focusGlobal" as CommandId;
+
 export const TopBarSearch: Component = () => {
 	const store = useStore();
 	const providers = createStoreDestinationProviders(store);
 	const [query, setQuery] = createSignal("");
+	const [focused, setFocused] = createSignal(false);
 	const [destinations, setDestinations] = createSignal<Map<
 		DestinationKind,
 		Destination[]
 	> | null>(null);
 	let generation = 0;
 	let currentGeneration = 0;
+	let pendingTimer: ReturnType<typeof window.setTimeout> | undefined;
 	let inputRef: HTMLInputElement | undefined;
+	let wrapperRef: HTMLDivElement | undefined;
 	let restoreTo: HTMLElement | null = null;
+
+	function queryNow(
+		input: string,
+		mine: number,
+	): Promise<Map<DestinationKind, Destination[]> | null> {
+		return queryDestinations(providers, input, mine, () => currentGeneration)
+			.then((result) => {
+				if (mine !== currentGeneration || result === null) return null;
+				setDestinations(result);
+				return result;
+			})
+			.catch(() => {
+				if (mine === currentGeneration) setDestinations(null);
+				return null;
+			});
+	}
 
 	createEffect(
 		() => query(),
@@ -42,19 +63,19 @@ export const TopBarSearch: Component = () => {
 			generation += 1;
 			const mine = generation;
 			currentGeneration = mine;
-			// This production debounce coalesces keystrokes before querying providers.
-			// biome-ignore lint/style/noRestrictedGlobals: intentional 150ms search debounce
-			const timer = setTimeout(() => {
-				void queryDestinations(providers, input, mine, () => currentGeneration)
-					.then((result) => {
-						if (mine === currentGeneration && result !== null)
-							setDestinations(result);
-					})
-					.catch(() => {
-						if (mine === currentGeneration) setDestinations(null);
-					});
+			clearTimeout(pendingTimer);
+			pendingTimer = undefined;
+			if (!input.trim()) {
+				setDestinations(null);
+				return;
+			}
+			// Coalesce typing before provider searches.
+			// biome-ignore lint/style/noRestrictedGlobals: intentional search debounce
+			pendingTimer = setTimeout(() => {
+				pendingTimer = undefined;
+				void queryNow(input, mine);
 			}, SEARCH_DEBOUNCE_MS);
-			return () => clearTimeout(timer);
+			return () => clearTimeout(pendingTimer);
 		},
 	);
 
@@ -67,7 +88,11 @@ export const TopBarSearch: Component = () => {
 		setQuery("");
 		if (inputRef) inputRef.value = "";
 		inputRef?.blur();
+		const fallback = document.querySelector<HTMLElement>(
+			'.bridge-grid [tabindex="0"]',
+		);
 		if (restoreTo?.isConnected) restoreTo.focus();
+		else fallback?.focus();
 	}
 
 	function select(row: DestinationSurfaceRow): void {
@@ -75,6 +100,12 @@ export const TopBarSearch: Component = () => {
 		setQuery("");
 		if (inputRef) inputRef.value = "";
 		inputRef?.focus();
+	}
+
+	function onFocusOut(event: FocusEvent): void {
+		const next = event.relatedTarget;
+		if (!(next instanceof Node) || !wrapperRef?.contains(next))
+			setFocused(false);
 	}
 
 	const focusGroup = createRovingGroup({
@@ -86,19 +117,44 @@ export const TopBarSearch: Component = () => {
 	});
 	store.keyboard.registerGroup(focusGroup);
 	store.keyboard.registry.register({
-		id: "search.focusGlobal" as CommandId,
+		id: FOCUS_GLOBAL,
 		title: "Focus global search",
 		keywords: ["search", "global"],
 		scope: "global",
 		run: () => inputRef?.focus(),
 	});
 	onCleanup(() => {
-		store.keyboard.registry.unregister("search.focusGlobal" as CommandId);
+		store.keyboard.registry.unregister(FOCUS_GLOBAL);
 		store.keyboard.unregisterGroup(focusGroup);
 	});
 
+	async function handleEnter(): Promise<void> {
+		const input = query();
+		if (!input.trim()) return;
+		if (pendingTimer !== undefined) {
+			clearTimeout(pendingTimer);
+			pendingTimer = undefined;
+			const result = await queryNow(input, currentGeneration);
+			const first = result ? destinationSurfaceRows(result)[0] : undefined;
+			if (first) select(first);
+			return;
+		}
+		const first = rows()[0];
+		if (first) select(first);
+	}
 	return (
-		<div class="topbar-search">
+		<div
+			ref={wrapperRef}
+			class="topbar-search"
+			onFocusIn={(event) => {
+				setFocused(true);
+				if (event.target === inputRef) {
+					const previous = event.relatedTarget;
+					restoreTo = previous instanceof HTMLElement ? previous : null;
+				}
+			}}
+			onFocusOut={onFocusOut}
+		>
 			<input
 				ref={inputRef}
 				class="topbar-search-input"
@@ -106,10 +162,6 @@ export const TopBarSearch: Component = () => {
 				aria-label="Global search"
 				placeholder="Search…"
 				value={query()}
-				onFocus={(event) => {
-					const previous = event.relatedTarget;
-					restoreTo = previous instanceof HTMLElement ? previous : null;
-				}}
 				onInput={(event) => setQuery(event.currentTarget.value)}
 				onKeyDown={(event) => {
 					if (event.key === "Escape") {
@@ -117,26 +169,22 @@ export const TopBarSearch: Component = () => {
 						clearAndRestore();
 					} else if (event.key === "Enter") {
 						event.preventDefault();
-						const row = rows()[0];
-						if (row) select(row);
+						void handleEnter();
 					}
 				}}
 			/>
-			<Show when={query().trim().length > 0}>
-				<div class="topbar-search-panel" role="listbox">
+			<Show when={focused() && query().trim().length > 0}>
+				<div class="topbar-search-panel">
 					<For each={rows()}>
 						{(row) => (
 							<>
 								<Show when={row.groupStart}>
-									<div class="topbar-search-group" role="presentation">
-										{row.groupLabel}
-									</div>
+									<div class="topbar-search-group">{row.groupLabel}</div>
 								</Show>
 								<button
 									class="topbar-search-row"
-									role="option"
 									type="button"
-									onMouseDown={(event) => event.preventDefault()}
+									onMouseDown={(mouseEvent) => mouseEvent.preventDefault()}
 									onClick={() => select(row)}
 								>
 									{row.title}
