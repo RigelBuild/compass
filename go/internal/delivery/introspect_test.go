@@ -46,6 +46,14 @@ func (c *Consumer) isHeld(authorSession, messageID string) bool {
 	})
 }
 
+// hasLastSettle reports whether a settle time is recorded for authorSession.
+func (c *Consumer) hasLastSettle(authorSession string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.lastSettle[authorSession]
+	return ok
+}
+
 // waitSettleDrained blocks until the settle queue is empty, or fails at the
 // deadline. Paired with an OnSessionSettled for a throwaway session, it is a
 // deterministic barrier that a prior settle edge was fully processed.
