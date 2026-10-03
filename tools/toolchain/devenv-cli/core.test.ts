@@ -140,6 +140,22 @@ describe("devenvSource", () => {
 		expect(() => devenvSource(lock)).toThrow(/bare github owner/);
 	});
 
+	test("throws on a repo with flakeref-reshaping characters", () => {
+		const lock = JSON.stringify({
+			nodes: {
+				devenv: {
+					locked: {
+						owner: "cachix",
+						repo: "dev/env#x",
+						rev: "0bf6765ce7071d98ed137ecfe02d1e435007c971",
+						type: "github",
+					},
+				},
+			},
+		});
+		expect(() => devenvSource(lock)).toThrow(/bare github repo/);
+	});
+
 	test("throws on invalid JSON", () => {
 		expect(() => devenvSource("not json")).toThrow(/not valid JSON/);
 	});
@@ -214,6 +230,12 @@ describe("shimPlan (RD-3 single-binary invariant)", () => {
 		// printed dir cannot put devenv's whole closure bin dir on $GITHUB_PATH.
 		expect(plan).toHaveLength(1);
 		expect(plan.map((l) => l.link)).toEqual(["devenv"]);
+	});
+
+	test("throws on a multi-output build instead of linking a garbage target", () => {
+		expect(() =>
+			shimPlan("/nix/store/abc-devenv-1.0\n/nix/store/def-devenv-1.0-man"),
+		).toThrow(/more than one out-path/);
 	});
 });
 
