@@ -9,6 +9,18 @@ import (
 	"testing"
 )
 
+// hasTablePrivilege reports whether role holds priv on tbl in the test schema.
+func hasTablePrivilege(t *testing.T, s *Store, role, tbl, priv string) bool {
+	t.Helper()
+	var ok bool
+	if err := s.pool.QueryRow(t.Context(),
+		`SELECT has_table_privilege($1, (current_schema()||'.'||$2)::regclass, $3)`,
+		role, tbl, priv).Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
 func TestT0ServerSecretsShape(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -44,10 +56,11 @@ func TestT0ServerSecretsShape(t *testing.T) {
 	}
 
 	// The load-bearing half: grants are NOT inherited from 0001's snapshot, so
-	// each table needs its own. Both tables are asserted with their OWN expected
+	// each table needs its own. Each table is asserted with their OWN expected
 	// privilege set, and server_key_state's withheld DELETE is asserted ABSENT —
 	// that omission is a deliberate least-privilege choice (the tripwire digest
-	// must not be droppable), so it is pinned, not left to chance.
+	// must not be droppable), so it is pinned, not left to chance. The usage
+	// prune horizon withholds INSERT and DELETE for the reason in 0003_token_usage.sql.
 	for _, tc := range []struct {
 		tbl     string
 		granted []string
@@ -55,27 +68,16 @@ func TestT0ServerSecretsShape(t *testing.T) {
 	}{
 		{"server_secrets", []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, nil},
 		{"server_key_state", []string{"SELECT", "INSERT", "UPDATE"}, []string{"DELETE"}},
+		{"token_usage_prune_horizon", []string{"SELECT", "UPDATE"}, []string{"INSERT", "DELETE"}},
 	} {
 		for _, role := range []string{"compass_app", "compass_system"} {
 			for _, priv := range tc.granted {
-				var ok bool
-				if err := s.pool.QueryRow(ctx,
-					`SELECT has_table_privilege($1, (current_schema()||'.'||$2)::regclass, $3)`,
-					role, tc.tbl, priv).Scan(&ok); err != nil {
-					t.Fatal(err)
-				}
-				if !ok {
+				if !hasTablePrivilege(t, s, role, tc.tbl, priv) {
 					t.Fatalf("%s: %s lacks %s", tc.tbl, role, priv)
 				}
 			}
 			for _, priv := range tc.denied {
-				var ok bool
-				if err := s.pool.QueryRow(ctx,
-					`SELECT has_table_privilege($1, (current_schema()||'.'||$2)::regclass, $3)`,
-					role, tc.tbl, priv).Scan(&ok); err != nil {
-					t.Fatal(err)
-				}
-				if ok {
+				if hasTablePrivilege(t, s, role, tc.tbl, priv) {
 					t.Fatalf("%s: %s has %s, which is deliberately withheld", tc.tbl, role, priv)
 				}
 			}

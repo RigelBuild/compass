@@ -35,6 +35,32 @@ func (q *Queries) InsertTenant(ctx context.Context, arg InsertTenantParams) erro
 	return err
 }
 
+const listTenantIDs = `-- name: ListTenantIDs :many
+SELECT id FROM tenants ORDER BY id
+`
+
+// ListTenantIDs lists every tenant. tenants has no row-level security, so the
+// app role sees them all without the BYPASSRLS system role.
+func (q *Queries) ListTenantIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listTenantIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const tenantIDBySlug = `-- name: TenantIDBySlug :one
 SELECT id FROM tenants WHERE slug = $1
 `
