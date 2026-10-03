@@ -70,12 +70,11 @@ import type {
 import type { MapMessage } from "./comms-state";
 
 /** The wire `ChannelKind` enum → the domain's string-literal kind. Total over
- *  the enum: a `satisfies Record<ChannelKind, …>` makes a new wire variant a
- *  compile error here rather than an unmapped channel that renders wrong. */
+ *  the supported wire variants. */
 const CHANNEL_KIND: Record<ChannelKind, DomainChannelKind> = {
 	[ChannelKind.CHANNEL]: "channel",
 	[ChannelKind.DM]: "dm",
-	[ChannelKind.GROUP_DM]: "group_dm",
+	[ChannelKind.GROUP_DM]: "channel",
 } satisfies Record<ChannelKind, DomainChannelKind>;
 
 /** The wire `ChannelGroupVisibility` enum → the domain's string literal. Total,
