@@ -41,26 +41,34 @@ func TestEnsureLinearRoutingChannelSkipsSharedGroup(t *testing.T) {
 	s := newTestStore(t)
 	admin, supervisor, bridge := routingParties(t, s)
 	stranger := mustUser(t, s, "stranger")
-	shared, err := s.CreateChannelGroup(t.Context(), admin.ID, NewChannelGroup{Name: linearRoutingGroupName, Visibility: VisibilityShared})
-	if err != nil {
-		t.Fatalf("CreateChannelGroup(shared __linear__): %v", err)
+	// CreateChannelGroup and CreateChannel refuse the reserved group, so plant the
+	// look-alike group and its routing channel with raw SQL.
+	sharedID, plantedID := newID(), newID()
+	if _, err := s.pool.Exec(t.Context(),
+		"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1,$2,NULL,$3,$4)",
+		sharedID, linearRoutingGroupName, string(admin.ID), int16(VisibilityShared)); err != nil {
+		t.Fatalf("plant shared __linear__ group: %v", err)
 	}
-	planted, err := s.CreateChannel(t.Context(), stranger.ID, NewChannel{Name: LinearRoutingChannelName, GroupID: shared.ID})
-	if err != nil {
-		t.Fatalf("CreateChannel(planted in SHARED __linear__): %v", err)
+	if _, err := s.pool.Exec(t.Context(),
+		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription, tenant_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		plantedID, LinearRoutingChannelName, sharedID, int32(ChannelKindChannel),
+		int32(ChannelPostPolicyOpen), string(stranger.ID), false, string(s.resolveTenant(t.Context()))); err != nil {
+		t.Fatalf("plant routing channel in SHARED __linear__: %v", err)
 	}
 
-	_, err = s.LinearRoutingChannel(t.Context(), admin.ID)
+	planted := ChannelID(plantedID)
+	_, err := s.LinearRoutingChannel(t.Context(), admin.ID)
 	sentinelIs(t, err, ErrNotFound, "routing read with only a SHARED look-alike")
 
 	id, err := s.EnsureLinearRoutingChannel(t.Context(), admin.ID, supervisor.ID, bridge.ID)
 	if err != nil {
 		t.Fatalf("EnsureLinearRoutingChannel: %v", err)
 	}
-	if id == planted.ID {
-		t.Fatalf("ensure adopted the planted SHARED-group channel %s", planted.ID)
+	if id == planted {
+		t.Fatalf("ensure adopted the planted SHARED-group channel %s", planted)
 	}
-	if ok, err := s.IsChannelMember(t.Context(), supervisor.ID, planted.ID); err != nil || ok {
+	if ok, err := s.IsChannelMember(t.Context(), supervisor.ID, planted); err != nil || ok {
 		t.Fatalf("supervisor membership of planted channel = (%v, %v), want (false, nil)", ok, err)
 	}
 	got, err := s.LinearRoutingChannel(t.Context(), admin.ID)
