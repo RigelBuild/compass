@@ -98,6 +98,20 @@ SELECT gen_random_uuid()::text, @interval_id::text, 'end', clock_timestamp(),
  WHERE a.account_id = @agent_account_id::text
 ON CONFLICT (tenant_id, interval_id, kind) DO NOTHING;
 
+-- A binding an older server wrote during a rolling deploy has no start event.
+-- Its created_at is the best start we hold, so the start is marked estimated.
+-- name: EnsureComputeUsageIntervalStart :exec
+INSERT INTO compute_usage_events (
+    id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
+    session_id, runner_id, estimated
+)
+SELECT gen_random_uuid()::text, b.usage_interval_id, 'start', b.created_at,
+       b.agent_account_id, a.owner_user_id, b.session_id, b.runner_id, TRUE
+  FROM session_bindings AS b
+  JOIN agent_accounts AS a ON a.account_id = b.agent_account_id
+ WHERE b.agent_account_id = @agent_account_id::text
+ON CONFLICT (tenant_id, interval_id, kind) DO NOTHING;
+
 -- What it DISPLACED comes from SessionBindingForUpdate above, not from a
 -- RETURNING here. The binding update and event writes share the Store tx.
 -- name: RecordSessionBinding :exec
@@ -114,12 +128,25 @@ SELECT agent_account_id, runner_id FROM session_bindings WHERE session_id = $1;
 -- name: SessionBindingForAccount :one
 SELECT session_id FROM session_bindings WHERE agent_account_id = $1;
 
+-- Both deletes also write an estimated start for a binding an older server made
+-- without one; ON CONFLICT keeps any real start.
 -- name: DeleteSessionBinding :exec
 WITH d AS (
     DELETE FROM session_bindings AS b
      WHERE b.session_id = $1
     RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
-              b.session_id, b.runner_id
+              b.session_id, b.runner_id, b.created_at
+), starts AS (
+    INSERT INTO compute_usage_events (
+        tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+        owner_user_id, session_id, runner_id, estimated
+    )
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'start', d.created_at,
+           d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id, TRUE
+      FROM d
+      JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+    ON CONFLICT DO NOTHING
+    RETURNING 1
 )
 INSERT INTO compute_usage_events (
     tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
@@ -140,7 +167,18 @@ WITH d AS (
     DELETE FROM session_bindings AS b
      WHERE b.runner_id = $1
     RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
-              b.session_id, b.runner_id
+              b.session_id, b.runner_id, b.created_at
+), starts AS (
+    INSERT INTO compute_usage_events (
+        tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+        owner_user_id, session_id, runner_id, estimated
+    )
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'start', d.created_at,
+           d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id, TRUE
+      FROM d
+      JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+    ON CONFLICT DO NOTHING
+    RETURNING 1
 ), ins AS (
     INSERT INTO compute_usage_events (
         tenant_id, id, interval_id, kind, occurred_at, agent_account_id,

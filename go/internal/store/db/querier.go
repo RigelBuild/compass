@@ -123,6 +123,8 @@ type Querier interface {
 	// identifies a row (composite PK).
 	DeleteSecret(ctx context.Context, arg DeleteSecretParams) (int64, error)
 	DeleteServerSecret(ctx context.Context, name string) (int64, error)
+	// Both deletes also write an estimated start for a binding an older server made
+	// without one; ON CONFLICT keeps any real start.
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
 	// The reconnect sweep, run by Hub.enroll under the system role because a Runner
 	// is shared across tenants. :many with RETURNING: each removed row drives a
@@ -154,6 +156,9 @@ type Querier interface {
 	// itself) makes RETURNING fire on conflict so a repeat returns the stored id.
 	EnsureAgentForgeSubscription(ctx context.Context, arg EnsureAgentForgeSubscriptionParams) (string, error)
 	EnsureChannelMember(ctx context.Context, arg EnsureChannelMemberParams) error
+	// A binding an older server wrote during a rolling deploy has no start event.
+	// Its created_at is the best start we hold, so the start is marked estimated.
+	EnsureComputeUsageIntervalStart(ctx context.Context, agentAccountID string) error
 	EnsureForgeRepoSubscription(ctx context.Context, arg EnsureForgeRepoSubscriptionParams) error
 	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
