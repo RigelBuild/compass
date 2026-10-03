@@ -242,12 +242,12 @@ function classifyLine(
 	if (line.trim() === "") {
 		state.listItem = false;
 		state.barePipeInterrupted = false;
-	} else if (/^ {0,3}(?:[-+*]|\d+[.)])\s/.test(line)) state.listItem = true;
-	else if (
-		/^ {0,3}#{1,6}(?:\s|$)/.test(line) ||
-		/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)
+	} else if (
+		/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line) ||
+		/^ {0,3}#{1,6}(?:\s|$)/.test(line)
 	)
 		state.listItem = false;
+	else if (/^ {0,3}(?:[-+*]|\d+[.)])\s/.test(line)) state.listItem = true;
 	return line;
 }
 

@@ -197,6 +197,12 @@ describe("shared line classification", () => {
 			{ id: "DL-001", surface: "designs", ref: "none" },
 		]);
 	});
+	test("clears list context at a spaced thematic break before a ledger table", () => {
+		const text = ["- item", "* * *", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
 	// Both counters read one classification pre-pass, so no fence or comment
 	// shape resolves for one and not the other. The floor carries no table
 	// anchor, so it still reads high where a classified-out region interrupts a
