@@ -2,6 +2,7 @@ import {
 	type Component,
 	createEffect,
 	createSignal,
+	createUniqueId,
 	For,
 	onCleanup,
 	Show,
@@ -33,6 +34,10 @@ export const TopBarSearch: Component<{
 	const providers = createStoreDestinationProviders(store, props.clients);
 	const [query, setQuery] = createSignal("");
 	const [focused, setFocused] = createSignal(false);
+	const [activeIndex, setActiveIndex] = createSignal(0);
+	const id = createUniqueId();
+	const listboxId = `topbar-search-listbox-${id}`;
+	const optionId = (key: string) => `topbar-search-option-${id}-${key}`;
 	const [destinations, setDestinations] = createSignal<Map<
 		DestinationKind,
 		Destination[]
@@ -64,10 +69,14 @@ export const TopBarSearch: Component<{
 			.then((result) => {
 				if (mine !== currentGeneration || result === null) return null;
 				setDestinations(result);
+				setActiveIndex(0);
 				return result;
 			})
 			.catch(() => {
-				if (mine === currentGeneration) setDestinations(null);
+				if (mine === currentGeneration) {
+					setDestinations(null);
+					setActiveIndex(0);
+				}
 				return null;
 			});
 		inflight = { gen: mine, promise, applied: false };
@@ -87,6 +96,7 @@ export const TopBarSearch: Component<{
 			pendingTimer = undefined;
 			if (!input.trim()) {
 				setDestinations(null);
+				setActiveIndex(0);
 				return;
 			}
 			// Coalesce typing before provider searches.
@@ -168,8 +178,22 @@ export const TopBarSearch: Component<{
 			selectFirst(await active.promise);
 			return;
 		}
-		const first = rows()[0];
-		if (first) select(first);
+		const row = rows()[activeIndex()];
+		if (row) select(row);
+	}
+
+	function moveActive(offset: number): void {
+		const currentRows = rows();
+		const count = currentRows.length;
+		if (count === 0) return;
+		const nextIndex = (activeIndex() + offset + count) % count;
+		setActiveIndex(nextIndex);
+		const row = currentRows[nextIndex];
+		if (!row) return;
+		const activeOption = document.getElementById(optionId(row.key));
+		if (typeof activeOption?.scrollIntoView === "function") {
+			activeOption.scrollIntoView({ block: "nearest" });
+		}
 	}
 	return (
 		<div
@@ -188,12 +212,28 @@ export const TopBarSearch: Component<{
 				ref={inputRef}
 				class="topbar-search-input"
 				type="text"
+				role="combobox"
 				aria-label="Global search"
+				aria-expanded={
+					focused() && query().trim().length > 0 ? "true" : "false"
+				}
+				aria-controls={listboxId}
+				aria-activedescendant={
+					focused() && query().trim().length > 0 && rows().length > 0
+						? (() => {
+								const activeRow = rows()[activeIndex()] ?? rows()[0];
+								return activeRow ? optionId(activeRow.key) : undefined;
+							})()
+						: undefined
+				}
 				placeholder="Search…"
 				value={query()}
 				onInput={(event) => setQuery(event.currentTarget.value)}
 				onKeyDown={(event) => {
-					if (event.key === "Escape") {
+					if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+						event.preventDefault();
+						moveActive(event.key === "ArrowDown" ? 1 : -1);
+					} else if (event.key === "Escape") {
 						event.preventDefault();
 						clearAndRestore();
 					} else if (event.key === "Enter") {
@@ -203,16 +243,28 @@ export const TopBarSearch: Component<{
 				}}
 			/>
 			<Show when={focused() && query().trim().length > 0}>
-				<div class="topbar-search-panel">
+				<div id={listboxId} class="topbar-search-panel" role="listbox">
+					<Show when={rows().length === 0}>
+						<div class="cx-palette-empty" aria-live="polite">
+							No results
+						</div>
+					</Show>
 					<For each={rows()}>
-						{(row) => (
+						{(row, index) => (
 							<>
 								<Show when={row.groupStart}>
-									<div class="topbar-search-group">{row.groupLabel}</div>
+									<div class="topbar-search-group" role="presentation">
+										{row.groupLabel}
+									</div>
 								</Show>
 								<button
+									id={optionId(row.key)}
 									class="topbar-search-row"
 									type="button"
+									role="option"
+									tabindex={-1}
+									aria-selected={index() === activeIndex() ? "true" : "false"}
+									onMouseEnter={() => setActiveIndex(index())}
 									onMouseDown={(mouseEvent) => mouseEvent.preventDefault()}
 									onClick={() => select(row)}
 								>

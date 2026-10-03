@@ -1,5 +1,13 @@
 // Global search tests use an overridable debounce and event-loop settling.
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	mock,
+	spyOn,
+	test,
+} from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { flush as flushSync } from "solid-js";
 import type { Destination, DestinationProvider } from "../keyboard/commands";
@@ -13,6 +21,8 @@ import { flush, mountApp } from "../test-router";
 beforeEach(() => setSearchDebounceMsForTest(0));
 afterEach(() => {
 	cleanup();
+	// Restore spies even when an assertion throws before the inline restore.
+	mock.restore();
 	resetSearchDebounceForTest();
 });
 
@@ -28,6 +38,157 @@ const input = (container: HTMLElement) =>
 	container.querySelector<HTMLInputElement>(".topbar-search-input");
 
 describe("TopBarSearch", () => {
+	test("exposes combobox and listbox semantics as results open and close", async () => {
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		expect(search.getAttribute("role")).toBe("combobox");
+		expect(search.getAttribute("aria-expanded")).toBe("false");
+		search.focus();
+		fireEvent.input(search, { target: { value: "s" } });
+		await settleSearch();
+		expect(search.getAttribute("aria-expanded")).toBe("true");
+		const listbox = container.querySelector('[role="listbox"]');
+		expect(listbox?.id ?? undefined).toBe(
+			search.getAttribute("aria-controls") ?? undefined,
+		);
+		const options = container.querySelectorAll<HTMLElement>('[role="option"]');
+		expect(options.length).toBeGreaterThanOrEqual(2);
+		const selected = [...options].filter(
+			(option) => option.getAttribute("aria-selected") === "true",
+		);
+		expect(selected).toHaveLength(1);
+		expect(search.getAttribute("aria-activedescendant")).toBe(selected[0]?.id);
+		for (const group of container.querySelectorAll(".topbar-search-group")) {
+			expect(group.getAttribute("role")).toBe("presentation");
+		}
+		search.blur();
+		await flush();
+		expect(search.getAttribute("aria-expanded")).toBe("false");
+		expect(search.getAttribute("aria-activedescendant")).toBeNull();
+		expect(container.querySelector('[role="listbox"]')).toBeNull();
+	});
+
+	test("Escape closes the listbox and updates aria-expanded", async () => {
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		search.focus();
+		fireEvent.input(search, { target: { value: "settings" } });
+		await settleSearch();
+		expect(search.getAttribute("aria-expanded")).toBe("true");
+		fireEvent.keyDown(search, { key: "Escape" });
+		await flush();
+		expect(search.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector('[role="listbox"]')).toBeNull();
+	});
+	test("ArrowDown activates and Enter selects the second result", async () => {
+		let navigated = "";
+		const querySpy = spyOn(
+			destinationsModule,
+			"createStoreDestinationProviders",
+		);
+		querySpy.mockImplementation(
+			() =>
+				[
+					{
+						id: "controlled",
+						query: () =>
+							Promise.resolve([
+								{
+									id: "first",
+									title: "First result",
+									kind: "agent",
+									navigate: () => {
+										navigated = "first";
+									},
+								},
+								{
+									id: "second",
+									title: "Second result",
+									kind: "agent",
+									navigate: () => {
+										navigated = "second";
+									},
+								},
+							]),
+					},
+				] satisfies DestinationProvider[],
+		);
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		search.focus();
+		fireEvent.input(search, { target: { value: "results" } });
+		await settleSearch();
+		const options = container.querySelectorAll<HTMLElement>('[role="option"]');
+		expect(options).toHaveLength(2);
+		const second = options[1];
+		fireEvent.keyDown(search, { key: "ArrowDown" });
+		await flush();
+		expect(search.getAttribute("aria-activedescendant")).toBe(second?.id);
+		expect(second?.getAttribute("aria-selected")).toBe("true");
+		expect(
+			[...options].filter(
+				(option) => option.getAttribute("aria-selected") === "true",
+			),
+		).toHaveLength(1);
+		fireEvent.keyDown(search, { key: "Enter" });
+		await flush();
+		expect(navigated).toBe("second");
+		querySpy.mockRestore();
+	});
+	test("ArrowUp wraps, a new result set resets the active row, and no hits says so", async () => {
+		let navigated = "";
+		const hit = (id: string): Destination => ({
+			id,
+			title: `${id} result`,
+			kind: "agent",
+			navigate: () => {
+				navigated = id;
+			},
+		});
+		const querySpy = spyOn(
+			destinationsModule,
+			"createStoreDestinationProviders",
+		);
+		querySpy.mockImplementation(
+			() =>
+				[
+					{
+						id: "controlled",
+						query: (q: string) =>
+							Promise.resolve(
+								q === "none"
+									? []
+									: q === "abc"
+										? [hit("a"), hit("b"), hit("c")]
+										: [hit("x"), hit("y")],
+							),
+					},
+				] satisfies DestinationProvider[],
+		);
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		search.focus();
+		fireEvent.input(search, { target: { value: "abc" } });
+		await settleSearch();
+		fireEvent.keyDown(search, { key: "ArrowUp" });
+		await flush();
+		const options = container.querySelectorAll<HTMLElement>('[role="option"]');
+		expect(search.getAttribute("aria-activedescendant")).toBe(options[2]?.id);
+
+		fireEvent.input(search, { target: { value: "xy" } });
+		await settleSearch();
+		fireEvent.keyDown(search, { key: "Enter" });
+		await flush();
+		expect(navigated).toBe("x");
+
+		search.focus();
+		fireEvent.input(search, { target: { value: "none" } });
+		await settleSearch();
+		expect(container.querySelector('[role="listbox"]')?.textContent).toContain(
+			"No results",
+		);
+		querySpy.mockRestore();
+	});
 	test("typing renders grouped destination rows and Enter navigates", async () => {
 		const { container, store } = mountApp("/");
 		const search = input(container) as HTMLInputElement;
