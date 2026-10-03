@@ -264,6 +264,21 @@ func TestWriteTokenFile(t *testing.T) {
 	})
 }
 
+// The rotation warning names the prior subject's kind; a wrong mapping would
+// point the operator at the wrong overwritten credential.
+func TestSubjectKindName(t *testing.T) {
+	for k, want := range map[store.SubjectKind]string{
+		store.SubjectAccount: "account",
+		store.SubjectRunner:  "runner",
+		store.SubjectService: "service",
+		store.SubjectKind(9): "unknown(9)",
+	} {
+		if got := subjectKindName(k); got != want {
+			t.Errorf("subjectKindName(%d) = %q, want %q", k, got, want)
+		}
+	}
+}
+
 // TestMintToFile pins the --token-out sink's store-aware idempotence and its
 // write-before-commit ordering. mintToFile takes the tokenStore fake, so the
 // (hash, subject) it commits and the resolves it performs are asserted directly,
