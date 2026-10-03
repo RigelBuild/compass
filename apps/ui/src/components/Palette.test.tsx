@@ -72,7 +72,6 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("keyword-only match: a keyword hit surfaces a command whose title misses (A3)", async () => {
-		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -91,7 +90,6 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("toggle no-recapture: reopen-from-board still ranks main above global after a Mod+K toggle-close", async () => {
-		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		focusBoardStop(container);
@@ -123,7 +121,6 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("a command row renders its shortcut chip derived from the keymap", async () => {
-		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -147,7 +144,6 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("navigation mode: destination groups render and selection navigates via the store", async () => {
-		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -174,7 +170,6 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("empty state renders when both modes miss", async () => {
-		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
@@ -190,7 +185,6 @@ describe("Palette (RIG-2483)", () => {
 	});
 
 	test("board commands' chips surface in the palette while the board is mounted", async () => {
-		jest.useFakeTimers();
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		expect(container.querySelector(".bridge")).not.toBeNull();
@@ -215,7 +209,6 @@ describe("Palette (RIG-2483)", () => {
 
 	test("a .cx-palette-loading row (chase-light bar) shows while destination providers are in flight", async () => {
 		setPlatform("other");
-		jest.useFakeTimers();
 		const { store, container } = mountApp("/");
 		store.openPalette();
 		await flush();
