@@ -299,21 +299,70 @@ export function conflictMarkerViolations(
 	return out;
 }
 
+type LedgerFence = { marker: "`" | "~"; length: number };
+
+function updateLedgerFence(
+	line: string,
+	fence: LedgerFence | null,
+): LedgerFence | null {
+	const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+	if (!match) return fence;
+	const run = match[1] ?? "";
+	const marker = run[0];
+	if (fence === null && (marker === "`" || marker === "~"))
+		return { marker, length: run.length };
+	if (
+		fence !== null &&
+		marker === fence.marker &&
+		run.length >= fence.length &&
+		(match[2] ?? "").trim() === ""
+	)
+		return null;
+	return fence;
+}
+
+function ledgerContentLines(text: string): string[] {
+	let fence: LedgerFence | null = null;
+	let inComment = false;
+	const lines: string[] = [];
+	for (const line of text.split("\n")) {
+		if (inComment) {
+			if (line.includes("-->")) inComment = false;
+			lines.push("");
+			continue;
+		}
+		if (fence === null && /^ {0,3}<!--/.test(line)) {
+			inComment = !line.includes("-->");
+			lines.push("");
+			continue;
+		}
+		const updatedFence = updateLedgerFence(line, fence);
+		if (updatedFence !== fence || /^ {0,3}(`{3,}|~{3,})/.test(line)) {
+			fence = updatedFence;
+			lines.push("");
+			continue;
+		}
+		lines.push(fence === null ? line : "");
+	}
+	if (fence !== null)
+		throw new Error("unterminated fenced block in design ledger");
+	if (inComment) throw new Error("unterminated HTML comment in design ledger");
+	return lines;
+}
+
 /** Parse DECISIONS.md text into ledger rows (topic headings/prose skipped). */
 export function parseLedger(text: string): LedgerRow[] {
 	const rows: LedgerRow[] = [];
-	text.split("\n").forEach((line, i) => {
+	ledgerContentLines(text).forEach((line, i) => {
 		const trimmed = line.trim();
 		if (!trimmed.startsWith("|")) return;
-		// Escape-aware split: the leading/trailing delimiter pipes become empty
-		// edge cells (dropped here), and interior `\|` stays inside its cell.
 		const raw = splitLedgerRow(trimmed);
 		if (raw[0] === "") raw.shift();
 		if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
 		const cells = raw.map((c) => c.trim());
 		if (cells.length !== 4) return;
 		const id = cells[0] ?? "";
-		if (!/^DL-\d+$/.test(id)) return; // skips header + separator + prose rows
+		if (!/^DL-\d+$/.test(id)) return;
 		rows.push({
 			id,
 			decision: cells[1] ?? "",
@@ -322,6 +371,8 @@ export function parseLedger(text: string): LedgerRow[] {
 			line: i + 1,
 		});
 	});
+	if (rows.length === 0)
+		throw new Error("design ledger contains no decision rows");
 	return rows;
 }
 
@@ -608,7 +659,18 @@ export async function runOnce(deps: Deps): Promise<number> {
 			message: "the ledger DECISIONS.md was not found",
 		});
 	}
-	const ledger = ledgerText === null ? [] : parseLedger(ledgerText);
+	let ledger: LedgerRow[] = [];
+	if (ledgerText !== null) {
+		try {
+			ledger = parseLedger(ledgerText);
+		} catch (error) {
+			violations.push({
+				file: DECISIONS_PATH,
+				line: 0,
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 	if (ledgerText !== null) {
 		violations.push(...conflictMarkerViolations(DECISIONS_PATH, ledgerText));
 	}
