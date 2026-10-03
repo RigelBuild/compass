@@ -227,6 +227,7 @@ type Issue struct {
 	Summary        string
 	Branch         string
 	TenantID       string
+	SearchTsv      interface{}
 }
 
 type LinearAgentSession struct {

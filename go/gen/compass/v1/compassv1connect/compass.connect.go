@@ -54,6 +54,9 @@ const (
 	// CompassServiceListBoardIssuesProcedure is the fully-qualified name of the CompassService's
 	// ListBoardIssues RPC.
 	CompassServiceListBoardIssuesProcedure = "/compass.v1.CompassService/ListBoardIssues"
+	// CompassServiceSearchIssuesProcedure is the fully-qualified name of the CompassService's
+	// SearchIssues RPC.
+	CompassServiceSearchIssuesProcedure = "/compass.v1.CompassService/SearchIssues"
 	// CompassServiceProvisionAgentWorkspaceProcedure is the fully-qualified name of the
 	// CompassService's ProvisionAgentWorkspace RPC.
 	CompassServiceProvisionAgentWorkspaceProcedure = "/compass.v1.CompassService/ProvisionAgentWorkspace"
@@ -147,6 +150,9 @@ type CompassServiceClient interface {
 	// tail it re-snapshots — the whole board is repo-scoped, with no per-account
 	// filter, exactly like that tail.
 	ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error)
+	// Full-text search over the whole board (title/body/summary/labels),
+	// best-match-first. authenticatedOpen: same access class as ListBoardIssues.
+	SearchIssues(context.Context, *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error)
 	// Provision a per-agent container for a workstream: build the image, create
 	// and start the isolated container, arm egress, and clone the repo — the
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
@@ -297,6 +303,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("ListBoardIssues")),
 			connect.WithClientOptions(opts...),
 		),
+		searchIssues: connect.NewClient[v1.SearchIssuesRequest, v1.SearchIssuesResponse](
+			httpClient,
+			baseURL+CompassServiceSearchIssuesProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("SearchIssues")),
+			connect.WithClientOptions(opts...),
+		),
 		provisionAgentWorkspace: connect.NewClient[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse](
 			httpClient,
 			baseURL+CompassServiceProvisionAgentWorkspaceProcedure,
@@ -402,6 +414,7 @@ type compassServiceClient struct {
 	whoAmI                  *connect.Client[v1.WhoAmIRequest, v1.WhoAmIResponse]
 	subscribeEvents         *connect.Client[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse]
 	listBoardIssues         *connect.Client[v1.ListBoardIssuesRequest, v1.ListBoardIssuesResponse]
+	searchIssues            *connect.Client[v1.SearchIssuesRequest, v1.SearchIssuesResponse]
 	provisionAgentWorkspace *connect.Client[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse]
 	startAgentSession       *connect.Client[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse]
 	spawnAgent              *connect.Client[v1.SpawnAgentRequest, v1.SpawnAgentResponse]
@@ -438,6 +451,11 @@ func (c *compassServiceClient) SubscribeEvents(ctx context.Context, req *connect
 // ListBoardIssues calls compass.v1.CompassService.ListBoardIssues.
 func (c *compassServiceClient) ListBoardIssues(ctx context.Context, req *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error) {
 	return c.listBoardIssues.CallUnary(ctx, req)
+}
+
+// SearchIssues calls compass.v1.CompassService.SearchIssues.
+func (c *compassServiceClient) SearchIssues(ctx context.Context, req *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error) {
+	return c.searchIssues.CallUnary(ctx, req)
 }
 
 // ProvisionAgentWorkspace calls compass.v1.CompassService.ProvisionAgentWorkspace.
@@ -551,6 +569,9 @@ type CompassServiceHandler interface {
 	// tail it re-snapshots — the whole board is repo-scoped, with no per-account
 	// filter, exactly like that tail.
 	ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error)
+	// Full-text search over the whole board (title/body/summary/labels),
+	// best-match-first. authenticatedOpen: same access class as ListBoardIssues.
+	SearchIssues(context.Context, *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error)
 	// Provision a per-agent container for a workstream: build the image, create
 	// and start the isolated container, arm egress, and clone the repo — the
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
@@ -697,6 +718,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("ListBoardIssues")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceSearchIssuesHandler := connect.NewUnaryHandler(
+		CompassServiceSearchIssuesProcedure,
+		svc.SearchIssues,
+		connect.WithSchema(compassServiceMethods.ByName("SearchIssues")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceProvisionAgentWorkspaceHandler := connect.NewUnaryHandler(
 		CompassServiceProvisionAgentWorkspaceProcedure,
 		svc.ProvisionAgentWorkspace,
@@ -803,6 +830,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceSubscribeEventsHandler.ServeHTTP(w, r)
 		case CompassServiceListBoardIssuesProcedure:
 			compassServiceListBoardIssuesHandler.ServeHTTP(w, r)
+		case CompassServiceSearchIssuesProcedure:
+			compassServiceSearchIssuesHandler.ServeHTTP(w, r)
 		case CompassServiceProvisionAgentWorkspaceProcedure:
 			compassServiceProvisionAgentWorkspaceHandler.ServeHTTP(w, r)
 		case CompassServiceStartAgentSessionProcedure:
@@ -858,6 +887,10 @@ func (UnimplementedCompassServiceHandler) SubscribeEvents(context.Context, *conn
 
 func (UnimplementedCompassServiceHandler) ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ListBoardIssues is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) SearchIssues(context.Context, *connect.Request[v1.SearchIssuesRequest]) (*connect.Response[v1.SearchIssuesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SearchIssues is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) ProvisionAgentWorkspace(context.Context, *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error) {
