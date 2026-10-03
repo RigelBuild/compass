@@ -154,6 +154,55 @@ const PARKED_ROW =
 	"| DL-905 | parked | Active (Matt, 2026-01-01) | [r](r.md) |";
 
 describe("shared line classification", () => {
+	test("rejects ledger rows inside an HTML block", () => {
+		expect(() =>
+			parseLedger(["<pre>", ...ANCHORED_ROW, "</pre>"].join("\n")),
+		).toThrow(/line 4.*HTML block/i);
+	});
+
+	test("rejects ledger rows after a bare pipe interrupts a table", () => {
+		expect(() =>
+			parseLedger([...ANCHORED_ROW, "|", PARKED_ROW].join("\n")),
+		).toThrow(/line 5.*table/i);
+	});
+
+	test("rejects ledger rows when a list item absorbs the table", () => {
+		expect(() => parseLedger(["- item", ...ANCHORED_ROW].join("\n"))).toThrow(
+			/line 4.*list/i,
+		);
+	});
+
+	test("keeps parsing a normal ledger table", () => {
+		expect(parseLedger(ANCHORED_ROW.join("\n"))).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+	test("resets a stray pipe interruption at a blank line", () => {
+		const text = ["|", "", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+
+	test("closes a single-line pre block before a ledger table", () => {
+		const text = ["<pre>x</pre>", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+
+	test("clears list context at a heading before a ledger table", () => {
+		const text = ["- item", "# Heading", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
+	test("clears list context at a spaced thematic break before a ledger table", () => {
+		const text = ["- item", "* * *", ...ANCHORED_ROW].join("\n");
+		expect(parseLedger(text)).toEqual([
+			{ id: "DL-001", surface: "designs", ref: "none" },
+		]);
+	});
 	// Both counters read one classification pre-pass, so no fence or comment
 	// shape resolves for one and not the other. The floor carries no table
 	// anchor, so it still reads high where a classified-out region interrupts a
