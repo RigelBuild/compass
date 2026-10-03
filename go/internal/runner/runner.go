@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
@@ -66,6 +67,8 @@ type ServerLink struct {
 	// beforeWait, set only by tests, runs inside each stream's shared wait just
 	// before Process.Wait, so a test can hold the reaper there while Stop runs.
 	beforeWait func()
+	// drainGrace, set only by tests, overrides the post-exit drain join bound.
+	drainGrace time.Duration
 }
 
 // Reattached reports whether enrollment re-attached an already-registered Runner
