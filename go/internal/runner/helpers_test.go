@@ -151,7 +151,8 @@ type stubStreamingRuntime struct {
 	execEntered chan runtime.WorkloadID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
 	execErr     error                           // when set, ExecStreaming fails before starting the child
 	created     []runtime.WorkloadSpec
-	createErr   error // when set, Create fails with it — models `podman create` refusing a name already in use
+	createErr   error           // when set, Create fails with it — models `podman create` refusing a name already in use
+	vanished    map[string]bool // names removed outside the Runner (a redeploy); Exists reports them gone
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -242,12 +243,34 @@ func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) 
 	f.recordForID(id, "remove")
 	return nil
 }
-func (f *stubStreamingRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
+func (f *stubStreamingRuntime) Exists(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vanished[name] {
+		return false, nil
+	}
+	for _, s := range f.created {
+		if s.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func (f *stubStreamingRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil
 }
 func (f *stubStreamingRuntime) Resize(context.Context, runtime.WorkloadID, runtime.ResourceLimits) error {
 	return nil
+}
+
+// vanish models the container being removed behind the Runner's back.
+func (f *stubStreamingRuntime) vanish(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vanished == nil {
+		f.vanished = map[string]bool{}
+	}
+	f.vanished[name] = true
 }
 
 func (f *stubStreamingRuntime) record(call string) {
