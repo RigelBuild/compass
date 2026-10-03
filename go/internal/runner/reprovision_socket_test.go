@@ -38,11 +38,8 @@ func TestFailedReprovisionKeepsLiveContainerSocket(t *testing.T) {
 		t.Fatalf("Stop = %v", err)
 	}
 
-	engine.mu.Lock()
-	engine.createErr = errors.New(`"podman create" failed (exit 125): the container name is already in use`)
-	engine.mu.Unlock()
-	if _, err := h.Provision(ctx, req, "acct-1"); err == nil {
-		t.Fatal("re-Provision onto a taken name = nil, want the create error")
+	if _, err := h.Provision(ctx, req, "acct-1"); !errors.Is(err, errAlreadyProvisioned) {
+		t.Fatalf("re-Provision onto a launched name = %v, want errAlreadyProvisioned", err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("socket of the still-running container after a failed re-Provision: %v, want it kept", err)

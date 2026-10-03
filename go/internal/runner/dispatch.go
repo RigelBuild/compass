@@ -66,6 +66,7 @@ type SessionHost interface {
 // RUNNER_ERROR_CODE_FAILED_PRECONDITION.
 var (
 	errAlreadyRunning        = errors.New("session already running on container")
+	errAlreadyProvisioned    = errors.New("container name already provisioned on this runner")
 	errSessionUnknown        = errors.New("session unknown to runner")
 	errFreshSessionIDMissing = errors.New("fresh session start missing server-minted session id")
 )
@@ -412,7 +413,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *compassv1internal.SessionsRequest {
 	code := compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL
 	switch {
-	case errors.Is(err, errAlreadyRunning):
+	case errors.Is(err, errAlreadyRunning), errors.Is(err, errAlreadyProvisioned):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING
 	case errors.Is(err, errSessionUnknown):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
