@@ -133,6 +133,80 @@ func TestComputeUsageRepointClosesPriorInterval(t *testing.T) {
 	}
 }
 
+// A bind that waits on the account lock must stamp its events after the wait,
+// so the interval it opens never starts before the gate released.
+func TestComputeUsageEventsStampedAfterLockWait(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "compute-wait-owner")
+	agent := mustAgent(t, s, owner.ID, "compute-wait-agent")
+	tenant := s.EffectiveTenant(ctx)
+	mustBind(t, ctx, s, "wait-before", agent.ID, "runner-1")
+
+	gate, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate tx: %v", err)
+	}
+	defer func() {
+		if err := gate.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("rollback gate: %v", err)
+		}
+	}()
+	// Character-identical to LockSessionBindingAccount.
+	if _, err := gate.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('binding:' || $1 || ':' || $2))`,
+		string(tenant), string(agent.ID)); err != nil {
+		t.Fatalf("gate advisory lock: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.RecordSessionBinding(ctx, "wait-after", agent.ID, "runner-1")
+		done <- err
+	}()
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var waiters int
+		if err := gate.QueryRow(ctx,
+			`WITH k AS (SELECT hashtext('binding:' || $1 || ':' || $2)::bigint AS key)
+			 SELECT count(*) FROM pg_locks, k
+			 WHERE locktype = 'advisory' AND NOT granted
+			   AND classid = ((k.key >> 32) & 4294967295)::oid
+			   AND objid = (k.key & 4294967295)::oid`,
+			string(tenant), string(agent.ID)).Scan(&waiters); err != nil {
+			t.Fatalf("poll pg_locks: %v", err)
+		}
+		if waiters >= 1 {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("bind finished (err=%v) while the gate held the account lock", err)
+		case <-deadline:
+			t.Fatal("bind never waited on the account lock")
+		case <-tick.C:
+		}
+	}
+	var released time.Time
+	if err := gate.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&released); err != nil {
+		t.Fatalf("read release time: %v", err)
+	}
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release gate: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("RecordSessionBinding after release: %v", err)
+	}
+
+	for _, event := range computeEvents(t, s, tenant, agent.ID) {
+		if event.SessionID == "wait-after" || event.Kind == "end" {
+			if event.OccurredAt.Before(released) {
+				t.Fatalf("%s event for %s stamped %s, before the lock release at %s", event.Kind, event.SessionID, event.OccurredAt, released)
+			}
+		}
+	}
+}
+
 func TestComputeUsageConflictRollsBackIntervalEvents(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -228,6 +302,32 @@ func TestComputeUsageLegacyBindingReleaseLogsInterval(t *testing.T) {
 	if len(events) != 2 || events[0].Kind != "start" || events[1].Kind != "end" ||
 		events[0].IntervalID != events[1].IntervalID || !events[0].Estimated {
 		t.Fatalf("legacy release events = %+v, want an estimated start and its end", events)
+	}
+}
+
+// Re-pointing a legacy binding to a new session ends the legacy interval with an
+// estimated start and opens an exact replacement.
+func TestComputeUsageLegacyBindingRepointKeepsBothIntervals(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "compute-legacy-repoint-owner")
+	agent := mustAgent(t, s, owner.ID, "compute-legacy-repoint-agent")
+	tenant := s.EffectiveTenant(ctx)
+	execAsSystem(t, s, "INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id) VALUES ($1, $2, 'legacy-old', 'runner-old')",
+		string(tenant), string(agent.ID))
+
+	mustBind(t, ctx, s, "legacy-new", agent.ID, "runner-new")
+
+	byKey := map[string]computeUsageEvent{}
+	for _, event := range computeEvents(t, s, tenant, agent.ID) {
+		byKey[event.SessionID+"/"+event.Kind] = event
+	}
+	oldStart, okOldStart := byKey["legacy-old/start"]
+	oldEnd, okOldEnd := byKey["legacy-old/end"]
+	newStart, okNewStart := byKey["legacy-new/start"]
+	if len(byKey) != 3 || !okOldStart || !okOldEnd || !okNewStart ||
+		oldStart.IntervalID != oldEnd.IntervalID || !oldStart.Estimated || oldEnd.Estimated || newStart.Estimated {
+		t.Fatalf("legacy re-point events = %+v, want estimated legacy start, exact end, exact replacement start", byKey)
 	}
 }
 

@@ -1028,6 +1028,8 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	var durableReaped []store.SessionBinding
 	durableReapSucceeded := false
 	if bindings != nil && reattached {
+		// Cross-tenant on purpose: a Runner serves every tenant, and id is the
+		// authenticated token subject, so the sweep reaches only this Runner's rows.
 		rows, err := bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
 		if err != nil {
 			// A durable-reap fault must not wedge reconnect; fall back to the in-RAM
