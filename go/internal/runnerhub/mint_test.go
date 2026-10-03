@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"testing"
 
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -111,4 +112,59 @@ func TestMintRunnerTokenRequiresRunnerId(t *testing.T) {
 	if len(putter.calls) != 0 {
 		t.Fatalf("PutTokenHash called %d times for an empty id, want 0 (reject before storing)", len(putter.calls))
 	}
+}
+
+// fakeHashResolver answers ResolveTokenHash from a fixed map or a fixed error.
+type fakeHashResolver struct {
+	known map[[32]byte]store.Subject
+	err   error
+}
+
+func (f fakeHashResolver) ResolveTokenHash(_ context.Context, hash [32]byte) (store.Subject, error) {
+	if f.err != nil {
+		return store.Subject{}, f.err
+	}
+	if s, ok := f.known[hash]; ok {
+		return s, nil
+	}
+	return store.Subject{}, store.ErrNotFound
+}
+
+// A hash live under another subject must not read as registered for this
+// runner: that skip stranded enrollment after a dev-DB wipe.
+func TestRunnerTokenStatus(t *testing.T) {
+	const tok = "tok"
+	h := sha256.Sum256([]byte(tok))
+	dogfood := store.Subject{Kind: store.SubjectRunner, ID: "dogfood"}
+	tests := []struct {
+		name      string
+		r         fakeHashResolver
+		want      TokenState
+		wantPrior store.Subject
+	}{
+		{"same runner", fakeHashResolver{known: map[[32]byte]store.Subject{h: {Kind: store.SubjectRunner, ID: "r1"}}}, TokenRegistered, store.Subject{Kind: store.SubjectRunner, ID: "r1"}},
+		{"other runner id", fakeHashResolver{known: map[[32]byte]store.Subject{h: dogfood}}, TokenOtherSubject, dogfood},
+		{"same id other kind", fakeHashResolver{known: map[[32]byte]store.Subject{h: {Kind: store.SubjectAccount, ID: "r1"}}}, TokenOtherSubject, store.Subject{Kind: store.SubjectAccount, ID: "r1"}},
+		{"unknown", fakeHashResolver{}, TokenUnknown, store.Subject{}},
+		{"revoked", fakeHashResolver{err: store.ErrTokenRevoked}, TokenRevoked, store.Subject{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, prior, err := RunnerTokenStatus(context.Background(), tc.r, tok, "r1")
+			if err != nil {
+				t.Fatalf("RunnerTokenStatus: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("RunnerTokenStatus = %d, want %d", got, tc.want)
+			}
+			if prior != tc.wantPrior {
+				t.Fatalf("prior subject = %+v, want %+v", prior, tc.wantPrior)
+			}
+		})
+	}
+	t.Run("lookup failure surfaces", func(t *testing.T) {
+		if _, _, err := RunnerTokenStatus(context.Background(), fakeHashResolver{err: errors.New("db down")}, tok, "r1"); err == nil {
+			t.Fatal("RunnerTokenStatus with a failing store = nil error, want failure")
+		}
+	})
 }

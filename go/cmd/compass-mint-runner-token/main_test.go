@@ -264,6 +264,21 @@ func TestWriteTokenFile(t *testing.T) {
 	})
 }
 
+// The rotation warning names the prior subject's kind; a wrong mapping would
+// point the operator at the wrong overwritten credential.
+func TestSubjectKindName(t *testing.T) {
+	for k, want := range map[store.SubjectKind]string{
+		store.SubjectAccount: "account",
+		store.SubjectRunner:  "runner",
+		store.SubjectService: "service",
+		store.SubjectKind(9): "unknown(9)",
+	} {
+		if got := subjectKindName(k); got != want {
+			t.Errorf("subjectKindName(%d) = %q, want %q", k, got, want)
+		}
+	}
+}
+
 // TestMintToFile pins the --token-out sink's store-aware idempotence and its
 // write-before-commit ordering. mintToFile takes the tokenStore fake, so the
 // (hash, subject) it commits and the resolves it performs are asserted directly,
@@ -304,6 +319,49 @@ func TestMintToFile(t *testing.T) {
 	// credential keeps working against the new store.
 	t.Run("existing token unknown to store is re-registered without rotating", func(t *testing.T) {
 		assertUnknownTokenReregisteredWithoutRotating(t)
+	})
+
+	// existing file whose token is registered to a DIFFERENT runner id (a stale
+	// `dogfood` row while provisioning `mattfw-dev`): rotate, so the runner can
+	// enroll, and never treat the foreign row as this runner's registration.
+	t.Run("existing token registered to another runner is rotated", func(t *testing.T) {
+		fake := &fakeTokenPutter{}
+		path := filepath.Join(t.TempDir(), "runner.token")
+		if err := mintToFile(context.Background(), fake, "dogfood", path, false); err != nil {
+			t.Fatalf("seed mint: %v", err)
+		}
+		first, _ := os.ReadFile(path)
+
+		if err := mintToFile(context.Background(), fake, "runner-1", path, false); err != nil {
+			t.Fatalf("mintToFile: %v", err)
+		}
+		second, _ := os.ReadFile(path)
+		if bytes.Equal(first, second) {
+			t.Fatal("token registered to another runner was kept; want rotation")
+		}
+		subj, ok := fake.stored[sha256.Sum256(second)]
+		if !ok || subj.Kind != store.SubjectRunner || subj.ID != "runner-1" {
+			t.Errorf("new token subject = %+v (stored=%v), want {SubjectRunner runner-1}", subj, ok)
+		}
+	})
+
+	// a revoked token is the operator's deliberate state: leave the file and
+	// write nothing, so provisioning never silently undoes a revoke.
+	t.Run("existing revoked token is left in place", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "runner.token")
+		if err := writeTokenFile(path, "revoked-token"); err != nil {
+			t.Fatalf("seed file: %v", err)
+		}
+		fake := &fakeTokenPutter{resolve: store.ErrTokenRevoked}
+		if err := mintToFile(context.Background(), fake, "runner-1", path, false); err != nil {
+			t.Fatalf("mintToFile: %v", err)
+		}
+		if got, _ := os.ReadFile(path); string(got) != "revoked-token" {
+			t.Errorf("revoked token file changed to %q; want it left in place", got)
+		}
+		if len(fake.calls) != 0 {
+			t.Errorf("PutTokenHash called %d times for a revoked token, want 0", len(fake.calls))
+		}
 	})
 
 	// T2 ordering: the hash commit must not happen before the file lands, and a
