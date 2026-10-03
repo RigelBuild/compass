@@ -111,9 +111,8 @@ type ComputeBucket struct {
 }
 
 // Store is the Plane-A usage store seam: an append-only event write plus rollup
-// reads. Each call but PruneTokenUsageBefore is scoped to ctx's tenant, which
-// the backend resolves.
-
+// reads. Each call is scoped to ctx's tenant, which the backend resolves, except
+// the two Prune calls: they advance a global horizon and prune every tenant.
 type Store interface {
 	AppendTokenUsage(ctx context.Context, events []TokenUsageEvent) error
 	TokenUsageSeries(ctx context.Context, query SeriesQuery) ([]Bucket, error)

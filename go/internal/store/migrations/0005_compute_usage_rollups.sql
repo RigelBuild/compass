@@ -161,7 +161,7 @@ BEGIN
                     active_ms = compute_usage_rollups_daily.active_ms + EXCLUDED.active_ms,
                     intervals = compute_usage_rollups_daily.intervals + EXCLUDED.intervals;
             END IF;
-            rollup_bucket := rollup_bucket + CASE WHEN width_ms = 3600000 THEN interval '1 hour' ELSE interval '1 day' END;
+            rollup_bucket := rollup_bucket + CASE WHEN width_ms = 3600000 THEN interval '1 hour' ELSE interval '24 hours' END;
         END LOOP;
     END LOOP;
     RETURN NEW;

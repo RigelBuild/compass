@@ -258,7 +258,7 @@ WITH intervals AS (
       CROSS JOIN LATERAL generate_series(
           bounds.first_day,
           bounds.last_day,
-          interval '1 day'
+          interval '24 hours'
       ) AS buckets(bucket_start)
       CROSS JOIN LATERAL (
           SELECT floor(extract(epoch FROM buckets.bucket_start) * 1000)::bigint AS bucket_ms

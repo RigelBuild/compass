@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -179,6 +180,71 @@ func TestPostgresComputePruneRemovesOnlyClosedIntervalsBeforeCutoffDay(t *testin
 	}
 	if old != 0 || newer != 2 || open != 1 {
 		t.Fatalf("compute event counts = old %d, new %d, open %d; want 0, 2, 1", old, newer, open)
+	}
+}
+
+// Daily buckets are fixed UTC days, so a non-UTC session crossing a DST change
+// must not shift later buckets off UTC midnight on either rollup path.
+func TestPostgresComputeDailyBucketsIgnoreSessionTimeZone(t *testing.T) {
+	st, _ := openPostgres(t)
+	ctx := store.WithTenant(t.Context(), pgTenants[0])
+	// America/New_York springs forward on 2026-03-08.
+	start := time.Date(2026, time.March, 7, 12, 0, 0, 0, time.UTC)
+	end := start.Add(72 * time.Hour)
+	var misaligned []string
+	err := st.WithTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL timezone = 'America/New_York'"); err != nil {
+			return err
+		}
+		for _, ev := range []struct {
+			kind string
+			at   time.Time
+		}{{"start", start}, {"end", end}} {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO compute_usage_events (
+				    id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
+				    session_id, runner_id
+				) VALUES ($1, 'dst', $2, $3, 'a1', 'u1', 'session-dst', 'runner-1')`,
+				"dst-"+ev.kind, ev.kind, ev.at); err != nil {
+				return err
+			}
+		}
+		check := func(path string) error {
+			rows, err := tx.Query(ctx, `
+				SELECT rollups.bucket_start AT TIME ZONE 'UTC'
+				  FROM compute_usage_rollups_daily AS rollups
+				 WHERE rollups.bucket_start <> date_trunc('day', rollups.bucket_start, 'UTC')`)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var b time.Time
+				if err := rows.Scan(&b); err != nil {
+					return err
+				}
+				misaligned = append(misaligned, path+" "+b.Format(time.DateTime))
+			}
+			return rows.Err()
+		}
+		if err := check("trigger"); err != nil {
+			return err
+		}
+		q := db.New(tx)
+		horizon := pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+		if err := q.DeleteComputeUsageRollupsFrom(ctx, horizon); err != nil {
+			return err
+		}
+		if err := q.RollUpComputeUsageFrom(ctx, horizon); err != nil {
+			return err
+		}
+		return check("rebuild")
+	})
+	if err != nil {
+		t.Fatalf("roll up across DST: %v", err)
+	}
+	if len(misaligned) != 0 {
+		t.Fatalf("daily buckets off UTC midnight: %v", misaligned)
 	}
 }
 
