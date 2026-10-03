@@ -57,7 +57,7 @@ export type GenOutput = {
 	forgeAffected: boolean;
 	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/ or a shared GTK closure input */
 	gtk4Affected: boolean;
-	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell), the macos-bundle tool, or the sidecar surface (three sidecars plus shared go/internal/) */
+	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell), the macos-bundle tool, or the sidecar surface (four sidecars plus shared go/internal/) */
 	darwinAffected: boolean;
 };
 
@@ -122,14 +122,14 @@ const GTK4_CLOSURE_PATHS = [
  * darwin trigger: the macos-14 lane compiles the SAME native shell the gtk4 lane
  * does, so it must fire on any go/cmd/compass-app/ change OR a shared GTK closure
  * input (mirror gtk4's surface), PLUS a change to the macos-bundle tool itself
- * (the bundler the lane exercises). The lane also cross-compiles the three pure-Go
+ * (the bundler the lane exercises). The lane also cross-compiles the four pure-Go
  * sidecars, whose first-party package surface is enumerated in DARWIN_SIDECAR_PREFIXES below.
  * Per compass-distribution DL-263: affected on PR, full-sweep on push/schedule (isFullSweep below).
  */
 const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
 /**
- * darwin sidecar surface: the mac lane now cross-compiles the three pure-Go
- * sidecars (compass-stack/server/runner) beside the shell, so a change to any
+ * darwin sidecar surface: the mac lane now cross-compiles the four pure-Go
+ * sidecars (compass-stack/server/runner/clear-token) beside the shell, so a change to any
  * first-party package they compile in must fire the darwin lane — else a darwin
  * cross-compile break (e.g. a go/internal/runtime change like #847) first
  * surfaces at the release cut. `go list -deps ./cmd/<sidecar>` resolves the
@@ -146,6 +146,7 @@ const DARWIN_SIDECAR_PREFIXES = [
 	"go/cmd/compass-stack/",
 	"go/cmd/compass-server/",
 	"go/cmd/compass-runner/",
+	"go/cmd/compass-clear-token/",
 	"go/internal/",
 	"go/server/",
 	"go/events/",
