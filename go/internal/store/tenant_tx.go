@@ -18,8 +18,8 @@ import (
 //     per-transaction compass.tenant_id GUC.
 //   - systemRole is the narrowly-scoped BYPASSRLS role the cross-tenant
 //     background loops (N5/OQ-4: delivery-cursor sweep, deliver-ack advance,
-//     reattach recovery, lag-resync, compute-usage orphan sweep) run under, and
-//     ONLY those. It carries no tenant GUC — it is cross-tenant by design.
+//     reattach recovery, lag-resync, compute-usage orphan sweep) and the Runner
+//     re-enroll binding reap run under, and ONLY those. It carries no tenant GUC.
 const (
 	appRole    = "compass_app"
 	systemRole = "compass_system"
@@ -40,10 +40,10 @@ type systemRoleKey struct{}
 // WithSystemRole marks ctx as the cross-tenant background/system path: store
 // calls made under it run as the BYPASSRLS compass_system role and see every
 // tenant's rows. It is the OQ-4 (Matt-ruled option 1) exemption, applied ONLY at
-// named background-loop entrypoints (the delivery consumer's Run, the hub's
-// deliver-ack / forge-notification-ack arms, reattach recovery, and the
-// compute-usage orphan sweep) — a request-path call NEVER sets it, so the
-// request path stays tenant-scoped and fail-closed under RLS.
+// named entrypoints (the delivery consumer's Run, the hub's deliver-ack /
+// forge-notification-ack arms, reattach recovery, the compute-usage orphan
+// sweep, and Hub.enroll's reap keyed by the authenticated Runner id). Every other
+// request-path call stays tenant-scoped and fail-closed under RLS.
 func WithSystemRole(ctx context.Context) context.Context {
 	return context.WithValue(ctx, systemRoleKey{}, true)
 }

@@ -57,7 +57,9 @@ health/quota signal.
   its start to end. The server emits both events with the binding transition;
   an hourly sweep marks an inferred end as estimated if a binding disappears
   without its end event. Intervals already open when the log was introduced get
-  an estimated start. The event log is exact, auditable, and reconstructable.
+  an estimated start. Every inferred timestamp carries the `estimated` flag;
+  all others are recorded at the transition. The log is auditable and
+  reconstructable.
 - **LLM token usage and spend — recorded for display, not billed day-1.** Every
   model call's tokens-in/out and cost, captured at the gateway. It powers the
   in-product usage/spend charts the user sees, and it is *recorded* even though
