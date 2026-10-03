@@ -370,6 +370,60 @@ func TestIssueSearchIndexesBodyAndLabels(t *testing.T) {
 	}
 }
 
+func TestSearchIssuesRanksTitleClampsLimitAndScopesTenant(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	otherTenant := seedTenant(t, s, "search-other")
+
+	titleHit := forgeFields(1)
+	titleHit.Title = "Falcon rollout"
+	titleHit.Body = "routine maintenance"
+	titleHit.Labels = nil
+	titleID, err := s.UpsertIssueForgeFields(ctx, titleHit)
+	if err != nil {
+		t.Fatalf("upsert title hit: %v", err)
+	}
+	bodyHit := forgeFields(2)
+	bodyHit.Title = "Routine maintenance"
+	bodyHit.Body = "Falcon rollout"
+	bodyHit.Labels = nil
+	if _, err := s.UpsertIssueForgeFields(ctx, bodyHit); err != nil {
+		t.Fatalf("upsert body hit: %v", err)
+	}
+	crossTenant := forgeFields(3)
+	crossTenant.Title = "Falcon rollout"
+	crossTenant.Labels = nil
+	if _, err := s.UpsertIssueForgeFields(WithTenant(ctx, otherTenant), crossTenant); err != nil {
+		t.Fatalf("upsert cross-tenant hit: %v", err)
+	}
+
+	if _, err := s.SearchIssues(ctx, "  \t", 10); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty query error = %v, want ErrInvalidArgument", err)
+	}
+	hits, err := s.SearchIssues(ctx, "falcon", ^uint32(0))
+	if err != nil {
+		t.Fatalf("SearchIssues: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("SearchIssues returned %d hits, want 2 visible tenant rows", len(hits))
+	}
+	if hits[0].ID != titleID {
+		t.Fatalf("first search hit id = %q, want title hit %q", hits[0].ID, titleID)
+	}
+	for _, hit := range hits {
+		if hit.Title == crossTenant.Title && hit.Number == crossTenant.Number {
+			t.Fatalf("SearchIssues exposed cross-tenant issue %+v", hit)
+		}
+	}
+}
+
+func TestSearchIssuesRejectsEmptyQuery(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.SearchIssues(context.Background(), " \t\n", 10); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("SearchIssues(empty) error = %v, want ErrInvalidArgument", err)
+	}
+}
+
 // The OQ-6(a) recency guard (RIG-2883 T4a): once both the stored row and the
 // incoming write carry a forge_updated_at, the conditional ON CONFLICT keeps
 // the FRESHER timestamp's forge fields, regardless of arrival order — a stale
