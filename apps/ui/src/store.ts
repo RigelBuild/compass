@@ -1824,11 +1824,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		setPaletteOpen(true);
 	};
 	const closePalette = () => {
+		const active = document.activeElement;
+		const shouldRestore =
+			active instanceof HTMLElement &&
+			(active.closest(".cx-palette") !== null || active === document.body);
 		setPaletteOpen(false);
 		const el = paletteElement;
 		paletteElement = null;
 		setPaletteZone(null);
-		if (el?.isConnected) el.focus();
+		if (shouldRestore && el?.isConnected) el.focus();
 	};
 	const togglePalette = () => {
 		if (paletteOpen()) closePalette();
