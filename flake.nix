@@ -88,7 +88,7 @@
           # The web UI built to a static dist (apps/ui/dist.nix). Bound in the
           # `let` because it has two consumers: its own package output and
           # compass-app's bin/dist staging.
-          compass-ui = import ./apps/ui/dist.nix {
+          compass-ui = pkgs.lib.makeOverridable (import ./apps/ui/dist.nix) {
             inherit pkgs version;
             inherit (pkgs) lib;
           };
