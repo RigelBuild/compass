@@ -27,11 +27,13 @@ lane makes six decisions.
    `{ "repo": "https://github.com/RigelBuild/oh-my-pi.git", "commit": "<40-hex>" }`.
    A bump is a reviewed compass PR that edits this file. The fork is public, so
    CI fetches it with no credential:
-   - `git init`, then `git fetch --depth=1 origin <commit>`, then check out
-     `FETCH_HEAD`, into a temp directory.
-   - Then the lane fetches fork `main` with `--filter=tree:0` and
-     `git merge-base --is-ancestor`. Together they assert that the commit is on
-     fork `main`.
+   - Delete and recreate `<out>/src`, run `git init` there, and add the pin's
+     `repo` as remote `origin`. Every build starts from an empty checkout, so
+     a repeat run never reuses stale state.
+   - `git fetch --depth=1 origin <commit>`, then check out `FETCH_HEAD`.
+   - Fetch fork `main` with `--filter=tree:0` and run
+     `git merge-base --is-ancestor`. Together they assert that the commit is
+     on fork `main`.
 
    The ancestry check refuses a pin on an unmerged PR branch. That branch could
    be force-pushed away, and its code has no fork review. The fork has no LFS
@@ -48,26 +50,35 @@ lane makes six decisions.
      `--oci-layout pibase=<layout> --opt context:oh-my-pi/pi:dev=oci-layout://pibase@<digest>`.
 
    The base never leaves the runner. Nothing is published except the gateway
-   image. Both solves use the runner lane's reproducibility settings:
-   `SOURCE_DATE_EPOCH=1`, `rewrite-timestamp=true`, `oci-mediatypes=true`, and
-   platform `linux/amd64`. A local probe on 2026-10-03 at fork commit
+   image. Both solves use `SOURCE_DATE_EPOCH=1`, `rewrite-timestamp=true`, and
+   platform `linux/amd64`, as the runner lane does. The stage-2 output also
+   sets `oci-mediatypes=true`, the media type the runner lane states for its
+   pushed image. A local probe on 2026-10-03 at fork commit
    `91ad19fbe19c` (PR #108 head) tested the mapping with buildkit 0.32.2. Two
    stage-2 solves gave the same digest, and that digest equals
    `containerimage.digest` in the metadata file.
 3. **Push the bytes that were smoked.** The guest lane pushes with
    `skopeo copy` from a local layout. The gateway lane copies that shape, not
    the runner lane's re-solve with the push exporter. The order is:
-   1. Build once to an OCI layout.
-   2. Secret-scan the image config.
-   3. Smoke-boot the image (item 4).
-   4. Run `skopeo copy --preserve-digests oci:<layout> docker://<repo>:git-<sha12>`.
-   5. Re-read the manifest from the registry and assert that its digest equals
+   1. Build once to an OCI layout, then secret-scan the image config. Both
+      happen in `build.ts`, so nothing unscanned is ever booted.
+   2. Smoke-boot the image (item 4).
+   3. Run `skopeo copy --preserve-digests oci:<layout> docker://<repo>:git-<sha12>`.
+   4. Re-read the manifest from the registry and assert that its digest equals
       the local digest.
 
    No second build exists, so a reproducibility drift cannot publish a digest
    that was never smoked. A tag that already holds the same digest is a no-op.
    A tag that holds a different digest aborts the run. That is the guest
    lane's `tagDisposition` rule.
+
+   A re-run does not reliably repair a failure after the push. The fork
+   `Dockerfile` pulls base images by tag and downloads tools without pins, so
+   a fresh build of the same pin can differ, and its tag then aborts as
+   "already holds". That abort is the intended outcome: a published
+   `:git-<sha12>` is never overwritten. Recovery is a new compass commit,
+   which gets a new tag. A failed digest check (exit 5) leaves the tag on
+   bytes nobody pinned, so nothing consumes it.
 4. **Smoke before push.** The lane loads the image into podman with
    `skopeo copy oci:<layout> docker-archive:<tar>` and then `podman load -i`.
    The bare `ubuntu-latest` runner denies the nested unshare that a direct
@@ -154,7 +165,9 @@ result in compass (RIG-4209 option A). Matt ruled for option B.
 - Exit codes, numbered as in the runner and guest lanes: usage 2,
   secretFound 3, pushFailed 4, digestMismatch 5, badLayout 6, plus smokeFailed
   7 and badPin 8.
-- No retries anywhere. A fault fails the step, and the remedy is a re-run.
+- No retries anywhere. A fault before the push fails the step, and the remedy
+  is a re-run. A fault after the push is recovered by a new compass commit,
+  never by overwriting the tag (Approach item 3).
 - Prerequisite: fork PR #108 and its base PR are merged to fork `main`.
   Until then no commit satisfies the ancestry rule.
 - compass is public. Cite only compass, the public fork, and Linear IDs.
@@ -213,12 +226,13 @@ different digest aborts. An ambiguous probe aborts.
 Interfaces:
 - `bun tools/gateway-image/build.ts [--out <dir>]` (default
   `tools/gateway-image/out`). It needs `BUILDKIT_HOST`. It reads
-  `fork-pin.json` and fetches the commit shallowly into `<out>/src`. It
-  asserts ancestry against fork `main` and exits 8 if the commit is not an
-  ancestor. Then it runs stage 1 into `<out>/base-oci` and stage 2 into
-  `<out>/oci`. It asserts that `containerimage.digest` in the metadata equals
-  `layoutDigest(<out>/oci/index.json)` and exits 6 if they differ. It prints
-  the digest on stdout.
+  `fork-pin.json`, recreates `<out>/src`, and fetches the commit there
+  (Approach item 1). It asserts ancestry against fork `main` and exits 8 if
+  the commit is not an ancestor. Then it runs stage 1 into `<out>/base-oci`
+  and stage 2 into `<out>/oci`. It asserts that `containerimage.digest` in the
+  metadata equals `layoutDigest(<out>/oci/index.json)` and exits 6 if they
+  differ. It scans the `<out>/oci` image config `Env` and `Labels`, and exits
+  3 if any name is flagged. It prints the digest on stdout.
 - `bun tools/gateway-image/smoke.ts [--out <dir>]`. It needs `skopeo` and
   `podman`. It loads `<out>/oci` through a `docker-archive` tar with
   `podman load`, then runs the broker + gateway smoke from Approach item 4.
@@ -226,22 +240,23 @@ Interfaces:
   them down. It exits 0 on pass and 7 on any failed check.
 
 Test cycle: on a host with rootless buildkitd and podman, run `build.ts`
-twice; the two digests are the same. `smoke.ts` passes. To show the smoke can
-fail, run it twice more: once with the broker env withheld, and once with a
-different token mounted than the one sent. Both must exit 7.
+twice; the two digests are the same. This only shows the stage-2 mapping is
+deterministic on one warm daemon; it does not prove a cold rebuild matches
+(Approach item 3). `smoke.ts` passes. To show the smoke can fail, run it twice
+more: once with the broker env withheld, and once with a different token
+mounted than the one sent. Both must exit 7.
 
 ### T3 — Publish shell and release job
 
 Interfaces:
 - `bun tools/gateway-image/publish.ts --repo <repo> --sha <sha12> [--out <dir>]`.
-  It honours `REGISTRY_AUTH_FILE`. In order, it:
-  1. Scans the `<out>/oci` image config `Env` and `Labels`, and exits 3 if any
-     name is flagged.
-  2. Probes the tag and applies `tagDisposition`.
-  3. Runs `skopeo copy --preserve-digests oci:<out>/oci docker://<tag>`.
-  4. Re-reads the tag with `skopeo inspect --raw`, and exits 5 if the digest
+  `<sha12>` is the first 12 characters of the compass commit (Global
+  Constraints). It honours `REGISTRY_AUTH_FILE`. In order, it:
+  1. Probes the tag and applies `tagDisposition`.
+  2. Runs `skopeo copy --preserve-digests oci:<out>/oci docker://<tag>`.
+  3. Re-reads the tag with `skopeo inspect --raw`, and exits 5 if the digest
      differs from the local one.
-  5. Prints `digestRef` on stdout.
+  4. Prints `digestRef` on stdout.
 - `.github/workflows/release.yml` changes:
   - A new env block, `GATEWAY_IMAGE_CLOSURE_PATHS`, with
     `tools/gateway-image/**` and `.github/workflows/release.yml`.
