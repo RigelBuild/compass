@@ -17,7 +17,7 @@
 // lets the test import the pure core without firing the edge.
 //
 // The .app layout mirrors the Linux tarball bundle (GC9 / §A4): the shell, the
-// three embedded sidecars, and the UI dist. The dist lands at
+// four embedded sidecars, and the UI dist. The dist lands at
 // Contents/Resources/dist beside the executable at Contents/MacOS/compass-app,
 // satisfying the shell's beside-the-executable dist resolution
 // (go/cmd/compass-app/main.go resolveAssetsDir); each sidecar lands at
@@ -58,7 +58,7 @@ export type BundleArgs = {
 	 * required contract is binary/dist/version/out, so a caller that passes no
 	 * `--sidecar` gets an empty array (a shell-only .app) rather than a parse
 	 * error — WHICH sidecars a release carries is the release lane's call
-	 * (release.yml passes the three), not a grammar constant. Every path given
+	 * (release.yml passes the four), not a grammar constant. Every path given
 	 * is still assertExists-checked before staging.
 	 */
 	sidecars: string[];
