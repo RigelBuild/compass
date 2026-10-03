@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { Channel } from "./comms-stub";
 import { type Agent, agentTree } from "./stub-data";
 
 // agentTree derives the nested sidebar tree from each account's parentAgentId
@@ -25,6 +26,16 @@ const agent = (id: string, parentAgentId?: string): Agent => ({
 	model: "test-model",
 	cwd: "/tmp",
 	terminals: [],
+});
+
+const channel = (id: string, fields: Partial<Channel> = {}): Channel => ({
+	id,
+	name: id,
+	kind: "channel",
+	memberAccountIds: [],
+	membership: "joined",
+	postPolicy: "open",
+	...fields,
 });
 
 // Read a node's id and its children's ids, for terse structural assertions.
@@ -119,6 +130,35 @@ describe("agentTree", () => {
 		expect(tree.every((n) => n.children.length === 0)).toBe(true);
 	});
 
+	test("slots home and parented channels once, leaving dangling channel parents unclaimed", () => {
+		const homeAgent = agent("home-owner");
+		homeAgent.account.homeChannelId = "home";
+		const agents = [homeAgent, agent("attached")];
+		const channels = [
+			channel("attached-channel", { parentAgentId: "attached" }),
+			channel("home"),
+			channel("orphan-channel", { parentAgentId: "missing-agent" }),
+		];
+		const tree = agentTree(agents, channels);
+		expect(tree[0]?.channels.map((item) => item.id)).toEqual(["home"]);
+		expect(tree[1]?.channels.map((item) => item.id)).toEqual([
+			"attached-channel",
+		]);
+		expect(
+			tree.flatMap((node) => node.channels).map((item) => item.id),
+		).toEqual(["home", "attached-channel"]);
+	});
+
+	test("home ownership takes precedence over a different parent agent", () => {
+		const homeAgent = agent("home-owner");
+		homeAgent.account.homeChannelId = "home";
+		const agents = [homeAgent, agent("parent-agent")];
+		const tree = agentTree(agents, [
+			channel("home", { parentAgentId: "parent-agent" }),
+		]);
+		expect(tree[0]?.channels.map((item) => item.id)).toEqual(["home"]);
+		expect(tree[1]?.channels).toEqual([]);
+	});
 	test("empty input yields an empty tree", () => {
 		expect(agentTree([])).toEqual([]);
 	});

@@ -604,11 +604,10 @@ export interface AppStore {
 	logOpen: Accessor<boolean>;
 	toggleLog: () => void;
 
-	// ── Left-sidebar sections (channels / agents) ──
-	/** Whether a sidebar section is collapsed. The two sections collapse
-	 *  independently (design: architecture-lineage). */
-	isSectionCollapsed: (section: "channels" | "agents") => boolean;
-	toggleSection: (section: "channels" | "agents") => void;
+	// ── Unified left-sidebar section ──
+	/** Whether the sidebar's single section is collapsed. */
+	isSectionCollapsed: (section: "channels") => boolean;
+	toggleSection: (section: "channels") => void;
 
 	// ── Issues (reactive board data) ──
 	/** All issues — the reactive source every board surface reads, so a
@@ -884,9 +883,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(
 		new Set(),
 	);
-	// Left-sidebar section collapse (channels / agents) — a separate namespaced
-	// key space on the same set mechanism as folder collapse (design:
-	// architecture-lineage). Keyed `section:${name}` so no tree folder id can collide.
+	// The unified sidebar section uses a namespaced key, separate from tree ids.
 	const [sectionCollapsed, setSectionCollapsed] = createSignal<
 		ReadonlySet<string>
 	>(new Set());
@@ -1870,12 +1867,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// The bottom log panel (D2).
 	const toggleLog = () => setLogOpen((v) => !v);
 
-	// Left-sidebar section collapse (channels / agents) — namespaced keys on the
-	// same set mechanism, so the two sections toggle independently and can't
-	// collide with tree folder ids (design: architecture-lineage).
-	const isSectionCollapsed = (section: "channels" | "agents") =>
+	// Sidebar section collapse uses a namespaced key, separate from tree nodes.
+	const isSectionCollapsed = (section: "channels") =>
 		sectionCollapsed().has(`section:${section}`);
-	const toggleSection = (section: "channels" | "agents") =>
+	const toggleSection = (section: "channels") =>
 		setSectionCollapsed((prev) => {
 			const key = `section:${section}`;
 			const next = new Set(prev);

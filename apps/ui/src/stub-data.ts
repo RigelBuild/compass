@@ -3,6 +3,8 @@
 // explorable in `vite dev` with no daemon. Plain in-memory fixtures; deleted when the daemon
 // grows the streams and components read @compass/client (shapes here mirror that contract).
 
+import type { Channel } from "./comms-stub";
+
 // ── Enums ──────────────────────────────────────────────────────────────────
 
 /**
@@ -379,34 +381,43 @@ export interface Agent {
 
 // ── Left-sidebar organization ────────────────────────────────────────────
 
-/** A node in the derived left-sidebar agent tree: an agent plus its children,
- *  nested by parentAgentId. */
+/** An agent tree node with channels owned by that agent. */
 export interface AgentTreeNode {
 	agent: Agent;
+	channels: Channel[];
 	children: AgentTreeNode[];
 }
 
-/** Derive the nested agent tree from parentAgentId. Roots = accounts with
- *  empty/absent parentAgentId; children nested under their parent. ORDERING:
- *  roots, and each parent's children, preserve the STABLE INPUT ORDER of the
- *  `agents` array — depth-first alone is not a total order, so this
- *  sibling/root tie-break is what makes the derivation deterministic for a
- *  fixed input (the contract board.ts treeOrder consumes, C-T5). A DANGLING
- *  parentAgentId (referencing an account not in `agents` — e.g. filtered by
- *  visibility) is treated as a root: promote the child to top-level rather
- *  than drop it, so no agent is ever unreachable. A parentAgentId that would
- *  close a CYCLE (a self-parent, or a link back to a descendant) is likewise
- *  treated as a root, so the derivation is total against any input and never
- *  silently drops a cycle member. The server rejects persisted cycles at the
- *  mutation boundary (compass-agent-trees §T3: same-owner-tree lock + ancestor
- *  walk), so this client guard is belt-and-suspenders against unresolved or
- *  inconsistent live data rather than an expected shape. */
-export function agentTree(agents: readonly Agent[]): AgentTreeNode[] {
-	// One node per agent, in input order, indexed by account id.
+/** Derive the agent tree in stable input order; board.ts treeOrder relies on it (C-T5).
+ *  Dangling or cyclic parents become roots so no agent is dropped; the server rejects
+ *  cycles, so the guard only covers stale live data. Home and parented channels slot
+ *  under their agent once; a channel whose parent is absent stays unclaimed. */
+export function agentTree(
+	agents: readonly Agent[],
+	channels: readonly Channel[] = [],
+): AgentTreeNode[] {
+	// One node per agent, in input order, indexed by account and home channel id.
 	const byId = new Map<string, AgentTreeNode>();
+	const byHomeChannelId = new Map<string, AgentTreeNode>();
 	for (const agent of agents) {
-		byId.set(agent.account.id, { agent, children: [] });
+		const node = { agent, channels: [], children: [] } satisfies AgentTreeNode;
+		byId.set(agent.account.id, node);
+		if (agent.account.homeChannelId) {
+			byHomeChannelId.set(agent.account.homeChannelId, node);
+		}
 	}
+	const claimedChannelIds = new Set<string>();
+	const claimChannel = (channel: Channel): void => {
+		if (claimedChannelIds.has(channel.id)) return;
+		const parentId = channel.parentAgentId;
+		const owner =
+			byHomeChannelId.get(channel.id) ??
+			(parentId ? byId.get(parentId) : undefined);
+		if (!owner) return;
+		owner.channels.push(channel);
+		claimedChannelIds.add(channel.id);
+	};
+	for (const channel of channels) claimChannel(channel);
 	// Would attaching `id` under `parentId` close a cycle? Walk parentId's
 	// ancestor chain; a back-edge to `id` (incl. a self-parent) means yes. The
 	// visited set bounds the walk so a pre-existing cycle cannot spin it.
@@ -421,6 +432,7 @@ export function agentTree(agents: readonly Agent[]): AgentTreeNode[] {
 		}
 		return false;
 	};
+
 	// Second pass, still in input order: each node joins its parent's children
 	// (present parent, no cycle) or the roots (empty/absent, dangling, or a
 	// parentAgentId that would close a cycle — promoted, never dropped).

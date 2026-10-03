@@ -1606,32 +1606,15 @@ describe("log panel (D2)", () => {
 });
 
 describe("sidebar section collapse", () => {
-	// The two sidebar sections collapse independently and each round-trips: both
-	// default to not-collapsed, collapsing one leaves the other expanded, and both
-	// can be collapsed at once. A single-slot or shared-flag implementation would
-	// fail the "channels collapsed, agents still expanded" leg.
-	test("collapses channels and agents independently", () => {
-		withStore((s) => {
-			expect(s.isSectionCollapsed("channels")).toBe(false);
-			expect(s.isSectionCollapsed("agents")).toBe(false);
-
-			s.toggleSection("channels");
+	test("collapses and expands the unified sidebar section", () => {
+		withStore((store) => {
+			expect(store.isSectionCollapsed("channels")).toBe(false);
+			store.toggleSection("channels");
 			flush();
-			expect(s.isSectionCollapsed("channels")).toBe(true);
-			// Collapsing channels leaves agents expanded.
-			expect(s.isSectionCollapsed("agents")).toBe(false);
-
-			s.toggleSection("agents");
+			expect(store.isSectionCollapsed("channels")).toBe(true);
+			store.toggleSection("channels");
 			flush();
-			// Both collapsed simultaneously.
-			expect(s.isSectionCollapsed("channels")).toBe(true);
-			expect(s.isSectionCollapsed("agents")).toBe(true);
-
-			s.toggleSection("channels");
-			flush();
-			// Re-toggling channels expands only channels; agents stay collapsed.
-			expect(s.isSectionCollapsed("channels")).toBe(false);
-			expect(s.isSectionCollapsed("agents")).toBe(true);
+			expect(store.isSectionCollapsed("channels")).toBe(false);
 		});
 	});
 });
