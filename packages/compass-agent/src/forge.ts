@@ -139,6 +139,9 @@ export const getPullRequestParameters = type({
 	pr_number: type("number.integer >= 1"),
 });
 
+// Mirrors listIssuesLimit in go/server/forge.go: limit 0 means a page of 30.
+const LIST_ISSUES_DEFAULT_LIMIT = 30;
+
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const listIssuesParameters = type({
 	...forgeSelector,
@@ -623,6 +626,12 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 			const records = issues.flatMap((issue) =>
 				renderIssueRecord(issue, fence),
 			);
+			// The response carries no total, so a full page is the only sign more exist.
+			const limit = params.limit ?? LIST_ISSUES_DEFAULT_LIMIT;
+			if (issues.length >= limit)
+				records.push(
+					`[more ${fence}] (page full at ${limit} issues; more may exist: raise limit (max 100) or narrow state/labels)`,
+				);
 			return { content: [{ type: "text", text: framedRead(records) }] };
 		},
 	};
