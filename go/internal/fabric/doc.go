@@ -42,8 +42,8 @@
 // Every error surfaces wrapped; nothing is swallowed and nothing panics. A
 // subject built from an invalid token is refused rather than silently corrupted
 // (see [ValidSubjectToken]), an undecodable [EventRef] is parked on the DLQ
-// rather than dropped, and a subscriber callback that panics is caught, retried
-// up to Config.MaxDeliver times, then parked.
+// rather than dropped, and a subscriber callback that returns an error or
+// panics is retried up to Config.MaxDeliver times, then parked.
 //
 // Those last two are JetStream properties. On [RoutingFabric] there is nowhere
 // to park — core NATS has no ack, so an undecodable payload and a panicking

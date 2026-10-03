@@ -26,13 +26,15 @@ type Unsubscribe func()
 type EventFabric interface {
 	Publish(ctx context.Context, subject string, ref EventRef) error
 	// Subscribe and SubscribeKind invoke fn serially per subscription, with a
-	// ctx carrying the publisher's span context when one was propagated.
-	Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef)) (Unsubscribe, error)
+	// ctx carrying the publisher's span context when one was propagated. fn
+	// returning nil acks the event; an error or a panic redelivers it up to
+	// MaxDeliver attempts, then parks it on DLQSubject.
+	Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error)
 	// SubscribeKind is the tenant-wildcard read side: one durable queue-group
 	// consumer receiving one kind across EVERY tenant, which is what the
 	// per-Server delivery singleton needs (§T3). Publish stays per-tenant and
 	// concrete.
-	SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef)) (Unsubscribe, error)
+	SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef) error) (Unsubscribe, error)
 	// OnReconnect runs fn after each NATS reconnect, once the fabric has logged
 	// it, so a consumer can sweep for events lost during the outage. fn runs on
 	// a fabric goroutine, never concurrently with itself; a burst of reconnects
