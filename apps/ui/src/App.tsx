@@ -21,17 +21,21 @@ import { RightSidebar } from "./components/RightSidebar";
 import { RuntimeMarker } from "./components/RuntimeMarker";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { StateDot } from "./components/StateDot";
+import { TopBarSearch } from "./components/TopBarSearch";
 import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
 import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
+import type { LiveClients } from "./live/client";
 
 // Compass shell: routed center view with persistent navigation and usage chrome.
 
 // App owns the shell layout; the matched route renders in its center region.
 // Bind the store router seam to the active router location and navigation.
-const App: Component<RouteSectionProps> = (props) => {
+const App: Component<
+	RouteSectionProps & { clients?: Pick<LiveClients, "comms" | "compass"> }
+> = (props) => {
 	const store = useStore();
 	const navigate = useNavigate();
 	const location = useLocation();
@@ -106,6 +110,7 @@ const App: Component<RouteSectionProps> = (props) => {
 					</Show>
 				</nav>
 
+				<TopBarSearch clients={props.clients} />
 				<span class="topbar-spacer" />
 
 				<div class={["daemon", { live: store.daemon().live }]}>
@@ -177,7 +182,7 @@ const App: Component<RouteSectionProps> = (props) => {
 			</Show>
 
 			<Show when={store.paletteOpen()}>
-				<Palette />
+				<Palette clients={props.clients} />
 			</Show>
 		</div>
 	);

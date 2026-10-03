@@ -102,5 +102,5 @@ async function main(
 		}),
 	);
 
-	mountShell(root, store, queryClient);
+	mountShell(root, store, queryClient, clients);
 }

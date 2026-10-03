@@ -1,4 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import {
+	AskQuestionSchema,
+	AskSchema,
+	CommsService,
+	create,
+	createCommsClient,
+	createCompassClient,
+	createRouterTransport,
+	type Message,
+	MessageBlockSchema,
+	MessageSchema,
+	type Transport,
+} from "@compass/client";
 import { createRoot } from "solid-js";
 import { STUB_COMMS_STATE } from "../comms-stub";
 import { type AppStore, createAppStore } from "../store";
@@ -36,6 +49,71 @@ async function withStoreAsync(
 /** Drain the microtask queue so an async accessor (assignedIssues) settles. */
 async function flush(): Promise<void> {
 	for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
+function searchTransport(
+	hits: Message[],
+	onCall: () => void = () => {},
+	shouldReject = false,
+): Transport {
+	return createRouterTransport(({ service }) => {
+		service(CommsService, {
+			searchMessages: () => {
+				onCall();
+				if (shouldReject) throw new Error("search unavailable");
+				return { messages: hits };
+			},
+		});
+	});
+}
+
+function makeSearchHit(id: string, topicId: string, text: string) {
+	return create(MessageSchema, {
+		id,
+		topicId,
+		blocks: [
+			create(MessageBlockSchema, {
+				block: { case: "text", value: text },
+			}),
+		],
+	});
+}
+function makeAskSearchHit(id: string, topicId: string, question: string) {
+	return create(MessageSchema, {
+		id,
+		topicId,
+		blocks: [
+			create(MessageBlockSchema, {
+				block: {
+					case: "ask",
+					value: create(AskSchema, {
+						questions: [
+							create(AskQuestionSchema, { questionId: "q1", question }),
+						],
+					}),
+				},
+			}),
+		],
+	});
+}
+
+function makeSearchHitWithLeadingNewline(id: string, topicId: string) {
+	return create(MessageSchema, {
+		id,
+		topicId,
+		blocks: [
+			create(MessageBlockSchema, {
+				block: { case: "text", value: "\nA title after a blank line" },
+			}),
+		],
+	});
+}
+
+function liveSearchClients(transport: Transport) {
+	return {
+		comms: createCommsClient(transport),
+		compass: createCompassClient(transport),
+	};
 }
 
 const CURRENT_GEN = () => 1;
@@ -104,6 +182,168 @@ describe("createStoreDestinationProviders", () => {
 			const views =
 				(await providers.find((p) => p.id === "views")?.query("sett")) ?? [];
 			expect(views.map((d) => d.title)).toEqual(["Settings"]);
+		});
+	});
+	test("message hits map to rows and navigate through their topic", async () => {
+		await withStoreAsync(async (store) => {
+			let calls = 0;
+			const clients = liveSearchClients(
+				searchTransport(
+					[
+						makeSearchHit(
+							"msg-search",
+							"top-ann-posture",
+							"First line\nSecond line",
+						),
+					],
+					() => calls++,
+				),
+			);
+			const providers = createStoreDestinationProviders(store, clients);
+			const messages = await providers
+				.find((p) => p.id === "messages")
+				?.query("posture");
+			expect(calls).toBe(1);
+			expect(
+				messages?.map((message) => [message.id, message.title, message.kind]),
+			).toEqual([["msg-search", "First line", "message"]]);
+			messages?.[0]?.navigate();
+			await flush();
+			expect(store.view()).toBe("topic");
+			expect(store.selectedTopicId()).toBe("top-ann-posture");
+		});
+	});
+	test("message titles truncate at 120 characters", async () => {
+		await withStoreAsync(async (store) => {
+			const longText = "x".repeat(121);
+			const clients = liveSearchClients(
+				searchTransport([
+					makeSearchHit("msg-long", "top-ann-posture", longText),
+				]),
+			);
+			const messages = await createStoreDestinationProviders(store, clients)
+				.find((provider) => provider.id === "messages")
+				?.query("x");
+			expect(messages?.[0]?.title).toBe(`${"x".repeat(117)}…`);
+		});
+	});
+
+	test("ask-only hits use the question as their title", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([
+					makeAskSearchHit("msg-ask", "top-ann-posture", "Which approach?"),
+				]),
+			);
+			const messages = await createStoreDestinationProviders(store, clients)
+				.find((provider) => provider.id === "messages")
+				?.query("approach");
+			expect(messages?.map((message) => message.title)).toEqual([
+				"Which approach?",
+			]);
+		});
+	});
+
+	test("message titles skip leading blank lines", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([
+					makeSearchHitWithLeadingNewline("msg-newline", "top-ann-posture"),
+				]),
+			);
+			const messages = await createStoreDestinationProviders(store, clients)
+				.find((provider) => provider.id === "messages")
+				?.query("title");
+			expect(messages?.map((message) => message.title)).toEqual([
+				"A title after a blank line",
+			]);
+		});
+	});
+
+	test("message hits with no text or ask question are dropped", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([makeSearchHit("msg-blank", "top-ann-posture", "\n ")]),
+			);
+			const messages = await createStoreDestinationProviders(store, clients)
+				.find((provider) => provider.id === "messages")
+				?.query("blank");
+			expect(messages).toEqual([]);
+		});
+	});
+
+	test("message provider returns no rows without clients", async () => {
+		await withStoreAsync(async (store) => {
+			const messages = await createStoreDestinationProviders(store)
+				.find((provider) => provider.id === "messages")
+				?.query("search");
+			expect(messages).toEqual([]);
+		});
+	});
+
+	test("message hits outside the client-held topic set are dropped", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([
+					makeSearchHit("msg-off-set", "top-archived", "Archived hit"),
+				]),
+			);
+			const providers = createStoreDestinationProviders(store, clients);
+			const messages = await providers
+				.find((p) => p.id === "messages")
+				?.query("archived");
+			expect(messages).toEqual([]);
+		});
+	});
+
+	test("message rows keep the server's best-match-first order", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([
+					makeSearchHit("msg-best", "top-ann-posture", "body mentions it"),
+					makeSearchHit("msg-next", "top-ann-posture", "posture"),
+				]),
+			);
+			const providers = createStoreDestinationProviders(store, clients);
+			const byKind = await queryDestinations(
+				providers,
+				"posture",
+				1,
+				CURRENT_GEN,
+			);
+			expect((byKind?.get("message") ?? []).map((d) => d.id)).toEqual([
+				"msg-best",
+				"msg-next",
+			]);
+		});
+	});
+
+	test("empty and whitespace message queries do not make RPC calls", async () => {
+		await withStoreAsync(async (store) => {
+			let calls = 0;
+			const clients = liveSearchClients(searchTransport([], () => calls++));
+			const providers = createStoreDestinationProviders(store, clients);
+			const messages = providers.find((p) => p.id === "messages");
+			expect(await messages?.query("")).toEqual([]);
+			expect(await messages?.query("  \t ")).toEqual([]);
+			expect(calls).toBe(0);
+		});
+	});
+
+	test("a rejected message search preserves other destination groups", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(searchTransport([], undefined, true));
+			const providers = createStoreDestinationProviders(store, clients);
+			const byKind = await queryDestinations(
+				providers,
+				"settings",
+				1,
+				CURRENT_GEN,
+			);
+			expect(byKind?.get("message")).toBeUndefined();
+			expect(byKind?.get("view")?.map((view) => view.title)).toEqual([
+				"Settings",
+			]);
 		});
 	});
 });
