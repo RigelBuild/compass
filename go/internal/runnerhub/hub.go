@@ -221,9 +221,9 @@ type SessionBindingStore interface {
 	// DeleteSessionBinding releases one session's binding — the unbind write.
 	// Idempotent: releasing an already-released session is a no-op success.
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
-	// DeleteSessionBindingsForRunner is the reconnect sweep: it releases every
+	// DeleteSessionBindingsForRunner is the enroll sweep: it releases every
 	// binding attached to runnerID and RETURNS the rows it removed, driving the
-	// re-enroll reap (offline edges + held-deliver reap) from durable truth
+	// enroll reap (offline edges + held-deliver reap) from durable truth
 	// rather than the in-RAM snapshots.
 	DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]store.SessionBinding, error)
 	// EffectiveTenant names the tenant a request-scoped call resolves against,
@@ -980,10 +980,10 @@ type promotedPair struct {
 // whether it re-attached (OQ6, single-Runner MVP). It drops ALL agent-comms bindings
 // (OQ-2): a restarted Runner could re-mint a still-bound id, so clearing forces a
 // re-minted id to CodeNotFound until bound anew. RIG-3108: the maps are a read-through
-// cache over session_bindings whose rows survive process death — a RE-ENROLL durably
-// reaps the rows (fail-closed requires dead sessions gone) and drives OFFLINE + reap
-// edges from them, while a FIRST enroll (Server restart, sessions live) only clears the
-// maps so valid rows survive. The reap runs request-scoped by RLS.
+// cache over session_bindings whose rows survive process death. EVERY enroll durably
+// reaps this Runner's rows and drives OFFLINE + reap edges from them: a Runner enrolls
+// once per process and then sweeps its stale containers, so no pre-enroll session of
+// it survives, even on a fresh hub after a Server restart. The reap runs request-scoped by RLS.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool) {
 	h.mu.Lock()
 	reattached = h.runner != nil
@@ -1015,24 +1015,23 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	// Refuse read-through from the instant the maps are cleared, not after the reap
 	// returns: the reap can block for seconds, and a concurrent resolver in that gap
 	// would read a not-yet-deleted row back, resurrecting a session just declared dead.
-	// Pessimistic-true costs nothing on success — the maps are empty.
-	if bindings != nil && reattached {
+	if bindings != nil {
 		h.reapStale = true
 	}
 	h.mu.Unlock()
 
-	// Choose the reap set. A re-enroll with a durable store reaps the ROWS and
-	// drives the edges from what it removed (the authoritative set); everything
-	// else falls back to the in-RAM snapshot taken above.
+	// Choose the reap set. With a durable store the ROWS are reaped and the edges
+	// driven from what was removed (the authoritative set); without one, the in-RAM
+	// snapshot taken above.
 	offline := ramOffline
 	reapedSessions := ramReaped
-	if bindings != nil && reattached {
+	if bindings != nil {
 		rows, err := bindings.DeleteSessionBindingsForRunner(ctx, id)
 		if err != nil {
 			// A durable-reap fault must not wedge the reconnect: log and fall back to the
 			// in-RAM snapshot (still cleared). The rows SURVIVE and name dead sessions, so
 			// reapStale STAYS raised — a read-through would resurrect one.
-			h.log.Error("durable session-binding reap failed on re-enroll; using in-RAM snapshot, read-through disabled until a reap succeeds",
+			h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled until a reap succeeds",
 				"runner_id", id, "error", err)
 		} else {
 			offline = make([]promotedPair, 0, len(rows))
