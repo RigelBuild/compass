@@ -150,5 +150,12 @@ export interface ShimLink {
  * the parity-pinned toolchain — is unit-checked without a nix build.
  */
 export function shimPlan(outPath: string): readonly ShimLink[] {
+	// --print-out-paths prints one line per output; a multi-output attr would
+	// otherwise become one garbage symlink target.
+	if (outPath.includes("\n")) {
+		throw new Error(
+			`devenv-cli: nix build printed more than one out-path:\n${outPath}`,
+		);
+	}
 	return [{ link: "devenv", target: `${outPath}/bin/devenv` }];
 }
