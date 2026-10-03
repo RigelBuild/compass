@@ -22,12 +22,15 @@ import {
 	queryDestinations,
 } from "../keyboard/destinations";
 import { createRovingGroup } from "../keyboard/roving";
+import type { LiveClients } from "../live/client";
 
 const FOCUS_GLOBAL = "search.focusGlobal" as CommandId;
 
-export const TopBarSearch: Component = () => {
+export const TopBarSearch: Component<{
+	clients?: Pick<LiveClients, "comms" | "compass">;
+}> = (props) => {
 	const store = useStore();
-	const providers = createStoreDestinationProviders(store);
+	const providers = createStoreDestinationProviders(store, props.clients);
 	const [query, setQuery] = createSignal("");
 	const [focused, setFocused] = createSignal(false);
 	const [destinations, setDestinations] = createSignal<Map<

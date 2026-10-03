@@ -52,6 +52,7 @@ export type DestinationKind =
 	| "topic"
 	| "issue"
 	| "pr"
+	| "message"
 	| "view";
 
 /**

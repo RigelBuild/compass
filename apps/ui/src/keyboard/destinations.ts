@@ -15,6 +15,7 @@
  * `Destination` so the surface can order within a kind.
  */
 
+import type { Message } from "@compass/client";
 import type { LiveClients } from "../live/client";
 import type { AppStore } from "../store";
 import type {
@@ -58,14 +59,45 @@ const VIEW_TARGETS: readonly { id: string; title: string }[] = [
 	{ id: "settings", title: "Settings" },
 ];
 
+function mapMessageHit(
+	message: Message,
+	store: AppStore,
+	rank: number,
+): Destination[] {
+	const topic = store
+		.topics()
+		.find((candidate) => candidate.id === message.topicId);
+	// Search hits lack channel ids, so an off-set topic cannot be routed safely.
+	if (!topic) return [];
+	const firstLine =
+		message.blocks
+			.filter((block) => block.block.case === "text")
+			.map((block) => block.block.value)
+			.join(" ")
+			.split(/\r?\n/, 1)[0]
+			?.trim() ?? "";
+	const title =
+		firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine;
+	// The server returns best-match-first; score by rank so the group sort keeps it.
+	const score = -rank;
+	return [
+		{
+			id: message.id,
+			title,
+			kind: "message",
+			score,
+			navigate: () => store.openTopic(message.topicId),
+		},
+	];
+}
+
 /**
- * Build every store-backed destination provider (all six kinds ship, D9). Each
- * provider's `query` resolves against the store's live accessors at call time,
- * so a streamed roster/issue update is reflected on the next keystroke.
+ * Build every store-backed destination provider. Live search clients are absent
+ * in fixture mode; local providers still resolve from the store's accessors.
  */
 export function createStoreDestinationProviders(
 	store: AppStore,
-	_clients?: Pick<LiveClients, "comms" | "compass">,
+	clients?: Pick<LiveClients, "comms" | "compass">,
 ): DestinationProvider[] {
 	return [
 		{
@@ -149,6 +181,21 @@ export function createStoreDestinationProviders(
 						},
 					),
 				),
+		},
+		{
+			id: "messages",
+			query: async (input) => {
+				const query = input.trim();
+				if (!query || !clients) return [];
+				const response = await clients.comms.searchMessages({
+					query,
+					limit: 50,
+					snapshotSeq: 0n,
+				});
+				return response.messages.flatMap((message, rank) =>
+					mapMessageHit(message, store, rank),
+				);
+			},
 		},
 	];
 }

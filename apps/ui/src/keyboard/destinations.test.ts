@@ -1,4 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import {
+	CommsService,
+	create,
+	createCommsClient,
+	createCompassClient,
+	createRouterTransport,
+	type Message,
+	MessageBlockSchema,
+	MessageSchema,
+	type Transport,
+} from "@compass/client";
 import { createRoot } from "solid-js";
 import { STUB_COMMS_STATE } from "../comms-stub";
 import { type AppStore, createAppStore } from "../store";
@@ -36,6 +47,41 @@ async function withStoreAsync(
 /** Drain the microtask queue so an async accessor (assignedIssues) settles. */
 async function flush(): Promise<void> {
 	for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
+function searchTransport(
+	hits: Message[],
+	onCall: () => void = () => {},
+	shouldReject = false,
+): Transport {
+	return createRouterTransport(({ service }) => {
+		service(CommsService, {
+			searchMessages: () => {
+				onCall();
+				if (shouldReject) throw new Error("search unavailable");
+				return { messages: hits };
+			},
+		});
+	});
+}
+
+function makeSearchHit(id: string, topicId: string, text: string) {
+	return create(MessageSchema, {
+		id,
+		topicId,
+		blocks: [
+			create(MessageBlockSchema, {
+				block: { case: "text", value: text },
+			}),
+		],
+	});
+}
+
+function liveSearchClients(transport: Transport) {
+	return {
+		comms: createCommsClient(transport),
+		compass: createCompassClient(transport),
+	};
 }
 
 const CURRENT_GEN = () => 1;
@@ -104,6 +150,101 @@ describe("createStoreDestinationProviders", () => {
 			const views =
 				(await providers.find((p) => p.id === "views")?.query("sett")) ?? [];
 			expect(views.map((d) => d.title)).toEqual(["Settings"]);
+		});
+	});
+	test("message hits map to rows and navigate through their topic", async () => {
+		await withStoreAsync(async (store) => {
+			let calls = 0;
+			const clients = liveSearchClients(
+				searchTransport(
+					[
+						makeSearchHit(
+							"msg-search",
+							"top-ann-posture",
+							"First line\nSecond line",
+						),
+					],
+					() => calls++,
+				),
+			);
+			const providers = createStoreDestinationProviders(store, clients);
+			const messages = await providers
+				.find((p) => p.id === "messages")
+				?.query("posture");
+			expect(calls).toBe(1);
+			expect(
+				messages?.map((message) => [message.id, message.title, message.kind]),
+			).toEqual([["msg-search", "First line", "message"]]);
+			messages?.[0]?.navigate();
+			await flush();
+			expect(store.view()).toBe("topic");
+			expect(store.selectedTopicId()).toBe("top-ann-posture");
+		});
+	});
+
+	test("message hits outside the client-held topic set are dropped", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([
+					makeSearchHit("msg-off-set", "top-archived", "Archived hit"),
+				]),
+			);
+			const providers = createStoreDestinationProviders(store, clients);
+			const messages = await providers
+				.find((p) => p.id === "messages")
+				?.query("archived");
+			expect(messages).toEqual([]);
+		});
+	});
+
+	test("message rows keep the server's best-match-first order", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([
+					makeSearchHit("msg-best", "top-ann-posture", "body mentions it"),
+					makeSearchHit("msg-next", "top-ann-posture", "posture"),
+				]),
+			);
+			const providers = createStoreDestinationProviders(store, clients);
+			const byKind = await queryDestinations(
+				providers,
+				"posture",
+				1,
+				CURRENT_GEN,
+			);
+			expect((byKind?.get("message") ?? []).map((d) => d.id)).toEqual([
+				"msg-best",
+				"msg-next",
+			]);
+		});
+	});
+
+	test("empty and whitespace message queries do not make RPC calls", async () => {
+		await withStoreAsync(async (store) => {
+			let calls = 0;
+			const clients = liveSearchClients(searchTransport([], () => calls++));
+			const providers = createStoreDestinationProviders(store, clients);
+			const messages = providers.find((p) => p.id === "messages");
+			expect(await messages?.query("")).toEqual([]);
+			expect(await messages?.query("  \t ")).toEqual([]);
+			expect(calls).toBe(0);
+		});
+	});
+
+	test("a rejected message search preserves other destination groups", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(searchTransport([], undefined, true));
+			const providers = createStoreDestinationProviders(store, clients);
+			const byKind = await queryDestinations(
+				providers,
+				"settings",
+				1,
+				CURRENT_GEN,
+			);
+			expect(byKind?.get("message")).toBeUndefined();
+			expect(byKind?.get("view")?.map((view) => view.title)).toEqual([
+				"Settings",
+			]);
 		});
 	});
 });
