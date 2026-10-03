@@ -1,20 +1,22 @@
-import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { flush as flushSync } from "solid-js";
 import type { Destination, DestinationProvider } from "../keyboard/commands";
-import { SEARCH_DEBOUNCE_MS } from "../keyboard/destination-surface";
+import { setSearchDebounceMsForTest } from "../keyboard/destination-surface";
 import * as destinationsModule from "../keyboard/destinations";
 import { flush, mountApp } from "../test-router";
 
+beforeEach(() => setSearchDebounceMsForTest(0));
 afterEach(() => {
 	cleanup();
-	jest.useRealTimers();
+	setSearchDebounceMsForTest(150);
 });
 
 async function settleSearch(): Promise<void> {
-	jest.advanceTimersByTime(0);
-	flushSync();
-	jest.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+	const { promise, resolve } = Promise.withResolvers<void>();
+	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield for provider debounce; not a timed wait
+	setTimeout(resolve, 0);
+	await promise;
 	await flush();
 }
 
@@ -23,7 +25,6 @@ const input = (container: HTMLElement) =>
 
 describe("TopBarSearch", () => {
 	test("typing renders grouped destination rows and Enter navigates", async () => {
-		jest.useFakeTimers();
 		const { container, store } = mountApp("/");
 		const search = input(container) as HTMLInputElement;
 		fireEvent.input(search, { target: { value: "settings" } });
@@ -41,7 +42,6 @@ describe("TopBarSearch", () => {
 	});
 
 	test("Escape clears and returns focus to the prior element", async () => {
-		jest.useFakeTimers();
 		const { container } = mountApp("/");
 		const prior = container.querySelector<HTMLElement>(".topbar .view-tab");
 		const search = input(container) as HTMLInputElement;
@@ -54,7 +54,6 @@ describe("TopBarSearch", () => {
 	});
 
 	test("latest query wins when an earlier provider resolves slowly", async () => {
-		jest.useFakeTimers();
 		const pending: Array<(rows: Destination[]) => void> = [];
 		const querySpy = spyOn(
 			destinationsModule,
@@ -99,7 +98,6 @@ describe("TopBarSearch", () => {
 	});
 
 	test("debounces a typing burst into one provider query", async () => {
-		jest.useFakeTimers();
 		let queries = 0;
 		const querySpy = spyOn(
 			destinationsModule,

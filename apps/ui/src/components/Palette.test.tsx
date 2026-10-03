@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { flush as flushSync } from "solid-js";
-import { SEARCH_DEBOUNCE_MS } from "../keyboard/destination-surface";
+import { setSearchDebounceMsForTest } from "../keyboard/destination-surface";
 import { flush, mountApp } from "../test-router";
 
 // The command palette's rendered contract (RIG-2483). Mounts the full shell so
@@ -32,17 +32,18 @@ const input = (c: HTMLElement) =>
 function focusBoardStop(container: HTMLElement): void {
 	container.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')?.focus();
 }
-beforeEach(() => jest.useFakeTimers());
+beforeEach(() => setSearchDebounceMsForTest(0));
 afterEach(() => {
 	cleanup();
-	jest.useRealTimers();
+	setSearchDebounceMsForTest(150);
 	setPlatform("other");
 });
 
 async function settle(): Promise<void> {
-	jest.advanceTimersByTime(0);
-	await flush();
-	jest.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+	const { promise, resolve } = Promise.withResolvers<void>();
+	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield for provider debounce; not a timed wait
+	setTimeout(resolve, 0);
+	await promise;
 	await flush();
 }
 describe("Palette (RIG-2483)", () => {
@@ -221,7 +222,7 @@ describe("Palette (RIG-2483)", () => {
 		expect(
 			loadingRow?.querySelector('.cx-loader[data-topology="bar"]'),
 		).not.toBeNull();
-		jest.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+		await settle();
 		await flush();
 		expect(container.querySelector(".cx-palette-loading")).toBeNull();
 	});

@@ -1,6 +1,10 @@
 import type { Destination, DestinationKind } from "./commands";
 
-export const SEARCH_DEBOUNCE_MS = 150;
+export let SEARCH_DEBOUNCE_MS = 150;
+
+export function setSearchDebounceMsForTest(ms: number): void {
+	SEARCH_DEBOUNCE_MS = ms;
+}
 export const KIND_LABELS: Record<DestinationKind, string> = {
 	view: "Views",
 	agent: "Agents",
