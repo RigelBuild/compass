@@ -22,7 +22,8 @@ let
   pkgs = import nixpkgsSrc { };
 
   # Only the two branded faces the design tokens name. The font-coverage gate
-  # keeps rendered UI text inside Space Mono, so no fallback face is pinned.
+  # keeps literal UI source text, including the baseline fixtures, inside Space
+  # Mono. Runtime text it cannot see renders as tofu under this config.
   fontDirs = [
     "${pkgs.google-fonts.override { fonts = [ "SpaceMono" ]; }}/share/fonts/truetype"
     "${pkgs.departure-mono}/share/fonts/otf"
