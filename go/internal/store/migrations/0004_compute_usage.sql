@@ -18,10 +18,13 @@ CREATE TABLE compute_usage_events (
 
 CREATE INDEX compute_usage_events_occurred_at_idx ON compute_usage_events (tenant_id, occurred_at);
 
-ALTER TABLE session_bindings ADD COLUMN usage_interval_id TEXT;
+-- Keep the default so older servers can insert bindings during a rolling deploy.
+-- squawk-ignore adding-field-with-default
+ALTER TABLE session_bindings ADD COLUMN usage_interval_id TEXT NOT NULL DEFAULT gen_random_uuid()::TEXT;
 
-UPDATE session_bindings AS b
-   SET usage_interval_id = gen_random_uuid()::TEXT;
+GRANT SELECT, INSERT ON compute_usage_events TO compass_app, compass_system;
+
+SET LOCAL ROLE compass_system;
 
 INSERT INTO compute_usage_events (
     tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
@@ -35,11 +38,7 @@ SELECT b.tenant_id, gen_random_uuid()::TEXT AS id, b.usage_interval_id, 'start' 
     ON a.account_id = b.agent_account_id
    AND a.tenant_id = b.tenant_id;
 
--- Every existing row got an id above, so the cutover cannot fail.
--- squawk-ignore adding-not-nullable-field
-ALTER TABLE session_bindings ALTER COLUMN usage_interval_id SET NOT NULL;
-
-GRANT SELECT, INSERT ON compute_usage_events TO compass_app, compass_system;
+RESET ROLE;
 
 DO $$
 DECLARE

@@ -4,7 +4,9 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -18,6 +20,7 @@ type computeUsageEvent struct {
 	OwnerUserID    string
 	SessionID      string
 	RunnerID       string
+	OccurredAt     time.Time
 	Estimated      bool
 }
 
@@ -25,7 +28,7 @@ func computeEvents(t *testing.T, s *Store, tenant TenantID, accountID AccountID)
 	t.Helper()
 	rows, err := s.pool.Query(t.Context(), `
 		SELECT tenant_id, id, interval_id, kind, agent_account_id, owner_user_id,
-		       session_id, runner_id, estimated
+		       session_id, runner_id, occurred_at, estimated
 		  FROM compute_usage_events
 		 WHERE tenant_id = $1 AND agent_account_id = $2
 		 ORDER BY session_id, CASE kind WHEN 'start' THEN 0 ELSE 1 END`, string(tenant), string(accountID))
@@ -38,7 +41,7 @@ func computeEvents(t *testing.T, s *Store, tenant TenantID, accountID AccountID)
 		var event computeUsageEvent
 		if err := rows.Scan(&event.TenantID, &event.ID, &event.IntervalID, &event.Kind,
 			&event.AgentAccountID, &event.OwnerUserID, &event.SessionID, &event.RunnerID,
-			&event.Estimated); err != nil {
+			&event.OccurredAt, &event.Estimated); err != nil {
 			t.Fatalf("scan compute usage event: %v", err)
 		}
 		events = append(events, event)
@@ -122,8 +125,35 @@ func TestComputeUsageRepointClosesPriorInterval(t *testing.T) {
 	if !hasBefore || !hasAfter || !hasEnd || before.IntervalID == after.IntervalID || closed.IntervalID != before.IntervalID {
 		t.Fatalf("re-point events = %+v, want distinct starts and end of displaced interval", events)
 	}
+	if closed.OccurredAt.After(after.OccurredAt) {
+		t.Fatalf("re-point end occurred at %s, after replacement start at %s", closed.OccurredAt, after.OccurredAt)
+	}
 	if after.RunnerID != "runner-after" || closed.RunnerID != "runner-before" || closed.OwnerUserID != string(owner.ID) {
 		t.Fatalf("re-point event metadata = %+v, want runner and owner preserved per interval", events)
+	}
+}
+
+func TestComputeUsageConflictRollsBackIntervalEvents(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "compute-conflict-owner")
+	accountX := mustAgent(t, s, owner.ID, "compute-conflict-x")
+	accountY := mustAgent(t, s, owner.ID, "compute-conflict-y")
+	tenant := s.EffectiveTenant(ctx)
+	mustBind(t, ctx, s, "sess-1", accountX.ID, "runner-1")
+	mustBind(t, ctx, s, "sess-2", accountY.ID, "runner-1")
+
+	before := computeEvents(t, s, tenant, accountX.ID)
+	if _, err := s.RecordSessionBinding(ctx, "sess-2", accountX.ID, "runner-1"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("RecordSessionBinding(X, sess-2) error = %v, want ErrConflict", err)
+	}
+	after := computeEvents(t, s, tenant, accountX.ID)
+	if len(before) != 1 || len(after) != 1 || after[0].Kind != "start" || after[0].SessionID != "sess-1" ||
+		after[0].IntervalID != before[0].IntervalID || !after[0].OccurredAt.Equal(before[0].OccurredAt) {
+		t.Fatalf("account X events before=%+v after=%+v, want its unchanged open start only", before, after)
+	}
+	if sessionID, err := s.SessionForAccount(ctx, accountX.ID); err != nil || sessionID != "sess-1" {
+		t.Fatalf("account X resolves to (%q, %v), want sess-1", sessionID, err)
 	}
 }
 

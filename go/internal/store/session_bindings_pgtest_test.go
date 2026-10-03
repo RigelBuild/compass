@@ -356,11 +356,12 @@ func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
 	z := mustAgent(t, s, owner.ID, "agent-z")
 	elsewhere := mustAgent(t, s, owner.ID, "agent-elsewhere")
 
+	tenant := s.EffectiveTenant(ctx)
 	for _, bind := range []SessionBinding{
-		{SessionID: "sess-z", AccountID: z.ID, RunnerID: "runner-1"},
-		{SessionID: "sess-b", AccountID: b.ID, RunnerID: "runner-1"},
-		{SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
-		{SessionID: "sess-elsewhere", AccountID: elsewhere.ID, RunnerID: "runner-2"},
+		{TenantID: tenant, SessionID: "sess-z", AccountID: z.ID, RunnerID: "runner-1"},
+		{TenantID: tenant, SessionID: "sess-b", AccountID: b.ID, RunnerID: "runner-1"},
+		{TenantID: tenant, SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
+		{TenantID: tenant, SessionID: "sess-elsewhere", AccountID: elsewhere.ID, RunnerID: "runner-2"},
 	} {
 		mustBind(t, ctx, s, bind.SessionID, bind.AccountID, bind.RunnerID)
 	}
@@ -374,9 +375,9 @@ func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
 	// every swept binding, with the account each DISCONNECTED edge needs, in
 	// sorted order (which is NOT the order they were seeded in).
 	want := []SessionBinding{
-		{SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
-		{SessionID: "sess-b", AccountID: b.ID, RunnerID: "runner-1"},
-		{SessionID: "sess-z", AccountID: z.ID, RunnerID: "runner-1"},
+		{TenantID: s.EffectiveTenant(ctx), SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
+		{TenantID: s.EffectiveTenant(ctx), SessionID: "sess-b", AccountID: b.ID, RunnerID: "runner-1"},
+		{TenantID: s.EffectiveTenant(ctx), SessionID: "sess-z", AccountID: z.ID, RunnerID: "runner-1"},
 	}
 	if len(swept) != len(want) {
 		t.Fatalf("swept = %+v, want exactly the %d bindings on runner-1 (a :exec sweep would return none)", swept, len(want))
