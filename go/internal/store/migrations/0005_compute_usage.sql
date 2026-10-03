@@ -1,4 +1,4 @@
--- 0004_compute_usage: the append-only compute interval event log. Each
+-- 0005_compute_usage: the append-only compute interval event log. Each
 -- session binding is one billable interval; starts and ends commit with its row.
 
 CREATE TABLE compute_usage_events (
