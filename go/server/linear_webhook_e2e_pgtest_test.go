@@ -264,7 +264,7 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
-	cm := comms.NewComms(st, commsBus, admin.ID)
+	cm := comms.NewComms(st, commsBus, nil, admin.ID)
 
 	linear := newFakeLinearAPI(t)
 	tokens := linearagent.NewTokenSource(linE2EClientID, linE2ESecret, linear.srv.Client(), linear.srv.URL+"/oauth/token")
