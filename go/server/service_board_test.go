@@ -114,6 +114,7 @@ func TestListBoardIssuesReachableEmptyBoard(t *testing.T) {
 	}
 }
 
+// This reaches store validation before the handler dereferences its nil store.
 func TestSearchIssuesRejectsEmptyQuery(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)

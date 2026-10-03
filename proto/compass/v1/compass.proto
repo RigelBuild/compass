@@ -401,8 +401,8 @@ message SearchIssuesRequest {
 }
 
 message SearchIssuesResponse {
-	// Best-match-first.
-	repeated Issue issues = 1;
+  // Best-match-first.
+  repeated Issue issues = 1;
 }
 
 // The server's liveness state, pushed on connect and whenever it changes.
