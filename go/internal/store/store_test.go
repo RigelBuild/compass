@@ -169,8 +169,8 @@ func TestRestartDurabilityReadsBackFullGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveTokenHash after restart: %v", err)
 	}
-	if subj.Kind != SubjectAccount || subj.ID != string(user.ID) {
-		t.Fatalf("resolved subject = %+v, want {Account, %s}", subj, user.ID)
+	if subj.Kind != SubjectAccount || subj.ID != string(user.ID) || subj.Tenant != s2.EffectiveTenant(ctx) {
+		t.Fatalf("resolved subject = %+v, want account %s in tenant %s", subj, user.ID, s2.EffectiveTenant(ctx))
 	}
 }
 
