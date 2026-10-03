@@ -46,6 +46,7 @@ func Run(t *testing.T, h Harness) {
 	t.Run("compute_open_interval_ending_at_prune_horizon", computeOpenIntervalEndingAtPruneHorizon(h))
 	t.Run("compute_open_interval_crossing_prune_horizon_rebuilds_consistently", computeOpenIntervalCrossingPruneHorizon(h))
 	t.Run("compute_multiple_intervals_crossing_bucket_edges_rebuild_consistently", computeMultipleIntervalsCrossingBucketEdges(h))
+	t.Run("compute_zero_duration_at_prune_horizon_matches_sql", computeZeroDurationAtPruneHorizon(h))
 	t.Run("compute_prune_keeps_rollups_and_open_intervals", computePruneKeepsRollups(h))
 	t.Run("compute_series_is_tenant_scoped", computeSeriesIsTenantScoped(h))
 }
@@ -498,6 +499,27 @@ func computeOpenIntervalCrossingPruneHorizon(h Harness) func(*testing.T) {
 			usage.ComputeBucket{StartUnixMs: at(day), ActiveMs: int64(2 * time.Hour / time.Millisecond)},
 		)
 		assertComputeRebuildMatchesIncremental(t, s, ctx)
+	}
+}
+
+func computeZeroDurationAtPruneHorizon(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		interval := usage.ComputeInterval{
+			IntervalID: "zero-at-prune-horizon", StartUnixMs: at(day),
+			AgentAccountID: "a1", OwnerUserID: "u1",
+		}
+		h.AppendComputeInterval(t, s, ctx, interval)
+		mustComputePrune(t, ctx, s, at(day), 0)
+
+		interval.EndUnixMs = at(day)
+		h.AppendComputeInterval(t, s, ctx, interval)
+		want := []usage.ComputeBucket{{StartUnixMs: at(day), ActiveMs: 0, Intervals: 1}}
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour), want...)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay), want...)
+		mustComputeRebuild(t, ctx, s)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour), want...)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay), want...)
 	}
 }
 

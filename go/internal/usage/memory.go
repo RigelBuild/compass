@@ -91,22 +91,23 @@ func (m *Memory) AppendComputeInterval(ctx context.Context, interval ComputeInte
 }
 
 func (t *memoryTenant) rollUpCompute(interval ComputeInterval, horizon int64) {
-	if interval.EndUnixMs == 0 || (horizon != math.MinInt64 && interval.EndUnixMs <= GranularityDay.BucketStart(horizon)) {
+	if interval.EndUnixMs == 0 || (horizon != math.MinInt64 && interval.EndUnixMs < horizon) {
 		return
 	}
 	for _, g := range rollupGranularities {
 		width := g.widthMs()
+		startBucket := g.BucketStart(interval.StartUnixMs)
 		horizonStart := int64(math.MinInt64)
 		if horizon != math.MinInt64 {
 			horizonStart = g.BucketStart(horizon)
 		}
-		first := max(g.BucketStart(interval.StartUnixMs), horizonStart)
-		last := max(g.BucketStart(interval.EndUnixMs-1), first)
+		first := max(startBucket, horizonStart)
+		last := max(startBucket, g.BucketStart(interval.EndUnixMs-1))
 		for start := first; start <= last; start += width {
 			activeStart := max(interval.StartUnixMs, start)
 			activeEnd := min(interval.EndUnixMs, start+width)
 			count := int64(0)
-			if interval.StartUnixMs >= horizon && g.BucketStart(interval.StartUnixMs) == start {
+			if interval.StartUnixMs >= horizon && startBucket == start {
 				count = 1
 			}
 			key := computeRollupKey{

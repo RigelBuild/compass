@@ -97,7 +97,7 @@ func (p *Postgres) PruneComputeUsageBefore(ctx context.Context, beforeUnixMs int
 // pruneComputeTenant deletes only this tenant's closed intervals.
 func (p *Postgres) pruneComputeTenant(ctx context.Context, tenantID string, cutoff pgtype.Timestamptz) (int64, error) {
 	var deleted int64
-	err := p.st.WithTx(store.WithTenant(ctx, store.TenantID(tenantID)), func(tx pgx.Tx) error {
+	err := p.st.WithTx(store.WithTenant(store.WithoutSystemRole(ctx), store.TenantID(tenantID)), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		if err := q.LockComputeUsage(ctx); err != nil {
 			return err

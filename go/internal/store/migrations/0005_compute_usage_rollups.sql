@@ -99,7 +99,7 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtext('compute_usage:' || NEW.tenant_id));
     SELECT state.horizon INTO prune_horizon
       FROM compute_usage_prune_horizon AS state
-     WHERE state.singleton FOR SHARE;
+     WHERE state.singleton;
     IF NEW.occurred_at < prune_horizon THEN
         RETURN NEW;
     END IF;
@@ -170,3 +170,76 @@ END $$;
 CREATE TRIGGER compute_usage_rollup_after_end
 AFTER INSERT ON compute_usage_events
 FOR EACH ROW EXECUTE FUNCTION roll_up_compute_usage_end();
+
+-- Seed rollups for closed intervals written before the trigger existed.
+SET LOCAL ROLE compass_system;
+
+WITH intervals AS (
+    SELECT starts.tenant_id, starts.interval_id, starts.occurred_at AS start_at,
+           ends.occurred_at AS end_at, starts.owner_user_id, starts.agent_account_id,
+           floor(extract(EPOCH FROM starts.occurred_at) * 1000)::BIGINT AS start_ms,
+           floor(extract(EPOCH FROM ends.occurred_at) * 1000)::BIGINT AS end_ms
+      FROM compute_usage_events AS starts
+      JOIN compute_usage_events AS ends
+        ON ends.tenant_id = starts.tenant_id
+       AND ends.interval_id = starts.interval_id
+       AND ends.kind = 'end'
+     WHERE starts.kind = 'start'
+),
+
+bounds AS (
+    SELECT intervals.*,
+           date_trunc('hour', intervals.start_at, 'UTC') AS first_hour,
+           greatest(date_trunc('hour', intervals.start_at, 'UTC'),
+                    date_trunc('hour', intervals.end_at - INTERVAL '1 millisecond', 'UTC')) AS last_hour,
+           date_trunc('day', intervals.start_at, 'UTC') AS first_day,
+           greatest(date_trunc('day', intervals.start_at, 'UTC'),
+                    date_trunc('day', intervals.end_at - INTERVAL '1 millisecond', 'UTC')) AS last_day
+      FROM intervals
+),
+
+hourly AS (
+    INSERT INTO compute_usage_rollups_hourly (
+        tenant_id, bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+    )
+    SELECT bounds.tenant_id, buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id,
+           sum(greatest(0, least(bounds.end_ms, epoch.bucket_ms + 3600000) -
+                           greatest(bounds.start_ms, epoch.bucket_ms)))::BIGINT AS active_ms,
+           sum(CASE WHEN buckets.bucket_start = bounds.first_hour THEN 1 ELSE 0 END)::BIGINT AS intervals
+      FROM bounds
+      CROSS JOIN LATERAL generate_series(
+          bounds.first_hour,
+          bounds.last_hour,
+          INTERVAL '1 hour'
+      ) AS buckets(bucket_start)
+      CROSS JOIN LATERAL (
+          SELECT floor(extract(EPOCH FROM buckets.bucket_start) * 1000)::BIGINT AS bucket_ms
+      ) AS epoch
+     GROUP BY bounds.tenant_id, buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id
+    RETURNING 1
+),
+
+daily AS (
+    INSERT INTO compute_usage_rollups_daily (
+        tenant_id, bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+    )
+    SELECT bounds.tenant_id, buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id,
+           sum(greatest(0, least(bounds.end_ms, epoch.bucket_ms + 86400000) -
+                           greatest(bounds.start_ms, epoch.bucket_ms)))::BIGINT AS active_ms,
+           sum(CASE WHEN buckets.bucket_start = bounds.first_day THEN 1 ELSE 0 END)::BIGINT AS intervals
+      FROM bounds
+      CROSS JOIN LATERAL generate_series(
+          bounds.first_day,
+          bounds.last_day,
+          INTERVAL '24 hours'
+      ) AS buckets(bucket_start)
+      CROSS JOIN LATERAL (
+          SELECT floor(extract(EPOCH FROM buckets.bucket_start) * 1000)::BIGINT AS bucket_ms
+      ) AS epoch
+     GROUP BY bounds.tenant_id, buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id
+    RETURNING 1
+)
+
+SELECT (SELECT count(*) FROM hourly) + (SELECT count(*) FROM daily);
+
+RESET ROLE;

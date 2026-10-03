@@ -54,6 +54,7 @@ SELECT orphaned.tenant_id, gen_random_uuid()::text AS id, orphaned.interval_id,
        orphaned.owner_user_id, orphaned.session_id, orphaned.runner_id,
        true AS estimated
   FROM orphaned
+ ORDER BY orphaned.tenant_id, orphaned.interval_id
 ON CONFLICT DO NOTHING
 `
 
