@@ -142,11 +142,13 @@ type tokenStore interface {
 //     file write never leaves an orphaned hash whose plaintext is gone; if the
 //     hash commit then fails, the just-written file is removed so no file is left
 //     holding a token the store never accepted.
-//   - existing file, token already registered: no-op (the common restart).
+//   - existing file, token registered for THIS runner id (or revoked): no-op.
 //   - existing file, token NOT registered (the store was replaced): re-register
 //     that exact token so the Runner's on-disk credential keeps working — heal
 //     without rotating, which a blind skip (stale hash) or a blind re-mint
 //     (rotated credential) would both get wrong.
+//   - existing file, token registered under ANOTHER subject: it can never enroll
+//     as runnerID, so rotate exactly as --force would.
 func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force bool) error {
 	if !force && fileExists(path) {
 		existing, err := os.ReadFile(path) //nolint:gosec // path is the operator-provided --token-out flag, the file this binary owns and just checked exists
@@ -154,21 +156,26 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 			return fmt.Errorf("reading existing token file %q: %w", path, err)
 		}
 		token := string(existing)
-		registered, err := runnerhub.RunnerTokenRegistered(ctx, st, token)
+		state, err := runnerhub.RunnerTokenStatus(ctx, st, token, runnerID)
 		if err != nil {
 			return err
 		}
-		if registered {
+		switch state {
+		case runnerhub.TokenRegistered, runnerhub.TokenRevoked:
 			slog.Info("runner token file already present and registered; skipping (pass --force to re-mint)",
 				"token_out", path, "runner_id", runnerID)
 			return nil
+		case runnerhub.TokenUnknown:
+			if err := runnerhub.StoreRunnerTokenHash(ctx, st, token, runnerID); err != nil {
+				return fmt.Errorf("re-registering existing runner token: %w", err)
+			}
+			slog.Info("existing runner token re-registered in store (store had no record); file left unchanged",
+				"token_out", path, "runner_id", runnerID)
+			return nil
+		case runnerhub.TokenOtherSubject:
+			slog.Warn("runner token file is registered to a different subject; rotating",
+				"token_out", path, "runner_id", runnerID)
 		}
-		if err := runnerhub.StoreRunnerTokenHash(ctx, st, token, runnerID); err != nil {
-			return fmt.Errorf("re-registering existing runner token: %w", err)
-		}
-		slog.Info("existing runner token re-registered in store (store had no record); file left unchanged",
-			"token_out", path, "runner_id", runnerID)
-		return nil
 	}
 
 	token, err := runnerhub.GenerateRunnerToken()

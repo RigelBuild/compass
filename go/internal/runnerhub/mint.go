@@ -64,24 +64,40 @@ func StoreRunnerTokenHash(ctx context.Context, st TokenPutter, token, runnerID s
 	return nil
 }
 
-// RunnerTokenRegistered reports whether token's hash is already known to the
-// store. A never-registered token is (false, nil) so a provisioning path can
-// heal a token file whose hash the store lost (e.g. the database was replaced)
-// by re-registering that exact token instead of rotating it. A revoked token is
-// (true, nil): the store knows it and the operator revoked it deliberately, so
-// it is left alone (pass --force to rotate). Any other lookup error surfaces.
-func RunnerTokenRegistered(ctx context.Context, r TokenHashResolver, token string) (bool, error) {
+// TokenState is what the store knows about a runner token file's token, relative
+// to the runner id the caller provisions for.
+type TokenState int
+
+const (
+	// TokenUnknown: the store never saw the hash (e.g. the database was
+	// replaced), so the caller heals by re-registering that exact token.
+	TokenUnknown TokenState = iota
+	// TokenRegistered: the hash is live under this runner's subject.
+	TokenRegistered
+	// TokenRevoked: the operator revoked it deliberately; leave it (--force rotates).
+	TokenRevoked
+	// TokenOtherSubject: the hash is live under a different subject, so it can
+	// never enroll as this runner and the hash cannot be re-registered — rotate.
+	TokenOtherSubject
+)
+
+// RunnerTokenStatus classifies token against the store for runnerID. Any lookup
+// error other than not-found or revoked surfaces.
+func RunnerTokenStatus(ctx context.Context, r TokenHashResolver, token, runnerID string) (TokenState, error) {
 	hash := sha256.Sum256([]byte(token))
-	_, err := r.ResolveTokenHash(ctx, hash)
+	subj, err := r.ResolveTokenHash(ctx, hash)
 	switch {
 	case err == nil:
-		return true, nil
+		if subj.Kind == store.SubjectRunner && subj.ID == runnerID {
+			return TokenRegistered, nil
+		}
+		return TokenOtherSubject, nil
 	case errors.Is(err, store.ErrNotFound):
-		return false, nil
+		return TokenUnknown, nil
 	case errors.Is(err, store.ErrTokenRevoked):
-		return true, nil
+		return TokenRevoked, nil
 	default:
-		return false, fmt.Errorf("resolving runner token hash: %w", err)
+		return TokenUnknown, fmt.Errorf("resolving runner token hash: %w", err)
 	}
 }
 

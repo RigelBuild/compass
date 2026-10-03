@@ -306,6 +306,30 @@ func TestMintToFile(t *testing.T) {
 		assertUnknownTokenReregisteredWithoutRotating(t)
 	})
 
+	// existing file whose token is registered to a DIFFERENT runner id (a stale
+	// `dogfood` row while provisioning `mattfw-dev`): rotate, so the runner can
+	// enroll, and never treat the foreign row as this runner's registration.
+	t.Run("existing token registered to another runner is rotated", func(t *testing.T) {
+		fake := &fakeTokenPutter{}
+		path := filepath.Join(t.TempDir(), "runner.token")
+		if err := mintToFile(context.Background(), fake, "dogfood", path, false); err != nil {
+			t.Fatalf("seed mint: %v", err)
+		}
+		first, _ := os.ReadFile(path)
+
+		if err := mintToFile(context.Background(), fake, "runner-1", path, false); err != nil {
+			t.Fatalf("mintToFile: %v", err)
+		}
+		second, _ := os.ReadFile(path)
+		if bytes.Equal(first, second) {
+			t.Fatal("token registered to another runner was kept; want rotation")
+		}
+		subj, ok := fake.stored[sha256.Sum256(second)]
+		if !ok || subj.Kind != store.SubjectRunner || subj.ID != "runner-1" {
+			t.Errorf("new token subject = %+v (stored=%v), want {SubjectRunner runner-1}", subj, ok)
+		}
+	})
+
 	// T2 ordering: the hash commit must not happen before the file lands, and a
 	// failed hash commit must not leave a file holding a token the store rejected.
 	t.Run("hash-commit failure removes the just-written file", func(t *testing.T) {

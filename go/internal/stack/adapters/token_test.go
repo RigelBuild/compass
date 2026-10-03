@@ -48,6 +48,34 @@ func TestEnsure(t *testing.T) {
 	t.Run("absent file mints, writes 0600, registers hash", testEnsureAbsentMints)
 	t.Run("present and registered returns same token, no re-mint", testEnsurePresentRegistered)
 	t.Run("present but store forgot re-registers same token, file unchanged", testEnsurePresentStoreForgot)
+	t.Run("present but registered to another runner mints fresh", testEnsurePresentOtherSubject)
+}
+
+func testEnsurePresentOtherSubject(t *testing.T) {
+	const runnerID = "runner-alpha"
+	dir := t.TempDir()
+	st := newFakeTokenStore()
+
+	const existing = "seeded-foreign-token"
+	path := filepath.Join(dir, tokenFileName)
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+	st.hashes[hashOf(existing)] = store.Subject{Kind: store.SubjectRunner, ID: "dogfood"}
+
+	token, err := ensure(context.Background(), st, dir, runnerID)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if token == existing {
+		t.Fatal("ensure kept a token registered to another runner; want a fresh mint")
+	}
+	if string(readFile(t, path)) != token {
+		t.Fatal("token file does not hold the returned token")
+	}
+	if subj := st.hashes[hashOf(token)]; subj.Kind != store.SubjectRunner || subj.ID != runnerID {
+		t.Fatalf("registered subject = %+v, want {SubjectRunner, %q}", subj, runnerID)
+	}
 }
 
 func testEnsureAbsentMints(t *testing.T) {
