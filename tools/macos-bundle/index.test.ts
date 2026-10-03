@@ -11,13 +11,17 @@
 // import.meta.main-guarded, so importing index.ts never runs it.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import {
 	createOrThrow,
 	formatBusyDiagnosis,
 	formatCreateFailure,
+	imageHolderPids,
 	parseArgs,
 	probe,
 	renderInfoPlist,
+	settleAndCreate,
+	settleBeforeCreate,
 	staleMountPoints,
 } from "./index.ts";
 
@@ -337,6 +341,20 @@ describe("staleMountPoints — selects only this build's leaked attachment", () 
 	});
 });
 
+describe("imageHolderPids", () => {
+	test("extracts process IDs only from the matching image block", () => {
+		const info = [
+			"================================================",
+			"image-path      : /tmp/other.dmg",
+			"process ID      : 11",
+			"================================================",
+			"image-path      : /tmp/ours.dmg",
+			"process ID      : 18250",
+		].join("\n");
+		expect(imageHolderPids(info, "/tmp/ours.dmg")).toEqual(["18250"]);
+	});
+});
+
 describe("formatBusyDiagnosis — names the holder of a busy staging tree", () => {
 	const probes = {
 		stageRoot: "/tmp/macos-bundle-stage",
@@ -360,6 +378,20 @@ describe("formatBusyDiagnosis — names the holder of a busy staging tree", () =
 
 	test("carries the hdiutil attachment state alongside it", () => {
 		expect(formatBusyDiagnosis(probes)).toContain("no image attached");
+	});
+	test("prints the supplied PID in the ps heading", () => {
+		const output = formatBusyDiagnosis({
+			stageRoot: "/tmp/stage",
+			lsof: { exitCode: 0, stdout: "", stderr: "" },
+			hdiutilInfo: { exitCode: 0, stdout: "", stderr: "" },
+			processes: [
+				{
+					pid: "18250",
+					probe: { exitCode: 0, stdout: "PID process", stderr: "" },
+				},
+			],
+		});
+		expect(output).toContain("ps -p 18250 -o pid,comm,args");
 	});
 
 	test("an empty probe reads as no output, never as a blank section", () => {
@@ -499,6 +531,136 @@ describe("createOrThrow — a busy create fails the build, loudly and once", () 
 				() => {},
 			),
 		).rejects.not.toThrow("UNRELATED_DIAGNOSIS");
+	});
+});
+describe("createOrThrow retry — retries only busy image creation", () => {
+	const busy = { exitCode: 1, stderr: "hdiutil: Resource busy" };
+	const success = { exitCode: 0, stderr: "" };
+	test("busy then success retries once and emits a diagnosis for each failure", async () => {
+		const lines: string[] = [];
+		const delays: number[] = [];
+		let creates = 0;
+		let detaches = 0;
+		await createOrThrow(
+			busy,
+			async () => `diagnosis ${creates}`,
+			(line) => lines.push(line),
+			{
+				create: async () => {
+					creates++;
+					return success;
+				},
+				imagePath: "/tmp/nonexistent-test-image.dmg",
+				detach: async () => {
+					detaches++;
+				},
+				sleep: async (ms) => {
+					delays.push(ms);
+				},
+			},
+		);
+		expect({
+			creates,
+			detaches,
+			delays,
+			diagnoses: lines.filter((line) => line.startsWith("diagnosis")).length,
+		}).toEqual({
+			creates: 1,
+			detaches: 1,
+			delays: [5_000],
+			diagnoses: 1,
+		});
+	});
+	test("three busy attempts each print a diagnosis, then throw", async () => {
+		const lines: string[] = [];
+		const delays: number[] = [];
+		let creates = 0;
+		let detaches = 0;
+		await expect(
+			createOrThrow(
+				busy,
+				async () => "DIAGNOSIS",
+				(line) => lines.push(line),
+				{
+					create: async () => {
+						creates++;
+						return busy;
+					},
+					imagePath: "/tmp/nonexistent-test-image.dmg",
+					detach: async () => {
+						detaches++;
+					},
+					sleep: async (ms) => {
+						delays.push(ms);
+					},
+				},
+			),
+		).rejects.toThrow("Resource busy");
+		expect({
+			creates,
+			detaches,
+			delays,
+			diagnoses: lines.filter((line) => line === "DIAGNOSIS").length,
+		}).toEqual({
+			creates: 2,
+			detaches: 2,
+			delays: [5_000, 15_000],
+			diagnoses: 3,
+		});
+	});
+	test("non-busy failure does not retry", async () => {
+		let creates = 0;
+		let detaches = 0;
+		await expect(
+			createOrThrow(
+				{ exitCode: 1, stderr: "permission denied" },
+				async () => "DIAGNOSIS",
+				() => {},
+				{
+					create: async () => {
+						creates++;
+						return success;
+					},
+					imagePath: "/tmp/nonexistent-test-image.dmg",
+					detach: async () => {
+						detaches++;
+					},
+					sleep: async () => {},
+				},
+			),
+		).rejects.toThrow("permission denied");
+		expect({ creates, detaches }).toEqual({ creates: 0, detaches: 0 });
+	});
+});
+
+test("settling completes before the first create", async () => {
+	const stage = await mkdtemp("/tmp/macos-bundle-order-");
+	const events: string[] = [];
+	try {
+		await settleAndCreate(stage, async () => {
+			events.push(
+				(await Bun.file(`${stage}/.metadata_never_index`).exists())
+					? "marker then create"
+					: "create before marker",
+			);
+			return undefined;
+		});
+		expect(events).toEqual(["marker then create"]);
+	} finally {
+		await rm(stage, { recursive: true, force: true });
+	}
+});
+describe("settleBeforeCreate", () => {
+	test("creates Spotlight marker in the staging directory", async () => {
+		const stage = await mkdtemp("/tmp/macos-bundle-test-");
+		try {
+			await settleBeforeCreate(stage);
+			expect(await Bun.file(`${stage}/.metadata_never_index`).exists()).toBe(
+				true,
+			);
+		} finally {
+			await rm(stage, { recursive: true, force: true });
+		}
 	});
 });
 
