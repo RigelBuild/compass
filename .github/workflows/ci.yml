@@ -1673,7 +1673,7 @@ jobs:
     # bundle is complete + mountable. The job-level `if:` ANDs the dispatch-aware
     # gate guard with the darwin affected gate: on a PR it runs only when setup
     # found the shell surface (go/cmd/compass-app/ or a GTK closure input), the
-    # macos-bundle tool, or the sidecar surface (the three sidecar cmd dirs plus
+    # macos-bundle tool, or the sidecar surface (the four sidecar cmd dirs plus
     # every first-party package they compile in) changed (darwin_affected), and
     # always on push/schedule
     # and on a base-re-point re-trigger (DL-263 cadence — full sweep on main +
@@ -1766,7 +1766,7 @@ jobs:
         #
         # AFFECTED-GUARDED to match the one-job affected posture (DL-263): on a PR
         # it runs only when the shell surface (go/cmd/compass-app/ or a shared GTK
-        # closure input), the macos-bundle tool, or the sidecar surface (the three
+        # closure input), the macos-bundle tool, or the sidecar surface (the four
         # sidecar cmd dirs plus every first-party package they compile in) actually
         # changed. push-to-main and the nightly schedule always run it (the
         # full-sweep backstop); a base-re-point re-trigger (workflow_dispatch) also
@@ -1790,7 +1790,7 @@ jobs:
             fi
             # The darwin lane compiles the SAME shell the gtk4 lane does, so a
             # closure-only PR must trigger it too; plus a macos-bundle tool change
-            # (the bundler this lane exercises) and the three pure-Go sidecars plus
+            # (the bundler this lane exercises) and the four pure-Go sidecars plus
             # every first-party package they compile in — `go list -deps` resolves
             # those non-cmd roots to {events, gen, internal, server}. Mirrors the
             # darwinAffected trigger in tools/ci-matrix/index.ts.
@@ -1802,6 +1802,7 @@ jobs:
               go/cmd/compass-stack/ \
               go/cmd/compass-server/ \
               go/cmd/compass-runner/ \
+              go/cmd/compass-clear-token/ \
               go/internal/ \
               go/server/ \
               go/events/ \
@@ -1834,10 +1835,10 @@ jobs:
             -ldflags "-X main.version=$dev" \
             -o /tmp/compass-app ./cmd/compass-app
 
-          # The three embedded sidecars (§A4): pure-Go, CGO_ENABLED=0, same dev
+          # The four embedded sidecars (§A4): pure-Go, CGO_ENABLED=0, same dev
           # version stamp, built beside the shell so the bundle staging + mount
-          # assertion below exercise the same four binaries build.sh ships.
-          for b in compass-stack compass-server compass-runner; do
+          # assertion below exercise the same five binaries build.sh ships.
+          for b in compass-stack compass-server compass-runner compass-clear-token; do
             CGO_ENABLED=0 go -C go build -trimpath \
               -ldflags "-X main.version=$dev" \
               -o "/tmp/$b" "./cmd/$b"
@@ -1897,6 +1898,7 @@ jobs:
             --sidecar /tmp/compass-stack \
             --sidecar /tmp/compass-server \
             --sidecar /tmp/compass-runner \
+            --sidecar /tmp/compass-clear-token \
             --out "$out"
 
           # Assert the dmg exists, mounts, and carries a complete .app.
@@ -1931,6 +1933,7 @@ jobs:
             "$mnt/Compass.app/Contents/MacOS/compass-stack"
             "$mnt/Compass.app/Contents/MacOS/compass-server"
             "$mnt/Compass.app/Contents/MacOS/compass-runner"
+            "$mnt/Compass.app/Contents/MacOS/compass-clear-token"
           )
           for want in "${BINARIES[@]}"; do
             if [ ! -x "$want" ]; then
