@@ -24,7 +24,7 @@
 // Contents/MacOS/<name> BESIDE the shell, where resolveStackBin's sibling probe
 // finds it. No compass-postgres — embedded's postgres is a container (DL-260).
 
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { $ } from "bun";
 
@@ -265,6 +265,7 @@ export function formatBusyDiagnosis(probes: {
 	stageRoot: string;
 	lsof: Probe;
 	hdiutilInfo: Probe;
+	processes?: { pid: string; probe: Probe }[];
 }): string {
 	const section = (title: string, probe: Probe): string =>
 		`── ${title} (exit ${probe.exitCode}) ──\n${probeOutput(probe)}`;
@@ -272,6 +273,9 @@ export function formatBusyDiagnosis(probes: {
 		`macos-bundle: hdiutil create failed; probing what holds ${probes.stageRoot}`,
 		section(`lsof +D ${probes.stageRoot}`, probes.lsof),
 		section("hdiutil info", probes.hdiutilInfo),
+		...(probes.processes ?? []).map(({ pid, probe }) =>
+			section(`ps -p ${pid} -o pid,comm,args`, probe),
+		),
 	].join("\n");
 }
 
@@ -295,15 +299,33 @@ export async function createOrThrow(
 	created: { exitCode: number | null; stderr: { toString(): string } },
 	diagnose: () => Promise<string>,
 	emit: (line: string) => void,
+	options:
+		| {
+				create: () => Promise<{
+					exitCode: number | null;
+					stderr: { toString(): string };
+				}>;
+				imagePath: string;
+				detach: () => Promise<void>;
+				sleep: (ms: number) => Promise<void>;
+		  }
+		| undefined = undefined,
 ): Promise<void> {
-	if (created.exitCode === 0) return;
-	const headline = formatCreateFailure(
-		created.exitCode,
-		created.stderr.toString(),
-	);
-	emit(headline);
-	emit(await diagnose());
-	throw new Error(headline);
+	let result = created;
+	for (let attempt = 0; ; attempt++) {
+		if (result.exitCode === 0) return;
+		const stderr = result.stderr.toString();
+		const headline = formatCreateFailure(result.exitCode, stderr);
+		emit(headline);
+		emit(await diagnose());
+		if (!options || !stderr.includes("Resource busy") || attempt >= 2) {
+			throw new Error(headline);
+		}
+		await options.detach();
+		await rm(options.imagePath, { force: true });
+		await options.sleep(attempt === 0 ? 5_000 : 15_000);
+		result = await options.create();
+	}
 }
 
 /**
@@ -343,14 +365,14 @@ async function assertExists(path: string, what: string): Promise<void> {
  * `hdiutil info` both leave the build untouched — a cleanup that reds a green
  * system is worse than the leak.
  */
-async function detachStaleAttachments(target: {
-	imagePath: string;
-	volumeName: string;
-}): Promise<void> {
-	const info = await $`hdiutil info -plist`.quiet().nothrow();
+export async function detachStaleAttachments(
+	target: { imagePath: string; volumeName: string },
+	runProbe: typeof probe = probe,
+): Promise<void> {
+	const info = await runProbe(["hdiutil", "info", "-plist"]);
 	if (info.exitCode !== 0) return;
-	for (const mount of staleMountPoints(info.stdout.toString(), target)) {
-		await $`hdiutil detach ${mount} -force`.quiet().nothrow();
+	for (const mount of staleMountPoints(info.stdout, target)) {
+		await runProbe(["hdiutil", "detach", mount, "-force"]);
 	}
 }
 
@@ -359,16 +381,55 @@ async function detachStaleAttachments(target: {
  * throws and never hangs: this runs only when the build has already failed, so
  * a diagnostic that blocks would erase the error it exists to explain.
  */
-async function diagnoseBusy(stageRoot: string): Promise<string> {
-	// Concurrent so the whole diagnostic is bounded once, not once per probe.
-	// +D walks the tree to full depth and man lsof warns it can be slow.
+async function diagnoseBusy(
+	stageRoot: string,
+	imagePath: string,
+): Promise<string> {
 	const [lsof, hdiutilInfo] = await Promise.all([
 		probe(["lsof", "+D", stageRoot]),
 		probe(["hdiutil", "info"]),
 	]);
-	return formatBusyDiagnosis({ stageRoot, lsof, hdiutilInfo });
+	const processes = imageHolderPids(hdiutilInfo.stdout, imagePath);
+	const processProbes = await Promise.all(
+		processes.map(async (pid) => ({
+			pid,
+			probe: await probe(["ps", "-p", pid, "-o", "pid,comm,args"]),
+		})),
+	);
+	return formatBusyDiagnosis({
+		stageRoot,
+		lsof,
+		hdiutilInfo,
+		processes: processProbes,
+	});
 }
 
+/** Return process IDs from only the image block matching imagePath. */
+export function imageHolderPids(info: string, imagePath: string): string[] {
+	return info
+		.split(/={5,}/)
+		.filter(
+			(block) =>
+				block.match(/^\s*image-path\s*:\s*(.*?)\s*$/m)?.[1] === imagePath,
+		)
+		.flatMap((block) =>
+			[...block.matchAll(/^\s*process ID\s*:\s*(\d+)\s*$/gim)].flatMap(
+				(match) => (match[1] ? [match[1]] : []),
+			),
+		);
+}
+
+export async function settleBeforeCreate(stageRoot: string): Promise<void> {
+	await $`sync`.quiet();
+	await writeFile(join(stageRoot, ".metadata_never_index"), "");
+}
+export async function settleAndCreate<T>(
+	stageRoot: string,
+	create: () => Promise<T>,
+): Promise<T> {
+	await settleBeforeCreate(stageRoot);
+	return create();
+}
 const PROBE_TIMEOUT_MS = 10_000;
 
 /** Run one bounded probe, reporting any failure as output instead of raising. */
@@ -513,17 +574,31 @@ async function main(): Promise<void> {
 	// signs nested code; --force replaces any prior signature (idempotent re-run).
 	await $`codesign --sign - --force --deep ${appDir}`;
 
-	// Wrap the staging dir into a compressed (UDZO) .dmg. -ov overwrites an
-	// existing image so a re-run is idempotent. detachStaleAttachments covers a
-	// leaked mount of our own image; the observed EBUSY had no such mount, so
-	// that cause is ruled out and the source tree is the leading suspect.
 	await rm(args.out, { force: true });
-	await detachStaleAttachments({ imagePath: args.out, volumeName: "Compass" });
-	const created =
-		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`
+	// hdiutil reports resolved paths (/tmp is /private/tmp on macOS), so match on that.
+	const imagePath = join(await realpath(dirname(args.out)), basename(args.out));
+	const detachImage = () =>
+		detachStaleAttachments({ imagePath, volumeName: "Compass" });
+	await detachImage();
+	const create = async () =>
+		await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${imagePath}`
 			.quiet()
 			.nothrow();
-	await createOrThrow(created, () => diagnoseBusy(stageRoot), console.error);
+	const created = await settleAndCreate(stageRoot, create);
+	await createOrThrow(
+		created,
+		() => diagnoseBusy(stageRoot, imagePath),
+		console.error,
+		{
+			create,
+			imagePath,
+			detach: detachImage,
+			sleep: (ms) => {
+				// biome-ignore lint/plugin: Required retry backoff for transient filesystem contention.
+				return Bun.sleep(ms);
+			},
+		},
+	);
 
 	console.log(`macos-bundle: wrote ${args.out}`);
 }
