@@ -27,11 +27,10 @@ import (
 
 // PR2 adds the table and methods only; demoting the hub's in-RAM maps is PR3.
 
-// SessionBinding is one live binding: the session, the agent account it speaks
-// for, and the Runner it is attached to. Returned by
-// DeleteSessionBindingsForRunner, which is the reconnect sweep — its caller
-// needs every field of each binding it just removed.
+// SessionBinding is one live binding, including its tenant. Returned by the
+// reconnect sweep so callers can scope follow-up work to the deleted row.
 type SessionBinding struct {
+	TenantID  TenantID
 	SessionID string
 	AccountID AccountID
 	RunnerID  string
@@ -285,6 +284,7 @@ func (s *Store) DeleteSessionBindingsForRunner(ctx context.Context, runnerID str
 	bindings := make([]SessionBinding, 0, len(rows))
 	for _, row := range rows {
 		bindings = append(bindings, SessionBinding{
+			TenantID:  TenantID(row.TenantID),
 			SessionID: row.SessionID,
 			AccountID: AccountID(row.AgentAccountID),
 			RunnerID:  runnerID,
