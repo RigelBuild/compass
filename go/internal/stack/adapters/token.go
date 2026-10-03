@@ -31,7 +31,8 @@ type tokenStore interface {
 // TokenEnsurer is the real stack.TokenEnsurer: it ensures the runner enrollment
 // token exists under the state dir and is registered in the store, minting it
 // via internal/runnerhub on first bring-up and healing a store-forgotten token
-// on subsequent ones — without ever rotating a token that is still valid.
+// on subsequent ones. It keeps a token valid for runnerID and rotates one that
+// is live under another subject.
 //
 // EnsureToken's signature carries no DSN, so the adapter holds it: the store is
 // opened at the edge (EnsureToken) and the mint/idempotence logic runs against
@@ -66,12 +67,14 @@ func (e *TokenEnsurer) EnsureToken(ctx context.Context, stateDir, runnerID strin
 // against file presence — mirroring the mint CLI's --token-out semantics
 // (cmd/compass-mint-runner-token/main.go mintToFile):
 //
-//   - file present, token already registered: return it unchanged (the common
-//     restart) — no mint, no rotation.
+//   - file present, token registered for THIS runner id (or revoked): return it
+//     unchanged (the common restart) — no mint, no rotation.
 //   - file present, token NOT registered (the store was replaced): re-register
 //     that exact token so the runner's on-disk credential keeps working — heal
 //     without rotating, which a blind skip (stale hash) or a blind re-mint
 //     (rotated credential) would both get wrong.
+//   - file present, token registered under ANOTHER subject: it can never enroll
+//     as runnerID, so mint fresh as if the file were absent.
 //   - file absent: mint a fresh token, write the file FIRST at 0600 atomically,
 //     then commit its hash. File-before-store means a failed file write never
 //     orphans a committed hash whose plaintext is gone; if the hash commit then
@@ -84,19 +87,23 @@ func ensure(ctx context.Context, st tokenStore, stateDir, runnerID string) (stri
 	if existing, ok, err := readTokenFile(path); err != nil {
 		return "", err
 	} else if ok {
-		registered, err := runnerhub.RunnerTokenRegistered(ctx, st, existing)
+		state, _, err := runnerhub.RunnerTokenStatus(ctx, st, existing, runnerID)
 		if err != nil {
 			return "", err
 		}
-		if registered {
+		switch state {
+		case runnerhub.TokenRegistered, runnerhub.TokenRevoked:
 			return existing, nil
+		case runnerhub.TokenUnknown:
+			// Store forgot this token (e.g. the database was replaced): re-register
+			// the same token so the runner's credential keeps working; do not rotate.
+			if err := runnerhub.StoreRunnerTokenHash(ctx, st, existing, runnerID); err != nil {
+				return "", fmt.Errorf("re-registering existing runner token: %w", err)
+			}
+			return existing, nil
+		case runnerhub.TokenOtherSubject:
+			// Falls through to a fresh mint below.
 		}
-		// Store forgot this token (e.g. the database was replaced): re-register
-		// the same token so the runner's credential keeps working; do not rotate.
-		if err := runnerhub.StoreRunnerTokenHash(ctx, st, existing, runnerID); err != nil {
-			return "", fmt.Errorf("re-registering existing runner token: %w", err)
-		}
-		return existing, nil
 	}
 
 	token, err := runnerhub.GenerateRunnerToken()
