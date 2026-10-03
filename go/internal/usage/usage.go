@@ -92,22 +92,35 @@ type Bucket struct {
 	CostMicroUSD     int64
 }
 
+// ComputeInterval is one completed, or currently open, agent-active interval.
+// EndUnixMs is zero while open; only closed intervals are rolled up.
+type ComputeInterval struct {
+	IntervalID     string
+	StartUnixMs    int64
+	EndUnixMs      int64
+	AgentAccountID string
+	OwnerUserID    string
+}
+
+// ComputeBucket holds active duration and the number of intervals that started
+// in one UTC bucket.
+type ComputeBucket struct {
+	StartUnixMs int64
+	ActiveMs    int64
+	Intervals   int64
+}
+
 // Store is the Plane-A usage store seam: an append-only event write plus rollup
-// reads. Each call but PruneTokenUsageBefore is scoped to ctx's tenant, which
-// the backend resolves.
+// reads. Each call is scoped to ctx's tenant, which the backend resolves, except
+// the two Prune calls: they advance a global horizon and prune every tenant.
 type Store interface {
-	// AppendTokenUsage records a batch atomically. It is idempotent on event ID
-	// for events still inside the retention window, so a retried batch never
-	// double-counts. A pruned event's ID is forgotten and counts again.
 	AppendTokenUsage(ctx context.Context, events []TokenUsageEvent) error
-	// TokenUsageSeries returns the non-empty buckets in the window, oldest first.
 	TokenUsageSeries(ctx context.Context, query SeriesQuery) ([]Bucket, error)
-	// RebuildTokenUsageRollups recomputes every rollup from the prune horizon on.
-	// Older rollups outlive their pruned events, so it keeps them.
 	RebuildTokenUsageRollups(ctx context.Context) error
-	// PruneTokenUsageBefore deletes every tenant's raw events before the UTC day
-	// that holds beforeUnixMs and keeps the rollups. It returns the delete count.
 	PruneTokenUsageBefore(ctx context.Context, beforeUnixMs int64) (int64, error)
+	ComputeUsageSeries(ctx context.Context, query SeriesQuery) ([]ComputeBucket, error)
+	RebuildComputeUsageRollups(ctx context.Context) error
+	PruneComputeUsageBefore(ctx context.Context, beforeUnixMs int64) (int64, error)
 }
 
 // BucketStart returns the start of the UTC-aligned bucket that holds unixMs,

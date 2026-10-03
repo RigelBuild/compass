@@ -138,8 +138,8 @@ type ServeConfig struct {
 	// points the whole deployment's custody — including the master key — at a
 	// managed store, per the record's A2 KMS-by-provider-URI custody note.
 	SecretProvider string
-	// UsageEventRetention is how long raw token-usage events are kept; 0 turns
-	// the daily prune off. The CLI defaults it to 90 days.
+	// UsageEventRetention is how long raw token- and compute-usage events are kept.
+	// 0 turns the daily prune off. The CLI defaults it to 90 days.
 	UsageEventRetention time.Duration
 }
 

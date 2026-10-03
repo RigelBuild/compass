@@ -17,6 +17,8 @@ type Querier interface {
 	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
 	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
 	ActivityFor(ctx context.Context, dollar_1 []string) ([]ActivityForRow, error)
+	// AdvanceComputeUsagePruneHorizon moves the single global horizon forward.
+	AdvanceComputeUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	AdvanceDeliveryCursor(ctx context.Context, arg AdvanceDeliveryCursorParams) error
 	AdvanceForgeDeliveredRevision(ctx context.Context, arg AdvanceForgeDeliveredRevisionParams) (int64, error)
 	// Compare-and-set advance for the notify-router suppress path: the write lands
@@ -81,10 +83,14 @@ type Querier interface {
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
-	// Close intervals only after both binding deletion and its end event are absent.
-	// The tenant id comes from each start because the system role has no tenant GUC.
+	// Close intervals only after the binding and matching end event are absent.
+	// The tenant id comes from each start because this sweep has no tenant GUC.
 	CloseOrphanedComputeIntervals(ctx context.Context) (int64, error)
 	CollectSegment(ctx context.Context, arg CollectSegmentParams) ([]CollectSegmentRow, error)
+	// ComputeUsagePruneHorizon pins the horizon while the rebuild replaces newer rows.
+	ComputeUsagePruneHorizon(ctx context.Context) (pgtype.Timestamptz, error)
+	// ComputeUsageSeries sums matching rows at one pre-aggregated granularity.
+	ComputeUsageSeries(ctx context.Context, arg ComputeUsageSeriesParams) ([]ComputeUsageSeriesRow, error)
 	// Single-statement clear-and-return: the row is claimed and its actor returned
 	// in ONE UPDATE, so a memo attributes at most one event and a concurrent second
 	// reader matches nothing (consumed_at is no longer NULL). A state mismatch or a
@@ -118,6 +124,10 @@ type Querier interface {
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
 	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
+	// DeleteComputeUsageIntervalsBefore removes both events only when the end is old.
+	DeleteComputeUsageIntervalsBefore(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	// DeleteComputeUsageRollupsFrom clears rows the rebuild can reconstruct.
+	DeleteComputeUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	DeleteModelRegistry(ctx context.Context) error
 	// DeleteSecret addresses one scope coordinate — a name alone no longer
 	// identifies a row (composite PK).
@@ -373,6 +383,10 @@ type Querier interface {
 	LockChannelForPins(ctx context.Context, id string) (LockChannelForPinsRow, error)
 	LockChannelMandatoryKind(ctx context.Context, id string) (LockChannelMandatoryKindRow, error)
 	LockChannelPolicy(ctx context.Context, id string) (LockChannelPolicyRow, error)
+	// Compute-usage rollups are derived from closed start/end event pairs.
+	// Each query runs under the tenant role and transaction scope supplied by Store.
+	// LockComputeUsage serializes a tenant rebuild with end-event rollup triggers.
+	LockComputeUsage(ctx context.Context) error
 	LockLinearRouting(ctx context.Context, dollar_1 pgtype.Text) error
 	LockOwnerCoordination(ctx context.Context, dollar_1 pgtype.Text) error
 	LockOwnerDM(ctx context.Context, dollar_1 pgtype.Text) error
@@ -507,6 +521,9 @@ type Querier interface {
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ReviveTopic(ctx context.Context, id string) error
 	RevokeToken(ctx context.Context, hash []byte) (int64, error)
+	// RollUpComputeUsageFrom mirrors end-trigger duration clipping and start counts.
+	// The sentinel horizon skips clipping until the first prune establishes a day.
+	RollUpComputeUsageFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	// RollUpTokenUsageFrom rebuilds both rollups from the events at or after the
 	// horizon.
 	RollUpTokenUsageFrom(ctx context.Context, horizon pgtype.Timestamptz) error
