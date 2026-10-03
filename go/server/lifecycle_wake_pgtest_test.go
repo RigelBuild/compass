@@ -123,14 +123,9 @@ func TestWakeAgentPriorSessionResumes(t *testing.T) {
 	}
 }
 
-// TestWakeAgentStaleBindingRowStillResumes is the RIG-4223 regression. A durable
-// session_bindings row that this hub never promoted names a session that is gone
-// (its container died across a restart). The wake must still resume the agent,
-// not read the row back as live and return without a log line.
-//
-// Mutation: making the not-live pre-check read through to the table again
-// (hub.SessionForAccount) resolves the stale row, pushes no Start, and reddens
-// both assertions.
+// RIG-4223: a session_bindings row this hub never promoted names a dead session.
+// The wake must still resume, not read the row back as live and skip silently.
+// Reverting the pre-check to hub.SessionForAccount resolves the row and reddens it.
 func TestWakeAgentStaleBindingRowStillResumes(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -171,11 +166,10 @@ func TestWakeAgentStaleBindingRowStillResumes(t *testing.T) {
 	}
 }
 
-// A wake for an agent live on a Runner this hub has not cached (another Server
-// instance promoted it) resumes, and the Runner refuses with ALREADY_RUNNING
-// (agentHost.Start's live-session check). The live session is untouched: the
-// wake logs outcome=failed and records no new session row.
-func TestWakeAgentLiveElsewhereIsRefusedHarmlessly(t *testing.T) {
+// A wake for an agent live on a Runner but not in this hub's cache (another Server
+// promoted it) resumes, and the Runner refuses with ALREADY_RUNNING. No container is
+// touched, but BindLifetime already re-based the live session (witnessed below).
+func TestWakeAgentLiveElsewhereIsRefusedByRunner(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
 
@@ -211,6 +205,11 @@ func TestWakeAgentLiveElsewhereIsRefusedHarmlessly(t *testing.T) {
 	}
 	if got := sessionRowCount(t, ctx, f.dsn, logical); got != 1 {
 		t.Fatalf("session rows for %q = %d, want 1 (a refused resume records nothing)", logical, got)
+	}
+	// Witness, not a guarantee: the bind runs before the Runner refuses, so the live
+	// session's base moves to the stored max. Binding only after acceptance flips this.
+	if base := boundBase(t, ctx, f.dsn, logical); base != 1 {
+		t.Fatalf("base after refused resume = %d, want 1 (BindLifetime ran before the refusal)", base)
 	}
 }
 
