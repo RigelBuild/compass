@@ -78,18 +78,20 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 		c.fanOut(ctx, channel, author, wire)
 		return
 	}
-	c.hold(authorSession, messageID, otelx.Traceparent(ctx))
+	c.hold(ctx, authorSession, messageID)
 }
 
 // hold registers messageID under its author's session for later firing at the
-// author's settle edge (design.md:157-160). Kept in post order so a settle fires
-// the held set ascending. traceparent is the origin trace captured at hold time
-// (the bus-extracted author ctx); it is restamped at fireHeld so the settled
-// deliver re-links to the publisher's trace across the settle goroutine boundary.
-func (c *Consumer) hold(authorSession, messageID, traceparent string) {
+// author's settle edge (design.md:157-160), in post order. It captures the origin
+// trace and tenant from ctx for fireHeld.
+func (c *Consumer) hold(ctx context.Context, authorSession, messageID string) {
+	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx)}
+	if tenant, ok := store.TenantFromContext(ctx); ok {
+		entry.tenant = tenant
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.held[authorSession] = append(c.held[authorSession], heldEntry{messageID: messageID, traceparent: traceparent})
+	c.held[authorSession] = append(c.held[authorSession], entry)
 }
 
 // fanOut dispatches one settled message. It first routes any `@`-mentions to a

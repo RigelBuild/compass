@@ -113,7 +113,7 @@ func TestSessionStartDoesNotResweepAckedMessages(t *testing.T) {
 	}
 }
 
-// Case T6-3: a live bus event posted mid-sweep queues BEHIND the start sweep — the
+// Case T6-3: a live event posted mid-sweep queues BEHIND the start sweep — the
 // per-session dispatch gate serialization. The start sweep holds the gate for its
 // whole ordered re-dispatch; a live deliver for the SAME session must not dispatch
 // until the sweep releases the gate, then in order. Deterministic via beforeGate.
@@ -130,25 +130,33 @@ func TestLiveEventQueuesBehindStartSweep(t *testing.T) {
 	reads.owed[recipient] = map[store.ChannelID][]store.Message{
 		ch: {textMessage("swept-1", author, "owed")},
 	}
+	// beforeGate signals when the live deliver reaches the session gate, so the
+	// no-dispatch check below runs only once that deliver is provably queued.
+	atGate := make(chan struct{}, 1)
+	c.beforeGate = func(sessionID string) {
+		if sessionID == "sess-recip" {
+			atGate <- struct{}{}
+		}
+	}
 	startConsumer(t, c)
 
 	// Arm the first dispatch (the start sweep's re-dispatch) to block after
-	// signaling entry but BEFORE it records — so while it is held, the consumer
-	// loop is parked inside the sweep and cannot yet read the live tail.
+	// signaling entry but BEFORE it records, so the sweep holds the recipient's
+	// session gate while it is blocked.
 	disp.armFirstBlock()
 	c.OnSessionStarted("sess-recip", recipient)
-	<-disp.enteredFirst // the sweep's first re-dispatch is in-flight, loop parked
+	<-disp.enteredFirst // the sweep's first re-dispatch is in-flight, holding the gate
 
-	// Publish a live deliver for the SAME session while the sweep holds the loop. It
-	// buffers on the bus tail: the single-goroutine loop drains the start edge before
-	// it selects the live event (the per-session gate is the off-loop
-	// belt-and-suspenders). Nothing has recorded yet: the armed dispatch blocks.
-	c.bus.Publish(postedResponse(wireText("live-1", author, "live")))
+	// Publish a live deliver for the SAME session while the sweep is in flight.
+	// The callback blocks on the session gate the sweep holds; wait until it
+	// reaches that gate, then check nothing has recorded.
+	postMessage(t, c, reads, textMessage("live-1", author, "live"))
+	<-atGate
 	if got := disp.snapshot(); len(got) != 0 {
-		t.Fatalf("recorded %d dispatches while the start sweep holds the loop, want 0 (live deliver must queue behind)", len(got))
+		t.Fatalf("recorded %d dispatches while the start sweep holds the gate, want 0 (live deliver must queue behind)", len(got))
 	}
 
-	// Release the sweep; the swept deliver records first (it held the loop), then
+	// Release the sweep; the swept deliver records first (it held the gate), then
 	// the live deliver drains behind it, in order.
 	close(disp.releaseFirst)
 	disp.waitForDispatches(t, 2)

@@ -367,6 +367,7 @@ func serveOTelSocket(t *testing.T, version, dsn string) string {
 	errCh := make(chan error, 1)
 	cfg := ServeConfig{SocketPath: path, Version: version, DatabaseDSN: dsn}
 	provisionMasterKeyProvider(t, &cfg)
+	provisionNats(t, &cfg)
 	go func() {
 		errCh <- Serve(ctx, cfg)
 	}()

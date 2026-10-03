@@ -179,11 +179,10 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 		// CollectorImage and ExternalOTLPEndpoint empty -> an empty-image
 		// `podman run` deep in the adapter.
 		otelExternal: "127.0.0.1:4317",
-		// A struct-literal configFlags bypasses newFlagSet's NatsImage default
-		// exactly as it does the collector's; this headless stack connects to
-		// no broker, so opt out rather than bundle a NATS these subtests never
-		// exercise. The bundled-nats path deserves its own podman-gated test.
-		natsExternal: "nats://127.0.0.1:4222",
+		// compass-server connects its event fabric at boot, so opt out of the
+		// bundled NATS container onto one in-process broker: a live endpoint,
+		// without a container these subtests never exercise.
+		natsExternal: startTestNats(t),
 	})
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
