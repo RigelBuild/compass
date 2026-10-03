@@ -567,11 +567,11 @@ jobs:
       - name: Build and stage the macOS app bundle
         # The release version is the semver release-please cut, sourced from
         # version.txt (Global Constraint 1: ONE version string across all
-        # binaries — the darwin shell and the three sidecars carry the SAME clean
+        # binaries — the darwin shell and the four sidecars carry the SAME clean
         # semver ldflags stamp as the released daemons). The shell compiles with
         # cgo against the system WebKit framework (no build tag — T2 restructured
         # the tags so a bare `go build ./cmd/compass-app` compiles on darwin);
-        # the three embedded sidecars are pure Go (CGO_ENABLED=0). The
+        # the four embedded sidecars are pure Go (CGO_ENABLED=0). The
         # macos-bundle tool then stages + ad-hoc signs the .app — shell, sidecars
         # beside it in Contents/MacOS, UI dist in Contents/Resources — and wraps
         # the .dmg under the release asset grammar. No compass-postgres:
@@ -589,7 +589,7 @@ jobs:
             -ldflags "-X main.version=$version" \
             -o /tmp/compass-app ./cmd/compass-app
 
-          for b in compass-stack compass-server compass-runner; do
+          for b in compass-stack compass-server compass-runner compass-clear-token; do
             CGO_ENABLED=0 go -C go build -trimpath \
               -ldflags "-X main.version=$version" \
               -o "/tmp/$b" "./cmd/$b"
@@ -604,6 +604,7 @@ jobs:
             --sidecar /tmp/compass-stack \
             --sidecar /tmp/compass-server \
             --sidecar /tmp/compass-runner \
+            --sidecar /tmp/compass-clear-token \
             --out "compass-app_${tag}_darwin-arm64.dmg"
 
       - name: Upload the macOS dmg for release-assets to fold in
@@ -753,7 +754,7 @@ jobs:
             -o "../compass_${tag}_darwin-arm64" ./cmd/compass
 
       - name: Build and stage the Linux app bundle
-        # The app tarball (gtk4 shell + the three embedded sidecars + UI dist + desktop
+        # The app tarball (gtk4 shell + the four embedded sidecars + UI dist + desktop
         # + LICENSE) joins the semver Release asset set (RIG-2752 / compass-distribution T1).
         # COMPASS_BUNDLE_VERSION pins the clean semver so the app binary carries
         # the same one version as the daemons (Global Constraint 1); moon's
