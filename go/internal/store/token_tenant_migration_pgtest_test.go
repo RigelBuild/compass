@@ -42,7 +42,7 @@ func TestTokenTenantMigrationBackfillsV1Tokens(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed tenants: %v", err)
 	}
-	hash := tokenHash("pre-0002-token")
+	hash := tokenHash("pre-0004-token")
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO tokens (hash, subject_kind, subject_id) VALUES ($1, $2, 'acct-old')",
 		hash[:], int16(SubjectAccount),
