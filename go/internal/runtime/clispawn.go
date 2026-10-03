@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec" //nolint:depguard // CLI-engine seam: *exec.Cmd/*exec.ExitError types for the container engine subprocess
 	"strings"
 	"time"
@@ -95,7 +96,8 @@ func (e cliEngine) run(ctx context.Context, summary string, args []string) ([]by
 // plus a kill/wait handle. The process is bound to a cancellable child of ctx:
 // its Cancel SIGKILLs the process and WaitDelay bounds the reap, so cancelling
 // the parent context or calling ChildHandle.Kill terminates the in-container
-// agent even without a Go Drop.
+// agent even without a Go Drop. stdout/stderr are caller-owned os.Pipes, so
+// Wait reaps at exit without closing them under output still in the pipe.
 func (e cliEngine) spawnStreaming(ctx context.Context, args []string) (*StreamingExec, error) {
 	execCtx, cancel := context.WithCancel(ctx)
 	//nolint:gosec // G204: the container-engine seam — see spawnCapture. The
@@ -116,20 +118,29 @@ func (e cliEngine) spawnStreaming(ctx context.Context, args []string) (*Streamin
 	if err != nil {
 		return spawnErr(err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
-		return spawnErr(err)
+		return spawnErr(errors.Join(err, stdin.Close()))
 	}
-	stderr, err := cmd.StderrPipe()
+	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
-		return spawnErr(err)
+		return spawnErr(errors.Join(err, stdin.Close(), closePipes(stdoutR, stdoutW)))
 	}
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {
-		return spawnErr(err)
+		// A failed Start closes the exec-owned stdin pipe but never caller files.
+		return spawnErr(errors.Join(err, closePipes(stdoutR, stdoutW, stderrR, stderrW)))
+	}
+	// The child holds its own copies; closing ours lets the reader see EOF once
+	// the child and every descendant holding the pipe have exited.
+	if err := closePipes(stdoutW, stderrW); err != nil {
+		cancel()
+		return nil, errors.Join(&SpawnError{Program: e.program, Err: err}, cmd.Wait(), closePipes(stdoutR, stderrR))
 	}
 
 	return &StreamingExec{
-		IO:      StreamingIO{Stdin: stdin, Stdout: stdout, Stderr: stderr},
+		IO:      StreamingIO{Stdin: stdin, Stdout: stdoutR, Stderr: stderrR},
 		Process: &ChildHandle{cmd: cmd, cancel: cancel},
 	}, nil
 }
