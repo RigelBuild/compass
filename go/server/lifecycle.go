@@ -69,7 +69,7 @@ var _ runnerhub.LifecycleCaller = (*lifecycleService)(nil)
 //
 // The chain, all cost-controlled:
 //
-//  1. Not-live pre-check: a live agent has nothing to wake — no-op.
+//  1. Not-live pre-check: a live agent has nothing to wake — a logged no-op.
 //  2. Per-agent singleflight: N concurrent wakes for one agent coalesce onto one
 //     start; the coalesced callers log outcome=coalesced.
 //  3. LatestSessionForAccount: a prior session → the SYSTEM-AUTHORIZED internal
@@ -83,9 +83,11 @@ func (l *lifecycleService) WakeAgent(ctx context.Context, agent store.AccountID)
 		return
 	}
 	// 1. Not-live pre-check (cost control): a live agent is already awake, so
-	// there is nothing to resume. No-op, no log line — a wake is only an attempt
-	// against an OFFLINE agent.
-	if _, live := l.hub.SessionForAccount(ctx, agent); live {
+	// there is nothing to resume. Cache-only, like the delivery consumer's own
+	// check: a durable row this hub never promoted may name a dead session, and
+	// trusting it would drop the wake silently.
+	if sessionID, live := l.hub.CachedSessionForAccount(agent); live {
+		slog.InfoContext(ctx, "agent wake", "outcome", wakeOutcomeAlreadyLive, "agent_account_id", agent, "session_id", sessionID)
 		return
 	}
 
@@ -486,6 +488,7 @@ func (l *lifecycleService) rollbackSpawn(ctx context.Context, container, session
 // values are the literal outcome= log field.
 const (
 	wakeOutcomeResumed      = "resumed"
+	wakeOutcomeAlreadyLive  = "already-live"
 	wakeOutcomeFreshStarted = "fresh-started"
 	wakeOutcomeCoalesced    = "coalesced"
 	wakeOutcomeNoPlacement  = "no-placement"

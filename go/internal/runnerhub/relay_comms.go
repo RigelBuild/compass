@@ -430,6 +430,17 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 	return sessionID, true
 }
 
+// CachedSessionForAccount is SessionForAccount without the durable read-through:
+// it answers only from this hub's live bindings. A wake's not-live check uses it,
+// because a row this hub has not promoted may name a session that is gone, and
+// reading it back would skip the wake that delivers the agent's message.
+func (h *Hub) CachedSessionForAccount(account store.AccountID) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sessionID, ok := h.accountSessions[account]
+	return sessionID, ok
+}
+
 // LiveAgentSessions snapshots every live (agent account -> session) binding — the
 // set the delivery consumer's lag-resync sweep iterates to redeliver owed
 // messages to every live recipient (design.md:227-231). A copy under the lock,
