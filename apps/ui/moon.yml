@@ -79,7 +79,7 @@ tasks:
     #    the rot this gate exists to red on. Precedent: `ci` itself (below).
     command: 'bunx playwright test e2e/dev-boot.spec.ts'
     deps: ['install']
-    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', 'e2e/dev-boot.spec.ts', 'playwright.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', 'e2e/dev-boot.spec.ts', 'playwright.config.ts', '/bun.lock', '/tools/toolchain/chromium-e2e-env.nix', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     options:
       cache: false
   visual-gate:
@@ -123,6 +123,9 @@ tasks:
     deps: ['install']
     # `dev-smoke`'s list with the spec swapped, plus two additions.
     #
+    # `/tools/toolchain/chromium-e2e-env.nix` (on both tasks): it defines the
+    # pinned Chromium and font set, so a change to either must schedule the gate.
+    #
     # `e2e/__screens__/**/*`: a baseline-only PR (the regen bot's, exactly)
     # must re-schedule this gate, and PNGs live outside `src/**/*`.
     #
@@ -138,7 +141,7 @@ tasks:
     #
     # `src/**/*.css` is already covered by `src/**/*`; naming it separately
     # would be redundant, not additive.
-    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', 'e2e/visual-smoke.spec.ts', 'e2e/__screens__/**/*', 'playwright.config.ts', '/bun.lock', '/devenv.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', 'e2e/visual-smoke.spec.ts', 'e2e/__screens__/**/*', 'playwright.config.ts', '/bun.lock', '/devenv.lock', '/tools/toolchain/chromium-e2e-env.nix', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     options:
       cache: false
   ci:
