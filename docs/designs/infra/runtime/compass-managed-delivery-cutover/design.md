@@ -478,23 +478,26 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
 
 ## Tasks
 
-- [ ] T1: fabric publish in `publishMessagePosted` + `Store.EffectiveTenant` +
+All six landed with compass #1333–#1400 (merged 2026-10-03). The changelog is
+release-please's, generated from those commit subjects.
+
+- [x] T1: fabric publish in `publishMessagePosted` + `Store.EffectiveTenant` +
       failure counter (tests a–d)
-- [ ] T2: consumer trigger cutover — `SubscribeKind` in, bus tail out, per
+- [x] T2: consumer trigger cutover — `SubscribeKind` in, bus tail out, per
       OQ-1/OQ-2/OQ-3 rulings; fabric serial-callback contract doc + no-overlap
       test; every `package delivery` test file referencing `c.bus.*`/
       `events.Bus`/`c.afterResubscribe` edited in this commit (eleven, incl. the
       shared `newTestConsumer` in `helpers_test.go`); scan-vs-hold
       critical-section test; suites green + race run
-- [ ] T3: fabric construction + lifecycle in `serve.go` assembly; fail-closed
+- [x] T3: fabric construction + lifecycle in `serve.go` assembly; fail-closed
       nil-fabric startup
-- [ ] T4: two-instance single-claim, redelivery, DLQ-park integration proof
+- [x] T4: two-instance single-claim, redelivery, DLQ-park integration proof
       (transport-only scope note; slow-callback redelivery case)
-- [ ] T5: recovery-path rewire — Matt-ruled publish-failure trigger
+- [x] T5: recovery-path rewire — Matt-ruled publish-failure trigger
       (`sweepAllLive` / `scanMissedMentions`) per OQ-3 part 2; PRODUCES the
       reconnect seam (does not exist yet); lands in T2's PR; plain-deliver
       recovery test
-- [ ] T6: changelog + record cross-references (DL-327..333 already landed with
+- [x] T6: changelog + record cross-references (DL-327..333 already landed with
       this record's freeze PR)
 
 ## Resolved decisions
