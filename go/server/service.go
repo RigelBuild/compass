@@ -298,6 +298,26 @@ func (s *service) ListBoardIssues(
 	}), nil
 }
 
+// SearchIssues searches the tenant-scoped board corpus and returns wire issues
+// in relevance order. Empty queries are rejected by the store as invalid.
+func (s *service) SearchIssues(
+	ctx context.Context,
+	req *connect.Request[compassv1.SearchIssuesRequest],
+) (*connect.Response[compassv1.SearchIssuesResponse], error) {
+	issues, err := s.store.SearchIssues(ctx, req.Msg.GetQuery(), req.Msg.GetLimit())
+	if err != nil {
+		if errors.Is(err, store.ErrInvalidArgument) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := make([]*compassv1.Issue, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, board.IssueToProto(issue))
+	}
+	return connect.NewResponse(&compassv1.SearchIssuesResponse{Issues: out}), nil
+}
+
 // GetServerInfo is the connect-time liveness/version probe.
 func (s *service) GetServerInfo(
 	_ context.Context,
