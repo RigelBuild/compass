@@ -124,6 +124,43 @@ func TestPlainReloadSendsReplayCompleteThenUnackedOps(t *testing.T) {
 	}
 }
 
+// The old process acks Start's replay_complete, as a real agent does, so reload must
+// queue a fresh lift for the new process. Without the ack, the retained seq-1 op from
+// Start would be redelivered and mask a reload that sends none.
+func TestReloadAfterAckedBarrierSendsFreshReplayComplete(t *testing.T) {
+	h := newTransportFixture(t, newCapturePublish())
+	ctx := context.Background()
+	t.Cleanup(func() { h.Close(ctx) })
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-acked-reload")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
+	first := assertFirstReplayComplete(t, client)
+	ack := client.Publish(ctx)
+	if err := ack.Send(&compassv1internal.PublishFrameRequest{Frame: &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_ControlAck{ControlAck: &compassv1internal.ControlAck{AckedSeq: first.Msg().GetControlSeq()}},
+	}}); err != nil {
+		t.Fatalf("send ack: %v", err)
+	}
+	// The handler returns only after applying every frame, so the ack is in.
+	if _, err := ack.CloseAndReceive(); err != nil {
+		t.Fatalf("close ack stream: %v", err)
+	}
+	if err := h.Reload(ctx, sessionID); err != nil {
+		t.Fatalf("Reload = %v", err)
+	}
+	controlStream := assertFirstReplayComplete(t, client)
+	if err := h.Deliver(ctx, sessionID, &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_Prompt{Prompt: &compassv1internal.PromptControl{Input: "live"}}}); err != nil {
+		t.Fatalf("Deliver after Reload = %v", err)
+	}
+	assertNextPrompt(t, controlStream, "live")
+}
+
 func TestSelfExitAllowsResumeStart(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stay-up")
 	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nif [ -e '"+marker+"' ]; then exec sleep 120; fi\nexit 7\n")
