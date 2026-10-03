@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   reconcile:
+    environment: main
     # The workflow definition itself comes from the dispatched ref, so pinning
     # only the checkout would still run branch-authored steps with the token.
     if: github.ref == 'refs/heads/main'
