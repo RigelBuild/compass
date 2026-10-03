@@ -1,17 +1,14 @@
-/**
- * Store-backed destination providers for the command palette's navigation mode
- * (RIG-2483, A4/D9). One provider per `DestinationKind` — agents, channels,
- * topics, views, issues, prs — each reading a reactive store accessor and
- * mapping its rows to `Destination`s whose `navigate()` routes through the
- * store's own action seam (so a palette jump and a click share one home).
+/** Destination providers for the command palette's navigation mode (RIG-2483, A4/D9).
+ * One provider per `DestinationKind` — agents, channels, topics, views, issues,
+ * PRs, and messages. Most read reactive store accessors; message search is a
+ * remote provider backed by the live comms client.
  *
  * Providers are `Promise`-returning by contract (`DestinationProvider.query`);
- * the store-backed ones resolve synchronously-wrapped today, but the issue
- * provider rides the async tracker seam and later kinds may be genuinely async,
- * so `queryDestinations` is race-safe now via the latest-wins generation guard.
+ * store-backed ones resolve synchronously-wrapped today, while issue and message
+ * providers are async, so `queryDestinations` uses a latest-wins generation guard.
  *
- * Filtering + ranking is the in-house `fuzzyScore` (D2) over the destination
- * title; an empty query passes everything (score 0). `score` is stamped on each
+ * Filtering + ranking is the in-house `fuzzyScore` (D2) over destination titles;
+ * an empty query passes everything (score 0). `score` is stamped on each
  * `Destination` so the surface can order within a kind.
  */
 
@@ -69,13 +66,25 @@ function mapMessageHit(
 		.find((candidate) => candidate.id === message.topicId);
 	// Search hits lack channel ids, so an off-set topic cannot be routed safely.
 	if (!topic) return [];
-	const firstLine =
-		message.blocks
-			.filter((block) => block.block.case === "text")
-			.map((block) => block.block.value)
-			.join(" ")
-			.split(/\r?\n/, 1)[0]
-			?.trim() ?? "";
+	const textTitle = message.blocks
+		.filter((block) => block.block.case === "text")
+		.flatMap((block) =>
+			block.block.case === "text" ? block.block.value.split(/\r?\n/) : [],
+		)
+		.map((line) => line.trim())
+		.find((line) => line.length > 0);
+	const askTitle = message.blocks
+		.filter((block) => block.block.case === "ask")
+		.flatMap((block) =>
+			block.block.case === "ask"
+				? block.block.value.questions.map((question) =>
+						question.question.trim(),
+					)
+				: [],
+		)
+		.find((question) => question.length > 0);
+	const firstLine = textTitle ?? askTitle;
+	if (!firstLine) return [];
 	const title =
 		firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine;
 	// The server returns best-match-first; score by rank so the group sort keeps it.
@@ -190,7 +199,6 @@ export function createStoreDestinationProviders(
 				const response = await clients.comms.searchMessages({
 					query,
 					limit: 50,
-					snapshotSeq: 0n,
 				});
 				return response.messages.flatMap((message, rank) =>
 					mapMessageHit(message, store, rank),
