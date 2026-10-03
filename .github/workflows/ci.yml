@@ -141,6 +141,13 @@ on:
         options:
           - forge
           - visual
+      regen_ref:
+        # The branch the visual lane captures under and opens its bot PR onto.
+        # A Chromium bump changes pixels, so its baselines must come from its
+        # own branch's pins; main's lane cannot produce them.
+        description: 'Branch the visual regen lane captures and targets (empty = main; ignored by the forge lane)'
+        required: false
+        default: ''
 
 # One in-flight run per ref per event action. A superseded push's run is
 # answering a question nobody is asking any more. Both the event and its action
@@ -2807,19 +2814,32 @@ jobs:
     # to copy here.
     # The `refs/heads/main` conjunct matches the forge lane's: a dispatch names
     # an arbitrary ref, and the dispatched ref's own copy of this file runs, so
-    # without it an arbitrary branch mints the App token that pushes and opens PRs.
+    # without it an arbitrary branch's copy of this file would run.
+    #
+    # `regen_ref` names the branch to capture. Capture runs under THAT branch's
+    # pins, so a Chromium bump can carry its own baselines. This job holds no
+    # secrets and only read access; the App token is minted in
+    # publish-visual-baselines, which runs no code from the branch.
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.pr == '' &&
       github.ref == 'refs/heads/main' &&
       inputs.regen == 'visual'
     timeout-minutes: 30
+    outputs:
+      ref: ${{ steps.target.outputs.ref }}
     steps:
+      - name: Resolve the capture branch
+        id: target
+        env:
+          REGEN_REF: ${{ inputs.regen_ref }}
+        run: |
+          echo "ref=${REGEN_REF:-main}" >>"$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history so the create-pull-request action can branch and diff
-          # cleanly, matching the forge regen lane's checkout.
-          fetch-depth: 0
+          ref: ${{ steps.target.outputs.ref }}
+          persist-credentials: false
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
@@ -2926,6 +2946,33 @@ jobs:
         # dispatched to replace.
         run: bunx playwright test e2e/visual-smoke.spec.ts --update-snapshots=all
 
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visual-baselines
+          path: apps/ui/e2e/__screens__/*.png
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-visual-baselines:
+    name: publish-visual-baselines
+    runs-on: ubuntu-latest
+    # Holds the App token, so it runs nothing from the captured branch: it
+    # checks the branch out only as the PR's base tree and copies in PNGs.
+    needs: regen-visual-baselines
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.regen-visual-baselines.outputs.ref }}
+          # Full history so create-pull-request can branch and diff cleanly.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: visual-baselines
+          path: apps/ui/e2e/__screens__
+
       # App token for the same reason as the forge lane: a GITHUB_TOKEN PR gets no CI.
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
@@ -2934,29 +2981,22 @@ jobs:
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
 
       - name: Open a bot PR with the regenerated baselines
-        # The rewritten __screens__ PNGs are a working-tree diff; this opens a
-        # bot PR carrying them for image review, the same bot-opens-a-PR
-        # credential path the forge regen lane uses, on the same SHA pin.
-        #
-        # DELIBERATELY no `base:`. create-pull-request defaults it to the
-        # checked-out branch, and this lane's contract (OQ-2 (b)) is that the bot
-        # PR targets the FEATURE BRANCH the lane was dispatched on — that is how
-        # a red visual gate on a branch gets its baselines refreshed in place,
-        # without laundering an unreviewed UI change onto main. Do NOT "fix" this
-        # to `base: main`.
+        # The bot PR targets the captured branch (`regen_ref`, default main),
+        # so a Chromium bump's baselines land on the bump branch, not on main.
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
+          base: ${{ needs.regen-visual-baselines.outputs.ref }}
           branch: visual-baseline-regen-${{ github.run_id }}
           title: 'test(ui): regenerate visual regression baselines'
           commit-message: 'test(ui): regenerate visual regression baselines'
           body: >-
             Automated `--update-snapshots=all` re-capture of the visual regression
-            baselines (`apps/ui/e2e/__screens__/`) under CI's pinned Chromium,
-            produced by the `regen-visual-baselines` workflow_dispatch lane.
-            Review the baselines in the Files-changed tab: GitHub renders PNG
-            changes as native image diffs, with 2-up, swipe, and onion-skin
-            modes.
+            baselines (`apps/ui/e2e/__screens__/`) under the pinned Chromium of
+            the base branch, produced by the `regen-visual-baselines`
+            workflow_dispatch lane. Review the baselines in the Files-changed
+            tab: GitHub renders PNG changes as native image diffs, with 2-up,
+            swipe, and onion-skin modes.
 
 
             jj HAZARD — after merging this PR, run `jj git fetch` and rebase

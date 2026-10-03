@@ -103,8 +103,8 @@ tasks:
     # PLAYWRIGHT_CHROMIUM_PATH first, then a stale baseline: the shots live in
     # the tree, so committed shots older than the last recapture red until
     # they are refreshed. Check those before regenerating.
-    # Regenerate ONLY via `regen-visual-baselines` (dispatch `ci` on the
-    # branch with `regen: visual`, not the `forge` default). A devenv
+    # Regenerate ONLY via `regen-visual-baselines` (dispatch `ci` on main with
+    # `regen: visual` and `regen_ref: <branch>`, not the `forge` default). A devenv
     # recapture under the pins is byte-identical to CI's, so local bytes are
     # not WRONG — they are simply unattested, and no later reader can tell.
     #
