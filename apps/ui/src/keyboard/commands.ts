@@ -52,6 +52,7 @@ export type DestinationKind =
 	| "topic"
 	| "issue"
 	| "pr"
+	| "message"
 	| "view";
 
 /**
@@ -73,8 +74,8 @@ export interface Destination {
  * An async, ranked destination provider (D5:425-429).
  *
  * Providers back navigation mode: agents (tree), channels/topics, issues
- * (`SEA-…` keys), PRs, views. The palette is prefix-free — bare typing matches
- * both commands and destinations.
+ * (`SEA-…` keys), PRs, views, and remote messages. The palette is prefix-free —
+ * bare typing matches both commands and destinations.
  *
  * Ranking inputs (D5:429): results are ordered by **recency** and **fuzzy
  * score**. The exact weighting of these two signals is an NLB deferral and is
