@@ -142,6 +142,12 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 	displaced := prior.SessionID
 
 	intervalID := prior.UsageIntervalID
+	if intervalID != "" {
+		// An older server may have written the prior row without a start event.
+		if err := qtx.EnsureComputeUsageIntervalStart(ctx, string(accountID)); err != nil {
+			return "", fmt.Errorf("store: ensure compute usage interval start: %w", err)
+		}
+	}
 	if prior.SessionID != sessionID {
 		if intervalID != "" {
 			if err := qtx.EndComputeUsageInterval(ctx, db.EndComputeUsageIntervalParams{

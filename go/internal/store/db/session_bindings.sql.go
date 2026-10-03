@@ -16,7 +16,18 @@ WITH d AS (
     DELETE FROM session_bindings AS b
      WHERE b.session_id = $1
     RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
-              b.session_id, b.runner_id
+              b.session_id, b.runner_id, b.created_at
+), starts AS (
+    INSERT INTO compute_usage_events (
+        tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+        owner_user_id, session_id, runner_id, estimated
+    )
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'start', d.created_at,
+           d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id, TRUE
+      FROM d
+      JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+    ON CONFLICT DO NOTHING
+    RETURNING 1
 )
 INSERT INTO compute_usage_events (
     tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
@@ -29,6 +40,8 @@ SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', clock_t
 ON CONFLICT DO NOTHING
 `
 
+// Both deletes also write an estimated start for a binding an older server made
+// without one; ON CONFLICT keeps any real start.
 func (q *Queries) DeleteSessionBinding(ctx context.Context, sessionID string) error {
 	_, err := q.db.Exec(ctx, deleteSessionBinding, sessionID)
 	return err
@@ -39,7 +52,18 @@ WITH d AS (
     DELETE FROM session_bindings AS b
      WHERE b.runner_id = $1
     RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
-              b.session_id, b.runner_id
+              b.session_id, b.runner_id, b.created_at
+), starts AS (
+    INSERT INTO compute_usage_events (
+        tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+        owner_user_id, session_id, runner_id, estimated
+    )
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'start', d.created_at,
+           d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id, TRUE
+      FROM d
+      JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+    ON CONFLICT DO NOTHING
+    RETURNING 1
 ), ins AS (
     INSERT INTO compute_usage_events (
         tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
@@ -113,6 +137,26 @@ func (q *Queries) EndComputeUsageInterval(ctx context.Context, arg EndComputeUsa
 		arg.RunnerID,
 		arg.AgentAccountID,
 	)
+	return err
+}
+
+const ensureComputeUsageIntervalStart = `-- name: EnsureComputeUsageIntervalStart :exec
+INSERT INTO compute_usage_events (
+    id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
+    session_id, runner_id, estimated
+)
+SELECT gen_random_uuid()::text, b.usage_interval_id, 'start', b.created_at,
+       b.agent_account_id, a.owner_user_id, b.session_id, b.runner_id, TRUE
+  FROM session_bindings AS b
+  JOIN agent_accounts AS a ON a.account_id = b.agent_account_id
+ WHERE b.agent_account_id = $1::text
+ON CONFLICT (tenant_id, interval_id, kind) DO NOTHING
+`
+
+// A binding an older server wrote during a rolling deploy has no start event.
+// Its created_at is the best start we hold, so the start is marked estimated.
+func (q *Queries) EnsureComputeUsageIntervalStart(ctx context.Context, agentAccountID string) error {
+	_, err := q.db.Exec(ctx, ensureComputeUsageIntervalStart, agentAccountID)
 	return err
 }
 
