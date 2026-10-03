@@ -64,7 +64,7 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 	}
 	if err == nil {
 		_, err = seed.Exec(ctx,
-			"INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id) VALUES ($1, $2, 'upgrade-session', 'upgrade-runner')",
+			"INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id, updated_at) VALUES ($1, $2, 'upgrade-session', 'upgrade-runner', now() - interval '3 days')",
 			tenant, agentID,
 		)
 	}
@@ -106,20 +106,21 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 
 	var backfilledStartCount int
 	var backfilledInterval, boundInterval string
-	var allEstimated bool
+	var allEstimated, timestampMatches bool
 	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*), min(e.interval_id), bool_and(e.estimated), min(b.usage_interval_id)
+		SELECT count(*), min(e.interval_id), bool_and(e.estimated), min(b.usage_interval_id),
+		       bool_and(e.occurred_at = b.updated_at)
 		  FROM compute_usage_events AS e
 		  JOIN session_bindings AS b
 		    ON b.tenant_id = e.tenant_id AND b.agent_account_id = e.agent_account_id
 		 WHERE e.tenant_id = $1 AND e.agent_account_id = $2
 		   AND e.kind = 'start' AND e.session_id = 'upgrade-session'`, string(tenant), agentID).
-		Scan(&backfilledStartCount, &backfilledInterval, &allEstimated, &boundInterval); err != nil {
+		Scan(&backfilledStartCount, &backfilledInterval, &allEstimated, &boundInterval, &timestampMatches); err != nil {
 		t.Fatalf("read backfilled compute start: %v", err)
 	}
-	if backfilledStartCount != 1 || backfilledInterval == "" || backfilledInterval != boundInterval || !allEstimated {
-		t.Fatalf("backfilled starts = %d, interval = %q, bound = %q, estimated = %t; want one estimated start on the bound interval",
-			backfilledStartCount, backfilledInterval, boundInterval, allEstimated)
+	if backfilledStartCount != 1 || backfilledInterval == "" || backfilledInterval != boundInterval || !allEstimated || !timestampMatches {
+		t.Fatalf("backfilled starts = %d, interval = %q, bound = %q, estimated = %t, timestamp matches = %t; want one estimated start on the bound interval at its seeded updated_at",
+			backfilledStartCount, backfilledInterval, boundInterval, allEstimated, timestampMatches)
 	}
 
 	var horizon pgtype.Timestamptz

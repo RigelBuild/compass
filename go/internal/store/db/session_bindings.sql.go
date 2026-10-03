@@ -22,7 +22,7 @@ INSERT INTO compute_usage_events (
     tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
     owner_user_id, session_id, runner_id
 )
-SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', now(),
+SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', clock_timestamp(),
        d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
   FROM d
   JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
@@ -45,36 +45,26 @@ WITH d AS (
         tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
         owner_user_id, session_id, runner_id
     )
-    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', now(),
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', clock_timestamp(),
            d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
       FROM d
       JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
     ON CONFLICT DO NOTHING
     RETURNING 1
 )
-SELECT d.session_id, d.agent_account_id FROM d
+SELECT d.tenant_id, d.session_id, d.agent_account_id FROM d
 `
 
 type DeleteSessionBindingsForRunnerRow struct {
+	TenantID       string
 	SessionID      string
 	AgentAccountID string
 }
 
-// The reconnect sweep. Hub.enroll (internal/runnerhub/hub.go:905-957) clears
-// every binding when a Runner (re-)enrolls: a reconnecting Runner has no live
-// sessions, so a surviving binding would resolve a re-minted session id to a
-// stale account. A durable table does not forget on reconnect, so the sweep must
-// be explicit.
-//
-// :many with RETURNING, deliberately NOT :exec. enroll snapshots the bindings
-// BEFORE clearing them (hub.go:912-928) because each cleared binding drives a
-// presence DISCONNECTED edge (RIG-1569 T8) and each cleared session id must be
-// reaped from the delivery held-deliver registry (RIG-1569 T3). A bare DELETE
-// would satisfy the invariant while silently dropping both side-effects, leaving
-// a long-WORKING agent stuck WORKING in the projection forever. RETURNING is
-// what preserves them, so the returned rows are load-bearing, not diagnostic.
-// A DELETE ... RETURNING takes no ORDER BY, so the Store method sorts the
-// returned slice by session id to keep a sweep pass deterministic and diffable.
+// The reconnect sweep, run by Hub.enroll under the system role because a Runner
+// is shared across tenants. :many with RETURNING: each removed row drives a
+// presence DISCONNECTED edge, a held-deliver reap, and a tenant-scoped archive.
+// DELETE ... RETURNING takes no ORDER BY, so the Store method sorts by session id.
 func (q *Queries) DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]DeleteSessionBindingsForRunnerRow, error) {
 	rows, err := q.db.Query(ctx, deleteSessionBindingsForRunner, runnerID)
 	if err != nil {
@@ -84,7 +74,7 @@ func (q *Queries) DeleteSessionBindingsForRunner(ctx context.Context, runnerID s
 	var items []DeleteSessionBindingsForRunnerRow
 	for rows.Next() {
 		var i DeleteSessionBindingsForRunnerRow
-		if err := rows.Scan(&i.SessionID, &i.AgentAccountID); err != nil {
+		if err := rows.Scan(&i.TenantID, &i.SessionID, &i.AgentAccountID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -100,7 +90,7 @@ INSERT INTO compute_usage_events (
     id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
     session_id, runner_id
 )
-SELECT gen_random_uuid()::text, $1::text, 'end', now(),
+SELECT gen_random_uuid()::text, $1::text, 'end', clock_timestamp(),
        a.account_id, a.owner_user_id, $2::text, $3::text
   FROM agent_accounts AS a
  WHERE a.account_id = $4::text
@@ -146,39 +136,21 @@ type LockSessionBindingAccountParams struct {
 // compass.tenant_id GUC for RLS and tenant defaults. Delete queries carry the
 // deleted binding's tenant_id into their end-event insert explicitly.
 //
-// It is NOT complete under WithSystemRole (tenant_tx.go), which arms the
-// BYPASSRLS compass_system role and NO tenant GUC. Every query here then runs
-// cross-tenant and unscoped, and each one changes meaning:
+// Under WithSystemRole (BYPASSRLS, no tenant GUC) these queries run cross-tenant:
 //
 //   - SessionBindingForAccount / SessionBindingAccount / SessionBindingForUpdate
-//     are :one, but with RLS gone their single predicate can match rows in
-//     SEVERAL tenants. pgx's QueryRow takes the first and discards the rest
-//     without error, so the caller gets a plausible answer from an arbitrary
-//     tenant.
-//   - DeleteSessionBindingsForRunner sweeps EVERY tenant's bindings for that
-//     runner id — runner ids are not tenant-unique either.
-//   - RecordSessionBinding does not fail closed. tenant_id DEFAULTs to
-//     current_setting('compass.tenant_id', TRUE); on a pooled connection that
-//     previously served an ARMED statement, the ended SET LOCAL leaves that
-//     custom GUC defined-and-EMPTY rather than undefined, so the DEFAULT
-//     resolves to ” and the NOT NULL is satisfied. The row lands stamped with a
-//     tenant that does not exist — and tenant_id here has no FK to tenants
-//     (accounts.tenant_id does), so nothing catches it. No RLS policy matches
-//     ”, so that row is then invisible to every tenant and releasable by
-//     nothing on the request path. On a connection that never carried an armed
-//     statement the GUC is genuinely undefined, the DEFAULT is NULL, and the
-//     insert fails not-null instead — so which of the two a caller gets depends
-//     on the pooled connection it draws.
+//     are :one, so a predicate matching rows in several tenants returns an
+//     arbitrary tenant's row without error.
+//   - RecordSessionBinding does not fail closed: tenant_id DEFAULTs from the GUC,
+//     which a pooled connection may leave empty, landing a row no tenant can see.
+//   - DeleteSessionBindingsForRunner sweeps every tenant's bindings for that
+//     runner id. Hub.enroll calls it this way on purpose, since a Runner is shared
+//     across tenants; the returned tenant_id scopes each archive and end event.
 //
-// Nothing calls these under the system role today (WithSystemRole is set at
-// delivery/consumer.go and runnerhub/hub.go); a PR3 caller that wants to must
-// scope them deliberately rather than inherit scoping from here.
-// session_bindings_pgtest_test.go pins the observed behaviour so it is recorded
-// rather than latent.
+// SessionBindingTenants is the other deliberate system-role read.
+// session_bindings_pgtest_test.go pins the :one behaviour.
 //
-// updated_at is NEVER assigned here: the set_updated_at() BEFORE UPDATE trigger
-// (0001_init.sql, RIG-3495) is the one mechanism, and a hand-written
-// `updated_at = now()` is the exact defect that convention removes.
+// updated_at is maintained by the set_updated_at() trigger, never here.
 //
 // The per-account serialization the bind takes FIRST, before it reads anything.
 // Auto-released at transaction end. It mirrors LockOwnerDM / LockOwnerCoordination
@@ -334,7 +306,7 @@ INSERT INTO compute_usage_events (
     id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
     session_id, runner_id
 )
-SELECT gen_random_uuid()::text, $1::text, 'start', now(),
+SELECT gen_random_uuid()::text, $1::text, 'start', clock_timestamp(),
        a.account_id, a.owner_user_id, $2::text, $3::text
   FROM agent_accounts AS a
  WHERE a.account_id = $4::text
@@ -350,6 +322,7 @@ type StartComputeUsageIntervalParams struct {
 
 // Event writes share RecordSessionBinding's transaction, so neither half of an
 // interval can commit without its binding transition.
+// clock_timestamp records after lock waits, unlike now() which uses tx start time.
 func (q *Queries) StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) error {
 	_, err := q.db.Exec(ctx, startComputeUsageInterval,
 		arg.IntervalID,

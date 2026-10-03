@@ -981,9 +981,8 @@ type promotedPair struct {
 // (OQ-2): a restarted Runner could re-mint a still-bound id, so clearing forces a
 // re-minted id to CodeNotFound until bound anew. RIG-3108: the maps are a read-through
 // cache over session_bindings whose rows survive process death — a RE-ENROLL durably
-// reaps the rows (fail-closed requires dead sessions gone) and drives OFFLINE + reap
-// edges from them, while a FIRST enroll (Server restart, sessions live) only clears the
-// maps so valid rows survive. The reap runs request-scoped by RLS.
+// reaps rows across tenants under the system role and drives OFFLINE + reap edges,
+// while a FIRST enroll only clears the maps so valid durable rows survive.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool) {
 	h.mu.Lock()
 	reattached = h.runner != nil
@@ -1026,15 +1025,18 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	// else falls back to the in-RAM snapshot taken above.
 	offline := ramOffline
 	reapedSessions := ramReaped
+	var durableReaped []store.SessionBinding
+	durableReapSucceeded := false
 	if bindings != nil && reattached {
-		rows, err := bindings.DeleteSessionBindingsForRunner(ctx, id)
+		rows, err := bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
 		if err != nil {
-			// A durable-reap fault must not wedge the reconnect: log and fall back to the
-			// in-RAM snapshot (still cleared). The rows SURVIVE and name dead sessions, so
-			// reapStale STAYS raised — a read-through would resurrect one.
+			// A durable-reap fault must not wedge reconnect; fall back to the in-RAM
+			// snapshot while read-through stays disabled until a reap succeeds.
 			h.log.Error("durable session-binding reap failed on re-enroll; using in-RAM snapshot, read-through disabled until a reap succeeds",
 				"runner_id", id, "error", err)
 		} else {
+			durableReaped = rows
+			durableReapSucceeded = true
 			offline = make([]promotedPair, 0, len(rows))
 			reapedSessions = make([]string, 0, len(rows))
 			for _, b := range rows {
@@ -1062,8 +1064,14 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	if reap != nil {
 		reap.OnSessionsReaped(reapedSessions)
 	}
-	for _, sessionID := range reapedSessions {
-		h.archiveEnded(ctx, sessionID)
+	if durableReapSucceeded {
+		for _, b := range durableReaped {
+			h.archiveEnded(store.WithTenant(ctx, b.TenantID), b.SessionID)
+		}
+	} else {
+		for _, sessionID := range reapedSessions {
+			h.archiveEnded(ctx, sessionID)
+		}
 	}
 	return reattached
 }
