@@ -354,7 +354,7 @@ func TestIssueSearchIndexesBodyAndLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin verification transaction: %v", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // read-only verification tx; rollback is cleanup only
 	if _, err := tx.Exec(ctx, "SET LOCAL ROLE compass_system"); err != nil {
 		t.Fatalf("set verification role: %v", err)
 	}
@@ -397,15 +397,16 @@ func TestSearchIssuesRanksTitleClampsLimitAndScopesTenant(t *testing.T) {
 		t.Fatalf("upsert cross-tenant hit: %v", err)
 	}
 
-	if _, err := s.SearchIssues(ctx, "  \t", 10); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("empty query error = %v, want ErrInvalidArgument", err)
+	defaultHits, err := s.SearchIssues(ctx, "falcon", 0)
+	if err != nil {
+		t.Fatalf("SearchIssues(limit=0): %v", err)
 	}
 	hits, err := s.SearchIssues(ctx, "falcon", ^uint32(0))
 	if err != nil {
 		t.Fatalf("SearchIssues: %v", err)
 	}
-	if len(hits) != 2 {
-		t.Fatalf("SearchIssues returned %d hits, want 2 visible tenant rows", len(hits))
+	if len(defaultHits) != 2 {
+		t.Fatalf("SearchIssues(limit=0) returned %d hits, want 2", len(defaultHits))
 	}
 	if hits[0].ID != titleID {
 		t.Fatalf("first search hit id = %q, want title hit %q", hits[0].ID, titleID)

@@ -253,6 +253,7 @@ func issueFromListRow(r db.ListIssuesRow) Issue {
 		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
 }
 
+// issueFromSearchRow maps a generated search result to the store issue model.
 func issueFromSearchRow(r db.SearchIssuesRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
