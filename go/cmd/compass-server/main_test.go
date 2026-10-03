@@ -433,6 +433,7 @@ func TestBuildServeConfigUsageEventRetention(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("COMPASS_USAGE_EVENT_RETENTION", tc.env)
+			t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222") // required since the event fabric landed
 			args := []string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"}
 			if tc.flag != "" {
 				args = append(args, "--usage-event-retention", tc.flag)
