@@ -11,39 +11,51 @@ import (
 
 const insertTokenHash = `-- name: InsertTokenHash :exec
 
-INSERT INTO tokens (hash, subject_kind, subject_id) VALUES ($1, $2, $3)
+INSERT INTO tokens (hash, subject_kind, subject_id, tenant_id) VALUES ($1, $2, $3, $4)
 `
 
 type InsertTokenHashParams struct {
 	Hash        []byte
 	SubjectKind int16
 	SubjectID   string
+	TenantID    string
 }
 
 // Token-domain queries (sqlc adoption T6, RIG-3034). These replace the inline
 // SQL literals in internal/store/tokens.go; the hand-written Store methods keep
 // their signatures, the ErrConflict/ErrNotFound/ErrTokenRevoked mapping, and the
 // RowsAffected branching (RevokeToken is :execrows). ResolveTokenHash maps the
-// generated row (subject_kind/subject_id/revoked) back to the domain Subject.
+// generated row (subject_kind/subject_id/tenant_id/revoked) back to the domain Subject.
 func (q *Queries) InsertTokenHash(ctx context.Context, arg InsertTokenHashParams) error {
-	_, err := q.db.Exec(ctx, insertTokenHash, arg.Hash, arg.SubjectKind, arg.SubjectID)
+	_, err := q.db.Exec(ctx, insertTokenHash,
+		arg.Hash,
+		arg.SubjectKind,
+		arg.SubjectID,
+		arg.TenantID,
+	)
 	return err
 }
 
 const resolveTokenHash = `-- name: ResolveTokenHash :one
-SELECT subject_kind, subject_id, (revoked_at IS NOT NULL)::boolean AS revoked FROM tokens WHERE hash = $1
+SELECT subject_kind, subject_id, tenant_id, (revoked_at IS NOT NULL)::boolean AS revoked FROM tokens WHERE hash = $1
 `
 
 type ResolveTokenHashRow struct {
 	SubjectKind int16
 	SubjectID   string
+	TenantID    string
 	Revoked     bool
 }
 
 func (q *Queries) ResolveTokenHash(ctx context.Context, hash []byte) (ResolveTokenHashRow, error) {
 	row := q.db.QueryRow(ctx, resolveTokenHash, hash)
 	var i ResolveTokenHashRow
-	err := row.Scan(&i.SubjectKind, &i.SubjectID, &i.Revoked)
+	err := row.Scan(
+		&i.SubjectKind,
+		&i.SubjectID,
+		&i.TenantID,
+		&i.Revoked,
+	)
 	return i, err
 }
 

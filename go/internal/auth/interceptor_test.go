@@ -26,6 +26,7 @@ const authHeader = "Authorization"
 // spyResult records what the wrapped handler observed: whether it ran at all,
 // and the caller CallerFrom returned from the context the interceptor built.
 type spyResult struct {
+	tenant    store.TenantID
 	called    bool
 	caller    store.AccountID
 	hasCaller bool
@@ -38,6 +39,7 @@ func recordingSpy(rec *spyResult) connect.UnaryFunc {
 	return func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 		rec.called = true
 		rec.caller, rec.hasCaller = CallerFrom(ctx)
+		rec.tenant, _ = store.TenantFromContext(ctx)
 		return connect.NewResponse(&compassv1.GetServerInfoResponse{}), nil
 	}
 }

@@ -72,6 +72,7 @@ func recordingStreamHandler(rec *spyResult) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, _ connect.StreamingHandlerConn) error {
 		rec.called = true
 		rec.caller, rec.hasCaller = CallerFrom(ctx)
+		rec.tenant, _ = store.TenantFromContext(ctx)
 		return nil
 	}
 }

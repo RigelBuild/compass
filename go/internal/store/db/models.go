@@ -329,6 +329,7 @@ type Token struct {
 	SubjectID   string
 	CreatedAt   pgtype.Timestamptz
 	RevokedAt   pgtype.Timestamptz
+	TenantID    string
 }
 
 type TokenUsageEvent struct {
