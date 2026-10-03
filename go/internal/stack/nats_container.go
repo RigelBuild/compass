@@ -125,6 +125,15 @@ func natsContainerSpec(cfg Config) (NatsContainerSpec, error) {
 	return spec, nil
 }
 
+// natsURL is the endpoint every NATS consumer dials: the operator's URL on
+// --nats-external, else the bundled container's published loopback client port.
+func natsURL(cfg Config) string {
+	if cfg.ExternalNatsURL != "" {
+		return cfg.ExternalNatsURL
+	}
+	return "nats://" + natsListenHost + ":" + natsClientPort
+}
+
 // natsContainerName derives the stable per-state-dir NATS container name. Like
 // containerName (postgres) and collectorContainerName it is a deterministic
 // function of the state dir alone so a fresh `down` with no in-memory handle

@@ -16,7 +16,7 @@ import (
 // waitHeld blocks until authorSession holds at least n pending-deliver entries,
 // or fails at the deadline. Event-gates on the registry, polled with a yielding
 // ticker — no wall-clock synchronization, just a bounded observe-loop over an
-// in-memory field the bus goroutine mutates.
+// in-memory field the fabric callback mutates.
 func (c *Consumer) waitHeld(t *testing.T, authorSession string, n int) { //nolint:unparam // read-clarity signature: both authorSession and n are intentionally explicit at each call site (which session's held-queue, how many entries) though currently constant — not dead code.
 	t.Helper()
 	deadline := time.After(testTimeout)
@@ -44,6 +44,14 @@ func (c *Consumer) isHeld(authorSession, messageID string) bool {
 	return slices.ContainsFunc(c.held[authorSession], func(e heldEntry) bool {
 		return e.messageID == messageID
 	})
+}
+
+// hasLastSettle reports whether a settle time is recorded for authorSession.
+func (c *Consumer) hasLastSettle(authorSession string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.lastSettle[authorSession]
+	return ok
 }
 
 // waitSettleDrained blocks until the settle queue is empty, or fails at the

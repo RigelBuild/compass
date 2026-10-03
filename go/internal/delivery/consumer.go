@@ -1,38 +1,29 @@
 //go:build unix
 
-// Package delivery is the Server-side notification fan-out consumer (RIG-1569
-// T3, design record D1). It tails the in-process comms event bus and, for each
-// posted message, resolves the subscribed agent sessions and dispatches a
-// `deliver` control down the existing Sessions relay to each live recipient —
-// timed by the author-split settle gate — while the durable per-(agent, channel)
-// delivery cursor is advanced only when the recipient acks (the ack arm lives in
-// the RunnerHub; this package is the trigger + dispatch side).
-//
-// It mirrors comms.SubscribeComms's bus-tail discipline (subscribe.go) but runs
-// its OWN long-lived goroutine started in server assembly, not a per-request
-// handler: Run(ctx) roots the loop on the serve-scoped ctx, and the loop ends
-// when that ctx is cancelled or the bus closes (rule://go-thread-context — the
-// ctx passed to Run IS the goroutine's root; the loop never mints a fresh one,
-// and the settle hook hands its work back to this loop rather than storing a
-// ctx).
+// Package delivery fans each posted message out to subscribed live agent
+// sessions as a `deliver` control, timed by the author-split settle gate. It
+// consumes message_posted refs from the event fabric on a goroutine rooted in
+// the serve ctx; the hub's ack arm advances the durable delivery cursor.
 package delivery
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
-	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -149,6 +140,9 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 type settleEvent struct {
 	sessionID string
 	state     compassv1.AgentSessionState
+	// upTo bounds the commit times this edge fires. A real settle fires all; a
+	// late hold's replay fires only its settled turn, not a still-streaming one.
+	upTo int64
 }
 
 // startEvent is one queued session-start edge handed from the hub's Start (or
@@ -164,21 +158,28 @@ type startEvent struct {
 // providers T2/T3 install). Shared by every otel.Tracer / otel.Meter call here.
 const instrumentationScope = "github.com/RigelBuild/compass/go/internal/delivery"
 
+// recoveryFloorInterval bounds how long a message whose fabric publish failed
+// while NATS stayed up waits before a recovery pass delivers it.
+const recoveryFloorInterval = 5 * time.Minute
+
 // heldEntry is one pending-deliver registry element: the held message id plus
-// the W3C traceparent captured at hold time (the author's live-dispatch ctx), so
-// the deliver fired when the author settles re-links to the publisher's trace
-// across the goroutine boundary. Empty traceparent ⇒ empty on the wire.
+// the W3C traceparent and tenant captured at hold time, so the deliver fired when
+// the author settles re-links to the publisher's trace and re-reads under the
+// message's own tenant. Empty traceparent ⇒ empty on the wire.
 type heldEntry struct {
 	messageID   string
 	traceparent string
+	tenant      store.TenantID
+	atUnixMs    int64 // commit time, matched against settleEvent.upTo
 }
 
-// Consumer tails the comms bus and fans posted messages out to subscribed live
-// agent sessions. Safe for concurrent use: the pending-deliver registry, the
-// settle queue, and the per-session dispatch gates mutate under mu; the bus loop,
-// the settle hook, and per-session dispatches all touch them.
+// Consumer consumes message_posted refs and fans posted messages out to
+// subscribed live agent sessions. Safe for concurrent use: the pending-deliver
+// registry, the settle queue, and the per-session dispatch gates mutate under mu;
+// the fabric callback, the loop, the settle hook, and per-session dispatches all
+// touch them.
 type Consumer struct {
-	bus      *events.Bus[*compassv1.SubscribeCommsResponse]
+	fab      fabric.EventFabric
 	st       DeliveryReads
 	dispatch ControlDispatcher
 	resolver SessionResolver
@@ -194,27 +195,18 @@ type Consumer struct {
 	mu sync.Mutex
 	// held is the pending-deliver registry (design.md:157-168), keyed by the
 	// AUTHOR's live session id: an agent-authored message posted while its author
-	// still streams is HELD here until that author's session settles
-	// (WORKING->READY) or reaches any terminal frame, including ERRORED reported
-	// by the Runner after an unrequested agent exit. The value is the ordered set
-	// of message ids held for that author, in post order, so a settle fires them
-	// ascending. A pre-T9 Runner link loss (no settle edge ever enqueues) leaves
-	// its entry here until it is reaped: the reap happens in-process on the next
-	// Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped), which
-	// drops the entry for every session id whose hub binding enroll just cleared.
-	// So the common pre-T9 link-loss entry is reaped at that next enroll rather
-	// than persisting until process restart. The reap is best-effort, NOT a hard
-	// bound: the reaped set is exactly the session ids bound at enroll time, and a
-	// session can now be re-promoted after re-enroll. A narrow race can still
-	// strand one entry until a later settle or process restart — a Deliver that
-	// resolved the author LIVE an instant before enroll cleared the maps can
-	// hold(sess) just AFTER that enroll's reap, re-adding the entry; if that
-	// session is not re-promoted or settled, no later event clears it. Delivery
-	// correctness (no-loss) is unaffected either way — only the reap (a leak
-	// bound, not the delivery guarantee) is best-effort: the recipient still
-	// receives the message via the reconnect cursor sweep, independent of this
-	// registry.
+	// still streams is HELD here until that session settles (WORKING->READY) or
+	// reaches any terminal frame, including ERRORED after an unrequested agent
+	// exit. Values are in post order, so a settle fires them ascending. A pre-T9
+	// Runner link loss never settles; its entry waits for the next-enroll reap
+	// (OnSessionsReaped), and a reap race can strand one entry. The sweeps skip
+	// only messages held for a LIVE author, so the cursor sweep still delivers a
+	// stranded entry.
 	held map[string][]heldEntry
+	// lastSettle maps an author session id to the unix ms of its latest settle
+	// edge, so a message whose hold lost the race with that settle fires at once.
+	// The recovery pass drops entries of dead sessions; the reap drops them too.
+	lastSettle map[string]int64
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
 	// (coalescing wakeups): the hook appends and signals without blocking Deliver.
@@ -230,9 +222,12 @@ type Consumer struct {
 	// owedRewake is set when a Runner command stream attaches: a wake that failed
 	// while none could serve it is retried for every agent still owed a mention.
 	owedRewake bool
-	// notify wakes the loop when settleQueue OR startQueue grows. Buffered(1)
-	// with a non-blocking send, so many edges between drains collapse to one
-	// wakeup and the hook never blocks.
+	// recoveryPending marks a full recovery pass (sweepAllLive + the mention
+	// scan) owed by a fabric reconnect or a floor tick; the loop runs it.
+	recoveryPending bool
+	// notify wakes the loop when settleQueue OR startQueue grows or a recovery
+	// pass is owed. Buffered(1) with a non-blocking send, so many edges between
+	// drains collapse to one wakeup and the hook never blocks.
 	notify chan struct{}
 	// gates serializes dispatch per RECIPIENT session (design.md:212-225): a
 	// session's live delivers and its reconnect-sweep re-dispatch drain through
@@ -246,11 +241,12 @@ type Consumer struct {
 	// deliver reaching the gate while a sweep holds it (the case-6 ordering gate).
 	beforeGate func(sessionID string)
 
-	// afterResubscribe, when set, is called right after the lag-overrun branch
-	// re-subscribes and before it resumes the tail — a TEST-ONLY seam (nil in
-	// production) that lets a test observe the fresh subscription is live, so a
-	// post-sweep publish lands on the new tail rather than racing the replay snapshot.
-	afterResubscribe func()
+	// newFloorTicker starts the recovery floor tick; a test swaps in a channel
+	// it drives.
+	newFloorTicker func() (<-chan time.Time, func())
+
+	// now stamps and prunes lastSettle; a test swaps in a fixed clock.
+	now func() time.Time
 
 	// dispatched counts control dispatches (deliver + steer), labelled only by
 	// op kind (compass.op.kind = steer|deliver). Created ONCE at NewConsumer from
@@ -263,9 +259,10 @@ type Consumer struct {
 // NewConsumer constructs the fan-out consumer. It takes the hub as dispatch and
 // resolver (the hub is already built at server assembly); the settle edge is
 // wired the other way, via hub.SetSettleSink(consumer), AFTER both exist — the
-// post-construction setter that breaks the construction cycle (§2). A nil log
-// falls back to slog.Default.
-func NewConsumer(bus *events.Bus[*compassv1.SubscribeCommsResponse], st DeliveryReads, dispatch ControlDispatcher, resolver SessionResolver, log *slog.Logger) *Consumer {
+// post-construction setter that breaks the construction cycle (§2). fab is the
+// event fabric Run consumes; assembly fails closed before it could be nil. A nil
+// log falls back to slog.Default.
+func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionResolver, fab fabric.EventFabric, log *slog.Logger) *Consumer {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -281,15 +278,21 @@ func NewConsumer(bus *events.Bus[*compassv1.SubscribeCommsResponse], st Delivery
 		dispatched = nil
 	}
 	return &Consumer{
-		bus:        bus,
+		fab:        fab,
 		st:         st,
 		dispatch:   dispatch,
 		resolver:   resolver,
 		log:        log,
 		held:       make(map[string][]heldEntry),
+		lastSettle: make(map[string]int64),
 		notify:     make(chan struct{}, 1),
 		gates:      make(map[string]*sync.Mutex),
 		dispatched: dispatched,
+		newFloorTicker: func() (<-chan time.Time, func()) {
+			t := time.NewTicker(recoveryFloorInterval)
+			return t.C, t.Stop
+		},
+		now: time.Now,
 	}
 }
 
@@ -303,111 +306,123 @@ func (c *Consumer) SetAgentWaker(w AgentWaker) {
 	c.agentWaker = w
 }
 
-// Run tails the comms bus and dispatches until ctx is cancelled (serve shutdown)
-// or the bus closes. It mirrors comms.forwardComms: drain the replay snapshot
-// oldest-first, then select on ctx, the live tail, and the settle queue. On the
-// live channel closing, sub.Lagged() distinguishes an overrun — re-subscribe
-// then run the D2 recipient sweep, not a loss (design.md:227-231) — from a clean
-// bus shutdown (end silently). ctx threads from the serve group into every store
-// read and dispatch below; the loop never re-roots it.
+// Run consumes message_posted refs and drains settle, start, and recovery work
+// until ctx is cancelled. A publish failed after commit, or a ref parked after
+// its reads kept failing, reaches live recipients via the recovery pass
+// (reconnect or floor tick) and offline ones at their next session start.
 func (c *Consumer) Run(ctx context.Context) error {
-	// N5/OQ-4: the fan-out consumer is a cross-tenant background loop (it tails EVERY
-	// tenant's messages, sweeps EVERY agent's owed set, scans the whole table). It
-	// must run under the BYPASSRLS system role — a fail-closed scope would see zero
-	// rows and halt delivery fleet-wide. Marking the root ctx here propagates it.
-	ctx = store.WithSystemRole(ctx)
-	sub, err := c.bus.Subscribe(0, c.bus.InstanceEpoch())
+	// Sweeps and scans enumerate every tenant, so they run as the BYPASSRLS system
+	// role; per-event work stays tenant-scoped under ctx.
+	sysCtx := store.WithSystemRole(ctx)
+
+	unsubReconnect, err := c.fab.OnReconnect(c.requestRecovery)
 	if err != nil {
-		// A fresh subscription at since_seq=0 on a live bus cannot underflow; any
-		// error here is a genuine subscribe fault the caller should see.
-		return err
+		return fmt.Errorf("delivery: register fabric reconnect hook: %w", err)
 	}
-	// Closure over sub (not defer sub.Cancel()): the lagged branch reassigns sub
-	// to a fresh subscription, and only a closure cancels whichever one is
-	// current at return, not the value captured at defer time.
-	defer func() { sub.Cancel() }()
+	defer unsubReconnect()
 
 	// Surface the durable owed-mention backlog once at start — a silently-growing
 	// owed_mentions table (a wake path that never resumes) must be visible.
-	if n, err := c.st.CountOwedMentions(ctx); err != nil {
-		c.log.WarnContext(ctx, "delivery: count owed mentions at start", "error", err)
+	if n, err := c.st.CountOwedMentions(sysCtx); err != nil {
+		c.log.WarnContext(sysCtx, "delivery: count owed mentions at start", "error", err)
 	} else {
-		c.log.InfoContext(ctx, "delivery: owed mention backlog at start", "count", n)
+		c.log.InfoContext(sysCtx, "delivery: owed mention backlog at start", "count", n)
 	}
+	// Scan before subscribing: callbacks run concurrently with this loop, so this
+	// is the only way no event is handled before the start recovery finishes.
+	c.scanMissedMentions(sysCtx)
 
-	// Recover the committed-but-unmarked mention set from durable state before
-	// draining replay: mirrors the subscribe-first/sweep-second seam ordering
-	// (see the overrun branch below), so the scan and the replay+live tail
-	// together cover every message with no loss (RIG-2490 T3).
-	c.scanMissedMentions(ctx)
-
-	for _, event := range sub.Replay {
-		select {
-		case <-ctx.Done():
+	unsub, err := c.fab.SubscribeKind(ctx, fabric.KindMessagePosted, c.onEventRef)
+	if err != nil {
+		// Shutdown during stream setup is a clean stop, like cancel in the loop.
+		if ctx.Err() != nil {
 			return nil
-		default:
 		}
-		c.handleEvent(otelx.ContextWithTraceparent(ctx, event.Traceparent), event.Payload)
+		return fmt.Errorf("delivery: subscribe to message_posted: %w", err)
 	}
+	defer unsub()
+
+	floor, stopFloor := c.newFloorTicker()
+	defer stopFloor()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-c.notify:
+			// Held delivers re-read under their own tenant, so the settle drain
+			// gets ctx, never the system role (which would override the tenant).
 			c.drainSettles(ctx)
-			c.drainStarts(ctx)
-			c.drainLost(ctx)
-			c.drainOwedRewake(ctx)
-		case event, ok := <-sub.Live:
-			if !ok {
-				if sub.Lagged() {
-					// Overrun: bus events dropped. Not a loss — RE-SUBSCRIBE then
-					// sweep every live recipient. Subscribe FIRST, sweep SECOND closes
-					// a seam (a message committed between the owed-read and the fresh
-					// Subscribe would be missed sweep-first); overlap = benign dedup.
-					fresh, err := c.bus.Subscribe(0, c.bus.InstanceEpoch())
-					if err != nil {
-						// A fresh subscription at since_seq=0 on a live bus cannot
-						// underflow; any error here is a genuine subscribe fault
-						// the caller should see (mirrors the top-of-Run subscribe).
-						c.log.ErrorContext(ctx, "delivery: re-subscribe after bus-lag overrun", "error", err)
-						return err
-					}
-					// Cancel the old lagged sub and adopt the fresh one; the deferred
-					// closure cancels whichever is current at return. The fresh Replay
-					// is NOT drained — the sweep below is the replay-equivalent, and
-					// re-draining the ring would double-deliver every message in it.
-					sub.Cancel()
-					sub = fresh
-					c.sweepAllLive(ctx)
-					// Recover the committed-but-unmarked mention set dropped in
-					// the overrun window: the scan/replay overlap is the same
-					// tolerated at-least-once boundary set the sweep above
-					// absorbs (RIG-2490 T3).
-					c.scanMissedMentions(ctx)
-					if c.afterResubscribe != nil {
-						c.afterResubscribe()
-					}
-					continue
-				}
-				return nil
-			}
-			c.handleEvent(otelx.ContextWithTraceparent(ctx, event.Traceparent), event.Payload)
+			c.drainStarts(sysCtx)
+			c.drainLost(sysCtx)
+			c.drainOwedRewake(sysCtx)
+			c.drainRecovery(sysCtx)
+		case <-floor:
+			c.requestRecovery()
 		}
 	}
 }
 
-// handleEvent routes one comms bus payload. A MessagePosted is the delivery
-// trigger; a MessageUpdated grows an agent-authored message's block set but is
-// NOT itself a trigger (the settle edge fires the held deliver, re-reading the
-// then-current blocks); every other variant is ignored.
-func (c *Consumer) handleEvent(ctx context.Context, resp *compassv1.SubscribeCommsResponse) {
-	posted := resp.GetMessagePosted()
-	if posted == nil {
+// onEventRef handles one ref on the fabric goroutine, concurrently with Run's
+// drains. A transient read error is returned before any hold or dispatch, so the
+// fabric redelivers; a missing row or a deliberate skip returns nil and acks.
+// A post whose author settled before the hold landed is delivered at once (hold).
+func (c *Consumer) onEventRef(ctx context.Context, ref fabric.EventRef) error {
+	ctx = store.WithTenant(ctx, store.TenantID(ref.Tenant))
+	m, err := c.st.MessageByID(ctx, ref.RowID)
+	if err != nil {
+		return c.readFailure(ctx, "re-read posted message", ref.RowID, err)
+	}
+	return c.onMessagePosted(ctx, comms.MessageToWire(m))
+}
+
+// readFailure logs a failed pre-dispatch read. A missing row returns nil (acked),
+// since redelivery cannot make it appear; any other error is returned to redeliver.
+// The tenant comes from ctx, which onEventRef scoped to the ref's tenant.
+func (c *Consumer) readFailure(ctx context.Context, what, messageID string, err error) error {
+	tenant, _ := store.TenantFromContext(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		c.log.ErrorContext(ctx, "delivery: "+what+": row missing, skipping", "error", err, "message_id", messageID, "tenant", string(tenant))
+		return nil
+	}
+	c.log.WarnContext(ctx, "delivery: "+what+": will redeliver", "error", err, "message_id", messageID, "tenant", string(tenant))
+	return fmt.Errorf("delivery: %s %s: %w", what, messageID, err)
+}
+
+// requestRecovery marks a recovery pass owed and wakes the loop. It runs on the
+// fabric's reconnect goroutine and the floor tick, so it never blocks or reads.
+func (c *Consumer) requestRecovery() {
+	c.mu.Lock()
+	c.recoveryPending = true
+	c.mu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+// drainRecovery runs an owed recovery pass. sweepAllLive is the part that
+// reaches a plain deliver whose publish failed; the scan covers mentions only.
+func (c *Consumer) drainRecovery(ctx context.Context) {
+	c.mu.Lock()
+	pending := c.recoveryPending
+	c.recoveryPending = false
+	c.mu.Unlock()
+	if !pending {
 		return
 	}
-	c.onMessagePosted(ctx, posted.GetMessage())
+	// A settle time guards a hold at any age, for example when a backlog replays
+	// after an outage, so only a dead session's entry goes.
+	live := c.liveSessionIDs()
+	c.mu.Lock()
+	for sid := range c.lastSettle {
+		if _, ok := live[sid]; !ok {
+			delete(c.lastSettle, sid)
+		}
+	}
+	c.mu.Unlock()
+	c.sweepAllLive(ctx)
+	c.scanMissedMentions(ctx)
 }
 
 // deliverOp wraps a wire message in the AgentControl deliver op the relay carries

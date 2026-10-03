@@ -9,6 +9,7 @@ package server
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -58,5 +59,46 @@ func TestServeRejectsNonLoopbackDevHTTPUpFront(t *testing.T) {
 func TestSeededRootRoleIsSpawnable(t *testing.T) {
 	if _, ok := spawnableRoles[rootSupervisorRole]; !ok {
 		t.Fatalf("rootSupervisorRole = %q is not in the closed spawnableRoles taxonomy %v; the seeded tree root must carry a spawnable role", rootSupervisorRole, spawnableRoles)
+	}
+}
+
+// TestServeFailsWithoutReachableNats pins the fail-closed fabric boot: with no
+// NATS URL, or one nothing listens on, Serve returns the event-fabric error
+// instead of serving with no delivery trigger. The fabric connects before the
+// store, so the dead DSN is never dialed, and failStartup unlinks the socket.
+func TestServeFailsWithoutReachableNats(t *testing.T) {
+	// A port that was free a moment ago, with no listener now.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	deadURL := "nats://" + ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release reserved port: %v", err)
+	}
+
+	for _, tc := range []struct{ name, natsURL string }{
+		{"empty url", ""},
+		{"unreachable url", deadURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			socketPath := filepath.Join(dir, "compass.sock")
+			err := Serve(t.Context(), ServeConfig{
+				SocketPath:  socketPath,
+				Version:     "serve-test",
+				DatabaseDSN: "host=" + dir + " port=1 dbname=compass sslmode=disable",
+				NatsURL:     tc.natsURL,
+			})
+			if err == nil {
+				t.Fatal("Serve without a reachable NATS = nil, want a startup error")
+			}
+			if !strings.Contains(err.Error(), "event fabric") {
+				t.Fatalf("Serve error = %q, want the event-fabric startup failure", err)
+			}
+			if _, statErr := os.Stat(socketPath); !os.IsNotExist(statErr) {
+				t.Fatalf("socket created despite the fabric failure (stat err = %v)", statErr)
+			}
+		})
 	}
 }

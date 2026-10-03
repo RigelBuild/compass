@@ -2,13 +2,21 @@ package fabric
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// traceparentHeader is the W3C key, lowercase because nats-server 2.11/2.12
+// lowercase it in place and NATS headers are case-sensitive.
+const traceparentHeader = "traceparent"
 
 // Publish sends ref to subject on JetStream, returning only once the server has
 // acked it into the stream — so a Publish that returns nil means the event is
@@ -43,7 +51,11 @@ func (f *Fabric) Publish(ctx context.Context, subject string, ref EventRef) erro
 	if err != nil {
 		return err
 	}
-	if _, err := f.js.Publish(ctx, subject, data, jetstream.WithMsgID(ref.msgID())); err != nil {
+	msg := &nats.Msg{Subject: subject, Data: data, Header: nats.Header{}}
+	if tp := otelx.Traceparent(ctx); tp != "" {
+		msg.Header.Set(traceparentHeader, tp)
+	}
+	if _, err := f.js.PublishMsg(ctx, msg, jetstream.WithMsgID(ref.msgID())); err != nil {
 		return fmt.Errorf("fabric: publishing %s/%s to %q: %w", ref.Kind, ref.RowID, subject, err)
 	}
 	return nil
@@ -52,7 +64,8 @@ func (f *Fabric) Publish(ctx context.Context, subject string, ref EventRef) erro
 // Subscribe drives fn for every event on subject until the returned Unsubscribe
 // is called, ctx is done, or the Fabric is closed — whichever comes first. Every
 // one of those three paths DRAINS the consumer, so an event this process had
-// already claimed is processed and acked rather than discarded.
+// already claimed is processed and acked rather than discarded. Callbacks run
+// serially per subscription.
 //
 // The consumer is a DURABLE pull consumer named from the subject, so every
 // Server instance on that subject shares one consumer: each event is claimed by
@@ -61,14 +74,16 @@ func (f *Fabric) Publish(ctx context.Context, subject string, ref EventRef) erro
 // consumer is shared, every instance subscribing to a subject must run the same
 // fabric Config — see Config.MaxDeliver.
 //
-// Acking is explicit and follows fn: fn returning normally acks, and fn
-// panicking is recovered and treated as a failure (a panic in one subscriber
-// must not take down the process — and must not silently ack an unprocessed
-// event either). A failure Naks for immediate redelivery until NumDelivered
+// Acking is explicit and follows fn: fn returning nil acks, and fn returning an
+// error or panicking is a failure. A panic is recovered, so one subscriber can
+// neither take down the process nor silently ack an unprocessed event. A
+// failure Naks for immediate redelivery until NumDelivered
 // reaches MaxDeliver — total ATTEMPTS, not retries — at which point the message
 // is parked on DLQSubject and Term'd. An undecodable payload is parked
-// immediately: redelivering it can never succeed.
-func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error) {
+// immediately: redelivering it can never succeed. A callback that outlives
+// AckWait on every attempt is dropped by the server at MaxDeliver; the fabric
+// parks it from the consumer's MAX_DELIVERIES advisory instead (no Term).
+func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	if err := f.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -83,16 +98,16 @@ func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(EventRef
 
 // SubscribeKind drives fn for every event of one kind ACROSS EVERY TENANT,
 // until the returned Unsubscribe is called, ctx is done, or the Fabric is
-// closed. It is the delivery plane's cross-tenant fan-in path: the delivery
-// consumer is a per-Server singleton serving all tenants, while each event is
-// published on a concrete compass.<tenant>.comms.<kind>, so the one consumer
-// subscribes on the tenant-wildcard subject CommsWildcardSubject builds.
+// closed. Callbacks run serially per subscription. It is the delivery plane's
+// cross-tenant fan-in path: the delivery consumer is a per-Server singleton,
+// while each event is published on a concrete compass.<tenant>.comms.<kind>.
 //
 // Identical in every other respect to Subscribe — one DURABLE queue-group
 // consumer (durableName hashes the wildcard subject to its own name, distinct
 // from any concrete-tenant consumer, so each matching event is claimed by
 // exactly one Server instance), the same explicit ack / Nak-to-MaxDeliver /
-// park-on-DLQSubject semantics, and the same drain on all three teardown
+// park-on-DLQSubject semantics (including the advisory park of a message the
+// server dropped at MaxDeliver), and the same drain on all three teardown
 // paths. Wildcard and concrete consumers are independent durables; see
 // SUBJECTS.md's "Its own durable consumer" property when migrating callers.
 //
@@ -100,7 +115,7 @@ func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(EventRef
 // a SubscribeKind(KindMessagePosted) receives message_posted for every tenant
 // and nothing else. Subscribe keeps its strict concrete-subject grammar — a
 // wildcard subject cannot be reached through it.
-func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(EventRef)) (Unsubscribe, error) {
+func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	if err := f.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -122,7 +137,7 @@ func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(Even
 //
 // It performs no validation of its own: subject must come from
 // validCommsSubject or CommsWildcardSubject.
-func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error) {
+func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(context.Context, EventRef) error) (Unsubscribe, error) {
 	stream, err := f.ensureStream(ctx)
 	if err != nil {
 		return nil, err
@@ -135,7 +150,12 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(E
 		return nil, fmt.Errorf("fabric: creating consumer for %q on %s: %w", subject, f.cfg.streamName(), err)
 	}
 
+	// Consume dispatches serially today; the lock makes the promised serial
+	// callback a fabric guarantee rather than a nats.go internal.
+	var callbackMu sync.Mutex
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
 		f.handleEvent(ctx, msg, fn)
 	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
 		// Transient pull errors are the library's to retry; surfacing them is
@@ -145,6 +165,11 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(E
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("fabric: consuming %q: %w", subject, err)
+	}
+	advisory, err := f.parkOnMaxDeliveries(ctx, subject)
+	if err != nil {
+		cc.Stop()
+		return nil, err
 	}
 
 	// One teardown path (Unsubscribe, ctx done, or fabric closing), run once. Drain,
@@ -156,6 +181,9 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(E
 	stop := func() {
 		once.Do(func() {
 			cc.Drain()
+			if err := advisory.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrConnectionDraining) && !errors.Is(err, nats.ErrBadSubscription) {
+				f.log.WarnContext(ctx, "fabric: unsubscribing the max-deliveries advisory failed", "subject", subject, "error", err)
+			}
 			close(done)
 		})
 	}
@@ -182,9 +210,9 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(E
 }
 
 // handleEvent runs one delivery: decode, invoke fn under a panic guard, then ack
-// or park. Split out of Subscribe so the ack/park decision is readable on its
-// own.
-func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(EventRef)) {
+// on nil or retry/park on an error. Split out of Subscribe so the ack/park
+// decision is readable on its own.
+func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(context.Context, EventRef) error) {
 	ref, decodeErr := decodeEventRef(msg.Data())
 	if decodeErr != nil {
 		// Unparseable: no number of redeliveries changes the bytes.
@@ -204,7 +232,20 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(Eve
 		f.park(ctx, msg, fmt.Errorf("fabric: event ref %s/%s names subject %q but was delivered on %q", ref.Tenant, ref.Kind, want, got))
 		return
 	}
-	if err := invoke(fn, ref); err != nil {
+	// A message buffered behind a slow callback has already spent part of its
+	// AckWait; resetting it here lines the server's timer up with the deadline
+	// below, so a ctx-respecting final attempt parks before the server drops it.
+	if err := msg.InProgress(); err != nil {
+		f.log.WarnContext(ctx, "fabric: resetting ack_wait before the callback failed", "subject", msg.Subject(), "error", err)
+	}
+	// Detached from ctx so an event drained after Subscribe's ctx ends still runs
+	// live; the 0.9 margin lets the final attempt's Term reach the server first.
+	// The subscriber's span is stripped so only the publisher's trace carries.
+	base := trace.ContextWithSpanContext(context.WithoutCancel(ctx), trace.SpanContext{})
+	deliveryCtx, cancel := context.WithTimeout(otelx.ContextWithTraceparent(base, traceparent(msg.Headers())), f.cfg.ackWait()*9/10)
+	err := invoke(deliveryCtx, fn, ref)
+	cancel()
+	if err != nil {
 		f.retryOrPark(ctx, msg, err)
 		return
 	}
@@ -216,18 +257,28 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(Eve
 	}
 }
 
-// invoke calls fn, converting a panic into an error. A subscriber callback is
-// consumer code running on the fabric's goroutine: letting it panic would take
-// the process down, and recovering without failing the message would ack an
-// event nobody processed.
-func invoke(fn func(EventRef), ref EventRef) (err error) {
+// invoke calls fn and returns its error, converting a panic into an error. A
+// subscriber callback is consumer code running on the fabric's goroutine:
+// letting it panic would take the process down, and recovering without failing
+// the message would ack an event nobody processed.
+func invoke(ctx context.Context, fn func(context.Context, EventRef) error, ref EventRef) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("fabric: subscriber panicked handling %s/%s: %v", ref.Kind, ref.RowID, r)
 		}
 	}()
-	fn(ref)
-	return nil
+	return fn(ctx, ref)
+}
+
+// traceparent reads the trace header in any case: a server may have rewritten
+// the canonical key a publisher sent.
+func traceparent(h nats.Header) string {
+	for k, v := range h {
+		if strings.EqualFold(k, traceparentHeader) && len(v) > 0 {
+			return v[0]
+		}
+	}
+	return ""
 }
 
 // retryOrPark Naks a failed delivery for another attempt, or parks it once the
@@ -272,22 +323,68 @@ func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error
 // The reason on the wire is sanitized and bounded (see sanitizeReason); the
 // full cause goes to the log, which has no wire limit.
 func (f *Fabric) park(ctx context.Context, msg jetstream.Msg, cause error) {
-	f.log.ErrorContext(ctx, "fabric: parking event on the dlq",
-		"subject", msg.Subject(), "dlq_subject", DLQSubject, "error", cause)
-
-	dlq := nats.NewMsg(DLQSubject)
-	dlq.Data = msg.Data()
-	dlq.Header.Set(dlqHeaderSubject, msg.Subject())
-	reason := sanitizeReason(cause.Error())
-	dlq.Header.Set(dlqHeaderReason, reason)
-	if err := f.nc.PublishMsg(dlq); err != nil {
-		f.log.ErrorContext(ctx, "fabric: publishing to the dlq failed; terminating the message anyway",
-			"subject", msg.Subject(), "error", err)
-	}
+	reason := f.publishDLQ(ctx, msg.Subject(), msg.Data(), cause)
 	if err := msg.TermWithReason(reason); err != nil {
 		f.log.ErrorContext(ctx, "fabric: terminating a parked message failed; it may redeliver until max_deliver",
 			"subject", msg.Subject(), "error", err)
 	}
+}
+
+// publishDLQ writes one DLQ record and returns the sanitized reason it carried.
+// Shared by both park paths so a DLQ consumer sees one header convention.
+func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, cause error) string {
+	f.log.ErrorContext(ctx, "fabric: parking event on the dlq",
+		"subject", subject, "dlq_subject", DLQSubject, "error", cause)
+	dlq := nats.NewMsg(DLQSubject)
+	dlq.Data = data
+	dlq.Header.Set(dlqHeaderSubject, subject)
+	reason := sanitizeReason(cause.Error())
+	dlq.Header.Set(dlqHeaderReason, reason)
+	if err := f.nc.PublishMsg(dlq); err != nil {
+		f.log.ErrorContext(ctx, "fabric: publishing to the dlq failed",
+			"subject", subject, "error", err)
+	}
+	return reason
+}
+
+// maxDeliveriesAdvisory is the server's notice that a consumer gave up on a
+// message after MaxDeliver attempts. Only the fields the park needs.
+type maxDeliveriesAdvisory struct {
+	StreamSeq  uint64 `json:"stream_seq"`
+	Deliveries uint64 `json:"deliveries"`
+}
+
+// parkOnMaxDeliveries parks what the server drops at MaxDeliver. A callback that
+// returns nil but outlives AckWait every time is never Nak'd, so retryOrPark never
+// sees it; only this advisory does. A Term'd park emits no such advisory.
+func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats.Subscription, error) {
+	// A private handle: the shared one from ensureStream has its cached info
+	// rewritten by Info(), which races this callback's GetMsg.
+	stream, err := f.js.Stream(ctx, f.cfg.streamName())
+	if err != nil {
+		return nil, fmt.Errorf("fabric: opening stream for the max-deliveries advisory: %w", err)
+	}
+	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES." + f.cfg.streamName() + "." + durableName(subject)
+	// Queue group: every instance on this consumer hears the advisory; one parks it.
+	sub, err := f.nc.QueueSubscribe(advisorySubject, durableName(subject), func(m *nats.Msg) {
+		var adv maxDeliveriesAdvisory
+		if err := json.Unmarshal(m.Data, &adv); err != nil {
+			f.log.WarnContext(ctx, "fabric: undecodable max-deliveries advisory", "subject", subject, "error", err)
+			return
+		}
+		raw, err := stream.GetMsg(context.WithoutCancel(ctx), adv.StreamSeq)
+		if err != nil {
+			f.log.WarnContext(ctx, "fabric: event dropped at max_deliver is no longer in the stream; not parked",
+				"subject", subject, "stream_seq", adv.StreamSeq, "error", err)
+			return
+		}
+		f.publishDLQ(ctx, raw.Subject, raw.Data,
+			fmt.Errorf("fabric: dropped by the server after %d delivery attempts (callback outlived ack_wait)", adv.Deliveries))
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fabric: subscribing to max-deliveries advisory for %q: %w", subject, err)
+	}
+	return sub, nil
 }
 
 // DLQ message headers, so a consumer of DLQSubject knows what the payload was

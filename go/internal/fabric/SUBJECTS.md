@@ -192,21 +192,25 @@ One durable pull consumer per subscribed subject, created with
 | `Durable` | `comms-` + sha256(subject) as untruncated hex (e.g. `comms-f48b3059…e25211` for `compass.tenant-a.comms.message_posted`) | Consumer names cannot contain `.`, and subject tokens may legally contain `_` (every snake_case EventKind does), so a `.` → `_` substitution is NOT injective: two distinct subjects would collapse onto one shared durable consumer and the second Subscribe would silently re-point the first's `FilterSubject` (a cross-tenant mis-delivery). Hashing is injective by construction; 70 chars is far inside JetStream's 255-char limit, and truncating would reintroduce the collision surface. Durable and shared, so every Server instance on that subject draws from one consumer: each event is claimed by exactly one instance (§Q3 queue groups), and a restart resumes rather than replaying. The consumer's `Description`/`FilterSubject` still carry the readable subject for operators. |
 | `FilterSubject` | the subscribed subject | The tenant/kind isolation the single stream relies on. |
 | `AckPolicy` | explicit | §Q3: explicit per-message acks. |
-| `AckWait` | 30s | Redelivery backstop for a subscriber that hangs or dies mid-callback; a callback that *fails* is Nak'd for immediate redelivery instead. |
-| `MaxDeliver` | 5 | Finite budget of total delivery **attempts**, not retries: `MaxDeliver=1` parks on the first failure with no retry at all. Enforced twice by design — the app-level check parks at the budget, and the consumer's server-side `MaxDeliver` is the backstop for a delivery whose metadata is unreadable. Both derive from the SAME fabric `Config`, and the consumer is shared, so every Server instance on a subject must run one config (RIG-2861: one stack config) or the shared consumer's server-side budget flip-flops with whichever instance last ran `CreateOrUpdateConsumer`. |
+| `AckWait` | 30s | Redelivery backstop for a subscriber that hangs or dies mid-callback; a callback that *fails* is Nak'd for immediate redelivery instead. The callback's ctx deadline is 0.9 × `AckWait` from when it starts, and `InProgress()` resets the server's timer at that start, so a ctx-respecting final attempt parks and `Term`s before the server gives up on it. |
+| `MaxDeliver` | 5 | Finite budget of total delivery **attempts**, not retries: `MaxDeliver=1` parks on the first failure with no retry at all. Enforced twice by design — the app-level check parks a *failed* attempt at the budget, and the consumer's server-side `MaxDeliver` drops a delivery that never answered (every attempt outlived `AckWait`, or its metadata was unreadable). The server's drop is parked from its advisory (see Dead-letter). Both derive from the SAME fabric `Config`, and the consumer is shared, so every Server instance on a subject must run one config (RIG-2861: one stack config) or the shared consumer's server-side budget flip-flops with whichever instance last ran `CreateOrUpdateConsumer`. |
 | `Replicas` | matches the stream | — |
 
 Delivery semantics per message:
 
 1. Decode the `EventRef`. Undecodable → **park immediately** (no number of
    redeliveries changes the bytes).
-2. Run the subscriber callback under a panic guard. A panic becomes a failure —
-   it neither takes the process down nor acks an event nobody handled.
-3. Success → `Ack()`. A *failed ack* after successful handling is logged, never
+2. Run the subscriber callback under a panic guard. A returned error or a panic
+   is a failure; a panic neither takes the process down nor acks an event
+   nobody handled.
+3. `nil` → `Ack()`. A *failed ack* after successful handling is logged, never
    parked: it costs one redelivery, which the subscriber's Postgres re-read makes
    idempotent.
 4. Failure → read `Metadata().NumDelivered`, which counts **attempts**. Below
    `MaxDeliver` → `Nak()` for immediate redelivery. At `MaxDeliver` → park.
+5. No answer within `AckWait` on every attempt → the server drops the message
+   at `MaxDeliver` and emits a max-deliveries advisory → the fabric parks it
+   from the advisory.
 
 ## Dead-letter: `compass.dlq.comms`
 
@@ -223,6 +227,22 @@ park, republish the raw payload to `compass.dlq.comms` and then
   subject the message was delivered on, even for a wildcard (`SubscribeKind`)
   consumer, so it always names the tenant) and `Compass-Park-Reason` (the
   error), so an operator reading the DLQ needs no log correlation.
+
+### Advisory park: messages the server dropped
+
+A callback that returns nil but outlives `AckWait` on every attempt is never
+Nak'd, so the app-level check never sees it. Each subscription therefore also
+subscribes to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<durable>`
+on a core-NATS queue group named for the durable, so exactly one Server
+instance handles each advisory.
+
+- The handler fetches the message by `stream_seq` and parks it with the same
+  headers. There is no `Term`: the server already stopped delivering it.
+- The reason reads `fabric: dropped by the server after N delivery attempts
+  (callback outlived ack_wait)`.
+- A message that aged out of the stream before the fetch is logged, not parked.
+- The fabric's NATS user needs subscribe permission on
+  `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>`.
 
 The attempt count comes from the message's server-side metadata rather than any
 local counter, which is what makes the budget hold across Server instances and

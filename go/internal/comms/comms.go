@@ -18,14 +18,18 @@ package comms
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -37,13 +41,17 @@ import (
 // edge stamps Seq/AtUnixMs/InstanceEpoch onto a copy.
 type commsBus = *events.Bus[*compassv1.SubscribeCommsResponse]
 
+const instrumentationScope = "github.com/RigelBuild/compass/go/internal/comms"
+
 // Comms implements compassv1connect.CommsServiceHandler over the store and the
 // comms event bus. Cheap to share by pointer; the store and bus are each safe
 // for concurrent use, and Comms holds no mutable state of its own — the store is
 // the source of truth, so there is no in-memory account/channel/group state.
 type Comms struct {
-	store *store.Store
-	bus   commsBus
+	store                 *store.Store
+	bus                   commsBus
+	fabric                fabric.EventFabric
+	fabricPublishFailures metric.Int64Counter
 	// adminID attributes every RPC on the local-socket door (the door has no
 	// interceptor yet). The T3 interceptor overrides this per-request by setting
 	// a caller on the context; adminID is the fallback when none is set.
@@ -59,9 +67,19 @@ type Comms struct {
 
 // NewComms constructs the CommsService handler over store and bus. adminID is the
 // bootstrap-admin account the local-socket door attributes callers to until the
-// T3 interceptor sets a real identity (design.md:1219-1222).
-func NewComms(st *store.Store, bus commsBus, adminID store.AccountID) *Comms {
-	return &Comms{store: st, bus: bus, adminID: adminID}
+// T3 interceptor sets a real identity (design.md:1219-1222). A nil fab keeps
+// message_posted on the bus only.
+func NewComms(st *store.Store, bus commsBus, fab fabric.EventFabric, adminID store.AccountID) *Comms {
+	// A metric miss must never fail construction, matching the delivery counter.
+	failures, err := otel.Meter(instrumentationScope).Int64Counter(
+		"compass.delivery.fabric_publish_failures",
+		metric.WithDescription("Count of message_posted fabric publishes that failed after commit."),
+	)
+	if err != nil {
+		slog.Warn("comms: failed to create fabric publish failure counter; metric disabled", "err", err)
+		failures = nil
+	}
+	return &Comms{store: st, bus: bus, fabric: fab, fabricPublishFailures: failures, adminID: adminID}
 }
 
 // SetPresenceSource wires the in-memory presence enum source GetRoster joins

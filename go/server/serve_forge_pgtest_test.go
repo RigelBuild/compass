@@ -518,7 +518,7 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin.ID)
 	brd := board.NewProjection(bus)
 	issueBrd := board.NewIssueProjection(bus, st)
 	tail := newSessionTail()

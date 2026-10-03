@@ -204,9 +204,11 @@ func extractMissingClause(t *testing.T, msg string) string {
 // knob round-trips too — the server-level TestServeMints* tests are the teeth for
 // "takes effect"), but it is exactly what pins the flag NAME→field wiring: a
 // --state-dir mistakenly feeding AdminHandle reddens here. --database is supplied
-// throughout because buildServeConfig requires a DSN (flag or $COMPASS_DATABASE_DSN).
+// throughout because buildServeConfig requires a DSN (flag or $COMPASS_DATABASE_DSN),
+// and $COMPASS_NATS_URL is set because it requires a NATS URL the same way.
 func TestBuildServeConfigFlagRoundTrip(t *testing.T) {
-	t.Setenv("COMPASS_DATABASE_DSN", "") // isolate from an ambient env DSN
+	t.Setenv("COMPASS_DATABASE_DSN", "")                  // isolate from an ambient env DSN
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222") // required; the env path leaves the args under test unchanged
 
 	t.Run("new flags round-trip into their fields", func(t *testing.T) {
 		cfg, showVersion, err := buildServeConfig([]string{
@@ -312,6 +314,42 @@ func TestBuildServeConfigMissingDSN(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DSN is required") {
 		t.Fatalf("error = %q, want a 'DSN is required' message", err.Error())
+	}
+}
+
+// TestBuildServeConfigNatsURL pins the event-fabric endpoint: --nats-url wins
+// over $COMPASS_NATS_URL, the env is the fallback, and with neither the config
+// is rejected, because a Server with no fabric commits posts it never delivers.
+func TestBuildServeConfigNatsURL(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	tests := []struct {
+		name, flag, env, want string
+	}{
+		{name: "neither set is rejected"},
+		{name: "env is the fallback", env: "nats://env.example:4222", want: "nats://env.example:4222"},
+		{name: "flag wins over env", flag: "nats://flag.example:4222", env: "nats://env.example:4222", want: "nats://flag.example:4222"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("COMPASS_NATS_URL", tt.env)
+			args := []string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"}
+			if tt.flag != "" {
+				args = append(args, "--nats-url", tt.flag)
+			}
+			cfg, _, err := buildServeConfig(args)
+			if tt.want == "" {
+				if err == nil || !strings.Contains(err.Error(), "--nats-url") {
+					t.Fatalf("buildServeConfig with no NATS URL = %v, want an error naming --nats-url", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildServeConfig = %v, want nil", err)
+			}
+			if cfg.NatsURL != tt.want {
+				t.Errorf("NatsURL = %q, want %q", cfg.NatsURL, tt.want)
+			}
+		})
 	}
 }
 

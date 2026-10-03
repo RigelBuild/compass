@@ -36,6 +36,9 @@ import (
 	"testing"
 	"time"
 
+	natsd "github.com/nats-io/nats-server/v2/server"
+	natsserver "github.com/nats-io/nats-server/v2/test"
+
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
@@ -140,6 +143,9 @@ func TestExternalNatsUpDown(t *testing.T) {
 	cfg := fx.cfg
 	pgName := derivedContainerName(cfg.StateDir)
 	natsName := derivedNatsName(cfg.StateDir)
+	// compass-server dials the external broker at boot, so the opt-out needs a
+	// live one. Started before the down guard so it outlives the server.
+	brokerURL := startTestNats(t)
 
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), downBudget)
@@ -161,7 +167,7 @@ func TestExternalNatsUpDown(t *testing.T) {
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
 	out, err := mustRunStack(upCtx, t, stackBin, env,
-		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--nats-external", "nats://127.0.0.1:4222", "--linger")...)
+		cfg.args("up", "--postgres-image", pgImagePinned, "--otel-external", "127.0.0.1:4317", "--nats-external", brokerURL, "--linger")...)
 	if err != nil {
 		t.Fatalf("compass-stack up (--nats-external): %v\n%s", err, out)
 	}
@@ -179,6 +185,22 @@ func TestExternalNatsUpDown(t *testing.T) {
 		t.Fatalf("compass-stack down (--nats-external): %v\n%s", err, out)
 	}
 	assertServerGone(t, fx.deps, cfg.SocketPath)
+}
+
+// startTestNats runs an in-process JetStream NATS server on loopback and
+// returns its client URL. The server and its store dir are released with t.
+func startTestNats(t *testing.T) string {
+	t.Helper()
+	srv := natsserver.RunServer(&natsd.Options{
+		Host:      "127.0.0.1",
+		Port:      natsd.RANDOM_PORT,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		NoLog:     true,
+		NoSigs:    true,
+	})
+	t.Cleanup(srv.Shutdown)
+	return srv.ClientURL()
 }
 
 // derivedNatsName reproduces stack.natsContainerName (package-internal): the

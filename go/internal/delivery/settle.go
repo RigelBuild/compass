@@ -4,6 +4,7 @@ package delivery
 
 import (
 	"context"
+	"math"
 
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
@@ -27,7 +28,10 @@ func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessi
 		return
 	}
 	c.mu.Lock()
-	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state})
+	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state, upTo: math.MaxInt64})
+	// Recorded with the enqueue, so a hold that loses the race to the drain
+	// still sees this settle.
+	c.lastSettle[sessionID] = c.now().UnixMilli()
 	c.mu.Unlock()
 	// Coalescing wakeup: a full buffer already signals a pending drain, so a
 	// dropped send loses nothing (the loop drains the whole queue).
@@ -85,20 +89,13 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 }
 
 // drainSettles fires every queued author-settle edge under the loop's ctx. Each
-// edge fires the messages held for that author session, in post order, from each
-// message's CURRENT (settled) stored blocks (design.md:158-168), then clears the
-// registry entry. A pre-T9 Runner link loss has no Runner-observed process exit,
-// so no settle edge fires to clear its held entry; it is left in place until it
-// is reaped. The reap happens in-process on the next Runner (re-)enroll via the
-// hub's SessionReapSink (OnSessionsReaped), which drops the entry for every
-// session id enroll just cleared. The reap is best-effort, not a hard bound: a
-// Deliver that resolved the author LIVE just before enroll cleared the maps can
-// re-hold the session just AFTER that enroll's reap. The same logical id can now
-// be re-promoted after re-enroll, and a later settle can clear the entry; if it
-// is not re-promoted or settled, it can remain until process restart. No-loss is
-// unaffected regardless — the reconnect sweep still delivers the message
-// (design.md:168-176); only the leak bound, not the delivery guarantee, is
-// best-effort.
+// edge fires the messages held for that author session up to its upTo, in post
+// order, from each message's CURRENT (settled) stored blocks (design.md:158-168).
+// An edge for a session with nothing in range is a no-op.
+//
+// A pre-T9 Runner link loss never enqueues an edge. No-loss still holds: the
+// sweeps skip only messages held for a LIVE author, so the cursor sweep
+// delivers an entry stranded under a dead session (design.md:168-176).
 func (c *Consumer) drainSettles(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -109,14 +106,14 @@ func (c *Consumer) drainSettles(ctx context.Context) {
 		ev := c.settleQueue[0]
 		c.settleQueue = c.settleQueue[1:]
 		c.mu.Unlock()
-		c.fireHeld(ctx, ev.sessionID)
+		c.fireHeld(ctx, ev.sessionID, ev.upTo)
 	}
 }
 
 // drainStarts sweeps every queued session-start edge under the loop's ctx. Each
 // edge redelivers the freshly-live session's owed messages via the EXISTING
 // sweepSession (holding the recipient session's dispatch gate for the whole
-// ordered re-dispatch, so live bus events for that session queue behind the
+// ordered re-dispatch, so live events for that session queue behind the
 // sweep — design.md:220-225). The sweep is at-least-once; agent-side message_id
 // dedup (T5) makes an already-acked message a no-op, and the contiguous+sparse
 // cursor omits it from UndeliveredMessages, so a message is not re-swept after
@@ -131,7 +128,9 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 		ev := c.startQueue[0]
 		c.startQueue = c.startQueue[1:]
 		c.mu.Unlock()
-		c.sweepSession(ctx, ev.account, ev.sessionID)
+		// Skip messages held for a live author: fireHeld re-resolves recipients
+		// at settle, so this session still gets them with their settled blocks.
+		c.sweepSession(ctx, ev.account, ev.sessionID, true)
 		if err := c.sweepPins(ctx, ev.account, ev.sessionID); err != nil {
 			c.log.ErrorContext(ctx, "delivery: sweep pins on session start", "error", err,
 				"account", string(ev.account), "session_id", ev.sessionID)
@@ -151,7 +150,7 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 // session. All reads (SweepChannels, PinnedEntries, message re-reads) happen
 // BEFORE the gate is taken; the recipient session's dispatch gate is then held
 // only across the ordered dispatch of the pre-built ops, mirroring sweepSession,
-// so live bus events for the session queue behind it (design.md:220-225).
+// so live events for the session queue behind it (design.md:220-225).
 //
 // It does NOT change cursor-advance semantics: a pin-sweep deliver is acked like
 // any deliver (an ack for an already-below-cursor seq is the existing no-op,
@@ -261,73 +260,109 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 	return nil
 }
 
-// fireHeld dispatches every message held for authorSession, ascending, and
-// clears the registry entry. Each held message is re-read from the store so the
-// deliver carries the author's SETTLED block set at fire time, not the initial
-// posted blocks (design.md:158-161). Recipients are re-resolved per message
-// against the then-current subscription + liveness.
-func (c *Consumer) fireHeld(ctx context.Context, authorSession string) {
+// fireHeld dispatches, ascending, the messages held for authorSession whose
+// commit time is at most upTo, and keeps the rest held in order. Each is
+// re-read under its hold-time tenant, so the deliver carries the SETTLED blocks
+// (design.md:158-161), and recipients are re-resolved at fire time.
+func (c *Consumer) fireHeld(ctx context.Context, authorSession string, upTo int64) {
 	c.mu.Lock()
-	held := c.held[authorSession]
-	delete(c.held, authorSession)
+	var fire, keep []heldEntry
+	for _, e := range c.held[authorSession] {
+		if e.atUnixMs <= upTo {
+			fire = append(fire, e)
+		} else {
+			keep = append(keep, e)
+		}
+	}
+	if len(keep) == 0 {
+		delete(c.held, authorSession)
+	} else {
+		c.held[authorSession] = keep
+	}
 	c.mu.Unlock()
 
-	for _, entry := range held {
-		wire, channel, author, err := c.storeMessageToWire(ctx, entry.messageID)
+	for _, entry := range fire {
+		// The drain ctx carries no tenant; re-read under the one captured at hold.
+		tctx := store.WithTenant(ctx, entry.tenant)
+		wire, channel, author, err := c.storeMessageToWire(tctx, entry.messageID)
 		if err != nil {
 			// The message vanished between hold and fire (unexpected): skip it;
 			// the cursor never advanced, so the sweep still redelivers.
-			c.log.ErrorContext(ctx, "delivery: re-read held message", "error", err, "message_id", entry.messageID)
+			c.log.ErrorContext(tctx, "delivery: re-read held message", "error", err, "message_id", entry.messageID)
 			continue
 		}
 		// Restamp the origin trace captured at hold onto this bare drain ctx (no
 		// live span here — the settle goroutine boundary), so the settled deliver
 		// re-links to the publisher's trace. Empty origin ⇒ ctx unchanged ⇒ empty
 		// on the wire (invariant holds).
-		mctx := otelx.ContextWithTraceparent(ctx, entry.traceparent)
+		mctx := otelx.ContextWithTraceparent(tctx, entry.traceparent)
 		c.fanOut(mctx, channel, author, wire)
 	}
 }
 
-// OnSessionsReaped drops the held-deliver registry entries for sessions whose
-// hub bindings were cleared at a Runner (re-)enroll (SessionReapSink). A pre-T9
-// Runner link loss has no Runner-observed process exit, so no settle edge fires
-// fireHeld to clear its entry; this enroll-bounded reap realizes the design's
-// promised cleanup (design.md:172-175). The reap is best-effort, not a hard
-// bound: a concurrent Deliver that resolved the author LIVE just before enroll
-// cleared the maps can re-hold the session just AFTER that enroll's reap. The
-// same logical id may be re-promoted after re-enroll; a later settle can clear
-// the entry, but if the session is not re-promoted or settled the entry may
-// remain until process restart. No-loss is unaffected: any message still owed
-// is redelivered by the recipient's reconnect cursor sweep. Pure in-memory work
-// under c.mu — it does not enqueue onto the consumer loop or touch the store, so
-// it is safe to run directly on the hub's enroll goroutine.
+// OnSessionsReaped drops the held-deliver and settle-time entries for sessions
+// whose hub bindings were cleared at a Runner (re-)enroll, so a pre-T9 link loss
+// does not leak an entry (design.md:172-175). The cursor sweep still delivers
+// what was held, since it skips only live authors' messages.
 func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, sid := range sessionIDs {
 		delete(c.held, sid)
+		delete(c.lastSettle, sid)
 	}
 }
 
-// sweepAllLive redelivers every owed message to every live agent session — the
-// resync->sweep fallback the bus-lag overrun triggers (design.md:227-231). The
-// cursor defines exactly what each agent is owed, so a dropped bus event is a
-// latency blip, never a loss. Each session's re-dispatch runs under that
-// session's gate, so it serializes against any concurrent live deliver for the
-// same session (design.md:220-225).
+// sweepAllLive is the recovery pass a fabric reconnect or the floor tick runs:
+// it redelivers every owed message to every live agent session, skipping those
+// held for a live author so partial blocks never go out ahead of fireHeld
+// (message_id dedup would drop the settled deliver).
 func (c *Consumer) sweepAllLive(ctx context.Context) {
 	for account, sessionID := range c.resolver.LiveAgentSessions() {
-		c.sweepSession(ctx, account, sessionID)
+		c.sweepSession(ctx, account, sessionID, true)
 	}
 }
 
-// sweepSession redelivers every message owed to one agent, ascending seq per
-// channel, under the recipient session's dispatch gate held for the WHOLE ordered
-// re-dispatch — so live bus events for that session queue behind the sweep and
-// drain after it (design.md:220-225), never interleaving ahead of the sweep's
-// ordered set.
-func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, sessionID string) {
+// heldIDs snapshots the ids held for LIVE author sessions. An entry stranded
+// under a dead session has no settle coming, so the sweeps must deliver it.
+// Liveness is read after the held snapshot, so a session that went live in
+// between is still skipped; a stale-live one also stays skipped, the safe side.
+func (c *Consumer) heldIDs() map[string]struct{} {
+	c.mu.Lock()
+	bySession := make(map[string][]string, len(c.held))
+	for sid, entries := range c.held {
+		for _, e := range entries {
+			bySession[sid] = append(bySession[sid], e.messageID)
+		}
+	}
+	c.mu.Unlock()
+	live := c.liveSessionIDs() // resolver read stays outside c.mu
+	ids := make(map[string]struct{})
+	for sid, msgIDs := range bySession {
+		if _, ok := live[sid]; !ok {
+			continue
+		}
+		for _, id := range msgIDs {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// liveSessionIDs snapshots the set of live agent session ids.
+func (c *Consumer) liveSessionIDs() map[string]struct{} {
+	bound := c.resolver.LiveAgentSessions()
+	live := make(map[string]struct{}, len(bound))
+	for _, sid := range bound {
+		live[sid] = struct{}{}
+	}
+	return live
+}
+
+// sweepSession redelivers one agent's owed messages in seq order under the
+// session's gate held for the whole pass, so live delivers queue behind it
+// (design.md:220-225). skipHeld leaves messages held at owed-read time to fireHeld.
+func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, sessionID string, skipHeld bool) {
 	// Root a per-pass span (see sweepPins): the swept delivers link to its trace.
 	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.sweep.session")
 	defer span.End()
@@ -336,11 +371,19 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 		c.log.ErrorContext(ctx, "delivery: sweep undelivered", "error", err, "account", string(account))
 		return
 	}
+	var skip map[string]struct{}
+	if skipHeld {
+		// Snapshot after the owed read, so the window is one read, not one pass.
+		skip = c.heldIDs()
+	}
 	gate := c.gateFor(sessionID)
 	gate.Lock()
 	defer gate.Unlock()
 	for _, msgs := range owed {
 		for i := range msgs {
+			if _, held := skip[string(msgs[i].ID)]; held {
+				continue
+			}
 			wire := comms.MessageToWire(msgs[i])
 			cn, tn := c.sourceNames(ctx, wire)
 			op := deliverOp(wire, wire.GetAuthorHandle(), cn, tn, otelx.Traceparent(ctx))

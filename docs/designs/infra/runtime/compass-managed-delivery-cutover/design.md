@@ -24,6 +24,36 @@ Ledger-impact: appends DL-331..337 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reco
 > licence to reword a landed Decision. The in-body citations below read as
 > point-in-time; the ledger rows are canonical.
 
+## Post-freeze amendments
+
+Matt's rulings made during implementation. Each is a ledger row; the frozen
+prose below is not rewritten.
+
+- **Trace context crosses the fabric as a NATS header (DL-385, RIG-4014
+  option 1).** `Fabric.Publish` writes the W3C `traceparent` header in
+  lowercase and the subscriber reads it case-insensitively. Subscriber
+  callbacks gain a ctx carrying the extracted span. T2's Interfaces line reads
+  `SubscribeKind(ctx, kind, fn func(context.Context, EventRef) error)` after
+  this and DL-378.
+- **A failed callback Naks (DL-378, RIG-4030 option 1).** The callback
+  returns an error: nil acks, an error Naks through `retryOrPark`, and the
+  delivery consumer returns nil only for a missing row (`store.ErrNotFound`).
+  Redelivery is an immediate Nak, so the five attempts cover a brief fault,
+  not a Postgres failover; the recovery pass still backstops delivery.
+- **compass-server takes its NATS URL like its DSN (DL-379, RIG-4006
+  option 1).** `--nats-url` / `$COMPASS_NATS_URL`, forwarded by
+  `stack.serverSpec`; each e2e stack runs its own in-process NATS server.
+- **A healthy event dropped at MaxDeliver is parked on the DLQ (DL-380,
+  RIG-4036 option 3).** The fabric subscribes to the JetStream
+  max-deliveries advisory for its own consumers and republishes the stream
+  message to `DLQSubject` with the park headers. This makes T4 (d)'s
+  "can march to a DLQ-park" true for the slow-callback case; the change lands
+  as its own PR stacked on this record's.
+- **Held delivery orders by turn, not time (RIG-4033 option 3).** A settle
+  edge fires only messages held from turns up to its own. This needs proto
+  fields from the agent side and has its own design record
+  (`compass-managed-settle-turn-order/design.md`).
+
 ## Problem / Intent
 
 The frozen multitenancy record's T3 mandates "comms and delivery publish
@@ -274,10 +304,10 @@ resolve the tenant from ctx with the bootstrap fallback.
   and `CommsSubject(tenant string, kind EventKind) (string, error)` +
   `fabric.KindMessagePosted` (PR3);
   `store.TenantFromContext(ctx context.Context) (store.TenantID, bool)`
-  (`go/internal/store/context.go:23`). Produces: a new exported
-  `func (s *Store) ResolveTenant(ctx context.Context) TenantID` (promoting the
-  unexported `resolveTenant`, `go/internal/store/tenant.go:54-58`, so comms
-  gets the same set-or-bootstrap-fallback semantics the store's writes use);
+  (`go/internal/store/context.go:23`). Produces: comms resolves the tenant
+  through the exported `func (s *Store) EffectiveTenant(ctx context.Context)
+  TenantID` (which RIG-3108 added after this record froze, with the same
+  set-or-bootstrap-fallback semantics as the unexported `resolveTenant`);
   `comms.NewComms` gains a `fabric fabric.EventFabric` parameter (nil-safe:
   nil ⇒ bus-only, so unit tests and any not-yet-wired assembly keep working);
   `publishMessagePosted(ctx, m)` extended with the fabric publish + the
@@ -448,7 +478,7 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
 
 ## Tasks
 
-- [ ] T1: fabric publish in `publishMessagePosted` + `Store.ResolveTenant` +
+- [ ] T1: fabric publish in `publishMessagePosted` + `Store.EffectiveTenant` +
       failure counter (tests a–d)
 - [ ] T2: consumer trigger cutover — `SubscribeKind` in, bus tail out, per
       OQ-1/OQ-2/OQ-3 rulings; fabric serial-callback contract doc + no-overlap

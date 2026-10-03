@@ -2,6 +2,7 @@ package fabric
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -12,6 +13,9 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TestEventFabricRoundTrip defends the core promise of the event plane: an
@@ -28,7 +32,10 @@ func TestEventFabricRoundTrip(t *testing.T) {
 		t.Fatalf("CommsSubject: %v", err)
 	}
 	got := make(chan EventRef, 1)
-	unsub, err := f.Subscribe(ctx, subject, func(r EventRef) { got <- r })
+	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -40,6 +47,238 @@ func TestEventFabricRoundTrip(t *testing.T) {
 	}
 	if delivered := recvRef(t, got); delivered != want {
 		t.Fatalf("delivered %+v, want %+v", delivered, want)
+	}
+}
+
+func TestPublishPropagatesTraceContext(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+	subject, err := CommsSubject("t-trace", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	tracer := sdktrace.NewTracerProvider().Tracer("fabric-test")
+	// A spanned Subscribe ctx makes the no-span assertion below able to fail: the
+	// callback must not inherit the subscriber's span.
+	subCtx, subSpan := tracer.Start(ctx, "subscriber")
+	defer subSpan.End()
+	got := make(chan context.Context, 2)
+	unsub, err := f.Subscribe(subCtx, subject, func(ctx context.Context, _ EventRef) error {
+		got <- ctx
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer unsub()
+	spanCtx, span := tracer.Start(ctx, "publish")
+	wantTraceID := trace.SpanContextFromContext(spanCtx).TraceID()
+	if err := f.Publish(spanCtx, subject, EventRef{Tenant: "t-trace", Kind: KindMessagePosted, RowID: "trace"}); err != nil {
+		t.Fatalf("Publish with span: %v", err)
+	}
+	// The stored key must be lowercase: servers that lowercase in place leave a
+	// canonical-only reader blind, whatever this package's own reader tolerates.
+	stream, err := f.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	stored, err := stream.GetLastMsgForSubject(ctx, subject)
+	if err != nil {
+		t.Fatalf("GetLastMsgForSubject: %v", err)
+	}
+	if _, ok := stored.Header[traceparentHeader]; !ok {
+		t.Fatalf("stored headers %v lack the lowercase %q key", stored.Header, traceparentHeader)
+	}
+	span.End()
+	delivered := recvContext(t, got)
+	if gotTraceID := trace.SpanContextFromContext(delivered).TraceID(); gotTraceID != wantTraceID {
+		t.Fatalf("delivered trace ID = %s, want %s", gotTraceID, wantTraceID)
+	}
+	if err := f.Publish(ctx, subject, EventRef{Tenant: "t-trace", Kind: KindMessagePosted, RowID: "no-trace"}); err != nil {
+		t.Fatalf("Publish without span: %v", err)
+	}
+	if sc := trace.SpanContextFromContext(recvContext(t, got)); sc.IsValid() {
+		t.Fatalf("delivered SpanContext = %v, want invalid", sc)
+	}
+}
+
+// TestSubscribeReadsTraceparentAnyCase pins the receive side against header
+// case: nats-server 2.11/2.12 lowercase Traceparent in place, and NATS headers
+// are case-sensitive, so a canonical-only read silently drops the trace.
+func TestSubscribeReadsTraceparentAnyCase(t *testing.T) {
+	t.Parallel()
+	const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	wantTraceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatalf("TraceIDFromHex: %v", err)
+	}
+	for _, key := range []string{"traceparent", "Traceparent"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			ctx := testCtx(t)
+			f := newFabric(t, Config{})
+			subject, err := CommsSubject("t-trace-case", KindMessagePosted)
+			if err != nil {
+				t.Fatalf("CommsSubject: %v", err)
+			}
+			got := make(chan context.Context, 1)
+			unsub, err := f.Subscribe(ctx, subject, func(ctx context.Context, _ EventRef) error {
+				got <- ctx
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			defer unsub()
+			data, err := EventRef{Tenant: "t-trace-case", Kind: KindMessagePosted, RowID: "m1"}.encode()
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			// Straight onto JetStream, so the header key is exactly the one under test.
+			msg := &nats.Msg{Subject: subject, Data: data, Header: nats.Header{key: []string{tp}}}
+			if _, err := f.js.PublishMsg(ctx, msg); err != nil {
+				t.Fatalf("PublishMsg: %v", err)
+			}
+			if gotTraceID := trace.SpanContextFromContext(recvContext(t, got)).TraceID(); gotTraceID != wantTraceID {
+				t.Fatalf("delivered trace ID = %s, want %s", gotTraceID, wantTraceID)
+			}
+		})
+	}
+}
+
+// TestCallbackContextSurvivesSubscribeCancel pins that an event drained after
+// the Subscribe ctx is cancelled still gets a live ctx: the drain exists to
+// process claimed events, and a dead ctx would fail every one of them.
+func TestCallbackContextSurvivesSubscribeCancel(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+	subject, err := CommsSubject("t-cancel", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		calls   atomic.Int64
+		firstIn = make(chan struct{})
+		release = make(chan struct{})
+		errs    = make(chan error, 2)
+	)
+	unsub, err := f.Subscribe(subCtx, subject, func(cbCtx context.Context, _ EventRef) error {
+		if calls.Add(1) == 1 {
+			close(firstIn)
+			select {
+			case <-release:
+			case <-time.After(gate):
+			}
+		}
+		errs <- cbCtx.Err()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer unsub()
+	publish := func(id string) {
+		t.Helper()
+		if err := f.Publish(ctx, subject, EventRef{Tenant: "t-cancel", Kind: KindMessagePosted, RowID: id}); err != nil {
+			t.Fatalf("Publish %s: %v", id, err)
+		}
+	}
+	publish("one")
+	<-firstIn
+	publish("two")
+	stream, err := f.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	cons, err := stream.Consumer(ctx, durableName(subject))
+	if err != nil {
+		t.Fatalf("Consumer: %v", err)
+	}
+	// The second event must be in this client's buffer before the cancel, so it
+	// is delivered by the drain rather than by a live consumer.
+	pollUntil(t, "the second event buffered behind the first", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumAckPending > 1
+	})
+	cancel()
+	close(release)
+	for i := range 2 {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("callback %d saw ctx.Err() = %v, want nil", i+1, err)
+			}
+		case <-time.After(gate):
+			t.Fatalf("callback %d did not run within %s", i+1, gate)
+		}
+	}
+}
+
+func recvContext(t *testing.T, ch <-chan context.Context) context.Context {
+	t.Helper()
+	select {
+	case ctx := <-ch:
+		return ctx
+	case <-time.After(gate):
+		t.Fatal("no callback context within gate")
+		return nil
+	}
+}
+
+func TestSubscribeCallbacksDoNotOverlap(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+	subject, err := CommsSubject("t-serial", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	var active, maximum atomic.Int64
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	unsub, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) error {
+		current := active.Add(1)
+		for old := maximum.Load(); current > old && !maximum.CompareAndSwap(old, current); old = maximum.Load() {
+		}
+		started <- struct{}{}
+		<-release
+		active.Add(-1)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer unsub()
+	for _, id := range []string{"one", "two"} {
+		if err := f.Publish(ctx, subject, EventRef{Tenant: "t-serial", Kind: KindMessagePosted, RowID: id}); err != nil {
+			t.Fatalf("Publish %s: %v", id, err)
+		}
+	}
+	select {
+	case <-started:
+	case <-time.After(gate):
+		t.Fatal("first callback did not start")
+	}
+	select {
+	case <-started:
+		t.Fatal("second callback started while first was blocked")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatalf("second callback did not start after release: %v", ctx.Err())
+	}
+	if got := maximum.Load(); got != 1 {
+		t.Fatalf("maximum simultaneous callbacks = %d, want 1", got)
 	}
 }
 
@@ -62,7 +301,10 @@ func TestEventFabricDedupsIdenticalPublishes(t *testing.T) {
 		t.Fatalf("CommsSubject: %v", err)
 	}
 	got := make(chan EventRef, 4)
-	unsub, err := f.Subscribe(ctx, subject, func(r EventRef) { got <- r })
+	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -106,7 +348,10 @@ func TestEventFabricFiltersBySubject(t *testing.T) {
 	}
 
 	got := make(chan EventRef, 4)
-	unsub, err := f.Subscribe(ctx, mine, func(r EventRef) { got <- r })
+	unsub, err := f.Subscribe(ctx, mine, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -146,12 +391,18 @@ func TestEventFabricConcreteAndWildcardConsumersCoexist(t *testing.T) {
 	}
 	concrete := make(chan EventRef, 4)
 	wildcard := make(chan EventRef, 4)
-	unsubConcrete, err := f.Subscribe(ctx, concreteSubject, func(r EventRef) { concrete <- r })
+	unsubConcrete, err := f.Subscribe(ctx, concreteSubject, func(_ context.Context, r EventRef) error {
+		concrete <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	defer unsubConcrete()
-	unsubWildcard, err := f.SubscribeKind(ctx, KindMessagePosted, func(r EventRef) { wildcard <- r })
+	unsubWildcard, err := f.SubscribeKind(ctx, KindMessagePosted, func(_ context.Context, r EventRef) error {
+		wildcard <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("SubscribeKind: %v", err)
 	}
@@ -201,12 +452,13 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 
 	var stale atomic.Int64
 	first := make(chan EventRef, 1)
-	unsub, err := f.Subscribe(ctx, subject, func(r EventRef) {
+	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
 		stale.Add(1)
 		select {
 		case first <- r:
 		default:
 		}
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -230,7 +482,10 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 	// A second subscriber on the same subject picks up where the consumer left
 	// off; its delivery is the gate.
 	second := make(chan EventRef, 1)
-	unsub2, err := f.Subscribe(ctx, subject, func(r EventRef) { second <- r })
+	unsub2, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
+		second <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("second Subscribe: %v", err)
 	}
@@ -268,7 +523,10 @@ func TestSubscribeStopsWhenContextIsDone(t *testing.T) {
 	// Rooted at context.Background() because this is a test root.
 	subCtx, cancel := context.WithCancel(context.Background())
 	live := make(chan EventRef, 1)
-	unsub, err := f.Subscribe(subCtx, subject, func(r EventRef) { live <- r })
+	unsub, err := f.Subscribe(subCtx, subject, func(_ context.Context, r EventRef) error {
+		live <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -293,7 +551,10 @@ func TestSubscribeStopsWhenContextIsDone(t *testing.T) {
 	// Gate on the replacement subscription receiving, exactly as the
 	// Unsubscribe test does.
 	after := make(chan EventRef, 1)
-	unsub2, err := f.Subscribe(pubCtx, subject, func(r EventRef) { after <- r })
+	unsub2, err := f.Subscribe(pubCtx, subject, func(_ context.Context, r EventRef) error {
+		after <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("second Subscribe: %v", err)
 	}
@@ -403,7 +664,7 @@ func TestPoisonMessageParksOnDLQ(t *testing.T) {
 	// The callback panics: the fabric must treat a subscriber panic as a
 	// failure (neither crashing the process nor acking an unhandled event), so
 	// this exercises the panic guard and the retry budget together.
-	unsub, err := f.Subscribe(ctx, subject, func(EventRef) {
+	unsub, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) error {
 		attempts.Add(1)
 		panic("subscriber is broken")
 	})
@@ -468,7 +729,7 @@ func TestWildcardConsumerParksWithConcreteSubject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommsSubject: %v", err)
 	}
-	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(EventRef) {
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error {
 		panic("subscriber is broken")
 	})
 	if err != nil {
@@ -508,6 +769,134 @@ func TestWildcardConsumerParksWithConcreteSubject(t *testing.T) {
 	}
 }
 
+// TestCallbackErrorParksOnDLQ: a returned error is a failure like a panic. It is
+// redelivered up to MaxDeliver attempts, then parked under its concrete subject.
+func TestCallbackErrorParksOnDLQ(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, MaxDeliver: 2, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the dlq subscription: %v", err)
+	}
+
+	concrete, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	var attempts atomic.Int64
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error {
+		attempts.Add(1)
+		return errors.New("store read failed")
+	})
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+
+	failing := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-failing"}
+	if err := f.Publish(ctx, concrete, failing); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	msg, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("waiting for the parked message on %q: %v", DLQSubject, err)
+	}
+	parked, err := decodeEventRef(msg.Data)
+	if err != nil {
+		t.Fatalf("the parked payload must be the original event: %v", err)
+	}
+	if parked != failing {
+		t.Fatalf("parked %+v, want %+v", parked, failing)
+	}
+	if got := msg.Header.Get(dlqHeaderSubject); got != concrete {
+		t.Errorf("park header %s = %q, want concrete subject %q", dlqHeaderSubject, got, concrete)
+	}
+	if reason := msg.Header.Get(dlqHeaderReason); !strings.Contains(reason, "store read failed") {
+		t.Errorf("park header %s = %q, want the callback's error", dlqHeaderReason, reason)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Errorf("callback ran %d time(s), want exactly MaxDeliver=2 attempts before parking", got)
+	}
+}
+
+// TestCallbackErrorThenSuccessIsAcked: a transient error is retried, and the
+// attempt that returns nil acks the event, so it is never parked.
+func TestCallbackErrorThenSuccessIsAcked(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, MaxDeliver: 3, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the dlq subscription: %v", err)
+	}
+
+	var attempts atomic.Int64
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("transient")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+
+	ref := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-flaky"}
+	subject, err := CommsSubject(ref.Tenant, ref.Kind)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	if err := f.Publish(ctx, subject, ref); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	pollUntil(t, "a second attempt after the failed first", func() bool { return attempts.Load() >= 2 })
+	cons := kindConsumer(t, ctx, f)
+	pollUntil(t, "the event acked", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumAckPending == 0 && info.NumPending == 0
+	})
+	// Close flushes any park publish; the raw flush orders it ahead of the check.
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the raw connection: %v", err)
+	}
+	if n, _, err := dlq.Pending(); err != nil || n != 0 {
+		t.Fatalf("dlq pending = %d (err %v), want 0: a retried-then-ok event is acked", n, err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("callback ran %d time(s), want 2 (one failure, one success)", got)
+	}
+}
+
 // TestSubscriberPanicDoesNotBlockOtherEvents defends the panic guard's
 // consequence for throughput: one broken event must not wedge the subject. The
 // poison event exhausts its budget and parks, and the next event is delivered —
@@ -523,11 +912,12 @@ func TestSubscriberPanicDoesNotBlockOtherEvents(t *testing.T) {
 	}
 
 	good := make(chan EventRef, 1)
-	unsub, err := f.Subscribe(ctx, subject, func(r EventRef) {
+	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
 		if r.RowID == "poison" {
 			panic("subscriber is broken")
 		}
 		good <- r
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -577,7 +967,10 @@ func TestUndecodablePayloadParksImmediately(t *testing.T) {
 	}
 
 	var calls atomic.Int64
-	unsub, err := f.Subscribe(ctx, subject, func(EventRef) { calls.Add(1) })
+	unsub, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) error {
+		calls.Add(1)
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -623,11 +1016,12 @@ func TestSubscribeIsIdempotentAcrossInstances(t *testing.T) {
 		seen  []EventRef
 		total = make(chan struct{}, 8)
 	)
-	record := func(r EventRef) {
+	record := func(_ context.Context, r EventRef) error {
 		mu.Lock()
 		seen = append(seen, r)
 		mu.Unlock()
 		total <- struct{}{}
+		return nil
 	}
 	unsubA, err := a.Subscribe(ctx, subject, record)
 	if err != nil {
@@ -718,19 +1112,24 @@ func TestEnsureStreamErrorIsNotCached(t *testing.T) {
 	}
 }
 
-// TestInvokeConvertsPanicToError defends the guard in isolation: a subscriber
-// callback runs on the fabric's goroutine, so an unrecovered panic there would
-// take the whole server down. It must become an error the delivery path can act
-// on.
-func TestInvokeConvertsPanicToError(t *testing.T) {
+// TestInvokeReturnsCallbackOutcome defends invoke in isolation: it passes the
+// callback's error through, and converts a panic to an error, so neither acks.
+func TestInvokeReturnsCallbackOutcome(t *testing.T) {
 	t.Parallel()
 	ref := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "m1"}
 
-	if err := invoke(func(EventRef) {}, ref); err != nil {
-		t.Fatalf("a callback that returns normally must not error: %v", err)
+	if err := invoke(context.Background(), func(context.Context, EventRef) error { return nil }, ref); err != nil {
+		t.Fatalf("a callback that returns nil must not error: %v", err)
 	}
 
-	err := invoke(func(EventRef) { panic(errors.New("boom")) }, ref)
+	sentinel := errors.New("transient")
+	if err := invoke(context.Background(), func(context.Context, EventRef) error { return sentinel }, ref); !errors.Is(err, sentinel) {
+		t.Fatalf("invoke = %v, want the callback's own error (a nil would ack a failed event)", err)
+	}
+
+	err := invoke(context.Background(), func(context.Context, EventRef) error {
+		panic(errors.New("boom"))
+	}, ref)
 	if err == nil {
 		t.Fatal("a panicking callback must yield an error, not a nil (which would ack an unhandled event)")
 	}
@@ -758,7 +1157,10 @@ func TestPublishRejectsCrossTenantRef(t *testing.T) {
 	}
 
 	got := make(chan EventRef, 2)
-	unsub, err := f.Subscribe(ctx, theirs, func(r EventRef) { got <- r })
+	unsub, err := f.Subscribe(ctx, theirs, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -818,7 +1220,9 @@ func TestParkReasonIsSanitizedAndBounded(t *testing.T) {
 	// multiple KB to blow any size bound. This is test code deliberately
 	// driving the package's documented panic guard, as the DLQ tests above do.
 	hostile := "line-one\r\nline-two " + strings.Repeat("x", 4096)
-	unsub, err := f.Subscribe(ctx, subject, func(EventRef) { panic(hostile) })
+	unsub, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) error {
+		panic(hostile)
+	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -891,7 +1295,7 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 	// Taken before Subscribe so no delivery is missed. Subscribe adds exactly
 	// one reply of its own (CreateOrUpdateConsumer), so gates below subtract it.
 	baseline := f.nc.Stats().InMsgs
-	unsub, err := f.Subscribe(ctx, subject, func(r EventRef) {
+	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
 		got <- r
 		// Only the first delivery blocks; that is enough to let the rest pile
 		// up in the consumer's buffer, which is what teardown must not discard.
@@ -902,6 +1306,7 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 			case <-time.After(gate):
 			}
 		})
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -986,7 +1391,7 @@ func TestSubscribeWatchdogExitsOnClose(t *testing.T) {
 
 	// Rooted at context.Background() because this is a test root, and an
 	// uncancelled context is the whole point of the test.
-	unsub, err := f.Subscribe(context.Background(), subject, func(EventRef) {})
+	unsub, err := f.Subscribe(context.Background(), subject, func(context.Context, EventRef) error { return nil })
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -1037,7 +1442,10 @@ func TestSubscribeKindReceivesEveryTenant(t *testing.T) {
 	f := newFabric(t, Config{})
 
 	got := make(chan EventRef, 4)
-	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(r EventRef) { got <- r })
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("SubscribeKind: %v", err)
 	}
@@ -1094,7 +1502,10 @@ func TestSubscribeKindIsolatesKinds(t *testing.T) {
 	f := newFabric(t, Config{})
 
 	got := make(chan EventRef, 4)
-	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(r EventRef) { got <- r })
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("SubscribeKind: %v", err)
 	}
@@ -1136,11 +1547,11 @@ func TestSubscribeKindRejectsBadInput(t *testing.T) {
 	if _, err := f.SubscribeKind(ctx, KindMessagePosted, nil); err == nil {
 		t.Error("SubscribeKind with a nil callback = nil error, want a refusal")
 	}
-	if _, err := f.SubscribeKind(ctx, EventKind("bad.kind"), func(EventRef) {}); err == nil {
+	if _, err := f.SubscribeKind(ctx, EventKind("bad.kind"), func(context.Context, EventRef) error { return nil }); err == nil {
 		t.Error("SubscribeKind with a reserved-character kind = nil error, want a refusal")
 	}
 	// A wildcard kind would put all seven comms kinds on one consumer.
-	if _, err := f.SubscribeKind(ctx, EventKind("*"), func(EventRef) {}); err == nil {
+	if _, err := f.SubscribeKind(ctx, EventKind("*"), func(context.Context, EventRef) error { return nil }); err == nil {
 		t.Error("SubscribeKind with a wildcard kind = nil error, want a refusal")
 	}
 }
@@ -1176,7 +1587,10 @@ func TestForgedTenantRefIsParked(t *testing.T) {
 	}
 
 	delivered := make(chan EventRef, 2)
-	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(ref EventRef) { delivered <- ref })
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(_ context.Context, ref EventRef) error {
+		delivered <- ref
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("SubscribeKind: %v", err)
 	}
@@ -1272,7 +1686,10 @@ func TestLegitimateRefsSurviveTheSubjectCrossCheck(t *testing.T) {
 			t.Fatalf("CommsSubject(%q): %v", tenant, err)
 		}
 		delivered := make(chan EventRef, 1)
-		unsub, err := f.Subscribe(ctx, subject, func(ref EventRef) { delivered <- ref })
+		unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, ref EventRef) error {
+			delivered <- ref
+			return nil
+		})
 		if err != nil {
 			t.Fatalf("Subscribe(%q): %v", subject, err)
 		}
@@ -1300,5 +1717,287 @@ func TestLegitimateRefsSurviveTheSubjectCrossCheck(t *testing.T) {
 	if msg, err := dlq.NextMsgWithContext(dlqCtx); err == nil {
 		t.Errorf("a legitimate event was parked on %q: subject header %q, reason %q",
 			DLQSubject, msg.Header.Get(dlqHeaderSubject), msg.Header.Get(dlqHeaderReason))
+	}
+}
+
+// slowAckWait is the AckWait the slow-callback tests run under: short enough to
+// expire many times inside the gate, long enough to exceed a normal ack.
+const slowAckWait = 300 * time.Millisecond
+
+// kindConsumer opens the shared durable consumer SubscribeKind created for message_posted.
+func kindConsumer(t *testing.T, ctx context.Context, f *Fabric) jetstream.Consumer {
+	t.Helper()
+	stream, err := f.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	subject, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	cons, err := stream.Consumer(ctx, durableName(subject))
+	if err != nil {
+		t.Fatalf("Consumer(%q): %v", durableName(subject), err)
+	}
+	return cons
+}
+
+// TestSlowCallbackPastAckWaitRedeliversHealthyEvent pins the hazard behind the
+// bounded-callback invariant: a callback that succeeds but outlives AckWait gets
+// its healthy event redelivered, across the shared queue-group of two instances.
+func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	cfg := Config{URL: url, AckWait: slowAckWait, Log: quietLogger(t)}
+	a := newFabric(t, cfg)
+	b := newFabric(t, cfg)
+
+	invoked := make(chan EventRef, 16)
+	release := make(chan struct{})
+	releaseHeld := sync.OnceFunc(func() { close(release) })
+	defer releaseHeld()
+	var first sync.Once
+	slow := func(_ context.Context, ref EventRef) error {
+		invoked <- ref
+		// Only the first invocation is held, like a callback queued behind a gate.
+		first.Do(func() { <-release })
+		return nil
+	}
+	for name, f := range map[string]*Fabric{"a": a, "b": b} {
+		unsub, err := f.SubscribeKind(ctx, KindMessagePosted, slow)
+		if err != nil {
+			t.Fatalf("SubscribeKind on %s: %v", name, err)
+		}
+		defer unsub()
+	}
+
+	want := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-slow"}
+	subject, err := CommsSubject(want.Tenant, want.Kind)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	if err := a.Publish(ctx, subject, want); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := recvRef(t, invoked); got != want {
+		t.Fatalf("first invocation got %+v, want %+v", got, want)
+	}
+
+	// The first callback is still held, so any further delivery is a redelivery
+	// of an event that never failed.
+	cons := kindConsumer(t, ctx, a)
+	pollUntil(t, "a redelivery of the held event", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumRedelivered > 0
+	})
+	releaseHeld()
+	if got := recvRef(t, invoked); got != want {
+		t.Fatalf("second invocation got %+v, want the same healthy ref %+v", got, want)
+	}
+}
+
+// TestAlwaysSlowCallbackExhaustsMaxDeliver pins where an unbounded callback
+// ends: a healthy event whose every attempt outlives AckWait spends the whole
+// MaxDeliver budget, is dropped by the server, and is parked once from the advisory.
+func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	cfg := Config{URL: url, AckWait: slowAckWait, MaxDeliver: 2, Log: quietLogger(t)}
+	a := newFabric(t, cfg)
+	b := newFabric(t, cfg)
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	wildcard, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	exhausted, err := raw.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES." + DefaultStreamName + "." + durableName(wildcard))
+	if err != nil {
+		t.Fatalf("SubscribeSync(max deliveries advisory): %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the raw subscriptions: %v", err)
+	}
+
+	release := make(chan struct{})
+	releaseHeld := sync.OnceFunc(func() { close(release) })
+	defer releaseHeld()
+	slow := func(context.Context, EventRef) error {
+		<-release
+		return nil
+	}
+	for name, f := range map[string]*Fabric{"a": a, "b": b} {
+		unsub, err := f.SubscribeKind(ctx, KindMessagePosted, slow)
+		if err != nil {
+			t.Fatalf("SubscribeKind on %s: %v", name, err)
+		}
+		defer unsub()
+	}
+
+	ref := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-always-slow"}
+	subject, err := CommsSubject(ref.Tenant, ref.Kind)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	if err := a.Publish(ctx, subject, ref); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	stream, err := a.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	streamInfo, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream Info: %v", err)
+	}
+	publishedSeq := streamInfo.State.LastSeq
+
+	// The advisory names the shared durable, so either instance's attempts count.
+	msg, err := exhausted.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("the always-slow healthy event never exhausted MaxDeliver=2: %v", err)
+	}
+	var advisory struct {
+		StreamSeq  uint64 `json:"stream_seq"`
+		Deliveries uint64 `json:"deliveries"`
+	}
+	if err := json.Unmarshal(msg.Data, &advisory); err != nil {
+		t.Fatalf("decoding the max-deliveries advisory: %v", err)
+	}
+	if advisory.Deliveries != 2 || advisory.StreamSeq != publishedSeq {
+		t.Fatalf("advisory = %+v, want deliveries 2 for stream seq %d", advisory, publishedSeq)
+	}
+
+	releaseHeld()
+	cons := kindConsumer(t, ctx, a)
+	pollUntil(t, "no delivery awaiting ack", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumAckPending == 0
+	})
+	// Close drains the released callbacks and flushes any park they published;
+	// the raw flush then orders every routed DLQ message ahead of the check.
+	for name, f := range map[string]*Fabric{"a": a, "b": b} {
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close %s: %v", name, err)
+		}
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the raw connection: %v", err)
+	}
+	// Both instances hear the advisory; the queue group must park it exactly once.
+	parked, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("the event dropped at MaxDeliver was never parked: %v", err)
+	}
+	if got := parked.Header.Get(dlqHeaderSubject); got != "compass.t1.comms.message_posted" {
+		t.Errorf("parked original subject = %q, want the event's subject", got)
+	}
+	if !strings.Contains(parked.Header.Get(dlqHeaderReason), "2 delivery attempts") {
+		t.Errorf("parked reason = %q, want it to name the 2 attempts", parked.Header.Get(dlqHeaderReason))
+	}
+	// A second park would come from the other instance; give it a bounded window.
+	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelDup()
+	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
+		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
+	}
+}
+
+// TestQueuedFinalAttemptParksOnce verifies a buffered final attempt parks once.
+func TestQueuedFinalAttemptParksOnce(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	ackWait := time.Second
+	f := newFabric(t, Config{URL: url, AckWait: ackWait, MaxDeliver: 1, Log: quietLogger(t)})
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ subscription: %v", err)
+	}
+	startedA := make(chan struct{}, 1)
+	startedB := make(chan struct{}, 1)
+	callback := func(ctx context.Context, ref EventRef) error {
+		if ref.RowID == "queued-a" {
+			startedA <- struct{}{}
+			timer := time.NewTimer(ackWait * 3 / 5)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		startedB <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, callback)
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+	subject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	for _, id := range []string{"queued-a", "queued-b"} {
+		if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: id}); err != nil {
+			t.Fatalf("Publish %s: %v", id, err)
+		}
+	}
+	select {
+	case <-startedA:
+	case <-ctx.Done():
+		t.Fatal("A callback did not start")
+	}
+	cons := kindConsumer(t, ctx, f)
+	pollUntil(t, "both published events buffered", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumAckPending == 2
+	})
+	select {
+	case <-startedB:
+	case <-ctx.Done():
+		t.Fatal("B callback did not start")
+	}
+	parked, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("B was not parked: %v", err)
+	}
+	if got := parked.Header.Get(dlqHeaderSubject); got != subject {
+		t.Fatalf("parked subject = %q, want %q", got, subject)
+	}
+	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelDup()
+	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
+		t.Fatalf("B parked twice; second reason %q", dup.Header.Get(dlqHeaderReason))
 	}
 }

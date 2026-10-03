@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // procedurePath reconstructs the connect procedure path for a method descriptor.
@@ -33,6 +34,17 @@ func gatedFileDescriptors() []protoreflect.FileDescriptor {
 	return []protoreflect.FileDescriptor{
 		compassv1.File_compass_v1_compass_proto,
 		compassv1.File_compass_v1_comms_proto,
+	}
+}
+
+// ungatedFileDescriptors are compass.v1 service files never mounted behind
+// AdminGate: Runner, agent-socket and guest-vsock surfaces with their own authz.
+// Importing them keeps the registry guard below independent of the link set.
+func ungatedFileDescriptors() []protoreflect.FileDescriptor {
+	return []protoreflect.FileDescriptor{
+		compassv1internal.File_compass_v1_runner_proto,
+		compassv1internal.File_compass_v1_agent_gateway_proto,
+		compassv1internal.File_compass_v1_guest_control_proto,
 	}
 }
 
@@ -127,6 +139,12 @@ func TestClassificationGateCoversEveryRegisteredCompassService(t *testing.T) {
 			covered[services.Get(si).FullName()] = true
 		}
 	}
+	for _, file := range ungatedFileDescriptors() {
+		services := file.Services()
+		for si := range services.Len() {
+			covered[services.Get(si).FullName()] = true
+		}
+	}
 	if len(packages) == 0 {
 		t.Fatal("gatedFileDescriptors is empty — the classification gate covers nothing")
 	}
@@ -139,7 +157,7 @@ func TestClassificationGateCoversEveryRegisteredCompassService(t *testing.T) {
 				svc := services.Get(si)
 				checked++
 				if !covered[svc.FullName()] {
-					t.Errorf("service %q is registered in proto package %q but its file is not in gatedFileDescriptors — add its File_..._proto to the slice so classifyProcedure's exhaustiveness gate covers its RPCs (otherwise they silently fail-closed to adminOnly on the network door)", svc.FullName(), pkg)
+					t.Errorf("service %q is registered in proto package %q but its file is in neither gatedFileDescriptors nor ungatedFileDescriptors — add it to the gated slice so classifyProcedure's exhaustiveness gate covers its RPCs (otherwise they silently fail-closed to adminOnly on the network door), or to the ungated slice if it is never mounted behind AdminGate", svc.FullName(), pkg)
 				}
 			}
 			return true
