@@ -16,7 +16,7 @@ tasks:
     deps: ['install']
     inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', 'bunfig.toml']
 
   credential-keys-drift:
     # Fail if the store door's credential denylist is stale vs the SDK settings
