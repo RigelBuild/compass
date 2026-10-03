@@ -336,6 +336,40 @@ func TestLabelsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestIssueSearchIndexesBodyAndLabels(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	bodyHit := forgeFields(1)
+	bodyHit.Body = "Investigate falcon migration"
+	if _, err := s.UpsertIssueForgeFields(ctx, bodyHit); err != nil {
+		t.Fatalf("upsert body hit: %v", err)
+	}
+	labelHit := forgeFields(2)
+	labelHit.Labels = []string{"Needs-Triage"}
+	if _, err := s.UpsertIssueForgeFields(ctx, labelHit); err != nil {
+		t.Fatalf("upsert label hit: %v", err)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin verification transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE compass_system"); err != nil {
+		t.Fatalf("set verification role: %v", err)
+	}
+	var bodyMatch, labelMatch bool
+	if err := tx.QueryRow(ctx, `
+		SELECT
+		    EXISTS (SELECT 1 FROM issues WHERE search_tsv @@ websearch_to_tsquery('english', 'falcon')),
+		    EXISTS (SELECT 1 FROM issues WHERE search_tsv @@ websearch_to_tsquery('english', 'triage'))`).Scan(&bodyMatch, &labelMatch); err != nil {
+		t.Fatalf("query issue search vector: %v", err)
+	}
+	if !bodyMatch || !labelMatch {
+		t.Fatalf("search vector body match = %v, label match = %v, want both true", bodyMatch, labelMatch)
+	}
+}
+
 // The OQ-6(a) recency guard (RIG-2883 T4a): once both the stored row and the
 // incoming write carry a forge_updated_at, the conditional ON CONFLICT keeps
 // the FRESHER timestamp's forge fields, regardless of arrival order — a stale
