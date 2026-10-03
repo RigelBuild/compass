@@ -47,6 +47,10 @@ service CompassService {
   // filter, exactly like that tail.
   rpc ListBoardIssues(ListBoardIssuesRequest) returns (ListBoardIssuesResponse);
 
+  // Full-text search over the whole board (title/body/summary/labels),
+  // best-match-first. authenticatedOpen: same access class as ListBoardIssues.
+  rpc SearchIssues(SearchIssuesRequest) returns (SearchIssuesResponse);
+
   // Provision a per-agent container for a workstream: build the image, create
   // and start the isolated container, arm egress, and clone the repo — the
   // built lifecycle façade (internal/runtime/agent.go). Returns the stable
@@ -385,6 +389,20 @@ message ListBoardIssuesRequest {
 // The client unions these with the live tail and dedups by `id`.
 message ListBoardIssuesResponse {
   repeated Issue issues = 1;
+}
+
+message SearchIssuesRequest {
+  string query = 1;
+  // Page size; the server clamps to a maximum.
+  uint32 limit = 2;
+  // Reserved: v1 board is unversioned (see SubscribeEventsResponse.snapshot_seq),
+  // so this carries 0.
+  uint64 snapshot_seq = 3;
+}
+
+message SearchIssuesResponse {
+	// Best-match-first.
+	repeated Issue issues = 1;
 }
 
 // The server's liveness state, pushed on connect and whenever it changes.
