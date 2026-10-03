@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -186,7 +189,7 @@ func runS3Restart(t *testing.T, ctx context.Context, wholeStack bool) {
 
 func runS3Outage(t *testing.T, ctx context.Context) {
 	t.Helper()
-	f, _, _, container, joined := runS3DurabilityBase(t, ctx, "s3-durability-outage", nil)
+	f, st, _, container, joined := runS3DurabilityBase(t, ctx, "s3-durability-outage", nil)
 	if container == "" {
 		t.Fatal("empty agent container")
 	}
@@ -201,6 +204,9 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	t.Cleanup(func() { _ = signalGarage(ctx, "CONT", f.garage.name) })
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn during outage: %v", err)
+	}
+	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "marker durability-second"); err != nil {
+		t.Fatalf("await outage transcript: %v", err)
 	}
 	// The first turn's flushes may still land, so check only entries from the outage turn.
 	if n := segmentsCoveringMarker(t, ctx, f.DSN(), sessionID, "marker durability-second"); n != 0 {
@@ -266,6 +272,33 @@ func waitSegmentKind(t *testing.T, ctx context.Context, dsn, sessionID, kind str
 		select {
 		case <-ctx.Done():
 			t.Fatalf("waiting for %s segment: %v", kind, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitSessionErrored(t *testing.T, ctx context.Context, f *Fixture, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(settleTimeout)
+	ticker := time.NewTicker(transcriptPollInterval)
+	defer ticker.Stop()
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
+		resp, err := f.Compass().GetAgentStatus(probeCtx, connect.NewRequest(&compassv1.GetAgentStatusRequest{SessionId: sessionID}))
+		cancel()
+		if err != nil {
+			t.Fatalf("get agent status: %v", err)
+		}
+		statuses := resp.Msg.GetStatuses()
+		if len(statuses) == 1 && statuses[0].GetState() == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("session %s did not reach ERRORED within %s", sessionID, settleTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for session %s to reach ERRORED: %v", sessionID, ctx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -398,6 +431,7 @@ func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 	if err := podmanRemoveForce(ctx, container); err != nil {
 		t.Fatalf("crash agent container: %v", err)
 	}
+	waitSessionErrored(t, ctx, f, sessionID)
 	if _, err := f.PostMessage(ctx, channel, "general", "marker durability-after-crash"); err != nil {
 		t.Fatalf("post after crash: %v", err)
 	}
