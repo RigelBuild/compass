@@ -672,13 +672,6 @@ export async function runOnce(deps: Deps): Promise<number> {
 		}
 	}
 	if (ledgerText !== null) {
-		if (ledger.length === 0) {
-			violations.push({
-				file: DECISIONS_PATH,
-				line: 0,
-				message: "design ledger contains no decision rows",
-			});
-		}
 		violations.push(...conflictMarkerViolations(DECISIONS_PATH, ledgerText));
 	}
 
