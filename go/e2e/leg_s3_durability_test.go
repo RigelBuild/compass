@@ -205,6 +205,7 @@ func runS3Outage(t *testing.T, ctx context.Context) {
 	if err := runS3TurnSettled(ctx, f, sessionID, channel, "durability-second"); err != nil {
 		t.Fatalf("turn during outage: %v", err)
 	}
+	// The turn settles before CommitConversationFrame lands; wait for the row segmentsCoveringMarker reads.
 	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "marker durability-second"); err != nil {
 		t.Fatalf("await outage transcript: %v", err)
 	}
@@ -277,8 +278,8 @@ func waitSegmentKind(t *testing.T, ctx context.Context, dsn, sessionID, kind str
 	}
 }
 
-// waitSessionErrored gates on the Runner's async exit report, so a later post
-// reaches the lost-session archive path instead of a still-live session.
+// waitSessionErrored gates on the Runner's async exit report: a post before it
+// is dropped with no refusal, so no lost-session archive fires.
 func waitSessionErrored(t *testing.T, ctx context.Context, f *Fixture, sessionID string) {
 	t.Helper()
 	deadline := time.Now().Add(settleTimeout)
