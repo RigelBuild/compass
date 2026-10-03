@@ -51,12 +51,13 @@ func run() error {
 			"Defaults to $COMPASS_DATABASE_DSN.")
 	tokenOut := flag.String("token-out", "",
 		"Write the token to this file (0600, atomically) instead of stdout. With "+
-			"it set, the mint is idempotent: if the file exists and its token is "+
-			"already registered in the store, it no-ops; if the file exists but "+
-			"the store no longer knows the token (e.g. the database was replaced), "+
-			"it re-registers that same token without rotating it. Pass --force to "+
-			"mint a fresh token and overwrite. Without it, the token goes to "+
-			"stdout exactly once (capture it: `mint --runner-id r1 > runner.token`).")
+			"it set, the mint is idempotent: if the file's token is registered to "+
+			"this --runner-id, it no-ops; if the store no longer knows the token "+
+			"(e.g. the database was replaced), it re-registers that same token "+
+			"without rotating it; if the token belongs to a different subject, it "+
+			"rotates. Pass --force to mint a fresh token and overwrite. Without "+
+			"it, the token goes to stdout exactly once (capture it: "+
+			"`mint --runner-id r1 > runner.token`).")
 	force := flag.Bool("force", false,
 		"With --token-out, mint a fresh token and overwrite the file even when it "+
 			"already exists. Ignored without --token-out (stdout always mints).")
@@ -156,13 +157,17 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 			return fmt.Errorf("reading existing token file %q: %w", path, err)
 		}
 		token := string(existing)
-		state, err := runnerhub.RunnerTokenStatus(ctx, st, token, runnerID)
+		state, prior, err := runnerhub.RunnerTokenStatus(ctx, st, token, runnerID)
 		if err != nil {
 			return err
 		}
 		switch state {
-		case runnerhub.TokenRegistered, runnerhub.TokenRevoked:
+		case runnerhub.TokenRegistered:
 			slog.Info("runner token file already present and registered; skipping (pass --force to re-mint)",
+				"token_out", path, "runner_id", runnerID)
+			return nil
+		case runnerhub.TokenRevoked:
+			slog.Warn("runner token file holds a revoked token; leaving it (pass --force to re-mint)",
 				"token_out", path, "runner_id", runnerID)
 			return nil
 		case runnerhub.TokenUnknown:
@@ -173,8 +178,11 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 				"token_out", path, "runner_id", runnerID)
 			return nil
 		case runnerhub.TokenOtherSubject:
+			// Name the replaced subject so a mistyped --runner-id or --token-out
+			// that overwrote another runner's credential is visible in the log.
 			slog.Warn("runner token file is registered to a different subject; rotating",
-				"token_out", path, "runner_id", runnerID)
+				"token_out", path, "runner_id", runnerID,
+				"prior_subject_kind", int(prior.Kind), "prior_subject_id", prior.ID)
 		}
 	}
 

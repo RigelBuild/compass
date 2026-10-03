@@ -148,7 +148,7 @@ func TestRunnerTokenStatus(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := RunnerTokenStatus(context.Background(), tc.r, tok, "r1")
+			got, _, err := RunnerTokenStatus(context.Background(), tc.r, tok, "r1")
 			if err != nil {
 				t.Fatalf("RunnerTokenStatus: %v", err)
 			}
@@ -158,7 +158,7 @@ func TestRunnerTokenStatus(t *testing.T) {
 		})
 	}
 	t.Run("lookup failure surfaces", func(t *testing.T) {
-		if _, err := RunnerTokenStatus(context.Background(), fakeHashResolver{err: errors.New("db down")}, tok, "r1"); err == nil {
+		if _, _, err := RunnerTokenStatus(context.Background(), fakeHashResolver{err: errors.New("db down")}, tok, "r1"); err == nil {
 			t.Fatal("RunnerTokenStatus with a failing store = nil error, want failure")
 		}
 	})

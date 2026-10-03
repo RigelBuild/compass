@@ -16,7 +16,7 @@ import (
 // fakeTokenStore is an in-memory tokenStore: it records hash→subject with a
 // write counter so a test can assert no re-mint/re-register happened. It mirrors
 // the real store's contract for the two methods ensure exercises — an unknown
-// hash resolves to store.ErrNotFound (so RunnerTokenRegistered reports false).
+// hash resolves to store.ErrNotFound (so RunnerTokenStatus reports TokenUnknown).
 type fakeTokenStore struct {
 	hashes map[[32]byte]store.Subject
 	writes int

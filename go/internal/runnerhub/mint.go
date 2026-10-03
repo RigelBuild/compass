@@ -81,23 +81,23 @@ const (
 	TokenOtherSubject
 )
 
-// RunnerTokenStatus classifies token against the store for runnerID. Any lookup
-// error other than not-found or revoked surfaces.
-func RunnerTokenStatus(ctx context.Context, r TokenHashResolver, token, runnerID string) (TokenState, error) {
+// RunnerTokenStatus classifies token against the store for runnerID and returns
+// the resolved subject (zero unless live). Any other lookup error surfaces.
+func RunnerTokenStatus(ctx context.Context, r TokenHashResolver, token, runnerID string) (TokenState, store.Subject, error) {
 	hash := sha256.Sum256([]byte(token))
 	subj, err := r.ResolveTokenHash(ctx, hash)
 	switch {
 	case err == nil:
 		if subj.Kind == store.SubjectRunner && subj.ID == runnerID {
-			return TokenRegistered, nil
+			return TokenRegistered, subj, nil
 		}
-		return TokenOtherSubject, nil
+		return TokenOtherSubject, subj, nil
 	case errors.Is(err, store.ErrNotFound):
-		return TokenUnknown, nil
+		return TokenUnknown, store.Subject{}, nil
 	case errors.Is(err, store.ErrTokenRevoked):
-		return TokenRevoked, nil
+		return TokenRevoked, store.Subject{}, nil
 	default:
-		return TokenUnknown, fmt.Errorf("resolving runner token hash: %w", err)
+		return TokenUnknown, store.Subject{}, fmt.Errorf("resolving runner token hash: %w", err)
 	}
 }
 

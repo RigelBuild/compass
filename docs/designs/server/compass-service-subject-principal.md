@@ -99,24 +99,16 @@ condition is version-keyed, not row-count-keyed — see Global Constraints).
 - The one-resolver invariant holds over DOORS: every door authenticates
   through `auth.ResolveToken` (`token.go:102`); no door grows its own resolve
   or kind-check. One non-door path is deliberately outside it:
-  `runnerhub.RunnerTokenRegistered` (`mint.go:80-93`) is a KIND-AGNOSTIC
-  store-level existence check — it resolves a hash and returns true for ANY
-  resolving subject, never comparing `Kind` — used by the runner-credential
-  provisioning heal paths, not a door — its two callers are
-  `go/cmd/compass-mint-runner-token/main.go:157` (the operator CLI) and
-  `go/internal/stack/adapters/token.go:87` (the AUTOMATED stack-boot heal,
-  not operator-driven). The third class widens its
-  false-"registered" surface by one: a `SubjectService` token hash that
-  appeared in a runner's token file would report registered, so the heal path
-  would keep it instead of rotating and the runner would then fail the kind
-  gate at `runnerhub/auth.go:79`. Not an escalation (the door still fails
-  closed); reaching it via the CLI leg needs an operator pasting a service token
-  into runner state, while the `stack/adapters/token.go:87` heal leg reaches it
-  only from a token already in a runner's own resolved state — so neither is
-  an untrusted input path. A non-load-bearing follow-up for the T4/issuance
-  slice could
-  compare the resolved `Kind` before treating a token as registered, landing in
-  exactly those two callsites.
+  `runnerhub.RunnerTokenStatus` (in `go/internal/runnerhub/mint.go`) is a
+  store-level check used by the runner-credential provisioning heal paths, not
+  a door. It reports a token as registered only when the resolved subject is
+  `SubjectRunner` with the runner id being provisioned; any other live subject
+  (a different runner, or a `SubjectService` token pasted into runner state)
+  is `TokenOtherSubject`, and both callers rotate it. The callers are
+  `mintToFile` in `go/cmd/compass-mint-runner-token/main.go` (the operator
+  CLI) and `ensure` in `go/internal/stack/adapters/token.go` (the AUTOMATED
+  stack-boot heal). The third class therefore adds no false-"registered"
+  surface.
 - The token-existence-oracle posture holds: every door maps
   `ErrTokenNotFound` / `ErrTokenRevoked` / `ErrWrongKind` to the same bare
   `CodeUnauthenticated` (`token.go:92-97`).

@@ -86,7 +86,7 @@ func ensure(ctx context.Context, st tokenStore, stateDir, runnerID string) (stri
 	if existing, ok, err := readTokenFile(path); err != nil {
 		return "", err
 	} else if ok {
-		state, err := runnerhub.RunnerTokenStatus(ctx, st, existing, runnerID)
+		state, _, err := runnerhub.RunnerTokenStatus(ctx, st, existing, runnerID)
 		if err != nil {
 			return "", err
 		}
