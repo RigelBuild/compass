@@ -11,7 +11,8 @@
 // the SHA-256 hash; the plaintext is unrecoverable after this command exits, so
 // capture it now: `compass-mint-runner-token --runner-id r1 > runner.token`
 // (then chmod 0600), or `--token-out runner.token` to write+chmod it directly.
-// With --token-out the mint is skip-if-present (idempotent across restarts);
+// With --token-out the mint keeps a token registered to --runner-id, heals one
+// the store lost, and rotates one held by another subject;
 // stdout always mints. All logs go to stderr, so stdout carries the token and
 // nothing else. The mint logic lives in internal/runnerhub; this binary is a
 // thin wrapper that assembles config from flags/env, mirroring cmd/compass-server
@@ -55,7 +56,8 @@ func run() error {
 			"this --runner-id, it no-ops; if the store no longer knows the token "+
 			"(e.g. the database was replaced), it re-registers that same token "+
 			"without rotating it; if the token belongs to a different subject, it "+
-			"rotates. Pass --force to mint a fresh token and overwrite. Without "+
+			"rotates; a revoked token is left in place. Pass --force to mint a "+
+			"fresh token and overwrite. Without "+
 			"it, the token goes to stdout exactly once (capture it: "+
 			"`mint --runner-id r1 > runner.token`).")
 	force := flag.Bool("force", false,
@@ -182,7 +184,7 @@ func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force
 			// that overwrote another runner's credential is visible in the log.
 			slog.Warn("runner token file is registered to a different subject; rotating",
 				"token_out", path, "runner_id", runnerID,
-				"prior_subject_kind", int(prior.Kind), "prior_subject_id", prior.ID)
+				"prior_subject_kind", subjectKindName(prior.Kind), "prior_subject_id", prior.ID)
 		}
 	}
 
@@ -240,6 +242,19 @@ func writeTokenFile(path, token string) error {
 		return fmt.Errorf("renaming token file into place at %q: %w", path, err)
 	}
 	return nil
+}
+
+// subjectKindName renders a store.SubjectKind for operator logs.
+func subjectKindName(k store.SubjectKind) string {
+	switch k {
+	case store.SubjectAccount:
+		return "account"
+	case store.SubjectRunner:
+		return "runner"
+	case store.SubjectService:
+		return "service"
+	}
+	return fmt.Sprintf("unknown(%d)", k)
 }
 
 // fileExists reports whether path names an existing file. A stat error other

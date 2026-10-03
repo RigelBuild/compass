@@ -330,6 +330,25 @@ func TestMintToFile(t *testing.T) {
 		}
 	})
 
+	// a revoked token is the operator's deliberate state: leave the file and
+	// write nothing, so provisioning never silently undoes a revoke.
+	t.Run("existing revoked token is left in place", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "runner.token")
+		if err := writeTokenFile(path, "revoked-token"); err != nil {
+			t.Fatalf("seed file: %v", err)
+		}
+		fake := &fakeTokenPutter{resolve: store.ErrTokenRevoked}
+		if err := mintToFile(context.Background(), fake, "runner-1", path, false); err != nil {
+			t.Fatalf("mintToFile: %v", err)
+		}
+		if got, _ := os.ReadFile(path); string(got) != "revoked-token" {
+			t.Errorf("revoked token file changed to %q; want it left in place", got)
+		}
+		if len(fake.calls) != 0 {
+			t.Errorf("PutTokenHash called %d times for a revoked token, want 0", len(fake.calls))
+		}
+	})
+
 	// T2 ordering: the hash commit must not happen before the file lands, and a
 	// failed hash commit must not leave a file holding a token the store rejected.
 	t.Run("hash-commit failure removes the just-written file", func(t *testing.T) {

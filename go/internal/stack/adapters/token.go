@@ -31,7 +31,8 @@ type tokenStore interface {
 // TokenEnsurer is the real stack.TokenEnsurer: it ensures the runner enrollment
 // token exists under the state dir and is registered in the store, minting it
 // via internal/runnerhub on first bring-up and healing a store-forgotten token
-// on subsequent ones — without ever rotating a token that is still valid.
+// on subsequent ones. It keeps a token valid for runnerID and rotates one that
+// is live under another subject.
 //
 // EnsureToken's signature carries no DSN, so the adapter holds it: the store is
 // opened at the edge (EnsureToken) and the mint/idempotence logic runs against
