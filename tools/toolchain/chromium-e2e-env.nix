@@ -21,17 +21,12 @@ let
   };
   pkgs = import nixpkgsSrc { };
 
-  # The two branded faces the design tokens name, then a coverage fallback: the
-  # branded pair leaves 21 of the UI's 49 non-ASCII glyphs uncovered, and an
-  # uncovered glyph bakes tofu into a baseline. Unifont, not a stock face:
-  # DejaVu pulled a proportional math face into the monospace grid; Unifont is
-  # 1-bit 16x16 so it reads as pixel-grid. It is dual-width though, so some
-  # fallback glyphs miss the cell — RIG-3603 retires those to dot-matrix SVG.
+  # Only the two branded faces the design tokens name. The font-coverage gate
+  # keeps literal UI source text, including the baseline fixtures, inside Space
+  # Mono. Runtime text it cannot see renders as tofu under this config.
   fontDirs = [
     "${pkgs.google-fonts.override { fonts = [ "SpaceMono" ]; }}/share/fonts/truetype"
     "${pkgs.departure-mono}/share/fonts/otf"
-    "${pkgs.unifont}/share/fonts/opentype"
-    "${pkgs.unifont_upper}/share/fonts/opentype"
   ];
 in
 {
