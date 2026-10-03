@@ -655,6 +655,32 @@ describe("forge_list_issues", () => {
 			2,
 		);
 	});
+
+	// The response carries no total, so a full page is the only "more exist" signal.
+	test("a full page states that more issues may exist; a short page does not", async () => {
+		const page = (n: number) =>
+			Array.from({ length: n }, (_, i) =>
+				issue({ number: i + 1, repo: "o/r", url: `https://x/${i + 1}` }),
+			);
+		const run = async (n: number, limit?: number) => {
+			const t = tool(
+				new ForgeBroker(new FakeTransport(issuesResult(...page(n)))),
+				"forge_list_issues",
+			);
+			return textOf(await exec(t, "tc-1", { repo: "o/r", limit }));
+		};
+		const full = await run(30);
+		expect(full).toContain(`[more ${fenceOf(full)}] (page full at 30 issues;`);
+		const explicit = await run(5, 5);
+		expect(explicit).toContain(
+			`[more ${fenceOf(explicit)}] (page full at 5 issues;`,
+		);
+		expect(await run(29)).not.toContain("[more ");
+		expect(await run(5, 10)).not.toContain("[more ");
+		const max = await run(100, 100);
+		expect(max).toContain("more may exist: narrow state/labels)");
+		expect(max).not.toContain("raise limit");
+	});
 });
 
 describe("forge_comment_on_issue", () => {
