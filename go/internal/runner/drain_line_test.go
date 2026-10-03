@@ -318,37 +318,10 @@ func TestDrainToLogIsSilentOnTeardown(t *testing.T) {
 	}
 }
 
-// The reap closes the pipes, so os.ErrClosed is what EVERY deliberate stop
-// delivers to the drains — and it arrives while ctx is still live, because Stop
-// Terminates before it cancels. Without the stopping flag the WARN below would
-// fire on 100% of ordinary stops, which is the alarm-fatigue failure the
-// classification exists to prevent.
-func TestDrainToLogIsSilentOnDeliberateStop(t *testing.T) {
-	logs := newCaptureLog()
-
-	// context.Background() as the test root — the rule's explicit test exemption.
-	s := &AgentStream{sessionID: "sess-stopped"}
-	s.stopping.Store(true)
-	s.drainToLog(context.Background(), &failingReader{after: []byte("hello\n"), err: os.ErrClosed},
-		"agent stdout", logs.logger(), nil)
-
-	for {
-		select {
-		case l := <-logs.lines:
-			if strings.Contains(l.msg, "drain ended early") {
-				t.Fatalf("deliberate stop logged %q; the reap's pipe close is an expected end", l.msg)
-			}
-			continue
-		default:
-		}
-		return
-	}
-}
-
-// The direction that makes the flag load-bearing rather than a blanket mute: an
-// os.ErrClosed with no stop in flight means a LIVE agent's pipe closed under the
-// drain. Nothing reads it after that, so the agent stalls on its next write with
-// no other symptom — this WARN is the only signal that exists.
+// An os.ErrClosed while ctx is live means a LIVE agent's pipe closed under the
+// drain (teardown cancels ctx before it closes). Nothing reads it after that, so
+// the agent stalls on its next write with no other symptom — this WARN is the
+// only signal that exists.
 func TestDrainToLogReportsPipeCloseWithoutAStop(t *testing.T) {
 	logs := newCaptureLog()
 
