@@ -21,6 +21,7 @@ import { RightSidebar } from "./components/RightSidebar";
 import { RuntimeMarker } from "./components/RuntimeMarker";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { StateDot } from "./components/StateDot";
+import { TopBarSearch } from "./components/TopBarSearch";
 import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
 import type { CommandId } from "./keyboard/commands";
@@ -106,6 +107,7 @@ const App: Component<RouteSectionProps> = (props) => {
 					</Show>
 				</nav>
 
+				<TopBarSearch />
 				<span class="topbar-spacer" />
 
 				<div class={["daemon", { live: store.daemon().live }]}>

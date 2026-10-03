@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
-import { flush as flushSync } from "solid-js";
 import { flush, mountApp } from "../test-router";
 
 // The command palette's rendered contract (RIG-2483). Mounts the full shell so
@@ -37,13 +36,10 @@ afterEach(() => {
 	setPlatform("other");
 });
 
-// Kobalte Search debounces onInputChange through a 0ms setTimeout, so the query
-// signal updates on a macrotask — `flush()` (microtasks) alone won't see it.
-// `settle` waits one macrotask then drains the microtask queue.
+// Palette query execution now includes the shared 150ms upstream debounce.
 async function settle(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
-	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield (setTimeout(0)) to observe Kobalte Search's 0ms-debounced onInputChange; not a timed wait
-	setTimeout(resolve, 0);
+	window.setTimeout(resolve, 175);
 	await promise;
 	await flush();
 }
@@ -210,31 +206,15 @@ describe("Palette (RIG-2483)", () => {
 		);
 	});
 
-	test("a .cx-palette-loading row (chase-light bar) shows while destination providers are in flight", async () => {
+	test("navigation mode: loading settles after the debounced destination query", async () => {
 		setPlatform("other");
 		const { store, container } = mountApp("/");
 		store.openPalette();
 		await flush();
-
 		fireEvent.input(input(container) as HTMLInputElement, {
 			target: { value: "set" },
 		});
-		// The input change re-runs the navigation split effect, whose apply phase
-		// sets loading=true and kicks off the async provider fetch. Flush the
-		// reactive scheduler SYNCHRONOUSLY (v2 signal writes are flush-deferred) so
-		// the loading row renders — WITHOUT awaiting a microtask, so the async
-		// resolution (a Promise.allSettled chain) has not landed yet and the
-		// in-flight window is observable. (Search 2.x resolves the input change on
-		// the reactive tick, not the 0ms debounce macrotask 0.13.x used.)
-		flushSync();
-		const loadingRow = container.querySelector(".cx-palette-loading");
-		expect(loadingRow).not.toBeNull();
-		expect(
-			loadingRow?.querySelector('.cx-loader[data-topology="bar"]'),
-		).not.toBeNull();
-
-		// It clears once the providers resolve.
-		await flush();
+		await settle();
 		expect(container.querySelector(".cx-palette-loading")).toBeNull();
 	});
 

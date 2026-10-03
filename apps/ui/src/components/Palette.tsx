@@ -39,6 +39,7 @@ import { detectPlatform } from "../keyboard/dispatch";
 import { fuzzyScore } from "../keyboard/fuzzy";
 import { shortcutFor } from "../keyboard/keymap";
 import "../design/components/palette.css";
+import { destinationSurfaceRows } from "../keyboard/destination-surface";
 import { ShortcutChip } from "./ShortcutChip";
 
 /** A rendered palette result — an action (command) or a navigation destination.
@@ -60,31 +61,10 @@ interface PaletteOption {
 	run(): void;
 }
 
-/** Human labels for the destination-group headers, in render order. */
-const KIND_LABELS: Record<DestinationKind, string> = {
-	view: "Views",
-	agent: "Agents",
-	channel: "Channels",
-	topic: "Topics",
-	issue: "Issues",
-	pr: "Pull requests",
-};
-const KIND_ORDER: readonly DestinationKind[] = [
-	"view",
-	"agent",
-	"channel",
-	"topic",
-	"issue",
-	"pr",
-];
-
-// (Kobalte's own section nodes can't carry stable keys, so groups are expressed
-//  as `groupLabel`/`groupStart` on a flat option list — see PaletteOption.)
-
 export const Palette: Component = () => {
 	const store = useStore();
 	const platform = detectPlatform();
-	const providers = createStoreDestinationProviders(store);
+	const providers = createStoreDestinationProviders(store, undefined);
 
 	const [query, setQuery] = createSignal("");
 	// The latest-wins generation counter: bumped per keystroke, captured at issue
@@ -164,50 +144,37 @@ export const Palette: Component = () => {
 			const mine = generation;
 			currentGen = mine;
 			setLoading(true);
-			void queryDestinations(providers, input, mine, () => currentGen)
-				.then((result) => {
-					// A stale resolve returns null and must apply nothing — a newer
-					// keystroke already owns the surface. The freshest in-flight query is
-					// the one whose generation is still current; only it clears loading.
-					if (mine !== currentGen) return;
-					if (result !== null) setDestinations(result);
-					setLoading(false);
-				})
-				.catch(() => {
-					// queryDestinations wraps providers in Promise.allSettled and never
-					// rejects today; this mirrors createResource's error containment so a
-					// future throwing path can't strand `loading` at true (there is no
-					// ErrorBoundary on this surface — an unhandled rejection would unmount
-					// the window). Same defensive posture as MarkdownText's highlight effect.
-					if (mine === currentGen) setLoading(false);
-				});
+			const timer = window.setTimeout(() => {
+				void queryDestinations(providers, input, mine, () => currentGen)
+					.then((result) => {
+						if (mine !== currentGen) return;
+						if (result !== null) setDestinations(result);
+						setLoading(false);
+					})
+					.catch(() => {
+						if (mine === currentGen) setLoading(false);
+					});
+			}, 150);
+			return () => clearTimeout(timer);
 		},
 	);
 
-	// The rendered rows, in display order: the Commands group first, then one
-	// group per destination kind. A flat list (Kobalte's <Key by="key"> renders
-	// it) with each group's first row flagged `groupStart` so the row component
-	// draws that group's `.cx-palette-group` header above it.
+	// Navigation results use the shared row grouping consumed by both surfaces.
 	const allOptions = createMemo<PaletteOption[]>(() => {
 		const out: PaletteOption[] = [...actionOptions()];
 		const byKind = destinations();
 		if (byKind) {
-			for (const kind of KIND_ORDER) {
-				const dests = byKind.get(kind);
-				if (!dests || dests.length === 0) continue;
-				const label = KIND_LABELS[kind];
-				dests.forEach((d, i) => {
-					out.push({
-						key: `dest:${kind}:${d.id}`,
-						title: d.title,
-						context: label,
-						groupLabel: label,
-						groupStart: i === 0,
-						run: () => {
-							d.navigate();
-							store.closePalette();
-						},
-					});
+			for (const row of destinationSurfaceRows(byKind)) {
+				out.push({
+					key: row.key,
+					title: row.title,
+					context: row.groupLabel,
+					groupLabel: row.groupLabel,
+					groupStart: row.groupStart,
+					run: () => {
+						row.navigate();
+						store.closePalette();
+					},
 				});
 			}
 		}
