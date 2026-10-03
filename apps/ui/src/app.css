@@ -109,13 +109,19 @@
 	min-width: 180px;
 }
 
-.topbar-search-input.cx-search {
+.topbar-search-input {
 	width: 240px;
 	padding: 5px 8px;
 	border: 1px solid var(--cx-border);
 	border-radius: var(--cx-radius-sm);
 	background: var(--cx-bg);
 	color: var(--cx-text);
+}
+
+.topbar-search-input:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: 1px;
+	border-color: var(--cx-border-focus);
 }
 
 .topbar-search-panel {

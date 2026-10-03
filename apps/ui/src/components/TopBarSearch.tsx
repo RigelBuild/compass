@@ -210,7 +210,7 @@ export const TopBarSearch: Component<{
 		>
 			<input
 				ref={inputRef}
-				class="cx-search topbar-search-input"
+				class="topbar-search-input"
 				type="text"
 				role="combobox"
 				aria-label="Global search"

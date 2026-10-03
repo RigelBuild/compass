@@ -1,5 +1,13 @@
 // Global search tests use an overridable debounce and event-loop settling.
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	mock,
+	spyOn,
+	test,
+} from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
 import { flush as flushSync } from "solid-js";
 import type { Destination, DestinationProvider } from "../keyboard/commands";
@@ -13,6 +21,8 @@ import { flush, mountApp } from "../test-router";
 beforeEach(() => setSearchDebounceMsForTest(0));
 afterEach(() => {
 	cleanup();
+	// Restore spies even when an assertion throws before the inline restore.
+	mock.restore();
 	resetSearchDebounceForTest();
 });
 
@@ -123,6 +133,60 @@ describe("TopBarSearch", () => {
 		fireEvent.keyDown(search, { key: "Enter" });
 		await flush();
 		expect(navigated).toBe("second");
+		querySpy.mockRestore();
+	});
+	test("ArrowUp wraps, a new result set resets the active row, and no hits says so", async () => {
+		let navigated = "";
+		const hit = (id: string): Destination => ({
+			id,
+			title: `${id} result`,
+			kind: "agent",
+			navigate: () => {
+				navigated = id;
+			},
+		});
+		const querySpy = spyOn(
+			destinationsModule,
+			"createStoreDestinationProviders",
+		);
+		querySpy.mockImplementation(
+			() =>
+				[
+					{
+						id: "controlled",
+						query: (q: string) =>
+							Promise.resolve(
+								q === "none"
+									? []
+									: q === "abc"
+										? [hit("a"), hit("b"), hit("c")]
+										: [hit("x"), hit("y")],
+							),
+					},
+				] satisfies DestinationProvider[],
+		);
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		search.focus();
+		fireEvent.input(search, { target: { value: "abc" } });
+		await settleSearch();
+		fireEvent.keyDown(search, { key: "ArrowUp" });
+		await flush();
+		const options = container.querySelectorAll<HTMLElement>('[role="option"]');
+		expect(search.getAttribute("aria-activedescendant")).toBe(options[2]?.id);
+
+		fireEvent.input(search, { target: { value: "xy" } });
+		await settleSearch();
+		fireEvent.keyDown(search, { key: "Enter" });
+		await flush();
+		expect(navigated).toBe("x");
+
+		search.focus();
+		fireEvent.input(search, { target: { value: "none" } });
+		await settleSearch();
+		expect(container.querySelector('[role="listbox"]')?.textContent).toContain(
+			"No results",
+		);
 		querySpy.mockRestore();
 	});
 	test("typing renders grouped destination rows and Enter navigates", async () => {
