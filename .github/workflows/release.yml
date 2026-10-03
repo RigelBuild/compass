@@ -60,7 +60,9 @@ env:
   # the flake attributes tools/runner-image/build.ts realises: the image's
   # source tree, the TypeScript build/publish lane, the Go runner binary and its
   # internal packages, the guest asset closure, the two flake files the nix
-  # realise reads, the VMM env, and this workflow. Every glob is verified to
+  # realise reads, version.txt (stamped into the runner binary, so a release
+  # push publishes an image that reports its own version), the VMM env, and
+  # this workflow. Every glob is verified to
   # match a real path — one that never matches would silently narrow the gate.
   RUNNER_IMAGE_CLOSURE_PATHS: |
     runner-image/**
@@ -73,6 +75,7 @@ env:
     flake.nix
     flake.lock
     tools/toolchain/microvm-vmm-env.nix
+    version.txt
     .github/workflows/release.yml
   # The guest artifact's own closure set, SEPARATE from the two above: this
   # publishes the three guest assets, so an agent- or runner-only change must
