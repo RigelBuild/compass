@@ -628,10 +628,12 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 			);
 			// The response carries no total, so a full page is the only sign more exist.
 			const limit = params.limit ?? LIST_ISSUES_DEFAULT_LIMIT;
-			if (issues.length >= limit)
+			if (issues.length >= limit) {
+				const hint = limit < 100 ? "raise limit (max 100) or narrow" : "narrow";
 				records.push(
-					`[more ${fence}] (page full at ${limit} issues; more may exist: raise limit (max 100) or narrow state/labels)`,
+					`[more ${fence}] (page full at ${limit} issues; more may exist: ${hint} state/labels)`,
 				);
+			}
 			return { content: [{ type: "text", text: framedRead(records) }] };
 		},
 	};

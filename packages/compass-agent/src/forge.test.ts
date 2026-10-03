@@ -677,6 +677,9 @@ describe("forge_list_issues", () => {
 		);
 		expect(await run(29)).not.toContain("[more ");
 		expect(await run(5, 10)).not.toContain("[more ");
+		const max = await run(100, 100);
+		expect(max).toContain("more may exist: narrow state/labels)");
+		expect(max).not.toContain("raise limit");
 	});
 });
 
