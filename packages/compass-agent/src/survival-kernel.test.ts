@@ -17,6 +17,12 @@ const kernelRule = {
 	alwaysApply: true,
 	content: kernel,
 	path: "/rules/survival-kernel.md",
+	_source: {
+		provider: "compass-config",
+		providerName: "compass config",
+		path: "/rules/survival-kernel.md",
+		level: "user" as const,
+	},
 };
 
 function scratch(): string {
@@ -39,7 +45,7 @@ async function makeSession(cwd: string, manager: SessionManager) {
 }
 
 function userMessage(): Parameters<SessionManager["appendMessage"]>[0] {
-	return { role: "user", content: "persist this turn" };
+	return { role: "user", content: "persist this turn", timestamp: Date.now() };
 }
 
 describe("survival kernel delivery", () => {
