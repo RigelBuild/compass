@@ -12,6 +12,7 @@ import (
 	"flag"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/server"
 )
@@ -409,5 +410,47 @@ func TestBuildServeConfigBadFlagIsUsageError(t *testing.T) {
 	}
 	if errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("a bad flag must not read as ErrHelp (that is a clean help exit): %v", err)
+	}
+}
+
+// TestBuildServeConfigUsageEventRetention pins the retention window's
+// flag-then-env precedence, its 90-day default, 0 as the opt-out, and bad input.
+func TestBuildServeConfigUsageEventRetention(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, env string
+		want            time.Duration
+		wantErr         bool
+	}{
+		{name: "unset_keeps_90_days", want: 90 * 24 * time.Hour},
+		{name: "flag_sets_the_window", flag: "720h", want: 720 * time.Hour},
+		{name: "env_is_the_fallback", env: "48h", want: 48 * time.Hour},
+		{name: "flag_beats_env", flag: "24h", env: "48h", want: 24 * time.Hour},
+		{name: "flag_0_disables_the_sweep", flag: "0", env: "48h", want: 0},
+		{name: "env_0_disables_the_sweep", env: "0", want: 0},
+		{name: "day_unit_is_rejected", flag: "90d", wantErr: true},
+		{name: "bad_env_is_rejected", env: "soon", wantErr: true},
+		{name: "negative_is_rejected", flag: "-24h", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("COMPASS_USAGE_EVENT_RETENTION", tc.env)
+			t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222") // required since the event fabric landed
+			args := []string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"}
+			if tc.flag != "" {
+				args = append(args, "--usage-event-retention", tc.flag)
+			}
+			cfg, _, err := buildServeConfig(args)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "--usage-event-retention") {
+					t.Fatalf("buildServeConfig = %v, want an error naming --usage-event-retention", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildServeConfig = %v, want nil", err)
+			}
+			if cfg.UsageEventRetention != tc.want {
+				t.Errorf("UsageEventRetention = %v, want %v", cfg.UsageEventRetention, tc.want)
+			}
+		})
 	}
 }

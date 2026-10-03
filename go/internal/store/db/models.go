@@ -330,6 +330,69 @@ type Token struct {
 	RevokedAt   pgtype.Timestamptz
 }
 
+type TokenUsageEvent struct {
+	TenantID         string
+	ID               string
+	OccurredAt       pgtype.Timestamptz
+	AgentAccountID   string
+	OwnerUserID      string
+	SessionID        string
+	RequestID        string
+	Provider         string
+	Model            string
+	CredentialID     string
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	TotalTokens      int64
+	CostMicroUsd     int64
+	RateVersion      string
+	Outcome          string
+	CreatedAt        pgtype.Timestamptz
+}
+
+type TokenUsagePruneHorizon struct {
+	Singleton bool
+	Horizon   pgtype.Timestamptz
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+type TokenUsageRollupsDaily struct {
+	TenantID         string
+	BucketStart      pgtype.Timestamptz
+	OwnerUserID      string
+	AgentAccountID   string
+	Provider         string
+	Model            string
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	TotalTokens      int64
+	CostMicroUsd     int64
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
+type TokenUsageRollupsHourly struct {
+	TenantID         string
+	BucketStart      pgtype.Timestamptz
+	OwnerUserID      string
+	AgentAccountID   string
+	Provider         string
+	Model            string
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	TotalTokens      int64
+	CostMicroUsd     int64
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
 type Topic struct {
 	ID                 string
 	ChannelID          string
