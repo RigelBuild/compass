@@ -256,25 +256,25 @@ Test cycle: `core.test.ts` covers every branch of the publish decision. The
 first main push after merge publishes the image. Then `skopeo inspect --raw`
 on `:git-<sha12>` must give the digest the summary shows.
 
-### T4 — First pin
+### Out of scope — the first pin
 
-After the first publish, Matt sets the GHCR package to public once. This
-follows the compass-agent image ruling. The stack pulls with no registry
-login. Then, in a PR stacked after PR #1382 merges:
-- set `DefaultGatewayImage` to the summary's `repo@sha256:…` ref;
-- replace its doc comment in the style of `collector_image.go`. The comment
-  gives the bump procedure (edit `fork-pin.json`, merge, copy the ref from the
-  `publish-gateway-image` summary, open a pin PR) and the provenance (the
-  compass commit and the fork commit).
+Pinning `DefaultGatewayImage` is the stack lane's change, not this lane's.
+It waits on PR #1382 merging and on RIG-4251: how the stack gives the
+gateway its broker credentials. `auth-gateway serve` exits 1 without
+`OMP_AUTH_BROKER_URL`, and PR #1382 passes only the three `COMPASS_GATEWAY_*`
+vars. So a pinned default cannot boot until RIG-4251 is decided. This lane
+builds and publishes the same image under every RIG-4251 option.
 
-Interfaces: consumes the published ref. Produces
-`const DefaultGatewayImage = "ghcr.io/rigelbuild/compass-gateway@sha256:<64-hex>"`.
-This task also depends on OQ-1. Until the stack gives the gateway a
-credential source, the pinned default exits 1 at boot.
+What this lane hands that pin:
 
-Test cycle: the RIG-2862 gateway integration test, run with the default image
-and no `--gateway-image`, reaches `/healthz` 200 and a clean
-`compass-stack down`.
+- the `repo@sha256:…` ref in the `publish-gateway-image` step summary;
+- a bump procedure for the doc comment, in the style of `collector_image.go`:
+  edit `fork-pin.json`, merge, copy the ref from the summary, open a pin PR;
+- provenance: the compass commit, and through its `fork-pin.json`, the fork
+  commit.
+
+Before the first pin, Matt sets the GHCR package to public once, as for the
+compass-agent image, so the stack pulls with no registry login.
 
 ## Tasks
 
@@ -284,26 +284,10 @@ and no `--gateway-image`, reaches `/healthz` 200 and a clean
       `smoke.ts` (broker + gateway boot, `/healthz`, 401, exit 143)
 - [ ] T3 — `publish.ts` and the `publish-gateway-image` job with
       `GATEWAY_IMAGE_CLOSURE_PATHS`
-- [ ] T4 — make the package public, then pin `DefaultGatewayImage` (after
-      PR #1382 and OQ-1)
 - [ ] DECISIONS.md rows DL-386 and DL-387 in the same PR as this record
 
 ## Open Questions
 
-- **OQ-1 — How the stack gives the gateway its credential source (RIG-4251).**
-  Load-bearing for T4, not for T1–T3. `auth-gateway serve` exits 1 without
-  `OMP_AUTH_BROKER_URL`, and the stack in PR #1382 passes only the three
-  `COMPASS_GATEWAY_*` vars. So a pinned default cannot boot as wired. Options:
-  - (a) The stack passes a broker URL and token, for example from the
-    operator's existing `omp auth-broker`.
-  - (b) The fork adds a broker-less mode to `gateway-boot.ts`, for example
-    reading credentials from a mounted file.
-  - (c) Wait for the compass-backed credential store planned in the
-    `server/compass-server-llm-gateway` record.
-
-  Recommendation: (a) now, because it needs one env pair and no fork change.
-  This lane builds the same image under every option. Only the smoke's broker
-  wiring and the T4 test change.
 - **OQ-2 — Package name and visibility.** Not load-bearing.
   `ghcr.io/rigelbuild/compass-gateway` is the RIG-4209 proposal, not yet
   confirmed. Public visibility follows the compass-agent image ruling.
