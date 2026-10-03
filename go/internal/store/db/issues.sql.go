@@ -130,6 +130,79 @@ func (q *Queries) ListIssues(ctx context.Context) ([]ListIssuesRow, error) {
 	return items, nil
 }
 
+const searchIssues = `-- name: SearchIssues :many
+SELECT id, forge_provider, forge_host, repo, number,
+       title, body, forge_state, url, forge_account, labels, agent_handle,
+       state, priority, assignee, summary, branch
+FROM issues
+WHERE search_tsv @@ websearch_to_tsquery('english', $1)
+ORDER BY ts_rank('{0.1,0.2,0.4,1.0}'::real[], search_tsv, websearch_to_tsquery('english', $1)) DESC, number DESC
+LIMIT $2
+`
+
+type SearchIssuesParams struct {
+	WebsearchToTsquery string
+	Limit              int32
+}
+
+type SearchIssuesRow struct {
+	ID            string
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+	Number        int64
+	Title         string
+	Body          string
+	ForgeState    string
+	Url           string
+	ForgeAccount  string
+	Labels        []string
+	AgentHandle   string
+	State         int16
+	Priority      string
+	Assignee      string
+	Summary       string
+	Branch        string
+}
+
+func (q *Queries) SearchIssues(ctx context.Context, arg SearchIssuesParams) ([]SearchIssuesRow, error) {
+	rows, err := q.db.Query(ctx, searchIssues, arg.WebsearchToTsquery, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchIssuesRow
+	for rows.Next() {
+		var i SearchIssuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ForgeProvider,
+			&i.ForgeHost,
+			&i.Repo,
+			&i.Number,
+			&i.Title,
+			&i.Body,
+			&i.ForgeState,
+			&i.Url,
+			&i.ForgeAccount,
+			&i.Labels,
+			&i.AgentHandle,
+			&i.State,
+			&i.Priority,
+			&i.Assignee,
+			&i.Summary,
+			&i.Branch,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setIssueState = `-- name: SetIssueState :execrows
 UPDATE issues SET state = $2 WHERE id = $1
 `
