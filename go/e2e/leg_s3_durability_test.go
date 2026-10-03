@@ -277,6 +277,8 @@ func waitSegmentKind(t *testing.T, ctx context.Context, dsn, sessionID, kind str
 	}
 }
 
+// waitSessionErrored gates on the Runner's async exit report, so a later post
+// reaches the lost-session archive path instead of a still-live session.
 func waitSessionErrored(t *testing.T, ctx context.Context, f *Fixture, sessionID string) {
 	t.Helper()
 	deadline := time.Now().Add(settleTimeout)
