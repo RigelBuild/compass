@@ -34,7 +34,7 @@ describe("TopBarSearch", () => {
 		expect(search.getAttribute("role")).toBe("combobox");
 		expect(search.getAttribute("aria-expanded")).toBe("false");
 		search.focus();
-		fireEvent.input(search, { target: { value: "settings" } });
+		fireEvent.input(search, { target: { value: "s" } });
 		await settleSearch();
 		expect(search.getAttribute("aria-expanded")).toBe("true");
 		const listbox = container.querySelector('[role="listbox"]');
@@ -42,15 +42,19 @@ describe("TopBarSearch", () => {
 			search.getAttribute("aria-controls") ?? undefined,
 		);
 		const options = container.querySelectorAll<HTMLElement>('[role="option"]');
-		expect(options.length).toBeGreaterThan(0);
-		expect(options[0]?.getAttribute("aria-selected")).toBe("true");
-		expect(search.getAttribute("aria-activedescendant")).toBe(options[0]?.id);
+		expect(options.length).toBeGreaterThanOrEqual(2);
+		const selected = [...options].filter(
+			(option) => option.getAttribute("aria-selected") === "true",
+		);
+		expect(selected).toHaveLength(1);
+		expect(search.getAttribute("aria-activedescendant")).toBe(selected[0]?.id);
 		for (const group of container.querySelectorAll(".topbar-search-group")) {
 			expect(group.getAttribute("role")).toBe("presentation");
 		}
 		search.blur();
 		await flush();
 		expect(search.getAttribute("aria-expanded")).toBe("false");
+		expect(search.getAttribute("aria-activedescendant")).toBeNull();
 		expect(container.querySelector('[role="listbox"]')).toBeNull();
 	});
 
@@ -65,6 +69,61 @@ describe("TopBarSearch", () => {
 		await flush();
 		expect(search.getAttribute("aria-expanded")).toBe("false");
 		expect(container.querySelector('[role="listbox"]')).toBeNull();
+	});
+	test("ArrowDown activates and Enter selects the second result", async () => {
+		let navigated = "";
+		const querySpy = spyOn(
+			destinationsModule,
+			"createStoreDestinationProviders",
+		);
+		querySpy.mockImplementation(
+			() =>
+				[
+					{
+						id: "controlled",
+						query: () =>
+							Promise.resolve([
+								{
+									id: "first",
+									title: "First result",
+									kind: "agent",
+									navigate: () => {
+										navigated = "first";
+									},
+								},
+								{
+									id: "second",
+									title: "Second result",
+									kind: "agent",
+									navigate: () => {
+										navigated = "second";
+									},
+								},
+							]),
+					},
+				] satisfies DestinationProvider[],
+		);
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		search.focus();
+		fireEvent.input(search, { target: { value: "results" } });
+		await settleSearch();
+		const options = container.querySelectorAll<HTMLElement>('[role="option"]');
+		expect(options).toHaveLength(2);
+		const second = options[1];
+		fireEvent.keyDown(search, { key: "ArrowDown" });
+		await flush();
+		expect(search.getAttribute("aria-activedescendant")).toBe(second?.id);
+		expect(second?.getAttribute("aria-selected")).toBe("true");
+		expect(
+			[...options].filter(
+				(option) => option.getAttribute("aria-selected") === "true",
+			),
+		).toHaveLength(1);
+		fireEvent.keyDown(search, { key: "Enter" });
+		await flush();
+		expect(navigated).toBe("second");
+		querySpy.mockRestore();
 	});
 	test("typing renders grouped destination rows and Enter navigates", async () => {
 		const { container, store } = mountApp("/");
