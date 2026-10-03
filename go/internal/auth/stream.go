@@ -26,7 +26,7 @@ var (
 // served by the UnaryInterceptorFunc variants. resolve returns a
 // CodeUnauthenticated error to reject the stream before the handler runs.
 type streamAuth struct {
-	resolve func(ctx context.Context, header string) (store.AccountID, error)
+	resolve func(ctx context.Context, header string) (store.AccountID, store.TenantID, error)
 }
 
 func (a streamAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc { return next }
@@ -37,10 +37,10 @@ func (a streamAuth) WrapStreamingClient(next connect.StreamingClientFunc) connec
 
 func (a streamAuth) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		account, err := a.resolve(ctx, conn.RequestHeader().Get(authorizationHeader))
+		account, tenant, err := a.resolve(ctx, conn.RequestHeader().Get(authorizationHeader))
 		if err != nil {
 			return err
 		}
-		return next(withCaller(ctx, account), conn)
+		return next(store.WithTenant(withCaller(ctx, account), tenant), conn)
 	}
 }

@@ -29,8 +29,9 @@ import (
 // bearer_auth_injects_authed_account_for_a_valid_token: a valid Bearer token is
 // accepted and the wrapped handler sees the token's account as the caller.
 func TestBearerInterceptorInjectsCallerForAValidToken(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	st, acct, _ := openTestStore(t)
+	tenant := st.EffectiveTenant(ctx)
 	token, err := IssueAccountToken(ctx, st, acct)
 	if err != nil {
 		t.Fatalf("IssueAccountToken: %v", err)
@@ -45,6 +46,9 @@ func TestBearerInterceptorInjectsCallerForAValidToken(t *testing.T) {
 	}
 	if !rec.hasCaller || rec.caller != acct {
 		t.Fatalf("the injected caller is the token's account: got %v hasCaller=%v, want %v", rec.caller, rec.hasCaller, acct)
+	}
+	if rec.tenant != tenant {
+		t.Fatalf("the injected tenant = %q, want token tenant %q", rec.tenant, tenant)
 	}
 }
 

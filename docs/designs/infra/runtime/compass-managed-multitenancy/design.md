@@ -115,6 +115,11 @@ Mechanics:
   authenticated on the connection, read from the request context",
   `go/internal/comms/comms.go:10-15`): the auth interceptor resolves token →
   account → tenant, and the store sets the tenancy GUC per transaction.
+  Post-freeze amendment (Matt, 2026-09-28, RIG-4067 option 1; DL-381): the
+  token row itself carries the issuing tenant (`tokens.tenant_id`, stamped at
+  issue from the issuer's tenant context). The interceptor reads it in the
+  same lookup that resolves the account, so the request path never needs
+  `BYPASSRLS` to learn its tenant. A token without a tenant fails closed.
 - **OSS single-tenant stays degenerate, not configured.** The OSS core runs
   with the one bootstrap tenant row auto-created at `Open` (the
   `BootstrapAdmin` pattern, `go/internal/store/accounts.go:54-63`); RLS
