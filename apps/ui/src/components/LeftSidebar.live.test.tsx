@@ -14,8 +14,8 @@ import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { LeftSidebar } from "./LeftSidebar";
 
-// The LIVE render path for the Agent workspaces tree (T4/T5): the board no
-// longer reads STUB_AGENTS — it reads `store.agents()`, the reactive join of
+// The LIVE render path for the agent tree in the unified Channels section: the
+// board no longer reads STUB_AGENTS — it reads `store.agents()`, the reactive join of
 // the comms accounts (identity) and the roster presence map (lifecycle +
 // activity). These tests mount LeftSidebar over a live store (createFakeComms,
 // no server) and defend what a live roster looks like on the surface:

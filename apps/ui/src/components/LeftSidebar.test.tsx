@@ -51,13 +51,13 @@ const findToggle = (
 		...container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]"),
 	].find((b) => b.textContent?.includes(label));
 
-// The channel rows that are rail rows (not the browse-list rows), and their
-// visible names — the standalone set the Channels section renders.
+// The channel rows that are rail rows (not the browse-list rows) — the
+// standalone set the Channels section renders.
 const railRows = (container: HTMLElement): HTMLElement[] => [
 	...container.querySelectorAll<HTMLElement>(".ch-row:not(.browse-row)"),
 ];
 
-describe("LeftSidebar (T5)", () => {
+describe("LeftSidebar (T7)", () => {
 	test("the combined Channels section collapses and expands as one tree", () => {
 		const { store, container } = mountSidebar();
 		expect(store.isSectionCollapsed("channels")).toBe(false);
