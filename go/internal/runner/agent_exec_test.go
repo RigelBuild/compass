@@ -776,20 +776,11 @@ func TestStopReapsBeforeJoiningTheDrains(t *testing.T) {
 	}
 }
 
-// A clean Stop must be quiet. The reap ends both drains one of two ways, and
-// which one is a race: SIGKILL closes the child's write end (EOF), while
-// cmd.Wait closes our read end (os.ErrClosed). Measured against this stub EOF
-// wins every time, so this test alone does NOT reach the os.ErrClosed arm —
-// TestDrainToLogIsSilentOnDeliberateStop drives that arm directly, and
-// TestStopArmsTheStoppingDiscriminator pins the wiring between them. What this
-// test covers is the whole-path guarantee: however the race lands, a clean Stop
-// emits no WARN. Treating either end as a fault fires `drain ended early` on
-// every stop (including the first half of every Reload) and trains operators to
-// ignore the single WARN that means a live agent is about to stall behind an
-// unread pipe.
-//
-// Needs a capturing logger: the other teardown tests use discardLoggerRunner,
-// so the spurious records were thrown away and invisible to the whole suite.
+// A clean Stop must be quiet. Stop kills, reaps, then closeDrains cancels the
+// drain ctx before closing the read ends, so a drain ends on EOF or a cancelled
+// ctx, never on a live-ctx os.ErrClosed. A WARN here would fire `drain ended
+// early` on every stop (including the first half of every Reload). Needs a
+// capturing logger: the other teardown tests discard their records.
 func TestCleanStopEmitsNoDrainWarning(t *testing.T) {
 	engine := newStubStreamingRuntime(t)
 	logs := newCaptureLog()
@@ -814,7 +805,7 @@ func TestCleanStopEmitsNoDrainWarning(t *testing.T) {
 		select {
 		case l := <-logs.lines:
 			if strings.Contains(l.msg, "drain ended early") {
-				t.Fatalf("clean Stop logged %q (error %q) — the reap's pipe close is an expected end, not a fault",
+				t.Fatalf("clean Stop logged %q (error %q) — teardown's pipe close is an expected end, not a fault",
 					l.msg, l.attrs["error"])
 			}
 		default:
@@ -823,13 +814,9 @@ func TestCleanStopEmitsNoDrainWarning(t *testing.T) {
 	}
 }
 
-// The wiring between the two halves above, and the one thing neither reaches:
-// Stop must ARM the discriminator, and arm it before the reap. The drains hold
-// no other way to tell the reap's pipe close from a live agent's, so an unarmed
-// flag silently reclassifies every stop as a fault — and it cannot be caught
-// through Stop's own path, because whether the reap delivers os.ErrClosed at all
-// is a race this stub loses to EOF. Asserting the flag directly is what makes
-// the deliberate-stop arm reachable in production rather than only in a test.
+// Stop must arm stopping before the kill: retireOnExit reads it to tell a
+// deliberate stop from a self-exit, and an unarmed flag reports ERRORED for
+// every ordinary stop.
 func TestStopArmsTheStoppingDiscriminator(t *testing.T) {
 	engine := newStubStreamingRuntime(t)
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
@@ -843,19 +830,19 @@ func TestStopArmsTheStoppingDiscriminator(t *testing.T) {
 		t.Fatalf("StartAgent = %v", err)
 	}
 	if stream.stopping.Load() {
-		t.Fatal("stopping is armed before Stop — a live agent's pipe close would be misread as an expected end")
+		t.Fatal("stopping is armed before Stop — a self-exit would be mistaken for a deliberate stop")
 	}
 
 	if err := stream.Stop(); err != nil {
 		t.Fatalf("Stop = %v", err)
 	}
 	if !stream.stopping.Load() {
-		t.Fatal("Stop did not arm stopping — the reap's os.ErrClosed would be reported as `drain ended early` on every stop")
+		t.Fatal("Stop did not arm stopping — retireOnExit would report every deliberate stop as ERRORED")
 	}
 }
 
-// A self-exiting agent must release the drain ctx node without a Stop. Stop is
-// the only caller of endDrains, so before the StartAgent reaper existed a
+// A self-exiting agent must release the drain ctx node without a Stop. Before
+// the StartAgent reaper existed only Stop cancelled the drain ctx, so a
 // session whose agent died on its own (pipes reach EOF, both drains return, no
 // Stop/Reload/Close) left its context.WithCancel node attached to the Runner's
 // long-lived ctx until Runner shutdown — a bounded leak of one node per
