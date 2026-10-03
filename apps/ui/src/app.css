@@ -836,7 +836,7 @@
 	padding: 10px 12px 4px;
 }
 
-/* A collapsible left-sidebar section (Channels / Agent workspaces — design:
+/* A collapsible left-sidebar section (the unified Channels section — design:
  * architecture-lineage). The header reuses the .ws-section-label typography as a
  * clickable toggle with a caret; the body holds the section's rows/tree. */
 .ws-section {
