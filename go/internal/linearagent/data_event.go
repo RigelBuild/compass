@@ -57,11 +57,12 @@ type dataUser struct {
 
 // dataIssue is the issue a comment is attached to.
 type dataIssue struct {
-	Number    uint64      `json:"number"`
-	URL       string      `json:"url"`
-	Team      dataTeam    `json:"team"`
-	ProjectID string      `json:"projectId"`
-	Project   dataProject `json:"project"`
+	Number     uint64      `json:"number"`
+	Identifier string      `json:"identifier"`
+	URL        string      `json:"url"`
+	Team       dataTeam    `json:"team"`
+	ProjectID  string      `json:"projectId"`
+	Project    dataProject `json:"project"`
 }
 
 // dataUpdatedFrom carries only the fields this arm inspects to discriminate a
@@ -126,12 +127,25 @@ func parseLinearComment(de dataEvent) (forge.ForgeEvent, bool, error) {
 		return forge.ForgeEvent{}, false, nil
 	}
 	iss := de.Data.Issue
+	team, number := iss.Team.Key, iss.Number
+	// A comment's issue child may omit number; identifier (TEAM-N) carries it.
+	if idTeam, idNum, ok := parseIssueIdentifier(iss.Identifier); ok {
+		if team == "" {
+			team = idTeam
+		}
+		if number == 0 {
+			number = idNum
+		}
+	}
+	if team == "" || number == 0 {
+		return forge.ForgeEvent{}, false, nil
+	}
 	base := forge.ForgeEvent{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
 		Host:     forge.LinearHost,
-		Repo:     iss.Team.Key,
+		Repo:     team,
 		Kind:     compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE,
-		Number:   iss.Number,
+		Number:   number,
 		Project:  linearProjectID(iss.ProjectID, iss.Project),
 		URL:      iss.URL,
 		Change:   compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_COMMENT,

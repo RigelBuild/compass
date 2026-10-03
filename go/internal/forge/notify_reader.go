@@ -67,9 +67,8 @@ type NotifyReader interface {
 // check_suite fires for every pushed head, including a branch with no PR open
 // yet and a commit pushed straight to a default branch, so "no PR" is the
 // expected steady-state answer for a large share of CHECKS events. The router
-// fails the route CLOSED on it (nothing to notify against), while an
-// infrastructure error propagates as one — two outcomes the caller must not
-// conflate.
+// skips it at debug level (nothing to notify against), while an infrastructure
+// error propagates — two outcomes the caller must not conflate.
 var ErrNoPullRequestForSHA = errors.New("forge: no pull request associated with commit")
 
 // PullRequestResolver resolves a commit SHA to the pull-request number it
