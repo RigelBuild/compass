@@ -237,11 +237,10 @@ func (s *Store) DeleteSessionBinding(ctx context.Context, sessionID string) erro
 	return nil
 }
 
-// DeleteSessionBindingsForRunner is the reconnect sweep: it releases every
-// binding attached to runnerID and RETURNS the bindings it removed. Hub.enroll
-// (runnerhub/hub.go:905-957) clears all bindings when a Runner (re-)enrolls,
-// because a reconnecting Runner has no live sessions and a surviving binding
-// would resolve a re-minted session id to a stale account.
+// DeleteSessionBindingsForRunner is the enroll sweep: it releases every binding
+// attached to runnerID and RETURNS the bindings it removed. Hub.enroll clears all
+// bindings on every Runner enroll, because an enrolling Runner has no live sessions
+// and a surviving binding would resolve a dead or re-minted session id to a stale account.
 //
 // The returned slice is load-bearing, not diagnostic. Each released binding
 // drives a presence DISCONNECTED edge for its account (RIG-1569 T8) and each
