@@ -218,6 +218,23 @@ describe("parseLedger", () => {
 			line: 1,
 		});
 	});
+	test("rejects unterminated fences and comments", () => {
+		expect(() =>
+			parseLedger(
+				"```\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-001 | hidden | x | y |",
+			),
+		).toThrow("unterminated fenced block");
+		expect(() => parseLedger("<!--\n| DL-001 | hidden | x | y |")).toThrow(
+			"unterminated HTML comment",
+		);
+	});
+	test("rejects ledgers with no decision rows", () => {
+		expect(() =>
+			parseLedger(
+				"| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\njust prose",
+			),
+		).toThrow("no decision rows");
+	});
 });
 
 describe("parseRecordHeader", () => {
@@ -1001,6 +1018,34 @@ describe("runOnce", () => {
 		expect(errs.some((l) => l.includes("malformed"))).toBe(true);
 	});
 
+	test("an unterminated fence fails the gate", async () => {
+		const { d, errs } = deps({
+			readText: async (_root, rel) =>
+				rel === LEDGER ? "```\n| DL-001 | hidden | x | y |" : "# Title\n",
+		});
+		expect(await runOnce(d)).toBe(1);
+		expect(
+			errs.some((line) => line.includes("unterminated fenced block")),
+		).toBe(true);
+	});
+	test("an unterminated comment fails the gate", async () => {
+		const { d, errs } = deps({
+			readText: async (_root, rel) =>
+				rel === LEDGER ? "<!--\n| DL-001 | hidden | x | y |" : "# Title\n",
+		});
+		expect(await runOnce(d)).toBe(1);
+		expect(
+			errs.some((line) => line.includes("unterminated HTML comment")),
+		).toBe(true);
+	});
+	test("a zero-row ledger fails the gate", async () => {
+		const { d, errs } = deps({
+			readText: async (_root, rel) =>
+				rel === LEDGER ? "# no rows" : "# Title\n",
+		});
+		expect(await runOnce(d)).toBe(1);
+		expect(errs.some((line) => line.includes("no decision rows"))).toBe(true);
+	});
 	test("a throwing dep → exit 2", async () => {
 		const { d } = deps({
 			listRecordFiles: async () => {
