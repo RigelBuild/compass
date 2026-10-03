@@ -166,6 +166,20 @@ describe("cross-tool parser contract", () => {
 			expect(gateIds).toEqual(reconcileIds);
 		});
 	}
+	test("documents gate-only parsing outside the anchored ledger table", () => {
+		const text = "| DL-050 | outside table | Active | [r](r.md) |";
+		expect(parseGateLedger(text).map((row) => row.id)).toEqual(["DL-050"]);
+		expect(parseLedger(text)).toEqual([]);
+	});
+	test("both parsers reject unterminated markdown blocks", () => {
+		for (const text of [
+			"```\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-051 | hidden | x | y |",
+			"<!--\n| ID | Decision | Status | Record |\n| --- | --- | --- | --- |\n| DL-052 | hidden | x | y |",
+		]) {
+			expect(() => parseGateLedger(text)).toThrow("unterminated");
+			expect(() => parseLedger(text)).toThrow("unterminated");
+		}
+	});
 });
 
 type LedgerOutcome =

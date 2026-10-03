@@ -344,6 +344,9 @@ function ledgerContentLines(text: string): string[] {
 		}
 		lines.push(fence === null ? line : "");
 	}
+	if (fence !== null)
+		throw new Error("unterminated fenced block in design ledger");
+	if (inComment) throw new Error("unterminated HTML comment in design ledger");
 	return lines;
 }
 
@@ -368,6 +371,8 @@ export function parseLedger(text: string): LedgerRow[] {
 			line: i + 1,
 		});
 	});
+	if (rows.length === 0)
+		throw new Error("design ledger contains no decision rows");
 	return rows;
 }
 
@@ -654,8 +659,26 @@ export async function runOnce(deps: Deps): Promise<number> {
 			message: "the ledger DECISIONS.md was not found",
 		});
 	}
-	const ledger = ledgerText === null ? [] : parseLedger(ledgerText);
+	let ledger: LedgerRow[] = [];
 	if (ledgerText !== null) {
+		try {
+			ledger = parseLedger(ledgerText);
+		} catch (error) {
+			violations.push({
+				file: DECISIONS_PATH,
+				line: 0,
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	if (ledgerText !== null) {
+		if (ledger.length === 0) {
+			violations.push({
+				file: DECISIONS_PATH,
+				line: 0,
+				message: "design ledger contains no decision rows",
+			});
+		}
 		violations.push(...conflictMarkerViolations(DECISIONS_PATH, ledgerText));
 	}
 
