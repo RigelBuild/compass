@@ -89,7 +89,7 @@ func plantRoutingLookalikes(t *testing.T, st *store.Store, dsn string, adminID s
 	if err != nil {
 		t.Fatalf("CreateUser(stranger): %v", err)
 	}
-	// The store refuses the reserved group name, so plant the look-alike with raw SQL.
+	// The store refuses the reserved group name (store.linearRoutingGroupName), so plant with raw SQL.
 	const sharedID, plantedID = "linear-lookalike-group", "linear-lookalike-channel"
 	execSQL(t, ctx, dsn,
 		`INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, tenant_id)

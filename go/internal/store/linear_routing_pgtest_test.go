@@ -45,8 +45,8 @@ func TestEnsureLinearRoutingChannelSkipsSharedGroup(t *testing.T) {
 	// look-alike group and its routing channel with raw SQL.
 	sharedID, plantedID := newID(), newID()
 	if _, err := s.pool.Exec(t.Context(),
-		"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1,$2,NULL,$3,$4)",
-		sharedID, linearRoutingGroupName, string(admin.ID), int16(VisibilityShared)); err != nil {
+		"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, tenant_id) VALUES ($1,$2,NULL,$3,$4,$5)",
+		sharedID, linearRoutingGroupName, string(admin.ID), int16(VisibilityShared), string(s.resolveTenant(t.Context()))); err != nil {
 		t.Fatalf("plant shared __linear__ group: %v", err)
 	}
 	if _, err := s.pool.Exec(t.Context(),
