@@ -136,57 +136,34 @@ type SyntheticDep = {
 	depType?: string;
 };
 
-// Renovate applies packageRules top-to-bottom, last-match-wins, so a later rule
-// can override groupName set by an earlier one. Resolve the effective groupName
-// for a synthetic dep by replaying that semantics over the real rule array.
+// An absent match* list passes every dep; a present one needs the dep's value in it.
+const listAdmits = (list: string[] | undefined, value: string | undefined) =>
+	!list || (!!value && list.includes(value));
+
+// Renovate applies packageRules top-to-bottom, last-match-wins. Both replays
+// below fold over this one gate list so a new match* key cannot reach only one.
+const ruleMatches = (
+	rule: (typeof cfg.packageRules)[number],
+	dep: SyntheticDep,
+): boolean =>
+	listAdmits(rule.matchManagers, dep.manager) &&
+	listAdmits(rule.matchUpdateTypes, dep.updateType) &&
+	listAdmits(rule.matchDepTypes, dep.depType) &&
+	listAdmits(rule.matchDepNames, dep.depName) &&
+	listAdmits(rule.matchPackageNames, dep.packageName) &&
+	(!rule.matchFileNames ||
+		(!!dep.fileName &&
+			rule.matchFileNames.some((g) =>
+				globToRegExp(g).test(dep.fileName as string),
+			))) &&
+	!(dep.depName && rule.excludeDepNames?.includes(dep.depName));
+
+// A later rule can override groupName set by an earlier one; replay that over
+// the real rule array to get a synthetic dep's effective groupName.
 const resolveGroupName = (dep: SyntheticDep): string | null | undefined => {
 	let group: string | null | undefined;
 	for (const rule of cfg.packageRules) {
-		if (rule.matchManagers && !rule.matchManagers.includes(dep.manager)) {
-			continue;
-		}
-		if (
-			rule.matchUpdateTypes &&
-			!(dep.updateType && rule.matchUpdateTypes.includes(dep.updateType))
-		) {
-			continue;
-		}
-		if (
-			rule.matchDepTypes &&
-			!(dep.depType && rule.matchDepTypes.includes(dep.depType))
-		) {
-			continue;
-		}
-		if (
-			rule.matchDepNames &&
-			!(dep.depName && rule.matchDepNames.includes(dep.depName))
-		) {
-			continue;
-		}
-		if (
-			rule.matchPackageNames &&
-			!(dep.packageName && rule.matchPackageNames.includes(dep.packageName))
-		) {
-			continue;
-		}
-		if (
-			rule.matchFileNames &&
-			!(
-				dep.fileName &&
-				rule.matchFileNames.some((g) =>
-					globToRegExp(g).test(dep.fileName as string),
-				)
-			)
-		) {
-			continue;
-		}
-		if (
-			rule.excludeDepNames &&
-			dep.depName &&
-			rule.excludeDepNames.includes(dep.depName)
-		) {
-			continue;
-		}
+		if (!ruleMatches(rule, dep)) continue;
 		// A rule with no groupName key (e.g. the TS <7 cap) does not touch grouping.
 		if ("groupName" in rule) group = rule.groupName;
 	}
@@ -1330,58 +1307,14 @@ describe("tools/renovate postgres-stack digest manager (RIG-2774, DL-260)", () =
 	// Load-bearing behavioral guard: the CI-service disable fence
 	// (matchDepNames ["postgres"], enabled false) is unscoped by manager/file, so a
 	// `postgres` depName here would inherit the disable and open ZERO PRs. Replay
-	// Renovate's last-match-wins packageRule semantics (mirroring resolveGroupName's
-	// gates) for a synthetic postgres-stack docker dep and confirm it resolves
+	// Renovate's last-match-wins semantics (shared ruleMatches gates) for a
+	// synthetic postgres-stack docker dep and confirm it resolves
 	// ENABLED — this fails closed if the fence (or any future unscoped rule) ever
 	// swallows postgres-stack, silently defeating the automation.
 	const resolveEnabled = (dep: SyntheticDep): boolean => {
 		let enabled = true;
 		for (const rule of cfg.packageRules) {
-			if (rule.matchManagers && !rule.matchManagers.includes(dep.manager)) {
-				continue;
-			}
-			if (
-				rule.matchUpdateTypes &&
-				!(dep.updateType && rule.matchUpdateTypes.includes(dep.updateType))
-			) {
-				continue;
-			}
-			if (
-				rule.matchDepTypes &&
-				!(dep.depType && rule.matchDepTypes.includes(dep.depType))
-			) {
-				continue;
-			}
-			if (
-				rule.matchDepNames &&
-				!(dep.depName && rule.matchDepNames.includes(dep.depName))
-			) {
-				continue;
-			}
-			if (
-				rule.matchPackageNames &&
-				!(dep.packageName && rule.matchPackageNames.includes(dep.packageName))
-			) {
-				continue;
-			}
-			if (
-				rule.matchFileNames &&
-				!(
-					dep.fileName &&
-					rule.matchFileNames.some((g) =>
-						globToRegExp(g).test(dep.fileName as string),
-					)
-				)
-			) {
-				continue;
-			}
-			if (
-				rule.excludeDepNames &&
-				dep.depName &&
-				rule.excludeDepNames.includes(dep.depName)
-			) {
-				continue;
-			}
+			if (!ruleMatches(rule, dep)) continue;
 			if (typeof rule.enabled === "boolean") enabled = rule.enabled;
 		}
 		return enabled;
