@@ -81,6 +81,9 @@ type Querier interface {
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
+	// Close intervals only after both binding deletion and its end event are absent.
+	// The tenant id comes from each start because the system role has no tenant GUC.
+	CloseOrphanedComputeIntervals(ctx context.Context) (int64, error)
 	CollectSegment(ctx context.Context, arg CollectSegmentParams) ([]CollectSegmentRow, error)
 	// Single-statement clear-and-return: the row is claimed and its actor returned
 	// in ONE UPDATE, so a memo attributes at most one event and a concurrent second
@@ -144,6 +147,9 @@ type Querier interface {
 	// rollups can hold pruned events, so they stay.
 	DeleteTokenUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	DeleteTopic(ctx context.Context, id string) error
+	// The account owner is read in SQL so callers continue to supply only the
+	// session binding identity.
+	EndComputeUsageInterval(ctx context.Context, arg EndComputeUsageIntervalParams) error
 	// Agent-forge-subscription / artifact-cursor queries (sqlc adoption T6,
 	// RIG-3034). These replace the inline SQL literals in
 	// internal/store/forge_subscriptions.go; the hand-written Store methods keep
@@ -382,11 +388,9 @@ type Querier interface {
 	// map these rows into the SessionBinding domain struct (the AccountID newtype is
 	// done inline in the Go, as agent_placements does).
 	//
-	// No query here names tenant_id, and on the REQUEST path that is complete: the
-	// store arms every statement with SET LOCAL ROLE compass_app + the
-	// compass.tenant_id GUC (tenant_tx.go), so the RLS policy (0001_init.sql) scopes
-	// reads to the acting tenant and the tenant_id column DEFAULTs to that GUC on
-	// insert. That is how every other query file here is written.
+	// These request-path queries rely on SET LOCAL ROLE compass_app and the
+	// compass.tenant_id GUC for RLS and tenant defaults. Delete queries carry the
+	// deleted binding's tenant_id into their end-event insert explicitly.
 	//
 	// It is NOT complete under WithSystemRole (tenant_tx.go), which arms the
 	// BYPASSRLS compass_system role and NO tenant GUC. Every query here then runs
@@ -500,19 +504,8 @@ type Querier interface {
 	// there is the NORMAL replay case, not a drop), so asserting rows-affected here
 	// would wrongly fail an idempotent re-fire.
 	RecordOwedMention(ctx context.Context, arg RecordOwedMentionParams) error
-	// The bind. Keyed on the ACCOUNT (see the table comment): the hub's 1:1
-	// accountSessions map this replaces treats re-pointing an account at a newer
-	// session as an assignment, not a collision, so this is an upsert on
-	// (tenant_id, agent_account_id) and never refuses a re-point.
-	//
 	// What it DISPLACED comes from SessionBindingForUpdate above, not from a
-	// RETURNING here: ON CONFLICT DO UPDATE's RETURNING sees the POST-update row, and
-	// the pre-update one is unreachable from this statement (`OLD`-aliased RETURNING
-	// is Postgres 18+; this targets 16). The two statements are nonetheless one
-	// operation, because they share a transaction and the row lock the read took —
-	// which is the property the caller needs. It reaps the displaced session from the
-	// delivery held-deliver registry, and reaping a session that is once again live
-	// would strand a live agent's deliveries.
+	// RETURNING here. The binding update and event writes share the Store tx.
 	RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error
 	// Forge state-transition memo queries (compass-forge-state-transition §Actor
 	// attribution). The write chokepoint upserts one memo per forge coordinate
@@ -571,12 +564,9 @@ type Querier interface {
 	SessionBase(ctx context.Context, sessionID string) (int64, error)
 	SessionBinding(ctx context.Context, sessionID string) (SessionBindingRow, error)
 	SessionBindingForAccount(ctx context.Context, agentAccountID string) (string, error)
-	// The prior-value read of the bind, and the second of three statements the Store
-	// runs in ONE explicit transaction (beginTenantTx): the advisory lock above, this
-	// read, then the upsert below. FOR UPDATE takes a row lock on the binding this
-	// bind is about to overwrite, so the read and the write cannot be separated by a
-	// concurrent bind — that caller is already parked on the advisory lock, and would
-	// park here too.
+	// The prior-value read follows the account advisory lock. It shares a tx with
+	// event writes and the binding upsert. FOR UPDATE also protects against a writer
+	// that reaches the row without taking the advisory lock.
 	//
 	// The single-statement form this replaces (a `prev` CTE beside the upsert) could
 	// not do that: under READ COMMITTED the CTE reads the statement-start snapshot
@@ -587,7 +577,9 @@ type Querier interface {
 	//
 	// A MISS is not an error: a first-ever bind returns pgx.ErrNoRows and the Store
 	// maps that to the empty displaced id.
-	SessionBindingForUpdate(ctx context.Context, agentAccountID string) (string, error)
+	// The prior binding, including the original Runner and interval identity. The
+	// Store closes a displaced interval before it writes a replacement binding.
+	SessionBindingForUpdate(ctx context.Context, agentAccountID string) (SessionBindingForUpdateRow, error)
 	// The one query here meant for the system role: a Runner-originated call carries
 	// no tenant, so the hub reads the session's tenant cross-tenant, then acts under it.
 	// :many so a session id minted in two tenants is refused, not resolved arbitrarily.
@@ -604,6 +596,9 @@ type Querier interface {
 	SetIssueState(ctx context.Context, arg SetIssueStateParams) (int64, error)
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
 	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)
+	// Event writes share RecordSessionBinding's transaction, so neither half of an
+	// interval can commit without its binding transition.
+	StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) error
 	StoreForgeRepoWatermark(ctx context.Context, arg StoreForgeRepoWatermarkParams) (int64, error)
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error
 	// Delivery-consumer read queries (sqlc adoption T4, RIG-3034). These replace the

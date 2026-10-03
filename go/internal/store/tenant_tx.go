@@ -18,8 +18,8 @@ import (
 //     per-transaction compass.tenant_id GUC.
 //   - systemRole is the narrowly-scoped BYPASSRLS role the cross-tenant
 //     background loops (N5/OQ-4: delivery-cursor sweep, deliver-ack advance,
-//     reattach recovery, lag-resync) run under, and ONLY those. It carries no
-//     tenant GUC — it is cross-tenant by design.
+//     reattach recovery, lag-resync, compute-usage orphan sweep) run under, and
+//     ONLY those. It carries no tenant GUC — it is cross-tenant by design.
 const (
 	appRole    = "compass_app"
 	systemRole = "compass_system"
@@ -33,18 +33,17 @@ const tenantGUC = "compass.tenant_id"
 
 // systemRoleKey marks a context as running the cross-tenant system path. When
 // present, the store arms statements with SET LOCAL ROLE compass_system
-// (BYPASSRLS) and no tenant GUC, instead of the tenant-scoped app role. Only the
-// four N5 background loops set it (WithSystemRole); every other path is
-// tenant-scoped and fail-closed.
+// (BYPASSRLS) and no tenant GUC, instead of the tenant-scoped app role. Only
+// named background loops use it; every other path is tenant-scoped and fail-closed.
 type systemRoleKey struct{}
 
 // WithSystemRole marks ctx as the cross-tenant background/system path: store
 // calls made under it run as the BYPASSRLS compass_system role and see every
 // tenant's rows. It is the OQ-4 (Matt-ruled option 1) exemption, applied ONLY at
-// the four named background-loop entrypoints (the delivery consumer's Run, the
-// hub's deliver-ack / forge-notification-ack arms, and reattach recovery) — a
-// request-path call NEVER sets it, so the request path stays tenant-scoped and
-// fail-closed under RLS.
+// named background-loop entrypoints (the delivery consumer's Run, the hub's
+// deliver-ack / forge-notification-ack arms, reattach recovery, and the
+// compute-usage orphan sweep) — a request-path call NEVER sets it, so the
+// request path stays tenant-scoped and fail-closed under RLS.
 func WithSystemRole(ctx context.Context) context.Context {
 	return context.WithValue(ctx, systemRoleKey{}, true)
 }

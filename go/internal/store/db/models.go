@@ -151,6 +151,19 @@ type ChannelPin struct {
 	TenantID          string
 }
 
+type ComputeUsageEvent struct {
+	TenantID       string
+	ID             string
+	IntervalID     string
+	Kind           string
+	OccurredAt     pgtype.Timestamptz
+	AgentAccountID string
+	OwnerUserID    string
+	SessionID      string
+	RunnerID       string
+	Estimated      bool
+}
+
 type ForgeArtifactCursor struct {
 	ForgeProvider int16
 	ForgeHost     string
@@ -303,12 +316,13 @@ type ServerSecret struct {
 }
 
 type SessionBinding struct {
-	TenantID       string
-	AgentAccountID string
-	SessionID      string
-	RunnerID       string
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
+	TenantID        string
+	AgentAccountID  string
+	SessionID       string
+	RunnerID        string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	UsageIntervalID string
 }
 
 type SystemAccount struct {

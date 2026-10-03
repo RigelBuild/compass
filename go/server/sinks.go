@@ -191,6 +191,18 @@ func startUsageRetention(gctx context.Context, g *errgroup.Group, st *store.Stor
 	g.Go(func() error { return w.Run(gctx) })
 }
 
+// startComputeUsageSweeper closes orphaned compute intervals on the serve group.
+func startComputeUsageSweeper(gctx context.Context, g *errgroup.Group, st *store.Store, log *slog.Logger) {
+	w := usage.NewComputeUsageSweeper(computeUsageCloser{st: st}, log)
+	g.Go(func() error { return w.Run(gctx) })
+}
+
+type computeUsageCloser struct{ st *store.Store }
+
+func (c computeUsageCloser) CloseOrphanedComputeIntervals(ctx context.Context) (int64, error) {
+	return c.st.CloseOrphanedComputeIntervals(store.WithSystemRole(ctx))
+}
+
 // logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve
 // calls it on shutdown, so every run states plainly how many relayed frames
 // never reached their surface.
