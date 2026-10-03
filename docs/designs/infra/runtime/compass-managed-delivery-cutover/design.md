@@ -478,8 +478,9 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
 
 ## Tasks
 
-All six landed with compass #1333–#1400 (merged 2026-10-03). The changelog is
-release-please's, generated from those commit subjects.
+All six landed with compass #1333, #1337, #1345, #1351, #1353, #1355, #1396,
+and #1400 (merged 2026-10-03). No hand-written changelog entry: release-please
+builds it from the `feat`/`fix` commit subjects at the next release.
 
 - [x] T1: fabric publish in `publishMessagePosted` + `Store.EffectiveTenant` +
       failure counter (tests a–d)
