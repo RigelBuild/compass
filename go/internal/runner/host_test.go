@@ -154,7 +154,7 @@ func TestReprovisionOfLaunchedNameIsRejectedUntouched(t *testing.T) {
 		t.Fatalf("Provision = %v", err)
 	}
 	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, errors.New("config fetch down")))
-	creates := countCalls(engine.callsSnapshot(), "create")
+	creates := countCreates(engine.callsSnapshot())
 
 	_, err = host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
 	if !errors.Is(err, errAlreadyProvisioned) {
@@ -163,15 +163,51 @@ func TestReprovisionOfLaunchedNameIsRejectedUntouched(t *testing.T) {
 	if !socketServed(t, host, name) {
 		t.Fatal("live container's socket closed by a rejected re-Provision")
 	}
-	if got := countCalls(engine.callsSnapshot(), "create"); got != creates {
+	if got := countCreates(engine.callsSnapshot()); got != creates {
 		t.Fatalf("engine create calls = %d after rejected re-Provision, want %d", got, creates)
 	}
 }
 
-func countCalls(calls []string, want string) int {
+// A registry entry whose container was removed outside the Runner (a redeploy)
+// is stale, not live: re-Provision replaces it and retires the old session, so
+// a fresh Start on the replacement is not refused as already running.
+func TestReprovisionOfVanishedContainerReplacesStaleEntry(t *testing.T) {
+	host, engine, _ := newHostFixtureWithPublish(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-old"); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	engine.vanish(name)
+	creates := countCreates(engine.callsSnapshot())
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
+		t.Fatalf("re-Provision of a vanished container = %v, want success", err)
+	}
+	if got := countCreates(engine.callsSnapshot()); got != creates+1 {
+		t.Fatalf("engine create calls = %d, want %d (a fresh container)", got, creates+1)
+	}
+	if !socketServed(t, host, name) {
+		t.Fatal("replacement container has no served socket")
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-new")
+	if err != nil {
+		t.Fatalf("Start on the replacement = %v, want success (old session retired)", err)
+	}
+	t.Cleanup(func() {
+		if err := host.Stop(ctx, sessionID); err != nil {
+			t.Errorf("Stop = %v", err)
+		}
+	})
+}
+
+func countCreates(calls []string) int {
 	n := 0
 	for _, c := range calls {
-		if c == want {
+		if c == "create" {
 			n++
 		}
 	}

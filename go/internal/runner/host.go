@@ -187,9 +187,9 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 // Provision so a call arriving before Start binds a session fails closed rather
 // than finding no listener. Launch registers the handle so a later Start
 // resolves it by name. The dispatcher's request-id dedup makes a provision retry
-// idempotent (no duplicate container) before this runs. A name already launched
+// idempotent (no duplicate container) before this runs. A name still launched
 // on this Runner is rejected with errAlreadyProvisioned before any socket,
-// config or engine work, so a stray re-Provision cannot disturb the live one.
+// config or engine work; a registered name whose container is gone is replaced.
 func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (string, error) {
 	spec, err := h.specs.BuildSpec(req, accountID)
 	if err != nil {
@@ -205,8 +205,19 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	// name (the stable lifecycle key).
 	unlock := h.lockContainer(spec.Name)
 	defer unlock()
-	if _, launched := h.registry.Resolve(spec.Name); launched {
-		return "", fmt.Errorf("provisioning %q: %w", spec.Name, errAlreadyProvisioned)
+	if _, registered := h.registry.Resolve(spec.Name); registered {
+		live, err := h.engine.Exists(ctx, spec.Name)
+		if err != nil {
+			return "", fmt.Errorf("provisioning %q: checking registered container: %w", spec.Name, err)
+		}
+		if live {
+			return "", fmt.Errorf("provisioning %q: %w", spec.Name, errAlreadyProvisioned)
+		}
+		// Removed behind the Runner's back (redeploy, crash): retire the old
+		// container's session, config version and socket, then drop the entry.
+		h.retireContainer(spec.Name)
+		h.closeSocket(ctx, spec.Name)
+		h.registry.Deregister(spec.Name)
 	}
 	// microVM serves the AgentGateway over a per-session vsock path not knowable
 	// until Launch mints the session runtime dir, so it inverts order: Launch first,
@@ -545,58 +556,7 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 	// concurrent Provision/Start/Stop/Reload of the same name cannot interleave.
 	unlock := h.lockContainer(containerName)
 	defer unlock()
-	// Retire the live session bound to this container under h.mu — the mirror of
-	// Stop's retirement — so a concurrent lifecycle op cannot observe a half-torn
-	// state. The socket is closed unconditionally below, so it is not retired here
-	// (a container with no bound session has nothing to retire).
-	h.mu.Lock()
-	var retired *liveSession
-	for id, s := range h.sessions {
-		if s.containerName == containerName {
-			delete(h.sessions, id)
-			if listener, served := h.sockets[containerName]; served {
-				listener.RetireSession(id)
-			}
-			retired = s
-			break
-		}
-	}
-	// Forget this container's materialized config version — the container is
-	// being torn down, so its per-container root and its version tracking go
-	// with it. A later re-Provision of the name re-records from a fresh
-	// materialize.
-	delete(h.configVersions, containerName)
-	h.mu.Unlock()
-
-	// Close the container's agent socket once teardown returns, whatever the
-	// outcome, so a Remove never leaves a listener behind — not even when the
-	// container teardown below fails. Deferred, so it still runs last (after the
-	// container is stopped and removed) on the success path.
-	defer h.closeSocket(ctx, containerName)
-
-	// Stop the retired session's agent exec outside the lock (it terminates a
-	// child and joins its drains). A stop error is logged, never returned: the
-	// container teardown below is the operation that must complete, and a failed
-	// exec-stop must not leave the container running.
-	if retired != nil && retired.stream != nil {
-		if err := retired.stream.Stop(); err != nil {
-			h.log.Warn("stopping agent exec during container remove",
-				slog.String("container", containerName), slog.String("session_id", retired.sessionID), slog.Any("error", err))
-		}
-	}
-
-	// Tear the container down through the AgentRuntime (stop + remove +
-	// deregister). A container the registry no longer resolves is already gone —
-	// an idempotent no-op; its socket is still closed by the deferred close above.
-	if handle, ok := h.registry.Resolve(containerName); ok {
-		if handle == nil {
-			return fmt.Errorf("tearing down container %q: registry resolved a nil handle", containerName)
-		}
-		if err := h.runtime.Teardown(ctx, handle); err != nil {
-			return fmt.Errorf("tearing down container %q: %w", containerName, err)
-		}
-	}
-	return nil
+	return h.removeLocked(ctx, containerName)
 }
 
 // Reload restarts a session's agent in place, reusing the session id so the
@@ -790,6 +750,58 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	// Always nil today: every per-container fault is swallowed above. The error
 	// return is reserved for a future fleet-level fault (see the interface doc).
 	return nil
+}
+
+// removeLocked is Remove's body; the caller holds the container lock.
+func (h *agentHost) removeLocked(ctx context.Context, containerName string) error {
+	// Close the container's agent socket once teardown returns, whatever the
+	// outcome, so a Remove never leaves a listener behind — not even when the
+	// container teardown below fails. Deferred, so it still runs last (after the
+	// container is stopped and removed) on the success path.
+	defer h.closeSocket(ctx, containerName)
+	h.retireContainer(containerName)
+
+	// Tear the container down through the AgentRuntime (stop + remove +
+	// deregister). A container the registry no longer resolves is already gone —
+	// an idempotent no-op; its socket is still closed by the deferred close above.
+	if handle, ok := h.registry.Resolve(containerName); ok {
+		if handle == nil {
+			return fmt.Errorf("tearing down container %q: registry resolved a nil handle", containerName)
+		}
+		if err := h.runtime.Teardown(ctx, handle); err != nil {
+			return fmt.Errorf("tearing down container %q: %w", containerName, err)
+		}
+	}
+	return nil
+}
+
+// retireContainer drops the session bound to containerName and its config
+// version, then stops that session's agent exec. The caller holds the container lock.
+func (h *agentHost) retireContainer(containerName string) {
+	h.mu.Lock()
+	var retired *liveSession
+	for id, s := range h.sessions {
+		if s.containerName == containerName {
+			delete(h.sessions, id)
+			if listener, served := h.sockets[containerName]; served {
+				listener.RetireSession(id)
+			}
+			retired = s
+			break
+		}
+	}
+	// A later re-Provision of the name re-records from a fresh materialize.
+	delete(h.configVersions, containerName)
+	h.mu.Unlock()
+
+	// Outside the lock: stopping terminates a child and joins its drains. Logged,
+	// never returned, so a failed exec-stop cannot block the teardown.
+	if retired != nil && retired.stream != nil {
+		if err := retired.stream.Stop(); err != nil {
+			h.log.Warn("stopping agent exec during container retire",
+				slog.String("container", containerName), slog.String("session_id", retired.sessionID), slog.Any("error", err))
+		}
+	}
 }
 
 // replayCompleteOp is the op that lifts a freshly started agent's replay barrier.
