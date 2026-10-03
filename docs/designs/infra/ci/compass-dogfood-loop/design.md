@@ -50,8 +50,10 @@ the `compass` repo it targets has no design-ledger tooling of its own.
   loopback TLS.
 - **Idempotent tasks (F2, DECIDED).** gen-cert skips when both files exist
   (`main.go:85-89` `shouldSkipGen`); mint with `--token-out` is
-  skip-if-present/heal-without-rotate (`compass-mint-runner-token/main.go:53-59`).
-  Re-running `devenv up` mints/generates nothing new.
+  skip-if-present/heal-without-rotate for a token registered to its own runner
+  id (`--token-out` help in `compass-mint-runner-token/main.go`); a token live
+  under another subject is rotated. Re-running `devenv up` with a consistent
+  runner id mints/generates nothing new.
 - **Ordering (F3, DECIDED).** gen-cert → postgres → compass-server(ready) →
   mint-runner-token → compass-runner. Server readiness stays the existing
   GetServerInfo probe (`devenv.nix:191-197`), which flips only after the store
@@ -145,11 +147,11 @@ compass-server's precedence exactly"). It must run after the server is ready
 because `store.Open` verifies the migrated schema (`main.go:88`,
 `store.go:55-59` "refusing to serve on a failed migration or a version
 mismatch") — ordering: `after = [ "devenv:processes:compass-server" ]`
-(default `@ready`). With `--token-out` the mint is idempotent: "if the file
-exists and its token is already registered in the store, it no-ops; if the
-file exists but the store no longer knows the token (e.g. the database was
-replaced), it re-registers that same token without rotating it"
-(`main.go:53-58`). File is 0600, written atomically, raw token no newline
+(default `@ready`). With `--token-out` the mint is idempotent per runner id:
+it no-ops when the file's token is registered to `--runner-id`, re-registers
+the same token when the store no longer knows it (e.g. the database was
+replaced), and rotates a token live under another subject (`mintToFile` in
+`compass-mint-runner-token/main.go`). File is 0600, written atomically, raw token no newline
 (`main.go:192-196`).
 
 ### 4. compass-runner (process; enrolls and idles)
@@ -398,7 +400,7 @@ Interfaces:
   server's env (`devenv.nix:179`; DSN precedence parity per
   `compass-mint-runner-token/main.go:100-101`).
 - Produces: `$DEVENV_STATE/compass/runner.token`, 0600, raw token, no newline
-  (`main.go:192-196`), idempotent/heal-without-rotate (`main.go:53-58`).
+  (`main.go:192-196`), idempotent per runner id (`mintToFile`).
 
 Test cycle: red — task absent; no token file after `up`. Green — token file
 exists 0600 after `up`; a second `up` does not rotate it (byte-identical);
