@@ -198,12 +198,17 @@ func TestComputeUsageEventsStampedAfterLockWait(t *testing.T) {
 		t.Fatalf("RecordSessionBinding after release: %v", err)
 	}
 
+	checked := 0
 	for _, event := range computeEvents(t, s, tenant, agent.ID) {
 		if event.SessionID == "wait-after" || event.Kind == "end" {
+			checked++
 			if event.OccurredAt.Before(released) {
 				t.Fatalf("%s event for %s stamped %s, before the lock release at %s", event.Kind, event.SessionID, event.OccurredAt, released)
 			}
 		}
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d events, want the displaced end and the replacement start", checked)
 	}
 }
 
