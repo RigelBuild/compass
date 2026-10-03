@@ -207,7 +207,7 @@ bundle's staged sidecar. Use a separate pinned state directory for both client
 launches; the packaged app must never share the standalone stack's state:
 
 ```bash
-CSTATE=$(mktemp -d); CRT=$(mktemp -d)
+CSTATE=$(mktemp -d); CAPPSTATE=$(mktemp -d); CRT=$(mktemp -d)
 compass-stack up \
   --state-dir "$CSTATE" --socket "$CRT/server.sock" \
   --listen 127.0.0.1:50052 --linger \
@@ -259,7 +259,7 @@ BINENV=$(nix build --no-link --print-out-paths \
   -f tools/toolchain/gtk-e2e-env.nix bin)
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
   xvfb-run -a "$BUNDLE/bin/compass-app" \
-    --state-dir "$CSTATE" --socket "$CRT/server.sock" 2>"$CRT/app.log"
+    --state-dir "$CAPPSTATE" --socket "$CRT/server.sock" 2>"$CRT/app.log"
 ```
 
 With no stored token, the app paints the connect screen. The server URL is
@@ -281,7 +281,7 @@ Quit the app, then relaunch it:
 ```bash
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
   xvfb-run -a "$BUNDLE/bin/compass-app" \
-    --state-dir "$CSTATE" --socket "$CRT/server.sock" \
+    --state-dir "$CAPPSTATE" --socket "$CRT/server.sock" \
     2>>"$CRT/app.log"
 ```
 
@@ -315,7 +315,7 @@ stored file intact. Use the exact URL from `app.toml`:
 ```bash
 "$BUNDLE/bin/compass-clear-token" \
   --server-url "https://127.0.0.1:50052" \
-  --state-dir "$CSTATE"
+  --state-dir "$CAPPSTATE"
 ```
 
 The helper is silent on success, and exits 0 whether it deleted a token, found a
@@ -323,7 +323,8 @@ mismatched URL, or found nothing at all. So confirm the outcome yourself rather
 than reading exit 0 as proof. On the file-fallback path the entry is a file:
 
 ```bash
-test ! -e "$CSTATE/remote-token" && echo "file-backend token cleared"
+if test -e "$CAPPSTATE/remote-token"; then echo "FAIL: remote-token still present" >&2
+else echo "file-backend token cleared"; fi
 ```
 
 Which backend is bound depends on whether a Secret Service is reachable. A
@@ -361,7 +362,7 @@ After this check, remove the client configuration and the pinned smoke state:
 
 ```bash
 rm -f "$APP_CONFIG"
-rm -rf "$PREFIX" "$CSTATE" "$CRT"
+rm -rf "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 ```
 
 ## Manual checklist
@@ -390,8 +391,9 @@ rm -rf "$PREFIX" "$CSTATE" "$CRT"
 - [ ] quit and relaunch auto-connects from the OS keychain, with no connect
       screen or bearer re-entry (§Part (b), 5)
 - [ ] the stored bearer for the matching server URL is cleared, confirmed by an
-      observation and not by the helper's exit code: `remote-token` is absent on
-      the file-fallback path, or the keychain probe reports the entry cleared.
+      observation and not by the helper's exit code: `$CAPPSTATE/remote-token` is
+      absent on the file-fallback path, or the keychain probe reports the entry
+      cleared.
       A probe reporting UNKNOWN does not satisfy this — re-run it where the
       keychain is reachable. A mismatched or absent URL leaves the stored file
       intact, and the client `app.toml` is removed (§Part (b), 6)
