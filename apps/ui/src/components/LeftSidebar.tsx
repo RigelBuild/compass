@@ -1,4 +1,4 @@
-import { type Component, createSignal, For, Show } from "solid-js";
+import { type Component, createMemo, createSignal, For, Show } from "solid-js";
 import { activeIssues, backlogIssues } from "../board";
 import {
 	agentDmAccountId,
@@ -90,10 +90,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 	);
 };
 
-/** A parent agent's row + its recursively-rendered children. The agent's own
- *  row selects (openAgent); a dedicated caret sub-button toggles collapse — the
- *  expand/collapse + descendant count a folder row carried today, re-keyed to
- *  the parent agent id. */
+/** A parent agent row with collapsible child agents and attached channels. */
 const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 	const store = useStore();
 	const agentId = () => props.node.agent.account.id;
@@ -105,7 +102,7 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 					type="button"
 					class="tree-branch-caret"
 					aria-expanded={!collapsed() ? "true" : "false"}
-					aria-label={`${collapsed() ? "Expand" : "Collapse"} ${props.node.agent.account.handle}'s agents`}
+					aria-label={`${collapsed() ? "Expand" : "Collapse"} ${props.node.agent.account.handle}'s tree`}
 					onClick={() => store.toggleAgent(agentId())}
 				>
 					<span class={["tree-caret", { collapsed: collapsed() }]}>
@@ -114,11 +111,18 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 				</button>
 				<AgentLeaf
 					agent={props.node.agent}
-					badge={countDescendants(props.node)}
+					badge={
+						props.node.children.length > 0
+							? countDescendants(props.node)
+							: undefined
+					}
 				/>
 			</div>
 			<Show when={!collapsed()}>
 				<div class="tree-children">
+					<For each={props.node.channels}>
+						{(channel) => <ChannelRow channel={channel} />}
+					</For>
 					<For each={props.node.children}>
 						{(child) => <Node node={child} />}
 					</For>
@@ -128,12 +132,10 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 	);
 };
 
-/** Dispatch a derived-tree node: a node with children renders the parent form
- *  (caret + badge + collapsible children); a childless node renders the plain
- *  agent leaf. */
+/** Child agents or channels render the parent form; otherwise render the plain leaf. */
 const Node: Component<{ node: AgentTreeNode }> = (props) => (
 	<Show
-		when={props.node.children.length > 0}
+		when={props.node.children.length > 0 || props.node.channels.length > 0}
 		fallback={<AgentLeaf agent={props.node.agent} />}
 	>
 		<Branch node={props.node} />
@@ -313,16 +315,30 @@ const BrowseChannels: Component<{ channels: Channel[] }> = (props) => {
 	);
 };
 
-/** The collapsible Channels section (above Agent workspaces): grouped member
- *  channels, a multi-party DMs subsection (1:1 agent DMs are excluded — the
- *  agent workspace is their surface, §589), then a browse/join list. */
+/** One collapsible sidebar section for the agent tree and channel bands. */
 const ChannelsSection: Component = () => {
 	const store = useStore();
 	const collapsed = () => store.isSectionCollapsed("channels");
 	const memberChannels = () => railChannels(store.channels());
-	const sections = () =>
-		channelSections(memberChannels(), store.channelGroups());
-	// Multi-party DMs only: drop any 1:1 agent DM (its surface is the workspace).
+	// Only member channels may be claimed; a non-member one stays in browse.
+	const tree = createMemo(() => agentTree(store.agents(), memberChannels()));
+	const claimedIds = createMemo(() => {
+		const ids = new Set<string>();
+		const nodes = [...tree()];
+		while (nodes.length > 0) {
+			const node = nodes.pop();
+			if (node) {
+				for (const channel of node.channels) ids.add(channel.id);
+				nodes.push(...node.children);
+			}
+		}
+		return ids;
+	});
+	const unclaimed = () =>
+		memberChannels().filter((channel) => !claimedIds().has(channel.id));
+	const sharedGroups = () =>
+		store.channelGroups().filter((group) => group.visibility === "shared");
+	const sections = () => channelSections(unclaimed(), sharedGroups());
 	const dms = () => {
 		const byId = new Map(store.accounts().map((a) => [a.id, a]));
 		return dmChannels(memberChannels()).filter(
@@ -346,6 +362,18 @@ const ChannelsSection: Component = () => {
 			</button>
 			<Show when={!collapsed()}>
 				<div class="ws-section-body">
+					<div class="tree">
+						<Show
+							when={store.firstSnapshotArrived() && tree().length === 0}
+							fallback={
+								<For each={tree()}>{(node) => <Node node={node} />}</For>
+							}
+						>
+							<div class="tree-empty">
+								No agents in the fleet yet — the supervisor builds the tree.
+							</div>
+						</Show>
+					</div>
 					<For each={sections()}>
 						{(section) => (
 							<div class="rail-section">
@@ -366,7 +394,6 @@ const ChannelsSection: Component = () => {
 							</div>
 						)}
 					</For>
-
 					<Show when={dms().length > 0}>
 						<div class="rail-section">
 							<div class="rail-section-head">direct messages</div>
@@ -375,7 +402,6 @@ const ChannelsSection: Component = () => {
 							</For>
 						</div>
 					</Show>
-
 					<Show when={browsable().length > 0}>
 						<BrowseChannels channels={browsable()} />
 					</Show>
@@ -385,50 +411,7 @@ const ChannelsSection: Component = () => {
 	);
 };
 
-/** The collapsible Agent workspaces section (below Channels): the existing
- *  user-organized folder tree of agents. */
-const AgentsSection: Component = () => {
-	const store = useStore();
-	const collapsed = () => store.isSectionCollapsed("agents");
-	return (
-		<div class="ws-section">
-			<button
-				type="button"
-				class="ws-section-head"
-				onClick={() => store.toggleSection("agents")}
-				aria-expanded={!collapsed() ? "true" : "false"}
-			>
-				<span class={["ws-caret", { open: !collapsed() }]}>
-					<Glyph name="disclosure" />
-				</span>
-				Agent workspaces
-			</button>
-			<Show when={!collapsed()}>
-				<div class="tree ws-section-body">
-					<Show
-						when={
-							store.firstSnapshotArrived() &&
-							agentTree(store.agents()).length === 0
-						}
-						fallback={
-							<For each={agentTree(store.agents())}>
-								{(node) => <Node node={node} />}
-							</For>
-						}
-					>
-						<div class="tree-empty">
-							No agents in the fleet yet — the supervisor builds the tree.
-						</div>
-					</Show>
-				</div>
-			</Show>
-		</div>
-	);
-};
-
-/** The left sidebar: the Workspace header and Bridge/Backlog/Done/Settings nav
- *  links pinned at the top, then two collapsible sections — Channels above Agent
- *  workspaces (design: architecture-lineage). */
+/** The left sidebar links and its unified channel-and-agent tree. */
 export const LeftSidebar: Component = () => {
 	const store = useStore();
 	// The Bridge badge mirrors the board's in-flight count: active columns minus
@@ -519,7 +502,6 @@ export const LeftSidebar: Component = () => {
 				/>
 			</CoachTip>
 			<ChannelsSection />
-			<AgentsSection />
 		</aside>
 	);
 };
