@@ -874,7 +874,7 @@ func TestCallbackErrorThenSuccessIsAcked(t *testing.T) {
 	}
 
 	pollUntil(t, "a second attempt after the failed first", func() bool { return attempts.Load() >= 2 })
-	cons := kindConsumer(t, ctx, f, KindMessagePosted)
+	cons := kindConsumer(t, ctx, f)
 	pollUntil(t, "the event acked", func() bool {
 		info, err := cons.Info(ctx)
 		if err != nil {
@@ -1724,14 +1724,14 @@ func TestLegitimateRefsSurviveTheSubjectCrossCheck(t *testing.T) {
 // expire many times inside the gate, long enough to exceed a normal ack.
 const slowAckWait = 300 * time.Millisecond
 
-// kindConsumer opens the shared durable consumer SubscribeKind created for kind.
-func kindConsumer(t *testing.T, ctx context.Context, f *Fabric, kind EventKind) jetstream.Consumer {
+// kindConsumer opens the shared durable consumer SubscribeKind created for message_posted.
+func kindConsumer(t *testing.T, ctx context.Context, f *Fabric) jetstream.Consumer {
 	t.Helper()
 	stream, err := f.ensureStream(ctx)
 	if err != nil {
 		t.Fatalf("ensureStream: %v", err)
 	}
-	subject, err := CommsWildcardSubject(kind)
+	subject, err := CommsWildcardSubject(KindMessagePosted)
 	if err != nil {
 		t.Fatalf("CommsWildcardSubject: %v", err)
 	}
@@ -1786,7 +1786,7 @@ func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
 
 	// The first callback is still held, so any further delivery is a redelivery
 	// of an event that never failed.
-	cons := kindConsumer(t, ctx, a, KindMessagePosted)
+	cons := kindConsumer(t, ctx, a)
 	pollUntil(t, "a redelivery of the held event", func() bool {
 		info, err := cons.Info(ctx)
 		if err != nil {
@@ -1802,7 +1802,7 @@ func TestSlowCallbackPastAckWaitRedeliversHealthyEvent(t *testing.T) {
 
 // TestAlwaysSlowCallbackExhaustsMaxDeliver pins where an unbounded callback
 // ends: a healthy event whose every attempt outlives AckWait spends the whole
-// MaxDeliver budget and is dropped by the server, not parked on DLQSubject.
+// MaxDeliver budget, is dropped by the server, and is parked once from the advisory.
 func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
@@ -1882,7 +1882,7 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	}
 
 	releaseHeld()
-	cons := kindConsumer(t, ctx, a, KindMessagePosted)
+	cons := kindConsumer(t, ctx, a)
 	pollUntil(t, "no delivery awaiting ack", func() bool {
 		info, err := cons.Info(ctx)
 		if err != nil {
@@ -1900,7 +1900,104 @@ func TestAlwaysSlowCallbackExhaustsMaxDeliver(t *testing.T) {
 	if err := raw.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flushing the raw connection: %v", err)
 	}
-	if n, _, err := dlq.Pending(); err != nil || n != 0 {
-		t.Fatalf("dlq pending = %d (err %v), want 0: a slow healthy event is dropped, never parked", n, err)
+	// Both instances hear the advisory; the queue group must park it exactly once.
+	parked, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("the event dropped at MaxDeliver was never parked: %v", err)
+	}
+	if got := parked.Header.Get(dlqHeaderSubject); got != "compass.t1.comms.message_posted" {
+		t.Errorf("parked original subject = %q, want the event's subject", got)
+	}
+	if !strings.Contains(parked.Header.Get(dlqHeaderReason), "2 delivery attempts") {
+		t.Errorf("parked reason = %q, want it to name the 2 attempts", parked.Header.Get(dlqHeaderReason))
+	}
+	// A second park would come from the other instance; give it a bounded window.
+	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelDup()
+	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
+		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
+	}
+}
+
+// TestQueuedFinalAttemptParksOnce verifies a buffered final attempt parks once.
+func TestQueuedFinalAttemptParksOnce(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	ackWait := time.Second
+	f := newFabric(t, Config{URL: url, AckWait: ackWait, MaxDeliver: 1, Log: quietLogger(t)})
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ subscription: %v", err)
+	}
+	startedA := make(chan struct{}, 1)
+	startedB := make(chan struct{}, 1)
+	callback := func(ctx context.Context, ref EventRef) error {
+		if ref.RowID == "queued-a" {
+			startedA <- struct{}{}
+			timer := time.NewTimer(ackWait * 3 / 5)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		startedB <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, callback)
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+	subject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	for _, id := range []string{"queued-a", "queued-b"} {
+		if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: id}); err != nil {
+			t.Fatalf("Publish %s: %v", id, err)
+		}
+	}
+	select {
+	case <-startedA:
+	case <-ctx.Done():
+		t.Fatal("A callback did not start")
+	}
+	cons := kindConsumer(t, ctx, f)
+	pollUntil(t, "both published events buffered", func() bool {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer Info: %v", err)
+		}
+		return info.NumAckPending == 2
+	})
+	select {
+	case <-startedB:
+	case <-ctx.Done():
+		t.Fatal("B callback did not start")
+	}
+	parked, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("B was not parked: %v", err)
+	}
+	if got := parked.Header.Get(dlqHeaderSubject); got != subject {
+		t.Fatalf("parked subject = %q, want %q", got, subject)
+	}
+	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelDup()
+	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
+		t.Fatalf("B parked twice; second reason %q", dup.Header.Get(dlqHeaderReason))
 	}
 }
