@@ -16,14 +16,15 @@ import (
 // fakeTokenStore is an in-memory tokenStore: it records hash→subject with a
 // write counter so a test can assert no re-mint/re-register happened. It mirrors
 // the real store's contract for the two methods ensure exercises — an unknown
-// hash resolves to store.ErrNotFound (so RunnerTokenRegistered reports false).
+// hash resolves to store.ErrNotFound (so RunnerTokenStatus reports TokenUnknown).
 type fakeTokenStore struct {
-	hashes map[[32]byte]store.Subject
-	writes int
+	hashes  map[[32]byte]store.Subject
+	revoked map[[32]byte]bool
+	writes  int
 }
 
 func newFakeTokenStore() *fakeTokenStore {
-	return &fakeTokenStore{hashes: make(map[[32]byte]store.Subject)}
+	return &fakeTokenStore{hashes: make(map[[32]byte]store.Subject), revoked: make(map[[32]byte]bool)}
 }
 
 func (f *fakeTokenStore) PutTokenHash(_ context.Context, hash [32]byte, subj store.Subject) error {
@@ -33,6 +34,9 @@ func (f *fakeTokenStore) PutTokenHash(_ context.Context, hash [32]byte, subj sto
 }
 
 func (f *fakeTokenStore) ResolveTokenHash(_ context.Context, hash [32]byte) (store.Subject, error) {
+	if f.revoked[hash] {
+		return store.Subject{}, store.ErrTokenRevoked
+	}
 	subj, ok := f.hashes[hash]
 	if !ok {
 		return store.Subject{}, store.ErrNotFound
@@ -48,6 +52,57 @@ func TestEnsure(t *testing.T) {
 	t.Run("absent file mints, writes 0600, registers hash", testEnsureAbsentMints)
 	t.Run("present and registered returns same token, no re-mint", testEnsurePresentRegistered)
 	t.Run("present but store forgot re-registers same token, file unchanged", testEnsurePresentStoreForgot)
+	t.Run("present but registered to another runner mints fresh", testEnsurePresentOtherSubject)
+	t.Run("present but revoked returns it unchanged, no write", testEnsurePresentRevoked)
+}
+
+func testEnsurePresentRevoked(t *testing.T) {
+	dir := t.TempDir()
+	st := newFakeTokenStore()
+	const existing = "seeded-revoked-token"
+	path := filepath.Join(dir, tokenFileName)
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+	st.revoked[hashOf(existing)] = true
+
+	token, err := ensure(context.Background(), st, dir, "runner-alpha")
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if token != existing || string(readFile(t, path)) != existing {
+		t.Fatalf("revoked token rotated: returned %q; want the file left as %q", token, existing)
+	}
+	if st.writes != 0 {
+		t.Fatalf("store writes = %d, want 0 for a revoked token", st.writes)
+	}
+}
+
+func testEnsurePresentOtherSubject(t *testing.T) {
+	const runnerID = "runner-alpha"
+	dir := t.TempDir()
+	st := newFakeTokenStore()
+
+	const existing = "seeded-foreign-token"
+	path := filepath.Join(dir, tokenFileName)
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+	st.hashes[hashOf(existing)] = store.Subject{Kind: store.SubjectRunner, ID: "dogfood"}
+
+	token, err := ensure(context.Background(), st, dir, runnerID)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if token == existing {
+		t.Fatal("ensure kept a token registered to another runner; want a fresh mint")
+	}
+	if string(readFile(t, path)) != token {
+		t.Fatal("token file does not hold the returned token")
+	}
+	if subj := st.hashes[hashOf(token)]; subj.Kind != store.SubjectRunner || subj.ID != runnerID {
+		t.Fatalf("registered subject = %+v, want {SubjectRunner, %q}", subj, runnerID)
+	}
 }
 
 func testEnsureAbsentMints(t *testing.T) {

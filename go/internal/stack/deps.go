@@ -293,8 +293,9 @@ type CertResult struct {
 	Rotated  bool
 }
 
-// TokenEnsurer ensures the runner enrollment token exists (idempotent: it does
-// not rotate an existing token), writes it 0600 under the state dir, and returns
+// TokenEnsurer ensures the runner enrollment token exists (idempotent: it keeps
+// a token registered to runnerID and rotates one registered to any other
+// subject), writes it 0600 under the state dir, and returns
 // the token value. runnerID is the subject the minted token is issued for; the
 // runner cross-checks its --runner-id against it at enroll, so mint and spawn
 // must be threaded the same id. The value is handed to the runner via env only.
