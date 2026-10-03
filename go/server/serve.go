@@ -841,7 +841,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// user-or-agent list). The hub is its SecretsVersion signaler; it shares the
 	// one resolver with FetchSecrets.
 	secretsSvc := newSecretsService(st, resolver, serverResolver, hub)
-	usageSvc := newUsageService(usage.NewPostgres(st), st)
 
 	// The forge read-side credentials, built BEFORE the doors because the network
 	// door mounts the board lane's webhook ingress and the Linear notify lane,
@@ -866,7 +865,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// responder. On a net-door build error the listeners this Serve bound are
 	// still ours to close.
 	// buildDoors takes BOTH instances — see its parameter docs for why.
-	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, admin.ID, linearBridge.ID, resolver, serverResolver,
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, linearBridge.ID, resolver, serverResolver,
 		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
@@ -968,7 +967,6 @@ func buildDoors(
 	svc *service,
 	commsSvc *comms.Comms,
 	secretsSvc *secretsService,
-	usageSvc *usageService,
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
@@ -987,6 +985,7 @@ func buildDoors(
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearTokens *linearagent.TokenSource,
 ) (serveDoors, error) {
+	usageSvc := newUsageService(usage.NewPostgres(st), st)
 	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
 	// empty, so mounted unconditionally. otelconnect goes FIRST so the span

@@ -186,7 +186,7 @@ func TestUsageSeriesNetworkDoor(t *testing.T) {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	svc := newService("usage-test", bus, st, nil, nil, nil, nil)
-	commsSvc := comms.NewComms(st, commsBus, admin)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin)
 	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
