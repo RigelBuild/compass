@@ -123,16 +123,14 @@ type AgentStream struct {
 	// drainGrace is the post-exit join bound; tests shorten it via ServerLink.
 	drainGrace time.Duration
 	// closeStdout/closeStderr close each read end once, from its drain on return
-	// or from Stop after the reap, whichever comes first.
+	// or from closeDrains (Stop or the reaper), whichever comes first.
 	closeStdout func() error
 	closeStderr func() error
 	// stopDrains ends both drains on teardown even if the pipes never reach EOF,
 	// so a wedged read can't hold Stop past its bounded wait.
 	stopDrains context.CancelFunc
-	// stopping is set by Stop before it kills. retireOnExit reads it to skip the
-	// ERRORED report, and a drain uses it to treat os.ErrClosed during a stop as
-	// an expected end even on a backend whose kill closes the pipe before
-	// closeDrains cancels drainCtx.
+	// stopping is set by Stop before it kills, so retireOnExit can tell a
+	// deliberate stop from a self-exit and skip the ERRORED report.
 	stopping atomic.Bool
 	// waitOnce makes the reaper and Stop share ONE Process.Wait (podman's cmd.Wait
 	// is not idempotent) without a lock held across it, so Stop can always Kill.
@@ -146,8 +144,8 @@ type AgentStream struct {
 	stderrTail  []stderrTailLine
 	stderrBytes int
 	// drainsReleased mirrors drainCtx.Done(): it closes when the drain context is
-	// cancelled, whichever path ends the exec — Stop's endDrains or StartAgent's
-	// reaper on self-exit. Held as a channel, not the context (containedctx forbids
+	// cancelled, whichever path ends the exec — closeDrains from Stop or from
+	// StartAgent's reaper on self-exit. Held as a channel, not the context (containedctx forbids
 	// that in shipped state), so the ctx-node release is observable.
 	drainsReleased <-chan struct{}
 	// reaped closes when the reaper finishes (reap + exit classification), the
@@ -209,11 +207,9 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		stream.logPipeClose("agent stdout", stream.closeStdout())
 	}()
 
-	// The reaper: reap once, so the exit is reported even while a descendant still
-	// holds a pipe; then join the drains, bounded from exit, so the stderr tail is
-	// complete; log the exit unless it was a deliberate kill or the caller's ctx
-	// ended; release the ctx node a self-exiting agent would otherwise leave
-	// attached until Runner shutdown.
+	// The reaper: reap first so a descendant holding a pipe cannot delay the exit
+	// report; join the drains, bounded from exit, for a complete stderr tail; then
+	// cut them loose (which also releases the drain ctx node) and log the exit.
 	go func() {
 		defer close(stream.reaped)
 		if xs.Process == nil {
@@ -222,8 +218,6 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		}
 		waitErr := stream.wait()
 		stream.joinDrains()
-		// A descendant may still hold a pipe; cut its drain loose so the goroutine
-		// does not outlive the exit report.
 		stream.closeDrains()
 		if shouldLogExit(ctx, waitErr) {
 			logUnexpectedExit(log, stream, waitErr)
@@ -254,8 +248,9 @@ func (s *AgentStream) Stop() error {
 	return s.terminate()
 }
 
-// logPipeClose reports a failed read-end close. Closing an already closed end is
-// expected: Stop and the drain both close it, whichever finishes first.
+// logPipeClose reports a failed read-end close. sync.OnceValue closes each end
+// once, so the drain and closeDrains share one result; os.ErrClosed means the
+// backend already closed it.
 func (s *AgentStream) logPipeClose(msg string, err error) {
 	if err != nil && !errors.Is(err, os.ErrClosed) {
 		s.log.Debug(msg+" pipe close failed", slog.String("session_id", s.sessionID), slog.Any("error", err))
@@ -515,13 +510,10 @@ func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string
 		// The expected ends, tested FIRST: a truncated final line joins its error
 		// with the terminal one, and "keep going" would spin on a dead pipe.
 
-		// os.ErrClosed is ordinary during teardown: closeDrains cancels ctx, then
-		// closes the pipe. The stopping flag also covers a backend whose kill
-		// closes the pipe before that cancel lands.
+		// closeDrains cancels ctx before it closes the pipe, so the os.ErrClosed it
+		// causes lands here; one with ctx still live is a fault (below).
 		case errors.Is(err, io.EOF), ctx.Err() != nil:
 			return // agent exit or teardown: the expected ends.
-		case errors.Is(err, os.ErrClosed) && s.stopping.Load():
-			return // the reap closed the pipe on the deliberate-stop path.
 		// A truncated line comes back as the sentinel BY VALUE; a truncated line
 		// that ALSO faulted joins the fault in, and the ends above peeled off the
 		// terminal faults — so an identity test keeps draining on pure truncation

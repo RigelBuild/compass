@@ -69,7 +69,8 @@ func TestDrainOutlivesTheGraceWhileTheAgentLives(t *testing.T) {
 		"' ]; do sleep 0.01; done\nhead -c 131072 /dev/zero | tr '\\0' x >&2\necho >&2\necho after-flood >&2\nexit 0\n")
 	logs := newCaptureLog()
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-	const grace = 50 * time.Millisecond
+	// Wide enough that the post-exit read of up to 64KB never races the bound.
+	const grace = 500 * time.Millisecond
 	link.drainGrace = grace
 	stream, err := link.StartAgent(t.Context(), "sess-late-flood", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
 	if err != nil {
@@ -77,7 +78,7 @@ func TestDrainOutlivesTheGraceWhileTheAgentLives(t *testing.T) {
 	}
 
 	// Elapsed time is the input here: a bound timed from spawn would fire now.
-	<-time.After(4 * grace)
+	<-time.After(2 * grace)
 	select {
 	case <-stream.reaped:
 		t.Fatal("reaper finished while the agent was still waiting to write")
