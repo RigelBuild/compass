@@ -1,0 +1,3 @@
+# Keep tests off the host's shared omp state (models.db, agent.db, sessions).
+[test]
+preload = ["./src/test-preload.ts"]
