@@ -444,6 +444,11 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
 	f := newFabric(t, Config{})
+	// Both subscriptions share one durable consumer. Until the first one's pull
+	// is closed, the server can route the next event to it and the drained callback
+	// claims it, so the second subscriber never sees it.
+	closed := make(chan struct{}, 2)
+	f.consumerClosed = func() { closed <- struct{}{} }
 
 	subject, err := CommsSubject("t1", KindChannelChanged)
 	if err != nil {
@@ -478,6 +483,11 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 	unsub()
 	// Idempotent by contract: a second call must not double-Stop.
 	unsub()
+	select {
+	case <-closed:
+	case <-time.After(gate):
+		t.Fatalf("the unsubscribed consumer did not close within %s", gate)
+	}
 
 	// A second subscriber on the same subject picks up where the consumer left
 	// off; its delivery is the gate.
@@ -511,7 +521,8 @@ func TestSubscribeStopsWhenContextIsDone(t *testing.T) {
 	t.Parallel()
 	f := newFabric(t, Config{})
 	// Both subscriptions share one durable consumer. Until the cancelled one's
-	// pull is closed, the server can hand it the next event, stalling it for AckWait.
+	// pull is closed, the server can route the next event to it and the drained
+	// callback claims it, so the replacement never sees it.
 	closed := make(chan struct{}, 2)
 	f.consumerClosed = func() { closed <- struct{}{} }
 
