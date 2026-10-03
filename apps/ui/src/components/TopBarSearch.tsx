@@ -37,6 +37,13 @@ export const TopBarSearch: Component = () => {
 	let generation = 0;
 	let currentGeneration = 0;
 	let pendingTimer: ReturnType<typeof window.setTimeout> | undefined;
+	let inflight:
+		| {
+				gen: number;
+				promise: Promise<Map<DestinationKind, Destination[]> | null>;
+				applied: boolean;
+		  }
+		| undefined;
 	let inputRef: HTMLInputElement | undefined;
 	let wrapperRef: HTMLDivElement | undefined;
 	let restoreTo: HTMLElement | null = null;
@@ -45,7 +52,12 @@ export const TopBarSearch: Component = () => {
 		input: string,
 		mine: number,
 	): Promise<Map<DestinationKind, Destination[]> | null> {
-		return queryDestinations(providers, input, mine, () => currentGeneration)
+		const promise = queryDestinations(
+			providers,
+			input,
+			mine,
+			() => currentGeneration,
+		)
 			.then((result) => {
 				if (mine !== currentGeneration || result === null) return null;
 				setDestinations(result);
@@ -55,6 +67,11 @@ export const TopBarSearch: Component = () => {
 				if (mine === currentGeneration) setDestinations(null);
 				return null;
 			});
+		inflight = { gen: mine, promise, applied: false };
+		void promise.then(() => {
+			if (inflight?.promise === promise) inflight.applied = true;
+		});
+		return promise;
 	}
 
 	createEffect(
@@ -121,22 +138,31 @@ export const TopBarSearch: Component = () => {
 		title: "Focus global search",
 		keywords: ["search", "global"],
 		scope: "global",
-		run: () => inputRef?.focus(),
+		run: () => queueMicrotask(() => inputRef?.focus()),
 	});
 	onCleanup(() => {
 		store.keyboard.registry.unregister(FOCUS_GLOBAL);
 		store.keyboard.unregisterGroup(focusGroup);
 	});
 
+	function selectFirst(
+		result: Map<DestinationKind, Destination[]> | null,
+	): void {
+		const first = result ? destinationSurfaceRows(result)[0] : undefined;
+		if (first) select(first);
+	}
+
 	async function handleEnter(): Promise<void> {
-		const input = query();
-		if (!input.trim()) return;
+		if (!query().trim()) return;
 		if (pendingTimer !== undefined) {
 			clearTimeout(pendingTimer);
 			pendingTimer = undefined;
-			const result = await queryNow(input, currentGeneration);
-			const first = result ? destinationSurfaceRows(result)[0] : undefined;
-			if (first) select(first);
+			selectFirst(await queryNow(query(), currentGeneration));
+			return;
+		}
+		const active = inflight;
+		if (active?.gen === currentGeneration && !active.applied) {
+			selectFirst(await active.promise);
 			return;
 		}
 		const first = rows()[0];

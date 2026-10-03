@@ -212,7 +212,7 @@ export const Palette: Component = () => {
 					itemComponent={(props) => (
 						<>
 							<Show when={props.item.rawValue.groupStart}>
-								<li class="cx-palette-group">
+								<li class="cx-palette-group" role="presentation">
 									{props.item.rawValue.groupLabel}
 								</li>
 							</Show>

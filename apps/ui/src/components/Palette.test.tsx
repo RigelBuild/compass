@@ -52,15 +52,17 @@ async function settle(): Promise<void> {
 	await flush();
 }
 describe("Palette (RIG-2483)", () => {
-	test("running Focus global search from the palette preserves search focus", async () => {
+	test("clicking Focus global search from the palette preserves search focus", async () => {
 		const { container, store } = mountApp("/");
-		const prior = container.querySelector<HTMLElement>(".topbar .view-tab");
-		prior?.focus();
 		store.openPalette();
 		await flush();
-		store.keyboard.registry.get("search.focusGlobal" as never)?.run();
-		store.closePalette();
+		const focusSearch = rows(container).find((row) =>
+			row.textContent?.includes("Focus global search"),
+		);
+		expect(focusSearch).toBeDefined();
+		fireEvent.click(focusSearch as HTMLElement);
 		await flush();
+		await Promise.resolve();
 		expect(document.activeElement).toBe(
 			container.querySelector(".topbar-search-input"),
 		);

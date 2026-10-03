@@ -68,6 +68,61 @@ describe("TopBarSearch", () => {
 		await flush();
 		expect(store.view()).toBe("settings");
 	});
+	test("Enter waits for the current in-flight query before selecting", async () => {
+		setSearchDebounceMsForTest(0);
+		const pending = new Map<string, (rows: Destination[]) => void>();
+		let navigated = "";
+		const querySpy = spyOn(
+			destinationsModule,
+			"createStoreDestinationProviders",
+		);
+		querySpy.mockImplementation(() => [
+			{
+				id: "controlled",
+				query: (value) => {
+					const { promise, resolve } = Promise.withResolvers<Destination[]>();
+					pending.set(value, resolve);
+					return promise;
+				},
+			} satisfies DestinationProvider,
+		]);
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		search.focus();
+
+		fireEvent.input(search, { target: { value: "alpha" } });
+		await settleSearch();
+		pending.get("alpha")?.([
+			{
+				id: "alpha",
+				title: "Alpha result",
+				kind: "agent",
+				navigate: () => {
+					navigated = "alpha";
+				},
+			},
+		]);
+		await flush();
+
+		fireEvent.input(search, { target: { value: "beta" } });
+		await settleSearch();
+		expect(pending.has("beta")).toBe(true);
+		fireEvent.keyDown(search, { key: "Enter" });
+		pending.get("beta")?.([
+			{
+				id: "beta",
+				title: "Beta result",
+				kind: "agent",
+				navigate: () => {
+					navigated = "beta";
+				},
+			},
+		]);
+		await flush();
+		await Promise.resolve();
+		expect(navigated).toBe("beta");
+		querySpy.mockRestore();
+	});
 
 	test("empty Enter does not navigate and blur hides results", async () => {
 		const { container, store } = mountApp("/backlog");
