@@ -251,13 +251,11 @@ func (h *Hub) unbindContainer(containerName string) {
 //
 // RIG-3108: the map is a read-through cache. A hit returns immediately. A miss
 // falls through to the durable binding table ONLY when a Runner is currently
-// enrolled AND the ctx is request-scoped — so a Server restart resolves a
-// pre-restart session from the durable row, while a miss after a reconnect
-// (which durably reaps every binding at enroll) stays a fail-closed miss. The
-// enrolled-Runner gate is what keeps fail-closed correct across a reconnect: the
-// reap deletes the rows, so even the table read would miss, but the gate makes
-// the miss free of a table round-trip. store.ErrNotFound (and any store fault)
-// maps to ok=false, so CodeNotFound behaviour is byte-identical to today.
+// enrolled AND the ctx is request-scoped. Every enroll durably reaps that Runner's
+// rows, so a session that predates the enroll stays a fail-closed miss, while a
+// binding another Server instance recorded after it resolves from the row. With no
+// Runner enrolled the gate skips the table round-trip. store.ErrNotFound (and any
+// store fault) maps to ok=false, so CodeNotFound behaviour is byte-identical to today.
 //
 // The read-through is refused under a system-role ctx: SessionBindingStore's
 // reads are single-valued only because RLS narrows them to the acting tenant,
@@ -380,7 +378,7 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 // to the durable table: a store must be wired, a Runner must be currently
 // enrolled (a miss with none enrolled means the reconnect reap cleared every
 // binding — fail closed), the ctx must be request-scoped (a system-role read
-// is the unscoped-row hazard, refused), and the last re-enroll's durable reap
+// is the unscoped-row hazard, refused), and the last enroll's durable reap
 // must not have faulted — rows it failed to delete name sessions this hub has
 // already declared dead, so reading them back would resurrect them.
 func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingStore, enrolled, reapStale bool) bool {
@@ -402,8 +400,8 @@ func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingSto
 // request-scoped. The delivery consumer's loop runs under the system role
 // (delivery/consumer.go Run), so its resolve REFUSES the read-through and falls
 // to the D2 cursor sweep — the consumer's own miss contract, unchanged. A
-// request-scoped caller (a Server restart resolving a pre-restart recipient)
-// resolves from the row. store.ErrNotFound and any store fault map to ok=false.
+// request-scoped caller resolves a binding recorded since the last enroll from
+// the row. store.ErrNotFound and any store fault map to ok=false.
 func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (string, bool) {
 	h.mu.Lock()
 	if sessionID, ok := h.accountSessions[account]; ok {
