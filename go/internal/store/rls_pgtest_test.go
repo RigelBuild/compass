@@ -536,18 +536,10 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// Bucket A (infrastructure) carries NO tenant_id, so it never appears in the
-	// tenant_id enumeration below; any tenant_id-bearing table NOT in this exempt
-	// set must be RLS-enabled+forced. Kept as an explicit allow-list so a
-	// deliberate future exemption is a conscious edit here, not a silent miss.
-	// server_secrets / server_key_state are deployment-global: the master key
-	// decrypts EVERY tenant's credentials and the PEM/webhook/Linear secrets
-	// belong to the deployment, so there is no tenant to scope by. The entry is
-	// NOT mere bookkeeping: the bucket-A loop at the end of this test iterates
-	// this map and asserts each listed table has RLS DISABLED, so removing the
-	// entry would let an accidental `ENABLE ROW LEVEL SECURITY` on either table
-	// pass unnoticed. token_usage_prune_horizon is global because one prune
-	// spans every tenant.
+	// Bucket A (infrastructure) is exempt from RLS; the loop at the end asserts each
+	// listed table has RLS DISABLED, so an accidental ENABLE is caught.
+	// server_secrets / server_key_state / token_usage_prune_horizon are deployment-
+	// global. tokens carries its tenant but must resolve before any tenant GUC exists.
 	bucketA := map[string]bool{
 		"tenants": true, "tokens": true, "agent_config_bundle": true,
 		"server_secrets": true, "server_key_state": true,
@@ -580,7 +572,9 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 			t.Fatalf("scan catalog row: %v", err)
 		}
 		if bucketA[tbl] {
-			t.Errorf("%s: bucket-A infrastructure table unexpectedly carries a tenant_id column", tbl)
+			if tbl != "tokens" {
+				t.Errorf("%s: bucket-A infrastructure table unexpectedly carries a tenant_id column", tbl)
+			}
 			continue
 		}
 		enumerated[tbl] = true
