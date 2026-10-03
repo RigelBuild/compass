@@ -140,7 +140,7 @@ type ChecksRoller interface {
 // Linear is issues-only and never produces a CHECKS event.
 //
 // A commit with no associated PR is forge.ErrNoPullRequestForSHA, which Route
-// distinguishes from an infrastructure error: the former fails the route closed
+// distinguishes from an infrastructure error: the former is a debug-logged skip
 // (there is no coordinate to notify against), the latter propagates.
 type PullNumberResolver interface {
 	PullNumberForSHA(ctx context.Context, repo, headSHA string) (uint64, error)
@@ -204,7 +204,7 @@ func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller,
 //     check_suite webhook — the payload is head-SHA-keyed), resolve the SHA to
 //     its PR number via PullNumberResolver BEFORE the zero-number guard, so the
 //     coordinate every later step keys on exists. A nil resolver skips this (the
-//     guard then rejects); a commit with no associated PR still fails closed.
+//     guard then rejects); a commit with no associated PR is skipped.
 //  1. Load the coordinate's prior snapshot (from the cursor).
 //  2. For CHECKS, resolve the combined roll-up via ChecksRoller BEFORE apply
 //     (a check_suite is per-App, never roll-up truth), passing the cursor's
@@ -229,10 +229,10 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 		num, nerr := r.pullNumbers.PullNumberForSHA(ctx, ev.Repo, ev.HeadSHA)
 		switch {
 		case errors.Is(nerr, forge.ErrNoPullRequestForSHA):
-			// No PR carries this head: there is no coordinate to notify
-			// against, so fail CLOSED naming the SHA (a push to a PR-less
-			// branch is the common, benign cause).
-			return fmt.Errorf("ingest: route: checks %s@%s: no pull request for head sha: %w", ev.Repo, ev.HeadSHA, errInvalidEvent)
+			// Expected for queue-landed or deleted-branch heads: skip, don't warn.
+			r.log.DebugContext(ctx, "notify route: no pull request for head sha, skipped",
+				"repo", ev.Repo, "head_sha", ev.HeadSHA)
+			return nil
 		case nerr != nil:
 			return fmt.Errorf("ingest: route: resolve pull number %s@%s: %w", ev.Repo, ev.HeadSHA, nerr)
 		}

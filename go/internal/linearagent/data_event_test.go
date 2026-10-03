@@ -159,6 +159,33 @@ func TestParseLinearDataEvent_Comment(t *testing.T) {
 	}
 }
 
+// Linear's comment issue child (IssueChildWebhookPayload) carries team and
+// identifier but no number; a zero number is rejected by the notify router.
+func TestParseLinearDataEvent_CommentIdentifierOnly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		issue    string
+		wantRepo string
+		wantNum  uint64
+	}{
+		"team and identifier": {`{"identifier":"TEST-7","team":{"key":"TEST"},"url":"iu"}`, "TEST", 7},
+		"identifier only":     {`{"identifier":"RIG-42","url":"iu"}`, "RIG", 42},
+	} {
+		payload := `{"type":"Comment","action":"create","data":{"id":"c1","body":"b","issue":` + tc.issue + `}}`
+		ev, ok, err := ParseLinearDataEvent([]byte(payload))
+		if err != nil || !ok {
+			t.Fatalf("%s: ok=%v err=%v, want ok", name, ok, err)
+		}
+		if ev.Number != tc.wantNum || ev.Repo != tc.wantRepo {
+			t.Errorf("%s: repo/number = %q/%d, want %s/%d", name, ev.Repo, ev.Number, tc.wantRepo, tc.wantNum)
+		}
+	}
+
+	// An unparseable identifier with no number is dropped, not routed as zero.
+	if _, ok, _ := ParseLinearDataEvent([]byte(`{"type":"Comment","action":"create","data":{"id":"c1","issue":{"identifier":"bogus"}}}`)); ok {
+		t.Error("unparseable identifier ok = true, want false")
+	}
+}
+
 // TestLinearCommentForgeAccountIsDisplayNameOnly pins the RIG-2732 Fork-1
 // producer-symmetry decision (DL-304): the webhook comment producer resolves
 // ForgeAccount to displayName ONLY, never a displayName||name fallback, so it
