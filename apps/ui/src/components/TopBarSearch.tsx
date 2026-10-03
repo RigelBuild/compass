@@ -188,7 +188,17 @@ export const TopBarSearch: Component<{
 				ref={inputRef}
 				class="topbar-search-input"
 				type="text"
+				role="combobox"
 				aria-label="Global search"
+				aria-expanded={
+					focused() && query().trim().length > 0 ? "true" : "false"
+				}
+				aria-controls="topbar-search-listbox"
+				aria-activedescendant={
+					rows().length > 0
+						? `topbar-search-option-${rows()[0].key}`
+						: undefined
+				}
 				placeholder="Search…"
 				value={query()}
 				onInput={(event) => setQuery(event.currentTarget.value)}
@@ -203,16 +213,26 @@ export const TopBarSearch: Component<{
 				}}
 			/>
 			<Show when={focused() && query().trim().length > 0}>
-				<div class="topbar-search-panel">
+				<div
+					id="topbar-search-listbox"
+					class="topbar-search-panel"
+					role="listbox"
+				>
 					<For each={rows()}>
-						{(row) => (
+						{(row, index) => (
 							<>
 								<Show when={row.groupStart}>
-									<div class="topbar-search-group">{row.groupLabel}</div>
+									<div class="topbar-search-group" role="presentation">
+										{row.groupLabel}
+									</div>
 								</Show>
 								<button
+									id={`topbar-search-option-${row.key}`}
 									class="topbar-search-row"
 									type="button"
+									role="option"
+									tabindex={-1}
+									aria-selected={index() === 0 ? "true" : "false"}
 									onMouseDown={(mouseEvent) => mouseEvent.preventDefault()}
 									onClick={() => select(row)}
 								>

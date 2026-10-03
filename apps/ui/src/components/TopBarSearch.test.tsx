@@ -28,6 +28,44 @@ const input = (container: HTMLElement) =>
 	container.querySelector<HTMLInputElement>(".topbar-search-input");
 
 describe("TopBarSearch", () => {
+	test("exposes combobox and listbox semantics as results open and close", async () => {
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		expect(search.getAttribute("role")).toBe("combobox");
+		expect(search.getAttribute("aria-expanded")).toBe("false");
+		search.focus();
+		fireEvent.input(search, { target: { value: "settings" } });
+		await settleSearch();
+		expect(search.getAttribute("aria-expanded")).toBe("true");
+		const listbox = container.querySelector('[role="listbox"]');
+		expect(listbox?.id ?? undefined).toBe(
+			search.getAttribute("aria-controls") ?? undefined,
+		);
+		const options = container.querySelectorAll<HTMLElement>('[role="option"]');
+		expect(options.length).toBeGreaterThan(0);
+		expect(options[0]?.getAttribute("aria-selected")).toBe("true");
+		expect(search.getAttribute("aria-activedescendant")).toBe(options[0]?.id);
+		for (const group of container.querySelectorAll(".topbar-search-group")) {
+			expect(group.getAttribute("role")).toBe("presentation");
+		}
+		search.blur();
+		await flush();
+		expect(search.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector('[role="listbox"]')).toBeNull();
+	});
+
+	test("Escape closes the listbox and updates aria-expanded", async () => {
+		const { container } = mountApp("/");
+		const search = input(container) as HTMLInputElement;
+		search.focus();
+		fireEvent.input(search, { target: { value: "settings" } });
+		await settleSearch();
+		expect(search.getAttribute("aria-expanded")).toBe("true");
+		fireEvent.keyDown(search, { key: "Escape" });
+		await flush();
+		expect(search.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector('[role="listbox"]')).toBeNull();
+	});
 	test("typing renders grouped destination rows and Enter navigates", async () => {
 		const { container, store } = mountApp("/");
 		const search = input(container) as HTMLInputElement;
