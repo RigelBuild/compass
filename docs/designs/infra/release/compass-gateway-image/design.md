@@ -5,10 +5,10 @@ RIG-2862 (the stack's supervised gateway child, compass PR #1382).
 
 ## Problem / Intent
 
-The installed stack runs the LLM gateway as a podman child, but
-`DefaultGatewayImage` in `go/internal/stack/gateway_image.go` is `""`, so
-`compass-stack up` needs `--gateway-image` or `--gateway-external`. No
-published gateway image exists. The gateway is the `auth-gateway serve`
+PR #1382 (unmerged) makes the installed stack run the LLM gateway as a podman
+child. In that PR, `DefaultGatewayImage` in `go/internal/stack/gateway_image.go`
+is `""`, so `compass-stack up` needs `--gateway-image` or `--gateway-external`.
+No published gateway image exists. The gateway is the `auth-gateway serve`
 command of the RigelBuild/oh-my-pi fork, booted by
 `packages/coding-agent/src/cli/gateway-boot.ts` and packaged by the fork's
 `Dockerfile.gateway`. This record makes compass build that image from a pinned
@@ -82,6 +82,9 @@ lane makes six decisions.
    - `/healthz` answers 200 with `{"ok":true,…}` within 30 s. This is the
      budget of `waitGateway` in the stack.
    - `/v1/models` without a token answers 401.
+   - `/v1/models` with the mounted token answers 200 with
+     `{"object":"list",…}`. This proves the gateway accepts the token file,
+     not just that it rejects requests.
    - `podman stop -t 25` ends with exit code 143.
 
    `auth-gateway serve` exits 1 when `OMP_AUTH_BROKER_URL` is not set. (A
@@ -99,7 +102,8 @@ lane makes six decisions.
      it off argv.
 
    A local run of this broker + gateway pair gave `/healthz` 200 after 2.5 s,
-   401 without a token, and exit 143 on SIGTERM.
+   401 without a token or with a wrong one, 200 with the mounted token, and
+   exit 143 on SIGTERM.
 5. **No reuse of runner-image publish-core.** `secretConfigViolations` in that
    file rejects two benign names in the gateway config:
    - `GPG_KEY`, a public-key fingerprint set by the `python` base image;
@@ -196,6 +200,8 @@ Interfaces (`core.ts`):
   — the guest lane's semantics, copied.
 - `healthzOk(status: number, body: string): boolean` — true only when the
   status is 200 and the JSON body has `ok === true`.
+- `modelsListOk(status: number, body: string): boolean` — true only when the
+  status is 200 and the JSON body has `object === "list"`.
 
 Tests: for each rejection in `parseForkPin`, a test shows it fails. A real
 secret name such as `OMP_AUTH_BROKER_TOKEN` is still flagged. A near-miss of
@@ -221,7 +227,8 @@ Interfaces:
 
 Test cycle: on a host with rootless buildkitd and podman, run `build.ts`
 twice; the two digests are the same. `smoke.ts` passes. To show the smoke can
-fail, run it once with the broker env withheld; it must exit 7.
+fail, run it twice more: once with the broker env withheld, and once with a
+different token mounted than the one sent. Both must exit 7.
 
 ### T3 — Publish shell and release job
 
@@ -281,7 +288,8 @@ compass-agent image, so the stack pulls with no registry login.
 - [ ] T1 — `tools/gateway-image/` scaffold, `fork-pin.json`, `core.ts` and
       tests, moon and `.gitignore` registration
 - [ ] T2 — `build.ts` (fork fetch, ancestry check, two-stage solve) and
-      `smoke.ts` (broker + gateway boot, `/healthz`, 401, exit 143)
+      `smoke.ts` (broker + gateway boot, `/healthz`, 401 without the token,
+      200 with it, exit 143)
 - [ ] T3 — `publish.ts` and the `publish-gateway-image` job with
       `GATEWAY_IMAGE_CLOSURE_PATHS`
 - [ ] DECISIONS.md rows DL-386 and DL-387 in the same PR as this record
