@@ -366,10 +366,12 @@ describe("adaptChannel", () => {
 		});
 	const empty: ReadonlySet<string> = new Set();
 
+	// GROUP_DM is retired from the domain union but survives in the generated
+	// wire enum, so the adapter must still collapse it to a supported channel.
 	for (const [wire, expected] of [
 		[ChannelKind.CHANNEL, "channel"],
 		[ChannelKind.DM, "dm"],
-		[ChannelKind.GROUP_DM, "group_dm"],
+		[ChannelKind.GROUP_DM, "channel"],
 	] as const) {
 		test(`kind ${ChannelKind[wire]} → "${expected}"`, () => {
 			expect(

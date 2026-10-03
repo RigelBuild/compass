@@ -27,26 +27,15 @@ export function handleOf(
 
 // ── Channel organization (the left rail) ─────────────────────────────────────
 
-/** Whether a channel is a direct/group DM (rendered in the DMs section) rather
+/** Whether a channel is a direct DM (rendered in the DMs section) rather
  *  than a group channel (rendered under its group). */
 export function isDm(channel: Channel): boolean {
-	return channel.kind === "dm" || channel.kind === "group_dm";
+	return channel.kind === "dm";
 }
 
-/** The glyph before a channel name, by kind (Discord-style: # for a channel,
- *  @ for a DM, & for a group DM — the "cluster" marker). One home so the rail
- *  row and the channel header never drift. All three are ASCII, covered by the
- *  brand face; this stays DATA (a string in the marker column), not a `<Glyph>`
- *  — a bitmap for one kind only would mix glyph and character in one column. */
+/** The glyph before a channel name, by kind (# for a channel, @ for a DM). */
 export function channelGlyph(kind: Channel["kind"]): string {
-	switch (kind) {
-		case "dm":
-			return "@";
-		case "group_dm":
-			return "&";
-		default:
-			return "#";
-	}
+	return kind === "dm" ? "@" : "#";
 }
 
 /** The channels that belong in the rail: ones the caller has joined or
@@ -126,8 +115,7 @@ export function channelSections(
 	return sections;
 }
 
-/** The DM + group-DM channels, fixture order preserved — the rail's DMs
- *  section. */
+/** DM channels, fixture order preserved — the rail's DMs section. */
 export function dmChannels(channels: readonly Channel[]): Channel[] {
 	return channels.filter(isDm);
 }
@@ -147,10 +135,7 @@ export function dmLabel(
 
 /** The agent account observed by a channel, or undefined when the channel has no
  *  single agent to observe. A 1:1 DM whose other party is an agent resolves to
- *  that agent (the agent workspace: the agent's session
- *  trace shows beside the DM). A plain channel, a human↔human DM, or a group DM
- *  with more than one other party resolves to undefined — no single session to
- *  observe. */
+ *  that agent; other channel shapes resolve to undefined. */
 export function agentDmAccountId(
 	channel: Channel,
 	callerId: string,
