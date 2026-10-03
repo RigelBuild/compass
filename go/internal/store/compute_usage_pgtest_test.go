@@ -175,6 +175,62 @@ func TestComputeUsageSameSessionRunnerRebindKeepsInterval(t *testing.T) {
 	}
 }
 
+// A binding an older server wrote mid-deploy has no start event. A later rebind
+// or release must still leave one complete interval, with its start estimated.
+func TestComputeUsageLegacyBindingGetsEstimatedStart(t *testing.T) {
+	for name, release := range map[string]func(*testing.T, context.Context, *Store){
+		"single release": func(t *testing.T, ctx context.Context, s *Store) {
+			if err := s.DeleteSessionBinding(ctx, "legacy-session"); err != nil {
+				t.Fatalf("DeleteSessionBinding: %v", err)
+			}
+		},
+		"runner sweep": func(t *testing.T, ctx context.Context, s *Store) {
+			if _, err := s.DeleteSessionBindingsForRunner(ctx, "runner-new"); err != nil {
+				t.Fatalf("DeleteSessionBindingsForRunner: %v", err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newTestStore(t)
+			owner := mustUser(t, s, "compute-legacy-owner")
+			agent := mustAgent(t, s, owner.ID, "compute-legacy-agent")
+			tenant := s.EffectiveTenant(ctx)
+			// The old INSERT omits usage_interval_id, so the column default fills it.
+			execAsSystem(t, s, "INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id) VALUES ($1, $2, 'legacy-session', 'runner-old')",
+				string(tenant), string(agent.ID))
+
+			mustBind(t, ctx, s, "legacy-session", agent.ID, "runner-new")
+			release(t, ctx, s)
+
+			events := computeEvents(t, s, tenant, agent.ID)
+			if len(events) != 2 || events[0].Kind != "start" || events[1].Kind != "end" ||
+				events[0].IntervalID != events[1].IntervalID || !events[0].Estimated || events[1].Estimated {
+				t.Fatalf("legacy binding events = %+v, want one estimated start and one exact end", events)
+			}
+		})
+	}
+}
+
+// A legacy binding released before any new-server rebind still logs its interval.
+func TestComputeUsageLegacyBindingReleaseLogsInterval(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "compute-legacy-release-owner")
+	agent := mustAgent(t, s, owner.ID, "compute-legacy-release-agent")
+	tenant := s.EffectiveTenant(ctx)
+	execAsSystem(t, s, "INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id) VALUES ($1, $2, 'legacy-only', 'runner-old')",
+		string(tenant), string(agent.ID))
+	if err := s.DeleteSessionBinding(ctx, "legacy-only"); err != nil {
+		t.Fatalf("DeleteSessionBinding: %v", err)
+	}
+	events := computeEvents(t, s, tenant, agent.ID)
+	if len(events) != 2 || events[0].Kind != "start" || events[1].Kind != "end" ||
+		events[0].IntervalID != events[1].IntervalID || !events[0].Estimated {
+		t.Fatalf("legacy release events = %+v, want an estimated start and its end", events)
+	}
+}
+
 func TestComputeUsageRunnerSweepClosesIntervalsAndReturnsBindings(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
