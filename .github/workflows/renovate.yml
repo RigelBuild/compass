@@ -40,6 +40,7 @@ concurrency:
 
 jobs:
   renovate:
+    environment: main
     name: run
     runs-on: ubuntu-latest
     steps:
