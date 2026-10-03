@@ -89,7 +89,7 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 
 	for _, tbl := range []string{
 		"token_usage_events", "token_usage_rollups_hourly", "token_usage_rollups_daily",
-		"compute_usage_events",
+		"compute_usage_events", "compute_usage_rollups_hourly", "compute_usage_rollups_daily",
 	} {
 		var enabled, forced bool
 		err := s.pool.QueryRow(ctx,

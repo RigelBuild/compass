@@ -34,6 +34,7 @@ func TestPostgres(t *testing.T) {
 				t.Fatalf("clear rollups: %v", err)
 			}
 		},
+		AppendComputeInterval: appendPostgresComputeIntervals,
 	})
 }
 
@@ -70,6 +71,13 @@ func openPostgres(t *testing.T) (*store.Store, usage.Store) {
 		t.Fatalf("seed tenants: %v", err)
 	}
 	return st, usage.NewPostgres(st)
+}
+
+func appendPostgresComputeIntervals(t *testing.T, s usage.Store, ctx context.Context, intervals ...usage.ComputeInterval) {
+	t.Helper()
+	if err := usage.SeedPostgresComputeIntervals(ctx, s, intervals...); err != nil {
+		t.Fatalf("seed compute intervals: %v", err)
+	}
 }
 
 // A rebuild reads the horizon FOR SHARE, so a prune must not advance it, and
@@ -111,6 +119,66 @@ func TestPostgresPruneWaitsForHeldHorizon(t *testing.T) {
 	}
 	if n := countEvents(t, st, ctx); n != 0 {
 		t.Fatalf("after the prune, %d events remain, want 0", n)
+	}
+}
+
+func TestPostgresComputeRebuildUsesPruneHorizon(t *testing.T) {
+	_, s := openPostgres(t)
+	ctx := store.WithTenant(t.Context(), pgTenants[0])
+	day0 := time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC)
+	appendPostgresComputeIntervals(t, s, ctx,
+		usage.ComputeInterval{IntervalID: "horizon", StartUnixMs: day0.Add(23 * time.Hour).UnixMilli(), EndUnixMs: day0.Add(25 * time.Hour).UnixMilli(), AgentAccountID: "a1", OwnerUserID: "u1"},
+	)
+	if _, err := s.PruneComputeUsageBefore(ctx, day0.Add(24*time.Hour).UnixMilli()); err != nil {
+		t.Fatalf("PruneComputeUsageBefore: %v", err)
+	}
+	query := usage.SeriesQuery{
+		Granularity: usage.GranularityHour,
+		StartUnixMs: day0.UnixMilli(),
+		EndUnixMs:   day0.Add(48 * time.Hour).UnixMilli(),
+	}
+	want := []usage.ComputeBucket{
+		{StartUnixMs: day0.Add(23 * time.Hour).UnixMilli(), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+		{StartUnixMs: day0.Add(24 * time.Hour).UnixMilli(), ActiveMs: int64(time.Hour / time.Millisecond)},
+	}
+	for range 2 {
+		if err := s.RebuildComputeUsageRollups(ctx); err != nil {
+			t.Fatalf("RebuildComputeUsageRollups: %v", err)
+		}
+		got, err := s.ComputeUsageSeries(ctx, query)
+		if err != nil {
+			t.Fatalf("ComputeUsageSeries: %v", err)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("compute usage series after rebuild = %+v, want %+v", got, want)
+		}
+	}
+}
+
+func TestPostgresComputePruneRemovesOnlyClosedIntervalsBeforeCutoffDay(t *testing.T) {
+	st, s := openPostgres(t)
+	ctx := store.WithTenant(t.Context(), pgTenants[0])
+	day0 := time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC)
+	appendPostgresComputeIntervals(t, s, ctx,
+		usage.ComputeInterval{IntervalID: "old-compute", StartUnixMs: day0.Add(time.Hour).UnixMilli(), EndUnixMs: day0.Add(2 * time.Hour).UnixMilli(), AgentAccountID: "a1", OwnerUserID: "u1"},
+		usage.ComputeInterval{IntervalID: "new-compute", StartUnixMs: day0.Add(24 * time.Hour).UnixMilli(), EndUnixMs: day0.Add(25 * time.Hour).UnixMilli(), AgentAccountID: "a1", OwnerUserID: "u1"},
+		usage.ComputeInterval{IntervalID: "open-compute", StartUnixMs: day0.Add(3 * time.Hour).UnixMilli(), AgentAccountID: "a1", OwnerUserID: "u1"},
+	)
+	if deleted, err := s.PruneComputeUsageBefore(ctx, day0.Add(24*time.Hour).UnixMilli()); err != nil || deleted != 2 {
+		t.Fatalf("PruneComputeUsageBefore = %d, %v; want two events, nil", deleted, err)
+	}
+	var old, newer, open int
+	if err := st.WithTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FILTER (WHERE interval_id = 'old-compute'),
+			       count(*) FILTER (WHERE interval_id = 'new-compute'),
+			       count(*) FILTER (WHERE interval_id = 'open-compute')
+			  FROM compute_usage_events`).Scan(&old, &newer, &open)
+	}); err != nil {
+		t.Fatalf("count compute events: %v", err)
+	}
+	if old != 0 || newer != 2 || open != 1 {
+		t.Fatalf("compute event counts = old %d, new %d, open %d; want 0, 2, 1", old, newer, open)
 	}
 }
 

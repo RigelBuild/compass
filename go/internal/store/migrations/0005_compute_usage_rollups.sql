@@ -1,0 +1,172 @@
+-- 0005_compute_usage_rollups adds derived compute duration buckets and a raw-log horizon.
+
+CREATE TABLE compute_usage_rollups_hourly (
+    tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    bucket_start     TIMESTAMPTZ NOT NULL,
+    owner_user_id    TEXT        NOT NULL,
+    agent_account_id TEXT        NOT NULL,
+    active_ms        BIGINT      NOT NULL,
+    intervals        BIGINT      NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id)
+);
+
+CREATE TABLE compute_usage_rollups_daily (
+    tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    bucket_start     TIMESTAMPTZ NOT NULL,
+    owner_user_id    TEXT        NOT NULL,
+    agent_account_id TEXT        NOT NULL,
+    active_ms        BIGINT      NOT NULL,
+    intervals        BIGINT      NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id)
+);
+
+CREATE TABLE compute_usage_prune_horizon (
+    singleton  BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    horizon    TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO compute_usage_prune_horizon (horizon) VALUES ('-infinity');
+
+GRANT DELETE ON compute_usage_events TO compass_app, compass_system;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON compute_usage_rollups_hourly, compute_usage_rollups_daily,
+       compute_usage_prune_horizon
+    TO compass_app, compass_system;
+REVOKE INSERT, DELETE ON compute_usage_prune_horizon FROM compass_app, compass_system;
+
+DO $$
+DECLARE
+    t text;
+    tenant_tables text[] := ARRAY[
+        'compute_usage_rollups_hourly', 'compute_usage_rollups_daily'
+    ];
+BEGIN
+    FOREACH t IN ARRAY tenant_tables LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+        EXECUTE format($f$
+            CREATE POLICY tenant_isolation ON %I
+                USING ((SELECT current_setting('compass.tenant_id', TRUE)) <> ''
+                       AND tenant_id = (SELECT current_setting('compass.tenant_id', TRUE)))
+                WITH CHECK ((SELECT current_setting('compass.tenant_id', TRUE)) <> ''
+                       AND tenant_id = (SELECT current_setting('compass.tenant_id', TRUE)))
+        $f$, t);
+    END LOOP;
+END $$;
+
+DO $$
+DECLARE
+    t text;
+    updated_at_tables text[] := ARRAY[
+        'compute_usage_rollups_hourly',
+        'compute_usage_rollups_daily',
+        'compute_usage_prune_horizon'
+    ];
+BEGIN
+    FOREACH t IN ARRAY updated_at_tables LOOP
+        EXECUTE format(
+            'CREATE TRIGGER set_updated_at BEFORE UPDATE ON %I
+                 FOR EACH ROW EXECUTE FUNCTION set_updated_at()', t);
+    END LOOP;
+END $$;
+
+-- Keep this trigger unpinned so isolated schemas resolve their own tables.
+CREATE FUNCTION roll_up_compute_usage_end() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    started compute_usage_events%ROWTYPE;
+    start_ms BIGINT;
+    end_ms BIGINT;
+    width_ms BIGINT;
+    rollup_bucket TIMESTAMPTZ;
+    first_bucket TIMESTAMPTZ;
+    last_bucket TIMESTAMPTZ;
+    bucket_ms BIGINT;
+    active_ms BIGINT;
+    prune_horizon TIMESTAMPTZ;
+BEGIN
+    IF NEW.kind <> 'end' THEN
+        RETURN NEW;
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtext('compute_usage:' || NEW.tenant_id));
+    SELECT state.horizon INTO prune_horizon
+      FROM compute_usage_prune_horizon AS state
+     WHERE state.singleton FOR SHARE;
+    IF NEW.occurred_at < prune_horizon THEN
+        RETURN NEW;
+    END IF;
+    SELECT events.* INTO started
+      FROM compute_usage_events AS events
+     WHERE events.tenant_id = NEW.tenant_id
+       AND events.interval_id = NEW.interval_id
+       AND events.kind = 'start';
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
+
+    start_ms := floor(extract(epoch FROM started.occurred_at) * 1000)::bigint;
+    end_ms := floor(extract(epoch FROM NEW.occurred_at) * 1000)::bigint;
+
+    FOREACH width_ms IN ARRAY ARRAY[3600000::bigint, 86400000::bigint] LOOP
+        IF width_ms = 3600000 THEN
+            first_bucket := date_trunc('hour', started.occurred_at, 'UTC');
+            last_bucket := greatest(first_bucket, date_trunc('hour', NEW.occurred_at - interval '1 millisecond', 'UTC'));
+            IF prune_horizon > '-infinity'::timestamptz THEN
+                first_bucket := greatest(first_bucket, date_trunc('hour', prune_horizon, 'UTC'));
+            END IF;
+        ELSE
+            first_bucket := date_trunc('day', started.occurred_at, 'UTC');
+            last_bucket := greatest(first_bucket, date_trunc('day', NEW.occurred_at - interval '1 millisecond', 'UTC'));
+            IF prune_horizon > '-infinity'::timestamptz THEN
+                first_bucket := greatest(first_bucket, date_trunc('day', prune_horizon, 'UTC'));
+            END IF;
+        END IF;
+
+        rollup_bucket := first_bucket;
+        WHILE rollup_bucket <= last_bucket LOOP
+            bucket_ms := floor(extract(epoch FROM rollup_bucket) * 1000)::bigint;
+            active_ms := greatest(0, least(end_ms, bucket_ms + width_ms) - greatest(start_ms, bucket_ms));
+            IF width_ms = 3600000 THEN
+                INSERT INTO compute_usage_rollups_hourly (
+                    tenant_id, bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+                ) VALUES (
+                    NEW.tenant_id, rollup_bucket, started.owner_user_id, started.agent_account_id,
+                    active_ms, CASE WHEN rollup_bucket = date_trunc('hour', started.occurred_at, 'UTC')
+                                         AND started.occurred_at >= date_trunc('day', prune_horizon, 'UTC')
+                                    THEN 1 ELSE 0 END
+                )
+                ON CONFLICT (tenant_id, bucket_start, owner_user_id, agent_account_id)
+                DO UPDATE SET
+                    active_ms = compute_usage_rollups_hourly.active_ms + EXCLUDED.active_ms,
+                    intervals = compute_usage_rollups_hourly.intervals + EXCLUDED.intervals;
+            ELSE
+                INSERT INTO compute_usage_rollups_daily (
+                    tenant_id, bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+                ) VALUES (
+                    NEW.tenant_id, rollup_bucket, started.owner_user_id, started.agent_account_id,
+                    active_ms, CASE WHEN rollup_bucket = date_trunc('day', started.occurred_at, 'UTC')
+                                         AND started.occurred_at >= date_trunc('day', prune_horizon, 'UTC')
+                                    THEN 1 ELSE 0 END
+                )
+                ON CONFLICT (tenant_id, bucket_start, owner_user_id, agent_account_id)
+                DO UPDATE SET
+                    active_ms = compute_usage_rollups_daily.active_ms + EXCLUDED.active_ms,
+                    intervals = compute_usage_rollups_daily.intervals + EXCLUDED.intervals;
+            END IF;
+            rollup_bucket := rollup_bucket + CASE WHEN width_ms = 3600000 THEN interval '1 hour' ELSE interval '1 day' END;
+        END LOOP;
+    END LOOP;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER compute_usage_rollup_after_end
+AFTER INSERT ON compute_usage_events
+FOR EACH ROW EXECUTE FUNCTION roll_up_compute_usage_end();
