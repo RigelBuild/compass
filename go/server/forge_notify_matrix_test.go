@@ -494,8 +494,8 @@ func (p *matrixPullNumbers) PullNumberForSHA(_ context.Context, _, headSHA strin
 // its PR number through the PullNumberResolver seam BEFORE the zero-number
 // guard — so a signed check_suite webhook now routes and dispatches.
 //
-// The negative half stays: a head SHA no PR carries has no coordinate to notify
-// against, so the route fails CLOSED with nothing dispatched.
+// The negative half: a head SHA no PR carries has no coordinate to notify
+// against, so the route skips it with a nil error and nothing dispatched.
 func TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber(t *testing.T) {
 	secret := []byte("gh-webhook-secret")
 	gh := newFakeGitHubForge(secret, "octo/repo")
@@ -530,15 +530,15 @@ func TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber(t *testing.T) {
 		}
 	})
 
-	t.Run("no pull request for the head sha fails closed", func(t *testing.T) {
+	t.Run("no pull request for the head sha is skipped", func(t *testing.T) {
 		ev := postGH(t, secret, gh.completeCheckSuite(t, "orphanheadsha"))
 
 		st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}}}
 		d := &matrixDispatcher{}
 		pulls := &matrixPullNumbers{err: forge.ErrNoPullRequestForSHA}
 		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, pulls, nil, mxRef(), nil)
-		if err := r.Route(t.Context(), ev); err == nil {
-			t.Fatal("Route(check_suite, no PR for head sha) = nil error, want the route to fail closed")
+		if err := r.Route(t.Context(), ev); err != nil {
+			t.Fatalf("Route(check_suite, no PR for head sha) = %v, want a nil skip", err)
 		}
 		if len(d.sent) != 0 {
 			t.Errorf("dispatched %d, want 0 (no coordinate to notify against)", len(d.sent))
