@@ -181,6 +181,7 @@ func TestClassifyProcedureClassifiesKnownAndUnknownProcedures(t *testing.T) {
 		{"GetServerInfo", compassv1connect.CompassServiceGetServerInfoProcedure, false, true},
 		{"SubscribeEvents", compassv1connect.CompassServiceSubscribeEventsProcedure, false, true},
 		{"ListBoardIssues", compassv1connect.CompassServiceListBoardIssuesProcedure, false, true},
+		{"SearchIssues", compassv1connect.CompassServiceSearchIssuesProcedure, false, true},
 		{"SubscribeAgentSession", compassv1connect.CompassServiceSubscribeAgentSessionProcedure, false, true},
 		{"GetAgentConfigInfo", compassv1connect.CompassServiceGetAgentConfigInfoProcedure, false, true},
 		{"CommsCreateUser", compassv1connect.CommsServiceCreateUserProcedure, false, true},
