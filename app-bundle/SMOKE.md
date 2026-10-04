@@ -159,7 +159,7 @@ the app (`stopStackAndQuit` in `go/cmd/compass-app/lifecycle.go`). Do not run a 
 containers or private postgres container remain:
 
 ```bash
-podman ps -a --filter name='^compass-(postgres|otel-collector|nats|agent)-'
+podman ps -a --filter name='^compass-(postgres|otel-collector|nats|gateway|agent)-'
 ```
 
 The filter should match the stack's containers while it is up. After teardown,
@@ -374,7 +374,7 @@ rm -rf "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
       is pulled so bring-up does not cold-pull (§Part (a), 1)
 - [ ] the bundle contains the shell and four sidecars (§Part (a), 2)
 - [ ] **Quit and stop stack** (not plain close) closes the app; `podman ps -a
-      --filter name='^compass-(postgres|otel-collector|nats|agent)-'` is empty
+      --filter name='^compass-(postgres|otel-collector|nats|gateway|agent)-'` is empty
       and `$ERT/app.log` reports no teardown failure (§Part (a), 5)
 - [ ] the pinned `--state-dir`/`--socket` paths are removed and `$HOME/.compass`
       was not touched (§Part (a), 5)
