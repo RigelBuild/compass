@@ -2996,8 +2996,11 @@ jobs:
           SRC: ${{ runner.temp }}/visual-baselines
         run: |
           dir=apps/ui/e2e/__screens__
+          for p in apps apps/ui apps/ui/e2e; do
+            [ -d "$p" ] && [ ! -L "$p" ] || { echo "::error::$p is not a plain directory"; exit 1; }
+          done
           rm -rf -- "$dir"
-          mkdir -p -- "$dir"
+          mkdir -- "$dir"
           find "$SRC" -maxdepth 1 -type f -name '*.png' \
             -exec cp --no-dereference -t "$dir" -- {} +
           [ -n "$(ls -A "$dir")" ] || { echo "::error::no PNGs in artifact"; exit 1; }
