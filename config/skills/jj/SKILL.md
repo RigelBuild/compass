@@ -258,12 +258,13 @@ first can lose work that exists only on its head.
    are new, unpublished commits. If there are several (review fixes count),
    fold them into the first copy with
    `jj squash --from '<first>+::<last>' --into <first> -m '<subject>'`.
-   For two concerns, run
+   For two independent concerns, run
    `jj split --parallel -r <copy> -m '<first subject>' <file>...`, then
    `jj describe -r <remainder> -m '<second subject>'`; `-m` keeps every step
-   off the editor. File sets cannot divide one file between concerns; edit
-   that file by hand in each replacement. Give each replacement its own
-   bookmark and submit.
+   off the editor. If one concern needs the other, drop `--parallel` and select
+   the prerequisite's files; the selected part becomes the parent. File sets
+   cannot divide one file between concerns; edit that file by hand in each
+   replacement. Give each replacement its own bookmark and submit.
 2. Compare cumulative diffs: every hunk in the old PR's effective diff against
    its base must appear in exactly one replacement, or be dropped on purpose
    with a stated reason. Carry over the title, body, and issue references.
