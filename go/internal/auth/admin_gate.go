@@ -90,6 +90,7 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CommsServiceListChannelsProcedure,
 		compassv1connect.CommsServiceUpdateChannelMembersProcedure,
 		compassv1connect.CommsServiceReparentAgentProcedure,
+		compassv1connect.CommsServiceReparentChannelProcedure,
 		compassv1connect.CommsServiceOpenAgentWorkspaceProcedure,
 		compassv1connect.CommsServiceListMessagesProcedure,
 		compassv1connect.CommsServicePostMessageProcedure,
