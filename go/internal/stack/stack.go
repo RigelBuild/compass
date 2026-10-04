@@ -83,6 +83,11 @@ type Stack struct {
 	// It is the in-process Down's teardown identity for the container (the same
 	// name persisted in the v2 pgid record for a cross-process down).
 	pgContainerName string
+	// guest is the resolved guest image location for the microVM backend:
+	// materialised from GuestArtifact, validated from GuestDir, or zero (the
+	// Runner image's baked assets stay live). Resolved before the runner spawn,
+	// so a fetch failure prevents the launch instead of a failing preflight.
+	guest GuestPaths
 	// pgids accumulates each spawned child's teardown identity (pgid +
 	// start-time token) in start order, so spawnChain can rewrite the state-dir
 	// pgid record after each spawn and a fully successful Down knows the file it
@@ -252,10 +257,17 @@ func (s *Stack) startRunner(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ensure runner token: %w", err)
 	}
-	if err := s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage); err != nil {
-		return fmt.Errorf("ensure agent image: %w", err)
+	// The agent ships inside the guest rootfs under microVM; there is no image to pull.
+	if !s.cfg.microVM() {
+		if err := s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage); err != nil {
+			return fmt.Errorf("ensure agent image: %w", err)
+		}
 	}
-	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, s.cert, token))
+	// Resolve and verify guest paths before spawning, so a bad guest fails here.
+	if err := s.resolveGuest(ctx); err != nil {
+		return err
+	}
+	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, s.cert, token, s.guest))
 	if err != nil {
 		return fmt.Errorf("start compass-runner: %w", err)
 	}
@@ -327,8 +339,30 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 
-	// 5-7. Runner token, agent image, then compass-runner.
+	// 5-7. Runner token, agent image, guest paths, then compass-runner.
 	return s.startRunner(ctx)
+}
+
+// resolveGuest resolves the microVM guest image to concrete paths. Validate
+// already rejected the incoherent combinations, so three arms are exhaustive:
+// fetch a GuestArtifact into the content-addressed dir, validate a GuestDir
+// as-is, or leave the paths zero and keep the Runner image's baked assets live.
+func (s *Stack) resolveGuest(ctx context.Context) error {
+	switch {
+	case s.cfg.GuestArtifact != "":
+		paths, err := materializeGuest(ctx, s.cfg.GuestArtifact, s.cfg.StateDir)
+		if err != nil {
+			return fmt.Errorf("materialise guest image %q: %w", s.cfg.GuestArtifact, err)
+		}
+		s.guest = paths
+	case s.cfg.GuestDir != "":
+		paths, err := resolveGuestDir(s.cfg.GuestDir)
+		if err != nil {
+			return fmt.Errorf("resolve guest dir: %w", err)
+		}
+		s.guest = paths
+	}
+	return nil
 }
 
 // startPostgres brings up the private store-of-record via the path Config
