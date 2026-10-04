@@ -346,6 +346,15 @@ func (c *Comms) ReparentAgent(
 	return connect.NewResponse(&compassv1.ReparentAgentResponse{Account: accountToWire(acc)}), nil
 }
 
+// ReparentChannel lands proto-first: the store invariants and handler body
+// arrive with the channel-attach store work, so it is Unimplemented until then.
+func (c *Comms) ReparentChannel(
+	_ context.Context,
+	_ *connect.Request[compassv1.ReparentChannelRequest],
+) (*connect.Response[compassv1.ReparentChannelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("comms ReparentChannel: not implemented"))
+}
+
 // ---- agent workspace RPC (D5) ----
 
 // OpenAgentWorkspace opens (or fetches) the caller's observation pane for an
