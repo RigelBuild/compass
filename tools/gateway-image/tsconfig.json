@@ -7,5 +7,6 @@
 		"allowImportingTsExtensions": true,
 		"noUncheckedIndexedAccess": true,
 		"types": ["bun"]
-	}
+	},
+	"include": ["*.ts"]
 }

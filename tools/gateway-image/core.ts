@@ -143,10 +143,11 @@ export const SECRET_NAME_ALLOWLIST: readonly string[] = [
 	"COMPASS_GATEWAY_TOKEN_FILE",
 ];
 
-/** Credential-shaped name segments. The `(^|_)…($|_)` boundary keeps `PAT`
- * from firing on `PATH` while `SSH_KEY` still matches. */
+/** Credential-shaped name segments. The boundary spans `_`, `.` and `-` so it
+ * also reads label keys (`org.example.registry-token`), and keeps `PAT` from
+ * firing on `PATH` while `SSH_KEY` still matches. */
 const SECRET_NAME_PATTERN =
-	/(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|APIKEY|API_KEY|KEY|CREDENTIAL|CREDENTIALS|PRIVATE_KEY|SESSION|AUTH|PAT|BEARER)($|_)/i;
+	/(^|[_.-])(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|APIKEY|API_KEY|KEY|CREDENTIAL|CREDENTIALS|PRIVATE_KEY|SESSION|AUTH|PAT|BEARER)([_.-]|$)/i;
 
 const flagged = (name: string): boolean =>
 	!SECRET_NAME_ALLOWLIST.includes(name) && SECRET_NAME_PATTERN.test(name);

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-	BASE_CONTEXT,
 	baseBuildArgs,
 	buildTag,
 	digestRef,
@@ -16,9 +15,6 @@ import {
 
 const COMMIT = "76015c2d80691c8a9f46fb84a00cad652d4455c6";
 const DIGEST = `sha256:${"a".repeat(64)}`;
-const pin = (fields: Record<string, unknown>) => JSON.stringify(fields);
-const sha256 = (text: string) =>
-	`sha256:${new Bun.CryptoHasher("sha256").update(text).digest("hex")}`;
 
 describe("parseForkPin", () => {
 	test("accepts the committed pin file", async () => {
@@ -41,7 +37,7 @@ describe("parseForkPin", () => {
 		["a branch name", { repo: FORK_REPO, commit: "main" }],
 		["a missing commit", { repo: FORK_REPO }],
 	])("rejects %s", (_, fields) => {
-		expect(() => parseForkPin(pin(fields))).toThrow();
+		expect(() => parseForkPin(JSON.stringify(fields))).toThrow();
 	});
 
 	test("rejects a non-object", () => {
@@ -50,32 +46,54 @@ describe("parseForkPin", () => {
 });
 
 describe("buildctl argv", () => {
-	test("stage 1 targets pi-runtime with reproducible OCI output", () => {
-		const argv = baseBuildArgs("/src", "/base");
-		expect(argv).toContain("target=pi-runtime");
-		expect(argv).toContain("build-arg:SOURCE_DATE_EPOCH=1");
-		expect(argv).toContain(
+	test("stage 1 builds pi-runtime for amd64 with reproducible OCI output", () => {
+		expect(baseBuildArgs("/src", "/base")).toEqual([
+			"build",
+			"--frontend",
+			"dockerfile.v0",
+			"--local",
+			"context=/src",
+			"--local",
+			"dockerfile=/src",
+			"--opt",
+			"filename=Dockerfile",
+			"--opt",
+			"target=pi-runtime",
+			"--opt",
+			"platform=linux/amd64",
+			"--opt",
+			"build-arg:SOURCE_DATE_EPOCH=1",
+			"--output",
 			"type=oci,dest=/base,tar=false,rewrite-timestamp=true",
-		);
+		]);
 	});
 
-	test("stage 2 binds the stage-1 layout as the PI_BASE context by digest", () => {
-		const argv = gatewayBuildArgs(
-			"/src",
-			"/base",
-			DIGEST,
-			"/oci",
-			"/meta.json",
-		);
-		expect(argv).toContain("filename=Dockerfile.gateway");
-		expect(argv).toContain("pibase=/base");
-		expect(argv).toContain(
-			`context:${BASE_CONTEXT}=oci-layout://pibase@${DIGEST}`,
-		);
-		expect(argv).toContain(
+	test("stage 2 binds the stage-1 layout as oh-my-pi/pi:dev by digest", () => {
+		expect(
+			gatewayBuildArgs("/src", "/base", DIGEST, "/oci", "/meta.json"),
+		).toEqual([
+			"build",
+			"--frontend",
+			"dockerfile.v0",
+			"--local",
+			"context=/src",
+			"--local",
+			"dockerfile=/src",
+			"--oci-layout",
+			"pibase=/base",
+			"--opt",
+			"filename=Dockerfile.gateway",
+			"--opt",
+			`context:oh-my-pi/pi:dev=oci-layout://pibase@${DIGEST}`,
+			"--opt",
+			"platform=linux/amd64",
+			"--opt",
+			"build-arg:SOURCE_DATE_EPOCH=1",
+			"--output",
 			"type=oci,dest=/oci,tar=false,rewrite-timestamp=true,oci-mediatypes=true",
-		);
-		expect(argv.slice(-2)).toEqual(["--metadata-file", "/meta.json"]);
+			"--metadata-file",
+			"/meta.json",
+		]);
 	});
 
 	test("stage 2 refuses a base that is not a digest", () => {
@@ -129,8 +147,39 @@ describe("secretConfigViolations", () => {
 		]);
 	});
 
-	test("flags a name-only env entry, which inherits a value at runtime", () => {
+	test("passes an empty value but flags a name-only entry", () => {
+		expect(scan(["API_KEY="])).toEqual([]);
 		expect(scan(["API_KEY"])).toEqual(["API_KEY"]);
+	});
+
+	test("applies the exact-match allowlist to label keys and values", () => {
+		expect(
+			scan([], { GPG_KEY: "x", note: "COMPASS_GATEWAY_TOKEN_FILE" }),
+		).toEqual([]);
+		expect(scan([], { GPG_KEY_X: "x" })).toEqual(["GPG_KEY_X"]);
+	});
+
+	test("flags dotted and dashed label keys", () => {
+		expect(
+			scan([], {
+				"org.example.registry-token": "x",
+				"org.example.api.key": "y",
+			}),
+		).toEqual(["org.example.registry-token", "org.example.api.key"]);
+	});
+
+	test("passes the env of the built gateway image", () => {
+		const env = [
+			"LANG=C.UTF-8",
+			"GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+			"PYTHON_SHA256=5c8462af",
+			"PATH=/opt/bun/bin:/usr/bin:/bin",
+			"HOME=/tmp",
+			"COMPASS_GATEWAY_TOKEN_FILE=/run/compass/gateway.token",
+			"COMPASS_GATEWAY_BIND=0.0.0.0:4000",
+			"COMPASS_GATEWAY_DRAIN_MS=20000",
+		];
+		expect(scan(env, { "io.buildah.version": "1.43.2" })).toEqual([]);
 	});
 
 	test("flags a label whose value names a secret", () => {
@@ -153,16 +202,24 @@ describe("tags and refs", () => {
 });
 
 describe("tagDisposition", () => {
-	const manifest = '{"schemaVersion":2}';
+	// Non-canonical raw bytes and their independently computed sha256: a
+	// parse-and-reserialize regression hashes different bytes.
+	const manifest = '{\n  "schemaVersion": 2 }';
+	const manifestDigest =
+		"sha256:e36b365ae05ced79e2d32ee8d290cc999fe07aff11ce21bb2caf1f69428e93f9";
 
-	test("publishes when the registry says the tag is unknown", () => {
-		const probe = { exitCode: 1, stdout: "", stderr: "manifest unknown" };
-		expect(tagDisposition(probe, DIGEST).action).toBe("publish");
-	});
+	test.each(["manifest unknown", "name unknown", "manifest not found"])(
+		"publishes when the registry answers %s",
+		(stderr) => {
+			expect(
+				tagDisposition({ exitCode: 1, stdout: "", stderr }, DIGEST).action,
+			).toBe("publish");
+		},
+	);
 
-	test("skips a re-run whose raw manifest has the local digest", () => {
+	test("skips a re-run whose raw manifest bytes hash to the local digest", () => {
 		const probe = { exitCode: 0, stdout: manifest, stderr: "" };
-		expect(tagDisposition(probe, sha256(manifest)).action).toBe("skip");
+		expect(tagDisposition(probe, manifestDigest).action).toBe("skip");
 	});
 
 	test("aborts when the tag holds a different digest", () => {
