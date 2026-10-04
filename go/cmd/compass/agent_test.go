@@ -83,11 +83,12 @@ func TestRunAgentStatusEmpty(t *testing.T) {
 func TestRunAgentStatusRunnerEnrollment(t *testing.T) {
 	tests := []struct {
 		name         string
-		enrolled     bool
+		enrolled     *bool
 		wantNoRunner bool
 	}{
-		{name: "not enrolled", enrolled: false, wantNoRunner: true},
-		{name: "enrolled", enrolled: true},
+		{name: "not enrolled", enrolled: new(false), wantNoRunner: true},
+		{name: "enrolled", enrolled: new(true)},
+		{name: "older server leaves it unset"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

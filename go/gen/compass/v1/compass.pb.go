@@ -4286,8 +4286,9 @@ func (x *GetAgentStatusRequest) GetSessionId() string {
 type GetAgentStatusResponse struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Statuses []*AgentSessionStatus  `protobuf:"bytes,1,rep,name=statuses,proto3" json:"statuses,omitempty"`
-	// True when a Runner is enrolled and its Sessions stream is attached.
-	RunnerEnrolled bool `protobuf:"varint,2,opt,name=runner_enrolled,json=runnerEnrolled,proto3" json:"runner_enrolled,omitempty"`
+	// True when a Runner is enrolled and its Sessions stream is attached; unset
+	// from a server that predates the field.
+	RunnerEnrolled *bool `protobuf:"varint,2,opt,name=runner_enrolled,json=runnerEnrolled,proto3,oneof" json:"runner_enrolled,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -4330,8 +4331,8 @@ func (x *GetAgentStatusResponse) GetStatuses() []*AgentSessionStatus {
 }
 
 func (x *GetAgentStatusResponse) GetRunnerEnrolled() bool {
-	if x != nil {
-		return x.RunnerEnrolled
+	if x != nil && x.RunnerEnrolled != nil {
+		return *x.RunnerEnrolled
 	}
 	return false
 }
@@ -6503,10 +6504,11 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"6\n" +
 	"\x15GetAgentStatusRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"}\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\x96\x01\n" +
 	"\x16GetAgentStatusResponse\x12:\n" +
-	"\bstatuses\x18\x01 \x03(\v2\x1e.compass.v1.AgentSessionStatusR\bstatuses\x12'\n" +
-	"\x0frunner_enrolled\x18\x02 \x01(\bR\x0erunnerEnrolled\":\n" +
+	"\bstatuses\x18\x01 \x03(\v2\x1e.compass.v1.AgentSessionStatusR\bstatuses\x12,\n" +
+	"\x0frunner_enrolled\x18\x02 \x01(\bH\x00R\x0erunnerEnrolled\x88\x01\x01B\x12\n" +
+	"\x10_runner_enrolled\":\n" +
 	"\x11IssueTokenRequest\x12%\n" +
 	"\x0eaccount_handle\x18\x01 \x01(\tR\raccountHandle\"*\n" +
 	"\x12IssueTokenResponse\x12\x14\n" +
@@ -7032,6 +7034,7 @@ func file_compass_v1_compass_proto_init() {
 	file_compass_v1_compass_proto_msgTypes[38].OneofWrappers = []any{}
 	file_compass_v1_compass_proto_msgTypes[40].OneofWrappers = []any{}
 	file_compass_v1_compass_proto_msgTypes[42].OneofWrappers = []any{}
+	file_compass_v1_compass_proto_msgTypes[58].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

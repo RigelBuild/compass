@@ -216,8 +216,8 @@ func TestRunnerEnrolledTracksSessionsAttachment(t *testing.T) {
 	}
 }
 
-// TestRunnerEnrolledFalseAfterReenrollUntilAttach pins that a re-enroll resets the
-// answer to the NEW router: the old router's still-attached stream must not leak.
+// TestRunnerEnrolledFalseAfterReenrollUntilAttach pins that a completed re-enroll
+// answers for the NEW router, never the old router's still-attached stream.
 func TestRunnerEnrolledFalseAfterReenrollUntilAttach(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)

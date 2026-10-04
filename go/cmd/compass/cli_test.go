@@ -261,7 +261,7 @@ type fakeCompass struct {
 	deleteCalls    int
 	gotToken       string
 	gotStatus      *compassv1.GetAgentStatusRequest
-	statusEnrolled bool
+	statusEnrolled *bool
 	statuses       []*compassv1.AgentSessionStatus
 	gotAuth        string
 }
