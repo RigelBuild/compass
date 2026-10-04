@@ -252,14 +252,20 @@ A PR that carries two concerns, or that a newer PR replaces, is retired only
 after its replacement is proven. Keep the old PR open until then; closing it
 first can lose work that exists only on its head.
 
-1. Build each replacement on `main@origin`, one concern per bookmark (`jj split
-   <file>...` carves a mixed commit by file). Submit them.
+1. Leave the published old bookmark untouched. Copy its commits onto current
+   trunk with `jj duplicate '<old-base>..<old-bookmark>' --onto 'main@origin'`;
+   the copies are new, unpublished commits. For two concerns, run
+   `jj split --parallel -r <copy> <file>...` to make them sibling commits. Give
+   each replacement its own bookmark and submit.
 2. Compare cumulative diffs: every hunk in the old PR's effective diff against
    its base must appear in exactly one replacement, or be dropped on purpose
    with a stated reason. Carry over the title, body, and issue references.
-3. Close the old PR with a comment that links each replacement.
-4. Delete its remote branch. `jj-vine submit` cannot delete one, so run
-   `jj git push --deleted --dry-run`, confirm the deletion set is exactly that
-   branch, then run it without `--dry-run`.
+3. Find PRs stacked on the old one. Rebase each onto the right replacement and
+   re-submit it before the old branch goes away.
+4. Close the old PR with a comment that links each replacement.
+5. Delete its branch. `jj-vine submit` cannot delete one, so run
+   `jj bookmark delete <old-bookmark>`, then `jj-hp push --deleted --dry-run`.
+   `--deleted` pushes every locally deleted bookmark, so confirm the set is
+   exactly that one, then run it without `--dry-run`.
 
 Retire only PRs you own. Route a PR owned by another agent to its owner.
