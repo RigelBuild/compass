@@ -73,14 +73,14 @@ export async function fetchSnapshot(
 			client.getRoster({ scope: RosterScope.OWNER }, opts),
 		]);
 
-	// Topics + messages page per channel. ListTopics is channel-scoped; messages page
-	// the whole channel (empty topic filter), so the store's flat `messages()` accessor
-	// stays the whole visible list. (Lazy per-topic load would change the contract.)
+	// Topics + messages page per channel. ListTopics is channel-scoped and includes
+	// archived topics so a search hit or deep link can open one; the index hides them
+	// (topicsOf). Messages page the whole channel (empty topic filter).
 	const [perChannelTopics, perChannelMessages] = await Promise.all([
 		Promise.all(
 			channelsResp.channels.map((channel) =>
 				client
-					.listTopics({ channelId: channel.id, includeArchived: false }, opts)
+					.listTopics({ channelId: channel.id, includeArchived: true }, opts)
 					.then((resp) => resp.topics),
 			),
 		),

@@ -165,7 +165,10 @@ export function createStoreDestinationProviders(
 			query: (input) =>
 				Promise.resolve(
 					scored(
-						store.topics().map((t) => ({ id: t.id, title: t.name })),
+						store
+							.topics()
+							.filter((t) => !t.archived)
+							.map((t) => ({ id: t.id, title: t.name })),
 						"topic",
 						input,
 						(item) => () => store.openTopic(item.id),

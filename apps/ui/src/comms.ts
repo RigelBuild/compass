@@ -208,9 +208,8 @@ function lastActivityOf(group: TopicGroup): number {
 /** Group a channel's topics into ordered TopicGroups: every ACTIVE topic in the
  *  channel (in `topics`, archived excluded), each carrying its own messages
  *  chronological, ordered by last activity DESCENDING (most-recently-active
- *  topic first). Archived topics are hidden from the index (matching the
- *  snapshot loader's listTopics{includeArchived:false}) but keep their messages,
- *  so a deep-link into an archived topic still renders in TopicView. The server
+ *  topic first). Archived topics are loaded (so a deep link or search hit can
+ *  open one in TopicView) but hidden from the index, keeping their messages. The server
  *  guarantees every message has a topic, so there is NO client root-chasing and
  *  nothing is dropped: each message lands in exactly the group of its `topicId`.
  *  Ties break by topic id so the order is stable. Message order within

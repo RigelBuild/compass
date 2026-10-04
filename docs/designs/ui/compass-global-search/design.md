@@ -388,7 +388,10 @@ one. **Amendment (RIG-4295, Matt, 2026-10-04):** `Message` gains
 (`comms.proto`). The provider routes on `channel_id` + `topic_id` through
 `store.openTopic(topicId, channelId)`, and falls back to the topic set when
 the field is empty. A hit with neither is dropped at map time rather than
-rendered dead. T5's tests cover both routes and the drop.
+rendered dead. The topic route needs the topic in the client set, so the
+comms snapshot now loads archived topics too; the channel index and the topic
+provider still hide them. T5's tests cover both routes, the drop, and an
+archived hit after a live snapshot.
 
 This requires widening the frozen `DestinationKind` union
 (`commands.ts:49-55`) with `"message"` — a D5/DL-233 overlap the driver must

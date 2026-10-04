@@ -18,6 +18,12 @@ import {
 } from "@compass/client";
 import { createRoot } from "solid-js";
 import { STUB_COMMS_STATE } from "../comms-stub";
+import {
+	createFakeComms,
+	wireChannel,
+	wireTextMessage,
+	wireTopic,
+} from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import type { Destination, DestinationProvider } from "./commands";
@@ -458,6 +464,69 @@ describe("createStoreDestinationProviders", () => {
 			expect(store.selectedChannelId()).toBe("ch-announcements");
 			expect(store.selectedTopicId()).toBe("top-archived");
 		});
+	});
+
+	test("an archived-topic hit opens its topic after the live snapshot", async () => {
+		const caller = "acc-me";
+		const fake = createFakeComms({
+			channels: [wireChannel("ch-live", caller)],
+			topicsByChannel: {
+				"ch-live": [
+					wireTopic({ id: "top-live", channelId: "ch-live", name: "live" }),
+					wireTopic({
+						id: "top-old",
+						channelId: "ch-live",
+						name: "old",
+						archived: true,
+					}),
+				],
+			},
+			messagesByChannel: {
+				"ch-live": [
+					wireTextMessage({
+						id: "msg-old",
+						topicId: "top-old",
+						authorAccountId: caller,
+						atUnixMs: 1,
+						text: "archived hit",
+					}),
+				],
+			},
+		});
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				comms: fake.client,
+				callerId: caller,
+				queryClient: testQueryClient(),
+			});
+		});
+		try {
+			await flush();
+			expect(store.firstSnapshotArrived()).toBe(true);
+			const providers = createStoreDestinationProviders(
+				store,
+				liveSearchClients(
+					searchTransport([
+						makeSearchHit("msg-old", "top-old", "archived hit", "ch-live"),
+					]),
+				),
+			);
+			const topicRows = await providers
+				.find((p) => p.id === "topics")
+				?.query("");
+			expect(topicRows?.map((row) => row.id)).toEqual(["top-live"]);
+			const messages = await providers
+				.find((p) => p.id === "messages")
+				?.query("archived");
+			messages?.[0]?.navigate();
+			await flush();
+			expect(store.view()).toBe("topic");
+			expect(store.selectedTopic()?.id).toBe("top-old");
+		} finally {
+			dispose();
+		}
 	});
 
 	test("message rows keep the server's best-match-first order", async () => {
