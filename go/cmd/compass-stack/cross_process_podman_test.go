@@ -175,6 +175,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 		"--database", cfg.DatabaseDSN,
 		"--image", cfg.AgentImage,
 		"--runtime-dir", cfg.RuntimeDir,
+		"--gateway-external", "http://127.0.0.1:4100",
 		"--linger",
 	)
 	if err != nil {

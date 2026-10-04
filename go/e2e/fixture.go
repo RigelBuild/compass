@@ -617,6 +617,8 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// without an event fabric, and a bundled container would be pure CI cost.
 		// Its cleanup is registered before Up's Down, so it outlives the server.
 		ExternalNatsURL: startFixtureNats(t),
+		// No agent here calls a model through the gateway, so skip the bundled child.
+		ExternalGatewayURL: "http://127.0.0.1:4100",
 	}
 	if fc.objectStore != nil {
 		garage = fc.objectStore
