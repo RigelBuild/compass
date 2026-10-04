@@ -735,7 +735,15 @@ func (p *PodmanCLI) Running(ctx context.Context, name string) (bool, error) {
 	if exitCode != 0 {
 		return false, &CommandError{Summary: "podman container inspect", ExitCode: exitCode, Stderr: strings.TrimSpace(string(stderr))}
 	}
-	return strings.TrimSpace(string(out)) == "true", nil
+	// Provision treats false as licence to remove, so only an exact answer counts.
+	switch state := strings.TrimSpace(string(out)); state {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("podman container inspect: unexpected running state %q", state)
+	}
 }
 
 // MountLabel reads the container's SELinux mount label via `podman inspect`,

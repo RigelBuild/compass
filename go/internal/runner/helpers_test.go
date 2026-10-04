@@ -153,6 +153,7 @@ type stubStreamingRuntime struct {
 	execErr     error                           // when set, ExecStreaming fails before starting the child
 	created     []runtime.WorkloadSpec
 	createErr   error           // when set, Create fails with it — models `podman create` refusing a name already in use
+	removeErr   error           // when set, Remove fails with it and leaves the workload in place
 	vanished    map[string]bool // names removed outside the Runner (a redeploy); Exists reports them gone
 	stopped     map[string]bool // registered workloads whose process stopped
 }
@@ -181,7 +182,8 @@ func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.WorkloadSp
 	}
 	delete(f.stopped, spec.Name)
 	delete(f.vanished, spec.Name)
-	return runtime.WorkloadID("fake-id"), nil
+	// The name doubles as the id so Stop/Remove bookkeeping resolves the workload.
+	return runtime.WorkloadID(spec.Name), nil
 }
 func (f *stubStreamingRuntime) Start(context.Context, runtime.WorkloadID) error {
 	f.record("start")
@@ -257,6 +259,10 @@ func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) 
 	f.record("remove")
 	f.recordForID(id, "remove")
 	f.mu.Lock()
+	if f.removeErr != nil {
+		f.mu.Unlock()
+		return f.removeErr
+	}
 	if f.vanished == nil {
 		f.vanished = make(map[string]bool)
 	}

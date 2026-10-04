@@ -330,13 +330,18 @@ func (a *AppleContainerCLI) Running(ctx context.Context, name string) (bool, err
 	if exitCode != 0 {
 		return classifyInspectErr(exitCode, string(stderr))
 	}
-	var inspect struct {
+	// inspect prints a JSON array, one entry per named container. An unknown
+	// status shape errors: Provision treats false as licence to remove.
+	var inspect []struct {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(out, &inspect); err != nil {
 		return false, fmt.Errorf("decoding container inspect status: %w", err)
 	}
-	return inspect.Status == "running", nil
+	if len(inspect) != 1 || inspect[0].Status == "" {
+		return false, fmt.Errorf("container inspect %q: want one entry with a status, got %s", name, out)
+	}
+	return inspect[0].Status == "running", nil
 }
 
 // appleInspectArgs assembles the `container inspect` argv used as the existence

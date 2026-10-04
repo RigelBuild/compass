@@ -213,12 +213,10 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		if running {
 			return "", fmt.Errorf("provisioning %q: %w", spec.Name, errAlreadyProvisioned)
 		}
-		// Stopped or removed behind the Runner's back (redeploy, crash): retire the
-		// old session, config version and socket, drop the entry, and remove any
-		// stopped container so Launch can reuse the name.
-		h.retireContainer(spec.Name)
-		h.closeSocket(ctx, spec.Name)
-		h.registry.Deregister(spec.Name)
+		// Stopped or removed behind the Runner's back (redeploy, crash): remove any
+		// stopped container so Launch can reuse the name, then retire the old
+		// session, config version and socket and drop the entry. Deregister last,
+		// so a failed engine call leaves the entry for a retry.
 		exists, err := h.engine.Exists(ctx, spec.Name)
 		if err != nil {
 			return "", fmt.Errorf("provisioning %q: checking stale workload: %w", spec.Name, err)
@@ -228,6 +226,9 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 				return "", fmt.Errorf("provisioning %q: removing stale workload: %w", spec.Name, err)
 			}
 		}
+		h.retireContainer(spec.Name)
+		h.closeSocket(ctx, spec.Name)
+		h.registry.Deregister(spec.Name)
 	}
 	// microVM serves the AgentGateway over a per-session vsock path not knowable
 	// until Launch mints the session runtime dir, so it inverts order: Launch first,

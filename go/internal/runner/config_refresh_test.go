@@ -22,7 +22,7 @@ import (
 // configFanoutRuntime is a WorkloadRuntime for the RefreshConfig fan-out tests.
 // Create returns the container NAME as its engine id (per-container-unique, so a
 // per-container label and a per-container Reload count are distinguishable —
-// stubStreamingRuntime's fixed "fake-id" would alias every container onto one),
+// counted by this wrapper rather than the shared stub),
 // MountLabel serves a per-id label (or a per-id error), and ExecStreaming both
 // counts launches per container id (Start = 1, each Reload = +1) and delegates to
 // the embedded stub's real terminatable child so Reload's Stop+relaunch works.

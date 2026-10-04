@@ -381,31 +381,17 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 // double-forked out of that group is NOT reliably stopped (no cgroup freezer in
 // v1). Stopping a handle with no live process is a no-op.
 func (h *HostRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
-	// A stopped handle reads as not running, like a stopped podman container.
+	if err := h.stopProcess(ctx, id, timeout); err != nil {
+		return err
+	}
+	// Only a confirmed stop reads as not running, like a stopped podman container;
+	// a failed signal or expired ctx leaves a possibly live process marked started.
 	h.mu.Lock()
 	if handle, ok := h.handles[id]; ok {
 		handle.state = hostCreated
 	}
 	h.mu.Unlock()
-	proc := h.liveProcess(id)
-	if proc == nil {
-		return nil
-	}
-	if termErr := killGroup(proc.pgid, syscall.SIGTERM); termErr != nil {
-		return termErr
-	}
-	select {
-	case <-proc.done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(timeout):
-		if killErr := killGroup(proc.pgid, syscall.SIGKILL); killErr != nil {
-			return killErr
-		}
-		<-proc.done
-		return nil
-	}
+	return nil
 }
 
 // Remove force-kills the process group if still live, then deletes the handle's
@@ -550,6 +536,28 @@ func (h *HostRuntime) liveProcess(id WorkloadID) *hostProcess {
 		return nil
 	}
 	return handle.proc
+}
+
+func (h *HostRuntime) stopProcess(ctx context.Context, id WorkloadID, timeout time.Duration) error {
+	proc := h.liveProcess(id)
+	if proc == nil {
+		return nil
+	}
+	if termErr := killGroup(proc.pgid, syscall.SIGTERM); termErr != nil {
+		return termErr
+	}
+	select {
+	case <-proc.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(timeout):
+		if killErr := killGroup(proc.pgid, syscall.SIGKILL); killErr != nil {
+			return killErr
+		}
+		<-proc.done
+		return nil
+	}
 }
 
 // killGroup signals the process group led by pgid. An already-gone group
