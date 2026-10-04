@@ -24,5 +24,10 @@ finished issue open has not finished.**
 Merged ≠ done: a merged PR is evidence toward done, not done. An issue with three
 deliverables is not closed at PR #1 — file the remainder or keep it open.
 
+Issue-state ownership belongs to the assigned Manager role. A hands subagent
+executes its brief and reports status to its caller; it does not take, move, or
+close the Manager's issue. On a lane handoff, transfer ownership explicitly and
+pass the current state, open work, and evidence to the receiving Manager.
+
 [TODO RIG-1734: name the concrete issue/PR tools and how status/close are
 performed once they land; until then, treat this behaviorally.]

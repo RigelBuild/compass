@@ -117,3 +117,16 @@ keeps the sole review a monitored posture rather than an article of faith.
   post to the PR; aggregation and any PR interaction is yours.
 - **Never merge.** The operator merges every PR. You drive the loop to
   merge-ready and hand off.
+
+## Evidence and status coverage
+
+Before reporting a PR ready, inspect each available feedback surface: review
+summaries, inline discussions, general comments, and CI results. Record zero
+counts where a surface is empty; absence of findings from one surface says
+nothing about another. Resolve or explicitly disposition every finding before
+handoff. A clean review is evidence of readiness only within the reviewer's
+scope, not proof that the change is safe.
+
+When several agents encounter the same failing shared check, route observations
+to one investigator rather than starting competing diagnoses. Triage the
+failure from its actual log using `skill://ci-failure-triage`.
