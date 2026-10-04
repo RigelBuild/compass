@@ -151,6 +151,7 @@ func MessageToWire(m store.Message) *compassv1.Message {
 	out := &compassv1.Message{
 		Id:              string(m.ID),
 		TopicId:         m.TopicID,
+		ChannelId:       string(m.ChannelID),
 		AuthorAccountId: string(m.AuthorAccountID),
 		AuthorHandle:    m.AuthorHandle,
 		AtUnixMs:        m.At.UnixMilli(),

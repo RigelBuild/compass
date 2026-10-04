@@ -373,6 +373,8 @@ message Message {
   // The author's bare handle, for display only: not unique across owners (two
   // owners' agents can share one) and not an address. author_account_id is the stable key.
   string author_handle = 6;
+  // Set on SearchMessages hits to identify the topic's channel; empty otherwise.
+  string channel_id = 7;
 }
 
 // One content block in a message: the durable conversation the comms layer

@@ -78,7 +78,7 @@ ORDER BY m.seq DESC
 LIMIT $4;
 
 -- name: SearchMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 JOIN topics t ON t.id = m.topic_id
