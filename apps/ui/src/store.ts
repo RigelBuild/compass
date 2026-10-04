@@ -614,9 +614,9 @@ export interface AppStore {
 	 *  streamed lifecycle update is visible everywhere at once (design "read
 	 *  through the store accessors"). */
 	issues: Accessor<Issue[]>;
-	/** Every open-PR row across all issues, paired with its owning issue — a
-	 *  `createMemo` over `prRows(issues())` (RIG-2483, D9). The palette's `pr`
-	 *  destination provider reads this; the store has no other PR collection. */
+	/** Every open-PR row across all issues, paired with its owning issue: a
+	 *  `createMemo` over `prRows(issues())`. Search derives PR rows from its own
+	 *  hits, so this is the board-wide PR collection, not a search source. */
 	prs: Accessor<PrRow[]>;
 
 	// ── Backlog view (D3) ──
@@ -1943,9 +1943,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		const ws = issues().find((w) => w.assignee === id && w.branch === branch);
 		if (ws) setSelectedIssueId(ws.id);
 	};
-	// Every open-PR row across all issues (RIG-2483, D9): the palette's `pr`
-	// destination provider's collection. `prRows` (board.ts) is the same pure
-	// helper the PRs tab reads, so palette PR results can't drift from the pane.
+	// Every open-PR row across all issues, from the same `prRows` helper the PRs
+	// tab and search use, so the three cannot disagree on what counts as open.
 	const prs = createMemo<PrRow[]>(() => prRows(issues()));
 
 	return {
