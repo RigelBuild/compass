@@ -343,8 +343,8 @@ func removePgidFile(stateDir string) error {
 //
 // The invariant that IS load-bearing: this spawn-side reader and the down-side
 // reader (adapters.readGroupLeaderStartTime) must produce the IDENTICAL encoding
-// on a given OS. GroupSignaller.Alive compares the two for uint64 equality, so a
-// disagreement would report every live child as not-alive and silently skip it
+// on a given OS. GroupSignaller.Liveness compares the two for uint64 equality, so a
+// disagreement would report every live child as recycled and silently skip it
 // at teardown. The two darwin readers therefore share one packing rule
 // (sec*1e6 + usec), pinned by mirrored unit tests in both packages.
 var readStartTime = readProcessStartTime

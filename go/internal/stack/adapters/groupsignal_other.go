@@ -12,10 +12,8 @@ import (
 // groupsignal.go is //go:build unix, so this symbol must exist under every
 // build constraint the package accepts.
 //
-// Refusing is fail-closed here too. Alive treats a read error as not-alive, so
-// an unsupported host reports no live group rather than claiming one — the safe
-// direction, since the alternative is signalling a pid the token cannot vouch
-// for.
+// Refusing is fail-closed here too: the spawn side refuses as well, so no
+// record carrying a token for this host is ever written.
 func readGroupLeaderStartTime(pgid int) (uint64, error) {
 	return 0, fmt.Errorf(
 		"reading the start-time identity token for process group %d is not implemented on %s "+

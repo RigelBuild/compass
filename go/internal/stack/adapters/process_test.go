@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,9 @@ const (
 	// normalization in Wait now folds any post-SIGTERM exit code to nil, so an
 	// exit-code-keyed negative control would silently pass.
 	helperEchoOutKey = "STACK_TEST_ECHO_OUT"
+	// helperMemberReadyKey names the ready file the forkmember helper's group
+	// member writes once its SIGTERM handler is armed.
+	helperMemberReadyKey = "STACK_TEST_MEMBER_READY"
 )
 
 func TestMain(m *testing.M) {
@@ -82,6 +86,12 @@ func TestMain(m *testing.M) {
 		// exits clean.
 		helperTrap()
 		os.Exit(0)
+	case "forkmember":
+		// Group leader that first starts a same-group member, so the group can
+		// outlive the leader (an orphaned group).
+		helperForkMember()
+		helperTrap()
+		os.Exit(0)
 	default:
 		os.Exit(99)
 	}
@@ -95,6 +105,22 @@ func helperTrap() {
 	signalNotifyTerm(ch)
 	writeReady()
 	<-ch
+}
+
+// helperForkMember starts this binary in "sleep" mode as a member of the
+// caller's process group, signalling readiness through helperMemberReadyKey.
+func helperForkMember() {
+	self, err := os.Executable()
+	if err != nil {
+		os.Exit(4)
+	}
+	member := exec.Command(self)
+	member.Env = append(os.Environ(),
+		helperEnvVar+"=sleep",
+		helperReadyKey+"="+os.Getenv(helperMemberReadyKey))
+	if err := member.Start(); err != nil {
+		os.Exit(4)
+	}
 }
 
 // helperReadyNoTrap signals readiness WITHOUT installing a SIGTERM handler, so

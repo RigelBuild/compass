@@ -15,9 +15,9 @@ import (
 // timeval through its own packing and asserts this same literal.
 //
 // It exists because the two packings are deliberately duplicated across a
-// package boundary the packages cannot cross, and GroupSignaller.Alive compares
+// package boundary the packages cannot cross, and GroupSignaller.Liveness compares
 // their outputs for uint64 equality — a drift would report every live child as
-// not-alive and silently skip it at teardown. Both tests must be updated
+// recycled and silently skip it at teardown. Both tests must be updated
 // together or one reds, which is the point.
 func TestPackStartTimevalMatchesDownSide(t *testing.T) {
 	tv := unix.Timeval{Sec: 1_700_000_123, Usec: 456_789}
@@ -30,7 +30,7 @@ func TestPackStartTimevalMatchesDownSide(t *testing.T) {
 // TestReadProcessStartTimeSelfIsStable drives the real darwin sysctl reader
 // against a live process (this one): the token must be non-zero and identical
 // across two reads. A start time that moved between reads, or came back zero,
-// would break the identity gate — Alive would stop matching a group it spawned
+// would break the identity gate — Liveness would stop matching a group it spawned
 // moments earlier and skip it at teardown.
 func TestReadProcessStartTimeSelfIsStable(t *testing.T) {
 	pid := os.Getpid()
