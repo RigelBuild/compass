@@ -1236,8 +1236,9 @@
 }
 
 .ask-text:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: 1px;
 	border-color: var(--cx-border-focus);
-	outline: none;
 }
 
 .ask-option.chosen {
