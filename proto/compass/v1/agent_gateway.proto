@@ -106,6 +106,9 @@ service AgentGateway {
 message CommsCallRequest {
   string call_id = 1;
   oneof call {
+    // post, list and update_members carry a channel NAME in channel_id, resolved
+    // within the caller's visible set: unknown or invisible is NOT_FOUND,
+    // ambiguous is INVALID_ARGUMENT. Only list defaults an empty name to home.
     PostMessageRequest post = 2;
     ListMessagesRequest list = 3;
     GetRosterRequest roster = 4;

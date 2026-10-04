@@ -68,6 +68,10 @@ export type CommsCallRequest = Message<"compass.v1.CommsCallRequest"> & {
    */
   call: {
     /**
+     * post, list and update_members carry a channel NAME in channel_id, resolved
+     * within the caller's visible set: unknown or invisible is NOT_FOUND,
+     * ambiguous is INVALID_ARGUMENT. Only list defaults an empty name to home.
+     *
      * @generated from field: compass.v1.PostMessageRequest post = 2;
      */
     value: PostMessageRequest;
