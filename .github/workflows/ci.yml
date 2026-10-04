@@ -2953,12 +2953,9 @@ jobs:
         # bot PR carrying them for image review, the same bot-opens-a-PR
         # credential path the forge regen lane uses, on the same SHA pin.
         #
-        # DELIBERATELY no `base:`. create-pull-request defaults it to the
-        # checked-out branch, and this lane's contract (OQ-2 (b)) is that the bot
-        # PR targets the FEATURE BRANCH the lane was dispatched on — that is how
-        # a red visual gate on a branch gets its baselines refreshed in place,
-        # without laundering an unreviewed UI change onto main. Do NOT "fix" this
-        # to `base: main`.
+        # No `base:`: create-pull-request defaults to the checked-out branch,
+        # which the `if:` above pins to main. A new shot's first baseline is a
+        # local capture instead (DL-399), since a branch dispatch can't run here.
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
