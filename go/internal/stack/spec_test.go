@@ -7,19 +7,25 @@ import (
 	"testing"
 )
 
-// baseRunnerArgs is the five unconditional flags runnerSpec always forwards
-// (--runner-id, --server, --ca, --image, --runtime-dir). The AgentModel and
-// EgressAllow flags are appended AFTER these, and only when set — so the base
-// vector is the exact prefix every case shares and the zero-value case's whole
-// expected output.
+// baseRunnerArgs is the unconditional flags runnerSpec always forwards
+// (--runner-id, --server, --ca, --runtime-dir), plus --image on every backend
+// that reads one. The AgentModel and EgressAllow flags are appended AFTER
+// these, and only when set — so the base vector is the exact prefix every case
+// shares and the zero-value case's whole expected output.
+//
+// --image is omitted under microVM because the runner REFUSES a configured
+// agent image there (runner.ResolveAgentImage): the agent is pinned by the
+// guest rootfs, so forwarding one would fail every microVM runner at startup.
 func baseRunnerArgs(cfg Config, cert CertResult) []string {
-	return []string{
+	args := []string{
 		"--runner-id", embeddedRunnerID,
 		"--server", "https://" + cfg.ListenAddr,
 		"--ca", cert.CertPath,
-		"--image", cfg.AgentImage,
-		"--runtime-dir", cfg.RuntimeDir,
 	}
+	if !cfg.microVM() {
+		args = append(args, "--image", cfg.AgentImage)
+	}
+	return append(args, "--runtime-dir", cfg.RuntimeDir)
 }
 
 // TestRunnerSpecForwardsOptionalFlagsConditionally is the load-bearing red→green
@@ -101,7 +107,7 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 			cfg.CheckoutDir = tt.checkoutDir
 			cfg.Mounts = tt.mounts
 
-			spec := runnerSpec(cfg, cert, token)
+			spec := runnerSpec(cfg, cert, token, GuestPaths{})
 
 			want := append(baseRunnerArgs(cfg, cert), tt.wantExtra...)
 			if !slices.Equal(spec.Args, want) {
@@ -121,23 +127,67 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 func TestRunnerSpecGuestArgs(t *testing.T) {
 	base := Config{ListenAddr: "127.0.0.1:50052", AgentImage: "agent:latest", RuntimeDir: "/run/compass"}
 	cert := CertResult{CertPath: "/state/tls.crt"}
+	resolved := guestPathsIn("/state/guest-image/abc")
 	tests := []struct {
 		name    string
 		cfg     Config
+		guest   GuestPaths
 		wantEnd []string
 	}{
 		{name: "non-microvm remains unchanged", cfg: base, wantEnd: nil},
 		{name: "backend without guest paths", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "container"}, wantEnd: []string{"--backend", "container"}},
-		{name: "microvm guest dir", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "microvm", GuestDir: "/state/guest"}, wantEnd: []string{"--backend", "microvm", "--microvm-kernel", "/state/guest/kernel", "--microvm-rootfs", "/state/guest/rootfs.erofs", "--microvm-initrd", "/state/guest/initrd", "--microvm-image-manifest", "/state/guest/manifest.sha256"}},
+		// A microVM backend with no resolved paths is the baked-Runner-image
+		// default: --backend alone, no guest flags.
+		{name: "microvm without resolved paths", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "microvm"}, wantEnd: []string{"--backend", "microvm"}},
+		{
+			name:  "microvm with resolved paths",
+			cfg:   Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "microvm"},
+			guest: resolved,
+			wantEnd: []string{
+				"--backend", "microvm",
+				"--microvm-kernel", "/state/guest-image/abc/kernel",
+				"--microvm-rootfs", "/state/guest-image/abc/rootfs.erofs",
+				"--microvm-initrd", "/state/guest-image/abc/initrd",
+				"--microvm-image-manifest", "/state/guest-image/abc/manifest.sha256",
+			},
+		},
+		// Resolved paths without a backend forward nothing: --backend gates the
+		// whole guest arg set, so a caller that resolved paths but selected no
+		// backend still gets a byte-identical argv.
+		{name: "resolved paths without a backend forward nothing", cfg: base, guest: resolved, wantEnd: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := runnerSpec(tt.cfg, cert, "token").Args
+			got := runnerSpec(tt.cfg, cert, "token", tt.guest).Args
 			want := append(baseRunnerArgs(tt.cfg, cert), tt.wantEnd...)
 			if !slices.Equal(got, want) {
 				t.Fatalf("runnerSpec Args = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// The runner REFUSES a configured agent image under microVM
+// (runner.ResolveAgentImage: the agent is pinned by the guest rootfs), so
+// forwarding --image there fails the runner at startup. This asserts the flag
+// literally rather than through baseRunnerArgs, which mirrors the production
+// branch and so cannot fail if that branch is wrong.
+func TestRunnerSpecOmitsAgentImageUnderMicroVM(t *testing.T) {
+	cert := CertResult{CertPath: "/state/tls.crt"}
+	cfg := Config{ListenAddr: "127.0.0.1:50052", AgentImage: "agent:latest", RuntimeDir: "/run/compass"}
+
+	container := runnerSpec(cfg, cert, "token", GuestPaths{}).Args
+	if i := slices.Index(container, "--image"); i < 0 || container[i+1] != "agent:latest" {
+		t.Fatalf("container-backend args %q must still carry --image agent:latest", container)
+	}
+
+	cfg.RuntimeBackend = "microvm"
+	micro := runnerSpec(cfg, cert, "token", GuestPaths{}).Args
+	if slices.Contains(micro, "--image") {
+		t.Errorf("microVM args %q carry --image, which the runner refuses", micro)
+	}
+	if slices.Contains(micro, "agent:latest") {
+		t.Errorf("microVM args %q leak the agent image value", micro)
 	}
 }
 
