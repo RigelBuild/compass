@@ -550,6 +550,7 @@ type Querier interface {
 	// selects a genuinely existing column from a genuinely existing table
 	// (tenants, 0001_init.sql), so sqlc compiles it against the real schema.
 	ScaffoldGetTenant(ctx context.Context, id string) (Tenant, error)
+	SearchIssues(ctx context.Context, arg SearchIssuesParams) ([]SearchIssuesRow, error)
 	SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error)
 	// SecretRecordsForAgent collapses the A9 precedence in SQL: DISTINCT ON keeps the
 	// first row per name under scope_kind DESC (agent 2 > user 1 > tenant 0), the
