@@ -245,3 +245,44 @@ approval changes the reviewed head; obtain a fresh review after any such update.
 
 The detailed version-control invariants follow DL-142. Do not bypass the
 `jj-vine submit` path with direct pushes.
+
+## Recovering a mixed or superseded PR
+
+A PR that carries two concerns, or that a newer PR replaces, is retired only
+after its replacement is proven. Keep the old PR open until then; closing it
+first can lose work that exists only on its head.
+
+1. Leave the published old bookmark untouched. After `jj git fetch`, copy its
+   commits onto the base they need with
+   `jj duplicate '<old-base>..<old-bookmark>' --onto <new-base>`.
+   The new base is `main@origin`, or the surviving PR it depends on. The copies
+   are new, unpublished commits. If there are several (review fixes count),
+   fold them into the first copy with
+   `jj squash --from '<first>+::<last>' --into <first> -m '<subject>'`.
+   For two independent concerns, run
+   `jj split --parallel -r <copy> -m '<first subject>' <file>...`, then
+   `jj describe -r <remainder> -m '<second subject>'`; `-m` keeps every step
+   off the editor. If one concern needs the other, drop `--parallel` and select
+   the prerequisite's files; the selected part becomes the parent. File sets
+   cannot divide one file between concerns; move the other concern's hunks
+   from that file into its replacement by hand. Give each replacement its own
+   bookmark and submit.
+2. Compare cumulative diffs: every hunk in
+   `jj --no-pager diff --from <old-base> --to <old-bookmark>` must appear in
+   exactly one replacement's
+   `jj --no-pager diff --from <new-base> --to <replacement>`, or be dropped on
+   purpose with a stated reason. Carry over the title, body, and issue
+   references.
+3. Find PRs stacked on the old one. Move only each dependent's own commits:
+   `jj rebase -s 'roots(<old-bookmark>..<dependent>)' -o <replacement> --ignore-immutable`.
+   `-b` would drag the old commits along. This rewrites the dependent's
+   published head on purpose; re-submit it, and re-request review if it was
+   approved. A dependent that needs both concerns needs a linear line: split
+   without `--parallel`, stack it on the top, and check its cumulative diff.
+4. Close the old PR with a comment that links each replacement.
+5. Delete its branch. `jj-vine submit` cannot delete one, so run
+   `jj bookmark delete <old-bookmark>`, then `jj-hp push --deleted --dry-run`.
+   `--deleted` pushes every locally deleted bookmark, so confirm the set is
+   exactly that one, then run it without `--dry-run`.
+
+Retire only PRs you own. Route a PR owned by another agent to its owner.
