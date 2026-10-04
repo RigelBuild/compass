@@ -53,6 +53,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/usage"
 )
 
 // TLSConfig carries operator-provisioned PEM paths for the authenticated TCP
@@ -984,6 +985,7 @@ func buildDoors(
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearTokens *linearagent.TokenSource,
 ) (serveDoors, error) {
+	usageSvc := newUsageService(usage.NewPostgres(st), st)
 	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
 	// empty, so mounted unconditionally. otelconnect goes FIRST so the span
@@ -1008,10 +1010,14 @@ func buildDoors(
 	// is the credential, and admin being a user satisfies the user-only writes.
 	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+	usageSocketPath, usageSocketHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
+		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
+			auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	udsMux := http.NewServeMux()
 	udsMux.Handle(socketPath, socketHandler)
 	udsMux.Handle(commsPath, commsHandler)
 	udsMux.Handle(secretsSocketPath, secretsSocketHandler)
+	udsMux.Handle(usageSocketPath, usageSocketHandler)
 	udsServer := &http.Server{Handler: udsMux, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply; the network door below sets it
 
 	// Dev-only browser door: the same services with permissive CORS on the
@@ -1029,10 +1035,14 @@ func buildDoors(
 		// (a user) the handler reads for the user-only write authz.
 		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
 			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		devUsagePath, devUsageHandler := compassv1connect.NewUsageServiceHandler(usageSvc,
+			connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
+				auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		devMux := http.NewServeMux()
 		devMux.Handle(devPath, devHandler)
 		devMux.Handle(commsPath, commsHandler)
 		devMux.Handle(devSecretsPath, devSecretsHandler)
+		devMux.Handle(devUsagePath, devUsageHandler)
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
@@ -1052,7 +1062,7 @@ func buildDoors(
 	// drift apart and the recorded instance is always the delivered one.
 	netResolver := resolver
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook)
 		if err != nil {
 			return serveDoors{}, err
 		}
