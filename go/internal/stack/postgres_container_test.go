@@ -39,6 +39,7 @@ func TestExternalDatabaseSkipsPostgres(t *testing.T) {
 	want := []string{
 		"start otel-collector",
 		"start nats",
+		"start llm-gateway",
 		"ensure-cert",
 		"start compass-server",
 		"ensure-token",
@@ -94,6 +95,7 @@ func TestContainerPathBuildsSpecAndRecordsContainerEntry(t *testing.T) {
 		"start postgres-container",
 		"start otel-collector",
 		"start nats",
+		"start llm-gateway",
 		"ensure-cert",
 		"start compass-server",
 		"ensure-token",
@@ -165,6 +167,7 @@ func TestContainerPathBuildsSpecAndRecordsContainerEntry(t *testing.T) {
 	wantStops := []string{
 		"signal compass-runner", "wait compass-runner",
 		"signal compass-server", "wait compass-server",
+		"signal llm-gateway", "wait llm-gateway",
 		"signal nats", "wait nats",
 		"signal otel-collector", "wait otel-collector",
 		"signal postgres", "wait postgres",
