@@ -22,6 +22,9 @@ import (
 // container (DL-170). CodeAlreadyExists, returned before any Provision.
 var errAgentAlreadyLive = errors.New("agent already has a live session")
 
+// errAgentErrored requires explicit recovery before the account can be spawned again.
+var errAgentErrored = errors.New("agent errored; reload or stop it")
+
 // spawnMemoTTL bounds how long a settled SUCCESS spawn entry is retained for
 // idempotent replay before eviction. It covers the real retry window — a UI
 // double-click or a blip retry, seconds to minutes — not a server restart: the
@@ -164,21 +167,26 @@ func (s *service) runSpawn(ctx context.Context, acc store.Account, crid string) 
 }
 
 // rejectIfAgentLive returns CodeAlreadyExists when agentAccountID already holds a
-// live session, scanning the Runner's authoritative all-sessions status set (the
-// GetAgentStatus arm answered by the Runner with an empty session id). The scan
-// matches on AgentSessionStatus.agent_account_id (DL-167) — the request shape
-// admits nothing else, since GetAgentStatusRequest carries only a session id. A
-// relay failure propagates: reject-on-live must fail closed rather than let a
-// second container collide on the one-per-account name.
+// live session, or FailedPrecondition when its only matching sessions are errored.
+// It scans the Runner's authoritative all-sessions status set, returned by
+// GetAgentStatus with an empty session id. Relay failures fail closed.
 func (s *service) rejectIfAgentLive(ctx context.Context, agentAccountID string) error {
 	statuses, err := s.hub.Status(ctx, "", &compassv1.GetAgentStatusRequest{})
 	if err != nil {
 		return err
 	}
+	errored := false
 	for _, st := range statuses.GetStatuses() {
-		if st.GetAgentAccountId() == agentAccountID {
+		if st.GetAgentAccountId() != agentAccountID {
+			continue
+		}
+		if st.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 			return connect.NewError(connect.CodeAlreadyExists, errAgentAlreadyLive)
 		}
+		errored = true
+	}
+	if errored {
+		return connect.NewError(connect.CodeFailedPrecondition, errAgentErrored)
 	}
 	return nil
 }

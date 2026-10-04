@@ -9,6 +9,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -175,6 +176,72 @@ func TestSpawnAgentRejectsWhenAgentAlreadyLive(t *testing.T) {
 	}
 	if got := f.runner.provisionCount(); got != 0 {
 		t.Fatalf("Provision commands = %d, want 0 (reject-on-live is a PRE-Provision short-circuit); commands: %v", got, f.runner.commands())
+	}
+}
+
+func TestSpawnAgentStatusControlsRejectOnLive(t *testing.T) {
+	tests := []struct {
+		name        string
+		states      []compassv1.AgentSessionState
+		wantCode    connect.Code
+		wantMessage string
+	}{
+		{
+			name:        "errored only requires recovery",
+			states:      []compassv1.AgentSessionState{compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED},
+			wantCode:    connect.CodeFailedPrecondition,
+			wantMessage: "agent errored; reload or stop it",
+		},
+		{
+			name:     "live",
+			states:   []compassv1.AgentSessionState{compassv1.AgentSessionState_AGENT_SESSION_STATE_READY},
+			wantCode: connect.CodeAlreadyExists,
+		},
+		{
+			name:     "errored and live",
+			states:   []compassv1.AgentSessionState{compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY},
+			wantCode: connect.CodeAlreadyExists,
+		},
+		{name: "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newPlacementFixture(t)
+			statuses := make([]*compassv1.AgentSessionStatus, 0, len(tt.states))
+			for i, state := range tt.states {
+				statuses = append(statuses, &compassv1.AgentSessionStatus{
+					SessionId:      fmt.Sprintf("sess-%d", i),
+					State:          state,
+					AgentAccountId: string(f.agentID),
+				})
+			}
+			f.runner.setStatuses(statuses...)
+
+			_, err := f.client.SpawnAgent(context.Background(), connect.NewRequest(&compassv1.SpawnAgentRequest{
+				AgentHandle: fixtureAgentHandle, ClientRequestId: "spawn-status-state",
+			}))
+			if tt.wantCode == 0 {
+				if err != nil {
+					t.Fatalf("SpawnAgent with no status = %v, want success", err)
+				}
+				if got := f.runner.provisionCount(); got != 1 {
+					t.Fatalf("Provision commands = %d, want 1", got)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("SpawnAgent = nil error, want rejection")
+			}
+			if got := connect.CodeOf(err); got != tt.wantCode {
+				t.Fatalf("SpawnAgent code = %v, want %v", got, tt.wantCode)
+			}
+			if tt.wantMessage != "" && !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("SpawnAgent error = %q, want message %q", err, tt.wantMessage)
+			}
+			if got := f.runner.provisionCount(); got != 0 {
+				t.Fatalf("Provision commands = %d, want 0", got)
+			}
+		})
 	}
 }
 

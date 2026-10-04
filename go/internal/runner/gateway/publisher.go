@@ -100,6 +100,21 @@ type sessionPublisher struct {
 	// sequence survives a replacement. Only the counter is shared; its lock is
 	// held just long enough to allocate.
 	seq *seqCounter
+	// admit, when set, allocates under the Gateway's publish gate so a sealed
+	// session refuses frames instead of sequencing them after its ERRORED report.
+	admit func() (uint64, error)
+	// afterAdmit is the Gateway's test seam, run between admission and Send.
+	afterAdmit func(ctx context.Context)
+
+	// ctx is the stream's own child context; cancel lets a lifecycle report
+	// unstick a Send that holds mu past its bound.
+	ctx    context.Context //nolint:containedctx // the stream's lifetime, cancelled to unstick its Send
+	cancel context.CancelFunc
+
+	// closed and closeErr make close idempotent under mu: a lifecycle report can
+	// close the shared stream before its owning handler releases it.
+	closed   bool
+	closeErr error
 }
 
 // newSessionPublisher opens the upstream PublishEvents client-stream for
@@ -108,9 +123,12 @@ type sessionPublisher struct {
 // reports use a bounded caller ctx. seq is the Gateway counter, carried across
 // publishers so the sequence never restarts.
 func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *seqCounter) *sessionPublisher {
+	ctx, cancel := context.WithCancel(ctx)
 	return &sessionPublisher{
 		sessionID: sessionID,
 		seq:       seq,
+		ctx:       ctx,
+		cancel:    cancel,
 		stream:    relay.PublishEvents(ctx),
 	}
 }
@@ -130,7 +148,35 @@ func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string
 func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	seq := p.seq.next()
+	var seq uint64
+	if p.admit != nil {
+		var err error
+		if seq, err = p.admit(); err != nil {
+			return err
+		}
+	} else {
+		seq = p.seq.next()
+	}
+	if p.afterAdmit != nil {
+		p.afterAdmit(p.ctx)
+	}
+	return p.sendLocked(seq, frame)
+}
+
+// forwardState sends a lifecycle state past the publish gate, which is already
+// sealed for it. Taking mu orders it after every frame admitted on this stream.
+func (p *sessionPublisher) forwardState(frame *compassv1internal.AgentFrame) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// A cancelled or closed stream cannot carry the state; skip the allocation.
+	if err := p.ctx.Err(); err != nil {
+		return err
+	}
+	return p.sendLocked(p.seq.next(), frame)
+}
+
+// sendLocked sends one allocated seq and rolls it back on failure. Caller holds mu.
+func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.AgentFrame) error {
 	if err := p.stream.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: seq,
 		SessionId: p.sessionID,
@@ -151,8 +197,13 @@ func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 func (p *sessionPublisher) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	_, err := p.stream.CloseAndReceive()
-	return err
+	if p.closed {
+		return p.closeErr
+	}
+	_, p.closeErr = p.stream.CloseAndReceive()
+	p.closed = true
+	p.cancel()
+	return p.closeErr
 }
 
 // acquirePublisher returns the session's ordered publisher, creating it on first
@@ -172,54 +223,62 @@ func (p *sessionPublisher) close() error {
 func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 	g.pubMu.Lock()
 	var stale *sessionPublisher
-	if g.pub != nil && g.pub.sessionID != sessionID {
+	// A lifecycle report that timed out cancels the shared stream; a reopened
+	// session must not inherit that dead stream.
+	if g.pub != nil && (g.pub.sessionID != sessionID || g.pub.ctx.Err() != nil) {
 		stale = g.pub
 		g.pub = nil
 	}
 	if g.pub == nil {
 		g.pub = newSessionPublisher(g.baseCtx, g.events, sessionID, &g.seq)
+		g.pub.admit = func() (uint64, error) { return g.admitFrame(sessionID) }
+		g.pub.afterAdmit = g.afterAdmit
 	}
 	pub := g.pub
 	g.pubMu.Unlock()
 	if stale != nil {
-		// The stopped session's handlers have already returned (lifecycle dispatch
-		// is sequential across Stop→Start), so no caller holds the orphan; close it
-		// to end its upstream stream rather than leak it. Best-effort: the new
-		// publisher is already installed, so a close error changes nothing.
+		// Close the orphan (a stopped session's, or one a lifecycle report
+		// cancelled) to end its upstream stream rather than leak it. Close takes
+		// the orphan's mu, so a straggling forward on it finishes first.
+		// Discarded: the new publisher is installed, so a close error changes nothing.
 		_ = stale.close()
 	}
 	return pub
 }
 
-// releasePublisher clears the publisher under pubMu, then closes its upstream
-// stream OUTSIDE the lock. Called by the Publish handler (the stream owner) at
-// stream end. Returns the upstream close/ack error.
-//
-// The close is deliberately outside pubMu. pub.close() blocks on
-// CloseAndReceive awaiting the Server's terminal ack on the socket-lifetime
-// stream, with no per-close timeout; holding pubMu across it would let one
-// unresponsive-but-connected Server stall every later Publish forward on the
-// same mutex — a session-wide telemetry outage from one clean stream-end.
-// Clearing g.pub under the lock first is enough. releasePublisher is only
-// reached after the handler's Receive loop has drained (publish.go:75/82/88),
-// so no forward() from that handler is in flight, and forward()'s per-publisher
-// pub.mu serializes any Send against this close on the same stream — the drained
-// publisher never Sends concurrently with its own close. A concurrent
-// acquirePublisher that observes g.pub==nil just opens a fresh one, and the
-// capture under the lock still gives single ownership, so pub is closed exactly
-// once. Lifecycle reports use distinct one-shot publishers and do not inspect or
-// close g.pub. The only residue is a cross-stream reorder of already-sent frames
-// that the hub's loss-tolerant gap detector accepts by design: recordSeq flags only
-// a forward jump, so a delayed low seq neither flags a gap nor rewinds lastSeq.
-// This mirrors acquirePublisher, which already closes its stale publisher outside
-// the lock.
-func (g *Gateway) releasePublisher() error {
+// sharedPublisher returns the live shared publisher for sessionID, or nil. It
+// never opens one: a lifecycle report only needs the stream frames rode.
+func (g *Gateway) sharedPublisher(sessionID string) *sessionPublisher {
 	g.pubMu.Lock()
-	pub := g.pub
-	g.pub = nil
-	g.pubMu.Unlock()
-	if pub == nil {
+	defer g.pubMu.Unlock()
+	if g.pub == nil || g.pub.sessionID != sessionID {
 		return nil
 	}
+	return g.pub
+}
+
+// detachPublisher clears g.pub only if it is still pub, so a caller never
+// removes a replacement installed after pub was detached.
+func (g *Gateway) detachPublisher(pub *sessionPublisher) {
+	g.pubMu.Lock()
+	defer g.pubMu.Unlock()
+	if g.pub == pub {
+		g.pub = nil
+	}
+}
+
+// releasePublisher detaches pub (compare-and-clear under pubMu) and closes its
+// upstream stream OUTSIDE the lock. Called by the Publish handler with the
+// publisher it acquired. Returns the upstream close/ack error.
+//
+// The close is outside pubMu because CloseAndReceive awaits the Server's ack
+// with no timeout; holding pubMu would stall every Publish forward behind one
+// unresponsive Server. pub.mu still serializes the close against any Send on the
+// same stream, and close is idempotent, so a lifecycle report that already closed
+// pub hands back its result. Compare-and-clear matters after that report: a
+// handler reopened by BindSession may own g.pub, and the stale handler must not
+// clear or close it.
+func (g *Gateway) releasePublisher(pub *sessionPublisher) error {
+	g.detachPublisher(pub)
 	return pub.close()
 }

@@ -61,6 +61,7 @@ const committedKeysMax = 16384
 // closed.
 var (
 	errNoSessionForPublish      = errors.New("gateway: no live session bound to container for publish")
+	errSessionEnded             = errors.New("gateway: session ended; frame not forwarded")
 	errNoSessionForConversation = errors.New("gateway: no live session bound to container for conversation frame")
 )
 
@@ -184,6 +185,16 @@ type Gateway struct {
 	pubMu sync.Mutex
 	pub   *sessionPublisher
 	seq   seqCounter
+
+	// publishMu fences telemetry admission while a lifecycle terminal state is sent.
+	publishMu sync.Mutex
+	publishes map[string]*publishGate
+	// afterAdmit and beforeSharedState are test seams, nil in production and set
+	// before Serve: afterAdmit runs between a frame's admission and its Send with
+	// the publisher's stream ctx; beforeSharedState runs before a lifecycle state
+	// waits for the shared stream's send lock.
+	afterAdmit        func(ctx context.Context)
+	beforeSharedState func()
 	// committedKeys is the advisory in-process fast-path for durable frame
 	// idempotency; a key seen here short-circuits a retry. It is NOT the durability
 	// boundary — the atomic Message-store commit on the same idempotency_key is,
