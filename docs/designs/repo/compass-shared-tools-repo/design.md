@@ -355,7 +355,7 @@ Acceptance:
   that, and the tool name in output, are the stated intended changes.
 - On a docs-only PR, the ci-matrix output still contains the ledger gate target.
 
-Record both results in the PR body.
+Record each result in the PR body.
 
 Interfaces: consumes the T3–T6 releases; produces the config files above.
 
