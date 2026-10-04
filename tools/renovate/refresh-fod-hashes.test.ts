@@ -53,6 +53,8 @@ function mustFind(id: string): FodEntry {
 const GO_ENTRY = mustFind("guestd-go-vendor");
 const BUN_WRITE_ENTRY = mustFind("agent-node-modules-root-pkgs");
 const BUN_VERIFY_ENTRY = mustFind("agent-node-modules-agent-image-pkgs");
+const UI_ENTRY = mustFind("ui-node-modules");
+
 // The real repo, for the table properties that must hold against files on disk
 // (as opposed to the hermetic fixture repo the gate tests build below).
 const repoRoot = join(import.meta.dir, "..", "..");
@@ -131,6 +133,7 @@ emit() {
 }
 emit go-modules
 emit node-modules
+emit compass-ui-node-modules
 exit 1
 `;
 
@@ -169,6 +172,10 @@ async function buildBaselineRepo(): Promise<string> {
 	// Pin files at the paths the TABLE declares.
 	await write(GO_ENTRY.file, GO_NIX_FIXTURE);
 	await write(BUN_WRITE_ENTRY.file, BUN_NIX_FIXTURE);
+	await write(
+		UI_ENTRY.file,
+		await readFile(join(repoRoot, UI_ENTRY.file), "utf8"),
+	);
 	// Every vehicle the table names, unless it IS a pin file already written
 	// above — derived from the shipped table so a new vehicle needs no second
 	// edit here.
@@ -186,6 +193,11 @@ async function buildBaselineRepo(): Promise<string> {
 	// Trigger manifests (content is irrelevant; only their diff-vs-base matters).
 	for (const entry of FOD_ENTRIES) {
 		for (const trigger of entry.triggers) {
+			if (trigger.includes("*")) {
+				const [dir] = trigger.split("/");
+				await write(`${dir}/x/package.json`, "baseline\n");
+				continue;
+			}
 			await write(trigger, "baseline\n");
 		}
 	}
@@ -350,6 +362,25 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		).toBe(stubSriForFragment("node-modules"));
 		expect(await readFile(join(repo, GO_ENTRY.file), "utf8")).toBe(goBefore);
 	});
+	test.each([
+		"packages/x/package.json",
+		"apps/x/package.json",
+		"tools/x/package.json",
+	])(
+		"a nested workspace manifest (%s) gates the UI outputHash",
+		async (manifest) => {
+			await Bun.write(join(repo, manifest), "changed\n");
+			const res = await runRefresh(repo);
+			expect(res.exitCode).toBe(0);
+			expect(res.stdout.toString()).toContain("apps/ui/dist.nix");
+			expect(
+				maybeHashOnMarker(
+					await readFile(join(repo, UI_ENTRY.file), "utf8"),
+					UI_ENTRY.marker,
+				),
+			).toBe(stubSriForFragment("compass-ui-node-modules"));
+		},
+	);
 
 	// Restore-on-completion: the script fakes the pin to force the mismatch, then
 	// writes the REAL value — never leaving the fake all-A hash in the tree.
@@ -563,6 +594,26 @@ describe("rewriteInlineHash", () => {
 			GO_ENTRY.file,
 		);
 		expect(maybeHashOnMarker(out, GO_ENTRY.marker)).toBe("sha256-newgo=");
+	});
+	test("rewrites only the UI outputHash on its real marker line", async () => {
+		const text = await readFile(join(repoRoot, UI_ENTRY.file), "utf8");
+		const stale = rewriteInlineHash(
+			text,
+			UI_ENTRY.marker,
+			"sha256-stale=",
+			UI_ENTRY.file,
+		);
+		const corrected = rewriteInlineHash(
+			stale,
+			UI_ENTRY.marker,
+			"sha256-correct=",
+			UI_ENTRY.file,
+		);
+		expect(hashOnMarker(corrected, UI_ENTRY.marker, UI_ENTRY.file)).toBe(
+			"sha256-correct=",
+		);
+		expect(corrected.match(/outputHash = "sha256-/g)).toHaveLength(1);
+		expect(corrected).toContain('outputHash = "sha256-correct=";');
 	});
 
 	test("is idempotent — rewriting to the same SRI yields identical content", () => {

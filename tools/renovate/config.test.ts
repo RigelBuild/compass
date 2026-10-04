@@ -303,6 +303,8 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 		// commits files a task's fileFilters names, so a missing flake.nix here would
 		// silently drop the mirror edit → a gomod bump lands with flake.nix's
 		// vendorHash stale and `nix flake check` red (RIG-2852 Gap 1).
+		// A bun-first branch also moves the UI node_modules pin.
+		expect(topLevel?.fileFilters).toContain("apps/ui/dist.nix");
 		expect(topLevel?.fileFilters).toContain("guest-image/default.nix");
 		expect(topLevel?.fileFilters).toContain("flake.nix");
 		expect(topLevel?.fileFilters).toContain("agent-image/entrypoint.nix");
@@ -538,6 +540,7 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 			"flake.nix",
 			"flake.lock",
 			"agent-image/entrypoint.nix",
+			"apps/ui/dist.nix",
 		]);
 		// Silent-drop guard (mirrors the top-level rule's flake.nix guard): step 6
 		// writes flake.nix + flake.lock, and fileFilters is an INCLUDE allowlist —
@@ -1555,11 +1558,12 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 		// that the population has not shrunk or grown. A newly coupled site is a
 		// deliberate edit: update this number in the same change.
 		//
-		// 12 = six sites naming a trigger of the two entrypoint.nix entries
-		// (2 entries × 6 sites), plus the guestd vendorHash entry's zero pairs —
-		// its triggers are go/go.mod and go/go.sum, which the gomod MANAGER writes
-		// and no fileFilters names.
-		expect(coupled.length).toBe(12);
+		// 14 = six sites naming a trigger of the two entrypoint.nix entries
+		// (2 entries × 6 sites), plus the UI pin's two sites (the lockstep and
+		// catalog rules name bun.lock), plus the guestd vendorHash entry's zero
+		// pairs — its triggers are go/go.mod and go/go.sum, which the gomod
+		// MANAGER writes and no fileFilters names.
+		expect(coupled.length).toBe(14);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 

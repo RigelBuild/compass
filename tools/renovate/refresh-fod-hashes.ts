@@ -4,7 +4,7 @@
 // red on a "hash mismatch in fixed-output derivation" build break (RIG-2432,
 // PR #579's failure class).
 
-// Compass pins two FOD hash VALUES. The Go vendorHash lives in two files that
+// Compass pins three FOD hash VALUES. The Go vendorHash lives in two files that
 // share it by design: guest-image/default.nix and flake.nix — the SAME
 // proxyVendor hash over go/, both moved by a go.mod|go.sum bump. The vehicle
 // realises only guestd's FOD; flake.nix is a MIRROR (FodEntry.mirrorFiles).
@@ -13,6 +13,10 @@
 // installed node_modules (a bun install FOD). Invalidated by a bun.lock bump AND
 // by a devenv-nixpkgs channel bump (the channel moves pkgs.bun, the FOD builder),
 // so the entry gates on both and reconciles the pin whichever moved.
+
+// apps/ui/dist.nix's outputHash pins the bun-workspace node_modules closure.
+// It moves with bun.lock, root and workspace package manifests, or flake.lock,
+// which supplies the flake vehicle's pkgs.bun.
 
 // Neither is a URL hash prefetch-file can recompute — a vendorHash/outputHash is
 // only knowable by REALISING the derivation and reading the SRI Nix reports on the
@@ -152,6 +156,23 @@ export const FOD_ENTRIES: FodEntry[] = [
 		vehicleChannelLock: "agent-image/devenv.lock",
 		triggers: ["bun.lock", "devenv.lock", "agent-image/devenv.lock"],
 		verifyOf: "agent-node-modules-root-pkgs",
+	},
+	{
+		id: "ui-node-modules",
+		file: "apps/ui/dist.nix",
+		marker: 'outputHash = "sha256-',
+		drvFragment: "compass-ui-node-modules",
+		buildFile: "tools/renovate/ui-fod-vehicle.nix",
+		buildTarget: "compass-ui",
+		vehicleChannelLock: "flake.lock",
+		triggers: [
+			"bun.lock",
+			"package.json",
+			"packages/*/package.json",
+			"apps/*/package.json",
+			"tools/*/package.json",
+			"flake.lock",
+		],
 	},
 ];
 
