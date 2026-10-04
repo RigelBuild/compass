@@ -320,7 +320,7 @@ func (f *fakeCommsCaller) CreateChannelAsAccount(_ context.Context, account stor
 	return f.createChannelResp, nil
 }
 
-func (f *fakeCommsCaller) UpdateChannelMembersAsAccount(_ context.Context, account store.AccountID, req *compassv1.UpdateChannelMembersRequest) (*compassv1.UpdateChannelMembersResponse, error) {
+func (f *fakeCommsCaller) UpdateChannelMembersAsAccountByName(_ context.Context, account store.AccountID, req *compassv1.UpdateChannelMembersRequest) (*compassv1.UpdateChannelMembersResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, commsCall{account: account, updateMembers: req})

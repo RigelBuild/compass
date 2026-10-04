@@ -99,10 +99,10 @@ func TestCreateChannelAsAccountUnknownMemberHandleIsNotFound(t *testing.T) {
 	connectNotFoundFor(t, err, "ghost", "CreateChannelAsAccount with an unresolvable member handle")
 }
 
-// TestUpdateChannelMembersAsAccountAddsMember: an agent adds a member to a channel
+// TestUpdateChannelMembersAsAccountByNameAddsMember: an agent adds a member to a channel
 // it authored (and so can mutate) → the updated Channel carries the new member,
 // and a ChannelChanged is fanned out (parity with the human caller's path).
-func TestUpdateChannelMembersAsAccountAddsMember(t *testing.T) {
+func TestUpdateChannelMembersAsAccountByNameAddsMember(t *testing.T) {
 	h := newStreamHarness(t)
 	ctx := context.Background()
 	owner := mustUser(t, h.store, "owner")
@@ -116,12 +116,12 @@ func TestUpdateChannelMembersAsAccountAddsMember(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, owner.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	resp, err := h.svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+	resp, err := h.svc.UpdateChannelMembersAsAccountByName(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        ch.Name,
 		AddMemberHandles: []string{newcomer.Handle},
 	})
 	if err != nil {
-		t.Fatalf("UpdateChannelMembersAsAccount: %v", err)
+		t.Fatalf("UpdateChannelMembersAsAccountByName: %v", err)
 	}
 	if !slices.Contains(resp.GetChannel().GetMemberAccountIds(), string(newcomer.ID)) {
 		t.Fatalf("member set = %v, want it to contain the added %q", resp.GetChannel().GetMemberAccountIds(), newcomer.ID)
@@ -137,13 +137,13 @@ func TestUpdateChannelMembersAsAccountAddsMember(t *testing.T) {
 	}
 }
 
-// TestUpdateChannelMembersAsAccountUnknownMemberHandleIsNotFound: an agent adds a
+// TestUpdateChannelMembersAsAccountByNameUnknownMemberHandleIsNotFound: an agent adds a
 // member naming a handle that resolves to no account → the T3 batch resolver
 // (AccountsByHandles, OQ-2) fails the whole call with the oracle-safe CodeNotFound
 // naming the submitted handle, identical to the code a human caller gets. The
 // org-management adapter inherits that resolution; it never partially applies a
 // member set with an unresolved handle in it.
-func TestUpdateChannelMembersAsAccountUnknownMemberHandleIsNotFound(t *testing.T) {
+func TestUpdateChannelMembersAsAccountByNameUnknownMemberHandleIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
@@ -154,14 +154,14 @@ func TestUpdateChannelMembersAsAccountUnknownMemberHandleIsNotFound(t *testing.T
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+	_, err = svc.UpdateChannelMembersAsAccountByName(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        ch.Name,
 		AddMemberHandles: []string{"ghost"},
 	})
-	connectNotFoundFor(t, err, "ghost", "UpdateChannelMembersAsAccount with an unresolvable member handle")
+	connectNotFoundFor(t, err, "ghost", "UpdateChannelMembersAsAccountByName with an unresolvable member handle")
 }
 
-// TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound: an agent adds
+// TestUpdateChannelMembersAsAccountByNameInvisibleMemberHandleIsNotFound: an agent adds
 // a member naming a handle that IS a real account but one the caller cannot see —
 // an agent living only under a DIFFERENT owner's per-owner namespace (DL-271). The
 // bare handle misses the global user index and misses the caller-owner agent index,
@@ -169,7 +169,7 @@ func TestUpdateChannelMembersAsAccountUnknownMemberHandleIsNotFound(t *testing.T
 // entirely-unknown handle gets: the caller cannot distinguish "no such handle" from
 // "a handle I'm not allowed to see", so it cannot probe another owner's roster by
 // naming its agents as members.
-func TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound(t *testing.T) {
+func TestUpdateChannelMembersAsAccountByNameInvisibleMemberHandleIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
@@ -184,24 +184,24 @@ func TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound(t *testing
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+	_, err = svc.UpdateChannelMembersAsAccountByName(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        ch.Name,
 		AddMemberHandles: []string{otherAgent.Handle},
 	})
-	connectNotFoundFor(t, err, otherAgent.Handle, "UpdateChannelMembersAsAccount with a foreign-owner (invisible) member handle")
+	connectNotFoundFor(t, err, otherAgent.Handle, "UpdateChannelMembersAsAccountByName with a foreign-owner (invisible) member handle")
 }
 
-// TestUpdateChannelMembersAsAccountEmptyAccountIsNoActor: an empty account →
+// TestUpdateChannelMembersAsAccountByNameEmptyAccountIsNoActor: an empty account →
 // errNoActor (CodeInvalidArgument).
-func TestUpdateChannelMembersAsAccountEmptyAccountIsNoActor(t *testing.T) {
+func TestUpdateChannelMembersAsAccountByNameEmptyAccountIsNoActor(t *testing.T) {
 	svc, _ := newHandler(t)
-	_, err := svc.UpdateChannelMembersAsAccount(context.Background(), "", &compassv1.UpdateChannelMembersRequest{ChannelId: "ch-1"})
-	connectCodeIs(t, err, connect.CodeInvalidArgument, "UpdateChannelMembersAsAccount empty account")
+	_, err := svc.UpdateChannelMembersAsAccountByName(context.Background(), "", &compassv1.UpdateChannelMembersRequest{ChannelId: "ch-1"})
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "UpdateChannelMembersAsAccountByName empty account")
 }
 
-// TestUpdateChannelMembersAsAccountNonMemberIsNotFound: an agent mutating a
+// TestUpdateChannelMembersAsAccountByNameNonMemberIsNotFound: an agent mutating a
 // channel it cannot see collapses to the SAME CodeNotFound a human non-member gets.
-func TestUpdateChannelMembersAsAccountNonMemberIsNotFound(t *testing.T) {
+func TestUpdateChannelMembersAsAccountByNameNonMemberIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
@@ -213,16 +213,16 @@ func TestUpdateChannelMembersAsAccountNonMemberIsNotFound(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = svc.UpdateChannelMembersAsAccount(ctx, strangerAgent.ID, &compassv1.UpdateChannelMembersRequest{
+	_, err = svc.UpdateChannelMembersAsAccountByName(ctx, strangerAgent.ID, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        ch.Name,
 		AddMemberHandles: []string{stranger.Handle},
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount on invisible channel")
+	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccountByName on invisible channel")
 }
 
-// Agent tools name channels; a bare id is not a name, so it must miss rather
-// than let a model bypass the viewer-scoped resolve.
-func TestUpdateChannelMembersAsAccountChannelIDIsNotFound(t *testing.T) {
+// Agent tools address channels by name only; a bare id must miss, not silently
+// work.
+func TestUpdateChannelMembersAsAccountByNameChannelIDIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
@@ -234,15 +234,15 @@ func TestUpdateChannelMembersAsAccountChannelIDIsNotFound(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+	_, err = svc.UpdateChannelMembersAsAccountByName(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        string(ch.ID),
 		AddMemberHandles: []string{newcomer.Handle},
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount by channel id")
+	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccountByName by channel id")
 }
 
 // Two visible channels sharing a name must be refused, never silently picked.
-func TestUpdateChannelMembersAsAccountAmbiguousChannelIsInvalidArgument(t *testing.T) {
+func TestUpdateChannelMembersAsAccountByNameAmbiguousChannelIsInvalidArgument(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
@@ -254,25 +254,25 @@ func TestUpdateChannelMembersAsAccountAmbiguousChannelIsInvalidArgument(t *testi
 		}
 	}
 
-	_, err := svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+	_, err := svc.UpdateChannelMembersAsAccountByName(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
 		ChannelId:        "dupe",
 		AddMemberHandles: []string{newcomer.Handle},
 	})
-	connectCodeIs(t, err, connect.CodeInvalidArgument, "UpdateChannelMembersAsAccount on ambiguous channel name")
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "UpdateChannelMembersAsAccountByName on ambiguous channel name")
 }
 
 // An empty channel name has no home default: it misses like any unknown name.
-func TestUpdateChannelMembersAsAccountEmptyChannelHasNoHomeDefault(t *testing.T) {
+func TestUpdateChannelMembersAsAccountByNameEmptyChannelHasNoHomeDefault(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "manager")
 	newcomer := mustUser(t, st, "newcomer")
 
-	_, err := svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+	_, err := svc.UpdateChannelMembersAsAccountByName(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
 		AddMemberHandles: []string{newcomer.Handle},
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount with empty channel")
+	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccountByName with empty channel")
 }
 
 // TestCreateChannelGroupAsAccountReturnsGroup: an agent creates a top-level group

@@ -275,13 +275,13 @@ func (c *Comms) CreateChannelAsAccount(
 	return resp.Msg, nil
 }
 
-// UpdateChannelMembersAsAccount executes one agent-initiated UpdateChannelMembers
+// UpdateChannelMembersAsAccountByName executes one agent-initiated UpdateChannelMembers
 // as account. Agent tools address channels by NAME, so channel_id is resolved
 // within account's visible set first (unknown or invisible → CodeNotFound,
 // ambiguous → CodeInvalidArgument), with no home default. The resolved request
 // then runs the shared handler under WithActor, so authz and fan-out match a
 // human caller's.
-func (c *Comms) UpdateChannelMembersAsAccount(
+func (c *Comms) UpdateChannelMembersAsAccountByName(
 	ctx context.Context,
 	account store.AccountID,
 	req *compassv1.UpdateChannelMembersRequest,
@@ -300,7 +300,7 @@ func (c *Comms) UpdateChannelMembersAsAccount(
 		return nil, err
 	}
 	if resp == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("comms UpdateChannelMembersAsAccount: UpdateChannelMembers returned nil response"))
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms UpdateChannelMembersAsAccountByName: UpdateChannelMembers returned nil response"))
 	}
 	return resp.Msg, nil
 }
@@ -331,7 +331,7 @@ func (c *Comms) CreateChannelGroupAsAccount(
 }
 
 // OpenDMAsAccount executes one agent-initiated OpenDM as account, mirroring
-// UpdateChannelMembersAsAccount: WithActor + the shared OpenDM handler path, so
+// UpdatePinnedBoardAsAccount: WithActor + the shared OpenDM handler path, so
 // the peer resolve, the same-owner authz, the reserved-DM-group upsert, and the
 // post-commit ChannelChanged fan-out are identical to a human caller's. An
 // unknown, cross-owner, or self peer collapses to the same code a human gets. The

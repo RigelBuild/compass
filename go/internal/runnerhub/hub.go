@@ -332,7 +332,9 @@ type CommsCaller interface { //nolint:interfacebloat // one method per agent-com
 	SetStatusAsAccount(ctx context.Context, account store.AccountID, activity string) (string, error)
 	UpdatePinnedBoardAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdatePinnedBoardRequest) (*compassv1.UpdatePinnedBoardResponse, error)
 	CreateChannelAsAccount(ctx context.Context, account store.AccountID, req *compassv1.CreateChannelRequest) (*compassv1.CreateChannelResponse, error)
-	UpdateChannelMembersAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdateChannelMembersRequest) (*compassv1.UpdateChannelMembersResponse, error)
+	// UpdateChannelMembersAsAccountByName is the agent-tool path: channel_id is a
+	// channel NAME, resolved within account's visible set, with no home default.
+	UpdateChannelMembersAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.UpdateChannelMembersRequest) (*compassv1.UpdateChannelMembersResponse, error)
 	CreateChannelGroupAsAccount(ctx context.Context, account store.AccountID, req *compassv1.CreateChannelGroupRequest) (*compassv1.CreateChannelGroupResponse, error)
 	// OpenDMAsAccount resolves-or-creates the two-party peer DM between account
 	// and the request's peer handle (RIG-2962 T3), same-owner authz enforced

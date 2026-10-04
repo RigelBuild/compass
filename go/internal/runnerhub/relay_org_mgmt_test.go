@@ -4,7 +4,7 @@ package runnerhub
 
 // The org-management relay arms (RIG-2673 T3): RelayCommsCall dispatches a
 // create_channel call to CreateChannelAsAccount, an update_members call to
-// UpdateChannelMembersAsAccount, and a create_channel_group call to
+// UpdateChannelMembersAsAccountByName, and a create_channel_group call to
 // CreateChannelGroupAsAccount — each under the bound account, wrapping the
 // matching result oneof, with call_id round-tripped. A tool error on an arm is
 // rendered in-band as a CommsCallError, never a transport teardown. Driven

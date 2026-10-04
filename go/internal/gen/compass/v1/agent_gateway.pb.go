@@ -278,6 +278,9 @@ type isCommsCallRequest_Call interface {
 }
 
 type CommsCallRequest_Post struct {
+	// post, list and update_members carry a channel NAME in channel_id, resolved
+	// within the caller's visible set: unknown or invisible is NOT_FOUND,
+	// ambiguous is INVALID_ARGUMENT. Only list defaults an empty name to home.
 	Post *v1.PostMessageRequest `protobuf:"bytes,2,opt,name=post,proto3,oneof"`
 }
 
