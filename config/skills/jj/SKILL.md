@@ -267,8 +267,10 @@ first can lose work that exists only on its head.
 2. Compare cumulative diffs: every hunk in the old PR's effective diff against
    its base must appear in exactly one replacement, or be dropped on purpose
    with a stated reason. Carry over the title, body, and issue references.
-3. Find PRs stacked on the old one. Rebase each onto the right replacement and
-   re-submit it before the old branch goes away.
+3. Find PRs stacked on the old one. Rebase each onto the replacement it needs
+   and re-submit it before the old branch goes away. A dependent that needs
+   both concerns needs a linear line: split without `--parallel`, stack the
+   dependent on the top, and check its cumulative diff.
 4. Close the old PR with a comment that links each replacement.
 5. Delete its branch. `jj-vine submit` cannot delete one, so run
    `jj bookmark delete <old-bookmark>`, then `jj-hp push --deleted --dry-run`.
