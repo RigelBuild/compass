@@ -12,7 +12,7 @@ DL-372 froze a reload design: displace the old Control subscription, then append
 
 - It advances the epoch and the subscription generation, closes the wake channel and clears liveness. The old stream ends, and acks from the old process are fenced off by epoch.
 - It stamps `replay_complete` as seq 1.
-- It renumbers every retained op after the lift, in order, and drops any earlier lift.
+- It renumbers every retained op after the lift, in order, and drops any earlier `replay` or `replay_complete` op.
 - It resets the ack cursor to 0 and clears the hold.
 
 So the lift is the replacement process's first op. Ops the old process received but never acked are redelivered behind the lift, at least once, as on a reconnect. A concurrent `Send` cannot land ahead of the lift.
