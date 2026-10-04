@@ -105,8 +105,9 @@ both repos carry. This record reads that as shared Nix modules and helpers
 (gate-tool sets, image-tool environments), not a nix build of the bun tools.
 Toolchain version pins stay local: the toolchain-parity gate checks them
 against each consumer's own dev shell, and the Renovate upgrade scripts that
-rewrite them are a later record. T10 inventories the rest and moves each shared
-file under `nix/` as a flake output. The public boundary applies unchanged.
+rewrite them are a later record. T10 is a design record that inventories the
+rest and plans each move to a flake output under `nix/`. The public boundary
+applies unchanged.
 
 ### What may move (the public boundary)
 
@@ -172,7 +173,8 @@ shared-repo PR and reaches each consumer by pin bump.
 
 ## Plan
 
-Order: T1, T2, T3, then T4, T6, and T10 in parallel, then T5, then T7, T8, T9.
+Order: T1, T2, T3, then T4 and T6 in parallel, then T5, then T7, T8, T9. T10
+is a design record with no code dependency and can start at once.
 T3 comes first among the tools because it guards every later shared-repo PR.
 T5 follows T4 because it imports `LedgerConfig` from the T4 package. RIG-4184's
 scope is T4, T5, and the ledger part of T7 and T8.
@@ -191,7 +193,8 @@ Interfaces: produces the repo with an initialised `main` and the ruleset.
 
 ### T2 — Scaffold and release lane
 
-Lands in: the shared repo. A bun workspace over `packages/*`, a `flake.nix`,
+Lands in: the shared repo, plus one org GitHub IaC change after CI first runs
+(T1's ruleset gains the required checks). A bun workspace over `packages/*`, a `flake.nix`,
 moon, biome, rumdl, the licence files (after the outside-contribution check),
 a GitHub Actions CI that runs typecheck, lint, and test per package plus
 `nix flake check`, and the release lane: release-please per package, then
@@ -342,11 +345,14 @@ Acceptance:
   `file:line` and exit 1. Only the old ledger gate reads `GATE_ROOT`. Run the
   old ref gates with cwd set to the corpus, and compare old reconcile through
   its exported `assertReconcilableLedger` on the corpus ledger.
-- The same corpus with the faults removed: both tools exit 0 with no output.
-  Each exempt prefix (`renovate/`, `trunk-merge/`) gets a branch carrying a
-  fault; the new tool exits 0 on it. The old tool also exits 0, except on
-  `trunk-merge/`, which is the stated intended change along with the tool
-  name in output.
+- The same corpus with the faults removed: both tools exit 0 and report no
+  violations.
+- Exempt prefixes apply only to the ledger gate's touch-coupling leg, which
+  needs PR context. Seed a record touched with no ledger edit and no
+  `Ledger-impact:` line. Drive both ledger gates through `runOnce` with that
+  injected changed set and a `headBranch`. A normal branch exits 1 on both.
+  `renovate/` exits 0 on both. `trunk-merge/` exits 0 on the new gate only;
+  that, and the tool name in output, are the stated intended changes.
 - On a docs-only PR, the ci-matrix output still contains the ledger gate target.
 
 Record both results in the PR body.
@@ -385,7 +391,7 @@ argument (it hard-codes `DEVENV_INPUT = "devenv"`), plus the bot config's
 Acceptance: the record merges with its own task list; the moves are filed from
 it.
 
-Interfaces: consumes T2's `flake.nix`.
+Interfaces: none; the flake outputs it plans come from T2's `flake.nix`.
 
 ### Out of scope
 
