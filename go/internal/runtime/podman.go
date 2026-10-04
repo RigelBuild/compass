@@ -386,6 +386,9 @@ type WorkloadRuntime interface {
 	// Exists reports whether a workload with name currently exists (any state).
 	Exists(ctx context.Context, name string) (bool, error)
 
+	// Running reports whether a workload with name exists and is currently running.
+	Running(ctx context.Context, name string) (bool, error)
+
 	// MountLabel reports the workload's SELinux mount label (its private MCS
 	// category); the podman backend reads it from `podman inspect`. The
 	// config-update path relabels a freshly materialized version dir into this
@@ -423,6 +426,7 @@ const (
 	argExec        = "exec"
 	argInteractive = "--interactive"
 	argFormat      = "--format"
+	argInspect     = "inspect"
 )
 
 // PodmanCLI is a WorkloadRuntime over the podman CLI. The subprocess seam
@@ -718,6 +722,30 @@ func (p *PodmanCLI) ImageExists(ctx context.Context, image string) (bool, error)
 	}
 }
 
+// Running inspects the container state; a missing container is not running.
+func (p *PodmanCLI) Running(ctx context.Context, name string) (bool, error) {
+	out, stderr, exitCode, err := p.spawnCapture(ctx, "podman container inspect", []string{"container", argInspect, argFormat, "{{.State.Running}}", name}, nil)
+	if err != nil {
+		return false, err
+	}
+	// podman reports a missing container as exit 1 or 125 depending on version.
+	if (exitCode == 1 || exitCode == 125) && strings.Contains(strings.ToLower(string(stderr)), "no such") {
+		return false, nil
+	}
+	if exitCode != 0 {
+		return false, &CommandError{Summary: "podman container inspect", ExitCode: exitCode, Stderr: strings.TrimSpace(string(stderr))}
+	}
+	// Provision treats false as licence to remove, so only an exact answer counts.
+	switch state := strings.TrimSpace(string(out)); state {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("podman container inspect: unexpected running state %q", state)
+	}
+}
+
 // MountLabel reads the container's SELinux mount label via `podman inspect`,
 // trimming the trailing newline the CLI prints. A one-shot fire-and-check like
 // Start/Remove: a non-zero exit becomes a CommandError through run.
@@ -754,7 +782,7 @@ func execStreamingArgs(id WorkloadID, spec StreamingExecSpec) []string {
 // mount label. Split out so the argv assembly is unit-testable without spawning
 // podman, mirroring execStreamingArgs.
 func inspectMountLabelArgs(id WorkloadID) []string {
-	return []string{"inspect", argFormat, "{{.MountLabel}}", id.String()}
+	return []string{argInspect, argFormat, "{{.MountLabel}}", id.String()}
 }
 
 // mountArg assembles a `-v host:container[:ro],Z` argument. SELinux relabelling

@@ -105,7 +105,7 @@ func (a *AppleContainerCLI) ListByOwner(ctx context.Context, prefix, runnerID st
 	if runnerID == "" {
 		return nil, errors.New("runner id must not be empty")
 	}
-	stdout, err := a.run(ctx, "container list", []string{"list", "--all", "--format", "json"})
+	stdout, err := a.run(ctx, "container list", []string{"list", "--all", argFormat, "json"})
 	if err != nil {
 		return nil, err
 	}
@@ -321,10 +321,43 @@ func (a *AppleContainerCLI) Exists(ctx context.Context, name string) (bool, erro
 	return classifyInspectErr(exitCode, string(stderr))
 }
 
+// Running checks the inspect status field; missing containers are not running.
+func (a *AppleContainerCLI) Running(ctx context.Context, name string) (bool, error) {
+	out, stderr, exitCode, err := a.spawnCapture(ctx, "container inspect", appleInspectArgs(name), nil)
+	if err != nil {
+		return false, err
+	}
+	if exitCode != 0 {
+		return classifyInspectErr(exitCode, string(stderr))
+	}
+	// inspect prints a JSON array whose entries carry status.state. A stopping
+	// container is still live; an unknown state errors, since Provision treats
+	// false as licence to remove.
+	var inspect []struct {
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(out, &inspect); err != nil {
+		return false, fmt.Errorf("decoding container inspect status: %w", err)
+	}
+	if len(inspect) != 1 {
+		return false, fmt.Errorf("container inspect %q: got %d entries, want 1", name, len(inspect))
+	}
+	switch state := inspect[0].Status.State; state {
+	case "running", "stopping":
+		return true, nil
+	case "stopped":
+		return false, nil
+	default:
+		return false, fmt.Errorf("container inspect %q: unexpected state %q", name, state)
+	}
+}
+
 // appleInspectArgs assembles the `container inspect` argv used as the existence
 // probe.
 func appleInspectArgs(name string) []string {
-	return []string{"inspect", name}
+	return []string{argInspect, name}
 }
 
 // appleNotFoundStderr is the CLI's own "that container does not exist" refusal.
