@@ -1,7 +1,5 @@
 # Compass native first-run product tour (RIG-2797)
 
-Status: Draft
-
 Parent: the Compass onboarding/discoverability net. The coaching-tooltips
 record explicitly deferred "a first-run coach" to a future record
 (`compass-coaching-tooltips/design.md` §Deferred — "The wider onboarding
@@ -135,68 +133,75 @@ minimal Tab/Shift+Tab focus TRAP"), reusing its focus-capture/restore shape
 where anchored-positioning a11y is the hard part, `.cx-dialog` where modal
 chrome is (same split DL-230/DL-245 drew between the overlay and CoachTip).
 
-### A4 — Sequencing, dismissal, resume
+### A4 — Sequencing, skip, resume
 
 - **Advance/back**: Next/Back buttons in the callout footer plus
   `ArrowRight`/`ArrowLeft`. Keys are **component-local**, never a second
   window keymap listener (DL-223's one-listener law): the callout footer holds
-  focus, so its own handlers fire — and mid-step interaction with the live app
-  is therefore pointer-driven (the non-`modal` Popover does not trap focus).
-  **Dismissal is single-pathed**: the Popover surfaces `Escape` and
+  focus, so its own handlers fire. Mid-step interaction with the live app is
+  pointer-driven (the non-`modal` Popover does not trap focus).
+- **Skip tour on every step**: each dialog and callout carries an explicit
+  **Skip tour** button (Matt, OQ-4). Skip, `Escape`, and outside-click all
+  route to one path, `store.tour.dismiss()`: the Popover surfaces `Escape` and
   outside-click through `onOpenChange`
   (`apps/ui/node_modules/@kobalte/core/dist/index/QQ67U6Bm.d.ts:150-152`), and
-  the controller routes `onOpenChange(false)` straight to
-  `store.tour.dismiss()`, so the controlled `open` never desyncs from
-  Kobalte's internal dismissal. Outside-click dismisses (consistent with a
-  non-modal layer); the welcome and finale `.cx-dialog` steps trap focus and
-  are dismissed only by their own controls or `Escape`.
-- **Skip = dismiss-with-memory**: dismissal at step *k* persists
-  `{ dismissedAt: k }`; the tour never auto-reopens. Completion persists
-  `{ completed: true }`.
-- **Resume**: a replay entered from a persisted mid-tour state offers "resume
-  from step *k*" (the persisted cursor) with restart available.
+  the controller sends `onOpenChange(false)` to `dismiss()`, so the controlled
+  `open` never desyncs from Kobalte's own dismissal. The welcome and finale
+  `.cx-dialog` steps trap focus and close only by their own controls
+  (Skip / Start / Done) or `Escape`.
+- **Dismiss and complete persist per account** (A5): dismissal at step *k*
+  records `{ outcome: dismissed, step: k }`, completion records
+  `{ outcome: completed }`. Neither ever auto-reopens.
+- **Resume**: a replay from a dismissed state offers "resume from step *k*"
+  with restart available.
 - **Replay affordance**: a `tour.start` command registered in the keyboard
   spine beside the view commands (`spine.ts:89-96` — the `view.shortcuts`
   registration is the shape: `{ id, title, keywords, scope: "global", run }`),
-  so the palette's action mode inventories it (DL-229: register =
-  actionable-from-anywhere) — no new chrome button needed.
+  so the palette's action mode lists it (DL-229). No default chord (Matt,
+  OQ-4).
 
-### A5 — First-run detection + persistence: the `safeLocalStorage` pattern
+### A5 — First-run detection + persistence: per-account server state
 
-Tour state persists exactly as the pin set does — best-effort, synchronous
-write-through, workspace-namespaced:
+Matt's ruling (OQ-2): a person must never get the tour twice. So "seen" state
+lives **on the server, per account**, not in browser storage. Browser storage
+is per device and per URL, and `workspaceKey` is
+`` `${connection.baseUrl}#${callerId}` `` (`index.tsx:134`), so a LAN IP, a
+tailnet host, and a second device would each re-arm the tour.
 
-- `safeLocalStorage()` (`store.ts:650-656`) — "The `localStorage` handle, or
-  undefined where it is absent or throwing (SSR, a privacy-locked context).
-  Persistence is best-effort" — is the accessor; absence means the tour state
-  is session-only, never a crash.
-- The key follows the pin set's shape, `compass.tourState.<key>`, mirroring
-  `compass.pinnedAgents.${workspace}` (`store.ts:671/704`). **But the
-  namespacing grain is a live fork, not a settled default** (OQ-2): the pin
-  set is workspace-namespaced because agent ids are deployment-local
-  (`store.ts:660-663`), a rationale that does NOT transfer to a
-  "has-this-human-seen-the-product" flag. `workspaceKey` is
-  `` `${connection.baseUrl}#${callerId}` `` (`index.tsx:134`; fallback
-  `store.ts:862`), and `baseUrl` is unstable across a LAN IP vs a tailnet
-  hostname vs a port — so a per-workspace key re-arms the auto-tour on every
-  new deployment *and* every URL variant of the same one. The candidate grains
-  (client-global `compass.tourState`, vs per-workspace, vs a global "seen" +
-  per-workspace resume cursor) are OQ-2; DL-274's wording tracks whichever
-  grain Matt ratifies.
-- Writes are synchronous write-through inside the state transition, the
-  `pinAgent` shape (`store.ts:2058-2065` — `setPinnedAgents((prev) => { …
-  savePinnedAgents(workspaceKey, next); return next; })`), with per-field
-  defensive hydration (the `loadPinnedAgents` self-healing parse,
-  `store.ts:667-694`: bad JSON / wrong shape → the empty default).
+**Server.** No preference or UI-state storage exists today (no table in
+`go/internal/store/migrations/`, no RPC in `proto/compass/v1/`). Add the
+smallest one:
 
-First-run detection distinguishes **empty** storage from **absent** storage.
-`safeLocalStorage()` returns undefined in a privacy-locked context
-(`store.ts:651-657`), which would leave `loadTourState` perpetually empty and
-auto-open the tour on *every* launch. So `shouldAutoStart` requires storage to
-be **present and holding no tour state**; locked/absent storage arms nothing
-(the tour stays replay-only via `tour.start`, A4). Given present storage, the
-tour **auto-opens only on a genuinely fresh workspace**; a dismissed or
-completed state never re-triggers (A4).
+- Migration `0008_account_tour_state.sql` (`0007` is taken by the forge
+  scope store; take the next free number at implementation — migrations are
+  append-only). Table `account_tour_state`: `tenant_id` defaulted from
+  `current_setting('compass.tenant_id', TRUE)` like every tenant-owned table,
+  `account_id`, `outcome` (`started` / `dismissed` / `completed`), `step_id`
+  (resume cursor, nullable), `updated_at`; primary key
+  `(tenant_id, account_id)`. ENABLE + FORCE row-level security with the same
+  `tenant_isolation` policy shape as `0001_init.sql` (non-empty GUC and tenant
+  equality in USING and WITH CHECK).
+- Two RPCs on `CompassService`, beside `WhoAmI`: `GetTourState` and
+  `SetTourState`. Both key on `auth.CallerFrom(ctx)` — the `WhoAmI` handler's
+  pattern (`go/server/service.go`, "never a client-supplied field") — and fail
+  closed with `Unauthenticated` without a caller. The request carries no
+  account id. `SetTourState` is an idempotent upsert. No row means unseen.
+
+**Write timing.** The UI writes `started` (with the step id) **when the tour
+opens**, before the user sees step 1. Closing the app mid-tour therefore
+counts as seen. Step changes update `step_id` best-effort; skip and finish
+write `dismissed` / `completed`. Writes never block the UI; a failed write is
+logged and not retried in a loop.
+
+**Auto-start rule.** The tour auto-opens only when `GetTourState` succeeds and
+returns no row. A failed or slow read arms nothing: a missed tour can be
+replayed from the palette, a repeated one cannot be undone. Replay via
+`tour.start` (A4) always works.
+
+**Offline fixture build.** `boot-fixture.ts` has no server. Tour state there is
+an in-memory signal, so a fixture page load can show the tour once per load.
+This is a dev and demo build, not an account, so the rule above does not apply
+to it.
 
 ### A6 — Entrance: the chase-light welcome, reduced-motion by token
 
@@ -236,10 +241,10 @@ vocabulary — no new motion primitive and no client animation runtime
 
 The tour never imports `posthog-js`. A tiny module,
 `apps/ui/src/tour/analytics.ts`, exposes `captureTourEvent(event: TourEvent)`
-(the T3 union below) and resolves the PR #656 T6 embed **at call time**: when
+(the T4 union below) and resolves the PR #656 T6 embed **at call time**: when
 the analytics enable flag is off, every call is a silent no-op and the tour is
 fully functional un-instrumented. (The embed is *present* by the time any
-capture ships — T3 sequences after T6, and a statically-bundled build cannot
+capture ships — T4 sequences after T6, and a statically-bundled build cannot
 soft-import an absent module — so flag-off is the only live no-op path; OTel
 `trace_id` stamping is the embed's own concern per the obs record's J1, not
 this indirection's.) This satisfies the T6
@@ -247,8 +252,8 @@ contract ("embed `posthog-js` behind an off-by-default enable flag +
 configurable host"; "PostHog contributes only headless data — event capture,
 and flag/early-access-feature JSON payloads … never a PostHog widget" — PR
 656 T6) while keeping the dependency one-directional: the tour's UI tasks
-(T1/T2/T4 below) have zero dependency on T6; only the instrumentation task
-(T3) sequences after it. Events: `tour_started` (with `trigger: "first-run" |
+(T2/T3/T5 below) have zero dependency on T6; only the instrumentation task
+(T4) sequences after it. Events: `tour_started` (with `trigger: "first-run" |
 "replay" | "resume"`), `tour_step_viewed` (`step_id`, `index`),
 `tour_dismissed` (`step_id`), `tour_completed`.
 
@@ -265,16 +270,68 @@ surfaces, and any displayed chord resolves through `shortcutFor` (DL-234's
 single-derivation rule, `CoachTip.tsx:5-6` — "never hand-authored"), reusing
 `ShortcutChip`/CoachTip rendering conventions.
 
-### A9 — Remote content: seam acknowledged, not adopted day-1
+### A9 — Remote content: static steps day-1
 
 Step definitions ship **static, in-code** (a `TOUR_STEPS: readonly TourStep[]`
-table). The optional headless remote-content path T6 names
+table; Matt, OQ-1). The headless remote-content path T6 names
 (`getFeatureFlagPayload` / `getEarlyAccessFeatures` JSON rendered by our own
-component) is deliberately NOT adopted day-1: it would make first-run content
-depend on an off-by-default network SDK, inverting the no-op requirement (A7).
-Because steps are data (A2), a later remote override is a pure data-source
-swap behind the same `TourStep[]` type — the seam is the type, no rework. See
-OQ-1.
+component) is not adopted day-1: it would make first-run content depend on an
+off-by-default network SDK (A7). Because steps are data (A2), a later remote
+override is a data-source swap behind the same `TourStep[]` type.
+
+### A10 — Demo agents and content
+
+A fresh workspace has no agents and an empty board, so the tour would point at
+empty chrome (Matt, OQ-3: "otherwise it's hard to understand"). While the tour
+is open, the store shows a small **demo dataset**: two or three demo agents
+with presence, a handful of demo issues across board columns, and one demo
+channel with a few messages. Data lives in a new `apps/ui/src/tour/demo.ts`,
+shaped like the fixture data in `stub-data.ts` / `comms-stub.ts`.
+
+- **One seam, in the store.** The store's existing read accessors — `agents()`,
+  `issues()`, `channels()`, `messages()` (`store.ts`, `AppStore` interface) —
+  return real rows plus demo rows while `tour.demoActive()` is true. Every
+  surface (LeftSidebar tree, board, RightSidebar, AgentView) already reads
+  through these accessors, so no component gets a second data path.
+- **Demo rows are visibly marked.** Every demo id has the `demo:` prefix, and
+  rows render a "Demo" badge.
+- **Demo rows never reach the server.** Every store mutation closure (move
+  issue, send message, start session, and the rest) returns early on a
+  `demo:` id. Demo rows are never written to the query cache or the stream
+  state; the seam adds them at read time only.
+- **Teardown.** Skip, finish, and any dismiss clear `demoActive`, so the demo
+  rows disappear in the same tick.
+- **Real data stays visible.** On a replay in a busy workspace, demo rows sit
+  beside real ones instead of hiding them.
+- **Agent-workspace beat.** It anchors to a demo agent's row in the agent tree,
+  so it no longer skips itself on an empty workspace. The route union (A2)
+  stays the four static views.
+
+Risk: a missed mutation guard would send a `demo:` id to the server. The
+server rejects unknown ids, but T2 adds a test that runs every mutation
+closure with a `demo:` id and asserts no client call.
+
+### A11 — Faint spotlight on callout steps
+
+Callout steps dim the app faintly and leave a clear cutout over the anchor
+(Matt, OQ-5: "faint spotlight").
+
+- A fixed full-viewport `.cx-tour-spotlight` layer below the callout. Its fill
+  is a new token `--cx-tour-scrim`, much lighter than the dialog
+  `--cx-scrim` (`design/tokens.css`), so the live app stays readable.
+- The cutout is a CSS `mask` (a radial or rounded-rect transparent region)
+  positioned from the anchor's `getBoundingClientRect()` plus padding. It is
+  recomputed on step change, resize, and scroll (one rAF-throttled
+  listener, removed on close).
+- The layer is `pointer-events: none`, so it never blocks clicks on the anchor
+  or the app.
+- Cutout moves use `--cx-motion-base`; under reduced motion the token is zero,
+  so the cutout jumps.
+- Dialog steps (welcome, finale) keep the normal `.cx-dialog-backdrop`.
+
+Cost: one more fixed layer and one resize/scroll listener while the tour is
+open. No mask or clip-path exists in the UI yet, so T6 adds a short note to
+`components.md`.
 
 ## Alternatives considered
 
@@ -322,21 +379,13 @@ Kept hand-rolled: the two **modal** steps
 the hard parts (focus trap/restore) are already solved in-tree
 (`ShortcutsOverlay.tsx:50-58`).
 
-### "Seen" state: store-backed signal only, or server-persisted
+### "Seen" state: browser storage
 
-- **Signal-only (no persistence)**: the tour would replay on every launch —
-  fails the premise.
-- **Server-persisted per-account preference**: durable across devices, but
-  there is no UI preferences surface in the contract today (the store persists
-  exactly one client pref, the pin set — `store.ts:612-618`: "prefs in
-  `localStorage` — the pinned-agent set"), so this buys a cross-device nicety
-  at the cost of a new RPC + schema + migration on a cold-start feature.
-  Rejected day-1; the localStorage state is self-healing and losing it merely
-  re-offers a skippable tour. A future preferences-sync lane can lift the same
-  `TourState` shape server-side (see OQ-2).
-- **Chosen**: workspace-namespaced `localStorage` via the shipped
-  `safeLocalStorage` pattern (A5) — zero new backend surface, identical
-  semantics to the pin set, degrades to session-only where storage is locked.
+Store the "seen" flag in `localStorage` with the pin-set pattern
+(`safeLocalStorage`, `store.ts:650-656`). Rejected (Matt, OQ-2): storage is per
+device and per URL, so the same person would get the tour again on a second
+device, a second URL for the same server, or a cleared browser. Per-account
+server state (A5) costs one small table and two RPCs.
 
 ### One Kobalte substrate for everything (Dialog for modal steps too)
 
@@ -381,11 +430,15 @@ positioning, and only the Popover carries that.
   `[data-reduce="on"]` — automatic via the token zeroing
   (`tokens.css:241-257`); any tour keyframe not driven by a zeroed token needs
   an explicit substitution rule (`motion.md:42-49`).
-- **Persistence**: tour state only via the `safeLocalStorage` pattern
-  (`store.ts:650-656`), workspace-namespaced
-  (`compass.tourState.<workspaceKey>`, key derivation `index.tsx:134`),
-  best-effort, synchronous write-through (`store.ts:2058-2065`), self-healing
-  hydration (`store.ts:667-694`). Never a crash on locked storage.
+- **Persistence**: tour state only through `GetTourState` / `SetTourState`
+  (A5), keyed on the server-side caller. No client-supplied account id. The
+  tour auto-opens only on a successful read with no row. No tour state in
+  `localStorage`.
+- **Server**: the new migration is append-only and tenant-scoped with ENABLE +
+  FORCE row-level security like its neighbors; a cross-tenant pgtest proves
+  isolation.
+- **Demo data** (A10): read-time only, `demo:`-prefixed, never sent to the
+  server, gone on close.
 - **Keyboard**: no second window keydown listener (DL-223 — one `installKeymap`
   listener, `App.tsx:59-65`); tour-local keys are component-scoped handlers
   (the ShortcutsOverlay pattern). The replay command `tour.start` registers in
@@ -397,25 +450,54 @@ positioning, and only the Popover carries that.
   `apps/ui` (DL-154 token guard); tests `cd apps/ui && bun test --conditions
   browser <files>` with `@solidjs/testing-library`; red → green per
   `rule://red-green-testing`; markdownlint on docs.
-- **Ledger**: new rows DL-272..275 (next contiguous block above the landed
-  max DL-268 at `DECISIONS.md:371`, leaving DL-269..271 for RIG-2751 #645
-  ahead in the merge queue), driver-folded in the same PR; no row superseded.
+- **Ledger**: rows DL-272..275 (reserved for this record), updated in place;
+  no row superseded.
 
 ## Plan
 
-Dependency order: T1 → T2 → (T3 ∥ T4) → T5. T1/T2/T4/T5 have **no**
-dependency on PR #656; **T3 alone sequences after the #656 T6 embed lands**
-(and is a no-op-safe shim even then, so it can merge with T6 still dark).
+Dependency order: T1 → T2 → T3 → (T4 ∥ T5) → T6. T1–T3, T5, and T6 have **no**
+dependency on PR #656; **T4 alone sequences after the #656 T6 embed lands**.
 
-### T1 — Tour state: controller + persistence in the store
+### T1 — Server: per-account tour state
 
-New files `apps/ui/src/tour/state.ts` (pure) and store wiring in
-`apps/ui/src/store.ts` beside the sibling overlay signals
-(`store.ts:1942-1965`). Persistence via the shipped `safeLocalStorage`
-pattern (A5): key `compass.tourState.<workspaceKey>`, self-healing hydration,
-synchronous write-through on every transition.
+Migration `0008_account_tour_state.sql`, sqlc queries in
+`go/internal/store/queries/`, and `GetTourState` / `SetTourState` on
+`CompassService` (A5). Regenerate the TS client.
 
 Interfaces:
+
+```proto
+// proto/compass/v1/compass.proto, beside WhoAmI
+rpc GetTourState(GetTourStateRequest) returns (GetTourStateResponse);
+rpc SetTourState(SetTourStateRequest) returns (SetTourStateResponse);
+
+enum TourOutcome {
+  TOUR_OUTCOME_UNSPECIFIED = 0; // no row: never seen
+  TOUR_OUTCOME_STARTED = 1;
+  TOUR_OUTCOME_DISMISSED = 2;
+  TOUR_OUTCOME_COMPLETED = 3;
+}
+message GetTourStateRequest {}
+message GetTourStateResponse {
+  TourOutcome outcome = 1;
+  string step_id = 2; // resume cursor; empty when none
+}
+message SetTourStateRequest {
+  TourOutcome outcome = 1; // UNSPECIFIED is InvalidArgument
+  string step_id = 2;
+}
+message SetTourStateResponse {}
+```
+
+Red → green (pgtests): no row reads `UNSPECIFIED`; set then get round-trips;
+a second set overwrites; a caller in tenant A cannot read tenant B's row;
+no caller fails `Unauthenticated`; `UNSPECIFIED` on set is
+`InvalidArgument`.
+
+### T2 — Tour state + demo seam in the store
+
+New `apps/ui/src/tour/state.ts` (pure), `apps/ui/src/tour/demo.ts` (A10), and
+store wiring beside the sibling overlay signals (`store.ts:1942-1965`).
 
 ```ts
 // apps/ui/src/tour/state.ts (pure — no DOM, no store import)
@@ -423,72 +505,57 @@ export interface TourStep {
   readonly id: string;
   readonly kind: "dialog" | "callout";
   readonly anchor?: string; // data-tour value, callout steps only
-  // Only the four closure-backed static views navigate (A1/B2);
-  // parameterized surfaces (agent workspace) are anchored, never navigated.
   readonly route?: "/" | "/backlog" | "/done" | "/settings";
   readonly title: string;
   readonly body: string;
 }
 
-export interface TourState {
-  readonly completed: boolean;
-  /** Step id the user dismissed at; undefined = never dismissed. */
-  readonly dismissedAt?: string;
-}
-
-/** Hydrate persisted state; bad JSON / wrong shape → undefined (fresh). */
-export function loadTourState(workspace: string): TourState | undefined;
-/** Best-effort write-through (savePinnedAgents shape, store.ts:697-708). */
-export function saveTourState(workspace: string, state: TourState): void;
-
-/** The static step table (A2/A9). Copy is impl-owned; ids are frozen here
- *  as the analytics dimension: "welcome", "board", "sidebar-tree",
- *  "agent-workspace", "keyboard", "finale". */
+/** Step ids are frozen as the analytics dimension and resume cursor:
+ *  "welcome", "board", "sidebar-tree", "agent-workspace", "keyboard",
+ *  "finale". Copy is impl-owned. */
 export const TOUR_STEPS: readonly TourStep[];
 ```
 
 ```ts
-// AppStore additions (store.ts, beside shortcutsOpen at store.ts:268-273)
+// AppStore additions (store.ts, beside shortcutsOpen)
 interface AppStore {
   tour: {
     open: Accessor<boolean>;
     stepIndex: Accessor<number>;
-    /** Arm-on-fresh: true only when no persisted state exists (A5). */
+    /** True while demo rows are merged into the read accessors (A10). */
+    demoActive: Accessor<boolean>;
+    /** True only after GetTourState succeeded with no row (A5). */
     shouldAutoStart: Accessor<boolean>;
     start: (trigger: "first-run" | "replay" | "resume") => void;
     next: () => void;
     back: () => void;
-    /** Persists { dismissedAt: currentStepId } and closes. */
+    /** Writes DISMISSED + current step id, closes, clears demo rows. */
     dismiss: () => void;
-    /** Persists { completed: true } and closes. */
+    /** Writes COMPLETED, closes, clears demo rows. */
     complete: () => void;
   };
 }
 ```
 
-`start`/`next` perform the step's `route` navigation through the existing
-closures (`store.ts:1952-1969`) before opening/advancing — and because `route`
-is the four-view union (B2), every step's navigation target is a closure that
-exists; the agent-workspace step carries no `route` and is reached by anchor.
-Red → green (`apps/ui/src/tour/state.test.ts` + store tests): hydration
-self-healing (bad JSON → fresh), namespacing (two keys don't cross-suppress),
-dismiss-at-k persistence, `next` past the last step calls `complete`;
-auto-start fires only when storage is **present and empty**, and **not** when
-storage is absent/locked (S3 — no auto-open every launch).
+Live boot reads `GetTourState` after `WhoAmI` (`index.tsx`); fixture boot uses
+an in-memory state (A5). Red → green: auto-start only on a successful empty
+read, never on a failed read; `start` writes `STARTED` before step 1 shows;
+dismiss and complete write their outcome; `next` past the last step calls
+`complete`; demo rows appear in `agents()`/`issues()`/`channels()`/
+`messages()` only while `demoActive`; every mutation closure called with a
+`demo:` id makes no client call.
 
-### T2 — `TourOverlay` component + `.cx-tour-*` CSS
+### T3 — `TourOverlay` + spotlight + `.cx-tour-*` CSS
 
-New `apps/ui/src/components/TourOverlay.tsx` +
+New `apps/ui/src/components/TourOverlay.tsx` and
 `apps/ui/src/design/components/tour.css`; App-root mount as a third overlay
 sibling (`App.tsx:185-191`). Callouts on Kobalte Popover with `anchorRef`
 resolving `[data-tour]` (A2/A3); dialog steps on `.cx-dialog` with the
-ShortcutsOverlay focus capture/restore + trap shape
-(`ShortcutsOverlay.tsx:50-58`); missing anchor skips the step. Adds inert
-`data-tour` attributes to the anchored chrome (LeftSidebar view buttons
-`LeftSidebar.tsx:442-454`, topbar nav `App.tsx:86`, board grid, right
-sidebar). Entrance chase + step transitions per A6, tokens only.
-
-Interfaces:
+ShortcutsOverlay focus capture/restore and trap (`ShortcutsOverlay.tsx:50-58`);
+Skip tour on every step (A4); faint spotlight on callout steps (A11); "Demo"
+badge on demo rows (A10). Adds `data-tour` attributes to anchored chrome
+(LeftSidebar view buttons `LeftSidebar.tsx:442-454`, topbar nav `App.tsx:86`,
+board grid, right sidebar). Entrance and transitions per A6.
 
 ```tsx
 // apps/ui/src/components/TourOverlay.tsx
@@ -497,35 +564,21 @@ Interfaces:
 export const TourOverlay: Component;
 ```
 
-Consumes: T1's `store.tour` + `TOUR_STEPS`; Kobalte `Popover`
-(`anchorRef?: Accessor<HTMLElement | undefined>`, `open?: boolean` —
-`apps/ui/node_modules/@kobalte/core/dist/index/QQ67U6Bm.d.ts:139-147`);
-`.cx-dialog` conventions. Produces: the `data-tour`
-anchor contract (values = `TourStep.anchor`).
+Red → green (`TourOverlay.test.tsx`, shared test router): dialog step traps
+and restores focus; callout anchors to its `[data-tour]` element; an anchor
+that mounts one tick after navigation still anchors; a missing anchor skips
+only after the bounded wait; Skip, `Escape`, and outside-click all call
+`dismiss`; arrow keys work with no window-level listener (DL-223); the
+spotlight layer is `pointer-events: none` and its cutout tracks the anchor
+rect; reduced motion keeps all assertions passing. **Aggregate anchor test**:
+for every callout step, mount the real `App` on that route with demo rows
+active and assert the anchor resolves.
 
-Red → green (`TourOverlay.test.tsx`, mounted via the shared test router,
-`test-router.tsx` memoryHistory): dialog step renders with focus trapped and
-restored on close; callout step anchors to the `[data-tour]` element; an
-anchor that mounts one tick *after* navigation still anchors (B1 — the bounded
-reactive resolve, not a synchronous miss); a genuinely missing anchor advances
-to the next step only after the bounded wait (no error); Escape / outside-click
-both route through `onOpenChange(false)` to dismiss and persist `dismissedAt`
-(S5); ArrowRight/ArrowLeft advance/retreat with the callout focused and **no**
-window-level keydown listener added (DL-223); a step with `route` navigates
-(location changes) before rendering; reduced-motion (`[data-reduce="on"]`)
-leaves all assertions passing. **Aggregate anchor contract test** (S4): for
-every callout step in `TOUR_STEPS`, mount the real `App` on that step's route
-via the memory-router harness and assert its `data-tour` anchor resolves — so
-DOM drift that would silently empty the tour is a red CI check, while the
-runtime skip above stays the graceful degradation.
+### T4 — Analytics indirection (after #656 T6)
 
-### T3 — Analytics indirection (sequences after #656 T6)
-
-New `apps/ui/src/tour/analytics.ts` (A7) + capture calls wired into T1's
-transitions. **Ordering: merges only after the #656 T6 embed defines the
-enable-flag + capture seam**; the module still guards for the flag being off.
-
-Interfaces:
+New `apps/ui/src/tour/analytics.ts` (A7) and capture calls in T2's
+transitions. Merges only after the #656 T6 embed defines the enable flag and
+capture seam.
 
 ```ts
 // apps/ui/src/tour/analytics.ts
@@ -540,121 +593,74 @@ export type TourEvent =
 export function captureTourEvent(event: TourEvent): void;
 ```
 
-Consumes: the T6 embed's exported capture handle + enable flag (exact import
-path fixed by T6's impl; this module is the only file that names it).
-Red → green: with the enable flag off, every tour flow from T1/T2 tests still
-passes (the no-op contract); with a stubbed embed and the flag on, transitions
-emit the four events with correct payloads.
+Red → green: with the flag off every T2/T3 flow still passes; with a stubbed
+embed and the flag on, transitions emit the four events.
 
-### T4 — Replay command + first-run arming
+### T5 — Replay command + first-run arming
 
-Register `tour.start` in the spine beside `view.shortcuts`
-(`spine.ts:89-96` shape; deps extended with T1's `startTour` closure,
-`spine.ts:70-79`), `scope: "global"`, keywords `["tour", "welcome",
-"onboarding", "help"]` — palette-discoverable per DL-229. Wire auto-start:
-App mount checks `store.tour.shouldAutoStart()` (S3 — present-and-empty storage
-only) and calls `store.tour.start("first-run")` deferred behind idle time (the
-boot-sequence posture, `motion.md:195-197` — never blocking first input).
-**Sequencing against the boot sequence** (S6): the first-load boot
-choreography (`motion.md:180-203`) is itself an idle-deferred wow on the same
-fresh-workspace first frame, so the tour auto-start waits for the boot layer to
-clear before opening; until that boot lane lands in-tree, the tour is the
-first-launch owner and this stays an explicit integration point.
+Register `tour.start` in the spine beside `view.shortcuts` (`spine.ts:89-96`
+shape), `scope: "global"`, keywords `["tour", "welcome", "onboarding",
+"help"]`. No keymap row (Matt, OQ-4). App mount checks
+`store.tour.shouldAutoStart()` and calls `start("first-run")` behind idle
+time (`motion.md:195-197`), after the boot layer clears (`motion.md:180-203`);
+until that boot lane lands, the tour owns first launch.
 
-Interfaces: consumes T1's `store.tour.start`; touches
-`apps/ui/src/keyboard/spine.ts` (one registration + one dep), `App.tsx`
-(arming effect). No keymap row (no default chord — palette-only; a chord is
-OQ-4).
+Red → green: `tour.start` resolves in the registry and opens with `"replay"`
+(or `"resume"` when the server holds a dismissed step); auto-start fires once
+on an empty read and never after any outcome is stored.
 
-Red → green: `tour.start` resolves in the registry and opens the tour with
-`trigger: "replay"` (or `"resume"` when a `dismissedAt` cursor exists);
-auto-start fires exactly once on a fresh workspace and never when
-completed/dismissed state is persisted.
+### T6 — Docs
 
-### T5 — Docs + ledger follow-through
-
-- `apps/ui/src/design/components.md`: add the `.cx-tour-callout` /
-  `.cx-tour-*` class contract section; `motion.md`: note the tour entrance as
-  a finite-iteration chase-light consumer.
-- Ledger delta rides the same PR (driver-folded): DL-272..275 (below).
-- Gate: markdownlint on touched docs; `cd apps/ui && bun test --conditions
-  browser` affected suites; Biome + stylelint.
-
-Interfaces: none new; docs only.
+- `apps/ui/src/design/components.md`: `.cx-tour-*` classes, the spotlight
+  mask, and the `--cx-tour-scrim` token; `motion.md`: the one-shot entrance
+  chase.
+- Gates: rumdl on touched docs; `cd apps/ui && bun test --conditions browser`
+  affected suites; Biome + stylelint; Go tests and pgtests for T1.
 
 ## Tasks
 
-- [ ] T1: `tour/state.ts` (TourStep/TourState, load/save via
-  `safeLocalStorage`, `TOUR_STEPS`) + `store.tour` controller wired beside
-  the sibling overlay signals + red→green state/persistence tests.
-- [ ] T2: `TourOverlay.tsx` + `design/components/tour.css` (Kobalte Popover
-  callouts on `data-tour` anchors, `.cx-dialog` welcome/finale, chase-light
-  entrance, reduced-motion by token) + `data-tour` attributes on anchored
-  chrome + red→green component tests.
-- [ ] T3 (after #656 T6 lands): `tour/analytics.ts` no-op-safe
-  `captureTourEvent` + capture wiring in the controller + red→green
-  no-op/emission tests.
-- [ ] T4: `tour.start` spine registration (palette-discoverable) +
-  idle-deferred first-run arming in App + red→green replay/arming tests.
-- [ ] T5: `components.md`/`motion.md` updates; ledger delta DL-272..275
-  noted for the driver; markdownlint/Biome/stylelint gates.
+- [ ] T1: `account_tour_state` migration + sqlc queries + `GetTourState` /
+  `SetTourState` on `CompassService` + TS client regen + pgtests (incl.
+  cross-tenant).
+- [ ] T2: `tour/state.ts`, `tour/demo.ts`, `store.tour` controller, server
+  read/write wiring, demo read seam + mutation guards + tests.
+- [ ] T3: `TourOverlay.tsx` + `tour.css` (Popover callouts, `.cx-dialog`
+  welcome/finale, Skip tour, faint spotlight, Demo badge, chase-light
+  entrance) + `data-tour` anchors + tests.
+- [ ] T4 (after #656 T6): `tour/analytics.ts` + capture wiring + tests.
+- [ ] T5: `tour.start` spine registration + idle-deferred first-run arming +
+  tests.
+- [ ] T6: `components.md` / `motion.md` updates; gates.
 
 ## Open Questions
 
-Load-bearing (need Matt's ruling before impl):
+Ruled by Matt on PR #662, 2026-10-04:
 
-- **OQ-1 — Remote tour content: adopt the headless flag/EAF payload path
-  day-1, or ship static steps only?** Recommendation: **static in-code steps
-  day-1** (A9) — remote content would couple first-run UX to an
-  off-by-default network SDK, and the `TourStep[]` type keeps the swap
-  additive later. Load-bearing because a day-1 remote path changes T1's data
-  source and T3's scope.
-- **OQ-2 — "Seen" state: storage tier AND namespacing grain.** Two coupled
-  forks. (a) *Tier*: workspace-scoped localStorage day-1, or per-account server
-  sync? Recommendation: **localStorage day-1** (Alternatives §"Seen" state) —
-  worst failure is a re-offered skippable tour; server sync needs new contract
-  surface no other UI pref has today. (b) *Grain* (S2): the pin set's
-  per-workspace key re-arms the auto-tour on every new deployment and every URL
-  variant (`baseUrl` is unstable), which is wrong for a per-human "seen" flag.
-  Recommendation: **client-global `compass.tourState`** (or global "seen" +
-  per-workspace resume cursor if resume must stay workspace-local).
-  Load-bearing: the grain sets DL-274's wording, and a server answer adds an
-  RPC + schema task that re-sequences the plan.
-- **OQ-3 — Step inventory + copy.** The frozen step *ids* (T1) assume the
-  six-beat arc welcome → board → sidebar-tree → agent-workspace → keyboard →
-  finale. Recommendation: ratify the arc now, leave copy impl-owned (reviewed
-  at PR). Load-bearing because ids are the analytics dimension and the resume
-  cursor — renaming after T3 ships breaks funnel continuity. **Arc caveat**
-  (B2): the `agent-workspace` beat has no static route (it is `/agent/:agentId`
-  — `routes.tsx:42`) and a genuinely fresh workspace may have zero agents, so
-  that step is designed as **anchored to the agent tree / right sidebar, not
-  navigated**, and it self-skips (A2 bounded resolve) when no agent exists —
-  its `tour_step_viewed` will under-report on empty workspaces by design.
-  Confirm the arc with that beat so scoped.
+- **OQ-1 — Remote tour content.** Static in-code steps day-1 (A9).
+- **OQ-2 — "Seen" state.** Per account, on the server; a person never gets
+  the tour twice (A5).
+- **OQ-3 — Step arc.** Arc welcome → board → sidebar-tree → agent-workspace →
+  keyboard → finale, illustrated with demo agents and content (A10).
+- **OQ-4 — Chord for `tour.start`.** None. Add a Skip tour button (A4).
+- **OQ-5 — Spotlight.** Faint spotlight on callout steps (A11).
+- **OQ-6 — Re-offer on major releases.** Not now; may revisit.
 
-Deferred (non-load-bearing; impl proceeds on the stated assumption):
+Deferred (impl proceeds on the stated assumption):
 
-- **OQ-4 — A default chord for `tour.start`?** Assumption: none — palette +
-  keywords suffice for a rare action; a chord can ride a later keymap wave
-  (the DL-252 pattern) without touching this design.
-- **OQ-5 — Spotlight/backdrop dimming on callout steps** (dim the app,
-  punch a hole over the anchor). Assumption: ship without it — a dimmed
-  backdrop fights the "the tour IS the live app" premise and adds a
-  clip-path maintenance surface; revisit after first dogfood feedback.
-- **OQ-6 — Tour re-offer on major releases** (a "what's new" re-run keyed on
-  version). Assumption: out of scope; the changelog/announcement surface PR
-  #656 T6 names is a separate native component and a separate record.
+- **OQ-7 — Demo rows beside real rows on replay.** Assumption: show both,
+  demo rows badged (A10). Hiding real rows during a replay is the alternative.
+- **OQ-8 — RPC home.** Assumption: the two RPCs ride `CompassService` beside
+  `WhoAmI`. A separate preferences service is the alternative if more
+  per-account UI settings follow.
 
 ## Ledger delta
 
-Proposed rows (next contiguous block above the landed max DL-268, `DECISIONS.md:371`, leaving DL-269..271 for RIG-2751 #645 ahead in the merge queue; driver folds
-into `DECISIONS.md` in the same PR, stamping `Active (Matt, <merge date>)` per
-the ledger's status convention — the cells below carry the ratification
-provenance, the driver supplies the date):
+Rows DL-272..275 in `DECISIONS.md` § UI shell, stamped `Active (Matt,
+2026-10-04)`:
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-272 | The first-run product tour is built natively in SolidJS v2 as a store-gated App-root overlay (a third sibling of the shortcuts overlay + palette) whose steps anchor to real chrome via `data-tour` attributes and navigate the real router through the store's closures; PostHog-rendered UI (Product Tours/surveys/banners or any `posthog-js` widget) NEVER ships in-app — PostHog is measurement/data-only (Matt's RIG-2793 ruling, restated by #656 T6) | Active (Matt, on merge) | [first-run tour §A1](#a1--host-shape-an-app-root-overlay-layer-store-gated) |
-| DL-273 | Tour callout substrate is the Kobalte v2-alpha `Popover` (external `anchorRef` + controlled `open` — DL-150 a11y-hard scope); the welcome/finale modal steps stay hand-rolled on the `.cx-dialog` convention (DL-230), reusing the ShortcutsOverlay focus trap/restore; a missing `data-tour` anchor skips the step only after a bounded reactive resolve, never errors | Active (Matt, on merge) | [first-run tour §A3](#a3--callout-substrate-kobalte-popover-with-an-external-anchorref) |
-| DL-274 | Tour "seen"/resume state persists as best-effort localStorage via the shipped `safeLocalStorage` + write-through pin-set pattern, self-healing on hydrate, auto-opening only when storage is present and empty (locked storage → replay-only); the namespacing grain (client-global vs per-workspace vs global-seen + per-workspace resume) is set by OQ-2's ruling, and server-side preference sync is a named future, not day-1 | Active (Matt, on merge) | [first-run tour §A5](#a5--first-run-detection--persistence-the-safelocalstorage-pattern) |
-| DL-275 | Tour analytics ride a thin call-time indirection (`captureTourEvent`) over the #656 T6 PostHog embed: flag off → silent no-op, no static `posthog-js` import in tour code; only the instrumentation task sequences after T6 — the tour UI has zero dependency on it. Step content ships static in-code; the headless flag/EAF remote-content path is a deferred additive behind the same `TourStep[]` type | Active (Matt, on merge) | [first-run tour §A7](#a7--analytics-a-thin-no-op-safe-indirection-over-the-t6-embed) |
+| DL-272 | The first-run product tour (RIG-2797) is built natively in SolidJS v2 as a store-gated App-root overlay (a third sibling of the shortcuts overlay + palette) whose steps anchor to real chrome via `data-tour` attributes and navigate the real router through the store's closures; while open it shows tour-only demo agents and content (`demo:` ids, badged, read-time only, never sent to the server). PostHog-rendered UI (Product Tours/surveys/banners or any `posthog-js` widget) NEVER ships in-app — PostHog is measurement/data-only (Matt's RIG-2793 ruling, restated by #656 T6) | Active (Matt, 2026-10-04) | [first-run tour §A1](#a1--host-shape-an-app-root-overlay-layer-store-gated) |
+| DL-273 | Tour callout substrate is the Kobalte v2-alpha `Popover` (external `anchorRef` + controlled `open` — DL-150 a11y-hard scope) over a faint, pointer-transparent spotlight with a cutout at the anchor; the welcome/finale modal steps stay hand-rolled on the `.cx-dialog` convention (DL-230); every step has a Skip tour control; a missing `data-tour` anchor skips the step only after a bounded reactive resolve, never errors | Active (Matt, 2026-10-04) | [first-run tour §A3](#a3--callout-substrate-kobalte-popover-with-an-external-anchorref) |
+| DL-274 | Tour "seen"/resume state is per account on the server (`account_tour_state`, tenant RLS; `GetTourState`/`SetTourState` keyed on the authenticated caller, never a client-supplied id). The UI writes `started` when the tour opens, so no person sees it twice; it auto-opens only after a successful read with no row, and a failed read arms nothing | Active (Matt, 2026-10-04) | [first-run tour §A5](#a5--first-run-detection--persistence-per-account-server-state) |
+| DL-275 | Tour analytics ride a thin call-time indirection (`captureTourEvent`) over the #656 T6 PostHog embed: flag off → silent no-op, no static `posthog-js` import in tour code; only the instrumentation task sequences after T6 — the tour UI has zero dependency on it. Step content ships static in-code; the headless flag/EAF remote-content path is a deferred additive behind the same `TourStep[]` type | Active (Matt, 2026-10-04) | [first-run tour §A7](#a7--analytics-a-thin-no-op-safe-indirection-over-the-t6-embed) |
