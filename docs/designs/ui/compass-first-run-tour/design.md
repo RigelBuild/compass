@@ -263,7 +263,7 @@ fully functional un-instrumented. (The embed is *present* by the time any
 capture ships — T4 sequences after #656 T6, and a statically-bundled build cannot
 soft-import an absent module — so flag-off is the only live no-op path; OTel
 `trace_id` stamping is the embed's own concern per the obs record's J1, not
-this indirection's.) This satisfies the T6
+this indirection's.) This satisfies the #656 T6
 contract ("embed `posthog-js` behind an off-by-default enable flag +
 configurable host"; "PostHog contributes only headless data — event capture,
 and flag/early-access-feature JSON payloads … never a PostHog widget" — PR
@@ -289,7 +289,7 @@ single-derivation rule, `CoachTip.tsx:5-6` — "never hand-authored"), reusing
 ### A9 — Remote content: static steps day-1
 
 Step definitions ship **static, in-code** (a `TOUR_STEPS: readonly TourStep[]`
-table; Matt, OQ-1). The headless remote-content path T6 names
+table; Matt, OQ-1). The headless remote-content path #656 T6 names
 (`getFeatureFlagPayload` / `getEarlyAccessFeatures` JSON rendered by our own
 component) is not adopted day-1: it would make first-run content depend on an
 off-by-default network SDK (A7). Because steps are data (A2), a later remote
@@ -386,7 +386,7 @@ built natively in Solid"). Concretely: a PostHog widget is a generic DOM
 overlay injected outside the Solid tree — it cannot anchor through our
 reactive store, cannot drive the router, cannot consume `--cx-*` tokens or the
 chase-light primitive, ignores `[data-reduce="on"]`, and would ship UI from a
-network SDK that is **off by default** on self-hosted deploys (T6), i.e. the
+network SDK that is **off by default** on self-hosted deploys (#656 T6), i.e. the
 tour would simply not exist for most self-hosters. PostHog stays
 measurement-only (A7).
 
