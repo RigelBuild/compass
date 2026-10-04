@@ -149,6 +149,9 @@ func TestGetAgentStatusNilBoardNoPanic(t *testing.T) {
 	if got := resp.Msg.GetStatuses(); len(got) != 0 {
 		t.Errorf("GetAgentStatus(nil board) statuses = %v, want empty", got)
 	}
+	if resp.Msg.RunnerEnrolled == nil || resp.Msg.GetRunnerEnrolled() {
+		t.Errorf("GetAgentStatus(nil board) runner_enrolled = %v, want explicit false", resp.Msg.RunnerEnrolled)
+	}
 }
 
 func TestGetAgentStatusRunnerNotEnrolled(t *testing.T) {
@@ -157,8 +160,8 @@ func TestGetAgentStatusRunnerNotEnrolled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentStatus = %v", err)
 	}
-	if resp.Msg.GetRunnerEnrolled() {
-		t.Fatal("GetAgentStatus runner_enrolled = true without a Runner, want false")
+	if resp.Msg.RunnerEnrolled == nil || resp.Msg.GetRunnerEnrolled() {
+		t.Fatalf("GetAgentStatus runner_enrolled = %v without a Runner, want explicit false", resp.Msg.RunnerEnrolled)
 	}
 }
 
@@ -180,6 +183,9 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 		resp, err := client.GetAgentStatus(context.Background(), connect.NewRequest(&compassv1.GetAgentStatusRequest{}))
 		if err != nil {
 			t.Fatalf("GetAgentStatus = %v", err)
+		}
+		if resp.Msg.RunnerEnrolled == nil {
+			t.Fatal("GetAgentStatus left runner_enrolled unset")
 		}
 		return resp.Msg.GetRunnerEnrolled()
 	}
