@@ -814,9 +814,9 @@ type Channel struct {
 	// The channel's pinned board, ordered by PinnedEntry.position. Maintained via
 	// UpdatePinnedBoard; board changes ride the existing ChannelChanged event.
 	PinnedEntries []*PinnedEntry `protobuf:"bytes,10,rep,name=pinned_entries,json=pinnedEntries,proto3" json:"pinned_entries,omitempty"`
-	// The agent this channel hangs off in the sidebar tree; empty = a tree-root
-	// channel. The anchor's owner reads the channel (owner-set read grant). Never
-	// set on a SHARED-group channel: shared spaces stay at the tree root.
+	// The agent this channel hangs off; empty = a tree-root channel. The anchor's
+	// owner set (its owner and that owner's agents) sees the channel; history
+	// still needs membership. Never set on a SHARED-group channel.
 	ParentAgentId string `protobuf:"bytes,11,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
 	// How membership is decided: stored member rows (EXPLICIT) or derived from
 	// the agent subtree under parent_agent_id (TREE).

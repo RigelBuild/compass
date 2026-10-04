@@ -312,9 +312,9 @@ export type Channel = Message$1<"compass.v1.Channel"> & {
   pinnedEntries: PinnedEntry[];
 
   /**
-   * The agent this channel hangs off in the sidebar tree; empty = a tree-root
-   * channel. The anchor's owner reads the channel (owner-set read grant). Never
-   * set on a SHARED-group channel: shared spaces stay at the tree root.
+   * The agent this channel hangs off; empty = a tree-root channel. The anchor's
+   * owner set (its owner and that owner's agents) sees the channel; history
+   * still needs membership. Never set on a SHARED-group channel.
    *
    * @generated from field: string parent_agent_id = 11;
    */
