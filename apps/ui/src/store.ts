@@ -69,7 +69,17 @@ import {
 	DEFAULT_TRACKER_CONFIG,
 	type TrackerSeam,
 } from "./tracker";
+import { parseRoute } from "./view-route";
 
+// Open on the first subscribed channel so the shell boots into a live
+// conversation; null before the first snapshot (components render empty state).
+export function firstChannelId(channels: readonly Channel[]): string | null {
+	return (
+		channels.find((c) => c.membership === "subscribed")?.id ??
+		channels[0]?.id ??
+		null
+	);
+}
 /** The caller — whose visibility scopes every listing and whose membership the
  *  rail reflects. The daemon derives this from the authenticated connection
  *  (comms.proto: "the caller is the account authenticated on the connection");
@@ -961,15 +971,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const setActiveRightTab = (tab: RightSidebarTab) => {
 		setActiveRightTabRaw(tab);
 	};
-	// Open on the first subscribed channel so the shell boots into a live
-	// conversation, not the empty state — no hardcoded id, and null before the
-	// first snapshot arrives (the components render their empty state).
-	const firstChannelId = (state: CommsState): string | null =>
-		state.channels.find((c) => c.membership === "subscribed")?.id ??
-		state.channels[0]?.id ??
-		null;
 	const [selectedChannelId, setSelectedChannelId] = createSignal<string | null>(
-		firstChannelId(comms()),
+		firstChannelId(comms().channels),
 	);
 	// True once the first comms snapshot has arrived from the stream. The
 	// pending-aware route fallback (applyChannelRoute) reads it: before the first
@@ -988,7 +991,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// The selection is absent from the pushed snapshot. Under routes-as-truth the
 		// channel surface is a route: if the current route names a channel, re-point it
 		// through navigate; then re-seed the signal as the "last visited" fallback.
-		const fallback = firstChannelId(next);
+		const fallback = firstChannelId(next.channels);
 		if (currentPath().startsWith("/channel/")) {
 			navigateTo(fallback ? `/channel/${fallback}` : "/");
 		}
@@ -1173,40 +1176,22 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// seam (offline) or the bound route-sync effect. It parses currentPath itself — the
 	// store is outside the router tree and cannot call useParams. ──
 	function applyRoute(path: string): void {
-		const segs = path.split("/").filter((s) => s.length > 0);
-		const [head, param, sub, subParam] = segs;
-		switch (head) {
-			case undefined:
-				setView("bridge");
+		const match = parseRoute(path);
+		switch (match.view) {
+			case "bridge":
+			case "backlog":
+			case "done":
+			case "settings":
+				setView(match.view);
 				return;
 			case "channel":
-				// `/channel/:channelId/topic/:topicId` drills into a topic; the plain
-				// `/channel/:channelId` shows the topic index.
-				if (param && sub === "topic" && subParam) {
-					applyTopicRoute(param, subParam);
-				} else if (param) {
-					applyChannelRoute(param);
-				} else {
-					setView("bridge");
-				}
+				applyChannelRoute(match.channelId);
+				return;
+			case "topic":
+				applyTopicRoute(match.channelId, match.topicId);
 				return;
 			case "agent":
-				if (param) applyAgentRoute(param);
-				else setView("bridge");
-				return;
-			case "backlog":
-				setView("backlog");
-				return;
-			case "done":
-				setView("done");
-				return;
-			case "settings":
-				setView("settings");
-				return;
-			default:
-				// Unknown path — the router's `*` route redirects to "/"; leave the
-				// routed state untouched until that navigation lands (no blank
-				// surface, no wrong-view write).
+				applyAgentRoute(match.agentId);
 				return;
 		}
 	}
@@ -1221,7 +1206,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			return;
 		}
 		if (firstSnapshotArrived()) {
-			const fallback = firstChannelId(comms());
+			const fallback = firstChannelId(comms().channels);
 			navigateTo(fallback ? `/channel/${fallback}` : "/");
 			return;
 		}
@@ -1235,7 +1220,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		setView("topic");
 		const channelKnown = channels().some((c) => c.id === channelId);
 		if (!channelKnown && firstSnapshotArrived()) {
-			const fallback = firstChannelId(comms());
+			const fallback = firstChannelId(comms().channels);
 			navigateTo(fallback ? `/channel/${fallback}` : "/");
 			return;
 		}
