@@ -38,8 +38,10 @@ of an existing one:
 
 The `regen-visual-baselines` lane stays as the operator path for refreshing
 `main` itself, for example after a toolchain bump moves the renderer. The
-rest of DL-341 (thresholds, hard gate, image-diff adjudication) is
-unchanged.
+rest of DL-341 is unchanged: Playwright `toHaveScreenshot` (not a hosted
+service) as the `visual-gate` moon task, its thresholds, the hard gate, and
+image-diff adjudication with the CI failure artifact kept only for an
+unintended red.
 
 ## Alternatives considered
 
