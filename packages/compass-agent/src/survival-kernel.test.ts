@@ -49,6 +49,7 @@ function userMessage(): Parameters<SessionManager["appendMessage"]>[0] {
 }
 
 describe("survival kernel delivery", () => {
+	// biome-ignore lint/plugin: 30s bounds two real session boots (~1.2s warm total); the awaits gate on each session being ready, so the ceiling only bounds a genuine hang.
 	test("persisted session resume rebuilds kernel, role, and persona prompt", async () => {
 		const cwd = scratch();
 		const sessionDir = join(cwd, "sessions");
@@ -74,8 +75,9 @@ describe("survival kernel delivery", () => {
 			await resumedManager.close();
 			rmSync(cwd, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
 
+	// biome-ignore lint/plugin: 30s bounds a real session boot (~1.2-1.6s warm); the await gates on the session being ready, so the ceiling only bounds a genuine hang.
 	test("taskDepth:1 subagent-shaped session receives the composed kernel rule", async () => {
 		const cwd = scratch();
 		const manager = SessionManager.create(cwd, join(cwd, "sessions"));
@@ -97,5 +99,5 @@ describe("survival kernel delivery", () => {
 			await manager.close();
 			rmSync(cwd, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
 });
