@@ -612,9 +612,10 @@ func (s *service) startResumeSession(
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("authorizing resume: %w", err))
 	}
-	// Snapshot the rebase base for the new lifetime BEFORE the Runner emits any
-	// frame for it. Write-once within a lifetime; a re-resume re-reads the same
-	// stored max, so this is safe to call on every resume.
+	// Snapshot the rebase base before the new lifetime emits a frame. Accepted
+	// race: this binds before the Runner accepts, and nothing here checks
+	// liveness, so resuming a live session moves its base even though the Runner
+	// refuses ALREADY_RUNNING, leaving a gap in its seqs.
 	if _, err := s.store.BindLifetime(ctx, resumeSessionID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// TOCTOU: the session vanished between the authz check and the bind.
