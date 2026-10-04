@@ -430,8 +430,9 @@ original `resume_session_id` SHALL then recover the session.
 
 - **Given** a session is `ERRORED` and its container was removed outside
   Compass, while the Runner still has the container handle
-- **When** a client calls `ProvisionAgentWorkspace` for the same agent, then
-  `StartAgentSession` with the original `resume_session_id`
+- **When** a client calls `ProvisionAgentWorkspace` for the same agent with a
+  new or empty `client_request_id`, then `StartAgentSession` with the original
+  `resume_session_id`
 - **Then** the Runner launches a replacement container instead of rejecting
   the provision as already provisioned, and the resumed session starts on it.
 
