@@ -551,6 +551,8 @@ func (l *lifecycleService) resumeSession(ctx context.Context, agent store.Accoun
 		}
 		return fmt.Errorf("resolving placement: %w", err)
 	}
+	// Accepted race: as in startResumeSession, the bind precedes the Runner's
+	// accept, so a resume refused ALREADY_RUNNING still moves the live base.
 	if _, err := l.store.BindLifetime(ctx, sessionID); err != nil {
 		return fmt.Errorf("binding resume lifetime: %w", err)
 	}
