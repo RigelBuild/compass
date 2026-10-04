@@ -24,7 +24,7 @@ func TestBackfillEmptyTenantMigration(t *testing.T) {
 	}
 	execAsSystem(t, s, "INSERT INTO agent_sessions (session_id, agent_account_id, tenant_id) VALUES ('sess-lone', $1, ''), ('sess-twice-old', $2, '')",
 		string(lone.ID), string(twice.ID))
-	execAsSystem(t, s, "INSERT INTO session_bindings (agent_account_id, session_id, runner_id, tenant_id) VALUES ($1, 'sess-lone', 'runner-1', ''), ($2, 'sess-twice-old', 'runner-1', '')",
+	execAsSystem(t, s, "INSERT INTO session_bindings (agent_account_id, session_id, runner_id, tenant_id, usage_interval_id) VALUES ($1, 'sess-lone', 'runner-1', '', 'iv-lone'), ($2, 'sess-twice-old', 'runner-1', '', 'iv-twice-old')",
 		string(lone.ID), string(twice.ID))
 
 	execAsSystem(t, s, migrationSQL(t, 2))
