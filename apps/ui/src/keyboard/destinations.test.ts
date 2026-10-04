@@ -222,15 +222,12 @@ describe("createStoreDestinationProviders", () => {
 			]);
 			const row = (kind: "issue" | "pr", id: string) =>
 				byKind?.get(kind)?.find((dest) => dest.id === id);
-			const selected = () =>
-				store.issues().find((issue) => issue.id === store.selectedIssueId())
-					?.id;
 			row("issue", "ws-864")?.navigate();
 			await flush();
-			expect(selected()).toBe("ws-864");
+			expect(store.selectedIssue()?.id).toBe("ws-864");
 			row("pr", "RigelBuild/compass#443")?.navigate();
 			await flush();
-			expect(selected()).toBe("ws-1023");
+			expect(store.selectedIssue()?.id).toBe("ws-1023");
 			expect(store.activeRightTab()).toBe("pr");
 		});
 	});
