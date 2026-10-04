@@ -42,6 +42,36 @@ func TestCreateChannelGroupRefusesReservedTopLevelNames(t *testing.T) {
 	}
 }
 
+// TestCreateChannelGroupUnderReservedDMGroupIsNotFound prevents child groups
+// from nesting under the system-owned DM group.
+func TestCreateChannelGroupUnderReservedDMGroupIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	a := mustAgent(t, s, owner.ID, "alice")
+	b := mustAgent(t, s, owner.ID, "bob")
+
+	// Materialize the reserved group by opening a real DM first.
+	openDM(t, s, owner.ID, "dm--alice--bob", []AccountID{a.ID, b.ID})
+	reservedGroupID := dmGroupIDFor(t, s, owner.ID)
+
+	_, err := s.CreateChannelGroup(t.Context(), owner.ID, NewChannelGroup{
+		Name: "reserved-child", ParentGroupID: reservedGroupID, Visibility: VisibilityOwner,
+	})
+	sentinelIs(t, err, ErrNotFound, "child under the reserved DM group")
+
+	parent, err := s.CreateChannelGroup(t.Context(), owner.ID, NewChannelGroup{
+		Name: "normal-parent", Visibility: VisibilityOwner,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(normal parent): %v", err)
+	}
+	if _, err := s.CreateChannelGroup(t.Context(), owner.ID, NewChannelGroup{
+		Name: "normal-child", ParentGroupID: parent.ID, Visibility: VisibilityOwner,
+	}); err != nil {
+		t.Fatalf("CreateChannelGroup(under normal parent): %v", err)
+	}
+}
+
 // TestNestedReservedNameGroupIsOrdinary: a nested owner-visible __dm__ is not the
 // reserved DM group, so its owner can create channels in it.
 func TestNestedReservedNameGroupIsOrdinary(t *testing.T) {
