@@ -433,6 +433,7 @@ func TestExecuteMapsHostSentinelsToCodes(t *testing.T) {
 		{"already running", errAlreadyRunning, compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING},
 		{"already provisioned", fmt.Errorf("provisioning: %w", errAlreadyProvisioned), compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING},
 		{"session unknown", errSessionUnknown, compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND},
+		{"container gone", fmt.Errorf("start: %w", errContainerGone), compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND},
 		{"fresh session ID missing", errFreshSessionIDMissing, compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION},
 		{"other error", errors.New("engine exploded"), compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL},
 		{"wrapped already running", errWrap(errAlreadyRunning), compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING},

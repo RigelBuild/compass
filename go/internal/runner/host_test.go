@@ -643,6 +643,63 @@ func TestStartTwiceSameContainerIsAlreadyRunning(t *testing.T) {
 	}
 }
 
+// Start must reject a registered handle whose container disappeared before either
+// a fresh launch or an authorized resume can execute inside it.
+func TestStartMissingContainerReturnsNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  *compassv1.StartAgentSessionRequest
+	}{
+		{"fresh", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}},
+		{"resume", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: "resume-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, engine, _ := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+			if _, err := host.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
+				t.Fatalf("Provision = %v", err)
+			}
+			engine.vanish("cont-1")
+			_, err := host.Start(t.Context(), tc.req, "resume body", "fresh-session")
+			if !errors.Is(err, errContainerGone) {
+				t.Fatalf("Start on missing container = %v, want errContainerGone", err)
+			}
+			if got := engine.countCall("exec_streaming"); got != 0 {
+				t.Fatalf("exec_streaming calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestReloadMissingContainerKeepsSessionAndDoesNotExec(t *testing.T) {
+	host, engine, _ := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	if _, err := host.Provision(t.Context(), &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "session-1")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	before, err := host.Status(t.Context(), sessionID)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("Status before Reload = %+v, %v", before, err)
+	}
+	execs := engine.countCall("exec_streaming")
+	engine.vanish("cont-1")
+	if err := host.Reload(t.Context(), sessionID); !errors.Is(err, errContainerGone) {
+		t.Fatalf("Reload on missing container = %v, want errContainerGone", err)
+	}
+	if got := engine.countCall("exec_streaming"); got != execs {
+		t.Fatalf("exec_streaming calls after Reload = %d, want unchanged %d", got, execs)
+	}
+	after, err := host.Status(t.Context(), sessionID)
+	if err != nil || len(after) != 1 {
+		t.Fatalf("Status after Reload = %+v, %v; session must remain retained", after, err)
+	}
+	if after[0].GetState() != before[0].GetState() {
+		t.Fatalf("session state after Reload = %v, want unchanged %v", after[0].GetState(), before[0].GetState())
+	}
+}
+
 // Starting an unregistered container is errSessionUnknown — Start resolves the
 // container by name through the registry, so an unlaunched name is not found.
 func TestStartUnknownContainerIsSessionUnknown(t *testing.T) {

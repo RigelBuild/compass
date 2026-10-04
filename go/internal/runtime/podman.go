@@ -628,18 +628,16 @@ func stopGraceSeconds(timeout time.Duration) int64 {
 func (p *PodmanCLI) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
 	// podman's --time is whole seconds; the interface takes a Duration for idiom
 	// and callsite clarity, converted at this CLI boundary.
-	_, err := p.run(ctx, "podman stop", []string{
+	return p.runTolerateMissing(ctx, "podman stop", []string{
 		"stop",
 		"--time", strconv.FormatInt(stopGraceSeconds(timeout), 10),
 		id.String(),
 	})
-	return err
 }
 
 // Remove removes a container (force-kills if still running).
 func (p *PodmanCLI) Remove(ctx context.Context, id WorkloadID) error {
-	_, err := p.run(ctx, "podman rm", removeArgs(id))
-	return err
+	return p.runTolerateMissing(ctx, "podman rm", removeArgs(id))
 }
 
 // removeArgs assembles the `podman rm` argv. --volumes removes any anonymous
@@ -755,6 +753,19 @@ func (p *PodmanCLI) MountLabel(ctx context.Context, id WorkloadID) (string, erro
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// runTolerateMissing accepts only podman's explicit absent-container refusal.
+func (p *PodmanCLI) runTolerateMissing(ctx context.Context, summary string, args []string) error {
+	_, stderr, exitCode, err := p.spawnCapture(ctx, summary, args, nil)
+	if err != nil {
+		return err
+	}
+	trimmed := strings.TrimSpace(string(stderr))
+	if exitCode == 0 || (exitCode == 125 && strings.Contains(trimmed, "no such container")) {
+		return nil
+	}
+	return &CommandError{Summary: summary, ExitCode: exitCode, Stderr: trimmed}
 }
 
 // execStreamingArgs assembles the argv for a streaming `podman exec -i`. Split

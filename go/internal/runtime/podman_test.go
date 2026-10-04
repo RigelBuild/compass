@@ -539,6 +539,49 @@ func podmanStubExit(t *testing.T, code int) *PodmanCLI {
 	}
 	return NewPodmanCLI().WithProgram(prog).WithTimeout(10 * time.Second)
 }
+func podmanStubResult(t *testing.T, code int, stderr string) *PodmanCLI {
+	t.Helper()
+	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
+	script := "#!/bin/sh\nprintf '%s' " + strconv.Quote(stderr) + " >&2\nexit " + strconv.Itoa(code) + "\n"
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	return NewPodmanCLI().WithProgram(prog).WithTimeout(10 * time.Second)
+}
+
+// Missing-container teardown is idempotent for both lifecycle verbs.
+func TestStopAndRemoveTolerateMissingContainer(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(*PodmanCLI) error
+	}{
+		{"stop", func(p *PodmanCLI) error { return p.Stop(t.Context(), "gone", time.Second) }},
+		{"remove", func(p *PodmanCLI) error { return p.Remove(t.Context(), "gone") }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			if err := operation.run(podmanStubResult(t, 125, "Error: no such container: gone\n")); err != nil {
+				t.Fatalf("%s missing container = %v, want success", operation.name, err)
+			}
+		})
+	}
+}
+
+// Only podman's explicit missing-container refusal is tolerated.
+func TestStopAndRemoveRejectOtherFailures(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(*PodmanCLI) error
+	}{
+		{"stop", func(p *PodmanCLI) error { return p.Stop(t.Context(), "gone", time.Second) }},
+		{"remove", func(p *PodmanCLI) error { return p.Remove(t.Context(), "gone") }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			if err := operation.run(podmanStubResult(t, 125, "permission denied\n")); err == nil {
+				t.Fatalf("%s non-missing failure = nil, want error", operation.name)
+			}
+		})
+	}
+}
 
 // A ran child's exit status comes back as data, and Exists/ImageExists key
 // presence off the exact code (0 present, 1 absent). So an off-by-one here, or
