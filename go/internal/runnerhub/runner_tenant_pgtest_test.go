@@ -16,21 +16,6 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-type tenantRecordingEndSink struct {
-	ended chan struct {
-		tenant    store.TenantID
-		sessionID string
-	}
-}
-
-func (s tenantRecordingEndSink) OnSessionEnded(ctx context.Context, sessionID string) {
-	tenant, _ := store.TenantFromContext(ctx)
-	s.ended <- struct {
-		tenant    store.TenantID
-		sessionID string
-	}{tenant: tenant, sessionID: sessionID}
-}
-
 func TestEnrollReapsEveryTenantsBindings(t *testing.T) {
 	ctx := context.Background()
 	dsn := pgtest.RequireDSN(t)
@@ -66,10 +51,7 @@ func TestEnrollReapsEveryTenantsBindings(t *testing.T) {
 
 	hub := newHubOnly()
 	hub.SetSessionBindingStore(st)
-	ended := tenantRecordingEndSink{ended: make(chan struct {
-		tenant    store.TenantID
-		sessionID string
-	}, 2)}
+	ended := tenantRecordingEndSink{ended: make(chan endedArchive, 2)}
 	hub.SetSessionEndSink(ended)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 

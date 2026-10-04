@@ -4,6 +4,7 @@ package runnerhub
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -59,6 +60,47 @@ func recvEnded(t *testing.T, c chanEndSink) string {
 	case <-time.After(10 * time.Second):
 		t.Fatal("no session-end archive within 10s")
 		return ""
+	}
+}
+
+type endedArchive struct {
+	tenant    store.TenantID
+	sessionID string
+}
+
+type tenantRecordingEndSink struct{ ended chan endedArchive }
+
+func (s tenantRecordingEndSink) OnSessionEnded(ctx context.Context, sessionID string) {
+	tenant, _ := store.TenantFromContext(ctx)
+	s.ended <- endedArchive{tenant: tenant, sessionID: sessionID}
+}
+
+// When the durable sweep faults, the RAM-snapshot fallback still archives each
+// session under its own tenant, read from the binding rows the fault left behind.
+func TestEnrollReapFaultArchivesUnderSessionTenant(t *testing.T) {
+	ctx := t.Context()
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	ended := tenantRecordingEndSink{ended: make(chan endedArchive, 1)}
+	hub.SetSessionEndSink(ended)
+	subj := runnerSubject()
+	tier, egress := compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED
+	hub.enroll(ctx, "runner-1", subj, tier, egress)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+
+	bindings.mu.Lock()
+	bindings.deleteForRunnerErr = errors.New("sweep fault")
+	bindings.mu.Unlock()
+	hub.enroll(ctx, "runner-1", subj, tier, egress)
+	select {
+	case got := <-ended.ended:
+		if got != (endedArchive{tenant: bindings.tenant, sessionID: "sess-1"}) {
+			t.Fatalf("archived %+v, want sess-1 under %q", got, bindings.tenant)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no session-end archive within 10s")
 	}
 }
 
