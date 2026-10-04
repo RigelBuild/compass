@@ -405,7 +405,7 @@ The seam exists and is currently unused: `WithProvider` pins the provider URI
 func WithProvider(uri string) SpecOption { return func(r *SpecResolver) { r.provider = uri } }
 ```
 
-and production pins nothing today (`Serve` in `go/server/serve.go`):
+and production pins nothing today (`buildServerSecretResolver` in `go/server/serve.go`):
 
 ```go
 resolver := secrets.NewSpecResolver(st, secretsStateDir(cfg))
@@ -514,7 +514,7 @@ reads the user's imported corpus against Compass's built-ins and produces a
    current-only retention via the singleton PK upsert",
    `Store.PutAgentConfig` in `go/internal/store/agent_config.go`); and credential-marked settings
    are rejected at the door ("credentials never ride the config bundle",
-   `parseYAMLMapping` in `go/internal/store/agent_config.go`) — so the agent tells the
+   `rejectCredentialSettings` in `go/internal/store/agent_config.go`) — so the agent tells the
    user up front which members will bounce and why.
 4. **Decide**: the user marks each finding keep/drop/rewrite. The agent then
    assembles the approved subset into a bundle dir and (with the user's
@@ -696,7 +696,7 @@ probe leg is necessary but not sufficient, and the record takes both.
   `go/internal/secrets`). Config knob for the resolver provider; host-tier
   single-box profile defaults it to `keyring://`.
   Interfaces: `secrets.NewSpecResolver(st, dir, secrets.WithProvider(uri))`
-  (`NewSpecResolver` in `go/internal/secrets/resolver.go`); wiring at `Serve` in `go/server/serve.go`.
+  (`NewSpecResolver` in `go/internal/secrets/resolver.go`); wiring at `buildServerSecretResolver` in `go/server/serve.go`.
   Test: resolver receives the configured URI; empty config preserves today's
   default chain.
 - **T4 — per-agent `$HOME` overlay** (host backend + materializer path

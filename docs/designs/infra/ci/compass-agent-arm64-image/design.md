@@ -39,7 +39,7 @@ SPEC="$(printf '%s\n' "$BUILD_OUT" | tail -n 1)"
 
 `nix run` evaluates the devenv fork's flake for the *builder's* system and
 nix2container emits a spec for that system — so the build is native: an arm64
-image needs an arm64 builder (or emulation). The root `outputs.systems` in `flake.nix`
+image needs an arm64 builder (or emulation). The `systems` binding in `outputs` of `flake.nix`
 (`systems = [ "x86_64-linux" ];`) is **not in this build's dependency graph**:
 the inputs are `agent-image/devenv.yaml`'s own `nixpkgs`, `nix2container`,
 `mk-shell-bin`, and `devenv` fork inputs, pinned in `agent-image/devenv.lock`.
@@ -52,7 +52,7 @@ script: 'src=$(bun tools/toolchain/devenv-cli/index.ts --lock agent-image/devenv
 
 So the blast radius of arm64 support is `agent-image/` plus the publish jobs in
 `release.yml` — the root flake's `systems` list does not change. The
-the `TODO(aarch64-darwin follow-up)` above `compass-app` in `flake.nix` ("TODO(aarch64-darwin follow-up): the darwin app links
+`TODO(aarch64-darwin follow-up)` above `compass-app` in `flake.nix` ("TODO(aarch64-darwin follow-up): the darwin app links
 system WebKit via frameworks … add a darwin branch when the systems list
 grows") is about aarch64-**darwin** and the gtk/WebKit app; it is unrelated to
 the agent image's aarch64-**linux** need and stays untouched.
@@ -170,7 +170,7 @@ guard translated to its list-level equivalent.
 - `defaultAgentImage` in `go/cmd/compass-app/embedded.go` —
   `const defaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"`, the
   embedded stack's default when no `--image`/`$COMPASS_AGENT_IMAGE` is given.
-- `Stack.spawnChain` in `go/internal/stack/stack.go` —
+- `Stack.startRunner` in `go/internal/stack/stack.go` —
   `s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage)`; the ensurer pulls by
   tag: `go/internal/stack/adapters/image.go` `imageCLI` is
   `ImageExists(ctx, image)` + `Pull(ctx, image)`, backed by
@@ -377,7 +377,7 @@ end-to-end pull check.
 
 - The root `flake.nix` (`systems = [ "x86_64-linux" ]` in `outputs`) — the
   agent image does not build through it (see Context). The
-  the `TODO(aarch64-darwin follow-up)` above `compass-app` in `flake.nix` is out of scope.
+  `TODO(aarch64-darwin follow-up)` above `compass-app` in `flake.nix` is out of scope.
 - `agent-image/devenv.yaml` / `devenv.lock` inputs — same fork revs, evaluated
   for a second system.
 - `guard_immutable`'s logic and the auth/`REGISTRY_AUTH_FILE` pin.
