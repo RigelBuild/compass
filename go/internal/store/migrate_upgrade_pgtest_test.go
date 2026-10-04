@@ -22,6 +22,8 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 	ctx := t.Context()
 	dsn := pgtest.RequireDSN(t)
 	const tenant TenantID = "upgrade-tenant"
+	const userID = "upgrade-user"
+	const agentID = "upgrade-agent"
 
 	applyV1Only(t, dsn)
 	// The tenant predates the upgrade; the token-usage foreign keys must accept it.
@@ -36,6 +38,39 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 	seed.Close()
 	if err != nil {
 		t.Fatalf("seed tenant at v1: %v", err)
+	}
+	seed, err = pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to seed binding: %v", err)
+	}
+	_, err = seed.Exec(ctx,
+		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, 'upgrade-user', 'Upgrade User', $2)",
+		userID, tenant,
+	)
+	if err == nil {
+		_, err = seed.Exec(ctx, "INSERT INTO user_accounts (account_id, tenant_id) VALUES ($1, $2)", userID, tenant)
+	}
+	if err == nil {
+		_, err = seed.Exec(ctx,
+			"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, 'upgrade-agent', 'Upgrade Agent', $2)",
+			agentID, tenant,
+		)
+	}
+	if err == nil {
+		_, err = seed.Exec(ctx,
+			"INSERT INTO agent_accounts (account_id, owner_user_id, tenant_id) VALUES ($1, $2, $3)",
+			agentID, userID, tenant,
+		)
+	}
+	if err == nil {
+		_, err = seed.Exec(ctx,
+			"INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id, updated_at) VALUES ($1, $2, 'upgrade-session', 'upgrade-runner', now() - interval '3 days')",
+			tenant, agentID,
+		)
+	}
+	seed.Close()
+	if err != nil {
+		t.Fatalf("seed v1 session binding: %v", err)
 	}
 
 	s := openStore(t, dsn)
@@ -52,7 +87,10 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 		t.Fatalf("schema version after upgrade = %d, want %d", version, want)
 	}
 
-	for _, tbl := range []string{"token_usage_events", "token_usage_rollups_hourly", "token_usage_rollups_daily"} {
+	for _, tbl := range []string{
+		"token_usage_events", "token_usage_rollups_hourly", "token_usage_rollups_daily",
+		"compute_usage_events",
+	} {
 		var enabled, forced bool
 		err := s.pool.QueryRow(ctx,
 			`SELECT relrowsecurity, relforcerowsecurity FROM pg_class
@@ -64,6 +102,25 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 		if !enabled || !forced {
 			t.Errorf("%s: relrowsecurity=%t relforcerowsecurity=%t, want both true", tbl, enabled, forced)
 		}
+	}
+
+	var backfilledStartCount int
+	var backfilledInterval, boundInterval string
+	var allEstimated, timestampMatches bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*), min(e.interval_id), bool_and(e.estimated), min(b.usage_interval_id),
+		       bool_and(e.occurred_at = b.updated_at)
+		  FROM compute_usage_events AS e
+		  JOIN session_bindings AS b
+		    ON b.tenant_id = e.tenant_id AND b.agent_account_id = e.agent_account_id
+		 WHERE e.tenant_id = $1 AND e.agent_account_id = $2
+		   AND e.kind = 'start' AND e.session_id = 'upgrade-session'`, string(tenant), agentID).
+		Scan(&backfilledStartCount, &backfilledInterval, &allEstimated, &boundInterval, &timestampMatches); err != nil {
+		t.Fatalf("read backfilled compute start: %v", err)
+	}
+	if backfilledStartCount != 1 || backfilledInterval == "" || backfilledInterval != boundInterval || !allEstimated || !timestampMatches {
+		t.Fatalf("backfilled starts = %d, interval = %q, bound = %q, estimated = %t, timestamp matches = %t; want one estimated start on the bound interval at its seeded updated_at",
+			backfilledStartCount, backfilledInterval, boundInterval, allEstimated, timestampMatches)
 	}
 
 	var horizon pgtype.Timestamptz
