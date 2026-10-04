@@ -137,7 +137,8 @@ each consumer by pin bump.
 ## Global Constraints
 
 - The shared repo is public and follows the boundary in "What may move".
-- Licence: dual MIT and Apache-2.0, matching compass.
+- Licence: per OQ6. Compass is AGPL-3.0-only, and so are the tools ported
+  here, so a permissive licence is a relicence, not a carry-over.
 - Runtime and checks: bun, TypeScript `strict` plus `noUncheckedIndexedAccess`,
   biome, `bun test`, rumdl for markdown.
 - Each tool is the package `@rigelbuild/<tool>` under `packages/<tool>/`, with
@@ -152,8 +153,9 @@ each consumer by pin bump.
 
 ## Plan
 
-Order: T1, T2, T3, then T4, T5, and T6 in parallel, then T7, T8, T9. T3 comes
-first among the tools because it guards every later shared-repo PR. RIG-4184's
+Order: T1, T2, T3, then T4 and T6 in parallel, then T5, then T7, T8, T9. T3
+comes first among the tools because it guards every later shared-repo PR. T5
+follows T4 because it imports `LedgerConfig` from the T4 package. RIG-4184's
 scope is T4, T5, and the ledger part of T7 and T8.
 
 ### T1 — Create the repo
@@ -235,10 +237,11 @@ CLI: `design-ledger-gate --config docs/designs/ledger.config.json`.
 
 ### T5 — `dl-claim` and `dl-reconcile`
 
-Lands in: the shared repo. Both read `counter` and `ledgers` from
-`LedgerConfig`. Reconcile keeps compass's guards (raw-row cross-count,
-empty-frontier refusal, `--check`) and adds the stale and duplicate claim
-report. Messages that name the counter take its URL from config.
+Lands in: the shared repo. Both depend on `@rigelbuild/design-ledger-gate` for
+`LedgerConfig` and `loadLedgerConfig`, so the loader has one copy. Reconcile
+keeps compass's guards (raw-row cross-count, empty-frontier refusal, `--check`)
+and adds the stale and duplicate claim report. Messages that name the counter
+take its URL from config.
 
 Interfaces:
 
@@ -258,7 +261,7 @@ export function assertReconcilableLedgers(
 CLIs: `dl-claim --config <path> --ref <RIG-n|none> --lane <branch> [--count 1..10] [--surface <s>]`
 and `dl-reconcile --config <path> [--check]`, both reading `DL_CLAIM_TOKEN`.
 `--surface` is required when the config lists more than one ledger. `repo` is
-always `counter.partition`.
+always `counter.partition`. Consumes the T4 release.
 
 ### T6 — `renovate-preflight`
 
@@ -275,23 +278,40 @@ Lands in: compass. Add the five packages at exact versions. Add
 surface `designs`, the seven current buckets `ui`, `agent`, `server`, `meta`,
 `infra`, `observability`, `repo`), an empty historical chain, `renovate/` and
 `trunk-merge/` exempt, all legs off, partition `compass`, url
-`https://dl.rigel.build`. Add a code-free moon project `tools/ref-gates/`
-holding `moon.yml` and the two configs `sea.json` and `private-name.json`.
-The private-name config keeps the deleted tool's compound name in `ignore`,
-because existing records still cite that path. Point the moon tasks,
-`.github/workflows/dl-reconcile.yml`, the Renovate preflight step, the
-`design-ledger-gate:ci` target injected in `.github/workflows/ci.yml`,
-`.moon/workspace.yml`, and `docs/designs/CONTRIBUTING.md` §7 at the package
-bins, with the install that OQ4 picks. Delete `tools/design-ledger-gate/`,
-`tools/dl-claim/`, `tools/dl-reconcile/`, `tools/sea-ref-gate/`,
-`tools/orion-ref-gate/`, and `tools/renovate-preflight/`.
+`https://dl.rigel.build`.
 
-Acceptance: a seeded corpus with at least one known violation per gate leg and
-one branch per exempt prefix. Run the old and new gates on it through
-`GATE_ROOT`. They report the same set of `file:line` pairs and the same pass or
-fail result. The intended changes (the `trunk-merge/` exemption, the tool name
-in output) are listed as stated exceptions. A clean tree cannot fail this
-check, so it does not count. Record the result in the PR body.
+Add two code-free moon projects:
+
+- `tools/design-ledger/`: `check` and `ci` tasks call the `design-ledger-gate`
+  and `dl-reconcile --check` bins. `tools/ci-matrix/index.ts` injects
+  `ALWAYS_RUN_ON_PR` by moon project id, and it injects nothing, with no error,
+  when the project is missing. So keep the id `design-ledger-gate`, or update
+  `ALWAYS_RUN_ON_PR` and its test in the same PR.
+- `tools/ref-gates/`: `moon.yml` plus the configs `sea.json` and
+  `private-name.json`. Each config carves out `tools/ref-gates/`. The
+  private-name config keeps the deleted tool's compound name in `ignore`,
+  because existing records still cite that path.
+
+Point the moon tasks, `.github/workflows/dl-reconcile.yml`, the Renovate
+preflight step, `.moon/workspace.yml`, `docs/designs/CONTRIBUTING.md` §7, and
+`docs/concepts/self-host-and-managed.md` (which names the old ref-gate task) at
+the new bins and projects, with the install that OQ4 picks. Delete
+`tools/design-ledger-gate/`, `tools/dl-claim/`, `tools/dl-reconcile/`,
+`tools/sea-ref-gate/`, `tools/orion-ref-gate/`, and `tools/renovate-preflight/`.
+
+Acceptance:
+
+- A seeded corpus, as its own git repo, with at least one known violation per
+  gate leg and one branch per exempt prefix. Old and new tools report the same
+  set of `file:line` pairs and the same pass or fail result. Only the old ledger
+  gate reads `GATE_ROOT`. Run the old ref gates with cwd set to the corpus, and
+  compare old reconcile through its exported `assertReconcilableLedger` on the
+  corpus ledger. The intended changes (the `trunk-merge/` exemption, the tool
+  name in output) are stated exceptions. A clean tree cannot fail this check,
+  so it does not count.
+- On a docs-only PR, the ci-matrix output still contains the ledger gate target.
+
+Record both results in the PR body.
 
 Interfaces: consumes the T3–T6 releases; produces the config files above.
 
@@ -307,14 +327,16 @@ Interfaces: consumes the T3–T6 releases.
 ### T9 — Compass turns on the extra ledger legs
 
 Lands in: compass. Run the citation, errata, and record-link legs over the
-corpus, fix every finding, and turn the legs on in the same PR.
+corpus, fix every finding, and turn the legs on in the same PR. Dropped if OQ3
+is no.
 
 Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 
 ### Out of scope
 
-Later records: a shared Renovate preset, the moon task templates, and the root
-checks. The DL counter service (`dl.rigel.build`) does not move.
+Later records: a shared Renovate preset and the Renovate upgrade scripts. The
+moon task template and the root checks stay local (see Inventory). The DL
+counter service (`dl.rigel.build`) does not move.
 
 ## Tasks
 
@@ -326,7 +348,7 @@ checks. The DL counter service (`dl.rigel.build`) does not move.
 - [ ] T6 — Move `renovate-preflight`.
 - [ ] T7 — Cut compass over and delete its six local tools.
 - [ ] T8 — Cut the private consumer over and delete its local copies.
-- [ ] T9 — Turn on compass's extra ledger legs.
+- [ ] T9 — Turn on compass's extra ledger legs (only if OQ3 is yes).
 
 ## Open Questions
 
@@ -334,7 +356,7 @@ checks. The DL counter service (`dl.rigel.build`) does not move.
   (recommended), bun git dependency, or rev-pin JSON. See "Pinning".
 - **OQ2 (load-bearing; blocks T1) — repo and scope names.** Working names:
   `RigelBuild/repo-tools` and `@rigelbuild/<tool>`.
-- **OQ3 (load-bearing; blocks the extra legs in T4) — publish the private-only
+- **OQ3 (load-bearing; blocks the extra legs in T4, T8's leg config, and T9) — publish the private-only
   ledger-gate features.** Multiple ledgers, the citation, errata, and
   record-link legs, and malformed-row reporting exist only in the private
   copy, and publishing private code is Matt's call. Recommendation: yes. They
@@ -350,8 +372,16 @@ checks. The DL counter service (`dl.rigel.build`) does not move.
   lockfile to keep current; (c) `bunx @rigelbuild/<tool>@<exact>`, the
   smallest change, but it skips `bun.lock` integrity. Recommendation: (b).
 - **OQ5 (blocks T7) — cooldown for these packages.** Keep the 5-day cooldown
-  (a fix waits at least 5 days per consumer) or exempt `@rigelbuild/*` tools in
-  both `bunfig.toml` and Renovate, as compass already does for
-  `@rigelbuild/solid-*`. Recommendation: exempt, since Matt approves every
-  shared-repo release PR, and the cooldown guards against third-party
-  publishes.
+  (a fix waits at least 5 days per consumer) or exempt the five packages. The
+  exemption has two halves. `bunfig.toml` `minimumReleaseAgeExcludes` lists
+  exact names, as it already does for `@rigelbuild/solid-*`. Renovate needs the
+  five names added to the catalog soak-exemption rule in
+  `tools/renovate/config.json5`, which `config.test.ts` requires to equal the
+  catalog subset of the bunfig list. Recommendation: exempt, since Matt
+  approves every shared-repo release PR, and the cooldown guards against
+  third-party publishes.
+- **OQ6 (load-bearing; blocks T2) — licence.** The ported tools are
+  AGPL-3.0-only today. Options: (a) keep AGPL-3.0-only, which matches the
+  source and needs no relicence; (b) relicence to `MIT OR Apache-2.0`, which
+  suits build tooling any repo can pin, but needs a check that the ported files
+  have no outside contributions. Recommendation: (b), if that check is clean.
