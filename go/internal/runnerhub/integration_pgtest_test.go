@@ -392,7 +392,7 @@ func (f *integStubRuntime) Stop(context.Context, runtime.WorkloadID, time.Durati
 	return nil
 }
 func (f *integStubRuntime) Remove(context.Context, runtime.WorkloadID) error { return nil }
-func (f *integStubRuntime) Exists(context.Context, string) (bool, error)     { return false, nil }
+func (f *integStubRuntime) Exists(context.Context, string) (bool, error)     { return true, nil }
 func (f *integStubRuntime) Running(context.Context, string) (bool, error)    { return false, nil }
 func (f *integStubRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil

@@ -1126,7 +1126,8 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 }
 
 // requireContainer fails fast when a registered container was removed outside
-// Compass, so Start and Reload never report success on an exec that cannot run.
+// Compass before the call, so Start and Reload never report success on an exec
+// that cannot run.
 func (h *agentHost) requireContainer(ctx context.Context, name string) error {
 	live, err := h.engine.Exists(ctx, name)
 	if err != nil {

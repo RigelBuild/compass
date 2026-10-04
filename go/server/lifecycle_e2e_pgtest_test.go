@@ -606,6 +606,7 @@ type e2eStubRuntime struct {
 	cli *runtime.PodmanCLI // shell-stub podman → a real terminatable Process
 
 	mu      sync.Mutex
+	created map[string]bool
 	removed map[string]bool
 }
 
@@ -617,12 +618,15 @@ func newE2EStubRuntime(t *testing.T) *e2eStubRuntime {
 	if err := os.WriteFile(prog, []byte(stub), 0o755); err != nil {
 		t.Fatalf("writing streaming stub: %v", err)
 	}
-	return &e2eStubRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog), removed: map[string]bool{}}
+	return &e2eStubRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog), created: map[string]bool{}, removed: map[string]bool{}}
 }
 
 func (f *e2eStubRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	// Per-call-unique engine id: the container name (NamePrefix+accountID), which
 	// already differs per account — see the type doc for why a fixed id collides.
+	f.mu.Lock()
+	f.created[spec.Name] = true
+	f.mu.Unlock()
 	return runtime.WorkloadID(spec.Name), nil
 }
 func (f *e2eStubRuntime) Start(context.Context, runtime.WorkloadID) error { return nil }
@@ -645,7 +649,11 @@ func (f *e2eStubRuntime) Remove(_ context.Context, id runtime.WorkloadID) error 
 	f.removed[string(id)] = true
 	return nil
 }
-func (f *e2eStubRuntime) Exists(context.Context, string) (bool, error)  { return false, nil }
+func (f *e2eStubRuntime) Exists(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.created[name] && !f.removed[name], nil
+}
 func (f *e2eStubRuntime) Running(context.Context, string) (bool, error) { return false, nil }
 func (f *e2eStubRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil

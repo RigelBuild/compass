@@ -427,8 +427,16 @@ new container under the same name. A following `StartAgentSession` with the
 original `resume_session_id` SHALL then recover the session. Until then,
 `StartAgentSession` and `ReloadAgentSession` for that container SHALL fail with
 `NOT_FOUND` before any exec, and `RemoveAgentWorkspace` SHALL succeed and drop
-the handle and placement. A message wake that hits `NOT_FOUND` re-provisions
-the agent itself.
+the handle and placement. A message wake that receives `NOT_FOUND` SHALL
+re-provision the agent and retry the start.
+
+#### Scenario: Removing a stale container releases its placement
+
+- **Given** the container was removed outside Compass and the Runner still
+  holds the handle
+- **When** `StartAgentSession` or `ReloadAgentSession` is called
+- **Then** it fails with `NOT_FOUND` and no agent exec runs
+- **And** `RemoveAgentWorkspace` succeeds and releases the placement.
 
 #### Scenario: Re-provisioning recovers a container removed outside Compass
 

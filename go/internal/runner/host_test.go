@@ -776,6 +776,34 @@ func TestRemoveTearsDownContainerAndRetiresSession(t *testing.T) {
 	}
 }
 
+// Remove must tear down and deregister a handle even after its container has
+// vanished outside the Runner; a later Provision can then launch it again.
+func TestRemoveVanishedContainerDeregisters(t *testing.T) {
+	host, engine, registry := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	engine.vanish(name)
+
+	if err := host.Remove(ctx, name); err != nil {
+		t.Fatalf("Remove vanished container = %v, want success", err)
+	}
+	if _, ok := registry.Resolve(name); ok {
+		t.Fatal("vanished container still registered after Remove")
+	}
+
+	creates := countCreates(engine.callsSnapshot())
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
+		t.Fatalf("Provision after Remove = %v, want success", err)
+	}
+	if got := countCreates(engine.callsSnapshot()); got != creates+1 {
+		t.Fatalf("engine create calls = %d, want %d after reprovision", got, creates+1)
+	}
+}
+
 // Remove is idempotent, like Stop: a second Remove of an already-removed
 // container is a no-op success and does not tear a container down again, and a
 // Remove of a never-provisioned container simply succeeds. A bug that errored on

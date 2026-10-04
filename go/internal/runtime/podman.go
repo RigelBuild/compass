@@ -626,26 +626,36 @@ func stopGraceSeconds(timeout time.Duration) int64 {
 
 // Stop stops a running container, allowing timeout for graceful exit.
 func (p *PodmanCLI) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
+	_, err := p.run(ctx, "podman stop", stopArgs(id, timeout))
+	return err
+}
+
+// stopArgs assembles the `podman stop` argv. --ignore makes stopping a missing
+// container succeed without suppressing other engine errors.
+func stopArgs(id WorkloadID, timeout time.Duration) []string {
 	// podman's --time is whole seconds; the interface takes a Duration for idiom
 	// and callsite clarity, converted at this CLI boundary.
-	return p.runTolerateMissing(ctx, "podman stop", []string{
+	return []string{
 		"stop",
+		"--ignore",
 		"--time", strconv.FormatInt(stopGraceSeconds(timeout), 10),
 		id.String(),
-	})
+	}
 }
 
 // Remove removes a container (force-kills if still running).
 func (p *PodmanCLI) Remove(ctx context.Context, id WorkloadID) error {
-	return p.runTolerateMissing(ctx, "podman rm", removeArgs(id))
+	_, err := p.run(ctx, "podman rm", removeArgs(id))
+	return err
 }
 
 // removeArgs assembles the `podman rm` argv. --volumes removes any anonymous
 // volumes created with the container along with it: a base image that declares
 // a VOLUME directive would otherwise orphan them, and leaked anonymous volumes
-// exhaust podman's num_locks and wedge the host. Harmless when the container
-// has none. Sister argv in internal/pgtest (removeContainerArgs); the two are
-// deliberately independent (no prod->test-harness dependency) — keep in sync.
+// exhaust podman's num_locks and wedge the host. Harmless when the container has
+// none. --force also makes rm succeed for a missing container. Sister argv in
+// internal/pgtest (removeContainerArgs); the two are deliberately independent
+// (no prod->test-harness dependency) — keep in sync.
 func removeArgs(id WorkloadID) []string {
 	return []string{"rm", "--force", "--volumes", id.String()}
 }
@@ -753,19 +763,6 @@ func (p *PodmanCLI) MountLabel(ctx context.Context, id WorkloadID) (string, erro
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// runTolerateMissing accepts only podman's explicit absent-container refusal.
-func (p *PodmanCLI) runTolerateMissing(ctx context.Context, summary string, args []string) error {
-	_, stderr, exitCode, err := p.spawnCapture(ctx, summary, args, nil)
-	if err != nil {
-		return err
-	}
-	trimmed := strings.TrimSpace(string(stderr))
-	if exitCode == 0 || (exitCode == 125 && strings.Contains(trimmed, "no such container")) {
-		return nil
-	}
-	return &CommandError{Summary: summary, ExitCode: exitCode, Stderr: trimmed}
 }
 
 // execStreamingArgs assembles the argv for a streaming `podman exec -i`. Split
