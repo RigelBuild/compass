@@ -432,8 +432,8 @@ within 0.2–0.8 and persist it. Pointer and chord focus between panes. A 1px
    browser reserves `Ctrl+T`/`W`/`N`/`Tab`, so modifier chords cannot match
    across hosts. Not ruled: desktop-only `Mod+T` aliases would be additive.
 2. **Sidebar clicks navigate in place, or open a tab.** Ruled by Matt,
-   2026-10-04: navigate in place; `Mod`+click or middle-click opens a new tab.
-3. **Splits ship with tabs in Beta.** Ruled by Matt, 2026-10-04: ship both in
+   2026-09-27: navigate in place; `Mod`+click or middle-click opens a new tab.
+3. **Splits ship with tabs in Beta.** Ruled by Matt, 2026-09-27: ship both in
    Beta. T1–T2 are the expensive part and both features need them.
 4. **Layout restore across an app restart.** (Non-load-bearing, deferred.) It
    needs a per-window identity that survives a restart. The multi-window record
