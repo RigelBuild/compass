@@ -153,6 +153,31 @@ type startEvent struct {
 	account   store.AccountID
 }
 
+// lostEvent is one lost session. A refused deliver always had a message in
+// flight; errored marks a Runner-reported ERRORED, which may owe nothing.
+type lostEvent struct {
+	account store.AccountID
+	errored bool
+	// deferred marks a backoff timer firing: it wakes without adding a strike.
+	deferred bool
+}
+
+// erroredBackoff spaces repeat ERRORED wakes of one account. A message that
+// crashes the agent stays owed, so without it each crash re-wakes at once.
+type erroredBackoff struct {
+	strikes int
+	last    time.Time
+	pending bool
+}
+
+// The cap must stay below the reset window, or a steady crash loop would reset
+// its own strikes and wake at once every time.
+const (
+	erroredWakeBaseDelay  = 30 * time.Second
+	erroredWakeMaxDelay   = 15 * time.Minute
+	erroredWakeResetAfter = 30 * time.Minute
+)
+
 // instrumentationScope is the OTel instrumentation scope for this package's
 // spans AND metrics (the delivery tracer and meter both resolve from the global
 // providers T2/T3 install). Shared by every otel.Tracer / otel.Meter call here.
@@ -216,9 +241,9 @@ type Consumer struct {
 	// settleQueue: a slice (never lost) plus the shared notify wakeup, so the
 	// hook appends and signals without blocking the hub's Start goroutine.
 	startQueue []startEvent
-	// lostQueue buffers accounts whose session the Runner reported gone; the loop wakes
-	// each, and the woken session's start sweep redelivers what is owed.
-	lostQueue []store.AccountID
+	// lostQueue buffers sessions the Runner reported gone; the loop wakes each
+	// account, and the woken session's start sweep redelivers what is owed.
+	lostQueue []lostEvent
 	// owedRewake is set when a Runner command stream attaches: a wake that failed
 	// while none could serve it is retried for every agent still owed a mention.
 	owedRewake bool
@@ -247,6 +272,11 @@ type Consumer struct {
 
 	// now stamps and prunes lastSettle; a test swaps in a fixed clock.
 	now func() time.Time
+
+	// erroredWakes holds per-account ERRORED wake backoff, under mu.
+	erroredWakes map[store.AccountID]*erroredBackoff
+	// afterFunc schedules a deferred wake; a test swaps in a manual trigger.
+	afterFunc func(time.Duration, func())
 
 	// dispatched counts control dispatches (deliver + steer), labelled only by
 	// op kind (compass.op.kind = steer|deliver). Created ONCE at NewConsumer from
@@ -292,7 +322,11 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 			t := time.NewTicker(recoveryFloorInterval)
 			return t.C, t.Stop
 		},
-		now: time.Now,
+		now:          time.Now,
+		erroredWakes: make(map[store.AccountID]*erroredBackoff),
+		afterFunc: func(d time.Duration, f func()) {
+			time.AfterFunc(d, f)
+		},
 	}
 }
 
@@ -420,6 +454,7 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 			delete(c.lastSettle, sid)
 		}
 	}
+	c.pruneErroredWakes()
 	c.mu.Unlock()
 	c.sweepAllLive(ctx)
 	c.scanMissedMentions(ctx)

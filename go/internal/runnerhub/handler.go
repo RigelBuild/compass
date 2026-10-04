@@ -117,13 +117,8 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
-	// Off the receive loop: the release does store work, and the stream ctx dies with the stream.
 	router.setSessionUnknown(func(sessionID string) {
-		go func() {
-			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lostSessionTimeout)
-			defer cancel()
-			h.hub.dropLostSession(dctx, subj.ID, sessionID)
-		}()
+		h.hub.dropLostSessionDetached(ctx, subj.ID, sessionID, false)
 	})
 	router.attach(stream.Send)
 	defer router.detach(errStreamClosed)
@@ -150,7 +145,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 // Sessions stream ends — the router detaches and every pending call observes it.
 var errStreamClosed = errors.New("runner sessions stream closed")
 
-// lostSessionTimeout bounds the binding release after a NotFound deliver refusal.
+// lostSessionTimeout bounds the detached release of a lost session.
 const lostSessionTimeout = 30 * time.Second
 
 // PublishEvents feeds each relayed frame the Runner streams into Deliver — the

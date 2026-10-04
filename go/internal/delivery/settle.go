@@ -5,6 +5,7 @@ package delivery
 import (
 	"context"
 	"math"
+	"time"
 
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
@@ -395,15 +396,18 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 	}
 }
 
-// OnSessionLost is the hub's SessionLostSink: the Runner refused a deliver because
-// sessionID's container is gone and the hub released its binding. It only enqueues;
-// the loop wakes the account, re-provisioning the container on the wake path.
-func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID) {
+// OnSessionLost is the hub's SessionLostSink. It only enqueues: the loop wakes the
+// account, which re-provisions the container.
+func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID, errored bool) {
 	if sessionID == "" || account == "" {
 		return
 	}
+	c.enqueueLost(lostEvent{account: account, errored: errored})
+}
+
+func (c *Consumer) enqueueLost(ev lostEvent) {
 	c.mu.Lock()
-	c.lostQueue = append(c.lostQueue, account)
+	c.lostQueue = append(c.lostQueue, ev)
 	c.mu.Unlock()
 	select {
 	case c.notify <- struct{}{}:
@@ -411,7 +415,8 @@ func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID) {
 	}
 }
 
-// drainLost wakes every account queued by OnSessionLost under the loop's ctx.
+// drainLost wakes each lost account. An ERRORED loss wakes only with owed work, and
+// repeat ERRORED wakes back off, so a poisoned message re-wakes on a capped delay.
 func (c *Consumer) drainLost(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -419,11 +424,100 @@ func (c *Consumer) drainLost(ctx context.Context) {
 			c.mu.Unlock()
 			return
 		}
-		account := c.lostQueue[0]
+		ev := c.lostQueue[0]
 		c.lostQueue = c.lostQueue[1:]
 		c.mu.Unlock()
-		c.wake(ctx, account)
+		if ev.errored && !ev.deferred && c.erroredWakePending(ev.account) {
+			continue
+		}
+		if ev.errored && !c.hasOwedWork(ctx, ev.account) {
+			c.log.InfoContext(ctx, "delivery: errored session owes nothing, not waking", "account", string(ev.account))
+			if ev.deferred {
+				c.clearPendingErroredWake(ev.account)
+			}
+			continue
+		}
+		if ev.errored && !ev.deferred {
+			if delay := c.nextErroredWakeDelay(ev.account); delay > 0 {
+				c.log.WarnContext(ctx, "delivery: repeat errored session, delaying wake",
+					"account", string(ev.account), "delay", delay)
+				c.afterFunc(delay, func() {
+					c.enqueueLost(lostEvent{account: ev.account, errored: true, deferred: true})
+				})
+				continue
+			}
+		}
+		if ev.deferred {
+			c.clearPendingErroredWake(ev.account)
+		}
+		c.wake(ctx, ev.account)
 	}
+}
+
+// erroredWakeDelay is the wait before the wake that follows strikes earlier
+// ERRORED losses in one window: zero, then doubling from the base to the cap.
+func erroredWakeDelay(strikes int) time.Duration {
+	if strikes == 0 {
+		return 0
+	}
+	if strikes > 10 {
+		return erroredWakeMaxDelay
+	}
+	return min(erroredWakeBaseDelay<<(strikes-1), erroredWakeMaxDelay)
+}
+
+func (c *Consumer) erroredWakePending(account store.AccountID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.erroredWakes[account]
+	return b != nil && b.pending
+}
+
+// nextErroredWakeDelay records one ERRORED loss for account and returns its wake
+// delay; a nonzero delay marks a deferred wake pending.
+func (c *Consumer) nextErroredWakeDelay(account store.AccountID) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.erroredWakes[account]
+	now := c.now()
+	if b == nil || now.Sub(b.last) >= erroredWakeResetAfter {
+		b = &erroredBackoff{}
+		c.erroredWakes[account] = b
+	}
+	delay := erroredWakeDelay(b.strikes)
+	b.strikes++
+	b.last = now
+	b.pending = delay > 0
+	return delay
+}
+
+func (c *Consumer) clearPendingErroredWake(account store.AccountID) {
+	c.mu.Lock()
+	if b := c.erroredWakes[account]; b != nil {
+		b.pending = false
+	}
+	c.mu.Unlock()
+}
+
+// pruneErroredWakes drops backoff state past its reset window. Caller holds mu.
+func (c *Consumer) pruneErroredWakes() {
+	now := c.now()
+	for account, b := range c.erroredWakes {
+		if !b.pending && now.Sub(b.last) >= erroredWakeResetAfter {
+			delete(c.erroredWakes, account)
+		}
+	}
+}
+
+// hasOwedWork reports whether a start sweep would deliver anything to account. A
+// read error counts as owed: a spurious wake is cheaper than a lost message.
+func (c *Consumer) hasOwedWork(ctx context.Context, account store.AccountID) bool {
+	undelivered, err := c.st.UndeliveredMessages(ctx, account)
+	if err != nil || len(undelivered) > 0 {
+		return true
+	}
+	mentions, err := c.st.OwedMentions(ctx, account)
+	return err != nil || len(mentions) > 0
 }
 
 // OnRunnerReady is called when a Runner's command stream attaches. A mention made
