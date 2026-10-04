@@ -61,11 +61,12 @@ when `#batchCancel` is set. Queue contents do not define it.
   single parent, trigger cleared. With nothing queued, `steer` is unchanged.
 
 If `CompassAgentOptions.batchWindow` is absent, the agent flushes at once
-(today's behaviour). `cli.ts` `main` takes `MainDeps.batchWindow`: `undefined`
-selects `DEFAULT_BATCH_WINDOW` and `null` means no window. The timer is an
-injected `BatchTimer`. Its real implementation is the one `setTimeout`, under a
-`biome-ignore`, because `biome.json` `noRestrictedGlobals` denies the global
-(precedent `session-tee.ts`).
+(today's behaviour). `run()`'s `finally` calls `#cancelBatch()`, so no timer
+outlives the agent. `cli.ts` `main` takes `MainDeps.batchWindow`: absent selects
+`DEFAULT_BATCH_WINDOW`, and the literal `"off"` passes no window. The timer is
+an injected `BatchTimer`. Its real implementation is the one `setTimeout`,
+under a `biome-ignore`, because `biome.json` `noRestrictedGlobals` denies the
+global (precedent `session-tee.ts`).
 
 ### Q1: window length
 
@@ -110,15 +111,27 @@ process ends with items queued in the window:
 
 | Event | Queued delivers | Queued forge ops |
 | --- | --- | --- |
-| Stop, later Start | `OnSessionStarted` → `sweepSession` | Dropped (`agentHost.Stop` → `RetireSession` → `controlProducer.Retire`); reconcile `SynthesizeUpdate` within `defaultBackstop`, 30 min |
-| ERRORED exit | `drainLost` wakes on owed work → start sweep | Dropped (`markErrored` → `RetireSession`); reconcile within 30 min |
+| Stop, later Start | `OnSessionStarted` → `sweepSession` | Dropped (`agentHost.Stop` → `RetireSession` → `controlProducer.Retire`); recovered after the next start, see below |
+| ERRORED exit | `drainLost` wakes only on owed work (repeat wakes back off from `erroredWakeBaseDelay`, 30 s, to `erroredWakeMaxDelay`, 15 min) → start sweep | Dropped (`markErrored` → `RetireSession`); recovered after the next start, see below |
 | Server Reload (`Hub.Reload`) | `notifySessionStarted` → sweep | `controlProducer.Restart` re-sends |
 | Runner config refresh (`refreshOneContainer` → `reloadLocked`) | No start edge; floor sweep within `recoveryFloorInterval`, 5 min | `controlProducer.Restart` re-sends |
 
 Restart does not resend delivers because a deliver's control-seq is acked when
-it is decoded (`dispatch`, `transport/control-source.ts`). The 5- and 30-minute
-bounds are accepted costs. Every item is still delivered, and items queued
-mid-turn have the same exposure today.
+it is decoded (`dispatch`, `transport/control-source.ts`).
+
+A dropped forge op recovers weakly:
+
+- `forgeNotifyDispatcher.Notify` (`go/server/serve.go`) returns
+  `errNoLiveSession` with no live session. So the reconcile sweep (every
+  `defaultBackstop`, 30 min) re-notifies only after the agent next starts.
+- Forge items alone never wake an ERRORED agent: `hasOwedWork` checks only
+  `UndeliveredMessages` and `OwedMentions`.
+- The re-notify is `SynthesizeUpdate`'s payload-free
+  `FORGE_NOTIFICATION_KIND_UPDATE`, a re-read cue, not the original COMMENT,
+  CHECKS, REVIEW, or STATE payload.
+
+Accepted: the agent re-reads the artifact on its next live turn, and mid-turn
+forge items share this exposure today. So is the 5-minute deliver bound (OQ-8).
 
 ### Q5: the skip control
 
@@ -133,36 +146,27 @@ flowchart LR
   A -->|ImmediateControl.startNow| C[CompassAgent.startNow]
 ```
 
-- Proto: `StartNowControl start_now = 10` in `AgentControl` (`agent.proto`).
-  Tag 4 is unused but not `reserved`, so the record does not reuse it.
+- Proto: `StartNowControl start_now = 10`. Tag 4 is unused but not
+  `reserved`, so it is not reused.
 - Runner: no new code. `representable` (`gateway/control.go`) admits every
-  variant except Replay, Config, and nil. Forge notifications already rely on
-  this.
-- Server: `CompassService.SkipBatchWindow(session_id)` sits beside
-  `StopAgentSession`, because the UI already holds the observed session id. It
-  authorizes with `Store.RequireAgentSessionOwner` (owner or admin, OQ-4), then
-  calls `Hub.DispatchControl`.
-- Agent: `dispatch` gets a `startNow` case. Like steer and deliver, it is
-  refused at the barrier before ReplayComplete, and it is acked at decode.
+  variant except Replay, Config, and nil.
+- Server: `SkipBatchWindow` sits beside `StopAgentSession`, because the UI
+  holds the observed session id. It is authorized owner-or-admin (OQ-4).
 
-The Runner retains a `start_now` across a disconnect or reload
-(`controlProducer.Restart`), so it can end the new process's first window
-early. This is accepted: a stale skip only moves a flush earlier.
+A `start_now` retained across a reload (`controlProducer.Restart`) can end the
+new process's first window early. Accepted: it only moves a flush earlier.
 
 ## Alternatives considered
 
-- **Window in the server delivery consumer.** Forge items dispatch on a
-  separate path (`forgeNotifyDispatcher`, `go/server/serve.go`). The server
-  also sees idle only through presence, not through `#turnActive` or
-  `isStreaming`. Rejected.
-- **Window in the Runner control producer.** The Runner would have to classify
-  steers, and holding ops stalls its ack cursor. Rejected.
-- **Skip via an empty `PromptControl`.** This starts a turn on empty text even
-  when nothing is queued. Rejected.
-- **No window: steer later items into the running turn.** Item 1 starts turn
-  1, and items 2..N go through `agent.steer`, as `steer`'s mid-turn branch
-  does. There is no latency, RPC, or UI. The cost is that any deliver could
-  interrupt a turn (OQ-6).
+- **Window in the server delivery consumer.** Forge uses a separate path
+  (`forgeNotifyDispatcher`), and the server cannot see `#turnActive`.
+  Rejected.
+- **Window in the Runner control producer.** The Runner would have to
+  classify steers, and held ops stall its ack cursor. Rejected.
+- **Skip via an empty `PromptControl`.** It starts a turn on empty text.
+  Rejected.
+- **No window: steer items 2..N into turn 1** via `agent.steer`. No latency,
+  RPC, or UI, but any deliver could interrupt a turn (OQ-6).
 
 ## Plan
 
@@ -174,7 +178,7 @@ early. This is accepted: a stale skip only moves a flush earlier.
   server/Runner state.
 - Existing test assertions stay unmodified. Existing harnesses change only to
   compile or to opt out of the window:
-  - `turnSpanFor` in `cli.test.ts` passes `batchWindow: null` to `main`.
+  - `turnSpanFor` in `cli.test.ts` passes `batchWindow: "off"` to `main`.
   - T4 adds `startNow` to the `ImmediateControl` fixtures.
 - There is one `setTimeout`, in `realBatchTimer.set`, under
   `// biome-ignore lint/style/noRestrictedGlobals: <reason>`.
@@ -195,9 +199,14 @@ early. This is accepted: a stale skip only moves a flush earlier.
   - the idle swaps in `deliver` and `forgeNotification`;
   - the `#cancelBatch()` calls;
   - the steer tail.
-- In `cli.ts`, add `MainDeps.batchWindow` and resolve it as above.
-- In `cli.test.ts`, `turnSpanFor` passes `batchWindow: null`. Its single idle
-  deliver must still produce a turn span before the control stream closes.
+- In `cli.ts`, add `MainDeps.batchWindow` and resolve it with an explicit
+  `=== "off"` check, so no `??` or truthiness test can turn the opt-out into
+  the default.
+- In `cli.test.ts`:
+  - `turnSpanFor` passes `batchWindow: "off"`. Its single idle deliver still
+    produces a turn span before the control stream closes.
+  - New case: with `batchWindow` omitted, the same feed produces no turn span,
+    which shows the default window is on.
 
 New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
 
@@ -210,8 +219,10 @@ New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
   cancelled and each item is acked once (DELIVER, STEER).
 - The same, with the prompt rejected → D and S are un-deduped and neither is
   acked.
-- Traced: D and S with distinct traceparents → the turn span has no parent and
-  links both. The stamped ids are `D,S` and the trigger is cleared.
+- Traced: a prior single-deliver turn sets a non-empty turn trigger and ends.
+  Then D and S arrive with distinct traceparents. The turn span has no parent
+  and links both, the stamped ids are `D,S`, and the fake tracer's trigger is
+  empty.
 - A deliver is queued, then a control prompt is applied → nothing is injected
   when the timer would have fired. At `agent_end` there is one flush and one
   ack.
@@ -261,8 +272,8 @@ interface SteerTail {
 // cli.ts
 export interface MainDeps {
 	// …existing fields unchanged
-	/** undefined → DEFAULT_BATCH_WINDOW; null → no window. */
-	readonly batchWindow?: BatchWindow | null;
+	/** Absent → DEFAULT_BATCH_WINDOW; "off" → no window. Resolve with === "off". */
+	readonly batchWindow?: BatchWindow | "off";
 }
 ```
 
@@ -275,9 +286,12 @@ export interface MainDeps {
 - Add `RequireAgentSessionOwner` beside `RequireAgentSessionSubscriber`
   (`queries/agent_sessions.sql`, `agent_sessions.go`), in the same
   single-statement not-found-merge shape.
-- Add the handler beside `StopAgentSession` in `go/server/service.go`. It calls
-  `auth.CallerFrom`, then `RequireAgentSessionOwner`, then
-  `s.hub.DispatchControl`. A dispatch error, or no hub, returns `Unavailable`.
+- Add the handler beside `StopAgentSession` in `go/server/service.go`:
+  - no hub (`s.hub == nil`) → `Unavailable` with `errNoRunnerHub`, before any
+    store read;
+  - otherwise call `auth.CallerFrom`, then `RequireAgentSessionOwner`, then
+    `s.hub.DispatchControl`;
+  - a dispatch error → `Unavailable`.
 - Classify the handler `authenticatedOpen` in `classifyProcedure` and add its
   `admin_gate_test.go` row.
 
@@ -288,6 +302,7 @@ Tests:
   the same `NotFound`.
 - An empty `session_id` → `InvalidArgument`.
 - A dispatch error → `Unavailable`.
+- No Runner hub → `Unavailable`, with no store read and no dispatch.
 
 Interfaces:
 
@@ -388,7 +403,9 @@ Tests:
 
 - One click issues one `skipBatchWindow` with the observed session id.
 - A fixture session is refused without a call.
-- A refusal sets `skipError`.
+- A store with no compass client is refused locally without a call, and sets
+  `skipError`.
+- A server refusal sets `skipError` and calls `onCommsError` with the error.
 
 Interfaces:
 
@@ -423,8 +440,8 @@ last.
 
 ## Open Questions
 
-The plan follows each recommendation. OQ-1 to OQ-6 are load-bearing; OQ-7 is
-not.
+The plan follows each recommendation. OQ-1 to OQ-6 are load-bearing; OQ-7 and
+OQ-8 are not.
 
 - **OQ-1: window values.**
   - (A) Fixed 3 s / 15 s.
@@ -470,3 +487,7 @@ not.
   usage data to compare turns and tokens (cached input, uncached input, output)
   per burst against today. If the saving is small, shorten
   `DEFAULT_BATCH_WINDOW` or drop it.
+- **OQ-8 (not load-bearing): keep forge items immediate when idle.** An idle
+  forge item would flush at once, as today. Only the deliver lane would batch.
+  That removes the idle-window exposure in Q4, but a CI or PR burst would cost
+  extra turns. This record batches both lanes.
