@@ -1060,4 +1060,8 @@ func TestForgeProviderRegistryRejectsEmptyHost(t *testing.T) {
 	if got, ok := reg.resolve(nil); !ok || got.host != testHost {
 		t.Fatalf("resolve(nil) = %+v, %v; want host %q", got, ok, testHost)
 	}
+	hostless := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB}
+	if got, ok := reg.resolve(hostless); !ok || got.host != testHost {
+		t.Fatalf("resolve(github, no host) = %+v, %v; want host %q", got, ok, testHost)
+	}
 }
