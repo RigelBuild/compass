@@ -11,7 +11,6 @@ import (
 	"context"
 	"log/slog"
 	"testing"
-	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
@@ -23,11 +22,13 @@ import (
 // recordingDispatcher is the notify dispatcher fake: it records every dispatched
 // ForgeNotification per account (no live hub). When noSession is true it returns
 // the same no-live-session sentinel the real forgeNotifyDispatcher returns, so
-// the router's log-and-move-on isolation is exercised without a hub.
+// the router's log-and-move-on isolation is exercised without a hub. A non-nil
+// notified gets one send per recorded dispatch, so async callers can wait on it.
 type recordingDispatcher struct {
 	sent      []*compassv1internal.ForgeNotification
 	accounts  []string
 	noSession bool
+	notified  chan struct{}
 }
 
 func (d *recordingDispatcher) Notify(_ context.Context, account string, n *compassv1internal.ForgeNotification) error {
@@ -36,6 +37,9 @@ func (d *recordingDispatcher) Notify(_ context.Context, account string, n *compa
 	}
 	d.sent = append(d.sent, n)
 	d.accounts = append(d.accounts, account)
+	if d.notified != nil {
+		d.notified <- struct{}{}
+	}
 	return nil
 }
 
@@ -182,7 +186,7 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 	agent, subID := seedNotifySubscription(t, st, repo, store.ForgeArtifactKindIssue, number)
 
 	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: forgeTestHost}
-	disp := &recordingDispatcher{}
+	disp := &recordingDispatcher{notified: make(chan struct{}, 1)}
 	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: forgeTestHost}
 	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, nil, nil, forgeRef, nil)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{})
@@ -192,8 +196,9 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 		t.Fatalf("precondition delivered_revision = %q, want empty", got)
 	}
 
-	// Drive the arm's async drain (the sink path) and bound the wait on the
-	// dispatch + cursor advance rather than a fixed sleep.
+	// Drive the arm's async drain (the sink path). The router upserts the cursor
+	// BEFORE it dispatches, so wait on the dispatch itself, then join the drain
+	// goroutine before reading disp (the join orders its writes before our reads).
 	drainCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
@@ -201,23 +206,10 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 
 	arm.Enqueue(ctx, notifyCommentEvent(repo, number, url))
 
-	deadline := time.After(5 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	var cursorRevision string
-	for cursorRevision == "" {
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for the notify route to advance the fetch cursor")
-		case <-tick.C:
-			cur, err := st.LoadForgeArtifactCursor(ctx, store.ForgeProviderGitHub, forgeTestHost, repo, store.ForgeArtifactKindIssue, number)
-			if err != nil {
-				t.Fatalf("LoadForgeArtifactCursor: %v", err)
-			}
-			if cur != nil {
-				cursorRevision = cur.Revision
-			}
-		}
+	select {
+	case <-disp.notified:
+	case <-timeAfter():
+		t.Fatalf("no forge notification dispatched within %s", testTimeout)
 	}
 
 	// Stop the drain and confirm a clean (nil) shutdown.
@@ -225,6 +217,20 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("arm.Run returned a non-nil error on ctx-cancel: %v", err)
 	}
+
+	// The shared FETCH cursor advanced with a snapshot (the router writes it
+	// before dispatch, so it is visible now).
+	cur, err := st.LoadForgeArtifactCursor(ctx, store.ForgeProviderGitHub, forgeTestHost, repo, store.ForgeArtifactKindIssue, number)
+	if err != nil {
+		t.Fatalf("LoadForgeArtifactCursor (post): %v", err)
+	}
+	if cur == nil {
+		t.Fatal("fetch cursor is nil after route, want an advanced row")
+	}
+	if len(cur.Snapshot) == 0 {
+		t.Error("fetch cursor snapshot is empty after route, want the observed snapshot")
+	}
+	cursorRevision := cur.Revision
 
 	// (1) The dispatcher saw exactly one ForgeNotification for the subscriber,
 	// carrying the right coordinate + change + the cursor's revision.
@@ -248,18 +254,7 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 		t.Errorf("notification revision = %q, want the cursor revision %q", n.GetRevision(), cursorRevision)
 	}
 
-	// (2) The shared FETCH cursor advanced with a snapshot; delivered_revision
-	// did NOT advance (W3 — the route never touches it).
-	cur, err := st.LoadForgeArtifactCursor(ctx, store.ForgeProviderGitHub, forgeTestHost, repo, store.ForgeArtifactKindIssue, number)
-	if err != nil {
-		t.Fatalf("LoadForgeArtifactCursor (post): %v", err)
-	}
-	if cur == nil {
-		t.Fatal("fetch cursor is nil after route, want an advanced row")
-	}
-	if len(cur.Snapshot) == 0 {
-		t.Error("fetch cursor snapshot is empty after route, want the observed snapshot")
-	}
+	// (2) delivered_revision did NOT advance (W3 — the route never touches it).
 	if got := deliveredRevision(t, st, agent, subID); got != "" {
 		t.Fatalf("delivered_revision = %q after route, want empty (W3: the route never advances it)", got)
 	}
