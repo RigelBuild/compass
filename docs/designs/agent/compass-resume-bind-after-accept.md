@@ -189,6 +189,10 @@ resume still moves the base.
     (`capturePublish`, `recordingRelay`, `w3Relay` in `go/internal/runner`)
     implements `BindLifetime` and records calls, or the embedded
     `Unimplemented` handler fails those Starts.
+  - Production wiring: `hub.SetLifetimeBinder(st)` in `go/server/sinks.go`
+    beside `hub.SetTranscriptStore(st)`. The leg-five e2e resume
+    (`go/e2e/legfive_test.go`) runs against the real stack, so it fails if the
+    wiring is missing.
 
   Tests:
   - Handler pgtest: a tenant-B session binds through the handler. A foreign
