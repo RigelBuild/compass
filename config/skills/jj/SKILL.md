@@ -252,11 +252,13 @@ A PR that carries two concerns, or that a newer PR replaces, is retired only
 after its replacement is proven. Keep the old PR open until then; closing it
 first can lose work that exists only on its head.
 
-1. Leave the published old bookmark untouched. Copy its commits onto current
-   trunk with `jj duplicate '<old-base>..<old-bookmark>' --onto 'main@origin'`;
-   the copies are new, unpublished commits. For two concerns, run
-   `jj split --parallel -r <copy> <file>...` to make them sibling commits. Give
-   each replacement its own bookmark and submit.
+1. Leave the published old bookmark untouched. Copy its commits onto the base
+   they need with `jj duplicate '<old-base>..<old-bookmark>' --onto <new-base>`.
+   The new base is `main@origin`, or the surviving PR it depends on. The copies
+   are new, unpublished commits. For two concerns, run
+   `jj split --parallel -r <copy> -m '<first subject>' <file>...`, then
+   `jj describe -r <remainder> -m '<second subject>'`; `-m` keeps both steps
+   off the editor. Give each replacement its own bookmark and submit.
 2. Compare cumulative diffs: every hunk in the old PR's effective diff against
    its base must appear in exactly one replacement, or be dropped on purpose
    with a stated reason. Carry over the title, body, and issue references.
