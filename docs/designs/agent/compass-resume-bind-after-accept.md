@@ -200,8 +200,8 @@ resume still moves the base.
   alone would make two SDK sessions share one logical transcript. Options:
   (a) Reload is a resume: materialize a reconstructed body, then bind
   (recommended); (b) Reload mints a new logical session id; (c) Reload keeps
-  the id and the new process opens with a checkpoint. Tracked on the
-  human-action issue; a follow-up record designs the chosen option. The bind
+  the id and the new process opens with a checkpoint. Tracked on RIG-4451
+  (human-action); a follow-up record designs the chosen option. The bind
   RPC above is the mechanism (a) and (c) would call.
 - **Non-load-bearing deferral: in-flight commit across a rebind.** Under (a)
   or (c), the stopped process can have one `CommitConversationFrame` still in
