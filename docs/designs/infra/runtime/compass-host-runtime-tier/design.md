@@ -33,7 +33,7 @@ land: the agent is already sitting where the user's config lives.
 
 The host tier is a third `SelectBackend` value, joining `""`/`podman`/
 `microvm`. `SelectBackend` is the sole backend selection point
-(`go/internal/runtime/microvm.go:117-125`):
+(`SelectBackend` in `go/internal/runtime/microvm.go`):
 
 ```go
 func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
@@ -53,7 +53,7 @@ name the third accepted value. The default stays podman: `host` is opted into
 explicitly, never fallen back to.
 
 On the DL-325 trust-model axis
-(`docs/designs/DECISIONS.md:158`: "untrusted multi-tenant operation requires
+(`docs/designs/DECISIONS.md` § *Agent runtime & container*: "untrusted multi-tenant operation requires
 the microVM hardware boundary (KVM, unchanged); self-host single-tenant
 deployments keep podman as a permanent, supported entry tier"), the host tier
 sits **below** podman. DL-325's rule is that **the boundary follows the trust
@@ -90,22 +90,22 @@ work has to run where the hardware and the session are. See Open Questions.
 #### `WorkloadRuntime` implementation
 
 The host backend implements `WorkloadRuntime`
-(`go/internal/runtime/podman.go:348-396`) as-is; it does not
+(`WorkloadRuntime` in `go/internal/runtime/podman.go`) as-is; it does not
 amend it.
 The nine methods, per the interface doc comments, and their host-process
 semantics — including where the mapping is degenerate:
 
 | Method | Interface contract (quoted) | Host semantics |
 | --- | --- | --- |
-| `Create(ctx, spec) (WorkloadID, error)` | "makes a container from spec without starting it, returning its id" (`podman.go:349-350`) | Allocates a per-agent **handle**: mints a synthetic `WorkloadID`, creates the agent's private state dir (workspace root, home overlay dir, socket dir) from `WorkloadSpec`. No process is spawned. Spec fields that configure container machinery (image, mounts as bind specs, network) are interpreted or ignored per a documented field map — see T1. |
-| `Start(ctx, id)` | "starts a created container" (`podman.go:352-353`) | **Degenerate.** There is no init process to start; the agent process itself is launched later by `ExecStreaming`. `Start` transitions the handle `created → started` and validates the state dir. It must not be pretended to be more: a "started" host handle is bookkeeping, not a running boundary. |
-| `Exec(ctx, id, spec) (ExecOutput, error)` | "runs a command in a running container, capturing its output. A non-zero exit is a successful runtime call returning a failed command" (`podman.go:355-359`) | Runs the command as a **direct host subprocess** of the Runner, under the Runner's own uid, with `ExecSpec`'s env/cwd/stdin and the per-command timeout. `ExecSpec.AsUser` cannot switch user — the process runs as whoever runs the Runner — so the backend honors exactly one value, the Runner's own effective uid, and rejects (errors on) an `AsUser` naming **any other** uid rather than silently running it wrong. That strict rejection is only launchable because the host tier derives `Workspace.UID` from `os.Geteuid()` instead of the baked fleet constant, so every provision-path `AsUser` already carries the euid it will run as — see "The host-tier uid contract" below. Without that derivation this rule would error on every provision exec and no host agent could launch. |
-| `ExecStreaming(ctx, id, spec) (*StreamingExec, error)` | "starts a long-lived streaming command … returning its live stdio pipes plus a kill/wait handle" (`podman.go:361-369`) | The one clean mapping: spawns the agent as a host child process in its own process group, stdio piped, bound to ctx. This is where the host-tier agent actually comes to life. |
-| `Stop(ctx, id, timeout)` | "stops a running container, allowing timeout for graceful exit" (`podman.go:371-373`) | Signals the handle's process group: SIGTERM, wait up to `timeout`, then SIGKILL. Scope is the process group the backend spawned — a host process the agent double-forked out of the group is **not reliably stopped**; that leak is named, not papered over (no cgroup freezer in v1; see Open Questions). |
-| `Remove(ctx, id)` | "removes a container (force-kills if still running)" (`podman.go:375-376`) | Force-kills the process group if live, then deletes the handle's state dir. It does **not** touch anything outside the state dir — the agent's writes to the real host filesystem are permanent, which is the tier's declared posture, not a cleanup bug. |
-| `Exists(ctx, name) (bool, error)` | "reports whether a container with name currently exists (any state)" (`podman.go:378-379`) | **Degenerate.** There is no container registry to consult; existence means "the backend has a handle (state dir) under this name". This is handle-existence plus process-liveness, not container-existence: a crashed agent whose state dir remains still `Exists`, mirroring a stopped-but-not-removed container. |
-| `MountLabel(ctx, id) (string, error)` | "reports the container's SELinux mount label (its private MCS category), read from `podman inspect`" (`podman.go:381-385`) | **Degenerate: returns `""`, nil.** There is no container and no per-container MCS category. Empty is already a first-class value in the consumer: `ConfigMaterializer.Materialize` documents "mcsLabel is \"\" on the PROVISION path … there is no label to target … skip chcon" (`go/internal/runner/config_materialize.go:138-144`). The host tier extends that meaning: empty on **every** path, so the `chcon -R` relabel (`config_materialize.go:353-354`) never runs. Agent reads succeed because materialized files carry the Runner's own label and the agent **is** the Runner's uid. See "MCS/SELinux relabel gap" below. |
-| `Resize(ctx, id, limits)` | "changes a live container's cgroup resource limits in place … the resize BEHAVIOR … is C3's to fill in behind this signature" (`podman.go:387-396`) | **Degenerate for v1.** The host backend owns no cgroup. It returns a typed "unsupported on host backend" error, never a silent success — a caller that believes it resized must not be lied to. A future systemd user-scope/cgroup v2 delegation could make this real; out of scope here. |
+| `Create(ctx, spec) (WorkloadID, error)` | "makes a container from spec without starting it, returning its id" (`WorkloadRuntime.Create` in `go/internal/runtime/podman.go`) | Allocates a per-agent **handle**: mints a synthetic `WorkloadID`, creates the agent's private state dir (workspace root, home overlay dir, socket dir) from `WorkloadSpec`. No process is spawned. Spec fields that configure container machinery (image, mounts as bind specs, network) are interpreted or ignored per a documented field map — see T1. |
+| `Start(ctx, id)` | "starts a created container" (`WorkloadRuntime.Start` in `go/internal/runtime/podman.go`) | **Degenerate.** There is no init process to start; the agent process itself is launched later by `ExecStreaming`. `Start` transitions the handle `created → started` and validates the state dir. It must not be pretended to be more: a "started" host handle is bookkeeping, not a running boundary. |
+| `Exec(ctx, id, spec) (ExecOutput, error)` | "runs a command in a running container, capturing its output. A non-zero exit is a successful runtime call returning a failed command" (`WorkloadRuntime.Exec` in `go/internal/runtime/podman.go`) | Runs the command as a **direct host subprocess** of the Runner, under the Runner's own uid, with `ExecSpec`'s env/cwd/stdin and the per-command timeout. `ExecSpec.AsUser` cannot switch user — the process runs as whoever runs the Runner — so the backend honors exactly one value, the Runner's own effective uid, and rejects (errors on) an `AsUser` naming **any other** uid rather than silently running it wrong. That strict rejection is only launchable because the host tier derives `Workspace.UID` from `os.Geteuid()` instead of the baked fleet constant, so every provision-path `AsUser` already carries the euid it will run as — see "The host-tier uid contract" below. Without that derivation this rule would error on every provision exec and no host agent could launch. |
+| `ExecStreaming(ctx, id, spec) (*StreamingExec, error)` | "starts a long-lived streaming command … returning its live stdio pipes plus a kill/wait handle" (`WorkloadRuntime.ExecStreaming` in `go/internal/runtime/podman.go`) | The one clean mapping: spawns the agent as a host child process in its own process group, stdio piped, bound to ctx. This is where the host-tier agent actually comes to life. |
+| `Stop(ctx, id, timeout)` | "stops a running container, allowing timeout for graceful exit" (`WorkloadRuntime.Stop` in `go/internal/runtime/podman.go`) | Signals the handle's process group: SIGTERM, wait up to `timeout`, then SIGKILL. Scope is the process group the backend spawned — a host process the agent double-forked out of the group is **not reliably stopped**; that leak is named, not papered over (no cgroup freezer in v1; see Open Questions). |
+| `Remove(ctx, id)` | "removes a container (force-kills if still running)" (`WorkloadRuntime.Remove` in `go/internal/runtime/podman.go`) | Force-kills the process group if live, then deletes the handle's state dir. It does **not** touch anything outside the state dir — the agent's writes to the real host filesystem are permanent, which is the tier's declared posture, not a cleanup bug. |
+| `Exists(ctx, name) (bool, error)` | "reports whether a container with name currently exists (any state)" (`WorkloadRuntime.Exists` in `go/internal/runtime/podman.go`) | **Degenerate.** There is no container registry to consult; existence means "the backend has a handle (state dir) under this name". This is handle-existence plus process-liveness, not container-existence: a crashed agent whose state dir remains still `Exists`, mirroring a stopped-but-not-removed container. |
+| `MountLabel(ctx, id) (string, error)` | "reports the container's SELinux mount label (its private MCS category), read from `podman inspect`" (`WorkloadRuntime.MountLabel` in `go/internal/runtime/podman.go`) | **Degenerate: returns `""`, nil.** There is no container and no per-container MCS category. Empty is already a first-class value in the consumer: `ConfigMaterializer.Materialize` documents "mcsLabel is \"\" on the PROVISION path … there is no label to target … skip chcon" (`ConfigMaterializer.Materialize` in `go/internal/runner/config_materialize.go`). The host tier extends that meaning: empty on **every** path, so the `chcon -R` relabel (`relabel` in `go/internal/runner/config_materialize.go`) never runs. Agent reads succeed because materialized files carry the Runner's own label and the agent **is** the Runner's uid. See "MCS/SELinux relabel gap" below. |
+| `Resize(ctx, id, limits)` | "changes a live container's cgroup resource limits in place … the resize BEHAVIOR … is C3's to fill in behind this signature" (`WorkloadRuntime.Resize` in `go/internal/runtime/podman.go`) | **Degenerate for v1.** The host backend owns no cgroup. It returns a typed "unsupported on host backend" error, never a silent success — a caller that believes it resized must not be lied to. A future systemd user-scope/cgroup v2 delegation could make this real; out of scope here. |
 
 The honest summary: `ExecStreaming`, `Exec`, `Stop`, `Remove` are real;
 `Create`/`Start`/`Exists` are bookkeeping over a state dir; `MountLabel` and
@@ -127,10 +127,10 @@ implementation detail. The fleet uid is a constant with no override:
 const AgentUID = 1000
 ```
 
-(`go/internal/agentuid/agentuid.go:8-13`.) The Runner hands exactly that into
-its spec defaults (`go/cmd/compass-runner/main.go:153`: `UID:         agentuid.AgentUID,`),
+(`AgentUID` in `go/internal/agentuid/agentuid.go`.) The Runner hands exactly that into
+its spec defaults (`run` in `go/cmd/compass-runner/main.go`: `UID:         agentuid.AgentUID,`),
 and `BuildSpec` copies it verbatim into every agent's workspace
-(`go/internal/runner/spec.go:89-93`, dedented):
+(`configSpecBuilder.BuildSpec` in `go/internal/runner/spec.go`, dedented):
 
 ```go
 Workspace: runtime.Workspace{
@@ -141,11 +141,11 @@ Workspace: runtime.Workspace{
 ```
 
 Nothing configures it. The Runner's whole flag block declares no uid flag or env
-override (`go/cmd/compass-runner/main.go:44-84`, `run()`'s flag declarations
+override (`run` in `go/cmd/compass-runner/main.go`, `run()`'s flag declarations
 through `flag.Parse()`; the command's only other `uid` mentions are the podman
-userns-remap preflight comment at `main.go:96-98`), and
+userns-remap preflight comment at `run` in `go/cmd/compass-runner/main.go`), and
 `NewConfigSpecBuilder`'s sole check on the value is that it is not root
-(`go/internal/runner/spec.go:59-60`):
+(`NewConfigSpecBuilder` in `go/internal/runner/spec.go`):
 
 ```go
 if defaults.UID == 0 {
@@ -154,12 +154,12 @@ if defaults.UID == 0 {
 ```
 
 That uid is then what every provision-path exec passes as `AsUser`:
-`AgentRuntime.ExecAsAgent` (`go/internal/runtime/agent.go:203-204`:
+`AgentRuntime.ExecAsAgent` (in `go/internal/runtime/agent.go`:
 `AsUser(strconv.FormatUint(uint64(handle.spec.Workspace.UID), 10))`),
-`WriteAgentFile` (`agent.go:249-250`), `installCredentials` (`agent.go:343-344`),
-`ensureCheckoutDir` (`agent.go:359-360`), the secrets materializer
-(`go/internal/runtime/secrets_materialize.go:435-436`), and the agent's own
-streaming exec (`go/internal/runner/agent_exec.go:78-79`:
+`WriteAgentFile` (`AgentRuntime.WriteAgentFile` in `go/internal/runtime/agent.go`), `installCredentials` (`AgentRuntime.installCredentials` in `go/internal/runtime/agent.go`),
+`ensureCheckoutDir` (`AgentRuntime.ensureCheckoutDir` in `go/internal/runtime/agent.go`), the secrets materializer
+(`SecretMaterializer.runScript` in `go/internal/runtime/secrets_materialize.go`), and the agent's own
+streaming exec (`AgentEnv.execSpec` in `go/internal/runner/agent_exec.go`:
 `AsUser(strconv.FormatUint(uint64(e.UID), 10))`).
 
 **Ruling.** On the host tier `Workspace.UID` is derived from the Runner's real
@@ -178,13 +178,13 @@ host backend cannot provide one.
 Two consequences the plan carries (T1a):
 
 - The host tier needs its own spec derivation. `SpecDefaults` is built once at
-  Runner startup (`main.go:148-156`), so the host profile supplies the derived
+  Runner startup (`run` in `go/cmd/compass-runner/main.go`), so the host profile supplies the derived
   euid there rather than the constant; the existing non-root check
-  (`spec.go:59-60`) still applies, so a Runner running as root is refused — the
-  same posture the container tiers hold (`go/internal/runtime/workspace.go:51-53`:
+  (`NewConfigSpecBuilder` in `go/internal/runner/spec.go`) still applies, so a Runner running as root is refused — the
+  same posture the container tiers hold (`Workspace.UID` in `go/internal/runtime/workspace.go`:
   "UID is the unprivileged uid the agent runs as. Never container-root — that
   would let the agent tear down its own egress firewall").
-- `runtime.Workspace.UID` is a `uint32` (`workspace.go:53`) while `os.Geteuid()`
+- `runtime.Workspace.UID` is a `uint32` (`Workspace.UID` in `go/internal/runtime/workspace.go`) while `os.Geteuid()`
   returns an `int`, and it returns `-1` on platforms without the syscall — so the
   derivation validates the value before narrowing rather than converting blindly.
 
@@ -196,7 +196,7 @@ constants on **both** sides of the rendezvous. A host process has no bind
 mounts, so this is the one part of the tier that no `WorkloadRuntime`
 implementation can supply — it needs its own Provision leg.
 
-Runner side (`go/internal/runner/host.go:33-38`, tabs expanded):
+Runner side (`agentSocketMountPath` in `go/internal/runner/host.go`, tabs expanded):
 
 ```go
 const (
@@ -207,27 +207,27 @@ const (
 )
 ```
 
-preceded by the comment that names the contract (`host.go:30-32`):
+preceded by the comment that names the contract (`agentSocketMountPath` in `go/internal/runner/host.go`):
 "`agentSocketMountPath` is the fixed in-container path the socket is
 bind-mounted to, so the agent needs no per-session configuration — it always
 dials the same path". Both are delivered as mounts on the podman provision leg —
-`host.go:198`: `spec.Mounts = append(spec.Mounts, listener.Mount(agentSocketMountPath))`
-and `host.go:214`:
+`agentHost.Provision` in `go/internal/runner/host.go`: `spec.Mounts = append(spec.Mounts, listener.Mount(agentSocketMountPath))`
+and `agentHost.Provision` in `go/internal/runner/host.go`:
 `spec.Mounts = append(spec.Mounts, runtime.Mount{HostPath: mount.HostPath, ContainerPath: agentConfigMountPath, ReadOnly: true})`.
 
 Agent side, both paths are compile-time constants with no configuration input
-(`packages/compass-agent/src/cli.ts:86-91`):
+(`AGENT_SOCKET_PATH` in `packages/compass-agent/src/cli.ts`):
 
 ```ts
 /**
  * The in-container path the Runner bind-mounts this agent's socket to. Fixed by
- * contract with `internal/runner/host.go:33` — the agent takes no per-session
+ * contract with `agentSocketMountPath` in `go/internal/runner/host.go` — the agent takes no per-session
  * socket configuration, so this constant IS the rendezvous.
  */
 export const AGENT_SOCKET_PATH = "/run/compass/agent.sock";
 ```
 
-and (`packages/compass-agent/src/config-reader.ts:47-53`):
+and (`AGENT_CONFIG_MOUNT_PATH` in `packages/compass-agent/src/config-reader.ts`):
 
 ```ts
 /**
@@ -239,7 +239,7 @@ and (`packages/compass-agent/src/config-reader.ts:47-53`):
 export const AGENT_CONFIG_MOUNT_PATH = "/run/compass/agent-config";
 ```
 
-Both are pinned by contract tests. `packages/compass-agent/src/cli.test.ts:113-116`
+Both are pinned by contract tests: the `AGENT_SOCKET_PATH` describe block in `packages/compass-agent/src/cli.test.ts`
 (tabs expanded):
 
 ```ts
@@ -249,8 +249,8 @@ describe("AGENT_SOCKET_PATH", () => {
     });
 ```
 
-and `packages/compass-agent/src/config-reader.test.ts:67-70`, whose preceding
-comment states why it is pinned (`config-reader.test.ts:63-66`) — "A drift is a
+and the `AGENT_CONFIG_MOUNT_PATH` describe block in `packages/compass-agent/src/config-reader.test.ts`, whose preceding
+comment states why it is pinned (the comment above the `AGENT_CONFIG_MOUNT_PATH` describe block in `packages/compass-agent/src/config-reader.test.ts`) — "A drift is a
 silent unconfigured boot, so it is pinned — beside `AGENT_SOCKET_PATH`'s
 contract test":
 
@@ -277,7 +277,7 @@ env-overridable:
   `/run/compass`, and materializes the config tree to a path in that dir. No
   mounts are appended — there is nothing to mount into.
 - It threads both paths to the agent as environment variables on the streaming
-  exec that starts it (`AgentEnv.execSpec`, `go/internal/runner/agent_exec.go:77-81`,
+  exec that starts it (`AgentEnv.execSpec` in `go/internal/runner/agent_exec.go`,
   already the seam that sets `HOME`/`COMPASS_WORKDIR`).
 - `AGENT_SOCKET_PATH` and `AGENT_CONFIG_MOUNT_PATH` become **env-overridable
   with today's literals as defaults**, so an agent that receives no override
@@ -286,7 +286,7 @@ env-overridable:
   override path. `cli.ts` already carries the precedent for the config half —
   `MainDeps.configMount` is documented as "Overridable ONLY so a test can point
   the reader at a tempdir fixture instead of the container path"
-  (`cli.ts:586-590`) — this promotes that from a test-only dependency seam to a
+  (`MainDeps` in `packages/compass-agent/src/cli.ts`) — this promotes that from a test-only dependency seam to a
   first-class environment input, a change to the path contract, named
   as such.
 
@@ -301,7 +301,7 @@ constant with no configuration input.
 #### Egress: explicitly unenforced
 
 The container tiers arm a default-deny nftables firewall **in the container's
-own network namespace** (`go/internal/runtime/egress.go:1-4`):
+own network namespace** (`go/internal/runtime/egress.go`):
 
 > "Default-deny + allowlist egress firewall for an agent container … The
 > container's own network namespace is firewalled with nftables, so a
@@ -314,7 +314,7 @@ a first-class declared posture, not a degraded arm.
 Concretely, the host backend must **not** implement the `inGuestEgressArmer`
 probe-and-skip seam. That seam exists so a backend that armed egress itself can
 tell `AgentRuntime.provision` to skip the host-side arm exec
-(`go/internal/runtime/agent.go:307-312`):
+(`AgentRuntime.provision` in `go/internal/runtime/agent.go`):
 
 ```go
 func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
@@ -328,7 +328,7 @@ func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentS
 and its contract is "the backend armed it internally" — the test names it "a
 fakeRuntime that self-arms egress in-guest … so AgentRuntime.provision must
 skip the host-side armEgress exec — mirroring the microVM backend"
-(`go/internal/runtime/agent_test.go:298-301`). Returning `true` from
+(`inGuestArmingFakeRuntime` in `go/internal/runtime/agent_test.go`). Returning `true` from
 `EgressArmedInGuest()` on the host backend would **falsely claim someone armed
 the firewall** when nobody did and nobody can. Instead:
 
@@ -344,7 +344,7 @@ the firewall** when nobody did and nobody can. Instead:
   fails loud ("host backend cannot enforce an egress policy"), never silently
   ignores it. The trigger is the policy's **presence**, not a non-empty
   allowlist: an empty host set is the *strictest* posture, not the absence of a
-  policy (`go/internal/runtime/egress.go:29-31`):
+  policy (`EgressPolicy` in `go/internal/runtime/egress.go`):
 
   ```go
   // EgressPolicy is the set of destinations an agent container may reach. An empty
@@ -353,8 +353,8 @@ the firewall** when nobody did and nobody can. Instead:
   ```
 
   and empty is also the Runner's default: `--egress-allow` defaults to `""`
-  (`go/cmd/compass-runner/main.go:58-59`) and the parse turns that into a real
-  policy (`main.go:378-381`):
+  (`run` in `go/cmd/compass-runner/main.go`) and the parse turns that into a real
+  policy (`parseEgress` in `go/cmd/compass-runner/main.go`):
 
   ```go
   func parseEgress(csv string) (runtime.EgressPolicy, error) {
@@ -368,7 +368,7 @@ the firewall** when nobody did and nobody can. Instead:
   bullet exists to prevent, inverted.
 - Making presence expressible is a small upstream change the tier requires.
   `EgressPolicy` today draws no configured/unconfigured distinction: its only
-  accessor is `Hosts()` (`go/internal/runtime/egress.go:67`), so a zero-value
+  accessor is `Hosts()` (`EgressPolicy.Hosts` in `go/internal/runtime/egress.go`), so a zero-value
   `EgressPolicy{}` and an explicit `AllowEgress()` are indistinguishable. T2
   adds a `configured bool` set by `AllowEgress`/`MustAllowEgress` plus a
   `Configured()` accessor, and the host backend refuses any spec whose policy
@@ -386,7 +386,7 @@ noted as future work and deliberately not designed here.
 
 #### Secrets: pin the SecretSpec `keyring://` provider
 
-Per DL-024 (`docs/designs/DECISIONS.md:137`): "Each agent runs in a per-agent
+Per DL-024 (`docs/designs/DECISIONS.md` § *Agent runtime & container*): "Each agent runs in a per-agent
 container on the Runner for blast-radius isolation, not credential avoidance."
 The container was never the thing keeping secrets from the agent — the agent is
 handed resolved values regardless, and they are the user's own secrets. So the
@@ -397,7 +397,7 @@ resolver's provider is pinned to `keyring://`, so resolved values live in the
 OS keyring rather than wherever the SDK's default chain lands.
 
 The seam exists and is currently unused: `WithProvider` pins the provider URI
-(`go/internal/secrets/resolver.go:83-85`):
+(`WithProvider` in `go/internal/secrets/resolver.go`):
 
 ```go
 // WithProvider pins the SecretSpec provider URI (e.g. "keyring://",
@@ -405,7 +405,7 @@ The seam exists and is currently unused: `WithProvider` pins the provider URI
 func WithProvider(uri string) SpecOption { return func(r *SpecResolver) { r.provider = uri } }
 ```
 
-and production pins nothing today (`go/server/serve.go:528`):
+and production pins nothing today (`Serve` in `go/server/serve.go`):
 
 ```go
 resolver := secrets.NewSpecResolver(st, secretsStateDir(cfg))
@@ -419,10 +419,10 @@ whose T0–T5 are all unimplemented — see Global Constraints.
 
 **The `$HOME/.compass/{env,secrets}` collision.** The materializer writes
 resolved secrets into the agent's `$HOME/.compass/env` before agent start
-(`go/internal/runner/host.go:360-384`: "Materialize the agent's secrets into
+(`agentHost.Start` in `go/internal/runner/host.go`: "Materialize the agent's secrets into
 the container BEFORE exec'ing the agent … `h.materializer.Install(ctx,
 handle.ID(), handle.HomeDir(), …)`"; the agent "sources that file from its own
-namespace at startup", `go/internal/runner/agent_exec.go:72-74`). In a
+namespace at startup", `AgentEnv.execSpec` in `go/internal/runner/agent_exec.go`). In a
 container, `$HOME` is container-private. On the host tier, a naive `$HOME` is
 the user's **real** home — colliding with any `.compass` state the user's own
 CLI tooling keeps, and strewing per-agent runtime files into a shared dir.
@@ -438,10 +438,10 @@ is not the agent's `$HOME`.
 
 The config-update path reads the container's MCS label via `podman inspect`
 `MountLabel` and `chcon -R`s the freshly materialized version dir into it
-(`go/internal/runner/config_materialize.go:141-144`: "read via `podman
+(`ConfigMaterializer.Materialize` in `go/internal/runner/config_materialize.go`: "read via `podman
 inspect` MountLabel … chcon -R it into the container's MCS category AFTER
 writing and BEFORE the flip, or a confined agent gets EACCES"; the relabel
-shellout at `:353-354`). With no container there is no label and no confined
+shellout, `relabel` in `go/internal/runner/config_materialize.go`). With no container there is no label and no confined
 domain: the host backend's `MountLabel` returns `""`, `Materialize` takes its
 already-documented skip-chcon path on every call, and reads succeed because the
 agent process runs as the same uid that wrote the files. No new mechanism; the
@@ -472,14 +472,14 @@ the user had.
 
 The transport is implemented. `compass agent-config push --dir <path>`
 tars+gzips a local directory and `PutAgentConfig`s it
-(`go/cmd/compass/agent_config.go:30-32`: "newPushCmd builds `agent-config push
+(`newPushCmd` in `go/cmd/compass/agent_config.go`: "newPushCmd builds `agent-config push
 --dir <path>`: tar+gzip the dir into a bundle the store door accepts and
 PutAgentConfig it (admin-gated)"). The bundle grammar whitelists top dirs
 `skills/`, `extensions/`, `mcp/`, `settings/`, `rules/`, `agents/`, `prompts/`,
 `profiles/` plus top-level `AGENTS.md` and `models.yml`
-(`go/cmd/compass/bundle.go:29-53,71-80`, mirroring "the store door
+(`bundleTopDirs` in `go/cmd/compass/bundle.go`, mirroring "the store door
 (internal/store/agent_config.go) so a bundle this builder produces passes
-validateAndHashConfigBundle", `bundle.go:23-24`).
+validateAndHashConfigBundle", `go/cmd/compass/bundle.go`).
 
 What is missing is judgment. A user pushing their existing corpus cannot tell
 which of their hand-written skills/rules Compass's built-ins already cover,
@@ -507,14 +507,14 @@ reads the user's imported corpus against Compass's built-ins and produces a
    happen on import, grounded in the shipped semantics — settings are
    fleet-first whole-file ("overlay-over-project precedence", DL-123), rules
    and AGENTS.md compose additively ("fleet-first, both levels load, no
-   cross-level dedup", `docs/designs/agent/compass-agent-config-passthrough/design.md:481-483`;
+   cross-level dedup", `docs/designs/agent/compass-agent-config-passthrough/design.md` § *Decision CP-4 — agent-dir-anchored categories: rules/ as an injected object; agents/ and models.yml via user-level symlinks*;
    "the fleet file composes additively with the checkout's own AGENTS.md
-   chain", `:50-53`); the bundle is a fleet-wide **singleton**, admin-gated,
+   chain", same record's opening section); the bundle is a fleet-wide **singleton**, admin-gated,
    current-only ("upserts it as the single current bundle …
    current-only retention via the singleton PK upsert",
-   `go/internal/store/agent_config.go:131-138`); and credential-marked settings
+   `Store.PutAgentConfig` in `go/internal/store/agent_config.go`); and credential-marked settings
    are rejected at the door ("credentials never ride the config bundle",
-   `go/internal/store/agent_config.go:1026-1030`) — so the agent tells the
+   `parseYAMLMapping` in `go/internal/store/agent_config.go`) — so the agent tells the
    user up front which members will bounce and why.
 4. **Decide**: the user marks each finding keep/drop/rewrite. The agent then
    assembles the approved subset into a bundle dir and (with the user's
@@ -544,7 +544,7 @@ tell the user something true about their own setup.
 - The trust-model split this extends: DL-325 via
   `docs/designs/infra/runtime/compass-runner-adoption-strategy/design.md`.
 - The embedded-mode front door this sits beside (DL-319/DL-320,
-  `docs/designs/DECISIONS.md:321-322`): embedded mode lowers *stack* friction
+  `docs/designs/DECISIONS.md` § *Desktop shell*): embedded mode lowers *stack* friction
   (the app spawns a local podman-backed stack); the host tier lowers *agent
   environment* friction. They compose: an embedded-local stack can run a
   host-backend Runner.
@@ -581,12 +581,12 @@ opt-in wrapped mode.
 ### A Provision-side probe seam alone for the agent transport
 
 Rejected as insufficient, not as ugly. The microVM backend's precedent is a
-Provision probe (`go/internal/runner/host.go:50-60`, `vsockGatewayEngine`, whose
-leg at `host.go:800-810` "launches the container with NO agent-socket mount and
+Provision probe (`vsockGatewayEngine` in `go/internal/runner/host.go`, whose
+leg at `agentHost.provisionVsockGateway` in `go/internal/runner/host.go` "launches the container with NO agent-socket mount and
 NO config mount"), and the host tier does need the equivalent leg. But a probe
 only changes what the **Runner** does. The path the agent dials is resolved from
 a module-level constant with no configuration input
-(`packages/compass-agent/src/cli.ts:91`, `config-reader.ts:53`), so no
+(`AGENT_SOCKET_PATH` in `packages/compass-agent/src/cli.ts`, `AGENT_CONFIG_MOUNT_PATH` in `packages/compass-agent/src/config-reader.ts`), so no
 Runner-side seam can redirect it. The agent-side override is unavoidable; the
 probe leg is necessary but not sufficient, and the record takes both.
 
@@ -600,7 +600,7 @@ probe leg is necessary but not sufficient, and the record takes both.
   (`armEgress`, `EgressArmedInGuest`) is untouched; the host tier adds a
   distinct unenforced posture beside it, never a change to arming.
 - **The host backend implements `WorkloadRuntime` as-is.** The
-  9-method interface (`go/internal/runtime/podman.go:348-396`) needs no
+  9-method interface (`WorkloadRuntime` in `go/internal/runtime/podman.go`) needs no
   amendment for this tier.
 - **No dependency on gateway-credentials at-rest encryption.** That record's
   T0–T5 are all unimplemented
@@ -618,17 +618,17 @@ probe leg is necessary but not sufficient, and the record takes both.
   review explains them; it does not bypass or re-implement them.
 - **The host tier derives its own uid.** `Workspace.UID` comes from the
   Runner's `os.Geteuid()`, never `agentuid.AgentUID`
-  (`go/internal/agentuid/agentuid.go:13`) — that constant names the uid baked
+  (`AgentUID` in `go/internal/agentuid/agentuid.go`) — that constant names the uid baked
   into the agent image and has no Runner-side override. Root is still refused
-  (`go/internal/runner/spec.go:59-60`).
+  (`NewConfigSpecBuilder` in `go/internal/runner/spec.go`).
 - **Container-tier agent behaviour stays byte-identical.** The two
-  agent-side path constants (`packages/compass-agent/src/cli.ts:91`,
-  `config-reader.ts:53`) become env-overridable with today's literals as
+  agent-side path constants (`AGENT_SOCKET_PATH` in `packages/compass-agent/src/cli.ts`,
+  `AGENT_CONFIG_MOUNT_PATH` in `packages/compass-agent/src/config-reader.ts`) become env-overridable with today's literals as
   defaults; only the host tier ever supplies an override, and the existing
   contract tests keep pinning the defaults.
 - **No egress policy reaches the host backend.** Presence, not emptiness, is
   the fail-loud trigger — empty is the strictest policy
-  (`go/internal/runtime/egress.go:29-31`), so the host launch path must carry
+  (`EgressPolicy` in `go/internal/runtime/egress.go`), so the host launch path must carry
   no policy at all.
 
 ## Plan
@@ -639,8 +639,8 @@ probe leg is necessary but not sufficient, and the record takes both.
   documented at the method. Includes the `WorkloadSpec` field map (which
   fields are honored, interpreted, or rejected on host).
   Interfaces: implements `WorkloadRuntime`
-  (`go/internal/runtime/podman.go:348-396`) exactly; registered in
-  `SelectBackend` (`go/internal/runtime/microvm.go:117-125`) as `case "host"`,
+  (`WorkloadRuntime` in `go/internal/runtime/podman.go`) exactly; registered in
+  `SelectBackend` (in `go/internal/runtime/microvm.go`) as `case "host"`,
   error string extended. Unit tests with a real short-lived process
   (spawn/exec/stop/remove/exists), plus the degenerate-method contracts.
 - **T1a — host-tier spec + uid derivation** (`go/cmd/compass-runner/main.go`,
@@ -650,12 +650,12 @@ probe leg is necessary but not sufficient, and the record takes both.
   before use; the existing non-root check stays, so a root Runner is refused at
   startup. The host backend's `Exec`/`ExecStreaming` reject an `AsUser` naming
   any uid other than the Runner's own euid.
-  Interfaces: consumes `runner.SpecDefaults` as built at `main.go:148-156`;
-  produces `runtime.Workspace{UID: <derived euid>}` (`spec.go:89-93`,
-  `go/internal/runtime/workspace.go:51-53`). Tests: the derived uid equals
+  Interfaces: consumes `runner.SpecDefaults` as built at `run` in `go/cmd/compass-runner/main.go`;
+  produces `runtime.Workspace{UID: <derived euid>}` (`configSpecBuilder.BuildSpec` in `go/internal/runner/spec.go`,
+  `Workspace.UID` in `go/internal/runtime/workspace.go`). Tests: the derived uid equals
   `os.Geteuid()` and is what every provision `AsUser` carries
-  (`go/internal/runtime/agent.go:203-204`); a mismatched `AsUser` errors; a
-  uid-0 derivation is refused (`spec.go:59-60`); a full host provision +
+  (`AgentRuntime.ExecAsAgent` in `go/internal/runtime/agent.go`); a mismatched `AsUser` errors; a
+  uid-0 derivation is refused (`NewConfigSpecBuilder` in `go/internal/runner/spec.go`); a full host provision +
   launch succeeds on a box whose euid is NOT 1000 — the regression this task
   exists to prevent.
 - **T1b — host `Provision` leg: agent socket + config delivery**
@@ -667,50 +667,50 @@ probe leg is necessary but not sufficient, and the record takes both.
   starting streaming exec. `AGENT_SOCKET_PATH` and `AGENT_CONFIG_MOUNT_PATH`
   become env-overridable, defaulting to today's literals. **This touches the
   `compass-agent` package's path contract and its two pinned contract
-  tests** (`cli.test.ts:113-117`, `config-reader.test.ts:67-70`), which keep
+  tests** (the `AGENT_SOCKET_PATH` describe block in `packages/compass-agent/src/cli.test.ts`, the `AGENT_CONFIG_MOUNT_PATH` describe block in `packages/compass-agent/src/config-reader.test.ts`), which keep
   pinning the defaults and each gain an override case.
-  Interfaces: consumes the leg-selection seam (`host.go:191-193`) and the
-  socket/config mount constants (`host.go:33-38`, delivered at `host.go:198`
-  and `host.go:214`); produces two env vars on `AgentEnv.execSpec`
-  (`go/internal/runner/agent_exec.go:77-81`). Tests: the host leg appends no
-  mounts (mirroring `host_vsock_gateway_test.go:121-128`); the agent dials the
+  Interfaces: consumes the leg-selection seam (`agentHost.Provision` in `go/internal/runner/host.go`) and the
+  socket/config mount constants (`agentSocketMountPath` in `go/internal/runner/host.go`, delivered at `agentHost.Provision` in `go/internal/runner/host.go`
+  and `agentHost.Provision` in `go/internal/runner/host.go`); produces two env vars on `AgentEnv.execSpec`
+  (`AgentEnv.execSpec` in `go/internal/runner/agent_exec.go`). Tests: the host leg appends no
+  mounts (mirroring `TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts` in `go/internal/runner/host_vsock_gateway_test.go`); the agent dials the
   overridden socket and reads the overridden config root; with no override both
   resolve to today's literals.
 - **T2 — unenforced-egress posture** (`go/internal/runtime/agent.go` + session
   state). New backend marker (distinct from `inGuestEgressArmer`) making
   `provision` skip `armEgress` while recording posture=unenforced; fail-loud on
   ANY `EgressPolicy` that reaches provision (presence, not a non-empty
-  allowlist — empty is the strictest policy, `go/internal/runtime/egress.go:29-31`),
+  allowlist — empty is the strictest policy, `EgressPolicy` in `go/internal/runtime/egress.go`),
   which requires adding a `configured bool` + `Configured()` to `EgressPolicy`
-  (today `Hosts()` at `egress.go:67` is its only accessor) and leaving the host
+  (today `Hosts()` at `EgressPolicy.Hosts` in `go/internal/runtime/egress.go` is its only accessor) and leaving the host
   Runner profile's `SpecDefaults.Egress` at its zero value; posture threaded
   into session state and rendered
   in the session UI/status surface.
-  Interfaces: consumes the `provision` seam (`agent.go:307-312`); produces an
+  Interfaces: consumes the `provision` seam (`AgentRuntime.provision` in `go/internal/runtime/agent.go`); produces an
   egress-posture field on the session (exact proto/field shape decided at
   implementation, additive only). Tests mirror
-  `TestInGuestArmerSkipsHostArmEgress` (`agent_test.go:312`) for the new
+  `TestInGuestArmerSkipsHostArmEgress` (in `go/internal/runtime/agent_test.go`) for the new
   marker, plus the fail-loud policy case, plus a test asserting the host
   backend does NOT satisfy `inGuestEgressArmer`.
 - **T3 — `keyring://` provider pin** (`go/server/serve.go`,
   `go/internal/secrets`). Config knob for the resolver provider; host-tier
   single-box profile defaults it to `keyring://`.
   Interfaces: `secrets.NewSpecResolver(st, dir, secrets.WithProvider(uri))`
-  (`go/internal/secrets/resolver.go:83-85,97`); wiring at `serve.go:528`.
+  (`NewSpecResolver` in `go/internal/secrets/resolver.go`); wiring at `Serve` in `go/server/serve.go`.
   Test: resolver receives the configured URI; empty config preserves today's
   default chain.
 - **T4 — per-agent `$HOME` overlay** (host backend + materializer path
   threading). The handle's private home dir is the agent's `HOME`;
   `$HOME/.compass/{env,secrets}` land there; `Remove` cleans them.
   Interfaces: `handle.HomeDir()` as consumed by `h.materializer.Install`
-  (`go/internal/runner/host.go:384`); `HOME` on the streaming exec
-  (`go/internal/runner/host_test.go:1194-1197` names the existing contract).
+  (`agentHost.Start` in `go/internal/runner/host.go`); `HOME` on the streaming exec
+  (`TestStartAgentExecCarriesNoEnvFile` in `go/internal/runner/host_test.go` names the existing contract).
 - **T5 — config-import review agent task** (compass-agent lane). The first-run
   review flow per Half B: ingest/compare/explain/decide, report format, and
   the assemble-and-push handoff to the existing
   `compass agent-config push --dir` path.
-  Interfaces: consumes the bundle grammar (`go/cmd/compass/bundle.go:29-53`)
-  and door semantics (`go/internal/store/agent_config.go:131-174,1026-1033`)
+  Interfaces: consumes the bundle grammar (the bundle-grammar `const` block in `go/cmd/compass/bundle.go`)
+  and door semantics (`Store.PutAgentConfig` in `go/internal/store/agent_config.go`)
   read-only; produces a report artifact + an approved bundle dir. No new RPC.
 - **T6 — docs**. Tier documentation: the declared-absent protections list, the
   graduation guidance (host → podman → microVM), and the first-run review
@@ -772,9 +772,9 @@ probe leg is necessary but not sufficient, and the record takes both.
 - **The `Container*` vocabulary — RULED and DONE (Matt): renamed to
   `Workload*` in this change.** Not deferred. The interface is named for one of
   its backends, and it now has four: podman containers, microVM guests
-  (`MicroVMRuntime`, `go/internal/runtime/microvm.go:71`), Apple `container` on
+  (`MicroVMRuntime` in `go/internal/runtime/microvm.go`), Apple `container` on
   macOS (`AppleContainerCLI`, DL-330), and the direct host processes this tier
-  adds. `SelectBackend`'s own comment (`microvm.go:110-116`) says the podman
+  adds. `SelectBackend`'s own comment (`SelectBackend` in `go/internal/runtime/microvm.go`) says the podman
   path eventually goes away entirely, which would leave an interface named
   `WorkloadRuntime` with no container implementation at all.
 
@@ -789,12 +789,12 @@ probe leg is necessary but not sufficient, and the record takes both.
 
   Deliberately NOT renamed, because these are genuinely containers:
   `ContainerController` (the podman-only stack supervisor,
-  `go/internal/stack/deps.go:219`), `ContainerRef` (a *message* container,
-  `go/internal/store/types.go:268`), the testcontainer specs
+  `ContainerController` in `go/internal/stack/deps.go`), `ContainerRef` (a *message* container,
+  `ContainerRef` in `go/internal/store/types.go`), the testcontainer specs
   (`PostgresContainerSpec`, `NatsContainerSpec`, `CollectorContainerSpec`), and
-  the `container_name` wire field (`proto/compass/v1/compass.proto:645,653,666,708`),
+  the `container_name` wire field (`ProvisionAgentWorkspaceRequest`, `ProvisionAgentWorkspaceResponse`, and `StartAgentSessionRequest` in `proto/compass/v1/compass.proto`),
   which is a compatibility boundary. `AgentRuntime`
-  (`go/internal/runtime/agent.go:155`) also keeps its name — it is the
+  (`AgentRuntime` in `go/internal/runtime/agent.go`) also keeps its name — it is the
   per-agent lifecycle façade over a backend, and that name is accurate.
 
   The podman.go note beside the interface covers the
