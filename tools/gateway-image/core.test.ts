@@ -168,12 +168,23 @@ describe("secretConfigViolations", () => {
 		).toEqual(["org.example.registry-token", "org.example.api.key"]);
 	});
 
-	test("passes the env of the built gateway image", () => {
+	test("passes every env name of the built gateway image", () => {
+		// The full Config.Env of the image built from the gateway boot change.
 		const env = [
 			"LANG=C.UTF-8",
 			"GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
-			"PYTHON_SHA256=5c8462af",
-			"PATH=/opt/bun/bin:/usr/bin:/bin",
+			"PYTHON_VERSION=3.12.14",
+			"PYTHON_SHA256=5c8462af5790baf43a321a1559dbe0db06d1be4300fb85fb53c40060668e548a",
+			"PYTHONDONTWRITEBYTECODE=1",
+			"PYTHONUNBUFFERED=1",
+			"PIP_NO_CACHE_DIR=1",
+			"PIP_DISABLE_PIP_VERSION_CHECK=1",
+			"BUN_INSTALL=/opt/bun",
+			"CARGO_HOME=/data/cache/cargo",
+			"CARGO_TARGET_DIR=/data/cache/cargo-target",
+			"RUSTUP_HOME=/data/cache/rustup",
+			"PATH=/opt/bun/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin",
+			"PI_ROOT=/pi",
 			"HOME=/tmp",
 			"COMPASS_GATEWAY_TOKEN_FILE=/run/compass/gateway.token",
 			"COMPASS_GATEWAY_BIND=0.0.0.0:4000",
