@@ -225,7 +225,8 @@ export function parseArgs(argv: string[]): Args {
  *    transport error DEGRADES (the image lane is paths-filtered independently,
  *    and a re-run converges the pointer once the image publishes).
  *  - exit 0 but unparseable output or no `.config.digest` => null.
- *  - exit 0 with a digest => the pullable @digest ref + the digest.
+ *  - exit 0 with a digest => a ref pinned to the sha256 of the raw manifest
+ *    bytes (pullable), plus the config digest carried on its own.
  */
 export function classifyImageResult(result: {
 	exitCode: number;

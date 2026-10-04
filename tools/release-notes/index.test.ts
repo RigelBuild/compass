@@ -171,8 +171,11 @@ describe("parseArgs — the edge's argv contract", () => {
 });
 
 describe("classifyImageResult — the skopeo-result contract (crux of the skopeo fix)", () => {
-	const manifestRaw = JSON.stringify({ config: { digest: "sha256:beef" } });
-	const manifestDigest = `sha256:${new Bun.CryptoHasher("sha256").update(manifestRaw).digest("hex")}`;
+	// Non-canonical bytes JSON.stringify would not reproduce: the ref must be
+	// the sha256 of exactly what skopeo printed.
+	const manifestRaw = '{"config": {"digest": "sha256:beef"}}\n';
+	const manifestDigest =
+		"sha256:0575d6de78ab5aa1b4a857e96b1e17d344fc18507e0f61eca24095d71e2222af";
 
 	test("exit 127 THROWS — a missing skopeo can never masquerade as an absent image", () => {
 		expect(() =>
