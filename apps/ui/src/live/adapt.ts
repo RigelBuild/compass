@@ -7,6 +7,7 @@ import {
 	AgentPresence,
 	ChannelGroupVisibility,
 	ChannelKind,
+	ChannelMembershipMode,
 	ChannelPostPolicy,
 	EgressPosture,
 	ForgeProvider,
@@ -91,6 +92,14 @@ const POST_POLICY: Record<ChannelPostPolicy, DomainPostPolicy> = {
 	[ChannelPostPolicy.OPEN]: "open",
 	[ChannelPostPolicy.OWNER_ONLY]: "owner_only",
 } satisfies Record<ChannelPostPolicy, DomainPostPolicy>;
+
+const MEMBERSHIP_MODE: Record<
+	ChannelMembershipMode,
+	NonNullable<Channel["membershipMode"]>
+> = {
+	[ChannelMembershipMode.EXPLICIT]: "explicit",
+	[ChannelMembershipMode.TREE]: "tree",
+};
 
 /** Map a wire PinnedEntry to the domain one: the board pointer (message id +
  *  position) the strip renders. The wire's audit extras (`pinnedAtUnixMs`,
@@ -201,6 +210,8 @@ export function adaptChannel(
 		// Absent when false so the domain's optional flag reads "no mandatory
 		// subscription" as absence, matching the fixture shape.
 		mandatorySubscription: w.mandatorySubscription || undefined,
+		parentAgentId: w.parentAgentId || undefined,
+		membershipMode: MEMBERSHIP_MODE[w.membershipMode],
 		// Ordered by position at the render seam (pinnedMessages); mapped verbatim
 		// here. Absent when empty so an unpinned channel carries no board.
 		pinnedEntries:

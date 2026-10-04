@@ -11,6 +11,7 @@ import {
 	ChannelGroupSchema,
 	ChannelGroupVisibility,
 	ChannelKind,
+	ChannelMembershipMode,
 	ChannelPostPolicy,
 	ChannelSchema,
 	create,
@@ -351,6 +352,8 @@ describe("adaptChannel", () => {
 		ownerAccountId?: string;
 		mandatorySubscription?: boolean;
 		pinnedEntries?: { messageId: string; position: number }[];
+		parentAgentId?: string;
+		membershipMode?: ChannelMembershipMode;
 	}) =>
 		create(ChannelSchema, {
 			id: over.id ?? "c",
@@ -363,6 +366,8 @@ describe("adaptChannel", () => {
 			ownerAccountId: over.ownerAccountId ?? "",
 			mandatorySubscription: over.mandatorySubscription ?? false,
 			pinnedEntries: over.pinnedEntries ?? [],
+			parentAgentId: over.parentAgentId ?? "",
+			membershipMode: over.membershipMode ?? ChannelMembershipMode.EXPLICIT,
 		});
 	const empty: ReadonlySet<string> = new Set();
 
@@ -477,6 +482,48 @@ describe("adaptChannel", () => {
 			adaptChannel(wireChannel({ mandatorySubscription: true }), caller, empty)
 				.mandatorySubscription,
 		).toBe(true);
+	});
+
+	test("parentAgentId: empty → undefined; set passes through", () => {
+		expect(
+			adaptChannel(wireChannel({}), caller, empty).parentAgentId,
+		).toBeUndefined();
+		expect(
+			adaptChannel(wireChannel({ parentAgentId: "acc-agent" }), caller, empty)
+				.parentAgentId,
+		).toBe("acc-agent");
+	});
+
+	for (const [wire, expected] of [
+		[ChannelMembershipMode.EXPLICIT, "explicit"],
+		[ChannelMembershipMode.TREE, "tree"],
+	] as const) {
+		test(`membershipMode ${ChannelMembershipMode[wire]} → "${expected}"`, () => {
+			expect(
+				adaptChannel(wireChannel({ membershipMode: wire }), caller, empty)
+					.membershipMode,
+			).toBe(expected);
+		});
+	}
+
+	// The server materializes a TREE channel's derived participants into the two
+	// lists, so a subtree agent present in them derives joined/subscribed.
+	test("TREE channel derives membership from its materialized lists", () => {
+		const tree = {
+			parentAgentId: "acc-parent",
+			membershipMode: ChannelMembershipMode.TREE,
+			members: ["acc-parent", caller],
+		};
+		expect(adaptChannel(wireChannel(tree), caller, empty).membership).toBe(
+			"joined",
+		);
+		expect(
+			adaptChannel(
+				wireChannel({ ...tree, subscribers: [caller] }),
+				caller,
+				empty,
+			).membership,
+		).toBe("subscribed");
 	});
 
 	test("empty pinnedEntries → undefined", () => {

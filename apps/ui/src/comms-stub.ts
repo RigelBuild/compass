@@ -392,6 +392,30 @@ export const STUB_CHANNELS: Channel[] = [
 		membership: "none",
 		postPolicy: "open",
 	},
+	// Agent-attached channels, one per membership mode, so `vite dev` renders
+	// both under their agent without a daemon.
+	{
+		id: "ch-ui-review",
+		name: "ui-review",
+		kind: "channel",
+		memberAccountIds: [MATT, "acc-compass-ui", "acc-compass-ui-bridge"],
+		topic: "Review hand-offs for the UI subtree.",
+		membership: "joined",
+		postPolicy: "open",
+		parentAgentId: "acc-compass-ui",
+		membershipMode: "tree",
+	},
+	{
+		id: "ch-server-design",
+		name: "server-design",
+		kind: "channel",
+		memberAccountIds: [MATT, "acc-compass-server"],
+		topic: "Hand-membered design notes under the server agent.",
+		membership: "subscribed",
+		postPolicy: "open",
+		parentAgentId: "acc-compass-server",
+		membershipMode: "explicit",
+	},
 	// The per-agent home DMs (one 1:1 DM per board agent) — the 1:1 surviving-
 	// roster DMs that replace the pre-reshape hand-listed set.
 	...AGENT_HOME_DMS,
