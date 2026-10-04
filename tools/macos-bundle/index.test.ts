@@ -634,19 +634,29 @@ describe("createOrThrow retry — retries only busy image creation", () => {
 	});
 });
 
-test("settling completes before the first create", async () => {
+test("flush, then marker, then create", async () => {
 	const stage = await mkdtemp("/tmp/macos-bundle-order-");
+	const marker = `${stage}/.metadata_never_index`;
 	const events: string[] = [];
 	try {
-		await settleAndCreate(stage, async () => {
-			events.push(
-				(await Bun.file(`${stage}/.metadata_never_index`).exists())
-					? "marker then create"
-					: "create before marker",
-			);
-			return undefined;
-		});
-		expect(events).toEqual(["marker then create"]);
+		await settleAndCreate(
+			stage,
+			async () => {
+				events.push(
+					(await Bun.file(marker).exists())
+						? "create (marker present)"
+						: "create",
+				);
+			},
+			async () => {
+				events.push(
+					(await Bun.file(marker).exists())
+						? "flush (marker present)"
+						: "flush",
+				);
+			},
+		);
+		expect(events).toEqual(["flush", "create (marker present)"]);
 	} finally {
 		await rm(stage, { recursive: true, force: true });
 	}
@@ -654,8 +664,12 @@ test("settling completes before the first create", async () => {
 describe("settleBeforeCreate", () => {
 	test("creates Spotlight marker in the staging directory", async () => {
 		const stage = await mkdtemp("/tmp/macos-bundle-test-");
+		let flushed = false;
 		try {
-			await settleBeforeCreate(stage);
+			await settleBeforeCreate(stage, async () => {
+				flushed = true;
+			});
+			expect(flushed).toBe(true);
 			expect(await Bun.file(`${stage}/.metadata_never_index`).exists()).toBe(
 				true,
 			);
