@@ -41,16 +41,20 @@ function isLoopbackUrl(value: string): boolean {
 	return LOOPBACK_HOSTS.has(new URL(value).hostname);
 }
 
-// dotenv value rules: a quoted value ends at its closing quote; an unquoted one
-// ends at a whitespace-led `#` comment.
-function envValue(rest: string): string {
-	const quoted = /^(["'`])(.*?)\1/.exec(rest);
-	if (quoted?.[2] !== undefined) return quoted[2];
-	return rest.replace(/\s+#.*$/, "").trim();
+// Only two value shapes pass: empty, or a plain loopback URL, optionally quoted. Escapes,
+// `${VAR}` expansion and anything else unrecognised fail closed, since Vite's dotenv would
+// resolve them to something this test cannot see.
+const EMPTY = /^(""|''|)$/;
+const PLAIN_URL = /^(["']?)(https?:\/\/[A-Za-z0-9.[\]:_/-]+)\1$/;
+
+function isSafeValue(value: string): boolean {
+	if (EMPTY.test(value)) return true;
+	const url = PLAIN_URL.exec(value)?.[2];
+	return url !== undefined && isLoopbackUrl(url);
 }
 
-// One message per unsafe `KEY=VALUE` line. A non-empty VITE_* value must be a
-// loopback URL, so bearers and anything unrecognised fail closed; any URL value must be loopback.
+// One message per unsafe `KEY=VALUE` line: any non-empty VITE_* value, or any URL-bearing
+// value, must be a plain loopback URL.
 function unsafeEnvLines(text: string): string[] {
 	const problems: string[] = [];
 	for (const raw of text.split("\n")) {
@@ -59,9 +63,12 @@ function unsafeEnvLines(text: string): string[] {
 		const eq = line.indexOf("=");
 		if (eq < 0) continue;
 		const key = line.slice(0, eq).trim();
-		const value = envValue(line.slice(eq + 1).trim());
-		if (value === "" || isLoopbackUrl(value)) continue;
-		if (key.startsWith("VITE_") || URL.canParse(value)) {
+		const value = line
+			.slice(eq + 1)
+			.replace(/\s+#.*$/, "")
+			.trim();
+		if (isSafeValue(value)) continue;
+		if (key.startsWith("VITE_") || value.includes("://")) {
 			problems.push(`${key} is set to a non-loopback value`);
 		}
 	}
@@ -115,6 +122,7 @@ describe("env-secrecy gate (no new committable .env; tracked env set pinned to d
 });
 
 describe("env content classifier", () => {
+	const EXPAND = "$" + "{SUFFIX}";
 	test.each([
 		["VITE_COMPASS_TOKEN=xxx", 1],
 		["VITE_COMPASS_TOKEN=", 0],
@@ -131,6 +139,10 @@ describe("env content classifier", () => {
 		["VITE_COMPASS_BASE_URL=http://127.0.0.1:50051 # devenv", 0],
 		['VITE_COMPASS_BASE_URL="https://door.example.com#frag" # c', 1],
 		["VITE_COMPASS_BASE_URL='http://localhost:5173' # c", 0],
+		['VITE_COMPASS_BASE_URL="http://127.0.0.1\\"@evil.example"', 1],
+		[`VITE_COMPASS_BASE_URL=http://localhost${EXPAND}`, 1],
+		[`OTHER_URL=http://localhost${EXPAND}`, 1],
+		["VITE_COMPASS_BASE_URL=http://localhost:5173/path", 0],
 		["# VITE_COMPASS_TOKEN=xxx", 0],
 	] as const)("%s -> %d problem(s)", (line, count) => {
 		expect(unsafeEnvLines(line)).toHaveLength(count);
