@@ -143,6 +143,7 @@ func TestAdminGateAllowsAnyAccountOnOpenRPCs(t *testing.T) {
 		{"CommsCreateChannel", compassv1connect.CommsServiceCreateChannelProcedure},
 		{"CommsUpdateChannelMembers", compassv1connect.CommsServiceUpdateChannelMembersProcedure},
 		{"CommsReparentAgent", compassv1connect.CommsServiceReparentAgentProcedure},
+		{"CommsReparentChannel", compassv1connect.CommsServiceReparentChannelProcedure},
 		{"CommsPostMessage", compassv1connect.CommsServicePostMessageProcedure},
 		{"CommsSubscribeComms", compassv1connect.CommsServiceSubscribeCommsProcedure},
 	}
@@ -188,6 +189,7 @@ func TestClassifyProcedureClassifiesKnownAndUnknownProcedures(t *testing.T) {
 		{"CommsCreateChannel", compassv1connect.CommsServiceCreateChannelProcedure, false, true},
 		{"CommsUpdateChannelMembers", compassv1connect.CommsServiceUpdateChannelMembersProcedure, false, true},
 		{"CommsReparentAgent", compassv1connect.CommsServiceReparentAgentProcedure, false, true},
+		{"CommsReparentChannel", compassv1connect.CommsServiceReparentChannelProcedure, false, true},
 		{"CommsPostMessage", compassv1connect.CommsServicePostMessageProcedure, false, true},
 		{"CommsSubscribeComms", compassv1connect.CommsServiceSubscribeCommsProcedure, false, true},
 		{"unknown compass method", "/compass.v1.CompassService/Bogus", true, false},
