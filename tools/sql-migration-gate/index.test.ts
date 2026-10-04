@@ -1,27 +1,28 @@
 // Unit tests for the sql-migration-gate's pure core + I/O orchestration.
 //
-// This gate is a CI oracle: it decides whether the first-party migrations pass
-// the squawk (safety) + sqruff (style) batteries. Its whole reason to be a
-// script is that the previous inline-`bash -c` form combined the two exit codes
-// with a shell expression moon double-expanded to a constant `exit 0`, so the
-// gate ran fail-OPEN. This suite defends the machine-readable contract the bug
-// violated: the exit-code combination is fail-closed, and runOnce runs BOTH
-// linters before combining.
+// This gate is a CI oracle: three checks decide whether the first-party
+// migrations pass squawk (safety), sqruff (style), and append-only byte checks.
+// Its original shell form was double-expanded by moon to a constant `exit 0`.
+// This suite defends the fail-closed contract and proves all three checks run
+// before their exit codes are combined.
 //
 // Conventions (mirroring tools/inline-sql-gate/index.test.ts):
 // - Literal expectations, not values derived from the module.
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	checkMigrationImmutability,
 	combineExitCodes,
 	type Deps,
+	findMigrationViolations,
 	formatVerdict,
 	type LinterResult,
 	MIGRATION_GLOB,
 	makeSpawnLinter,
+	migrationBaseRef,
 	runOnce,
 } from "./index.ts";
 
@@ -42,26 +43,44 @@ const broke = (name: string): LinterResult => ({
 // ---------------------------------------------------------------------------
 
 describe("combineExitCodes", () => {
-	test("both pass -> 0", () => {
-		expect(combineExitCodes([ok("squawk"), ok("sqruff")])).toBe(0);
+	test("all checks pass -> 0", () => {
+		expect(
+			combineExitCodes([
+				ok("squawk"),
+				ok("sqruff"),
+				ok("migration-immutability"),
+			]),
+		).toBe(0);
 	});
 
-	test("squawk finds, sqruff clean -> 1 (fail-closed on either)", () => {
-		expect(combineExitCodes([fail("squawk"), ok("sqruff")])).toBe(1);
+	test("a finding from any check -> 1", () => {
+		expect(
+			combineExitCodes([
+				fail("squawk"),
+				ok("sqruff"),
+				ok("migration-immutability"),
+			]),
+		).toBe(1);
+		expect(
+			combineExitCodes([
+				ok("squawk"),
+				fail("sqruff"),
+				ok("migration-immutability"),
+			]),
+		).toBe(1);
+		expect(
+			combineExitCodes([
+				ok("squawk"),
+				ok("sqruff"),
+				fail("migration-immutability"),
+			]),
+		).toBe(1);
 	});
 
-	test("squawk clean, sqruff finds -> 1 (the case the old gate hid)", () => {
-		expect(combineExitCodes([ok("squawk"), fail("sqruff")])).toBe(1);
-	});
-
-	test("both find -> 1", () => {
-		expect(combineExitCodes([fail("squawk"), fail("sqruff")])).toBe(1);
-	});
-
-	test("a spawn failure (2) dominates so an un-run gate is never green", () => {
-		expect(combineExitCodes([broke("squawk"), ok("sqruff")])).toBe(2);
-		expect(combineExitCodes([ok("squawk"), broke("sqruff")])).toBe(2);
-		expect(combineExitCodes([broke("squawk"), fail("sqruff")])).toBe(2);
+	test("an internal failure (2) dominates", () => {
+		expect(
+			combineExitCodes([broke("migration-immutability"), fail("sqruff")]),
+		).toBe(2);
 	});
 
 	test("no results -> 0 (vacuous; runOnce guards the empty-glob case)", () => {
@@ -103,6 +122,15 @@ function harness(codes: Record<string, number>) {
 			const code = codes[name] ?? 0;
 			return { name, code, output: code === 0 ? "" : `${name} findings` };
 		},
+		runMigrationCheck: async () => {
+			ran.push("migration-immutability");
+			const code = codes["migration-immutability"] ?? 0;
+			return {
+				name: "migration-immutability",
+				code,
+				output: code === 0 ? "" : "migration findings",
+			};
+		},
 		log: (m) => logs.push(m),
 		err: (m) => errs.push(m),
 	};
@@ -110,42 +138,250 @@ function harness(codes: Record<string, number>) {
 }
 
 describe("runOnce", () => {
-	test("runs BOTH linters even when the first fails, surfacing both outputs", async () => {
+	test("runs all checks even when a linter fails, surfacing their outputs", async () => {
 		const { deps, ran, errs } = harness({ squawk: 1, sqruff: 1 });
 		await runOnce(deps);
-		expect(ran).toEqual(["squawk", "sqruff"]);
-		// Both batteries' findings must surface in one push — the old bug hid
-		// one half; dropping either err() call would re-hide it.
+		expect(ran).toEqual(["squawk", "sqruff", "migration-immutability"]);
 		const joined = errs.join("\n");
 		expect(joined).toContain("squawk findings");
 		expect(joined).toContain("sqruff findings");
 	});
 
-	test("returns 1 when only sqruff finds — the exact regression", async () => {
+	test("returns 1 when a check finds and still runs all checks", async () => {
 		const { deps, ran, logs } = harness({ squawk: 0, sqruff: 1 });
 		expect(await runOnce(deps)).toBe(1);
-		expect(ran).toEqual(["squawk", "sqruff"]);
-		// A failing gate must NOT emit the OK line.
+		expect(ran).toEqual(["squawk", "sqruff", "migration-immutability"]);
 		expect(logs.join("\n")).not.toContain("OK");
 	});
 
-	test("returns 0 and logs OK when both pass", async () => {
+	test("returns 0 and logs OK when all checks pass", async () => {
 		const { deps, logs } = harness({ squawk: 0, sqruff: 0 });
 		expect(await runOnce(deps)).toBe(0);
 		expect(logs.join("\n")).toContain("OK");
 	});
 
-	test("clean run emits no blank output lines (only the OK verdict)", async () => {
+	test("clean run emits no blank output lines", async () => {
 		const { deps, errs } = harness({ squawk: 0, sqruff: 0 });
 		await runOnce(deps);
-		// Clean linters produce empty output; the guard must suppress those so
-		// stderr carries no blank noise ahead of the OK line.
 		expect(errs).toEqual([]);
 	});
 
-	test("propagates a spawn failure as 2", async () => {
+	test("propagates an internal failure as 2", async () => {
 		const { deps } = harness({ squawk: 2, sqruff: 0 });
 		expect(await runOnce(deps)).toBe(2);
+	});
+
+	test("a migration-check finding fails the gate and surfaces its output", async () => {
+		const { deps, errs } = harness({ "migration-immutability": 1 });
+		expect(await runOnce(deps)).toBe(1);
+		expect(errs.join("\n")).toContain("migration findings");
+	});
+});
+
+describe("findMigrationViolations", () => {
+	const original = new TextEncoder().encode("SELECT 1;\n");
+	const same = new TextEncoder().encode("SELECT 1;\n");
+	const edited = new TextEncoder().encode("SELECT 2;\n");
+	const path = "go/internal/store/migrations/0001_init.sql";
+
+	test("unchanged base migrations pass", () => {
+		expect(
+			findMigrationViolations(
+				new Map([[path, original]]),
+				new Map([[path, same]]),
+			),
+		).toEqual([]);
+	});
+
+	test("an edited base migration fails by path", () => {
+		expect(
+			findMigrationViolations(
+				new Map([[path, original]]),
+				new Map([[path, edited]]),
+			),
+		).toEqual([path]);
+	});
+
+	test("a deleted base migration fails by path", () => {
+		expect(
+			findMigrationViolations(new Map([[path, original]]), new Map()),
+		).toEqual([path]);
+	});
+
+	test("a renamed base migration fails by its old path", () => {
+		expect(
+			findMigrationViolations(
+				new Map([[path, original]]),
+				new Map([["go/internal/store/migrations/0002_init.sql", original]]),
+			),
+		).toEqual([path]);
+	});
+
+	test("new migrations are not checked even when edited", () => {
+		const added = "go/internal/store/migrations/0002_new.sql";
+		expect(
+			findMigrationViolations(
+				new Map([[path, original]]),
+				new Map([
+					[path, same],
+					[added, edited],
+				]),
+			),
+		).toEqual([]);
+	});
+
+	test("a trailing-newline-only change fails", () => {
+		expect(
+			findMigrationViolations(
+				new Map([[path, original]]),
+				new Map([[path, new TextEncoder().encode("SELECT 1;")]]),
+			),
+		).toEqual([path]);
+	});
+});
+
+describe("migrationBaseRef", () => {
+	test("GATE_BASE_REF wins over the PR target", () => {
+		expect(
+			migrationBaseRef({ GATE_BASE_REF: "base", GITHUB_BASE_REF: "release" }),
+		).toBe("base");
+	});
+
+	test("the PR target resolves on origin", () => {
+		expect(migrationBaseRef({ GITHUB_BASE_REF: "release" })).toBe(
+			"origin/release",
+		);
+	});
+
+	test("defaults to origin/main", () => {
+		expect(migrationBaseRef({})).toBe("origin/main");
+	});
+});
+
+describe("checkMigrationImmutability", () => {
+	// An inherited GIT_DIR or GIT_WORK_TREE would point every git call at the outer repo.
+	const gitOverrides = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] as const;
+	const saved = new Map<string, string | undefined>();
+	beforeAll(() => {
+		for (const key of gitOverrides) {
+			saved.set(key, process.env[key]);
+			delete process.env[key];
+		}
+	});
+	afterAll(() => {
+		for (const [key, value] of saved) {
+			if (value !== undefined) process.env[key] = value;
+		}
+	});
+
+	async function withRepo(
+		files: Record<string, string>,
+		body: (root: string) => Promise<void>,
+	) {
+		const root = mkdtempSync(join(tmpdir(), "sql-gate-git-"));
+		const git = (args: string[]) => Bun.$`git ${args}`.cwd(root).quiet();
+		try {
+			mkdirSync(join(root, "go/internal/store/migrations"), {
+				recursive: true,
+			});
+			for (const [path, text] of Object.entries(files))
+				writeFileSync(join(root, path), text);
+			await git(["init", "-q"]);
+			await git(["config", "user.email", "test@example.com"]);
+			await git(["config", "user.name", "Migration test"]);
+			await git(["add", "."]);
+			await git(["commit", "-qm", "base"]);
+			await git(["branch", "base"]);
+			await body(root);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+
+	test("real git path rejects edited base migration and accepts unchanged file", async () => {
+		const path = "go/internal/store/migrations/0001_init.sql";
+		await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
+			expect(
+				(await checkMigrationImmutability(root, { GATE_BASE_REF: "base" }))
+					.code,
+			).toBe(0);
+			writeFileSync(join(root, path), "SELECT 2;\n");
+			const result = await checkMigrationImmutability(root, {
+				GATE_BASE_REF: "base",
+			});
+			expect(result.code).toBe(1);
+			expect(result.output).toContain(path);
+		});
+	});
+
+	test("inherited GIT_DIR/GIT_WORK_TREE cannot redirect the check to another repo", async () => {
+		const path = "go/internal/store/migrations/0001_init.sql";
+		// The decoy's base holds the edited bytes, so a redirected check would pass.
+		await withRepo({ [path]: "SELECT 2;\n" }, async (decoy) => {
+			await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
+				writeFileSync(join(root, path), "SELECT 2;\n");
+				// Overrides go in the spawn env: Bun children ignore later process.env writes.
+				const script = `import { checkMigrationImmutability } from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
+console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(root)}, { GATE_BASE_REF: "base" })));`;
+				const child = Bun.spawn([process.execPath, "-e", script], {
+					env: {
+						...process.env,
+						GIT_DIR: join(decoy, ".git"),
+						GIT_WORK_TREE: decoy,
+					},
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [out, stderr] = await Promise.all([
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+				]);
+				expect(await child.exited, stderr).toBe(0);
+				const result = JSON.parse(out) as LinterResult;
+				expect(result.code).toBe(1);
+				expect(result.output).toContain(path);
+			});
+		});
+	});
+
+	test("a migration name git would C-quote is still checked", async () => {
+		const path = "go/internal/store/migrations/0002_café.sql";
+		await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
+			writeFileSync(join(root, path), "SELECT 2;\n");
+			const result = await checkMigrationImmutability(root, {
+				GATE_BASE_REF: "base",
+			});
+			expect(result.code).toBe(1);
+			expect(result.output).toContain(path);
+		});
+	});
+
+	test("an unresolvable base ref fails closed and names the ref", async () => {
+		await withRepo(
+			{ "go/internal/store/migrations/0001_init.sql": "SELECT 1;\n" },
+			async (root) => {
+				const result = await checkMigrationImmutability(root, {
+					GATE_BASE_REF: "no-such-ref",
+				});
+				expect(result.code).toBe(2);
+				expect(result.output).toContain("no-such-ref");
+			},
+		);
+	});
+
+	test("outside a git worktree: skipped locally, fails closed on GitHub Actions", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sql-gate-nogit-"));
+		try {
+			const local = await checkMigrationImmutability(root, {});
+			expect(local.code).toBe(0);
+			expect(local.output).toContain("skipped");
+			expect(
+				(await checkMigrationImmutability(root, { GITHUB_ACTIONS: "true" }))
+					.code,
+			).toBe(2);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

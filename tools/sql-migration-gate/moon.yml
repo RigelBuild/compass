@@ -1,8 +1,7 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# sql-migration-gate (RIG-3031) — SQL migration lint for the first-party
-# migrations under go/internal/store/migrations/. Two linters, both nix-pinned in
-# devenv.nix (the SQL lint battery):
+# sql-migration-gate (RIG-3031) — SQL migration lint and append-only protection
+# for first-party migrations under go/internal/store/migrations/. Three checks:
 #
 #   squawk  migration-SAFETY analysis — flags unsafe DDL (a NOT-NULL column with
 #           no default, a full-table rewrite, a non-CONCURRENT index on a live
@@ -10,6 +9,8 @@
 #   sqruff  SQL style/lint — structural + correctness + capitalisation rules
 #           kept, pure-layout reformatting rules excluded for this hand-authored
 #           schema. Config in /.sqruff.
+#   migration-immutability  a migration present at the merge-base with the PR
+#           target must be byte-identical; migrations are append-only.
 #
 # A bun/TypeScript CLI (`bun` tag), like its gate siblings inline-sql-gate and
 # microvm-boot-test: install is inherited via .moon/tasks/tag-bun.yml (the shared
@@ -59,10 +60,10 @@ tasks:
     # inline-`bash -c` form silently violated.
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   check:
-    # Both linters over every first-party migration, exit codes OR'd fail-closed
-    # in index.ts. Run from the workspace root so squawk/sqruff discover their
-    # repo-root configs (/.squawk.toml, /.sqruff) and the migration glob resolves
-    # repo-relative (GATE_ROOT defaults to the git toplevel = workspace root).
+    # All three checks over every first-party migration, exit codes OR'd
+    # fail-closed in index.ts. Run from the workspace root so squawk/sqruff
+    # discover their repo-root configs (/.squawk.toml, /.sqruff) and the
+    # migration glob and git resolve repo-relative.
     command: 'bun run tools/sql-migration-gate/index.ts'
     deps: ['install']
     options:
