@@ -41,6 +41,14 @@ function isLoopbackUrl(value: string): boolean {
 	return LOOPBACK_HOSTS.has(new URL(value).hostname);
 }
 
+// dotenv value rules: a quoted value ends at its closing quote; an unquoted one
+// ends at a whitespace-led `#` comment.
+function envValue(rest: string): string {
+	const quoted = /^(["'`])(.*?)\1/.exec(rest);
+	if (quoted?.[2] !== undefined) return quoted[2];
+	return rest.replace(/\s+#.*$/, "").trim();
+}
+
 // One message per unsafe `KEY=VALUE` line. A non-empty VITE_* value must be a
 // loopback URL, so bearers and anything unrecognised fail closed; any URL value must be loopback.
 function unsafeEnvLines(text: string): string[] {
@@ -51,10 +59,7 @@ function unsafeEnvLines(text: string): string[] {
 		const eq = line.indexOf("=");
 		if (eq < 0) continue;
 		const key = line.slice(0, eq).trim();
-		const value = line
-			.slice(eq + 1)
-			.trim()
-			.replace(/^(["'])(.*)\1$/, "$2");
+		const value = envValue(line.slice(eq + 1).trim());
 		if (value === "" || isLoopbackUrl(value)) continue;
 		if (key.startsWith("VITE_") || URL.canParse(value)) {
 			problems.push(`${key} is set to a non-loopback value`);
@@ -122,6 +127,10 @@ describe("env content classifier", () => {
 		["VITE_COMPASS_BASE_URL=http://127.0.0.1.evil.com", 1],
 		["OTHER_URL=https://door.example.com", 1],
 		["OTHER_FLAG=1", 0],
+		["OTHER_URL=https://door.example.com # prod", 1],
+		["VITE_COMPASS_BASE_URL=http://127.0.0.1:50051 # devenv", 0],
+		['VITE_COMPASS_BASE_URL="https://door.example.com#frag" # c', 1],
+		["VITE_COMPASS_BASE_URL='http://localhost:5173' # c", 0],
 		["# VITE_COMPASS_TOKEN=xxx", 0],
 	] as const)("%s -> %d problem(s)", (line, count) => {
 		expect(unsafeEnvLines(line)).toHaveLength(count);
