@@ -48,6 +48,9 @@ func (s *Store) GrantForgeScope(ctx context.Context, scope ForgeScope) error {
 		Repo:          scope.Repo,
 	})
 	if err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return fmt.Errorf("%w: scope account %q is not a user in this tenant", ErrInvalidArgument, scope.AccountID)
+		}
 		return fmt.Errorf("store: grant forge scope: %w", err)
 	}
 	if n > 0 {

@@ -201,8 +201,8 @@ type ForgeConfig struct {
 	// EnforceScopes gates agent forge writes on account_forge_scopes grants.
 	// Off keeps the single-trust-domain behaviour; the Beta default is still undecided.
 	EnforceScopes bool
-	// ScopeGrants are boot-reconciled into account_forge_scopes (insert only;
-	// removing a row here does not revoke it).
+	// ScopeGrants are boot-reconciled into account_forge_scopes in the bootstrap
+	// tenant (insert only; removing a row here does not revoke it).
 	ScopeGrants []store.ForgeScope
 }
 

@@ -282,7 +282,7 @@ By default an agent can write to any repo the forge credential reaches. Two flag
 
 Grants name a user account. That user's agents inherit them. A rejected write looks the same as a write to a missing repo. Reads are not gated.
 
-Seeding only inserts. Removing a grant from the flag does not revoke it.
+Seeding only inserts. Removing a grant from the flag does not revoke it. Boot seeding runs in the bootstrap tenant, so every account in the flag must be a user there; any other account fails startup.
 
 ### Choosing a provider
 
