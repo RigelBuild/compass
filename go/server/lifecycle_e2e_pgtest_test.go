@@ -626,6 +626,7 @@ func (f *e2eStubRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (r
 	// already differs per account — see the type doc for why a fixed id collides.
 	f.mu.Lock()
 	f.created[spec.Name] = true
+	delete(f.removed, spec.Name)
 	f.mu.Unlock()
 	return runtime.WorkloadID(spec.Name), nil
 }
