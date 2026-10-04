@@ -52,3 +52,6 @@ result-*
 # guest-image publish output: the OCI layout a local dry run writes, multi-GiB
 # because it holds a copy of the rootfs blob.
 /guest-image/oci-layout/
+
+# gateway-image build output: the fork checkout and both OCI layouts.
+/tools/gateway-image/out/
