@@ -248,6 +248,9 @@ func TestSearchMessagesAuthorizationScoped(t *testing.T) {
 	if len(aliceHits.Msg.GetMessages()) != 1 {
 		t.Fatalf("alice found %d, want her 1 message", len(aliceHits.Msg.GetMessages()))
 	}
+	if got := aliceHits.Msg.GetMessages()[0].GetChannelId(); got != string(chA.ID) {
+		t.Fatalf("SearchMessages hit channel_id = %q, want %q", got, chA.ID)
+	}
 
 	// bob, a non-member, sees nothing — the store scopes the search to his
 	// visible set, so a private channel never leaks through search.

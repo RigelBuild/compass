@@ -781,6 +781,7 @@ func messagesFromSearchRows(rows []db.SearchMessagesRow) ([]Message, error) {
 		if err != nil {
 			return nil, err
 		}
+		m.ChannelID = ChannelID(r.ChannelID)
 		out = append(out, m)
 	}
 	return out, nil
