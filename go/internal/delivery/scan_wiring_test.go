@@ -32,9 +32,7 @@ func TestStartScanRecoversMissedMention(t *testing.T) {
 	startConsumer(t, c)
 
 	reads.waitForOwed(t, agentA, 1)
-	if got := reads.markCount("m1"); got != 1 {
-		t.Fatalf("marks for m1 = %d, want 1 (the start scan marks the recovered message)", got)
-	}
+	reads.waitForMark(t, "m1", 1)
 }
 
 // The start scan finishes before Run subscribes, so no event is handled until
