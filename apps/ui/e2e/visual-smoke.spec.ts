@@ -127,8 +127,9 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	// (margins, lists, code fences) has pixel cover.
 	test("topic — markdown messages", async ({ page }) => {
 		await page.goto("/#/channel/ch-svc-compass/topic/top-compass-acp");
+		// Shiki highlights after a lazy import; the sync plain <pre> is not the baseline.
 		await page
-			.locator(".markdown-content pre")
+			.locator(".markdown-content .code-highlight pre")
 			.first()
 			.waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
