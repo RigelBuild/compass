@@ -69,6 +69,7 @@ style = "fenced"
 "docs/designs/agent/compass-agent-trees/design.md" = ["MD057"]
 "docs/designs/infra/ci/compass-ci-check-naming/design.md" = ["MD057"]
 "docs/designs/server/compass-comms-multi-actor-test-coverage/design.md" = ["MD057"]
+"docs/designs/server/compass-forge-scope-enforcement/design.md" = ["MD057"]
 "docs/designs/server/compass-forge-write-path/design.md" = ["MD057"]
 "docs/designs/server/compass-issue-model/design.md" = ["MD057"]
 "docs/designs/server/compass-linear-agent-responder/design.md" = ["MD057"]
