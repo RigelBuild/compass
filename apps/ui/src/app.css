@@ -1235,7 +1235,7 @@
 	color: var(--cx-text);
 }
 
-.ask-text:focus {
+.ask-text:focus-visible {
 	border-color: var(--cx-border-focus);
 	outline: none;
 }
@@ -1990,11 +1990,11 @@
 	min-width: 200px;
 }
 
-.settings-input:focus,
-.settings-select:focus {
-	outline: 2px solid var(--cx-accent);
+.settings-input:focus-visible,
+.settings-select:focus-visible {
+	outline: var(--cx-focus-ring);
 	outline-offset: 1px;
-	border-color: var(--cx-accent);
+	border-color: var(--cx-border-focus);
 }
 
 .settings-map {
@@ -2246,10 +2246,10 @@
 	font-size: 12px;
 }
 
-.r-files-search:focus {
-	outline: 2px solid var(--cx-accent);
+.r-files-search:focus-visible {
+	outline: var(--cx-focus-ring);
 	outline-offset: 1px;
-	border-color: var(--cx-accent);
+	border-color: var(--cx-border-focus);
 }
 
 /* Commit history — the menu at the bottom of the VCS pane (D5). */
@@ -3416,10 +3416,10 @@
 	font: inherit;
 }
 
-.conv-composer .field:focus {
-	outline: 2px solid var(--cx-accent);
+.conv-composer .field:focus-visible {
+	outline: var(--cx-focus-ring);
 	outline-offset: 1px;
-	border-color: var(--cx-accent);
+	border-color: var(--cx-border-focus);
 }
 
 .conv-composer .field:disabled {
