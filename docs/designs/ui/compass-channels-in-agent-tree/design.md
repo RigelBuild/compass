@@ -138,7 +138,7 @@ by precedent. Precisely:
   Members read regardless of owner: cross-owner member sets exist — a
   converted DM keeps both owners' accounts, and `CreateChannel` adds "for
   each agent in the requested member set that agent's owning user(s)"
-  (`Store.CreateChannelGroup` in `go/internal/store/channels.go`). Attachment caps what a
+  (`Store.CreateChannel` doc in `go/internal/store/channels.go`). Attachment caps what a
   NON-member can see at the owner set; it never subtracts membership.
 - **SHARED channels still cannot hang on an agent.** The owner-set grant
   is the widest non-member access an agent-attached channel can carry;
@@ -263,7 +263,7 @@ refuses `OWNER_ONLY` together with `membership_mode = TREE`
 **A TREE create still runs `expandOwnerMembership`, but writes no member
 rows from it.** The expansion is not skipped: the attach authz needs the
 resolved owner set, and the expansion result is what `CreateChannel`
-carries back today as `MemberAccountIDs` (`expandOwnerMembership` in `go/internal/store/channels.go`). What a TREE
+carries back today as `MemberAccountIDs` (the returned literal in `Store.CreateChannel` in `go/internal/store/channels.go`). What a TREE
 create skips is the `EnsureChannelMember` loop over it
 (`Store.CreateChannel` in `go/internal/store/channels.go`). The list it returns is instead the derived
 participant set — the same materialization T4 applies on every read
@@ -271,7 +271,7 @@ participant set — the same materialization T4 applies on every read
 the same member list for the same channel. T4's hop (v) makes that
 identity structural rather than a coincidence of two code paths
 agreeing: `CreateChannel` stops hand-writing the returned `Channel` at
-`expandOwnerMembership` in `go/internal/store/channels.go` and returns the same post-commit `getChannel`
+`Store.CreateChannel` in `go/internal/store/channels.go` and returns the same post-commit `getChannel`
 read a `ListChannels` row goes through, so "the same member list" is
 the same projection, not a reconstruction of it. The expansion at
 `Store.CreateChannel` in `go/internal/store/channels.go` still runs — the authz needs it — it just no longer
@@ -485,7 +485,7 @@ caller at once. The callers were enumerated by grep over `go/**/*.go` for
   `TopicChannelMemberExists` query at query `TopicChannelMemberExists` in `go/internal/store/queries/authz.sql` gains the same
   arm with the channel resolved through `topics.channel_id`).
 
-The two direct `ChannelMemberExists` callers above (`hasGenuineAdd` in `go/internal/store/channels.go`) are deliberately NOT in this list — they keep member-row
+The two direct `ChannelMemberExists` callers above (`hasGenuineAdd` and `Store.SetChannelPolicy` in `go/internal/store/channels.go`) are deliberately NOT in this list — they keep member-row
 semantics.
 
 Read paths that join `channel_members` directly switch to the same
@@ -601,7 +601,7 @@ One further channel-keyed site is deliberately NOT rewritten:
 `SeedChannelDeliveryCursors` (in `go/internal/store/queries/delivery_cursors.sql`, keyed
 `WHERE cm.channel_id = $1`) would need the descent by the same
 argument, but its two callers both fire only on a mandatory channel
-(`Store.CreateChannel` in `go/internal/store/channels.go`) and `mandatory_subscription` is refused on
+(`Store.CreateChannel` and `Store.SetChannelPolicy` in `go/internal/store/channels.go`) and `mandatory_subscription` is refused on
 TREE, so it can never see a mode-1 channel in v1. Stated so a later
 relaxation of that refusal knows this query is the sixth site.
 
@@ -667,7 +667,7 @@ the authz gate first, the shape refusals after:
   the reserved namespace.
 - Refuse `kind != CHANNEL_KIND_CHANNEL` (kind 0, `ChannelKind.CHANNEL_KIND_CHANNEL` in `proto/compass/v1/comms.proto`). A
   converted DM is attachable — "a third party converts it to a named
-  CHANNEL" (the `PinnedEntry` doc in `proto/compass/v1/comms.proto`), and conversion leaves it ungrouped
+  CHANNEL" (the `ChannelKind` doc in `proto/compass/v1/comms.proto`), and conversion leaves it ungrouped
   (post-convert `GroupID` empty,
   `TestConvertOnAddRequiresNameAndConverts` in `go/internal/store/dm_pgtest_test.go`); a live DM is not.
 - Refuse a home channel (any channel referenced by an agent's
@@ -886,7 +886,7 @@ premise the adapter relies on: "A subscriber is by definition a member
 
 **Cost of the materialization, on the read path.** The descent runs on
 every read that loads member lists, not just the sidebar's first paint:
-`loadChannelMembers` has four call sites (`Store.ListChannels` in `go/internal/store/channels.go`), so `ListChannels` pays it too. It MUST NOT become one
+`loadChannelMembers` has four call sites (`Store.ListChannels`, `Store.ChannelByNameForViewer`, `Store.getChannel`, and `scanChannels` in `go/internal/store/channels.go`), so `ListChannels` pays it too. It MUST NOT become one
 query per channel. The function's own contract forbids that — it
 "populates each channel's member and subscriber sets with one follow-up
 query over the whole id set, so member loading is O(1) round-trips
@@ -1090,7 +1090,7 @@ Store writes:
   owner or an agent with the same owner, unknown agent merged to
   `ErrNotFound` (the gate shape at
   `Store.CreateChannel` in `go/internal/store/channels.go`). EXPLICIT attach keeps
-  today's member augmentation (`Store.CreateChannelGroup` in `go/internal/store/channels.go`); a TREE create still
+  today's member augmentation (`Store.CreateChannel` doc in `go/internal/store/channels.go`); a TREE create still
   runs `expandOwnerMembership` (`Store.CreateChannel` in `go/internal/store/channels.go`) for the authz and the
   returned list, but skips the `EnsureChannelMember` loop over it
   (`Store.CreateChannel` in `go/internal/store/channels.go`) and returns the derived participant set as
@@ -1264,7 +1264,7 @@ suite stays green (EXPLICIT behaviour identical).
   domain type T2 produces. **(iv) `channelToWire`**
   (`channelToWire` in `go/internal/comms/mapping.go`) maps both, beside the nine
   fields it sets today. **(v) `CreateChannel`'s returned literal**
-  (`expandOwnerMembership` in `go/internal/store/channels.go`) — because `channelFromRow`'s call sites are
+  (`Store.CreateChannel` in `go/internal/store/channels.go`) — because `channelFromRow`'s call sites are
   NOT the same set as the places a `Channel` is BUILT, and hops (i)
   through (iv) reach only the read paths. `CreateChannel` hand-writes
   its return value after commit rather than re-reading the row:
@@ -1288,7 +1288,7 @@ suite stays green (EXPLICIT behaviour identical).
   `CreateChannel` and a later `ListChannels` report the same member list
   for the same channel", § *Approach*) and which the literal today only
   approximates by reconstructing it — leg 3's citation of
-  `expandOwnerMembership` in `go/internal/store/channels.go` for that carry-back becomes the re-read, and the
+  `Store.CreateChannel` in `go/internal/store/channels.go` for that carry-back becomes the re-read, and the
   expansion it describes is still run, for the authz. The re-read is a
   pool read after commit, the posture `GetChannel`'s doc comment already
   states for the sibling path ("It is a pool read (post-commit), not a
@@ -1300,10 +1300,10 @@ suite stays green (EXPLICIT behaviour identical).
   (`ErrConflict`, `Store.CreateChannel` in `go/internal/store/channels.go`) on T2's own new
   `channels_agent_name_key` (§ *T2 — store: schema migration + attach writes (lane: compass-server)*). **Accepted, not softened**,
   because both store siblings propagate their post-commit re-read error
-  identically (`Store.UpdateChannelMembers` in `go/internal/store/channels.go`) — only the coordination
+  identically (`Store.UpdateChannelMembers` and `Store.SetChannelPolicy` in `go/internal/store/channels.go`) — only the coordination
   EVENT path is best-effort, and only because there the read is not the
   return value ("A read failure is logged and skipped, never
-  propagated", the `EnsureCoordinationChannel` doc in `go/internal/comms/coordination.go`) — and a literal-shaped
+  propagated", the `Comms.emitCoordChanges` doc in `go/internal/comms/coordination.go`) — and a literal-shaped
   fallback on the error arm would reintroduce the fifth construction
   site this hop exists to remove, handing T2 back the shortcut the
   bullet above forbids. The write is durable and the channel appears on
@@ -1343,7 +1343,7 @@ suite stays green (EXPLICIT behaviour identical).
   makes the create path singular: `UpdateChannelMembers`,
   `SetChannelPolicy` and `UpdatePinnedBoard` all
   re-read through `getChannel`, the coordination reconcile re-reads via
-  `c.store.GetChannel` (`Comms.EnsureCoordinationChannel` in `go/internal/comms/coordination.go`), and `Comms.emitDMCreated` in `go/internal/comms/dm.go` forwards
+  `c.store.GetChannel` (`Comms.emitCoordChanges` in `go/internal/comms/coordination.go`), and `Comms.emitDMCreated` in `go/internal/comms/dm.go` forwards
   a value its caller already read. This is a DIFFERENT gap from the H3
   materialization
   below: that one fills the two member LISTS, these are two other fields
@@ -1421,7 +1421,7 @@ Interfaces:
   `Channel.MembershipMode` (`Channel` in `go/internal/store/types.go`) and in `channelToWire`
   (`channelToWire` in `go/internal/comms/mapping.go`); `CreateChannel` returning
   `s.getChannel(ctx, ChannelID(id))` in place of its hand-written
-  literal (`expandOwnerMembership` in `go/internal/store/channels.go`), so `channelFromRow` becomes the sole
+  literal (`Store.CreateChannel` in `go/internal/store/channels.go`), so `channelFromRow` becomes the sole
   `Channel` construction point; a derived branch in `loadChannelMembers`
   (`loadChannelMembers` in `go/internal/store/channels.go`); predicate parity test.
 
@@ -1453,16 +1453,16 @@ land, and so are the acceptance for them:
   three copies is what the identical-copies rule
   (the identical-copies header comment in `go/internal/store/queries/channels.sql`) asks for: a fix applied to one or two copies
   still goes red, and `GetChannel` is the copy behind `s.getChannel`,
-  the return path for `SetChannelPolicy` (`Store.getChannel` in `go/internal/store/channels.go`),
+  the return path for `SetChannelPolicy` (`Store.SetChannelPolicy` in `go/internal/store/channels.go`),
   `UpdateChannelMembers`, `GetChannel`, the
   coordination reconcile's post-commit event read
-  (`Comms.EnsureCoordinationChannel` in `go/internal/comms/coordination.go`) and — after hop (v) — `CreateChannel` itself.
+  (`Comms.emitCoordChanges` in `go/internal/comms/coordination.go`) and — after hop (v) — `CreateChannel` itself.
 - The `Channel` that `CreateChannel` ITSELF returns — not a subsequent
   read — carries the anchor and the mode. This is the assertion for hop
   (v) specifically and nothing else in the record catches it: the
   assertion above goes green the moment the three projections and
   `channelFromRow` land, while a `CreateChannel` still returning its
-  hand-written literal (`expandOwnerMembership` in `go/internal/store/channels.go`) hands back
+  hand-written literal (`Store.CreateChannel` in `go/internal/store/channels.go`) hands back
   `ParentAgentID` empty and `MembershipMode` at zero for a channel just
   created WITH an anchor. Assert it at the store boundary on the
   returned value, and — because the same value feeds both the RPC

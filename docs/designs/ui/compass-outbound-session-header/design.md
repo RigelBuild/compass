@@ -63,7 +63,7 @@ lazy, so no change is needed to it:
 - The value is only populated by replies: "the clients exist before this line, but the first trace id only lands once a call has returned" — `main` in `apps/ui/src/index.tsx`. (That comment documents the *getter's* laziness, not a boot-ordering constraint — do not read it as one.)
 - `PostHogAnalytics` already reads it at capture time, not construction time: the getter is stored in the `PostHogAnalytics` constructor in `apps/ui/src/analytics/analytics.ts` (`this.traceId = traceId;`) and invoked in `PostHogAnalytics.capture` in `apps/ui/src/analytics/analytics.ts` (`const traceId = this.traceId();`), documented at the `PostHogAnalytics` constructor doc in `apps/ui/src/analytics/analytics.ts`: "The trace-id source, read at CAPTURE time rather than construction time".
 
-Both getters resolve at call time, pointing opposite ways: `traceId` reads transport state from analytics; `sessionId` reads analytics state from the transport. The layering rule at the `PostHogAnalytics` constructor doc in `apps/ui/src/analytics/analytics.ts` is preserved on both sides: "A getter, not the sink object, on purpose — analytics reads one string and has no business depending on compass-client's transport types, so the layering stays one-directional." Symmetrically, the transport receives a `() => string | undefined`, never an `Analytics` reference.
+Both getters resolve at call time, pointing opposite ways: `traceId` reads transport state from analytics; `sessionId` reads analytics state from the transport. The layering rule at the `PostHogAnalytics.traceId` doc in `apps/ui/src/analytics/analytics.ts` is preserved on both sides: "A getter, not the sink object, on purpose — analytics reads one string and has no business depending on compass-client's transport types, so the layering stays one-directional." Symmetrically, the transport receives a `() => string | undefined`, never an `Analytics` reference.
 
 #### Two consequences of constructing analytics earlier
 
@@ -391,7 +391,7 @@ pivot" (`NewSessionIDInterceptor` in `go/internal/otel/interceptor.go`).
 
 Both degraded states are **no header at all** — never an empty-string header:
 
-- **Analytics off.** `analyticsConfigFromEnv()` returns `undefined` ⇒ `createAnalytics` returns `NoopAnalytics` (`createAnalytics` in `apps/ui/src/analytics/analytics.ts`: `if (!config) { return new NoopAnalytics(); }`), whose `sessionId()` returns `undefined` ⇒ the interceptor's guard skips `req.header.set` entirely. Zero posthog calls, per the module contract (the `Analytics` doc in `apps/ui/src/analytics/analytics.ts`: "the config is `undefined` and `createAnalytics` returns a no-op that never CALLS posthog").
+- **Analytics off.** `analyticsConfigFromEnv()` returns `undefined` ⇒ `createAnalytics` returns `NoopAnalytics` (`createAnalytics` in `apps/ui/src/analytics/analytics.ts`: `if (!config) { return new NoopAnalytics(); }`), whose `sessionId()` returns `undefined` ⇒ the interceptor's guard skips `req.header.set` entirely. Zero posthog calls, per the module contract (the file header of `apps/ui/src/analytics/analytics.ts`: "the config is `undefined` and `createAnalytics` returns a no-op that never CALLS posthog (zero network); posthog is injectable for tests.").
 - **Session id not yet available.** `get_session_id()` returns `""` before full init (`PostHog.get_session_id` in `module.d.ts`); `PostHogAnalytics.sessionId()` maps that to `undefined` ⇒ no header.
 
 An empty header would be worse than none on both sides: the server would trim-and-drop it anyway (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`), and it would spend preflight/wire bytes asserting a correlation that does not exist. This mirrors the established discipline for `$ai_trace_id` in `PostHogAnalytics.capture` in `apps/ui/src/analytics/analytics.ts`: "Not even an `$ai_trace_id: undefined` key".
@@ -507,7 +507,7 @@ only because it is the obvious competing attach point.
 
 - TypeScript strict, Bun, Biome. SolidJS — no React. `bun:test` conventions as in the existing suites (fake-injection, `spyOn` not `mock.module` — the file header of `apps/ui/src/live/client.test.ts`).
 - posthog-js pinned `^1.418.10`; no version bump in this work.
-- Layering: `apps/ui/src/analytics` never imports transport types; `@compass/client` never imports analytics. Both sides exchange only `() => string | undefined` (the `PostHogAnalytics` constructor doc in `apps/ui/src/analytics/analytics.ts`).
+- Layering: `apps/ui/src/analytics` never imports transport types; `@compass/client` never imports analytics. Both sides exchange only `() => string | undefined` (the `PostHogAnalytics.traceId` doc in `apps/ui/src/analytics/analytics.ts`).
 - Header name `X-POSTHOG-SESSION-ID`, exactly (`PostHogSessionHeader` in `go/internal/otel/interceptor.go`); already CORS-allowed (`networkCORS` in `go/server/network_door.go` on `origin/main`: `AllowedHeaders: append(connectcors.AllowedHeaders(), "Authorization", otel.PostHogSessionHeader)`).
 - Sender-side guard is **printable ASCII (`\x21`–`\x7E`) and `.length ≤ 200`** — stricter than the server's own `≤200 bytes` + valid-UTF-8 pair, and a strict *subset* of what `Headers.set` itself accepts (it takes space and tab; the guard does not). The narrowing is driven by the `Headers.set` ByteString seam, which throws on code points above U+00FF and on CRLF, and accepts U+0080–U+00FF only for a browser to emit it as a single raw high byte that the server then rejects as invalid UTF-8 and DROPS (see Validation). On accepted input `.length` equals the UTF-8 byte count, so the cap mirrors `maxSessionIDLen` in `go/internal/otel/interceptor.go` exactly — inclusive on both sides, since the server's own check is `len(id) > maxSessionIDLen` (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`). No empty, no whitespace, no CRLF.
 - Omitted-means-off: every new optional collaborator (transport `opts.sessionId`, `createLiveClients` deps bag) installs nothing when absent, preserving byte-identical behavior for callers that don't ask (`callInterceptors` in `packages/compass-client/src/index.ts`).
@@ -651,8 +651,7 @@ Cases:
 - **self-healing across requests: getter returns `""` on the first call and a
   valid id on the second ⇒ the first request carries no header, the second
   carries it** (capture seam). This is the transition Degradation and the
-  Approach both promise — "self-healing on the next request once a session
-  exists" (§ *Degradation*) — and it is the direction the laziness case above does
+  exists" (§ *Two consequences of constructing analytics earlier*) — and it is the direction the laziness case above does
   *not* cover: a construction-time cache or a first-value memo still passes
   forward-propagation while failing this. OQ2's anti-memoization concern rests
   on this case.
@@ -771,8 +770,7 @@ Update the module-header prose in the file header of `apps/ui/src/analytics/anal
    `apps/ui`'s: that file sets no `lib` at all (`{"extends":
    "../../tsconfig.base.json", "compilerOptions": {"types": ["bun"]},
    "include": ["src"]}`), so its lib defaults from `target: "ES2022"`
-   (`compilerOptions.target` in `tsconfig.base.json`), and `isWellFormed` is ES2024. (`compilerOptions.target` in `apps/ui/
-   tsconfig.json` pins the same `ES2022` for the app, but it does not govern
+   `compilerOptions.lib` in `apps/ui/tsconfig.json` pins the same `ES2022` for the app, but it does not govern
    this package — citing it would be evidence about the wrong compilation
    unit.) The ASCII guard then removed the need for any well-formedness test at
    all, since lone surrogates are non-ASCII, so neither `isWellFormed` nor an
