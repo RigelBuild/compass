@@ -61,8 +61,12 @@ func newForgeE2EWire(t *testing.T) *forgeE2EWire {
 	linear.SetError("CreatePullRequest", forge.ErrUnsupported)
 
 	reg := newForgeProviderRegistry()
-	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: forgeE2EHost}, author, reviewer, true)
-	registerLinearForgeCoordinate(reg, linear)
+	if err := reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: forgeE2EHost}, author, reviewer, true); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := registerLinearForgeCoordinate(reg, linear); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 
 	// The chokepoint reads tracked issues off a store-backed issue projection
 	// (its own bus, distinct from the wire's). None of these writes are tracked,

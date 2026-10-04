@@ -64,7 +64,11 @@ func newForgeProviderRegistry() *forgeProviderRegistry {
 // register adds coord's author+reviewer clients. The first host seen for a
 // provider becomes that provider's default host (empty-host resolution, A3);
 // isDefault marks coord as the coordinate a nil/unset ForgeRef resolves to.
-func (r *forgeProviderRegistry) register(coord forgeCoordinate, author, reviewer forge.Provider, isDefault bool) {
+// An empty host is refused: it would become the default the DL-055 row rejects.
+func (r *forgeProviderRegistry) register(coord forgeCoordinate, author, reviewer forge.Provider, isDefault bool) error {
+	if coord.host == "" {
+		return fmt.Errorf("forge: register %s coordinate: empty host", coord.provider)
+	}
 	r.entries[coord] = forgeProviderRoles{author: author, reviewer: reviewer}
 	if _, ok := r.defaultHost[coord.provider]; !ok {
 		r.defaultHost[coord.provider] = coord.host
@@ -72,6 +76,7 @@ func (r *forgeProviderRegistry) register(coord forgeCoordinate, author, reviewer
 	if isDefault {
 		r.def = coord
 	}
+	return nil
 }
 
 // resolvedForge is one lookup result: the two role clients, the shared body
