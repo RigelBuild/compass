@@ -723,9 +723,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return err
 	}
 	devListener, netListener, netTLS := listeners.dev, listeners.network, listeners.netTLS
-	if cfg.OnBound != nil {
-		cfg.OnBound(listenerAddr(devListener), listenerAddr(netListener))
-	}
 
 	// Create the parent chain first, tightening any directory we create to 0700
 	// so the socket never sits briefly reachable under a world-traversable dir.
