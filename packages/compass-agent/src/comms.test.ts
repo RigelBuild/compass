@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import {
 	CommsBroker,
 	type CommsTransport,
@@ -55,6 +56,7 @@ import {
 	SetAgentStatusResponseSchema,
 	UpdateChannelMembersResponseSchema,
 } from "./compassv1";
+import { TurnSequence } from "./turn-sequence";
 
 // A fake of the one transport method the broker consumes. Records every request
 // it is handed (so the wire shape is asserted) and returns a canned result.
@@ -265,8 +267,12 @@ function rosterEntry(
 
 // Pull one tool out of the set by name, failing loudly if the set stops carrying
 // it (so a rename reddens here rather than silently skipping the assertions).
+const testTurnSequence = new TurnSequence(SessionManager.create(process.cwd()));
+
 function tool(broker: CommsBroker, name: string): AgentTool {
-	const found = createCommsTools(broker).find((t) => t.name === name);
+	const found = createCommsTools(broker, testTurnSequence).find(
+		(t) => t.name === name,
+	);
 	if (!found) throw new Error(`no such tool: ${name}`);
 	return found;
 }
@@ -501,6 +507,24 @@ describe("CommsBroker turn-trigger re-attach (RIG-2894)", () => {
 		const req = transport.requests[0];
 		expect(req?.call.case).toBe("list");
 		expect(req?.triggerTraceparent).toBe("");
+	});
+});
+
+describe("CommsBroker turn sequence", () => {
+	test("a post carries the active turn sequence", async () => {
+		const session = SessionManager.create(process.cwd());
+		const sequence = new TurnSequence(session);
+		sequence.start();
+		sequence.start();
+		const transport = new FakeTransport(postResult("m-1", "t-1"));
+		const post = createCommsTools(new CommsBroker(transport), sequence).find(
+			(item) => item.name === "comms_post_message",
+		);
+		if (!post) throw new Error("no comms_post_message tool");
+		await exec(post, "tc-1", { text: "hi", topic: "t", channel: "c" });
+		const request = transport.requests[0];
+		if (request?.call.case !== "post") throw new Error("expected post request");
+		expect(request.call.value.turnSequence).toBe(2n);
 	});
 });
 

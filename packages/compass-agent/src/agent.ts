@@ -25,6 +25,7 @@ import type { FrameSink } from "./frame";
 import { EventMapper, type UnmappedEvent } from "./mapping";
 import { flat } from "./render-guard";
 import type { TurnTracer } from "./trace-bridge";
+import type { TurnSequence } from "./turn-sequence";
 
 export interface CompassAgentOptions {
 	// The session to drive, constructed by the caller (container entrypoint) via
@@ -43,6 +44,7 @@ export interface CompassAgentOptions {
 	// fence-clean. `undefined` (telemetry off) ⇒ every trace call no-ops via
 	// optional chaining, so frames stay bit-identical.
 	readonly tracer?: TurnTracer;
+	readonly turnSequence?: TurnSequence;
 }
 
 export class CompassAgent {
@@ -50,6 +52,7 @@ export class CompassAgent {
 	readonly #sink: FrameSink;
 	readonly #control: ControlSource;
 	readonly #mapper: EventMapper;
+	readonly #turnSequence: TurnSequence | undefined;
 	readonly #onUnmapped: (u: UnmappedEvent) => void;
 	readonly #tracer: TurnTracer | undefined;
 	// The native tools the session was constructed with — the set no control frame
@@ -113,7 +116,8 @@ export class CompassAgent {
 		this.#sink = opts.sink;
 		this.#control = opts.control;
 		this.#tracer = opts.tracer;
-		this.#mapper = new EventMapper();
+		this.#turnSequence = opts.turnSequence;
+		this.#mapper = new EventMapper(Date.now, this.#turnSequence);
 		this.#onUnmapped =
 			opts.onUnmapped ??
 			((u) =>

@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentPlanEntryStatus,
 	AgentSessionState,
@@ -19,6 +20,7 @@ import {
 	type SessionEvent,
 } from "./compassv1";
 import { EventMapper, type MapOutput } from "./mapping";
+import { TurnSequence } from "./turn-sequence";
 
 // The injected wall-clock value: every trace SessionEvent must stamp exactly
 // this on `at_unix_ms` (as a bigint). A picked-out constant, distinct from any
@@ -206,6 +208,21 @@ describe("EventMapper — session lifecycle state derivation", () => {
 			expect(mapper().map(row.event)).toEqual([]);
 		});
 	}
+});
+
+describe("EventMapper turn sequence", () => {
+	test("successive agent_start edges stamp matching agent_end frames", () => {
+		const manager = SessionManager.create(process.cwd());
+		const sequence = new TurnSequence(manager);
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		for (const expected of [1n, 2n, 3n]) {
+			mapper.map({ type: "agent_start" });
+			const frame = mapper.map({ type: "agent_end", messages: [] })[0];
+			if (frame?.kind !== "session")
+				throw new Error("expected lifecycle session frame");
+			expect(frame.value.turnSequence).toBe(expected);
+		}
+	});
 });
 
 describe("EventMapper — injected clock stamps at_unix_ms (as bigint)", () => {
