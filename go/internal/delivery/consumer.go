@@ -158,7 +158,23 @@ type startEvent struct {
 type lostEvent struct {
 	account store.AccountID
 	errored bool
+	// deferred marks a backoff timer firing: it wakes without adding a strike.
+	deferred bool
 }
+
+// erroredBackoff spaces repeat ERRORED wakes of one account. A message that
+// crashes the agent stays owed, so without it each crash re-wakes at once.
+type erroredBackoff struct {
+	strikes int
+	last    time.Time
+	pending bool
+}
+
+const (
+	erroredWakeBaseDelay  = 30 * time.Second
+	erroredWakeMaxDelay   = 15 * time.Minute
+	erroredWakeResetAfter = 30 * time.Minute
+)
 
 // instrumentationScope is the OTel instrumentation scope for this package's
 // spans AND metrics (the delivery tracer and meter both resolve from the global
@@ -255,6 +271,11 @@ type Consumer struct {
 	// now stamps and prunes lastSettle; a test swaps in a fixed clock.
 	now func() time.Time
 
+	// erroredWakes holds per-account ERRORED wake backoff, under mu.
+	erroredWakes map[store.AccountID]*erroredBackoff
+	// afterFunc schedules a deferred wake; a test swaps in a manual trigger.
+	afterFunc func(time.Duration, func())
+
 	// dispatched counts control dispatches (deliver + steer), labelled only by
 	// op kind (compass.op.kind = steer|deliver). Created ONCE at NewConsumer from
 	// the global meter; nil when meter construction failed, in which case the
@@ -299,7 +320,11 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 			t := time.NewTicker(recoveryFloorInterval)
 			return t.C, t.Stop
 		},
-		now: time.Now,
+		now:          time.Now,
+		erroredWakes: make(map[store.AccountID]*erroredBackoff),
+		afterFunc: func(d time.Duration, f func()) {
+			time.AfterFunc(d, f)
+		},
 	}
 }
 

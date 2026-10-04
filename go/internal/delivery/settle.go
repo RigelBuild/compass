@@ -5,6 +5,7 @@ package delivery
 import (
 	"context"
 	"math"
+	"time"
 
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
@@ -401,8 +402,12 @@ func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID, erro
 	if sessionID == "" || account == "" {
 		return
 	}
+	c.enqueueLost(lostEvent{account: account, errored: errored})
+}
+
+func (c *Consumer) enqueueLost(ev lostEvent) {
 	c.mu.Lock()
-	c.lostQueue = append(c.lostQueue, lostEvent{account: account, errored: errored})
+	c.lostQueue = append(c.lostQueue, ev)
 	c.mu.Unlock()
 	select {
 	case c.notify <- struct{}{}:
@@ -410,8 +415,8 @@ func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID, erro
 	}
 }
 
-// drainLost wakes each lost account. An ERRORED loss may owe nothing, and waking it
-// anyway loops an agent that crashes on boot.
+// drainLost wakes each lost account. An ERRORED loss wakes only with owed work, and
+// repeat ERRORED wakes back off, so neither a boot crash nor a poisoned message loops.
 func (c *Consumer) drainLost(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -424,10 +429,67 @@ func (c *Consumer) drainLost(ctx context.Context) {
 		c.mu.Unlock()
 		if ev.errored && !c.hasOwedWork(ctx, ev.account) {
 			c.log.InfoContext(ctx, "delivery: errored session owes nothing, not waking", "account", string(ev.account))
+			if ev.deferred {
+				c.clearPendingErroredWake(ev.account)
+			}
 			continue
+		}
+		if ev.errored && !ev.deferred {
+			if delay, ok := c.erroredWakeDelay(ev.account); delay > 0 {
+				if ok {
+					c.log.WarnContext(ctx, "delivery: repeat errored session, delaying wake",
+						"account", string(ev.account), "delay", delay)
+					c.afterFunc(delay, func() {
+						c.enqueueLost(lostEvent{account: ev.account, errored: true, deferred: true})
+					})
+				}
+				continue
+			}
+		}
+		if ev.deferred {
+			c.clearPendingErroredWake(ev.account)
 		}
 		c.wake(ctx, ev.account)
 	}
+}
+
+// erroredWakeDelay records one ERRORED loss for account and returns how long its
+// wake waits: zero for the first in a window, then doubling to a cap. ok is false
+// when a deferred wake is already pending, so the caller schedules nothing.
+func (c *Consumer) erroredWakeDelay(account store.AccountID) (time.Duration, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.erroredWakes[account]
+	if b == nil {
+		b = &erroredBackoff{}
+		c.erroredWakes[account] = b
+	}
+	if b.pending {
+		return erroredWakeMaxDelay, false
+	}
+	now := c.now()
+	if b.strikes > 0 && now.Sub(b.last) >= erroredWakeResetAfter {
+		b.strikes = 0
+	}
+	var delay time.Duration
+	if b.strikes > 0 {
+		delay = erroredWakeMaxDelay
+		if b.strikes <= 10 {
+			delay = min(erroredWakeBaseDelay<<(b.strikes-1), erroredWakeMaxDelay)
+		}
+	}
+	b.strikes++
+	b.last = now
+	b.pending = delay > 0
+	return delay, true
+}
+
+func (c *Consumer) clearPendingErroredWake(account store.AccountID) {
+	c.mu.Lock()
+	if b := c.erroredWakes[account]; b != nil {
+		b.pending = false
+	}
+	c.mu.Unlock()
 }
 
 // hasOwedWork reports whether a start sweep would deliver anything to account. A
