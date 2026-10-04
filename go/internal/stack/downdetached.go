@@ -14,10 +14,10 @@ import (
 
 // Per-component drain budgets: after SIGTERM, how long DownDetached waits for a
 // component's confirmation channel to go quiet before escalating to a group
-// SIGKILL. Reverse start order (runner → server → nats → collector → postgres); the
-// server's graceful drain is the long pole. On the SIGTERM-succeeds path they
-// sum to 85s; on the escalation path the four non-runner components each add a
-// postKillGrace, so the true worst case is 15 + (30+5) + (20+5) + (10+5) + (10+5) = 105s.
+// SIGKILL. Reverse start order (runner → server → gateway → nats → collector →
+// postgres); the server's graceful drain is the long pole. On the SIGTERM-succeeds
+// path they sum to 110s; on the escalation path the five non-runner components each
+// add a postKillGrace, so the true worst case is 15 + (30+5) + (25+5) + (20+5) + (10+5) + (10+5) = 135s.
 // That can exceed the app's 60s stackDownTimeout (lifecycle.go:35) — and is
 // bounded by its ctx cancellation, not by this arithmetic: on ctx.Done waitDead
 // returns the current dead() verdict, so an overrun becomes a partial-failure
@@ -39,6 +39,8 @@ var (
 	// gets the wider budget its natsStopTimeout also reserves — a `rm -f` mid-flush
 	// is the unclean-shutdown case the store recovers from on next boot.
 	natsDrainBudget = 20 * time.Second
+	// gatewayDrainBudget matches gatewayStopTimeout: in-flight model calls drain on SIGTERM.
+	gatewayDrainBudget = 25 * time.Second
 	// postKillGrace bounds the confirm after the hard kill for the non-runner
 	// components: the kill is unblockable (group SIGKILL, or `podman rm -f`), so a
 	// component still confirming alive past this grace is a genuine survivor, not a
@@ -167,7 +169,7 @@ type target struct {
 }
 
 // liveTargets returns the identity-matched live groups in reverse start order
-// (runner → server → nats → collector → postgres). Each recorded group is checked with
+// (runner → server → gateway → nats → collector → postgres). Each recorded group is checked with
 // GroupSignaller.Alive (existence AND start-time identity); a gone or recycled
 // group is omitted — never signaled.
 func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []target {
@@ -191,6 +193,10 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		{ComponentServer, serverDrainBudget, func(pgidEntry) func() bool {
 			// Socket quiescence: the UDS stops answering GetServerInfo.
 			return func() bool { _, err := deps.Prober.Probe(ctx, cfg.SocketPath); return err != nil }
+		}},
+		{ComponentGateway, gatewayDrainBudget, func(e pgidEntry) func() bool {
+			// Container existence; signalTerm also removes it, since it runs without --rm.
+			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
 		}},
 		{ComponentNats, natsDrainBudget, func(e pgidEntry) func() bool {
 			// Container existence: nats is a container child torn down by name,
@@ -371,6 +377,11 @@ func signalTerm(deps Deps, e pgidEntry, budget time.Duration) {
 	case entryContainer:
 		if err := deps.Containers.Stop(e.ContainerName, budget); err != nil {
 			logContainerSignalMiss("stop", e, err)
+		}
+		if e.Component == ComponentGateway {
+			if err := deps.Containers.Remove(e.ContainerName); err != nil {
+				logContainerSignalMiss("remove", e, err)
+			}
 		}
 	default:
 		if err := deps.GroupSignaller.Signal(e.Pgid, SignalTerm); err != nil {

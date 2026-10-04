@@ -204,6 +204,9 @@ const (
 	// flagPodmanStopTimeout is the safe default grace for any `podman stop` that
 	// passes no explicit -t.
 	flagPodmanStopTimeout = "--stop-timeout"
+	flagPodmanEnv         = "-e"
+	flagPodmanVolume      = "-v"
+	flagPodmanRestart     = "--restart"
 )
 
 // postgresDB is the single database the private store holds, created by the

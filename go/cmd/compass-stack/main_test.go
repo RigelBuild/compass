@@ -319,6 +319,40 @@ func TestResolveConfigNatsFlags(t *testing.T) {
 		}
 	})
 }
+func TestResolveConfigGatewayFlags(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	f := baseFlags(t.TempDir())
+	f.gatewayImage = "gateway:test"
+	f.gatewayExternal = "http://gateway.example"
+	cfg, err := resolveConfig(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GatewayImage != "gateway:test" || cfg.ExternalGatewayURL != f.gatewayExternal {
+		t.Fatalf("gateway config = %q %q", cfg.GatewayImage, cfg.ExternalGatewayURL)
+	}
+	fs, g := newFlagSet("up", true)
+	g.stateDir = t.TempDir()
+	g.image = "example.com/agent:latest"
+	if err := fs.Parse([]string{"--gateway-external", "", "--state-dir", g.stateDir, "--image", g.image}); err != nil {
+		t.Fatal(err)
+	}
+	markExplicitFlags(fs, g)
+	if _, err := resolveConfig(*g); err == nil || !strings.Contains(err.Error(), "--gateway-external") {
+		t.Fatalf("explicit empty error = %v", err)
+	}
+	_, defaults := newFlagSet("up", true)
+	defaults.stateDir = t.TempDir()
+	defaults.image = "example.com/agent:latest"
+	defaultCfg, err := resolveConfig(*defaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultCfg.GatewayImage != "" {
+		t.Fatalf("GatewayImage = %q, want unpublished empty default", defaultCfg.GatewayImage)
+	}
+}
 
 // testGuestArtifact is a valid digest-pinned guest reference; Config.Validate
 // rejects a tag-pinned one, so every positive case must use a real digest.
