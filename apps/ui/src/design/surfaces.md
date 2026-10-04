@@ -93,13 +93,12 @@ below, both rendered with the same tree-row contract so a later data-level
 unification is a data change, not a visual one. The agent tree is one of the four
 excellence surfaces.
 
-**Reference.** The starting point is `AgentTree.astro` (the production-quality
-Rigel-site mockup, authored against the real `LeftSidebar`), not a redraw. Its
+**Reference.** The surface builds on the real `LeftSidebar`, not a redraw. Its
 load-bearing structure to carry forward:
 
 - **Every standing node is a Manager**, indented parent-above-children in
-  depth-first tree order (`flatten` in the mockup, mirroring `board.ts`
-  `treeOrder`); ephemeral worker subagents are not tree nodes. Each node shows a
+  depth-first tree order (`board.ts` `treeOrder`); ephemeral worker subagents
+  are not tree nodes. Each node shows a
   state glyph, handle, state, a live worker count, and the issue it currently
   owns (`AgentCard`).
 - **The connecting spine** is the delegation cue: an elbow rule from the parent's
@@ -199,9 +198,8 @@ The Bridge is the central supervision board and one of the four excellence
 surfaces: a swimlane grid of Managers against a lifecycle, with an Issues view
 and a PRs view.
 
-**Reference.** The starting point is `BridgeBoard.astro` (authored against the
-real `Bridge.tsx` / `IssueCard.tsx` / `board.ts`), not a redraw. Its load-bearing
-structure to carry forward:
+**Reference.** The surface builds on the real `Bridge.tsx` / `IssueCard.tsx` /
+`board.ts`, not a redraw. Its load-bearing structure to carry forward:
 
 - **Two views, one board shape.** A segmented control flips between Issues and
   PRs (the real `Bridge.tsx` `BoardTab`); both are the same swimlane grid, only
@@ -273,8 +271,7 @@ UX as its base model — a channel is a list of named topics, each topic a focus
 flat stream — with Rigel excellence layered on. `ThreadPanel` and every
 `.thread-*` selector are removed by this surface, not restyled.
 
-**Reference.** The visual starting point is `ThreadView.astro`; its load-bearing
-structure to carry forward:
+**Reference.** The surface's load-bearing structure to carry forward:
 
 - **A thread header** stamping channel and topic (`#channel › topic`), with the
   channel's live state glyph.
@@ -330,8 +327,8 @@ home channel plus its session trace, nothing more: two fixed panes, no arbitrary
 split tree. There is no terminal pane and no file-viewer pane in dogfood — agents
 run in isolated containers, and PR review happens on the user's forge.
 
-**Reference.** The home-channel pane reuses the comms topic contract above (the
-`ThreadView` lineage). The session-trace pane is the successor to the legacy
+**Reference.** The home-channel pane reuses the comms topic contract above. The
+session-trace pane is the successor to the legacy
 `LogPanel`, recast as a typed renderer, and it carries the brand streaming
 treatment (the brand micro-excellence streaming system). Its load-bearing
 behavior:
