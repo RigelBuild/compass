@@ -1,5 +1,7 @@
 # Reload replay barrier
 
+Status: Superseded by ../reload-control-restart/design.md
+
 Tracker: RIG-3854. Freezes on merge.
 
 ## Problem / Intent
