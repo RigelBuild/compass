@@ -12,8 +12,8 @@ interface Entry {
 }
 
 class FakeSession {
-	readonly sessionId: string;
-	readonly entries: Entry[];
+	sessionId: string;
+	entries: Entry[];
 
 	constructor(sessionId: string, entries: Entry[] = []) {
 		this.sessionId = sessionId;
@@ -60,11 +60,22 @@ describe("TurnSequence", () => {
 		expect(turnSequence(session).start()).toBe(5n);
 	});
 
-	test("a new session identity starts at one", () => {
-		const prior = new FakeSession("old");
-		turnSequence(prior).start();
-		const fresh = new FakeSession("new");
-		expect(turnSequence(fresh).start()).toBe(1n);
+	test("restores after an in-place identity change", () => {
+		const session = new FakeSession("first");
+		const sequence = turnSequence(session);
+		expect(sequence.start()).toBe(1n);
+		session.sessionId = "empty";
+		session.entries = [];
+		expect(sequence.start()).toBe(1n);
+		session.sessionId = "stored";
+		session.entries = [
+			{
+				type: "custom",
+				customType: "compass_turn_sequence",
+				data: { turnSequence: "8" },
+			},
+		];
+		expect(sequence.start()).toBe(9n);
 	});
 	test("refuses a sequence beyond the signed 64-bit maximum", () => {
 		const session = new FakeSession("session-1", [

@@ -265,10 +265,7 @@ function rosterEntry(
 	});
 }
 
-// Pull one tool out of the set by name, failing loudly if the set stops carrying
-// it (so a rename reddens here rather than silently skipping the assertions).
-const testTurnSequence = new TurnSequence(SessionManager.create(process.cwd()));
-
+const testTurnSequence = new TurnSequence(SessionManager.inMemory());
 function tool(broker: CommsBroker, name: string): AgentTool {
 	const found = createCommsTools(broker, testTurnSequence).find(
 		(t) => t.name === name,
@@ -511,21 +508,48 @@ describe("CommsBroker turn-trigger re-attach (RIG-2894)", () => {
 });
 
 describe("CommsBroker turn sequence", () => {
-	test("a post carries the active turn sequence", async () => {
-		const session = SessionManager.create(process.cwd());
-		const sequence = new TurnSequence(session);
+	async function assertPostTurn(
+		name: "comms_post_message" | "comms_post_ask" | "comms_dm",
+		transport: FakeTransport | SequencedTransport,
+		params: Record<string, unknown>,
+	): Promise<void> {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const tools = createCommsTools(new CommsBroker(transport), sequence);
+		const post = tools.find((item) => item.name === name);
+		if (!post) throw new Error(`no ${name} tool`);
 		sequence.start();
 		sequence.start();
-		const transport = new FakeTransport(postResult("m-1", "t-1"));
-		const post = createCommsTools(new CommsBroker(transport), sequence).find(
-			(item) => item.name === "comms_post_message",
-		);
-		if (!post) throw new Error("no comms_post_message tool");
-		await exec(post, "tc-1", { text: "hi", topic: "t", channel: "c" });
-		const request = transport.requests[0];
+		await exec(post, "tc-1", params);
+		const request = transport.requests.at(-1);
 		if (request?.call.case !== "post") throw new Error("expected post request");
 		expect(request.call.value.turnSequence).toBe(2n);
-	});
+	}
+
+	test.each([
+		[
+			"comms_post_message",
+			new FakeTransport(postResult("m-1", "t-1")),
+			{ text: "hi", topic: "t", channel: "c" },
+		],
+		[
+			"comms_post_ask",
+			new FakeTransport(askPostResult("a-1", "t-1")),
+			{ questions: [{ id: "q1", question: "Q?", options: [] }], channel: "c" },
+		],
+		[
+			"comms_dm",
+			new SequencedTransport([
+				openDmResult("dm--a--b", true),
+				postResult("m-1", "t-1"),
+			]),
+			{ peer_handle: "@b", topic: "t", text: "hi" },
+		],
+	] as const)(
+		"%s stamps the turn started after tool construction",
+		async (name, transport, params) => {
+			await assertPostTurn(name, transport, params);
+		},
+	);
 });
 
 // The agent loop validates model-supplied arguments against these schemas before

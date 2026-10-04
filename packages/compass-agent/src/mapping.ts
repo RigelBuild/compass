@@ -77,10 +77,16 @@ export class EventMapper {
 	// Injectable wall-clock for `at_unix_ms`.
 	readonly #now: Clock;
 	readonly #turnSequence: TurnSequence | undefined;
+	readonly #capturedStarts: bigint[] = [];
+	readonly #endingSequences: bigint[] = [];
 
 	constructor(now: Clock = Date.now, turnSequence?: TurnSequence) {
 		this.#now = now;
 		this.#turnSequence = turnSequence;
+	}
+
+	captureTurnStart(): void {
+		this.#capturedStarts.push(this.#turnSequence?.start() ?? 0n);
 	}
 
 	// Map one session event to zero or more compass.v1 frames. Zero frames is
@@ -89,7 +95,9 @@ export class EventMapper {
 	map(event: AgentSessionEvent): MapOutput[] {
 		switch (event.type) {
 			case "agent_start":
-				this.#turnSequence?.start();
+				this.#endingSequences.push(
+					this.#capturedStarts.shift() ?? this.#turnSequence?.start() ?? 0n,
+				);
 				return [this.#sessionState(AgentSessionState.WORKING)];
 			case "turn_start":
 				return [this.#sessionState(AgentSessionState.WORKING)];
@@ -102,7 +110,9 @@ export class EventMapper {
 				return [
 					this.#sessionState(
 						AgentSessionState.READY,
-						this.#turnSequence?.current() ?? 0n,
+						this.#endingSequences.shift() ??
+							this.#turnSequence?.current() ??
+							0n,
 					),
 				];
 			case "message_update":

@@ -1,16 +1,12 @@
-import type { SessionManager } from "@oh-my-pi/pi-coding-agent";
+import type { SessionEntry, SessionManager } from "@oh-my-pi/pi-coding-agent";
 
 const ENTRY_TYPE = "compass_turn_sequence";
 const MAX_SEQUENCE = 9_223_372_036_854_775_807n;
 
-function storedSequence(entry: unknown): bigint | undefined {
-	if (typeof entry !== "object" || entry === null) return undefined;
-	if (
-		Reflect.get(entry, "type") !== "custom" ||
-		Reflect.get(entry, "customType") !== ENTRY_TYPE
-	)
+function storedSequence(entry: SessionEntry): bigint | undefined {
+	if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE)
 		return undefined;
-	const data: unknown = Reflect.get(entry, "data");
+	const data: unknown = entry.data;
 	if (typeof data !== "object" || data === null) return undefined;
 	const value = Reflect.get(data, "turnSequence");
 	if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value))
@@ -28,7 +24,11 @@ export class TurnSequence {
 	constructor(manager: SessionManager) {
 		this.#manager = manager;
 		this.#identity = manager.getSessionId();
-		this.#current = manager
+		this.#current = this.#restore();
+	}
+
+	#restore(): bigint {
+		return this.#manager
 			.getEntries()
 			.flatMap((entry) => {
 				const sequence = storedSequence(entry);
@@ -46,8 +46,8 @@ export class TurnSequence {
 
 	start(): bigint {
 		if (this.#manager.getSessionId() !== this.#identity) {
-			this.#current = 0n;
 			this.#identity = this.#manager.getSessionId();
+			this.#current = this.#restore();
 		}
 		if (this.#current === MAX_SEQUENCE) {
 			throw new Error("compass-agent: turn sequence exceeds int64 maximum");

@@ -561,7 +561,10 @@ interface FakeSession {
 	// Resolves with the listener the moment `run()` subscribes — the event gate a
 	// test awaits before pushing session events, so there is no race and no spin.
 	readonly subscribed: Promise<AgentSessionEventListener>;
-	agent: { getApiKey?: (model: Model) => Promise<string | undefined> };
+	agent: {
+		getApiKey?: (model: Model) => Promise<string | undefined>;
+		subscribe: () => () => void;
+	};
 	// The boot-model-health belt reads these two: a recorded models.yml config
 	// error (swallowed by createAgentSession) and the resolved model. `model` is
 	// only ever checked for undefined, so `unknown` is honest.
@@ -579,7 +582,7 @@ function fakeSession(
 	const gate = Promise.withResolvers<AgentSessionEventListener>();
 	const rec: FakeSession = {
 		subscribed: gate.promise,
-		agent: {},
+		agent: { subscribe: () => () => {} },
 		// Default: no config error, and a truthy resolved model — the happy path
 		// every existing test represents, which never trips the fail-closed belt.
 		modelRegistry: { getError: () => opts.modelError },

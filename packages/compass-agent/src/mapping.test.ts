@@ -211,17 +211,32 @@ describe("EventMapper — session lifecycle state derivation", () => {
 });
 
 describe("EventMapper turn sequence", () => {
-	test("successive agent_start edges stamp matching agent_end frames", () => {
-		const manager = SessionManager.create(process.cwd());
-		const sequence = new TurnSequence(manager);
+	test("matches each agent end to its start when events are delayed", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
 		const mapper = new EventMapper(() => FIXED_NOW, sequence);
 		for (const expected of [1n, 2n, 3n]) {
+			mapper.captureTurnStart();
 			mapper.map({ type: "agent_start" });
+			mapper.map({ type: "turn_start" });
+			mapper.map({ type: "turn_start" });
 			const frame = mapper.map({ type: "agent_end", messages: [] })[0];
 			if (frame?.kind !== "session")
 				throw new Error("expected lifecycle session frame");
 			expect(frame.value.turnSequence).toBe(expected);
 		}
+	});
+
+	test("an earlier end stamps its own start after overlapping starts", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		mapper.captureTurnStart();
+		mapper.map({ type: "agent_start" });
+		mapper.captureTurnStart();
+		mapper.map({ type: "agent_start" });
+		const frame = mapper.map({ type: "agent_end", messages: [] })[0];
+		if (frame?.kind !== "session")
+			throw new Error("expected lifecycle session frame");
+		expect(frame.value.turnSequence).toBe(1n);
 	});
 });
 

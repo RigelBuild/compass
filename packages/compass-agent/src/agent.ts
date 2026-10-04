@@ -52,7 +52,6 @@ export class CompassAgent {
 	readonly #sink: FrameSink;
 	readonly #control: ControlSource;
 	readonly #mapper: EventMapper;
-	readonly #turnSequence: TurnSequence | undefined;
 	readonly #onUnmapped: (u: UnmappedEvent) => void;
 	readonly #tracer: TurnTracer | undefined;
 	// The native tools the session was constructed with — the set no control frame
@@ -116,8 +115,7 @@ export class CompassAgent {
 		this.#sink = opts.sink;
 		this.#control = opts.control;
 		this.#tracer = opts.tracer;
-		this.#turnSequence = opts.turnSequence;
-		this.#mapper = new EventMapper(Date.now, this.#turnSequence);
+		this.#mapper = new EventMapper(Date.now, opts.turnSequence);
 		this.#onUnmapped =
 			opts.onUnmapped ??
 			((u) =>
@@ -131,6 +129,9 @@ export class CompassAgent {
 	// until stdin closes. Emits a terminal status — STOPPED on a clean close,
 	// ERRORED on an exception — then resolves (clean) or re-throws (error).
 	async run(): Promise<void> {
+		const unsubscribeAgent = this.#session.agent.subscribe((event) => {
+			if (event.type === "agent_start") this.#mapper.captureTurnStart();
+		});
 		const unsubscribe = this.#session.subscribe((event) => {
 			// Turn-tracking (RIG-1310 §8): an ADDITIONAL read of the same event,
 			// beside the mapper fan-out. A turn-start edge marks the session active;
@@ -162,6 +163,7 @@ export class CompassAgent {
 		} finally {
 			// Terminal edge: no strand-recovery re-check may start a turn past here.
 			this.#closed = true;
+			unsubscribeAgent();
 			unsubscribe();
 		}
 	}

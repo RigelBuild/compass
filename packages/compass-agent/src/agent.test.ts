@@ -155,6 +155,10 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 		setTools(t: AgentTool[]): void {
 			agent.toolSets.push(t);
 		},
+		// Core events are not modelled: the mapper falls back to counting at session agent_start.
+		subscribe(): () => void {
+			return () => {};
+		},
 	};
 	Object.assign(agent, agentImpl);
 	// Resolvers for waitForIdle calls parked while streaming (RIG-2644).
@@ -2301,6 +2305,9 @@ function startTracedAgent() {
 		appendMessage(): void {},
 		setSystemPrompt(): void {},
 		setTools(): void {},
+		subscribe(): () => void {
+			return () => {};
+		},
 		state,
 	};
 	// A feedable control source (mirrors startControlAgent): parks awaiting
