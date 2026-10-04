@@ -30,9 +30,14 @@ func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessi
 	}
 	c.mu.Lock()
 	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state, turnSequence: turnSequence, upTo: math.MaxInt64})
-	// Recorded with the enqueue, so a hold that loses the race to the drain
-	// still sees this settle.
 	c.lastSettle[sessionID] = c.now().UnixMilli()
+	if turnSequence > c.lastSettleSequence[sessionID] {
+		c.lastSettleSequence[sessionID] = turnSequence
+		c.lastSettleLegacy[sessionID] = false
+	}
+	if turnSequence == 0 {
+		c.lastSettleLegacy[sessionID] = true
+	}
 	c.mu.Unlock()
 	// Coalescing wakeup: a full buffer already signals a pending drain, so a
 	// dropped send loses nothing (the loop drains the whole queue).
@@ -89,14 +94,8 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 	}
 }
 
-// drainSettles fires every queued author-settle edge under the loop's ctx. Each
-// edge fires the messages held for that author session up to its upTo, in post
-// order, from each message's CURRENT (settled) stored blocks (design.md:158-168).
-// An edge for a session with nothing in range is a no-op.
-//
-// A pre-T9 Runner link loss never enqueues an edge. No-loss still holds: the
-// sweeps skip only messages held for a LIVE author, so the cursor sweep
-// delivers an entry stranded under a dead session (design.md:168-176).
+// drainSettles handles each queued settle edge under the loop's ctx. Numbered
+// edges select by turn sequence; zero-sequence edges keep the legacy replay bound.
 func (c *Consumer) drainSettles(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -106,8 +105,19 @@ func (c *Consumer) drainSettles(ctx context.Context) {
 		}
 		ev := c.settleQueue[0]
 		c.settleQueue = c.settleQueue[1:]
+		logFallback := ev.turnSequence == 0
+		if logFallback {
+			if _, logged := c.fallbackLogged[ev.sessionID]; logged {
+				logFallback = false
+			} else {
+				c.fallbackLogged[ev.sessionID] = struct{}{}
+			}
+		}
 		c.mu.Unlock()
-		c.fireHeld(ctx, ev.sessionID, ev.upTo)
+		if logFallback {
+			c.log.WarnContext(ctx, "delivery: zero turn sequence settle; using legacy fire-all fallback", "session_id", ev.sessionID)
+		}
+		c.fireHeld(ctx, ev.sessionID, ev.upTo, ev.turnSequence)
 	}
 }
 
@@ -261,15 +271,16 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 	return nil
 }
 
-// fireHeld dispatches, ascending, the messages held for authorSession whose
-// commit time is at most upTo, and keeps the rest held in order. Each is
-// re-read under its hold-time tenant, so the deliver carries the SETTLED blocks
-// (design.md:158-161), and recipients are re-resolved at fire time.
-func (c *Consumer) fireHeld(ctx context.Context, authorSession string, upTo int64) {
+// fireHeld dispatches entries at or before both the commit-time and sequence
+// bounds, re-reading each under its hold-time tenant before dispatch.
+func (c *Consumer) fireHeld(ctx context.Context, authorSession string, upTo int64, turnSequence uint64) {
 	c.mu.Lock()
 	var fire, keep []heldEntry
 	for _, e := range c.held[authorSession] {
-		if e.atUnixMs <= upTo {
+		withinTime := e.atUnixMs <= upTo
+		// Legacy entries have no turn identity, so they never wait on a sequence.
+		withinTurn := turnSequence == 0 || e.turnSequence == 0 || e.turnSequence <= turnSequence
+		if withinTime && withinTurn {
 			fire = append(fire, e)
 		} else {
 			keep = append(keep, e)
@@ -301,16 +312,17 @@ func (c *Consumer) fireHeld(ctx context.Context, authorSession string, upTo int6
 	}
 }
 
-// OnSessionsReaped drops the held-deliver and settle-time entries for sessions
-// whose hub bindings were cleared at a Runner (re-)enroll, so a pre-T9 link loss
-// does not leak an entry (design.md:172-175). The cursor sweep still delivers
-// what was held, since it skips only live authors' messages.
+// OnSessionsReaped drops all per-session delivery state after the hub clears
+// the session binding. The cursor sweep still delivers what was held.
 func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, sid := range sessionIDs {
 		delete(c.held, sid)
 		delete(c.lastSettle, sid)
+		delete(c.lastSettleSequence, sid)
+		delete(c.lastSettleLegacy, sid)
+		delete(c.fallbackLogged, sid)
 	}
 }
 
