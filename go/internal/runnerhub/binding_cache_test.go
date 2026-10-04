@@ -58,6 +58,7 @@ type fakeBindingStore struct {
 	resolveErr           error
 	reverseErr           error
 	deleteForRunnerErr   error
+	tenantErr            error
 }
 
 func newFakeBindingStore() *fakeBindingStore {
@@ -156,6 +157,9 @@ const testRunnerID = "runner-1"
 func (f *fakeBindingStore) SessionBindingTenant(_ context.Context, sessionID, runnerID string) (store.TenantID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.tenantErr != nil {
+		return "", f.tenantErr
+	}
 	if b, ok := f.bindings[sessionID]; ok && b.RunnerID == runnerID {
 		return f.tenant, nil
 	}
