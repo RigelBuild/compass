@@ -331,6 +331,8 @@ type Message struct {
 	// former channel_id + parent_message_id: the channel is resolved through the
 	// topic, and threading is by topic membership, not a parent pointer.
 	TopicID string
+	// ChannelID is set only on SearchMessages results.
+	ChannelID ChannelID
 	// AuthorAccountID is the posting account, a user or an agent.
 	AuthorAccountID AccountID
 	// AuthorHandle is the author's current handle from account_handles.
