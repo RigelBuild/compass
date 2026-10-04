@@ -455,7 +455,7 @@ jobs:
           fonts=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix fontconfig)
           # Fail closed: the two malformed values fail in opposite directions
-          # and BOTH stay green. An EMPTY FONTCONFIG_FILE is not "use the
+          # and BOTH stay green. An EMPTY E2E_FONTCONFIG_FILE is not "use the
           # system config" — fontconfig reads it as a config with no font dirs
           # at all, and every string then measures zero width. A path that does
           # not exist falls back to the full host set, which is the undeclared
@@ -464,7 +464,7 @@ jobs:
             echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
             exit 1
           }
-          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
+          echo "E2E_FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
         if: matrix.run == 'true'
@@ -2893,7 +2893,7 @@ jobs:
             echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
             exit 1
           }
-          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
+          echo "E2E_FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Install the workspace JS dependencies
         # Unlike the forge regen lane — whose payload is `go test` and needs no
