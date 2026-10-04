@@ -418,6 +418,31 @@ A reattach within the window resumes the session; window expiry falls to
 > (RIG-1328). Until T9 lands, the
 > window/expiry state machine in this Requirement is not yet enforced.
 
+### Requirement: Recover a session after its container is removed outside Compass
+
+When an agent's container was removed outside Compass while the Runner still
+holds its handle, `ProvisionAgentWorkspace` for the same agent SHALL replace it:
+the Runner retires the `ERRORED` session, drops the stale handle, and launches a
+new container under the same name. A following `StartAgentSession` with the
+original `resume_session_id` SHALL then recover the session.
+
+#### Scenario: Re-provisioning recovers a container removed outside Compass
+
+- **Given** a session is `ERRORED` and its container was removed outside
+  Compass, while the Runner still has the container handle
+- **When** a client calls `ProvisionAgentWorkspace` for the same agent with a
+  new or empty `client_request_id`, then `StartAgentSession` with the original
+  `resume_session_id`
+- **Then** the Runner launches a replacement container instead of rejecting
+  the provision as already provisioned, and the resumed session starts on it.
+
+> **Implementation status (RIG-4108):** Before re-provisioning, the stale handle
+> misleads the other recovery calls on the podman backend. A resume
+> `StartAgentSession` fails at its first exec into the missing container.
+> `ReloadAgentSession` returns success, then the session returns to `ERRORED`
+> when the agent exec exits. `RemoveAgentWorkspace` fails at the container stop
+> and keeps the handle and placement.
+
 ### Requirement: Relayed agent events publish onto the event stream, Runner-sequenced
 
 The first-party agent emits `compass.v1` frames natively; the owning Runner
