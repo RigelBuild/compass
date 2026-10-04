@@ -129,6 +129,7 @@ type forgeStore interface {
 	EnsureAgentForgeSubscription(ctx context.Context, sub store.AgentForgeSubscription) (string, error)
 	DeleteAgentForgeSubscription(ctx context.Context, agent store.AccountID, subscriptionID string) error
 	RecordStateTransition(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64, state string, agent store.AccountID, at time.Time) error
+	HasForgeScope(ctx context.Context, account store.AccountID, provider store.ForgeProvider, host, repo string) (bool, error)
 }
 
 // forgeService is the ForgeCaller implementation and the DL-050 write
@@ -141,6 +142,8 @@ type forgeService struct {
 	issueBrd  *board.IssueProjection
 	providers *forgeProviderRegistry
 	now       func() time.Time
+	// enforceScopes gates every coordinate write on an account_forge_scopes grant.
+	enforceScopes bool
 }
 
 // newForgeService constructs the forge caller over the store, the issue
@@ -205,6 +208,22 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: call has no operation variant set"))
 	}
+}
+
+// requireForgeScope rejects a write outside the caller's grants with the same
+// result as a missing artifact, so a rejection does not reveal that the repo exists.
+func (s *forgeService) requireForgeScope(ctx context.Context, caller store.AccountID, rf resolvedForge, repo string) *compassv1internal.ForgeCallError {
+	if !s.enforceScopes {
+		return nil
+	}
+	allowed, err := s.store.HasForgeScope(ctx, caller, store.ForgeProvider(rf.provider), rf.host, repo)
+	if err != nil {
+		return storeForgeError(err)
+	}
+	if !allowed {
+		return artifactNotFound()
+	}
+	return nil
 }
 
 // callerIdentity is the resolved attribution for a write: the stamp Author plus
@@ -274,6 +293,9 @@ func subscribeToStoreKind(kind compassv1internal.ForgeArtifactKind) (store.Forge
 func (s *forgeService) subscribeForge(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubscribeForgeRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	kind, fe := subscribeToStoreKind(req.GetKind())
@@ -366,6 +388,9 @@ func (s *forgeService) createIssue(ctx context.Context, caller store.AccountID, 
 	} else if ok {
 		return coordinateResult(hit)
 	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+		return forgeErrorResult(fe)
+	}
 
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
 	if fe != nil {
@@ -398,6 +423,9 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 		return forgeErrorResult(fe)
 	} else if ok {
 		return coordinateResult(hit)
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+		return forgeErrorResult(fe)
 	}
 
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
@@ -434,6 +462,9 @@ func (s *forgeService) commentOnIssue(ctx context.Context, caller store.AccountI
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+		return forgeErrorResult(fe)
+	}
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
 	if fe != nil {
 		return forgeErrorResult(fe)
@@ -455,6 +486,9 @@ func (s *forgeService) commentOnIssue(ctx context.Context, caller store.AccountI
 func (s *forgeService) commentOnPullRequest(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.CommentOnPullRequestRequest) *compassv1internal.ForgeCallResult { //nolint:dupl // deliberate parallel of commentOnIssue (see its note): distinct proto arm + result variant, explicit parallel over a closure helper.
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
@@ -483,6 +517,9 @@ func (s *forgeService) commentOnPullRequest(ctx context.Context, caller store.Ac
 func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubmitReviewRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
@@ -600,6 +637,9 @@ func (s *forgeService) transitionIssueState(ctx context.Context, caller store.Ac
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+		return forgeErrorResult(fe)
+	}
 	if fe := transitionStateDomain(req.GetState()); fe != nil {
 		return forgeErrorResult(fe)
 	}
@@ -632,6 +672,9 @@ func (s *forgeService) transitionIssueState(ctx context.Context, caller store.Ac
 func (s *forgeService) transitionPullRequestState(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.TransitionPullRequestStateRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	if fe := transitionStateDomain(req.GetState()); fe != nil {
@@ -844,7 +887,7 @@ func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 	if se, ok := errors.AsType[*forge.StatusError](err); ok {
 		switch se.Status {
 		case 403, 404:
-			return forgeErr(connect.CodeNotFound, "forge: artifact not found")
+			return artifactNotFound()
 		case 422:
 			return forgeErr(connect.CodeInvalidArgument, se.Message)
 		case 429:
@@ -873,6 +916,12 @@ func storeForgeError(err error) *compassv1internal.ForgeCallError {
 // code (mirrors boardCallError: code = connect.CodeOf(err).String()).
 func forgeErr(code connect.Code, msg string) *compassv1internal.ForgeCallError {
 	return &compassv1internal.ForgeCallError{Code: code.String(), Message: msg}
+}
+
+// artifactNotFound is the single not-found shape for missing, forbidden, and
+// out-of-scope artifacts.
+func artifactNotFound() *compassv1internal.ForgeCallError {
+	return forgeErr(connect.CodeNotFound, "forge: artifact not found")
 }
 
 // forgeErrorResult wraps an in-band ForgeCallError as the Error arm of a
