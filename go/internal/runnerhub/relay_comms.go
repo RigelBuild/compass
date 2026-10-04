@@ -866,10 +866,9 @@ func commsCallError(err error) *compassv1internal.CommsCallError {
 	}
 }
 
-// dropLostSession releases sessionID after runnerID refused a deliver to it as
-// unknown, then reports the account so it can be woken. Only the owning Runner's
-// refusal counts, so a foreign Runner cannot unbind another's session.
-func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
+// dropLostSession unbinds, archives and reports a session its Runner lost. Only
+// the owning Runner may unbind it.
+func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string, errored bool) {
 	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
 	if !scoped {
 		return
@@ -883,11 +882,21 @@ func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
 	lost := h.lost
 	h.mu.Unlock()
 	h.archiveEnded(ctx, sessionID)
-	h.log.Warn("runner reports bound session unknown; released binding to wake the agent",
-		"session_id", sessionID, "agent_account_id", account)
+	h.log.Warn("runner reports bound session lost; released binding",
+		"session_id", sessionID, "agent_account_id", account, "errored", errored)
 	if lost != nil {
-		lost.OnSessionLost(sessionID, account)
+		lost.OnSessionLost(sessionID, account, errored)
 	}
+}
+
+// dropLostSessionDetached runs dropLostSession off the caller's receive loop: it
+// does store work, and the stream ctx dies with the stream.
+func (h *Hub) dropLostSessionDetached(ctx context.Context, runnerID, sessionID string, errored bool) {
+	go func() {
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lostSessionTimeout)
+		defer cancel()
+		h.dropLostSession(dctx, runnerID, sessionID, errored)
+	}()
 }
 
 // runnerSessionCtx scopes a Runner-originated ctx to the tenant that binds
