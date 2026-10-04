@@ -1941,25 +1941,31 @@ func TestGetIssueDecodeError(t *testing.T) {
 
 // A limited list stops paging once it holds Limit issues: the server only
 // renders that many, and walking every page cost one request per 100 issues.
+// Limit 3 ends exactly on page 2's boundary; the failing page 3 catches a
+// request past it.
 func TestListIssuesStopsPagingAtLimit(t *testing.T) {
 	next := func(p int) map[string]string {
 		return map[string]string{"Link": fmt.Sprintf(`<https://api.github.com/repos/org/repo/issues?page=%d>; rel="next"`, p)}
 	}
-	rt := &scriptedRoundTripper{responses: []scriptedResponse{
-		{status: 200, body: `[{"number":1,"user":{"login":"a"}}]`, headers: next(2)},
-		{status: 200, body: `[{"number":2,"user":{"login":"a"}},{"number":3,"user":{"login":"a"}}]`, headers: next(3)},
-		{status: 200, body: `[{"number":4,"user":{"login":"a"}}]`},
-	}}
-	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	for _, limit := range []int{2, 3} {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{
+				{status: 200, body: `[{"number":1,"user":{"login":"a"}}]`, headers: next(2)},
+				{status: 200, body: `[{"number":2,"user":{"login":"a"}},{"number":3,"user":{"login":"a"}}]`, headers: next(3)},
+				{status: 500, body: `{"message":"page 3 must not be fetched"}`},
+			}}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
-	got, err := g.ListIssues(context.Background(), "org/repo", IssueFilter{Limit: 2})
-	if err != nil {
-		t.Fatalf("ListIssues: %v", err)
-	}
-	if rt.calls != 2 {
-		t.Errorf("pages fetched = %d, want 2", rt.calls)
-	}
-	if len(got) != 2 || got[0].Number != 1 || got[1].Number != 2 {
-		t.Errorf("issues = %+v, want numbers [1 2]", got)
+			got, err := g.ListIssues(context.Background(), "org/repo", IssueFilter{Limit: limit})
+			if err != nil {
+				t.Fatalf("ListIssues: %v", err)
+			}
+			if rt.calls != 2 {
+				t.Errorf("pages fetched = %d, want 2", rt.calls)
+			}
+			if len(got) != limit || got[len(got)-1].Number != uint64(limit) {
+				t.Errorf("issues = %+v, want numbers 1..%d", got, limit)
+			}
+		})
 	}
 }
