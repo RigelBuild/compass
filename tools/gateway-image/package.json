@@ -1,0 +1,11 @@
+{
+	"name": "@compass/gateway-image",
+	"private": true,
+	"type": "module",
+	"description": "Build, smoke, and publish the LLM gateway image Compass Server supervises, from a fork commit pinned in fork-pin.json. The deployed reference is always repo@sha256:…; the lane writes only :git-<sha12>.",
+	"module": "core.ts",
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
