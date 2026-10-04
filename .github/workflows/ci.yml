@@ -2828,6 +2828,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       ref: ${{ steps.target.outputs.ref }}
+      sha: ${{ steps.captured.outputs.sha }}
     steps:
       - name: Resolve the capture branch
         id: target
@@ -2840,6 +2841,11 @@ jobs:
         with:
           ref: ${{ steps.target.outputs.ref }}
           persist-credentials: false
+
+      # Publish fails if the branch moves past this commit during capture.
+      - name: Record the captured commit
+        id: captured
+        run: echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
@@ -2956,8 +2962,8 @@ jobs:
   publish-visual-baselines:
     name: publish-visual-baselines
     runs-on: ubuntu-latest
-    # Holds the App token, so it runs nothing from the captured branch: it
-    # checks the branch out only as the PR's base tree and copies in PNGs.
+    # Holds the App token, so it runs nothing from the captured branch: the
+    # branch is only the PR's base tree, and the PNGs arrive as plain files.
     needs: regen-visual-baselines
     timeout-minutes: 10
     steps:
@@ -2968,10 +2974,34 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Refuse a branch that moved during capture
+        env:
+          CAPTURED: ${{ needs.regen-visual-baselines.outputs.sha }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$CAPTURED" ] || {
+            echo "::error::the branch moved during capture; re-dispatch"
+            exit 1
+          }
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: visual-baselines
-          path: apps/ui/e2e/__screens__
+          path: ${{ runner.temp }}/visual-baselines
+
+      - name: Import the PNGs as plain files
+        # The branch controls this checkout, so a tracked symlink in __screens__
+        # would aim an in-place extraction at .git/config. Replace the directory
+        # and copy only regular top-level PNGs; disable hooks for the PR action.
+        env:
+          SRC: ${{ runner.temp }}/visual-baselines
+        run: |
+          dir=apps/ui/e2e/__screens__
+          rm -rf -- "$dir"
+          mkdir -p -- "$dir"
+          find "$SRC" -maxdepth 1 -type f -name '*.png' \
+            -exec cp --no-dereference -t "$dir" -- {} +
+          [ -n "$(ls -A "$dir")" ] || { echo "::error::no PNGs in artifact"; exit 1; }
+          git config --local core.hooksPath /dev/null
 
       # App token for the same reason as the forge lane: a GITHUB_TOKEN PR gets no CI.
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
