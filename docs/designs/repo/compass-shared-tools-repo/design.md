@@ -32,6 +32,7 @@ record names no path in the private repo.
 | Root checks | `lint`, `format`, `markdownlint` tasks in the root `moon.yml` | Different tool | Not a copy. The private consumer runs a separate tool that runs its checks outside the moon cache and gates baked linter versions. | Stay local |
 | Agent extensions | None | Yes | None to measure. Personal agent config, not repo tooling. | Stay private |
 | Renovate config | `tools/renovate/config.json5` | Yes | Different files that share ideas (git-refs cooldown, catalog handling). | Later record |
+| Renovate upgrade scripts | `tools/renovate/refresh-go-overlay[.core].ts`, `refresh-devenv-nixpkgs[.core].ts`, `refresh-toolchain-hashes.ts` | Yes, same names | Not measured. Each bot config's `allowedCommands` regex names these paths, so moving them changes that config too. | Later record |
 
 ## Approach
 
@@ -56,10 +57,21 @@ code. Each consumer keeps one config file, `docs/designs/ledger.config.json`,
 which the gate, claim, and reconcile tools all read. The reference gate reads
 its own config file.
 
-The CLIs keep their current environment inputs (`GATE_ROOT`, `REPO`,
-`PR_NUMBER`, `GH_TOKEN`, `DL_CLAIM_TOKEN`, `RENOVATE_TOKEN`) and exit codes (0
-pass, 1 violations, 2 usage or internal error). CI wiring then changes only the
-command it runs.
+The CLIs keep their environment inputs (`REPO`, `PR_NUMBER`, `GH_TOKEN`,
+`DL_CLAIM_TOKEN`, `RENOVATE_TOKEN`). Every tool also reads `GATE_ROOT`, default
+the git toplevel, as the consumer root. A tool under `node_modules` cannot find
+the ledger relative to its own file, as `dl-reconcile` does today
+(`resolve(import.meta.dir, …)`). The counter URL comes only from
+`counter.url`; no env var overrides it.
+
+Exit codes are normalized to 0 pass, 1 violations, 2 usage or internal error.
+This is a change, not a carry-over: `dl-claim` and `dl-reconcile` exit 1 for
+every error today. CI only checks for non-zero, so no workflow changes.
+
+CI wiring changes more than the command. `dl-reconcile.yml` and the Renovate
+preflight step in `renovate.yml` run the tool from the checkout with no
+`bun install`, and both jobs hold a secret. A package bin needs an install
+first. OQ4 picks how.
 
 ### Pinning (OQ1)
 
@@ -71,13 +83,18 @@ command it runs.
 | Nix flake input | Flake input; `flake.lock` keeps the narHash | Content-addressed and nix-native | The tools run under bun with npm dependencies (micromark), so each needs a nix package build. moon and `tsc` cannot typecheck against a store path. |
 
 Recommendation: npm. A tool bump is then an ordinary catalog PR with release
-notes, under the same release-age cooldown as every other dependency. Compass's
-Renovate config nulls that cooldown on its git-refs rules because a git ref has
-no release timestamp (`tools/renovate/config.json5`), so both git options lose
-it. Publishing uses npm trusted publishing (OIDC from the shared repo's `main`
-release workflow), so no long-lived publish token exists. The only manual step
-is creating the npm org and its trusted-publisher entry. That step has no IaC
-path, so it goes to Matt as a human-action issue.
+notes. Compass's Renovate config nulls the cooldown on its git-refs rules
+because a git ref has no release timestamp (`tools/renovate/config.json5`), so
+both git options lose it. With npm the 5-day cooldown applies in both
+`bunfig.toml` (`minimumReleaseAge`) and Renovate, so a gate fix takes at least
+5 days to reach a consumer. OQ5 decides whether the packages are exempt.
+
+Publishing uses npm trusted publishing (OIDC from the shared repo's `main`
+release workflow), so no long-lived publish token exists. The `@rigelbuild`
+npm scope already exists (compass resolves `@rigelbuild/solid-virtual` from
+npm). npm can set a trusted publisher only on a package that already exists,
+so each new package needs one bootstrap publish and one trusted-publisher entry.
+These steps have no IaC path, so they go to Matt as one human-action issue.
 
 ### What may move (the public boundary)
 
@@ -104,9 +121,9 @@ Enforcement:
 
 No copy is left to drift. A consumer cannot patch a tool locally without
 adding a copy back, and the Global Constraints forbid that. Renovate bumps both
-pins, so the consumers converge on the newest release within one Renovate
-cycle. Skew between them is a version number, not a fork. A fix lands as a
-shared-repo PR and reaches each consumer by pin bump.
+pins, so skew between the consumers is a version number, not a fork. It lasts
+at least the cooldown window (OQ5). A fix lands as a shared-repo PR and reaches
+each consumer by pin bump.
 
 ### Alternatives considered
 
@@ -125,7 +142,8 @@ shared-repo PR and reaches each consumer by pin bump.
   biome, `bun test`, rumdl for markdown.
 - Each tool is the package `@rigelbuild/<tool>` under `packages/<tool>/`, with
   bin `<tool>` pointing at `./index.ts` (shebang `#!/usr/bin/env bun`).
-- CLIs keep their current environment inputs and exit codes 0 / 1 / 2.
+- CLIs read `GATE_ROOT` (default git toplevel) and exit 0 / 1 / 2 as defined
+  in "Config, not literals".
 - Consumers pin an exact version (or an exact SHA if OQ1 picks a git option),
   never a range. Bumps arrive only by Renovate PR.
 - A consumer's switch PR deletes its local copy in the same PR. No vendored
@@ -151,7 +169,8 @@ Interfaces: consumes OQ2; produces the empty repo.
 Lands in: the shared repo. A bun workspace over `packages/*`, moon, biome,
 rumdl, the licence files, a GitHub Actions CI that runs typecheck, lint, and
 test per package, and the release lane per OQ1. For npm: release-please per
-package, then `npm publish --provenance` through trusted publishing.
+package, then `npm publish --provenance` through trusted publishing, after the
+bootstrap publish of each package.
 
 Interfaces: each `packages/<tool>/package.json` has
 `"name": "@rigelbuild/<tool>"` and `"bin": { "<tool>": "./index.ts" }`.
@@ -165,12 +184,13 @@ in the same PR.
 Interfaces:
 
 ```ts
-export interface RefGatePattern { source: string; flags: string } // RegExp parts
 export interface RefGateConfig {
-  patterns: readonly RefGatePattern[];
+  prefilter: { ere: string; ignoreCase: boolean }; // POSIX ERE handed to git grep
+  patterns: readonly { source: string; flags: string }[]; // JS RegExp, applied per hit
   ignore: readonly string[]; // compound names stripped before matching, e.g. a gate's own name
   carveOutPaths: readonly string[];
   carveOutPrefixes: readonly string[];
+  allowlist: Readonly<Record<string, string>>; // path -> reason
   remediationDoc?: string;
 }
 export function loadRefGateConfig(path: string): RefGateConfig; // throws on unknown keys
@@ -178,22 +198,30 @@ export function findViolations(config: RefGateConfig, grepHits: readonly string[
 export async function runOnce(deps: Deps, config: RefGateConfig): Promise<number>;
 ```
 
+The coarse git-grep search is its own POSIX ERE, not derived from the JS
+patterns. A JS-only construct such as `\b` in a git-grep ERE can match nothing,
+and the gate then passes when it should fail.
+
 CLI: `ref-gate --config <path>`.
 
 ### T4 — `design-ledger-gate`
 
-Lands in: the shared repo. Port compass's gate. Add `layout: "per-surface"`
-(ledger at `<designsDir>/<surface>/DECISIONS.md`, found by glob), malformed-row
-reporting, and the three extra legs behind config (OQ3). Tests: compass's tests
-plus synthetic per-surface fixtures.
+Lands in: the shared repo. Port compass's gate. Add a list of ledgers (each
+with its own surface), malformed-row reporting, and the three extra legs behind
+config (OQ3). Tests: compass's tests plus synthetic multi-ledger fixtures. The
+private copy's test cases are the specification for those fixtures, written
+again as synthetic cases.
 
 Interfaces:
 
 ```ts
+export interface LedgerEntry {
+  path: string; // e.g. "docs/designs/DECISIONS.md"
+  surface: string; // counter surface for IDs in this ledger
+  governedRoots: readonly string[]; // record dirs this ledger governs
+}
 export interface LedgerConfig {
-  designsDir: string; // "docs/designs"
-  layout: "single" | "per-surface";
-  governedRoots?: readonly string[]; // single layout: the bucket list
+  ledgers: readonly LedgerEntry[]; // compass: one entry
   historicalChain?: readonly string[]; // record paths that must be Historical
   exemptBranchPrefixes?: readonly string[]; // default ["renovate/", "trunk-merge/"]
   legs?: { citations?: boolean; errata?: boolean; recordLinks?: boolean }; // each default false
@@ -207,10 +235,10 @@ CLI: `design-ledger-gate --config docs/designs/ledger.config.json`.
 
 ### T5 — `dl-claim` and `dl-reconcile`
 
-Lands in: the shared repo. Both read `counter` and the ledger layout from
+Lands in: the shared repo. Both read `counter` and `ledgers` from
 `LedgerConfig`. Reconcile keeps compass's guards (raw-row cross-count,
 empty-frontier refusal, `--check`) and adds the stale and duplicate claim
-report.
+report. Messages that name the counter take its URL from config.
 
 Interfaces:
 
@@ -229,8 +257,8 @@ export function assertReconcilableLedgers(
 
 CLIs: `dl-claim --config <path> --ref <RIG-n|none> --lane <branch> [--count 1..10] [--surface <s>]`
 and `dl-reconcile --config <path> [--check]`, both reading `DL_CLAIM_TOKEN`.
-`--surface` is required in the per-surface layout; the single layout sends
-`designs`. `repo` is always `counter.partition`.
+`--surface` is required when the config lists more than one ledger. `repo` is
+always `counter.partition`.
 
 ### T6 — `renovate-preflight`
 
@@ -243,30 +271,36 @@ codes as today; `classify(probe: ProbeResult): PreflightResult` stays exported.
 ### T7 — Compass cutover
 
 Lands in: compass. Add the five packages at exact versions. Add
-`docs/designs/ledger.config.json`: single layout, the seven current buckets
-(`ui`, `agent`, `server`, `meta`, `infra`, `observability`, `repo`), an empty
-historical chain, `renovate/` and `trunk-merge/` exempt, all legs off,
-partition `compass`, url `https://dl.rigel.build`. Add a code-free moon project
-`tools/ref-gates/` holding `moon.yml` and the two configs `sea.json` and
-`private-name.json`. Point the moon tasks, `.github/workflows/dl-reconcile.yml`,
-the `design-ledger-gate:ci` target injected in `.github/workflows/ci.yml`,
+`docs/designs/ledger.config.json`: one ledger (`docs/designs/DECISIONS.md`,
+surface `designs`, the seven current buckets `ui`, `agent`, `server`, `meta`,
+`infra`, `observability`, `repo`), an empty historical chain, `renovate/` and
+`trunk-merge/` exempt, all legs off, partition `compass`, url
+`https://dl.rigel.build`. Add a code-free moon project `tools/ref-gates/`
+holding `moon.yml` and the two configs `sea.json` and `private-name.json`.
+The private-name config keeps the deleted tool's compound name in `ignore`,
+because existing records still cite that path. Point the moon tasks,
+`.github/workflows/dl-reconcile.yml`, the Renovate preflight step, the
+`design-ledger-gate:ci` target injected in `.github/workflows/ci.yml`,
 `.moon/workspace.yml`, and `docs/designs/CONTRIBUTING.md` §7 at the package
-bins. Delete `tools/design-ledger-gate/`, `tools/dl-claim/`,
-`tools/dl-reconcile/`, `tools/sea-ref-gate/`, `tools/orion-ref-gate/`, and
-`tools/renovate-preflight/`.
+bins, with the install that OQ4 picks. Delete `tools/design-ledger-gate/`,
+`tools/dl-claim/`, `tools/dl-reconcile/`, `tools/sea-ref-gate/`,
+`tools/orion-ref-gate/`, and `tools/renovate-preflight/`.
 
-Acceptance: on the cutover commit, the old and new gates give the same exit
-code and the same violation lines on compass's tree. Run both once and record
-the result in the PR body.
+Acceptance: a seeded corpus with at least one known violation per gate leg and
+one branch per exempt prefix. Run the old and new gates on it through
+`GATE_ROOT`. They report the same set of `file:line` pairs and the same pass or
+fail result. The intended changes (the `trunk-merge/` exemption, the tool name
+in output) are listed as stated exceptions. A clean tree cannot fail this
+check, so it does not count. Record the result in the PR body.
 
 Interfaces: consumes the T3–T6 releases; produces the config files above.
 
 ### T8 — Private consumer cutover
 
 Lands in: the private consumer. The same shape as T7: its own
-`ledger.config.json` (per-surface layout, all legs on, its own partition), its
-own reference-gate config, CI pointed at the bins, and its local copies
-deleted. The same parity acceptance as T7.
+`ledger.config.json` (one entry per surface ledger, all legs on, its own
+partition), its own reference-gate config, CI pointed at the bins, and its
+local copies deleted. The same seeded-corpus acceptance as T7.
 
 Interfaces: consumes the T3–T6 releases.
 
@@ -287,7 +321,7 @@ checks. The DL counter service (`dl.rigel.build`) does not move.
 - [ ] T1 — Create `RigelBuild/repo-tools` through the org's GitHub IaC.
 - [ ] T2 — Scaffold the shared repo and its release lane.
 - [ ] T3 — Ship `ref-gate` and make it the shared repo's required check.
-- [ ] T4 — Port `design-ledger-gate` with both ledger layouts.
+- [ ] T4 — Port `design-ledger-gate` onto a list of ledgers.
 - [ ] T5 — Port `dl-claim` and `dl-reconcile` onto `LedgerConfig`.
 - [ ] T6 — Move `renovate-preflight`.
 - [ ] T7 — Cut compass over and delete its six local tools.
@@ -301,10 +335,23 @@ checks. The DL counter service (`dl.rigel.build`) does not move.
 - **OQ2 (load-bearing; blocks T1) — repo and scope names.** Working names:
   `RigelBuild/repo-tools` and `@rigelbuild/<tool>`.
 - **OQ3 (load-bearing; blocks the extra legs in T4) — publish the private-only
-  ledger-gate features.** The per-surface layout, the citation, errata, and
+  ledger-gate features.** Multiple ledgers, the citation, errata, and
   record-link legs, and malformed-row reporting exist only in the private
   copy, and publishing private code is Matt's call. Recommendation: yes. They
   are generic checks over a markdown corpus; write them again as public code
   with synthetic fixtures. If no, T4 ships compass's feature set only, and the
   private consumer keeps those legs locally, so part of the ledger gate stays
   duplicated.
+- **OQ4 (load-bearing; blocks T7, T8) — install in secret-holding jobs.** The
+  reconcile job and the Renovate preflight step hold secrets and do no install
+  today. Options: (a) a full `bun install --frozen-lockfile`, lockfile-checked
+  but every dependency runs next to the secret; (b) an isolated install of just
+  the tool into a temp dir with its own lockfile, a small surface but a second
+  lockfile to keep current; (c) `bunx @rigelbuild/<tool>@<exact>`, the
+  smallest change, but it skips `bun.lock` integrity. Recommendation: (b).
+- **OQ5 (blocks T7) — cooldown for these packages.** Keep the 5-day cooldown
+  (a fix waits at least 5 days per consumer) or exempt `@rigelbuild/*` tools in
+  both `bunfig.toml` and Renovate, as compass already does for
+  `@rigelbuild/solid-*`. Recommendation: exempt, since Matt approves every
+  shared-repo release PR, and the cooldown guards against third-party
+  publishes.
