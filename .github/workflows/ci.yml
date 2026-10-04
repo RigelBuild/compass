@@ -3016,6 +3016,7 @@ jobs:
       - name: Open a bot PR with the regenerated baselines
         # The bot PR targets the captured branch (`regen_ref`, default main),
         # so a Chromium bump's baselines land on the bump branch, not on main.
+        id: cpr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -3039,3 +3040,20 @@ jobs:
             a rebase (or any bookmark rewrite) can silently drop it and
             resurrect the red visual gate with no obvious cause.
           add-paths: apps/ui/e2e/__screens__
+
+      - name: Refuse a PR not built on the captured commit
+        # The action fetches `base` by name, so a branch that advanced after the
+        # HEAD check would carry these PNGs onto an unchecked tip. Close that PR.
+        if: steps.cpr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CAPTURED: ${{ needs.regen-visual-baselines.outputs.sha }}
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+        run: |
+          parent=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --jq '.[0].parents[0].sha')
+          [ "$parent" = "$CAPTURED" ] || {
+            gh pr close "$PR" --repo "$GITHUB_REPOSITORY" --delete-branch \
+              --comment "Built on $parent, not the captured $CAPTURED; re-dispatch."
+            echo "::error::base moved after capture; closed PR #$PR"
+            exit 1
+          }
