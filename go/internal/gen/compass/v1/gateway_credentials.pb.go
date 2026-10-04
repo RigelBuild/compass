@@ -90,8 +90,13 @@ type GatewayOAuthToken struct {
 	OrgId              string                 `protobuf:"bytes,9,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
 	OrgName            string                 `protobuf:"bytes,10,opt,name=org_name,json=orgName,proto3" json:"org_name,omitempty"`
 	AuthorizedAtUnixMs int64                  `protobuf:"varint,11,opt,name=authorized_at_unix_ms,json=authorizedAtUnixMs,proto3" json:"authorized_at_unix_ms,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Account residency; selects the API host for region-partitioned providers.
+	Region string `protobuf:"bytes,12,opt,name=region,proto3" json:"region,omitempty"`
+	// Inference scope: "global", "eu", or "us"; empty when the provider has none.
+	InferenceRegion      string `protobuf:"bytes,13,opt,name=inference_region,json=inferenceRegion,proto3" json:"inference_region,omitempty"`
+	ActiveOrganizationId string `protobuf:"bytes,14,opt,name=active_organization_id,json=activeOrganizationId,proto3" json:"active_organization_id,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *GatewayOAuthToken) Reset() {
@@ -199,6 +204,27 @@ func (x *GatewayOAuthToken) GetAuthorizedAtUnixMs() int64 {
 		return x.AuthorizedAtUnixMs
 	}
 	return 0
+}
+
+func (x *GatewayOAuthToken) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *GatewayOAuthToken) GetInferenceRegion() string {
+	if x != nil {
+		return x.InferenceRegion
+	}
+	return ""
+}
+
+func (x *GatewayOAuthToken) GetActiveOrganizationId() string {
+	if x != nil {
+		return x.ActiveOrganizationId
+	}
+	return ""
 }
 
 type GatewayCredential struct {
@@ -629,7 +655,7 @@ var File_compass_v1_gateway_credentials_proto protoreflect.FileDescriptor
 const file_compass_v1_gateway_credentials_proto_rawDesc = "" +
 	"\n" +
 	"$compass/v1/gateway_credentials.proto\x12\n" +
-	"compass.v1\"\xfa\x02\n" +
+	"compass.v1\"\xf3\x03\n" +
 	"\x11GatewayOAuthToken\x12\x1b\n" +
 	"\x06access\x18\x01 \x01(\tB\x03\x80\x01\x01R\x06access\x12\x1d\n" +
 	"\arefresh\x18\x02 \x01(\tB\x03\x80\x01\x01R\arefresh\x12&\n" +
@@ -644,7 +670,10 @@ const file_compass_v1_gateway_credentials_proto_rawDesc = "" +
 	"\x06org_id\x18\t \x01(\tR\x05orgId\x12\x19\n" +
 	"\borg_name\x18\n" +
 	" \x01(\tR\aorgName\x121\n" +
-	"\x15authorized_at_unix_ms\x18\v \x01(\x03R\x12authorizedAtUnixMs\"\xf3\x01\n" +
+	"\x15authorized_at_unix_ms\x18\v \x01(\x03R\x12authorizedAtUnixMs\x12\x16\n" +
+	"\x06region\x18\f \x01(\tR\x06region\x12)\n" +
+	"\x10inference_region\x18\r \x01(\tR\x0finferenceRegion\x124\n" +
+	"\x16active_organization_id\x18\x0e \x01(\tR\x14activeOrganizationId\"\xf3\x01\n" +
 	"\x11GatewayCredential\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x128\n" +
