@@ -366,11 +366,11 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	defer unlock()
 
 	handle, ok := h.registry.Resolve(name)
-	if !ok {
+	if !ok || handle == nil {
 		return "", errSessionUnknown
 	}
-	if handle == nil {
-		return "", errSessionUnknown
+	if err := h.requireContainer(ctx, name); err != nil {
+		return "", err
 	}
 
 	h.mu.Lock()
@@ -1087,6 +1087,9 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	if !ok || handle == nil {
 		return errSessionUnknown
 	}
+	if err := h.requireContainer(ctx, s.containerName); err != nil {
+		return err
+	}
 	stream := s.stream
 	if stream != nil {
 		if err := stream.Stop(); err != nil {
@@ -1119,6 +1122,20 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 		defer h.retireWG.Done()
 		h.retireOnExit(ctx, sessionID, s.containerName, stream)
 	}()
+	return nil
+}
+
+// requireContainer fails fast when a registered container was removed outside
+// Compass before the call, so Start and Reload never report success on an exec
+// that cannot run.
+func (h *agentHost) requireContainer(ctx context.Context, name string) error {
+	live, err := h.engine.Exists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("checking registered agent container %q: %w", name, err)
+	}
+	if !live {
+		return errContainerGone
+	}
 	return nil
 }
 

@@ -256,11 +256,9 @@ func TestInspectMountLabelArgsPinsFormat(t *testing.T) {
 	}
 }
 
-// removeArgs pins the exact `podman rm` argv. --volumes must ride alongside
-// --force so a container whose image declares a VOLUME does not orphan its
-// anonymous volumes on removal — leaked volumes exhaust podman's num_locks and
-// wedge the host. A dropped --volumes silently reintroduces that leak on the
-// production removal path, which has no other guard.
+// removeArgs pins the exact `podman rm` argv. --volumes removes anonymous
+// volumes along with a container so images declaring VOLUME do not orphan them;
+// --force also makes rm succeed when the container is already missing.
 func TestRemoveArgsCarriesVolumes(t *testing.T) {
 	args := removeArgs(WorkloadID("ctr123"))
 
@@ -538,6 +536,14 @@ func podmanStubExit(t *testing.T, code int) *PodmanCLI {
 		t.Fatalf("writing stub: %v", err)
 	}
 	return NewPodmanCLI().WithProgram(prog).WithTimeout(10 * time.Second)
+}
+
+func TestStopArgsIgnoreMissingContainer(t *testing.T) {
+	args := stopArgs(WorkloadID("ctr123"), 1500*time.Millisecond)
+	want := []string{"stop", "--ignore", "--time", "2", "ctr123"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("stopArgs = %q, want %q", args, want)
+	}
 }
 
 // A ran child's exit status comes back as data, and Exists/ImageExists key

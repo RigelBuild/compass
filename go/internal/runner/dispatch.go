@@ -68,6 +68,7 @@ var (
 	errAlreadyRunning        = errors.New("session already running on container")
 	errAlreadyProvisioned    = errors.New("container name already provisioned on this runner")
 	errSessionUnknown        = errors.New("session unknown to runner")
+	errContainerGone         = errors.New("agent container no longer exists; re-provision it")
 	errFreshSessionIDMissing = errors.New("fresh session start missing server-minted session id")
 )
 
@@ -417,7 +418,7 @@ func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *com
 	switch {
 	case errors.Is(err, errAlreadyRunning), errors.Is(err, errAlreadyProvisioned):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING
-	case errors.Is(err, errSessionUnknown):
+	case errors.Is(err, errSessionUnknown), errors.Is(err, errContainerGone):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
 	case errors.Is(err, errFreshSessionIDMissing), errors.Is(err, gateway.ErrOperatorConfig):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION

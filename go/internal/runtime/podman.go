@@ -626,14 +626,21 @@ func stopGraceSeconds(timeout time.Duration) int64 {
 
 // Stop stops a running container, allowing timeout for graceful exit.
 func (p *PodmanCLI) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
+	_, err := p.run(ctx, "podman stop", stopArgs(id, timeout))
+	return err
+}
+
+// stopArgs assembles the `podman stop` argv. --ignore makes stopping a missing
+// container succeed without suppressing other engine errors.
+func stopArgs(id WorkloadID, timeout time.Duration) []string {
 	// podman's --time is whole seconds; the interface takes a Duration for idiom
 	// and callsite clarity, converted at this CLI boundary.
-	_, err := p.run(ctx, "podman stop", []string{
+	return []string{
 		"stop",
+		"--ignore",
 		"--time", strconv.FormatInt(stopGraceSeconds(timeout), 10),
 		id.String(),
-	})
-	return err
+	}
 }
 
 // Remove removes a container (force-kills if still running).
@@ -645,9 +652,10 @@ func (p *PodmanCLI) Remove(ctx context.Context, id WorkloadID) error {
 // removeArgs assembles the `podman rm` argv. --volumes removes any anonymous
 // volumes created with the container along with it: a base image that declares
 // a VOLUME directive would otherwise orphan them, and leaked anonymous volumes
-// exhaust podman's num_locks and wedge the host. Harmless when the container
-// has none. Sister argv in internal/pgtest (removeContainerArgs); the two are
-// deliberately independent (no prod->test-harness dependency) — keep in sync.
+// exhaust podman's num_locks and wedge the host. Harmless when the container has
+// none. --force also makes rm succeed for a missing container. Sister argv in
+// internal/pgtest (removeContainerArgs); the two are deliberately independent
+// (no prod->test-harness dependency) — keep in sync.
 func removeArgs(id WorkloadID) []string {
 	return []string{"rm", "--force", "--volumes", id.String()}
 }
