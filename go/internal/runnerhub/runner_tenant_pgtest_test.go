@@ -27,6 +27,10 @@ func TestDropLostSessionScopesToTheSessionTenant(t *testing.T) {
 	sink := &recordingLostSink{}
 	hub.SetSessionLostSink(sink)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	// Enroll reaps every binding on this Runner; re-record so the drop reads a live row cold.
+	if _, err := st.RecordSessionBinding(ctxB, "sess-b", agent.ID, "runner-1"); err != nil {
+		t.Fatalf("RecordSessionBinding after enroll: %v", err)
+	}
 
 	hub.dropLostSession(ctx, "runner-1", "sess-b")
 
@@ -38,7 +42,7 @@ func TestDropLostSessionScopesToTheSessionTenant(t *testing.T) {
 	}
 }
 
-// A re-enrolling Runner spans tenants, so its system-role sweep must reap tenant B's
+// An enrolling Runner spans tenants, so its system-role sweep must reap tenant B's
 // binding and record its end event with tenant B's id.
 func TestEnrollReapsSessionBindingAcrossTenants(t *testing.T) {
 	ctx := context.Background()
@@ -46,8 +50,6 @@ func TestEnrollReapsSessionBindingAcrossTenants(t *testing.T) {
 
 	hub := newHubOnly()
 	hub.SetSessionBindingStore(st)
-	// The first enroll keeps durable rows; the second is the reconnect that reaps.
-	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	var remaining, ends int
