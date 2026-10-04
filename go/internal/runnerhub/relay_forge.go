@@ -83,9 +83,14 @@ func (h *Hub) RelayForgeCall(
 	}
 	sessionID := req.GetSessionId()
 	// Scope grants and memos are tenant rows; the Runner token carries no tenant.
-	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
-	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
-	if !scoped || !ok {
+	scopedCtx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
+	var account store.AccountID
+	ok := false
+	if scoped {
+		ctx = scopedCtx
+		account, ok = h.accountForRunnerSession(ctx, runnerID, sessionID)
+	}
+	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
 		return nil, connect.NewError(
