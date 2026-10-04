@@ -1,0 +1,41 @@
+// Historical token usage and spend series for tenant-scoped charts.
+// The authenticated caller sets tenant scope; request fields never set the tenant.
+
+syntax = "proto3";
+
+package compass.v1;
+
+service UsageService {
+  // Historical usage in [start, end), oldest first; empty buckets are omitted.
+  rpc GetUsageSeries(GetUsageSeriesRequest) returns (GetUsageSeriesResponse);
+}
+
+// Values map directly to usage.GranularityHour and usage.GranularityDay.
+enum Granularity {
+  GRANULARITY_UNSPECIFIED = 0;
+  GRANULARITY_HOUR = 1;
+  GRANULARITY_DAY = 2;
+}
+
+message GetUsageSeriesRequest {
+  int64 start_unix_ms = 1;
+  int64 end_unix_ms = 2;
+  Granularity granularity = 3;
+  string agent_account_id = 4;
+  bool include_subtree = 5;
+  string provider = 6;
+}
+
+message UsageBucket {
+  int64 bucket_start_unix_ms = 1;
+  int64 input_tokens = 2;
+  int64 output_tokens = 3;
+  int64 cache_read_tokens = 4;
+  int64 cache_write_tokens = 5;
+  // Total cost in integer micro-USD.
+  int64 cost_micro_usd = 6;
+}
+
+message GetUsageSeriesResponse {
+  repeated UsageBucket buckets = 1;
+}
