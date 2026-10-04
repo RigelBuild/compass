@@ -312,6 +312,8 @@ func componentFromString(s string) (Component, bool) {
 		return ComponentCollector, true
 	case ComponentNats.String():
 		return ComponentNats, true
+	case ComponentGateway.String():
+		return ComponentGateway, true
 	default:
 		return 0, false
 	}

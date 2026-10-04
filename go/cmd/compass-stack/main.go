@@ -126,10 +126,13 @@ type configFlags struct {
 	// The microVM guest knobs. runtimeBackend stays empty unless the flag or
 	// env explicitly selects a backend: an implicit "microvm" here would put
 	// every stack on a backend its host may not support.
-	runtimeBackend string
-	guestArtifact  string
-	guestDir       string
-	linger         bool
+	runtimeBackend     string
+	guestArtifact      string
+	guestDir           string
+	gatewayImage       string
+	gatewayExternal    string
+	gatewayExternalSet bool
+	linger             bool
 }
 
 // newFlagSet builds a flag.FlagSet for one subcommand, registering the config
@@ -192,6 +195,8 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 			"manifest.sha256) to use as-is, skipping all fetching — the "+
 			"air-gapped path. Honors $COMPASS_GUEST_DIR; the flag wins. Mutually "+
 			"exclusive with --guest-artifact.")
+	fs.StringVar(&f.gatewayImage, "gateway-image", stack.DefaultGatewayImage, "Container image for the bundled LLM gateway. Required unless --gateway-external is set.")
+	fs.StringVar(&f.gatewayExternal, "gateway-external", "", "Do not start the bundled LLM gateway; use this external gateway URL instead.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,
 			"Leave the stack running after this process exits (records Config.Linger).")
@@ -211,6 +216,9 @@ func markExplicitFlags(fs *flag.FlagSet, f *configFlags) {
 		}
 		if fl.Name == "nats-external" {
 			f.natsExternalSet = true
+		}
+		if fl.Name == "gateway-external" {
+			f.gatewayExternalSet = true
 		}
 	})
 }
@@ -284,6 +292,9 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 	if f.natsExternalSet && f.natsExternal == "" {
 		return stack.Config{}, errors.New("--nats-external requires an explicit nats:// URL: point compass surfaces at your own broker (omit the flag to bundle one)")
 	}
+	if f.gatewayExternalSet && f.gatewayExternal == "" {
+		return stack.Config{}, errors.New("--gateway-external requires an explicit URL")
+	}
 
 	// The guest knobs take the module's flag-then-env precedence with NO default
 	// on any of the three: an implicit backend selection here would silently
@@ -318,6 +329,8 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		RuntimeBackend:       runtimeBackend,
 		GuestArtifact:        guestArtifact,
 		GuestDir:             guestDir,
+		GatewayImage:         f.gatewayImage,
+		ExternalGatewayURL:   f.gatewayExternal,
 		Linger:               f.linger,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -420,6 +433,16 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 		deps.NatsProber = nc
 		if deps.Containers == nil {
 			deps.Containers = nc
+		}
+	}
+	if cfg.ExternalGatewayURL == "" {
+		gc, err := adapters.NewGatewayContainer()
+		if err != nil {
+			return stack.Deps{}, err
+		}
+		deps.GatewayContainer, deps.GatewayProber = gc, gc
+		if deps.Containers == nil {
+			deps.Containers = gc
 		}
 	}
 	return deps, nil

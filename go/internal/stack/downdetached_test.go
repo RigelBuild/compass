@@ -45,16 +45,17 @@ func downTestDeps(t *testing.T, h *harness) Deps {
 // test, restoring them after. Small but nonzero so the deadline math is real.
 func shrinkBudgets(t *testing.T) {
 	t.Helper()
-	pr, ps, pp, pc, pn, pk, pi := runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, natsDrainBudget, postKillGrace, downPollInterval
+	pr, ps, pp, pc, pn, pg, pk, pi := runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, natsDrainBudget, gatewayDrainBudget, postKillGrace, downPollInterval
 	runnerDrainBudget = 20 * time.Millisecond
 	serverDrainBudget = 20 * time.Millisecond
 	postgresDrainBudget = 20 * time.Millisecond
 	collectorDrainBudget = 20 * time.Millisecond
 	natsDrainBudget = 20 * time.Millisecond
+	gatewayDrainBudget = 20 * time.Millisecond
 	postKillGrace = 20 * time.Millisecond
 	downPollInterval = time.Millisecond
 	t.Cleanup(func() {
-		runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, natsDrainBudget, postKillGrace, downPollInterval = pr, ps, pp, pc, pn, pk, pi
+		runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, natsDrainBudget, gatewayDrainBudget, postKillGrace, downPollInterval = pr, ps, pp, pc, pn, pg, pk, pi
 	})
 }
 
@@ -814,6 +815,39 @@ func TestDownDetachedNatsEscalatesToRemove(t *testing.T) {
 		t.Fatalf("nats escalation:\n got  %v\n want %v (stop then rm -f)", got, want)
 	}
 	assertPgidFileGone(t, cfg.StateDir)
+}
+
+const gatewayContainerNameTest = "compass-gateway-test01"
+
+func seedGatewayRecord(t *testing.T, cfg Config, h *harness) {
+	t.Helper()
+	rec := pgidRecord{WriterPid: 4242, Version: pgidFileVersion, Entries: []pgidEntry{{Kind: entryProc, Component: ComponentPostgres, Pgid: pgPgid, StartTime: pgToken(pgPgid)}, {Kind: entryContainer, Component: ComponentGateway, ContainerName: gatewayContainerNameTest}, {Kind: entryProc, Component: ComponentServer, Pgid: serverPgid, StartTime: pgToken(serverPgid)}, {Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)}}}
+	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+		t.Fatal(err)
+	}
+	h.containers.setExistsName(gatewayContainerNameTest, true)
+	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
+	h.groupSig.set(serverPgid, pgToken(serverPgid), true)
+	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
+}
+
+func TestDownDetachedGatewayStopsThenRemoves(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	for _, p := range []int{pgPgid, serverPgid, runnerPgid} {
+		pgid := p
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onStop[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatal(err)
+	}
+	got := ctrEvents(h.rec.snapshot())
+	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm " + gatewayContainerNameTest}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gateway teardown = %v, want stop then remove", got)
+	}
 }
 
 // assertPgidFileGone fails if the pgid record still exists.
