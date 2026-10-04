@@ -98,9 +98,8 @@ load-bearing structure to carry forward:
 
 - **Every standing node is a Manager**, indented parent-above-children in
   depth-first tree order (`board.ts` `treeOrder`); ephemeral worker subagents
-  are not tree nodes. Each node shows a
-  state glyph, handle, state, a live worker count, and the issue it currently
-  owns (`AgentCard`).
+  are not tree nodes. Each node shows a state glyph, handle, state, a live
+  worker count, and the issue it currently owns.
 - **The connecting spine** is the delegation cue: an elbow rule from the parent's
   indent line into the child row, drawn with the surface border, gated on depth
   (`.tree-spine`, `depth > 0`).
