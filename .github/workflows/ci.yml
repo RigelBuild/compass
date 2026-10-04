@@ -2809,10 +2809,10 @@ jobs:
     # Chromium, then opens a BOT PR carrying the rewritten baselines for image
     # review. It exists for provenance: a dev-box capture under the same pins
     # is byte-identical, so this run attests a refreshed PNG's origin (a new
-    # shot's first baseline is a local capture, DL-399). Like the forge lane it is a SEPARATE job, never a step in the moon
-    # battery, and the required `rollup` check above does not `needs:` it — a
-    # regen dispatch must not post or
-    # disturb gate contexts.
+    # shot's first baseline is a local capture, DL-399). Like the forge lane it
+    # is a SEPARATE job, never a step in the moon battery, and the required
+    # `rollup` check above does not `needs:` it — a regen dispatch must not
+    # post or disturb gate contexts.
     #
     # Same workflow_dispatch + empty-`pr` gate as the forge lane, plus the
     # `regen` discriminator that keeps the two mutually exclusive (see the
