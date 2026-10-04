@@ -156,6 +156,16 @@ func TestErroredWakeDelaySchedule(t *testing.T) {
 	}
 }
 
+// A loop at the cap keeps adding strikes, so the shift must never overflow into
+// a non-positive delay that would wake at once.
+func TestErroredWakeDelayHoldsCapAtLargeStrikes(t *testing.T) {
+	for _, n := range []int{11, 40, 64, 1 << 20} {
+		if got := erroredWakeDelay(n); got != erroredWakeMaxDelay {
+			t.Fatalf("erroredWakeDelay(%d) = %v, want %v", n, got, erroredWakeMaxDelay)
+		}
+	}
+}
+
 // The recovery pass drops backoff state past its reset window but keeps an
 // account with a pending deferred wake.
 func TestRecoveryPrunesStaleErroredBackoff(t *testing.T) {
