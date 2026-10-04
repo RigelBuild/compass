@@ -180,18 +180,8 @@ let
     '';
 
     # Expect this hash to move when `bun.lock` or a workspace manifest changes,
-    # and on a devenv-nixpkgs channel bump (which moves `pkgs.bun`, the builder).
-    # Refresh it by setting `lib.fakeSha256` and taking the value nix reports.
-    #
-    # NOTE(RIG-3514): tools/renovate/refresh-fod-hashes.ts's
-    # `FOD_ENTRIES` automates exactly that refresh for the repo's two other pins,
-    # but its `marker` is a per-file unique substring and its five Renovate task
-    # sites each name the pin files they may write (tools/renovate/config.json5),
-    # asserted by tools/renovate/config.test.ts. Registering this third pin is a
-    # change to that surface, not to this one, so it is filed rather than done
-    # here — until it lands, a bun.lock bump reddens `nix build .#compass-ui`
-    # with `hash mismatch in fixed-output derivation` and the pin is refreshed by
-    # hand.
+    # and on a flake nixpkgs bump (which moves `pkgs.bun`). Refresh it through
+    # tools/renovate/refresh-fod-hashes.ts; the UI pin is registered there.
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";

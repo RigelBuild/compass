@@ -734,6 +734,8 @@
           "flake.nix",
           "flake.lock",
           "agent-image/entrypoint.nix",
+          // flake.lock supplies the UI node_modules FOD's bun.
+          "apps/ui/dist.nix",
         ],
         executionMode: "branch",
       },
@@ -1146,7 +1148,7 @@
           "bun install --lockfile-only",
           "bun tools/renovate/refresh-fod-hashes.ts",
         ],
-        fileFilters: ["bun.lock", "agent-image/entrypoint.nix"],
+        fileFilters: ["bun.lock", "agent-image/entrypoint.nix", "apps/ui/dist.nix"],
         executionMode: "update",
       },
     },
@@ -1198,6 +1200,7 @@
       // bump lands with flake.nix's vendorHash stale → `nix flake check` red.
       "flake.nix",
       "agent-image/entrypoint.nix",
+      "apps/ui/dist.nix",
     ],
     executionMode: "branch",
   },
