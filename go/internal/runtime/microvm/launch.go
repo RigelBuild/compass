@@ -631,6 +631,16 @@ func (vm *VM) WaitVMMExit(timeout time.Duration) bool {
 	if vm.vmm == nil || vm.vmmExited == nil {
 		return true
 	}
+	// An already-exited VMM must win over a zero timeout: select picks randomly
+	// between ready cases, so a bare timed select could report a dead VMM alive.
+	select {
+	case <-vm.vmmExited:
+		return true
+	default:
+	}
+	if timeout <= 0 {
+		return false
+	}
 	select {
 	case <-vm.vmmExited:
 		return true

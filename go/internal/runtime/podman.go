@@ -728,7 +728,8 @@ func (p *PodmanCLI) Running(ctx context.Context, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if exitCode == 1 && strings.Contains(strings.ToLower(string(stderr)), "no such") {
+	// podman reports a missing container as exit 1 or 125 depending on version.
+	if (exitCode == 1 || exitCode == 125) && strings.Contains(strings.ToLower(string(stderr)), "no such") {
 		return false, nil
 	}
 	if exitCode != 0 {

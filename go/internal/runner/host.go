@@ -219,8 +219,14 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		h.retireContainer(spec.Name)
 		h.closeSocket(ctx, spec.Name)
 		h.registry.Deregister(spec.Name)
-		if err := h.engine.Remove(ctx, oldHandle.ID()); err != nil {
-			return "", fmt.Errorf("provisioning %q: removing stale workload: %w", spec.Name, err)
+		exists, err := h.engine.Exists(ctx, spec.Name)
+		if err != nil {
+			return "", fmt.Errorf("provisioning %q: checking stale workload: %w", spec.Name, err)
+		}
+		if exists {
+			if err := h.engine.Remove(ctx, oldHandle.ID()); err != nil {
+				return "", fmt.Errorf("provisioning %q: removing stale workload: %w", spec.Name, err)
+			}
 		}
 	}
 	// microVM serves the AgentGateway over a per-session vsock path not knowable

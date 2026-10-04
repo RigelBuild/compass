@@ -233,6 +233,30 @@ func TestReprovisionStoppedReplaces(t *testing.T) {
 	}
 }
 
+// A workload removed outside the Runner (redeploy, crash) is replaced without a
+// Remove call, which `podman rm` would fail on the missing container.
+func TestReprovisionVanishedReplacesWithoutRemove(t *testing.T) {
+	host, engine, registry := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("initial Provision: %v", err)
+	}
+	oldHandle, _ := registry.Resolve(name)
+	engine.mu.Lock()
+	engine.vanished = map[string]bool{name: true}
+	engine.mu.Unlock()
+	if got, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil || got != name {
+		t.Fatalf("Provision vanished workload = %q, %v; want %q, nil", got, err, name)
+	}
+	if got := engine.countCallForID(oldHandle.ID(), "remove"); got != 0 {
+		t.Fatalf("Remove(old id) calls = %d, want 0", got)
+	}
+	if got := countCreates(engine.callsSnapshot()); got != 2 {
+		t.Fatalf("Create calls = %d, want 2", got)
+	}
+}
+
 func TestReprovisionRunningRejected(t *testing.T) {
 	host, engine, _ := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
 	ctx := context.Background()
