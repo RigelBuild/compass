@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -107,18 +109,19 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
-// migration is one parsed embedded migration file: its numeric version and the
-// SQL that advances the schema to it.
+// migration is one parsed embedded migration file: its numeric version, the
+// SQL that advances the schema to it, and the hex SHA-256 of that SQL.
 type migration struct {
-	version int
-	name    string
-	sql     string
+	version  int
+	name     string
+	sql      string
+	checksum string
 }
 
 // migrate applies every embedded migration not yet recorded in the database,
 // each in its own transaction, holding a session advisory lock so concurrent
-// Servers serialize. After applying, it verifies the recorded version equals
-// the highest embedded version (the refuse-to-serve guard).
+// Servers serialize. A recorded migration whose checksum differs from the
+// embedded file refuses to serve, as does a final version mismatch.
 func (s *Store) migrate(ctx context.Context) error {
 	migs, err := loadMigrations()
 	if err != nil {
@@ -146,16 +149,20 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := ensureMigrationsTable(ctx, conn); err != nil {
 		return err
 	}
-	applied, err := appliedVersions(ctx, conn)
+	applied, err := appliedChecksums(ctx, conn)
 	if err != nil {
 		return err
 	}
 
 	for _, m := range migs {
-		if applied[m.version] {
+		sum, ok := applied[m.version]
+		if !ok {
+			if err := applyMigration(ctx, conn, m); err != nil {
+				return err
+			}
 			continue
 		}
-		if err := applyMigration(ctx, conn, m); err != nil {
+		if err := verifyChecksum(ctx, conn, m, sum); err != nil {
 			return err
 		}
 	}
@@ -180,34 +187,72 @@ func ensureMigrationsTable(ctx context.Context, conn *pgxpool.Conn) error {
 	const ddl = `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		name       TEXT NOT NULL,
-		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		checksum   TEXT
 	)`
 	if _, err := conn.Exec(ctx, ddl); err != nil {
 		return fmt.Errorf("store: ensure schema_migrations: %w", err)
 	}
+	// Upgrade a pre-checksum table only when needed: ALTER takes an ACCESS
+	// EXCLUSIVE lock even when the column exists, stalling every Open behind it.
+	var hasChecksum bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'schema_migrations' AND column_name = 'checksum'
+	)`).Scan(&hasChecksum); err != nil {
+		return fmt.Errorf("store: inspect schema_migrations: %w", err)
+	}
+	if hasChecksum {
+		return nil
+	}
+	if _, err := conn.Exec(ctx, "ALTER TABLE schema_migrations ADD COLUMN checksum TEXT"); err != nil {
+		return fmt.Errorf("store: add schema_migrations.checksum: %w", err)
+	}
 	return nil
 }
 
-// appliedVersions reads the set of already-applied migration versions.
-func appliedVersions(ctx context.Context, conn *pgxpool.Conn) (map[int]bool, error) {
-	rows, err := conn.Query(ctx, "SELECT version FROM schema_migrations")
+// appliedChecksums maps each applied version to its recorded checksum; nil
+// marks a row applied before checksums were recorded.
+func appliedChecksums(ctx context.Context, conn *pgxpool.Conn) (map[int]*string, error) {
+	rows, err := conn.Query(ctx, "SELECT version, checksum FROM schema_migrations")
 	if err != nil {
 		return nil, fmt.Errorf("store: read applied migrations: %w", err)
 	}
 	defer rows.Close()
 
-	applied := make(map[int]bool)
+	applied := make(map[int]*string)
 	for rows.Next() {
 		var v int
-		if err := rows.Scan(&v); err != nil {
+		var sum *string
+		if err := rows.Scan(&v, &sum); err != nil {
 			return nil, fmt.Errorf("store: scan applied migration: %w", err)
 		}
-		applied[v] = true
+		applied[v] = sum
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate applied migrations: %w", err)
 	}
 	return applied, nil
+}
+
+// verifyChecksum refuses an applied migration whose file changed since it ran:
+// the runner never re-runs a recorded version, so the schema would silently
+// diverge from the source. A legacy row has nothing to compare, so it records
+// the embedded checksum as its baseline.
+func verifyChecksum(ctx context.Context, conn *pgxpool.Conn, m migration, recorded *string) error {
+	if recorded == nil {
+		if _, err := conn.Exec(ctx,
+			"UPDATE schema_migrations SET checksum = $1 WHERE version = $2", m.checksum, m.version,
+		); err != nil {
+			return fmt.Errorf("store: baseline checksum v%d: %w", m.version, err)
+		}
+		return nil
+	}
+	if *recorded != m.checksum {
+		return fmt.Errorf("%w: applied migration v%d (%s) was edited after it ran: recorded checksum %s, embedded %s; add a new migration instead",
+			ErrSchemaVersion, m.version, m.name, *recorded, m.checksum)
+	}
+	return nil
 }
 
 // currentVersion returns the highest applied migration version, or 0 if none.
@@ -235,7 +280,7 @@ func applyMigration(ctx context.Context, conn *pgxpool.Conn, m migration) error 
 		return fmt.Errorf("store: apply migration v%d (%s): %w", m.version, m.name, err)
 	}
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO schema_migrations (version, name) VALUES ($1, $2)", m.version, m.name,
+		"INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)", m.version, m.name, m.checksum,
 	); err != nil {
 		return fmt.Errorf("store: record migration v%d: %w", m.version, err)
 	}
@@ -273,7 +318,10 @@ func loadMigrations() ([]migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("store: read migration %s: %w", e.Name(), err)
 		}
-		migs = append(migs, migration{version: version, name: e.Name(), sql: string(body)})
+		sum := sha256.Sum256(body)
+		migs = append(migs, migration{
+			version: version, name: e.Name(), sql: string(body), checksum: hex.EncodeToString(sum[:]),
+		})
 	}
 
 	sort.Slice(migs, func(i, j int) bool { return migs[i].version < migs[j].version })
