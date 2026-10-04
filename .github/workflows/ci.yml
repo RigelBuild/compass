@@ -2190,9 +2190,11 @@ jobs:
         # matching go/go.mod) so a toolchain bump starts fresh, and hashed on
         # go/go.sum (the module root is go/) so any dependency change invalidates
         # the module cache. The restore-keys prefix lets a go.sum change still warm
-        # from the previous run's cache (a partial hit beats a cold build) before
-        # the post-run save writes the new exact key.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        # from the previous run's cache (a partial hit beats a cold build).
+        # Restore-only: a dispatch can run PR code under main's cache scope, so
+        # only trusted push/schedule runs save (the save step after the e2e).
+        id: go-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             /home/podman/.cache/go-build
@@ -2507,6 +2509,20 @@ jobs:
             fi
           done <<< "$test_names"
           echo "dogfood e2e: every source-derived TestComms* leg reported PASS"
+
+      - name: Save the Go build + module caches
+        # Only main's own code saves into main's cache scope; a `pr` dispatch
+        # restores but never writes. Runs as root, like the restore.
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'schedule')
+          && github.ref == 'refs/heads/main'
+          && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            /home/podman/.cache/go-build
+            /home/podman/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   rollup:
     name: rollup
