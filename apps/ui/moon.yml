@@ -89,7 +89,7 @@ tasks:
     # are exported so a dev run matches CI, and playwright.config.ts now fails
     # closed when either is missing rather than guessing a host path.
     #
-    # Both axes are measured, not assumed: unsetting FONTCONFIG_FILE fails
+    # Both axes are measured, not assumed: unsetting E2E_FONTCONFIG_FILE fails
     # closed before tests run because playwright.config.ts requires it;
     # pointing it at the host font config instead reds 10 of 11 assertions.
     # Host Chromium 153 vs pinned 150 is live-red on current main: 2 of 11
@@ -99,7 +99,7 @@ tasks:
     #
     # A local red is an explicit browser/font override first and a stale
     # baseline second: an unset variable fails closed with an error. Check for
-    # an overridden or stale-profile FONTCONFIG_FILE or
+    # an overridden or stale-profile E2E_FONTCONFIG_FILE or
     # PLAYWRIGHT_CHROMIUM_PATH first, then a stale baseline: the shots live in
     # the tree, so committed shots older than the last recapture red until
     # they are refreshed. Check those before regenerating.
