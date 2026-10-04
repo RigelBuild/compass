@@ -12,12 +12,12 @@ service. Tasks below name the owning lane per slice.
 The left sidebar renders two parallel hierarchies: a Channels section
 partitioned by `ChannelGroup` rows and an Agent workspaces section derived
 from `AgentAccount.parent_agent_id`
-(`apps/ui/src/components/LeftSidebar.tsx:414-416`: "then two collapsible
+(the agent-tree `<For each={agentTree(…)}>` in `apps/ui/src/components/LeftSidebar.tsx`: "then two collapsible
 sections — Channels above Agent workspaces"). The frozen agent-trees record
 names this work: "this record makes the agent tree the primitive RIG-1622
-will fold channels into" (`docs/designs/agent/compass-agent-trees/design.md:233-234`)
+will fold channels into" (`docs/designs/agent/compass-agent-trees/design.md` § *How each surface flows from the tree*)
 and fences it off: "channels stay on their own `ChannelGroup` tree until
-RIG-1622" (`design.md:297-298`). Fold channels into the agent tree so the
+RIG-1622" (§ *Global Constraints*). Fold channels into the agent tree so the
 sidebar shows one hierarchy and posting boundaries follow the tree.
 
 ## Global Constraints
@@ -26,23 +26,23 @@ sidebar shows one hierarchy and posting boundaries follow the tree.
   no `reserved` statement is needed. The one removed-field precedent is
   explicitly pre-dogfood: "the oneof and field 7 parent_message_id are both
   REMOVED, not reserved (F9: pre-dogfood, zero stored payloads)"
-  (`proto/compass/v1/comms.proto:341-344`). This design removes nothing.
+  (`Message.topic_id` in `proto/compass/v1/comms.proto`). This design removes nothing.
 - **Visibility predicate copies stay textually identical.** The store repeats
   the effective-visibility CTE per read: "The copies MUST stay textually
   identical so the stream edge's single-id visibility check cannot drift from
-  the list read" (`go/internal/store/queries/channels.sql:10-12`). Any
+  the list read" (the identical-copies header comment in `go/internal/store/queries/channels.sql`). Any
   predicate change lands in every copy in one commit. The same anti-drift
   rule already binds the membership probe this design widens:
   "requireChannelMember / isChannelMember reuse ChannelMemberExists
   (channels.sql) — the statement is textually identical"
-  (`go/internal/store/queries/authz.sql:4-5`).
+  (the header comment in `go/internal/store/queries/authz.sql`).
 - **The coordination-hook invariant governs the agent edge only.** The
   invariant "every write of parent_agent_id must invoke the registered
   coordination hook (RIG-1722 T5)"
-  (`go/internal/store/migrations/0001_init.sql:86-87`) names
+  (the `parent_agent_id` INVARIANT comment on `agent_accounts` in `go/internal/store/migrations/0001_init.sql`) names
   `agent_accounts.parent_agent_id`, whose two writers are `CreateAgent`
-  (`go/internal/store/accounts.go:363-372`) and `ReparentAgent`
-  (`accounts.go:614-633`). It holds unchanged: the hook reconciles the
+  (`Store.CreateAgent` in `go/internal/store/accounts.go`) and `ReparentAgent`
+  (`Store.ReparentAgent` in `go/internal/store/accounts.go`). It holds unchanged: the hook reconciles the
   stored membership of coordination channels, which stay
   explicitly-membered. `channels.parent_agent_id` is a NEW edge with its
   own writers (`CreateChannel` with attach, `ReparentChannel`); the hook
@@ -51,13 +51,13 @@ sidebar shows one hierarchy and posting boundaries follow the tree.
   extends no hook.
 - **Not-found/forbidden merge on every authz failure.** "a non-member gets
   ErrNotFound (the not-found/forbidden merge), never a hint"
-  (`go/internal/store/messages.go:56`). New authz branches keep the merge.
+  (`Store.AppendMessage` in `go/internal/store/messages.go`). New authz branches keep the merge.
 - **The caller is never a request field.** "the caller is the account
   authenticated on the connection … never a field in a request, which would
-  be spoofable" (`proto/compass/v1/comms.proto:27-29`).
+  be spoofable" (the `CommsService` header comment in `proto/compass/v1/comms.proto`).
 - **Reserved namespaces are untouchable.** The per-owner `__dm__` group
-  (`go/internal/store/dm.go:19`) and the `__coordination__` group it is
-  "distinct from" (`dm.go:15`) keep their storage shape; OpenDM and the
+  (`dmGroupName` in `go/internal/store/dm.go`) and the `__coordination__` group it is
+  "distinct from" (the `dmGroupName` doc in `go/internal/store/dm.go`) keep their storage shape; OpenDM and the
   coordination reconcile depend on them.
 
 ## Approach
@@ -69,21 +69,21 @@ has five legs.
 ### 1. What replaces `ChannelGroup`
 
 Add `Channel.parent_agent_id` (new field 11; field 10 is the last used,
-`repeated PinnedEntry pinned_entries = 10;` at `proto/compass/v1/comms.proto:259`).
+`repeated PinnedEntry pinned_entries = 10;` at `Channel.pinned_entries` in `proto/compass/v1/comms.proto`).
 Empty = a tree-root channel. When set, the channel hangs off that
 `AgentAccount` in the one sidebar tree. The field name follows the existing
 vocabulary: `AgentAccount.parent_agent_id` already "Mirrors
-ChannelGroup.parent_group_id" (`comms.proto:188`).
+ChannelGroup.parent_group_id" (`AgentAccount.parent_agent_id` in `proto/compass/v1/comms.proto`).
 
 `ChannelGroup` is NOT deleted. Two server subsystems depend on group rows as
 storage machinery, not as a user-facing hierarchy:
 
 - OpenDM ensures "the owner's reserved `__dm__` group, then upsert the"
-  DM channel under it (`go/internal/comms/dm.go:34`; the reserved name
-  constant is `go/internal/store/dm.go:19`).
+  DM channel under it (`Comms.openDMTx` in `go/internal/comms/dm.go`; the reserved name
+  constant is `dmGroupName` in `go/internal/store/dm.go`).
 - The coordination reconcile keeps a manager's channel provisioned from tree
   edges, in a `__coordination__` group `__dm__` is "distinct from"
-  (`go/internal/store/dm.go:15`).
+  (the `dmGroupName` doc in `go/internal/store/dm.go`).
 
 What changes is the group's role: it stops being the sidebar organizer and
 stops accepting user-facing nesting. `CreateChannelGroup` remains wire-legal
@@ -93,8 +93,8 @@ machinery and for SHARED spaces (leg 2).
 
 An agent's home channel needs no new edge at all: it is already joined to
 its agent by `AgentAccount.home_channel_id`, "minted at CreateAgent"
-(`comms.proto:182-184`), created "ungrouped (owner-scoped)"
-(`go/internal/store/accounts.go:375`). The UI derives its placement under
+(`AgentAccount.home_channel_id` in `proto/compass/v1/comms.proto`), created "ungrouped (owner-scoped)"
+(`Store.CreateAgent` in `go/internal/store/accounts.go`). The UI derives its placement under
 the agent node from that existing field.
 
 ### 2. The visibility invariant
@@ -102,12 +102,12 @@ the agent node from that existing field.
 This is the load-bearing decision. Today the lattice lives on groups: "This
 group's own visibility; the server rejects a value more open than the parent
 group's (child ≤ parent). Effective visibility is the most restrictive on
-the path to the root" (`comms.proto:214-216`), enforced at write
-(`go/internal/store/channels.go:48`: `if int32(g.Visibility) > int32(parentVis)`)
+the path to the root" (`ChannelGroup.visibility` in `proto/compass/v1/comms.proto`), enforced at write
+(`Store.CreateChannelGroup` in `go/internal/store/channels.go`: `if int32(g.Visibility) > int32(parentVis)`)
 and computed at read by a recursive CTE
-(`go/internal/store/queries/channels.sql:130-142`:
+(query `ListChannels` in `go/internal/store/queries/channels.sql`:
 `LEAST(a.min_vis, g.visibility)` then `MIN(min_vis) AS eff_vis`).
-`AgentAccount` has an owner (`owner_user_id`, `comms.proto:181`) but no
+`AgentAccount` has an owner (`owner_user_id`, `AgentAccount.owner_user_id` in `proto/compass/v1/comms.proto`) but no
 visibility field.
 
 **Decided (Matt, RIG-1622): by default every agent under an owner reads
@@ -115,11 +115,9 @@ every channel of that owner; a later ACL system will gate individual
 channels off.** The read grant below is that product decision. It is NOT a
 reuse of existing predicate behaviour: today the owner-set `viewer` CTE
 ("SELECT owner_user_id AS uid FROM agent_accounts WHERE account_id = $1",
-`channels.sql:94`) exists only in the two GROUP queries (`channels.sql:93`,
-`:118`, applied at `:101` and `:126`); all three CHANNEL predicate copies
+query `ListChannelGroups` in `go/internal/store/queries/channels.sql`) exists only in the two GROUP queries (query `ListChannelGroups` in `go/internal/store/queries/channels.sql`, applied); all three CHANNEL predicate copies
 grant non-member access solely through the SHARED-group arm (`c.kind = 0
-AND c.group_id IS NOT NULL AND … e.eff_vis = 1`, `channels.sql:152-153`,
-`:181-182`, `:211-212`). The disjunct this record adds is therefore a new
+AND c.group_id IS NOT NULL AND … e.eff_vis = 1`, query `ListChannels` in `go/internal/store/queries/channels.sql`). The disjunct this record adds is therefore a new
 visibility class for agent-attached channels, justified by the ruling, not
 by precedent. Precisely:
 
@@ -132,7 +130,7 @@ by precedent. Precisely:
 - **Visibility is not readability.** Message reads keep their membership
   gate — `ListMessages` joins members ("JOIN channel_members cm ON
   cm.channel_id = t.channel_id AND cm.account_id = $1",
-  `go/internal/store/queries/messages.sql:71`) — exactly as a SHARED
+  query `ListMessages` in `go/internal/store/queries/messages.sql`) — exactly as a SHARED
   channel is browsable today without message access. A non-member in the
   owner set sees the channel row (sidebar, browse/join); reading history
   and posting require membership, explicit or derived (leg 3).
@@ -140,7 +138,7 @@ by precedent. Precisely:
   Members read regardless of owner: cross-owner member sets exist — a
   converted DM keeps both owners' accounts, and `CreateChannel` adds "for
   each agent in the requested member set that agent's owning user(s)"
-  (`go/internal/store/channels.go:78-79`). Attachment caps what a
+  (`Store.CreateChannelGroup` in `go/internal/store/channels.go`). Attachment caps what a
   NON-member can see at the owner set; it never subtracts membership.
 - **SHARED channels still cannot hang on an agent.** The owner-set grant
   is the widest non-member access an agent-attached channel can carry;
@@ -149,7 +147,7 @@ by precedent. Precisely:
 - **ACL forward-compatibility.** The future per-channel ACL slots in as
   one more conjunct inside the same three predicate copies and the
   participant probe of leg 3 (e.g. `AND NOT EXISTS (SELECT 1 FROM
-  channel_acl …)`). The identical-copies rule (`channels.sql:10-12`)
+  channel_acl …)`). The identical-copies rule (the identical-copies header comment in `go/internal/store/queries/channels.sql`)
   keeps the insertion surface to exactly those places, so nothing here
   hardens against an ACL landing later. The ACL itself is out of scope.
 
@@ -178,7 +176,7 @@ and not an implication from placement.** Three candidates were weighed:
 - **(c) New `ChannelKind` value 3 — loses.** `kind` is the DM-vs-channel
   axis: `CHANNEL_KIND_CHANNEL = 0`, `CHANNEL_KIND_DM = 1`, and the
   retired `CHANNEL_KIND_GROUP_DM = 2 [deprecated = true]`
-  (`proto/compass/v1/comms.proto:289-294`) — whose retirement comment is
+  (`ChannelKind` in `proto/compass/v1/comms.proto`) — whose retirement comment is
   itself the cautionary tale for widening that enum. A tree channel IS a
   `CHANNEL` in every kind-switch in the codebase; a third value would
   make every kind check grow an arm that behaves as `CHANNEL`.
@@ -193,23 +191,23 @@ semantics are what make "posting boundaries follow the tree" literal: an
 agent may post to TREE channels anchored at itself or at any of its
 ancestors. The set is owner-bounded because a reparent cannot cross an
 owner boundary: `validateNewParent` rejects a cross-owner parent
-(`go/internal/store/accounts.go:666-673`) and its sole caller is
-`ReparentAgent` (`accounts.go:594`). Note the scope precisely — this is
+(`validateNewParent` in `go/internal/store/accounts.go`) and its sole caller is
+`ReparentAgent` (`Store.ReparentAgent` in `go/internal/store/accounts.go`). Note the scope precisely — this is
 a `ReparentAgent` guard, NOT a store-wide invariant: `CreateAgent`'s
 store path writes `parent_agent_id` with no cycle or same-owner check at
-all (`accounts.go:333-352` — the `InsertAgentAccount` call relies on the
+all (`Store.CreateAgent` in `go/internal/store/accounts.go` — the `InsertAgentAccount` call relies on the
 FK, whose only bespoke handling is the
-`agent_accounts_parent_agent_id_fkey` missing-referent arm at `:346-348`),
+`agent_accounts_parent_agent_id_fkey` missing-referent arm),
 and the same-owner check on that path lives at the comms EDGE
-(`go/internal/comms/comms.go:134-140`). So the proto comment
+(`Comms.CreateAgent` in `go/internal/comms/comms.go`). So the proto comment
 "The server validates same-owner and no-cycle on every write"
-(`comms.proto:188-189`) describes the edge, not the store, and is NOT
+(`AgentAccount.parent_agent_id` in `proto/compass/v1/comms.proto`) describes the edge, not the store, and is NOT
 cited here as a store invariant.
 
 **The gate mechanics: a new probe beside the old one.**
 `requireChannelMember` / `isChannelMember` wrap the `ChannelMemberExists`
 probe (`SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id =
-$1 AND account_id = $2);`, `go/internal/store/queries/channels.sql:36-37`).
+$1 AND account_id = $2);`, query `ChannelMemberExists` in `go/internal/store/queries/channels.sql`).
 A NEW query `ChannelParticipant` is added — the explicit arm OR a tree
 arm that walks the actor's ancestor chain and matches the anchor, or
 matches the actor as the anchor's owner — and the two wrappers are
@@ -219,18 +217,18 @@ rebound onto it.
 bypass the wrappers and use the sqlc query directly, and both genuinely
 mean "has a stored member row", not "participates":
 
-- `hasGenuineAdd` (`go/internal/store/channels.go:550`) drives the R4
+- `hasGenuineAdd` (in `go/internal/store/channels.go`) drives the R4
   DM-conversion decision — "an update that is not a remove and not an
   unsubscribe, naming an account not already a member" — which is a
   statement about rows in this tx's snapshot. Giving it the derived arm
   would make an add of an already-derived participant a non-add and
   silently skip a conversion.
-- The OWNER_ONLY coherence check (`channels.go:765`) requires "the owner
+- The OWNER_ONLY coherence check (`Store.SetChannelPolicy` in `go/internal/store/channels.go`) requires "the owner
   MUST be a member of the channel", because "the post gate demands the
-  author be BOTH a member AND the owner" (`channels.go:757-775`).
+  author be BOTH a member AND the owner" (`Store.SetChannelPolicy` in `go/internal/store/channels.go`).
 
 **Decided: `SetChannelPolicy` refuses `OWNER_ONLY` on a TREE channel**
-(`ErrInvalidArgument`), rather than converting `channels.go:765` to a
+(`ErrInvalidArgument`), rather than converting `Store.SetChannelPolicy` in `go/internal/store/channels.go` to a
 participant check. Reason: the coherence check exists to keep an
 OWNER_ONLY channel postable, and on a TREE channel it cannot do that job
 honestly — the owner's participation is derived from `parent_agent_id`,
@@ -247,15 +245,15 @@ caller's resolved owner, so every legal destination is same-owner and
 the user stays a participant. The agent-owner case alone settles it: a
 check that a subsequent, unrelated move can invalidate is not a
 coherence check. The refusal is the same shape T5 already uses for
-`mandatory_subscription` on TREE, and it keeps `channels.go:765`
+`mandatory_subscription` on TREE, and it keeps `Store.SetChannelPolicy` in `go/internal/store/channels.go`
 reachable only where member rows genuinely exist.
 
 **The refusal binds BOTH writers.** Nothing in the argument above is
 specific to `SetChannelPolicy`. `CreateChannel` can mint the same
 incoherent state directly, and its own coherence check cannot catch it:
 that check is `if c.Policy.OwnerAccountID != "" &&
-!slices.Contains(members, c.Policy.OwnerAccountID)` (`channels.go:170`)
-against the `expandOwnerMembership` result (`channels.go:160`), and a
+!slices.Contains(members, c.Policy.OwnerAccountID)` (`Store.CreateChannel` in `go/internal/store/channels.go`)
+against the `expandOwnerMembership` result (`Store.CreateChannel` in `go/internal/store/channels.go`), and a
 TREE create writes no member rows, so that expansion is not the
 channel's member set and the check passes vacuously. So `CreateChannel`
 refuses `OWNER_ONLY` together with `membership_mode = TREE`
@@ -265,18 +263,18 @@ refuses `OWNER_ONLY` together with `membership_mode = TREE`
 **A TREE create still runs `expandOwnerMembership`, but writes no member
 rows from it.** The expansion is not skipped: the attach authz needs the
 resolved owner set, and the expansion result is what `CreateChannel`
-carries back today as `MemberAccountIDs` (`channels.go:211`). What a TREE
+carries back today as `MemberAccountIDs` (`expandOwnerMembership` in `go/internal/store/channels.go`). What a TREE
 create skips is the `EnsureChannelMember` loop over it
-(`channels.go:174-184`). The list it returns is instead the derived
+(`Store.CreateChannel` in `go/internal/store/channels.go`). The list it returns is instead the derived
 participant set — the same materialization T4 applies on every read
 (leg 5) — so a TREE `CreateChannel` and a later `ListChannels` report
 the same member list for the same channel. T4's hop (v) makes that
 identity structural rather than a coincidence of two code paths
 agreeing: `CreateChannel` stops hand-writing the returned `Channel` at
-`channels.go:206-213` and returns the same post-commit `getChannel`
+`expandOwnerMembership` in `go/internal/store/channels.go` and returns the same post-commit `getChannel`
 read a `ListChannels` row goes through, so "the same member list" is
 the same projection, not a reconstruction of it. The expansion at
-`channels.go:160` still runs — the authz needs it — it just no longer
+`Store.CreateChannel` in `go/internal/store/channels.go` still runs — the authz needs it — it just no longer
 feeds the return value.
 
 **Invariant: `membership_mode` never goes EXPLICIT→TREE.** This is
@@ -286,7 +284,7 @@ or `mandatory_subscription` on it, and then converting it to TREE. Today
 the property holds by absence of a writer — T1 adds `membership_mode` to
 `CreateChannelRequest` only, and `SetChannelPolicy` writes the post
 policy, the owner and the mandatory flag and nothing else
-(`UpdateChannelPolicy`, `channels.go:777-782`) — and "safe because no
+(`UpdateChannelPolicy`, `Store.SetChannelPolicy` in `go/internal/store/channels.go`) — and "safe because no
 writer exists" is exactly the property a later task deletes without
 noticing. So it is guarded: no RPC may set TREE after the create, and
 `ReparentChannel` moves placement only. T2 pins it with a test. A channel
@@ -307,7 +305,7 @@ live in a tree). The conversion RPC is follow-up work, tracked outside
 this plan.
 
 Sketch of the new probe (the recursive-CTE precedent is the `ancestry`
-CTE, `channels.sql:130-137`):
+CTE, query `ListChannels` in `go/internal/store/queries/channels.sql`):
 
 ```sql
 SELECT EXISTS (
@@ -344,22 +342,22 @@ but nothing in the store guarantees acyclic rows — as established above,
 the no-cycle guard is a `ReparentAgent` guard only. The Go precedent this
 mirrors makes the same assumption explicitly: it carries a visited set
 with the comment "The visited set bounds the walk so a pre-existing cycle
-in the data cannot spin it forever" (`accounts.go:678-679`), and on
-meeting a cycle it `break`s rather than rejecting (`accounts.go:686-689`)
+in the data cannot spin it forever" (`validateNewParent` in `go/internal/store/accounts.go`), and on
+meeting a cycle it `break`s rather than rejecting (`validateNewParent` in `go/internal/store/accounts.go`)
 — that is, the code positively contemplates cyclic rows existing. Postgres
 does no cycle detection on `UNION ALL`, so `UNION ALL` here would spin
 forever inside the post-gate transaction. `UNION`'s distinct semantics
 terminate on a repeated row, which is the SQL equivalent of the Go
-visited set. (The `ancestry` precedent at `channels.sql:130-137` does not
+visited set. (The `ancestry` precedent at query `ListChannels` in `go/internal/store/queries/channels.sql` does not
 transfer: it walks `channel_groups`, which the repo treats as immutable
 after create — stated there as a load-bearing soundness condition,
 "Sound only because groups are immutable post-create: the sole
 channel_groups mutation is the CreateChannelGroup INSERT (no
 UpdateChannelGroup / re-parent RPC)"
-(`go/internal/store/queries/authz.sql:19-22`).)
+(query `GroupCreateAuthorized` in `go/internal/store/queries/authz.sql`).)
 
 **Cost on the rejection path.** `AppendMessage` runs this probe in-tx on
-every post (`messages.go:59`), so the mode test is hoisted OUT of the
+every post (`Store.AppendMessage` in `go/internal/store/messages.go`), so the mode test is hoisted OUT of the
 recursion above: a post by a non-member of an EXPLICIT channel resolves
 with one indexed `channels` lookup and never materializes an ancestor
 chain. Only a TREE channel pays the recursion, and then only for the
@@ -373,7 +371,7 @@ actor-to-root, seeded `WHERE account_id = $2`. Several sites downstream
 ask the opposite question — "who are ALL the participants of THIS
 channel?" — and are keyed by channel with no actor to seed from
 (`SubscribedAgents` and `ChannelAgentMembers` take an account parameter
-only to EXCLUDE the author, `delivery_reads.sql:15`, `:23`). That
+only to EXCLUDE the author, query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`). That
 question needs a second, DOWNWARD walk, seeded at the channel's anchor.
 It is a different recursion, not a re-parameterization of the probe's,
 so it is specified here in full rather than referred to:
@@ -401,7 +399,7 @@ The recursive step reads `agent_accounts` by `parent_agent_id`, which is
 the direction 0001 indexes for exactly this: "The 'children of this
 parent' read direction for the agent tree",
 `CREATE INDEX agent_accounts_parent_idx ON agent_accounts
-(parent_agent_id);` (`0001_init.sql:118-119`). `UNION`, not `UNION ALL`,
+(parent_agent_id);` (index `agent_accounts_parent_idx` in `go/internal/store/migrations/0001_init.sql`). `UNION`, not `UNION ALL`,
 for the same reason as the ascent: the store does not guarantee acyclic
 rows, and a descent through a cycle spins forever under `UNION ALL`. The
 trailing `UNION` adds the anchor's `owner_user_id`, the second disjunct
@@ -414,12 +412,12 @@ demands.** The sketch above is the SINGLE-CHANNEL form: it takes one
 `channel_id` as `$1` and projects bare `account_id`s, which is all a
 caller holding exactly one channel needs. The two channel-keyed delivery
 queries T5 rewrites use that form, each being called with a single
-`channel_id` (`delivery_reads.sql:13`, `:22`).
+`channel_id` (query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`).
 
 `loadChannelMembers` cannot. It is handed a whole id set and must
 attribute every returned account back to the channel it belongs to — its
 loop keys each row by `m.ChannelID` through
-`idx := byID[ChannelID(m.ChannelID)]` (`channels.go:895-902`) — and its
+`idx := byID[ChannelID(m.ChannelID)]` (`loadChannelMembers` in `go/internal/store/channels.go`) — and its
 contract forbids one query per channel (leg 5). So it uses the ID-SET
 form, which carries the originating channel id through the recursion and
 projects attributable `(channel_id, account_id)` PAIRS. A union of
@@ -467,44 +465,42 @@ Because both wrappers are rebound, the derived arm lands on every wrapper
 caller at once. The callers were enumerated by grep over `go/**/*.go` for
 `isChannelMember(` / `ChannelMemberExists(`, not by recall:
 
-- `AppendMessage` — the post gate (`go/internal/store/messages.go:59`),
+- `AppendMessage` — the post gate (`Store.AppendMessage` in `go/internal/store/messages.go`),
   keeping the not-found/forbidden merge ("never a hint that the channel
-  exists", `messages.go:56`). The old draft's promise that the post gate
+  exists", `Store.AppendMessage` in `go/internal/store/messages.go`). The old draft's promise that the post gate
   stays unchanged is withdrawn: the gate gains the derived arm.
-- `UpdateChannelMembers` (`go/internal/store/channels.go:387`) — plus the
+- `UpdateChannelMembers` (`Store.UpdateChannelMembers` in `go/internal/store/channels.go`) — plus the
   TREE-mode refusals below.
-- `SetChannelPolicy` (`channels.go:704`).
+- `SetChannelPolicy` (`Store.SetChannelPolicy` in `go/internal/store/channels.go`).
 - `requireBoardMutator` — pin-board mutations
-  (`go/internal/store/channel_pins.go:179-180`); its OWNER_ONLY owner
+  (`requireBoardMutator` in `go/internal/store/channel_pins.go`); its OWNER_ONLY owner
   gate is unchanged.
-- `ListTopics` (`go/internal/store/topics.go:23`) — it calls the
+- `ListTopics` (`Store.ListTopics` in `go/internal/store/topics.go`) — it calls the
   UNEXPORTED `isChannelMember` directly, so it is a separate caller from
   the stream filter below and inherits the derived arm the same way. T3
   carries its acceptance case; without naming it here it would gain
   derived membership with no test.
-- The stream filters `IsChannelMember` (`go/internal/store/authz.go:45`)
-  and `IsTopicChannelMember` (`authz.go:70`; its
-  `TopicChannelMemberExists` query at `authz.sql:8-10` gains the same
+- The stream filters `IsChannelMember` (`Store.IsChannelMember` in `go/internal/store/authz.go`)
+  and `IsTopicChannelMember` (`Store.IsTopicChannelMember` in `go/internal/store/authz.go`; its
+  `TopicChannelMemberExists` query at query `TopicChannelMemberExists` in `go/internal/store/queries/authz.sql` gains the same
   arm with the channel resolved through `topics.channel_id`).
 
-The two direct `ChannelMemberExists` callers above (`channels.go:550`,
-`:765`) are deliberately NOT in this list — they keep member-row
+The two direct `ChannelMemberExists` callers above (`hasGenuineAdd` in `go/internal/store/channels.go`) are deliberately NOT in this list — they keep member-row
 semantics.
 
 Read paths that join `channel_members` directly switch to the same
-participant shape: `GetPageCursorSeq` (`messages.sql:64`), `ListMessages`
-(`:71`), `SearchMessages` (`:81`), `FindAskMessage` (`:92`),
-`UpdateMessageBlocksAsAuthor` (`:53`), and `ResolveTopicForUpdate`
-(`go/internal/store/queries/topics.sql:16`). Two member-row oracles stay
+participant shape: `GetPageCursorSeq`, `ListMessages`, `SearchMessages`, `FindAskMessage`,
+`UpdateMessageBlocksAsAuthor`, and `ResolveTopicForUpdate`
+(query `ResolveTopicForUpdate` in `go/internal/store/queries/topics.sql`). Two member-row oracles stay
 unchanged and are accepted as under-inclusive for TREE channels in v1:
-`SharesVisibleChannel` (`go/internal/store/queries/presence_reads.sql:17-18`)
-and the visible-accounts arm (`go/internal/store/queries/accounts.sql:133-134`)
+`SharesVisibleChannel` (in `go/internal/store/queries/presence_reads.sql`)
+and the visible-accounts arm (query `ResolveVisibleGlobalHandles` in `go/internal/store/queries/accounts.sql`)
 — two accounts related ONLY through a TREE channel are not mutually
 visible through them. Stated, not hidden.
 
 **No seeding; no reconcile.** The `SeedHomeChannelMembers` pattern
 (`VALUES ($1, $2, FALSE), ($1, $3, TRUE)`,
-`go/internal/store/queries/accounts.sql:41-42`) applies to EXPLICIT
+query `SeedHomeChannelMembers` in `go/internal/store/queries/accounts.sql`) applies to EXPLICIT
 channels only. A TREE attach writes no member rows, and a
 `ReparentAgent` needs NO membership write for TREE channels — the
 subtree is recomputed at query time, so the move commits the agent edge
@@ -517,7 +513,7 @@ member, so channel existence is already known to it; no merge needed). A
 subscription toggle is allowed — see next.
 
 **Subscription state.** `channel_members.subscribed` is a per-row column
-(`go/internal/store/migrations/0001_init.sql:219`) and TREE channels
+(`channel_members.subscribed` in `go/internal/store/migrations/0001_init.sql`) and TREE channels
 have no rows, so subscription needs a new home. Three options weighed:
 
 - **Full subscription rows for every derived member — loses.** It mints
@@ -529,7 +525,7 @@ have no rows, so subscription needs a new home. Three options weighed:
   turn-end delivery; the existing `mandatory_subscription` class already
   covers "everyone gets it", and the stored default today is
   unsubscribed (`EnsureChannelMember` inserts `FALSE`,
-  `accounts.sql:44-46`).
+  query `EnsureChannelMember` in `go/internal/store/queries/accounts.sql`).
 - **Override rows only — chosen.** A new table
   `channel_subscriptions (channel_id, account_id, subscribed)` holds a
   row ONLY where an account explicitly toggled; default is unsubscribed.
@@ -539,7 +535,7 @@ have no rows, so subscription needs a new home. Three options weighed:
   any tree move, and a lazy GC may prune later. The subscribe toggle
   seeds the D2 delivery cursor, the same seed-at-subscribe discipline
   the explicit path uses ("insert when it is subscribed (D2
-  seed-at-subscribe)", `go/internal/store/channels.go:642`).
+  seed-at-subscribe)", `addOrUpdateMember` in `go/internal/store/channels.go`).
 
 **Delivery: the driving relation changes, not a predicate.** This is the
 consequence the old draft got wrong, so it is stated precisely. There are
@@ -550,16 +546,16 @@ is tabled beside the site:
 
 | Query | File:line | Keyed on | Walk | Consumer |
 | --- | --- | --- | --- | --- |
-| `SubscribedAgents` | `delivery_reads.sql:10` | `cm.channel_id = $1` (`:13`) | descent | turn-end delivery fan-out |
-| `ChannelAgentMembers` | `delivery_reads.sql:18-24` | `cm.channel_id = $1` (`:22`) | descent | @mention routing |
-| `SweepChannels` | `delivery_reads.sql:41` | `cm.account_id = $1` (`:44`) | ascent | the D1 sweep set |
-| `UndeliveredMessages` | `delivery_cursors.sql:83` | `cm.account_id = $1` (`:90`) | ascent | undelivered replay |
-| `InSweepSet` | `delivery_cursors.sql:102` | `cm.account_id = $1 AND cm.channel_id = $2` (`:105-106`) | ascent | sweep-set membership probe |
+| `SubscribedAgents` | query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql` | `cm.channel_id = $1` | descent | turn-end delivery fan-out |
+| `ChannelAgentMembers` | query `ChannelAgentMembers` in `go/internal/store/queries/delivery_reads.sql` | `cm.channel_id = $1` | descent | @mention routing |
+| `SweepChannels` | query `SweepChannels` in `go/internal/store/queries/delivery_reads.sql` | `cm.account_id = $1` | ascent | the D1 sweep set |
+| `UndeliveredMessages` | query `UndeliveredMessages` in `go/internal/store/queries/delivery_cursors.sql` | `cm.account_id = $1` | ascent | undelivered replay |
+| `InSweepSet` | query `InSweepSet` in `go/internal/store/queries/delivery_cursors.sql` | `cm.account_id = $1 AND cm.channel_id = $2` | ascent | sweep-set membership probe |
 
 A TREE channel has zero `channel_members` rows by construction, so each
 of these yields the EMPTY SET before any `WHERE` clause runs. Extending
-the existing subscription disjunct (`delivery_reads.sql:14`, `:45`;
-`delivery_cursors.sql:91`, `:107`) can therefore never admit a derived
+the existing subscription disjunct (query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`;
+query `UndeliveredMessages` in `go/internal/store/queries/delivery_cursors.sql`) can therefore never admit a derived
 member: a predicate cannot filter a row into existence. What is required
 is a rewrite of each query's FROM: a `participants` CTE that UNIONs the
 stored `channel_members` rows with the derived participant set, LEFT
@@ -575,7 +571,7 @@ the actor it already has; a channel-keyed query is asking "who are all
 the participants of THIS channel", and the ascent cannot answer it
 because it has no actor to seed from — `SubscribedAgents`' and
 `ChannelAgentMembers`' only account parameter is the author to EXCLUDE
-(`cm.account_id <> $2`, `delivery_reads.sql:15`, `:23`). `InSweepSet`
+(`cm.account_id <> $2`, query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`). `InSweepSet`
 takes both keys and uses the ascent, because it is a single-actor probe
 and the ascent is bounded by depth rather than subtree size.
 
@@ -584,7 +580,7 @@ CTE selects `COALESCE(cs.subscribed, FALSE) AS subscribed` from the LEFT
 JOIN, so a derived participant with no override row reads FALSE. Without
 the COALESCE the arm reads NULL and the disjunct
 `(cm.subscribed OR cm.channel_id = aa.home_channel_id OR
-ch.mandatory_subscription)` (`delivery_reads.sql:14`) evaluates to NULL,
+ch.mandatory_subscription)` (query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`) evaluates to NULL,
 which a `WHERE` treats as not-true — the same answer today, but only
 because the other two disjuncts are structurally FALSE on a TREE
 channel: home channels stay EXPLICIT (below) and `mandatory_subscription`
@@ -595,46 +591,46 @@ semantics total and independent of them.
 
 `ChannelAgentMembers` has no subscription predicate and needs the union
 alone; it is the site that carries @mentions — `resolveMentioned`
-(`go/internal/delivery/dispatch.go:278`) reads it for both the reserved
+(`Consumer.resolveMentioned` in `go/internal/delivery/dispatch.go`) reads it for both the reserved
 `@everyone`/`@agents` expansion and the per-handle membership check, and
-`dispatch.go:272-273` states "a resolved agent that is not a channel
+`Consumer.resolveMentioned` in `go/internal/delivery/dispatch.go` states "a resolved agent that is not a channel
 member is also a no-op", so without this rewrite every mention in a TREE
 channel is silently dropped. T5 owns all five.
 
 One further channel-keyed site is deliberately NOT rewritten:
-`SeedChannelDeliveryCursors` (`delivery_cursors.sql:15-22`, keyed
-`WHERE cm.channel_id = $1` at `:21`) would need the descent by the same
+`SeedChannelDeliveryCursors` (in `go/internal/store/queries/delivery_cursors.sql`, keyed
+`WHERE cm.channel_id = $1`) would need the descent by the same
 argument, but its two callers both fire only on a mandatory channel
-(`channels.go:198`, `:795`) and `mandatory_subscription` is refused on
+(`Store.CreateChannel` in `go/internal/store/channels.go`) and `mandatory_subscription` is refused on
 TREE, so it can never see a mode-1 channel in v1. Stated so a later
 relaxation of that refusal knows this query is the sixth site.
 
 **Cost, stated honestly.** This puts a recursive CTE on the delivery
 fan-out path, evaluated per post, where today's shape is a
-`channel_members` index scan (`0001_init.sql:216-222`). The ascent is
+`channel_members` index scan (table `channel_members` in `go/internal/store/migrations/0001_init.sql`). The ascent is
 one actor's ancestor chain — depth of the agent tree, small; the descent
 is the anchor's whole subtree, so the two fan-out sites pay
 proportionally to subtree SIZE, served by `agent_accounts_parent_idx`
-(`0001_init.sql:119`). The `membership_mode = 1` hoist below keeps an
+(index `agent_accounts_parent_idx` in `go/internal/store/migrations/0001_init.sql`). The `membership_mode = 1` hoist below keeps an
 EXPLICIT channel out of either recursion, so the EXPLICIT path is
 unchanged. It is still a real new cost on the hottest write path,
 accepted here rather than discovered in production.
 
 One v1 restriction follows: `mandatory_subscription` is refused on a
 TREE channel (`CreateChannel` and `SetChannelPolicy` guards), because
-mandatory delivery is defined over member rows (`delivery_reads.sql:14`)
+mandatory delivery is defined over member rows (query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`)
 and so is its D2 seeding (`SeedChannelDeliveryCursors`,
-`delivery_cursors.sql:15-22`, `FROM channel_members cm`; the
-newly-mandatory flip that calls it is `channels.go:794-795`), and a TREE
+query `SeedChannelDeliveryCursors` in `go/internal/store/queries/delivery_cursors.sql`, `FROM channel_members cm`; the
+newly-mandatory flip that calls it is `Store.SetChannelPolicy` in `go/internal/store/channels.go`), and a TREE
 channel has none. Revisit when the ACL record re-cuts this surface.
 
 **Home channels stay EXPLICIT.** They are minted ungrouped with seeded
-members (`accounts.go:375-384`) and place under their agent by UI
+members (`Store.CreateAgent` in `go/internal/store/accounts.go`) and place under their agent by UI
 derivation alone (leg 1); no home channel is ever TREE.
 
 **`ReparentChannel` invariants.** Channels have no owner column —
 `owner_account_id` is the post-policy operator, legal only on OWNER_ONLY
-and rejected on OPEN (`channels.go:93-104`) — so "same owner" needs a
+and rejected on OPEN (`Store.CreateChannel` in `go/internal/store/channels.go`) — so "same owner" needs a
 real referent. The rules, **in the order they MUST be implemented** —
 the authz gate first, the shape refusals after:
 
@@ -650,7 +646,7 @@ the authz gate first, the shape refusals after:
   stay after the no-oracle owner gate above: a non-owner already
   collapsed to ErrNotFound and never reaches here, so no InvalidArgument
   signal leaks channel existence to an unauthorized caller"
-  (`go/internal/store/channels.go:750-752`). The Global Constraint
+  (`Store.SetChannelPolicy` in `go/internal/store/channels.go`). The Global Constraint
   not-found/forbidden merge is only real if the merge runs first.
 - **Anchor-side authority: any participant may re-anchor within the
   owner set.** Decided, not omitted. On a TREE channel the participant
@@ -666,14 +662,14 @@ the authz gate first, the shape refusals after:
 - Refuse `group_id IS NOT NULL` (`ErrInvalidArgument`): attach applies
   to root ungrouped channels only. This also keeps "reserved namespaces
   untouchable" structural — every live DM sits in a `__dm__` group, and
-  the create-guard `isReservedDMGroupTx` (`channels.go:126-140`) is
+  the create-guard `isReservedDMGroupTx` (the reserved-group guard in `Store.CreateChannel` in `go/internal/store/channels.go`) is
   create-only, so without this refusal a reparent could pull a DM out of
   the reserved namespace.
-- Refuse `kind != CHANNEL_KIND_CHANNEL` (kind 0, `comms.proto:290`). A
+- Refuse `kind != CHANNEL_KIND_CHANNEL` (kind 0, `ChannelKind.CHANNEL_KIND_CHANNEL` in `proto/compass/v1/comms.proto`). A
   converted DM is attachable — "a third party converts it to a named
-  CHANNEL" (`comms.proto:285-286`), and conversion leaves it ungrouped
+  CHANNEL" (the `PinnedEntry` doc in `proto/compass/v1/comms.proto`), and conversion leaves it ungrouped
   (post-convert `GroupID` empty,
-  `go/internal/store/dm_pgtest_test.go:425-427`); a live DM is not.
+  `TestConvertOnAddRequiresNameAndConverts` in `go/internal/store/dm_pgtest_test.go`); a live DM is not.
 - Refuse a home channel (any channel referenced by an agent's
   `home_channel_id`): home channels place by derivation, never by edge.
 - A TREE channel must keep an anchor: an empty destination on a TREE
@@ -691,37 +687,37 @@ the explicit arm, so an attach never subtracts access.
   `parent_agent_id TEXT REFERENCES agent_accounts (account_id) ON DELETE
   RESTRICT`, nullable, NULL = root — the same shape as
   `agent_accounts.parent_agent_id`
-  (`go/internal/store/migrations/0001_init.sql:103`) — plus
+  (`agent_accounts.parent_agent_id` in `go/internal/store/migrations/0001_init.sql`) — plus
   `membership_mode SMALLINT NOT NULL DEFAULT 0 CHECK (membership_mode IN
   (0, 1))` — the value CHECK matching every other enum column on the
-  table (`kind`, `0001_init.sql:195`; `post_policy`, `:197`) — plus two
+  table (`kind`, `channels.kind` in `go/internal/store/migrations/0001_init.sql`; `post_policy`) — plus two
   further CHECK constraints making the invariants structural (`group_id
   IS NULL OR parent_agent_id IS NULL`; `membership_mode = 0 OR
   parent_agent_id IS NOT NULL`), an
-  index mirroring `channel_groups_parent_idx` (`0001_init.sql:174`), and
+  index mirroring `channel_groups_parent_idx` (index `channel_groups_parent_idx` in `go/internal/store/migrations/0001_init.sql`), and
   a partial unique index `ON channels (parent_agent_id, name) WHERE
   parent_agent_id IS NOT NULL` — the agent-namespace mirror of
-  `channels_group_name_key` (`0001_init.sql:210`), without which two
+  `channels_group_name_key` (index `channels_group_name_key` in `go/internal/store/migrations/0001_init.sql`), without which two
   same-name channels under one agent would both insert (the group index
   covers only `group_id IS NOT NULL`). The migration also creates
   `channel_subscriptions` (leg 3), shaped like `channel_members`
-  (`0001_init.sql:216-222`) minus the membership meaning — **including
+  (table `channel_members` in `go/internal/store/migrations/0001_init.sql`) minus the membership meaning — **including
   its account-direction index**, the mirror of
-  `channel_members_account_idx` (`0001_init.sql:224`), which the
+  `channel_members_account_idx` (index `channel_members_account_idx` in `go/internal/store/migrations/0001_init.sql`), which the
   216-222 range stops one line short of: the composite PK serves
   channel-first lookups only, and 0001 states the reason both directions
   are indexed ("by channel (list a channel's members) and by account
-  (the visible-channels query for a caller)", `:214-215`). The same
+  (the visible-channels query for a caller)"). The same
   asymmetry binds here — the three account-keyed delivery queries are
   exactly where leg 3 LEFT JOINs this table — **and, for a
   new tenant-owned table, its own `ENABLE`/`FORCE ROW LEVEL SECURITY`,
   its own `tenant_isolation` policy and its own grants.** 0001 applies
   those through a hardcoded `tenant_tables` array literal
-  (`0001_init.sql:939-950`) and a `GRANT … ON ALL TABLES`
-  (`0001_init.sql:927`) with no `ALTER DEFAULT PRIVILEGES` anywhere, so a
+  (the `tenant_tables` array in `go/internal/store/migrations/0001_init.sql`) and a `GRANT … ON ALL TABLES`
+  (the `GRANT … ON ALL TABLES` in `go/internal/store/migrations/0001_init.sql`) with no `ALTER DEFAULT PRIVILEGES` anywhere, so a
   table added by a later migration inherits NEITHER. The grant half fails
   CLOSED (permission denied under the request-path `compass_app` role,
-  `0001_init.sql:881-882`); the RLS half fails OPEN — cross-tenant reads
+  the `compass_app` role grants in `go/internal/store/migrations/0001_init.sql`); the RLS half fails OPEN — cross-tenant reads
   with a green test suite. T2 carries the exact DDL and its acceptance
   case. This is a standing hazard for every future table, not a quirk of
   this one.
@@ -739,66 +735,66 @@ the explicit arm, so an attach never subtracts access.
 ### 5. UI surface: one tree in the sidebar
 
 Today `LeftSidebar` mounts `<ChannelsSection />` then `<AgentsSection />`
-(`apps/ui/src/components/LeftSidebar.tsx:509-510`). `ChannelsSection`
+(`LeftSidebar` in `apps/ui/src/components/LeftSidebar.tsx`). `ChannelsSection`
 partitions channels by group via
 `channelSections(memberChannels(), store.channelGroups())`
-(`LeftSidebar.tsx:312-313`; the partition function is
-`apps/ui/src/comms.ts:114-117`, producing `ChannelSection { group:
-ChannelGroup | undefined; channels: Channel[] }` at `comms.ts:104-107`).
+(`ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`; the partition function is
+`channelSections` in `apps/ui/src/comms.ts`, producing `ChannelSection { group:
+ChannelGroup | undefined; channels: Channel[] }` at `channelSections` in `apps/ui/src/comms.ts`).
 `AgentsSection` renders "the existing user-organized folder tree of agents"
-(`LeftSidebar.tsx:375-376`) from `agentTree(agents)` — the derivation over
-`parentAgentId` at `apps/ui/src/stub-data.ts:387`, producing
+(`ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`) from `agentTree(agents)` — the derivation over
+`parentAgentId` at `agentTree` in `apps/ui/src/stub-data.ts`, producing
 `AgentTreeNode { agent: Agent; children: AgentTreeNode[] }`
-(`stub-data.ts:367-370`).
+(`AgentTreeNode` in `apps/ui/src/stub-data.ts`).
 
 After the fold the sidebar renders ONE section. Its bands are exactly
 these five, and the rest of this record uses these five names for them:
 
-- **The agent tree**, as today (`AgentLeaf` at `LeftSidebar.tsx:30`,
-  `Branch` at `:94`, `Node` at `:129`), where each agent node additionally
+- **The agent tree**, as today (`AgentLeaf` in `apps/ui/src/components/LeftSidebar.tsx`,
+  `Branch`, `Node`), where each agent node additionally
   lists its attached channels as child rows: the agent's home channel
   (matched by `Agent.account` → `home_channel_id`) plus every channel
   whose `parentAgentId` names that agent. `AgentTreeNode` grows a
   `channels: Channel[]` member populated by the tree derivation. A home
   channel is an ordinary `CHANNEL`-kind ungrouped channel
-  (`go/internal/store/accounts.go:377-380`, `Kind:
+  (`Store.CreateAgent` in `go/internal/store/accounts.go`, `Kind:
   int16(ChannelKindChannel)`), so today it lands in `channelSections`'
-  trailing ungrouped section (`apps/ui/src/comms.ts:124-128`); after the
+  trailing ungrouped section (`channelSections` in `apps/ui/src/comms.ts`); after the
   fold the deriver claims it for the agent band and excludes it from
   every other band, so it renders exactly once. Clicking a home-channel
   child row opens the channel view; the agent row keeps its existing
   click behaviour, so the workspace stays reachable there.
 - **Shared spaces** at the root: sections for SHARED groups — the badge
-  branch that already exists at `LeftSidebar.tsx:341`.
+  branch that already exists at `ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`.
 - **The root band**: one section for everything the agent tree did not
   claim and the shared-spaces band does not cover — ungrouped channels,
   plus any leftover OWNER-grouped channel. New work creates no OWNER
   groups (Open Questions 1, 5), so that second population is leftover
   data, not the common case; the band still renders it rather than
   dropping it, since OWNER is the default group visibility
-  (`CHANNEL_GROUP_VISIBILITY_OWNER = 0`, `comms.proto:226`). Read the
+  (`CHANNEL_GROUP_VISIBILITY_OWNER = 0`, `ChannelGroupVisibility.CHANNEL_GROUP_VISIBILITY_OWNER` in `proto/compass/v1/comms.proto`). Read the
   shared-spaces filter as selecting INTO that band, never as excluding
   OWNER-grouped channels from the sidebar.
 - **Direct messages**, unchanged: the existing DM subsection
-  (`LeftSidebar.tsx:358-359`) stays its own band; a DM's surface is not a
+  (`ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`) stays its own band; a DM's surface is not a
   tree concern (1:1 agent DMs are already excluded from the channel list,
-  `LeftSidebar.tsx:306-307`).
+  `ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`).
 - **Browse**, unchanged and surviving the fold: `BrowseChannels`
-  (`LeftSidebar.tsx:267`, mounted at `:366-367`) over
-  `browsableChannels(store.channels())` (`:321`). It is not a band of
+  (`BrowseChannels` in `apps/ui/src/components/LeftSidebar.tsx`, mounted) over
+  `browsableChannels(store.channels())`. It is not a band of
   the fold at all — the other four render `railChannels`, the
-  `membership !== "none"` set (`apps/ui/src/comms.ts:59`), and this one
+  `membership !== "none"` set (`railChannels` in `apps/ui/src/comms.ts`), and this one
   renders the complement. It is listed because a channel the agent band
   fails to claim falls HERE, which is what T7's assertion discriminates.
 
 **How those two bands are built, since neither is what `channelSections`
-does today.** `channelSections` (`apps/ui/src/comms.ts:114-129`)
+does today.** `channelSections` (in `apps/ui/src/comms.ts`)
 partitions by group MEMBERSHIP, not by visibility, and takes no
 visibility parameter: it emits one section per group in `groups` that
-has channels (`comms.ts:120-122`), then ONE trailing
+has channels (`channelSections` in `apps/ui/src/comms.ts`), then ONE trailing
 `group: undefined` section holding the channels whose group is absent or
 not in `groups` — `grouped.filter((c) => c.groupId === undefined ||
-!groups.some((g) => g.id === c.groupId))` (`:124-126`). So an
+!groups.some((g) => g.id === c.groupId))`. So an
 OWNER-grouped channel lands in its own group's section today, and
 "widening the trailing section" is not a filter that exists to widen.
 
@@ -808,7 +804,7 @@ free. The sidebar calls `channelSections` ONCE, passing only the SHARED
 groups:
 
 ```ts
-// LeftSidebar.tsx:312-313 today:
+// ChannelsSection in LeftSidebar.tsx today:
 //   channelSections(memberChannels(), store.channelGroups())
 const sharedGroups = () =>
   store.channelGroups().filter((g) => g.visibility === "shared");
@@ -816,13 +812,13 @@ const sections = () =>
   channelSections(unclaimedChannels(), sharedGroups());
 ```
 
-`unclaimedChannels()` is `memberChannels()` (`LeftSidebar.tsx:311`)
+`unclaimedChannels()` is `memberChannels()`
 minus what the agent band claimed, which the first T7 bullet already
 owns; the change this mechanism makes is the SECOND argument.
 
 Every SHARED group gets its own section, exactly the shared-spaces
 band; every OWNER-grouped channel now names a group NOT in `groups` and
-so falls through the `:124-126` predicate into the single trailing
+so falls through the unknown-group predicate into the single trailing
 section, alongside the genuinely ungrouped ones — exactly the root band,
 as ONE section, which a post-hoc filter over the RESULT could not
 produce (it would yield one section per OWNER group). The two bands are
@@ -831,33 +827,33 @@ then the leading `group !== undefined` sections and the trailing
 returns them in, so the render is a split of one list rather than two
 calls. `channelSections` itself, its signature and all three of its
 existing tests are UNCHANGED — the OWNER-visibility group in
-`comms.test.ts:321-341` still gets its own section when it is passed in
+the `channelSections` describe in `apps/ui/src/comms.test.ts` still gets its own section when it is passed in
 `groups`, because the behaviour that changes is the caller's argument,
 not the partition. `ChannelGroupVisibility` is `"owner" | "shared"`
-(`apps/ui/src/comms-stub.ts:45`), so the filter is total and needs no
+(`ChannelGroupVisibility` in `apps/ui/src/comms-stub.ts`), so the filter is total and needs no
 default arm. The one cost: the trailing section's header reads
-`"channels"` (`LeftSidebar.tsx:340`, `section.group?.name ?? "channels"`)
+`"channels"` (`ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`, `section.group?.name ?? "channels"`)
 — fine as the root band's label, and T7 owns it if it should read
 otherwise.
 
 **The wire gap this band depends on.** A TREE channel cannot reach the
 agent band on today's contract, and the sidebar work alone cannot fix
-it. `Channel.member_account_ids` (`comms.proto:243`) and
-`subscriber_account_ids` (`:248`) are populated from member rows only:
-`loadChannelMembers` (`go/internal/store/channels.go:883`) reads
-`ChannelMembersByChannelIDs` (`:893`) and appends into
+it. `Channel.member_account_ids` (in `proto/compass/v1/comms.proto`) and
+`subscriber_account_ids` are populated from member rows only:
+`loadChannelMembers` (in `go/internal/store/channels.go`) reads
+`ChannelMembersByChannelIDs` and appends into
 `MemberAccountIDs`, mapped to the wire at
-`go/internal/comms/mapping.go:73-74`. A TREE channel has no member rows,
+`channelToWire` in `go/internal/comms/mapping.go`. A TREE channel has no member rows,
 so both lists ship EMPTY. The UI then derives the caller's membership
 entirely from them — `deriveMembership`
-(`apps/ui/src/live/adapt.ts:172-176`) returns `"none"` when the caller is
+(`deriveMembership` in `apps/ui/src/live/adapt.ts`) returns `"none"` when the caller is
 in neither list, and the doc comment above it states the model: "the wire
 carries no per-caller membership enum — the domain's join/subscribe model
 is a UI projection over member_account_ids + subscriber_account_ids"
-(`adapt.ts:161-171`). `railChannels` (`apps/ui/src/comms.ts:58-59`) keeps
+(the `deriveMembership` doc in `apps/ui/src/live/adapt.ts`). `railChannels` (in `apps/ui/src/comms.ts`) keeps
 only `membership !== "none"`, so every TREE channel would land in the
 browse list behind the permanently disabled join button
-(`LeftSidebar.tsx:289-296`, title "Joining is not wired up yet") and
+(`BrowseChannels` in `apps/ui/src/components/LeftSidebar.tsx`, title "Joining is not wired up yet") and
 never under its agent.
 
 **Decided: the server materializes.** `loadChannelMembers` gains a
@@ -866,7 +862,7 @@ branch that, for each `membership_mode = 1` channel, fills
 subtree DESCENT of leg 3 in its ID-SET form, since `loadChannelMembers`
 is keyed by
 channel and by nothing else (`ChannelMembersByChannelIDs` takes
-`$1::text[]` of channel ids, `channels.sql:73-76`) and must attribute
+`$1::text[]` of channel ids, query `ChannelMembersByChannelIDs` in `go/internal/store/queries/channels.sql`) and must attribute
 each row back to its channel — and
 `SubscriberAccountIDs` from the `channel_subscriptions` overrides
 INTERSECTED with that derived set. The existing UI projection then works
@@ -879,34 +875,33 @@ participant check. `loadChannelMembers` is a new site that no such
 conjunction covers. Filled from raw override rows, a reparented-out
 agent would appear in `subscriber_account_ids` and not in
 `member_account_ids`, and `deriveMembership` checks subscribers FIRST
-(`adapt.ts:173`) — so it would return `"subscribed"`, the top tier, and
+(`deriveMembership` in `apps/ui/src/live/adapt.ts`) — so it would return `"subscribed"`, the top tier, and
 the agent's rail would show a channel every server read gate answers
 with `ErrNotFound`. It would also break the domain type's stated
 invariant, "SubscriberAccountIDs is the subset of members … A subset of
-MemberAccountIDs" (`go/internal/store/types.go:215-219`), and the
+MemberAccountIDs" (`Channel.SubscriberAccountIDs` in `go/internal/store/types.go`), and the
 premise the adapter relies on: "A subscriber is by definition a member
 (the server enforces 'subscribe only a current/added member')"
-(`adapt.ts:169-171`).
+(the `deriveMembership` doc in `apps/ui/src/live/adapt.ts`).
 
 **Cost of the materialization, on the read path.** The descent runs on
 every read that loads member lists, not just the sidebar's first paint:
-`loadChannelMembers` has four call sites (`channels.go:296`, `:348`,
-`:829`, `:856`), so `ListChannels` pays it too. It MUST NOT become one
+`loadChannelMembers` has four call sites (`Store.ListChannels` in `go/internal/store/channels.go`), so `ListChannels` pays it too. It MUST NOT become one
 query per channel. The function's own contract forbids that — it
 "populates each channel's member and subscriber sets with one follow-up
 query over the whole id set, so member loading is O(1) round-trips
-rather than one per channel" (`channels.go:879-882`) — so the derived
+rather than one per channel" (`loadChannelMembers` in `go/internal/store/channels.go`) — so the derived
 branch is ONE set-based recursive query over the whole mode-1 id set
 (the descent seeded from every mode-1 channel's anchor at once), keeping
 the round-trip count at two rather than restoring the N+1 that comment
 designed out. Accepted consequence on the wire: `member_account_ids`
 becomes O(subtree) per TREE channel, where today it is bounded by a
 hand-managed member set and the proto documents it only as "The accounts
-party to the channel" (`comms.proto:242-243`) with no size expectation.
+party to the channel" (`Channel.member_account_ids` in `proto/compass/v1/comms.proto`) with no size expectation.
 
 The alternative — a per-caller membership field on the wire `Channel` —
 is rejected: a larger contract change that contradicts the model
-`adapt.ts:161-171` states. T4 owns the server half and pins it with the
+the `deriveMembership` doc in `apps/ui/src/live/adapt.ts` states. T4 owns the server half and pins it with the
 pgtest that matters: a TREE channel's derived participants arrive in
 `MemberAccountIDs` with its `channel_members` row count asserted zero in
 the same test. T8 pins the client half — a TREE `WireChannel` whose
@@ -915,7 +910,7 @@ materialized `member_account_ids` CONTAINS the subtree agent derives
 what T8 canNOT assert: it is a unit test over a hand-built fixture, so
 it cannot observe what the server produced. Under this shape a channel
 arriving with BOTH lists genuinely empty SHOULD derive `"none"`, and
-`deriveMembership` (`adapt.ts:172-176`) stays unchanged and correct in
+`deriveMembership` (in `apps/ui/src/live/adapt.ts`) stays unchanged and correct in
 doing so; asserting otherwise would be asserting the rejected
 alternative. The regression risk lives on the server, and T4's pgtest is
 where it is caught.
@@ -923,14 +918,14 @@ where it is caught.
 Dead residue removed in the same slice:
 
 - The header button `<button type="button" class="icon-btn" title="New
-  folder">` (`LeftSidebar.tsx:437`) has no click handler — nothing in the
+  folder">` (`LeftSidebar` in `apps/ui/src/components/LeftSidebar.tsx`) has no click handler — nothing in the
   component wires it. T7 deletes it with no replacement: agents manage
   channels, so the user gets no create affordance (Open Questions 4).
 - `app.css` retains folder-tree classes with live consumers only inside the
-  agent tree: `.folder-caret` (`apps/ui/src/app.css:270`),
-  `.folder-caret.collapsed` (`:280`), `.folder-badge` (`:284`),
-  `.folder-children` (`:301`), plus the `.folder` wrapper class used at
-  `LeftSidebar.tsx:99`. These are renamed to `tree-*` so the "folder"
+  agent tree: `.folder-caret` (`apps/ui/src/app.css`),
+  `.folder-caret.collapsed`, `.folder-badge`,
+  `.folder-children`, plus the `.folder` wrapper class used at
+  `Branch` in `apps/ui/src/components/LeftSidebar.tsx`. These are renamed to `tree-*` so the "folder"
   vocabulary (retired with the folder tree in PR #91) leaves the codebase.
 
 ## Alternatives considered
@@ -945,8 +940,8 @@ Dead residue removed in the same slice:
 - **C — agent tree subsumes grouping entirely; drop `ChannelGroup`.**
   Delete the group table, move SHARED to a channel-level visibility field.
   Loses: OpenDM and the coordination reconcile both depend on reserved
-  group rows (`go/internal/comms/dm.go:34`,
-  `go/internal/comms/coordination.go:15-17`), so this forces a rewrite of
+  group rows (`Comms.openDMTx` in `go/internal/comms/dm.go`,
+  the file header of `go/internal/comms/coordination.go`), so this forces a rewrite of
   two working subsystems; and removing `ChannelGroup` messages/RPCs is a
   breaking wire change requiring `reserved` bookkeeping. Far more blast
   radius for the same sidebar outcome. Can be revisited after this record
@@ -956,7 +951,7 @@ Dead residue removed in the same slice:
   per-group name uniqueness — the way the coordination reconcile already
   mints per-owner machinery groups. Loses: a group's owner is a user, not
   an agent (the `channel_groups` DDL carries `owner_user_id` and no agent
-  reference at all, `go/internal/store/migrations/0001_init.sql:165-172`),
+  reference at all, table `channel_groups` in `go/internal/store/migrations/0001_init.sql`),
   so agent identity must
   be encoded in reserved names crowding the `__dm__`/`__coordination__`
   namespace; the sidebar still needs an agent-to-group join; and group
@@ -968,7 +963,7 @@ Dead residue removed in the same slice:
   subtree reparent must rewrite member rows on every TREE channel of
   every affected ancestor chain — unbounded write amplification against
   the hook's current cost of reconciling one manager's one channel
-  (`go/internal/comms/coordination.go:14-19`) — and any missed write is a
+  (the file header of `go/internal/comms/coordination.go`) — and any missed write is a
   stored-membership leak. Matt's "purely derived from the tree" is
   delivered by computing at query time, not by caching.
 - **A (chosen) — channel gains an owning-agent edge plus a membership
@@ -983,19 +978,19 @@ Dead residue removed in the same slice:
 Add to `proto/compass/v1/comms.proto`:
 
 - `string parent_agent_id = 11;` on `message Channel` (last used field is
-  `repeated PinnedEntry pinned_entries = 10;`, `comms.proto:259`). Comment
+  `repeated PinnedEntry pinned_entries = 10;`, `Channel.pinned_entries` in `proto/compass/v1/comms.proto`). Comment
   states the owner-set read grant and the SHARED exclusion.
 - `ChannelMembershipMode membership_mode = 12;` on `message Channel`,
   with the new enum below. `ChannelKind` is not touched.
 - `string parent_agent_handle = 5;` and `ChannelMembershipMode
   membership_mode = 6;` on `CreateChannelRequest` (last used field is
-  `repeated string member_handles = 4;`, `comms.proto:663`), the handle
+  `repeated string member_handles = 4;`, `CreateChannelRequest` in `proto/compass/v1/comms.proto`), the handle
   mutually exclusive with `group_id`. Handle addressing follows the
   account convention `ReparentAgentRequest` set: "A `@handle`; the
   server resolves it to an account id; unknown → NOT_FOUND"
-  (`comms.proto:714-715`).
+  (`OpenDMRequest` in `proto/compass/v1/comms.proto`).
 - `rpc ReparentChannel(ReparentChannelRequest) returns
-  (ReparentChannelResponse);` beside `ReparentAgent` (`comms.proto:82`).
+  (ReparentChannelResponse);` beside `ReparentAgent` (`CommsService.ReparentAgent` in `proto/compass/v1/comms.proto`).
 
 Interfaces:
 
@@ -1052,20 +1047,20 @@ CREATE TABLE channel_subscriptions (
     PRIMARY KEY (channel_id, account_id)
 );
 -- Both directions indexed, the mirror of channel_members_account_idx
--- (0001_init.sql:224) and for 0001's stated reason (:214-215): the composite
+-- (0001_init.sql channel_members_account_idx) and for 0001's stated reason: the composite
 -- PK serves channel-first lookups, and the three account-keyed delivery
 -- queries drive account-first.
 CREATE INDEX channel_subscriptions_account_idx
     ON channel_subscriptions (account_id);
 -- The tenant_id column is only HALF the isolation mechanism. 0001's ENABLE
 -- + FORCE + policy loop runs over a HARDCODED array literal
--- (0001_init.sql:939-950), and its GRANT is `ON ALL TABLES` at grant time
--- (0001_init.sql:927) with no ALTER DEFAULT PRIVILEGES anywhere, so a new
+-- (0001_init.sql tenant_tables), and its GRANT is `ON ALL TABLES` at grant time
+-- (0001_init.sql) with no ALTER DEFAULT PRIVILEGES anywhere, so a new
 -- table inherits NEITHER. The grant half fails CLOSED (permission denied
 -- under SET LOCAL ROLE compass_app, caught by the first pgtest); the RLS
 -- half fails OPEN (cross-tenant reads, a green suite). Both halves are
 -- therefore restated here explicitly, the policy in 0001's frozen T2 form
--- (0001_init.sql:955-961): scalar-subquery GUC read, non-empty guard,
+-- (0001_init.sql tenant_isolation policy): scalar-subquery GUC read, non-empty guard,
 -- tenant_id equality, as both USING and WITH CHECK.
 ALTER TABLE channel_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE channel_subscriptions FORCE ROW LEVEL SECURITY;
@@ -1090,15 +1085,15 @@ Store writes:
   with `mandatory_subscription`, and TREE with an `OWNER_ONLY` post
   policy (`ErrInvalidArgument` each — the last one per the leg-3
   decision, which binds both writers, and which the existing coherence
-  check at `channels.go:170` cannot catch because a TREE create writes
+  check at `Store.CreateChannel` in `go/internal/store/channels.go` cannot catch because a TREE create writes
   no member rows); authorizes attach — the caller must be the agent's
   owner or an agent with the same owner, unknown agent merged to
   `ErrNotFound` (the gate shape at
-  `go/internal/store/channels.go:114-117`). EXPLICIT attach keeps
-  today's member augmentation (`channels.go:76-79`); a TREE create still
-  runs `expandOwnerMembership` (`channels.go:160`) for the authz and the
+  `Store.CreateChannel` in `go/internal/store/channels.go`). EXPLICIT attach keeps
+  today's member augmentation (`Store.CreateChannelGroup` in `go/internal/store/channels.go`); a TREE create still
+  runs `expandOwnerMembership` (`Store.CreateChannel` in `go/internal/store/channels.go`) for the authz and the
   returned list, but skips the `EnsureChannelMember` loop over it
-  (`channels.go:174-184`) and returns the derived participant set as
+  (`Store.CreateChannel` in `go/internal/store/channels.go`) and returns the derived participant set as
   `MemberAccountIDs` instead (leg 3) — which after T4's hop (v) it gets
   from the post-commit `s.getChannel` re-read rather than from a
   hand-written literal. T4 owns that swap because it owns the two
@@ -1116,9 +1111,9 @@ Store writes:
 
 Interfaces:
 
-- Consumes: `store.NewChannel` (`go/internal/store/inputs.go:52`; gains
+- Consumes: `store.NewChannel` (`NewChannel` in `go/internal/store/inputs.go`; gains
   `ParentAgentID AccountID` and `MembershipMode ChannelMembershipMode`),
-  new sibling of `requireGroupCreateAuthz` (`authz.go:89`):
+  new sibling of `requireGroupCreateAuthz` (in `go/internal/store/authz.go`):
   `requireAgentAttachAuthz(ctx context.Context, q db.DBTX, actor
   AccountID, agentID AccountID) error`.
 - Produces: `func (s *Store) ReparentChannel(ctx context.Context, actor
@@ -1128,17 +1123,17 @@ Interfaces:
 
 Test cycle: pgtest + **`sql-migration-gate`** (squawk + sqruff over
 `go/internal/store/migrations/*.sql`,
-`tools/sql-migration-gate/index.ts:38`) — this is the FIRST migration
+`MIGRATION_GLOB` in `tools/sql-migration-gate/index.ts`) — this is the FIRST migration
 after the bootstrap, so `.squawk.toml`'s own revisit-note is now live:
 "They stay OFF only for this bootstrap posture — a future incremental
 migration against live data would want them back (revisit this list when
-the first post-live migration lands)" (`.squawk.toml:10-13`). Confirmed
+the first post-live migration lands)" (the header comment in `.squawk.toml`). Confirmed
 for THIS migration, with the reason per exclusion: `channels` is small
 and the added column carries a constant default (no table rewrite on PG
 11+), the two index builds are non-`CONCURRENT` but run pre-live, and
-`prefer-bigint-over-smallint` (`.squawk.toml:44`) still holds because
+`prefer-bigint-over-smallint` (`excluded_rules` in `.squawk.toml`) still holds because
 `membership_mode` is a two-value CHECK-able enum, the same shape as
-`channels.post_policy` (`0001_init.sql:197`,
+`channels.post_policy` (in `go/internal/store/migrations/0001_init.sql`,
 `SMALLINT NOT NULL DEFAULT 0 CHECK (post_policy IN (0, 1))`). The
 exclusions are re-confirmed here, not narrowed; the first migration
 against genuinely live data must narrow them. sqruff's capitalisation
@@ -1172,22 +1167,22 @@ it).
 
 Add `ChannelParticipant` — the explicit arm OR the tree arm of Approach
 leg 3 — BESIDE the existing `ChannelMemberExists`
-(`channels.sql:36-37`), and rebind the wrappers `requireChannelMember` /
-`isChannelMember` (`go/internal/store/authz.go:23` and `:51`) onto it.
+(query `ChannelMemberExists` in `go/internal/store/queries/channels.sql`), and rebind the wrappers `requireChannelMember` /
+`isChannelMember` (`requireChannelMember` in `go/internal/store/authz.go`) onto it.
 `ChannelMemberExists` SURVIVES: two callers genuinely mean
 stored-member-row semantics, not participation, and must not inherit the
 derived arm (Approach leg 3). Give `TopicChannelMemberExists`
-(`authz.sql:8-10`) the same tree arm with the channel resolved through
+(query `TopicChannelMemberExists` in `go/internal/store/queries/authz.sql`) the same tree arm with the channel resolved through
 `topics.channel_id`.
 
-Wrapper signatures and the not-found/forbidden merge (`authz.go:31-35`)
+Wrapper signatures and the not-found/forbidden merge (`requireChannelMember` in `go/internal/store/authz.go`)
 are unchanged, so every wrapper caller inherits derived membership
-without an edit: `AppendMessage` (`messages.go:59`),
-`UpdateChannelMembers` (`channels.go:387`), `SetChannelPolicy`
-(`channels.go:704`), `requireBoardMutator`
-(`channel_pins.go:179-180`), `IsChannelMember` (`authz.go:45`),
-`IsTopicChannelMember` (`authz.go:70`), and `ListTopics`
-(`go/internal/store/topics.go:23`, which calls the unexported
+without an edit: `AppendMessage` (`Store.AppendMessage` in `go/internal/store/messages.go`),
+`UpdateChannelMembers` (`Store.UpdateChannelMembers` in `go/internal/store/channels.go`), `SetChannelPolicy`
+(`Store.SetChannelPolicy` in `go/internal/store/channels.go`), `requireBoardMutator`
+(`requireBoardMutator` in `go/internal/store/channel_pins.go`), `IsChannelMember` (`Store.IsChannelMember` in `go/internal/store/authz.go`),
+`IsTopicChannelMember` (`Store.IsTopicChannelMember` in `go/internal/store/authz.go`), and `ListTopics`
+(`Store.ListTopics` in `go/internal/store/topics.go`, which calls the unexported
 `isChannelMember` directly, not the exported stream filter).
 
 Interfaces:
@@ -1219,9 +1214,9 @@ suite stays green (EXPLICIT behaviour identical).
 
 - Extend all three channel predicate copies (`ListChannels`,
   `ChannelVisibleTo`, `ChannelsByNameForViewer`;
-  `channels.sql:129`, `:159`, `:188`) with the `viewer` CTE and the
+  query `ListChannels` in `go/internal/store/queries/channels.sql`) with the `viewer` CTE and the
   owner-set disjunct of Approach leg 2, textually identical per
-  `channels.sql:10-12`.
+  the identical-copies header comment in `go/internal/store/queries/channels.sql`.
 - **The two new columns are carried from the row to the wire.** T2 adds
   `channels.parent_agent_id` and `channels.membership_mode`, and T1 adds
   the wire fields `Channel.parent_agent_id = 11` /
@@ -1229,7 +1224,7 @@ suite stays green (EXPLICIT behaviour identical).
   the shared channel projection is a fixed seven-column SELECT list, and
   `channelFromRow`'s own doc comment names that shape — "the shared
   seven-column channel projection every channel read selects"
-  (`go/internal/store/channels.go:863`). This task owns the carry rather
+  (`channelFromRow` in `go/internal/store/channels.go`). This task owns the carry rather
   than T2, because T2 owns the schema and the write paths while the
   carry is entirely a READ-path edit in the `db` package this task
   already regenerates, on queries it mostly already rewrites. Note the
@@ -1238,38 +1233,38 @@ suite stays green (EXPLICIT behaviour identical).
   `ChannelVisibleTo` and `ChannelsByNameForViewer`, while the
   PROJECTION copies are `GetChannel`, `ListChannels` and
   `ChannelsByNameForViewer`. They overlap in two. `GetChannel`
-  (`channels.sql:68-71`) carries no visibility predicate and so is
+  (query `GetChannel` in `go/internal/store/queries/channels.sql`) carries no visibility predicate and so is
   untouched by that bullet, and `ChannelVisibleTo` projects a bare
   `SELECT EXISTS (…)` with no column list at all
-  (`channels.sql:173-186`) and so is untouched by this one. Five hops,
+  (query `ChannelVisibleTo` in `go/internal/store/queries/channels.sql`) and so is untouched by this one. Five hops,
   all five required. **(i) The projection**
   gains both columns in all three PROJECTION copies — `GetChannel`
-  (`channels.sql:69`), `ListChannels` (`:143`) and
-  `ChannelsByNameForViewer` (`:202`), each of which today reads
+  (query `GetChannel` in `go/internal/store/queries/channels.sql`), `ListChannels` and
+  `ChannelsByNameForViewer`, each of which today reads
   `SELECT id, name, COALESCE(group_id, '') AS group_id, kind,
   post_policy,` over `COALESCE(owner_account_id, '') AS
   owner_account_id, mandatory_subscription`. `parent_agent_id` is
   nullable, so it projects as `COALESCE(parent_agent_id, '') AS
   parent_agent_id`, the shape the list already uses for both of its
   other nullable columns; `membership_mode` is `NOT NULL` and projects
-  bare. The identical-copies rule (`channels.sql:10-12`) already binds
+  bare. The identical-copies rule (the identical-copies header comment in `go/internal/store/queries/channels.sql`) already binds
   the three to change in one commit. **(ii) `channelFromRow`**
-  (`channels.go:865`) takes the two new values, and every call site
-  passes them: `ListChannels` (`channels.go:294`),
-  `ChannelByNameForViewer` (`:346`), `getChannel` (`:828`) and
-  `scanChannels` (`:851`, whose manual `rows.Scan` at `:848` grows the
+  (`channelFromRow` in `go/internal/store/channels.go`) takes the two new values, and every call site
+  passes them: `ListChannels` (`Store.ListChannels` in `go/internal/store/channels.go`),
+  `ChannelByNameForViewer`, `getChannel` and
+  `scanChannels` (whose manual `rows.Scan` grows the
   two scan destinations as well). Those four were enumerated by
   `git grep -nE 'channelFromRow'` over `go/`, not by recall, and its doc
-  comment's "seven-column" wording (`:863`) becomes nine. **(iii)
-  `store.Channel`** (`go/internal/store/types.go:204-225`) gains
+  comment's "seven-column" wording becomes nine. **(iii)
+  `store.Channel`** (`Channel` in `go/internal/store/types.go`) gains
   `ParentAgentID AccountID` — empty = tree root, the same
   empty-means-root encoding `AgentAccount.ParentAgentID` already uses
   ("the agent's parent in the agent tree; empty = root",
-  `types.go:181-183`) — and `MembershipMode ChannelMembershipMode`, the
+  `AgentAccount.ParentAgentID` in `go/internal/store/types.go`) — and `MembershipMode ChannelMembershipMode`, the
   domain type T2 produces. **(iv) `channelToWire`**
-  (`go/internal/comms/mapping.go:67-79`) maps both, beside the nine
+  (`channelToWire` in `go/internal/comms/mapping.go`) maps both, beside the nine
   fields it sets today. **(v) `CreateChannel`'s returned literal**
-  (`channels.go:206-213`) — because `channelFromRow`'s call sites are
+  (`expandOwnerMembership` in `go/internal/store/channels.go`) — because `channelFromRow`'s call sites are
   NOT the same set as the places a `Channel` is BUILT, and hops (i)
   through (iv) reach only the read paths. `CreateChannel` hand-writes
   its return value after commit rather than re-reading the row:
@@ -1280,9 +1275,9 @@ suite stays green (EXPLICIT behaviour identical).
   **The fix is structural, not another assignment**: `CreateChannel`
   returns `s.getChannel(ctx, ChannelID(id))` after the commit, which is
   exactly what its three sibling writers already do —
-  `UpdateChannelMembers` (`channels.go:471`), `SetChannelPolicy`
-  (`:803`) and, at the comms layer, `UpdatePinnedBoard`
-  (`go/internal/comms/comms.go:625`, whose own comment states the reason:
+  `UpdateChannelMembers` (`Store.UpdateChannelMembers` in `go/internal/store/channels.go`), `SetChannelPolicy`
+  and, at the comms layer, `UpdatePinnedBoard`
+  (`Comms.UpdatePinnedBoard` in `go/internal/comms/comms.go`, whose own comment states the reason:
   "Re-read the channel so ChannelChanged and the response carry the
   current member/policy projection alongside the updated board"). That
   collapses the construction sites to ONE, so no later column addition
@@ -1291,24 +1286,24 @@ suite stays green (EXPLICIT behaviour identical).
   `MemberAccountIDs` literally the projection a later `ListChannels`
   reports, which is the invariant leg 3 already claims ("a TREE
   `CreateChannel` and a later `ListChannels` report the same member list
-  for the same channel", :274-275) and which the literal today only
+  for the same channel", § *Approach*) and which the literal today only
   approximates by reconstructing it — leg 3's citation of
-  `channels.go:211` for that carry-back becomes the re-read, and the
+  `expandOwnerMembership` in `go/internal/store/channels.go` for that carry-back becomes the re-read, and the
   expansion it describes is still run, for the authz. The re-read is a
   pool read after commit, the posture `GetChannel`'s doc comment already
   states for the sibling path ("It is a pool read (post-commit), not a
-  tx read", `channels.go:807-808`). **The re-read is fallible where the
-  literal was not**: a failure between `tx.Commit` (`channels.go:202`)
+  tx read", the `GetChannel` doc in `go/internal/store/channels.go`). **The re-read is fallible where the
+  literal was not**: a failure between `tx.Commit` (`Store.CreateChannel` in `go/internal/store/channels.go`)
   and the read — a pool blip, or a client-cancelled ctx — returns an
   error for a channel that IS durably created, and because
   `CreateChannel` is not idempotent the natural retry then conflicts
-  (`ErrConflict`, `channels.go:152`) on T2's own new
-  `channels_agent_name_key` (:1038-1039). **Accepted, not softened**,
+  (`ErrConflict`, `Store.CreateChannel` in `go/internal/store/channels.go`) on T2's own new
+  `channels_agent_name_key` (§ *T2 — store: schema migration + attach writes (lane: compass-server)*). **Accepted, not softened**,
   because both store siblings propagate their post-commit re-read error
-  identically (`channels.go:471-473`, `:803`) — only the coordination
+  identically (`Store.UpdateChannelMembers` in `go/internal/store/channels.go`) — only the coordination
   EVENT path is best-effort, and only because there the read is not the
   return value ("A read failure is logged and skipped, never
-  propagated", `coordination.go:154-155`) — and a literal-shaped
+  propagated", the `EnsureCoordinationChannel` doc in `go/internal/comms/coordination.go`) — and a literal-shaped
   fallback on the error arm would reintroduce the fifth construction
   site this hop exists to remove, handing T2 back the shortcut the
   bullet above forbids. The write is durable and the channel appears on
@@ -1317,9 +1312,9 @@ suite stays green (EXPLICIT behaviour identical).
   `Channel` construction in the store package was swept with
   `git grep -nE 'return Channel\{' c7c73135 -- go/internal/store/` — 49
   hits, of which 47 are zero-value `Channel{}` error returns and exactly
-  TWO populate fields, `channelFromRow` (`:866`) and this one (`:206`).
+  TWO populate fields, `channelFromRow` and this one.
   The only non-`return` composite literal is `[]Channel{channelFromRow(…)}`
-  (`:828`), which wraps hop (ii) and needs nothing of its own. Outside
+ , which wraps hop (ii) and needs nothing of its own. Outside
   the package there are none: `git grep -nE 'store\.Channel\{' c7c73135
   -- go/` returns nothing (rc=1; positive control in the same run,
   `store.Channel` in `mapping.go` = 18 hits), so every `Channel` that
@@ -1334,87 +1329,85 @@ suite stays green (EXPLICIT behaviour identical).
   path — the one where the user is watching for the channel to appear.
   `Comms.CreateChannel` uses the store's returned value TWICE:
   `CreateChannelResponse.channel` is `channelToWire(ch)`
-  (`go/internal/comms/comms.go:247`), a wrong value on the wire rather
-  than a missing one; and `c.publishChannelChanged(ch, nil)` (`:246`)
-  maps that same literal into a `ChannelChanged` (`mapping.go:484-493`),
+  (`Comms.CreateChannel` in `go/internal/comms/comms.go`), a wrong value on the wire rather
+  than a missing one; and `c.publishChannelChanged(ch, nil)`
+  maps that same literal into a `ChannelChanged` (`Comms.publishChannelChanged` in `go/internal/comms/mapping.go`),
   which the UI reducer upserts straight into state (`case
   "channelChanged": return { ...state, channels: upsertById(…) }`,
-  `apps/ui/src/live/comms-state.ts:219-220`, adapted at
-  `apps/ui/src/live/stream.ts:214`). So a channel just created WITH an
+  `applyEvent` in `apps/ui/src/live/comms-state.ts`, adapted at
+  `decodeEvent` in `apps/ui/src/live/stream.ts`). So a channel just created WITH an
   anchor enters the sidebar anchor-less and renders in the root band
   instead of under its agent, self-healing only on the next
   `ListChannels` or a later event from a path that re-reads. The other
   four `publishChannelChanged` callers are unaffected and that is what
-  makes the create path singular: `UpdateChannelMembers` (`:274`),
-  `SetChannelPolicy` (`:575`) and `UpdatePinnedBoard` (`:625`) all
+  makes the create path singular: `UpdateChannelMembers`,
+  `SetChannelPolicy` and `UpdatePinnedBoard` all
   re-read through `getChannel`, the coordination reconcile re-reads via
-  `c.store.GetChannel` (`coordination.go:163`), and `dm.go:75` forwards
+  `c.store.GetChannel` (`Comms.EnsureCoordinationChannel` in `go/internal/comms/coordination.go`), and `Comms.emitDMCreated` in `go/internal/comms/dm.go` forwards
   a value its caller already read. This is a DIFFERENT gap from the H3
   materialization
   below: that one fills the two member LISTS, these are two other fields
   on the same message, and neither fix implies the other.
 - Swap the direct member JOINs of the message/topic reads for the
-  participant shape: `GetPageCursorSeq` (`messages.sql:64`),
-  `ListMessages` (`:71`), `SearchMessages` (`:81`), `FindAskMessage`
-  (`:92`), `UpdateMessageBlocksAsAuthor` (`:53`),
-  `ResolveTopicForUpdate` (`topics.sql:16`).
+  participant shape: `GetPageCursorSeq` (in `go/internal/store/queries/messages.sql`),
+  `ListMessages`, `SearchMessages`, `FindAskMessage`
+ , `UpdateMessageBlocksAsAuthor`,
+  `ResolveTopicForUpdate` (in `go/internal/store/queries/topics.sql`).
 - **The wire's member lists gain a derived branch (H3).**
-  `Channel.member_account_ids` (`comms.proto:243`) and
-  `subscriber_account_ids` (`:248`) are populated from member rows only
-  — `loadChannelMembers` (`go/internal/store/channels.go:883`) calls
-  `ChannelMembersByChannelIDs` (`:893`) and appends into
+  `Channel.member_account_ids` (in `proto/compass/v1/comms.proto`) and
+  `subscriber_account_ids` are populated from member rows only
+  — `loadChannelMembers` (in `go/internal/store/channels.go`) calls
+  `ChannelMembersByChannelIDs` and appends into
   `MemberAccountIDs`, mapped to the wire at
-  `go/internal/comms/mapping.go:73-74`. A TREE channel therefore ships
+  `channelToWire` in `go/internal/comms/mapping.go`. A TREE channel therefore ships
   with BOTH lists empty, and the UI derives the caller's membership
   purely from them: `deriveMembership`
-  (`apps/ui/src/live/adapt.ts:172-176`) returns `"none"` when the caller
-  is in neither, and `railChannels` (`apps/ui/src/comms.ts:58-59`)
+  (`deriveMembership` in `apps/ui/src/live/adapt.ts`) returns `"none"` when the caller
+  is in neither, and `railChannels` (in `apps/ui/src/comms.ts`)
   filters `membership !== "none"`, so the channel lands in the browse
   list behind the permanently disabled join button
-  (`LeftSidebar.tsx:289-296`) and never in the agent tree. Chosen fix:
+  (`BrowseChannels` in `apps/ui/src/components/LeftSidebar.tsx`) and never in the agent tree. Chosen fix:
   the SERVER materializes the derived participant set into
   `MemberAccountIDs` at read time — `loadChannelMembers` gains a branch
   that takes the ANCHOR-TO-SUBTREE DESCENT of Approach leg 3, not the
   probe's ascent: the function is keyed by channel and by nothing else
   (`ChannelMembersByChannelIDs` takes `$1::text[]` of channel ids,
-  `channels.sql:73-76`), so it has no actor to seed an ascent from. The
+  query `ChannelMembersByChannelIDs` in `go/internal/store/queries/channels.sql`), so it has no actor to seed an ascent from. The
   branch is ONE set-based recursive query over the whole mode-1 id set,
   NOT one per channel: the function's contract is "one follow-up query
   over the whole id set, so member loading is O(1) round-trips rather
-  than one per channel" (`channels.go:879-882`), and a per-channel
+  than one per channel" (`loadChannelMembers` in `go/internal/store/channels.go`), and a per-channel
   descent would restore exactly the N+1 that comment designed out. It
   takes the descent's ID-SET form (leg 3), which projects
   `(channel_id, account_id)` PAIRS rather than bare account ids,
   because this function attributes every row it consumes back to a
   channel through `idx := byID[ChannelID(m.ChannelID)]`
-  (`channels.go:895-902`) and a union of several anchors' subtrees
+  (`loadChannelMembers` in `go/internal/store/channels.go`) and a union of several anchors' subtrees
   projecting bare accounts cannot be attributed. The two channel-keyed
   delivery queries T5 rewrites use the SINGLE-CHANNEL form instead,
-  each being called with one `channel_id` (`delivery_reads.sql:13`,
-  `:22`).
+  each being called with one `channel_id` (query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`).
   `SubscriberAccountIDs` is filled from the `channel_subscriptions`
   override rows INTERSECTED with that derived set, so a stale override
   left by a reparent-out — which leg 3 keeps deliberately, inert for
   DELIVERY only — cannot escape onto the wire and make
   `deriveMembership` return `"subscribed"` (it checks subscribers first,
-  `adapt.ts:173`) for an agent every read gate refuses. The intersection
+  `deriveMembership` in `apps/ui/src/live/adapt.ts`) for an agent every read gate refuses. The intersection
   also holds the domain invariant "SubscriberAccountIDs is the subset of
-  members" (`go/internal/store/types.go:215-219`). Cost: the descent
-  runs on all four `loadChannelMembers` call sites (`channels.go:296`,
-  `:348`, `:829`, `:856`), so every `ListChannels` pays it, and
+  members" (`Channel.SubscriberAccountIDs` in `go/internal/store/types.go`). Cost: the descent
+  runs on all four `loadChannelMembers` call sites (`Store.ListChannels` in `go/internal/store/channels.go`), so every `ListChannels` pays it, and
   `member_account_ids` becomes O(subtree) per TREE channel on the wire
   where the proto states no size expectation ("The accounts party to the
-  channel", `comms.proto:242-243`). Both accepted. The alternative — a
+  channel", `Channel.member_account_ids` in `proto/compass/v1/comms.proto`). Both accepted. The alternative — a
   per-caller membership
   field on the wire `Channel` — is rejected: it is a larger contract
-  change and contradicts the stated model at `adapt.ts:161-171` ("the
+  change and contradicts the stated model at the `deriveMembership` doc in `apps/ui/src/live/adapt.ts` ("the
   wire carries no per-caller membership enum — the domain's
   join/subscribe model is a UI projection over member_account_ids +
   subscriber_account_ids"). Materializing keeps every existing consumer
   of those lists working with no UI contract change.
 - Out of scope, stated: `SharesVisibleChannel`
-  (`presence_reads.sql:17-18`) and the visible-accounts arm
-  (`accounts.sql:133-134`) stay member-row-based (leg 3 degradation
+  (query `SharesVisibleChannel` in `go/internal/store/queries/presence_reads.sql`) and the visible-accounts arm
+  (query `ResolveVisibleGlobalHandles` in `go/internal/store/queries/accounts.sql`) stay member-row-based (leg 3 degradation
   note).
 
 Interfaces:
@@ -1423,14 +1416,14 @@ Interfaces:
   type; T3's participant shape.
 - Produces: updated sqlc queries + regenerated
   `go/internal/store/db/*.sql.go`; the two new columns in all three
-  channel projections, in `channelFromRow` (`channels.go:865`) and its
+  channel projections, in `channelFromRow` (in `go/internal/store/channels.go`) and its
   four call sites, as `Channel.ParentAgentID` /
-  `Channel.MembershipMode` (`types.go:204-225`) and in `channelToWire`
-  (`mapping.go:67-79`); `CreateChannel` returning
+  `Channel.MembershipMode` (`Channel` in `go/internal/store/types.go`) and in `channelToWire`
+  (`channelToWire` in `go/internal/comms/mapping.go`); `CreateChannel` returning
   `s.getChannel(ctx, ChannelID(id))` in place of its hand-written
-  literal (`channels.go:206-213`), so `channelFromRow` becomes the sole
+  literal (`expandOwnerMembership` in `go/internal/store/channels.go`), so `channelFromRow` becomes the sole
   `Channel` construction point; a derived branch in `loadChannelMembers`
-  (`channels.go:883`); predicate parity test.
+  (`loadChannelMembers` in `go/internal/store/channels.go`); predicate parity test.
 
 Test cycle: pgtest — owner and a same-owner sibling agent see an attached
 channel in `ListChannels`; another user does not; `ChannelVisibleTo`
@@ -1458,18 +1451,18 @@ land, and so are the acceptance for them:
   puts either column in a SELECT list, so this fails on today's
   seven-column projection however correct T1 and T2 are. Covering all
   three copies is what the identical-copies rule
-  (`channels.sql:10-12`) asks for: a fix applied to one or two copies
+  (the identical-copies header comment in `go/internal/store/queries/channels.sql`) asks for: a fix applied to one or two copies
   still goes red, and `GetChannel` is the copy behind `s.getChannel`,
-  the return path for `SetChannelPolicy` (`channels.go:803`),
-  `UpdateChannelMembers` (`:471`), `GetChannel` (`:815-816`), the
+  the return path for `SetChannelPolicy` (`Store.getChannel` in `go/internal/store/channels.go`),
+  `UpdateChannelMembers`, `GetChannel`, the
   coordination reconcile's post-commit event read
-  (`coordination.go:163`) and — after hop (v) — `CreateChannel` itself.
+  (`Comms.EnsureCoordinationChannel` in `go/internal/comms/coordination.go`) and — after hop (v) — `CreateChannel` itself.
 - The `Channel` that `CreateChannel` ITSELF returns — not a subsequent
   read — carries the anchor and the mode. This is the assertion for hop
   (v) specifically and nothing else in the record catches it: the
   assertion above goes green the moment the three projections and
   `channelFromRow` land, while a `CreateChannel` still returning its
-  hand-written literal (`channels.go:206-213`) hands back
+  hand-written literal (`expandOwnerMembership` in `go/internal/store/channels.go`) hands back
   `ParentAgentID` empty and `MembershipMode` at zero for a channel just
   created WITH an anchor. Assert it at the store boundary on the
   returned value, and — because the same value feeds both the RPC
@@ -1492,16 +1485,16 @@ land, and so are the acceptance for them:
 
 - `UpdateChannelMembers` on a TREE channel: add/remove →
   `ErrInvalidArgument`; a `Subscribed` toggle (`MemberUpdate`,
-  `go/internal/store/inputs.go:69-74`) for a derived member upserts a
+  `MemberUpdate` in `go/internal/store/inputs.go`) for a derived member upserts a
   `channel_subscriptions` row (mirror of `UpsertChannelMember`,
-  `channels.sql:25-28`) and seeds the D2 delivery cursor on subscribe
-  (the seed-at-subscribe discipline, `channels.go:642`); a toggle for an
+  query `UpsertChannelMember` in `go/internal/store/queries/channels.sql`) and seeds the D2 delivery cursor on subscribe
+  (the seed-at-subscribe discipline, `addOrUpdateMember` in `go/internal/store/channels.go`); a toggle for an
   account outside the derived set → `ErrNotFound`.
 - **The five delivery-side queries change their DRIVING RELATION, not a
   WHERE disjunct.** Every one of them reads `FROM channel_members cm`
-  (`delivery_reads.sql:10` `SubscribedAgents`, `:18-24`
-  `ChannelAgentMembers`, `:41` `SweepChannels`;
-  `delivery_cursors.sql:83` `UndeliveredMessages`, `:102` `InSweepSet`),
+  (`SubscribedAgents`, `ChannelAgentMembers` and `SweepChannels` in
+  `go/internal/store/queries/delivery_reads.sql`;
+  `UndeliveredMessages` and `InSweepSet` in `go/internal/store/queries/delivery_cursors.sql`),
   so a TREE channel — which has zero member rows — yields the empty set
   before any predicate runs. Each query's `channel_members` scan is
   replaced by a `participants` CTE: the UNION of the stored member rows
@@ -1510,18 +1503,18 @@ land, and so are the acceptance for them:
   the derived arm — coalesced, not raw, so the arm's semantics do not
   depend on the TREE-only refusals that keep the disjunct's other two
   terms FALSE (leg 3). The existing subscription disjunct
-  (`delivery_reads.sql:14`, `:45`; `delivery_cursors.sql:91`, `:107`)
+  (query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`; query `UndeliveredMessages` in `go/internal/store/queries/delivery_cursors.sql`)
   then reads `subscribed` off that CTE unchanged.
 - **Which of leg 3's two walks the derived arm takes is per site, set by
   the site's key.** The two channel-keyed queries take the
   anchor-to-subtree DESCENT — `SubscribedAgents`
-  (`WHERE cm.channel_id = $1`, `delivery_reads.sql:13`) and
-  `ChannelAgentMembers` (`:22`) — because their only account parameter
-  is the author to EXCLUDE (`cm.account_id <> $2`, `:15`, `:23`) and an
+  (`WHERE cm.channel_id = $1`, query `SubscribedAgents` in `go/internal/store/queries/delivery_reads.sql`) and
+  `ChannelAgentMembers` — because their only account parameter
+  is the author to EXCLUDE (`cm.account_id <> $2`) and an
   ascent has nothing to seed from. The three account-keyed queries take
   the actor-to-root ASCENT: `SweepChannels`
-  (`WHERE cm.account_id = $1`, `:44`), `UndeliveredMessages`
-  (`delivery_cursors.sql:90`) and `InSweepSet` (`:105-106`, which keys
+  (`WHERE cm.account_id = $1`), `UndeliveredMessages`
+  (query `UndeliveredMessages` in `go/internal/store/queries/delivery_cursors.sql`) and `InSweepSet` (which keys
   on both but is a single-actor probe, so the depth-bounded ascent is
   the cheaper walk). Getting this backwards on any site yields the
   wrong question's answer, not a slow one. Both descent sites take the
@@ -1533,18 +1526,18 @@ land, and so are the acceptance for them:
 - `ChannelAgentMembers`
   has no subscription predicate at all — it needs only the union — and
   it is the site that makes @mentions work: `resolveMentioned`
-  (`go/internal/delivery/dispatch.go:278`) reads it for both reserved
+  (`Consumer.resolveMentioned` in `go/internal/delivery/dispatch.go`) reads it for both reserved
   expansion (`@everyone`/`@agents`) and the per-handle membership check,
-  and `dispatch.go:272-273` documents that "a resolved agent that is not
+  and `Consumer.resolveMentioned` in `go/internal/delivery/dispatch.go` documents that "a resolved agent that is not
   a channel member is also a no-op". Without this change every mention
   in a TREE channel is silently dropped.
 - **Cost, stated.** This puts a recursive CTE on the delivery fan-out
   path, evaluated per post rather than per turn, where today's shape is
   a `channel_members` index scan on `(channel_id, account_id)`
-  (`0001_init.sql:216-222`). The ascent is the actor's ancestor chain
+  (table `channel_members` in `go/internal/store/migrations/0001_init.sql`). The ascent is the actor's ancestor chain
   (depth of the agent tree, small); the descent is the anchor's whole
   subtree, so the two channel-keyed fan-out sites pay by subtree SIZE,
-  served by `agent_accounts_parent_idx` (`0001_init.sql:119`). The same
+  served by `agent_accounts_parent_idx` (index `agent_accounts_parent_idx` in `go/internal/store/migrations/0001_init.sql`). The same
   `membership_mode = 1`
   hoist as the probe (leg 3) keeps an EXPLICIT channel out of either
   recursion, so the EXPLICIT hot path is unchanged. It is
@@ -1554,7 +1547,7 @@ land, and so are the acceptance for them:
   channel (`ErrInvalidArgument`), pairing the `CreateChannel` guard (T2).
 - `SetChannelPolicy` also refuses `OWNER_ONLY` on a TREE channel
   (`ErrInvalidArgument`), per the leg-3 decision on the owner-is-member
-  coherence check (`channels.go:757-775`).
+  coherence check (`Store.SetChannelPolicy` in `go/internal/store/channels.go`).
 
 Interfaces:
 
@@ -1583,10 +1576,10 @@ both-writers refusal T2 asserts at create).
 ### T6 — comms service: RPC edge + events (lane: compass-server)
 
 Wire `ReparentChannel` into `Comms` beside `ReparentAgent`
-(`go/internal/comms/comms.go:285`), resolving `new_parent_agent_handle`
+(`Comms.ReparentAgent` in `go/internal/comms/comms.go`), resolving `new_parent_agent_handle`
 at the edge exactly as `ReparentAgent` resolves handles; pass
 `parent_agent_handle` + `membership_mode` through `CreateChannel`
-(`comms.go:228`); emit `ChannelChanged` post-commit. No coordination-hook
+(`Comms.CreateChannel` in `go/internal/comms/comms.go`); emit `ChannelChanged` post-commit. No coordination-hook
 change — the hook stays agent-edge-only (Global Constraints).
 
 Interfaces:
@@ -1604,11 +1597,11 @@ into a TREE channel succeeds end to end; a non-participant post still →
 
 ### T7 — UI: one sidebar tree (lane: compass-ui)
 
-- Extend `AgentTreeNode` (`apps/ui/src/stub-data.ts:367-370`) with
+- Extend `AgentTreeNode` (in `apps/ui/src/stub-data.ts`) with
   `channels: Channel[]`; extend `agentTree` itself
-  (`stub-data.ts:387`) — NOT a wrapping deriver in `comms.ts`, so the
+  (`agentTree` in `apps/ui/src/stub-data.ts`) — NOT a wrapping deriver in `comms.ts`, so the
   stable-input-order and dangling-parent contracts documented at
-  `stub-data.ts:372-386` stay stated once where they are enforced — to
+  `agentTree` in `apps/ui/src/stub-data.ts` stay stated once where they are enforced — to
   slot each channel under its `parentAgentId` agent and each home
   channel under its agent via `home_channel_id`. A channel claimed by
   the agent band (attached or home) is excluded from the shared-spaces
@@ -1617,31 +1610,31 @@ into a TREE channel succeeds end to end; a non-participant post still →
   participant set into `member_account_ids` (H3); without that server
   half the band renders nothing, whatever this deriver does.
 - Replace the `<ChannelsSection /><AgentsSection />` pair
-  (`apps/ui/src/components/LeftSidebar.tsx:509-510`) with one section:
+  (`LeftSidebar` in `apps/ui/src/components/LeftSidebar.tsx`) with one section:
   agent tree band (channels as child rows under `AgentLeaf` at
-  `LeftSidebar.tsx:30`, `Branch` at `:94`, `Node` at `:129`),
+  `AgentLeaf` in `apps/ui/src/components/LeftSidebar.tsx`, `Branch`, `Node`),
   shared-spaces band and root band from ONE `channelSections` call
-  (`apps/ui/src/comms.ts:114-129`) passed only the SHARED groups, per
+  (`channelSections` in `apps/ui/src/comms.ts`) passed only the SHARED groups, per
   the leg-5 mechanism: its per-group sections are the shared-spaces
   band and its trailing `group: undefined` section is the root band,
   which is where every OWNER-grouped channel now falls via the existing
-  unknown-group arm (`comms.ts:124-126`). The caller at
-  `LeftSidebar.tsx:312-313` changes its `groups` argument;
+  unknown-group arm (`channelSections` in `apps/ui/src/comms.ts`). The caller at
+  `ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx` changes its `groups` argument;
   `channelSections` itself does not change. DM band
   unchanged
-  (`LeftSidebar.tsx:358-359`; 1:1 agent DM exclusion at `:306-307`), and
-  the browse band untouched (`LeftSidebar.tsx:366-367`).
+  (`ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`; 1:1 agent DM exclusion), and
+  the browse band untouched (`ChannelsSection` in `apps/ui/src/components/LeftSidebar.tsx`).
 - Dead residue: delete the handler-less `title="New folder"` button
-  (`LeftSidebar.tsx:437`); rename `.folder`, `.folder-caret`,
+  (`LeftSidebar` in `apps/ui/src/components/LeftSidebar.tsx`); rename `.folder`, `.folder-caret`,
   `.folder-caret.collapsed`, `.folder-badge`, `.folder-children`
-  (`apps/ui/src/app.css:270,280,284,301`; wrapper used at
-  `LeftSidebar.tsx:99`) to `tree-*` and update their consumers.
+  (`apps/ui/src/app.css`; wrapper used at
+  `Branch` in `apps/ui/src/components/LeftSidebar.tsx`) to `tree-*` and update their consumers.
 
 Interfaces:
 
 - Consumes: `Channel.parentAgentId?: string` and
   `Channel.membershipMode?: "explicit" | "tree"` added to the UI
-  `Channel` (`apps/ui/src/comms-stub.ts:98-105`);
+  `Channel` (in `apps/ui/src/comms-stub.ts`);
   `AgentAccount.homeChannelId`; the `agentTree` contract.
 - Produces: `AgentTreeNode { agent: Agent; channels: Channel[];
   children: AgentTreeNode[] }`; a single sidebar section component
@@ -1657,34 +1650,32 @@ trailing root-band section rather than its own section, which is the
 assertion for the SHARED-only `groups` argument specifically and fails
 if the caller keeps passing every group; existing `board.test.ts` /
 `adapt.test.ts` stay green, and so does `comms.test.ts` — its three
-`channelSections` cases (`comms.test.ts:294-354`) are UNCHANGED by
+`channelSections` cases (the `channelSections` describe in `apps/ui/src/comms.test.ts`) are UNCHANGED by
 design, including the OWNER-visibility group that still gets its own
-section when passed in `groups` (`:321-341`), because the behaviour
+section when passed in `groups`, because the behaviour
 that moves is this caller's argument and not the partition. A red
 `comms.test.ts` means the mechanism was implemented in
 `channelSections` instead of at its call site.
 `apps/ui/src/components/LeftSidebar.test.tsx` does NOT stay green, and
 is rewritten here BY DESIGN — unlike `comms.test.ts`, a red one is
 expected, not a sign the mechanism landed in the wrong place: its
-two-section contract (`:91-134` "both sections collapse and expand
+two-section contract ("both sections collapse and expand
 independently", driving `findToggle(container, "Channels")` and
 `findToggle(container, "Agent workspaces")` and asserting each
-collapses independently, plus the `"Agent workspaces"` toggle assertion
-at `:203`) is what leg 5's ONE section reverses, and its New-folder pin
-(`:411-418`, "the keep-native new-folder button still carries its
+collapses independently, plus the `"Agent workspaces"` toggle assertion) is what leg 5's ONE section reverses, and its New-folder pin
+("the keep-native new-folder button still carries its
 native title (sweep boundary held)", asserting a `button.icon-btn` with
 `title === "New folder"` exists) is what the decided delete (Open Questions 4)
 reverses. `LeftSidebar.live.test.tsx` is NOT affected: it asserts only
-`.tree-agent` / `.tree-empty` rows inside the agent band (`:103`,
-`:110`, `:126`, `:169`) and never locates a section header.
+`.tree-agent` / `.tree-empty` rows inside the agent band and never locates a section header.
 
 ### T8 — live adapter + fixtures (lane: compass-ui)
 
 Lift `parentAgentId` and `membershipMode` from the wire `Channel` in the
 live adapter (the same lift pattern the agent arm uses — "agent account
-lifts parentAgentId from the agent arm", `apps/ui/src/live/adapt.test.ts:151`),
-and extend the stub fixtures (`apps/ui/src/comms-stub.ts:289-290` groups,
-`:314-378` channels) so `vite dev` exercises agent-attached channels in
+lifts parentAgentId from the agent arm", the `"agent account lifts parentAgentId from the agent arm"` test in `apps/ui/src/live/adapt.test.ts`),
+and extend the stub fixtures (the groups and channels beside `STUB_ACCOUNTS` in
+`apps/ui/src/comms-stub.ts`) so `vite dev` exercises agent-attached channels in
 both modes without a daemon.
 
 Interfaces:
@@ -1702,7 +1693,7 @@ is the shape T4 materializes — a TREE channel's lists arrive NON-empty,
 which IS the fix — so this case pins the lift, the fixture shape and the
 adapter's pass-through. It deliberately does NOT assert that both-empty
 lists derive non-`none`: under the chosen shape genuinely empty lists
-SHOULD derive `"none"`, and `deriveMembership` (`adapt.ts:172-176`)
+SHOULD derive `"none"`, and `deriveMembership` (in `apps/ui/src/live/adapt.ts`)
 stays unchanged and correct in doing so. Asserting otherwise would
 require `deriveMembership` to consult something beyond the two lists,
 which is the per-caller-wire-field alternative leg 5 rejects. This is a

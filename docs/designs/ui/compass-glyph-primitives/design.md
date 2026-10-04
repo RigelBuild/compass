@@ -30,11 +30,11 @@ conditions under which the Unifont pin can be retired.
 - **Night Owl palette via `--cx-*` tokens only.** No raw hex; glyphs carry no
   color of their own — `currentColor` end to end.
 - **The even-11px-multiple rule governs Departure Mono font sizes, not SVG
-  boxes** (`tokens.css:51-57` — it is about UPM font-pixels). The glyph grid
+  boxes** (the `fonts` comment in `apps/ui/src/design/tokens.css` — it is about UPM font-pixels). The glyph grid
   therefore neither inherits nor fixes the pre-existing 15px `.r-tab-icon`
-  violation (`app.css` `.r-tab .r-tab-icon`). What the grid MUST satisfy is
-  whole-pixel placement inside the 34px `.r-tab`, so its 1px cells do not
-  straddle device pixels.
+  violation (`.r-tab .r-tab-icon` in `apps/ui/src/app.css`). What the grid MUST
+  satisfy is whole-pixel placement inside the 34px `.r-tab`, so its 1px cells do
+  not straddle device pixels.
 - **Item-level union, per Matt's ruling.** `ActivityBarItem` splits AT
   THE ITEM: `{ kind: "glyph"; … }` vs `{ kind: "avatar"; … }`. A field-level
   union (one `icon` field with two shapes) was explicitly rejected. Both the
@@ -44,7 +44,7 @@ conditions under which the Unifont pin can be retired.
   test names (`§`, `⇒`, `≥`, …), which never render.
 - **The `stub-data.ts` fixture log glyphs are not converted, but they are not
   free either.** `➜` (U+279C) and `▪▪▪▪` render through `.term-body`, which
-  uses `var(--cx-font-ui)` (`app.css:1273`) — there is NO separate terminal
+  uses `var(--cx-font-ui)` (`.term-body` in `apps/ui/src/app.css`) — there is NO separate terminal
   font stack — and `agent.png` captures that exact fixture
   (`AGENT_ID = "acc-compass-ui"`). So after the pin is removed they would
   rasterize as tofu. They stay text, but T8 must first replace the two fixture
@@ -200,7 +200,7 @@ brand-face coverage**, which requires ALL of:
 3. Fixture log glyphs (`➜`, `▪▪▪▪`) replaced with ASCII in `stub-data.ts`
    (T8 step 1). They are content, not chrome, so they are never converted to
    SVG — but they are NOT exempt from coverage: `.term-body` renders through
-   `var(--cx-font-ui)` (`app.css:1273`), the same stack as everything else,
+   `var(--cx-font-ui)` (`.term-body` in `apps/ui/src/app.css`), the same stack as everything else,
    and `agent.png` captures them. There is no terminal font stack to fall back
    on.
 
@@ -258,7 +258,7 @@ export const Glyph: Component<{ name: GlyphName }>;
 ### T2 — `avatarInitial` helper
 
 In `apps/ui/src/constants.ts`: the single owner of initial derivation, today
-duplicated at `:137` and `:154`. Take `Array.from(handle)[0]` (never `.at(0)`,
+duplicated by `fleetItemForAgent` and `unreachableFleetItem`. Take `Array.from(handle)[0]` (never `.at(0)`,
 which splits a surrogate pair), NFKD-normalize it and strip combining marks so
 `É`→`E`, uppercase, then clamp to one printable ASCII character, else `"?"`
 (D1).
@@ -277,8 +277,8 @@ export function avatarInitial(handle: string): string;
 
 **These cannot be separate commits.** `GlyphTabItem` has neither `icon` nor
 `agentId`, and the activity-bar loop reads BOTH on the un-narrowed union:
-`{tab.icon}` at `RightSidebar.tsx:689` and
-`tab.agentId ? store.agentById(tab.agentId) : undefined` at `:662`. Landing the
+`{tab.icon}` in `RightSidebar`'s activity-bar render and
+`tab.agentId ? store.agentById(tab.agentId) : undefined` in the agent lookup. Landing the
 union without the render branch is a TS-strict error, so a split leaves a red
 commit mid-stack and breaks bisection.
 
@@ -292,7 +292,7 @@ In `apps/ui/src/constants.ts`: replace the single interface with the
 
 At the render site: the `.r-tab-icon` span gains `data-kind={tab.kind}` and
 branches `tab.kind === "glyph" ? <Glyph name={tab.name} /> : tab.letter`; the
-`:662` agent lookup moves behind a `tab.kind === "avatar"` guard. In `app.css`
+agent lookup moves behind a `tab.kind === "avatar"` guard. In `app.css`
 split `.r-tab .r-tab-icon` into the `[data-kind="glyph"]` box (no font
 properties) and the `[data-kind="avatar"]` 15px mono rule; `.r-tab
 .cx-state-dot` untouched. The glyph box MUST sit at a whole-pixel offset inside
@@ -346,7 +346,7 @@ Sweep the rendered non-ASCII chrome sites (census at main `97741c5ce2f4`:
 `▸ ▾ 🗀 ⎇ ✓ ✗ • − ·`, `App.tsx` `◇ ▦ ▐ ▌`, `AgentView.tsx` `⊞ ▁ ▏ ✕`,
 `UsageBar.tsx` `⎇`, `LogPanel.tsx` `■ ⟨⟩`, `SessionTrace.tsx` `↗`,
 `BacklogView.tsx` `▸`, `IssueCard.tsx`/`DoneView.tsx` `−`). The `·` in
-`RightSidebar.tsx:32` `FILE_ICON` is part of the census — Space Mono covers
+`FILE_ICON` (then in `apps/ui/src/components/RightSidebar.tsx`) is part of the census — Space Mono covers
 it, so it is a "kept, covered" row, not a conversion.
 
 **Split into three commits by surface**, each independently eyeball-able:
@@ -448,7 +448,7 @@ apps/ui/e2e/__screens__/ — 11 baselines recaptured against the shrunk font set
 
 - [ ] T1: `<Glyph/>` primitive + 4 static-tab bitmaps + `components.md` grids + cell-validity test
 - [ ] T2: `avatarInitial` helper + unit tests (surrogate pair, empty, accented Latin, non-Latin, multi-char uppercase)
-- [ ] T3+T4 (ONE commit): `ActivityBarItem` → `GlyphTabItem | AvatarTabItem` union, both constructors, the render branch for `{tab.icon}` (`:689`) AND `tab.agentId` (`:662`), the `.r-tab-icon` CSS split with a whole-pixel glyph box, and tests for BOTH arms
+- [ ] T3+T4 (ONE commit): `ActivityBarItem` → `GlyphTabItem | AvatarTabItem` union, both constructors, the render branch for `{tab.icon}` in `RightSidebar` AND `tab.agentId` in the agent lookup, the `.r-tab-icon` CSS split with a whole-pixel glyph box, and tests for BOTH arms
 - [ ] T5a: chrome glyph conversion — `LeftSidebar` + `App` (audit table rows, a11y column)
 - [ ] T5b: chrome glyph conversion — `RightSidebar` + `AgentView`
 - [ ] T5c: chrome glyph conversion — remaining surfaces; audit table complete against a non-ASCII sweep
@@ -464,7 +464,7 @@ apps/ui/e2e/__screens__/ — 11 baselines recaptured against the shrunk font set
   ASCII character, falling back to `?` only for scripts no Latin letter
   represents (CJK, Cyrillic, emoji). Handles are charset-unconstrained (proto
   `from_handle`, no schema validation), and the initial exists to tell agents
-  apart (`constants.ts:127-130`: "a per-agent glyph, no hardcoded Supervisor
+  apart (`fleetItemForAgent` in `apps/ui/src/constants.ts`: "a per-agent glyph, no hardcoded Supervisor
   ◆") — a bare clamp would collapse distinct non-ASCII handles to identical `?`
   tabs. A font fallback was rejected: it keeps the pin forever and makes T8
   impossible. The tab's `title`/`aria-label` carries the full handle in every
@@ -475,7 +475,7 @@ apps/ui/e2e/__screens__/ — 11 baselines recaptured against the shrunk font set
   9×9 per DL-150/DL-199; they are physically separate components, so two grid
   sizes coexisting is fine.
   11×11 does **not** resolve the pre-existing 15px slot violation — the
-  even-11px-multiple rule (`tokens.css:51-57`) governs Departure Mono font
+  even-11px-multiple rule (the `fonts` comment in `apps/ui/src/design/tokens.css`) governs Departure Mono font
   sizes via UPM font-pixels, and an SVG box has no UPM. An earlier draft of
   this record claimed it did and was wrong.
   The real hazard is placement: an 11px box flex-centered in the 34px `.r-tab`

@@ -6,16 +6,16 @@ Note on Go citations: this design was authored in a working copy whose `go/` tre
 
 ## Problem / Intent
 
-The J1 correlation seam is half-live. The server's inbound half is merged: `go/internal/otel/interceptor.go:66-79` (`NewSessionIDInterceptor`) stamps semconv `session.id` onto the handler span from the `X-POSTHOG-SESSION-ID` request header, and the CORS door admits the header (`go/server/network_door.go:168`). But nothing sends it — the UI's boot comment says so outright:
+The J1 correlation seam is half-live. The server's inbound half is merged: `NewSessionIDInterceptor` in `go/internal/otel/interceptor.go` (`NewSessionIDInterceptor`) stamps semconv `session.id` onto the handler span from the `X-POSTHOG-SESSION-ID` request header, and the CORS door admits the header (`networkCORS` in `go/server/network_door.go`). But nothing sends it — the UI's boot comment says so outright:
 
 > `// The OUTBOUND half (sending the PostHog session id to the server so its`
 > `// spans carry it) is deliberately not wired here.`
 
-— `apps/ui/src/index.tsx:119-120`
+— `main` in `apps/ui/src/index.tsx`
 
 That absence was Matt's RIG-3233 hold (2026-09-05), for two reasons, both now discharged:
 
-1. **No inbound consumer** — expired. The server reader merged; `X-POSTHOG-SESSION-ID` appears in `go/internal/otel/interceptor.go` (const at `:44`), its test file, and the CORS builder on `origin/main`.
+1. **No inbound consumer** — expired. The server reader merged; `X-POSTHOG-SESSION-ID` appears in `go/internal/otel/interceptor.go` (const `PostHogSessionHeader`), its test file, and the CORS builder on `origin/main`.
 2. **Boot ordering** — the outbound header would have needed a lazy getter over a not-yet-existing analytics handle. Dissolved by reordering boot (approved by Matt today; see Approach): analytics is constructed *before* the clients, so the transport interceptor closes over a real object.
 
 This record designs the outbound half: the boot reorder, an `Analytics.sessionId()` accessor, and a transport request interceptor that sets the header — with sender-side validation mirroring the server's limits.
@@ -28,17 +28,17 @@ Two moves, in dependency order: reorder boot so analytics exists before the tran
 
 Current order in `apps/ui/src/index.tsx` `main()`:
 
-1. `:91` — `const clients = createLiveClients(connection);`
-2. `:93` — `const callerId = await bootCaller(root, () => resolveCaller(clients.compass));`
-3. `:121-123` — `const analytics = createAnalytics(analyticsConfigFromEnv(), { traceId: () => clients.traceId.current });`
-4. `:124` — `analytics.identify(callerId);`
+1. `const clients = createLiveClients(connection);`
+2. `const callerId = await bootCaller(root, () => resolveCaller(clients.compass));`
+3. `const analytics = createAnalytics(analyticsConfigFromEnv(), { traceId: () => clients.traceId.current });`
+4. `analytics.identify(callerId);`
 
 Verified dependency edges:
 
-- `createLiveClients(conn)` needs only the connection — `apps/ui/src/live/client.ts:57`: `export function createLiveClients(conn: ResolvedConnection): LiveClients {`. Pure construction, no I/O (`client.ts:50`: "Pure construction (no I/O)").
-- `bootCaller(...)` needs the clients (`index.tsx:93`, above).
-- `createAnalytics(config, deps?)` needs only config + an optional deps bag — `apps/ui/src/analytics/analytics.ts:127-129`: `export function createAnalytics(config: AnalyticsConfig | undefined, deps?: { posthog?: PostHog; traceId?: () => string | undefined })`. It is not downstream of clients or caller.
-- `analytics.identify(callerId)` is a separate statement (`index.tsx:124`) needing only `callerId`.
+- `createLiveClients(conn)` needs only the connection — `createLiveClients` in `apps/ui/src/live/client.ts`: `export function createLiveClients(conn: ResolvedConnection): LiveClients {`. Pure construction, no I/O (the `createLiveClients` doc in `apps/ui/src/live/client.ts`: "Pure construction (no I/O)").
+- `bootCaller(...)` needs the clients (`main` in `apps/ui/src/index.tsx`, above).
+- `createAnalytics(config, deps?)` needs only config + an optional deps bag — `createAnalytics` in `apps/ui/src/analytics/analytics.ts`: `export function createAnalytics(config: AnalyticsConfig | undefined, deps?: { posthog?: PostHog; traceId?: () => string | undefined })`. It is not downstream of clients or caller.
+- `analytics.identify(callerId)` is a separate statement (`main` in `apps/ui/src/index.tsx`) needing only `callerId`.
 
 Target order:
 
@@ -60,15 +60,15 @@ binding is read during construction. Same direction, different timing — the
 timing is the whole distinction. Two grounded reasons the getter is already
 lazy, so no change is needed to it:
 
-- The value is only populated by replies: "the clients exist before this line, but the first trace id only lands once a call has returned" — `index.tsx:108-110`. (That comment documents the *getter's* laziness, not a boot-ordering constraint — do not read it as one.)
-- `PostHogAnalytics` already reads it at capture time, not construction time: the getter is stored at `analytics.ts:61` (`this.traceId = traceId;`) and invoked at `analytics.ts:77` (`const traceId = this.traceId();`), documented at `analytics.ts:47-49`: "The trace-id source, read at CAPTURE time rather than construction time".
+- The value is only populated by replies: "the clients exist before this line, but the first trace id only lands once a call has returned" — `main` in `apps/ui/src/index.tsx`. (That comment documents the *getter's* laziness, not a boot-ordering constraint — do not read it as one.)
+- `PostHogAnalytics` already reads it at capture time, not construction time: the getter is stored in the `PostHogAnalytics` constructor in `apps/ui/src/analytics/analytics.ts` (`this.traceId = traceId;`) and invoked in `PostHogAnalytics.capture` in `apps/ui/src/analytics/analytics.ts` (`const traceId = this.traceId();`), documented at the `PostHogAnalytics` constructor doc in `apps/ui/src/analytics/analytics.ts`: "The trace-id source, read at CAPTURE time rather than construction time".
 
-Both getters resolve at call time, pointing opposite ways: `traceId` reads transport state from analytics; `sessionId` reads analytics state from the transport. The layering rule at `analytics.ts:51-53` is preserved on both sides: "A getter, not the sink object, on purpose — analytics reads one string and has no business depending on compass-client's transport types, so the layering stays one-directional." Symmetrically, the transport receives a `() => string | undefined`, never an `Analytics` reference.
+Both getters resolve at call time, pointing opposite ways: `traceId` reads transport state from analytics; `sessionId` reads analytics state from the transport. The layering rule at the `PostHogAnalytics` constructor doc in `apps/ui/src/analytics/analytics.ts` is preserved on both sides: "A getter, not the sink object, on purpose — analytics reads one string and has no business depending on compass-client's transport types, so the layering stays one-directional." Symmetrically, the transport receives a `() => string | undefined`, never an `Analytics` reference.
 
 #### Two consequences of constructing analytics earlier
 
 The `PostHogAnalytics` constructor is **not** inert — it calls
-`client.init(config.key, {...})` at `analytics.ts:66-73`. Moving it ahead of
+`client.init(config.key, {...})` in the `PostHogAnalytics` constructor in `apps/ui/src/analytics/analytics.ts`. Moving it ahead of
 `bootCaller` therefore moves a real initialization earlier in boot. Both
 resulting changes are acceptable, and both are stated here so a reviewer does
 not have to rediscover them:
@@ -76,7 +76,7 @@ not have to rediscover them:
 1. **The WhoAmI failure path now leaves posthog initialized but never
    identified.** `bootCaller` returning `undefined` is a stop signal — "it
    already painted the WhoAmI failure screen, so the app must not come up"
-   (`index.tsx:94-95`) — and the function returns at `:96-97` before
+   (`main` in `apps/ui/src/index.tsx`) — and the function returns right there, before
    `analytics.identify(callerId)` ever runs. Under the current order analytics
    does not exist on that path; under the new one it is initialized and
    anonymous.
@@ -88,7 +88,7 @@ not have to rediscover them:
    session on a failed boot where it previously emitted nothing. Nothing is
    *captured* (`autocapture: false`, `capture_pageview: false`,
    `capture_pageleave: false`, `disable_session_recording: true`,
-   `disable_surveys: true` at `analytics.ts:66-73`, and no code path calls
+   `disable_surveys: true` in the `PostHogAnalytics` constructor in `apps/ui/src/analytics/analytics.ts`, and no code path calls
    `capture()` before the early return), and the client is left
    initialized-but-unidentified with no
    `shutdown()` — `analytics.shutdown()` is never invoked anywhere in
@@ -97,10 +97,10 @@ not have to rediscover them:
    A flag that *would* suppress that egress does exist, and this design
    **declines** it rather than claiming it is absent: `advanced_disable_flags`.
    The installed typings declare the key —
-   `node_modules/.bun/node_modules/@posthog/types/dist/posthog-config.d.ts:1624`:
+   `node_modules/.bun/node_modules/@posthog/types/dist/posthog-config.d.ts`:
    `advanced_disable_flags?: boolean;` — and the remote-config loader
    short-circuits on it before any request is made
-   (`apps/ui/node_modules/posthog-js/lib/src/remote-config.js:53-57`):
+   (`apps/ui/node_modules/posthog-js/lib/src/remote-config.js`):
 
    ```js
    if (this._instance._shouldDisableFlags()) {
@@ -111,13 +111,13 @@ not have to rediscover them:
    ```
 
    `_shouldDisableFlags()` reads exactly that config key
-   (`apps/ui/node_modules/posthog-js/lib/src/posthog-core.js:4033-4038`:
+   (`apps/ui/node_modules/posthog-js/lib/src/posthog-core.js`:
    `if ('advanced_disable_flags' in originalConfig) { return !!originalConfig.advanced_disable_flags; }`).
    Declining it is a trade with a named cost: the same typings warn
    "Disabling this will also prevent remote configuration from loading, which
    could mean features like web vitals, surveys, and other features configured
    in PostHog settings are disabled unless explicitly enabled via client-side
-   config" (`posthog-config.d.ts:1616-1620`). This record keeps remote config
+   config" (`posthog-config.d.ts`). This record keeps remote config
    live and accepts the anonymous-session egress instead.
 
    So the trade is **chosen, not forced**. Two halves: the reorder itself is
@@ -128,7 +128,7 @@ not have to rediscover them:
    because it only bites a deployment with a PostHog key configured.
 2. **`get_session_id()` may legitimately return an empty string early.** The
    installed typings say so: "This may be an empty string if the client is
-   … not initialized" (`apps/ui/node_modules/posthog-js/dist/module.d.ts:4210`).
+   … not initialized" (`PostHog.get_session_id` in `apps/ui/node_modules/posthog-js/dist/module.d.ts`).
    The guard's `+` quantifier rejects `""`, so an early request simply carries
    no header — the same degraded state as analytics-off, and self-healing on
    the next request once a session exists. This is why the getter returns
@@ -137,7 +137,7 @@ not have to rediscover them:
 
 ### The outbound interceptor
 
-A new request interceptor in `packages/compass-client/src/index.ts`, sibling to `traceResponseInterceptor` (`index.ts:143-162`), composed by `callInterceptors` (`index.ts:170-179`) under the same omitted-means-off discipline already documented there: "no sink ⇒ no trace interceptor at all, so a caller that does not ask for correlation gets byte-identical behavior" (`index.ts:167-168`).
+A new request interceptor in `packages/compass-client/src/index.ts`, sibling to `traceResponseInterceptor`, composed by `callInterceptors` under the same omitted-means-off discipline already documented there: "no sink ⇒ no trace interceptor at all, so a caller that does not ask for correlation gets byte-identical behavior" (`callInterceptors` in `packages/compass-client/src/index.ts`).
 
 ```typescript
 /** The PostHog session-id REQUEST header the server's J1 interceptor reads
@@ -162,16 +162,16 @@ export function sessionIdInterceptor(
 
 Wiring, one seam per layer, each mirroring an existing shape:
 
-- `createCompassWebTransport` gains `opts.sessionId?: () => string | undefined` beside the existing `opts.traceSink` (`index.ts:212`: `opts?: { fetch?: typeof globalThis.fetch; traceSink?: TraceIdSink }`), threaded into `callInterceptors`.
-- `callInterceptors` (`index.ts:170-179`) composes it exactly as it composes the trace sink: absent ⇒ no interceptor installed, `undefined` list when nothing is asked for.
-- `createLiveClients` gains a deps bag: `createLiveClients(conn: ResolvedConnection, deps?: { sessionId?: () => string | undefined })`, passing it through to `createCompassWebTransport` beside `traceSink` (`apps/ui/src/live/client.ts:59-62` builds the transport with `{ fetch: conn.fetchImpl, traceSink: traceId }`). The optional-deps-bag shape copies `createAnalytics`'s own rationale at `analytics.ts:123-126`: the call site names the collaborator and every existing caller keeps working unchanged.
+- `createCompassWebTransport` gains `opts.sessionId?: () => string | undefined` beside the existing `opts.traceSink` (`createCompassWebTransport` in `packages/compass-client/src/index.ts`: `opts?: { fetch?: typeof globalThis.fetch; traceSink?: TraceIdSink }`), threaded into `callInterceptors`.
+- `callInterceptors` (in `packages/compass-client/src/index.ts`) composes it exactly as it composes the trace sink: absent ⇒ no interceptor installed, `undefined` list when nothing is asked for.
+- `createLiveClients` gains a deps bag: `createLiveClients(conn: ResolvedConnection, deps?: { sessionId?: () => string | undefined })`, passing it through to `createCompassWebTransport` beside `traceSink` (`createLiveClients` in `apps/ui/src/live/client.ts` builds the transport with `{ fetch: conn.fetchImpl, traceSink: traceId }`). The optional-deps-bag shape copies `createAnalytics`'s own rationale in the `createAnalytics` doc in `apps/ui/src/analytics/analytics.ts`: the call site names the collaborator and every existing caller keeps working unchanged.
 - `index.tsx` `main()` performs the reorder and passes `{ sessionId: () => analytics.sessionId() }`.
 
-The interceptor applies to both unary and stream requests (Connect interceptors see every request). The server only *reads* it on unary (`NewSessionIDInterceptor` is a `connect.UnaryInterceptorFunc`, `interceptor.go:66`), which is harmless: an unread request header costs bytes, not correctness. See Open Questions for whether to gate it to unary.
+The interceptor applies to both unary and stream requests (Connect interceptors see every request). The server only *reads* it on unary (`NewSessionIDInterceptor` is a `connect.UnaryInterceptorFunc`, `NewSessionIDInterceptor` in `go/internal/otel/interceptor.go`), which is harmless: an unread request header costs bytes, not correctness. See Open Questions for whether to gate it to unary.
 
 ## The `Analytics.sessionId()` addition
 
-The `Analytics` interface (`analytics.ts:25-32`) is today `capture`/`identify`/`shutdown`:
+The `Analytics` interface (`Analytics` in `apps/ui/src/analytics/analytics.ts`) is today `capture`/`identify`/`shutdown`:
 
 ```typescript
 export interface Analytics {
@@ -192,8 +192,8 @@ There is no session-id accessor. Add one:
 sessionId(): string | undefined;
 ```
 
-- **`NoopAnalytics`** (`analytics.ts:36-40`, today three empty methods: `capture(): void {}` / `identify(): void {}` / `shutdown(): void {}`) adds `sessionId(): string | undefined { return undefined; }` — the disabled path stays zero-posthog-calls.
-- **`PostHogAnalytics`** delegates to posthog-js's `get_session_id()`, verified against the installed package `posthog-js@1.418.10` (`apps/ui/package.json` pins `^1.418.10`; installed at `apps/ui/node_modules/posthog-js`). From `apps/ui/node_modules/posthog-js/dist/module.d.ts:4201-4212`, on `declare class PostHog` (`module.d.ts:2905`):
+- **`NoopAnalytics`** (in `apps/ui/src/analytics/analytics.ts`, today three empty methods: `capture(): void {}` / `identify(): void {}` / `shutdown(): void {}`) adds `sessionId(): string | undefined { return undefined; }` — the disabled path stays zero-posthog-calls.
+- **`PostHogAnalytics`** delegates to posthog-js's `get_session_id()`, verified against the installed package `posthog-js@1.418.10` (`apps/ui/package.json` pins `^1.418.10`; installed at `apps/ui/node_modules/posthog-js`). From `PostHog.get_session_id` in `apps/ui/node_modules/posthog-js/dist/module.d.ts`, on `declare class PostHog` (`module.d.ts`):
 
   > Returns the current session_id. … This may be an empty string if the client is not yet fully initialized.
   >
@@ -208,11 +208,11 @@ sessionId(): string | undefined;
   }
   ```
 
-`distinct_id` is **permanently excluded** from the header plane. It identifies a person; backend spans land in Grafana/Tempo, and J1 deliberately keeps identity out of that plane — the server comment says exactly this: "either side can be pivoted to the other by the shared key — without either system holding the other's data, which is what keeps the join billing-safe" (`origin/main` `go/internal/otel/interceptor.go:59-61`). Identity resolution stays PostHog-side, where `identify()` already has it (`analytics.ts:105-107`).
+`distinct_id` is **permanently excluded** from the header plane. It identifies a person; backend spans land in Grafana/Tempo, and J1 deliberately keeps identity out of that plane — the server comment says exactly this: "either side can be pivoted to the other by the shared key — without either system holding the other's data, which is what keeps the join billing-safe" (`origin/main` the `maxSessionIDLen` doc in `go/internal/otel/interceptor.go`). Identity resolution stays PostHog-side, where `identify()` already has it (`PostHogAnalytics` in `apps/ui/src/analytics/analytics.ts`).
 
 ## Validation before send
 
-The server enforces two limits and silently returns `""` (drops the value, no error) on violation — `origin/main` `go/internal/otel/interceptor.go:95-101`:
+The server enforces two limits and silently returns `""` (drops the value, no error) on violation — `origin/main` `sessionIDFromHeader` in `go/internal/otel/interceptor.go`:
 
 ```go
 func sessionIDFromHeader(req connect.AnyRequest) string {
@@ -257,7 +257,7 @@ Two consequences, both fatal to a UTF-8-shaped validator:
 2. U+0080–U+00FF does *not* throw — it is accepted by `set` and then
    **dropped by the server**, silently. `Headers.set` takes it, the browser
    serializes it as a **single raw high byte** on the wire, Go's HTTP parser
-   admits high bytes, and then `!utf8.ValidString(id)` (`interceptor.go:97`)
+   admits high bytes, and then `!utf8.ValidString(id)` (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`)
    is **true**, so `sessionIDFromHeader` returns `""` and no `session.id` is
    stamped. The same failure class as every other value the guard rejects —
    silent loss, not a wrong key.
@@ -301,7 +301,7 @@ Two consequences, both fatal to a UTF-8-shaped validator:
    The server's own comment says why dropping is the right receiver-side
    answer: "a truncated or re-encoded id joins to nothing in PostHog, so it
    would add span weight while still failing the pivot, and a silent half-key
-   is harder to notice than an absent one" (`interceptor.go:83-86`). But a
+   is harder to notice than an absent one" (`NewSessionIDInterceptor` in `go/internal/otel/interceptor.go`). But a
    dropped key is still a lost key, and the client is the only place that can
    tell an intended id from a non-transmissible one. That is precisely why the
    sender-side check cannot be UTF-8-shaped: a UTF-8-shaped validator finds
@@ -316,7 +316,7 @@ Two consequences, both fatal to a UTF-8-shaped validator:
 
 ```ts
 const SENDABLE = /^[\x21-\x7E]+$/;
-const MAX_SESSION_ID_LEN = 200; // mirrors maxSessionIDLen (interceptor.go:53)
+const MAX_SESSION_ID_LEN = 200; // mirrors maxSessionIDLen (go/internal/otel/interceptor.go)
 
 function isSendableSessionId(id: string): boolean {
   return SENDABLE.test(id) && id.length <= MAX_SESSION_ID_LEN;
@@ -331,7 +331,7 @@ the same runtime, both set and read back — and the guard rejects both, so the
 guard is not stronger than `Headers.set` in both directions; it is a strict
 subset of what `Headers.set` will take. The extra narrowing is deliberate: the
 server trims and drops a whitespace-only value anyway
-(`interceptor.go:96-98`), and a real `get_session_id()` contains neither byte.
+(`sessionIDFromHeader` in `go/internal/otel/interceptor.go`), and a real `get_session_id()` contains neither byte.
 Verified by execution — every value the guard accepts is `header.set`-safe and
 has `.length === TextEncoder().encode(id).length`, so:
 
@@ -348,14 +348,14 @@ has `.length === TextEncoder().encode(id).length`, so:
   job here is to fail the value quietly rather than fail the whole RPC. A
   UTF-8-validity check would have waved CRLF through to that throw.
 
-The `≤200` cap still mirrors `interceptor.go:53`, whose rationale at `:46-52`
+The `≤200` cap still mirrors `maxSessionIDLen` in `go/internal/otel/interceptor.go`, whose rationale in its doc
 is: "The value is attacker-controlled … a span attribute flows to the trace
 backend, so an unbounded copy would let one request carry an arbitrarily large
 blob into Tempo. PostHog session ids are UUID-shaped; 200 leaves room for a
 format change without admitting a payload."
 
-The server's UTF-8 check (`interceptor.go:97`) is load-bearing against
-**every** sender, this client included. Its own comment at `:88-94` names what
+The server's UTF-8 check (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`) is load-bearing against
+**every** sender, this client included. Its own doc comment names what
 it holds back: "Go's HTTP parser rejects control bytes but ADMITS high bytes,
 OTLP span attributes are proto3 strings, and the protobuf marshaller fails the
 whole ExportTraceServiceRequest on an invalid one — so a single bad header
@@ -385,16 +385,16 @@ braces.
 A value failing the guard ⇒ the header is not set (see Degradation), matching
 the server's own drop-don't-repair stance: "a truncated or re-encoded id joins
 to nothing in PostHog, so it would add span weight while still failing the
-pivot" (`interceptor.go:83-85`).
+pivot" (`NewSessionIDInterceptor` in `go/internal/otel/interceptor.go`).
 
 ## Degradation
 
 Both degraded states are **no header at all** — never an empty-string header:
 
-- **Analytics off.** `analyticsConfigFromEnv()` returns `undefined` ⇒ `createAnalytics` returns `NoopAnalytics` (`analytics.ts:131-133`: `if (!config) { return new NoopAnalytics(); }`), whose `sessionId()` returns `undefined` ⇒ the interceptor's guard skips `req.header.set` entirely. Zero posthog calls, per the module contract (`analytics.ts:9-10`: "the config is `undefined` and `createAnalytics` returns a no-op that never CALLS posthog").
-- **Session id not yet available.** `get_session_id()` returns `""` before full init (`module.d.ts:4210`); `PostHogAnalytics.sessionId()` maps that to `undefined` ⇒ no header.
+- **Analytics off.** `analyticsConfigFromEnv()` returns `undefined` ⇒ `createAnalytics` returns `NoopAnalytics` (`createAnalytics` in `apps/ui/src/analytics/analytics.ts`: `if (!config) { return new NoopAnalytics(); }`), whose `sessionId()` returns `undefined` ⇒ the interceptor's guard skips `req.header.set` entirely. Zero posthog calls, per the module contract (the `Analytics` doc in `apps/ui/src/analytics/analytics.ts`: "the config is `undefined` and `createAnalytics` returns a no-op that never CALLS posthog").
+- **Session id not yet available.** `get_session_id()` returns `""` before full init (`PostHog.get_session_id` in `module.d.ts`); `PostHogAnalytics.sessionId()` maps that to `undefined` ⇒ no header.
 
-An empty header would be worse than none on both sides: the server would trim-and-drop it anyway (`interceptor.go:96-98`), and it would spend preflight/wire bytes asserting a correlation that does not exist. This mirrors the established discipline for `$ai_trace_id` at `analytics.ts:79-81`: "Not even an `$ai_trace_id: undefined` key".
+An empty header would be worse than none on both sides: the server would trim-and-drop it anyway (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`), and it would spend preflight/wire bytes asserting a correlation that does not exist. This mirrors the established discipline for `$ai_trace_id` in `PostHogAnalytics.capture` in `apps/ui/src/analytics/analytics.ts`: "Not even an `$ai_trace_id: undefined` key".
 
 ## Alternatives considered
 
@@ -406,7 +406,7 @@ why each is declined.
 
 ### (a) A mutable `sessionId` ref slot mirroring `clients.traceId`
 
-Mirror the inbound shape: a `{ current: string | undefined }` slot on `LiveClients`, written by analytics after construction, read by the transport. This is exactly how `traceId` works today — `TraceIdSink` at `packages/compass-client/src/index.ts:65-67`, created and handed to the transport at `apps/ui/src/live/client.ts:58-62` — and `LiveClients.traceId`'s own doc explains *why* that shape exists there: "the sink is WRITTEN by the transport layer and READ above it … boot builds the clients before analytics exists, so a shared mutable slot handed out here is what connects a writer and a reader that can never meet at construction" (`client.ts:42-46`).
+Mirror the inbound shape: a `{ current: string | undefined }` slot on `LiveClients`, written by analytics after construction, read by the transport. This is exactly how `traceId` works today — `TraceIdSink` in `packages/compass-client/src/index.ts`, created and handed to the transport in `createLiveClients` in `apps/ui/src/live/client.ts` — and `LiveClients.traceId`'s own doc explains *why* that shape exists there: "the sink is WRITTEN by the transport layer and READ above it … boot builds the clients before analytics exists, so a shared mutable slot handed out here is what connects a writer and a reader that can never meet at construction" (the `LiveClients.traceId` doc in `apps/ui/src/live/client.ts`).
 
 Rejected: the slot is a workaround for a construction-order problem the reorder deletes. Once analytics exists first, the writer and reader *can* meet at construction, and the slot would be a second mutable cell to keep fresh (who writes it, when — on init? on session rotation? posthog rotates session ids on inactivity) with a staleness window the direct getter simply doesn't have. `traceId` keeps its sink because its ordering problem is real and stays real; copying the shape where the problem no longer exists copies only the liability.
 
@@ -422,42 +422,42 @@ Rejected: both hold reasons are discharged. The server reader is merged and
 reachable, so UI requests **through the network door** are spans missing their
 `session.id` — and the failure-path spans the server deliberately stamps
 *before* the handler runs ("the traces most worth pivoting to from a product
-funnel", `interceptor.go:69-72`) are exactly the ones going un-keyed. The
+funnel", `NewSessionIDInterceptor` in `go/internal/otel/interceptor.go`) are exactly the ones going un-keyed. The
 remaining technical objection (boot ordering) is dissolved by the reorder, not
 deferred.
 
 **Scope limit — the reader is installed on ONE of three doors.**
-`NewSessionIDInterceptor` appears only in `go/server/network_door.go` (`:300`,
-`:308`). The Unix-socket and dev doors install
+`NewSessionIDInterceptor` appears only in `go/server/network_door.go`
+(`buildNetworkServer`). The Unix-socket and dev doors install
 `NewTraceResponseInterceptor` but not the session reader — measured on
 `origin/main`: `NewSessionIDInterceptor` = 0 hits in `go/server/serve.go`,
 while `TraceResponseInterceptor` = 4 there (POS-CTRL: the same instrument
 finds the sibling interceptor in that file, so the zero is a real absence, not
 a failed query). The dev door's CORS builder nevertheless *allows* the header
-(`serve.go:1041`), which reads as intent.
+(`devCORS` in `go/server/serve.go`), which reads as intent.
 
 The native shell has **two** modes, and only one of them lacks a reader.
-`go/cmd/compass-app/main.go:8-14` (on `origin/main`) states both: "The app
+the file header of `go/cmd/compass-app/main.go` (on `origin/main`) states both: "The app
 runs in one of two modes (appconfig, resolved at launch): — EMBEDDED: it
 supervises a private stack in-process via the compass-stack CLI … then dials
 the stack's Unix socket over h2c … — CLIENT: it dials a headless Compass stack
 over the authenticated TLS door (client.go, runClient)". The dispatch is the
-`switch cfg.Mode` at `main.go:242-281`: the embedded arm builds
-`bridge.NewPump(bridge.NewUnixTarget(socket))` (`main.go:268`), the client arm
-calls `runClient` (`main.go:274`), which builds
-`bridge.NewTLSTarget(cfg.ServerURL, caPEM)` (`client.go:41`) — and
+`switch cfg.Mode` in `launch` in `go/cmd/compass-app/main.go`: the embedded arm builds
+`bridge.NewPump(bridge.NewUnixTarget(socket))` (`launch` in `go/cmd/compass-app/main.go`), the client arm
+calls `runClient` (`launch` in `go/cmd/compass-app/main.go`), which builds
+`bridge.NewTLSTarget(cfg.ServerURL, caPEM)` (`runClient` in `go/cmd/compass-app/client.go`) — and
 `NewTLSTarget` "builds a Target that dials the daemon's TLS network door
-(native-client mode) over HTTP/2-over-TLS" (`bridge/tls_target.go:13-16`),
+(native-client mode) over HTTP/2-over-TLS" (the `NewTLSTarget` doc in `go/internal/bridge/tls_target.go`),
 "mirror[ing] the server's network door (network_door.go:115)"
-(`tls_target.go:25-26`).
+(the `NewTLSTarget` doc in `go/internal/bridge/tls_target.go`).
 
 So the door mapping per surface is:
 
 | Surface | Door dialed | Reads the header? |
 | --- | --- | --- |
 | Browser against the deployed stack | TLS network door | Yes |
-| Native shell, CLIENT mode | TLS network door (`tls_target.go:13-16`) | Yes |
-| Native shell, EMBEDDED mode | Unix socket (`main.go:268`) | No |
+| Native shell, CLIENT mode | TLS network door (`NewTLSTarget` in `go/internal/bridge/tls_target.go`) | Yes |
+| Native shell, EMBEDDED mode | Unix socket (`launch` in `go/cmd/compass-app/main.go`) | No |
 | Browser served by `vite dev`, pointed at the dev door (`serve.go`) | dev door | No |
 | Browser served by `vite dev`, pointed at the deployed stack | TLS network door | Yes |
 
@@ -479,9 +479,9 @@ either way.
 
 The vendor ships a mechanism for exactly this header: `declare class
 TracingHeaders implements Extension` (`apps/ui/node_modules/posthog-js/dist/
-module.d.ts:902`), which patches `fetch`/`XHR` to add PostHog correlation
+module.d.ts`), which patches `fetch`/`XHR` to add PostHog correlation
 headers for configured hostnames. The server's own comment identifies the
-header as the one "posthog-js sends" (`interceptor.go:41-44`), so a reviewer
+header as the one "posthog-js sends" (the `PostHogSessionHeader` doc in `go/internal/otel/interceptor.go`), so a reviewer
 will reasonably ask why we hand-roll an interceptor.
 
 Rejected on two grounds, the second decisive:
@@ -498,19 +498,19 @@ Rejected on two grounds, the second decisive:
 ### (e) Wrapping the transport `fetch` instead of a Connect interceptor
 
 Attach at `conn.fetchImpl` / the platform fetch rather than as an interceptor.
-Rejected for symmetry: `traceResponseInterceptor` (`index.ts:143-162`) already
+Rejected for symmetry: `traceResponseInterceptor` (in `packages/compass-client/src/index.ts`) already
 establishes the interceptor as this package's shape for correlation headers,
 and an interceptor sees the typed request rather than a raw `Request`. Named
 only because it is the obvious competing attach point.
 
 ## Global Constraints
 
-- TypeScript strict, Bun, Biome. SolidJS — no React. `bun:test` conventions as in the existing suites (fake-injection, `spyOn` not `mock.module` — `apps/ui/src/live/client.test.ts:13-14`).
+- TypeScript strict, Bun, Biome. SolidJS — no React. `bun:test` conventions as in the existing suites (fake-injection, `spyOn` not `mock.module` — the file header of `apps/ui/src/live/client.test.ts`).
 - posthog-js pinned `^1.418.10`; no version bump in this work.
-- Layering: `apps/ui/src/analytics` never imports transport types; `@compass/client` never imports analytics. Both sides exchange only `() => string | undefined` (`analytics.ts:51-53`).
-- Header name `X-POSTHOG-SESSION-ID`, exactly (`interceptor.go:44`); already CORS-allowed (`network_door.go:168` on `origin/main`: `AllowedHeaders: append(connectcors.AllowedHeaders(), "Authorization", otel.PostHogSessionHeader)`).
-- Sender-side guard is **printable ASCII (`\x21`–`\x7E`) and `.length ≤ 200`** — stricter than the server's own `≤200 bytes` + valid-UTF-8 pair, and a strict *subset* of what `Headers.set` itself accepts (it takes space and tab; the guard does not). The narrowing is driven by the `Headers.set` ByteString seam, which throws on code points above U+00FF and on CRLF, and accepts U+0080–U+00FF only for a browser to emit it as a single raw high byte that the server then rejects as invalid UTF-8 and DROPS (see Validation). On accepted input `.length` equals the UTF-8 byte count, so the cap mirrors `interceptor.go:53` exactly — inclusive on both sides, since the server's own check is `len(id) > maxSessionIDLen` (`interceptor.go:97`). No empty, no whitespace, no CRLF.
-- Omitted-means-off: every new optional collaborator (transport `opts.sessionId`, `createLiveClients` deps bag) installs nothing when absent, preserving byte-identical behavior for callers that don't ask (`index.ts:167-169`).
+- Layering: `apps/ui/src/analytics` never imports transport types; `@compass/client` never imports analytics. Both sides exchange only `() => string | undefined` (the `PostHogAnalytics` constructor doc in `apps/ui/src/analytics/analytics.ts`).
+- Header name `X-POSTHOG-SESSION-ID`, exactly (`PostHogSessionHeader` in `go/internal/otel/interceptor.go`); already CORS-allowed (`networkCORS` in `go/server/network_door.go` on `origin/main`: `AllowedHeaders: append(connectcors.AllowedHeaders(), "Authorization", otel.PostHogSessionHeader)`).
+- Sender-side guard is **printable ASCII (`\x21`–`\x7E`) and `.length ≤ 200`** — stricter than the server's own `≤200 bytes` + valid-UTF-8 pair, and a strict *subset* of what `Headers.set` itself accepts (it takes space and tab; the guard does not). The narrowing is driven by the `Headers.set` ByteString seam, which throws on code points above U+00FF and on CRLF, and accepts U+0080–U+00FF only for a browser to emit it as a single raw high byte that the server then rejects as invalid UTF-8 and DROPS (see Validation). On accepted input `.length` equals the UTF-8 byte count, so the cap mirrors `maxSessionIDLen` in `go/internal/otel/interceptor.go` exactly — inclusive on both sides, since the server's own check is `len(id) > maxSessionIDLen` (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`). No empty, no whitespace, no CRLF.
+- Omitted-means-off: every new optional collaborator (transport `opts.sessionId`, `createLiveClients` deps bag) installs nothing when absent, preserving byte-identical behavior for callers that don't ask (`callInterceptors` in `packages/compass-client/src/index.ts`).
 
 ## Plan
 
@@ -524,39 +524,39 @@ cap — **no `TextEncoder`, no `isWellFormed`**; see Validation), and
 extend `createCompassWebTransport`'s `opts` with
 `sessionId?: () => string | undefined`.
 
-The four per-client factories — `createCompassWebClient` (`index.ts:242`),
-`createCompassClientOverFetch` (`:265`), `createCommsWebClient` (`:300`),
-`createCommsClientOverFetch` (`:319`) — deliberately do **not** grow a
+The four per-client factories — `createCompassWebClient`,
+`createCompassClientOverFetch`, `createCommsWebClient`, and
+`createCommsClientOverFetch` (all in `packages/compass-client/src/index.ts`) — deliberately do **not** grow a
 `sessionId` option. Audited: no production caller exists. Grepping the four
 names across `apps/` and `packages/` matches only
 `packages/compass-client/src/index.ts`, its test file, and a *comment* at
-`apps/ui/src/boot-mode.ts:32` — the shipped path is
-`createLiveClients` → `createCompassWebTransport` (`live/client.ts:57-62`, the
+`defaultDeps` in `apps/ui/src/boot-mode.ts` — the shipped path is
+`createLiveClients` → `createCompassWebTransport` (`createLiveClients` in `apps/ui/src/live/client.ts`, the
 sole production transport construction), and both native-shell modes route
 through it via `conn.fetchImpl`. Recorded so a future caller of those
 factories does not assume the header rides along.
 
 Interfaces:
 
-- Consumes: `Interceptor` from `@connectrpc/connect` (already imported, `index.ts:8`).
+- Consumes: `Interceptor` from `@connectrpc/connect` (already imported, the imports of `packages/compass-client/src/index.ts`).
 - Produces: `export function sessionIdInterceptor(sessionId: () => string | undefined): Interceptor`; `createCompassWebTransport(baseUrl: string, token?: string, opts?: { fetch?: typeof globalThis.fetch; traceSink?: TraceIdSink; sessionId?: () => string | undefined }): Transport`.
 
 Tests (extend `packages/compass-client/src/index.test.ts`). Two seams, and
 which one a case uses is load-bearing:
 
-- The **capture-the-request** seam — `captureRequest` at `index.test.ts:79-91`
-  and the vendor-factory spy at `:36-50` — for the header-PRESENT cases and
+- The **capture-the-request** seam — `captureRequest` in `packages/compass-client/src/index.test.ts`
+  and the vendor-factory spy in the same file — for the header-PRESENT cases and
   the rejections that cannot throw. It reports only the URL and the
-  authorization header today (`index.test.ts:81`:
-  `Promise<{ url: string; authorization: string | null }>`; `:90`:
+  authorization header today (its signature:
+  `Promise<{ url: string; authorization: string | null }>`; its return:
   `return { url, authorization: headers.get("authorization") };`), so it must
   be widened to report `X-POSTHOG-SESSION-ID` as well.
 - The **direct-interceptor** seam, following the `bearerAuthInterceptor`
-  precedent in the same file at `index.test.ts:94-113`: build
-  `const req = { header: new Headers() }` (`:103`) — a **real** `Headers`, not
+  precedent in the `bearerAuthInterceptor` describe of the same file: build
+  `const req = { header: new Headers() }` — a **real** `Headers`, not
   a stub, which is what makes the throw reachable — and a counting `next` that
-  returns a `Symbol` sentinel (`:97-102`), then **`await`** the interceptor
-  call (`:105-107`). For any case where a defect would make the interceptor
+  returns a `Symbol` sentinel, then **`await`** the interceptor
+  call. For any case where a defect would make the interceptor
   **throw**.
 
   **Every case routed to this seam MUST assert all three of the following.**
@@ -565,9 +565,9 @@ which one a case uses is load-bearing:
   this seam exists to catch:
 
   1. the header is **absent** from `req.header`;
-  2. `next` ran exactly **once** — `expect(calls).toBe(1)`, as at `:110`;
+  2. `next` ran exactly **once** — `expect(calls).toBe(1)`, as that describe does;
   3. the awaited result **is** the sentinel `next` produced —
-     `expect(result).toBe(sentinel)`, as at `:112` — i.e. nothing threw.
+     `expect(result).toBe(sentinel)`, as that describe does — i.e. nothing threw.
 
   Assertion 3 is the load-bearing one, and it is why the call must be
   `await`ed: it cannot pass if the interceptor threw before reaching `next`.
@@ -591,7 +591,7 @@ Cases:
   boundary the `<=` in `id.length <= MAX_SESSION_ID_LEN` owns: a `<` typo
   reddens here and nowhere else, because the 201 case stays green under both
   operators. 200 is legal on the server too — its check is
-  `len(id) > maxSessionIDLen` (`interceptor.go:97`), so equality passes on
+  `len(id) > maxSessionIDLen` (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`), so equality passes on
   both sides and a client that refused 200 would be needlessly stricter than
   the wire contract.
 - **valid, well-formed, non-Latin-1 id (e.g. `"sess-日本語"` or an emoji) ⇒
@@ -604,9 +604,9 @@ Cases:
   reaching for it here makes the test green on exactly the defect it exists to
   catch. Three properties combine: its capturing `fetch` always
   `throw`s ("captureRequest: short-circuit before response",
-  `index.test.ts:87`), so it gates on `await expect(run(fetch)).rejects.toThrow()`
-  (`:89`); and `headers` is pre-initialized to an empty `new Headers()`
-  (`:83`) and only reassigned inside that `fetch` (`:86`). So if the
+  its fake `fetch`), so it gates on `await expect(run(fetch)).rejects.toThrow()`;
+  and `headers` is pre-initialized to an empty `new Headers()`
+  and only reassigned inside that `fetch`. So if the
   interceptor throws a `TypeError` at `header.set`, `fetch` is never reached,
   the readback returns `null`, and the mandatory `rejects.toThrow()` is
   satisfied by the interceptor's own throw. Both assertions pass on a broken
@@ -632,10 +632,10 @@ Cases:
   assertions above**. Also would-throw.
 - `callInterceptors` membership, all four directions, extending the existing
   `"callInterceptors installs only what was asked for"` describe
-  (`index.test.ts:593`) and matching its count style (`expect(opts.interceptors)
-  .toHaveLength(n)`, as at `:613`, `:624`, `:635`):
+  (in `packages/compass-client/src/index.test.ts`) and matching its count style (`expect(opts.interceptors)
+  .toHaveLength(n)`):
   - no `sessionId` (and no token, no sink) ⇒ `interceptors` is `undefined`,
-    not `[]` — the existing `:600-606` case, unchanged.
+    not `[]` — the existing case, unchanged.
   - `sessionId` **alone** ⇒ exactly one interceptor.
   - `sessionId` + `traceSink` ⇒ exactly two.
   - token + `traceSink` + `sessionId` ⇒ exactly three.
@@ -643,7 +643,7 @@ Cases:
   The `sessionId`-alone case is the one that catches an append placed inside
   the existing early return: `callInterceptors` today is
   `const bearer = bearerInterceptors(token); if (!traceSink) { return bearer; }`
-  (`packages/compass-client/src/index.ts:174-177`), so a session interceptor
+  (the `MAX_SESSION_ID_LEN` doc in `packages/compass-client/src/index.ts`), so a session interceptor
   appended after that guard is skipped entirely whenever no trace sink is
   configured — and every other membership direction still passes.
 - getter is called per-request: a fresh value on the second call is sent
@@ -652,40 +652,40 @@ Cases:
   valid id on the second ⇒ the first request carries no header, the second
   carries it** (capture seam). This is the transition Degradation and the
   Approach both promise — "self-healing on the next request once a session
-  exists" (`:134-135`) — and it is the direction the laziness case above does
+  exists" (§ *Degradation*) — and it is the direction the laziness case above does
   *not* cover: a construction-time cache or a first-value memo still passes
   forward-propagation while failing this. OQ2's anti-memoization concern rests
   on this case.
 
 ### T2 — `Analytics.sessionId()`
 
-`apps/ui/src/analytics/analytics.ts`: add `sessionId(): string | undefined` to the `Analytics` interface (`:25-32`), `return undefined` in `NoopAnalytics` (`:36-40`), and the `get_session_id()`-delegating, empty-mapping implementation in `PostHogAnalytics` (`:45-115`).
+`apps/ui/src/analytics/analytics.ts`: add `sessionId(): string | undefined` to the `Analytics` interface, `return undefined` in `NoopAnalytics`, and the `get_session_id()`-delegating, empty-mapping implementation in `PostHogAnalytics`.
 
 Interfaces:
 
-- Consumes: `PostHog.get_session_id(): string` (posthog-js `1.418.10`, `module.d.ts:4212`).
+- Consumes: `PostHog.get_session_id(): string` (posthog-js `1.418.10`, `PostHog.get_session_id` in `module.d.ts`).
 - Produces: `Analytics.sessionId(): string | undefined`.
 
-Tests (extend `apps/ui/src/analytics/analytics.test.ts`; add `get_session_id` to the `FakePostHog` recorder at `:11-17`):
+Tests (extend `apps/ui/src/analytics/analytics.test.ts`; add `get_session_id` to the `FakePostHog` recorder):
 
-- disabled path: `sessionId()` returns `undefined` and makes ZERO posthog calls (extends the load-bearing off-by-default contract, `analytics.test.ts:7-8`).
+- disabled path: `sessionId()` returns `undefined` and makes ZERO posthog calls (extends the load-bearing off-by-default contract, the file header of `apps/ui/src/analytics/analytics.test.ts`).
 - enabled path: returns exactly what the fake's `get_session_id` returns.
 - enabled path, fake returns `""` ⇒ `undefined`.
 
 ### T3 — `createLiveClients` deps bag
 
-`apps/ui/src/live/client.ts`: `createLiveClients(conn: ResolvedConnection, deps?: { sessionId?: () => string | undefined }): LiveClients`, threading `sessionId` into the `createCompassWebTransport` opts at `:59-62`. No `LiveClients` shape change.
+`apps/ui/src/live/client.ts`: `createLiveClients(conn: ResolvedConnection, deps?: { sessionId?: () => string | undefined }): LiveClients`, threading `sessionId` into the `createCompassWebTransport` opts. No `LiveClients` shape change.
 
 Interfaces:
 
 - Consumes: T1's transport opt.
 - Produces: the widened `createLiveClients` signature; existing single-arg callers compile unchanged.
 
-Tests (extend `apps/ui/src/live/client.test.ts`, same spy-the-factory seam as `:28-45`): the getter passed in deps is the one handed to the transport factory; omitted deps ⇒ transport opts carry no `sessionId`.
+Tests (extend `apps/ui/src/live/client.test.ts`, same spy-the-factory seam it already uses): the getter passed in deps is the one handed to the transport factory; omitted deps ⇒ transport opts carry no `sessionId`.
 
 ### T4 — the boot reorder + wiring
 
-`apps/ui/src/index.tsx` `main()` (`:87-124`): move the `createAnalytics` statement (with its comment block `:100-120`) above `createLiveClients`; pass `{ sessionId: () => analytics.sessionId() }` to `createLiveClients`; keep `bootCaller` and `analytics.identify(callerId)` in place. Rewrite the `:119-120` "deliberately not wired" sentence to describe the now-wired outbound half and the two opposite-pointing lazy getters.
+`apps/ui/src/index.tsx` `main()`: move the `createAnalytics` statement (with its comment block) above `createLiveClients`; pass `{ sessionId: () => analytics.sessionId() }` to `createLiveClients`; keep `bootCaller` and `analytics.identify(callerId)` in place. Rewrite the "deliberately not wired" sentence to describe the now-wired outbound half and the two opposite-pointing lazy getters.
 
 Interfaces:
 
@@ -699,16 +699,16 @@ pretend otherwise.** Two facts make that a structural gap rather than an
 oversight:
 
 - The four reordered statements live inside the `main()` closure
-  (`apps/ui/src/index.tsx:87-124`), which no test reaches. `main()` is not
+  (`main` in `apps/ui/src/index.tsx`), which no test reaches. `main()` is not
   exported and is invoked only from the module's own top-level `else` arm
-  (`index.tsx:58-63`: `} else { const bootConnectionForMode = …; … return
+  (the top-level `else` arm of `apps/ui/src/index.tsx`: `} else { const bootConnectionForMode = …; … return
   main(root, connection); …`).
 - Every e2e spec shares one webServer, and it is fixture-mode. There is a
   single `webServer` entry in `apps/ui/playwright.config.ts`, whose command is
   `bunx vite --port ${devPort} --strictPort --mode fixture`
-  (`playwright.config.ts:87`) — so all three specs (`e2e/visual-smoke.spec.ts`,
+  (`webServer.command` in `apps/ui/playwright.config.ts`) — so all three specs (`e2e/visual-smoke.spec.ts`,
   `e2e/dev-boot.spec.ts`, `e2e/advancing-hook.spec.ts`) run against it. In
-  that mode `index.tsx:47` takes the other branch —
+  that mode the top-level `if` of `apps/ui/src/index.tsx` takes the other branch —
   `if (import.meta.env.MODE === "fixture") { void import("./boot-fixture") … }`
   — and returns down the fixture arm, so `main()` is never called. The fixture
   boot does not contain the reordered composition either: grepping
@@ -723,7 +723,7 @@ absent.** Do not cite `e2e/visual-smoke.spec.ts`, `e2e/dev-boot.spec.ts`, or
 stay green, but staying green proves nothing about T4.
 
 T4's acceptance is therefore **manual**: run a `vite dev` boot (non-fixture
-mode, so the `else` arm at `index.tsx:58` runs `main()`) **pointed at a stack
+mode, so the `else` arm at of `apps/ui/src/index.tsx` runs `main()`) **pointed at a stack
 reached through the TLS NETWORK door** — the Vite dev server is only how the
 bundle is served; what matters is which door the transport dials. Observe
 `X-POSTHOG-SESSION-ID` on the wire on an outbound request. The network door is
@@ -750,7 +750,7 @@ made knowingly rather than by omission.
 
 ### T5 — record hygiene
 
-Update the module-header prose in `analytics.ts:1-16` (the "Built once at boot" framing) if the reorder changes what it asserts; verify no other comment states the old order as a constraint.
+Update the module-header prose in the file header of `apps/ui/src/analytics/analytics.ts` (the "Built once at boot" framing) if the reorder changes what it asserts; verify no other comment states the old order as a constraint.
 
 ## Tasks
 
@@ -762,7 +762,7 @@ Update the module-header prose in `analytics.ts:1-16` (the "Built once at boot" 
 
 ## Open Questions
 
-1. **Gate the header to unary requests?** (Not load-bearing.) The server reads it only in a `connect.UnaryInterceptorFunc` (`interceptor.go:66`), but a Connect client interceptor also sees the long-lived `SubscribeComms` stream request, where the header is sent and ignored. Cost is a few dozen bytes on stream open; gating would need the interceptor to inspect `req.stream`, adding a branch for no observable win. Recommendation: send on all requests, note it in the interceptor comment.
+1. **Gate the header to unary requests?** (Not load-bearing.) The server reads it only in a `connect.UnaryInterceptorFunc` (`NewSessionIDInterceptor` in `go/internal/otel/interceptor.go`), but a Connect client interceptor also sees the long-lived `SubscribeComms` stream request, where the header is sent and ignored. Cost is a few dozen bytes on stream open; gating would need the interceptor to inspect `req.stream`, adding a branch for no observable win. Recommendation: send on all requests, note it in the interceptor comment.
 2. **Session rotation freshness.** (Not load-bearing.) posthog-js rotates session ids on inactivity; the per-request getter picks up the new id on the next call by construction. No caching anywhere — confirm no reviewer asks for memoization, which would reintroduce staleness.
 3. **`String.prototype.isWellFormed` — MOOT, not answered.** (Was load-bearing
    for T1; recorded so no implementer re-opens it.) The question was whether
@@ -771,29 +771,29 @@ Update the module-header prose in `analytics.ts:1-16` (the "Built once at boot" 
    `apps/ui`'s: that file sets no `lib` at all (`{"extends":
    "../../tsconfig.base.json", "compilerOptions": {"types": ["bun"]},
    "include": ["src"]}`), so its lib defaults from `target: "ES2022"`
-   (`tsconfig.base.json:3`), and `isWellFormed` is ES2024. (`apps/ui/
-   tsconfig.json:4` pins the same `ES2022` for the app, but it does not govern
+   (`compilerOptions.target` in `tsconfig.base.json`), and `isWellFormed` is ES2024. (`compilerOptions.target` in `apps/ui/
+   tsconfig.json` pins the same `ES2022` for the app, but it does not govern
    this package — citing it would be evidence about the wrong compilation
    unit.) The ASCII guard then removed the need for any well-formedness test at
    all, since lone surrogates are non-ASCII, so neither `isWellFormed` nor an
    encode/decode fallback appears in T1. Noting *moot* versus *answered*
    because the two differ in what they leave behind: an answered question
    leaves a choice in the code, a moot one leaves nothing to choose.
-4. **Whether `deps` on `createLiveClients` should instead extend `ResolvedConnection`.** (Not load-bearing.) The deps-bag shape was chosen to mirror `createAnalytics`'s documented rationale (`analytics.ts:123-126`) and keep `ResolvedConnection` a pure connection record. Flagged only because `conn.fetchImpl` shows the connection already carries one injected collaborator; Matt may prefer symmetry either way.
+4. **Whether `deps` on `createLiveClients` should instead extend `ResolvedConnection`.** (Not load-bearing.) The deps-bag shape was chosen to mirror `createAnalytics`'s documented rationale (the `createAnalytics` doc in `apps/ui/src/analytics/analytics.ts`) and keep `ResolvedConnection` a pure connection record. Flagged only because `conn.fetchImpl` shows the connection already carries one injected collaborator; Matt may prefer symmetry either way.
 5. **Do the Unix-socket and dev doors need `NewSessionIDInterceptor` too?**
    (Load-bearing for *verification*, not for this record's code — the UI half
    is identical either way.) Measured on `origin/main`: the reader is
-   installed only on the network door (`network_door.go:300`, `:308`), absent
+   installed only on the network door (`buildNetworkServer` in `go/server/network_door.go`), absent
    from `serve.go`'s socket and dev chains, yet the dev CORS builder allows the
-   header (`serve.go:1041`). So dev-door spans, and native-shell **EMBEDDED**
-   spans (which dial the Unix socket — `go/cmd/compass-app/main.go:268`), will
+   header (`devCORS` in `go/server/serve.go`). So dev-door spans, and native-shell **EMBEDDED**
+   spans (which dial the Unix socket — `launch` in `go/cmd/compass-app/main.go`), will
    not carry `session.id` after this ships. This is compass-server's call, not
    mine — route it to that lane rather than widening this record's scope.
 
    Meanwhile there are **two** correct verification surfaces, both dialing the
    network door: a browser against the deployed stack, and the native shell in
    **CLIENT** mode, whose `bridge.NewTLSTarget` "dials the daemon's TLS network
-   door (native-client mode)" (`go/internal/bridge/tls_target.go:13-14`, built
-   at `go/cmd/compass-app/client.go:41`). Verify on either. Do **not** verify
+   door (native-client mode)" (the `NewTLSTarget` doc in `go/internal/bridge/tls_target.go`, built
+   in `runClient` in `go/cmd/compass-app/client.go`). Verify on either. Do **not** verify
    on the dev door or in native-EMBEDDED mode: both show a false negative that
    looks exactly like a broken UI half.
