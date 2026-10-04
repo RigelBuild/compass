@@ -117,7 +117,7 @@ func TestUpdateChannelMembersAsAccountAddsMember(t *testing.T) {
 	events := firstEventAfterBoundary(t, h, owner.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
 	resp, err := h.svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
-		ChannelId:        string(ch.ID),
+		ChannelId:        ch.Name,
 		AddMemberHandles: []string{newcomer.Handle},
 	})
 	if err != nil {
@@ -155,7 +155,7 @@ func TestUpdateChannelMembersAsAccountUnknownMemberHandleIsNotFound(t *testing.T
 	}
 
 	_, err = svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
-		ChannelId:        string(ch.ID),
+		ChannelId:        ch.Name,
 		AddMemberHandles: []string{"ghost"},
 	})
 	connectNotFoundFor(t, err, "ghost", "UpdateChannelMembersAsAccount with an unresolvable member handle")
@@ -185,7 +185,7 @@ func TestUpdateChannelMembersAsAccountInvisibleMemberHandleIsNotFound(t *testing
 	}
 
 	_, err = svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
-		ChannelId:        string(ch.ID),
+		ChannelId:        ch.Name,
 		AddMemberHandles: []string{otherAgent.Handle},
 	})
 	connectNotFoundFor(t, err, otherAgent.Handle, "UpdateChannelMembersAsAccount with a foreign-owner (invisible) member handle")
@@ -214,10 +214,65 @@ func TestUpdateChannelMembersAsAccountNonMemberIsNotFound(t *testing.T) {
 	}
 
 	_, err = svc.UpdateChannelMembersAsAccount(ctx, strangerAgent.ID, &compassv1.UpdateChannelMembersRequest{
-		ChannelId:        string(ch.ID),
+		ChannelId:        ch.Name,
 		AddMemberHandles: []string{stranger.Handle},
 	})
 	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount on invisible channel")
+}
+
+// Agent tools name channels; a bare id is not a name, so it must miss rather
+// than let a model bypass the viewer-scoped resolve.
+func TestUpdateChannelMembersAsAccountChannelIDIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+	newcomer := mustUser(t, st, "newcomer")
+
+	ch, err := st.CreateChannel(ctx, agent.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	_, err = svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+		ChannelId:        string(ch.ID),
+		AddMemberHandles: []string{newcomer.Handle},
+	})
+	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount by channel id")
+}
+
+// Two visible channels sharing a name must be refused, never silently picked.
+func TestUpdateChannelMembersAsAccountAmbiguousChannelIsInvalidArgument(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+	newcomer := mustUser(t, st, "newcomer")
+	for range 2 {
+		if _, err := st.CreateChannel(ctx, agent.ID, store.NewChannel{Name: "dupe", Kind: store.ChannelKindChannel}); err != nil {
+			t.Fatalf("CreateChannel(dupe): %v", err)
+		}
+	}
+
+	_, err := svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+		ChannelId:        "dupe",
+		AddMemberHandles: []string{newcomer.Handle},
+	})
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "UpdateChannelMembersAsAccount on ambiguous channel name")
+}
+
+// An empty channel name has no home default: it misses like any unknown name.
+func TestUpdateChannelMembersAsAccountEmptyChannelHasNoHomeDefault(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+	newcomer := mustUser(t, st, "newcomer")
+
+	_, err := svc.UpdateChannelMembersAsAccount(ctx, agent.ID, &compassv1.UpdateChannelMembersRequest{
+		AddMemberHandles: []string{newcomer.Handle},
+	})
+	connectCodeIs(t, err, connect.CodeNotFound, "UpdateChannelMembersAsAccount with empty channel")
 }
 
 // TestCreateChannelGroupAsAccountReturnsGroup: an agent creates a top-level group

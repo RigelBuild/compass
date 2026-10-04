@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -275,12 +276,11 @@ func (c *Comms) CreateChannelAsAccount(
 }
 
 // UpdateChannelMembersAsAccount executes one agent-initiated UpdateChannelMembers
-// as account, mirroring UpdatePinnedBoardAsAccount: WithActor + the shared
-// UpdateChannelMembers handler path, so the membership authz, the store ops, and
-// the ChannelChanged fan-out are identical to a human caller's. A non-member or
-// invisible channel collapses to the same code a human gets. The request always
-// names its channel explicitly (channel_id), so there is no home-channel
-// defaulting here.
+// as account. Agent tools address channels by NAME, so channel_id is resolved
+// within account's visible set first (unknown or invisible → CodeNotFound,
+// ambiguous → CodeInvalidArgument), with no home default. The resolved request
+// then runs the shared handler under WithActor, so authz and fan-out match a
+// human caller's.
 func (c *Comms) UpdateChannelMembersAsAccount(
 	ctx context.Context,
 	account store.AccountID,
@@ -289,7 +289,13 @@ func (c *Comms) UpdateChannelMembersAsAccount(
 	if account == "" {
 		return nil, errNoActor
 	}
-	resp, err := c.UpdateChannelMembers(WithActor(ctx, account), connect.NewRequest(req))
+	ch, err := c.store.ChannelByNameForViewer(ctx, account, req.GetChannelId())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	resolved := proto.CloneOf(req)
+	resolved.ChannelId = string(ch.ID)
+	resp, err := c.UpdateChannelMembers(WithActor(ctx, account), connect.NewRequest(resolved))
 	if err != nil {
 		return nil, err
 	}
