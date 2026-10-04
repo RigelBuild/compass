@@ -20,9 +20,6 @@ import (
 )
 
 // configFanoutRuntime is a WorkloadRuntime for the RefreshConfig fan-out tests.
-// Create returns the container NAME as its engine id (per-container-unique, so a
-// per-container label and a per-container Reload count are distinguishable —
-// counted by this wrapper rather than the shared stub),
 // MountLabel serves a per-id label (or a per-id error), and ExecStreaming both
 // counts launches per container id (Start = 1, each Reload = +1) and delegates to
 // the embedded stub's real terminatable child so Reload's Stop+relaunch works.
@@ -41,14 +38,6 @@ func newConfigFanoutRuntime(t *testing.T) *configFanoutRuntime {
 		labelErrs:            map[string]error{},
 		execByID:             map[string]int{},
 	}
-}
-
-func (r *configFanoutRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
-	r.mu.Lock()
-	r.calls = append(r.calls, "create")
-	r.created = append(r.created, spec)
-	r.mu.Unlock()
-	return runtime.WorkloadID(spec.Name), nil
 }
 
 func (r *configFanoutRuntime) MountLabel(_ context.Context, id runtime.WorkloadID) (string, error) {

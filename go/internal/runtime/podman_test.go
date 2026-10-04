@@ -103,10 +103,13 @@ func TestRunningReadsEngineAnswersExactly(t *testing.T) {
 		{name: "podman missing exit 125", engine: podman, stderr: "Error: no such container x", exit: 125},
 		{name: "podman missing exit 1", engine: podman, stderr: "Error: no such container x", exit: 1},
 		{name: "podman other failure", engine: podman, stderr: "Error: boom", exit: 125, wantErr: true},
-		{name: "apple running", engine: apple, stdout: `[{"status":"running"}]`, want: true},
-		{name: "apple stopped", engine: apple, stdout: `[{"status":"stopped"}]`},
-		{name: "apple object not array", engine: apple, stdout: `{"status":"running"}`, wantErr: true},
-		{name: "apple no status", engine: apple, stdout: `[{"status":{}}]`, wantErr: true},
+		{name: "apple running", engine: apple, stdout: `[{"id":"x","status":{"state":"running","networks":[]}}]`, want: true},
+		{name: "apple stopping is still live", engine: apple, stdout: `[{"status":{"state":"stopping"}}]`, want: true},
+		{name: "apple stopped", engine: apple, stdout: `[{"status":{"state":"stopped"}}]`},
+		{name: "apple unknown state", engine: apple, stdout: `[{"status":{"state":"unknown"}}]`, wantErr: true},
+		{name: "apple no state", engine: apple, stdout: `[{"status":{}}]`, wantErr: true},
+		{name: "apple string status", engine: apple, stdout: `[{"status":"running"}]`, wantErr: true},
+		{name: "apple object not array", engine: apple, stdout: `{"status":{"state":"running"}}`, wantErr: true},
 		{name: "apple empty array", engine: apple, stdout: `[]`, wantErr: true},
 	}
 	for _, tc := range tests {

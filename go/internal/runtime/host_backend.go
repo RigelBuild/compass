@@ -381,13 +381,17 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 // double-forked out of that group is NOT reliably stopped (no cgroup freezer in
 // v1). Stopping a handle with no live process is a no-op.
 func (h *HostRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
-	if err := h.stopProcess(ctx, id, timeout); err != nil {
-		return err
+	stopped := h.liveProcess(id)
+	if stopped != nil {
+		if err := signalAndWait(ctx, stopped, timeout); err != nil {
+			return err
+		}
 	}
 	// Only a confirmed stop reads as not running, like a stopped podman container;
 	// a failed signal or expired ctx leaves a possibly live process marked started.
+	// A process launched during the stop keeps the handle started.
 	h.mu.Lock()
-	if handle, ok := h.handles[id]; ok {
+	if handle, ok := h.handles[id]; ok && (handle.proc == nil || handle.proc == stopped) {
 		handle.state = hostCreated
 	}
 	h.mu.Unlock()
@@ -538,11 +542,7 @@ func (h *HostRuntime) liveProcess(id WorkloadID) *hostProcess {
 	return handle.proc
 }
 
-func (h *HostRuntime) stopProcess(ctx context.Context, id WorkloadID, timeout time.Duration) error {
-	proc := h.liveProcess(id)
-	if proc == nil {
-		return nil
-	}
+func signalAndWait(ctx context.Context, proc *hostProcess, timeout time.Duration) error {
 	if termErr := killGroup(proc.pgid, syscall.SIGTERM); termErr != nil {
 		return termErr
 	}
