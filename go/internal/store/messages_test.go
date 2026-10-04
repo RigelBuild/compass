@@ -571,8 +571,8 @@ func TestSearchMessages(t *testing.T) {
 	if len(hits) != 1 {
 		t.Fatalf("alice found %d messages for 'falcon', want 1 (her own; bob's is not visible)", len(hits))
 	}
-	if got := messageChannel(t, ctx, s, hits[0].ID); got != chA.ID {
-		t.Fatalf("alice's hit is in %q, want her channel %q", got, chA.ID)
+	if got := hits[0].ChannelID; got != chA.ID {
+		t.Fatalf("alice's hit channel = %q, want %q", got, chA.ID)
 	}
 
 	// A word present in no visible message returns nothing.
