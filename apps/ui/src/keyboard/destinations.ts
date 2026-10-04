@@ -58,11 +58,12 @@ function mapMessageHit(
 	store: AppStore,
 	rank: number,
 ): Destination[] {
-	const topic = store
-		.topics()
-		.find((candidate) => candidate.id === message.topicId);
-	// Search hits lack channel ids, so an off-set topic cannot be routed safely.
-	if (!topic) return [];
+	// SearchMessages hits carry their channel; fall back to the topic set if empty.
+	const channelId =
+		message.channelId ||
+		store.topics().find((candidate) => candidate.id === message.topicId)
+			?.channelId;
+	if (!channelId) return [];
 	const textTitle = message.blocks
 		.filter((block) => block.block.case === "text")
 		.flatMap((block) =>
@@ -92,7 +93,7 @@ function mapMessageHit(
 			title,
 			kind: "message",
 			score,
-			navigate: () => store.openTopic(message.topicId),
+			navigate: () => store.openTopic(message.topicId, channelId),
 		},
 	];
 }

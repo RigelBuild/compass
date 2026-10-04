@@ -108,10 +108,16 @@ function makeSearchIssue(id: string, title: string, prNumber: number) {
 	});
 }
 
-function makeSearchHit(id: string, topicId: string, text: string) {
+function makeSearchHit(
+	id: string,
+	topicId: string,
+	text: string,
+	channelId = "",
+) {
 	return create(MessageSchema, {
 		id,
 		topicId,
+		channelId,
 		blocks: [
 			create(MessageBlockSchema, {
 				block: { case: "text", value: text },
@@ -414,7 +420,7 @@ describe("createStoreDestinationProviders", () => {
 		});
 	});
 
-	test("message hits outside the client-held topic set are dropped", async () => {
+	test("a hit without a channel id outside the topic set is dropped", async () => {
 		await withStoreAsync(async (store) => {
 			const clients = liveSearchClients(
 				searchTransport([
@@ -426,6 +432,31 @@ describe("createStoreDestinationProviders", () => {
 				.find((p) => p.id === "messages")
 				?.query("archived");
 			expect(messages).toEqual([]);
+		});
+	});
+
+	test("a hit outside the topic set routes by its wire channel id", async () => {
+		await withStoreAsync(async (store) => {
+			const clients = liveSearchClients(
+				searchTransport([
+					makeSearchHit(
+						"msg-off-set",
+						"top-archived",
+						"Archived hit",
+						"ch-announcements",
+					),
+				]),
+			);
+			const providers = createStoreDestinationProviders(store, clients);
+			const messages = await providers
+				.find((p) => p.id === "messages")
+				?.query("archived");
+			expect(messages?.map((message) => message.id)).toEqual(["msg-off-set"]);
+			messages?.[0]?.navigate();
+			await flush();
+			// openTopic(topicId) alone no-ops here: the topic is not in the client set.
+			expect(store.selectedChannelId()).toBe("ch-announcements");
+			expect(store.selectedTopicId()).toBe("top-archived");
 		});
 	});
 

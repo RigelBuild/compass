@@ -381,12 +381,14 @@ invariant: that provider enumerates `store.topics()`, so its ids are in-set
 by construction.
 
 The provider therefore navigates on the wire data the search already
-returned, not the client-held set: `Message` carries `topic_id`
-(`queries/messages.sql:78`) and the route needs the channel id, so the
-message destination must carry both and route directly. A hit whose topic is
-genuinely unreachable is dropped at map time rather than rendered dead. T5
-carries the test that separates these, the way T1's label-only test separates
-the two column spellings.
+returned, not the client-held set. `Message` carries `topic_id`
+(`queries/messages.sql:78`), but it carried no channel id, and the route needs
+one. **Amendment (RIG-4295, Matt, 2026-10-04):** `Message` gains
+`channel_id = 7`, set only on `SearchMessages` hits from the topic join
+(`comms.proto`). The provider routes on `channel_id` + `topic_id` through
+`store.openTopic(topicId, channelId)`, and falls back to the topic set when
+the field is empty. A hit with neither is dropped at map time rather than
+rendered dead. T5's tests cover both routes and the drop.
 
 This requires widening the frozen `DestinationKind` union
 (`commands.ts:49-55`) with `"message"` — a D5/DL-233 overlap the driver must
