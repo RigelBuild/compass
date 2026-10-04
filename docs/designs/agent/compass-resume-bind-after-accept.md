@@ -39,11 +39,13 @@ harms reads: `Hub.ReconstructSessionBody` (`go/internal/runnerhub/reconstruct.go
 numbers each archived segment line as `MinEntrySeq + i`, so a segment that
 spans a gap gets wrong seqs and merges out of order against the PG tail.
 
-Today the window is narrow. There is one Server. The race needs a resume in
-the gap between the Runner's Start result and the map write in
-`Hub.promoteSession`, or a wake whose live check reads only the hub cache.
-RIG-3107 (multi-instance) widens it: a Server whose cache does not hold a
-session that another instance promoted will resume it.
+The wake path narrows it: `lifecycleService.WakeAgent` skips an agent that
+`Hub.CachedSessionForAccount` reports live, so a wake needs the gap between
+the Runner's Start result and the map write in `Hub.promoteSession`.
+`service.startResumeSession` has no live check. An authorized client that
+resumes a session already live reaches the race today, even with one Server.
+RIG-3107 (multi-instance) widens the wake path too: a Server whose cache does
+not hold a session that another instance promoted will resume it.
 
 Matt ruled Opt 3 + 1 on RIG-4297. Opt 3: accept the race now and document it.
 Opt 1: design bind-after-accept, sequenced with RIG-3107. Frames stay without a
@@ -80,9 +82,13 @@ the `errAlreadyRunning` checks and before `link.StartAgent`.
 - A bind error fails the Start before the agent runs. The container lock is
   still held, so no second Start can interleave. The error maps to
   `RUNNER_ERROR_CODE_INTERNAL`, never `NOT_FOUND`: `resumeSession` treats
-  `NOT_FOUND` as a missing container and would reprovision.
+  `NOT_FOUND` as a missing container and would reprovision. One visible
+  change: a session deleted between `startResumeSession`'s authz and the bind
+  now reaches the client as `Internal`, not today's `NotFound`. The window is
+  a concurrent delete, and both codes fail the resume.
 - A fresh Start skips the bind. `service.StartAgentSession` writes the
-  session row only after Start returns, and the default base 0 is correct.
+  session row only after Start returns, so a bind there would find no row and
+  fail every fresh Start. The default base 0 is correct.
 - `service.startResumeSession` and `lifecycleService.resumeSession` drop their
   `Store.BindLifetime` call. Authz, `ReconstructSessionBody`, `StartResume`,
   and the reprovision retry are unchanged. The retry binds once: the registry
@@ -93,7 +99,10 @@ today single-Runner placement enforces it. The container lock serializes
 binds across any number of Servers, because one Runner owns the container. It
 does not serialize across Runners: a stale placement on Runner B can still
 bind a session live on Runner A. Multi-Runner placement must close that before
-it ships (non-load-bearing deferral below).
+it ships (deferral below). `Hub.AccountForContainer` reads the in-memory
+`containerAccounts` of the instance that relayed Provision. Under RIG-3107 the
+bind must reach that instance or read the durable placement; that is the same
+dependency `FetchSecretsByContainer` already has.
 
 ## Alternatives considered
 
@@ -136,6 +145,8 @@ resume still moves the base.
 - Fail closed: an unauthorized bind is `PermissionDenied` and matches an
   unknown session byte for byte.
 - A bind failure never wraps `errSessionUnknown`.
+- Lands after the accepted-race comment PR for RIG-4297, whose comments T1
+  deletes.
 - Tests advance on observed state (channels, `testing/synctest`), never sleeps.
 - Land before RIG-3107 enables a second Server instance.
 
@@ -160,22 +171,33 @@ resume still moves the base.
     (*connect.Response[compassv1internal.BindLifetimeResponse], error)`.
   - `func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName,
     sessionID string) error`: authz, tenant resolve, bind.
+  - New Hub seam, set by `func (h *Hub) SetLifetimeBinder(b LifetimeBinder)`;
+    nil fails the RPC `Unavailable`, like `errTranscriptsUnavailable`:
+    `type LifetimeBinder interface { AccountTenant(ctx context.Context,
+    account store.AccountID) (store.TenantID, error); BindLifetime(ctx
+    context.Context, sessionID string, account store.AccountID) (uint64,
+    error) }`. `*store.Store` satisfies it.
   - `Store.BindLifetime` becomes `func (s *Store) BindLifetime(ctx
-    context.Context, sessionID string, account AccountID) error`; the sqlc
-    `BindLifetime` query adds `AND agent_account_id = $2`. Missing or foreign
-    row is `ErrNotFound`. Every caller and test moves in the same commit.
+    context.Context, sessionID string, account AccountID) (uint64, error)`;
+    the sqlc `BindLifetime` query adds `AND agent_account_id = $2`. Missing or
+    foreign row is `ErrNotFound`. The base return stays for the store tests
+    that assert it. Every caller and test moves in the same commit.
   - `func (l *ServerLink) BindLifetime(ctx context.Context, containerName,
     sessionID string) error`, called from `agentHost.Start` only when
     `req.GetResumeSessionId() != ""`.
+  - Every test `RunnerServiceHandler` fake that serves a resume Start
+    (`capturePublish`, `recordingRelay`, `w3Relay` in `go/internal/runner`)
+    implements `BindLifetime` and records calls, or the embedded
+    `Unimplemented` handler fails those Starts.
 
   Tests:
   - Handler pgtest: a tenant-B session binds through the handler. A foreign
     container, an account mismatch, and an unknown session return identical
     `PermissionDenied`.
   - Host tests: a resume Start on a live container returns
-    `errAlreadyRunning` and the fake `ServerLink` records zero binds. A bind
-    error fails Start before `StartAgent` and maps to
-    `RUNNER_ERROR_CODE_INTERNAL`.
+    `errAlreadyRunning` and the fake handler records zero binds. A fresh Start
+    records zero binds. A bind error fails Start before `StartAgent` and maps
+    to `RUNNER_ERROR_CODE_INTERNAL`.
   - Server pgtests: delete the `boundBase` assertions in
     `TestWakeAgentPriorSessionResumes`,
     `TestWakeAgentLiveElsewhereIsRefusedByRunner`
@@ -185,14 +207,15 @@ resume still moves the base.
     binds, so a base check there cannot fail. The refused-resume witness
     moves to the host test above.
 
-  Comment sweep: the Opt 3 accepted-race comments in `service.go` and
+  Comment sweep: the accepted-race comments in `service.go` and
   `lifecycle.go`, the bind-ordering comment on `Hub.StartResume`, the
-  `BindLifetime` doc in `go/internal/store/agent_transcripts.go`, and the
-  leg-five comment in `go/e2e/legfive_test.go`.
+  `BindLifetime` doc in `go/internal/store/agent_transcripts.go`, the
+  leg-five comment in `go/e2e/legfive_test.go`, and the named-entrypoint list
+  in the `store.WithSystemRole` doc, which gains the bind's tenant lookup.
 
 ## Open Questions
 
-- **Load-bearing for the Reload follow-up, not for this record: what is a
+- **Non-load-bearing deferral (out of scope; RIG-4451): what is a
   Reload's transcript?** `reloadLocked` relaunches with `h.agentEnv(handle)`
   and no `ResumeSessionFile`, so the new process starts a new SDK session
   (`cli.ts` calls `manager.setSessionFile` only with a resume file). Today its
@@ -203,14 +226,15 @@ resume still moves the base.
   the id and the new process opens with a checkpoint. Tracked on RIG-4451
   (human-action); a follow-up record designs the chosen option. The bind
   RPC above is the mechanism (a) and (c) would call.
-- **Non-load-bearing deferral: in-flight commit across a rebind.** Under (a)
-  or (c), the stopped process can have one `CommitConversationFrame` still in
-  the Server after the Runner sees its call cancelled, because the Gateway
-  commits on the agent's request ctx and the append reads the base and
-  inserts in two statements. The follow-up must close it, either with a
-  detached commit ctx plus a drain, or with row locks between bind and
-  append. A resume needs neither: no frame of a live lifetime can be in
-  flight when `Start` passes the live check.
+- **Non-load-bearing deferral: in-flight commit across a rebind.** A dead
+  process can have one `CommitConversationFrame` still in the Server after
+  the Runner sees its call cancelled: the Gateway commits on the agent's
+  request ctx, and the append reads the base and inserts in two statements. A
+  bind that lands between them collides the old frame with the new lifetime's
+  frame 1. Reload under (a) or (c) hits it, and so does a resume of an ERRORED
+  session, which `agentHost.Start` admits. Today's Server-side bind has the
+  same window for that resume, so this record does not regress it. The fix
+  is a detached commit ctx plus a drain, or row locks between bind and append.
 - **Non-load-bearing deferral: cross-Runner fence.** Multi-Runner placement
   must refuse a bind when the durable `session_bindings` row names another
   Runner, before more than one Runner can hold an agent.
