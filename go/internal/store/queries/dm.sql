@@ -37,5 +37,5 @@ UPDATE channels SET mandatory_subscription = TRUE WHERE id = $1 AND mandatory_su
 
 -- name: GetGroupNameVisibility :one
 -- Feeds isReservedGroupTx: the reserved-group discriminator (top-level AND a reserved name AND
--- VisibilityOwner) the CreateChannel create-guard keys on.
+-- VisibilityOwner) the CreateChannel and CreateChannelGroup create-guards key on.
 SELECT name, visibility, (parent_group_id IS NULL)::boolean AS top_level FROM channel_groups WHERE id = $1;
