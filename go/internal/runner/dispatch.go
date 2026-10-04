@@ -218,7 +218,9 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 		defer d.sendMu.Unlock()
 		return stream.Send(result)
 	}
-	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
+	// connect reports a server-ended stream as io.EOF on Send; the real outcome
+	// (clean end or server error) is read by the Receive loop below.
+	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	// Unblock the blocking Receive below on ctx cancel: closing the response
