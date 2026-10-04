@@ -288,18 +288,25 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	// One shared h2c connection: the dialer counts dials so the test can prove both
-	// streams rode a SINGLE connection (dials == 1) — the premise that makes this a
-	// per-STREAM proof. Launching B only after A's handler is live keeps the
-	// single-conn behaviour deterministic instead of racing a second dial.
+	// Both streams ride ONE explicit h2c ClientConn, the premise that makes this a
+	// per-STREAM proof. The pooled Transport can race B into a second dial before
+	// A's conn reaches the idle pool; the dial count below still asserts it.
 	var dials atomic.Int32
 	tr := h2cTransport(func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dials.Add(1)
 		var d net.Dialer
 		return d.DialContext(ctx, network, addr)
 	})
-	t.Cleanup(tr.CloseIdleConnections)
-	client := &http.Client{Transport: tr}
+	cc, err := tr.NewClientConn(t.Context(), "http", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("open the shared h2c conn: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cc.Close(); err != nil {
+			t.Errorf("close the shared h2c conn: %v", err)
+		}
+	})
+	client := &http.Client{Transport: cc}
 
 	// Request A: writes a few bytes then blocks forever (the pipe writer only
 	// closes in cleanup), so the socket read deadline is the ONLY thing that can
