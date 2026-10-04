@@ -48,6 +48,38 @@ func TestServeRejectsNonLoopbackDevHTTPUpFront(t *testing.T) {
 	}
 }
 
+// TestServeReportsBoundEphemeralPort pins OnBound: Serve binds a port-0 dev door
+// and reports the real port before it fails on the missing fabric, so a caller
+// never has to pick a port, release it, and race another process to rebind it.
+func TestServeReportsBoundEphemeralPort(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "compass.sock")
+	devAddr := netip.MustParseAddrPort("127.0.0.1:0")
+	var dev, network net.Addr
+	calls := 0
+	err := Serve(t.Context(), ServeConfig{
+		SocketPath: socketPath,
+		Version:    "serve-test",
+		DevHTTP:    &devAddr,
+		OnBound: func(d, n net.Addr) {
+			calls++
+			dev, network = d, n
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "event fabric") {
+		t.Fatalf("Serve error = %v, want the event-fabric startup failure after binding", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnBound calls = %d, want 1", calls)
+	}
+	if network != nil {
+		t.Errorf("OnBound network addr = %v, want nil (network door off)", network)
+	}
+	tcp, ok := dev.(*net.TCPAddr)
+	if !ok || tcp.Port == 0 || !tcp.IP.IsLoopback() {
+		t.Fatalf("OnBound dev addr = %v, want a loopback TCP addr with a real port", dev)
+	}
+}
+
 // TestSeededRootRoleIsSpawnable pins the seed const to the closed taxonomy: the
 // role the first-launch seed writes for the tree root (rootSupervisorRole) must
 // be a member of spawnableRoles. The seed path creates the root via

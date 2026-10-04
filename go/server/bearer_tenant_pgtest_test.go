@@ -58,17 +58,16 @@ func TestBearerTokenScopesCallerToIssuingTenant(t *testing.T) {
 
 	dir := t.TempDir()
 	certPath, keyPath, roots := writeSelfSignedCert(t, dir)
-	addr := freeLoopbackAddr(t)
 	socketPath := filepath.Join(dir, "compass.sock")
-	serveInBackground(t, ServeConfig{
+	addr := serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: dsn,
 		Version:     "tenant-b-bearer-test",
-		Listen:      addr,
+		Listen:      loopbackAny,
 		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:    filepath.Join(dir, "state"),
 		AdminHandle: "bootstrap-admin",
-	})
+	}).network
 	waitServing(t, socketPath)
 
 	protocols := new(http.Protocols)

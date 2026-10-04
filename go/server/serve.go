@@ -142,6 +142,10 @@ type ServeConfig struct {
 	// UsageEventRetention is how long raw token-usage events are kept; 0 turns
 	// the daily prune off. The CLI defaults it to 90 days.
 	UsageEventRetention time.Duration
+	// OnBound, when set, is called once the dev and network-door listeners are
+	// bound, with each bound address (nil for a door that is off). It lets a
+	// caller bind port 0 and learn the real port with no release-and-rebind gap.
+	OnBound func(dev, network net.Addr)
 }
 
 // ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
@@ -719,6 +723,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return err
 	}
 	devListener, netListener, netTLS := listeners.dev, listeners.network, listeners.netTLS
+	if cfg.OnBound != nil {
+		cfg.OnBound(listenerAddr(devListener), listenerAddr(netListener))
+	}
 
 	// Create the parent chain first, tightening any directory we create to 0700
 	// so the socket never sits briefly reachable under a world-traversable dir.
@@ -2300,4 +2307,12 @@ func closeListener(l net.Listener) {
 	if l != nil {
 		l.Close() //nolint:errcheck,gosec // best-effort listener close on teardown — nothing actionable remains (errcheck + its gosec G104 twin)
 	}
+}
+
+// listenerAddr returns l's bound address, or nil for a door that is off.
+func listenerAddr(l net.Listener) net.Addr {
+	if l == nil {
+		return nil
+	}
+	return l.Addr()
 }

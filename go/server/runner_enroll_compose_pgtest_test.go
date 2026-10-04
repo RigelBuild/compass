@@ -52,7 +52,6 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	socketPath := filepath.Join(dir, "compass.sock")
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
-	addr := freeLoopbackAddr(t)
 
 	// Mint the Runner token against the SAME per-test schema Serve will open, so
 	// the door's bearer interceptor resolves it. Migration is idempotent, so
@@ -71,14 +70,14 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 		t.Fatalf("MintRunnerToken: %v", err)
 	}
 
-	serveInBackground(t, ServeConfig{
+	addr := serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: dsn,
 		Version:     "runner-enroll-test",
-		Listen:      addr,
+		Listen:      loopbackAny,
 		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:    stateDir,
-	})
+	}).network
 	// The network listener binds before the socket (Serve's ordering), so once
 	// the socket serves an RPC the TLS door — RunnerService included — is
 	// accepting.

@@ -46,24 +46,6 @@ import (
 // the NotFound paths. A fixed literal keeps the assertion deterministic.
 const unknownHandle = "no-such-account"
 
-// freeLoopbackAddr returns a currently-free 127.0.0.1 address by binding an
-// ephemeral port and immediately releasing it, so Serve can rebind it without a
-// fixed-port collision. The brief sanctions the tiny bind/close/rebind race
-// (there is no way to hand Serve an already-bound listener); nothing else in the
-// test races on this port.
-func freeLoopbackAddr(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserving a free loopback port: %v", err)
-	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("releasing the reserved port: %v", err)
-	}
-	return addr
-}
-
 // writeSelfSignedCert generates an ECDSA P-256 self-signed cert/key valid for
 // 127.0.0.1 into dir (PEM), returning the two paths and a cert pool that trusts
 // it — the operator-provisioned keypair a TLS client and Serve share. The
@@ -135,14 +117,33 @@ func newTLSClient(t *testing.T, addr string, pool *x509.CertPool) compassv1conne
 	return compassv1connect.NewCompassServiceClient(&http.Client{Transport: tr}, "https://"+addr)
 }
 
+// loopbackAny is the port-0 loopback address tests bind the network door on;
+// serveInBackground returns the real port Serve bound.
+const loopbackAny = "127.0.0.1:0"
+
+// boundAddrs is what Serve bound: the dev and network door addresses as
+// host:port strings, empty for a door that is off.
+type boundAddrs struct{ dev, network string }
+
 // serveInBackground starts Serve on cfg in a goroutine and registers a cleanup
 // that cancels it and asserts the clean-shutdown contract (Serve returns nil on
-// ctx cancel). The returned nothing: readiness is gated separately via
-// waitServing.
-func serveInBackground(t *testing.T, cfg ServeConfig) {
+// ctx cancel). It waits for Serve's OnBound and returns the bound addresses;
+// readiness to serve RPCs is gated separately via waitServing.
+func serveInBackground(t *testing.T, cfg ServeConfig) boundAddrs {
 	t.Helper()
 	provisionMasterKeyProvider(t, &cfg)
 	provisionNats(t, &cfg)
+	bound := make(chan boundAddrs, 1)
+	cfg.OnBound = func(dev, network net.Addr) {
+		var b boundAddrs
+		if dev != nil {
+			b.dev = dev.String()
+		}
+		if network != nil {
+			b.network = network.String()
+		}
+		bound <- b
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- Serve(ctx, cfg) }()
@@ -157,6 +158,16 @@ func serveInBackground(t *testing.T, cfg ServeConfig) {
 			t.Error("Serve did not return after ctx cancel")
 		}
 	})
+	select {
+	case b := <-bound:
+		return b
+	case err := <-errCh:
+		errCh <- err // leave it for the cleanup's shutdown check
+		t.Fatalf("Serve returned before binding its listeners: %v", err)
+	case <-timeAfter():
+		t.Fatalf("Serve did not bind its listeners within %s", testTimeout)
+	}
+	return boundAddrs{}
 }
 
 // provisionMasterKeyProvider gives a full-Serve test a resolvable at-rest master
@@ -227,16 +238,15 @@ func TestServeNetworkDoorTLSHandshakeAndRPC(t *testing.T) {
 	socketPath := filepath.Join(dir, "compass.sock")
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
-	addr := freeLoopbackAddr(t)
 
-	serveInBackground(t, ServeConfig{
+	addr := serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: pgtest.RequireDSN(t),
 		Version:     "tls-test",
-		Listen:      addr,
+		Listen:      loopbackAny,
 		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:    stateDir,
-	})
+	}).network
 	// The network listener is bound before the socket (Serve's ordering), so once
 	// the socket serves an RPC the TCP port is bound and the network server is
 	// accepting — a TLS dial now connects and handshakes rather than hitting a
@@ -757,16 +767,15 @@ func TestServeWithListenWritesAdminToken0600(t *testing.T) {
 	socketPath := filepath.Join(dir, "compass.sock")
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
-	addr := freeLoopbackAddr(t)
 
-	serveInBackground(t, ServeConfig{
+	addr := serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: pgtest.RequireDSN(t),
 		Version:     "net-test",
-		Listen:      addr,
+		Listen:      loopbackAny,
 		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:    stateDir,
-	})
+	}).network
 	waitServing(t, socketPath)
 
 	tokenPath := filepath.Join(stateDir, adminTokenFile)
@@ -838,16 +847,15 @@ func TestServeNetworkDoorRejectsTLS12(t *testing.T) {
 	socketPath := filepath.Join(dir, "compass.sock")
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
-	addr := freeLoopbackAddr(t)
 
-	serveInBackground(t, ServeConfig{
+	addr := serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: pgtest.RequireDSN(t),
 		Version:     "tls12-reject-test",
-		Listen:      addr,
+		Listen:      loopbackAny,
 		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:    stateDir,
-	})
+	}).network
 	// The network listener binds before the socket (Serve's ordering), so once the
 	// socket serves an RPC the TCP port is accepting and a dial reaches the TLS
 	// handshake rather than a closed port.
@@ -914,13 +922,12 @@ func TestServeWithListenNeverLogsAdminToken(t *testing.T) {
 	socketPath := filepath.Join(dir, "compass.sock")
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, _ := writeSelfSignedCert(t, dir)
-	addr := freeLoopbackAddr(t)
 
 	serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: pgtest.RequireDSN(t),
 		Version:     "net-test",
-		Listen:      addr,
+		Listen:      loopbackAny,
 		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:    stateDir,
 	})
