@@ -395,9 +395,8 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 	}
 }
 
-// OnSessionLost is the hub's SessionLostSink: the Runner refused a deliver to, or
-// reported ERRORED for, sessionID and the hub released its binding. It only
-// enqueues; the loop wakes the account, re-provisioning the container on the wake path.
+// OnSessionLost is the hub's SessionLostSink. It only enqueues: the loop wakes the
+// account, which re-provisions the container.
 func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID, errored bool) {
 	if sessionID == "" || account == "" {
 		return
@@ -411,9 +410,8 @@ func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID, erro
 	}
 }
 
-// drainLost wakes every account queued by OnSessionLost under the loop's ctx. An
-// ERRORED loss wakes only when work is owed, so an agent that crashes on boot
-// does not loop through wake and resume with nothing to deliver.
+// drainLost wakes each lost account. An ERRORED loss may owe nothing, and waking it
+// anyway loops an agent that crashes on boot.
 func (c *Consumer) drainLost(ctx context.Context) {
 	for {
 		c.mu.Lock()

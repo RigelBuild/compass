@@ -24,7 +24,7 @@ func TestDropLostSessionScopesToTheSessionTenant(t *testing.T) {
 	// A fresh hub: its cache is cold, as after a Server restart.
 	hub := newHubOnly()
 	hub.SetSessionBindingStore(st)
-	sink := &recordingLostSink{}
+	sink := newRecordingLostSink()
 	hub.SetSessionLostSink(sink)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	// Enroll reaps every binding on this Runner; re-record so the drop reads a live row cold.
@@ -34,8 +34,8 @@ func TestDropLostSessionScopesToTheSessionTenant(t *testing.T) {
 
 	hub.dropLostSession(ctx, "runner-1", "sess-b", false)
 
-	if len(sink.lost) != 1 || sink.lost[0] != agent.ID {
-		t.Fatalf("lost = %v, want [%s]: the tenant-B session was not resolved, so no wake", sink.lost, agent.ID)
+	if lost, _ := sink.waitOne(t); lost != agent.ID {
+		t.Fatalf("lost = %s, want %s: the tenant-B session was not resolved, so no wake", lost, agent.ID)
 	}
 	if _, _, err := st.ResolveSessionBinding(ctxB, "sess-b"); err == nil {
 		t.Fatal("tenant B's durable binding survived the drop; a cache miss would resurrect it")

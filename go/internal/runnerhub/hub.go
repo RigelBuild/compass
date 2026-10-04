@@ -826,10 +826,9 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	if presence != nil && hasAccount {
 		presence.OnSessionLifecycle(account, sessionID, state)
 	}
-	// A Runner-published ERRORED state is the lost-session edge when the Runner
-	// observes an agent exit before any in-flight deliver can be refused.
+	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
-		h.dropLostSession(ctx, runnerID, sessionID, true)
+		h.dropLostSessionDetached(ctx, runnerID, sessionID, true)
 	}
 }
 

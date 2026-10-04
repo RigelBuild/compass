@@ -3,6 +3,7 @@
 package delivery
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -24,6 +25,9 @@ func TestLostSessionWakeGatedOnOwedWorkForErrored(t *testing.T) {
 		}, 1},
 		{"errored, owed mention", true, func(r *fakeReads, a store.AccountID) {
 			r.seedOwedMention(a, ch, textMessage("m2", "human-1", "@agent paged"))
+		}, 1},
+		{"errored, owed read fails", true, func(r *fakeReads, _ store.AccountID) {
+			r.undeliveredErr = errors.New("store down")
 		}, 1},
 		{"refused deliver, nothing owed", false, func(*fakeReads, store.AccountID) {}, 1},
 	}
