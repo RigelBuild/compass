@@ -10,12 +10,15 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -60,6 +63,78 @@ func newBoardServiceClient(t *testing.T) (compassv1connect.CompassServiceClient,
 	svc := newService("test", bus, st, nil, nil, issueBrd, nil)
 	url := newH2CTestServer(t, svc)
 	return newH2CClient(t, url), bus, issueBrd
+}
+
+func TestSearchIssuesRoundTripsTenantScopedResults(t *testing.T) {
+	ctx := context.Background()
+	dsn := pgtest.RequireDSN(t)
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("store Open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	var tenantB string
+	if err := pool.QueryRow(ctx, "INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ($1, $2, $3, $4) RETURNING id", "tenant-search-b", "tenant-search-b", "Tenant Search B", time.Now().UnixMilli()).Scan(&tenantB); err != nil {
+		t.Fatalf("seed second tenant: %v", err)
+	}
+	tenantBID := store.TenantID(tenantB)
+	visible := store.IssueForgeFields{ForgeProvider: store.ForgeProviderGitHub, ForgeHost: "github.com", Repo: "RigelBuild/compass", Number: 401, Title: "Falcon migration", Body: "Search result body", ForgeState: "open", URL: "https://github.com/RigelBuild/compass/issues/401", ForgeAccount: "octocat", Labels: []string{"Needs-Triage"}}
+	visibleID, err := st.UpsertIssueForgeFields(store.WithTenant(ctx, tenantBID), visible)
+	if err != nil {
+		t.Fatalf("upsert visible issue: %v", err)
+	}
+	foreign := visible
+	foreign.Number = 402
+	foreign.Title = "Falcon migration other tenant"
+	foreignID, err := st.UpsertIssueForgeFields(ctx, foreign)
+	if err != nil {
+		t.Fatalf("upsert foreign issue: %v", err)
+	}
+	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: "search-admin", DisplayName: "Search Admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	token, err := auth.IssueAccountToken(ctx, st, admin.ID)
+	if err != nil {
+		t.Fatalf("IssueAccountToken: %v", err)
+	}
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	svc := newService("test", bus, st, nil, nil, nil, nil)
+	// Bearer auth does not yet set a tenant on ctx, so arm one here to prove the
+	// handler's store call stays RLS-scoped on the wire path.
+	withTenant := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			return next(store.WithTenant(ctx, tenantBID), req)
+		}
+	})
+	client := newH2CClient(t, newH2CTestServerWithInterceptors(t, svc, auth.BearerInterceptor(st), withTenant))
+	request := connect.NewRequest(&compassv1.SearchIssuesRequest{Query: "falcon", Limit: 10})
+	request.Header().Set("Authorization", "Bearer "+token)
+	response, err := client.SearchIssues(ctx, request)
+	if err != nil {
+		t.Fatalf("SearchIssues: %v", err)
+	}
+	issues := response.Msg.GetIssues()
+	if len(issues) != 1 {
+		t.Fatalf("SearchIssues returned %d issues, want one tenant-visible result", len(issues))
+	}
+	if issues[0].GetId() != visibleID || issues[0].GetTitle() != visible.Title {
+		t.Fatalf("SearchIssues result = id %q title %q, want %q %q", issues[0].GetId(), issues[0].GetTitle(), visibleID, visible.Title)
+	}
+	if len(issues[0].GetLabels()) != 1 || issues[0].GetLabels()[0] != "Needs-Triage" || issues[0].GetId() == foreignID {
+		t.Fatalf("SearchIssues labels/id = %v/%q, want [Needs-Triage]/%q", issues[0].GetLabels(), issues[0].GetId(), visibleID)
+	}
+	unauthenticated := newH2CClient(t, newH2CTestServerWithInterceptors(t, svc, auth.BearerInterceptor(st)))
+	_, err = unauthenticated.SearchIssues(ctx, connect.NewRequest(&compassv1.SearchIssuesRequest{Query: "falcon", Limit: 10}))
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("SearchIssues without bearer code = %v, want Unauthenticated", connect.CodeOf(err))
+	}
 }
 
 // TestListBoardIssuesReturnsRehydratedBoard is THE durability seam at the RPC:

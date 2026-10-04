@@ -114,6 +114,19 @@ func TestListBoardIssuesReachableEmptyBoard(t *testing.T) {
 	}
 }
 
+// This reaches store validation before the handler dereferences its nil store.
+func TestSearchIssuesRejectsEmptyQuery(t *testing.T) {
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
+	client := newH2CClient(t, url)
+
+	_, err := client.SearchIssues(context.Background(), connect.NewRequest(&compassv1.SearchIssuesRequest{Query: "   ", Limit: 10}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("SearchIssues(empty) error = %v, code = %v, want InvalidArgument", err, connect.CodeOf(err))
+	}
+}
+
 // TestListBoardIssuesIgnoresRequestSnapshotSeqOnNilBoard pins the unversioned-v1
 // contract at the wiring level: the handler IGNORES the request snapshot_seq — a
 // zero and a non-zero snapshot_seq both return the same (here empty) board. The
