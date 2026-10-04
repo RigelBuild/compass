@@ -81,6 +81,11 @@ service CommsService {
   // parent_agent_id with no surface-specific plumbing.
   rpc ReparentAgent(ReparentAgentRequest) returns (ReparentAgentResponse);
 
+  // Re-anchor a channel under another agent, or detach an EXPLICIT channel to
+  // the tree root (empty new_parent_agent_handle). Moves placement only; the
+  // membership mode never changes EXPLICIT→TREE. Emits ChannelChanged.
+  rpc ReparentChannel(ReparentChannelRequest) returns (ReparentChannelResponse);
+
   // Open (or fetch) the caller's agent workspace for an agent — its session
   // observation surface (D5). Idempotent: created on first open, returned after.
   // Authorized: the caller must be a member of the agent's channel.
@@ -257,6 +262,13 @@ message Channel {
   // The channel's pinned board, ordered by PinnedEntry.position. Maintained via
   // UpdatePinnedBoard; board changes ride the existing ChannelChanged event.
   repeated PinnedEntry pinned_entries = 10;
+  // The agent this channel hangs off; empty = a tree-root channel. The anchor's
+  // owner set (its owner and that owner's agents) sees the channel; history
+  // still needs membership. Never set on a SHARED-group channel.
+  string parent_agent_id = 11;
+  // How membership is decided: stored member rows (EXPLICIT) or derived from
+  // the agent subtree under parent_agent_id (TREE).
+  ChannelMembershipMode membership_mode = 12;
 }
 
 // A channel's post policy: who may post. OPEN (default) lets any member post;
@@ -264,6 +276,16 @@ message Channel {
 enum ChannelPostPolicy {
   CHANNEL_POST_POLICY_OPEN = 0;
   CHANNEL_POST_POLICY_OWNER_ONLY = 1;
+}
+
+// A channel's membership mode. One-way: TREE→EXPLICIT is allowed, never the
+// reverse.
+enum ChannelMembershipMode {
+  // Stored channel_members rows; UpdateChannelMembers manages them.
+  CHANNEL_MEMBERSHIP_MODE_EXPLICIT = 0;
+  // Membership derived from the agent subtree under parent_agent_id; no
+  // stored member rows; UpdateChannelMembers add/remove is rejected.
+  CHANNEL_MEMBERSHIP_MODE_TREE = 1;
 }
 
 // One entry on a channel's pinned board: an existing message promoted to the
@@ -664,6 +686,11 @@ message CreateChannelRequest {
   // Initial members party to the channel. Each is a `@handle`; the server
   // resolves it to an account id; unknown → NOT_FOUND.
   repeated string member_handles = 4;
+  // The agent to hang the channel off; mutually exclusive with group_id. A
+  // `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+  string parent_agent_handle = 5;
+  // TREE requires parent_agent_handle.
+  ChannelMembershipMode membership_mode = 6;
 }
 
 message CreateChannelResponse {
@@ -724,6 +751,17 @@ message ReparentAgentRequest {
 
 message ReparentAgentResponse {
   Account account = 1;
+}
+
+message ReparentChannelRequest {
+  string channel_id = 1;
+  // Destination agent; empty detaches an EXPLICIT channel to the root.
+  // A `@handle`; the server resolves it; unknown → NOT_FOUND.
+  string new_parent_agent_handle = 2;
+}
+
+message ReparentChannelResponse {
+  Channel channel = 1;
 }
 
 message SetChannelPolicyRequest {

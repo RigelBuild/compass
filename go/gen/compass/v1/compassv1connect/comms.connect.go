@@ -78,6 +78,9 @@ const (
 	// CommsServiceReparentAgentProcedure is the fully-qualified name of the CommsService's
 	// ReparentAgent RPC.
 	CommsServiceReparentAgentProcedure = "/compass.v1.CommsService/ReparentAgent"
+	// CommsServiceReparentChannelProcedure is the fully-qualified name of the CommsService's
+	// ReparentChannel RPC.
+	CommsServiceReparentChannelProcedure = "/compass.v1.CommsService/ReparentChannel"
 	// CommsServiceOpenAgentWorkspaceProcedure is the fully-qualified name of the CommsService's
 	// OpenAgentWorkspace RPC.
 	CommsServiceOpenAgentWorkspaceProcedure = "/compass.v1.CommsService/OpenAgentWorkspace"
@@ -152,6 +155,10 @@ type CommsServiceClient interface {
 	// emits AccountChanged; surfaces re-derive the tree from the changed
 	// parent_agent_id with no surface-specific plumbing.
 	ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error)
+	// Re-anchor a channel under another agent, or detach an EXPLICIT channel to
+	// the tree root (empty new_parent_agent_handle). Moves placement only; the
+	// membership mode never changes EXPLICIT→TREE. Emits ChannelChanged.
+	ReparentChannel(context.Context, *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error)
 	// Open (or fetch) the caller's agent workspace for an agent — its session
 	// observation surface (D5). Idempotent: created on first open, returned after.
 	// Authorized: the caller must be a member of the agent's channel.
@@ -267,6 +274,12 @@ func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(commsServiceMethods.ByName("ReparentAgent")),
 			connect.WithClientOptions(opts...),
 		),
+		reparentChannel: connect.NewClient[v1.ReparentChannelRequest, v1.ReparentChannelResponse](
+			httpClient,
+			baseURL+CommsServiceReparentChannelProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("ReparentChannel")),
+			connect.WithClientOptions(opts...),
+		),
 		openAgentWorkspace: connect.NewClient[v1.OpenAgentWorkspaceRequest, v1.OpenAgentWorkspaceResponse](
 			httpClient,
 			baseURL+CommsServiceOpenAgentWorkspaceProcedure,
@@ -348,6 +361,7 @@ type commsServiceClient struct {
 	updateChannelMembers *connect.Client[v1.UpdateChannelMembersRequest, v1.UpdateChannelMembersResponse]
 	openDM               *connect.Client[v1.OpenDMRequest, v1.OpenDMResponse]
 	reparentAgent        *connect.Client[v1.ReparentAgentRequest, v1.ReparentAgentResponse]
+	reparentChannel      *connect.Client[v1.ReparentChannelRequest, v1.ReparentChannelResponse]
 	openAgentWorkspace   *connect.Client[v1.OpenAgentWorkspaceRequest, v1.OpenAgentWorkspaceResponse]
 	listMessages         *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	postMessage          *connect.Client[v1.PostMessageRequest, v1.PostMessageResponse]
@@ -409,6 +423,11 @@ func (c *commsServiceClient) OpenDM(ctx context.Context, req *connect.Request[v1
 // ReparentAgent calls compass.v1.CommsService.ReparentAgent.
 func (c *commsServiceClient) ReparentAgent(ctx context.Context, req *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error) {
 	return c.reparentAgent.CallUnary(ctx, req)
+}
+
+// ReparentChannel calls compass.v1.CommsService.ReparentChannel.
+func (c *commsServiceClient) ReparentChannel(ctx context.Context, req *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error) {
+	return c.reparentChannel.CallUnary(ctx, req)
 }
 
 // OpenAgentWorkspace calls compass.v1.CommsService.OpenAgentWorkspace.
@@ -507,6 +526,10 @@ type CommsServiceHandler interface {
 	// emits AccountChanged; surfaces re-derive the tree from the changed
 	// parent_agent_id with no surface-specific plumbing.
 	ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error)
+	// Re-anchor a channel under another agent, or detach an EXPLICIT channel to
+	// the tree root (empty new_parent_agent_handle). Moves placement only; the
+	// membership mode never changes EXPLICIT→TREE. Emits ChannelChanged.
+	ReparentChannel(context.Context, *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error)
 	// Open (or fetch) the caller's agent workspace for an agent — its session
 	// observation surface (D5). Idempotent: created on first open, returned after.
 	// Authorized: the caller must be a member of the agent's channel.
@@ -618,6 +641,12 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(commsServiceMethods.ByName("ReparentAgent")),
 		connect.WithHandlerOptions(opts...),
 	)
+	commsServiceReparentChannelHandler := connect.NewUnaryHandler(
+		CommsServiceReparentChannelProcedure,
+		svc.ReparentChannel,
+		connect.WithSchema(commsServiceMethods.ByName("ReparentChannel")),
+		connect.WithHandlerOptions(opts...),
+	)
 	commsServiceOpenAgentWorkspaceHandler := connect.NewUnaryHandler(
 		CommsServiceOpenAgentWorkspaceProcedure,
 		svc.OpenAgentWorkspace,
@@ -706,6 +735,8 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 			commsServiceOpenDMHandler.ServeHTTP(w, r)
 		case CommsServiceReparentAgentProcedure:
 			commsServiceReparentAgentHandler.ServeHTTP(w, r)
+		case CommsServiceReparentChannelProcedure:
+			commsServiceReparentChannelHandler.ServeHTTP(w, r)
 		case CommsServiceOpenAgentWorkspaceProcedure:
 			commsServiceOpenAgentWorkspaceHandler.ServeHTTP(w, r)
 		case CommsServiceListMessagesProcedure:
@@ -775,6 +806,10 @@ func (UnimplementedCommsServiceHandler) OpenDM(context.Context, *connect.Request
 
 func (UnimplementedCommsServiceHandler) ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ReparentAgent is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) ReparentChannel(context.Context, *connect.Request[v1.ReparentChannelRequest]) (*connect.Response[v1.ReparentChannelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ReparentChannel is not implemented"))
 }
 
 func (UnimplementedCommsServiceHandler) OpenAgentWorkspace(context.Context, *connect.Request[v1.OpenAgentWorkspaceRequest]) (*connect.Response[v1.OpenAgentWorkspaceResponse], error) {
