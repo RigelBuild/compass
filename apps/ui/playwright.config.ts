@@ -22,7 +22,9 @@ function requirePinnedEnv(name: string): string {
 }
 
 const chromiumPath = requirePinnedEnv("PLAYWRIGHT_CHROMIUM_PATH");
-requirePinnedEnv("FONTCONFIG_FILE");
+// Handed only to the launched browser: as a process-wide FONTCONFIG_FILE it would strip
+// every dev-shell GUI down to the two pinned faces.
+const fontconfigPath = requirePinnedEnv("E2E_FONTCONFIG_FILE");
 
 // The fixture dev server binds an OS-assigned ephemeral port, never a fixed one. A fixed
 // port collides with any dev server already on it and `--strictPort` turns that into a
@@ -69,7 +71,10 @@ export default defineConfig({
 		screenshot: "off",
 		reducedMotion: "reduce",
 		deviceScaleFactor: 1,
-		launchOptions: { executablePath: chromiumPath },
+		launchOptions: {
+			executablePath: chromiumPath,
+			env: { ...process.env, FONTCONFIG_FILE: fontconfigPath },
+		},
 	},
 	projects: [
 		{

@@ -202,9 +202,10 @@ in
     # faces, pinned to the same devenv.lock nixpkgs CI uses (with hinting/AA also
     # pinned), so a local run and a CI run rasterize identically. The config sees
     # ONLY the pinned faces, so the host's font set cannot sway the output.
-    # Linux-only: chromium is Linux-only so darwin cannot run the gate, and
-    # FONTCONFIG_FILE is process-tree-wide.
-    FONTCONFIG_FILE = (import tools/toolchain/chromium-e2e-env.nix).fontconfig;
+    # Linux-only: chromium is Linux-only so darwin cannot run the gate. Not
+    # FONTCONFIG_FILE: that is process-tree-wide and would leave dev-shell GUIs
+    # with only the pinned faces; playwright.config.ts hands it to Chromium alone.
+    E2E_FONTCONFIG_FILE = (import tools/toolchain/chromium-e2e-env.nix).fontconfig;
 
     # The gate's baselines are captured against this exact Chromium, so a dev
     # shell that leaves it unset falls through playwright.config.ts's default to
