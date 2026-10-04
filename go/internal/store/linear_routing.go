@@ -11,7 +11,8 @@ import (
 )
 
 // linearRoutingGroupName is the admin's reserved group for the Linear routing channel.
-// CreateChannel refuses it, so only EnsureLinearRoutingChannel writes a channel there.
+// CreateChannelGroup refuses it at top level and CreateChannel refuses the group,
+// so only EnsureLinearRoutingChannel writes there.
 const linearRoutingGroupName = "__linear__"
 
 // LinearRoutingChannelName names the supervisor's general routing channel, where a Linear

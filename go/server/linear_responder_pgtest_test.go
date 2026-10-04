@@ -20,7 +20,7 @@ func TestLinearRoutingSeedAndFallbackTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureLinearBridgeAccount: %v", err)
 	}
-	lookalikes := plantRoutingLookalikes(t, h.store, h.adminID)
+	lookalikes := plantRoutingLookalikes(t, h.store, h.dsn, h.adminID)
 	routing := &linearRouting{st: h.store, adminID: h.adminID}
 
 	if _, _, err := routing.RoutingTarget(ctx); !errors.Is(err, errRoutingSupervisor) {
@@ -82,26 +82,29 @@ func TestLinearRoutingSeedAndFallbackTarget(t *testing.T) {
 
 // plantRoutingLookalikes plants a stranger's routing channel in the admin's
 // SHARED __linear__ group and an admin-owned ungrouped routing channel.
-func plantRoutingLookalikes(t *testing.T, st *store.Store, adminID store.AccountID) []store.ChannelID {
+func plantRoutingLookalikes(t *testing.T, st *store.Store, dsn string, adminID store.AccountID) []store.ChannelID {
 	t.Helper()
 	ctx := t.Context()
 	stranger, err := st.CreateUser(ctx, store.NewUser{Handle: "stranger", DisplayName: "Stranger"})
 	if err != nil {
 		t.Fatalf("CreateUser(stranger): %v", err)
 	}
-	shared, err := st.CreateChannelGroup(ctx, adminID, store.NewChannelGroup{Name: "__linear__", Visibility: store.VisibilityShared})
-	if err != nil {
-		t.Fatalf("CreateChannelGroup(shared __linear__): %v", err)
-	}
-	planted, err := st.CreateChannel(ctx, stranger.ID, store.NewChannel{Name: store.LinearRoutingChannelName, GroupID: shared.ID})
-	if err != nil {
-		t.Fatalf("CreateChannel(planted in SHARED group): %v", err)
-	}
+	// The store refuses the reserved group name (store.linearRoutingGroupName), so plant with raw SQL.
+	const sharedID, plantedID = "linear-lookalike-group", "linear-lookalike-channel"
+	execSQL(t, ctx, dsn,
+		`INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, tenant_id)
+		 SELECT $1, '__linear__', NULL, a.id, $2, a.tenant_id FROM accounts a WHERE a.id = $3`,
+		sharedID, int16(store.VisibilityShared), string(adminID))
+	execSQL(t, ctx, dsn,
+		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription, tenant_id)
+		 SELECT $1, $2, $3, $4, $5, a.id, FALSE, a.tenant_id FROM accounts a WHERE a.id = $6`,
+		plantedID, store.LinearRoutingChannelName, sharedID, int32(store.ChannelKindChannel),
+		int32(store.ChannelPostPolicyOpen), string(stranger.ID))
 	userOwned, err := st.CreateChannel(ctx, adminID, store.NewChannel{Name: store.LinearRoutingChannelName})
 	if err != nil {
 		t.Fatalf("CreateChannel(admin's ungrouped): %v", err)
 	}
-	return []store.ChannelID{planted.ID, userOwned.ID}
+	return []store.ChannelID{plantedID, userOwned.ID}
 }
 
 // TestLinearRoutingOwningManager: a live author resolves to itself, a despawned peer to
