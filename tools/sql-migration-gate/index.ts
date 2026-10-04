@@ -131,9 +131,30 @@ export function migrationBaseRef(env: NodeJS.ProcessEnv): string {
 	return "origin/main";
 }
 
-async function gitStdout(root: string, args: string[]): Promise<Uint8Array> {
+// Variables that redirect git away from the cwd repository; an inherited one
+// would let the check read another repo's migrations and pass.
+const GIT_ROUTING_VARS = new Set([
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_NAMESPACE",
+	"GIT_CEILING_DIRECTORIES",
+	"GIT_DISCOVERY_ACROSS_FILESYSTEM",
+]);
+
+async function runGit(
+	root: string,
+	args: string[],
+): Promise<{ code: number; out: Uint8Array; stderr: string }> {
+	const env = Object.fromEntries(
+		Object.entries(process.env).filter(([key]) => !GIT_ROUTING_VARS.has(key)),
+	);
 	const proc = Bun.spawn(["git", ...args], {
 		cwd: root,
+		env,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -141,10 +162,14 @@ async function gitStdout(root: string, args: string[]): Promise<Uint8Array> {
 		new Response(proc.stdout).arrayBuffer(),
 		new Response(proc.stderr).text(),
 	]);
-	const code = await proc.exited;
+	return { code: await proc.exited, out: new Uint8Array(out), stderr };
+}
+
+async function gitStdout(root: string, args: string[]): Promise<Uint8Array> {
+	const { code, out, stderr } = await runGit(root, args);
 	if (code !== 0)
 		throw new Error(`git ${args.join(" ")} exited ${code}: ${stderr.trim()}`);
-	return new Uint8Array(out);
+	return out;
 }
 
 /** Read merge-base migration blobs from git and compare them with disk. */
@@ -153,12 +178,9 @@ export async function checkMigrationImmutability(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<LinterResult> {
 	const name = "migration-immutability";
-	const inWorktree = await $`git rev-parse --is-inside-work-tree`
-		.cwd(root)
-		.nothrow()
-		.quiet();
+	const inWorktree = await runGit(root, ["rev-parse", "--is-inside-work-tree"]);
 	// A jj workspace has no git worktree; CI always does, so only CI must fail closed.
-	if (inWorktree.exitCode !== 0 && !env.GITHUB_ACTIONS) {
+	if (inWorktree.code !== 0 && !env.GITHUB_ACTIONS) {
 		return {
 			name,
 			code: 0,

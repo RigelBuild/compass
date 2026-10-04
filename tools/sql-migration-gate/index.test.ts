@@ -314,6 +314,36 @@ describe("checkMigrationImmutability", () => {
 		});
 	});
 
+	test("inherited GIT_DIR/GIT_WORK_TREE cannot redirect the check to another repo", async () => {
+		const path = "go/internal/store/migrations/0001_init.sql";
+		// The decoy's base holds the edited bytes, so a redirected check would pass.
+		await withRepo({ [path]: "SELECT 2;\n" }, async (decoy) => {
+			await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
+				writeFileSync(join(root, path), "SELECT 2;\n");
+				// Overrides go in the spawn env: Bun children ignore later process.env writes.
+				const script = `import { checkMigrationImmutability } from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
+console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(root)}, { GATE_BASE_REF: "base" })));`;
+				const child = Bun.spawn([process.execPath, "-e", script], {
+					env: {
+						...process.env,
+						GIT_DIR: join(decoy, ".git"),
+						GIT_WORK_TREE: decoy,
+					},
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [out, stderr] = await Promise.all([
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+				]);
+				expect(await child.exited, stderr).toBe(0);
+				const result = JSON.parse(out) as LinterResult;
+				expect(result.code).toBe(1);
+				expect(result.output).toContain(path);
+			});
+		});
+	});
+
 	test("a migration name git would C-quote is still checked", async () => {
 		const path = "go/internal/store/migrations/0002_café.sql";
 		await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
