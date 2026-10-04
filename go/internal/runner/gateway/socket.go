@@ -254,6 +254,9 @@ func (l *SocketListener) Path() string { return l.path }
 // minting one that nothing would retire. Idempotent, and safe on a listener
 // whose producer was never wired.
 func (l *SocketListener) BindSession(sessionID string) {
+	if l.gateway != nil {
+		l.gateway.unfencePublishes(sessionID)
+	}
 	if l.control == nil {
 		return
 	}

@@ -352,8 +352,9 @@ provisioned container online — spawning it over the streaming-exec bridge — 
 return a server-assigned session id. `StopAgentSession` SHALL deliberately
 terminate the in-container agent and release the session, and SHALL succeed for
 an unknown or already-stopped session (idempotent teardown). `GetAgentStatus`
-SHALL return one session's status, or every live session's when no id is given,
-reconciled to the owning Runner's authoritative session set.
+SHALL return one session's status, or every retained session's when no id is
+given, reconciled to the owning Runner's authoritative session set; retained
+sessions include `ERRORED` ones awaiting `ReloadAgentSession`.
 
 #### Scenario: Starting an agent session streams its status
 
@@ -378,7 +379,10 @@ its workspace state.
 The server SHALL bind at most one live container to a given agent account. A
 `SpawnAgent` for an agent account that already holds a live session SHALL be
 rejected with `ALREADY_EXISTS` before any container is provisioned (the
-existing session is unaffected). This binds the reject-on-live rule to the
+existing session is unaffected). A `SpawnAgent` for an account whose only
+session is `ERRORED` SHALL be rejected with `FAILED_PRECONDITION` ("agent
+errored; reload or stop it"), also before any provisioning. This binds the
+reject-on-live rule to the
 *agent account*, not merely to the container name: the existing
 one-session-per-container requirement above coincides with it today only
 because the container name is derived from the account, an incidental property
