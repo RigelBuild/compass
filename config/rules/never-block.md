@@ -17,6 +17,11 @@ you on your next turn — you do not hold a turn open to catch them. Waiting on 
 operator decision is not a reason to block: post the question, yield, resume when
 the answer arrives.
 
+Keep async messages concise and scoped to one topic. Include the needed context,
+the specific ask or decision, and a pointer to evidence; omit background the
+recipient already has. Use the relevant home, parent/child, or coordination
+channel, and reserve broad posts for directives every recipient must see.
+
 The one allowed wait is a backgrounded job you launch and then yield from (a long
 build/test). That is not blocking — the harness wakes you with its result. A
 foreground wait that holds the turn open is the banned thing.
