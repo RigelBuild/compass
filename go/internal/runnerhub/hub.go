@@ -1073,8 +1073,11 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 			h.archiveEnded(store.WithTenant(ctx, b.TenantID), b.SessionID)
 		}
 	} else {
+		// The failed sweep left the rows, so each session's tenant is still readable.
 		for _, sessionID := range reapedSessions {
-			h.archiveEnded(ctx, sessionID)
+			if sctx, ok := h.runnerSessionCtx(ctx, id, sessionID); ok {
+				h.archiveEnded(sctx, sessionID)
+			}
 		}
 	}
 	return reattached

@@ -4,6 +4,8 @@ package runnerhub
 
 import (
 	"context"
+	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -13,6 +15,91 @@ import (
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+type tenantRecordingEndSink struct {
+	ended chan struct {
+		tenant    store.TenantID
+		sessionID string
+	}
+}
+
+func (s tenantRecordingEndSink) OnSessionEnded(ctx context.Context, sessionID string) {
+	tenant, _ := store.TenantFromContext(ctx)
+	s.ended <- struct {
+		tenant    store.TenantID
+		sessionID string
+	}{tenant: tenant, sessionID: sessionID}
+}
+
+func TestEnrollReapsEveryTenantsBindings(t *testing.T) {
+	ctx := context.Background()
+	dsn := pgtest.RequireDSN(t)
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	bootstrap, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: "admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	bootstrapAgent, err := st.CreateAgent(ctx, bootstrap.ID, store.NewAgent{Handle: "agent-bootstrap", DisplayName: "agent-bootstrap"})
+	if err != nil {
+		t.Fatalf("CreateAgent bootstrap: %v", err)
+	}
+	tenantB := seedTenantRow(t, ctx, dsn, "tenant-b-reap")
+	ctxB := store.WithTenant(ctx, tenantB)
+	owner, err := st.CreateUser(ctxB, store.NewUser{Handle: "owner-b-reap", DisplayName: "owner-b-reap"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	agent, err := st.CreateAgent(ctxB, owner.ID, store.NewAgent{Handle: "agent-b-reap", DisplayName: "agent-b-reap"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if _, err := st.RecordSessionBinding(ctxB, "sess-b", agent.ID, "runner-1"); err != nil {
+		t.Fatalf("RecordSessionBinding tenant B: %v", err)
+	}
+	if _, err := st.RecordSessionBinding(ctx, "sess-bootstrap", bootstrapAgent.ID, "runner-1"); err != nil {
+		t.Fatalf("RecordSessionBinding bootstrap: %v", err)
+	}
+
+	hub := newHubOnly()
+	hub.SetSessionBindingStore(st)
+	ended := tenantRecordingEndSink{ended: make(chan struct {
+		tenant    store.TenantID
+		sessionID string
+	}, 2)}
+	hub.SetSessionEndSink(ended)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	if _, _, err := st.ResolveSessionBinding(ctxB, "sess-b"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("tenant B binding resolve error = %v, want ErrNotFound", err)
+	}
+	if _, _, err := st.ResolveSessionBinding(ctx, "sess-bootstrap"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("bootstrap binding resolve error = %v, want ErrNotFound", err)
+	}
+	bootstrapTenant, err := st.BootstrapTenant(ctx)
+	if err != nil {
+		t.Fatalf("BootstrapTenant: %v", err)
+	}
+	want := map[string]store.TenantID{"sess-b": tenantB, "sess-bootstrap": bootstrapTenant}
+	got := make(map[string]store.TenantID, len(want))
+	for range len(want) {
+		select {
+		case e := <-ended.ended:
+			if _, dup := got[e.sessionID]; dup {
+				t.Fatalf("session %q archived twice", e.sessionID)
+			}
+			got[e.sessionID] = e.tenant
+		case <-time.After(10 * time.Second):
+			t.Fatalf("session-end archives = %v, want %v", got, want)
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("session-end archives = %v, want %v", got, want)
+	}
+}
 
 // A Runner is shared across tenants and its door carries none. A lost session of a
 // non-bootstrap tenant, read cold from the table, must still be released durably and
