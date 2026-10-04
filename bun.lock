@@ -199,6 +199,13 @@
         "typescript": "catalog:",
       },
     },
+    "tools/gateway-image": {
+      "name": "@compass/gateway-image",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/guest-image": {
       "name": "@compass/guest-image",
       "bin": {
@@ -539,6 +546,8 @@
     "@compass/font-coverage-gate": ["@compass/font-coverage-gate@workspace:tools/font-coverage-gate"],
 
     "@compass/forge-linear-token": ["@compass/forge-linear-token@workspace:tools/forge-linear-token"],
+
+    "@compass/gateway-image": ["@compass/gateway-image@workspace:tools/gateway-image"],
 
     "@compass/guest-image": ["@compass/guest-image@workspace:tools/guest-image"],
 
