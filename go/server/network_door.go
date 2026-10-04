@@ -81,8 +81,7 @@ func (b boundListeners) close() {
 // error it closes whatever it already bound and returns, so the caller never
 // sees a half-bound value. The dev endpoint must be loopback (defense in depth;
 // the CLI checks it too) and the network door requires TLS (a bearer token over
-// cleartext is credential disclosure). On success it reports the bound
-// addresses to cfg.OnBound.
+// cleartext is credential disclosure).
 func bindListeners(cfg ServeConfig) (boundListeners, error) {
 	var b boundListeners
 	if cfg.DevHTTP != nil {
@@ -108,7 +107,7 @@ func bindListeners(cfg ServeConfig) (boundListeners, error) {
 		}
 		b.network, b.netTLS = l, t
 	}
-	if cfg.OnBound != nil {
+	if cfg.OnBound != nil { // report what bound, so a port-0 caller learns the real port
 		cfg.OnBound(listenerAddr(b.dev), listenerAddr(b.network))
 	}
 	return b, nil
