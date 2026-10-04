@@ -20,6 +20,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -137,6 +138,34 @@ func TestRunSessionsCleanCancelReturnsNil(t *testing.T) {
 		}
 	case <-timeAfter():
 		t.Fatal("runSessions did not return after a clean cancel")
+	}
+}
+
+// A server that ends the stream before the bootstrap frame makes connect's Send
+// return io.EOF; the real outcome is on Receive, so a clean end must return nil
+// and a server error must surface as that error, never as the EOF.
+func TestRunSessionsBootstrapSendEOFReadsReceive(t *testing.T) {
+	serverErr := errors.New("permission denied")
+	for _, tc := range []struct {
+		name string
+		recv error
+		want error
+	}{
+		{name: "clean end", recv: io.EOF, want: nil},
+		{name: "server error", recv: serverErr, want: serverErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := newScriptStream()
+			stream.sendHook = func(*compassv1internal.SessionsRequest) error {
+				return fmt.Errorf("write envelope: %w", io.EOF)
+			}
+			stream.recv <- recvItem{err: tc.recv}
+
+			err := runSessions(context.Background(), stream, &fakeSessionHost{}, discardLoggerRunner())
+			if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("runSessions = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }
 
