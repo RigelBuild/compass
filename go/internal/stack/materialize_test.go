@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -187,13 +188,17 @@ func newFakeRegistry(t *testing.T, mutate func(m *guestManifest)) *fakeRegistry 
 }
 
 func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
-	tests := []struct {
-		name       string
-		configure  func(*fakeRegistry)
-		wantErr    bool
-		wantTokens int
-	}{
-		{name: "success", wantTokens: 1},
+	type testCase struct {
+		name                 string
+		configure            func(*fakeRegistry)
+		wantErr              bool
+		wantErrContains      string
+		wantTokens           int
+		wantRealmRequests    int
+		wantRegistryRequests int
+	}
+	tests := []testCase{
+		{name: "success", wantTokens: 1, wantRegistryRequests: 5},
 		{name: "reject unsafe realm", configure: func(r *fakeRegistry) {
 			r.realmServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				r.realmRequests++
@@ -202,10 +207,11 @@ func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
 			}))
 			t.Cleanup(r.realmServer.Close)
 			r.challengeRealm = strings.Replace(r.realmServer.URL, "127.0.0.1", "localhost", 1) + "/token"
-		}, wantErr: true},
-		{name: "token endpoint retries", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusServiceUnavailable; r.tokenRecoverAfter = 1 }, wantTokens: 2},
-		{name: "second unauthorized is final", configure: func(r *fakeRegistry) { r.second401 = true }, wantErr: true, wantTokens: 1},
-		{name: "refresh expired token", configure: func(r *fakeRegistry) { r.expireAfter = 2 }, wantTokens: 2},
+		}, wantErr: true, wantErrContains: "refusing unsafe", wantRealmRequests: 0, wantRegistryRequests: 1},
+		{name: "token endpoint retries", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusServiceUnavailable; r.tokenRecoverAfter = 1 }, wantTokens: 2, wantRegistryRequests: 6},
+		{name: "token endpoint final", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusForbidden }, wantErr: true, wantTokens: 1, wantRegistryRequests: 1},
+		{name: "second unauthorized is final", configure: func(r *fakeRegistry) { r.second401 = true }, wantErr: true, wantTokens: 1, wantRegistryRequests: 2},
+		{name: "refresh expired token", configure: func(r *fakeRegistry) { r.expireAfter = 2 }, wantTokens: 2, wantRegistryRequests: 6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -219,8 +225,14 @@ func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("materializeGuestArtifact error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if tt.name == "reject unsafe realm" && (err == nil || !strings.Contains(err.Error(), "refusing unsafe") || reg.realmRequests != 0) {
-				t.Fatalf("unsafe realm error = %v, realm requests = %d", err, reg.realmRequests)
+			if tt.wantErrContains != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrContains)) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErrContains)
+			}
+			if reg.tokenRequests != tt.wantTokens || reg.realmRequests != tt.wantRealmRequests {
+				t.Errorf("token requests = %d, realm requests = %d; want %d, %d", reg.tokenRequests, reg.realmRequests, tt.wantTokens, tt.wantRealmRequests)
+			}
+			if reg.registryRequests != tt.wantRegistryRequests {
+				t.Errorf("registry requests = %d, want %d", reg.registryRequests, tt.wantRegistryRequests)
 			}
 			if tt.wantErr {
 				assertNoMaterializedDir(t, stateDir, reg.digest)
@@ -252,6 +264,12 @@ func TestParseGuestBearerChallenge(t *testing.T) {
 		{name: "unterminated quote", challenge: `Bearer realm="https://example.test/token,service="fake",scope="repository:r:pull"`},
 		{name: "lowercase scheme and keys", challenge: `bearer REALM=https://example.test/token, SERVICE = fake, SCOPE = repository:r:pull`, wantRealm: "https://example.test/token", wantOK: true},
 		{name: "unquoted values", challenge: `Bearer realm=https://example.test/token,service=fake,scope=repository:r:pull`, wantRealm: "https://example.test/token", wantOK: true},
+		{name: "invalid scheme prefix", challenge: `Bearerx realm=a,service=b,scope=c`},
+		{name: "empty value", challenge: `Bearer realm=,service=b,scope=c`},
+		{name: "empty key", challenge: `Bearer =x,realm=a,service=b,scope=c`},
+		{name: "unquoted value with junk", challenge: `Bearer realm=a junk,service=b,scope=c`},
+		{name: "duplicate key", challenge: `Bearer realm=a,realm=b,service=c,scope=d`},
+		{name: "quoted trailing junk", challenge: `Bearer realm="a" "junk",service=b,scope=c`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -261,6 +279,49 @@ func TestParseGuestBearerChallenge(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFetchGuestBearerTokenRealmPolicy(t *testing.T) {
+	var requests int
+	client := &http.Client{Transport: bearerTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"token":"ok"}`)), Request: req}, nil
+	})}
+	tests := []struct {
+		name       string
+		requestURL string
+		challenge  string
+		wantErr    bool
+	}{
+		{name: "reject http realm for https registry", requestURL: "https://reg.example/v2/x", challenge: `Bearer realm="http://reg.example/token",service="fake",scope="repository:x:pull"`, wantErr: true},
+		{name: "allow matching http registry realm", requestURL: "http://reg.example/v2/x", challenge: `Bearer realm="http://reg.example/token",service="fake",scope="repository:x:pull"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token := &guestBearerToken{}
+			requests = 0
+			err := fetchGuestBearerToken(t.Context(), client, tt.requestURL, tt.challenge, token)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("fetchGuestBearerToken error = %v, wantErr %v", err, tt.wantErr)
+			}
+			wantRequests := 1
+			if tt.wantErr {
+				wantRequests = 0
+			}
+			if requests != wantRequests {
+				t.Fatalf("client requests = %d, want %d", requests, wantRequests)
+			}
+			if !tt.wantErr && token.value != "ok" {
+				t.Fatalf("token = %q, want ok", token.value)
+			}
+		})
+	}
+}
+
+type bearerTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f bearerTestRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 // registry returns the guestRegistry aimed at this stub. httptest serves plain

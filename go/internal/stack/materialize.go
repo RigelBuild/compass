@@ -599,9 +599,8 @@ func writeGuestManifestFile(staging string, layers []guestDescriptor) error {
 	return nil
 }
 
-// retryable marks a sink failure the fetch loop may reattempt — a dropped
-// connection mid-body, never a verification mismatch. Only the sink needs to
-// say so; every other retry decision is visible to doGuestGet directly.
+// retryable marks a transient fetch failure the loop may reattempt, including
+// dropped bodies and temporary registry token endpoint failures.
 type retryable struct{ error }
 
 func (r retryable) Unwrap() error { return r.error }
@@ -610,9 +609,8 @@ func (r retryable) Unwrap() error { return r.error }
 type guestBearerToken struct{ value string }
 
 // doGuestGet issues one bounded anonymous GET and hands the response body to
-// sink. A transport failure with a live context, a 429, a 5xx, and a
-// sink-reported transient retry with doubling backoff; everything else is final
-// — a digest or size mismatch would only become a slower clear failure.
+// sink. Transient transport, token endpoint, 429, 5xx, and sink failures retry
+// with doubling backoff; verification failures remain final.
 func doGuestGet(ctx context.Context, client *http.Client, url, accept string, token *guestBearerToken, sink func(io.Reader) error) error {
 	var last error
 	for attempt := 1; attempt <= guestFetchAttempts; attempt++ {
@@ -693,7 +691,7 @@ func fetchGuestBearerToken(ctx context.Context, client *http.Client, requestURL,
 	if err != nil {
 		return fmt.Errorf("parse registry URL: %w", err)
 	}
-	// Token realms require HTTPS, except same-host realms used by local registries.
+	// Token realms require HTTPS, except realms matching the registry scheme and host.
 	tokenURL, err := url.Parse(realm)
 	if err != nil || tokenURL.Host == "" {
 		return errors.New("refusing unsafe anonymous registry token realm")
@@ -750,10 +748,28 @@ func fetchGuestBearerToken(ctx context.Context, client *http.Client, requestURL,
 // comma-separated Bearer WWW-Authenticate value.
 func parseGuestBearerChallenge(challenge string) (string, string, string, bool) {
 	challenge = strings.TrimSpace(challenge)
-	if len(challenge) < len("Bearer") || !strings.EqualFold(challenge[:len("Bearer")], "Bearer") || (len(challenge) > len("Bearer") && challenge[len("Bearer")] != ' ' && challenge[len("Bearer")] != '\t') {
+	if !hasBearerScheme(challenge) {
 		return "", "", "", false
 	}
-	params := strings.TrimSpace(challenge[len("Bearer"):])
+	values, ok := parseGuestBearerParameters(strings.TrimSpace(challenge[len("Bearer"):]))
+	if !ok {
+		return "", "", "", false
+	}
+	realm, service, scope := values["realm"], values["service"], values["scope"]
+	if realm == "" || service == "" || scope == "" {
+		return "", "", "", false
+	}
+	return realm, service, scope, true
+}
+
+func hasBearerScheme(challenge string) bool {
+	if len(challenge) < len("Bearer") || !strings.EqualFold(challenge[:len("Bearer")], "Bearer") {
+		return false
+	}
+	return len(challenge) == len("Bearer") || challenge[len("Bearer")] == ' ' || challenge[len("Bearer")] == '\t'
+}
+
+func parseGuestBearerParameters(params string) (map[string]string, bool) {
 	values := make(map[string]string)
 	start, quoted, escaped := 0, false, false
 	for i := 0; i <= len(params); i++ {
@@ -780,32 +796,58 @@ func parseGuestBearerChallenge(challenge string) (string, string, string, bool) 
 		if part == "" {
 			continue
 		}
-		key, value, ok := strings.Cut(part, "=")
-		if !ok {
-			return "", "", "", false
-		}
-		key, value = strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value)
-		if key == "" || value == "" {
-			return "", "", "", false
-		}
-		if value[0] == '"' {
-			if len(value) < 2 || value[len(value)-1] != '"' {
-				return "", "", "", false
-			}
-			value = strings.ReplaceAll(value[1:len(value)-1], `\"`, `"`)
-		} else if strings.ContainsAny(value, " \t\r\n\"") {
-			return "", "", "", false
+		key, value, ok := parseGuestBearerParameter(part)
+		if !ok || values[key] != "" {
+			return nil, false
 		}
 		values[key] = value
 	}
-	if quoted || escaped {
-		return "", "", "", false
+	return values, !quoted && !escaped
+}
+
+func parseGuestBearerParameter(part string) (string, string, bool) {
+	key, value, ok := strings.Cut(part, "=")
+	if !ok {
+		return "", "", false
 	}
-	realm, service, scope := values["realm"], values["service"], values["scope"]
-	if realm == "" || service == "" || scope == "" {
-		return "", "", "", false
+	key, value = strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return "", "", false
 	}
-	return realm, service, scope, true
+	if value[0] == '"' {
+		value, ok = unquoteGuestBearerValue(value)
+		if !ok {
+			return "", "", false
+		}
+	} else if strings.ContainsAny(value, " \t\r\n\"") {
+		return "", "", false
+	}
+	return key, value, true
+}
+
+func unquoteGuestBearerValue(value string) (string, bool) {
+	closeQuote := -1
+	for i := 1; i < len(value); i++ {
+		if value[i] == '\\' {
+			i++
+			continue
+		}
+		if value[i] == '"' {
+			closeQuote = i
+			break
+		}
+	}
+	if closeQuote != len(value)-1 {
+		return "", false
+	}
+	var unescaped strings.Builder
+	for i := 1; i < closeQuote; i++ {
+		if value[i] == '\\' {
+			i++
+		}
+		unescaped.WriteByte(value[i])
+	}
+	return unescaped.String(), true
 }
 
 // waitBackoff waits d unless ctx is done first — a timer rather than a fixed
