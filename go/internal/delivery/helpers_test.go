@@ -756,6 +756,22 @@ func (f *fakeReads) markCount(messageID string) int {
 	return f.marked[messageID]
 }
 
+// waitForMark blocks until messageID has n marks or fails at the deadline. The
+// scan records owed rows before it marks, so an owed barrier alone races the mark.
+func (f *fakeReads) waitForMark(t *testing.T, messageID string, n int) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for f.markCount(messageID) != n {
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatalf("marks for %s = %d, want %d", messageID, f.markCount(messageID), n)
+		}
+	}
+}
+
 // unroutedCallCount reports how many UnroutedMentionMessages reads ran.
 func (f *fakeReads) unroutedCallCount() int {
 	f.mu.Lock()
