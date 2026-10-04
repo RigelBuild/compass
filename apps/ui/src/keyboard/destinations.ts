@@ -1,20 +1,17 @@
-/** Destination providers for the command palette's navigation mode (RIG-2483, A4/D9).
- * One provider per `DestinationKind` — agents, channels, topics, views, issues,
- * PRs, and messages. Most read reactive store accessors; message search is a
- * remote provider backed by the live comms client.
+/** Destination providers for palette and top-bar search (RIG-2483, A4/D9).
+ * Agents, channels, topics, and views are local; issues, PRs, and messages use
+ * live search clients.
  *
- * Providers are `Promise`-returning by contract (`DestinationProvider.query`);
- * store-backed ones resolve synchronously-wrapped today, while issue and message
- * providers are async, so `queryDestinations` uses a latest-wins generation guard.
- *
- * Filtering + ranking is the in-house `fuzzyScore` (D2) over destination titles;
- * an empty query passes everything (score 0). `score` is stamped on each
- * `Destination` so the surface can order within a kind.
+ * Providers are async; `queryDestinations` isolates failures and drops stale
+ * results. Local rows use fuzzy scores; remote rows retain server rank.
  */
 
 import type { Message } from "@compass/client";
+import { prRows } from "../board";
+import { adaptIssue } from "../live/adapt";
 import type { LiveClients } from "../live/client";
 import type { AppStore } from "../store";
+import type { Issue } from "../stub-data";
 import type {
 	Destination,
 	DestinationKind,
@@ -108,6 +105,24 @@ export function createStoreDestinationProviders(
 	store: AppStore,
 	clients?: Pick<LiveClients, "comms" | "compass">,
 ): DestinationProvider[] {
+	// Issue and PR rows share one in-flight SearchIssues; dropped once it settles
+	// so a repeated query refetches rather than replaying stale or failed results.
+	let inFlight: { query: string; promise: Promise<Issue[]> } | undefined;
+	const searchIssues = (query: string): Promise<Issue[]> => {
+		if (inFlight?.query === query) return inFlight.promise;
+		if (!clients) return Promise.resolve([]);
+		const entry = {
+			query,
+			promise: clients.compass
+				.searchIssues({ query, limit: 50 })
+				.then((response) => response.issues.map(adaptIssue))
+				.finally(() => {
+					if (inFlight === entry) inFlight = undefined;
+				}),
+		};
+		inFlight = entry;
+		return entry.promise;
+	};
 	return [
 		{
 			id: "agents",
@@ -162,34 +177,36 @@ export function createStoreDestinationProviders(
 		},
 		{
 			id: "issues",
-			query: (input) =>
-				Promise.resolve(
-					scored(
-						store.assignedIssues().map((w) => ({ id: w.id, title: w.title })),
-						"issue",
-						input,
-						(item) => () => store.selectIssue(item.id),
-					),
-				),
+			query: async (input) => {
+				const query = input.trim();
+				if (!query || !clients) return [];
+				const issues = await searchIssues(query);
+				return issues.map((issue, rank) => ({
+					kind: "issue",
+					id: issue.id,
+					title: issue.title,
+					score: -rank,
+					navigate: () => store.selectIssue(issue.id),
+				}));
+			},
 		},
 		{
 			id: "prs",
-			query: (input) =>
-				Promise.resolve(
-					scored(
-						store.prs().map((row) => ({
-							id: `${row.pr.repo}#${row.pr.number}`,
-							title: row.pr.title,
-							issueId: row.issue.id,
-						})),
-						"pr",
-						input,
-						(item) => () => {
-							store.selectIssue(item.issueId);
-							store.setActiveRightTab("pr");
-						},
-					),
-				),
+			query: async (input) => {
+				const query = input.trim();
+				if (!query || !clients) return [];
+				const issues = await searchIssues(query);
+				return prRows(issues).map(({ issue, pr }, index) => ({
+					kind: "pr",
+					id: `${pr.repo}#${pr.number}`,
+					title: pr.title,
+					score: -index,
+					navigate: () => {
+						store.selectIssue(issue.id);
+						store.setActiveRightTab("pr");
+					},
+				}));
+			},
 		},
 		{
 			id: "messages",

@@ -3,13 +3,17 @@ import {
 	AskQuestionSchema,
 	AskSchema,
 	CommsService,
+	CompassService,
 	create,
 	createCommsClient,
 	createCompassClient,
 	createRouterTransport,
+	type Issue,
+	IssueSchema,
 	type Message,
 	MessageBlockSchema,
 	MessageSchema,
+	PullRequestSchema,
 	type Transport,
 } from "@compass/client";
 import { createRoot } from "solid-js";
@@ -46,15 +50,17 @@ async function withStoreAsync(
 	}
 }
 
-/** Drain the microtask queue so an async accessor (assignedIssues) settles. */
+/** Drain the microtask queue for Solid route updates after navigation. */
 async function flush(): Promise<void> {
 	for (let i = 0; i < 20; i++) await Promise.resolve();
 }
-
 function searchTransport(
 	hits: Message[],
 	onCall: () => void = () => {},
 	shouldReject = false,
+	issueHits: Issue[] = [],
+	onIssueCall: () => void = () => {},
+	rejectIssues = false,
 ): Transport {
 	return createRouterTransport(({ service }) => {
 		service(CommsService, {
@@ -64,6 +70,30 @@ function searchTransport(
 				return { messages: hits };
 			},
 		});
+		service(CompassService, {
+			searchIssues: () => {
+				onIssueCall();
+				if (rejectIssues) throw new Error("issue search unavailable");
+				return { issues: issueHits };
+			},
+		});
+	});
+}
+
+function makeSearchIssue(id: string, title: string, prNumber: number) {
+	return create(IssueSchema, {
+		id,
+		title,
+		repo: "RigelBuild/compass",
+		number: prNumber,
+		prs: [
+			create(PullRequestSchema, {
+				repo: "RigelBuild/compass",
+				number: prNumber,
+				title: `PR ${prNumber}`,
+				forgeState: "open",
+			}),
+		],
 	});
 }
 
@@ -119,16 +149,17 @@ function liveSearchClients(transport: Transport) {
 const CURRENT_GEN = () => 1;
 
 describe("createStoreDestinationProviders", () => {
-	test("maps all six destination kinds from the fixture store", async () => {
+	test("maps local destination kinds without clients", async () => {
 		await withStoreAsync(async (store) => {
-			await flush(); // let assignedIssues load through the tracker seam
 			const providers = createStoreDestinationProviders(store);
 			const byKind = await queryDestinations(providers, "", 1, CURRENT_GEN);
 			expect(byKind).not.toBeNull();
 			const kinds = byKind as Map<string, Destination[]>;
-			for (const kind of ["agent", "channel", "topic", "view", "issue", "pr"]) {
+			for (const kind of ["agent", "channel", "topic", "view"]) {
 				expect((kinds.get(kind) ?? []).length).toBeGreaterThan(0);
 			}
+			expect(kinds.has("issue")).toBe(false);
+			expect(kinds.has("pr")).toBe(false);
 		});
 	});
 
@@ -145,22 +176,107 @@ describe("createStoreDestinationProviders", () => {
 		});
 	});
 
-	test("the prs provider derives Pr rows and navigates to the owning issue + PR tab", async () => {
+	test("one remote SearchIssues response feeds issue and PR rows", async () => {
 		await withStoreAsync(async (store) => {
-			// The prs accessor derives PrRows from fixture issues via prRows(issues()).
-			expect(store.prs().length).toBeGreaterThan(0);
-			const providers = createStoreDestinationProviders(store);
-			const prs =
-				(await providers.find((p) => p.id === "prs")?.query("")) ?? [];
-			expect(prs.length).toBe(store.prs().length);
-			// The pr id is `${repo}#${number}` and navigate selects the owning issue.
-			const row = store.prs()[0];
-			const dest = prs.find((d) => d.id === `${row.pr.repo}#${row.pr.number}`);
-			expect(dest).toBeDefined();
-			dest?.navigate();
+			let calls = 0;
+			const issues = [
+				makeSearchIssue("issue-best", "Best match", 41),
+				makeSearchIssue("issue-next", "Next match", 42),
+			];
+			const providers = createStoreDestinationProviders(
+				store,
+				liveSearchClients(
+					searchTransport([], undefined, false, issues, () => calls++),
+				),
+			);
+			const byKind = await queryDestinations(
+				providers,
+				"match",
+				1,
+				CURRENT_GEN,
+			);
+			expect(calls).toBe(1);
+			expect(
+				byKind?.get("issue")?.map((row) => [row.id, row.title, row.score]),
+			).toEqual([
+				["issue-best", "Best match", -0],
+				["issue-next", "Next match", -1],
+			]);
+			expect(
+				byKind?.get("pr")?.map((row) => [row.id, row.title, row.score]),
+			).toEqual([
+				["RigelBuild/compass#41", "PR 41", -0],
+				["RigelBuild/compass#42", "PR 42", -1],
+			]);
+			byKind?.get("issue")?.[0]?.navigate();
 			await flush();
-			expect(store.selectedIssueId()).toBe(row.issue.id);
+			expect(store.selectedIssueId()).toBe("issue-best");
+			byKind?.get("pr")?.[1]?.navigate();
+			await flush();
+			expect(store.selectedIssueId()).toBe("issue-next");
 			expect(store.activeRightTab()).toBe("pr");
+		});
+	});
+
+	test("empty and whitespace issue queries do not make RPC calls", async () => {
+		await withStoreAsync(async (store) => {
+			let calls = 0;
+			const providers = createStoreDestinationProviders(
+				store,
+				liveSearchClients(
+					searchTransport([], undefined, false, [], () => calls++),
+				),
+			);
+			for (const id of ["issues", "prs"]) {
+				const provider = providers.find((item) => item.id === id);
+				expect(await provider?.query("")).toEqual([]);
+				expect(await provider?.query(" \t ")).toEqual([]);
+			}
+			expect(calls).toBe(0);
+			for (const id of ["issues", "prs"]) {
+				expect(
+					await createStoreDestinationProviders(store)
+						.find((item) => item.id === id)
+						?.query("match"),
+				).toEqual([]);
+			}
+		});
+	});
+
+	test("a repeated issue query after the search settles fetches again", async () => {
+		await withStoreAsync(async (store) => {
+			let calls = 0;
+			const providers = createStoreDestinationProviders(
+				store,
+				liveSearchClients(
+					searchTransport([], undefined, false, [], () => calls++),
+				),
+			);
+			await queryDestinations(providers, "match", 1, CURRENT_GEN);
+			await queryDestinations(providers, "match", 2, () => 2);
+			expect(calls).toBe(2);
+		});
+	});
+
+	test("a rejected issue search preserves other destination groups", async () => {
+		await withStoreAsync(async (store) => {
+			const providers = createStoreDestinationProviders(
+				store,
+				liveSearchClients(
+					searchTransport([], undefined, false, [], undefined, true),
+				),
+			);
+			const byKind = await queryDestinations(
+				providers,
+				"settings",
+				1,
+				CURRENT_GEN,
+			);
+			expect(byKind?.get("issue")).toBeUndefined();
+			expect(byKind?.get("pr")).toBeUndefined();
+			expect(byKind?.get("view")?.map((view) => view.title)).toEqual([
+				"Settings",
+			]);
 		});
 	});
 
