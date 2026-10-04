@@ -54,19 +54,17 @@ when `#batchCancel` is set. Queue contents do not define it.
   `steer`'s idle branch, and the `prompt` case of `#applyControl` call it, so a
   started turn's `agent_end` owns the queue.
 - An idle `steer` with either queue non-empty calls `#flushTurnEnd(tail)`
-  instead of its own `prompt`. The steer content goes last. Its ack and STEER
-  injection are emitted in the batch's ack microtask. A rejected prompt
-  un-dedups it together with the delivers. It counts as one more message for
-  trace topology, so a steer plus anything queued is the N>1 shape: links, no
-  single parent, trigger cleared. With nothing queued, `steer` is unchanged.
+  instead of its own `prompt`, steer content last. It is acked, and its STEER
+  injection emitted, in the batch's ack microtask; a rejected prompt un-dedups
+  it with the delivers. It counts toward the N>1 trace shape: links, no parent,
+  trigger cleared. With nothing queued, `steer` is unchanged.
 
 If `CompassAgentOptions.batchWindow` is absent, the agent flushes at once
-(today's behaviour). `run()`'s `finally` calls `#cancelBatch()`, so no timer
-outlives the agent. `cli.ts` `main` takes `MainDeps.batchWindow`: absent selects
-`DEFAULT_BATCH_WINDOW`, and the literal `"off"` passes no window. The timer is
-an injected `BatchTimer`. Its real implementation is the one `setTimeout`,
-under a `biome-ignore`, because `biome.json` `noRestrictedGlobals` denies the
-global (precedent `session-tee.ts`).
+(today's behaviour). `run()`'s `finally` calls `#cancelBatch()`. `cli.ts`
+`main` takes `MainDeps.batchWindow`: absent selects `DEFAULT_BATCH_WINDOW`;
+`"off"` passes none. The timer is an injected `BatchTimer`; the real one is the
+single `setTimeout` under a `biome-ignore` (`noRestrictedGlobals`, precedent
+`session-tee.ts`).
 
 ### Q1: window length
 
@@ -129,9 +127,13 @@ A dropped forge op recovers weakly:
 - The re-notify is `SynthesizeUpdate`'s payload-free
   `FORGE_NOTIFICATION_KIND_UPDATE`, a re-read cue, not the original COMMENT,
   CHECKS, REVIEW, or STATE payload.
+- A later notification for the same artifact, delivered and acked first,
+  advances `delivered_revision`. `reconcileTarget` then sees no lag and sends
+  no UPDATE. That item's own re-read cue covers the gap.
 
 Accepted: the agent re-reads the artifact on its next live turn, and mid-turn
-forge items share this exposure today. So is the 5-minute deliver bound (OQ-8).
+forge items share this exposure today. OQ-8 would remove only this forge
+exposure. The 5-minute deliver bound is accepted on its own.
 
 ### Q5: the skip control
 
@@ -145,13 +147,6 @@ flowchart LR
   R -->|controlProducer.Send| A[control-source dispatch]
   A -->|ImmediateControl.startNow| C[CompassAgent.startNow]
 ```
-
-- Proto: `StartNowControl start_now = 10`. Tag 4 is unused but not
-  `reserved`, so it is not reused.
-- Runner: no new code. `representable` (`gateway/control.go`) admits every
-  variant except Replay, Config, and nil.
-- Server: `SkipBatchWindow` sits beside `StopAgentSession`, because the UI
-  holds the observed session id. It is authorized owner-or-admin (OQ-4).
 
 A `start_now` retained across a reload (`controlProducer.Restart`) can end the
 new process's first window early. Accepted: it only moves a flush earlier.
@@ -185,10 +180,7 @@ new process's first window early. Accepted: it only moves a flush earlier.
 - Window values: `quietMs: 3000`, `maxMs: 15000`.
 - The proto tag is 10; never reuse 4. Regenerate with
   `moon run compass-proto:gen` and commit the output.
-- A refused `SkipBatchWindow` returns `connect.CodeNotFound` with
-  `agent session %q`, byte-identical to `SubscribeAgentSession`.
-- No tracker ids in source comments. This is a public repo: name no private
-  repo.
+- No tracker ids in source comments, and no private-repo names (public repo).
 
 ### T1: idle batching window (lane compass-agent)
 
@@ -199,14 +191,10 @@ new process's first window early. Accepted: it only moves a flush earlier.
   - the idle swaps in `deliver` and `forgeNotification`;
   - the `#cancelBatch()` calls;
   - the steer tail.
-- In `cli.ts`, add `MainDeps.batchWindow` and resolve it with an explicit
-  `=== "off"` check, so no `??` or truthiness test can turn the opt-out into
-  the default.
-- In `cli.test.ts`:
-  - `turnSpanFor` passes `batchWindow: "off"`. Its single idle deliver still
-    produces a turn span before the control stream closes.
-  - New case: with `batchWindow` omitted, the same feed produces no turn span,
-    which shows the default window is on.
+- In `cli.ts`, add `MainDeps.batchWindow`, resolved with `=== "off"` (never
+  `??` or truthiness).
+- In `cli.test.ts`, `turnSpanFor` passes `"off"` and still gets its turn span. A
+  new case omits `batchWindow` and gets no span, proving the default is on.
 
 New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
 
@@ -215,6 +203,9 @@ New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
 - Arrivals every `quietMs - 1` → flush at `maxMs`.
 - An idle deliver plus a forge item in one window → one prompt with both
   sections.
+- A forge item alone, idle → no prompt, no `ForgeNotificationAck`, and no
+  `ackRail` call before the timer fires. After it fires: one prompt, one
+  `ForgeNotificationAck`, and the `ackRail` call.
 - Deliver D, then idle steer S → one prompt with D before S. The timer is
   cancelled and each item is acked once (DELIVER, STEER).
 - The same, with the prompt rejected → D and S are un-deduped and neither is
@@ -223,15 +214,15 @@ New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
   Then D and S arrive with distinct traceparents. The turn span has no parent
   and links both, the stamped ids are `D,S`, and the fake tracer's trigger is
   empty.
-- A deliver is queued, then a control prompt is applied → nothing is injected
-  when the timer would have fired. At `agent_end` there is one flush and one
-  ack.
+- A deliver, then a control prompt → no injection when the timer would have
+  fired; at `agent_end`, one flush and one ack.
 - The window fires during an untracked stream → strand recovery flushes after
   `waitForIdle`.
 - Strand interleave: the same, plus a second deliver after the stream ends and
   before `waitForIdle` resolves → it arms with `#batchFirstAt` set (delay
   `quietMs`), and one prompt carries both items.
-- The window fires after `run()` ends → no prompt.
+- The window is open when `run()` returns → the fake timer's cancel thunk has
+  run, and firing the stale callback prompts nothing.
 - A duplicate deliver of a queued id during the window → no ack.
 
 Interfaces:
@@ -286,23 +277,24 @@ export interface MainDeps {
 - Add `RequireAgentSessionOwner` beside `RequireAgentSessionSubscriber`
   (`queries/agent_sessions.sql`, `agent_sessions.go`), in the same
   single-statement not-found-merge shape.
-- Add the handler beside `StopAgentSession` in `go/server/service.go`:
-  - no hub (`s.hub == nil`) → `Unavailable` with `errNoRunnerHub`, before any
-    store read;
-  - otherwise call `auth.CallerFrom`, then `RequireAgentSessionOwner`, then
-    `s.hub.DispatchControl`;
-  - a dispatch error → `Unavailable`.
+- Add the handler beside `StopAgentSession` in `go/server/service.go`, with
+  checks in this order:
+  1. `s.hub == nil` → `Unavailable` (`errNoRunnerHub`);
+  2. no `auth.CallerFrom` caller → `Unauthenticated` (`errNoCaller`);
+  3. empty `session_id` → `InvalidArgument`, so it never reads as `NotFound`;
+  4. `RequireAgentSessionOwner` false → `NotFound`;
+  5. `s.hub.DispatchControl` error → `Unavailable`.
 - Classify the handler `authenticatedOpen` in `classifyProcedure` and add its
   `admin_gate_test.go` row.
 
 Tests:
 
 - The owner and an admin each dispatch one `start_now`.
-- A member who is not the owner, another owner, and an unknown session all get
-  the same `NotFound`.
-- An empty `session_id` → `InvalidArgument`.
+- A non-owner member, another owner, and an unknown session get the same
+  `NotFound`.
+- No hub → `Unavailable`; no caller → `Unauthenticated`; empty `session_id` →
+  `InvalidArgument`. None of these reads the store or dispatches.
 - A dispatch error → `Unavailable`.
-- No Runner hub → `Unavailable`, with no store read and no dispatch.
 
 Interfaces:
 
@@ -426,8 +418,22 @@ never prompt into a session":
 
 Interfaces: none.
 
-Order: T1 first, then T2. T3, T4, and T5 can run in parallel after T2. T6 is
-last.
+### T7: product spec (lane compass-server)
+
+In `docs/specs/product/compass.md`:
+
+- Add `SkipBatchWindow` to the "`CompassService` exposes" list.
+- Under "Agent sessions", add a requirement shaped like the
+  `SubscribeAgentSession` one. Only the owner or an admin is admitted. Unknown
+  and refused sessions get the identical `NotFound`. An empty id is
+  `InvalidArgument`, no caller is `Unauthenticated`, and no Runner seam is
+  `Unavailable`. Scenarios: the owner skips; a non-owner member and a missing
+  session get the same `NotFound`.
+
+Interfaces: none.
+
+Order: T1 first, then T2. T3, T4, T5, and T7 can run in parallel after T2. T6
+is last.
 
 ## Tasks
 
@@ -437,6 +443,7 @@ last.
 - [ ] T4: `start_now` route, `ImmediateControl` fixtures, `startNow`, tests.
 - [ ] T5: UI "Start now" button and store action, tests.
 - [ ] T6: comms-model doc update.
+- [ ] T7: product spec update for `SkipBatchWindow`.
 
 ## Open Questions
 
@@ -445,10 +452,8 @@ OQ-8 are not.
 
 - **OQ-1: window values.**
   - (A) Fixed 3 s / 15 s.
-  - (B) Longer values, such as 10 s / 60 s: bigger batches, but a slower answer
-    to a lone reply.
-  - (C) Adapt the cap to the cache TTL. This adds state and pays off only with
-    long windows.
+  - (B) Longer, such as 10 s / 60 s: bigger batches, slower lone replies.
+  - (C) Adapt the cap to the cache TTL: more state, pays off only when long.
   - Recommendation: (A). Changing it is one line in `DEFAULT_BATCH_WINDOW`.
 - **OQ-2: an idle steer while a window is open.**
   - (A) Steer alone, with the batch at `agent_end`. This reorders the burst (a
@@ -477,17 +482,14 @@ OQ-8 are not.
   - (A) No signal: the button is a no-op when nothing is waiting.
   - (B) A pending-count `SessionEvent`, which needs Runner and UI plumbing.
   - Recommendation: (A). A 15 s window would mostly flicker.
-- **OQ-6: window, or steer later items into the running turn.**
-  - (A) The window. It adds up to 15 s to a lone reply, and a deliver never
-    interrupts a turn.
-  - (B) Steer items 2..N into turn 1. No latency, and no RPC or UI, but any
-    deliver can interrupt a turn.
+- **OQ-6: window, or steer later items into the running turn** (see
+  Alternatives).
+  - (A) The window: up to 15 s on a lone reply, no interrupted turns.
+  - (B) Steer items 2..N into turn 1.
   - Recommendation: (A). It matches Matt's sketch.
-- **OQ-7 (not load-bearing): measure the saving.** After T1 ships, use the LLM
-  usage data to compare turns and tokens (cached input, uncached input, output)
-  per burst against today. If the saving is small, shorten
-  `DEFAULT_BATCH_WINDOW` or drop it.
-- **OQ-8 (not load-bearing): keep forge items immediate when idle.** An idle
-  forge item would flush at once, as today. Only the deliver lane would batch.
-  That removes the idle-window exposure in Q4, but a CI or PR burst would cost
-  extra turns. This record batches both lanes.
+- **OQ-7 (not load-bearing): measure the saving.** After T1 ships, compare
+  turns and tokens per burst against today in the LLM usage data. If the saving
+  is small, shorten `DEFAULT_BATCH_WINDOW` or drop it.
+- **OQ-8 (not load-bearing): keep forge items immediate when idle.** Only the
+  deliver lane would batch. That removes Q4's forge exposure, but a CI or PR
+  burst would cost extra turns. This record batches both lanes.
