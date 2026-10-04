@@ -824,7 +824,7 @@ func (h *Hub) executeCall(
 			Result: &compassv1internal.CommsCallResult_CreateChannel{CreateChannel: resp},
 		}, nil
 	case *compassv1internal.CommsCallRequest_UpdateMembers:
-		resp, err := h.comms.UpdateChannelMembersAsAccount(ctx, account, c.UpdateMembers)
+		resp, err := h.comms.UpdateChannelMembersAsAccountByName(ctx, account, c.UpdateMembers)
 		if err != nil {
 			return nil, err
 		}
