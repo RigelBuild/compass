@@ -1,11 +1,12 @@
-// sql-migration-gate — SQL migration lint over the first-party migrations
-// under go/internal/store/migrations/. Two nix-pinned linters run
-// UNCONDITIONALLY and their exit codes are OR'd, so one push surfaces both
-// batteries' findings together and the gate fails if EITHER fails:
+// sql-migration-gate — SQL migration lint and append-only protection for the
+// first-party migrations under go/internal/store/migrations/. Three checks run
+// UNCONDITIONALLY and their exit codes are OR'd, so one push surfaces every
+// finding and the gate fails if ANY check fails:
 //
 //   squawk  migration-SAFETY analysis (unsafe DDL). Config in /.squawk.toml.
 //   sqruff  SQL style/lint (structural + correctness + capitalisation). Config
 //           in /.sqruff.
+//   migration-immutability  base migration byte check (append-only policy).
 //
 // WHY THIS IS A SCRIPT, NOT AN INLINE `bash -c`:
 // The gate was a moon `command: 'bash -c "squawk …; rc=$?; sqruff …; rc2=$?;
@@ -27,10 +28,12 @@
 //               CI. The linters discover their repo-root configs (/.squawk.toml,
 //               /.sqruff) and the migration glob resolves repo-relative from
 //               here.
+//   GATE_BASE_REF - optional git ref to compare migrations against.
+//   GITHUB_BASE_REF - PR target branch, used when GATE_BASE_REF is unset.
 // Exit codes:
-//   0 - both linters passed (no findings).
-//   1 - one or both linters reported findings.
-//   2 - a linter could not be spawned / internal error.
+//   0 - all checks passed (no findings).
+//   1 - one or more checks reported findings.
+//   2 - a check could not run / internal error.
 
 import { $ } from "bun";
 
@@ -45,9 +48,9 @@ export interface LinterResult {
 }
 
 /**
- * Combine the linters' exit codes into the gate's exit code. Fail-closed: the
- * gate fails (1) if ANY linter reported findings (non-zero), passes (0) only
- * when every linter passed. A spawn/internal failure (code 2) dominates so a
+ * Combine the checks' exit codes into the gate's exit code. Fail-closed: the
+ * gate fails (1) if ANY check reported findings (non-zero), passes (0) only
+ * when every check passed. A spawn/internal failure (code 2) dominates so a
  * gate that could not actually run never reads as green.
  *
  * Pure and exported: this is the contract the false-green bug violated, so it
@@ -74,29 +77,115 @@ export function formatVerdict(results: LinterResult[]): string {
 export interface Deps {
 	/** Run one linter over the glob; returns its exit code + combined output. */
 	runLinter: (name: string, argv: string[]) => Promise<LinterResult>;
+	runMigrationCheck: () => Promise<LinterResult>;
 	log: (msg: string) => void;
 	err: (msg: string) => void;
 }
 
 /**
- * Run both linters over the migration glob and combine their exit codes.
- * Both ALWAYS run (findings from both batteries surface in one push) before the
- * codes are combined.
+ * Run all three checks and combine their exit codes. Every check ALWAYS runs
+ * (all findings surface in one push) before the codes are combined.
  */
 export async function runOnce(deps: Deps): Promise<number> {
-	const { runLinter, log, err } = deps;
-
+	const { runLinter, runMigrationCheck, log, err } = deps;
 	const squawk = await runLinter("squawk", [MIGRATION_GLOB]);
 	if (squawk.output) err(squawk.output);
 	const sqruff = await runLinter("sqruff", ["lint", MIGRATION_GLOB]);
 	if (sqruff.output) err(sqruff.output);
-
-	const results = [squawk, sqruff];
+	const migrations = await runMigrationCheck();
+	if (migrations.output) err(migrations.output);
+	const results = [squawk, sqruff, migrations];
 	const exit = combineExitCodes(results);
 	const verdict = formatVerdict(results);
 	if (exit === 0) log(verdict);
 	else err(verdict);
 	return exit;
+}
+
+export type MigrationFileMap = ReadonlyMap<string, Uint8Array>;
+
+/** Return base migrations missing or byte-changed in the current tree. */
+export function findMigrationViolations(
+	baseFiles: MigrationFileMap,
+	currentFiles: MigrationFileMap,
+): string[] {
+	const violations: string[] = [];
+	for (const [path, baseBytes] of baseFiles) {
+		const currentBytes = currentFiles.get(path);
+		if (
+			currentBytes === undefined ||
+			!Buffer.from(baseBytes).equals(Buffer.from(currentBytes))
+		) {
+			violations.push(path);
+		}
+	}
+	return violations;
+}
+
+function migrationBaseRef(env: NodeJS.ProcessEnv): string {
+	if (env.GATE_BASE_REF) return env.GATE_BASE_REF;
+	if (env.GITHUB_BASE_REF) return `origin/${env.GITHUB_BASE_REF}`;
+	return "origin/main";
+}
+
+/** Read merge-base migration blobs from git and compare them with disk. */
+export async function checkMigrationImmutability(
+	root: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<LinterResult> {
+	const name = "migration-immutability";
+	try {
+		const baseRef = migrationBaseRef(env);
+		const mergeBase = (
+			await $`git merge-base ${baseRef} HEAD`.cwd(root).quiet().text()
+		).trim();
+		if (!mergeBase)
+			throw new Error(`git merge-base returned no commit for ${baseRef}`);
+		const listed =
+			await $`git ls-tree -r --name-only ${mergeBase} -- go/internal/store/migrations`
+				.cwd(root)
+				.quiet()
+				.text();
+		const baseFiles = new Map<string, Uint8Array>();
+		const currentFiles = new Map<string, Uint8Array>();
+		for (const path of listed.split("\n").filter(Boolean)) {
+			if (!/^go\/internal\/store\/migrations\/[^/]+\.sql$/.test(path)) continue;
+			const blob = Bun.spawn(["git", "show", `${mergeBase}:${path}`], {
+				cwd: root,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [bytes, stderr] = await Promise.all([
+				new Response(blob.stdout).arrayBuffer(),
+				new Response(blob.stderr).text(),
+			]);
+			if ((await blob.exited) !== 0)
+				throw new Error(`git show ${path} failed: ${stderr.trim()}`);
+			baseFiles.set(path, new Uint8Array(bytes));
+			const file = Bun.file(`${root}/${path}`);
+			if (await file.exists())
+				currentFiles.set(path, new Uint8Array(await file.arrayBuffer()));
+		}
+		const violations = findMigrationViolations(baseFiles, currentFiles);
+		if (violations.length === 0) return { name, code: 0, output: "" };
+		// Runtime verification rejects changed bytes, so an allowlist would ship a boot failure.
+		return {
+			name,
+			code: 1,
+			output: violations
+				.map(
+					(path) =>
+						`${path}: migrations are append-only; add a new numbered migration instead.`,
+				)
+				.join("\n"),
+		};
+	} catch (error) {
+		return {
+			name,
+			code: 2,
+			output: `sql-migration-gate: could not check migration immutability: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
 }
 
 /**
@@ -171,6 +260,7 @@ if (import.meta.main) {
 			runLinter: makeSpawnLinter(root),
 			log: (msg) => console.log(msg),
 			err: (msg) => console.error(msg),
+			runMigrationCheck: () => checkMigrationImmutability(root),
 		}),
 	);
 }
