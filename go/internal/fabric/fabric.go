@@ -14,6 +14,7 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Unsubscribe tears down a Subscribe. Idempotent: calling it twice is safe, so a
@@ -270,10 +271,13 @@ type Fabric struct {
 	// reconnectHooks is read by the hook goroutine New starts; reconnectSignal
 	// wakes it. One slot, sent non-blocking, so a reconnect burst coalesces and
 	// the NATS callback goroutine never waits on a hook.
-	reconnectMu     sync.Mutex
-	reconnectNext   uint64
-	reconnectHooks  map[uint64]func()
-	reconnectSignal chan struct{}
+	reconnectMu         sync.Mutex
+	reconnectNext       uint64
+	reconnectHooks      map[uint64]func()
+	reconnectSignal     chan struct{}
+	consumerMu          sync.RWMutex
+	consumers           map[string]liveConsumer
+	backlogRegistration metric.Registration
 }
 
 // Compile-time proof Fabric satisfies every seam. Cheap here, and it fails the
@@ -305,6 +309,7 @@ func New(cfg Config) (*Fabric, error) {
 	f := &Fabric{
 		cfg:             cfg,
 		log:             log,
+		consumers:       make(map[string]liveConsumer),
 		teardown:        make(chan struct{}),
 		reconnectHooks:  make(map[uint64]func()),
 		reconnectSignal: make(chan struct{}, 1),
@@ -382,6 +387,7 @@ func New(cfg Config) (*Fabric, error) {
 		return nil, fmt.Errorf("fabric: creating jetstream context: %w", err)
 	}
 	f.nc, f.js = nc, js
+	f.registerBacklogMetric()
 	go f.runReconnectLoop()
 	return f, nil
 }
@@ -434,6 +440,11 @@ func (f *Fabric) Close() error {
 		// consuming and hand their consumers back while the connection is
 		// still usable, so the drain has something coherent to flush.
 		close(f.teardown)
+		if f.backlogRegistration != nil {
+			if err := f.backlogRegistration.Unregister(); err != nil {
+				f.log.Warn("fabric: unregistering consumer backlog callback failed", "error", err)
+			}
+		}
 
 		// Register the CLOSED listener BEFORE Drain: StatusChanged reports only
 		// future transitions and does not replay one that already fired, so a
