@@ -123,6 +123,22 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		});
 	});
 
+	// The only shot that renders MarkdownText bodies, so message block rhythm
+	// (margins, lists, code fences) has pixel cover.
+	test("topic — markdown messages", async ({ page }) => {
+		await page.goto("/#/channel/ch-svc-compass/topic/top-compass-acp");
+		await page
+			.locator(".markdown-content pre")
+			.first()
+			.waitFor({ state: "visible" });
+		await page.evaluate(() => document.fonts.ready);
+		await expect(page).toHaveScreenshot("topic-markdown.png", {
+			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
 	test("state-dot close-up", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });
