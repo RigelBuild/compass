@@ -529,7 +529,7 @@ export const STUB_MESSAGES: Message[] = [
 		blocks: [
 			{
 				kind: "text",
-				text: "Seam pass DONE, gate GREEN at 527ec845a. Verified with teeth: scope-clean, session-reload unit test, CI-exhaustiveness proven to bite both ways. Nothing owed back.",
+				text: "Seam pass DONE, gate GREEN at `527ec845a`. Verified:\n\n- scope-clean\n- session-reload unit test\n- CI exhaustiveness bites both ways\n\n```sh\nmoon run compass-ui:test\n```\n\nNothing owed back.",
 			},
 		],
 	},
