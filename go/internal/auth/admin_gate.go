@@ -121,6 +121,10 @@ func classifyProcedure(procedure string) (privilege, bool) {
 	case compassv1connect.SecretsServiceListServerSecretsProcedure:
 		return adminOnly{}, true
 
+	// UsageService admits authenticated callers; the handler applies account scope.
+	case compassv1connect.UsageServiceGetUsageSeriesProcedure:
+		return authenticatedOpen{}, true
+
 	default:
 		// Fail closed: an unrecognized path (not a generated procedure) is gated
 		// to admin and reported unclassified (ok=false). classify_exhaustive_test

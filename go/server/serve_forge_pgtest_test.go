@@ -525,7 +525,6 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 	hub := newRunnerHub(st, brd, tail, commsSvc, slog.Default())
 	svc := newService("test", bus, st, hub, brd, issueBrd, tail)
 	secretsSvc := newSecretsService(st, container, server, nil)
-
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, "",
 		container, server, nil, netListener, nil, nil, nil, nil)
 	if err != nil {
