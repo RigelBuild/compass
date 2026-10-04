@@ -245,3 +245,21 @@ approval changes the reviewed head; obtain a fresh review after any such update.
 
 The detailed version-control invariants follow DL-142. Do not bypass the
 `jj-vine submit` path with direct pushes.
+
+## Recovering a mixed or superseded PR
+
+A PR that carries two concerns, or that a newer PR replaces, is retired only
+after its replacement is proven. Keep the old PR open until then; closing it
+first can lose work that exists only on its head.
+
+1. Build each replacement on `main@origin`, one concern per bookmark (`jj split
+   <file>...` carves a mixed commit by file). Submit them.
+2. Compare cumulative diffs: every hunk in the old PR's effective diff against
+   its base must appear in exactly one replacement, or be dropped on purpose
+   with a stated reason. Carry over the title, body, and issue references.
+3. Close the old PR with a comment that links each replacement.
+4. Delete its remote branch. `jj-vine submit` cannot delete one, so run
+   `jj git push --deleted --dry-run`, confirm the deletion set is exactly that
+   branch, then run it without `--dry-run`.
+
+Retire only PRs you own. Route a PR owned by another agent to its owner.
