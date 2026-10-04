@@ -5,7 +5,7 @@ Tracker: RIG-4127. Freezes on merge.
 Builds on: [settle turn order](../../infra/runtime/compass-managed-settle-turn-order/design.md)
 (DL-382), [notification delivery](../../server/compass-notification-delivery/design.md).
 
-Ledger-impact: appends DL-399..DL-403 for idle batching, steer handling, the
+Ledger-impact: appends DL-401..DL-405 for idle batching, steer handling, the
 agent-owned queue, batch rendering, and the per-agent start-now control.
 
 ## Problem / Intent
