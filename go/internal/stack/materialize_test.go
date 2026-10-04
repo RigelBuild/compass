@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -38,9 +39,96 @@ type fakeRegistry struct {
 	corrupt  map[string]bool
 	truncate map[string]bool
 
+	bearerChallenge   bool
+	challengeRealm    string
+	tokenStatus       int
+	second401         bool
+	expireAfter       int
+	tokenRecoverAfter int
+	tokenRequests     int
+	registryRequests  int
+	realmRequests     int
+	realmServer       *httptest.Server
+
 	observeBlob func()
 	mu          sync.Mutex
 	requests    []string
+}
+
+func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
+	r.mu.Lock()
+	r.requests = append(r.requests, req.URL.Path)
+	r.mu.Unlock()
+	if req.URL.Path == "/token" {
+		r.mu.Lock()
+		r.tokenRequests++
+		request := r.tokenRequests
+		r.mu.Unlock()
+		if req.URL.Query().Get("service") != "fake" || req.URL.Query().Get("scope") != "repository:"+r.repo+":pull" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.tokenStatus != 0 && (r.tokenRecoverAfter == 0 || request <= r.tokenRecoverAfter) {
+			w.WriteHeader(r.tokenStatus)
+			return
+		}
+		token := "test-token"
+		if request > 1 {
+			token = "test-token-2"
+		}
+		_, _ = w.Write([]byte(`{"token":"` + token + `"}`))
+		return
+	}
+	if r.bearerChallenge {
+		r.mu.Lock()
+		r.registryRequests++
+		registryRequest := r.registryRequests
+		r.mu.Unlock()
+		r.mu.Lock()
+		tokenRequests := r.tokenRequests
+		r.mu.Unlock()
+		token := "test-token"
+		if tokenRequests > 1 {
+			token = "test-token-2"
+		}
+		expired := r.expireAfter > 0 && registryRequest > r.expireAfter && tokenRequests == 1
+		if expired || req.Header.Get("Authorization") != "Bearer "+token || (r.second401 && registryRequest > 1) {
+			realm := r.challengeRealm
+			if realm == "" {
+				realm = r.server.URL + "/token"
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="`+realm+`",service="fake",scope="repository:`+r.repo+`:pull"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
+	prefix := "/v2/" + r.repo + "/"
+	switch {
+	case req.URL.Path == prefix+"manifests/"+r.digest:
+		w.Header().Set("Content-Type", ociManifestMediaType)
+		_, _ = w.Write(r.manifest)
+	case strings.HasPrefix(req.URL.Path, prefix+"blobs/"):
+		if r.observeBlob != nil {
+			r.observeBlob()
+		}
+		d := strings.TrimPrefix(req.URL.Path, prefix+"blobs/")
+		body, ok := r.blobs[d]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch {
+		case r.corrupt[d]:
+			flipped := append([]byte(nil), body...)
+			flipped[0] ^= 0xff
+			body = flipped
+		case r.truncate[d]:
+			body = body[:len(body)-1]
+		}
+		_, _ = w.Write(body)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
 }
 
 // guestBlobBytes is the per-asset layer content the stub serves. Small and
@@ -99,38 +187,141 @@ func newFakeRegistry(t *testing.T, mutate func(m *guestManifest)) *fakeRegistry 
 	return r
 }
 
-func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
-	r.mu.Lock()
-	r.requests = append(r.requests, req.URL.Path)
-	r.mu.Unlock()
-
-	prefix := "/v2/" + r.repo + "/"
-	switch {
-	case req.URL.Path == prefix+"manifests/"+r.digest:
-		w.Header().Set("Content-Type", ociManifestMediaType)
-		_, _ = w.Write(r.manifest) // test stub; a short write surfaces as the client's own error
-	case strings.HasPrefix(req.URL.Path, prefix+"blobs/"):
-		if r.observeBlob != nil {
-			r.observeBlob()
-		}
-		d := strings.TrimPrefix(req.URL.Path, prefix+"blobs/")
-		body, ok := r.blobs[d]
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		switch {
-		case r.corrupt[d]:
-			flipped := append([]byte(nil), body...)
-			flipped[0] ^= 0xff
-			body = flipped
-		case r.truncate[d]:
-			body = body[:len(body)-1]
-		}
-		_, _ = w.Write(body) // test stub
-	default:
-		w.WriteHeader(http.StatusNotFound)
+func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
+	type testCase struct {
+		name                 string
+		configure            func(*fakeRegistry)
+		wantErr              bool
+		wantErrContains      string
+		wantTokens           int
+		wantRealmRequests    int
+		wantRegistryRequests int
 	}
+	tests := []testCase{
+		{name: "success", wantTokens: 1, wantRegistryRequests: 5},
+		{name: "reject unsafe realm", configure: func(r *fakeRegistry) {
+			r.realmServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				r.realmRequests++
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"token":"unexpected"}`))
+			}))
+			t.Cleanup(r.realmServer.Close)
+			r.challengeRealm = strings.Replace(r.realmServer.URL, "127.0.0.1", "localhost", 1) + "/token"
+		}, wantErr: true, wantErrContains: "refusing unsafe", wantRealmRequests: 0, wantRegistryRequests: 1},
+		{name: "token endpoint retries", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusServiceUnavailable; r.tokenRecoverAfter = 1 }, wantTokens: 2, wantRegistryRequests: 6},
+		{name: "token endpoint final", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusForbidden }, wantErr: true, wantTokens: 1, wantRegistryRequests: 1},
+		{name: "second unauthorized is final", configure: func(r *fakeRegistry) { r.second401 = true }, wantErr: true, wantTokens: 1, wantRegistryRequests: 2},
+		{name: "refresh expired token", configure: func(r *fakeRegistry) { r.expireAfter = 2 }, wantTokens: 2, wantRegistryRequests: 6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := newFakeRegistry(t, nil)
+			reg.bearerChallenge = true
+			if tt.configure != nil {
+				tt.configure(reg)
+			}
+			stateDir := t.TempDir()
+			paths, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("materializeGuestArtifact error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErrContains != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrContains)) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErrContains)
+			}
+			if reg.tokenRequests != tt.wantTokens || reg.realmRequests != tt.wantRealmRequests {
+				t.Errorf("token requests = %d, realm requests = %d; want %d, %d", reg.tokenRequests, reg.realmRequests, tt.wantTokens, tt.wantRealmRequests)
+			}
+			if reg.registryRequests != tt.wantRegistryRequests {
+				t.Errorf("registry requests = %d, want %d", reg.registryRequests, tt.wantRegistryRequests)
+			}
+			if tt.wantErr {
+				assertNoMaterializedDir(t, stateDir, reg.digest)
+				return
+			}
+			for i, path := range paths.assets() {
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read %s: %v", path, err)
+				}
+				if !bytes.Equal(got, guestBlobBytes[i]) {
+					t.Errorf("%s content = %q, want %q", path, got, guestBlobBytes[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseGuestBearerChallenge(t *testing.T) {
+	tests := []struct {
+		name      string
+		challenge string
+		wantRealm string
+		wantOK    bool
+	}{
+		{name: "quoted comma", challenge: `Bearer realm="https://example.test/token?a=1,b=2",service="fake",scope="repository:r:pull"`, wantRealm: "https://example.test/token?a=1,b=2", wantOK: true},
+		{name: "escaped quote", challenge: `Bearer realm="https://example.test/\"token",service="fake",scope="repository:r:pull"`, wantRealm: `https://example.test/"token`, wantOK: true},
+		{name: "missing scope", challenge: `Bearer realm="https://example.test/token",service="fake"`},
+		{name: "unterminated quote", challenge: `Bearer realm="https://example.test/token,service="fake",scope="repository:r:pull"`},
+		{name: "lowercase scheme and keys", challenge: `bearer REALM=https://example.test/token, SERVICE = fake, SCOPE = repository:r:pull`, wantRealm: "https://example.test/token", wantOK: true},
+		{name: "unquoted values", challenge: `Bearer realm=https://example.test/token,service=fake,scope=repository:r:pull`, wantRealm: "https://example.test/token", wantOK: true},
+		{name: "invalid scheme prefix", challenge: `Bearerx realm=a,service=b,scope=c`},
+		{name: "empty value", challenge: `Bearer realm=,service=b,scope=c`},
+		{name: "empty key", challenge: `Bearer =x,realm=a,service=b,scope=c`},
+		{name: "unquoted value with junk", challenge: `Bearer realm=a junk,service=b,scope=c`},
+		{name: "duplicate key", challenge: `Bearer realm=a,realm=b,service=c,scope=d`},
+		{name: "quoted trailing junk", challenge: `Bearer realm="a" "junk",service=b,scope=c`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			realm, _, _, ok := parseGuestBearerChallenge(tt.challenge)
+			if ok != tt.wantOK || realm != tt.wantRealm {
+				t.Fatalf("parseGuestBearerChallenge = (%q, %v), want (%q, %v)", realm, ok, tt.wantRealm, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestFetchGuestBearerTokenRealmPolicy(t *testing.T) {
+	var requests int
+	client := &http.Client{Transport: bearerTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"token":"ok"}`)), Request: req}, nil
+	})}
+	tests := []struct {
+		name       string
+		requestURL string
+		challenge  string
+		wantErr    bool
+	}{
+		{name: "reject http realm for https registry", requestURL: "https://reg.example/v2/x", challenge: `Bearer realm="http://reg.example/token",service="fake",scope="repository:x:pull"`, wantErr: true},
+		{name: "allow matching http registry realm", requestURL: "http://reg.example/v2/x", challenge: `Bearer realm="http://reg.example/token",service="fake",scope="repository:x:pull"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token := &guestBearerToken{}
+			requests = 0
+			err := fetchGuestBearerToken(t.Context(), client, tt.requestURL, tt.challenge, token)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("fetchGuestBearerToken error = %v, wantErr %v", err, tt.wantErr)
+			}
+			wantRequests := 1
+			if tt.wantErr {
+				wantRequests = 0
+			}
+			if requests != wantRequests {
+				t.Fatalf("client requests = %d, want %d", requests, wantRequests)
+			}
+			if !tt.wantErr && token.value != "ok" {
+				t.Fatalf("token = %q, want ok", token.value)
+			}
+		})
+	}
+}
+
+type bearerTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f bearerTestRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 // registry returns the guestRegistry aimed at this stub. httptest serves plain

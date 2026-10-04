@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -317,8 +318,9 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 	transport := guestTransport()
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: guestRequestTimeout}
+	token := &guestBearerToken{}
 
-	manifest, rawManifest, err := fetchGuestManifest(ctx, client, reg)
+	manifest, rawManifest, err := fetchGuestManifest(ctx, client, reg, token)
 	if err != nil {
 		return GuestPaths{}, fmt.Errorf("materialise guest image %s from cache %q: %w", reg.digest, final, err)
 	}
@@ -337,7 +339,7 @@ func materializeGuestArtifact(ctx context.Context, reg guestRegistry, stateDir s
 	}()
 
 	for i, asset := range guestAssets {
-		if err := fetchGuestBlob(ctx, client, reg, manifest.Layers[i], staging, asset.fileName); err != nil {
+		if err := fetchGuestBlob(ctx, client, reg, manifest.Layers[i], staging, asset.fileName, token); err != nil {
 			return GuestPaths{}, fmt.Errorf("materialise guest image %s: %w", reg.digest, err)
 		}
 	}
@@ -411,10 +413,10 @@ func verifyGuestAgainstManifest(paths GuestPaths, manifest guestManifest) error 
 	return nil
 }
 
-func fetchGuestManifest(ctx context.Context, client *http.Client, reg guestRegistry) (guestManifest, []byte, error) {
+func fetchGuestManifest(ctx context.Context, client *http.Client, reg guestRegistry, token *guestBearerToken) (guestManifest, []byte, error) {
 	url := reg.baseURL + "/v2/" + reg.repository + "/manifests/" + reg.digest
 	var raw []byte
-	err := doGuestGet(ctx, client, url, ociManifestMediaType, func(body io.Reader) error {
+	err := doGuestGet(ctx, client, url, ociManifestMediaType, token, func(body io.Reader) error {
 		b, err := io.ReadAll(io.LimitReader(body, guestManifestMaxBytes+1))
 		if err != nil {
 			return fmt.Errorf("read manifest from %s: %w", url, err)
@@ -501,9 +503,9 @@ func validateGuestLayer(m guestManifest, i int, asset guestAsset) error {
 // while it writes, and renames the temp file into place only once the digest and
 // the declared size both match. A mismatch removes the temp file and leaves no
 // asset at the final name.
-func fetchGuestBlob(ctx context.Context, client *http.Client, reg guestRegistry, layer guestDescriptor, staging, name string) error {
+func fetchGuestBlob(ctx context.Context, client *http.Client, reg guestRegistry, layer guestDescriptor, staging, name string, token *guestBearerToken) error {
 	url := reg.baseURL + "/v2/" + reg.repository + "/blobs/" + layer.Digest
-	return doGuestGet(ctx, client, url, "*/*", func(body io.Reader) error {
+	return doGuestGet(ctx, client, url, "*/*", token, func(body io.Reader) error {
 		return writeGuestBlob(body, layer, staging, name)
 	})
 }
@@ -597,18 +599,19 @@ func writeGuestManifestFile(staging string, layers []guestDescriptor) error {
 	return nil
 }
 
-// retryable marks a sink failure the fetch loop may reattempt — a dropped
-// connection mid-body, never a verification mismatch. Only the sink needs to
-// say so; every other retry decision is visible to doGuestGet directly.
+// retryable marks a transient fetch failure the loop may reattempt, including
+// dropped bodies and temporary registry token endpoint failures.
 type retryable struct{ error }
 
 func (r retryable) Unwrap() error { return r.error }
 
+// guestBearerToken holds a token for one materialisation call only.
+type guestBearerToken struct{ value string }
+
 // doGuestGet issues one bounded anonymous GET and hands the response body to
-// sink. A transport failure with a live context, a 429, a 5xx, and a
-// sink-reported transient retry with doubling backoff; everything else is final
-// — a digest or size mismatch would only become a slower clear failure.
-func doGuestGet(ctx context.Context, client *http.Client, url, accept string, sink func(io.Reader) error) error {
+// sink. Transient transport, token endpoint, 429, 5xx, and sink failures retry
+// with doubling backoff; verification failures remain final.
+func doGuestGet(ctx context.Context, client *http.Client, url, accept string, token *guestBearerToken, sink func(io.Reader) error) error {
 	var last error
 	for attempt := 1; attempt <= guestFetchAttempts; attempt++ {
 		if attempt > 1 {
@@ -616,7 +619,7 @@ func doGuestGet(ctx context.Context, client *http.Client, url, accept string, si
 				return err
 			}
 		}
-		retry, err := guestGetOnce(ctx, client, url, accept, sink)
+		retry, err := guestGetOnce(ctx, client, url, accept, token, sink)
 		if err == nil {
 			return nil
 		}
@@ -630,30 +633,221 @@ func doGuestGet(ctx context.Context, client *http.Client, url, accept string, si
 
 // guestGetOnce performs one attempt and reports whether the failure is worth
 // retrying.
-func guestGetOnce(ctx context.Context, client *http.Client, url, accept string, sink func(io.Reader) error) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func guestGetOnce(ctx context.Context, client *http.Client, url, accept string, token *guestBearerToken, sink func(io.Reader) error) (bool, error) {
+	return guestGetAttempt(ctx, client, url, accept, token, sink, false)
+}
+
+// guestGetAttempt answers a registry Bearer challenge with an anonymous token
+// and retries once; a 401 that still comes back after the token is final.
+func guestGetAttempt(ctx context.Context, client *http.Client, requestURL, accept string, token *guestBearerToken, sink func(io.Reader) error, retried bool) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return false, fmt.Errorf("build request for %s: %w", url, err)
+		return false, fmt.Errorf("build request for %s: %w", requestURL, err)
 	}
 	req.Header.Set("Accept", accept)
+	if token.value != "" {
+		req.Header.Set("Authorization", "Bearer "+token.value)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		// A cancelled or expired context is the caller's decision, never a
 		// transient fault to retry against.
-		return ctx.Err() == nil, fmt.Errorf("GET %s: %w", url, err)
+		return ctx.Err() == nil, fmt.Errorf("GET %s: %w", requestURL, err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized && !retried {
+		challenge := resp.Header.Get("WWW-Authenticate")
+		if err := resp.Body.Close(); err != nil {
+			return false, fmt.Errorf("close unauthorized response: %w", err)
+		}
+		token.value = ""
+		if err := fetchGuestBearerToken(ctx, client, requestURL, challenge, token); err != nil {
+			var transient retryable
+			return errors.As(err, &transient) && ctx.Err() == nil, err
+		}
+		return guestGetAttempt(ctx, client, requestURL, accept, token, sink, true)
 	}
 	defer func() {
 		_ = resp.Body.Close() // read-only body; a close error cannot affect the verified bytes
 	}()
 	if resp.StatusCode != http.StatusOK {
 		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError
-		return transient, fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
+		return transient, fmt.Errorf("GET %s: unexpected status %s", requestURL, resp.Status)
 	}
 	if err := sink(resp.Body); err != nil {
 		var transient retryable
 		return errors.As(err, &transient) && ctx.Err() == nil, err
 	}
 	return false, nil
+}
+
+// fetchGuestBearerToken runs the registry's anonymous token handshake. Public
+// GHCR packages still challenge an unauthenticated GET; no credential is sent.
+func fetchGuestBearerToken(ctx context.Context, client *http.Client, requestURL, challenge string, token *guestBearerToken) error {
+	realm, service, scope, ok := parseGuestBearerChallenge(challenge)
+	if !ok {
+		return fmt.Errorf("GET %s: unauthorized without a valid Bearer challenge", requestURL)
+	}
+	registryURL, err := url.Parse(requestURL)
+	if err != nil {
+		return fmt.Errorf("parse registry URL: %w", err)
+	}
+	// Token realms require HTTPS, except realms matching the registry scheme and host.
+	tokenURL, err := url.Parse(realm)
+	if err != nil || tokenURL.Host == "" {
+		return errors.New("refusing unsafe anonymous registry token realm")
+	}
+	safeRealm := tokenURL.Scheme == "https" || tokenURL.Scheme == registryURL.Scheme && tokenURL.Host == registryURL.Host
+	if !safeRealm {
+		return errors.New("refusing unsafe anonymous registry token realm")
+	}
+	query := tokenURL.Query()
+	query.Set("service", service)
+	query.Set("scope", scope)
+	tokenURL.RawQuery = query.Encode()
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("build anonymous token request: %w", err)
+	}
+	tokenResp, err := client.Do(tokenReq)
+	if err != nil {
+		return retryable{fmt.Errorf("fetch anonymous registry token: %w", err)}
+	}
+	if tokenResp.StatusCode != http.StatusOK {
+		status := tokenResp.StatusCode
+		if err := tokenResp.Body.Close(); err != nil {
+			return fmt.Errorf("close anonymous token error response: %w", err)
+		}
+		err := fmt.Errorf("fetch anonymous registry token: unexpected status %s", tokenResp.Status)
+		if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+			return retryable{err}
+		}
+		return err
+	}
+	var body struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	decodeErr := json.NewDecoder(io.LimitReader(tokenResp.Body, 64<<10)).Decode(&body)
+	if err := tokenResp.Body.Close(); err != nil {
+		return fmt.Errorf("close anonymous token response: %w", err)
+	}
+	if decodeErr != nil {
+		return fmt.Errorf("decode anonymous registry token: %w", decodeErr)
+	}
+	token.value = body.Token
+	if token.value == "" {
+		token.value = body.AccessToken
+	}
+	if token.value == "" {
+		return errors.New("anonymous registry token response is empty")
+	}
+	return nil
+}
+
+// parseGuestBearerChallenge reads realm, service and scope from a quoted,
+// comma-separated Bearer WWW-Authenticate value.
+func parseGuestBearerChallenge(challenge string) (string, string, string, bool) {
+	challenge = strings.TrimSpace(challenge)
+	if !hasBearerScheme(challenge) {
+		return "", "", "", false
+	}
+	values, ok := parseGuestBearerParameters(strings.TrimSpace(challenge[len("Bearer"):]))
+	if !ok {
+		return "", "", "", false
+	}
+	realm, service, scope := values["realm"], values["service"], values["scope"]
+	if realm == "" || service == "" || scope == "" {
+		return "", "", "", false
+	}
+	return realm, service, scope, true
+}
+
+func hasBearerScheme(challenge string) bool {
+	if len(challenge) < len("Bearer") || !strings.EqualFold(challenge[:len("Bearer")], "Bearer") {
+		return false
+	}
+	return len(challenge) == len("Bearer") || challenge[len("Bearer")] == ' ' || challenge[len("Bearer")] == '\t'
+}
+
+func parseGuestBearerParameters(params string) (map[string]string, bool) {
+	values := make(map[string]string)
+	start, quoted, escaped := 0, false, false
+	for i := 0; i <= len(params); i++ {
+		if i < len(params) {
+			c := params[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if quoted && c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				quoted = !quoted
+				continue
+			}
+			if c != ',' || quoted {
+				continue
+			}
+		}
+		part := strings.TrimSpace(params[start:i])
+		start = i + 1
+		if part == "" {
+			continue
+		}
+		key, value, ok := parseGuestBearerParameter(part)
+		if !ok || values[key] != "" {
+			return nil, false
+		}
+		values[key] = value
+	}
+	return values, !quoted && !escaped
+}
+
+func parseGuestBearerParameter(part string) (string, string, bool) {
+	key, value, ok := strings.Cut(part, "=")
+	if !ok {
+		return "", "", false
+	}
+	key, value = strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return "", "", false
+	}
+	if value[0] == '"' {
+		value, ok = unquoteGuestBearerValue(value)
+		if !ok {
+			return "", "", false
+		}
+	} else if strings.ContainsAny(value, " \t\r\n\"") {
+		return "", "", false
+	}
+	return key, value, true
+}
+
+func unquoteGuestBearerValue(value string) (string, bool) {
+	closeQuote := -1
+	for i := 1; i < len(value); i++ {
+		if value[i] == '\\' {
+			i++
+			continue
+		}
+		if value[i] == '"' {
+			closeQuote = i
+			break
+		}
+	}
+	if closeQuote != len(value)-1 {
+		return "", false
+	}
+	var unescaped strings.Builder
+	for i := 1; i < closeQuote; i++ {
+		if value[i] == '\\' {
+			i++
+		}
+		unescaped.WriteByte(value[i])
+	}
+	return unescaped.String(), true
 }
 
 // waitBackoff waits d unless ctx is done first — a timer rather than a fixed
