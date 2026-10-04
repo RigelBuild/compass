@@ -1,9 +1,10 @@
 // Env-secrecy gate: the app's env files must stay uncommittable, because Vite bakes every
 // VITE_* value into the production bundle, so a secret in a tracked `.env` ships to every
-// browser (review missed it once, RIG-1539). Two layers: check-ignore (do the rules cover the
-// filenames) + ls-files (what is ACTUALLY tracked, closing the force-add / pre-rule hole).
+// browser (review missed it once, RIG-1539). Three layers: check-ignore (do the rules cover the
+// filenames), ls-files (what is ACTUALLY tracked), and a content scan of the one tracked file.
 
 import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { $ } from "bun";
 
@@ -33,6 +34,35 @@ async function isIgnored(file: string): Promise<boolean> {
 	return exitCode === 0;
 }
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+function isLoopbackUrl(value: string): boolean {
+	if (!URL.canParse(value)) return false;
+	return LOOPBACK_HOSTS.has(new URL(value).hostname);
+}
+
+// One message per unsafe `KEY=VALUE` line. A non-empty VITE_* value must be a
+// loopback URL, so bearers and anything unrecognised fail closed; any URL value must be loopback.
+function unsafeEnvLines(text: string): string[] {
+	const problems: string[] = [];
+	for (const raw of text.split("\n")) {
+		const line = raw.trim().replace(/^export\s+/, "");
+		if (line === "" || line.startsWith("#")) continue;
+		const eq = line.indexOf("=");
+		if (eq < 0) continue;
+		const key = line.slice(0, eq).trim();
+		const value = line
+			.slice(eq + 1)
+			.trim()
+			.replace(/^(["'])(.*)\1$/, "$2");
+		if (value === "" || isLoopbackUrl(value)) continue;
+		if (key.startsWith("VITE_") || URL.canParse(value)) {
+			problems.push(`${key} is set to a non-loopback value`);
+		}
+	}
+	return problems;
+}
+
 describe("env-secrecy gate (no new committable .env; tracked env set pinned to dev defaults)", () => {
 	test.each(MUST_BE_IGNORED)(
 		"%s is covered by the .gitignore rules",
@@ -52,7 +82,7 @@ describe("env-secrecy gate (no new committable .env; tracked env set pinned to d
 		// `.env.<mode>`, and any nested one, but not a `.env.d.ts` type stub) and
 		// assert the set is exactly the dev-defaults file. A force-added or pre-rule
 		// secret lands here as a new entry and reddens this test even though layer 1
-		// would still pass. (Its CONTENTS are out of scope — see the header.)
+		// would still pass. The file's contents are the next test's job.
 		const tracked = (await $`git ls-files`.cwd(UI_DIR).quiet().text())
 			.split("\n")
 			.filter((line) => line.length > 0);
@@ -68,5 +98,32 @@ describe("env-secrecy gate (no new committable .env; tracked env set pinned to d
 				? `Unexpected tracked env file(s) under apps/ui: [${unexpected.join(", ")}]. A VITE_* value in any tracked env file is baked into dist/ and shipped to every browser (RIG-1539). Untrack it (git rm --cached <file>); only ${DEV_DEFAULTS} (loopback dev defaults, no secret) may be tracked.`
 				: "",
 		).toEqual([DEV_DEFAULTS]);
+	});
+	test(`${DEV_DEFAULTS} holds no secret or non-loopback VITE_* value`, async () => {
+		const text = await readFile(resolve(UI_DIR, DEV_DEFAULTS), "utf8");
+		const problems = unsafeEnvLines(text);
+		expect(
+			problems,
+			`${DEV_DEFAULTS} is tracked, and Vite inlines its VITE_* values: ${problems.join("; ")}. Leave tokens unset and point URLs at 127.0.0.1/localhost; put real values in .env.local (gitignored).`,
+		).toEqual([]);
+	});
+});
+
+describe("env content classifier", () => {
+	test.each([
+		["VITE_COMPASS_TOKEN=xxx", 1],
+		["VITE_COMPASS_TOKEN=", 0],
+		['VITE_COMPASS_TOKEN=""', 0],
+		["export VITE_COMPASS_TOKEN=abc", 1],
+		["VITE_COMPASS_BASE_URL=http://127.0.0.1:50051", 0],
+		["VITE_COMPASS_BASE_URL=http://localhost:5173", 0],
+		["VITE_COMPASS_BASE_URL=http://[::1]:50051", 0],
+		["VITE_COMPASS_BASE_URL=https://door.example.com", 1],
+		["VITE_COMPASS_BASE_URL=http://127.0.0.1.evil.com", 1],
+		["OTHER_URL=https://door.example.com", 1],
+		["OTHER_FLAG=1", 0],
+		["# VITE_COMPASS_TOKEN=xxx", 0],
+	] as const)("%s -> %d problem(s)", (line, count) => {
+		expect(unsafeEnvLines(line)).toHaveLength(count);
 	});
 });
