@@ -12,8 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
-	"time"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
@@ -172,6 +172,8 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 	t.Cleanup(bus.Close)
 	brd := board.NewProjection(bus)
 	hub := runnerhub.NewHub(brd, nil, nil, slog.New(slog.DiscardHandler))
+	attached := make(chan struct{}, 1)
+	hub.SetRunnerReadyHook(func() { attached <- struct{}{} })
 	client := newH2CClient(t, newH2CTestServer(t, newService("test", bus, nil, hub, brd, nil, nil)))
 	enrolled := func() bool {
 		t.Helper()
@@ -180,17 +182,6 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 			t.Fatalf("GetAgentStatus = %v", err)
 		}
 		return resp.Msg.GetRunnerEnrolled()
-	}
-	waitEnrolled := func(want bool) {
-		t.Helper()
-		deadline := timeAfter()
-		for enrolled() != want {
-			select {
-			case <-deadline:
-				t.Fatalf("runner_enrolled never became %v", want)
-			case <-time.After(10 * time.Millisecond):
-			}
-		}
 	}
 	if enrolled() {
 		t.Fatal("runner_enrolled = true before any Runner enrolled")
@@ -228,7 +219,14 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 
 	loopDone := make(chan error, 1)
 	go func() { loopDone <- link.RunSessions(ctx, idleHost{}, slog.New(slog.DiscardHandler)) }()
-	waitEnrolled(true)
+	select {
+	case <-attached:
+	case <-timeAfter():
+		t.Fatal("Sessions stream never attached")
+	}
+	if !enrolled() {
+		t.Fatal("runner_enrolled = false with the Sessions stream attached")
+	}
 
 	cancel()
 	select {
@@ -236,5 +234,18 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 	case <-timeAfter():
 		t.Fatal("RunSessions did not exit after cancel")
 	}
-	waitEnrolled(false)
+	// Detach runs in the server handler's defer after the client loop exits; no hook
+	// marks it, so gate on the hub, then assert the wire answer once.
+	deadline := timeAfter()
+	for hub.RunnerEnrolled() {
+		select {
+		case <-deadline:
+			t.Fatal("hub still enrolled after the Sessions stream closed")
+		default:
+			runtime.Gosched()
+		}
+	}
+	if enrolled() {
+		t.Fatal("runner_enrolled = true after the Sessions stream detached")
+	}
 }

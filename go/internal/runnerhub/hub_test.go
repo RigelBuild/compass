@@ -216,6 +216,27 @@ func TestRunnerEnrolledTracksSessionsAttachment(t *testing.T) {
 	}
 }
 
+// TestRunnerEnrolledFalseAfterReenrollUntilAttach pins that a re-enroll resets the
+// answer to the NEW router: the old router's still-attached stream must not leak.
+func TestRunnerEnrolledFalseAfterReenrollUntilAttach(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	old, _, err := hub.routerFor("")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v", err)
+	}
+	old.attach(func(*compassv1internal.SessionsResponse) error { return nil })
+	t.Cleanup(func() { old.detach(errStreamClosed) })
+	if !hub.RunnerEnrolled() {
+		t.Fatal("RunnerEnrolled() = false with the router attached, want true")
+	}
+
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	if hub.RunnerEnrolled() {
+		t.Fatal("RunnerEnrolled() = true after re-enroll with the old router still attached, want false")
+	}
+}
+
 // TestRunnerReadyHookFiresOnEachStreamAttach pins the RIG-1820 seam: a hook wired
 // via SetRunnerReadyHook is invoked once per fireRunnerReady (the Sessions
 // handler calls it each time a Runner's command stream attaches), on its own

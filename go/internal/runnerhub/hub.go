@@ -761,11 +761,14 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 }
 
 // RunnerEnrolled reports whether the enrolled Runner has a live Sessions stream.
+// h.mu stays held so a concurrent re-enroll cannot swap the router mid-read.
 func (h *Hub) RunnerEnrolled() bool {
-	router, _, err := h.routerFor("")
-	if err != nil {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.runner == nil {
 		return false
 	}
+	router := h.runner.router
 	router.mu.Lock()
 	defer router.mu.Unlock()
 	return router.sender != nil
