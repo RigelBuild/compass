@@ -27,9 +27,9 @@ import {
 } from "./destinations";
 
 // Destination providers (RIG-2483, A4/T3): local kinds read store accessors; issue,
-// PR, and message kinds call search RPCs through fake transports here. These mount a
-// fixture-backed store inside createRoot (createMemo needs an owner) and drive
-// navigation through the store's in-memory route path.
+// PR, and message kinds call search RPCs through fake transports, and issue/PR fall
+// back to the held board without clients. These mount a fixture-backed store inside
+// createRoot and drive navigation through the store's in-memory route path.
 
 async function withStoreAsync(
 	body: (store: AppStore) => Promise<void>,

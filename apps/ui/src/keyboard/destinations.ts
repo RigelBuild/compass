@@ -1,6 +1,6 @@
 /** Destination providers for palette and top-bar search (RIG-2483, A4/D9).
- * Agents, channels, topics, and views are local; issues, PRs, and messages use
- * live search clients.
+ * Agents, channels, topics, and views are local. Issues, PRs, and messages use
+ * live search clients; without clients, issues and PRs fall back to the held board.
  *
  * Providers are async; `queryDestinations` isolates failures and drops stale
  * results. Local rows use fuzzy scores; remote rows retain server rank.
