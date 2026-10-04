@@ -3,6 +3,7 @@ package fabric
 import (
 	"context"
 	"math"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
@@ -13,6 +14,9 @@ import (
 const (
 	instrumentationScope = "github.com/RigelBuild/compass/go/internal/fabric"
 	backlogMetricName    = "compass.fabric.consumer.backlog"
+	// backlogReadBudget caps one collection's Info round trips, so a NATS outage
+	// costs a missing point, not a stalled export.
+	backlogReadBudget = 2 * time.Second
 )
 
 // liveConsumer is ref-counted: two subscriptions on one subject share a durable.
@@ -42,6 +46,8 @@ func (f *Fabric) registerBacklogMetric() {
 		}
 		f.consumerMu.RUnlock()
 
+		ctx, cancel := context.WithTimeout(ctx, backlogReadBudget)
+		defer cancel()
 		for name, cons := range consumers {
 			info, err := cons.Info(ctx)
 			if err != nil {
