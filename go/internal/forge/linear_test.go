@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -1071,5 +1072,38 @@ func TestLinearIDFilterVariablesAreDeclaredID(t *testing.T) {
 	}
 	if strings.Contains(workflowStatesQuery, "$team: String") {
 		t.Errorf("workflowStatesQuery declares $team as String, which Linear rejects in an id comparator; got:\n%s", workflowStatesQuery)
+	}
+}
+
+// A limited list stops following pageInfo once it holds Limit issues. Limit 3
+// ends exactly on page 2's boundary; the failing page 3 catches a request past it.
+func TestLinearListIssuesStopsPagingAtLimit(t *testing.T) {
+	page := func(nums string, next bool, cursor string) scriptedResponse {
+		return scriptedResponse{status: 200, body: `{"data":{"issues":{"nodes":[` + nums +
+			`],"pageInfo":{"hasNextPage":` + strconv.FormatBool(next) + `,"endCursor":"` + cursor + `"}}}}`}
+	}
+	node := func(n int) string {
+		return fmt.Sprintf(`{"number":%d,"state":{"type":"started"},"labels":{"nodes":[]},"creator":null}`, n)
+	}
+	for _, limit := range []int{2, 3} {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{
+				page(node(1), true, "C1"),
+				page(node(2)+","+node(3), true, "C2"),
+				{status: 500, body: `page 3 must not be fetched`},
+			}}
+			l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+			got, err := l.ListIssues(context.Background(), "SEA", IssueFilter{Limit: limit})
+			if err != nil {
+				t.Fatalf("ListIssues: %v", err)
+			}
+			if rt.calls != 2 {
+				t.Errorf("pages fetched = %d, want 2", rt.calls)
+			}
+			if len(got) != limit || got[len(got)-1].Number != uint64(limit) {
+				t.Errorf("issues = %+v, want numbers 1..%d", got, limit)
+			}
+		})
 	}
 }

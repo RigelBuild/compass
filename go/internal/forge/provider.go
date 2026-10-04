@@ -226,6 +226,9 @@ type IssueFilter struct {
 	State string
 	// Labels restricts to issues carrying all of these label names.
 	Labels []string
+	// Limit caps the result; the provider stops paging once it holds Limit
+	// issues. Zero means every page.
+	Limit int
 }
 
 // TransitionState is the input to Provider.TransitionIssueState /
