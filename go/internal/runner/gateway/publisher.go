@@ -103,6 +103,13 @@ type sessionPublisher struct {
 	// admit, when set, allocates under the Gateway's publish gate so a sealed
 	// session refuses frames instead of sequencing them after its ERRORED report.
 	admit func() (uint64, error)
+	// afterAdmit is the Gateway's test seam, run between admission and Send.
+	afterAdmit func(ctx context.Context)
+
+	// ctx is the stream's own child context; cancel lets a lifecycle report
+	// unstick a Send that holds mu past its bound.
+	ctx    context.Context //nolint:containedctx // the stream's lifetime, cancelled to unstick its Send
+	cancel context.CancelFunc
 }
 
 // newSessionPublisher opens the upstream PublishEvents client-stream for
@@ -111,9 +118,12 @@ type sessionPublisher struct {
 // reports use a bounded caller ctx. seq is the Gateway counter, carried across
 // publishers so the sequence never restarts.
 func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *seqCounter) *sessionPublisher {
+	ctx, cancel := context.WithCancel(ctx)
 	return &sessionPublisher{
 		sessionID: sessionID,
 		seq:       seq,
+		ctx:       ctx,
+		cancel:    cancel,
 		stream:    relay.PublishEvents(ctx),
 	}
 }
@@ -142,6 +152,26 @@ func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 	} else {
 		seq = p.seq.next()
 	}
+	if p.afterAdmit != nil {
+		p.afterAdmit(p.ctx)
+	}
+	return p.sendLocked(seq, frame)
+}
+
+// forwardState sends a lifecycle state past the publish gate, which is already
+// sealed for it. Taking mu orders it after every frame admitted on this stream.
+func (p *sessionPublisher) forwardState(frame *compassv1internal.AgentFrame) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// A cancelled or closed stream cannot carry the state; skip the allocation.
+	if err := p.ctx.Err(); err != nil {
+		return err
+	}
+	return p.sendLocked(p.seq.next(), frame)
+}
+
+// sendLocked sends one allocated seq and rolls it back on failure. Caller holds mu.
+func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.AgentFrame) error {
 	if err := p.stream.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: seq,
 		SessionId: p.sessionID,
@@ -163,6 +193,7 @@ func (p *sessionPublisher) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	_, err := p.stream.CloseAndReceive()
+	p.cancel()
 	return err
 }
 
@@ -183,24 +214,38 @@ func (p *sessionPublisher) close() error {
 func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 	g.pubMu.Lock()
 	var stale *sessionPublisher
-	if g.pub != nil && g.pub.sessionID != sessionID {
+	// A lifecycle report that timed out cancels the shared stream; a reopened
+	// session must not inherit that dead stream.
+	if g.pub != nil && (g.pub.sessionID != sessionID || g.pub.ctx.Err() != nil) {
 		stale = g.pub
 		g.pub = nil
 	}
 	if g.pub == nil {
 		g.pub = newSessionPublisher(g.baseCtx, g.events, sessionID, &g.seq)
 		g.pub.admit = func() (uint64, error) { return g.admitFrame(sessionID) }
+		g.pub.afterAdmit = g.afterAdmit
 	}
 	pub := g.pub
 	g.pubMu.Unlock()
 	if stale != nil {
-		// The stopped session's handlers have already returned (lifecycle dispatch
-		// is sequential across Stop→Start), so no caller holds the orphan; close it
-		// to end its upstream stream rather than leak it. Best-effort: the new
-		// publisher is already installed, so a close error changes nothing.
+		// Close the orphan (a stopped session's, or one a lifecycle report
+		// cancelled) to end its upstream stream rather than leak it. Close takes
+		// the orphan's mu, so a straggling forward on it finishes first.
+		// Discarded: the new publisher is installed, so a close error changes nothing.
 		_ = stale.close()
 	}
 	return pub
+}
+
+// sharedPublisher returns the live shared publisher for sessionID, or nil. It
+// never opens one: a lifecycle report only needs the stream frames rode.
+func (g *Gateway) sharedPublisher(sessionID string) *sessionPublisher {
+	g.pubMu.Lock()
+	defer g.pubMu.Unlock()
+	if g.pub == nil || g.pub.sessionID != sessionID {
+		return nil
+	}
+	return g.pub
 }
 
 // releasePublisher clears the publisher under pubMu, then closes its upstream

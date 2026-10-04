@@ -579,6 +579,215 @@ func TestBindSessionReopensPublishAfterSessionState(t *testing.T) {
 	}
 }
 
+// (a) A frame admitted before the seal but still short of its Send when the
+// drain times out must reach the Server before ERRORED. Event-gated: afterAdmit
+// parks the admitted frame; beforeSharedState signals ERRORED is queued on the
+// shared stream, then the frame is released.
+//
+// RED (pre-fix): ERRORED rides a fresh one-shot stream, so it reaches the
+// capture while the admitted frame is still parked.
+func TestSessionStateFollowsFrameAdmittedBeforeDrainTimeout(t *testing.T) {
+	capture := newCapturePublish()
+	events := newRunnerServiceServer(t, capture)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	admitted := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	g.afterAdmit = func(ctx context.Context) {
+		once.Do(func() {
+			close(admitted)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		})
+	}
+	stateQueued := make(chan struct{})
+	g.beforeSharedState = func() { close(stateQueued) }
+	listener := &SocketListener{gateway: g}
+	client := newAgentGatewayServer(t, g)
+	publishCtx, cancelPublish := context.WithCancel(context.Background())
+	t.Cleanup(cancelPublish)
+	stream := client.Publish(publishCtx)
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("admitted")}); err != nil {
+		t.Fatalf("send Publish frame: %v", err)
+	}
+	<-admitted
+
+	// The drain wait expires at once: the Publish handler is parked mid-forward.
+	drainCtx, cancelDrain := context.WithCancel(context.Background())
+	cancelDrain()
+	stateDone := make(chan error, 1)
+	go func() {
+		stateDone <- listener.PublishSessionState(drainCtx, "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+	}()
+	select {
+	case <-stateQueued:
+	case f := <-capture.frames:
+		t.Fatalf("frame %v (seq %d) reached the Server while the admitted frame was still parked", f.GetFrame().GetSession().GetState(), f.GetRunnerSeq())
+	case <-time.After(testTimeout):
+		t.Fatal("ERRORED never queued on the shared stream")
+	}
+	close(release)
+	if err := <-stateDone; err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	first := capture.recvFrame(t)
+	state := capture.recvFrame(t)
+	if got := first.GetFrame().GetSession().GetTypedEvent().GetAssistantText().GetText(); got != "admitted" {
+		t.Fatalf("first frame text = %q, want admitted", got)
+	}
+	if state.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("second frame state = %v, want ERRORED", state.GetFrame().GetSession().GetState())
+	}
+	if first.GetRunnerSeq() >= state.GetRunnerSeq() {
+		t.Fatalf("admitted seq %d must precede ERRORED seq %d", first.GetRunnerSeq(), state.GetRunnerSeq())
+	}
+}
+
+// stallFirstPublish never reads its first PublishEvents stream, so a large Send
+// on it blocks on flow control until the client cancels; later streams capture.
+type stallFirstPublish struct {
+	compassv1internalconnect.UnimplementedRunnerServiceHandler
+	mu      sync.Mutex
+	stalled bool
+	frames  chan *compassv1internal.PublishEventsRequest
+}
+
+func (s *stallFirstPublish) PublishEvents(ctx context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+	s.mu.Lock()
+	first := !s.stalled
+	s.stalled = true
+	s.mu.Unlock()
+	if first {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	for stream.Receive() {
+		s.frames <- stream.Msg()
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+}
+
+// (b) A shared-stream Send stuck past stateSendTimeout must not lose ERRORED:
+// the report cancels the shared stream, waits for the stuck Send to return
+// (rolling its seq back), then delivers ERRORED on a one-shot stream at that seq.
+func TestSessionStateFallsBackWhenSharedSendStalls(t *testing.T) {
+	sink := &stallFirstPublish{frames: make(chan *compassv1internal.PublishEventsRequest, 4)}
+	events := newRunnerServiceServer(t, sink)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	admitted := make(chan struct{})
+	var once sync.Once
+	g.afterAdmit = func(context.Context) { once.Do(func() { close(admitted) }) }
+	listener := &SocketListener{gateway: g}
+
+	// Far past any HTTP/2 flow-control window, so Send blocks on the unread stream.
+	big := traceFrame(strings.Repeat("x", 8<<20))
+	pub := g.acquirePublisher("sess-1")
+	forwardDone := make(chan error, 1)
+	go func() { forwardDone <- pub.forward(big) }()
+	<-admitted
+
+	if err := listener.PublishSessionState(context.Background(), "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	if err := <-forwardDone; err == nil {
+		t.Fatal("stalled forward succeeded; want it to fail once the shared stream is cancelled")
+	}
+	var state *compassv1internal.PublishEventsRequest
+	select {
+	case state = <-sink.frames:
+	case <-time.After(testTimeout):
+		t.Fatal("ERRORED never delivered")
+	}
+	if state.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("delivered state = %v, want ERRORED", state.GetFrame().GetSession().GetState())
+	}
+	if state.GetRunnerSeq() != 1 {
+		t.Fatalf("ERRORED RunnerSeq = %d, want 1: the stalled frame's seq must be rolled back", state.GetRunnerSeq())
+	}
+	// Unblock the stalled stream's handler so the httptest server closes.
+	_ = g.releasePublisher() // its cancelled stream errs on close; not actionable here
+}
+
+// taggedPublish captures every frame with the ordinal of the PublishEvents
+// stream it rode, so a test can assert which upstream stream carried it.
+type taggedPublish struct {
+	compassv1internalconnect.UnimplementedRunnerServiceHandler
+	mu     sync.Mutex
+	n      int
+	frames chan taggedFrame
+}
+
+type taggedFrame struct {
+	stream int
+	req    *compassv1internal.PublishEventsRequest
+}
+
+func (c *taggedPublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+	c.mu.Lock()
+	c.n++
+	id := c.n
+	c.mu.Unlock()
+	for stream.Receive() {
+		c.frames <- taggedFrame{stream: id, req: stream.Msg()}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+}
+
+func (c *taggedPublish) recv(t *testing.T) taggedFrame {
+	t.Helper()
+	select {
+	case f := <-c.frames:
+		return f
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for a forwarded PublishEvents frame")
+		return taggedFrame{}
+	}
+}
+
+// (c) After a drain that times out with a Publish handler still open, ERRORED
+// rides that handler's shared upstream stream, not a separate one-shot stream.
+func TestSessionStateUsesSharedStreamAfterDrainTimeout(t *testing.T) {
+	capture := &taggedPublish{frames: make(chan taggedFrame, 8)}
+	events := newRunnerServiceServer(t, capture)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	listener := &SocketListener{gateway: g}
+	client := newAgentGatewayServer(t, g)
+	publishCtx, cancelPublish := context.WithCancel(context.Background())
+	t.Cleanup(cancelPublish)
+	stream := client.Publish(publishCtx)
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("open")}); err != nil {
+		t.Fatalf("send Publish frame: %v", err)
+	}
+	frame := capture.recv(t)
+
+	drainCtx, cancelDrain := context.WithCancel(context.Background())
+	cancelDrain()
+	if err := listener.PublishSessionState(drainCtx, "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	state := capture.recv(t)
+	if state.req.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("state = %v, want ERRORED", state.req.GetFrame().GetSession().GetState())
+	}
+	if state.stream != frame.stream {
+		t.Fatalf("ERRORED rode upstream stream %d, want the shared stream %d", state.stream, frame.stream)
+	}
+	if state.req.GetRunnerSeq() <= frame.req.GetRunnerSeq() {
+		t.Fatalf("ERRORED seq %d must follow frame seq %d", state.req.GetRunnerSeq(), frame.req.GetRunnerSeq())
+	}
+	if _, err := stream.CloseAndReceive(); err != nil {
+		t.Fatalf("finish Publish stream: %v", err)
+	}
+}
+
 // --- Case 2 ------------------------------------------------------------------
 
 // A transcript_entry frame (the RIG-1570 tee variant) rides the same durable
