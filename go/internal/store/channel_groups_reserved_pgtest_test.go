@@ -73,7 +73,7 @@ func TestCreateChannelGroupUnderReservedDMGroupIsNotFound(t *testing.T) {
 }
 
 // TestNestedReservedNameGroupIsOrdinary: a nested owner-visible __dm__ is not the
-// reserved DM group, so its owner can create channels in it.
+// reserved DM group, so its owner can create channels and child groups in it.
 func TestNestedReservedNameGroupIsOrdinary(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
@@ -87,5 +87,8 @@ func TestNestedReservedNameGroupIsOrdinary(t *testing.T) {
 	}
 	if _, err := s.CreateChannel(t.Context(), owner.ID, NewChannel{Name: "notes", GroupID: nested.ID}); err != nil {
 		t.Fatalf("CreateChannel into nested __dm__: %v, want success (not the reserved DM group)", err)
+	}
+	if _, err := s.CreateChannelGroup(t.Context(), owner.ID, NewChannelGroup{Name: "child", ParentGroupID: nested.ID, Visibility: VisibilityOwner}); err != nil {
+		t.Fatalf("CreateChannelGroup under nested __dm__: %v, want success (not the reserved DM group)", err)
 	}
 }
