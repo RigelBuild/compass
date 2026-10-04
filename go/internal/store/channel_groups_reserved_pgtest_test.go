@@ -23,6 +23,8 @@ func TestCreateChannelGroupRefusesReservedTopLevelNames(t *testing.T) {
 		{"dm shared", NewChannelGroup{Name: dmGroupName, Visibility: VisibilityShared}, true},
 		{"coordination owner", NewChannelGroup{Name: coordinationGroupName, Visibility: VisibilityOwner}, true},
 		{"coordination shared", NewChannelGroup{Name: coordinationGroupName, Visibility: VisibilityShared}, true},
+		{"linear owner", NewChannelGroup{Name: linearRoutingGroupName, Visibility: VisibilityOwner}, true},
+		{"linear shared", NewChannelGroup{Name: linearRoutingGroupName, Visibility: VisibilityShared}, true},
 		{"dm nested", NewChannelGroup{Name: dmGroupName, ParentGroupID: parent.ID, Visibility: VisibilityOwner}, false},
 		{"ordinary", NewChannelGroup{Name: "ordinary", Visibility: VisibilityShared}, false},
 	}
