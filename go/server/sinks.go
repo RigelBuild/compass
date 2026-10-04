@@ -184,11 +184,19 @@ func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *board
 	}
 }
 
-// startUsageRetention starts the token-usage retention sweeper on the serve
-// group. The raw log grows with activity; the rollups keep the history.
-func startUsageRetention(gctx context.Context, g *errgroup.Group, st *store.Store, retention time.Duration, log *slog.Logger) {
-	w := usage.NewRetentionSweeper(usage.NewPostgres(st), usage.RetentionConfig{Retention: retention, Log: log})
-	g.Go(func() error { return w.Run(gctx) })
+// startUsageSweepers starts the usage retention prune and the orphaned compute
+// interval close on the serve group; binding changes close intervals inline.
+func startUsageSweepers(gctx context.Context, g *errgroup.Group, st *store.Store, retention time.Duration, log *slog.Logger) {
+	retain := usage.NewRetentionSweeper(usage.NewPostgres(st), usage.RetentionConfig{Retention: retention, Log: log})
+	closer := usage.NewComputeUsageSweeper(computeUsageCloser{st: st}, log)
+	g.Go(func() error { return retain.Run(gctx) })
+	g.Go(func() error { return closer.Run(gctx) })
+}
+
+type computeUsageCloser struct{ st *store.Store }
+
+func (c computeUsageCloser) CloseOrphanedComputeIntervals(ctx context.Context) (int64, error) {
+	return c.st.CloseOrphanedComputeIntervals(store.WithSystemRole(ctx))
 }
 
 // logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve

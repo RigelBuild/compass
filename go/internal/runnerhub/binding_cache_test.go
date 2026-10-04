@@ -87,7 +87,7 @@ func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID str
 			break
 		}
 	}
-	f.bindings[sessionID] = store.SessionBinding{SessionID: sessionID, AccountID: accountID, RunnerID: runnerID}
+	f.bindings[sessionID] = store.SessionBinding{TenantID: f.tenant, SessionID: sessionID, AccountID: accountID, RunnerID: runnerID}
 	return displaced, nil
 }
 
@@ -165,7 +165,7 @@ func (f *fakeBindingStore) SessionBindingTenant(_ context.Context, sessionID, ru
 func (f *fakeBindingStore) seed(sessionID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.bindings[sessionID] = store.SessionBinding{SessionID: sessionID, AccountID: testAgentAccount, RunnerID: testRunnerID}
+	f.bindings[sessionID] = store.SessionBinding{TenantID: f.tenant, SessionID: sessionID, AccountID: testAgentAccount, RunnerID: testRunnerID}
 }
 
 // fakeRoutingFabric is an in-memory RoutingFabric double: PublishBindingChange
@@ -610,7 +610,7 @@ func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
 
 	// A row from before the joint restart, under a DIFFERENT account.
 	bindings.mu.Lock()
-	bindings.bindings["sess-1"] = store.SessionBinding{SessionID: "sess-1", AccountID: "acct-stale", RunnerID: "runner-1"}
+	bindings.bindings["sess-1"] = store.SessionBinding{TenantID: bindings.tenant, SessionID: "sess-1", AccountID: "acct-stale", RunnerID: "runner-1"}
 	bindings.mu.Unlock()
 
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")

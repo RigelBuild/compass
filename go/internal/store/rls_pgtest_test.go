@@ -606,6 +606,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 		"issues", "forge_repo_subscriptions", "forge_artifact_cursors",
 		"forge_state_transitions",
 		"token_usage_events", "token_usage_rollups_hourly", "token_usage_rollups_daily",
+		"compute_usage_events",
 	}
 	for _, tbl := range tenantOwned {
 		if !enumerated[tbl] {
