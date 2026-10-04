@@ -124,10 +124,10 @@ type SessionReapSink interface {
 }
 
 // SessionLostSink is told when the Runner reports a bound session unknown (its
-// container died), after the hub dropped the binding, so the account can be woken.
-// Must return promptly; called with h.mu released.
+// container died) or ERRORED, after the hub dropped the binding, so the account can
+// be woken. Must return promptly; called with h.mu released.
 type SessionLostSink interface {
-	OnSessionLost(sessionID string, account store.AccountID)
+	OnSessionLost(sessionID string, account store.AccountID, errored bool)
 }
 
 // RunnerReadySink is told each time a Runner command stream attaches, so work that
@@ -829,7 +829,7 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	// A Runner-published ERRORED state is the lost-session edge when the Runner
 	// observes an agent exit before any in-flight deliver can be refused.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
-		h.dropLostSession(ctx, runnerID, sessionID)
+		h.dropLostSession(ctx, runnerID, sessionID, true)
 	}
 }
 

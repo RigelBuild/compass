@@ -11,10 +11,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-type recordingLostSink struct{ lost []store.AccountID }
+type recordingLostSink struct {
+	lost    []store.AccountID
+	errored []bool
+}
 
-func (s *recordingLostSink) OnSessionLost(_ string, account store.AccountID) {
+func (s *recordingLostSink) OnSessionLost(_ string, account store.AccountID, errored bool) {
 	s.lost = append(s.lost, account)
+	s.errored = append(s.errored, errored)
 }
 
 // A NotFound deliver refusal releases the binding and reports the account, but only
@@ -30,20 +34,20 @@ func TestDropLostSessionOnlyForOwningRunner(t *testing.T) {
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(ctx, "cont-1", "sess-1")
 
-	hub.dropLostSession(ctx, "runner-other", "sess-1")
+	hub.dropLostSession(ctx, "runner-other", "sess-1", false)
 	if _, ok := hub.accountForSession(ctx, "sess-1"); !ok || len(sink.lost) != 0 {
 		t.Fatalf("foreign refusal: bound=%v lost=%v, want bound and no wake", ok, sink.lost)
 	}
 
-	hub.dropLostSession(ctx, "runner-1", "sess-1")
+	hub.dropLostSession(ctx, "runner-1", "sess-1", false)
 	if _, ok := hub.accountForSession(ctx, "sess-1"); ok {
 		t.Fatal("owning refusal left sess-1 bound")
 	}
 	if _, live := hub.SessionForAccount(ctx, testAgentAccount); live {
 		t.Fatal("account still resolves a live session after the drop")
 	}
-	if len(sink.lost) != 1 || sink.lost[0] != testAgentAccount {
-		t.Fatalf("lost = %v, want [%s]", sink.lost, testAgentAccount)
+	if len(sink.lost) != 1 || sink.lost[0] != testAgentAccount || sink.errored[0] {
+		t.Fatalf("lost = %v errored = %v, want [%s] [false]", sink.lost, sink.errored, testAgentAccount)
 	}
 }
 
@@ -79,8 +83,8 @@ func TestErroredSessionDropsBindingAndReportsLoss(t *testing.T) {
 	if _, ok := hub.accountForSession(ctx, "sess-1"); ok {
 		t.Fatal("owning ERRORED frame left sess-1 bound")
 	}
-	if len(sink.lost) != 1 || sink.lost[0] != testAgentAccount {
-		t.Fatalf("lost = %v, want [%s]", sink.lost, testAgentAccount)
+	if len(sink.lost) != 1 || sink.lost[0] != testAgentAccount || !sink.errored[0] {
+		t.Fatalf("lost = %v errored = %v, want [%s] [true]", sink.lost, sink.errored, testAgentAccount)
 	}
 	if got := recvEnded(t, ended); got != "sess-1" {
 		t.Fatalf("archived %q after owning ERRORED frame, want sess-1", got)
@@ -117,8 +121,8 @@ func TestSessionEndedWithoutStopIsArchived(t *testing.T) {
 
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(ctx, "cont-1", "sess-lost")
-	hub.dropLostSession(ctx, "runner-other", "sess-lost")
-	hub.dropLostSession(ctx, "runner-1", "sess-lost")
+	hub.dropLostSession(ctx, "runner-other", "sess-lost", false)
+	hub.dropLostSession(ctx, "runner-1", "sess-lost", false)
 	if got := recvEnded(t, ended); got != "sess-lost" {
 		t.Fatalf("archived %q after the lost drop, want sess-lost", got)
 	}

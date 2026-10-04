@@ -153,6 +153,13 @@ type startEvent struct {
 	account   store.AccountID
 }
 
+// lostEvent is one lost session. A refused deliver always had a message in
+// flight; errored marks a Runner-reported ERRORED, which may owe nothing.
+type lostEvent struct {
+	account store.AccountID
+	errored bool
+}
+
 // instrumentationScope is the OTel instrumentation scope for this package's
 // spans AND metrics (the delivery tracer and meter both resolve from the global
 // providers T2/T3 install). Shared by every otel.Tracer / otel.Meter call here.
@@ -216,9 +223,9 @@ type Consumer struct {
 	// settleQueue: a slice (never lost) plus the shared notify wakeup, so the
 	// hook appends and signals without blocking the hub's Start goroutine.
 	startQueue []startEvent
-	// lostQueue buffers accounts whose session the Runner reported gone; the loop wakes
-	// each, and the woken session's start sweep redelivers what is owed.
-	lostQueue []store.AccountID
+	// lostQueue buffers sessions the Runner reported gone; the loop wakes each
+	// account, and the woken session's start sweep redelivers what is owed.
+	lostQueue []lostEvent
 	// owedRewake is set when a Runner command stream attaches: a wake that failed
 	// while none could serve it is retried for every agent still owed a mention.
 	owedRewake bool

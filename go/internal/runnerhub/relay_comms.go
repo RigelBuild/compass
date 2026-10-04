@@ -867,9 +867,9 @@ func commsCallError(err error) *compassv1internal.CommsCallError {
 }
 
 // dropLostSession releases sessionID after its Runner refused a deliver or reported
-// ERRORED, then archives it and reports the account so it can be woken. A foreign
-// Runner's event cannot unbind another Runner's session.
-func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
+// ERRORED (errored), then archives it and reports the account so it can be woken.
+// A foreign Runner's event cannot unbind another Runner's session.
+func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string, errored bool) {
 	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
 	if !scoped {
 		return
@@ -886,7 +886,7 @@ func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string) {
 	h.log.Warn("runner reports bound session lost; released binding to wake the agent",
 		"session_id", sessionID, "agent_account_id", account)
 	if lost != nil {
-		lost.OnSessionLost(sessionID, account)
+		lost.OnSessionLost(sessionID, account, errored)
 	}
 }
 

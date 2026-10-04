@@ -122,7 +122,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 		go func() {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lostSessionTimeout)
 			defer cancel()
-			h.hub.dropLostSession(dctx, subj.ID, sessionID)
+			h.hub.dropLostSession(dctx, subj.ID, sessionID, false)
 		}()
 	})
 	router.attach(stream.Send)

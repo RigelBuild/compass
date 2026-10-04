@@ -32,7 +32,7 @@ func TestDropLostSessionScopesToTheSessionTenant(t *testing.T) {
 		t.Fatalf("RecordSessionBinding after enroll: %v", err)
 	}
 
-	hub.dropLostSession(ctx, "runner-1", "sess-b")
+	hub.dropLostSession(ctx, "runner-1", "sess-b", false)
 
 	if len(sink.lost) != 1 || sink.lost[0] != agent.ID {
 		t.Fatalf("lost = %v, want [%s]: the tenant-B session was not resolved, so no wake", sink.lost, agent.ID)

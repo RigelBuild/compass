@@ -395,15 +395,15 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 	}
 }
 
-// OnSessionLost is the hub's SessionLostSink: the Runner refused a deliver because
-// sessionID's container is gone and the hub released its binding. It only enqueues;
-// the loop wakes the account, re-provisioning the container on the wake path.
-func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID) {
+// OnSessionLost is the hub's SessionLostSink: the Runner refused a deliver to, or
+// reported ERRORED for, sessionID and the hub released its binding. It only
+// enqueues; the loop wakes the account, re-provisioning the container on the wake path.
+func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID, errored bool) {
 	if sessionID == "" || account == "" {
 		return
 	}
 	c.mu.Lock()
-	c.lostQueue = append(c.lostQueue, account)
+	c.lostQueue = append(c.lostQueue, lostEvent{account: account, errored: errored})
 	c.mu.Unlock()
 	select {
 	case c.notify <- struct{}{}:
@@ -411,7 +411,9 @@ func (c *Consumer) OnSessionLost(sessionID string, account store.AccountID) {
 	}
 }
 
-// drainLost wakes every account queued by OnSessionLost under the loop's ctx.
+// drainLost wakes every account queued by OnSessionLost under the loop's ctx. An
+// ERRORED loss wakes only when work is owed, so an agent that crashes on boot
+// does not loop through wake and resume with nothing to deliver.
 func (c *Consumer) drainLost(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -419,11 +421,26 @@ func (c *Consumer) drainLost(ctx context.Context) {
 			c.mu.Unlock()
 			return
 		}
-		account := c.lostQueue[0]
+		ev := c.lostQueue[0]
 		c.lostQueue = c.lostQueue[1:]
 		c.mu.Unlock()
-		c.wake(ctx, account)
+		if ev.errored && !c.hasOwedWork(ctx, ev.account) {
+			c.log.InfoContext(ctx, "delivery: errored session owes nothing, not waking", "account", string(ev.account))
+			continue
+		}
+		c.wake(ctx, ev.account)
 	}
+}
+
+// hasOwedWork reports whether a start sweep would deliver anything to account. A
+// read error counts as owed: a spurious wake is cheaper than a lost message.
+func (c *Consumer) hasOwedWork(ctx context.Context, account store.AccountID) bool {
+	undelivered, err := c.st.UndeliveredMessages(ctx, account)
+	if err != nil || len(undelivered) > 0 {
+		return true
+	}
+	mentions, err := c.st.OwedMentions(ctx, account)
+	return err != nil || len(mentions) > 0
 }
 
 // OnRunnerReady is called when a Runner's command stream attaches. A mention made
