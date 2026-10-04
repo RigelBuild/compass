@@ -74,9 +74,12 @@ func TestServeReportsBoundEphemeralPort(t *testing.T) {
 	if network != nil {
 		t.Errorf("OnBound network addr = %v, want nil (network door off)", network)
 	}
-	tcp, ok := dev.(*net.TCPAddr)
-	if !ok || tcp.Port == 0 || !tcp.IP.IsLoopback() {
-		t.Fatalf("OnBound dev addr = %v, want a loopback TCP addr with a real port", dev)
+	if dev == nil {
+		t.Fatal("OnBound dev addr = nil, want the bound dev door")
+	}
+	ap, perr := netip.ParseAddrPort(dev.String())
+	if perr != nil || ap.Port() == 0 || !ap.Addr().IsLoopback() {
+		t.Fatalf("OnBound dev addr = %v, want a loopback addr with a real port", dev)
 	}
 }
 

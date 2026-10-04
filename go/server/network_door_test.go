@@ -147,8 +147,12 @@ func serveInBackground(t *testing.T, cfg ServeConfig) boundAddrs {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- Serve(ctx, cfg) }()
+	returned := false // Serve already returned and the helper reported it
 	t.Cleanup(func() {
 		cancel()
+		if returned {
+			return
+		}
 		select {
 		case err := <-errCh:
 			if err != nil {
@@ -162,7 +166,7 @@ func serveInBackground(t *testing.T, cfg ServeConfig) boundAddrs {
 	case b := <-bound:
 		return b
 	case err := <-errCh:
-		errCh <- err // leave it for the cleanup's shutdown check
+		returned = true
 		t.Fatalf("Serve returned before binding its listeners: %v", err)
 	case <-timeAfter():
 		t.Fatalf("Serve did not bind its listeners within %s", testTimeout)
