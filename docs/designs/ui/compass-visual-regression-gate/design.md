@@ -305,9 +305,10 @@ that proves noisy, one-line PR) is cheaper than guessing up front.
   only by the regen dispatch lane (T4) running in the pinned environment.
   A local `--update-snapshots` run dirties these tracked files by design, so
   this CI-only baseline rule is enforced by review, not by tooling. A locally
-  generated baseline is a review-rejection offense — a dev-box Chromium raster
-  differs and would bake local noise into the oracle
-  (`compass-ui-fixture-boot/design.md:419-421`).
+  generated baseline is a review-rejection offense for provenance, not
+  pixels: under the pinned Chromium and fontconfig a dev-box capture is
+  byte-identical to CI's (measured, RIG-3929). Review therefore checks
+  origin, not bytes: only the regen bot's PR attests a `__screens__` change.
 - **API floor**: `@playwright/test 1.62.1` (`apps/ui/package.json:34`); no
   version bump inside this record. Every API used (`toHaveScreenshot`,
   `maxDiffPixelRatio`, `expect.toHaveScreenshot` defaults,
