@@ -581,8 +581,8 @@ func (h *agentHost) Reload(ctx context.Context, sessionID string) error {
 	return h.reloadLocked(ctx, sessionID)
 }
 
-// Status returns one session's status, or every live session's when id is empty
-// — answered from the Runner's authoritative live set.
+// Status returns one session's status, or every retained session when id is empty.
+// The all-sessions set includes ERRORED sessions recoverable via ReloadAgentSession.
 func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.AgentSessionStatus, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

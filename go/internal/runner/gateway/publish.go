@@ -37,6 +37,9 @@ func (g *Gateway) Publish(
 		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForPublish)
 	}
 
+	flight := g.beginPublish(sessionID)
+	defer g.endPublish(sessionID, flight)
+
 	pub := g.acquirePublisher(sessionID)
 	// Captured once: a Restart after this stream opened means these acks come from
 	// the replaced process and must not touch the new process's control state.
@@ -94,4 +97,52 @@ func (g *Gateway) Publish(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&compassv1internal.PublishFrameResponse{}), nil
+}
+
+// publishFlight counts one session's in-flight Publish handlers; done closes at zero.
+type publishFlight struct {
+	count int
+	done  chan struct{}
+}
+
+func (g *Gateway) beginPublish(sessionID string) *publishFlight {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	flight := g.publishes[sessionID]
+	if flight == nil {
+		flight = &publishFlight{done: make(chan struct{})}
+		if g.publishes == nil {
+			g.publishes = make(map[string]*publishFlight)
+		}
+		g.publishes[sessionID] = flight
+	}
+	flight.count++
+	return flight
+}
+
+func (g *Gateway) endPublish(sessionID string, flight *publishFlight) {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	flight.count--
+	if flight.count == 0 {
+		close(flight.done)
+		delete(g.publishes, sessionID)
+	}
+}
+
+func (g *Gateway) waitForPublishes(ctx context.Context, sessionID string) {
+	g.publishMu.Lock()
+	flight := g.publishes[sessionID]
+	var done <-chan struct{}
+	if flight != nil {
+		done = flight.done
+	}
+	g.publishMu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }

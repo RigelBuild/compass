@@ -184,6 +184,11 @@ type Gateway struct {
 	pubMu sync.Mutex
 	pub   *sessionPublisher
 	seq   seqCounter
+
+	// publishes counts in-flight Publish handlers per session so a lifecycle
+	// report waits for the agent's own last frames before sequencing ERRORED.
+	publishMu sync.Mutex
+	publishes map[string]*publishFlight
 	// committedKeys is the advisory in-process fast-path for durable frame
 	// idempotency; a key seen here short-circuits a retry. It is NOT the durability
 	// boundary — the atomic Message-store commit on the same idempotency_key is,
