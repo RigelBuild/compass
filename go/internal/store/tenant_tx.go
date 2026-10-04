@@ -19,7 +19,7 @@ import (
 //   - systemRole is the narrowly-scoped BYPASSRLS role the cross-tenant
 //     background loops (N5/OQ-4: delivery-cursor sweep, deliver-ack advance,
 //     reattach recovery, lag-resync, compute-usage orphan sweep), the Runner
-//     session tenant lookup, and the Runner re-enroll binding reap run under,
+//     session tenant lookup, and the Runner enroll binding reap run under,
 //     and ONLY those. It carries no tenant GUC.
 const (
 	appRole    = "compass_app"
