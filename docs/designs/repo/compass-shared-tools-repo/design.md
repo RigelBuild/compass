@@ -86,8 +86,10 @@ every install is checked against `bun.lock`.
 | Nix flake input (chosen for Nix tooling) | Flake input; `flake.lock` keeps the narHash | Content-addressed and nix-native | Wrong fit for the bun tools: each would need a nix package build, and moon and `tsc` cannot typecheck against a store path. Right fit for Nix code. |
 
 TS tools ship as npm packages, so a tool bump is an ordinary catalog PR with
-release notes. Nix tooling ships as flake outputs, pinned by `flake.lock`.
-Per OQ5, first-party pins skip the release-age cooldown in every toolchain.
+release notes. Nix tooling ships as flake outputs, pinned by the consumer's
+`devenv.lock` (compass takes its RigelBuild forks as `devenv.yaml` inputs, and
+Renovate's nix manager is off by design). Per OQ5, first-party pins skip the
+release-age cooldown in every toolchain.
 
 Publishing uses npm trusted publishing (OIDC from the shared repo's `main`
 release workflow), so no long-lived publish token exists. The `@rigelbuild`
@@ -100,10 +102,11 @@ These steps have no IaC path, so they go to Matt as one human-action issue.
 
 Matt's OQ1 ruling adds Nix: the shared repo is also a flake for the Nix code
 both repos carry. This record reads that as shared Nix modules and helpers
-(toolchain pins, gate-tool sets, image-tool environments), not a nix build of
-the bun tools. T10 inventories the Nix files both repos carry, with the same
-drift measurement as the Inventory table, and moves each shared one under
-`nix/` as a flake output. The public boundary applies unchanged.
+(gate-tool sets, image-tool environments), not a nix build of the bun tools.
+Toolchain version pins stay local: the toolchain-parity gate checks them
+against each consumer's own dev shell, and the Renovate upgrade scripts that
+rewrite them are a later record. T10 inventories the rest and moves each shared
+file under `nix/` as a flake output. The public boundary applies unchanged.
 
 ### What may move (the public boundary)
 
@@ -131,8 +134,9 @@ Enforcement:
 No copy is left to drift. A consumer cannot patch a tool locally without
 adding a copy back, and the Global Constraints forbid that. Renovate bumps both
 pins, so skew between the consumers is a version number, not a fork. Because
-first-party pins skip the cooldown (OQ5), the skew lasts at most one Renovate
-cycle. A fix lands as a shared-repo PR and reaches each consumer by pin bump.
+first-party pins skip the cooldown (OQ5), the skew lasts from release to the
+next Renovate run plus Matt's review of each bump PR. A fix lands as a
+shared-repo PR and reaches each consumer by pin bump.
 
 ### Alternatives considered
 
@@ -157,9 +161,11 @@ cycle. A fix lands as a shared-repo PR and reaches each consumer by pin bump.
   in "Config, not literals".
 - Consumers pin an exact npm version or a locked flake input, never a range.
   Bumps arrive only by Renovate PR.
-- First-party pins (`@rigelbuild/*` npm packages, `github.com/RigelBuild/*` Go
-  modules, `RigelBuild/*` flake inputs) skip the release-age cooldown in every
-  consumer, in both the package manager and Renovate (OQ5).
+- First-party pins skip the release-age cooldown wherever one applies (OQ5):
+  `@rigelbuild/*` npm packages in `bunfig.toml` (exact names, one entry each)
+  and in Renovate, and `RigelBuild/*` git-refs pins in Renovate. Go modules and
+  nix inputs have no package-manager cooldown, and compass has no first-party
+  Go dependency today.
 - A consumer's switch PR deletes its local copy in the same PR. No vendored
   copy, wrapper, or re-export stays behind.
 - No consumer literal in shared code, tests, comments, or docs.
@@ -310,11 +316,14 @@ Point the moon tasks, `.github/workflows/dl-reconcile.yml`, the Renovate
 preflight step, `.moon/workspace.yml`, `docs/designs/CONTRIBUTING.md` §7, and
 `docs/concepts/self-host-and-managed.md` (which names the old ref-gate task) at
 the new bins and projects. The two secret-holding jobs gain a
-`bun install --frozen-lockfile` step (OQ4). Add the cooldown exemption for
-first-party pins: `@rigelbuild/*` names in `bunfig.toml`
-`minimumReleaseAgeExcludes` and the Renovate catalog soak-exemption rule (which
-`config.test.ts` pairs), plus Renovate rules for `github.com/RigelBuild/*` Go
-modules and `RigelBuild/*` flake inputs (OQ5). Delete
+`bun install --frozen-lockfile` step (OQ4). Exempt first-party pins from the
+cooldown (OQ5). In `bunfig.toml`, add each new `@rigelbuild/*` package by
+exact name to `minimumReleaseAgeExcludes`. In Renovate, add those names to the
+catalog soak-exemption rule, which `config.test.ts` requires to match the
+catalog part of the bunfig list. Add a rule exempting the
+`@rigelbuild/solid-*` pins in `apps/ui/package.json`, which still soak today.
+Confirm every `RigelBuild/*` git-refs rule already sets
+`minimumReleaseAge: null`. Delete
 `tools/design-ledger-gate/`, `tools/dl-claim/`, `tools/dl-reconcile/`,
 `tools/sea-ref-gate/`, `tools/orion-ref-gate/`, and `tools/renovate-preflight/`.
 
@@ -354,10 +363,17 @@ Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 
 Lands in: the shared repo, then each consumer. Inventory the Nix files both
 repos carry and measure their drift, as the Inventory table does for the TS
-tools. Move each shared file under `nix/` in the shared flake as an output. Each
-consumer adds the flake input, switches its imports, and deletes its copy in
-the same PR. A file that holds a consumer literal takes it as a function
-argument instead.
+tools. Move each shared file under `nix/` in the shared flake as an output. A
+file that holds a consumer literal takes it as a function argument instead.
+In compass, add the shared repo as a `devenv.yaml` input. Then add a
+`custom.regex` git-refs Renovate rule with a `devenv.lock` relock
+postUpgradeTask, the same shape as the existing devenv-fork rule, with
+`minimumReleaseAge: null`. Switch the imports and delete each local copy in the
+same PR.
+
+Acceptance: the consumer's nixos/devenv evaluation and its toolchain-parity
+and flake-parity gates pass unchanged, and the store paths of the moved
+outputs match those from before the move.
 
 Interfaces: consumes T2's `flake.nix`; produces flake outputs under `nix/`.
 
