@@ -59,6 +59,7 @@ type fakeForgeStore struct {
 	scopes     map[string]bool
 	scopeErr   error
 	scopeCalls int
+	scopeArgs  []string
 }
 
 // recordedTransition is one RecordStateTransition the fake saw: the full
@@ -125,6 +126,7 @@ func (f *fakeForgeStore) DeleteAgentForgeSubscription(_ context.Context, agent s
 
 func (f *fakeForgeStore) HasForgeScope(_ context.Context, accountID store.AccountID, provider store.ForgeProvider, host, repo string) (bool, error) {
 	f.scopeCalls++
+	f.scopeArgs = append(f.scopeArgs, fmt.Sprintf("%s|%d|%s|%s", accountID, provider, host, repo))
 	if f.scopeErr != nil {
 		return false, f.scopeErr
 	}
@@ -1101,11 +1103,34 @@ func TestForgeScopeGateRejectsEveryCoordinateWrite(t *testing.T) {
 			if got := len(author.Calls()) + len(reviewer.Calls()); got != 0 {
 				t.Fatalf("provider calls = %d, want 0", got)
 			}
-			if st.scopeCalls != 1 {
-				t.Fatalf("scope checks = %d, want 1", st.scopeCalls)
+			want := fmt.Sprintf("%s|%d|%s|%s", testAgentID, store.ForgeProviderGitHub, testHost, testRepo)
+			if len(st.scopeArgs) != 1 || st.scopeArgs[0] != want {
+				t.Fatalf("scope checks = %v, want [%s]", st.scopeArgs, want)
 			}
 			if len(st.recorded) != 0 || len(st.transitions) != 0 || len(st.subs) != 0 {
 				t.Fatalf("rejected write persisted state: recorded=%d transitions=%d subscriptions=%d", len(st.recorded), len(st.transitions), len(st.subs))
+			}
+		})
+	}
+}
+
+// TestForgeScopeGateAllowsEveryGrantedWrite: an owner grant lets each write arm
+// reach its provider exactly as it would with enforcement off.
+func TestForgeScopeGateAllowsEveryGrantedWrite(t *testing.T) {
+	for name, call := range scopedWriteCalls() {
+		t.Run(name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			reviewer := forge.NewFakeProvider("gh-reviewer")
+			svc, st := newForgeServiceForTest(t, author, reviewer)
+			svc.enforceScopes = true
+			st.scopes = map[string]bool{fmt.Sprintf("%s|%d|%s|%s", testOwnerID, store.ForgeProviderGitHub, testHost, testRepo): true}
+
+			res := svc.ExecuteForgeCallAsAccountMust(t, call)
+			if fe := res.GetError(); fe != nil {
+				t.Fatalf("granted write error = %v", fe)
+			}
+			if name != "subscribe" && len(author.Calls())+len(reviewer.Calls()) != 1 {
+				t.Fatalf("provider calls = %d, want 1", len(author.Calls())+len(reviewer.Calls()))
 			}
 		})
 	}
