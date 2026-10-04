@@ -343,8 +343,8 @@ func TestForgeGetIssueReadBodyHasNoOwnerHeader(t *testing.T) {
 }
 
 // list_issues honors its wire contract: limit 0 returns the default 30, a set
-// limit returns at most that many, and a limit past 100 is capped. The provider
-// walks every page, so without the clamp one call rendered ~600KB into the agent.
+// limit returns at most that many, and a limit past 100 is capped. The limit
+// reaches the provider so it stops paging instead of walking every page.
 func TestForgeListIssuesAppliesLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -370,6 +370,9 @@ func TestForgeListIssuesAppliesLimit(t *testing.T) {
 			}
 			if issues[0].GetNumber() != 150 {
 				t.Fatalf("first issue = #%d, want #150: the clamp must keep the provider's leading rows", issues[0].GetNumber())
+			}
+			if got := author.Calls()[0].Filter.Limit; got != tc.want {
+				t.Fatalf("provider filter Limit = %d, want %d: the provider must stop paging at the limit", got, tc.want)
 			}
 		})
 	}

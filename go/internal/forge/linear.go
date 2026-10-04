@@ -274,8 +274,8 @@ func (l *Linear) GetIssue(ctx context.Context, repo string, number uint64) (Issu
 	return out.Issues.Nodes[0].toIssue(), nil
 }
 
-// ListIssues walks every issue in the team keyed by repo, narrowed by f, across
-// all pages (Linear paginates at 50; the loop follows pageInfo). Bodies are RAW.
+// ListIssues walks the team's issues keyed by repo, narrowed by f, until f.Limit
+// issues or the last page (Linear paginates at 50; the loop follows pageInfo). Bodies are RAW.
 func (l *Linear) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error) {
 	const query = `query CompassIssueList($filter: IssueFilter!, $after: String) {
   issues(filter: $filter, first: 50, after: $after) {
@@ -306,6 +306,9 @@ func (l *Linear) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]
 		}
 		for _, n := range out.Issues.Nodes {
 			all = append(all, n.toIssue())
+		}
+		if f.Limit > 0 && len(all) >= f.Limit {
+			return all[:f.Limit], nil
 		}
 		next := out.Issues.PageInfo.EndCursor
 		// Terminate on end-of-pages OR a malformed page (hasNextPage with an

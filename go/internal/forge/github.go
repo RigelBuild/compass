@@ -265,8 +265,8 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 	}, nil
 }
 
-// ListIssues is the unconditional full walk (concatenated pages), built on
-// ListIssuesPage. It follows the RFC-5988 Link rel="next" chain. Satisfies
+// ListIssues walks pages (concatenated) until f.Limit issues or the last page,
+// built on ListIssuesPage. It follows the RFC-5988 Link rel="next" chain. Satisfies
 // ingest.forgeReader structurally and is the read half of forge.Provider.
 func (g *GitHub) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error) {
 	var all []Issue
@@ -279,6 +279,9 @@ func (g *GitHub) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]
 			return nil, err
 		}
 		all = append(all, p.Issues...)
+		if f.Limit > 0 && len(all) >= f.Limit {
+			return all[:f.Limit], nil
+		}
 		if !p.HasNext {
 			return all, nil
 		}
