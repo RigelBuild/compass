@@ -3046,8 +3046,8 @@ jobs:
           add-paths: apps/ui/e2e/__screens__
 
       - name: Refuse a PR not built on the captured commit
-        # The action fetches `base` by name, so a branch that advanced after the
-        # HEAD check would carry these PNGs onto an unchecked tip. Close that PR.
+        # v8.1.1 builds the bot branch on local HEAD (== CAPTURED). This trips if a
+        # later pin rebases onto a refetched base, which could be an unchecked tip.
         if: steps.cpr.outputs.pull-request-number != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
