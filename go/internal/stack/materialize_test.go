@@ -38,9 +38,79 @@ type fakeRegistry struct {
 	corrupt  map[string]bool
 	truncate map[string]bool
 
+	bearerChallenge  bool
+	challengeRealm   string
+	tokenStatus      int
+	second401        bool
+	tokenRequests    int
+	registryRequests int
+
 	observeBlob func()
 	mu          sync.Mutex
 	requests    []string
+}
+
+func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
+	r.mu.Lock()
+	r.requests = append(r.requests, req.URL.Path)
+	r.mu.Unlock()
+	if req.URL.Path == "/token" {
+		r.mu.Lock()
+		r.tokenRequests++
+		r.mu.Unlock()
+		if req.URL.Query().Get("service") != "fake" || req.URL.Query().Get("scope") != "repository:"+r.repo+":pull" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.tokenStatus != 0 {
+			w.WriteHeader(r.tokenStatus)
+			return
+		}
+		_, _ = w.Write([]byte(`{"token":"test-token"}`))
+		return
+	}
+	if r.bearerChallenge {
+		r.mu.Lock()
+		r.registryRequests++
+		registryRequest := r.registryRequests
+		r.mu.Unlock()
+		if req.Header.Get("Authorization") != "Bearer test-token" || (r.second401 && registryRequest > 1) {
+			realm := r.challengeRealm
+			if realm == "" {
+				realm = r.server.URL + "/token"
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="`+realm+`",service="fake",scope="repository:`+r.repo+`:pull"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
+	prefix := "/v2/" + r.repo + "/"
+	switch {
+	case req.URL.Path == prefix+"manifests/"+r.digest:
+		w.Header().Set("Content-Type", ociManifestMediaType)
+		_, _ = w.Write(r.manifest)
+	case strings.HasPrefix(req.URL.Path, prefix+"blobs/"):
+		if r.observeBlob != nil {
+			r.observeBlob()
+		}
+		d := strings.TrimPrefix(req.URL.Path, prefix+"blobs/")
+		body, ok := r.blobs[d]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch {
+		case r.corrupt[d]:
+			flipped := append([]byte(nil), body...)
+			flipped[0] ^= 0xff
+			body = flipped
+		case r.truncate[d]:
+			body = body[:len(body)-1]
+		}
+		_, _ = w.Write(body)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
 }
 
 // guestBlobBytes is the per-asset layer content the stub serves. Small and
@@ -99,37 +169,47 @@ func newFakeRegistry(t *testing.T, mutate func(m *guestManifest)) *fakeRegistry 
 	return r
 }
 
-func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
-	r.mu.Lock()
-	r.requests = append(r.requests, req.URL.Path)
-	r.mu.Unlock()
-
-	prefix := "/v2/" + r.repo + "/"
-	switch {
-	case req.URL.Path == prefix+"manifests/"+r.digest:
-		w.Header().Set("Content-Type", ociManifestMediaType)
-		_, _ = w.Write(r.manifest) // test stub; a short write surfaces as the client's own error
-	case strings.HasPrefix(req.URL.Path, prefix+"blobs/"):
-		if r.observeBlob != nil {
-			r.observeBlob()
-		}
-		d := strings.TrimPrefix(req.URL.Path, prefix+"blobs/")
-		body, ok := r.blobs[d]
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		switch {
-		case r.corrupt[d]:
-			flipped := append([]byte(nil), body...)
-			flipped[0] ^= 0xff
-			body = flipped
-		case r.truncate[d]:
-			body = body[:len(body)-1]
-		}
-		_, _ = w.Write(body) // test stub
-	default:
-		w.WriteHeader(http.StatusNotFound)
+func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*fakeRegistry)
+		wantErr    bool
+		wantTokens int
+	}{
+		{name: "success", wantTokens: 1},
+		{name: "reject unsafe realm", configure: func(r *fakeRegistry) { r.challengeRealm = "http://other.example/token" }, wantErr: true},
+		{name: "token endpoint failure", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusInternalServerError }, wantErr: true, wantTokens: 1},
+		{name: "second unauthorized is final", configure: func(r *fakeRegistry) { r.second401 = true }, wantErr: true, wantTokens: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := newFakeRegistry(t, nil)
+			reg.bearerChallenge = true
+			if tt.configure != nil {
+				tt.configure(reg)
+			}
+			stateDir := t.TempDir()
+			paths, err := materializeGuestArtifact(t.Context(), reg.registry(), stateDir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("materializeGuestArtifact error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if reg.tokenRequests != tt.wantTokens {
+				t.Errorf("token requests = %d, want %d", reg.tokenRequests, tt.wantTokens)
+			}
+			if tt.wantErr {
+				assertNoMaterializedDir(t, stateDir, reg.digest)
+				return
+			}
+			for i, path := range paths.assets() {
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read %s: %v", path, err)
+				}
+				if !bytes.Equal(got, guestBlobBytes[i]) {
+					t.Errorf("%s content = %q, want %q", path, got, guestBlobBytes[i])
+				}
+			}
+		})
 	}
 }
 
