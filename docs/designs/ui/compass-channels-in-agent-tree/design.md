@@ -270,8 +270,8 @@ participant set — the same materialization T4 applies on every read
 (leg 5) — so a TREE `CreateChannel` and a later `ListChannels` report
 the same member list for the same channel. T4's hop (v) makes that
 identity structural rather than a coincidence of two code paths
-agreeing: `CreateChannel` stops hand-writing the returned `Channel` at
-`Store.CreateChannel` in `go/internal/store/channels.go` and returns the same post-commit `getChannel`
+agreeing: `CreateChannel` stops hand-writing its returned `Channel` literal
+(`Store.CreateChannel` in `go/internal/store/channels.go`) and returns the same post-commit `getChannel`
 read a `ListChannels` row goes through, so "the same member list" is
 the same projection, not a reconstruction of it. The expansion at
 `Store.CreateChannel` in `go/internal/store/channels.go` still runs — the authz needs it — it just no longer

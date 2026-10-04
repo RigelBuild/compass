@@ -391,7 +391,7 @@ pivot" (`NewSessionIDInterceptor` in `go/internal/otel/interceptor.go`).
 
 Both degraded states are **no header at all** — never an empty-string header:
 
-- **Analytics off.** `analyticsConfigFromEnv()` returns `undefined` ⇒ `createAnalytics` returns `NoopAnalytics` (`createAnalytics` in `apps/ui/src/analytics/analytics.ts`: `if (!config) { return new NoopAnalytics(); }`), whose `sessionId()` returns `undefined` ⇒ the interceptor's guard skips `req.header.set` entirely. Zero posthog calls, per the module contract (the file header of `apps/ui/src/analytics/analytics.ts`: "the config is `undefined` and `createAnalytics` returns a no-op that never CALLS posthog (zero network); posthog is injectable for tests.").
+- **Analytics off.** `analyticsConfigFromEnv()` returns `undefined` ⇒ `createAnalytics` returns `NoopAnalytics` (`createAnalytics` in `apps/ui/src/analytics/analytics.ts`: `if (!config) { return new NoopAnalytics(); }`), whose `sessionId()` returns `undefined` ⇒ the interceptor's guard skips `req.header.set` entirely. Zero posthog calls, per the module contract (the file header of `apps/ui/src/analytics/analytics.ts`: "the config is `undefined` and `createAnalytics` returns a no-op that never CALLS posthog").
 - **Session id not yet available.** `get_session_id()` returns `""` before full init (`PostHog.get_session_id` in `module.d.ts`); `PostHogAnalytics.sessionId()` maps that to `undefined` ⇒ no header.
 
 An empty header would be worse than none on both sides: the server would trim-and-drop it anyway (`sessionIDFromHeader` in `go/internal/otel/interceptor.go`), and it would spend preflight/wire bytes asserting a correlation that does not exist. This mirrors the established discipline for `$ai_trace_id` in `PostHogAnalytics.capture` in `apps/ui/src/analytics/analytics.ts`: "Not even an `$ai_trace_id: undefined` key".
@@ -651,6 +651,7 @@ Cases:
 - **self-healing across requests: getter returns `""` on the first call and a
   valid id on the second ⇒ the first request carries no header, the second
   carries it** (capture seam). This is the transition Degradation and the
+  Approach both promise — "self-healing on the next request once a session
   exists" (§ *Two consequences of constructing analytics earlier*) — and it is the direction the laziness case above does
   *not* cover: a construction-time cache or a first-value memo still passes
   forward-propagation while failing this. OQ2's anti-memoization concern rests
@@ -770,7 +771,7 @@ Update the module-header prose in the file header of `apps/ui/src/analytics/anal
    `apps/ui`'s: that file sets no `lib` at all (`{"extends":
    "../../tsconfig.base.json", "compilerOptions": {"types": ["bun"]},
    "include": ["src"]}`), so its lib defaults from `target: "ES2022"`
-   `compilerOptions.lib` in `apps/ui/tsconfig.json` pins the same `ES2022` for the app, but it does not govern
+   (`compilerOptions.target` in `tsconfig.base.json`), and `isWellFormed` is ES2024. (`compilerOptions.lib` in `apps/ui/tsconfig.json` pins the same `ES2022` for the app, but it does not govern
    this package — citing it would be evidence about the wrong compilation
    unit.) The ASCII guard then removed the need for any well-formedness test at
    all, since lone surrogates are non-ASCII, so neither `isWellFormed` nor an
