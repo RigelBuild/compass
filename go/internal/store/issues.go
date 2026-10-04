@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -213,6 +214,27 @@ func (s *Store) ListIssues(ctx context.Context) ([]Issue, error) {
 	return issues, nil
 }
 
+// SearchIssues searches all issues visible under the caller's tenant context,
+// ranked by full-text relevance and bounded to the requested page size.
+func (s *Store) SearchIssues(ctx context.Context, query string, limit uint32) ([]Issue, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("%w: search query is required", ErrInvalidArgument)
+	}
+
+	rows, err := s.q.SearchIssues(ctx, db.SearchIssuesParams{
+		WebsearchToTsquery: query,
+		Limit:              int32(clampLimit(limit)), //nolint:gosec // G115: clampLimit bounds this to maxPageLimit (200)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: search issues: %w", err)
+	}
+	issues := make([]Issue, 0, len(rows))
+	for _, row := range rows {
+		issues = append(issues, issueFromSearchRow(row))
+	}
+	return issues, nil
+}
+
 // issueFromGetRow maps a generated GetIssue row into a domain Issue. The
 // forge_provider/state int16 columns convert to their named types; number is a
 // BIGINT written only from a canonical uint32; an empty labels array normalizes
@@ -226,6 +248,13 @@ func issueFromGetRow(r db.GetIssueRow) Issue {
 // issueFromListRow maps a generated ListIssues row into a domain Issue (identical
 // column set to GetIssue; sqlc emits a distinct row type per query).
 func issueFromListRow(r db.ListIssuesRow) Issue {
+	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
+		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
+		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+}
+
+// issueFromSearchRow maps a generated search result to the store issue model.
+func issueFromSearchRow(r db.SearchIssuesRow) Issue {
 	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
 		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
 		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)

@@ -50,3 +50,12 @@ SELECT id, forge_provider, forge_host, repo, number,
        state, priority, assignee, summary, branch
 FROM issues
 ORDER BY id;
+
+-- name: SearchIssues :many
+SELECT id, forge_provider, forge_host, repo, number,
+       title, body, forge_state, url, forge_account, labels, agent_handle,
+       state, priority, assignee, summary, branch
+FROM issues
+WHERE search_tsv @@ websearch_to_tsquery('english', $1)
+ORDER BY ts_rank('{0.1,0.2,0.4,1.0}'::real[], search_tsv, websearch_to_tsquery('english', $1)) DESC, number DESC
+LIMIT $2;

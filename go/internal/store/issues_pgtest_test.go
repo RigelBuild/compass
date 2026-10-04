@@ -336,6 +336,95 @@ func TestLabelsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestIssueSearchIndexesBodyAndLabels(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	bodyHit := forgeFields(1)
+	bodyHit.Body = "Investigate falcon migration"
+	if _, err := s.UpsertIssueForgeFields(ctx, bodyHit); err != nil {
+		t.Fatalf("upsert body hit: %v", err)
+	}
+	labelHit := forgeFields(2)
+	labelHit.Labels = []string{"Needs-Triage"}
+	if _, err := s.UpsertIssueForgeFields(ctx, labelHit); err != nil {
+		t.Fatalf("upsert label hit: %v", err)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin verification transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // read-only verification tx; rollback is cleanup only
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE compass_system"); err != nil {
+		t.Fatalf("set verification role: %v", err)
+	}
+	var bodyMatch, labelMatch bool
+	if err := tx.QueryRow(ctx, `
+		SELECT
+		    EXISTS (SELECT 1 FROM issues WHERE search_tsv @@ websearch_to_tsquery('english', 'falcon')),
+		    EXISTS (SELECT 1 FROM issues WHERE search_tsv @@ websearch_to_tsquery('english', 'triage'))`).Scan(&bodyMatch, &labelMatch); err != nil {
+		t.Fatalf("query issue search vector: %v", err)
+	}
+	if !bodyMatch || !labelMatch {
+		t.Fatalf("search vector body match = %v, label match = %v, want both true", bodyMatch, labelMatch)
+	}
+}
+
+func TestSearchIssuesRanksTitleClampsLimitAndScopesTenant(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	otherTenant := seedTenant(t, s, "search-other")
+
+	titleHit := forgeFields(1)
+	titleHit.Title = "Falcon rollout"
+	titleHit.Body = "routine maintenance"
+	titleHit.Labels = nil
+	titleID, err := s.UpsertIssueForgeFields(ctx, titleHit)
+	if err != nil {
+		t.Fatalf("upsert title hit: %v", err)
+	}
+	bodyHit := forgeFields(2)
+	bodyHit.Title = "Routine maintenance"
+	bodyHit.Body = "Falcon rollout"
+	bodyHit.Labels = nil
+	if _, err := s.UpsertIssueForgeFields(ctx, bodyHit); err != nil {
+		t.Fatalf("upsert body hit: %v", err)
+	}
+	crossTenant := forgeFields(3)
+	crossTenant.Title = "Falcon rollout"
+	crossTenant.Labels = nil
+	if _, err := s.UpsertIssueForgeFields(WithTenant(ctx, otherTenant), crossTenant); err != nil {
+		t.Fatalf("upsert cross-tenant hit: %v", err)
+	}
+
+	defaultHits, err := s.SearchIssues(ctx, "falcon", 0)
+	if err != nil {
+		t.Fatalf("SearchIssues(limit=0): %v", err)
+	}
+	hits, err := s.SearchIssues(ctx, "falcon", ^uint32(0))
+	if err != nil {
+		t.Fatalf("SearchIssues: %v", err)
+	}
+	if len(defaultHits) != 2 {
+		t.Fatalf("SearchIssues(limit=0) returned %d hits, want 2", len(defaultHits))
+	}
+	if hits[0].ID != titleID {
+		t.Fatalf("first search hit id = %q, want title hit %q", hits[0].ID, titleID)
+	}
+	for _, hit := range hits {
+		if hit.Title == crossTenant.Title && hit.Number == crossTenant.Number {
+			t.Fatalf("SearchIssues exposed cross-tenant issue %+v", hit)
+		}
+	}
+}
+
+func TestSearchIssuesRejectsEmptyQuery(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.SearchIssues(context.Background(), " \t\n", 10); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("SearchIssues(empty) error = %v, want ErrInvalidArgument", err)
+	}
+}
+
 // The OQ-6(a) recency guard (RIG-2883 T4a): once both the stored row and the
 // incoming write carry a forge_updated_at, the conditional ON CONFLICT keeps
 // the FRESHER timestamp's forge fields, regardless of arrival order — a stale
