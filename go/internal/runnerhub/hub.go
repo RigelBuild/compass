@@ -1076,8 +1076,12 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 			h.archiveEnded(store.WithTenant(ctx, b.TenantID), b.SessionID)
 		}
 	} else {
+		// A failed sweep leaves the rows: resolve each session's tenant from them when
+		// the store still answers, else archive unscoped as before. An ambiguous id is skipped.
 		for _, sessionID := range reapedSessions {
-			h.archiveEnded(ctx, sessionID)
+			if sctx, ok := h.runnerSessionCtx(ctx, id, sessionID); ok {
+				h.archiveEnded(sctx, sessionID)
+			}
 		}
 	}
 	return reattached

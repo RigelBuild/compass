@@ -43,13 +43,16 @@ func TestDropLostSessionScopesToTheSessionTenant(t *testing.T) {
 }
 
 // An enrolling Runner spans tenants, so its system-role sweep must reap tenant B's
-// binding and record its end event with tenant B's id.
+// binding, record its end event with tenant B's id, and archive it under tenant B.
 func TestEnrollReapsSessionBindingAcrossTenants(t *testing.T) {
 	ctx := context.Background()
 	st, agent, ctxB := openTenantBSession(t, ctx)
+	tenantB, _ := store.TenantFromContext(ctxB)
 
 	hub := newHubOnly()
 	hub.SetSessionBindingStore(st)
+	ended := tenantRecordingEndSink{ended: make(chan endedArchive, 1)}
+	hub.SetSessionEndSink(ended)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	var remaining, ends int
@@ -64,6 +67,14 @@ func TestEnrollReapsSessionBindingAcrossTenants(t *testing.T) {
 	}
 	if remaining != 0 || ends != 1 {
 		t.Fatalf("tenant B binding remaining = %d, end events = %d; want reaped binding and one end", remaining, ends)
+	}
+	select {
+	case got := <-ended.ended:
+		if got != (endedArchive{tenant: tenantB, sessionID: "sess-b"}) {
+			t.Fatalf("archived %+v, want sess-b under %q", got, tenantB)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no session-end archive within 10s")
 	}
 }
 
