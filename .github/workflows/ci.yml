@@ -2181,7 +2181,7 @@ jobs:
         # `defaults.run.shell` and executes as the CONTAINER user (root), so the
         # restored cache dirs land root-owned. The go test step runs as the podman
         # user (uid 1000) and must WRITE into them (a restore repopulates only what
-        # was saved; the run then compiles the rest and the post-run save reads
+        # was saved; the run then compiles the rest and the final save step reads
         # them back), so the next step hands them to podman — the same
         # root-creates / podman-writes handoff the checkout uses.
         #
@@ -2192,7 +2192,7 @@ jobs:
         # the module cache. The restore-keys prefix lets a go.sum change still warm
         # from the previous run's cache (a partial hit beats a cold build).
         # Restore-only: a dispatch can run PR code under main's cache scope, so
-        # only trusted push/schedule runs save (the save step after the e2e).
+        # the gated save step at the end of the job never runs on a dispatch.
         id: go-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -2208,7 +2208,7 @@ jobs:
         # (/home/podman/.cache/go-build) and GOMODCACHE (/home/podman/go/pkg/mod)
         # AND their parents (/home/podman/.cache, /home/podman/go) root-owned. The
         # go test step runs as podman and must read (restored objects) + write
-        # (newly compiled objects, plus the post-run save) the caches, so hand them
+        # (newly compiled objects, plus the final save step) the caches, so hand them
         # to podman first — the same ownership handoff the checkout uses.
         #
         # Chown the PARENTS (/home/podman/.cache, /home/podman/go), not just the
@@ -2511,11 +2511,12 @@ jobs:
           echo "dogfood e2e: every source-derived TestComms* leg reported PASS"
 
       - name: Save the Go build + module caches
-        # Only main's own code saves into main's cache scope; a `pr` dispatch
-        # restores but never writes. Runs as root, like the restore.
+        # Never on workflow_dispatch: a `pr` dispatch runs PR code under main's
+        # cache scope. A pull_request run saves to its own PR scope. Runs as root.
         if: >-
-          (github.event_name == 'push' || github.event_name == 'schedule')
-          && github.ref == 'refs/heads/main'
+          (((github.event_name == 'push' || github.event_name == 'schedule')
+            && github.ref == 'refs/heads/main')
+           || github.event_name == 'pull_request')
           && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
