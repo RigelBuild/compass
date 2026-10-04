@@ -2808,8 +2808,8 @@ jobs:
     # apps/ui/e2e/__screens__ PNG from the fixture-mode UI under CI's PINNED
     # Chromium, then opens a BOT PR carrying the rewritten baselines for image
     # review. It exists for provenance: a dev-box capture under the same pins
-    # is byte-identical, so only this run attests where a committed PNG came
-    # from. Like the forge lane it is a SEPARATE job, never a step in the moon
+    # is byte-identical, so this run attests a refreshed PNG's origin (a new
+    # shot's first baseline is a local capture, DL-399). Like the forge lane it is a SEPARATE job, never a step in the moon
     # battery, and the required `rollup` check above does not `needs:` it — a
     # regen dispatch must not post or
     # disturb gate contexts.
