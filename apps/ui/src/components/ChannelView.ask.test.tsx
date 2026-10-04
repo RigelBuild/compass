@@ -11,6 +11,7 @@ import {
 } from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { TopicView } from "./TopicView";
 
 // The MULTI-question ask surface, over the live wire. The single-question ask
@@ -70,7 +71,9 @@ async function mountAsk(fake: FakeComms): Promise<{
 		});
 		return (
 			<StoreContext value={store}>
-				<TopicView />
+				<ViewContext value={store.focusedView()}>
+					<TopicView />
+				</ViewContext>
 			</StoreContext>
 		);
 	});

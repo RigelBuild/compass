@@ -23,6 +23,7 @@ import {
 } from "../comms-stub";
 import { avatarInitial } from "../constants";
 import { useStore } from "../context";
+import { useView } from "../view-scope";
 import { MarkdownText } from "./MarkdownText";
 
 /** UTC HH:MM for a message timestamp — deterministic, locale-independent (the
@@ -582,21 +583,21 @@ const TopicIndex: Component<{
  *
  *  The channel source is either an explicit `channel` prop (the agent
  *  workspace passes its bound home DM, so the pane can never drift onto the
- *  standalone surface's selection) or, when the prop is absent, the global
- *  `selectedChannel` (the standalone channel mount). The presence check is on
- *  the prop KEY, not its value: an explicit `undefined` channel is the
- *  workspace's empty state, NOT a fall-through to `selectedChannel` — that
+ *  standalone surface's selection) or, when the prop is absent, the hosting
+ *  view's routed channel (the standalone channel mount). The presence check is
+ *  on the prop KEY, not its value: an explicit `undefined` channel is the
+ *  workspace's empty state, NOT a fall-through to the view's channel — that
  *  fall-through is what would let a standalone channel bleed into the
  *  interactive workspace pane (D3). */
 export const ChannelView: Component<{
 	channel?: Channel | undefined;
 }> = (props) => {
 	const store = useStore();
-	// Bound to the prop when the caller passes one (workspace), else the global
-	// selection (standalone). `"channel" in props` keeps an explicit undefined
-	// from falling through to selectedChannel().
+	// A bound pane (workspace, right sidebar) may mount outside any view, so only
+	// the standalone mount reads the view.
+	const view = "channel" in props ? undefined : useView();
 	const channel = (): Channel | undefined =>
-		"channel" in props ? props.channel : store.selectedChannel();
+		view ? view.channel() : props.channel;
 	const byId = () => new Map(store.accounts().map((a) => [a.id, a]));
 
 	return (

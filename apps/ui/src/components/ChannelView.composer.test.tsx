@@ -12,6 +12,7 @@ import {
 } from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { TopicView } from "./TopicView";
 
 // The topic composer's POSTING contract. In the two-level model a message is
@@ -93,7 +94,9 @@ async function mountComposer(fake: FakeComms): Promise<{
 		});
 		return (
 			<StoreContext value={store}>
-				<TopicView />
+				<ViewContext value={store.focusedView()}>
+					<TopicView />
+				</ViewContext>
 			</StoreContext>
 		);
 	});

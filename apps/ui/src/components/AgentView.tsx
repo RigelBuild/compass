@@ -1,13 +1,14 @@
 import { type Component, For, Match, Show, Switch } from "solid-js";
-import { useStore } from "../context";
 import {
 	type AgentTab,
 	CHAT_TAB_ID,
 	type Pane,
 	type SplitNode,
 	splitPanes,
-} from "../store";
+} from "../agent-tabs";
+import { useStore } from "../context";
 import type { Agent, Terminal } from "../stub-data";
+import { useView } from "../view-scope";
 import { ChannelView } from "./ChannelView";
 import { Glyph } from "./Glyph";
 import { LogPanel } from "./LogPanel";
@@ -54,18 +55,19 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 	props,
 ) => {
 	const store = useStore();
+	const view = useView();
 	// The terminal pane the split buttons open: the agent's next unplaced FIXTURE
 	// terminal (rich scrollback) while any remain, else a freshly-minted
 	// placeholder from the store. Always returns a pane, so the split buttons are
 	// always enabled — fixture terminals first, then placeholders.
 	const nextOrMintedTerminalPane = (): Pane =>
-		nextFreeTerminalPane(props.agent, store.agentTabs()) ??
+		nextFreeTerminalPane(props.agent, view.agentTabs()) ??
 		store.newTerminalPane(props.agent);
 	// Split this tab's focused pane, opening that terminal beside it (row = split
 	// right, column = split down); a later context menu will pick the pane kind.
 	const splitWith = (direction: "row" | "column") => {
-		store.setFocusedPane(props.pane.id);
-		store.splitActivePane(nextOrMintedTerminalPane(), direction);
+		view.setFocusedPane(props.pane.id);
+		view.splitFocused(nextOrMintedTerminalPane(), direction);
 	};
 	return (
 		<div class={["av-pane", { focused: props.focused }]}>
@@ -75,7 +77,7 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 					class="av-pane-title"
 					title={`Focus ${props.pane.title}`}
 					aria-pressed={props.focused ? "true" : "false"}
-					onClick={() => store.setFocusedPane(props.pane.id)}
+					onClick={() => view.setFocusedPane(props.pane.id)}
 				>
 					{props.pane.title}
 				</button>
@@ -104,7 +106,7 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 						class="av-pane-btn av-pane-close"
 						title="Close pane"
 						aria-label="Close pane"
-						onClick={() => store.closePane(props.pane.id)}
+						onClick={() => view.closePane(props.pane.id)}
 					>
 						<Glyph name="close" />
 					</button>
@@ -113,7 +115,7 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 			<div class="av-pane-body">
 				<Switch>
 					<Match when={props.pane.kind === "chat"}>
-						<ChannelView channel={store.workspaceChannel()} />
+						<ChannelView channel={view.workspaceChannel()} />
 					</Match>
 					<Match when={props.pane.kind === "terminal"}>
 						<TerminalBody
@@ -199,20 +201,18 @@ export const nextFreeTerminalPane = (
  *  gutter, or a card. */
 export const AgentView: Component = () => {
 	const store = useStore();
+	const view = useView();
 	// Open a new full-screen terminal tab: reuse the next unplaced fixture
 	// terminal (rich scrollback) while any remain, else mint a fresh placeholder.
 	// Always opens a tab — the "+" button never disables.
 	const openTerminalTab = (agent: Agent) => {
-		store.openTab(
-			nextFreeTerminalPane(agent, store.agentTabs()) ??
+		view.openTab(
+			nextFreeTerminalPane(agent, view.agentTabs()) ??
 				store.newTerminalPane(agent),
 		);
 	};
 	return (
-		<Show
-			when={store.selectedAgent()}
-			fallback={<p class="muted">Select an agent.</p>}
-		>
+		<Show when={view.agent()} fallback={<p class="muted">Select an agent.</p>}>
 			{(agent) => (
 				<div class="agent-view">
 					<div class="av-header">
@@ -239,12 +239,12 @@ export const AgentView: Component = () => {
 					</div>
 					<div class="av-body">
 						<div class="av-tabs" role="tablist" aria-label="Agent tabs">
-							<For each={store.agentTabs()}>
+							<For each={view.agentTabs()}>
 								{(tab) => (
 									<div
 										class={[
 											"av-tab",
-											{ active: tab.id === store.activeAgentTabId() },
+											{ active: tab.id === view.activeAgentTabId() },
 										]}
 									>
 										<button
@@ -252,9 +252,9 @@ export const AgentView: Component = () => {
 											role="tab"
 											class="av-tab-label"
 											aria-selected={
-												tab.id === store.activeAgentTabId() ? "true" : "false"
+												tab.id === view.activeAgentTabId() ? "true" : "false"
 											}
-											onClick={() => store.setActiveAgentTab(tab.id)}
+											onClick={() => view.setActiveAgentTab(tab.id)}
 										>
 											{tab.title}
 										</button>
@@ -264,7 +264,7 @@ export const AgentView: Component = () => {
 												class="av-tab-close"
 												aria-label={`Close ${tab.title}`}
 												title={`Close ${tab.title}`}
-												onClick={() => store.closeTab(tab.id)}
+												onClick={() => view.closeTab(tab.id)}
 											>
 												<Glyph name="close" />
 											</button>
@@ -284,7 +284,7 @@ export const AgentView: Component = () => {
 						</div>
 						<div class="av-tree">
 							<Show
-								when={store.activeAgentTab()}
+								when={view.activeAgentTab()}
 								fallback={<div class="av-leaf-empty muted">No tab open.</div>}
 							>
 								{(tab) => (

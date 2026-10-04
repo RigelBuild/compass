@@ -354,7 +354,7 @@ type AgentLifecycle = AgentState;
  *  unstarted agent); role/model/cwd are UI-only roster config, terminals is
  *  pure fixture (no terminal stream in the MVP). The typed OMP session trace is
  *  NOT here — it is a separate type (`AgentSession`, session-events.ts) read by
- *  account id via `store.agentSession()`, folded and rendered by Compass. */
+ *  account id via a view's `agentSession()`, folded and rendered by Compass. */
 export interface Agent {
 	account: Account;
 	lifecycle?: AgentLifecycle;

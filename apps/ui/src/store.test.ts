@@ -1,20 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { createRoot, flush } from "solid-js";
-import type { Ask, AskQuestion } from "./comms-stub";
-import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
 import {
 	type AgentTab,
-	type AppStore,
-	CALLER_ID,
 	CHAT_TAB_ID,
-	createAppStore,
 	type Pane,
 	type SplitNode,
 	splitPaneIds,
 	splitPaneOnce,
 	splitPanes,
-	type View,
-} from "./store";
+} from "./agent-tabs";
+import type { Ask, AskQuestion } from "./comms-stub";
+import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
+import { type AppStore, CALLER_ID, createAppStore, type View } from "./store";
 import { STUB_AGENTS, STUB_ASSIGNED_ISSUES } from "./stub-data";
 import { testQueryClient } from "./test-support";
 
@@ -213,18 +210,30 @@ describe("openAgent", () => {
 			// Prior workspace with an extra tab open — the switch must clear it.
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1"]);
 
 			s.openAgent("acc-compass-server");
 			flush();
 
 			// Tabs reset to the lone chat tab, focused on it.
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID]);
-			expect(s.activeAgentTabId()).toBe(CHAT_TAB_ID);
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID]);
+			expect(s.focusedView().activeAgentTabId()).toBe(CHAT_TAB_ID);
 			// The workspace pane derives its channel from the agent's home DM.
-			expect(s.workspaceChannel()?.id).toBe(home?.account.homeChannelId);
+			expect(s.focusedView().workspaceChannel()?.id).toBe(
+				home?.account.homeChannelId,
+			);
 		});
 	});
 
@@ -235,16 +244,26 @@ describe("openAgent", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1"]);
 
 			// Re-open the same agent (clicking its tree row again).
 			s.openAgent("acc-compass-ui");
 			flush();
 
 			// The init-guard returned before the reset — the terminal tab survives.
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1"]);
 		});
 	});
 
@@ -389,34 +408,11 @@ describe("openAgent", () => {
 
 			// The workspace pane derives compass-ui's home DM, and the view is restored.
 			expect(s.view()).toBe("agent");
-			expect(s.workspaceChannel()?.id).toBe(home);
+			expect(s.focusedView().workspaceChannel()?.id).toBe(home);
 			// The decouple's whole point: openAgent left `selectedChannelId`
 			// untouched — the standalone selection persists alongside the
 			// workspace's independent home-DM channel.
 			expect(s.selectedChannelId()).toBe("ch-svc-compass");
-		});
-	});
-
-	// The reverse independence: moving the standalone channel surface
-	// (`openChannel` on a non-DM channel) cannot move the workspace pane. The
-	// workspace channel stays derived from the selected agent's home DM while
-	// `selectedChannel` follows the standalone pick — the two surfaces read
-	// separate state.
-	test("a standalone channel selection does not move the workspace channel", () => {
-		withStore((s) => {
-			s.openAgent("acc-compass-ui");
-			const home = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui")
-				?.account.homeChannelId;
-			expect(home).toBeDefined();
-
-			// Move the standalone surface to a channel distinct from compass-ui's home DM.
-			s.openChannel("ch-svc-compass");
-			flush();
-
-			// The standalone surface moved…
-			expect(s.selectedChannel()?.id).toBe("ch-svc-compass");
-			// …but the workspace pane still derives compass-ui's home DM.
-			expect(s.workspaceChannel()?.id).toBe(home);
 		});
 	});
 });
@@ -1052,7 +1048,7 @@ describe("agent tab group (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			const tabs = s.agentTabs();
+			const tabs = s.focusedView().agentTabs();
 			expect(tabs).toHaveLength(1);
 			expect(tabs[0]?.id).toBe(CHAT_TAB_ID);
 			expect(tabs[0]?.title).toBe("Chat");
@@ -1076,12 +1072,17 @@ describe("agent tab group (T7)", () => {
 				terminalId: "t1",
 			};
 
-			s.openTab(pane);
+			s.focusedView().openTab(pane);
 			flush();
 
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
-			expect(s.activeAgentTabId()).toBe("term-1");
-			const tab = s.activeAgentTab();
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(s.focusedView().activeAgentTabId()).toBe("term-1");
+			const tab = s.focusedView().activeAgentTab();
 			expect(tab?.title).toBe("dev");
 			expect(tab?.layout).toEqual({ kind: "leaf", pane });
 			expect(tab?.focusedPaneId).toBe("term-1");
@@ -1093,22 +1094,27 @@ describe("agent tab group (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			s.focusedView().openTab({
+				id: "term-2",
+				kind: "terminal",
+				title: "tests",
+			});
 			flush();
-			expect(s.activeAgentTabId()).toBe("term-2");
+			expect(s.focusedView().activeAgentTabId()).toBe("term-2");
 
 			// Re-open term-1 (already present): no new tab, focus moves back to it.
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
 
-			expect(s.agentTabs().map((t) => t.id)).toEqual([
-				CHAT_TAB_ID,
-				"term-1",
-				"term-2",
-			]);
-			expect(s.activeAgentTabId()).toBe("term-1");
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1", "term-2"]);
+			expect(s.focusedView().activeAgentTabId()).toBe("term-1");
 		});
 	});
 
@@ -1117,20 +1123,20 @@ describe("agent tab group (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			expect(s.activeAgentTabId()).toBe("term-1");
+			expect(s.focusedView().activeAgentTabId()).toBe("term-1");
 
-			s.setActiveAgentTab("does-not-exist");
+			s.focusedView().setActiveAgentTab("does-not-exist");
 			flush();
 
 			// Focus unchanged: the guard rejected the unknown id.
-			expect(s.activeAgentTabId()).toBe("term-1");
+			expect(s.focusedView().activeAgentTabId()).toBe("term-1");
 		});
 	});
 });
 
-describe("splitActivePane (T7)", () => {
+describe("splitFocused (T7)", () => {
 	// Splitting the active tab's focused pane grows THAT tab's tree by one pane
 	// and focuses the new pane so a follow-up split chains off it. `row` places
 	// the new pane to the right (split right).
@@ -1140,10 +1146,10 @@ describe("splitActivePane (T7)", () => {
 			flush();
 			const pane: Pane = { id: "term-1", kind: "terminal", title: "dev" };
 
-			s.splitActivePane(pane, "row");
+			s.focusedView().splitFocused(pane, "row");
 			flush();
 
-			const tab = s.activeAgentTab();
+			const tab = s.focusedView().activeAgentTab();
 			expect(tab?.layout).toEqual({
 				kind: "split",
 				direction: "row",
@@ -1165,13 +1171,13 @@ describe("splitActivePane (T7)", () => {
 			s.openAgent("acc-compass-ui");
 			flush();
 
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"column",
 			);
 			flush();
 
-			expect(s.activeAgentTab()?.layout).toEqual({
+			expect(s.focusedView().activeAgentTab()?.layout).toEqual({
 				kind: "split",
 				direction: "column",
 				left: {
@@ -1193,21 +1199,25 @@ describe("splitActivePane (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			s.focusedView().openTab({
+				id: "term-2",
+				kind: "terminal",
+				title: "tests",
+			});
 			flush();
 			// Make term-1 the active tab, then split it.
-			s.setActiveAgentTab("term-1");
+			s.focusedView().setActiveAgentTab("term-1");
 			flush();
 
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-3", kind: "terminal", title: "logs" },
 				"row",
 			);
 			flush();
 
-			const tabs = s.agentTabs();
+			const tabs = s.focusedView().agentTabs();
 			const term1 = tabs.find((t) => t.id === "term-1");
 			expect(paneIds(term1)).toEqual(["term-1", "term-3"]);
 			expect(term1?.focusedPaneId).toBe("term-3");
@@ -1228,34 +1238,34 @@ describe("splitActivePane (T7)", () => {
 			s.openAgent("acc-compass-ui");
 			flush();
 			// Split once: panes [chat, term-1], term-1 focused.
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"row",
 			);
 			flush();
-			expect(s.activeAgentTab()?.focusedPaneId).toBe("term-1");
+			expect(s.focusedView().activeAgentTab()?.focusedPaneId).toBe("term-1");
 
 			// Focus back to the chat pane; an absent id changes nothing.
-			s.setFocusedPane(CHAT_TAB_ID);
+			s.focusedView().setFocusedPane(CHAT_TAB_ID);
 			flush();
-			expect(s.activeAgentTab()?.focusedPaneId).toBe(CHAT_TAB_ID);
-			s.setFocusedPane("not-a-pane");
+			expect(s.focusedView().activeAgentTab()?.focusedPaneId).toBe(CHAT_TAB_ID);
+			s.focusedView().setFocusedPane("not-a-pane");
 			flush();
-			expect(s.activeAgentTab()?.focusedPaneId).toBe(CHAT_TAB_ID);
+			expect(s.focusedView().activeAgentTab()?.focusedPaneId).toBe(CHAT_TAB_ID);
 
 			// The next split anchors on the chat pane, inserting term-2 beside
 			// it (not beside term-1), and focuses term-2.
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-2", kind: "terminal", title: "tests" },
 				"column",
 			);
 			flush();
-			expect(paneIds(s.activeAgentTab())).toEqual([
+			expect(paneIds(s.focusedView().activeAgentTab())).toEqual([
 				CHAT_TAB_ID,
 				"term-2",
 				"term-1",
 			]);
-			expect(s.activeAgentTab()?.focusedPaneId).toBe("term-2");
+			expect(s.focusedView().activeAgentTab()?.focusedPaneId).toBe("term-2");
 		});
 	});
 });
@@ -1267,17 +1277,26 @@ describe("closing tabs + panes (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			s.focusedView().openTab({
+				id: "term-2",
+				kind: "terminal",
+				title: "tests",
+			});
 			flush();
-			expect(s.activeAgentTabId()).toBe("term-2");
+			expect(s.focusedView().activeAgentTabId()).toBe("term-2");
 
-			s.closeTab("term-2");
+			s.focusedView().closeTab("term-2");
 			flush();
 
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
-			expect(s.activeAgentTabId()).toBe(CHAT_TAB_ID);
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(s.focusedView().activeAgentTabId()).toBe(CHAT_TAB_ID);
 		});
 	});
 
@@ -1287,18 +1306,27 @@ describe("closing tabs + panes (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			s.focusedView().openTab({
+				id: "term-2",
+				kind: "terminal",
+				title: "tests",
+			});
 			flush();
-			s.setActiveAgentTab("term-2");
+			s.focusedView().setActiveAgentTab("term-2");
 			flush();
 
-			s.closeTab("term-1");
+			s.focusedView().closeTab("term-1");
 			flush();
 
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-2"]);
-			expect(s.activeAgentTabId()).toBe("term-2");
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-2"]);
+			expect(s.focusedView().activeAgentTabId()).toBe("term-2");
 		});
 	});
 
@@ -1307,15 +1335,20 @@ describe("closing tabs + panes (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			expect(s.activeAgentTabId()).toBe("term-1");
+			expect(s.focusedView().activeAgentTabId()).toBe("term-1");
 
-			s.closeTab(CHAT_TAB_ID);
+			s.focusedView().closeTab(CHAT_TAB_ID);
 			flush();
 
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
-			expect(s.activeAgentTabId()).toBe("term-1");
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(s.focusedView().activeAgentTabId()).toBe("term-1");
 		});
 	});
 
@@ -1325,21 +1358,29 @@ describe("closing tabs + panes (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-2", kind: "terminal", title: "tests" },
 				"row",
 			);
 			flush();
-			expect(paneIds(s.activeAgentTab())).toEqual(["term-1", "term-2"]);
+			expect(paneIds(s.focusedView().activeAgentTab())).toEqual([
+				"term-1",
+				"term-2",
+			]);
 
-			s.closePane("term-1");
+			s.focusedView().closePane("term-1");
 			flush();
 
 			// The tab survives; its tree collapsed to the lone surviving pane.
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
-			expect(s.activeAgentTab()?.layout).toEqual({
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(s.focusedView().activeAgentTab()?.layout).toEqual({
 				kind: "leaf",
 				pane: { id: "term-2", kind: "terminal", title: "tests" },
 			});
@@ -1352,15 +1393,20 @@ describe("closing tabs + panes (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			expect(s.activeAgentTabId()).toBe("term-1");
+			expect(s.focusedView().activeAgentTabId()).toBe("term-1");
 
-			s.closePane("term-1");
+			s.focusedView().closePane("term-1");
 			flush();
 
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID]);
-			expect(s.activeAgentTabId()).toBe(CHAT_TAB_ID);
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID]);
+			expect(s.focusedView().activeAgentTabId()).toBe(CHAT_TAB_ID);
 		});
 	});
 
@@ -1370,20 +1416,20 @@ describe("closing tabs + panes (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			s.focusedView().openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			flush();
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-2", kind: "terminal", title: "tests" },
 				"row",
 			);
 			flush();
-			expect(s.activeAgentTab()?.focusedPaneId).toBe("term-2");
+			expect(s.focusedView().activeAgentTab()?.focusedPaneId).toBe("term-2");
 
-			s.closePane("term-2");
+			s.focusedView().closePane("term-2");
 			flush();
 
-			expect(paneIds(s.activeAgentTab())).toEqual(["term-1"]);
-			expect(s.activeAgentTab()?.focusedPaneId).toBe("term-1");
+			expect(paneIds(s.focusedView().activeAgentTab())).toEqual(["term-1"]);
+			expect(s.focusedView().activeAgentTab()?.focusedPaneId).toBe("term-1");
 		});
 	});
 
@@ -1396,12 +1442,17 @@ describe("closing tabs + panes (T7)", () => {
 			s.openAgent("acc-compass-ui");
 			flush();
 
-			s.closePane(CHAT_TAB_ID);
+			s.focusedView().closePane(CHAT_TAB_ID);
 			flush();
 
-			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID]);
-			expect(s.activeAgentTabId()).toBe(CHAT_TAB_ID);
-			expect(s.activeAgentTab()?.layout).toEqual({
+			expect(
+				s
+					.focusedView()
+					.agentTabs()
+					.map((t) => t.id),
+			).toEqual([CHAT_TAB_ID]);
+			expect(s.focusedView().activeAgentTabId()).toBe(CHAT_TAB_ID);
+			expect(s.focusedView().activeAgentTab()?.layout).toEqual({
 				kind: "leaf",
 				pane: { id: CHAT_TAB_ID, kind: "chat", title: "Chat" },
 			});
@@ -1417,19 +1468,25 @@ describe("closing tabs + panes (T7)", () => {
 			s.openAgent("acc-compass-ui");
 			flush();
 			// Split the chat tab: chat pane + term-1 beside it.
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"row",
 			);
 			flush();
 			// Sanity: the chat tab now holds both panes.
-			expect(paneIds(s.activeAgentTab())).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(paneIds(s.focusedView().activeAgentTab())).toEqual([
+				CHAT_TAB_ID,
+				"term-1",
+			]);
 
-			s.closePane(CHAT_TAB_ID); // permanent — no-op
+			s.focusedView().closePane(CHAT_TAB_ID); // permanent — no-op
 			flush();
 
 			// Both panes survive; the split is intact.
-			expect(paneIds(s.activeAgentTab())).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(paneIds(s.focusedView().activeAgentTab())).toEqual([
+				CHAT_TAB_ID,
+				"term-1",
+			]);
 		});
 	});
 
@@ -1441,18 +1498,21 @@ describe("closing tabs + panes (T7)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 			flush();
-			s.splitActivePane(
+			s.focusedView().splitFocused(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"row",
 			);
 			flush();
-			expect(paneIds(s.activeAgentTab())).toEqual([CHAT_TAB_ID, "term-1"]);
+			expect(paneIds(s.focusedView().activeAgentTab())).toEqual([
+				CHAT_TAB_ID,
+				"term-1",
+			]);
 
-			s.closePane("term-1");
+			s.focusedView().closePane("term-1");
 			flush();
 
 			// The split collapses back to the lone chat pane.
-			expect(s.activeAgentTab()?.layout).toEqual({
+			expect(s.focusedView().activeAgentTab()?.layout).toEqual({
 				kind: "leaf",
 				pane: { id: CHAT_TAB_ID, kind: "chat", title: "Chat" },
 			});

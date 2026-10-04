@@ -23,6 +23,7 @@ import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { StateDot } from "./components/StateDot";
 import { TopBarSearch } from "./components/TopBarSearch";
 import { UsageBar } from "./components/UsageBar";
+import { ViewHost } from "./components/ViewHost";
 import { useStore } from "./context";
 import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
@@ -169,7 +170,9 @@ const App: Component<
 				<LeftSidebar />
 			</Show>
 
-			<main class="main">{props.children}</main>
+			<main class="main">
+				<ViewHost scope={store.focusedView()} />
+			</main>
 
 			<Show when={store.rightOpen()}>
 				<RightSidebar />
