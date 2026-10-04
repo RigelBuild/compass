@@ -30,6 +30,8 @@
 //               here.
 //   GATE_BASE_REF - optional git ref to compare migrations against.
 //   GITHUB_BASE_REF - PR target branch, used when GATE_BASE_REF is unset.
+//   GITHUB_ACTIONS - when set, a root outside a git worktree fails the check;
+//        otherwise (a local jj workspace) that check is skipped with a note.
 // Exit codes:
 //   0 - all checks passed (no findings).
 //   1 - one or more checks reported findings.
@@ -122,10 +124,27 @@ export function findMigrationViolations(
 	return violations;
 }
 
-function migrationBaseRef(env: NodeJS.ProcessEnv): string {
+/** The ref migrations are compared against: explicit, then the PR target, then main. */
+export function migrationBaseRef(env: NodeJS.ProcessEnv): string {
 	if (env.GATE_BASE_REF) return env.GATE_BASE_REF;
 	if (env.GITHUB_BASE_REF) return `origin/${env.GITHUB_BASE_REF}`;
 	return "origin/main";
+}
+
+async function gitStdout(root: string, args: string[]): Promise<Uint8Array> {
+	const proc = Bun.spawn(["git", ...args], {
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [out, stderr] = await Promise.all([
+		new Response(proc.stdout).arrayBuffer(),
+		new Response(proc.stderr).text(),
+	]);
+	const code = await proc.exited;
+	if (code !== 0)
+		throw new Error(`git ${args.join(" ")} exited ${code}: ${stderr.trim()}`);
+	return new Uint8Array(out);
 }
 
 /** Read merge-base migration blobs from git and compare them with disk. */
@@ -134,34 +153,48 @@ export async function checkMigrationImmutability(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<LinterResult> {
 	const name = "migration-immutability";
+	const inWorktree = await $`git rev-parse --is-inside-work-tree`
+		.cwd(root)
+		.nothrow()
+		.quiet();
+	// A jj workspace has no git worktree; CI always does, so only CI must fail closed.
+	if (inWorktree.exitCode !== 0 && !env.GITHUB_ACTIONS) {
+		return {
+			name,
+			code: 0,
+			output: `sql-migration-gate: skipped migration immutability: ${root} is not a git worktree (GitHub Actions enforces it)`,
+		};
+	}
 	try {
 		const baseRef = migrationBaseRef(env);
-		const mergeBase = (
-			await $`git merge-base ${baseRef} HEAD`.cwd(root).quiet().text()
-		).trim();
+		const decoder = new TextDecoder();
+		const mergeBase = decoder
+			.decode(await gitStdout(root, ["merge-base", baseRef, "HEAD"]))
+			.trim();
 		if (!mergeBase)
 			throw new Error(`git merge-base returned no commit for ${baseRef}`);
-		const listed =
-			await $`git ls-tree -r --name-only ${mergeBase} -- go/internal/store/migrations`
-				.cwd(root)
-				.quiet()
-				.text();
+		const listed = decoder.decode(
+			await gitStdout(root, [
+				"ls-tree",
+				"-r",
+				"-z",
+				"--name-only",
+				mergeBase,
+				"--",
+				"go/internal/store/migrations",
+			]),
+		);
 		const baseFiles = new Map<string, Uint8Array>();
 		const currentFiles = new Map<string, Uint8Array>();
-		for (const path of listed.split("\n").filter(Boolean)) {
-			if (!/^go\/internal\/store\/migrations\/[^/]+\.sql$/.test(path)) continue;
-			const blob = Bun.spawn(["git", "show", `${mergeBase}:${path}`], {
-				cwd: root,
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			const [bytes, stderr] = await Promise.all([
-				new Response(blob.stdout).arrayBuffer(),
-				new Response(blob.stderr).text(),
-			]);
-			if ((await blob.exited) !== 0)
-				throw new Error(`git show ${path} failed: ${stderr.trim()}`);
-			baseFiles.set(path, new Uint8Array(bytes));
+		for (const path of listed.split("\0").filter(Boolean)) {
+			if (!path.endsWith(".sql")) continue;
+			// go:embed takes only top-level *.sql; a nested one is not a migration.
+			if (path.slice("go/internal/store/migrations/".length).includes("/"))
+				continue;
+			baseFiles.set(
+				path,
+				await gitStdout(root, ["show", `${mergeBase}:${path}`]),
+			);
 			const file = Bun.file(`${root}/${path}`);
 			if (await file.exists())
 				currentFiles.set(path, new Uint8Array(await file.arrayBuffer()));

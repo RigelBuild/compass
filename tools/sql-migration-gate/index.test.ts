@@ -9,7 +9,7 @@
 // Conventions (mirroring tools/inline-sql-gate/index.test.ts):
 // - Literal expectations, not values derived from the module.
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,7 @@ import {
 	type LinterResult,
 	MIGRATION_GLOB,
 	makeSpawnLinter,
+	migrationBaseRef,
 	runOnce,
 } from "./index.ts";
 
@@ -169,6 +170,12 @@ describe("runOnce", () => {
 		const { deps } = harness({ squawk: 2, sqruff: 0 });
 		expect(await runOnce(deps)).toBe(2);
 	});
+
+	test("a migration-check finding fails the gate and surfaces its output", async () => {
+		const { deps, errs } = harness({ "migration-immutability": 1 });
+		expect(await runOnce(deps)).toBe(1);
+		expect(errs.join("\n")).toContain("migration findings");
+	});
 });
 
 describe("findMigrationViolations", () => {
@@ -233,33 +240,115 @@ describe("findMigrationViolations", () => {
 	});
 });
 
+describe("migrationBaseRef", () => {
+	test("GATE_BASE_REF wins over the PR target", () => {
+		expect(
+			migrationBaseRef({ GATE_BASE_REF: "base", GITHUB_BASE_REF: "release" }),
+		).toBe("base");
+	});
+
+	test("the PR target resolves on origin", () => {
+		expect(migrationBaseRef({ GITHUB_BASE_REF: "release" })).toBe(
+			"origin/release",
+		);
+	});
+
+	test("defaults to origin/main", () => {
+		expect(migrationBaseRef({})).toBe("origin/main");
+	});
+});
+
 describe("checkMigrationImmutability", () => {
-	test("real git path rejects edited base migration and accepts unchanged file", async () => {
+	// An inherited GIT_DIR or GIT_WORK_TREE would point every git call at the outer repo.
+	const gitOverrides = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] as const;
+	const saved = new Map<string, string | undefined>();
+	beforeAll(() => {
+		for (const key of gitOverrides) {
+			saved.set(key, process.env[key]);
+			delete process.env[key];
+		}
+	});
+	afterAll(() => {
+		for (const [key, value] of saved) {
+			if (value !== undefined) process.env[key] = value;
+		}
+	});
+
+	async function withRepo(
+		files: Record<string, string>,
+		body: (root: string) => Promise<void>,
+	) {
 		const root = mkdtempSync(join(tmpdir(), "sql-gate-git-"));
-		const path = "go/internal/store/migrations/0001_init.sql";
-		const file = join(root, path);
 		const git = (args: string[]) => Bun.$`git ${args}`.cwd(root).quiet();
 		try {
 			mkdirSync(join(root, "go/internal/store/migrations"), {
 				recursive: true,
 			});
-			writeFileSync(file, "SELECT 1;\n");
+			for (const [path, text] of Object.entries(files))
+				writeFileSync(join(root, path), text);
 			await git(["init", "-q"]);
 			await git(["config", "user.email", "test@example.com"]);
 			await git(["config", "user.name", "Migration test"]);
-			await git(["add", path]);
+			await git(["add", "."]);
 			await git(["commit", "-qm", "base"]);
 			await git(["branch", "base"]);
+			await body(root);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+
+	test("real git path rejects edited base migration and accepts unchanged file", async () => {
+		const path = "go/internal/store/migrations/0001_init.sql";
+		await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
 			expect(
 				(await checkMigrationImmutability(root, { GATE_BASE_REF: "base" }))
 					.code,
 			).toBe(0);
-			writeFileSync(file, "SELECT 2;\n");
+			writeFileSync(join(root, path), "SELECT 2;\n");
 			const result = await checkMigrationImmutability(root, {
 				GATE_BASE_REF: "base",
 			});
 			expect(result.code).toBe(1);
 			expect(result.output).toContain(path);
+		});
+	});
+
+	test("a migration name git would C-quote is still checked", async () => {
+		const path = "go/internal/store/migrations/0002_café.sql";
+		await withRepo({ [path]: "SELECT 1;\n" }, async (root) => {
+			writeFileSync(join(root, path), "SELECT 2;\n");
+			const result = await checkMigrationImmutability(root, {
+				GATE_BASE_REF: "base",
+			});
+			expect(result.code).toBe(1);
+			expect(result.output).toContain(path);
+		});
+	});
+
+	test("an unresolvable base ref fails closed and names the ref", async () => {
+		await withRepo(
+			{ "go/internal/store/migrations/0001_init.sql": "SELECT 1;\n" },
+			async (root) => {
+				const result = await checkMigrationImmutability(root, {
+					GATE_BASE_REF: "no-such-ref",
+				});
+				expect(result.code).toBe(2);
+				expect(result.output).toContain("no-such-ref");
+			},
+		);
+	});
+
+	test("outside a git worktree: skipped locally, fails closed on GitHub Actions", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sql-gate-nogit-"));
+		try {
+			const local = await checkMigrationImmutability(root, {});
+			expect(local.code).toBe(0);
+			expect(local.output).toContain("skipped");
+			expect(
+				(await checkMigrationImmutability(root, { GITHUB_ACTIONS: "true" }))
+					.code,
+			).toBe(2);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
