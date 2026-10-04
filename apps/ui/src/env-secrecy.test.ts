@@ -68,7 +68,11 @@ function unsafeEnvLines(text: string): string[] {
 			.replace(/\s+#.*$/, "")
 			.trim();
 		if (isSafeValue(value)) continue;
-		if (key.startsWith("VITE_") || value.includes("://")) {
+		if (
+			key.startsWith("VITE_") ||
+			value.includes("://") ||
+			URL.canParse(value)
+		) {
 			problems.push(`${key} is set to a non-loopback value`);
 		}
 	}
@@ -142,6 +146,8 @@ describe("env content classifier", () => {
 		['VITE_COMPASS_BASE_URL="http://127.0.0.1\\"@evil.example"', 1],
 		[`VITE_COMPASS_BASE_URL=http://localhost${EXPAND}`, 1],
 		[`OTHER_URL=http://localhost${EXPAND}`, 1],
+		["OTHER_URL=https:/door.example.com", 1],
+		["OTHER_URL=mailto:a@example.com", 1],
 		["VITE_COMPASS_BASE_URL=http://localhost:5173/path", 0],
 		["# VITE_COMPASS_TOKEN=xxx", 0],
 	] as const)("%s -> %d problem(s)", (line, count) => {
