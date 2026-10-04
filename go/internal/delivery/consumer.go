@@ -170,6 +170,8 @@ type erroredBackoff struct {
 	pending bool
 }
 
+// The cap must stay below the reset window, or a steady crash loop would reset
+// its own strikes and wake at once every time.
 const (
 	erroredWakeBaseDelay  = 30 * time.Second
 	erroredWakeMaxDelay   = 15 * time.Minute
@@ -452,6 +454,7 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 			delete(c.lastSettle, sid)
 		}
 	}
+	c.pruneErroredWakes()
 	c.mu.Unlock()
 	c.sweepAllLive(ctx)
 	c.scanMissedMentions(ctx)

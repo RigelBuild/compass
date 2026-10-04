@@ -130,3 +130,56 @@ func TestDeferredErroredWakeSkipsWhenNothingOwed(t *testing.T) {
 		t.Fatalf("pending flag not cleared: timers=%d, want 2", len(fire))
 	}
 }
+
+// The delay doubles from the base and holds at the cap, which stays below the
+// reset window so a steady crash loop cannot clear its own strikes.
+func TestErroredWakeDelaySchedule(t *testing.T) {
+	if erroredWakeMaxDelay >= erroredWakeResetAfter {
+		t.Fatalf("cap %v must be below reset window %v", erroredWakeMaxDelay, erroredWakeResetAfter)
+	}
+	want := make([]time.Duration, 0, 16)
+	want = append(want, 0, 30*time.Second, time.Minute, 2*time.Minute, 4*time.Minute,
+		8*time.Minute, 15*time.Minute, 15*time.Minute)
+	for range 8 {
+		want = append(want, erroredWakeMaxDelay)
+	}
+	c := NewConsumer(newFakeReads(), newFakeDispatcher(), newFakeResolver(), newFakeFabric(), discardLogger())
+	now := time.Unix(1_000_000, 0)
+	c.now = func() time.Time { return now }
+	const agent store.AccountID = "agent-a"
+	for strikes, w := range want {
+		if got := c.nextErroredWakeDelay(agent); got != w {
+			t.Fatalf("strike %d delay = %v, want %v", strikes, got, w)
+		}
+		c.clearPendingErroredWake(agent)
+		now = now.Add(time.Minute)
+	}
+}
+
+// The recovery pass drops backoff state past its reset window but keeps an
+// account with a pending deferred wake.
+func TestRecoveryPrunesStaleErroredBackoff(t *testing.T) {
+	c := NewConsumer(newFakeReads(), newFakeDispatcher(), newFakeResolver(), newFakeFabric(), discardLogger())
+	now := time.Unix(1_000_000, 0)
+	c.now = func() time.Time { return now }
+	for range 2 {
+		c.nextErroredWakeDelay("stale")
+	}
+	c.clearPendingErroredWake("stale")
+	for range 2 {
+		c.nextErroredWakeDelay("pending")
+	}
+	now = now.Add(erroredWakeResetAfter)
+	c.mu.Lock()
+	c.recoveryPending = true
+	c.mu.Unlock()
+	c.drainRecovery(t.Context())
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.erroredWakes["stale"]; ok {
+		t.Fatal("stale backoff entry was not pruned")
+	}
+	if _, ok := c.erroredWakes["pending"]; !ok {
+		t.Fatal("pending backoff entry was pruned")
+	}
+}

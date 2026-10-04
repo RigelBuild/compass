@@ -416,7 +416,7 @@ func (c *Consumer) enqueueLost(ev lostEvent) {
 }
 
 // drainLost wakes each lost account. An ERRORED loss wakes only with owed work, and
-// repeat ERRORED wakes back off, so neither a boot crash nor a poisoned message loops.
+// repeat ERRORED wakes back off, so a poisoned message re-wakes on a capped delay.
 func (c *Consumer) drainLost(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -427,6 +427,9 @@ func (c *Consumer) drainLost(ctx context.Context) {
 		ev := c.lostQueue[0]
 		c.lostQueue = c.lostQueue[1:]
 		c.mu.Unlock()
+		if ev.errored && !ev.deferred && c.erroredWakePending(ev.account) {
+			continue
+		}
 		if ev.errored && !c.hasOwedWork(ctx, ev.account) {
 			c.log.InfoContext(ctx, "delivery: errored session owes nothing, not waking", "account", string(ev.account))
 			if ev.deferred {
@@ -435,14 +438,12 @@ func (c *Consumer) drainLost(ctx context.Context) {
 			continue
 		}
 		if ev.errored && !ev.deferred {
-			if delay, ok := c.erroredWakeDelay(ev.account); delay > 0 {
-				if ok {
-					c.log.WarnContext(ctx, "delivery: repeat errored session, delaying wake",
-						"account", string(ev.account), "delay", delay)
-					c.afterFunc(delay, func() {
-						c.enqueueLost(lostEvent{account: ev.account, errored: true, deferred: true})
-					})
-				}
+			if delay := c.nextErroredWakeDelay(ev.account); delay > 0 {
+				c.log.WarnContext(ctx, "delivery: repeat errored session, delaying wake",
+					"account", string(ev.account), "delay", delay)
+				c.afterFunc(delay, func() {
+					c.enqueueLost(lostEvent{account: ev.account, errored: true, deferred: true})
+				})
 				continue
 			}
 		}
@@ -453,35 +454,41 @@ func (c *Consumer) drainLost(ctx context.Context) {
 	}
 }
 
-// erroredWakeDelay records one ERRORED loss for account and returns how long its
-// wake waits: zero for the first in a window, then doubling to a cap. ok is false
-// when a deferred wake is already pending, so the caller schedules nothing.
-func (c *Consumer) erroredWakeDelay(account store.AccountID) (time.Duration, bool) {
+// erroredWakeDelay is the wait before the wake that follows strikes earlier
+// ERRORED losses in one window: zero, then doubling from the base to the cap.
+func erroredWakeDelay(strikes int) time.Duration {
+	if strikes == 0 {
+		return 0
+	}
+	if strikes > 10 {
+		return erroredWakeMaxDelay
+	}
+	return min(erroredWakeBaseDelay<<(strikes-1), erroredWakeMaxDelay)
+}
+
+func (c *Consumer) erroredWakePending(account store.AccountID) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	b := c.erroredWakes[account]
-	if b == nil {
+	return b != nil && b.pending
+}
+
+// nextErroredWakeDelay records one ERRORED loss for account and returns its wake
+// delay; a nonzero delay marks a deferred wake pending.
+func (c *Consumer) nextErroredWakeDelay(account store.AccountID) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.erroredWakes[account]
+	now := c.now()
+	if b == nil || now.Sub(b.last) >= erroredWakeResetAfter {
 		b = &erroredBackoff{}
 		c.erroredWakes[account] = b
 	}
-	if b.pending {
-		return erroredWakeMaxDelay, false
-	}
-	now := c.now()
-	if b.strikes > 0 && now.Sub(b.last) >= erroredWakeResetAfter {
-		b.strikes = 0
-	}
-	var delay time.Duration
-	if b.strikes > 0 {
-		delay = erroredWakeMaxDelay
-		if b.strikes <= 10 {
-			delay = min(erroredWakeBaseDelay<<(b.strikes-1), erroredWakeMaxDelay)
-		}
-	}
+	delay := erroredWakeDelay(b.strikes)
 	b.strikes++
 	b.last = now
 	b.pending = delay > 0
-	return delay, true
+	return delay
 }
 
 func (c *Consumer) clearPendingErroredWake(account store.AccountID) {
@@ -490,6 +497,16 @@ func (c *Consumer) clearPendingErroredWake(account store.AccountID) {
 		b.pending = false
 	}
 	c.mu.Unlock()
+}
+
+// pruneErroredWakes drops backoff state past its reset window. Caller holds mu.
+func (c *Consumer) pruneErroredWakes() {
+	now := c.now()
+	for account, b := range c.erroredWakes {
+		if !b.pending && now.Sub(b.last) >= erroredWakeResetAfter {
+			delete(c.erroredWakes, account)
+		}
+	}
 }
 
 // hasOwedWork reports whether a start sweep would deliver anything to account. A
