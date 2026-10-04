@@ -39,15 +39,16 @@ record names no path in the private repo.
 
 ### One public repo, one package per tool
 
-Create `RigelBuild/repo-tools` (working name, OQ2). It is a bun workspace with
-one package per tool under `packages/<tool>/`, published as `@rigelbuild/<tool>`
-with a bin of the same name. Each consumer pins exact versions and deletes its
-own copy in the same PR. There is no shim and no re-export.
+Create `RigelBuild/repo-tools`. It is a bun workspace with one package per tool
+under `packages/<tool>/`, published as `@rigelbuild/<tool>` with a bin of the
+same name. It is also a nix flake that exports the shared Nix tooling (see
+"Nix tooling"). Each consumer pins exact versions and deletes its own copy in
+the same PR. There is no shim and no re-export.
 
 The port base is the compass copy. It is already public, so starting from it
 moves nothing private. Features only the private copy has (per-surface ledgers,
 the citation, errata, and record-link legs, malformed-row reporting) are written
-again as new public code on top of it, subject to OQ3.
+again as new public code on top of it (OQ3: yes).
 
 ### Config, not literals
 
@@ -72,23 +73,21 @@ every error today. CI only checks for non-zero, so no workflow changes.
 CI wiring changes more than the command. `dl-reconcile.yml` and the Renovate
 preflight step in `renovate.yml` run the tool from the checkout with no
 `bun install`, and both jobs hold a secret. A package bin needs an install
-first. OQ4 picks how.
+first. Per OQ4, those jobs run the full `bun install --frozen-lockfile`, so
+every install is checked against `bun.lock`.
 
-### Pinning (OQ1)
+### Pinning (OQ1: npm, plus nix)
 
 | Option | How a consumer pins | For | Against |
 | --- | --- | --- | --- |
-| npm package (recommended) | Exact version in the bun catalog; `bun.lock` keeps the integrity hash | Both repos already take tools as bun dependencies. Compass's Renovate catalog manager already reads npm versions. The release-age cooldown applies. One package per tool. | Needs a publish lane in the shared repo and a one-time npm org setup |
-| bun git dependency | `github:RigelBuild/repo-tools#<sha>` in the root `package.json` | No registry and no publish lane | One package for the whole repo (bun installs a git repo root, not a subdirectory). Compass's catalog manager reads only npm versions. A git ref has no release timestamp, so the cooldown cannot apply. |
-| Rev-pin JSON | A `{repo, ref, rev}` file plus a fetch step before each run. The private consumer already pins compass this way. | Precedent exists, and compass's Renovate config already bumps git revs with a regex manager | Each consumer writes its own fetch step. The tools' own npm dependencies need a separate install. No typed imports. Local runs need the fetch too. Same cooldown gap as the git dependency. |
-| Nix flake input | Flake input; `flake.lock` keeps the narHash | Content-addressed and nix-native | The tools run under bun with npm dependencies (micromark), so each needs a nix package build. moon and `tsc` cannot typecheck against a store path. |
+| npm package (chosen for TS tools) | Exact version in the bun catalog; `bun.lock` keeps the integrity hash | Both repos already take tools as bun dependencies. Compass's Renovate catalog manager already reads npm versions. One package per tool. | Needs a publish lane in the shared repo and a one-time bootstrap publish per package |
+| bun git dependency | `github:RigelBuild/repo-tools#<sha>` in the root `package.json` | No registry and no publish lane | One package for the whole repo (bun installs a git repo root, not a subdirectory). Compass's catalog manager reads only npm versions. |
+| Rev-pin JSON | A `{repo, ref, rev}` file plus a fetch step before each run. The private consumer already pins compass this way. | Precedent exists, and compass's Renovate config already bumps git revs with a regex manager | Each consumer writes its own fetch step. The tools' own npm dependencies need a separate install. No typed imports. Local runs need the fetch too. |
+| Nix flake input (chosen for Nix tooling) | Flake input; `flake.lock` keeps the narHash | Content-addressed and nix-native | Wrong fit for the bun tools: each would need a nix package build, and moon and `tsc` cannot typecheck against a store path. Right fit for Nix code. |
 
-Recommendation: npm. A tool bump is then an ordinary catalog PR with release
-notes. Compass's Renovate config nulls the cooldown on its git-refs rules
-because a git ref has no release timestamp (`tools/renovate/config.json5`), so
-both git options lose it. With npm the 5-day cooldown applies in both
-`bunfig.toml` (`minimumReleaseAge`) and Renovate, so a gate fix takes at least
-5 days to reach a consumer. OQ5 decides whether the packages are exempt.
+TS tools ship as npm packages, so a tool bump is an ordinary catalog PR with
+release notes. Nix tooling ships as flake outputs, pinned by `flake.lock`.
+Per OQ5, first-party pins skip the release-age cooldown in every toolchain.
 
 Publishing uses npm trusted publishing (OIDC from the shared repo's `main`
 release workflow), so no long-lived publish token exists. The `@rigelbuild`
@@ -96,6 +95,15 @@ npm scope already exists (compass resolves `@rigelbuild/solid-virtual` from
 npm). npm can set a trusted publisher only on a package that already exists,
 so each new package needs one bootstrap publish and one trusted-publisher entry.
 These steps have no IaC path, so they go to Matt as one human-action issue.
+
+### Nix tooling
+
+Matt's OQ1 ruling adds Nix: the shared repo is also a flake for the Nix code
+both repos carry. This record reads that as shared Nix modules and helpers
+(toolchain pins, gate-tool sets, image-tool environments), not a nix build of
+the bun tools. T10 inventories the Nix files both repos carry, with the same
+drift measurement as the Inventory table, and moves each shared one under
+`nix/` as a flake output. The public boundary applies unchanged.
 
 ### What may move (the public boundary)
 
@@ -122,9 +130,9 @@ Enforcement:
 
 No copy is left to drift. A consumer cannot patch a tool locally without
 adding a copy back, and the Global Constraints forbid that. Renovate bumps both
-pins, so skew between the consumers is a version number, not a fork. It lasts
-at least the cooldown window (OQ5). A fix lands as a shared-repo PR and reaches
-each consumer by pin bump.
+pins, so skew between the consumers is a version number, not a fork. Because
+first-party pins skip the cooldown (OQ5), the skew lasts at most one Renovate
+cycle. A fix lands as a shared-repo PR and reaches each consumer by pin bump.
 
 ### Alternatives considered
 
@@ -138,25 +146,29 @@ each consumer by pin bump.
 ## Global Constraints
 
 - The shared repo is public and follows the boundary in "What may move".
-- Licence: per OQ6. Compass is AGPL-3.0-only, and so are the tools ported
-  here, so a permissive licence is a relicence, not a carry-over.
+- Licence: `MIT OR Apache-2.0` (OQ6). This relicenses tools that are
+  AGPL-3.0-only in compass, so T2 first checks that no ported file has an
+  outside contribution. A file that has one stays out until its author agrees.
 - Runtime and checks: bun, TypeScript `strict` plus `noUncheckedIndexedAccess`,
   biome, `bun test`, rumdl for markdown.
 - Each tool is the package `@rigelbuild/<tool>` under `packages/<tool>/`, with
   bin `<tool>` pointing at `./index.ts` (shebang `#!/usr/bin/env bun`).
 - CLIs read `GATE_ROOT` (default git toplevel) and exit 0 / 1 / 2 as defined
   in "Config, not literals".
-- Consumers pin an exact version (or an exact SHA if OQ1 picks a git option),
-  never a range. Bumps arrive only by Renovate PR.
+- Consumers pin an exact npm version or a locked flake input, never a range.
+  Bumps arrive only by Renovate PR.
+- First-party pins (`@rigelbuild/*` npm packages, `github.com/RigelBuild/*` Go
+  modules, `RigelBuild/*` flake inputs) skip the release-age cooldown in every
+  consumer, in both the package manager and Renovate (OQ5).
 - A consumer's switch PR deletes its local copy in the same PR. No vendored
   copy, wrapper, or re-export stays behind.
 - No consumer literal in shared code, tests, comments, or docs.
 
 ## Plan
 
-Order: T1, T2, T3, then T4 and T6 in parallel, then T5, then T7, T8, T9. T3
-comes first among the tools because it guards every later shared-repo PR. T5
-follows T4 because it imports `LedgerConfig` from the T4 package. RIG-4184's
+Order: T1, T2, T3, then T4, T6, and T10 in parallel, then T5, then T7, T8, T9.
+T3 comes first among the tools because it guards every later shared-repo PR.
+T5 follows T4 because it imports `LedgerConfig` from the T4 package. RIG-4184's
 scope is T4, T5, and the ledger part of T7 and T8.
 
 ### T1 — Create the repo
@@ -165,15 +177,16 @@ Lands in: the org's GitHub IaC. A public repo `RigelBuild/repo-tools` with
 default branch `main`, a ruleset that requires a PR, Matt's CODEOWNERS review,
 and green CI, merging through the Trunk queue as compass does.
 
-Interfaces: consumes OQ2; produces the empty repo.
+Interfaces: produces the empty repo.
 
 ### T2 — Scaffold and release lane
 
-Lands in: the shared repo. A bun workspace over `packages/*`, moon, biome,
-rumdl, the licence files, a GitHub Actions CI that runs typecheck, lint, and
-test per package, and the release lane per OQ1. For npm: release-please per
-package, then `npm publish --provenance` through trusted publishing, after the
-bootstrap publish of each package.
+Lands in: the shared repo. A bun workspace over `packages/*`, a `flake.nix`,
+moon, biome, rumdl, the licence files (after the outside-contribution check),
+a GitHub Actions CI that runs typecheck, lint, and test per package plus
+`nix flake check`, and the release lane: release-please per package, then
+`npm publish --provenance` through trusted publishing, after the bootstrap
+publish of each package.
 
 Interfaces: each `packages/<tool>/package.json` has
 `"name": "@rigelbuild/<tool>"` and `"bin": { "<tool>": "./index.ts" }`.
@@ -211,7 +224,7 @@ CLI: `ref-gate --config <path>`.
 
 Lands in: the shared repo. Port compass's gate. Add a list of ledgers (each
 with its own surface), malformed-row reporting, and the three extra legs behind
-config (OQ3). Tests: compass's tests plus synthetic multi-ledger fixtures. The
+config (OQ3: yes). Tests: compass's tests plus synthetic multi-ledger fixtures. The
 private copy's test cases are the specification for those fixtures, written
 again as synthetic cases.
 
@@ -296,7 +309,12 @@ Add two code-free moon projects:
 Point the moon tasks, `.github/workflows/dl-reconcile.yml`, the Renovate
 preflight step, `.moon/workspace.yml`, `docs/designs/CONTRIBUTING.md` §7, and
 `docs/concepts/self-host-and-managed.md` (which names the old ref-gate task) at
-the new bins and projects, with the install that OQ4 picks. Delete
+the new bins and projects. The two secret-holding jobs gain a
+`bun install --frozen-lockfile` step (OQ4). Add the cooldown exemption for
+first-party pins: `@rigelbuild/*` names in `bunfig.toml`
+`minimumReleaseAgeExcludes` and the Renovate catalog soak-exemption rule (which
+`config.test.ts` pairs), plus Renovate rules for `github.com/RigelBuild/*` Go
+modules and `RigelBuild/*` flake inputs (OQ5). Delete
 `tools/design-ledger-gate/`, `tools/dl-claim/`, `tools/dl-reconcile/`,
 `tools/sea-ref-gate/`, `tools/orion-ref-gate/`, and `tools/renovate-preflight/`.
 
@@ -328,10 +346,20 @@ Interfaces: consumes the T3–T6 releases.
 ### T9 — Compass turns on the extra ledger legs
 
 Lands in: compass. Run the citation, errata, and record-link legs over the
-corpus, fix every finding, and turn the legs on in the same PR. Dropped if OQ3
-is no.
+corpus, fix every finding, and turn the legs on in the same PR.
 
 Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
+
+### T10 — Shared Nix tooling
+
+Lands in: the shared repo, then each consumer. Inventory the Nix files both
+repos carry and measure their drift, as the Inventory table does for the TS
+tools. Move each shared file under `nix/` in the shared flake as an output. Each
+consumer adds the flake input, switches its imports, and deletes its copy in
+the same PR. A file that holds a consumer literal takes it as a function
+argument instead.
+
+Interfaces: consumes T2's `flake.nix`; produces flake outputs under `nix/`.
 
 ### Out of scope
 
@@ -350,40 +378,20 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 - [ ] T6 — Move `renovate-preflight`.
 - [ ] T7 — Cut compass over and delete its six local tools.
 - [ ] T8 — Cut the private consumer over and delete its local copies.
-- [ ] T9 — Turn on compass's extra ledger legs (only if OQ3 is yes).
+- [ ] T9 — Turn on compass's extra ledger legs.
+- [ ] T10 — Move the shared Nix tooling into the flake and cut both consumers over.
 
-## Open Questions
+## Decisions (Matt, 2026-10-04, RIG-4440)
 
-- **OQ1 (load-bearing; blocks T2, T7, T8) — pin mechanism.** npm package
-  (recommended), bun git dependency, or rev-pin JSON. See "Pinning".
-- **OQ2 (load-bearing; blocks T1) — repo and scope names.** Working names:
-  `RigelBuild/repo-tools` and `@rigelbuild/<tool>`.
-- **OQ3 (load-bearing; blocks the extra legs in T4, T8's leg config, and T9) — publish the private-only
-  ledger-gate features.** Multiple ledgers, the citation, errata, and
-  record-link legs, and malformed-row reporting exist only in the private
-  copy, and publishing private code is Matt's call. Recommendation: yes. They
-  are generic checks over a markdown corpus; write them again as public code
-  with synthetic fixtures. If no, T4 ships compass's feature set only, and the
-  private consumer keeps those legs locally, so part of the ledger gate stays
-  duplicated.
-- **OQ4 (load-bearing; blocks T7, T8) — install in secret-holding jobs.** The
-  reconcile job and the Renovate preflight step hold secrets and do no install
-  today. Options: (a) a full `bun install --frozen-lockfile`, lockfile-checked
-  but every dependency runs next to the secret; (b) an isolated install of just
-  the tool into a temp dir with its own lockfile, a small surface but a second
-  lockfile to keep current; (c) `bunx @rigelbuild/<tool>@<exact>`, the
-  smallest change, but it skips `bun.lock` integrity. Recommendation: (b).
-- **OQ5 (blocks T7) — cooldown for these packages.** Keep the 5-day cooldown
-  (a fix waits at least 5 days per consumer) or exempt the five packages. The
-  exemption has two halves. `bunfig.toml` `minimumReleaseAgeExcludes` lists
-  exact names, as it already does for `@rigelbuild/solid-*`. Renovate needs the
-  five names added to the catalog soak-exemption rule in
-  `tools/renovate/config.json5`, which `config.test.ts` requires to equal the
-  catalog subset of the bunfig list. Recommendation: exempt, since Matt
-  approves every shared-repo release PR, and the cooldown guards against
-  third-party publishes.
-- **OQ6 (load-bearing; blocks T2) — licence.** The ported tools are
-  AGPL-3.0-only today. Options: (a) keep AGPL-3.0-only, which matches the
-  source and needs no relicence; (b) relicence to `MIT OR Apache-2.0`, which
-  suits build tooling any repo can pin, but needs a check that the ported files
-  have no outside contributions. Recommendation: (b), if that check is clean.
+- **OQ1 — pin mechanism:** npm packages for the TS tools. Matt added Nix: the
+  shared repo is also a flake for shared Nix tooling (T10).
+- **OQ2 — names:** npm scope `@rigelbuild/<tool>`. The repo name
+  `RigelBuild/repo-tools` was not ruled separately; it stands unless Matt
+  changes it at review.
+- **OQ3 — publish the private-only ledger-gate features:** yes, written again
+  as public code with synthetic fixtures.
+- **OQ4 — install in secret-holding jobs:** a full
+  `bun install --frozen-lockfile`.
+- **OQ5 — cooldown:** every first-party pin skips the release-age cooldown, in
+  every toolchain (TS, Go, Nix).
+- **OQ6 — licence:** relicense to `MIT OR Apache-2.0`.
