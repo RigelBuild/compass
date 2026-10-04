@@ -23,7 +23,6 @@ import {
 	getOwner,
 	onCleanup,
 } from "solid-js";
-import { type PrRow, prRows } from "./board";
 import { agentDmAccountId } from "./comms";
 import {
 	type Account,
@@ -614,10 +613,6 @@ export interface AppStore {
 	 *  streamed lifecycle update is visible everywhere at once (design "read
 	 *  through the store accessors"). */
 	issues: Accessor<Issue[]>;
-	/** Every open-PR row across all issues, paired with its owning issue — a
-	 *  `createMemo` over `prRows(issues())` (RIG-2483, D9). The palette's `pr`
-	 *  destination provider reads this; the store has no other PR collection. */
-	prs: Accessor<PrRow[]>;
 
 	// ── Backlog view (D3) ──
 	/** The current user's tracker-assigned issues (their personal queue), read
@@ -1943,10 +1938,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		const ws = issues().find((w) => w.assignee === id && w.branch === branch);
 		if (ws) setSelectedIssueId(ws.id);
 	};
-	// Every open-PR row across all issues (RIG-2483, D9): the palette's `pr`
-	// destination provider's collection. `prRows` (board.ts) is the same pure
-	// helper the PRs tab reads, so palette PR results can't drift from the pane.
-	const prs = createMemo<PrRow[]>(() => prRows(issues()));
 
 	return {
 		view,
@@ -2032,7 +2023,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		isSectionCollapsed,
 		toggleSection,
 		issues,
-		prs,
 		assignedIssues,
 		trackerConfig,
 		setTrackerConfig,

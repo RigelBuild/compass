@@ -109,8 +109,16 @@ export function createStoreDestinationProviders(
 	// so a repeated query refetches rather than replaying stale or failed results.
 	let inFlight: { query: string; promise: Promise<Issue[]> } | undefined;
 	const searchIssues = (query: string): Promise<Issue[]> => {
+		// Fixture mode has no server: fuzzy-match the held board so PR rows stay testable (§A4).
+		if (!clients) {
+			const hits = store.issues().flatMap((issue) => {
+				const score = fuzzyScore(query, issue.title);
+				return score === null ? [] : [{ issue, score }];
+			});
+			hits.sort((a, b) => b.score - a.score);
+			return Promise.resolve(hits.map((hit) => hit.issue));
+		}
 		if (inFlight?.query === query) return inFlight.promise;
-		if (!clients) return Promise.resolve([]);
 		const entry = {
 			query,
 			promise: clients.compass
@@ -179,7 +187,7 @@ export function createStoreDestinationProviders(
 			id: "issues",
 			query: async (input) => {
 				const query = input.trim();
-				if (!query || !clients) return [];
+				if (!query) return [];
 				const issues = await searchIssues(query);
 				return issues.map((issue, rank) => ({
 					kind: "issue",
@@ -194,7 +202,7 @@ export function createStoreDestinationProviders(
 			id: "prs",
 			query: async (input) => {
 				const query = input.trim();
-				if (!query || !clients) return [];
+				if (!query) return [];
 				const issues = await searchIssues(query);
 				return prRows(issues).map(({ issue, pr }, index) => ({
 					kind: "pr",

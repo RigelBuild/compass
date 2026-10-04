@@ -26,11 +26,10 @@ import {
 	queryDestinations,
 } from "./destinations";
 
-// Store-backed destination providers (RIG-2483, A4/T3). The providers map the
-// store's live accessors to Destinations of all six kinds; queryDestinations
-// groups them with per-provider isolation and a latest-wins generation guard.
-// These mount a fixture-backed store inside createRoot (createMemo needs an
-// owner) and drive navigation through the store's in-memory route path.
+// Destination providers (RIG-2483, A4/T3): local kinds read store accessors; issue,
+// PR, and message kinds call search RPCs through fake transports here. These mount a
+// fixture-backed store inside createRoot (createMemo needs an owner) and drive
+// navigation through the store's in-memory route path.
 
 async function withStoreAsync(
 	body: (store: AppStore) => Promise<void>,
@@ -58,23 +57,35 @@ function searchTransport(
 	hits: Message[],
 	onCall: () => void = () => {},
 	shouldReject = false,
-	issueHits: Issue[] = [],
-	onIssueCall: () => void = () => {},
-	rejectIssues = false,
 ): Transport {
+	return issueSearchTransport({
+		messageHits: hits,
+		onMessageCall: onCall,
+		rejectMessages: shouldReject,
+	});
+}
+
+function issueSearchTransport(opts: {
+	issueHits?: Issue[];
+	onIssueCall?: () => void;
+	rejectIssues?: boolean;
+	messageHits?: Message[];
+	onMessageCall?: () => void;
+	rejectMessages?: boolean;
+}): Transport {
 	return createRouterTransport(({ service }) => {
 		service(CommsService, {
 			searchMessages: () => {
-				onCall();
-				if (shouldReject) throw new Error("search unavailable");
-				return { messages: hits };
+				opts.onMessageCall?.();
+				if (opts.rejectMessages) throw new Error("search unavailable");
+				return { messages: opts.messageHits ?? [] };
 			},
 		});
 		service(CompassService, {
 			searchIssues: () => {
-				onIssueCall();
-				if (rejectIssues) throw new Error("issue search unavailable");
-				return { issues: issueHits };
+				opts.onIssueCall?.();
+				if (opts.rejectIssues) throw new Error("issue search unavailable");
+				return { issues: opts.issueHits ?? [] };
 			},
 		});
 	});
@@ -149,7 +160,7 @@ function liveSearchClients(transport: Transport) {
 const CURRENT_GEN = () => 1;
 
 describe("createStoreDestinationProviders", () => {
-	test("maps local destination kinds without clients", async () => {
+	test("an empty query lists only the local destination kinds", async () => {
 		await withStoreAsync(async (store) => {
 			const providers = createStoreDestinationProviders(store);
 			const byKind = await queryDestinations(providers, "", 1, CURRENT_GEN);
@@ -176,44 +187,50 @@ describe("createStoreDestinationProviders", () => {
 		});
 	});
 
-	test("one remote SearchIssues response feeds issue and PR rows", async () => {
+	test("one remote SearchIssues response feeds issue and PR rows in hit order", async () => {
 		await withStoreAsync(async (store) => {
 			let calls = 0;
+			// Hit order (444's issue first) conflicts with PR number and title order.
 			const issues = [
-				makeSearchIssue("issue-best", "Best match", 41),
-				makeSearchIssue("issue-next", "Next match", 42),
+				makeSearchIssue("ws-864", "Tauri desktop shell", 444),
+				makeSearchIssue("ws-1023", "Agent process management", 443),
 			];
 			const providers = createStoreDestinationProviders(
 				store,
 				liveSearchClients(
-					searchTransport([], undefined, false, issues, () => calls++),
+					issueSearchTransport({
+						issueHits: issues,
+						onIssueCall: () => calls++,
+					}),
 				),
 			);
 			const byKind = await queryDestinations(
 				providers,
-				"match",
+				"shell",
 				1,
 				CURRENT_GEN,
 			);
 			expect(calls).toBe(1);
-			expect(
-				byKind?.get("issue")?.map((row) => [row.id, row.title, row.score]),
-			).toEqual([
-				["issue-best", "Best match", -0],
-				["issue-next", "Next match", -1],
+			const order = (rows: Destination[] = []) =>
+				[...rows]
+					.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+					.map((row) => row.id);
+			expect(order(byKind?.get("issue"))).toEqual(["ws-864", "ws-1023"]);
+			expect(order(byKind?.get("pr"))).toEqual([
+				"RigelBuild/compass#444",
+				"RigelBuild/compass#443",
 			]);
-			expect(
-				byKind?.get("pr")?.map((row) => [row.id, row.title, row.score]),
-			).toEqual([
-				["RigelBuild/compass#41", "PR 41", -0],
-				["RigelBuild/compass#42", "PR 42", -1],
-			]);
-			byKind?.get("issue")?.[0]?.navigate();
+			const row = (kind: "issue" | "pr", id: string) =>
+				byKind?.get(kind)?.find((dest) => dest.id === id);
+			const selected = () =>
+				store.issues().find((issue) => issue.id === store.selectedIssueId())
+					?.id;
+			row("issue", "ws-864")?.navigate();
 			await flush();
-			expect(store.selectedIssueId()).toBe("issue-best");
-			byKind?.get("pr")?.[1]?.navigate();
+			expect(selected()).toBe("ws-864");
+			row("pr", "RigelBuild/compass#443")?.navigate();
 			await flush();
-			expect(store.selectedIssueId()).toBe("issue-next");
+			expect(selected()).toBe("ws-1023");
 			expect(store.activeRightTab()).toBe("pr");
 		});
 	});
@@ -223,9 +240,7 @@ describe("createStoreDestinationProviders", () => {
 			let calls = 0;
 			const providers = createStoreDestinationProviders(
 				store,
-				liveSearchClients(
-					searchTransport([], undefined, false, [], () => calls++),
-				),
+				liveSearchClients(issueSearchTransport({ onIssueCall: () => calls++ })),
 			);
 			for (const id of ["issues", "prs"]) {
 				const provider = providers.find((item) => item.id === id);
@@ -233,13 +248,22 @@ describe("createStoreDestinationProviders", () => {
 				expect(await provider?.query(" \t ")).toEqual([]);
 			}
 			expect(calls).toBe(0);
-			for (const id of ["issues", "prs"]) {
-				expect(
-					await createStoreDestinationProviders(store)
-						.find((item) => item.id === id)
-						?.query("match"),
-				).toEqual([]);
-			}
+		});
+	});
+
+	test("without clients, issue and PR rows come from the held board", async () => {
+		await withStoreAsync(async (store) => {
+			const providers = createStoreDestinationProviders(store);
+			const byKind = await queryDestinations(
+				providers,
+				"tauri",
+				1,
+				CURRENT_GEN,
+			);
+			expect(byKind?.get("issue")?.map((row) => row.id)).toEqual(["ws-864"]);
+			expect(byKind?.get("pr")?.map((row) => row.id)).toEqual([
+				"RigelBuild/compass#444",
+			]);
 		});
 	});
 
@@ -248,9 +272,7 @@ describe("createStoreDestinationProviders", () => {
 			let calls = 0;
 			const providers = createStoreDestinationProviders(
 				store,
-				liveSearchClients(
-					searchTransport([], undefined, false, [], () => calls++),
-				),
+				liveSearchClients(issueSearchTransport({ onIssueCall: () => calls++ })),
 			);
 			await queryDestinations(providers, "match", 1, CURRENT_GEN);
 			await queryDestinations(providers, "match", 2, () => 2);
@@ -262,9 +284,7 @@ describe("createStoreDestinationProviders", () => {
 		await withStoreAsync(async (store) => {
 			const providers = createStoreDestinationProviders(
 				store,
-				liveSearchClients(
-					searchTransport([], undefined, false, [], undefined, true),
-				),
+				liveSearchClients(issueSearchTransport({ rejectIssues: true })),
 			);
 			const byKind = await queryDestinations(
 				providers,
