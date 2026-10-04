@@ -5,15 +5,15 @@
 -- (errMessageInsertConflict), the JSONB block (de)serialization, and the D9
 -- not-found/forbidden error mapping — all hand-written around these generated
 -- calls. Every message read shares the id/topic_id/author_account_id/author_handle/
--- at_unix_ms/blocks projection so the Go maps each row through messageFromParts.
+-- at_unix_ms/blocks/turn_sequence projection so Go maps each row through messageFromParts.
 
 -- name: GetChannelPostPolicy :one
 SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id, name
 FROM channels WHERE id = $1;
 
 -- name: InsertMessage :one
-INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id, turn_sequence)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
 DO NOTHING
 RETURNING id, at_unix_ms, seq,
@@ -55,7 +55,7 @@ WHERE m.id = $3
   )
 RETURNING m.id, m.topic_id, m.author_account_id,
           COALESCE((SELECT (CASE WHEN author_handles.owner_user_id IS NULL THEN author_handles.handle WHEN owner_handles.handle IS NULL THEN '' ELSE owner_handles.handle || '/' || author_handles.handle END)::text FROM account_handles AS author_handles LEFT JOIN account_handles AS owner_handles ON owner_handles.account_id = author_handles.owner_user_id WHERE author_handles.account_id = $4), '')::text AS author_handle,
-          m.at_unix_ms, m.blocks;
+          m.at_unix_ms, m.blocks, m.turn_sequence;
 
 -- name: GetMessageBlocksAsAuthor :one
 SELECT m.blocks FROM messages m
@@ -74,7 +74,7 @@ JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.id = $2 AND t.channel_id = $3;
 
 -- name: ListMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -86,7 +86,7 @@ ORDER BY m.seq DESC
 LIMIT $4;
 
 -- name: SearchMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -99,7 +99,7 @@ ORDER BY ts_rank(m.search_tsv, websearch_to_tsquery('english', $2)) DESC, m.seq 
 LIMIT $4;
 
 -- name: FindAskMessage :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -109,7 +109,7 @@ WHERE m.blocks @> $2::jsonb
 FOR UPDATE OF m;
 
 -- name: GetMessageByRequestID :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id

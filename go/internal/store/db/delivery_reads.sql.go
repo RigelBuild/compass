@@ -73,7 +73,7 @@ func (q *Queries) IsAgentAccount(ctx context.Context, accountID string) (bool, e
 }
 
 const messageByID = `-- name: MessageByID :one
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -87,6 +87,7 @@ type MessageByIDRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 }
 
 func (q *Queries) MessageByID(ctx context.Context, id string) (MessageByIDRow, error) {
@@ -99,6 +100,7 @@ func (q *Queries) MessageByID(ctx context.Context, id string) (MessageByIDRow, e
 		&i.AuthorHandle,
 		&i.AtUnixMs,
 		&i.Blocks,
+		&i.TurnSequence,
 	)
 	return i, err
 }

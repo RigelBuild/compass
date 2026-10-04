@@ -18,7 +18,9 @@ package comms
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel"
@@ -424,12 +426,16 @@ func (c *Comms) PostMessage(
 	ctx context.Context,
 	req *connect.Request[compassv1.PostMessageRequest],
 ) (*connect.Response[compassv1.PostMessageResponse], error) {
+	if req.Msg.GetTurnSequence() > math.MaxInt64 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("turn_sequence %d exceeds signed BIGINT range", req.Msg.GetTurnSequence()))
+	}
 	blocks, err := blocksFromWire(req.Msg.GetBlocks())
 	if err != nil {
 		return nil, err
 	}
 	msg, inserted, err := c.store.AppendMessage(ctx, store.Message{
 		AuthorAccountID: c.actorFromContext(ctx),
+		TurnSequence:    req.Msg.GetTurnSequence(),
 		Blocks:          blocks,
 	}, req.Msg.GetChannelId(), store.TopicRef{
 		ID:     req.Msg.GetTopicId(),

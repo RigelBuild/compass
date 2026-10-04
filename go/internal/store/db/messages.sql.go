@@ -10,7 +10,7 @@ import (
 )
 
 const findAskMessage = `-- name: FindAskMessage :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -32,6 +32,7 @@ type FindAskMessageRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 }
 
 func (q *Queries) FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error) {
@@ -50,6 +51,7 @@ func (q *Queries) FindAskMessage(ctx context.Context, arg FindAskMessageParams) 
 			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
+			&i.TurnSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -80,7 +82,7 @@ type GetChannelPostPolicyRow struct {
 // (errMessageInsertConflict), the JSONB block (de)serialization, and the D9
 // not-found/forbidden error mapping — all hand-written around these generated
 // calls. Every message read shares the id/topic_id/author_account_id/author_handle/
-// at_unix_ms/blocks projection so the Go maps each row through messageFromParts.
+// at_unix_ms/blocks/turn_sequence projection so Go maps each row through messageFromParts.
 func (q *Queries) GetChannelPostPolicy(ctx context.Context, id string) (GetChannelPostPolicyRow, error) {
 	row := q.db.QueryRow(ctx, getChannelPostPolicy, id)
 	var i GetChannelPostPolicyRow
@@ -112,7 +114,7 @@ func (q *Queries) GetMessageBlocksAsAuthor(ctx context.Context, arg GetMessageBl
 }
 
 const getMessageByRequestID = `-- name: GetMessageByRequestID :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -131,6 +133,7 @@ type GetMessageByRequestIDRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 }
 
 func (q *Queries) GetMessageByRequestID(ctx context.Context, arg GetMessageByRequestIDParams) ([]GetMessageByRequestIDRow, error) {
@@ -149,6 +152,7 @@ func (q *Queries) GetMessageByRequestID(ctx context.Context, arg GetMessageByReq
 			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
+			&i.TurnSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -213,8 +217,8 @@ func (q *Queries) GetTopicChannel(ctx context.Context, id string) (string, error
 }
 
 const insertMessage = `-- name: InsertMessage :one
-INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id, turn_sequence)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
 DO NOTHING
 RETURNING id, at_unix_ms, seq,
@@ -229,6 +233,7 @@ type InsertMessageParams struct {
 	Blocks          []byte
 	TextContent     string
 	ClientRequestID string
+	TurnSequence    int64
 }
 
 type InsertMessageRow struct {
@@ -247,6 +252,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (I
 		arg.Blocks,
 		arg.TextContent,
 		arg.ClientRequestID,
+		arg.TurnSequence,
 	)
 	var i InsertMessageRow
 	err := row.Scan(
@@ -284,7 +290,7 @@ func (q *Queries) InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnorePa
 }
 
 const listMessages = `-- name: ListMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -312,6 +318,7 @@ type ListMessagesRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 }
 
 func (q *Queries) ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error) {
@@ -337,6 +344,7 @@ func (q *Queries) ListMessages(ctx context.Context, arg ListMessagesParams) ([]L
 			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
+			&i.TurnSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -369,7 +377,7 @@ func (q *Queries) ReviveTopic(ctx context.Context, id string) error {
 }
 
 const searchMessages = `-- name: SearchMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -398,6 +406,7 @@ type SearchMessagesRow struct {
 	AtUnixMs        int64
 	Blocks          []byte
 	ChannelID       string
+	TurnSequence    int64
 }
 
 func (q *Queries) SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error) {
@@ -423,6 +432,7 @@ func (q *Queries) SearchMessages(ctx context.Context, arg SearchMessagesParams) 
 			&i.AtUnixMs,
 			&i.Blocks,
 			&i.ChannelID,
+			&i.TurnSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -465,7 +475,7 @@ WHERE m.id = $3
   )
 RETURNING m.id, m.topic_id, m.author_account_id,
           COALESCE((SELECT (CASE WHEN author_handles.owner_user_id IS NULL THEN author_handles.handle WHEN owner_handles.handle IS NULL THEN '' ELSE owner_handles.handle || '/' || author_handles.handle END)::text FROM account_handles AS author_handles LEFT JOIN account_handles AS owner_handles ON owner_handles.account_id = author_handles.owner_user_id WHERE author_handles.account_id = $4), '')::text AS author_handle,
-          m.at_unix_ms, m.blocks
+          m.at_unix_ms, m.blocks, m.turn_sequence
 `
 
 type UpdateMessageBlocksAsAuthorParams struct {
@@ -482,6 +492,7 @@ type UpdateMessageBlocksAsAuthorRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 }
 
 func (q *Queries) UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMessageBlocksAsAuthorParams) (UpdateMessageBlocksAsAuthorRow, error) {
@@ -499,6 +510,7 @@ func (q *Queries) UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMes
 		&i.AuthorHandle,
 		&i.AtUnixMs,
 		&i.Blocks,
+		&i.TurnSequence,
 	)
 	return i, err
 }

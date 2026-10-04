@@ -343,6 +343,7 @@ type SessionFrame struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	State         v1.AgentSessionState   `protobuf:"varint,1,opt,name=state,proto3,enum=compass.v1.AgentSessionState" json:"state,omitempty"`
 	TypedEvent    *v1.SessionEvent       `protobuf:"bytes,2,opt,name=typed_event,json=typedEvent,proto3" json:"typed_event,omitempty"`
+	TurnSequence  uint64                 `protobuf:"varint,3,opt,name=turn_sequence,json=turnSequence,proto3" json:"turn_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -389,6 +390,13 @@ func (x *SessionFrame) GetTypedEvent() *v1.SessionEvent {
 		return x.TypedEvent
 	}
 	return nil
+}
+
+func (x *SessionFrame) GetTurnSequence() uint64 {
+	if x != nil {
+		return x.TurnSequence
+	}
+	return 0
 }
 
 // The agent's inbound control envelope — the other half of this §T5 contract,
@@ -1190,11 +1198,12 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"checkpoint\x18\x02 \x01(\bR\n" +
 	"checkpoint\x12\x1b\n" +
-	"\tentry_seq\x18\x03 \x01(\x04R\bentrySeq\"~\n" +
+	"\tentry_seq\x18\x03 \x01(\x04R\bentrySeq\"\xa3\x01\n" +
 	"\fSessionFrame\x123\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x129\n" +
 	"\vtyped_event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\n" +
-	"typedEvent\"\xdd\x03\n" +
+	"typedEvent\x12#\n" +
+	"\rturn_sequence\x18\x03 \x01(\x04R\fturnSequence\"\xdd\x03\n" +
 	"\fAgentControl\x12\x1f\n" +
 	"\vcontrol_seq\x18\b \x01(\x04R\n" +
 	"controlSeq\x123\n" +

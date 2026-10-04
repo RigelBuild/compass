@@ -164,7 +164,7 @@ func TestAgentAuthoredHeldUntilSettle(t *testing.T) {
 	reads.seedMessage(textMessage("m1", authorAgent, "settled body"))
 
 	// Author settles WORKING->READY: fire the held deliver from settled blocks.
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -192,7 +192,7 @@ func TestAgentAuthoredFiredOnTerminalFrame(t *testing.T) {
 	c.waitHeld(t, "sess-author", 1)
 
 	// Author dies with an ERRORED terminal frame: fire the held set from stored.
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED, 0)
 	disp.waitForDispatches(t, 1)
 
 	if got := disp.snapshot(); got[0].sessionID != "sess-recip" || got[0].messageID != "m1" {
@@ -222,11 +222,11 @@ func TestAgentAuthoredNoFrameNotForceDelivered(t *testing.T) {
 	// A no-frame death is a DISCONNECTED edge (the bounded-reattach window), which
 	// must NOT fire held delivers (design.md:314-315). Deliver it and assert the
 	// held entry survives and nothing was dispatched.
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED, 0)
 	// A READY settle for a DIFFERENT session drains the settle queue, giving a
 	// deterministic barrier that the DISCONNECTED edge was processed-and-ignored
 	// without firing sess-author's held set.
-	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	c.waitSettleDrained(t)
 
 	if got := disp.snapshot(); len(got) != 0 {
@@ -419,7 +419,7 @@ func TestRecoverySweepSkipsHeldMessage(t *testing.T) {
 	}
 
 	reads.seedMessage(textMessage("m1", authorAgent, "settled body"))
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	rec := disp.waitFor(t, "m1")
 	if rec.sessionID != "sess-recip" || rec.firstText != "settled body" {
 		t.Fatalf("settled deliver = %+v, want {sess-recip, m1, settled body}", rec)
@@ -543,7 +543,7 @@ func TestTransientReadFailureRedeliversAndDispatchesOnce(t *testing.T) {
 			}
 			if authorAgent {
 				c.waitHeld(t, "sess-author", 1)
-				c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+				c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 			}
 			if !disp.waitForMessage(t, "m1") {
 				t.Fatal("m1 never delivered after its redelivered ref")
@@ -589,7 +589,7 @@ func TestHoldOrdersByCommitTimeNotArrival(t *testing.T) {
 		c.hold(store.WithTenant(context.Background(), testTenant), "sess-author", m.id, m.at)
 	}
 	startConsumer(t, c)
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	disp.waitForDispatches(t, 2)
 	snap := disp.snapshot()
 	got := make([]string, 0, len(snap))
@@ -619,7 +619,7 @@ func TestEventReadsRunUnderRefTenant(t *testing.T) {
 
 	publishRef(t, context.Background(), c, tenant, "m1")
 	c.waitHeld(t, "sess-author", 1)
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	disp.waitForDispatches(t, 1)
 
 	scopes := reads.readScopes("m1")
@@ -653,7 +653,7 @@ func TestConcurrentEventRefAndSettleDrainFireEachHeldOnce(t *testing.T) {
 	go func() {
 		defer close(settling)
 		for range n {
-			c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+			c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 		}
 	}()
 	for i := range n {
@@ -665,10 +665,10 @@ func TestConcurrentEventRefAndSettleDrainFireEachHeldOnce(t *testing.T) {
 		fab.waitAcked(t, "m"+itoa(i))
 	}
 	// Every hold has landed; this settle fires whatever the racing ones missed.
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	disp.waitForDispatches(t, n)
 	// The loop drains edges in order, so once this one is popped every earlier fire returned.
-	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	c.waitSettleDrained(t)
 
 	fired := map[string]int{}

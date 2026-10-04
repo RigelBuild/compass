@@ -190,6 +190,7 @@ func (c *Comms) PostAsAccountByName(
 		Topic:           req.GetTopic(),
 		ClientRequestId: req.GetClientRequestId(),
 		CreateTopic:     req.GetCreateTopic(),
+		TurnSequence:    req.GetTurnSequence(),
 	}
 	// The delegated PostAsAccount runs defaultChannel again, but it is a no-op
 	// here: the channel id is already resolved-non-empty, so the empty→home fill
@@ -415,9 +416,10 @@ func (c *Comms) CommitAgentPost(
 		// Container unset: routes to the agent's home channel (defaultChannel).
 		// Topic named: the store has no home-topic default, so the frame's
 		// conversation is addressed by topic name.
-		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: agentConversationTopic},
-		CreateTopic: true,
-		Blocks:      posted.GetMessage().GetBlocks(),
+		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: agentConversationTopic},
+		CreateTopic:  true,
+		Blocks:       posted.GetMessage().GetBlocks(),
+		TurnSequence: posted.GetTurnSequence(),
 	})
 }
 
@@ -553,6 +555,7 @@ func (c *Comms) defaultChannel(
 		Topic:           req.GetTopic(),
 		ClientRequestId: req.GetClientRequestId(),
 		CreateTopic:     req.GetCreateTopic(),
+		TurnSequence:    req.GetTurnSequence(),
 	}, nil
 }
 

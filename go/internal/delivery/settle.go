@@ -24,12 +24,12 @@ import (
 // edge and wakes the loop; the loop drains it under its own ctx. A settle to a
 // non-terminal, non-READY state (STARTING) is ignored — only a SETTLED edge
 // fires held delivers.
-func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessionState) {
+func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessionState, turnSequence uint64) {
 	if !firesHeldDelivers(state) {
 		return
 	}
 	c.mu.Lock()
-	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state, upTo: math.MaxInt64})
+	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state, turnSequence: turnSequence, upTo: math.MaxInt64})
 	// Recorded with the enqueue, so a hold that loses the race to the drain
 	// still sees this settle.
 	c.lastSettle[sessionID] = c.now().UnixMilli()

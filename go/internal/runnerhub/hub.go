@@ -70,9 +70,8 @@ type LifecycleSink interface {
 // two bus spaces; the hub calling the sink directly at the arm keeps the edge
 // where the design puts it (design.md:76-84 of the T3 brief).
 type SettleSink interface {
-	// OnSessionSettled reports that sessionID transitioned to state, called at
-	// the hub's deliverSession arm right after the LifecycleSink publish.
-	OnSessionSettled(sessionID string, state compassv1.AgentSessionState)
+	// OnSessionSettled receives the agent-reported sequence unchanged from its frame.
+	OnSessionSettled(sessionID string, state compassv1.AgentSessionState, turnSequence uint64)
 }
 
 // SessionStartSink is notified when the hub binds a live agent session at its
@@ -824,7 +823,7 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	settle := h.settle
 	h.mu.Unlock()
 	if settle != nil {
-		settle.OnSessionSettled(sessionID, state)
+		settle.OnSessionSettled(sessionID, state, sf.GetTurnSequence())
 	}
 	// Same arm: notify the presence projection of the lifecycle transition so it
 	// recomputes + republishes-on-change the session's presence (RIG-1569 T8). Reuse

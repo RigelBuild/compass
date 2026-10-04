@@ -9,6 +9,7 @@ package comms
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -82,6 +83,52 @@ func TestCreateAgentStoresRoleAndPersona(t *testing.T) {
 	}
 }
 
+func TestPostMessageRejectsTurnSequenceBeyondSignedBigint(t *testing.T) {
+	svc, st := newHandler(t)
+	author := mustUser(t, st, "author")
+	ch, err := st.CreateChannel(context.Background(), author.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	_, err = svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		CreateTopic:  true,
+		TurnSequence: uint64(math.MaxInt64) + 1,
+		Blocks:       textBlocks("out of range"),
+	}))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "turn_sequence above signed BIGINT range")
+	msgs, err := st.ListMessages(context.Background(), store.ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID})
+	if err != nil {
+		t.Fatalf("ListMessages after rejected sequence: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("messages after rejected sequence = %d, want 0", len(msgs))
+	}
+}
+
+func TestPostMessageAcceptsMaxSignedBigintTurnSequence(t *testing.T) {
+	svc, st := newHandler(t)
+	author := mustUser(t, st, "author")
+	ch, err := st.CreateChannel(context.Background(), author.ID, store.NewChannel{Name: "max-sequence", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		CreateTopic:  true,
+		TurnSequence: uint64(math.MaxInt64),
+		Blocks:       textBlocks("max valid sequence"),
+	}))
+	if err != nil {
+		t.Fatalf("PostMessage at MaxInt64: %v", err)
+	}
+	if got := resp.Msg.GetMessage().GetTurnSequence(); got != uint64(math.MaxInt64) {
+		t.Fatalf("turn_sequence = %d, want MaxInt64", got)
+	}
+}
 func TestCreateChannelEmitsChannelChanged(t *testing.T) {
 	h := newStreamHarness(t)
 	ctx := context.Background()

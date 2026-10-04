@@ -195,7 +195,7 @@ type Querier interface {
 	// (errMessageInsertConflict), the JSONB block (de)serialization, and the D9
 	// not-found/forbidden error mapping — all hand-written around these generated
 	// calls. Every message read shares the id/topic_id/author_account_id/author_handle/
-	// at_unix_ms/blocks projection so the Go maps each row through messageFromParts.
+	// at_unix_ms/blocks/turn_sequence projection so Go maps each row through messageFromParts.
 	GetChannelPostPolicy(ctx context.Context, id string) (GetChannelPostPolicyRow, error)
 	GetCoordinationChannelByName(ctx context.Context, arg GetCoordinationChannelByNameParams) (GetCoordinationChannelByNameRow, error)
 	// Coordination-store queries (sqlc adoption T3, RIG-3034). These replace the

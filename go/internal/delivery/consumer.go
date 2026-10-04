@@ -127,8 +127,9 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 // settleEvent is one queued author-settle edge handed from the hub's Deliver
 // goroutine (OnSessionSettled) to the consumer's ctx-rooted loop.
 type settleEvent struct {
-	sessionID string
-	state     compassv1.AgentSessionState
+	sessionID    string
+	state        compassv1.AgentSessionState
+	turnSequence uint64
 	// upTo bounds the commit times this edge fires. A real settle fires all; a
 	// late hold's replay fires only its settled turn, not a still-streaming one.
 	upTo int64

@@ -867,7 +867,7 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		}
 
 		// Settle fires the held set on the bare drain ctx (no active span).
-		w.consumer.OnSessionSettled(authorSess, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+		w.consumer.OnSessionSettled(authorSess, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 		waitForControlDelivers(t, w.runner, recipSess, 2)
 
 		want := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()

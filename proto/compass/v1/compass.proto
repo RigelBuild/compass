@@ -724,6 +724,7 @@ message AgentSessionFrame {
   string session_id = 1;
   SessionEvent event = 2;
   AgentSessionState state = 3;
+  uint64 turn_sequence = 4;
 }
 
 // ProvisionAgentWorkspace: create the isolated per-agent container for a

@@ -382,6 +382,8 @@ type Message struct {
 	At time.Time
 	// Blocks is the ordered content: text and ask blocks only.
 	Blocks []MessageBlock
+	// TurnSequence is the agent-reported session turn that authored this message.
+	TurnSequence uint64
 }
 
 // MessageBlock is one content block, narrowed to the durable-conversation

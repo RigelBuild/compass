@@ -376,6 +376,7 @@ message Message {
   string author_handle = 6;
   // Set on SearchMessages hits to identify the topic's channel; empty otherwise.
   string channel_id = 7;
+  uint64 turn_sequence = 8;
 }
 
 // One content block in a message: the durable conversation the comms layer
@@ -539,6 +540,7 @@ message SubscribeCommsResponse {
 // A new message appeared in a channel.
 message MessagePosted {
   Message message = 1;
+  uint64 turn_sequence = 2;
 }
 
 // An existing message changed — a streaming agent turn appended a block, or a
@@ -929,6 +931,7 @@ message PostMessageRequest {
   // (peer-DM record DL-293; amends the get-or-create semantics of DL-098).
   // Ignored when `topic_id` is set or `topic_name` is unset.
   bool create_topic = 6;
+  uint64 turn_sequence = 7;
 }
 
 message PostMessageResponse {

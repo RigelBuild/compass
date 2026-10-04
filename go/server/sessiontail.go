@@ -157,8 +157,9 @@ func (t *sessionTail) unsubscribe(sessionID string, sub *tailSub) {
 // session_id is stamped from the tail sink's routing key, not the frame body.
 func toPublicFrame(sessionID string, f *compassv1internal.SessionFrame) *compassv1.AgentSessionFrame {
 	return &compassv1.AgentSessionFrame{
-		SessionId: sessionID,
-		Event:     f.GetTypedEvent(),
-		State:     f.GetState(),
+		SessionId:    sessionID,
+		Event:        f.GetTypedEvent(),
+		State:        f.GetState(),
+		TurnSequence: f.GetTurnSequence(),
 	}
 }

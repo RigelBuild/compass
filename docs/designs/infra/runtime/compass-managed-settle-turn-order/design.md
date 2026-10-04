@@ -2,6 +2,8 @@
 
 Ledger-impact: appends DL-382 for Matt's option-3 ruling (design-ledger-gate)
 
+> Post-freeze note (annotate, don't rewrite): `Message.turn_sequence` is field 8, because field 6 is `author_handle` and field 7 was the removed `parent_message_id`. The agent→Runner carrier is the internal `SessionFrame` (`turn_sequence = 3`), so the agent stamps that frame, not the public `AgentSessionFrame`; `toPublicFrame` copies it across.
+
 ## Problem / Intent
 
 The delivery consumer holds agent-authored messages while the author's session is live, then fires held messages on `OnSessionSettled`. Because the settle edge is queued and drained asynchronously, a turn N+1 post can be held before turn N's edge drains; firing it with partial blocks and deduping by `message_id` can discard its later settled delivery. This record implements Matt's RIG-4033 option 3: order holds and settle edges by the agent-reported per-session turn sequence, not wall time.

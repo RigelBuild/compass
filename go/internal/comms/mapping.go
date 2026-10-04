@@ -156,6 +156,7 @@ func MessageToWire(m store.Message) *compassv1.Message {
 		AuthorHandle:    m.AuthorHandle,
 		AtUnixMs:        m.At.UnixMilli(),
 		Blocks:          blocksToWire(m.Blocks),
+		TurnSequence:    m.TurnSequence,
 	}
 	return out
 }
@@ -507,7 +508,7 @@ const fabricPublishTimeout = 5 * time.Second
 func (c *Comms) publishMessagePosted(ctx context.Context, m store.Message) {
 	c.bus.PublishCtx(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
-			MessagePosted: &compassv1.MessagePosted{Message: MessageToWire(m)},
+			MessagePosted: &compassv1.MessagePosted{Message: MessageToWire(m), TurnSequence: m.TurnSequence},
 		},
 	})
 	if c.fabric == nil {

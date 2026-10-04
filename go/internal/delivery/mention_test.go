@@ -218,7 +218,7 @@ func TestSelfMentionAndReservedSelfNoop(t *testing.T) {
 	c.waitHeld(t, "sess-author", 1)
 	// The settled block set carries the self-mention AND the reserved ping.
 	reads.seedMessage(textMessage("m1", authorAgent, "@author @agents standup"))
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()
@@ -467,7 +467,7 @@ func TestStreamedMentionAtSettleEdgeSteers(t *testing.T) {
 	reads.seedMessage(textMessage("m8", authorAgent, "here you go @aa"))
 
 	// Author settles: the held routing fires from the grown blocks and steers A.
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	disp.waitForDispatches(t, 1)
 
 	got := disp.snapshot()

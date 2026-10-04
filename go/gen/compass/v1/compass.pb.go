@@ -3527,6 +3527,7 @@ type AgentSessionFrame struct {
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Event         *SessionEvent          `protobuf:"bytes,2,opt,name=event,proto3" json:"event,omitempty"`
 	State         AgentSessionState      `protobuf:"varint,3,opt,name=state,proto3,enum=compass.v1.AgentSessionState" json:"state,omitempty"`
+	TurnSequence  uint64                 `protobuf:"varint,4,opt,name=turn_sequence,json=turnSequence,proto3" json:"turn_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3580,6 +3581,13 @@ func (x *AgentSessionFrame) GetState() AgentSessionState {
 		return x.State
 	}
 	return AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
+}
+
+func (x *AgentSessionFrame) GetTurnSequence() uint64 {
+	if x != nil {
+		return x.TurnSequence
+	}
+	return 0
 }
 
 // ProvisionAgentWorkspace: create the isolated per-agent container for a
@@ -6443,12 +6451,13 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\a_status\"=\n" +
 	"\x1cSubscribeAgentSessionRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\x97\x01\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xbc\x01\n" +
 	"\x11AgentSessionFrame\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12.\n" +
 	"\x05event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\x05event\x123\n" +
-	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\x9d\x01\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x12#\n" +
+	"\rturn_sequence\x18\x04 \x01(\x04R\fturnSequence\"\x9d\x01\n" +
 	"\x1eProvisionAgentWorkspaceRequest\x12!\n" +
 	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\x12*\n" +
 	"\x11client_request_id\x18\x02 \x01(\tR\x0fclientRequestId\x12\x18\n" +

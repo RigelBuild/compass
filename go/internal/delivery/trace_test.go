@@ -125,7 +125,7 @@ func TestHeldThenSettleCarriesOriginTraceparentAcrossSettleEdge(t *testing.T) {
 
 		// Settle fires the held deliver on the bare drain ctx (no span). The
 		// origin traceparent must be restamped from the held entry.
-		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 		disp.waitForDispatches(t, 1)
 
 		got := disp.snapshot()
@@ -153,7 +153,7 @@ func TestHeldThenSettleCarriesOriginTraceparentAcrossSettleEdge(t *testing.T) {
 		// Posted with no span ⇒ empty origin held ⇒ empty on the fired deliver.
 		postMessage(t, c, reads, textMessage("m1", authorAgent, "initial body"))
 		c.waitHeld(t, "sess-author", 1)
-		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 		disp.waitForDispatches(t, 1)
 
 		got := disp.snapshot()
