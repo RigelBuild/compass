@@ -1,7 +1,5 @@
 # Compass global search — top-bar search over agents / PRs / issues / chats
 
-Status: Draft
-
 Owner lane: compass-ux (design) → compass-ui (execution)
 
 Tracker: RIG-1621 (Compass: global search bar in the top bar — agents / PRs /
