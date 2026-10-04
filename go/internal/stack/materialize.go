@@ -661,11 +661,10 @@ func guestGetAttempt(ctx context.Context, client *http.Client, requestURL, accep
 		if err := resp.Body.Close(); err != nil {
 			return false, fmt.Errorf("close unauthorized response: %w", err)
 		}
-		if token.value != "" {
-			return false, fmt.Errorf("GET %s: unexpected status %s", requestURL, resp.Status)
-		}
+		token.value = ""
 		if err := fetchGuestBearerToken(ctx, client, requestURL, challenge, token); err != nil {
-			return false, err
+			var transient retryable
+			return errors.As(err, &transient) && ctx.Err() == nil, err
 		}
 		return guestGetAttempt(ctx, client, requestURL, accept, token, sink, true)
 	}
@@ -696,7 +695,11 @@ func fetchGuestBearerToken(ctx context.Context, client *http.Client, requestURL,
 	}
 	// Token realms require HTTPS, except same-host realms used by local registries.
 	tokenURL, err := url.Parse(realm)
-	if err != nil || tokenURL.Host == "" || (tokenURL.Scheme != "https" && tokenURL.Host != registryURL.Host) {
+	if err != nil || tokenURL.Host == "" {
+		return errors.New("refusing unsafe anonymous registry token realm")
+	}
+	safeRealm := tokenURL.Scheme == "https" || tokenURL.Scheme == registryURL.Scheme && tokenURL.Host == registryURL.Host
+	if !safeRealm {
 		return errors.New("refusing unsafe anonymous registry token realm")
 	}
 	query := tokenURL.Query()
@@ -709,11 +712,18 @@ func fetchGuestBearerToken(ctx context.Context, client *http.Client, requestURL,
 	}
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
-		return fmt.Errorf("fetch anonymous registry token: %w", err)
+		return retryable{fmt.Errorf("fetch anonymous registry token: %w", err)}
 	}
 	if tokenResp.StatusCode != http.StatusOK {
-		_ = tokenResp.Body.Close()
-		return fmt.Errorf("fetch anonymous registry token: unexpected status %s", tokenResp.Status)
+		status := tokenResp.StatusCode
+		if err := tokenResp.Body.Close(); err != nil {
+			return fmt.Errorf("close anonymous token error response: %w", err)
+		}
+		err := fmt.Errorf("fetch anonymous registry token: unexpected status %s", tokenResp.Status)
+		if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+			return retryable{err}
+		}
+		return err
 	}
 	var body struct {
 		Token       string `json:"token"`
@@ -739,11 +749,12 @@ func fetchGuestBearerToken(ctx context.Context, client *http.Client, requestURL,
 // parseGuestBearerChallenge reads realm, service and scope from a quoted,
 // comma-separated Bearer WWW-Authenticate value.
 func parseGuestBearerChallenge(challenge string) (string, string, string, bool) {
-	if !strings.HasPrefix(challenge, "Bearer ") {
+	challenge = strings.TrimSpace(challenge)
+	if len(challenge) < len("Bearer") || !strings.EqualFold(challenge[:len("Bearer")], "Bearer") || (len(challenge) > len("Bearer") && challenge[len("Bearer")] != ' ' && challenge[len("Bearer")] != '\t') {
 		return "", "", "", false
 	}
+	params := strings.TrimSpace(challenge[len("Bearer"):])
 	values := make(map[string]string)
-	params := strings.TrimPrefix(challenge, "Bearer ")
 	start, quoted, escaped := 0, false, false
 	for i := 0; i <= len(params); i++ {
 		if i < len(params) {
@@ -764,22 +775,37 @@ func parseGuestBearerChallenge(challenge string) (string, string, string, bool) 
 				continue
 			}
 		}
-		key, value, ok := strings.Cut(strings.TrimSpace(params[start:i]), "=")
+		part := strings.TrimSpace(params[start:i])
+		start = i + 1
+		if part == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(part, "=")
 		if !ok {
 			return "", "", "", false
 		}
-		value = strings.TrimSpace(value)
-		if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		key, value = strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value)
+		if key == "" || value == "" {
 			return "", "", "", false
 		}
-		values[key] = strings.ReplaceAll(value[1:len(value)-1], `\"`, `"`)
-		start = i + 1
+		if value[0] == '"' {
+			if len(value) < 2 || value[len(value)-1] != '"' {
+				return "", "", "", false
+			}
+			value = strings.ReplaceAll(value[1:len(value)-1], `\"`, `"`)
+		} else if strings.ContainsAny(value, " \t\r\n\"") {
+			return "", "", "", false
+		}
+		values[key] = value
 	}
 	if quoted || escaped {
 		return "", "", "", false
 	}
 	realm, service, scope := values["realm"], values["service"], values["scope"]
-	return realm, service, scope, realm != "" && service != "" && scope != ""
+	if realm == "" || service == "" || scope == "" {
+		return "", "", "", false
+	}
+	return realm, service, scope, true
 }
 
 // waitBackoff waits d unless ctx is done first — a timer rather than a fixed

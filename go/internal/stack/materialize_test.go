@@ -38,12 +38,16 @@ type fakeRegistry struct {
 	corrupt  map[string]bool
 	truncate map[string]bool
 
-	bearerChallenge  bool
-	challengeRealm   string
-	tokenStatus      int
-	second401        bool
-	tokenRequests    int
-	registryRequests int
+	bearerChallenge   bool
+	challengeRealm    string
+	tokenStatus       int
+	second401         bool
+	expireAfter       int
+	tokenRecoverAfter int
+	tokenRequests     int
+	registryRequests  int
+	realmRequests     int
+	realmServer       *httptest.Server
 
 	observeBlob func()
 	mu          sync.Mutex
@@ -57,16 +61,21 @@ func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path == "/token" {
 		r.mu.Lock()
 		r.tokenRequests++
+		request := r.tokenRequests
 		r.mu.Unlock()
 		if req.URL.Query().Get("service") != "fake" || req.URL.Query().Get("scope") != "repository:"+r.repo+":pull" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if r.tokenStatus != 0 {
+		if r.tokenStatus != 0 && (r.tokenRecoverAfter == 0 || request <= r.tokenRecoverAfter) {
 			w.WriteHeader(r.tokenStatus)
 			return
 		}
-		_, _ = w.Write([]byte(`{"token":"test-token"}`))
+		token := "test-token"
+		if request > 1 {
+			token = "test-token-2"
+		}
+		_, _ = w.Write([]byte(`{"token":"` + token + `"}`))
 		return
 	}
 	if r.bearerChallenge {
@@ -74,7 +83,15 @@ func (r *fakeRegistry) handle(w http.ResponseWriter, req *http.Request) {
 		r.registryRequests++
 		registryRequest := r.registryRequests
 		r.mu.Unlock()
-		if req.Header.Get("Authorization") != "Bearer test-token" || (r.second401 && registryRequest > 1) {
+		r.mu.Lock()
+		tokenRequests := r.tokenRequests
+		r.mu.Unlock()
+		token := "test-token"
+		if tokenRequests > 1 {
+			token = "test-token-2"
+		}
+		expired := r.expireAfter > 0 && registryRequest > r.expireAfter && tokenRequests == 1
+		if expired || req.Header.Get("Authorization") != "Bearer "+token || (r.second401 && registryRequest > 1) {
 			realm := r.challengeRealm
 			if realm == "" {
 				realm = r.server.URL + "/token"
@@ -177,9 +194,18 @@ func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
 		wantTokens int
 	}{
 		{name: "success", wantTokens: 1},
-		{name: "reject unsafe realm", configure: func(r *fakeRegistry) { r.challengeRealm = "http://other.example/token" }, wantErr: true},
-		{name: "token endpoint failure", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusInternalServerError }, wantErr: true, wantTokens: 1},
+		{name: "reject unsafe realm", configure: func(r *fakeRegistry) {
+			r.realmServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				r.realmRequests++
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"token":"unexpected"}`))
+			}))
+			t.Cleanup(r.realmServer.Close)
+			r.challengeRealm = strings.Replace(r.realmServer.URL, "127.0.0.1", "localhost", 1) + "/token"
+		}, wantErr: true},
+		{name: "token endpoint retries", configure: func(r *fakeRegistry) { r.tokenStatus = http.StatusServiceUnavailable; r.tokenRecoverAfter = 1 }, wantTokens: 2},
 		{name: "second unauthorized is final", configure: func(r *fakeRegistry) { r.second401 = true }, wantErr: true, wantTokens: 1},
+		{name: "refresh expired token", configure: func(r *fakeRegistry) { r.expireAfter = 2 }, wantTokens: 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -193,8 +219,8 @@ func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("materializeGuestArtifact error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if reg.tokenRequests != tt.wantTokens {
-				t.Errorf("token requests = %d, want %d", reg.tokenRequests, tt.wantTokens)
+			if tt.name == "reject unsafe realm" && (err == nil || !strings.Contains(err.Error(), "refusing unsafe") || reg.realmRequests != 0) {
+				t.Fatalf("unsafe realm error = %v, realm requests = %d", err, reg.realmRequests)
 			}
 			if tt.wantErr {
 				assertNoMaterializedDir(t, stateDir, reg.digest)
@@ -208,6 +234,30 @@ func TestMaterializeGuestAnonymousBearerChallenge(t *testing.T) {
 				if !bytes.Equal(got, guestBlobBytes[i]) {
 					t.Errorf("%s content = %q, want %q", path, got, guestBlobBytes[i])
 				}
+			}
+		})
+	}
+}
+
+func TestParseGuestBearerChallenge(t *testing.T) {
+	tests := []struct {
+		name      string
+		challenge string
+		wantRealm string
+		wantOK    bool
+	}{
+		{name: "quoted comma", challenge: `Bearer realm="https://example.test/token?a=1,b=2",service="fake",scope="repository:r:pull"`, wantRealm: "https://example.test/token?a=1,b=2", wantOK: true},
+		{name: "escaped quote", challenge: `Bearer realm="https://example.test/\"token",service="fake",scope="repository:r:pull"`, wantRealm: `https://example.test/"token`, wantOK: true},
+		{name: "missing scope", challenge: `Bearer realm="https://example.test/token",service="fake"`},
+		{name: "unterminated quote", challenge: `Bearer realm="https://example.test/token,service="fake",scope="repository:r:pull"`},
+		{name: "lowercase scheme and keys", challenge: `bearer REALM=https://example.test/token, SERVICE = fake, SCOPE = repository:r:pull`, wantRealm: "https://example.test/token", wantOK: true},
+		{name: "unquoted values", challenge: `Bearer realm=https://example.test/token,service=fake,scope=repository:r:pull`, wantRealm: "https://example.test/token", wantOK: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			realm, _, _, ok := parseGuestBearerChallenge(tt.challenge)
+			if ok != tt.wantOK || realm != tt.wantRealm {
+				t.Fatalf("parseGuestBearerChallenge = (%q, %v), want (%q, %v)", realm, ok, tt.wantRealm, tt.wantOK)
 			}
 		})
 	}
