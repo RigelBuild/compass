@@ -677,6 +677,11 @@ func parseForgeScopeGrants(v string) ([]store.ForgeScope, error) {
 		default:
 			return nil, fmt.Errorf("invalid --forge-scope-grants provider %q in %q: want github or linear", parts[1], raw)
 		}
+		if provider == store.ForgeProviderGitHub && parts[3] != "*" {
+			if owner, name, ok := strings.Cut(parts[3], "/"); !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+				return nil, fmt.Errorf("invalid --forge-scope-grants repo %q in %q: want owner/name or *", parts[3], raw)
+			}
+		}
 		out = append(out, store.ForgeScope{AccountID: store.AccountID(parts[0]), Provider: provider, Host: parts[2], Repo: parts[3]})
 	}
 	return out, nil

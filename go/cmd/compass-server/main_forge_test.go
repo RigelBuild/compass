@@ -156,6 +156,7 @@ func TestResolveForgeScopeSettings(t *testing.T) {
 		{scopeGrants: "acct-u:github:github.com"},
 		{scopeGrants: "acct-u:gitlab:gitlab.com:a/b"},
 		{scopeGrants: "acct-u:github::a/b"},
+		{scopeGrants: "acct-u:github:github.com:norepo"},
 	} {
 		if _, err := resolveForge(in); err == nil {
 			t.Errorf("resolveForge(%+v) = nil error, want rejection", in)
