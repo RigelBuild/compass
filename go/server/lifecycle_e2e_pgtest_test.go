@@ -645,7 +645,8 @@ func (f *e2eStubRuntime) Remove(_ context.Context, id runtime.WorkloadID) error 
 	f.removed[string(id)] = true
 	return nil
 }
-func (f *e2eStubRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
+func (f *e2eStubRuntime) Exists(context.Context, string) (bool, error)  { return false, nil }
+func (f *e2eStubRuntime) Running(context.Context, string) (bool, error) { return false, nil }
 func (f *e2eStubRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil
 }

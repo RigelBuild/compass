@@ -123,6 +123,10 @@ func (e *recordingEngine) Remove(context.Context, runtime.WorkloadID) error {
 func (e *recordingEngine) Exists(context.Context, string) (bool, error) {
 	return false, errors.New("recordingEngine: Exists unused")
 }
+
+func (e *recordingEngine) Running(context.Context, string) (bool, error) {
+	return false, errors.New("recordingEngine: Running unused")
+}
 func (e *recordingEngine) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", errors.New("recordingEngine: MountLabel unused")
 }

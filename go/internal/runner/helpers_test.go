@@ -111,7 +111,8 @@ func (f *pipeRuntime) Remove(context.Context, runtime.WorkloadID) error {
 	f.record("remove")
 	return nil
 }
-func (f *pipeRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
+func (f *pipeRuntime) Exists(context.Context, string) (bool, error)  { return false, nil }
+func (f *pipeRuntime) Running(context.Context, string) (bool, error) { return false, nil }
 func (f *pipeRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil
 }
@@ -152,7 +153,9 @@ type stubStreamingRuntime struct {
 	execErr     error                           // when set, ExecStreaming fails before starting the child
 	created     []runtime.WorkloadSpec
 	createErr   error           // when set, Create fails with it — models `podman create` refusing a name already in use
+	removeErr   error           // when set, Remove fails with it and leaves the workload in place
 	vanished    map[string]bool // names removed outside the Runner (a redeploy); Exists reports them gone
+	stopped     map[string]bool // registered workloads whose process stopped
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -174,7 +177,13 @@ func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.WorkloadSp
 		return "", f.createErr
 	}
 	f.created = append(f.created, spec)
-	return runtime.WorkloadID("fake-id"), nil
+	if f.stopped == nil {
+		f.stopped = make(map[string]bool)
+	}
+	delete(f.stopped, spec.Name)
+	delete(f.vanished, spec.Name)
+	// The name doubles as the id so Stop/Remove bookkeeping resolves the workload.
+	return runtime.WorkloadID(spec.Name), nil
 }
 func (f *stubStreamingRuntime) Start(context.Context, runtime.WorkloadID) error {
 	f.record("start")
@@ -230,6 +239,14 @@ func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.WorkloadID, _ 
 		<-gate
 	}
 	f.mu.Lock()
+	if f.stopped == nil {
+		f.stopped = make(map[string]bool)
+	}
+	for _, spec := range f.created {
+		if runtime.WorkloadID(spec.Name) == id {
+			f.stopped[spec.Name] = true
+		}
+	}
 	err := f.stopErr
 	if e, ok := f.stopErrByID[id]; ok {
 		err = e
@@ -241,6 +258,20 @@ func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.WorkloadID, _ 
 func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) error {
 	f.record("remove")
 	f.recordForID(id, "remove")
+	f.mu.Lock()
+	if f.removeErr != nil {
+		f.mu.Unlock()
+		return f.removeErr
+	}
+	if f.vanished == nil {
+		f.vanished = make(map[string]bool)
+	}
+	for _, spec := range f.created {
+		if runtime.WorkloadID(spec.Name) == id {
+			f.vanished[spec.Name] = true
+		}
+	}
+	f.mu.Unlock()
 	return nil
 }
 func (f *stubStreamingRuntime) Exists(_ context.Context, name string) (bool, error) {
@@ -251,6 +282,20 @@ func (f *stubStreamingRuntime) Exists(_ context.Context, name string) (bool, err
 	}
 	for _, s := range f.created {
 		if s.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *stubStreamingRuntime) Running(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vanished[name] || f.stopped[name] {
+		return false, nil
+	}
+	for _, spec := range f.created {
+		if spec.Name == name {
 			return true, nil
 		}
 	}

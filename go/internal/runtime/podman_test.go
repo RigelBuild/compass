@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,6 +79,51 @@ func TestListByOwnerRejectsEmptyRunnerIDWithoutRunningPodman(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("podman stub invocation marker stat error = %v, want not-exist", err)
+	}
+}
+
+// Provision removes a workload Running reports stopped, so each CLI's answer is
+// decoded exactly: absent is (false, nil); unreadable output is an error, never false.
+func TestRunningReadsEngineAnswersExactly(t *testing.T) {
+	type engine func(prog string) WorkloadRuntime
+	podman := func(prog string) WorkloadRuntime { return NewPodmanCLI().WithProgram(prog) }
+	apple := func(prog string) WorkloadRuntime { return NewAppleContainerCLI(AppleContainerConfig{Program: prog}) }
+	tests := []struct {
+		name    string
+		engine  engine
+		stdout  string
+		stderr  string
+		exit    int
+		want    bool
+		wantErr bool
+	}{
+		{name: "podman running", engine: podman, stdout: "true\n", want: true},
+		{name: "podman stopped", engine: podman, stdout: "false\n"},
+		{name: "podman empty output", engine: podman, wantErr: true},
+		{name: "podman missing exit 125", engine: podman, stderr: "Error: no such container x", exit: 125},
+		{name: "podman missing exit 1", engine: podman, stderr: "Error: no such container x", exit: 1},
+		{name: "podman other failure", engine: podman, stderr: "Error: boom", exit: 125, wantErr: true},
+		{name: "apple running", engine: apple, stdout: `[{"id":"x","status":{"state":"running","networks":[]}}]`, want: true},
+		{name: "apple stopping is still live", engine: apple, stdout: `[{"status":{"state":"stopping"}}]`, want: true},
+		{name: "apple stopped", engine: apple, stdout: `[{"status":{"state":"stopped"}}]`},
+		{name: "apple unknown state", engine: apple, stdout: `[{"status":{"state":"unknown"}}]`, wantErr: true},
+		{name: "apple no state", engine: apple, stdout: `[{"status":{}}]`, wantErr: true},
+		{name: "apple string status", engine: apple, stdout: `[{"status":"running"}]`, wantErr: true},
+		{name: "apple object not array", engine: apple, stdout: `{"status":{"state":"running"}}`, wantErr: true},
+		{name: "apple empty array", engine: apple, stdout: `[]`, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prog := filepath.Join(t.TempDir(), "engine-stub.sh")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' '%s'\nprintf '%%s' '%s' >&2\nexit %d\n", tc.stdout, tc.stderr, tc.exit)
+			if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+				t.Fatalf("writing stub: %v", err)
+			}
+			got, err := tc.engine(prog).Running(t.Context(), "x")
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Fatalf("Running = %v, %v; want %v, err=%v", got, err, tc.want, tc.wantErr)
+			}
+		})
 	}
 }
 

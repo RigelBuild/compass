@@ -6,6 +6,7 @@ package runtime
 // runs on any Linux box with no container engine present and does not flake.
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -268,6 +269,33 @@ func TestHostStopEscalatesToSIGKILL(t *testing.T) {
 	if waitErr == nil {
 		t.Fatal("Wait after SIGKILL = nil, want a signalled-exit error")
 	}
+}
+
+// A Stop cut short by its context did not stop the process, so the handle must
+// keep reading as running; Provision treats "not running" as safe to replace.
+func TestHostStopCanceledKeepsRunning(t *testing.T) {
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-c")
+	script := "trap '' TERM; echo ready; while true; do sleep 1; done"
+	se, err := h.ExecStreaming(t.Context(), id, NewStreamingExecSpec("sh", "-c", script))
+	if err != nil {
+		t.Fatalf("ExecStreaming: %v", err)
+	}
+	if line := readLine(t, se.IO.Stdout); strings.TrimSpace(line) != "ready" {
+		t.Fatalf("first stdout line = %q, want %q", line, "ready")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if stopErr := h.Stop(ctx, id, time.Hour); !errors.Is(stopErr, context.Canceled) {
+		t.Fatalf("Stop with a canceled ctx = %v, want context.Canceled", stopErr)
+	}
+	if running, runErr := h.Running(t.Context(), "agent-c"); runErr != nil || !running {
+		t.Fatalf("Running after a canceled Stop = %v, %v; want true, nil", running, runErr)
+	}
+	if stopErr := h.Stop(t.Context(), id, 100*time.Millisecond); stopErr != nil {
+		t.Fatalf("cleanup Stop: %v", stopErr)
+	}
+	_ = se.Process.Wait()
 }
 
 // TestHostAsUser: nil and the Runner's own euid are accepted; any other uid is
