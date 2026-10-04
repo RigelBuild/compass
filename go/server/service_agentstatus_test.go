@@ -9,14 +9,23 @@ package server
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/runnertest"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // newAgentStatusClient stands up a service backed by a fresh board over a fresh
@@ -140,4 +149,92 @@ func TestGetAgentStatusNilBoardNoPanic(t *testing.T) {
 	if got := resp.Msg.GetStatuses(); len(got) != 0 {
 		t.Errorf("GetAgentStatus(nil board) statuses = %v, want empty", got)
 	}
+}
+
+func TestGetAgentStatusRunnerNotEnrolled(t *testing.T) {
+	client, _ := newAgentStatusClient(t)
+	resp, err := client.GetAgentStatus(context.Background(), connect.NewRequest(&compassv1.GetAgentStatusRequest{}))
+	if err != nil {
+		t.Fatalf("GetAgentStatus = %v", err)
+	}
+	if resp.Msg.GetRunnerEnrolled() {
+		t.Fatal("GetAgentStatus runner_enrolled = true without a Runner, want false")
+	}
+}
+
+// idleHost is a SessionHost the test never dispatches to; any command would panic.
+type idleHost struct{ runner.SessionHost }
+
+// TestGetAgentStatusRunnerEnrollment drives a real hub through Enroll, Sessions
+// attach, and detach, asserting runner_enrolled tracks the live stream end to end.
+func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	brd := board.NewProjection(bus)
+	hub := runnerhub.NewHub(brd, nil, nil, slog.New(slog.DiscardHandler))
+	client := newH2CClient(t, newH2CTestServer(t, newService("test", bus, nil, hub, brd, nil, nil)))
+	enrolled := func() bool {
+		t.Helper()
+		resp, err := client.GetAgentStatus(context.Background(), connect.NewRequest(&compassv1.GetAgentStatusRequest{}))
+		if err != nil {
+			t.Fatalf("GetAgentStatus = %v", err)
+		}
+		return resp.Msg.GetRunnerEnrolled()
+	}
+	waitEnrolled := func(want bool) {
+		t.Helper()
+		deadline := timeAfter()
+		for enrolled() != want {
+			select {
+			case <-deadline:
+				t.Fatalf("runner_enrolled never became %v", want)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+	if enrolled() {
+		t.Fatal("runner_enrolled = true before any Runner enrolled")
+	}
+
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	resolve := func(_ context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
+		if presented != "runner-tok" || want != store.SubjectRunner {
+			return store.Subject{}, store.ErrNotFound
+		}
+		return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, nil
+	}
+	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil, otelIC)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = cleartextHTTP2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	link, err := runner.Dial(ctx, runner.RunnerConfig{
+		RunnerID: "runner-1", ServerAddr: srv.URL, Token: "runner-tok", HTTPClient: runnertest.H2CClient(t),
+	})
+	if err != nil {
+		t.Fatalf("runner.Dial = %v", err)
+	}
+	if enrolled() {
+		t.Fatal("runner_enrolled = true after Enroll but before the Sessions stream attached")
+	}
+
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- link.RunSessions(ctx, idleHost{}, slog.New(slog.DiscardHandler)) }()
+	waitEnrolled(true)
+
+	cancel()
+	select {
+	case <-loopDone:
+	case <-timeAfter():
+		t.Fatal("RunSessions did not exit after cancel")
+	}
+	waitEnrolled(false)
 }

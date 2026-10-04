@@ -11,6 +11,7 @@ package runnerhub
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -183,6 +184,35 @@ func TestEnrollDuplicateReattaches(t *testing.T) {
 	// serve it).
 	if _, _, err := hub.routerFor("any"); err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a live router", err)
+	}
+}
+
+// TestRunnerEnrolledTracksSessionsAttachment distinguishes enrollment from a
+// live command stream and observes detach through the public hub accessor.
+func TestRunnerEnrolledTracksSessionsAttachment(t *testing.T) {
+	hub := newHubOnly()
+	if hub.RunnerEnrolled() {
+		t.Fatal("fresh hub reports an enrolled Runner")
+	}
+
+	hub, cancel, loopDone := runnerLoopFixture(t, &fakeSessionHost{})
+	if !hub.RunnerEnrolled() {
+		t.Fatal("RunnerEnrolled() = false after Sessions stream attached, want true")
+	}
+	cancel()
+	select {
+	case <-loopDone:
+	case <-timeAfter():
+		t.Fatal("Runner Sessions loop did not detach")
+	}
+	deadline := timeAfter()
+	for hub.RunnerEnrolled() {
+		select {
+		case <-deadline:
+			t.Fatal("RunnerEnrolled() stayed true after Sessions stream detached")
+		default:
+			runtime.Gosched()
+		}
 	}
 }
 

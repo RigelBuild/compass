@@ -760,6 +760,17 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 	}
 }
 
+// RunnerEnrolled reports whether the enrolled Runner has a live Sessions stream.
+func (h *Hub) RunnerEnrolled() bool {
+	router, _, err := h.routerFor("")
+	if err != nil {
+		return false
+	}
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	return router.sender != nil
+}
+
 // fireRunnerReady invokes the runner-ready hook, if wired, on its OWN goroutine.
 // The goroutine is load-bearing: the seed drives Provision→Start back through this
 // hub's router down the very stream calling this, so running it inline would deadlock.
