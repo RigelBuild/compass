@@ -83,7 +83,7 @@ every install is checked against `bun.lock`.
 | npm package (chosen for TS tools) | Exact version in the bun catalog; `bun.lock` keeps the integrity hash | Both repos already take tools as bun dependencies. Compass's Renovate catalog manager already reads npm versions. One package per tool. | Needs a publish lane in the shared repo and a one-time bootstrap publish per package |
 | bun git dependency | `github:RigelBuild/repo-tools#<sha>` in the root `package.json` | No registry and no publish lane | One package for the whole repo (bun installs a git repo root, not a subdirectory). Compass's catalog manager reads only npm versions. |
 | Rev-pin JSON | A `{repo, ref, rev}` file plus a fetch step before each run. The private consumer already pins compass this way. | Precedent exists, and compass's Renovate config already bumps git revs with a regex manager | Each consumer writes its own fetch step. The tools' own npm dependencies need a separate install. No typed imports. Local runs need the fetch too. |
-| Nix flake input (chosen for Nix tooling) | Flake input; `flake.lock` keeps the narHash | Content-addressed and nix-native | Wrong fit for the bun tools: each would need a nix package build, and moon and `tsc` cannot typecheck against a store path. Right fit for Nix code. |
+| Nix flake input (chosen for Nix tooling) | Flake input, locked by the consumer's lock file (`devenv.lock` in compass) | Content-addressed and nix-native | Wrong fit for the bun tools: each would need a nix package build, and moon and `tsc` cannot typecheck against a store path. Right fit for Nix code. |
 
 TS tools ship as npm packages, so a tool bump is an ordinary catalog PR with
 release notes. Nix tooling ships as flake outputs, pinned by the consumer's
@@ -366,12 +366,14 @@ repos carry and measure their drift, as the Inventory table does for the TS
 tools. Move each shared file under `nix/` in the shared flake as an output. A
 file that holds a consumer literal takes it as a function argument instead.
 In compass, add the shared repo as a `devenv.yaml` input. Then add a
-`custom.regex` git-refs Renovate rule with a `devenv.lock` relock
-postUpgradeTask, the same shape as the existing devenv-fork rule, with
-`minimumReleaseAge: null`. Switch the imports and delete each local copy in the
-same PR.
+`custom.regex` git-refs Renovate rule with `minimumReleaseAge: null` and a
+`devenv.lock` relock postUpgradeTask. `tools/renovate/refresh-devenv-lock.ts`
+hard-codes its input name (`DEVENV_INPUT = "devenv"`), so T10 makes the input
+name an argument. It also adds the new command to the bot config's
+`allowedCommands` and its `config.test.ts` pins. Switch the imports and delete
+each local copy in the same PR.
 
-Acceptance: the consumer's nixos/devenv evaluation and its toolchain-parity
+Acceptance: the consumer's devenv shell evaluation and its toolchain-parity
 and flake-parity gates pass unchanged, and the store paths of the moved
 outputs match those from before the move.
 
@@ -379,7 +381,8 @@ Interfaces: consumes T2's `flake.nix`; produces flake outputs under `nix/`.
 
 ### Out of scope
 
-Later records: a shared Renovate preset and the Renovate upgrade scripts. The
+Later records: a shared Renovate preset and moving the Renovate upgrade
+scripts (T10 changes only `refresh-devenv-lock.ts`'s input name). The
 moon task template and the root checks stay local (see Inventory). Wiring the
 touch-coupling leg into compass CI is separate work. The DL counter service
 (`dl.rigel.build`) does not move.
