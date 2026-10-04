@@ -212,6 +212,14 @@ Delivery semantics per message:
    at `MaxDeliver` and emits a max-deliveries advisory → the fabric parks it
    from the advisory.
 
+### Backlog gauge
+
+`compass.fabric.consumer.backlog` (OTel, `{message}`) reports `NumPending +
+NumAckPending` for each consumer a Server holds, keyed by the `consumer`
+attribute: the hashed durable name, never a tenant id. Every Server sharing a
+durable reports the same value, so aggregate with max, not sum. It is the
+delivery backlog signal for scaling out Servers.
+
 ## Dead-letter: `compass.dlq.comms`
 
 JetStream has no native DLQ, so the fabric implements the app-level pattern: on

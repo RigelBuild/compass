@@ -166,9 +166,12 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	if err != nil {
 		return nil, fmt.Errorf("fabric: consuming %q: %w", subject, err)
 	}
+	durable := durableName(subject)
+	f.trackConsumer(durable, cons)
 	advisory, err := f.parkOnMaxDeliveries(ctx, subject)
 	if err != nil {
 		cc.Stop()
+		f.untrackConsumer(durable)
 		return nil, err
 	}
 
@@ -181,6 +184,7 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	stop := func() {
 		once.Do(func() {
 			cc.Drain()
+			f.untrackConsumer(durable)
 			if err := advisory.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrConnectionDraining) && !errors.Is(err, nats.ErrBadSubscription) {
 				f.log.WarnContext(ctx, "fabric: unsubscribing the max-deliveries advisory failed", "subject", subject, "error", err)
 			}
