@@ -182,18 +182,31 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 // ensureMigrationsTable creates the schema-version bookkeeping table if absent.
-// Kept outside the numbered migrations so the runner can record v1 itself. The
-// ADD COLUMN upgrades a table created before checksums were recorded.
+// Kept outside the numbered migrations so the runner can record v1 itself.
 func ensureMigrationsTable(ctx context.Context, conn *pgxpool.Conn) error {
 	const ddl = `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		name       TEXT NOT NULL,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 		checksum   TEXT
-	);
-	ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`
+	)`
 	if _, err := conn.Exec(ctx, ddl); err != nil {
 		return fmt.Errorf("store: ensure schema_migrations: %w", err)
+	}
+	// Upgrade a pre-checksum table only when needed: ALTER takes an ACCESS
+	// EXCLUSIVE lock even when the column exists, stalling every Open behind it.
+	var hasChecksum bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'schema_migrations' AND column_name = 'checksum'
+	)`).Scan(&hasChecksum); err != nil {
+		return fmt.Errorf("store: inspect schema_migrations: %w", err)
+	}
+	if hasChecksum {
+		return nil
+	}
+	if _, err := conn.Exec(ctx, "ALTER TABLE schema_migrations ADD COLUMN checksum TEXT"); err != nil {
+		return fmt.Errorf("store: add schema_migrations.checksum: %w", err)
 	}
 	return nil
 }
