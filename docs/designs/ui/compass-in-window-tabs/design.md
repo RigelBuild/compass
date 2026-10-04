@@ -1,7 +1,7 @@
 # Design: In-Window Tabs and Split Views
 
 Builds on: [UX foundation §D6.1](../compass-ux-foundation/design.md) (DL-160), [shell routing](../compass-shell-routing/design.md) (DL-127), [multi-window](../compass-multi-window/design.md)
-Refs: RIG-1808 (Beta milestone)
+Refs: RIG-1808 (Beta milestone); rulings on RIG-4040
 
 ## Problem / Intent
 
@@ -427,11 +427,11 @@ within 0.2–0.8 and persist it. Pointer and chord focus between panes. A 1px
 
 ## Open Questions
 
-1. **Leader `W` for tab and split chords.** Ruled (a) by Matt, 2026-10-04:
+1. **Leader `W` for tab and split chords.** Ruled by Matt, 2026-10-04:
    leader `W` sequences in both hosts, one keymap, focus-gated like `G`. The
    browser reserves `Ctrl+T`/`W`/`N`/`Tab`, so modifier chords cannot match
-   across hosts. Desktop-only `Mod+T`-style aliases can be added later.
-2. **Sidebar clicks navigate in place, or open a tab.** Ruled (a) by Matt,
+   across hosts. Not ruled: desktop-only `Mod+T` aliases would be additive.
+2. **Sidebar clicks navigate in place, or open a tab.** Ruled by Matt,
    2026-10-04: navigate in place; `Mod`+click or middle-click opens a new tab.
 3. **Splits ship with tabs in Beta.** Ruled by Matt, 2026-10-04: ship both in
    Beta. T1–T2 are the expensive part and both features need them.
