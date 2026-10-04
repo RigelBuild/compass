@@ -17,11 +17,9 @@ var errNoGateway = errors.New("gateway: listener has no gateway to publish throu
 // Publish wait, so a wait that spends the caller's budget still reports the state.
 const stateSendTimeout = 2 * time.Second
 
-// PublishSessionState sends one lifecycle transition for sessionID up the same
-// Runner-sequenced PublishEvents path the agent's own frames take. It is for a
-// transition the agent cannot report itself, such as its own death. It first
-// waits, bounded by ctx, for that session's in-flight Publish handlers, so the
-// agent's last frames are not sequenced after its ERRORED transition.
+// PublishSessionState sends a lifecycle transition over the Runner-sequenced
+// PublishEvents path. It drains open Publish handlers, bounded by ctx, then seals
+// frame admission so no later telemetry frame can follow the terminal state.
 func (l *SocketListener) PublishSessionState(ctx context.Context, sessionID string, state compassv1.AgentSessionState) error {
 	if l.gateway == nil {
 		return errNoGateway
@@ -32,7 +30,7 @@ func (l *SocketListener) PublishSessionState(ctx context.Context, sessionID stri
 			Session: &compassv1internal.SessionFrame{State: state},
 		},
 	}
-	g.waitForPublishes(ctx, sessionID)
+	g.fencePublishes(ctx, sessionID)
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateSendTimeout)
 	defer cancel()
 	pub := newSessionPublisher(sendCtx, g.events, sessionID, &g.seq)

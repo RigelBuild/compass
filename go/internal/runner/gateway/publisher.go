@@ -100,6 +100,9 @@ type sessionPublisher struct {
 	// sequence survives a replacement. Only the counter is shared; its lock is
 	// held just long enough to allocate.
 	seq *seqCounter
+	// admit, when set, allocates under the Gateway's publish gate so a sealed
+	// session refuses frames instead of sequencing them after its ERRORED report.
+	admit func() (uint64, error)
 }
 
 // newSessionPublisher opens the upstream PublishEvents client-stream for
@@ -130,7 +133,15 @@ func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string
 func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	seq := p.seq.next()
+	var seq uint64
+	if p.admit != nil {
+		var err error
+		if seq, err = p.admit(); err != nil {
+			return err
+		}
+	} else {
+		seq = p.seq.next()
+	}
 	if err := p.stream.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: seq,
 		SessionId: p.sessionID,
@@ -178,6 +189,7 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 	}
 	if g.pub == nil {
 		g.pub = newSessionPublisher(g.baseCtx, g.events, sessionID, &g.seq)
+		g.pub.admit = func() (uint64, error) { return g.admitFrame(sessionID) }
 	}
 	pub := g.pub
 	g.pubMu.Unlock()

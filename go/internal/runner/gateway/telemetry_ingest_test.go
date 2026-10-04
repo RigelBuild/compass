@@ -400,20 +400,15 @@ func TestPublishSessionStateWaitsForInflightPublish(t *testing.T) {
 	events := newRunnerServiceServer(t, capture)
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	client := newAgentGatewayServer(t, g)
-
 	publishCtx, cancelPublish := context.WithCancel(context.Background())
 	t.Cleanup(cancelPublish)
 	stream := client.Publish(publishCtx)
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("in-flight")}); err != nil {
 		t.Fatalf("send Publish frame: %v", err)
 	}
-	select {
-	case frame := <-capture.frames:
-		if got := frame.GetFrame().GetSession().GetTypedEvent().GetAssistantText().GetText(); got != "in-flight" {
-			t.Fatalf("first frame = %q, want in-flight", got)
-		}
-	case <-time.After(testTimeout):
-		t.Fatal("timed out waiting for in-flight Publish frame")
+	first := capture.recvFrame(t)
+	if got := first.GetFrame().GetSession().GetTypedEvent().GetAssistantText().GetText(); got != "in-flight" {
+		t.Fatalf("first frame = %q, want in-flight", got)
 	}
 
 	listener := &SocketListener{gateway: g}
@@ -423,7 +418,6 @@ func TestPublishSessionStateWaitsForInflightPublish(t *testing.T) {
 		stateDone <- listener.PublishSessionState(waitCtx, "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
 	}()
 	<-waitCtx.entered
-	// A frame sent after the exit report began must still sequence before ERRORED.
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil {
 		t.Fatalf("send late Publish frame: %v", err)
 	}
@@ -433,16 +427,13 @@ func TestPublishSessionStateWaitsForInflightPublish(t *testing.T) {
 	if err := <-stateDone; err != nil {
 		t.Fatalf("PublishSessionState: %v", err)
 	}
-
-	var last *compassv1internal.PublishEventsRequest
-	for range 2 {
-		f := capture.recvFrame(t)
-		if last == nil || f.GetRunnerSeq() > last.GetRunnerSeq() {
-			last = f
-		}
+	late := capture.recvFrame(t)
+	state := capture.recvFrame(t)
+	if late.GetFrame().GetSession().GetTypedEvent().GetAssistantText().GetText() != "late" || late.GetRunnerSeq() >= state.GetRunnerSeq() {
+		t.Fatalf("late frame seq %d must precede ERRORED seq %d", late.GetRunnerSeq(), state.GetRunnerSeq())
 	}
-	if got := last.GetFrame().GetSession().GetState(); got != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		t.Fatalf("highest-RunnerSeq frame state = %v, want ERRORED after the agent's last frame", got)
+	if got := state.GetFrame().GetSession().GetState(); got != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("highest-RunnerSeq frame state = %v, want ERRORED", got)
 	}
 }
 
@@ -452,7 +443,15 @@ func TestPublishSessionStateSendsAfterPublishWaitContextExpires(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	listener := &SocketListener{gateway: g}
 
-	flight := g.beginPublish("sess-1")
+	client := newAgentGatewayServer(t, g)
+	publishCtx, cancelPublish := context.WithCancel(context.Background())
+	t.Cleanup(cancelPublish)
+	stream := client.Publish(publishCtx)
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("in-flight")}); err != nil {
+		t.Fatalf("send Publish frame: %v", err)
+	}
+	inFlight := capture.recvFrame(t)
+	seq := inFlight.GetRunnerSeq()
 	ctx, cancel := context.WithCancel(context.Background())
 	observed := &observedDoneContext{Context: ctx, entered: make(chan struct{})}
 	stateDone := make(chan error, 1)
@@ -469,7 +468,115 @@ func TestPublishSessionStateSendsAfterPublishWaitContextExpires(t *testing.T) {
 	if state.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 		t.Fatalf("frame state = %v, want ERRORED", state.GetFrame().GetSession().GetState())
 	}
-	g.endPublish("sess-1", flight)
+	if state.GetRunnerSeq() <= seq {
+		t.Fatalf("ERRORED RunnerSeq = %d, want greater than admitted frame %d", state.GetRunnerSeq(), seq)
+	}
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil {
+		t.Fatalf("send late Publish frame: %v", err)
+	}
+	if _, err := stream.CloseAndReceive(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("Publish code = %v, want CodeFailedPrecondition", connect.CodeOf(err))
+	}
+}
+
+func TestPublishAfterSessionStateIsRefused(t *testing.T) {
+	capture := newCapturePublish()
+	events := newRunnerServiceServer(t, capture)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	listener := &SocketListener{gateway: g}
+	if err := listener.PublishSessionState(context.Background(), "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	state := capture.recvFrame(t)
+	client := newAgentGatewayServer(t, g)
+	stream := client.Publish(context.Background())
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil {
+		t.Fatalf("send late Publish frame: %v", err)
+	}
+	if _, err := stream.CloseAndReceive(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("Publish code = %v, want CodeFailedPrecondition", connect.CodeOf(err))
+	}
+	if state.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("captured state = %v, want ERRORED", state.GetFrame().GetSession().GetState())
+	}
+	select {
+	case frame := <-capture.frames:
+		t.Fatalf("late frame forwarded after ERRORED: %+v", frame)
+	default:
+	}
+}
+
+func TestPublishHandlerOpenedDuringWaitIsRefused(t *testing.T) {
+	capture := newCapturePublish()
+	events := newRunnerServiceServer(t, capture)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	listener := &SocketListener{gateway: g}
+	client := newAgentGatewayServer(t, g)
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	t.Cleanup(firstCancel)
+	first := client.Publish(firstCtx)
+	if err := first.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("in-flight")}); err != nil {
+		t.Fatalf("send first Publish frame: %v", err)
+	}
+	capture.recvFrame(t)
+	waitCtx := &observedDoneContext{Context: context.Background(), entered: make(chan struct{})}
+	stateDone := make(chan error, 1)
+	go func() {
+		stateDone <- listener.PublishSessionState(waitCtx, "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+	}()
+	<-waitCtx.entered
+	second := client.Publish(context.Background())
+	if err := second.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil {
+		t.Fatalf("send frame on late handler: %v", err)
+	}
+	if _, err := second.CloseAndReceive(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("late handler code = %v, want CodeFailedPrecondition", connect.CodeOf(err))
+	}
+	if err := first.Send(&compassv1internal.PublishFrameRequest{}); err != nil {
+		t.Fatalf("finish original Publish stream: %v", err)
+	}
+	if _, err := first.CloseAndReceive(); err != nil {
+		t.Fatalf("finish original Publish stream: %v", err)
+	}
+	if err := <-stateDone; err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	state := capture.recvFrame(t)
+	if state.GetFrame().GetSession().GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("captured state = %v, want ERRORED", state.GetFrame().GetSession().GetState())
+	}
+	select {
+	case frame := <-capture.frames:
+		t.Fatalf("late handler frame forwarded after ERRORED: %+v", frame)
+	default:
+	}
+}
+
+func TestBindSessionReopensPublishAfterSessionState(t *testing.T) {
+	capture := newCapturePublish()
+	events := newRunnerServiceServer(t, capture)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	listener := &SocketListener{gateway: g}
+	if err := listener.PublishSessionState(context.Background(), "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	state := capture.recvFrame(t)
+	listener.BindSession("sess-1")
+	client := newAgentGatewayServer(t, g)
+	stream := client.Publish(context.Background())
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("resumed")}); err != nil {
+		t.Fatalf("send resumed Publish frame: %v", err)
+	}
+	if _, err := stream.CloseAndReceive(); err != nil {
+		t.Fatalf("finish resumed Publish stream: %v", err)
+	}
+	resumed := capture.recvFrame(t)
+	if got := resumed.GetFrame().GetSession().GetTypedEvent().GetAssistantText().GetText(); got != "resumed" {
+		t.Fatalf("resumed frame text = %q, want resumed", got)
+	}
+	if resumed.GetRunnerSeq() <= state.GetRunnerSeq() {
+		t.Fatalf("resumed RunnerSeq = %d, want greater than ERRORED %d", resumed.GetRunnerSeq(), state.GetRunnerSeq())
+	}
 }
 
 // --- Case 2 ------------------------------------------------------------------

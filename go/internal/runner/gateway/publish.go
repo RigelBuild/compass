@@ -37,9 +37,10 @@ func (g *Gateway) Publish(
 		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForPublish)
 	}
 
-	flight := g.beginPublish(sessionID)
-	defer g.endPublish(sessionID, flight)
-
+	if err := g.beginPublish(sessionID); err != nil {
+		return nil, err
+	}
+	defer g.endPublish(sessionID)
 	pub := g.acquirePublisher(sessionID)
 	// Captured once: a Restart after this stream opened means these acks come from
 	// the replaced process and must not touch the new process's control state.
@@ -99,50 +100,99 @@ func (g *Gateway) Publish(
 	return connect.NewResponse(&compassv1internal.PublishFrameResponse{}), nil
 }
 
-// publishFlight counts one session's in-flight Publish handlers; done closes at zero.
-type publishFlight struct {
-	count int
-	done  chan struct{}
+// publishGate tracks one session's Publish handlers. draining refuses new handlers
+// while a lifecycle report waits for open ones; sealed also refuses their frames.
+type publishGate struct {
+	draining bool
+	sealed   bool
+	handlers int
+	idle     chan struct{}
 }
 
-func (g *Gateway) beginPublish(sessionID string) *publishFlight {
+func (g *Gateway) beginPublish(sessionID string) error {
 	g.publishMu.Lock()
 	defer g.publishMu.Unlock()
-	flight := g.publishes[sessionID]
-	if flight == nil {
-		flight = &publishFlight{done: make(chan struct{})}
+	gate := g.publishes[sessionID]
+	if gate == nil {
+		gate = &publishGate{}
 		if g.publishes == nil {
-			g.publishes = make(map[string]*publishFlight)
+			g.publishes = make(map[string]*publishGate)
 		}
-		g.publishes[sessionID] = flight
+		g.publishes[sessionID] = gate
 	}
-	flight.count++
-	return flight
+	if gate.draining || gate.sealed {
+		return connect.NewError(connect.CodeFailedPrecondition, errSessionEnded)
+	}
+	if gate.handlers == 0 {
+		gate.idle = make(chan struct{})
+	}
+	gate.handlers++
+	return nil
 }
 
-func (g *Gateway) endPublish(sessionID string, flight *publishFlight) {
+func (g *Gateway) endPublish(sessionID string) {
 	g.publishMu.Lock()
 	defer g.publishMu.Unlock()
-	flight.count--
-	if flight.count == 0 {
-		close(flight.done)
-		delete(g.publishes, sessionID)
-	}
-}
-
-func (g *Gateway) waitForPublishes(ctx context.Context, sessionID string) {
-	g.publishMu.Lock()
-	flight := g.publishes[sessionID]
-	var done <-chan struct{}
-	if flight != nil {
-		done = flight.done
-	}
-	g.publishMu.Unlock()
-	if done == nil {
+	gate := g.publishes[sessionID]
+	if gate == nil {
 		return
 	}
-	select {
-	case <-done:
-	case <-ctx.Done():
+	gate.handlers--
+	if gate.handlers == 0 {
+		close(gate.idle)
+		if !gate.draining && !gate.sealed && g.publishes[sessionID] == gate {
+			delete(g.publishes, sessionID)
+		}
+	}
+}
+
+func (g *Gateway) admitFrame(sessionID string) (uint64, error) {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	gate := g.publishes[sessionID]
+	if gate != nil && gate.sealed {
+		return 0, connect.NewError(connect.CodeFailedPrecondition, errSessionEnded)
+	}
+	return g.seq.next(), nil
+}
+
+func (g *Gateway) fencePublishes(ctx context.Context, sessionID string) {
+	g.publishMu.Lock()
+	gate := g.publishes[sessionID]
+	if gate == nil {
+		gate = &publishGate{}
+		if g.publishes == nil {
+			g.publishes = make(map[string]*publishGate)
+		}
+		g.publishes[sessionID] = gate
+	}
+	gate.draining = true
+	var idle <-chan struct{}
+	if gate.handlers > 0 {
+		idle = gate.idle
+	}
+	g.publishMu.Unlock()
+	if idle != nil {
+		select {
+		case <-idle:
+		case <-ctx.Done():
+		}
+	}
+	g.publishMu.Lock()
+	gate.sealed = true
+	g.publishMu.Unlock()
+}
+
+func (g *Gateway) unfencePublishes(sessionID string) {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	gate := g.publishes[sessionID]
+	if gate == nil {
+		return
+	}
+	gate.draining = false
+	gate.sealed = false
+	if gate.handlers == 0 {
+		delete(g.publishes, sessionID)
 	}
 }
