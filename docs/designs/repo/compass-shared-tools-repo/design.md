@@ -27,7 +27,7 @@ record names no path in the private repo.
 | DL reconcile | `tools/dl-reconcile/` | Yes | Yes: 6 files, +1,088 / −501. Compass reads one ledger, cross-counts raw rows, refuses an empty frontier, and has `--check`. The private copy reads several ledgers and reports stale and duplicate claims. | Move (T5) |
 | DL claim | `tools/dl-claim/` | No | None to measure. Compass-only client; the request type hard-codes `repo: "compass"`. | Move (T5) |
 | SEA reference gate | `tools/sea-ref-gate/` | Yes | Yes: 8 files, +334 / −611. The private copy splits the core into its own module. | Move as `ref-gate` (T3) |
-| Private-name reference gate | `tools/orion-ref-gate/` | No | None to measure. Same four exported functions as the SEA gate (`isCarveOut`, `lineHasToken`, `findViolations`, `runOnce`). | Becomes a `ref-gate` config (T3) |
+| Private-name reference gate | A sibling of the SEA gate under `tools/` | No | None to measure. Same four exported functions as the SEA gate (`isCarveOut`, `lineHasToken`, `findViolations`, `runOnce`). | Becomes a `ref-gate` config (T3) |
 | Renovate preflight | `tools/renovate-preflight/` | Yes | Small: 6 files, +47 / −43 (comments, task and package config). | Move (T6) |
 | Bun moon task template | `.moon/tasks/tag-bun.yml` | Yes | Comments only. No task differs. | Stay local |
 | Root checks | `lint`, `format`, `markdownlint` tasks in the root `moon.yml` | Different tool | Not a copy. The private consumer runs a separate tool that runs its checks outside the moon cache and gates baked linter versions. | Stay local |
@@ -39,7 +39,7 @@ record names no path in the private repo.
 
 ### One public repo, one package per tool
 
-Create `RigelBuild/repo-tools`. It is a bun workspace with one package per tool
+Create one public repo (working name `RigelBuild/repo-tools`; see Open question). It is a bun workspace with one package per tool
 under `packages/<tool>/`, published as `@rigelbuild/<tool>` with a bin of the
 same name. It is also a nix flake that exports the shared Nix tooling (see
 "Nix tooling"). Each consumer pins exact versions and deletes its own copy in
@@ -179,11 +179,15 @@ scope is T4, T5, and the ledger part of T7 and T8.
 
 ### T1 — Create the repo
 
-Lands in: the org's GitHub IaC. A public repo `RigelBuild/repo-tools` with
-default branch `main`, a ruleset that requires a PR, Matt's CODEOWNERS review,
-and green CI, merging through the Trunk queue as compass does.
+Lands in: the org's GitHub IaC. A public repo (name per OQ2) with default
+branch `main`. The IaC creates it with `auto_init`, so `main` starts with one
+generated README commit and every later change lands by PR. The same apply
+turns on a ruleset that requires a PR and Matt's CODEOWNERS review. T2 adds
+the required CI checks to that ruleset after its CI has run once, because a
+required check that has never reported blocks every PR. Merges go through the
+Trunk queue as compass does.
 
-Interfaces: produces the empty repo.
+Interfaces: produces the repo with an initialised `main` and the ruleset.
 
 ### T2 — Scaffold and release lane
 
@@ -230,9 +234,10 @@ CLI: `ref-gate --config <path>`.
 
 Lands in: the shared repo. Port compass's gate. Add a list of ledgers (each
 with its own surface), malformed-row reporting, and the three extra legs behind
-config (OQ3: yes). Tests: compass's tests plus synthetic multi-ledger fixtures. The
-private copy's test cases are the specification for those fixtures, written
-again as synthetic cases.
+config (OQ3: yes). Tests: compass's tests plus synthetic multi-ledger fixtures.
+Each extra leg gets a fixture that must fail (a malformed row, a stale
+citation, a missing errata target, a broken record link) and one that must
+pass.
 
 Interfaces:
 
@@ -309,8 +314,9 @@ Add two code-free moon projects:
   `ALWAYS_RUN_ON_PR` and its test in the same PR.
 - `tools/ref-gates/`: `moon.yml` plus the configs `sea.json` and
   `private-name.json`. Each config carves out `tools/ref-gates/`. The
-  private-name config keeps the deleted tool's compound name in `ignore`,
-  because existing records still cite that path.
+  private-name token lives only in that carved-out config, as it lives today
+  only in the carved-out source of the current gate. Its `ignore` list keeps
+  the current gate's directory name, because existing records cite that path.
 
 Point the moon tasks, `.github/workflows/dl-reconcile.yml`, the Renovate
 preflight step, `.moon/workspace.yml`, `docs/designs/CONTRIBUTING.md` §7, and
@@ -325,18 +331,22 @@ catalog part of the bunfig list. Add a rule exempting the
 Confirm every `RigelBuild/*` git-refs rule already sets
 `minimumReleaseAge: null`. Delete
 `tools/design-ledger-gate/`, `tools/dl-claim/`, `tools/dl-reconcile/`,
-`tools/sea-ref-gate/`, `tools/orion-ref-gate/`, and `tools/renovate-preflight/`.
+`tools/sea-ref-gate/`, the private-name gate's directory, and
+`tools/renovate-preflight/`.
 
 Acceptance:
 
-- A seeded corpus, as its own git repo, with at least one known violation per
-  gate leg and one branch per exempt prefix. Old and new tools report the same
-  set of `file:line` pairs and the same pass or fail result. Only the old ledger
-  gate reads `GATE_ROOT`. Run the old ref gates with cwd set to the corpus, and
-  compare old reconcile through its exported `assertReconcilableLedger` on the
-  corpus ledger. The intended changes (the `trunk-merge/` exemption, the tool
-  name in output) are stated exceptions. A clean tree cannot fail this check,
-  so it does not count.
+- A seeded corpus, as its own git repo. For each gate leg the corpus holds one
+  seeded fault. The PR body lists, per fault, the expected `file:line` and the
+  expected exit code (1). Both the old and new tools must report exactly that
+  `file:line` and exit 1. Only the old ledger gate reads `GATE_ROOT`. Run the
+  old ref gates with cwd set to the corpus, and compare old reconcile through
+  its exported `assertReconcilableLedger` on the corpus ledger.
+- The same corpus with the faults removed: both tools exit 0 with no output.
+  Each exempt prefix (`renovate/`, `trunk-merge/`) gets a branch carrying a
+  fault; the new tool exits 0 on it. The old tool also exits 0, except on
+  `trunk-merge/`, which is the stated intended change along with the tool
+  name in output.
 - On a docs-only PR, the ci-matrix output still contains the ledger gate target.
 
 Record both results in the PR body.
@@ -359,37 +369,35 @@ corpus, fix every finding, and turn the legs on in the same PR.
 
 Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 
-### T10 — Shared Nix tooling
+### T10 — Shared Nix tooling inventory
 
-Lands in: the shared repo, then each consumer. Inventory the Nix files both
-repos carry and measure their drift, as the Inventory table does for the TS
-tools. Move each shared file under `nix/` in the shared flake as an output. A
-file that holds a consumer literal takes it as a function argument instead.
-In compass, add the shared repo as a `devenv.yaml` input. Then add a
-`custom.regex` git-refs Renovate rule with `minimumReleaseAge: null` and a
-`devenv.lock` relock postUpgradeTask. `tools/renovate/refresh-devenv-lock.ts`
-hard-codes its input name (`DEVENV_INPUT = "devenv"`), so T10 makes the input
-name an argument. It also adds the new command to the bot config's
-`allowedCommands` and its `config.test.ts` pins. Switch the imports and delete
-each local copy in the same PR.
+Lands in: compass, as a design record. Matt ruled that Nix tooling is shared
+too, but this record has not measured which Nix files the two repos share.
+T10 is that measurement, published as its own record: each Nix file both
+repos carry, its drift, whether it holds a consumer literal, and the flake
+output it would become, with acceptance per output. The record also covers
+the consumer wiring: a `devenv.yaml` input, a `custom.regex` git-refs Renovate
+rule with `minimumReleaseAge: null`, and a `devenv.lock` relock. That relock
+needs `tools/renovate/refresh-devenv-lock.ts` to take its input name as an
+argument (it hard-codes `DEVENV_INPUT = "devenv"`), plus the bot config's
+`allowedCommands` entry and `config.test.ts` pins.
 
-Acceptance: the consumer's devenv shell evaluation and its toolchain-parity
-and flake-parity gates pass unchanged, and the store paths of the moved
-outputs match those from before the move.
+Acceptance: the record merges with its own task list; the moves are filed from
+it.
 
-Interfaces: consumes T2's `flake.nix`; produces flake outputs under `nix/`.
+Interfaces: consumes T2's `flake.nix`.
 
 ### Out of scope
 
-Later records: a shared Renovate preset and moving the Renovate upgrade
-scripts (T10 changes only `refresh-devenv-lock.ts`'s input name). The
+Later records: a shared Renovate preset, moving the Renovate upgrade scripts,
+and the Nix moves themselves (T10 designs them). The
 moon task template and the root checks stay local (see Inventory). Wiring the
 touch-coupling leg into compass CI is separate work. The DL counter service
 (`dl.rigel.build`) does not move.
 
 ## Tasks
 
-- [ ] T1 — Create `RigelBuild/repo-tools` through the org's GitHub IaC.
+- [ ] T1 — Create the shared repo through the org's GitHub IaC.
 - [ ] T2 — Scaffold the shared repo and its release lane.
 - [ ] T3 — Ship `ref-gate` and make it the shared repo's required check.
 - [ ] T4 — Port `design-ledger-gate` onto a list of ledgers.
@@ -398,15 +406,14 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 - [ ] T7 — Cut compass over and delete its six local tools.
 - [ ] T8 — Cut the private consumer over and delete its local copies.
 - [ ] T9 — Turn on compass's extra ledger legs.
-- [ ] T10 — Move the shared Nix tooling into the flake and cut both consumers over.
+- [ ] T10 — Write the shared Nix tooling inventory record.
 
 ## Decisions (Matt, 2026-10-04, RIG-4440)
 
 - **OQ1 — pin mechanism:** npm packages for the TS tools. Matt added Nix: the
   shared repo is also a flake for shared Nix tooling (T10).
-- **OQ2 — names:** npm scope `@rigelbuild/<tool>`. The repo name
-  `RigelBuild/repo-tools` was not ruled separately; it stands unless Matt
-  changes it at review.
+- **OQ2 — names:** npm scope `@rigelbuild/<tool>`. The repo name is still
+  open (RIG-4440 did not rule it); see the open question below.
 - **OQ3 — publish the private-only ledger-gate features:** yes, written again
   as public code with synthetic fixtures.
 - **OQ4 — install in secret-holding jobs:** a full
@@ -414,3 +421,15 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 - **OQ5 — cooldown:** every first-party pin skips the release-age cooldown, in
   every toolchain (TS, Go, Nix).
 - **OQ6 — licence:** relicense to `MIT OR Apache-2.0`.
+
+## Open question
+
+**Repo name.** RIG-4440 ruled the npm scope, not the repo slug. Options:
+
+| Option | For | Against |
+| --- | --- | --- |
+| `RigelBuild/repo-tools` (recommended) | Says what it holds: tooling for repos. Matches the package role. | Generic. |
+| `RigelBuild/devtools` | Short. | Reads as developer workstation tooling, which it is not. |
+| `RigelBuild/rigel-tools` | Brand-scoped. | Repeats the org name. |
+
+T1 cannot start until Matt picks one (RIG-4469).
