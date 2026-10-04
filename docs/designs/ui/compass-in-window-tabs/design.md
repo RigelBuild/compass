@@ -427,20 +427,14 @@ within 0.2–0.8 and persist it. Pointer and chord focus between panes. A 1px
 
 ## Open Questions
 
-1. **Leader `W` for tab and split chords.** (Load-bearing: T5 builds it.) The
-   browser reserves `Ctrl+T`/`W`/`N`/`Tab`, so modifier chords cannot be the
-   same in both hosts. Options: (a) leader `W` sequences in both hosts
-   (recommended; one keymap, focus-gated like `G`); (b) `Mod+T`-style chords on
-   desktop, with leader chords only in the browser (two keymaps, and the shortcut
-   overlay differs per host); (c) palette only, no chords. Recommend (a).
-2. **Sidebar clicks navigate in place, or open a tab.** (Load-bearing: T4.)
-   Options: (a) in place, with `Mod`+click for a new tab (recommended; Linear
-   behavior, and no change for a one-tab user); (b) always a new tab, with dedupe
-   (tabs pile up fast, and the 10-tab cap is hit in minutes). Recommend (a).
-3. **Splits ship with tabs in Beta, or later.** (Load-bearing for milestone
-   planning, not for the design.) T6 is the last task and needs T2–T5
-   (`ViewHost`, the tab strip and the `w v` chord), so it can be deferred
-   alone. Recommend both in Beta; T1–T2 are the expensive part and are shared.
+1. **Leader `W` for tab and split chords.** Ruled (a) by Matt, 2026-10-04:
+   leader `W` sequences in both hosts, one keymap, focus-gated like `G`. The
+   browser reserves `Ctrl+T`/`W`/`N`/`Tab`, so modifier chords cannot match
+   across hosts. Desktop-only `Mod+T`-style aliases can be added later.
+2. **Sidebar clicks navigate in place, or open a tab.** Ruled (a) by Matt,
+   2026-10-04: navigate in place; `Mod`+click or middle-click opens a new tab.
+3. **Splits ship with tabs in Beta.** Ruled by Matt, 2026-10-04: ship both in
+   Beta. T1–T2 are the expensive part and both features need them.
 4. **Layout restore across an app restart.** (Non-load-bearing, deferred.) It
    needs a per-window identity that survives a restart. The multi-window record
    persists only a set of Bridge windows (its §A2). The design is correct
