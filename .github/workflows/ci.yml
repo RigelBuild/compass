@@ -2795,6 +2795,9 @@ jobs:
   regen-visual-baselines:
     name: regen-visual-baselines
     runs-on: ubuntu-latest
+    # Branch code runs here under main's cache scope; deny the cache token so
+    # it cannot plant entries that main's e2e restores by prefix.
+    cache-mode: none
     # The operator-only visual-baseline regeneration lane, the sibling of
     # regen-forge-fixtures above. `--update-snapshots=all` re-captures every
     # apps/ui/e2e/__screens__ PNG from the fixture-mode UI under CI's PINNED
@@ -2962,6 +2965,7 @@ jobs:
   publish-visual-baselines:
     name: publish-visual-baselines
     runs-on: ubuntu-latest
+    cache-mode: none
     # Holds the App token, so it runs nothing from the captured branch: the
     # branch is only the PR's base tree, and the PNGs arrive as plain files.
     needs: regen-visual-baselines
