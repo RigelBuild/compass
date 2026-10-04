@@ -381,6 +381,12 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 // double-forked out of that group is NOT reliably stopped (no cgroup freezer in
 // v1). Stopping a handle with no live process is a no-op.
 func (h *HostRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
+	// A stopped handle reads as not running, like a stopped podman container.
+	h.mu.Lock()
+	if handle, ok := h.handles[id]; ok {
+		handle.state = hostCreated
+	}
+	h.mu.Unlock()
 	proc := h.liveProcess(id)
 	if proc == nil {
 		return nil
@@ -443,6 +449,32 @@ func (h *HostRuntime) Exists(_ context.Context, name string) (bool, error) {
 	defer h.mu.Unlock()
 	for _, handle := range h.handles {
 		if handle.name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Running reports whether the named handle is started and its agent process, if
+// spawned yet, has not exited. Start is bookkeeping and the process arrives at
+// ExecStreaming, so a started handle with no process counts as running.
+func (h *HostRuntime) Running(_ context.Context, name string) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, handle := range h.handles {
+		if handle.name != name {
+			continue
+		}
+		if handle.state != hostStarted {
+			return false, nil
+		}
+		if handle.proc == nil {
+			return true, nil
+		}
+		select {
+		case <-handle.proc.done:
+			return false, nil
+		default:
 			return true, nil
 		}
 	}

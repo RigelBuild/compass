@@ -84,6 +84,10 @@ func (f *fakeRuntime) Exists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
 
+func (f *fakeRuntime) Running(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (f *fakeRuntime) MountLabel(_ context.Context, _ WorkloadID) (string, error) {
 	return "", nil
 }

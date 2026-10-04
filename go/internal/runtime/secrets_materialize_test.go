@@ -73,6 +73,7 @@ func (r *scriptRunner) ExecStreaming(context.Context, WorkloadID, StreamingExecS
 func (r *scriptRunner) Stop(context.Context, WorkloadID, time.Duration) error { return nil }
 func (r *scriptRunner) Remove(context.Context, WorkloadID) error              { return nil }
 func (r *scriptRunner) Exists(context.Context, string) (bool, error)          { return false, nil }
+func (r *scriptRunner) Running(context.Context, string) (bool, error)         { return false, nil }
 func (r *scriptRunner) MountLabel(context.Context, WorkloadID) (string, error) {
 	return "", nil
 }

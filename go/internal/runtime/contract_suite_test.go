@@ -210,6 +210,7 @@ func runContractSuite(t *testing.T, newRuntime func(t *testing.T) WorkloadRuntim
 	t.Run("duplicate_name_refused", func(t *testing.T) { rowDuplicateName(t, rt, caps) })
 	t.Run("stop_remove_idempotence", func(t *testing.T) { rowStopRemoveIdempotence(t, rt, caps) })
 	t.Run("exists_before_after_remove", func(t *testing.T) { rowExistsBeforeAfterRemove(t, rt, caps) })
+	t.Run("running_lifecycle", func(t *testing.T) { rowRunningLifecycle(t, rt, caps) })
 	if caps.gracefulStopPowersOff {
 		t.Run("stop_grace_powers_off", func(t *testing.T) { rowStopGrace(t, rt, caps) })
 	}
@@ -526,6 +527,31 @@ func rowExistsBeforeAfterRemove(t *testing.T, rt WorkloadRuntime, caps backendCa
 	}
 	if ok {
 		t.Fatal("Exists after Remove = true, want false")
+	}
+}
+
+func rowRunningLifecycle(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
+	t.Helper()
+	const name = "contract-running"
+	id, err := rt.Create(t.Context(), caps.makeSpec(t, name))
+	if err != nil {
+		t.Fatalf("Create(%s): %v", name, err)
+	}
+	registerRemove(t, rt, id, "running")
+	if running, err := rt.Running(t.Context(), "contract-unknown"); err != nil || running {
+		t.Fatalf("Running unknown name = %v, %v; want false, nil", running, err)
+	}
+	if err := rt.Start(t.Context(), id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if running, err := rt.Running(t.Context(), name); err != nil || !running {
+		t.Fatalf("Running after Start = %v, %v; want true, nil", running, err)
+	}
+	if err := rt.Stop(t.Context(), id, 5*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if running, err := rt.Running(t.Context(), name); err != nil || running {
+		t.Fatalf("Running after Stop = %v, %v; want false, nil", running, err)
 	}
 }
 

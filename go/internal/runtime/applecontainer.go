@@ -105,7 +105,7 @@ func (a *AppleContainerCLI) ListByOwner(ctx context.Context, prefix, runnerID st
 	if runnerID == "" {
 		return nil, errors.New("runner id must not be empty")
 	}
-	stdout, err := a.run(ctx, "container list", []string{"list", "--all", "--format", "json"})
+	stdout, err := a.run(ctx, "container list", []string{"list", "--all", argFormat, "json"})
 	if err != nil {
 		return nil, err
 	}
@@ -321,10 +321,28 @@ func (a *AppleContainerCLI) Exists(ctx context.Context, name string) (bool, erro
 	return classifyInspectErr(exitCode, string(stderr))
 }
 
+// Running checks the inspect status field; missing containers are not running.
+func (a *AppleContainerCLI) Running(ctx context.Context, name string) (bool, error) {
+	out, stderr, exitCode, err := a.spawnCapture(ctx, "container inspect", appleInspectArgs(name), nil)
+	if err != nil {
+		return false, err
+	}
+	if exitCode != 0 {
+		return classifyInspectErr(exitCode, string(stderr))
+	}
+	var inspect struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(out, &inspect); err != nil {
+		return false, fmt.Errorf("decoding container inspect status: %w", err)
+	}
+	return inspect.Status == "running", nil
+}
+
 // appleInspectArgs assembles the `container inspect` argv used as the existence
 // probe.
 func appleInspectArgs(name string) []string {
-	return []string{"inspect", name}
+	return []string{argInspect, name}
 }
 
 // appleNotFoundStderr is the CLI's own "that container does not exist" refusal.
