@@ -456,6 +456,7 @@ export {
 	ChannelGroupSchema,
 	ChannelGroupVisibility,
 	ChannelKind,
+	ChannelMembershipMode,
 	ChannelPostPolicy,
 	ChannelSchema,
 	CommsService,
