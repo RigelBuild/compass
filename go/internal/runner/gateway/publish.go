@@ -37,6 +37,10 @@ func (g *Gateway) Publish(
 		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForPublish)
 	}
 
+	if err := g.beginPublish(sessionID); err != nil {
+		return nil, err
+	}
+	defer g.endPublish(sessionID)
 	pub := g.acquirePublisher(sessionID)
 	// Captured once: a Restart after this stream opened means these acks come from
 	// the replaced process and must not touch the new process's control state.
@@ -77,21 +81,118 @@ func (g *Gateway) Publish(
 		if err := pub.forward(frame); err != nil {
 			// A mid-stream upstream failure ends the relay; the agent reconnects.
 			// Release the shared upstream stream on the way out.
-			_ = g.releasePublisher()
+			_ = g.releasePublisher(pub)
 			return nil, err
 		}
 	}
 	if err := stream.Err(); err != nil {
 		// The inbound stream failed (an over-limit message past WithReadMaxBytes,
 		// or a transport drop). Release the upstream and surface the error.
-		_ = g.releasePublisher()
+		_ = g.releasePublisher(pub)
 		return nil, err
 	}
 
 	// Clean stream end == stdout EOF: close the upstream PublishEvents stream and
 	// await its ack, then ack the agent's stream.
-	if err := g.releasePublisher(); err != nil && !errors.Is(err, context.Canceled) {
+	if err := g.releasePublisher(pub); err != nil && !errors.Is(err, context.Canceled) {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&compassv1internal.PublishFrameResponse{}), nil
+}
+
+// publishGate tracks one session's Publish handlers. draining refuses new handlers
+// while a lifecycle report waits for open ones; sealed also refuses their frames.
+type publishGate struct {
+	draining bool
+	sealed   bool
+	handlers int
+	idle     chan struct{}
+}
+
+func (g *Gateway) beginPublish(sessionID string) error {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	gate := g.publishes[sessionID]
+	if gate == nil {
+		gate = &publishGate{}
+		if g.publishes == nil {
+			g.publishes = make(map[string]*publishGate)
+		}
+		g.publishes[sessionID] = gate
+	}
+	if gate.draining || gate.sealed {
+		return connect.NewError(connect.CodeFailedPrecondition, errSessionEnded)
+	}
+	if gate.handlers == 0 {
+		gate.idle = make(chan struct{})
+	}
+	gate.handlers++
+	return nil
+}
+
+func (g *Gateway) endPublish(sessionID string) {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	gate := g.publishes[sessionID]
+	if gate == nil {
+		return
+	}
+	gate.handlers--
+	if gate.handlers == 0 {
+		close(gate.idle)
+		if !gate.draining && !gate.sealed && g.publishes[sessionID] == gate {
+			delete(g.publishes, sessionID)
+		}
+	}
+}
+
+func (g *Gateway) admitFrame(sessionID string) (uint64, error) {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	gate := g.publishes[sessionID]
+	if gate != nil && gate.sealed {
+		return 0, connect.NewError(connect.CodeFailedPrecondition, errSessionEnded)
+	}
+	return g.seq.next(), nil
+}
+
+func (g *Gateway) fencePublishes(ctx context.Context, sessionID string) {
+	g.publishMu.Lock()
+	gate := g.publishes[sessionID]
+	if gate == nil {
+		gate = &publishGate{}
+		if g.publishes == nil {
+			g.publishes = make(map[string]*publishGate)
+		}
+		g.publishes[sessionID] = gate
+	}
+	gate.draining = true
+	var idle <-chan struct{}
+	if gate.handlers > 0 {
+		idle = gate.idle
+	}
+	g.publishMu.Unlock()
+	if idle != nil {
+		select {
+		case <-idle:
+		case <-ctx.Done():
+		}
+	}
+	g.publishMu.Lock()
+	gate.sealed = true
+	g.publishMu.Unlock()
+}
+
+func (g *Gateway) unfencePublishes(sessionID string) {
+	g.publishMu.Lock()
+	defer g.publishMu.Unlock()
+	gate := g.publishes[sessionID]
+	if gate == nil {
+		return
+	}
+	gate.draining = false
+	gate.sealed = false
+	if gate.handlers == 0 {
+		delete(g.publishes, sessionID)
+	}
 }
