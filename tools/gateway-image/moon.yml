@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# gateway-image: builds, smokes, and publishes the LLM gateway image from the
+# fork commit in fork-pin.json. TypeScript rather than shell (no-bash-gate).
+#
+# Hoisted root-workspace member (`bun` tag): install comes from
+# .moon/tasks/tag-bun.yml and lint/format are root tasks.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', '*.json', '/tsconfig.base.json', '/bun.lock']
+  test:
+    # The pure core: pin validation, buildctl argv, layout digest, secret
+    # scan, and the fail-closed tag disposition.
+    inputs: ['*.ts', '*.json', '/tsconfig.base.json', '/bun.lock']
+  # ci-matrix emits a target only for a project with a `ci` task.
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
+  # The shells need buildkitd, podman, and GHCR credentials, so they run in
+  # the release workflow, never the gate.
+  build:
+    command: 'bun build.ts'
+    options:
+      runInCI: false
+      cache: false
+  smoke:
+    command: 'bun smoke.ts'
+    options:
+      runInCI: false
+      cache: false
+  publish:
+    command: 'bun publish.ts'
+    options:
+      runInCI: false
+      cache: false
