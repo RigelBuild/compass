@@ -10,16 +10,8 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// CreateChannelGroup inserts a namespace group owned by ownerUserID. When a
-// parent is named, two D9 gates apply, both in one transaction with the insert:
-// the actor must be authorized against the parent (own it, be an agent whose
-// owning user owns it, or the parent is shared — requireGroupCreateAuthz), so a
-// caller cannot nest a group under a parent it neither owns nor may see, and an
-// unauthorized-or-unknown parent both return ErrNotFound (the not-found/forbidden
-// merge, so a stranger cannot probe which group ids exist); and the child ≤
-// parent visibility ceiling (comms.proto:149-151) — a SHARED child under an
-// OWNER parent is ErrInvalidArgument. A top-level group (empty parent) is
-// un-parented, so neither gate applies and it may take any visibility.
+// CreateChannelGroup gates a parented create in-tx on authz, reserved system parents
+// and the visibility ceiling; unknown, unauthorized and reserved parents are ErrNotFound.
 func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g NewChannelGroup) (ChannelGroup, error) {
 	if g.Name == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
@@ -42,6 +34,14 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 		// group ids exist across the visibility boundary.
 		if err := requireGroupCreateAuthz(ctx, tx, ownerUserID, g.ParentGroupID); err != nil {
 			return ChannelGroup{}, err
+		}
+		// Reserved system groups take no children; the merged ErrNotFound keeps them unprobeable.
+		reserved, err := isReservedGroupTx(ctx, tx, g.ParentGroupID)
+		if err != nil {
+			return ChannelGroup{}, err
+		}
+		if reserved {
+			return ChannelGroup{}, fmt.Errorf("%w: group %q", ErrNotFound, g.ParentGroupID)
 		}
 		parentVis, err := s.q.WithTx(tx).GetChannelGroupVisibility(ctx, string(g.ParentGroupID))
 		if err != nil {
