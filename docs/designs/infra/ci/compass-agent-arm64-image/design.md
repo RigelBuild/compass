@@ -17,7 +17,7 @@ Tracking: RIG-3625
 The Apple-container runtime tier on macOS runs agent containers in a real
 Linux arm64 guest, so the `compass-agent` image must exist for linux/arm64.
 Today the publish lane builds and ships linux/amd64 only, and CI actively
-asserts that: `.github/workflows/release.yml:333-335` fails the publish run
+asserts that: step *Verify the published tags resolve from GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml` fails the publish run
 when the pushed image is not `linux/amd64`. This record designs the arm64
 build, the multi-arch tag layout, and the multi-arch form of every existing
 integrity guard. Matt has authorized building the arm image (RIG-3625).
@@ -26,7 +26,7 @@ integrity guard. Matt has authorized building the arm image (RIG-3625).
 
 ### The build is native, single-arch, and independent of the root flake
 
-`agent-image/publish.sh:65-68` builds the image spec through the shared devenv
+the `DEVENV_SRC`/`BUILD_OUT`/`SPEC` build in `agent-image/publish.sh` builds the image spec through the shared devenv
 fork, resolved from `agent-image/devenv.lock` — never from the root
 `flake.nix`:
 
@@ -39,7 +39,7 @@ SPEC="$(printf '%s\n' "$BUILD_OUT" | tail -n 1)"
 
 `nix run` evaluates the devenv fork's flake for the *builder's* system and
 nix2container emits a spec for that system — so the build is native: an arm64
-image needs an arm64 builder (or emulation). The root `flake.nix:33`
+image needs an arm64 builder (or emulation). The `systems` binding in `outputs` of `flake.nix`
 (`systems = [ "x86_64-linux" ];`) is **not in this build's dependency graph**:
 the inputs are `agent-image/devenv.yaml`'s own `nixpkgs`, `nix2container`,
 `mk-shell-bin`, and `devenv` fork inputs, pinned in `agent-image/devenv.lock`.
@@ -52,7 +52,7 @@ script: 'src=$(bun tools/toolchain/devenv-cli/index.ts --lock agent-image/devenv
 
 So the blast radius of arm64 support is `agent-image/` plus the publish jobs in
 `release.yml` — the root flake's `systems` list does not change. The
-`flake.nix:138-141` TODO ("TODO(aarch64-darwin follow-up): the darwin app links
+`TODO(aarch64-darwin follow-up)` above `compass-app` in `flake.nix` ("TODO(aarch64-darwin follow-up): the darwin app links
 system WebKit via frameworks … add a darwin branch when the systems list
 grows") is about aarch64-**darwin** and the gtk/WebKit app; it is unrelated to
 the agent image's aarch64-**linux** need and stays untouched.
@@ -63,8 +63,7 @@ Three guards assume one image config per tag. All three are deliberate
 security/correctness properties, and each needs a multi-arch equivalent (never
 deletion — `rule://no-inert-gating`).
 
-1. **`guard_immutable` + `LOCAL_DIGEST`** (`agent-image/publish.sh:81`,
-   `:92-127`): the local identity is one config digest,
+1. **`guard_immutable` + `LOCAL_DIGEST`** (`LOCAL_DIGEST` and `guard_immutable` in `agent-image/publish.sh`): the local identity is one config digest,
 
    ```bash
    LOCAL_DIGEST="$("${SKOPEO[@]}" inspect --raw "nix:$SPEC" | jq -r .config.digest)"
@@ -72,13 +71,13 @@ deletion — `rule://no-inert-gating`).
 
    and the guard compares it to the remote tag's
    (`remote_digest="$(printf '%s' "$remote_raw" | jq -r .config.digest)"`,
-   `publish.sh:102`), aborting on any ambiguous registry error. The post-copy
-   assert (`publish.sh:153`) re-inspects the pushed tag against the same
+   `guard_immutable` in `agent-image/publish.sh`), aborting on any ambiguous registry error. The post-copy
+   assert (in the `for tag` loop in `agent-image/publish.sh`) re-inspects the pushed tag against the same
    digest. On a manifest list, `skopeo inspect --raw` returns an OCI image
    index — it has **no** `.config.digest`, so `jq -r .config.digest` yields
    `null` and every compare is meaningless.
 
-2. **The amd64 tripwire** (`.github/workflows/release.yml:330-336`):
+2. **The amd64 tripwire** (step *Verify the published tags resolve from GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml`):
 
    ```bash
    # Cheapest platform-contract-regression tripwire.
@@ -96,7 +95,7 @@ deletion — `rule://no-inert-gating`).
    contains exactly the expected platform set — not disappear.
 
 3. **The `:latest` / `:git-<sha>` coherence check**
-   (`.github/workflows/release.yml:338-345`):
+   (step *Verify the published tags resolve from GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml`):
 
    ```bash
    git_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12" | jq -r .config.digest)"
@@ -108,7 +107,7 @@ deletion — `rule://no-inert-gating`).
    (the two tags are the same artifact) survives — compared as manifest-list
    digests instead.
 
-   The semver re-tag job carries the same shape: `release.yml:874-885` copies
+   The semver re-tag job carries the same shape: step *Digest-re-tag the newest ancestor image to the semver tag* (`jobs.release-image`) in `.github/workflows/release.yml` copies
    `:git-<sha12>` to `:vX.Y.Z` with `skopeo copy` and verifies
    `.config.digest` coherence. Two multi-arch breaks there: a bare
    `skopeo copy` of a list copies a **single resolved image**, not the list
@@ -117,31 +116,31 @@ deletion — `rule://no-inert-gating`).
 
 ### Where publish runs in CI
 
-The `publish-image` job (`release.yml:94-129`) runs on `runs-on: ubuntu-latest`
-(`release.yml:96`) with `permissions: contents: read / packages: write`
-(`release.yml:98-100`), serialized under
+The `publish-image` job (`jobs.publish-image` in `.github/workflows/release.yml`) runs on `runs-on: ubuntu-latest`
+(`jobs.publish-image.runs-on` in `.github/workflows/release.yml`) with `permissions: contents: read / packages: write`
+(`jobs.publish-image.permissions` in `.github/workflows/release.yml`), serialized under
 `concurrency: group: publish-agent-image, cancel-in-progress: false, queue: max`
-(`release.yml:110-113`), gated to `github.ref == 'refs/heads/main'`
-(`release.yml:117`), `working-directory: agent-image` (`release.yml:127-129`).
+(`jobs.publish-image.concurrency` in `.github/workflows/release.yml`), gated to `github.ref == 'refs/heads/main'`
+(`jobs.publish-image.if` in `.github/workflows/release.yml`), `working-directory: agent-image` (`jobs.publish-image.defaults` in `.github/workflows/release.yml`).
 Its bootstrap, per step:
 
-- an in-job changed-path gate over `IMAGE_CLOSURE_PATHS` (`release.yml:49`,
-  consumed at `:204`) decides `should_publish`;
-- `cachix/install-nix-action` with reviewed substituters (`release.yml:209-222`);
+- an in-job changed-path gate over `IMAGE_CLOSURE_PATHS` (`env.IMAGE_CLOSURE_PATHS` in `.github/workflows/release.yml`,
+  consumed by the `should_publish` loop in `jobs.publish-image`) decides `should_publish`;
+- `cachix/install-nix-action` with reviewed substituters (the `cachix/install-nix-action` step (`jobs.publish-image`) in `.github/workflows/release.yml`);
 - pinned bun via `nix eval -f tools/toolchain/gate-tools.nix langs.bun`
-  (`release.yml:224-244`) — publish needs the devenv-CLI resolver under bun;
+  (step *Put the pinned bun toolchain on PATH* (`jobs.publish-image`) in `.github/workflows/release.yml`) — publish needs the devenv-CLI resolver under bun;
 - the fork's patched skopeo via
   `nix build -f tools/toolchain/skopeo-nix2container-env.nix skopeo`
-  (`release.yml:246-278`), prepended to `PATH` — it understands the `nix:`
+  (step *Put the fork's patched skopeo on PATH* (`jobs.publish-image`) in `.github/workflows/release.yml`), prepended to `PATH` — it understands the `nix:`
   transport stock skopeo lacks;
 - `REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json` pinned to `GITHUB_ENV`
-  (`release.yml:287`) so login and copy resolve the same creds file;
+  (step *Pin the registry auth file* (`jobs.publish-image`) in `.github/workflows/release.yml`) so login and copy resolve the same creds file;
 - `skopeo login ghcr.io` with `GITHUB_TOKEN` via `--password-stdin`
-  (`release.yml:302-305`);
-- `run: ./publish.sh` with no args (`release.yml:312`) — the default two-tag
-  set, `publish.sh:54-59`: `TAGS=("git-${SHA}" "latest")`, immutable pin
+  (step *Log in to GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml`);
+- `run: ./publish.sh` with no args (step *Build and publish the two-tag set* (`jobs.publish-image`) in `.github/workflows/release.yml`) — the default two-tag
+  set (the default `TAGS` set in `agent-image/publish.sh`): `TAGS=("git-${SHA}" "latest")`, immutable pin
   first;
-- the verify step (`release.yml:314-346`) quoted above.
+- the verify step (step *Verify the published tags resolve from GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml`) quoted above.
 
 ## Approach
 
@@ -168,16 +167,16 @@ guard translated to its list-level equivalent.
 
 **Consumers found** (search: `compass-agent` refs across the repo):
 
-- `go/cmd/compass-app/embedded.go:43` —
+- `defaultAgentImage` in `go/cmd/compass-app/embedded.go` —
   `const defaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"`, the
   embedded stack's default when no `--image`/`$COMPASS_AGENT_IMAGE` is given.
-- `go/internal/stack/stack.go:316` —
+- `Stack.startRunner` in `go/internal/stack/stack.go` —
   `s.deps.Images.EnsureImage(ctx, s.cfg.AgentImage)`; the ensurer pulls by
   tag: `go/internal/stack/adapters/image.go` `imageCLI` is
   `ImageExists(ctx, image)` + `Pull(ctx, image)`, backed by
-  `go/internal/runtime/podman.go:651-652` — `p.run(ctx, "podman pull",
+  `PodmanCLI.Pull` in `go/internal/runtime/podman.go` — `p.run(ctx, "podman pull",
   []string{"pull", image})`. A plain tag pull, no digest, no platform flag.
-- `go/cmd/compass-stack/main.go:273` — `AgentImage: f.image` plumbs the
+- `resolveConfig` in `go/cmd/compass-stack/main.go` — `AgentImage: f.image` plumbs the
   `--image` flag into that config.
 - The Apple-container tier (the motivating consumer):
   `docs/designs/platform/apple-container-macos-runner/design.md` OQ-8 states
@@ -206,8 +205,8 @@ the platform set; keep the arch knowledge there.
    to emit an aarch64-linux spec with no cross machinery. That is
    designed-to-be-true, not yet observed (UNVERIFIED until T2; OQ-1).
 2. **binfmt/QEMU emulation on `ubuntu-latest`.** One runner, but the image
-   closure is the dominant CI cost already (the 90-minute `timeout-minutes`
-   at `release.yml:120` is sized by it); emulating a full nix build of that
+   closure is the dominant CI cost already (the 90-minute `jobs.publish-image.timeout-minutes`
+   in `.github/workflows/release.yml` is sized by it); emulating a full nix build of that
    closure multiplies it several-fold and adds a binfmt setup step as a new
    trust surface. Rejected.
 3. **Self-hosted arm64 (the mattmini).** The mac mini is committed to darwin
@@ -218,7 +217,7 @@ the platform set; keep the arch knowledge there.
 **Recommendation: option 1**, with these grounded facts and stated unknowns:
 
 - **bun pin: verified present for arm64.**
-  `tools/toolchain/versions/bun.nix:9-11` already carries an
+  `srcs."aarch64-linux"` in `tools/toolchain/versions/bun.nix` already carries an
   `"aarch64-linux"` entry (`bun-linux-aarch64.zip` + hash), so the
   `gate-tools.nix langs.bun` bootstrap resolves on the arm runner.
 - **FOD hash: verified single-platform — a real change.**
@@ -239,19 +238,18 @@ the platform set; keep the arch knowledge there.
   T2 is a spike that proves or disproves it before any workflow change.
 - **UNVERIFIED: binary-cache coverage on aarch64-linux.** The reviewed
   substituters (`devenv.cachix.org`, `cachix.cachix.org`,
-  `release.yml:219-222`) may hold few aarch64 artifacts. The risk is
+  `extra_nix_config` on the `cachix/install-nix-action` step (`jobs.publish-image`) in `.github/workflows/release.yml`) may hold few aarch64 artifacts. The risk is
   build-from-source time, not correctness: a cache miss falls back to source
   builds within the 90-minute ceiling or fails it visibly. If T2 shows the
   wall-clock is unacceptable, populating a cache is a follow-up, not a design
   change.
 - **The `@oh-my-pi` native-addon copy block is x64-hardcoded and must be
   edited, independent of whether an aarch64 prebuilt exists.**
-  `agent-image/entrypoint.nix:218-220` names the arch three times:
+  the `natives=` copy of `@oh-my-pi/pi-natives-linux-x64` in `agent-image/entrypoint.nix` names the arch three times:
   `natives=node_modules/.bun/node_modules/@oh-my-pi/pi-natives-linux-x64`,
   then `cp $natives/pi_natives.linux-x64-modern.node` and
   `pi_natives.linux-x64-baseline.node`. The package name, both filenames, and
-  the variant scheme itself all change on arm64: the surrounding comment
-  (`:214-217`) states the loader picks `modern` when the host has AVX2 else
+  the variant scheme itself all change on arm64: the surrounding comment states the loader picks `modern` when the host has AVX2 else
   `baseline`, and AVX2 is an x86 feature with no arm64 analogue, so the
   two-variant copy is not portable as written. T1 owns this edit.
 - **UNVERIFIED: whether that aarch64 prebuilt exists at all, and under which
@@ -266,9 +264,9 @@ Every guard survives; none is deleted (`rule://no-inert-gating`).
 1. **Per-arch immutability: unchanged code, new tag names.** `publish.sh` runs
    once per arch job and pushes only that arch's tag
    (`git-<sha12>-<arch>`). Single-arch manifests still have exactly one
-   `.config.digest`, so `LOCAL_DIGEST` (`publish.sh:81`), `guard_immutable`
-   (`publish.sh:92-127`) — including its "ambiguous registry error → abort,
-   never overwrite" posture — and the post-copy assert (`publish.sh:153`)
+   `.config.digest`, so `LOCAL_DIGEST` and `guard_immutable`
+   (both in `agent-image/publish.sh`) — including its "ambiguous registry error → abort,
+   never overwrite" posture — and the post-copy assert (in the `for tag` loop in `agent-image/publish.sh`)
    work verbatim. The script grows a tag-suffix/skip-latest mode (T3); its
    guard logic does not change.
 
@@ -297,7 +295,7 @@ Every guard survives; none is deleted (`rule://no-inert-gating`).
    — same immutability property, no dependence on byte-stable serialization.
 
 3. **The platform tripwire becomes a platform-set assertion.** Replacement
-   for `release.yml:330-336`: fetch the raw index for `:git-<sha12>`, assert
+   for step *Verify the published tags resolve from GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml`: fetch the raw index for `:git-<sha12>`, assert
    `mediaType` is an image index, and assert the platform set is **exactly**
    `{linux/amd64, linux/arm64}` — no members missing, none extra:
 
@@ -313,15 +311,15 @@ Every guard survives; none is deleted (`rule://no-inert-gating`).
    arm64 half silently vanishes.
 
 4. **Two-tag coherence compares list digests.** Replacement for
-   `release.yml:338-345`: `:latest`'s manifest-list digest must equal
+   step *Verify the published tags resolve from GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml`: `:latest`'s manifest-list digest must equal
    `:git-<sha12>`'s. Same property ("the moving tag is the pinned artifact"),
    same hard-fail, one level up.
 
-5. **The semver re-tag copies the whole list.** `release.yml:874-875`'s
+5. **The semver re-tag copies the whole list.** step *Digest-re-tag the newest ancestor image to the semver tag* (`jobs.release-image`) in `.github/workflows/release.yml`'s
    `skopeo copy "$ref:git-$resolved_sha12" "$ref:$tag"` gains
-   `--multi-arch all`, and the coherence verify at `:880-885` switches from
+   `--multi-arch all`, and the coherence verify in the same step switches from
    `.config.digest` to the manifest-list digest. The §A4 ancestor-walk
-   resolver (`release.yml:830-870`) is digest-agnostic (it only probes tag
+   resolver (step *Digest-re-tag the newest ancestor image to the semver tag* (`jobs.release-image`) in `.github/workflows/release.yml`) is digest-agnostic (it only probes tag
    existence) and needs no change.
 
 ### Decision D — ordering and partial-failure posture
@@ -337,14 +335,14 @@ Every guard survives; none is deleted (`rule://no-inert-gating`).
    from the two per-arch tags **by digest** (re-inspect each per-arch tag,
    pin the member digests into the index — never by tag, so a race cannot
    swap a member) and pushes `:git-<sha12>` first, then `:latest`, preserving
-   `publish.sh:54-59`'s pin-before-moving-tag order.
+   the pin-before-moving-tag order of the default `TAGS` set in `agent-image/publish.sh`.
 3. **Verify.** The platform-set assertion and list-digest coherence check
    (Decision C.3/C.4), in the compose job.
 
 Only the compose job carries the `publish-agent-image` concurrency group
-(`release.yml:110-113` semantics: `cancel-in-progress: false`, `queue: max`) —
+(`jobs.publish-image.concurrency` in `.github/workflows/release.yml` semantics: `cancel-in-progress: false`, `queue: max`) —
 it is the only writer of shared tags, and the release-time `release-image` job
-already shares that group (`release.yml:723-726`).
+already shares that group (`jobs.release-image.concurrency` in `.github/workflows/release.yml`).
 
 **Partial-failure analysis, preserving the "immutable `:git-*`, abort on
 ambiguity" posture:**
@@ -357,7 +355,7 @@ ambiguity" posture:**
   `guard_immutable`'s matching-digest skip.
 - Compose pushes `:git-<sha12>` but fails before `:latest` → exactly today's
   failure mode between the two `skopeo copy` iterations of
-  `publish.sh:128-159`; the re-run's index guard (C.2) skips the pin and
+  the `for tag` copy loop in `agent-image/publish.sh`; the re-run's index guard (C.2) skips the pin and
   moves `:latest`. No new window is introduced. **This recovery is only as
   good as C.2's skip arm, which is UNVERIFIED pending OQ-5**: if index
   composition is not byte-deterministic the re-run hard-fails instead of
@@ -377,9 +375,9 @@ end-to-end pull check.
 
 ### What does not change
 
-- The root `flake.nix` (`systems = [ "x86_64-linux" ]`, `flake.nix:33`) — the
+- The root `flake.nix` (`systems = [ "x86_64-linux" ]` in `outputs`) — the
   agent image does not build through it (see Context). The
-  `flake.nix:138-141` aarch64-darwin TODO is out of scope.
+  `TODO(aarch64-darwin follow-up)` above `compass-app` in `flake.nix` is out of scope.
 - `agent-image/devenv.yaml` / `devenv.lock` inputs — same fork revs, evaluated
   for a second system.
 - `guard_immutable`'s logic and the auth/`REGISTRY_AUTH_FILE` pin.
@@ -417,10 +415,10 @@ entries). The aarch64 hash is obtained the way the file's own comment
 prescribes (set `lib.fakeSha256`, take the reported value) — on the T2 spike
 runner, since the hash is what the arm64 install tree produces.
 
-Second, parameterize the native-addon copy block at `:218-220` per system. It
+Second, parameterize the native-addon copy block (the `natives=` copy in `agent-image/entrypoint.nix`) per system. It
 hardcodes the arch three times: the `pi-natives-linux-x64` package path and
 both `pi_natives.linux-x64-{modern,baseline}.node` filenames. The variant
-scheme is also not portable: per the block's own comment (`:214-217`) the
+scheme is also not portable: per the block's own comment the
 loader picks `modern` on an AVX2 host else `baseline`, and AVX2 is x86-only.
 So arm64 needs its real variant names rather than a renamed pair, and the
 "copy both" rule holds only if arm64 ships two. T2 reports the actual package
@@ -457,7 +455,7 @@ wall-clock number that sizes the arm64 job's timeout.
 ### T3 — `publish.sh` per-arch mode
 
 Add flags (e.g. `--arch-suffix <arch>` implying suffix-tagged pushes and no
-`:latest`): the default tag computation (`publish.sh:54-59`) becomes
+`:latest`): the default tag computation (the default `TAGS` set in `agent-image/publish.sh`) becomes
 `git-<sha12>-<arch>` only. Guard logic untouched. Bare invocation keeps
 today's behavior until T4 cuts over, then bare invocation is removed with the
 cutover (no dead mode left behind).
@@ -473,7 +471,7 @@ Split `publish-image` into `publish-image-amd64` / `publish-image-arm64`
 (`needs:` both, `ubuntu-latest`, `publish-agent-image` concurrency group):
 digest-pinned `podman manifest create/add`, push `:git-<sha12>` then
 `:latest`, with the C.2 index-immutability guard before the pin push and the
-C.3/C.4 verify replacing `release.yml:314-346`.
+C.3/C.4 verify replacing step *Verify the published tags resolve from GHCR* (`jobs.publish-image`) in `.github/workflows/release.yml`.
 
 Interfaces: consumes T3's script mode; produces the two index tags plus the
 verify assertions. The old single `publish-image` job is removed in this same
@@ -481,8 +479,7 @@ change.
 
 ### T5 — `release-image` multi-arch re-tag
 
-`skopeo copy --multi-arch all` at `release.yml:874-875`; coherence verify at
-`:880-885` switches to manifest-list digests. Ancestor-walk resolver
+`skopeo copy --multi-arch all` at step *Digest-re-tag the newest ancestor image to the semver tag* (`jobs.release-image`) in `.github/workflows/release.yml`; coherence verify in the same step switches to manifest-list digests. Ancestor-walk resolver
 unchanged.
 
 Interfaces: consumes T4's published index; produces `:vX.Y.Z` as the same
