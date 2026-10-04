@@ -163,6 +163,7 @@ type Querier interface {
 	EnsureComputeUsageIntervalStart(ctx context.Context, agentAccountID string) error
 	EnsureForgeRepoSubscription(ctx context.Context, arg EnsureForgeRepoSubscriptionParams) error
 	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
+	ForgeScopeUserExists(ctx context.Context, accountID string) (bool, error)
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
 	// EXISTS guard leaves it in place if any other agent still subscribes).
 	GCForgeArtifactCursorIfUnsubscribed(ctx context.Context, arg GCForgeArtifactCursorIfUnsubscribedParams) error
@@ -229,7 +230,8 @@ type Querier interface {
 	// The caller is bound to one tenant by the store's scoped query path.
 	GetTourState(ctx context.Context, accountID string) (GetTourStateRow, error)
 	// Scope grants are managed for user accounts; agents inherit their owner's rows.
-	GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) error
+	// The SELECT runs under RLS, so a user from another tenant inserts nothing.
+	GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) (int64, error)
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)

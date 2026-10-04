@@ -129,6 +129,10 @@ func TestForgeScopeRejectsAgentGrantAndSeparatesTenants(t *testing.T) {
 
 	tenantB := seedTenant(t, s, "scope-tenant-b")
 	ctxB := WithTenant(context.Background(), tenantB)
+	// A tenant-B caller cannot grant to a tenant-A user, even though the FK sees it.
+	if err := s.GrantForgeScope(ctxB, ForgeScope{AccountID: owner, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "owner/repo"}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("cross-tenant GrantForgeScope = %v, want ErrInvalidArgument", err)
+	}
 	if got, err := s.HasForgeScope(ctxB, agent, ForgeProviderGitHub, "github.com", "owner/repo"); err != nil || got {
 		t.Fatalf("cross-tenant HasForgeScope = (%t, %v), want (false, nil)", got, err)
 	}
