@@ -25,7 +25,7 @@ const coordinationGroupName = "__coordination__"
 // isReservedGroupName reports whether name is a system group name that a
 // caller may not claim at top level.
 func isReservedGroupName(name string) bool {
-	return name == dmGroupName || name == coordinationGroupName
+	return name == dmGroupName || name == coordinationGroupName || name == linearRoutingGroupName
 }
 
 // DMChannelSpec is the resolved identity + membership for one peer-DM channel,
