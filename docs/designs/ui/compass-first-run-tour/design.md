@@ -141,16 +141,21 @@ chrome is (same split DL-230/DL-245 drew between the overlay and CoachTip).
   focus, so its own handlers fire. Mid-step interaction with the live app is
   pointer-driven (the non-`modal` Popover does not trap focus).
 - **Skip tour on every step**: each dialog and callout carries an explicit
-  **Skip tour** button (Matt, OQ-4). Skip and `Escape` route to one path,
-  `store.tour.dismiss()`. **Outside-click does not dismiss**: the user is
-  meant to click the live app mid-tour (A11's spotlight passes pointer events
-  through), and a dismiss is permanent per account (A5). The callout calls
-  `preventDefault()` in Kobalte's `onPointerDownOutside` /
+  **Skip tour** button (Matt, OQ-4). Skip tour is the only path to
+  `store.tour.dismiss()`, the permanent per-account write (A5).
+- **`Escape` closes without persisting.** Kobalte binds `Escape` at the
+  document and fires it whenever the callout is the top layer, wherever focus
+  is, and the app's own escape ladder (`ESCAPE_LADDER` in `keyboard/zones.ts`)
+  uses the same key mid-tour. So `Escape` maps to `store.tour.close()`: the
+  tour hides, nothing is written beyond the current `step_id`, and the palette
+  replay offers resume. **Outside-click does nothing**: the user is meant to
+  click the live app mid-tour (A11's spotlight passes pointer events through).
+  The callout calls `preventDefault()` in Kobalte's `onPointerDownOutside` /
   `onInteractOutside` (`PopoverRootOptions`, `@kobalte/core`), and the
-  controller maps the remaining `onOpenChange(false)` (`Escape`) to
-  `dismiss()`, so the controlled `open` never desyncs. The welcome and finale
-  `.cx-dialog` steps trap focus and close only by their own controls
-  (Skip / Start / Done) or `Escape`.
+  controller maps the remaining `onOpenChange(false)` (`Escape`) to `close()`,
+  so the controlled `open` never desyncs. The welcome and finale `.cx-dialog`
+  steps trap focus and close only by their own controls (Skip tour / Start /
+  Done) or `Escape`.
 - **Dismiss and complete persist per account** (A5): dismissal at step *k*
   records `{ outcome: dismissed, step: k }`, completion records
   `{ outcome: completed }`. Neither ever auto-reopens.
@@ -255,7 +260,7 @@ The tour never imports `posthog-js`. A tiny module,
 (the T4 union below) and resolves the PR #656 T6 embed **at call time**: when
 the analytics enable flag is off, every call is a silent no-op and the tour is
 fully functional un-instrumented. (The embed is *present* by the time any
-capture ships — T4 sequences after T6, and a statically-bundled build cannot
+capture ships — T4 sequences after #656 T6, and a statically-bundled build cannot
 soft-import an absent module — so flag-off is the only live no-op path; OTel
 `trace_id` stamping is the embed's own concern per the obs record's J1, not
 this indirection's.) This satisfies the T6
@@ -304,9 +309,10 @@ shaped like the fixture data in `stub-data.ts` / `comms-stub.ts`.
   `createAppStore` (`apps/ui/src/store.ts`) — upstream of every derived read.
   Internal memos and closures (`selectedAgent`, `agentById`, `agentView`,
   `prs`, `agentRepos`, `openChannel`, `openTopic`, `applyAgentRoute`) read
-  those closure-local accessors, so they see demo rows with no change. The
-  writable `issues` signal stays real-only; the merged view is a separate memo
-  the accessor returns. Every surface (LeftSidebar tree and names, board,
+  those closure-local accessors, so they see demo rows with no change. The raw
+  writable signal is renamed (`realIssues` / `setRealIssues`), and the
+  closure-local name `issues` becomes the merged memo, so internal reads
+  (`selectIssue`, `applyAgentRoute`, `agentRepos`, `prs`) see demo rows too. Every surface (LeftSidebar tree and names, board,
   RightSidebar, AgentView, channel index via `topicsOf`) already reads through
   these accessors, so no component gets a second data path. The demo channel
   ships its own demo topic and demo author accounts.
@@ -355,7 +361,9 @@ Callout steps dim the app faintly and leave a clear cutout over the anchor
 - Stacking uses the existing `--cx-z-*` scale (`design/tokens.css`): the
   spotlight sits at `--cx-z-overlay` (above app chrome and sidebars), and the
   portaled callout at `--cx-z-modal`, so the callout is always above its own
-  dim. The palette (`--cx-z-palette`) still opens above both.
+  dim. The palette (`--cx-z-palette`) still opens above both. The shortcuts
+  overlay also uses `--cx-z-modal`, so the callout hides while
+  `shortcutsOpen()` is true and returns when it closes.
 - Dialog steps (welcome, finale) keep the normal `.cx-dialog-backdrop`.
 
 Cost: one more fixed layer and one resize/scroll listener while the tour is
@@ -414,7 +422,7 @@ Store the "seen" flag in `localStorage` with the pin-set pattern
 (`safeLocalStorage` in `store.ts`). Rejected (Matt, OQ-2): storage is per
 device and per URL, so the same person would get the tour again on a second
 device, a second URL for the same server, or a cleared browser. Per-account
-server state (A5) costs one small table and two RPCs.
+server state (A5) costs one small table and three RPCs.
 
 ### One Kobalte substrate for everything (Dialog for modal steps too)
 
@@ -459,10 +467,10 @@ positioning, and only the Popover carries that.
   `[data-reduce="on"]` — automatic via the token zeroing
   (`tokens.css:241-257`); any tour keyframe not driven by a zeroed token needs
   an explicit substitution rule (`motion.md:42-49`).
-- **Persistence**: tour state only through `GetTourState` / `SetTourState`
-  (A5), keyed on the server-side caller. No client-supplied account id. The
-  tour auto-opens only on a successful read with no row. No tour state in
-  `localStorage`.
+- **Persistence**: tour state only through `GetTourState` /
+  `ClaimTourStart` / `SetTourState` (A5), keyed on the server-side caller. No
+  client-supplied account id. The tour auto-opens only on a successful claim
+  (`claimed = true`). No tour state in `localStorage`.
 - **Server**: the new migration is append-only and tenant-scoped with ENABLE +
   FORCE row-level security like its neighbors; a cross-tenant pgtest proves
   isolation.
@@ -569,7 +577,9 @@ interface AppStore {
     start: (trigger: "first-run" | "replay" | "resume") => void;
     next: () => void;
     back: () => void;
-    /** Writes DISMISSED + current step id, closes, clears demo rows,
+    /** Hides without a permanent write; resume stays available (A4). */
+    close: () => void;
+    /** Skip tour: writes DISMISSED + current step id, closes, clears demo rows,
      *  and leaves a `demo:` route (A10). */
     dismiss: () => void;
     /** Writes COMPLETED, closes, clears demo rows, leaves a `demo:` route. */
@@ -610,8 +620,10 @@ export const TourOverlay: Component;
 Red → green (`TourOverlay.test.tsx`, shared test router): dialog step traps
 and restores focus; callout anchors to its `[data-tour]` element; an anchor
 that mounts one tick after navigation still anchors; a missing anchor skips
-only after the bounded wait; Skip and `Escape` call `dismiss`, and an
-outside click does not; arrow keys work with no window-level listener (DL-223); the
+only after the bounded wait; Skip tour calls `dismiss`, `Escape` calls
+`close` with no permanent write (also when focus is in the app), and an
+outside click does nothing; the callout hides while the shortcuts overlay is
+open; arrow keys work with no window-level listener (DL-223); the
 spotlight layer is `pointer-events: none` and its cutout tracks the anchor
 rect; reduced motion keeps all assertions passing. **Aggregate anchor test**:
 for every callout step, mount the real `App` on that route with demo rows
@@ -631,7 +643,7 @@ export type TourEvent =
   | { name: "tour_dismissed"; step_id: string }
   | { name: "tour_completed" };
 
-/** Resolves the T6 embed at call time; flag off → silent no-op. NEVER a
+/** Resolves the #656 T6 embed at call time; flag off → silent no-op. NEVER a
  *  static `posthog-js` import. */
 export function captureTourEvent(event: TourEvent): void;
 ```
@@ -663,12 +675,13 @@ successful claim and never after any outcome is stored.
 ## Tasks
 
 - [ ] T1: `account_tour_state` migration + sqlc queries + `GetTourState` /
-  `SetTourState` on `CompassService` + TS client regen + pgtests (incl.
-  cross-tenant).
+  `ClaimTourStart` / `SetTourState` on `CompassService` + admin-gate
+  classification + TS client regen + pgtests (incl. cross-tenant and
+  concurrent claim).
 - [ ] T2: `tour/state.ts`, `tour/demo.ts`, `store.tour` controller, server
   read/write wiring, demo read seam + mutation guards + tests.
 - [ ] T3: `TourOverlay.tsx` + `tour.css` (Popover callouts, `.cx-dialog`
-  welcome/finale, Skip tour, faint spotlight, Demo badge, chase-light
+  welcome/finale, Skip tour, non-persisting `Escape`, faint spotlight, Demo badge, chase-light
   entrance) + `data-tour` anchors + tests.
 - [ ] T4 (after #656 T6): `tour/analytics.ts` + capture wiring + tests.
 - [ ] T5: `tour.start` spine registration + idle-deferred first-run arming +
@@ -692,7 +705,7 @@ Deferred (impl proceeds on the stated assumption):
 
 - **OQ-7 — Demo rows beside real rows on replay.** Assumption: show both,
   demo rows badged (A10). Hiding real rows during a replay is the alternative.
-- **OQ-8 — RPC home.** Assumption: the two RPCs ride `CompassService` beside
+- **OQ-8 — RPC home.** Assumption: the three RPCs ride `CompassService` beside
   `WhoAmI`. A separate preferences service is the alternative if more
   per-account UI settings follow.
 
@@ -704,6 +717,6 @@ Rows DL-272..275 in `DECISIONS.md` § UX foundation (design system), stamped `Ac
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
 | DL-272 | The first-run product tour (RIG-2797) is built natively in SolidJS v2 as a store-gated App-root overlay (a third sibling of the shortcuts overlay + palette) whose steps anchor to real chrome via `data-tour` attributes and navigate the real router through the store's closures; while open it shows tour-only demo agents and content (`demo:` ids, badged, read-time only, never sent to the server). PostHog-rendered UI (Product Tours/surveys/banners or any `posthog-js` widget) NEVER ships in-app — PostHog is measurement/data-only (Matt's RIG-2793 ruling, restated by #656 T6) | Active (Matt, 2026-10-04) | [first-run tour §A1](#a1--host-shape-an-app-root-overlay-layer-store-gated) |
-| DL-273 | Tour callout substrate is the Kobalte v2-alpha `Popover` (external `anchorRef` + controlled `open` — DL-150 a11y-hard scope) over a faint, pointer-transparent spotlight with a cutout at the anchor; the welcome/finale modal steps stay hand-rolled on the `.cx-dialog` convention (DL-230); every step has a Skip tour control, and only Skip or `Escape` dismisses (an outside click never does, since the user clicks the live app mid-tour); a missing `data-tour` anchor skips the step only after a bounded reactive resolve, never errors | Active (Matt, 2026-10-04) | [first-run tour §A3](#a3--callout-substrate-kobalte-popover-with-an-external-anchorref) |
+| DL-273 | Tour callout substrate is the Kobalte v2-alpha `Popover` (external `anchorRef` + controlled `open` — DL-150 a11y-hard scope) over a faint, pointer-transparent spotlight with a cutout at the anchor; the welcome/finale modal steps stay hand-rolled on the `.cx-dialog` convention (DL-230); every step has a Skip tour control, the only permanent dismiss; `Escape` closes without persisting (resume stays) and an outside click does nothing, since the user works in the live app mid-tour; a missing `data-tour` anchor skips the step only after a bounded reactive resolve, never errors | Active (Matt, 2026-10-04) | [first-run tour §A3](#a3--callout-substrate-kobalte-popover-with-an-external-anchorref) |
 | DL-274 | Tour "seen"/resume state is per account on the server (`account_tour_state`, tenant RLS; `GetTourState`/`ClaimTourStart`/`SetTourState` keyed on the authenticated caller, never a client-supplied id). Auto-start is a claim (`ClaimTourStart`, insert-if-absent): the tour opens only when this call created the `started` row, so a failed claim or a lost race between windows or devices arms nothing | Active (Matt, 2026-10-04) | [first-run tour §A5](#a5--first-run-detection--persistence-per-account-server-state) |
 | DL-275 | Tour analytics ride a thin call-time indirection (`captureTourEvent`) over the #656 T6 PostHog embed: flag off → silent no-op, no static `posthog-js` import in tour code; only the instrumentation task sequences after T6 — the tour UI has zero dependency on it. Step content ships static in-code; the headless flag/EAF remote-content path is a deferred additive behind the same `TourStep[]` type | Active (Matt, 2026-10-04) | [first-run tour §A7](#a7--analytics-a-thin-no-op-safe-indirection-over-the-t6-embed) |
