@@ -124,10 +124,10 @@ type SessionReapSink interface {
 }
 
 // SessionLostSink is told when the Runner reports a bound session unknown (its
-// container died), after the hub dropped the binding, so the account can be woken.
-// Must return promptly; called with h.mu released.
+// container died) or ERRORED, after the hub dropped the binding, so the account can
+// be woken. Must return promptly; called with h.mu released.
 type SessionLostSink interface {
-	OnSessionLost(sessionID string, account store.AccountID)
+	OnSessionLost(sessionID string, account store.AccountID, errored bool)
 }
 
 // RunnerReadySink is told each time a Runner command stream attaches, so work that
@@ -777,10 +777,9 @@ func (h *Hub) fireRunnerReady() {
 	}()
 }
 
-// deliverSession routes a session frame to the observation-pane tail and, when
-// the frame carries a lifecycle transition, extracts the AgentSessionStatus onto
-// SubscribeEvents. A session frame can carry a trace event, a lifecycle
-// transition, or both; UNSPECIFIED means "trace only, no transition".
+// deliverSession routes session frames to the observation pane, publishes lifecycle
+// transitions, and retires an owned session when its Runner reports ERRORED.
+// UNSPECIFIED means "trace only, no transition".
 func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf *compassv1internal.SessionFrame) {
 	state := sf.GetState()
 	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
@@ -826,6 +825,10 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	h.mu.Unlock()
 	if presence != nil && hasAccount {
 		presence.OnSessionLifecycle(account, sessionID, state)
+	}
+	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
+	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
+		h.dropLostSessionDetached(ctx, runnerID, sessionID, true)
 	}
 }
 

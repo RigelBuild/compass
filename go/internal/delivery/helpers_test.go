@@ -288,6 +288,8 @@ type fakeReads struct {
 	// path (a name miss never blocks a delivery).
 	topicNames map[string]struct{ channelName, topicName string }
 	owed       map[store.AccountID]map[store.ChannelID][]store.Message
+	// undeliveredErr, when set, fails every UndeliveredMessages read.
+	undeliveredErr error
 	// sweepChannels is the D1 disjunct channel set per agent the pin sweep
 	// enumerates (SweepChannels). A test seeds the channels a fresh session must
 	// visit for pins, independent of owed (which omits channels with no owed
@@ -660,7 +662,7 @@ func (f *fakeReads) UndeliveredMessages(_ context.Context, agent store.AccountID
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.owed[agent], nil
+	return f.owed[agent], f.undeliveredErr
 }
 
 // readScopes returns the scope of every MessageByID call for messageID, in call

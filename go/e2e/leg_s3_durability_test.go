@@ -422,7 +422,7 @@ func assertSafetyValveEviction(t *testing.T, ctx context.Context, f *Fixture, se
 	}
 }
 
-// A lost container is detected on the next deliver; the hub then archives the tail
+// A lost container reports ERRORED on its session stream; the hub archives the tail
 // as session_end without pruning it, so the woken session still resumes from PG.
 func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 	t.Helper()
@@ -435,9 +435,6 @@ func runS3CrashArchivesSessionEnd(t *testing.T, ctx context.Context) {
 		t.Fatalf("crash agent container: %v", err)
 	}
 	waitSessionErrored(t, ctx, f, sessionID)
-	if _, err := f.PostMessage(ctx, channel, "general", "marker durability-after-crash"); err != nil {
-		t.Fatalf("post after crash: %v", err)
-	}
 	waitSegmentKind(t, ctx, f.DSN(), sessionID, "session_end")
 	assertArchiveHasReply(t, ctx, f, sessionID, "durability first reply")
 	if segmentCountByKind(t, ctx, f.DSN(), sessionID, "superseded") != 0 {
