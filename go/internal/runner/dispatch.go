@@ -40,8 +40,8 @@ type SessionHost interface {
 	Remove(ctx context.Context, containerName string) error
 	// Reload restarts a session's agent in place, reusing the session id.
 	Reload(ctx context.Context, sessionID string) error
-	// Status returns the live status of one session, or every live session when
-	// id is empty — answered from the Runner's authoritative session set.
+	// Status returns one session's status, or every retained session when id is empty.
+	// The all-sessions set includes ERRORED sessions recoverable via ReloadAgentSession.
 	Status(ctx context.Context, sessionID string) ([]*compassv1.AgentSessionStatus, error)
 	// RefreshSecrets re-fetches the session's resolved secret set and materializes it into
 	// the container — the SecretsVersion-driven install path (initial and rotation share
