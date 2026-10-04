@@ -684,6 +684,19 @@ func (m *MicroVMRuntime) Exists(_ context.Context, name string) (bool, error) {
 	return false, nil
 }
 
+// Running reports whether the named session's VMM is still up. Stop keeps the
+// vm handle, so a zero-timeout exit probe separates stopped from running.
+func (m *MicroVMRuntime) Running(_ context.Context, name string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.name == name {
+			return session.vm != nil && !session.vm.WaitVMMExit(0), nil
+		}
+	}
+	return false, nil
+}
+
 // AgentGatewayEndpoint resolves the named session and returns the host-side
 // AF_UNIX path the Runner serves its AgentGateway on — GatewaySocketPath over
 // the session's own vsock socket base and the fixed gateway port (record

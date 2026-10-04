@@ -381,25 +381,21 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 // double-forked out of that group is NOT reliably stopped (no cgroup freezer in
 // v1). Stopping a handle with no live process is a no-op.
 func (h *HostRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
-	proc := h.liveProcess(id)
-	if proc == nil {
-		return nil
-	}
-	if termErr := killGroup(proc.pgid, syscall.SIGTERM); termErr != nil {
-		return termErr
-	}
-	select {
-	case <-proc.done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(timeout):
-		if killErr := killGroup(proc.pgid, syscall.SIGKILL); killErr != nil {
-			return killErr
+	stopped := h.liveProcess(id)
+	if stopped != nil {
+		if err := signalAndWait(ctx, stopped, timeout); err != nil {
+			return err
 		}
-		<-proc.done
-		return nil
 	}
+	// Only a confirmed stop reads as not running, like a stopped podman container;
+	// a failed signal or expired ctx leaves a possibly live process marked started.
+	// A process launched during the stop keeps the handle started.
+	h.mu.Lock()
+	if handle, ok := h.handles[id]; ok && (handle.proc == nil || handle.proc == stopped) {
+		handle.state = hostCreated
+	}
+	h.mu.Unlock()
+	return nil
 }
 
 // Remove force-kills the process group if still live, then deletes the handle's
@@ -443,6 +439,32 @@ func (h *HostRuntime) Exists(_ context.Context, name string) (bool, error) {
 	defer h.mu.Unlock()
 	for _, handle := range h.handles {
 		if handle.name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Running reports whether the named handle is started and its agent process, if
+// spawned yet, has not exited. Start is bookkeeping and the process arrives at
+// ExecStreaming, so a started handle with no process counts as running.
+func (h *HostRuntime) Running(_ context.Context, name string) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, handle := range h.handles {
+		if handle.name != name {
+			continue
+		}
+		if handle.state != hostStarted {
+			return false, nil
+		}
+		if handle.proc == nil {
+			return true, nil
+		}
+		select {
+		case <-handle.proc.done:
+			return false, nil
+		default:
 			return true, nil
 		}
 	}
@@ -518,6 +540,24 @@ func (h *HostRuntime) liveProcess(id WorkloadID) *hostProcess {
 		return nil
 	}
 	return handle.proc
+}
+
+func signalAndWait(ctx context.Context, proc *hostProcess, timeout time.Duration) error {
+	if termErr := killGroup(proc.pgid, syscall.SIGTERM); termErr != nil {
+		return termErr
+	}
+	select {
+	case <-proc.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(timeout):
+		if killErr := killGroup(proc.pgid, syscall.SIGKILL); killErr != nil {
+			return killErr
+		}
+		<-proc.done
+		return nil
+	}
 }
 
 // killGroup signals the process group led by pgid. An already-gone group

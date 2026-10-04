@@ -189,7 +189,7 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 // resolves it by name. The dispatcher's request-id dedup makes a provision retry
 // idempotent (no duplicate container) before this runs. A name still launched
 // on this Runner is rejected with errAlreadyProvisioned before any socket,
-// config or engine work; a registered name whose container is gone is replaced.
+// config or engine work; a registered name whose workload is not running is replaced.
 func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest, accountID string) (string, error) {
 	spec, err := h.specs.BuildSpec(req, accountID)
 	if err != nil {
@@ -205,16 +205,27 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	// name (the stable lifecycle key).
 	unlock := h.lockContainer(spec.Name)
 	defer unlock()
-	if _, registered := h.registry.Resolve(spec.Name); registered {
-		live, err := h.engine.Exists(ctx, spec.Name)
+	if oldHandle, registered := h.registry.Resolve(spec.Name); registered && oldHandle != nil {
+		running, err := h.engine.Running(ctx, spec.Name)
 		if err != nil {
-			return "", fmt.Errorf("provisioning %q: checking registered container: %w", spec.Name, err)
+			return "", fmt.Errorf("provisioning %q: checking registered workload: %w", spec.Name, err)
 		}
-		if live {
+		if running {
 			return "", fmt.Errorf("provisioning %q: %w", spec.Name, errAlreadyProvisioned)
 		}
-		// Removed behind the Runner's back (redeploy, crash): retire the old
-		// container's session, config version and socket, then drop the entry.
+		// Stopped or removed behind the Runner's back (redeploy, crash): remove any
+		// stopped container so Launch can reuse the name, then retire the old
+		// session, config version and socket and drop the entry. Deregister last,
+		// so a failed engine call leaves the entry for a retry.
+		exists, err := h.engine.Exists(ctx, spec.Name)
+		if err != nil {
+			return "", fmt.Errorf("provisioning %q: checking stale workload: %w", spec.Name, err)
+		}
+		if exists {
+			if err := h.engine.Remove(ctx, oldHandle.ID()); err != nil {
+				return "", fmt.Errorf("provisioning %q: removing stale workload: %w", spec.Name, err)
+			}
+		}
 		h.retireContainer(spec.Name)
 		h.closeSocket(ctx, spec.Name)
 		h.registry.Deregister(spec.Name)

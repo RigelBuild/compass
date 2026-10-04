@@ -204,6 +204,110 @@ func TestReprovisionOfVanishedContainerReplacesStaleEntry(t *testing.T) {
 	})
 }
 
+func TestReprovisionStoppedReplaces(t *testing.T) {
+	host, engine, registry := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("initial Provision: %v", err)
+	}
+	oldHandle, ok := registry.Resolve(name)
+	if !ok {
+		t.Fatal("initial Provision did not register handle")
+	}
+	engine.mu.Lock()
+	engine.stopped = map[string]bool{name: true}
+	engine.mu.Unlock()
+	if got, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil || got != name {
+		t.Fatalf("Provision stopped workload = %q, %v; want %q, nil", got, err, name)
+	}
+	if got := engine.countCallForID(oldHandle.ID(), "remove"); got != 1 {
+		t.Fatalf("Remove(old id) calls = %d, want 1", got)
+	}
+	if got := countCreates(engine.callsSnapshot()); got != 2 {
+		t.Fatalf("Create calls = %d, want 2", got)
+	}
+	newHandle, ok := registry.Resolve(name)
+	if !ok || newHandle == oldHandle {
+		t.Fatalf("replacement handle = %p, registered = %v; want a new registered handle", newHandle, ok)
+	}
+}
+
+// A workload removed outside the Runner (redeploy, crash) is replaced without a
+// Remove call, which `podman rm` would fail on the missing container.
+func TestReprovisionVanishedReplacesWithoutRemove(t *testing.T) {
+	host, engine, registry := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("initial Provision: %v", err)
+	}
+	oldHandle, _ := registry.Resolve(name)
+	engine.mu.Lock()
+	engine.vanished = map[string]bool{name: true}
+	engine.mu.Unlock()
+	if got, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil || got != name {
+		t.Fatalf("Provision vanished workload = %q, %v; want %q, nil", got, err, name)
+	}
+	if got := engine.countCallForID(oldHandle.ID(), "remove"); got != 0 {
+		t.Fatalf("Remove(old id) calls = %d, want 0", got)
+	}
+	if got := countCreates(engine.callsSnapshot()); got != 2 {
+		t.Fatalf("Create calls = %d, want 2", got)
+	}
+}
+
+// A failed stale-workload Remove keeps the registry entry, so the next Provision
+// still sees the old workload and retries its cleanup instead of stranding it.
+func TestReprovisionRemoveFailureKeepsEntryForRetry(t *testing.T) {
+	host, engine, registry := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("initial Provision: %v", err)
+	}
+	oldHandle, _ := registry.Resolve(name)
+	if err := engine.Stop(ctx, oldHandle.ID(), time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	engine.mu.Lock()
+	engine.removeErr = errors.New("rm failed")
+	engine.mu.Unlock()
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err == nil {
+		t.Fatal("Provision with a failing Remove = nil, want an error")
+	}
+	if h, ok := registry.Resolve(name); !ok || h != oldHandle {
+		t.Fatalf("registry after failed Remove = %p, %v; want the old handle kept", h, ok)
+	}
+	engine.mu.Lock()
+	engine.removeErr = nil
+	engine.mu.Unlock()
+	if got, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil || got != name {
+		t.Fatalf("retry Provision = %q, %v; want %q, nil", got, err, name)
+	}
+	if got := engine.countCallForID(oldHandle.ID(), "remove"); got != 2 {
+		t.Fatalf("Remove(old id) calls = %d, want 2 (failed, then retried)", got)
+	}
+}
+
+func TestReprovisionRunningRejected(t *testing.T) {
+	host, engine, _ := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("initial Provision: %v", err)
+	}
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); !errors.Is(err, errAlreadyProvisioned) {
+		t.Fatalf("re-Provision running workload = %v, want errAlreadyProvisioned", err)
+	}
+	if got := countCreates(engine.callsSnapshot()); got != 1 {
+		t.Fatalf("Create calls after rejection = %d, want 1", got)
+	}
+	if !socketServed(t, host, name) {
+		t.Fatal("running workload socket was closed by rejected Provision")
+	}
+}
+
 func countCreates(calls []string) int {
 	n := 0
 	for _, c := range calls {

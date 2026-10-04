@@ -207,6 +207,23 @@ func TestWaitVMMExitObservesPromptSelfExit(t *testing.T) {
 	}
 }
 
+// A zero-timeout poll is how liveness is read; a select racing an already
+// closed exit channel against time.After(0) would intermittently say "alive".
+func TestWaitVMMExitZeroTimeoutSeesExitedVMM(t *testing.T) {
+	exited := make(chan struct{})
+	close(exited)
+	vm := &VM{vmm: &child{name: "cloud-hypervisor"}, vmmExited: exited}
+	for i := range 1000 {
+		if !vm.WaitVMMExit(0) {
+			t.Fatalf("WaitVMMExit(0) on an exited VMM = false at iteration %d", i)
+		}
+	}
+	live := &VM{vmm: &child{name: "cloud-hypervisor"}, vmmExited: make(chan struct{})}
+	if live.WaitVMMExit(0) {
+		t.Fatal("WaitVMMExit(0) on a live VMM = true")
+	}
+}
+
 // TestWaitForSocketsFailsFastOnADeadDaemon is HIGH-2's regression lock: the
 // readiness wait must be LIVENESS-aware, not path-existence-only.
 //
