@@ -81,20 +81,20 @@ func (g *Gateway) Publish(
 		if err := pub.forward(frame); err != nil {
 			// A mid-stream upstream failure ends the relay; the agent reconnects.
 			// Release the shared upstream stream on the way out.
-			_ = g.releasePublisher()
+			_ = g.releasePublisher(pub)
 			return nil, err
 		}
 	}
 	if err := stream.Err(); err != nil {
 		// The inbound stream failed (an over-limit message past WithReadMaxBytes,
 		// or a transport drop). Release the upstream and surface the error.
-		_ = g.releasePublisher()
+		_ = g.releasePublisher(pub)
 		return nil, err
 	}
 
 	// Clean stream end == stdout EOF: close the upstream PublishEvents stream and
 	// await its ack, then ack the agent's stream.
-	if err := g.releasePublisher(); err != nil && !errors.Is(err, context.Canceled) {
+	if err := g.releasePublisher(pub); err != nil && !errors.Is(err, context.Canceled) {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&compassv1internal.PublishFrameResponse{}), nil

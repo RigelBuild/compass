@@ -110,6 +110,11 @@ type sessionPublisher struct {
 	// unstick a Send that holds mu past its bound.
 	ctx    context.Context //nolint:containedctx // the stream's lifetime, cancelled to unstick its Send
 	cancel context.CancelFunc
+
+	// closed and closeErr make close idempotent under mu: a lifecycle report can
+	// close the shared stream before its owning handler releases it.
+	closed   bool
+	closeErr error
 }
 
 // newSessionPublisher opens the upstream PublishEvents client-stream for
@@ -192,9 +197,13 @@ func (p *sessionPublisher) sendLocked(seq uint64, frame *compassv1internal.Agent
 func (p *sessionPublisher) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	_, err := p.stream.CloseAndReceive()
+	if p.closed {
+		return p.closeErr
+	}
+	_, p.closeErr = p.stream.CloseAndReceive()
+	p.closed = true
 	p.cancel()
-	return err
+	return p.closeErr
 }
 
 // acquirePublisher returns the session's ordered publisher, creating it on first
@@ -248,35 +257,28 @@ func (g *Gateway) sharedPublisher(sessionID string) *sessionPublisher {
 	return g.pub
 }
 
-// releasePublisher clears the publisher under pubMu, then closes its upstream
-// stream OUTSIDE the lock. Called by the Publish handler (the stream owner) at
-// stream end. Returns the upstream close/ack error.
-//
-// The close is deliberately outside pubMu. pub.close() blocks on
-// CloseAndReceive awaiting the Server's terminal ack on the socket-lifetime
-// stream, with no per-close timeout; holding pubMu across it would let one
-// unresponsive-but-connected Server stall every later Publish forward on the
-// same mutex — a session-wide telemetry outage from one clean stream-end.
-// Clearing g.pub under the lock first is enough. releasePublisher is only
-// reached after the handler's Receive loop has drained (publish.go:75/82/88),
-// so no forward() from that handler is in flight, and forward()'s per-publisher
-// pub.mu serializes any Send against this close on the same stream — the drained
-// publisher never Sends concurrently with its own close. A concurrent
-// acquirePublisher that observes g.pub==nil just opens a fresh one, and the
-// capture under the lock still gives single ownership, so pub is closed exactly
-// once. Lifecycle reports use distinct one-shot publishers and do not inspect or
-// close g.pub. The only residue is a cross-stream reorder of already-sent frames
-// that the hub's loss-tolerant gap detector accepts by design: recordSeq flags only
-// a forward jump, so a delayed low seq neither flags a gap nor rewinds lastSeq.
-// This mirrors acquirePublisher, which already closes its stale publisher outside
-// the lock.
-func (g *Gateway) releasePublisher() error {
+// detachPublisher clears g.pub only if it is still pub, so a caller never
+// removes a replacement installed after pub was detached.
+func (g *Gateway) detachPublisher(pub *sessionPublisher) {
 	g.pubMu.Lock()
-	pub := g.pub
-	g.pub = nil
-	g.pubMu.Unlock()
-	if pub == nil {
-		return nil
+	defer g.pubMu.Unlock()
+	if g.pub == pub {
+		g.pub = nil
 	}
+}
+
+// releasePublisher detaches pub (compare-and-clear under pubMu) and closes its
+// upstream stream OUTSIDE the lock. Called by the Publish handler with the
+// publisher it acquired. Returns the upstream close/ack error.
+//
+// The close is outside pubMu because CloseAndReceive awaits the Server's ack
+// with no timeout; holding pubMu would stall every Publish forward behind one
+// unresponsive Server. pub.mu still serializes the close against any Send on the
+// same stream, and close is idempotent, so a lifecycle report that already closed
+// pub hands back its result. Compare-and-clear matters after that report: a
+// handler reopened by BindSession may own g.pub, and the stale handler must not
+// clear or close it.
+func (g *Gateway) releasePublisher(pub *sessionPublisher) error {
+	g.detachPublisher(pub)
 	return pub.close()
 }

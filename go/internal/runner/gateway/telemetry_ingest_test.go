@@ -710,7 +710,7 @@ func TestSessionStateFallsBackWhenSharedSendStalls(t *testing.T) {
 		t.Fatalf("ERRORED RunnerSeq = %d, want 1: the stalled frame's seq must be rolled back", state.GetRunnerSeq())
 	}
 	// Unblock the stalled stream's handler so the httptest server closes.
-	_ = g.releasePublisher() // its cancelled stream errs on close; not actionable here
+	_ = releaseCurrentPublisher(g) // its cancelled stream errs on close; not actionable here
 }
 
 // taggedPublish captures every frame with the ordinal of the PublishEvents
@@ -785,6 +785,140 @@ func TestSessionStateUsesSharedStreamAfterDrainTimeout(t *testing.T) {
 	}
 	if _, err := stream.CloseAndReceive(); err != nil {
 		t.Fatalf("finish Publish stream: %v", err)
+	}
+}
+
+// releaseCurrentPublisher releases whatever shared publisher is installed, as a
+// test that drives forward directly (no Publish handler owning it) needs.
+func releaseCurrentPublisher(g *Gateway) error {
+	g.pubMu.Lock()
+	pub := g.pub
+	g.pubMu.Unlock()
+	if pub == nil {
+		return nil
+	}
+	return g.releasePublisher(pub)
+}
+
+// A shared-path ERRORED is the session's last frame, so the report closes that
+// stream and returns only once the Server acks it. Event-gated: the Server
+// stalls its ack until the test releases it.
+//
+// RED (pre-fix): the report returns once Send writes, before any close reaches
+// the Server.
+func TestSessionStateOnSharedStreamAwaitsAck(t *testing.T) {
+	relay := newBlockingClosePublish()
+	events := newRunnerServiceServer(t, relay)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	listener := &SocketListener{gateway: g}
+	if err := g.acquirePublisher("sess-1").forward(traceFrame("open")); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	stateDone := make(chan error, 1)
+	go func() {
+		stateDone <- listener.PublishSessionState(context.Background(), "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+	}()
+	t.Cleanup(func() { close(relay.release) })
+	select {
+	case <-relay.closing:
+	case err := <-stateDone:
+		t.Fatalf("PublishSessionState returned %v before the shared stream's ack", err)
+	case <-time.After(testTimeout):
+		t.Fatal("shared stream never closed after ERRORED")
+	}
+	select {
+	case err := <-stateDone:
+		t.Fatalf("PublishSessionState returned %v while the Server withheld its ack", err)
+	default:
+	}
+	relay.release <- struct{}{}
+	if err := <-stateDone; err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	if pub := g.sharedPublisher("sess-1"); pub != nil {
+		t.Fatal("shared publisher still installed after ERRORED closed it")
+	}
+}
+
+// failingAckPublish drains each stream, then fails it, counting streams opened.
+type failingAckPublish struct {
+	compassv1internalconnect.UnimplementedRunnerServiceHandler
+	mu      sync.Mutex
+	streams int
+}
+
+func (f *failingAckPublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+	f.mu.Lock()
+	f.streams++
+	f.mu.Unlock()
+	for stream.Receive() {
+	}
+	return nil, connect.NewError(connect.CodeDataLoss, errors.New("ack refused"))
+}
+
+func (f *failingAckPublish) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.streams
+}
+
+// A failed ack on the shared stream surfaces to the caller, and the report does
+// not retry on a one-shot stream: ERRORED may already have reached the Server.
+//
+// RED (pre-fix): the report returns nil once Send writes; the ack is never read.
+func TestSessionStateSharedAckErrorSurfaces(t *testing.T) {
+	relay := &failingAckPublish{}
+	events := newRunnerServiceServer(t, relay)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	listener := &SocketListener{gateway: g}
+	if err := g.acquirePublisher("sess-1").forward(traceFrame("open")); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	err := listener.PublishSessionState(context.Background(), "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+	// Release the shared stream if the report left it open (pre-fix), so the
+	// server handler returns; its error is the one under test, already captured.
+	t.Cleanup(func() { _ = releaseCurrentPublisher(g) })
+	if connect.CodeOf(err) != connect.CodeDataLoss {
+		t.Fatalf("PublishSessionState error = %v, want the shared stream's CodeDataLoss ack", err)
+	}
+	if got := relay.count(); got != 1 {
+		t.Fatalf("upstream streams opened = %d, want 1: a failed ack must not fall back to one-shot", got)
+	}
+}
+
+// A Publish handler whose shared stream a lifecycle report detached must not
+// clear or close the publisher a later handler installed after BindSession.
+//
+// RED (pre-fix): releasePublisher clears and closes whatever g.pub holds.
+func TestStaleReleaseLeavesReplacementPublisher(t *testing.T) {
+	capture := newCapturePublish()
+	events := newRunnerServiceServer(t, capture)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+	listener := &SocketListener{gateway: g}
+	stale := g.acquirePublisher("sess-1")
+	if err := stale.forward(traceFrame("old")); err != nil {
+		t.Fatalf("forward on first publisher: %v", err)
+	}
+	capture.recvFrame(t)
+	if err := listener.PublishSessionState(context.Background(), "sess-1", compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED); err != nil {
+		t.Fatalf("PublishSessionState: %v", err)
+	}
+	capture.recvFrame(t)
+	listener.BindSession("sess-1")
+	fresh := g.acquirePublisher("sess-1")
+	t.Cleanup(func() { _ = releaseCurrentPublisher(g) })
+
+	// The stale handler unwinds; its close error is not under test.
+	_ = g.releasePublisher(stale)
+
+	if got := g.sharedPublisher("sess-1"); got != fresh {
+		t.Fatal("stale release cleared the replacement publisher")
+	}
+	if err := fresh.forward(traceFrame("new")); err != nil {
+		t.Fatalf("forward on replacement after stale release: %v", err)
+	}
+	if got := capture.recvFrame(t).GetFrame().GetSession().GetTypedEvent().GetAssistantText().GetText(); got != "new" {
+		t.Fatalf("delivered %q, want new", got)
 	}
 }
 
@@ -1045,11 +1179,11 @@ func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
 	// Each release drops the publisher; the next forward builds a fresh one. The
 	// sequence must continue across both swaps.
 	forward("p1")
-	if err := g.releasePublisher(); err != nil {
+	if err := releaseCurrentPublisher(g); err != nil {
 		t.Fatalf("release after p1 = %v", err)
 	}
 	forward("p2")
-	if err := g.releasePublisher(); err != nil {
+	if err := releaseCurrentPublisher(g); err != nil {
 		t.Fatalf("release after p2 = %v", err)
 	}
 
@@ -1089,7 +1223,7 @@ func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 	// abandoned stream leaves its server-side handler receiving forever —
 	// httptest's Server.Close then blocks on it at cleanup and the package times
 	// out.
-	if err := g.releasePublisher(); err != nil {
+	if err := releaseCurrentPublisher(g); err != nil {
 		t.Fatalf("release before the dead swap = %v", err)
 	}
 	g.events = newClosedRunnerServiceServer(t)
@@ -1099,12 +1233,12 @@ func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 	// Driving forward directly (unlike the Publish handler) does not auto-release
 	// on failure, so drop the dead publisher explicitly before the live swap; its
 	// close errors on the dead transport, which is expected and not actionable.
-	_ = g.releasePublisher()
+	_ = releaseCurrentPublisher(g)
 	g.events = live
 	if err := forward("ok-3"); err != nil {
 		t.Fatalf("forward after a failure = %v, want success", err)
 	}
-	if err := g.releasePublisher(); err != nil {
+	if err := releaseCurrentPublisher(g); err != nil {
 		t.Fatalf("final release = %v", err)
 	}
 
@@ -1170,11 +1304,11 @@ func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 	}
 	// Release WHILE the forwards are in flight — the case the sibling avoids. A
 	// close error racing an in-flight forward is expected and not actionable.
-	wg.Go(func() { _ = g.releasePublisher() })
+	wg.Go(func() { _ = releaseCurrentPublisher(g) })
 	wg.Wait()
 	// Drop the last publisher so every handler's Receive loop ends and its
 	// httptest server can close in cleanup without parking.
-	_ = g.releasePublisher()
+	_ = releaseCurrentPublisher(g)
 
 	for _, seq := range sink.seqs() {
 		record(seq)
@@ -1497,7 +1631,7 @@ func TestPublisherResetsOnSessionChange(t *testing.T) {
 	events := newRunnerServiceServer(t, capture)
 	sessions := &toggleSessions{sessionID: "sess-1"}
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: sessions, Events: events})
-	t.Cleanup(func() { _ = g.releasePublisher() })
+	t.Cleanup(func() { _ = releaseCurrentPublisher(g) })
 
 	// acquirePublisher resolves the session the same way the Publish handler
 	// does, so drive it with the resolver's current id.
@@ -1640,7 +1774,7 @@ func TestReleasePublisherClosesOutsideLock(t *testing.T) {
 	// releasePublisher clears g.pub under pubMu, then blocks in pub.close()'s
 	// CloseAndReceive against the unresponsive Server.
 	released := make(chan error, 1)
-	go func() { released <- g.releasePublisher() }()
+	go func() { released <- releaseCurrentPublisher(g) }()
 
 	// Gate on the close genuinely reaching the Server before racing the acquire,
 	// so the assertion measures the lock, not a scheduling coincidence.

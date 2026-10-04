@@ -26,8 +26,10 @@ const stateSendTimeout = 2 * time.Second
 //
 // A drain that times out can leave an admitted frame mid-Send on the shared
 // stream, so the state rides that stream under its send lock when one exists:
-// same stream and same lock order it after every admitted frame. Otherwise, or if
-// that send fails or stalls, it falls back to a bounded one-shot stream.
+// same stream and same lock order it after every admitted frame. ERRORED is that
+// stream's last frame (the gate is sealed), so the report then closes it and
+// returns the Server's ack. With no shared stream, or if the state never reached
+// Send there, it falls back to a bounded one-shot stream.
 func (l *SocketListener) PublishSessionState(ctx context.Context, sessionID string, state compassv1.AgentSessionState) error {
 	if l.gateway == nil {
 		return errNoGateway
@@ -41,9 +43,12 @@ func (l *SocketListener) PublishSessionState(ctx context.Context, sessionID stri
 	g.fencePublishes(ctx, sessionID)
 	var sharedErr error
 	if shared := g.sharedPublisher(sessionID); shared != nil {
-		if sharedErr = g.sendSharedState(ctx, shared, frame); sharedErr == nil {
-			return nil
+		sent, err := g.sendSharedState(ctx, shared, frame)
+		if sent {
+			// ERRORED may already be at the Server; a one-shot retry could duplicate it.
+			return err
 		}
+		sharedErr = err
 	}
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateSendTimeout)
 	defer cancel()
@@ -55,30 +60,40 @@ func (l *SocketListener) PublishSessionState(ctx context.Context, sessionID stri
 	return errors.Join(sharedErr, forwardErr, pub.close())
 }
 
-// sendSharedState sends frame on the shared publisher, bounded by
-// stateSendTimeout off ctx's values but not its cancellation (the drain may have
-// spent it). On timeout it cancels that stream and waits for the stalled Send to
-// return, so its RunnerSeq is settled (sent or rolled back) before the caller
-// allocates one for the fallback.
-func (g *Gateway) sendSharedState(ctx context.Context, pub *sessionPublisher, frame *compassv1internal.AgentFrame) error {
+// sendSharedState sends frame on the shared publisher, then detaches and closes
+// it and awaits the ack, all within stateSendTimeout. The budget keeps ctx's
+// values but not its cancellation, because the drain may already have used it up.
+// On timeout it cancels the stream and waits for the stalled call, so an unsent
+// RunnerSeq is rolled back before the caller allocates one for the fallback.
+// sent reports whether Send accepted the state; err is the send or close error.
+func (g *Gateway) sendSharedState(ctx context.Context, pub *sessionPublisher, frame *compassv1internal.AgentFrame) (sent bool, err error) {
 	stateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateSendTimeout)
 	defer cancel()
-	done := make(chan error, 1)
+	type result struct {
+		sent bool
+		err  error
+	}
+	done := make(chan result, 1)
 	go func() {
 		if g.beforeSharedState != nil {
 			g.beforeSharedState()
 		}
-		done <- pub.forwardState(frame)
+		if err := pub.forwardState(frame); err != nil {
+			done <- result{err: err}
+			return
+		}
+		g.detachPublisher(pub)
+		done <- result{sent: true, err: pub.close()}
 	}()
+	var res result
 	select {
-	case err := <-done:
-		return err
+	case res = <-done:
+		return res.sent, res.err
 	case <-stateCtx.Done():
 	}
 	pub.cancel()
-	// The state may have reached Send just before the cancel; a success stands.
-	if err := <-done; err != nil {
-		return errors.Join(errSharedStateTimeout, err)
+	if res = <-done; res.err != nil {
+		return res.sent, errors.Join(errSharedStateTimeout, res.err)
 	}
-	return nil
+	return res.sent, nil
 }
