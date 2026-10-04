@@ -268,7 +268,7 @@ contract ("embed `posthog-js` behind an off-by-default enable flag +
 configurable host"; "PostHog contributes only headless data — event capture,
 and flag/early-access-feature JSON payloads … never a PostHog widget" — PR
 656 T6) while keeping the dependency one-directional: the tour's UI tasks
-(T2/T3/T5 below) have zero dependency on T6; only the instrumentation task
+(T2/T3/T5 below) have zero dependency on #656 T6; only the instrumentation task
 (T4) sequences after it. Events: `tour_started` (with `trigger: "first-run" |
 "replay" | "resume"`), `tour_step_viewed` (`step_id`, `index`),
 `tour_dismissed` (`step_id`), `tour_completed`.
@@ -326,7 +326,8 @@ shaped like the fixture data in `stub-data.ts` / `comms-stub.ts`.
   `setTrackerConfig` touches no row id and needs no guard. Demo rows are never
   written to the query cache or the stream state; the seam adds them at read
   time only.
-- **Teardown.** Skip, finish, and any dismiss clear `demoActive`, so the demo
+- **Teardown.** Skip, finish, and `Escape` close (`dismiss`, `complete`,
+  `close`) all clear `demoActive`, so the demo
   rows disappear in the same tick. If the current route names a `demo:` id
   (the user clicked the demo agent, `/agent/demo:…`), teardown also calls
   `showBridge()`; `applyAgentRoute` has no unknown-id bounce, unlike the
@@ -362,8 +363,10 @@ Callout steps dim the app faintly and leave a clear cutout over the anchor
   spotlight sits at `--cx-z-overlay` (above app chrome and sidebars), and the
   portaled callout at `--cx-z-modal`, so the callout is always above its own
   dim. The palette (`--cx-z-palette`) still opens above both. The shortcuts
-  overlay also uses `--cx-z-modal`, so the callout hides while
-  `shortcutsOpen()` is true and returns when it closes.
+  overlay also uses `--cx-z-modal`, so while `shortcutsOpen()` is true the
+  Popover's controlled `open` is false. That removes its layer from Kobalte's
+  stack, so the `Escape` that closes the overlay never reaches the tour. The
+  callout returns when the overlay closes.
 - Dialog steps (welcome, finale) keep the normal `.cx-dialog-backdrop`.
 
 Cost: one more fixed layer and one resize/scroll listener while the tour is
@@ -446,7 +449,7 @@ positioning, and only the Popover carries that.
   anywhere in tour code (the module resolves the embed at call time, so it is
   a defensive guard, not a hard dependency). Sequencing: only the
   instrumentation task (T4) waits on #656 T6, and by then the embed is present — so
-  flag-off is the only live no-op path; the tour UI does not wait on T6.
+  flag-off is the only live no-op path; the tour UI does not wait on #656 T6.
 - **SolidJS v2** (`apps/ui/package.json:26` — `"solid-js": "^2.0.0-rc.1"`).
   No v1 idioms; component props are NEVER destructured (accessors / thunked
   derivation, the `CoachTip.tsx:49-53` shape). Router is `@solidjs/router`
@@ -577,7 +580,8 @@ interface AppStore {
     start: (trigger: "first-run" | "replay" | "resume") => void;
     next: () => void;
     back: () => void;
-    /** Hides without a permanent write; resume stays available (A4). */
+    /** Escape: hides, clears demo rows and leaves a `demo:` route, with no
+     *  permanent write; resume stays available (A4). */
     close: () => void;
     /** Skip tour: writes DISMISSED + current step id, closes, clears demo rows,
      *  and leaves a `demo:` route (A10). */
@@ -596,7 +600,7 @@ the last step calls `complete`; demo rows appear in `accounts()`/`agents()`/
 `issues()`/`channels()`/`topics()`/`messages()` and in derived memos
 (`selectedAgent`, `prs`) only while `demoActive`; each guarded closure (A10)
 with a `demo:` target makes no client call and no storage write; teardown on
-`/agent/demo:…` lands on the Bridge.
+`/agent/demo:…` lands on the Bridge, for `close` as well as `dismiss`.
 
 ### T3 — `TourOverlay` + spotlight + `.cx-tour-*` CSS
 
@@ -623,7 +627,7 @@ that mounts one tick after navigation still anchors; a missing anchor skips
 only after the bounded wait; Skip tour calls `dismiss`, `Escape` calls
 `close` with no permanent write (also when focus is in the app), and an
 outside click does nothing; the callout hides while the shortcuts overlay is
-open; arrow keys work with no window-level listener (DL-223); the
+open, and `Escape` then closes only the overlay; arrow keys work with no window-level listener (DL-223); the
 spotlight layer is `pointer-events: none` and its cutout tracks the anchor
 rect; reduced motion keeps all assertions passing. **Aggregate anchor test**:
 for every callout step, mount the real `App` on that route with demo rows
