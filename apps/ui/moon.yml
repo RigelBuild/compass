@@ -126,8 +126,8 @@ tasks:
     # `/tools/toolchain/chromium-e2e-env.nix` (on both tasks): it defines the
     # pinned Chromium and font set, so a change to either must schedule the gate.
     #
-    # `e2e/__screens__/**/*`: a baseline-only PR (the regen bot's, exactly)
-    # must re-schedule this gate, and PNGs live outside `src/**/*`.
+    # `e2e/__screens__/**/*`: a baseline-only change (a regen bot PR or a local
+    # capture) must re-schedule this gate, and PNGs live outside `src/**/*`.
     #
     # `/devenv.lock`: it pins the nixpkgs that builds the Chromium this gate
     # rasterizes against (tools/toolchain/chromium-e2e-env.nix reads it, and

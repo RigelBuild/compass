@@ -2804,9 +2804,9 @@ jobs:
     name: regen-visual-baselines
     runs-on: ubuntu-latest
     # Operator-only: re-captures every __screens__ PNG under CI's pinned
-    # Chromium and opens a bot PR, attesting a refreshed baseline's origin (a
-    # new shot's first baseline is a local capture, DL-399). A separate job so
-    # a regen dispatch never posts or disturbs gate contexts.
+    # Chromium and opens a bot PR against main (branches commit local captures,
+    # DL-399). A separate job so a regen dispatch never posts or disturbs gate
+    # contexts.
     #
     # Same workflow_dispatch + empty-`pr` gate as the forge lane, plus the
     # `regen` discriminator that keeps the two mutually exclusive (see the
@@ -2948,8 +2948,8 @@ jobs:
         # credential path the forge regen lane uses, on the same SHA pin.
         #
         # No `base:`: create-pull-request defaults to the checked-out branch,
-        # which the `if:` above pins to main. A new shot's first baseline is a
-        # local capture instead (DL-399), since a branch dispatch can't run here.
+        # which the `if:` above pins to main. A branch commits local captures
+        # instead (DL-399), since a branch dispatch can't run here.
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
