@@ -10,8 +10,9 @@
 # Two outputs, realized with `nix build` (never `nix eval`):
 #   chromium    the nix-wrapped Chromium; the step reads bin/chromium into
 #               PLAYWRIGHT_CHROMIUM_PATH.
-#   fontconfig  a self-contained fontconfig read into FONTCONFIG_FILE by both
-#               pixel-touching lanes and the Linux dev shell.
+#   fontconfig  a self-contained fontconfig read into E2E_FONTCONFIG_FILE by both
+#               pixel-touching lanes and the Linux dev shell; playwright.config.ts
+#               passes it to Chromium alone as FONTCONFIG_FILE.
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
   node = lock.nodes.nixpkgs.locked;

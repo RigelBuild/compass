@@ -454,17 +454,15 @@ jobs:
           # extra fonts installed renders identically to one without.
           fonts=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix fontconfig)
-          # Fail closed: the two malformed values fail in opposite directions
-          # and BOTH stay green. An EMPTY FONTCONFIG_FILE is not "use the
-          # system config" — fontconfig reads it as a config with no font dirs
-          # at all, and every string then measures zero width. A path that does
-          # not exist falls back to the full host set, which is the undeclared
-          # input this whole step exists to remove.
+          # Fail closed here with a clear error. playwright.config.ts also
+          # rejects an empty value, but a path that does not exist would reach
+          # Chromium and fall back to the full host font set, which is the
+          # undeclared input this whole step exists to remove.
           [ -n "$fonts" ] || {
             echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
             exit 1
           }
-          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
+          echo "E2E_FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
         if: matrix.run == 'true'
@@ -2902,15 +2900,15 @@ jobs:
           # text-bearing shot permanently.
           fonts=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix fontconfig)
-          # Fail closed HERE above all: an empty or bogus value in the capture
-          # lane writes zero-width or host-font pixels into committed baselines,
-          # and the bot PR then presents them for image review as a legitimate
-          # capture. A red gate is recoverable; a poisoned baseline is not.
+          # Fail closed HERE above all: a bogus value in the capture lane writes
+          # host-font pixels into committed baselines, and the bot PR then
+          # presents them for image review as a legitimate capture. A red gate
+          # is recoverable; a poisoned baseline is not.
           [ -n "$fonts" ] || {
             echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
             exit 1
           }
-          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
+          echo "E2E_FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Install the workspace JS dependencies
         # Unlike the forge regen lane — whose payload is `go test` and needs no
