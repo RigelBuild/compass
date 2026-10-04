@@ -30,6 +30,9 @@ var version = "0.1.0"
 // (deliveryLabel, kindLabel, stateLabel), so an unknown value reads uniformly.
 const unspecifiedLabel = "unspecified"
 
+// listVerb is the shared Use of every resource's list subcommand.
+const listVerb = "list"
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "compass:", err)
@@ -53,6 +56,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newAgentCmd())
 	root.AddCommand(newAgentConfigCmd())
 	root.AddCommand(newMessageCmd())
+	root.AddCommand(newPeerCmd())
 	root.AddCommand(newSecretCmd())
 	root.AddCommand(newServerSecretCmd())
 	root.AddCommand(newTokenCmd())

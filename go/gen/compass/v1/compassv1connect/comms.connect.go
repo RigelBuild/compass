@@ -109,6 +109,13 @@ const (
 	// CommsServiceUpdatePinnedBoardProcedure is the fully-qualified name of the CommsService's
 	// UpdatePinnedBoard RPC.
 	CommsServiceUpdatePinnedBoardProcedure = "/compass.v1.CommsService/UpdatePinnedBoard"
+	// CommsServiceApprovePeerProcedure is the fully-qualified name of the CommsService's ApprovePeer
+	// RPC.
+	CommsServiceApprovePeerProcedure = "/compass.v1.CommsService/ApprovePeer"
+	// CommsServiceRevokePeerProcedure is the fully-qualified name of the CommsService's RevokePeer RPC.
+	CommsServiceRevokePeerProcedure = "/compass.v1.CommsService/RevokePeer"
+	// CommsServiceListPeersProcedure is the fully-qualified name of the CommsService's ListPeers RPC.
+	CommsServiceListPeersProcedure = "/compass.v1.CommsService/ListPeers"
 	// CommsServiceSubscribeCommsProcedure is the fully-qualified name of the CommsService's
 	// SubscribeComms RPC.
 	CommsServiceSubscribeCommsProcedure = "/compass.v1.CommsService/SubscribeComms"
@@ -197,6 +204,17 @@ type CommsServiceClient interface {
 	// minting; the message must already live in a topic of the channel). A pin
 	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
 	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
+	// Approve a user as a peer of the caller (a user account). A peering is
+	// live only when both users have approved each other; until then this is
+	// a pending request. Idempotent. peer_handle is a bare user handle;
+	// unknown, agent, or system handles are NOT_FOUND, self is INVALID_ARGUMENT,
+	// an agent caller is PERMISSION_DENIED.
+	ApprovePeer(context.Context, *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error)
+	// Withdraw the caller's approval of a user. Idempotent; deleted reports
+	// whether an approval existed. Changes no channel, member, or message.
+	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
+	// List the caller's peerings: every user with an approval in either direction.
+	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
 	// The event stream: message, channel, group, account, and workspace updates,
 	// scoped to the caller's visible set, with gap-free replay-on-join. The sole
 	// push path for the comms surface, mirroring CompassService.SubscribeEvents'
@@ -341,6 +359,24 @@ func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
 			connect.WithClientOptions(opts...),
 		),
+		approvePeer: connect.NewClient[v1.ApprovePeerRequest, v1.ApprovePeerResponse](
+			httpClient,
+			baseURL+CommsServiceApprovePeerProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("ApprovePeer")),
+			connect.WithClientOptions(opts...),
+		),
+		revokePeer: connect.NewClient[v1.RevokePeerRequest, v1.RevokePeerResponse](
+			httpClient,
+			baseURL+CommsServiceRevokePeerProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("RevokePeer")),
+			connect.WithClientOptions(opts...),
+		),
+		listPeers: connect.NewClient[v1.ListPeersRequest, v1.ListPeersResponse](
+			httpClient,
+			baseURL+CommsServiceListPeersProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("ListPeers")),
+			connect.WithClientOptions(opts...),
+		),
 		subscribeComms: connect.NewClient[v1.SubscribeCommsRequest, v1.SubscribeCommsResponse](
 			httpClient,
 			baseURL+CommsServiceSubscribeCommsProcedure,
@@ -373,6 +409,9 @@ type commsServiceClient struct {
 	setChannelPolicy     *connect.Client[v1.SetChannelPolicyRequest, v1.SetChannelPolicyResponse]
 	getRoster            *connect.Client[v1.GetRosterRequest, v1.GetRosterResponse]
 	updatePinnedBoard    *connect.Client[v1.UpdatePinnedBoardRequest, v1.UpdatePinnedBoardResponse]
+	approvePeer          *connect.Client[v1.ApprovePeerRequest, v1.ApprovePeerResponse]
+	revokePeer           *connect.Client[v1.RevokePeerRequest, v1.RevokePeerResponse]
+	listPeers            *connect.Client[v1.ListPeersRequest, v1.ListPeersResponse]
 	subscribeComms       *connect.Client[v1.SubscribeCommsRequest, v1.SubscribeCommsResponse]
 }
 
@@ -481,6 +520,21 @@ func (c *commsServiceClient) UpdatePinnedBoard(ctx context.Context, req *connect
 	return c.updatePinnedBoard.CallUnary(ctx, req)
 }
 
+// ApprovePeer calls compass.v1.CommsService.ApprovePeer.
+func (c *commsServiceClient) ApprovePeer(ctx context.Context, req *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error) {
+	return c.approvePeer.CallUnary(ctx, req)
+}
+
+// RevokePeer calls compass.v1.CommsService.RevokePeer.
+func (c *commsServiceClient) RevokePeer(ctx context.Context, req *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
+	return c.revokePeer.CallUnary(ctx, req)
+}
+
+// ListPeers calls compass.v1.CommsService.ListPeers.
+func (c *commsServiceClient) ListPeers(ctx context.Context, req *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error) {
+	return c.listPeers.CallUnary(ctx, req)
+}
+
 // SubscribeComms calls compass.v1.CommsService.SubscribeComms.
 func (c *commsServiceClient) SubscribeComms(ctx context.Context, req *connect.Request[v1.SubscribeCommsRequest]) (*connect.ServerStreamForClient[v1.SubscribeCommsResponse], error) {
 	return c.subscribeComms.CallServerStream(ctx, req)
@@ -569,6 +623,17 @@ type CommsServiceHandler interface {
 	// minting; the message must already live in a topic of the channel). A pin
 	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
 	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
+	// Approve a user as a peer of the caller (a user account). A peering is
+	// live only when both users have approved each other; until then this is
+	// a pending request. Idempotent. peer_handle is a bare user handle;
+	// unknown, agent, or system handles are NOT_FOUND, self is INVALID_ARGUMENT,
+	// an agent caller is PERMISSION_DENIED.
+	ApprovePeer(context.Context, *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error)
+	// Withdraw the caller's approval of a user. Idempotent; deleted reports
+	// whether an approval existed. Changes no channel, member, or message.
+	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
+	// List the caller's peerings: every user with an approval in either direction.
+	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
 	// The event stream: message, channel, group, account, and workspace updates,
 	// scoped to the caller's visible set, with gap-free replay-on-join. The sole
 	// push path for the comms surface, mirroring CompassService.SubscribeEvents'
@@ -709,6 +774,24 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
 		connect.WithHandlerOptions(opts...),
 	)
+	commsServiceApprovePeerHandler := connect.NewUnaryHandler(
+		CommsServiceApprovePeerProcedure,
+		svc.ApprovePeer,
+		connect.WithSchema(commsServiceMethods.ByName("ApprovePeer")),
+		connect.WithHandlerOptions(opts...),
+	)
+	commsServiceRevokePeerHandler := connect.NewUnaryHandler(
+		CommsServiceRevokePeerProcedure,
+		svc.RevokePeer,
+		connect.WithSchema(commsServiceMethods.ByName("RevokePeer")),
+		connect.WithHandlerOptions(opts...),
+	)
+	commsServiceListPeersHandler := connect.NewUnaryHandler(
+		CommsServiceListPeersProcedure,
+		svc.ListPeers,
+		connect.WithSchema(commsServiceMethods.ByName("ListPeers")),
+		connect.WithHandlerOptions(opts...),
+	)
 	commsServiceSubscribeCommsHandler := connect.NewServerStreamHandler(
 		CommsServiceSubscribeCommsProcedure,
 		svc.SubscribeComms,
@@ -759,6 +842,12 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 			commsServiceGetRosterHandler.ServeHTTP(w, r)
 		case CommsServiceUpdatePinnedBoardProcedure:
 			commsServiceUpdatePinnedBoardHandler.ServeHTTP(w, r)
+		case CommsServiceApprovePeerProcedure:
+			commsServiceApprovePeerHandler.ServeHTTP(w, r)
+		case CommsServiceRevokePeerProcedure:
+			commsServiceRevokePeerHandler.ServeHTTP(w, r)
+		case CommsServiceListPeersProcedure:
+			commsServiceListPeersHandler.ServeHTTP(w, r)
 		case CommsServiceSubscribeCommsProcedure:
 			commsServiceSubscribeCommsHandler.ServeHTTP(w, r)
 		default:
@@ -852,6 +941,18 @@ func (UnimplementedCommsServiceHandler) GetRoster(context.Context, *connect.Requ
 
 func (UnimplementedCommsServiceHandler) UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdatePinnedBoard is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) ApprovePeer(context.Context, *connect.Request[v1.ApprovePeerRequest]) (*connect.Response[v1.ApprovePeerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ApprovePeer is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.RevokePeer is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListPeers is not implemented"))
 }
 
 func (UnimplementedCommsServiceHandler) SubscribeComms(context.Context, *connect.Request[v1.SubscribeCommsRequest], *connect.ServerStream[v1.SubscribeCommsResponse]) error {

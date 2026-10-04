@@ -152,6 +152,7 @@ type Querier interface {
 	// rollups can hold pruned events, so they stay.
 	DeleteTokenUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	DeleteTopic(ctx context.Context, id string) error
+	DeleteUserPeer(ctx context.Context, arg DeleteUserPeerParams) (int64, error)
 	// The account owner is read in SQL so callers continue to supply only the
 	// session binding identity.
 	EndComputeUsageInterval(ctx context.Context, arg EndComputeUsageIntervalParams) error
@@ -338,6 +339,7 @@ type Querier interface {
 	InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) error
 	InsertTranscriptEntry(ctx context.Context, arg InsertTranscriptEntryParams) (int64, error)
 	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
+	InsertUserPeer(ctx context.Context, arg InsertUserPeerParams) (int64, error)
 	IsAgentAccount(ctx context.Context, accountID string) (bool, error)
 	IsEnabledForgeRepo(ctx context.Context, repo string) (bool, error)
 	// Secrets-registry queries (sqlc adoption T6, RIG-3034). These back the
@@ -380,6 +382,7 @@ type Querier interface {
 	// (id, channel_id, name, created_by_account_id, created_at_unix_ms, archived,
 	// last_seq) matches the former scanTopics order so the Go maps each row to Topic.
 	ListTopics(ctx context.Context, arg ListTopicsParams) ([]Topic, error)
+	ListUserPeerings(ctx context.Context, userID string) ([]ListUserPeeringsRow, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
 	LoadDeliveryCursor(ctx context.Context, arg LoadDeliveryCursorParams) (LoadDeliveryCursorRow, error)
 	LoadForgeArtifactCursor(ctx context.Context, arg LoadForgeArtifactCursorParams) (LoadForgeArtifactCursorRow, error)

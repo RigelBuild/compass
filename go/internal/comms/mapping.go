@@ -42,6 +42,28 @@ func accountToWire(a store.Account) *compassv1.Account {
 	return out
 }
 
+// peeringToWire maps a store peering to its wire form.
+func peeringToWire(p store.Peering) *compassv1.Peering {
+	return &compassv1.Peering{
+		UserAccountId: string(p.PeerID),
+		Handle:        p.Handle,
+		State:         peeringStateToWire(p.State),
+	}
+}
+
+func peeringStateToWire(state store.PeeringState) compassv1.PeeringState {
+	switch state {
+	case store.PeeringPendingOutgoing:
+		return compassv1.PeeringState_PEERING_STATE_PENDING_OUTGOING
+	case store.PeeringPendingIncoming:
+		return compassv1.PeeringState_PEERING_STATE_PENDING_INCOMING
+	case store.PeeringApproved:
+		return compassv1.PeeringState_PEERING_STATE_APPROVED
+	default:
+		return compassv1.PeeringState_PEERING_STATE_UNSPECIFIED
+	}
+}
+
 func userRoleToWire(r store.UserRole) compassv1.UserRole {
 	if r == store.UserRoleAdmin {
 		return compassv1.UserRole_USER_ROLE_ADMIN

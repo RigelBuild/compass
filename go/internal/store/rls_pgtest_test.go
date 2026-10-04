@@ -596,7 +596,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	// above; this catches that regression.
 	tenantOwned := []string{
 		"accounts",
-		"user_accounts", "agent_accounts", "system_accounts", "account_handles",
+		"user_accounts", "agent_accounts", "system_accounts", "account_handles", "user_peers",
 		"channel_groups", "channels", "channel_members", "agent_workspaces",
 		"topics", "messages", "channel_pins", "secrets",
 		"agent_sessions", "agent_placements", "session_bindings",
