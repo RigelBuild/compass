@@ -37,6 +37,7 @@ type forgeCall struct {
 	account   store.AccountID
 	sessionID string
 	call      *compassv1internal.ForgeCallRequest
+	tenant    store.TenantID
 }
 
 // fakeForgeCaller is a hand-written ForgeCaller mirroring fakeBoardCaller: it
@@ -53,10 +54,11 @@ type fakeForgeCaller struct {
 	err    error
 }
 
-func (f *fakeForgeCaller) ExecuteForgeCallAsAccount(_ context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest) (*compassv1internal.ForgeCallResult, error) {
+func (f *fakeForgeCaller) ExecuteForgeCallAsAccount(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest) (*compassv1internal.ForgeCallResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, forgeCall{account: caller, sessionID: sessionID, call: call})
+	tenant, _ := store.TenantFromContext(ctx)
+	f.calls = append(f.calls, forgeCall{account: caller, sessionID: sessionID, call: call, tenant: tenant})
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -261,5 +263,26 @@ func TestRelayForgeCallNilResultIsInternalErrorInBand(t *testing.T) {
 	}
 	if got := resp.GetResult().GetCallId(); got != "fc-6" {
 		t.Fatalf("in-band error call_id = %q, want fc-6", got)
+	}
+}
+
+// The forge caller runs under the bound session's tenant: grants and memos are
+// tenant rows, and the Runner token carries no tenant of its own.
+func TestRelayForgeCallRunsUnderSessionTenant(t *testing.T) {
+	hub, fake := newHubWithForge()
+	fake.result = &compassv1internal.ForgeCallResult{
+		Result: &compassv1internal.ForgeCallResult_IssueComment{IssueComment: &compassv1internal.CommentRef{}},
+	}
+	bindings := newFakeBindingStore()
+	bindings.seed("sess-1")
+	hub.SetSessionBindingStore(bindings)
+	bindLiveSession(hub)
+
+	if _, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-t", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"})); err != nil {
+		t.Fatalf("RelayForgeCall = %v", err)
+	}
+	calls := fake.snapshot()
+	if len(calls) != 1 || calls[0].tenant != "tenant-a" {
+		t.Fatalf("calls = %+v, want one call under tenant-a", calls)
 	}
 }
