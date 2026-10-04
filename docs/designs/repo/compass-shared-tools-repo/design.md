@@ -6,7 +6,8 @@ Compass and one private consumer repo each keep their own copy of the same repo
 tools, and the copies drift. A fix lands in one copy and not the other. Example:
 the private consumer's design-ledger gate exempts Trunk merge-queue branches
 (`trunk-merge/`), but compass's copy does not, though compass also lands through
-the Trunk queue.
+the Trunk queue. That gap has no effect in compass today: the gate's
+touch-coupling leg needs `REPO` and `PR_NUMBER`, and no compass CI job sets them.
 
 Intent: move every tool both repos run into one new public repo, and have each
 consumer pin it, so each tool has one copy. This record folds in RIG-4184
@@ -335,8 +336,9 @@ Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 ### Out of scope
 
 Later records: a shared Renovate preset and the Renovate upgrade scripts. The
-moon task template and the root checks stay local (see Inventory). The DL
-counter service (`dl.rigel.build`) does not move.
+moon task template and the root checks stay local (see Inventory). Wiring the
+touch-coupling leg into compass CI is separate work. The DL counter service
+(`dl.rigel.build`) does not move.
 
 ## Tasks
 
