@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -459,9 +460,10 @@ const maxRunnerErrorMessageBytes = 4096
 // truncatedMarker ends a message cut to maxRunnerErrorMessageBytes.
 const truncatedMarker = "… (truncated)"
 
-// truncateMessage cuts msg to the bound on a rune boundary, since protobuf
-// string fields must stay valid UTF-8.
+// truncateMessage makes msg valid UTF-8 (stderr may not be), then cuts it to the
+// bound on a rune boundary: protobuf refuses to marshal an invalid string field.
 func truncateMessage(msg string) string {
+	msg = strings.ToValidUTF8(msg, "\uFFFD")
 	if len(msg) <= maxRunnerErrorMessageBytes {
 		return msg
 	}

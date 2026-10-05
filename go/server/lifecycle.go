@@ -185,6 +185,10 @@ func (l *lifecycleService) SpawnAsAccount(
 	if _, ok := spawnableRoles[req.GetRole()]; !ok {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errUnknownRole)
 	}
+	// Before CreateAgent: a later Provision refusal would leave the handle taken.
+	if err := runnerhub.CheckClientRequestID(req.GetClientRequestId()); err != nil {
+		return nil, err
+	}
 
 	// F2 ownership: the spawned peer inherits the CALLER'S OWNER, resolved from the
 	// store (the caller is an agent account).

@@ -1013,3 +1013,14 @@ func TestTruncateMessageKeepsUTF8(t *testing.T) {
 		t.Fatalf("truncated message valid=%v len=%d, want valid UTF-8 within %d bytes", utf8.ValidString(got), len(got), maxRunnerErrorMessageBytes)
 	}
 }
+
+// Engine stderr can hold bytes that are not UTF-8; the message must still be a
+// valid protobuf string, both under and over the bound.
+func TestTruncateMessageRepairsInvalidUTF8(t *testing.T) {
+	for _, msg := range []string{"bad \xff byte", "\xff" + strings.Repeat("x", 5000), strings.Repeat("x", 4094) + "\xe2\x82"} {
+		got := truncateMessage(msg)
+		if !utf8.ValidString(got) || len(got) > 4096 {
+			t.Fatalf("truncateMessage(len %d) valid=%v len=%d, want valid UTF-8 within 4096 bytes", len(msg), utf8.ValidString(got), len(got))
+		}
+	}
+}

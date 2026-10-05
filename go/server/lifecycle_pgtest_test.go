@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -903,4 +904,25 @@ func containsAccountID(ids []store.AccountID, want store.AccountID) bool {
 		}
 	}
 	return false
+}
+
+// An over-long client_request_id is refused before CreateAgent, so the handle
+// is not left taken by an account that Provision would then refuse.
+func TestSpawnRejectsOversizedClientRequestIDBeforeCreate(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+	_, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-long-id",
+		ClientRequestId: strings.Repeat("a", 257),
+		Role:            "manager",
+	})
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("SpawnAsAccount with a 257-byte id = %v (code %v), want InvalidArgument", err, got)
+	}
+	if _, err := f.store.AgentByHandle(ctx, f.ownerAdmin, "peer-long-id"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("AgentByHandle after the refusal = %v, want ErrNotFound (no account created)", err)
+	}
+	if cmds := f.runner.commands(); len(cmds) != 0 {
+		t.Fatalf("Runner commands = %v, want none", cmds)
+	}
 }
