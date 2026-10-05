@@ -136,6 +136,28 @@ func TestExecSpecExportsRoleOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestExecSpecExportsContinueSessionOnlyWhenReloadRequested(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		continueSession bool
+		want            string
+	}{
+		{name: "start leaves the control unset"},
+		{name: "reload requests continuation", continueSession: true, want: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := AgentEnv{
+				UID: 1000, HomeDir: "/home/coder", Workdir: "/srv/checkout",
+				ContinueSession: tc.continueSession,
+			}.execSpec()
+			got, ok := spec.Env["COMPASS_CONTINUE_SESSION"]
+			if ok != tc.continueSession || (ok && got != tc.want) {
+				t.Fatalf("COMPASS_CONTINUE_SESSION = %q (present %v), want %q (present %v)", got, ok, tc.want, tc.continueSession)
+			}
+		})
+	}
+}
+
 // SECURITY-LOAD-BEARING. The container is created with --cap-add NET_ADMIN
 // (runtime/agent.go:212) so its root entrypoint can arm the nft egress
 // firewall. Podman strips a container's ambient capabilities from an exec ONLY

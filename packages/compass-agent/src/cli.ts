@@ -4,8 +4,18 @@
 // exported function tested in cli.test.ts; main() is the thin IO composition over MainDeps.
 
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
-import { join } from "node:path";
+import {
+	lstat,
+	mkdir,
+	readFile,
+	readlink,
+	rename,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { ApiKey, Model } from "@oh-my-pi/pi-ai";
 import {
@@ -23,11 +33,14 @@ import {
 	type Rule,
 	ruleCapability,
 } from "@oh-my-pi/pi-coding-agent/capability/rule";
+import type { ResolvedModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { serviceTierSettingToTier } from "@oh-my-pi/pi-coding-agent/config/service-tier";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
 import {
 	initTelemetryExport,
 	isTelemetryExportEnabled,
 } from "@oh-my-pi/pi-coding-agent/telemetry-export";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
 import { BoardBroker, createBoardTools } from "./board";
@@ -124,6 +137,207 @@ export function parseEnvFile(contents: string): Record<string, string> {
 	return out;
 }
 
+async function resolveResumeFile(
+	env: Record<string, string | undefined>,
+	home: string,
+): Promise<string | undefined> {
+	const explicit = env.COMPASS_RESUME_SESSION_FILE?.trim();
+	if (explicit) return explicit;
+	if (env.COMPASS_CONTINUE_SESSION !== "1") return undefined;
+	return resolveContinuationSessionFile(home);
+}
+
+async function prepareResume(
+	env: Record<string, string | undefined>,
+	home: string,
+): Promise<{ resumeFile: string | undefined; continued: boolean }> {
+	const resumeFile = await resolveResumeFile(env, home);
+	if (env.COMPASS_CONTINUE_SESSION !== "1") {
+		await rm(join(home, ".compass", "current-session"), { force: true });
+	}
+	return {
+		resumeFile,
+		continued:
+			resumeFile !== undefined && !env.COMPASS_RESUME_SESSION_FILE?.trim(),
+	};
+}
+
+function configuredThinkingLevel(
+	settings: Settings | undefined,
+): Pick<CreateAgentSessionOptions, "thinkingLevel"> {
+	if (settings?.isConfigured("defaultThinkingLevel") !== true) return {};
+	return { thinkingLevel: settings.get("defaultThinkingLevel") };
+}
+
+interface BootSession {
+	storage: IndexedSessionStorage;
+	manager: SessionManager;
+	continued: boolean;
+}
+
+async function createBootSession(
+	sink: FrameSink,
+	cwd: string,
+	sessionDir: string,
+	resumeFile: string | undefined,
+	continued: boolean,
+	deps: MainDeps,
+): Promise<BootSession> {
+	const { storage } = await (
+		deps.createSessionStorage ?? createTeeSessionStorage
+	)(sink, sessionDir, resumeFile ? { resumeFile } : undefined);
+	const manager = SessionManager.create(cwd, sessionDir, storage);
+	if (resumeFile) {
+		if (continued) {
+			try {
+				await manager.setSessionFile(resumeFile);
+			} catch (error) {
+				const reason = String(error).replaceAll(/[\r\n]+/g, " ");
+				console.error(
+					`[compass-agent] continuation skipped: session could not be loaded: ${reason}`,
+				);
+				continued = false;
+				const freshStorage = await (
+					deps.createSessionStorage ?? createTeeSessionStorage
+				)(sink, sessionDir);
+				return {
+					storage: freshStorage.storage,
+					manager: SessionManager.create(cwd, sessionDir, freshStorage.storage),
+					continued,
+				};
+			}
+		} else {
+			await manager.setSessionFile(resumeFile);
+		}
+	}
+	return { storage, manager, continued };
+}
+
+function reapplyConfiguredServiceTiers(
+	session: AgentSession,
+	settings: Settings | undefined,
+): void {
+	if (!settings) return;
+	for (const family of ["openai", "anthropic", "google"] as const) {
+		const settingPath = `tier.${family}` as const;
+		if (settings.isConfigured(settingPath)) {
+			session.setServiceTierFamily(
+				family,
+				serviceTierSettingToTier(settings.get(settingPath)),
+			);
+		}
+	}
+}
+
+async function reapplyConfiguredDefaultModelRole(
+	session: AgentSession,
+	settings: Settings | undefined,
+	env: Record<string, string | undefined>,
+	continued: boolean,
+): Promise<void> {
+	if (
+		!continued ||
+		resolveModelSelector(env) !== undefined ||
+		settings?.isConfigured("modelRoles") !== true ||
+		settings.getModelRoleProvenance("default") !== "overlay"
+	) {
+		return;
+	}
+	const role = session.resolveRoleModelWithThinking("default");
+	if (!role.model) {
+		const warning = role.warning?.replaceAll(/[\r\n]+/g, " ");
+		console.error(
+			`[compass-agent] configured default model role did not resolve${warning ? `: ${warning}` : ""}`,
+		);
+		return;
+	}
+	const currentModel = session.model;
+	if (
+		currentModel?.provider !== role.model.provider ||
+		currentModel?.id !== role.model.id
+	) {
+		try {
+			await session.setModel(role.model, "default", { persist: false });
+		} catch (error) {
+			// setModel can fail after switching, so report the model actually active.
+			const reason = String(error).replaceAll(/[\r\n]+/g, " ");
+			const active = session.model
+				? `${session.model.provider}/${session.model.id}`
+				: "none";
+			console.error(
+				`[compass-agent] configured default model role could not be applied (active model: ${active}): ${reason}`,
+			);
+			return;
+		}
+	}
+	const thinkingLevel = reappliedThinkingLevel(settings, role);
+	if (thinkingLevel !== undefined) session.setThinkingLevel(thinkingLevel);
+}
+
+// setModel re-applies the new model's default level, so explicit config is applied last.
+function reappliedThinkingLevel(
+	settings: Settings,
+	role: ResolvedModelRoleValue,
+): ConfiguredThinkingLevel | undefined {
+	if (settings.isConfigured("defaultThinkingLevel")) {
+		return settings.get("defaultThinkingLevel");
+	}
+	return role.explicitThinkingLevel ? role.thinkingLevel : undefined;
+}
+async function resolveContinuationSessionFile(
+	home: string,
+): Promise<string | undefined> {
+	const pointerPath = join(home, ".compass", "current-session");
+	let sessionFile: string;
+	try {
+		sessionFile = (await readFile(pointerPath, "utf8")).trim();
+	} catch {
+		console.error(
+			"[compass-agent] continuation skipped: current-session pointer is missing or unreadable",
+		);
+		return undefined;
+	}
+	if (!sessionFile) {
+		console.error(
+			"[compass-agent] continuation skipped: current-session pointer is empty",
+		);
+		return undefined;
+	}
+	try {
+		const file = await stat(sessionFile);
+		if (!file.isFile() || file.size === 0) {
+			console.error(
+				"[compass-agent] continuation skipped: pointed-to session file is not a non-empty file",
+			);
+			return undefined;
+		}
+	} catch {
+		console.error(
+			"[compass-agent] continuation skipped: pointed-to session file is missing or unreadable",
+		);
+		return undefined;
+	}
+	return sessionFile;
+}
+
+async function writeCurrentSessionPointer(
+	home: string,
+	sessionFile: string,
+): Promise<void> {
+	const directory = join(home, ".compass");
+	const pointerPath = join(directory, "current-session");
+	const temporaryPath = join(directory, "current-session.tmp");
+	await mkdir(directory, { recursive: true });
+	try {
+		await writeFile(temporaryPath, `${resolve(sessionFile)}\n`, {
+			mode: 0o600,
+		});
+		await rename(temporaryPath, pointerPath);
+	} catch (error) {
+		await rm(temporaryPath, { force: true });
+		throw error;
+	}
+}
 /**
  * The model selector for this container, from `COMPASS_MODEL`.
  *
@@ -651,7 +865,13 @@ export async function main(
 	// caller building an AgentEnv with a blank Workdir would otherwise hand bun
 	// `cwd: ""` — which silently loads the wrong tree instead of throwing.
 	const cwd = env.COMPASS_WORKDIR?.trim() || process.cwd();
+	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
 
+	const { resumeFile, continued: initialContinuation } = await prepareResume(
+		env,
+		home,
+	);
+	let continued = initialContinuation;
 	// The socket carrier + sink come FIRST: the tee storage backend teems every
 	// committed session write onto the sink's DURABLE lane (RIG-1570), so the
 	// sink must exist before the storage that holds it.
@@ -659,29 +879,16 @@ export async function main(
 		resolveSocketPath(env),
 	);
 	const sink = createSocketFrameSink(transport);
-
-	// The tee session storage, wrapped + initialize()d (its scan of the session dir
-	// must finish before SessionManager.create so synchronous resume lookups see the
-	// keyspace). SESSION_DIR is the SDK-default HOME-relative dir for this cwd —
-	// checkout-independent (anchored on the agent's scoped $HOME; DL-090 no-auto-clone).
-	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
-	// Resume (RIG-1570): T8 exports COMPASS_RESUME_SESSION_FILE. Resolve it BEFORE the
-	// storage is built so it can be threaded into the tee backend and indexed at
-	// initialize()→loadIndex() — the resume file lives at an absolute path OUTSIDE
-	// sessionDir (Option B, T2), else setSessionFile's statSync gate would ENOENT it.
-	const resumeFile = env.COMPASS_RESUME_SESSION_FILE?.trim();
-	const { storage } = await (
-		deps.createSessionStorage ?? createTeeSessionStorage
-	)(sink, sessionDir, resumeFile ? { resumeFile } : undefined);
-	// SYNCHRONOUS (session-manager.ts:1839 returns SessionManager, not a Promise):
-	// do NOT await. The wrapped IndexedSessionStorage is the 3rd arg.
-	const manager = SessionManager.create(cwd, sessionDir, storage);
-
-	// When set, load it through the SDK-native path (setSessionFile → drain → migrate
-	// → resolveBlobRefs → apply) BEFORE creating the session; reads flow through the
-	// tee backend, no replay code. The reconstructed body is authoritative; the load
-	// never tees. The resume file is now indexed at initialize() so this gate passes.
-	if (resumeFile) await manager.setSessionFile(resumeFile);
+	const bootSession = await createBootSession(
+		sink,
+		cwd,
+		sessionDir,
+		resumeFile,
+		continued,
+		deps,
+	);
+	const { storage, manager } = bootSession;
+	continued = bootSession.continued;
 
 	// The Runner-mounted agent-config bundle (design §CD-3): read the mount and map
 	// it to the createAgentSession surfaces below; unconfigured yields every field
@@ -793,16 +1000,14 @@ export async function main(
 		...createBoardTools(boardBroker),
 	] as ToolDefinition[];
 
-	// Resolve the pinned model selector ONCE and share it between the session
-	// option and the boot-model-health belt below, so the "was a model pinned?"
-	// signal the two consult can never diverge.
+	// Keep the SDK's session model restoration and fallback logic authoritative.
 	const modelPattern = resolveModelSelector(env);
 
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
 		modelPattern,
-		// The tee-backed manager, so every session write teems upstream and the
-		// resumed history (if any) is already loaded.
+		...(continued ? configuredThinkingLevel(fleetSettings) : {}),
+		// The resumed history is already loaded through the tee-backed manager.
 		sessionManager: manager,
 		// The Runner-mounted agent-config (design §CD-3): each field passed
 		// UNCONDITIONALLY, empty when unconfigured, so "unconfigured → none" is a
@@ -860,6 +1065,15 @@ export async function main(
 				}
 			: {}),
 	});
+	if (continued) reapplyConfiguredServiceTiers(session, fleetSettings);
+	await reapplyConfiguredDefaultModelRole(
+		session,
+		fleetSettings,
+		env,
+		continued,
+	);
+	const sessionFile = manager.getSessionFile();
+	if (sessionFile) await writeCurrentSessionPointer(home, sessionFile);
 
 	// Boot-model-health belt. createAgentSession SWALLOWS a models.yml validation
 	// error, leaving the registry with a recorded error and booting model-less when

@@ -1113,7 +1113,9 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 		h.markErrored(ctx, sessionID, s.containerName, nil)
 		return err
 	}
-	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
+	env := h.agentEnv(handle)
+	env.ContinueSession = true
+	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, env, h.log)
 	if err != nil {
 		h.markErrored(ctx, sessionID, s.containerName, nil)
 		return err

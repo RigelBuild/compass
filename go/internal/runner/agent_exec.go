@@ -37,9 +37,10 @@ var agentCommand = []string{"compass-agent"}
 // COMPASS_WORKDIR is the session cwd, COMPASS_MODEL selects the model,
 // COMPASS_PERSONA is the identity overlay appended to the system prompt,
 // COMPASS_ROLE is the operator-set block-0 selector delivered as the
-// container's customSystemPrompt, COMPASS_RESUME_SESSION_FILE is the absolute
+// container's customSystemPrompt; COMPASS_RESUME_SESSION_FILE is the absolute
 // in-container path of a server-reconstructed session file the agent loads to
-// resume. Empty Model, Persona, Role, or ResumeSessionFile is omitted rather
+// resume. ContinueSession requests reuse of the agent's own current session on
+// Reload. Empty Model, Persona, Role, or ResumeSessionFile is omitted rather
 // than exported blank, so the agent falls back to its SDK default (or a fresh
 // session) instead of receiving a value it must special-case.
 type AgentEnv struct {
@@ -65,6 +66,8 @@ type AgentEnv struct {
 	// ResumeSessionFile is the absolute in-container path of the materialized
 	// resume session file, or empty for a fresh start.
 	ResumeSessionFile string
+	// ContinueSession tells Reload to resume the session file recorded by the agent.
+	ContinueSession bool
 	// SocketPath, when non-empty, overrides the agent's default gateway-socket
 	// path (agent-side AGENT_SOCKET_PATH). ConfigMountPath likewise overrides the
 	// default config-mount root (AGENT_CONFIG_MOUNT_PATH). Both are empty on the
@@ -100,6 +103,9 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	}
 	if e.ResumeSessionFile != "" {
 		spec.Env["COMPASS_RESUME_SESSION_FILE"] = e.ResumeSessionFile
+	}
+	if e.ContinueSession {
+		spec.Env["COMPASS_CONTINUE_SESSION"] = "1"
 	}
 	if e.SocketPath != "" {
 		spec.Env["COMPASS_AGENT_SOCKET_PATH"] = e.SocketPath
