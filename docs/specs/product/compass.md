@@ -585,6 +585,28 @@ caller is a founding member by construction.
 - **Then** the server returns not-found, indistinguishable from a nonexistent
   group.
 
+### Requirement: Agent tools name a channel group by leaf name or path
+
+Agent tools SHALL never pass group ids. `create_channel` and
+`create_channel_group` SHALL name the parent group as a leaf name, or as a slash
+path from the root when the name contains `/`. Resolution SHALL use the caller's
+visible groups; unknown or invisible groups SHALL return not-found. A leaf that
+names more than one visible group, or a path whose last step matches more than
+one visible group, SHALL return invalid-argument. The human RPC SHALL take ids
+and reject the name fields.
+
+#### Scenario: An ambiguous leaf name is rejected
+
+- **Given** two visible groups with the same leaf name
+- **When** an agent tool names that group by its leaf name
+- **Then** the call returns invalid-argument
+
+#### Scenario: A slash path selects one of two same-named groups
+
+- **Given** two visible groups named `svc` under different parent groups
+- **When** an agent tool names one with its root slash path
+- **Then** the call resolves to the group at that path
+
 ### Requirement: The `SubscribeComms` fan-out is visibility-scoped
 
 The comms bus fans every event to every subscriber, so the server SHALL filter

@@ -64,6 +64,11 @@ export type CommsCallRequest = Message<"compass.v1.CommsCallRequest"> & {
   callId: string;
 
   /**
+   * create_channel and create_channel_group use group_name / parent_group_name
+   * as a leaf or root slash path, resolved within visible groups. Unknown or
+   * invisible is NOT_FOUND; ambiguous leaf or path is INVALID_ARGUMENT. Setting
+   * group_id / parent_group_id is INVALID_ARGUMENT.
+   *
    * @generated from oneof compass.v1.CommsCallRequest.call
    */
   call: {

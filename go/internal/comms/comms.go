@@ -186,6 +186,9 @@ func (c *Comms) CreateChannelGroup(
 	ctx context.Context,
 	req *connect.Request[compassv1.CreateChannelGroupRequest],
 ) (*connect.Response[compassv1.CreateChannelGroupResponse], error) {
+	if req.Msg.GetParentGroupName() != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: parent_group_name is for agent tools; use parent_group_id"))
+	}
 	grp, err := c.store.CreateChannelGroup(ctx, c.actorFromContext(ctx), store.NewChannelGroup{
 		Name:          req.Msg.GetName(),
 		ParentGroupID: store.ChannelGroupID(req.Msg.GetParentGroupId()),
@@ -236,6 +239,9 @@ func (c *Comms) CreateChannel(
 	ctx context.Context,
 	req *connect.Request[compassv1.CreateChannelRequest],
 ) (*connect.Response[compassv1.CreateChannelResponse], error) {
+	if req.Msg.GetGroupName() != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: group_name is for agent tools; use group_id"))
+	}
 	caller := c.actorFromContext(ctx)
 	members, err := c.resolveHandles(ctx, caller, req.Msg.GetMemberHandles())
 	if err != nil {

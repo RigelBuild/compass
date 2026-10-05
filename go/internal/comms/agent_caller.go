@@ -250,13 +250,28 @@ func (c *Comms) UpdatePinnedBoardAsAccount(
 	return resp.Msg, nil
 }
 
-// CreateChannelAsAccount executes one agent-initiated CreateChannel as account,
-// mirroring UpdatePinnedBoardAsAccount: WithActor + the shared CreateChannel
-// handler path, so channel authz, the store ops (including expandOwnerMembership,
-// which seats the actor as a founding member so the Manager can immediately post
-// to the channel it made), and the ChannelChanged fan-out are identical to a
-// human caller's. A group the agent cannot see collapses to the same code a human
-// gets. The request names no channel, so there is no home-channel defaulting.
+func (c *Comms) resolveAgentGroupRef(
+	ctx context.Context,
+	account store.AccountID,
+	groupID string,
+	groupName string,
+	nameField string,
+) (string, error) {
+	if groupID != "" {
+		return "", connect.NewError(connect.CodeInvalidArgument, errors.New("comms: agent tools name groups; use "+nameField))
+	}
+	if groupName == "" {
+		return "", nil
+	}
+	group, err := c.store.ChannelGroupByRefForViewer(ctx, account, groupName)
+	if err != nil {
+		return "", edgeError(err)
+	}
+	return string(group.ID), nil
+}
+
+// CreateChannelAsAccount resolves a group name within the agent's visible groups,
+// then runs the shared CreateChannel handler as that account.
 func (c *Comms) CreateChannelAsAccount(
 	ctx context.Context,
 	account store.AccountID,
@@ -264,6 +279,16 @@ func (c *Comms) CreateChannelAsAccount(
 ) (*compassv1.CreateChannelResponse, error) {
 	if account == "" {
 		return nil, errNoActor
+	}
+	groupID, err := c.resolveAgentGroupRef(ctx, account, req.GetGroupId(), req.GetGroupName(), "group_name")
+	if err != nil {
+		return nil, err
+	}
+	if groupID != "" {
+		resolved := proto.CloneOf(req)
+		resolved.GroupId = groupID
+		resolved.GroupName = ""
+		req = resolved
 	}
 	resp, err := c.CreateChannel(WithActor(ctx, account), connect.NewRequest(req))
 	if err != nil {
@@ -305,13 +330,8 @@ func (c *Comms) UpdateChannelMembersAsAccountByName(
 	return resp.Msg, nil
 }
 
-// CreateChannelGroupAsAccount executes one agent-initiated CreateChannelGroup as
-// account, mirroring UpdatePinnedBoardAsAccount: WithActor + the shared
-// CreateChannelGroup handler path, so the group is created under the agent's
-// account (D9 owner-scoped by requireGroupCreateAuthz, resolved server-side from
-// the actor context) and the ChannelGroupChanged fan-out is identical to a human
-// caller's. The request names no channel (only an optional parent group), so
-// there is no home-channel defaulting here.
+// CreateChannelGroupAsAccount resolves a parent group name within the agent's
+// visible groups, then runs the shared handler as that account.
 func (c *Comms) CreateChannelGroupAsAccount(
 	ctx context.Context,
 	account store.AccountID,
@@ -319,6 +339,16 @@ func (c *Comms) CreateChannelGroupAsAccount(
 ) (*compassv1.CreateChannelGroupResponse, error) {
 	if account == "" {
 		return nil, errNoActor
+	}
+	parentGroupID, err := c.resolveAgentGroupRef(ctx, account, req.GetParentGroupId(), req.GetParentGroupName(), "parent_group_name")
+	if err != nil {
+		return nil, err
+	}
+	if parentGroupID != "" {
+		resolved := proto.CloneOf(req)
+		resolved.ParentGroupId = parentGroupID
+		resolved.ParentGroupName = ""
+		req = resolved
 	}
 	resp, err := c.CreateChannelGroup(WithActor(ctx, account), connect.NewRequest(req))
 	if err != nil {
