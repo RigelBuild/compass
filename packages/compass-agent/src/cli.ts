@@ -167,23 +167,6 @@ function configuredThinkingLevel(
 	return { thinkingLevel: settings.get("defaultThinkingLevel") };
 }
 
-function continuedModelSelector(
-	env: Record<string, string | undefined>,
-	continued: boolean,
-	settings: Settings | undefined,
-): string | undefined {
-	const explicit = resolveModelSelector(env);
-	if (explicit !== undefined) return explicit;
-	if (
-		!continued ||
-		settings?.isConfigured("modelRoles") !== true ||
-		settings.getModelRoleProvenance("default") !== "overlay"
-	) {
-		return undefined;
-	}
-	return settings.getModelRole("default") || undefined;
-}
-
 interface BootSession {
 	storage: IndexedSessionStorage;
 	manager: SessionManager;
@@ -241,6 +224,52 @@ function reapplyConfiguredServiceTiers(
 				serviceTierSettingToTier(settings.get(settingPath)),
 			);
 		}
+	}
+}
+
+async function reapplyConfiguredDefaultModelRole(
+	session: AgentSession,
+	settings: Settings | undefined,
+	env: Record<string, string | undefined>,
+	continued: boolean,
+): Promise<void> {
+	if (
+		!continued ||
+		resolveModelSelector(env) !== undefined ||
+		settings?.isConfigured("modelRoles") !== true ||
+		settings.getModelRoleProvenance("default") !== "overlay"
+	) {
+		return;
+	}
+	const role = session.resolveRoleModelWithThinking("default");
+	if (!role.model) {
+		const warning = role.warning?.replaceAll(/[\r\n]+/g, " ");
+		console.error(
+			`[compass-agent] configured default model role did not resolve${warning ? `: ${warning}` : ""}`,
+		);
+		return;
+	}
+	const currentModel = session.model;
+	if (
+		currentModel?.provider !== role.model.provider ||
+		currentModel?.id !== role.model.id
+	) {
+		try {
+			await session.setModel(role.model, "default", { persist: false });
+		} catch (error) {
+			const reason = String(error).replaceAll(/[\r\n]+/g, " ");
+			console.error(
+				`[compass-agent] configured default model role could not be applied: ${reason}`,
+			);
+			return;
+		}
+	}
+	if (
+		settings.isConfigured("defaultThinkingLevel") !== true &&
+		role.explicitThinkingLevel &&
+		role.thinkingLevel !== undefined
+	) {
+		session.setThinkingLevel(role.thinkingLevel);
 	}
 }
 async function resolveContinuationSessionFile(
@@ -959,9 +988,8 @@ export async function main(
 		...createBoardTools(boardBroker),
 	] as ToolDefinition[];
 
-	// A continued session has a baked model choice, so only an explicit fleet
-	// default role can replace it when COMPASS_MODEL is absent.
-	const modelPattern = continuedModelSelector(env, continued, fleetSettings);
+	// Keep the SDK's session model restoration and fallback logic authoritative.
+	const modelPattern = resolveModelSelector(env);
 
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
@@ -1026,6 +1054,12 @@ export async function main(
 			: {}),
 	});
 	if (continued) reapplyConfiguredServiceTiers(session, fleetSettings);
+	await reapplyConfiguredDefaultModelRole(
+		session,
+		fleetSettings,
+		env,
+		continued,
+	);
 	const sessionFile = manager.getSessionFile();
 	if (sessionFile) await writeCurrentSessionPointer(home, sessionFile);
 
