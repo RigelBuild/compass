@@ -13,7 +13,7 @@
 // (empty would render `author=""`); the degraded value names the fence so two hostile
 // values cannot collapse onto one mintable string. Callers outside a render get bare form.
 export const attr = (v: string, fence?: string): string =>
-	/^[\w.:-]+$/.test(v)
+	/^[\w.:/-]+$/.test(v)
 		? v
 		: fence === undefined
 			? "(malformed)"
@@ -34,10 +34,9 @@ export const flat = (v: string): string =>
 		.replaceAll(/[\t ]{12,}/g, " ")
 		.trim();
 
-// `attr` guards an id-shaped value; `ref` guards a URL or `<owner>/<name>` slug that
-// `attr`'s `[\w.:-]+` rejects (no `/`). `ref` widens to `/ ? # = & % ~ + @` but keeps the
-// SAME doctrine: no quote, angle bracket, or whitespace/control. Bound `+` not `*`; the
-// create-ack's empty-`url` dedup-hit is handled by the caller first.
+// `attr` guards an id-shaped value or `owner/handle`; `ref` guards a URL or slug, widening
+// to `? # = & % ~ + @` under the SAME doctrine: no quote, angle bracket, or whitespace/control.
+// Bound `+` not `*`; the create-ack's empty-`url` dedup-hit is handled by the caller first.
 export const ref = (v: string, fence?: string): string =>
 	/^[\w.:/?#=&%~+@-]+$/.test(v)
 		? v

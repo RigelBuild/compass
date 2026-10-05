@@ -602,6 +602,12 @@ id, never a retype.
   `comms.test.ts` fence-shape assert renders handle, no id; `bun test` in
   `packages/compass-agent`.
 
+Amendment (2026-09-27, RIG-4026): `author_handle` (and therefore `from_handle`)
+is `owner/handle` for agents and bare for users/system. The owner's global
+handle is resolved by joining the agent's `account_handles.owner_user_id`.
+This refines DL-270's display sibling into an address; an agent whose owner
+handle is unresolved yields an empty value.
+
 ## Tasks
 
 - [ ] T0 — `account_handles` in `0001_init.sql` (table + two partial-unique
@@ -658,6 +664,8 @@ confirm at freeze):
 
 Amendment (2026-09-25, ruling 9) adds **DL-375**: the adminOnly door resolves
 handles without the D9 visibility clip.
+Amendment (2026-09-27, RIG-4026) adds **DL-408**: agent message authors are
+owner-qualified (`owner/handle`); users and system remain bare.
 
 ## Rulings (Open Questions — all closed)
 

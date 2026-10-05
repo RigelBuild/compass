@@ -1476,6 +1476,22 @@ describe("comms_list_messages", () => {
 			`</msg ${f}>`,
 		]);
 	});
+	test("renders an owner-qualified message author in its fence", async () => {
+		const list = tool(
+			new CommsBroker(
+				new FakeTransport(
+					listResult(textMessage("m-1", "matt/compass-ux", "hi")),
+				),
+			),
+			"comms_list_messages",
+		);
+
+		const text = textOf(await exec(list, "tc-4026", {}));
+		const f = fenceOf(text);
+		expect(text).toContain(
+			`<msg ${f} id="m-1" author="matt/compass-ux" at="${EPOCH}">`,
+		);
+	});
 
 	// A whitespace-only question is unanswerable, and an ask's whole contract is
 	// that a participant answers ALL of them — a blank one is a phantom

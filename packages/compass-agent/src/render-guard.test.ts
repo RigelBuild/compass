@@ -8,8 +8,16 @@
 // line break — the exact breakouts the guards exist to deny.
 
 import { describe, expect, test } from "bun:test";
-import { login, ref } from "./render-guard";
+import { attr, login, ref } from "./render-guard";
 
+describe("attr render guard", () => {
+	test("passes owner-qualified handles and rejects attribute breakouts", () => {
+		expect(attr("matt/compass-ux")).toBe("matt/compass-ux");
+		for (const bad of ["", 'x"y', "x\ny", "x<y"]) {
+			expect(attr(bad)).toBe("(malformed)");
+		}
+	});
+});
 describe("ref render guard", () => {
 	test("passes a well-formed permalink, repo slug, and query/fragment url", () => {
 		for (const ok of [

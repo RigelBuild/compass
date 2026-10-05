@@ -244,7 +244,7 @@ func TestSteerCarriesMessage(t *testing.T) {
 	}
 }
 
-// TestDeliverAndSteerCarryAuthorFromHandle forwards the wire message's author
+// TestDeliverAndSteerCarryAuthorFromHandle forwards the wire message's qualified
 // handle to both controls without an account lookup.
 func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
@@ -256,6 +256,7 @@ func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	reads.members[ch] = []store.AccountID{agentA, agentB}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
 	msg := textMessage("m1", human, "hey @aa")
+	msg.AuthorHandle = "matt/compass-ux"
 	res.bind(agentA, "sess-a")
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
@@ -265,12 +266,12 @@ func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 
 	got := disp.snapshot()
 	a := recordsFor(got, "sess-a")
-	if len(a) != 1 || a[0].kind != opSteer || a[0].fromHandle != "matt" {
-		t.Fatalf("sess-a records = %+v, want one steer with from_handle=matt", a)
+	if len(a) != 1 || a[0].kind != opSteer || a[0].fromHandle != "matt/compass-ux" || a[0].fromHandle != a[0].messageAuthorHandle {
+		t.Fatalf("sess-a records = %+v, want one steer with from_handle equal to author_handle matt/compass-ux", a)
 	}
 	b := recordsFor(got, "sess-b")
-	if len(b) != 1 || b[0].kind != opDeliver || b[0].fromHandle != "matt" {
-		t.Fatalf("sess-b records = %+v, want one deliver with from_handle=matt", b)
+	if len(b) != 1 || b[0].kind != opDeliver || b[0].fromHandle != "matt/compass-ux" || b[0].fromHandle != b[0].messageAuthorHandle {
+		t.Fatalf("sess-b records = %+v, want one deliver with from_handle equal to author_handle matt/compass-ux", b)
 	}
 }
 
