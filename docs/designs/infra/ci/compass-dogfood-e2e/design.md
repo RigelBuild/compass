@@ -886,3 +886,7 @@ the PG hot-tail transcript append, the session-status transition, and the
 present-check vs the harness using a resolvable `containers-storage:` ref
 (H1, implementer's choice — the CI-distribution half of the image story is
 Decision D2 via RIG-1690, not deferrable).
+
+## Errata
+
+- `CreateAgentRequest` now carries a required `role` (`supervisor`, `owner`, or `manager`); a request without one is rejected `INVALID_ARGUMENT`. The harness `CreateAgent` primitive must set it. See `docs/designs/agent/compass-manager-role-taxonomy/design.md` § DL-new-B.

@@ -632,3 +632,7 @@ A related public-API fork in the ITEM 7 (RIG-1327 secrets) lane was ruled in
 the same batch: the `SetSecret`/`ListSecrets`/`DeleteSecret` RPCs go on a new
 `SecretsService` (not folded onto `CompassService`). That governs the ITEM 7
 proto edit, not this record's tasks; noted here only for provenance.
+
+## Errata
+
+- `CreateAgentRequest` now carries a required `role` (`supervisor`, `owner`, or `manager`); a request without one is rejected `INVALID_ARGUMENT`. The session driver's `CreateAgent{handle, display_name}` call must set it. See `docs/designs/agent/compass-manager-role-taxonomy/design.md` § DL-new-B.

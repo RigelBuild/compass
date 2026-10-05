@@ -89,8 +89,8 @@ func TestServeReportsBoundEphemeralPort(t *testing.T) {
 // seed uses store.CreateAgent, which skips the RPC guards, so nothing else
 // catches a drifted rootSupervisorRole.
 func TestSeededRootRoleIsSpawnable(t *testing.T) {
-	if _, ok := store.ManagerRoles[rootSupervisorRole]; !ok {
-		t.Fatalf("rootSupervisorRole = %q is not in ManagerRoles %v", rootSupervisorRole, store.ManagerRoles)
+	if !store.IsManagerRole(rootSupervisorRole) {
+		t.Fatalf("rootSupervisorRole = %q is not a Manager-taxonomy role", rootSupervisorRole)
 	}
 }
 

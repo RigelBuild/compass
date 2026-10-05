@@ -603,7 +603,7 @@ Ledger-impact: applied at freeze, not in this draft. Rows to add:
 - **DL-new-B:** Every tree node is created WITH a role: both creation doors,
   `agents_spawn_peer` and the `CommsService.CreateAgent` RPC (`role` on
   `CreateAgentRequest`), carry a required role from the closed taxonomy,
-  server-validated against one shared set, `store.ManagerRoles`
+  server-validated against one shared set, `store.IsManagerRole`
   (`CodeInvalidArgument` on unknown or empty). REVISES the
   server-authoritative-empty spawn invariant (lifecycle.go): role is
   caller-selected-but-server-validated; prompt text remains
@@ -658,3 +658,7 @@ assumption, none blocks the tasks above.
   code change. *Recommendation:* doc-only now; the one seam worth a later
   audit is tool inheritance if subagent tool-surfaces ever widen (a subagent
   must never inherit its Manager's comms/lifecycle tools).
+
+## Errata
+
+- The taxonomy set ships as `store.IsManagerRole` (a private set in `go/internal/store`), not the `spawnableRoles` server constant T1 names, so `SpawnAsAccount` and `CommsService.CreateAgent` validate against one set.

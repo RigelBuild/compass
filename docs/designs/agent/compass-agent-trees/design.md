@@ -524,3 +524,7 @@ None. The two questions this record carried are now decided:
   and rejects cycles on both creation and re-parenting (§T3). Now that the
   edge is mutable a cycle is reachable, so the check is required, not
   deferred.
+
+## Errata
+
+- `CreateAgentRequest` now carries a required `role` (`supervisor`, `owner`, or `manager`); a request without one is rejected `INVALID_ARGUMENT`. Every `CreateAgent` caller must set it. See `docs/designs/agent/compass-manager-role-taxonomy/design.md` § DL-new-B.

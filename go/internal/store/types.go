@@ -166,17 +166,23 @@ type UserAccount struct {
 	Role UserRole
 }
 
-// ManagerRoles is the closed agent-role taxonomy, validated at every creation
+// managerRoles is the closed agent-role taxonomy, validated at every creation
 // door. It is a product contract, not derived from the mutable config bundle's
-// prompts/ members.
-var ManagerRoles = map[string]struct{}{
+// prompts/ members; unexported so no importer can widen it.
+var managerRoles = map[string]struct{}{
 	"supervisor": {},
 	"owner":      {},
 	"manager":    {},
 }
 
-// ErrUnknownRole is the CodeInvalidArgument cause for a role outside
-// ManagerRoles, including empty: the label is validated, never prompt text.
+// IsManagerRole reports whether role is in the closed agent-role taxonomy.
+func IsManagerRole(role string) bool {
+	_, ok := managerRoles[role]
+	return ok
+}
+
+// ErrUnknownRole is the CodeInvalidArgument cause for a role outside the
+// taxonomy, including empty: the label is validated, never prompt text.
 var ErrUnknownRole = errors.New("unknown agent role")
 
 // AgentAccount is the owned-agent payload (comms.proto:136-142) plus the

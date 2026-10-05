@@ -172,7 +172,7 @@ func (l *lifecycleService) SpawnAsAccount(
 	defer cancel()
 
 	// First check in the chain, so it covers the idempotent-resume branch too.
-	if _, ok := store.ManagerRoles[req.GetRole()]; !ok {
+	if !store.IsManagerRole(req.GetRole()) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrUnknownRole)
 	}
 	// Before CreateAgent: a later Provision refusal would leave the handle taken.
