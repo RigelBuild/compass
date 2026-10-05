@@ -239,16 +239,23 @@ describe("EventMapper turn sequence", () => {
 		expect(settledTurn(mapper, { isTerminal: true })).toBe(3n);
 	});
 
-	test("a terminal end settles a start whose session event never arrived", () => {
+	test("a terminal end leaves a next run's early core start open", () => {
 		const sequence = new TurnSequence(SessionManager.inMemory());
 		const mapper = new EventMapper(() => FIXED_NOW, sequence);
 		mapper.captureTurnStart();
 		mapper.map({ type: "agent_start" });
+		// The next run's core start lands while this run's end is still pending.
+		mapper.captureTurnStart();
 		expect(settledTurn(mapper, { isTerminal: true })).toBe(1n);
-		mapper.captureTurnStart();
-		mapper.captureTurnStart();
 		mapper.map({ type: "agent_start" });
-		expect(settledTurn(mapper, { isTerminal: true })).toBe(3n);
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(2n);
+	});
+
+	test("a terminal end with no seen start settles a resumed sequence", () => {
+		const manager = SessionManager.inMemory();
+		new TurnSequence(manager).start();
+		const mapper = new EventMapper(() => FIXED_NOW, new TurnSequence(manager));
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(1n);
 	});
 
 	test("a non-terminal end keeps later starts open", () => {

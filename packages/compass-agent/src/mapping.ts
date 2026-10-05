@@ -89,17 +89,16 @@ export class EventMapper {
 		this.#capturedStarts.push(this.#turnSequence?.start() ?? 0n);
 	}
 
-	// A terminal end means idle, so every started run has settled. The SDK can
-	// supersede an end, or drop one on abort, so only non-terminal ends pair FIFO.
+	// A terminal end settles every run whose session agent_start was seen; the SDK
+	// can supersede or drop an end. A core start not yet seen belongs to a later run.
 	#endSequence(event: { readonly isTerminal?: boolean }): bigint {
+		const current = this.#turnSequence?.current() ?? 0n;
 		if (event.isTerminal === false) {
-			return (
-				this.#endingSequences.shift() ?? this.#turnSequence?.current() ?? 0n
-			);
+			return this.#endingSequences.shift() ?? current;
 		}
-		this.#capturedStarts.length = 0;
 		this.#endingSequences.length = 0;
-		return this.#turnSequence?.current() ?? 0n;
+		const nextUnseen = this.#capturedStarts[0];
+		return nextUnseen === undefined ? current : nextUnseen - 1n;
 	}
 
 	// Map one session event to zero or more compass.v1 frames. Zero frames is
