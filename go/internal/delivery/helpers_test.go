@@ -270,17 +270,14 @@ func (w *fakeWaker) waitForWakes(t *testing.T, n int) {
 	}
 }
 
-// fakeReads is an in-memory DeliveryReads: the subscriber set per channel, the
-// channel agent-member set (for mention→steer routing), the agent-account set, a
-// message-id -> message table, a handle -> account resolution map, and a
-// per-agent owed-message set for the sweep. A test seeds exactly what the case
-// under test needs.
+// fakeReads is an in-memory DeliveryReads. Tests seed channel members with
+// handles and owners, alongside the other read-side state.
 type fakeReads struct {
 	mu          sync.Mutex
-	subscribers map[store.ChannelID][]store.AccountID // channel -> subscribed agents (author NOT pre-excluded)
-	members     map[store.ChannelID][]store.AccountID // channel -> agent members (author NOT pre-excluded)
+	subscribers map[store.ChannelID][]store.AccountID
+	members     map[store.ChannelID][]store.ChannelAgentMember
+	owners      map[store.AccountID]store.AccountID
 	agents      map[store.AccountID]bool
-	handles     map[string]store.Account // lowercased handle -> resolved account (unknown -> ErrNotFound)
 	messages    map[string]store.Message
 	// topicNames resolves a topic id to its (channelName, topicName) — the source
 	// denorm the deliver/steer op carries (TopicChannelNames). Absent -> the fake
@@ -352,6 +349,21 @@ type fakeReads struct {
 	unroutedErr error
 }
 
+func memberRows(ids ...store.AccountID) []store.ChannelAgentMember {
+	members := make([]store.ChannelAgentMember, len(ids))
+	for i, id := range ids {
+		members[i] = store.ChannelAgentMember{ID: id, OwnerUserID: "human-1", OwnerHandle: "owner"}
+	}
+	return members
+}
+func memberRowsWithHandles(handles map[store.AccountID]string, ids ...store.AccountID) []store.ChannelAgentMember {
+	members := memberRows(ids...)
+	for i := range members {
+		members[i].Handle = handles[members[i].ID]
+	}
+	return members
+}
+
 // readScope is the store scope one MessageByID call ran under.
 type readScope struct {
 	messageID  string
@@ -362,9 +374,9 @@ type readScope struct {
 func newFakeReads() *fakeReads {
 	return &fakeReads{
 		subscribers:   map[store.ChannelID][]store.AccountID{},
-		members:       map[store.ChannelID][]store.AccountID{},
+		members:       map[store.ChannelID][]store.ChannelAgentMember{},
+		owners:        map[store.AccountID]store.AccountID{},
 		agents:        map[store.AccountID]bool{},
-		handles:       map[string]store.Account{},
 		messages:      map[string]store.Message{},
 		messageErrs:   map[string][]error{},
 		authorErrs:    map[store.AccountID][]error{},
@@ -547,40 +559,27 @@ func (f *fakeReads) SubscribedAgents(_ context.Context, channel store.ChannelID,
 	return out, nil
 }
 
-// ChannelAgentMembers mirrors the store query: every agent member of channel,
-// author excluded, subscribe-state irrelevant (the members map, not subscribers).
-func (f *fakeReads) ChannelAgentMembers(_ context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error) {
+// ChannelAgentMembers mirrors the store query and filters the author.
+func (f *fakeReads) ChannelAgentMembers(_ context.Context, channel store.ChannelID, author store.AccountID) ([]store.ChannelAgentMember, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []store.AccountID
-	for _, a := range f.members[channel] {
-		if a == author {
-			continue // author excluded, mirroring the SQL's cm.account_id <> $2
+	var out []store.ChannelAgentMember
+	for _, member := range f.members[channel] {
+		if member.ID == author {
+			continue
 		}
-		out = append(out, a)
+		out = append(out, member)
 	}
 	return out, nil
 }
 
-// AgentByHandle resolves a lowercased handle to its seeded agent account; an
-// unseeded handle is store.ErrNotFound, mirroring the store's fail-closed
-// treatment of an unknown or human handle. The owner param (RIG-2751 handle
-// cutover: agent handles are per-owner) is ignored here — the fake models one
-// owner namespace, so a handle resolves regardless of the owner passed.
-func (f *fakeReads) AgentByHandle(_ context.Context, _ store.AccountID, handle string) (store.Account, error) {
+// ResolveOwner returns the seeded owner, or the caller for a user-owned namespace.
+func (f *fakeReads) ResolveOwner(_ context.Context, caller store.AccountID) (store.AccountID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	acc, ok := f.handles[handle]
-	if !ok {
-		return store.Account{}, store.ErrNotFound
+	if owner, ok := f.owners[caller]; ok {
+		return owner, nil
 	}
-	return acc, nil
-}
-
-// ResolveOwner returns the caller itself — the single-owner fake namespace, so
-// the author's mention-resolution owner is stable and every seeded handle
-// resolves under it (mirrors the store's user-owns-itself fallback).
-func (f *fakeReads) ResolveOwner(_ context.Context, caller store.AccountID) (store.AccountID, error) {
 	return caller, nil
 }
 
@@ -795,14 +794,6 @@ func (f *fakeReads) waitUnroutedCalls(t *testing.T, n int) {
 			t.Fatalf("UnroutedMentionMessages calls = %d, want %d", f.unroutedCallCount(), n)
 		}
 	}
-}
-
-// agentAccount builds a resolved agent store.Account for the handle→account map,
-// so AgentByHandle resolves a mention to it. The Agent subtype is what makes
-// IsAgent() true (the store's non-agent handles are ErrNotFound, so only agents
-// are ever seeded here).
-func agentAccount(id store.AccountID, handle string) store.Account {
-	return store.Account{ID: id, Handle: handle, Agent: &store.AgentAccount{}}
 }
 
 // textMessage builds a store.Message with one text block on the shared test

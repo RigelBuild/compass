@@ -53,11 +53,9 @@ type SessionResolver interface {
 	LiveAgentSessions() map[store.AccountID]string
 }
 
-// DeliveryReads is the store surface the consumer reads: subscriber resolution,
-// the author agent/human split, the settled-message re-read, the sweep, the
-// mention→steer routing set (channel agent members + handle resolution, D5), and
-// the RIG-1641 owed-mention arm (record/read/clear/count + the sweep-set
-// predicate). *store.Store implements it.
+// DeliveryReads is the store surface the consumer reads: subscribers, authors,
+// messages, channel-member mention routing, and durable delivery recovery.
+// *store.Store implements it.
 type DeliveryReads interface { //nolint:interfacebloat // one method per store read the consumer drives; the surface is the delivery-read contract, not incidental sprawl
 	SubscribedAgents(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
 	IsAgentAccount(ctx context.Context, account store.AccountID) (bool, error)
@@ -75,19 +73,10 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// treats as empty names — never a delivery block.
 	TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
-	// ChannelAgentMembers resolves every agent MEMBER of a channel (subscribe
-	// state irrelevant), author excluded — the mention→steer routing set (D5,
-	// design.md:526-527), distinct from SubscribedAgents' deliver set.
-	ChannelAgentMembers(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
-	// AgentByHandle resolves a bare mention handle to its agent account within
-	// owner's namespace (RIG-2751 handle cutover: agent handles are per-owner);
-	// the caller passes the posting author's owner, since a mention is a bare
-	// handle in the author's own namespace. An unknown, wrong-owner, or non-agent
-	// (human) handle is store.ErrNotFound (a mention no-op, D5).
-	AgentByHandle(ctx context.Context, owner store.AccountID, handle string) (store.Account, error)
-	// ResolveOwner resolves the posting author to the owner-user namespace its
-	// bare mentions resolve in (an agent author → its owner_user_id, a user
-	// author → itself).
+	// ChannelAgentMembers returns every non-author agent member and its handles,
+	// regardless of subscribe state.
+	ChannelAgentMembers(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.ChannelAgentMember, error)
+	// ResolveOwner scopes bare mentions to the posting author's owner namespace.
 	ResolveOwner(ctx context.Context, caller store.AccountID) (store.AccountID, error)
 	// SweepChannels resolves the D1 disjunct channel set an agent sweeps: every
 	// subscribed channel, PLUS its home channel, PLUS any mandatory_subscription
@@ -513,16 +502,9 @@ func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (cha
 	return channelName, topicName
 }
 
-// mentionRE matches one `@`-mention token: `@` then a handle. The handle is
-// [a-z0-9][a-z0-9._-]* — the leading char must be a letter/digit, so a bare `@`
-// or `@.` does not match. This is the client grammar ported verbatim for parity
-// (apps/ui/src/comms.ts:265 MENTION_RE = /@([a-z0-9][a-z0-9._-]*)/gi); keep the
-// two grammars in sync. Parity is GRAMMAR-level only: the server routes from raw
-// block text, so an @handle inside a code span or link label DOES route here,
-// whereas the client renderer never chips a mention inside code or a link label
-// (MarkdownText.tsx:389-398). Go RE2 has no inline /i, so the (?i) prefix
-// carries the flag; no backrefs are needed. Group 1 is the handle without `@`.
-var mentionRE = regexp.MustCompile(`(?i)@([a-z0-9][a-z0-9._-]*)`)
+// mentionRE matches a bare or owner-qualified handle after `@`. Group 1 captures
+// the complete handle, including its optional owner qualifier.
+var mentionRE = regexp.MustCompile(`(?i)@([a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)?)`)
 
 // reservedMentions are the broadcast ping targets that expand to a channel's
 // member sets server-side (apps/ui/src/comms-stub.ts:182 RESERVED_MENTIONS).
@@ -531,11 +513,8 @@ var mentionRE = regexp.MustCompile(`(?i)@([a-z0-9][a-z0-9._-]*)`)
 // @users expands to human members (no agent session to steer) (design.md:532-534).
 var reservedMentions = map[string]bool{"everyone": true, "agents": true, "users": true}
 
-// parseMentions returns the distinct lowercased handles mentioned in text, in
-// first-appearance order. Lowercasing folds the case-insensitive grammar into a
-// single dedup key for both reserved-ping matching and handle resolution
-// (account handles are stored lowercase). The `@` is stripped; group 1 is the
-// handle.
+// parseMentions returns distinct lowercased handles in first-appearance order.
+// The full qualified spelling is the deduplication key and resolution input.
 func parseMentions(text string) []string {
 	matches := mentionRE.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
@@ -543,13 +522,13 @@ func parseMentions(text string) []string {
 	}
 	seen := make(map[string]bool, len(matches))
 	var out []string
-	for _, m := range matches {
-		h := strings.ToLower(m[1])
-		if seen[h] {
+	for _, match := range matches {
+		handle := strings.ToLower(match[1])
+		if seen[handle] {
 			continue
 		}
-		seen[h] = true
-		out = append(out, h)
+		seen[handle] = true
+		out = append(out, handle)
 	}
 	return out
 }

@@ -132,6 +132,15 @@ type Account struct {
 	System *SystemAccount
 }
 
+// ChannelAgentMember is one non-author agent in a channel, with its handle and
+// owning user's handle for mention routing.
+type ChannelAgentMember struct {
+	ID          AccountID
+	OwnerUserID AccountID
+	OwnerHandle string
+	Handle      string
+}
+
 // SystemAccountHandle is the reserved handle of the platform system sender,
 // seeded by EnsureSystemAccount and rejected for user/agent creation (T1).
 const SystemAccountHandle = "compass"

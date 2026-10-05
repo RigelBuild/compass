@@ -263,11 +263,10 @@ export interface Mention {
 	end: number;
 }
 
-// An @-mention token: `@` then a run of handle characters. Handles are
-// [a-z0-9._-] (matching account handles like "svc.compass" and "ci-build");
-// the leading char must be a letter/digit so a bare "@" or "@." doesn't match.
-const MENTION_RE = /@([a-z0-9][a-z0-9._-]*)/gi;
-
+// An @-mention token has one handle segment or an owner/agent pair. Each
+// segment starts with a letter or digit, so incomplete qualified handles stop at
+// the owner segment.
+const MENTION_RE = /@([a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)?)/gi;
 /** Parse all `@`-mentions out of a text block, in order of appearance. A
  *  reserved token (case-insensitive match against RESERVED_MENTIONS) is flagged
  *  `reserved`. Non-reserved tokens are returned regardless of whether they

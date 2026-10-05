@@ -35,8 +35,7 @@ func TestOfflineUnsubscribedMentionRecordsOwedAndWakes(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	// agentA is offline (never bound) and NOT in the sweep set (sweepSet unseeded).
 	startConsumer(t, c)
 
@@ -64,9 +63,7 @@ func TestOfflineSubscribedMentionWakesNoOwed(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.subscribers[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	reads.sweepSet[agentA] = map[store.ChannelID]bool{ch: true} // in the sweep set
 	// agentA is offline (never bound).
 	startConsumer(t, c)
@@ -122,7 +119,7 @@ func TestBroadcastMentionWakesAllOwedOnlyOutOfSweepSet(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
-	reads.members[ch] = []store.AccountID{agentA, agentB}
+	reads.members[ch] = memberRows(agentA, agentB)
 	reads.subscribers[ch] = []store.AccountID{agentB}
 	reads.sweepSet[agentB] = map[store.ChannelID]bool{ch: true} // B is in the sweep set
 	// A is out of the sweep set (unseeded). Both offline.
@@ -293,9 +290,7 @@ func TestNilWakerRoutesWithoutPanic(t *testing.T) {
 	if c.agentWaker != nil {
 		t.Fatal("precondition: a freshly-built consumer has no AgentWaker wired")
 	}
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.subscribers[ch] = []store.AccountID{agentA} // also a subscriber, so the deliver arm runs too
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	// agentA offline, out of sweep set.
 	startConsumer(t, c)
 
@@ -318,8 +313,7 @@ func TestOfflineMentionNowLiveAfterRecordSteersDirectly(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	// Out of the sweep set (unseeded) so the record path runs. Offline at first
 	// resolve; the record hook binds it live for the post-record re-check.
 	reads.afterRecord = func(agent store.AccountID, _ store.ChannelID, _ string) {

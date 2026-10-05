@@ -51,8 +51,7 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 		const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 		reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-		reads.members[ch] = []store.AccountID{agentA, agentB}
-		reads.handles["aa"] = agentAccount(agentA, "aa")
+		reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, agentB)
 		res.bind(agentA, "sess-a")
 		res.bind(agentB, "sess-b")
 		startConsumer(t, c)
@@ -80,7 +79,7 @@ func TestLiveDeliverAndSteerCarryPublisherTraceparent(t *testing.T) {
 		const agentA store.AccountID = "agent-a"
 
 		reads.subscribers[ch] = []store.AccountID{agentA}
-		reads.members[ch] = []store.AccountID{agentA}
+		reads.members[ch] = memberRows(agentA)
 		res.bind(agentA, "sess-a")
 		startConsumer(t, c)
 
@@ -212,8 +211,7 @@ func TestDispatchMetricIncrementsWithOpKindOnly(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{agentA, agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, agentB)
 	res.bind(agentA, "sess-a")
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)

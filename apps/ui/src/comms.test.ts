@@ -138,7 +138,6 @@ describe("topicsOf", () => {
 		const older = top({ id: "older", channelId: CH, createdAtUnixMs: 10 });
 		const fresh = top({ id: "fresh", channelId: CH, createdAtUnixMs: 400 });
 		const m1 = msg({ id: "m1", topicId: "older", atUnixMs: 100 });
-
 		const groups = topicsOf([older, fresh], [m1], CH);
 
 		expect(groups.map((g) => g.topic.id)).toEqual(["fresh", "older"]);
@@ -468,6 +467,11 @@ describe("parseMentions", () => {
 			{ handle: "svc.compass", reserved: false },
 			{ handle: "ci-build", reserved: false },
 		]);
+	});
+	test("qualified mentions require two valid handle segments", () => {
+		expect(parsed("@bob/x")).toEqual([{ handle: "bob/x", reserved: false }]);
+		expect(parsed("@bob/")).toEqual([{ handle: "bob", reserved: false }]);
+		expect(parsed("@/x")).toEqual([]);
 	});
 
 	test("a bare @ or @. does not match", () => {

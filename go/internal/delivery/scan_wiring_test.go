@@ -24,8 +24,7 @@ func TestStartScanRecoversMissedMention(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	// agentA offline (never bound) and out of the sweep set (sweepSet unseeded).
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
 
@@ -43,8 +42,7 @@ func TestStartScanCompletesBeforeSubscribe(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
 	fab := fakeFabricOf(c)
 	marksAtSubscribe := -1
@@ -79,8 +77,7 @@ func TestReconnectScansMissedMention(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	startConsumer(t, c)
 	fab := fakeFabricOf(c)
 	fab.waitSubscribed(t)

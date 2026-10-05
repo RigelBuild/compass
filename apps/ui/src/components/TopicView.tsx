@@ -19,8 +19,24 @@ export const TopicView: Component = () => {
 	const topic = () => store.selectedTopic();
 	const channel = () => store.selectedChannel();
 	const byId = () => new Map(store.accounts().map((a) => [a.id, a]));
-	const byHandle = () =>
-		new Map(store.accounts().map((a) => [a.handle.toLowerCase(), a]));
+	const byHandle = () => {
+		const accounts = store.accounts();
+		const byId = new Map(accounts.map((a) => [a.id, a]));
+		const handles = new Map<string, (typeof accounts)[number]>();
+		for (const account of accounts) {
+			handles.set(account.handle.toLowerCase(), account);
+			if (account.kind === "agent" && account.ownerUserId) {
+				const ownerHandle = byId.get(account.ownerUserId)?.handle;
+				if (ownerHandle) {
+					handles.set(
+						`${ownerHandle}/${account.handle}`.toLowerCase(),
+						account,
+					);
+				}
+			}
+		}
+		return handles;
+	};
 	const messages = () => {
 		const t = topic();
 		return t ? topicMessages(store.messages(), t.id) : [];

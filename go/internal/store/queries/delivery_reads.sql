@@ -16,9 +16,15 @@ WHERE cm.channel_id = $1
 ORDER BY aa.account_id;
 
 -- name: ChannelAgentMembers :many
-SELECT aa.account_id
+SELECT aa.account_id, aa.owner_user_id,
+       COALESCE(oh.handle, '') AS owner_handle, COALESCE(ah.handle, '') AS handle
 FROM channel_members cm
 JOIN agent_accounts aa ON aa.account_id = cm.account_id
+-- Keep handle joins optional so missing handle rows do not hide @everyone members.
+LEFT JOIN account_handles ah ON ah.account_id = aa.account_id
+    AND ah.owner_user_id = aa.owner_user_id AND ah.tenant_id = aa.tenant_id
+LEFT JOIN account_handles oh ON oh.account_id = aa.owner_user_id
+    AND oh.owner_user_id IS NULL AND oh.tenant_id = aa.tenant_id
 WHERE cm.channel_id = $1
   AND cm.account_id <> $2
 ORDER BY aa.account_id;
