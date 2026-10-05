@@ -254,9 +254,11 @@ Mirror the message pipeline end to end:
    `EXPLAIN` shows a `Bitmap Index Scan on issues_search_idx`. That plan was
    measured as the table owner. As `compass_app` under FORCE RLS, `@@` is not
    LEAKPROOF, so Postgres filters the tenant's rows instead of using the GIN
-   index. `messages_search_idx` has the same plan. This per-tenant scan is
-   accepted for now; measure again when one tenant's issues or messages grow
-   large.
+   index. For the same reason `messages_search_idx` cannot serve the `@@`
+   filter. `SearchMessages` may still reach fewer rows through its
+   `channel_members` join, but no plan has been measured there as `compass_app`.
+   This is accepted for now; measure each query again as `compass_app` when one
+   tenant's issues or messages grow large.
 
    **Operational hazard, for whoever later edits the wrapper:** a
    `CREATE OR REPLACE` of `compass_labels_text` does **not** recompute
