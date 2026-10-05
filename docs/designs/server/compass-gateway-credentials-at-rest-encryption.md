@@ -656,8 +656,8 @@ declared into a store that does not exist.
     declaration-layer NAME partition independent of provider; D2's read-back
     defends the master key regardless of who else can write the keyspace). The
     shared default is the ruled baseline; the split is the operator's opt-out.
-    The master key is server-minted on first boot and written back to that
-    provider (T2, unchanged). The six forge secrets are operator-SUPPLIED
+    The master key is operator-seeded into that provider and only read at boot
+    (DL-355; T2). The six forge secrets are operator-SUPPLIED
     values: the operator populates them in the provider — for the `age://`
     default, deploy tooling seeds the age file; `compass server-secret set`
     (the T0 CLI below) writes a value through `resolver.Set` for rotation on a
@@ -880,9 +880,9 @@ compass never generates, writes, or declares-on-absence the key.
     pointed at the SERVER-SECRET resolver instance and invoked once at
     boot; the decoded `envelope.Key` is held in memory for the process
     lifetime.
-  - Boot fails closed: a resolve fault or an absent key is a startup error
-    naming the provisioning runbook, never a fall-back-to-plaintext and
-    never a generated key.
+  - Boot fails closed: a resolve fault, an absent or empty key, or a
+    malformed key is a startup error (only the empty-value error names the
+    runbook), never a fall-back-to-plaintext and never a generated key.
 - Consumes: T0's `server_secrets` store + server resolver instance, T1
   `envelope`, `secrets.Resolver`.
 - Produces: the process-lifetime `envelope.Key` handed to T4.
