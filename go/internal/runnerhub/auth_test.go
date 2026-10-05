@@ -104,6 +104,9 @@ func TestAuthenticateLookupFailureIsUnavailable(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Fatalf("code = %v, want Unavailable", got)
 	}
+	if ce, ok := errors.AsType[*connect.Error](err); !ok || ce.Message() != "credential check unavailable" {
+		t.Fatalf("error = %v, want fixed message %q", err, "credential check unavailable")
+	}
 	if strings.Contains(err.Error(), cause.Error()) {
 		t.Fatalf("wire error %q contains lookup cause", err)
 	}
