@@ -405,7 +405,7 @@ func (q *Queries) SessionBindingTenants(ctx context.Context, arg SessionBindingT
 	return items, nil
 }
 
-const startComputeUsageInterval = `-- name: StartComputeUsageInterval :exec
+const startComputeUsageInterval = `-- name: StartComputeUsageInterval :execrows
 INSERT INTO compute_usage_events (
     id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
     session_id, runner_id
@@ -427,12 +427,17 @@ type StartComputeUsageIntervalParams struct {
 // Event writes share RecordSessionBinding's transaction, so neither half of an
 // interval can commit without its binding transition.
 // clock_timestamp records after lock waits, unlike now() which uses tx start time.
-func (q *Queries) StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) error {
-	_, err := q.db.Exec(ctx, startComputeUsageInterval,
+// :execrows: the interval id is fresh, so zero rows means RLS hid the agent row
+// (an agent of another tenant), and the Store refuses the bind.
+func (q *Queries) StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, startComputeUsageInterval,
 		arg.IntervalID,
 		arg.SessionID,
 		arg.RunnerID,
 		arg.AgentAccountID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -79,7 +79,9 @@ type SessionBinding struct {
 // updated_at is maintained by the set_updated_at() trigger, never here
 // (RIG-3495) — the query file assigns it nowhere.
 //
-// An unknown agent_account_id is ErrInvalidArgument (the FK).
+// An unknown agent_account_id is ErrInvalidArgument (the FK), and so is an
+// agent of another tenant: the FK ignores RLS, but the interval start cannot see
+// that agent's row and inserts nothing, so the bind would commit unbilled.
 //
 // ErrConflict means ONE thing, and it is not about the account: the account path
 // is an upsert and cannot conflict. Both unique indexes on this table can raise
@@ -160,13 +162,17 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 			}
 		}
 		intervalID = uuid.NewString()
-		if err := qtx.StartComputeUsageInterval(ctx, db.StartComputeUsageIntervalParams{
+		started, err := qtx.StartComputeUsageInterval(ctx, db.StartComputeUsageIntervalParams{
 			IntervalID:     intervalID,
 			AgentAccountID: string(accountID),
 			SessionID:      sessionID,
 			RunnerID:       runnerID,
-		}); err != nil {
+		})
+		if err != nil {
 			return "", "", fmt.Errorf("store: start compute usage interval: %w", err)
+		}
+		if started == 0 {
+			return "", "", fmt.Errorf("%w: agent account %q does not exist in this tenant", ErrInvalidArgument, accountID)
 		}
 	}
 

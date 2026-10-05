@@ -625,50 +625,55 @@ func TestSessionBindingSameSessionIDInTwoTenantsCoexist(t *testing.T) {
 	}
 }
 
-// TestSessionBindingSameAccountIDInTwoTenantsCoexist pins the PRIMARY KEY half of
-// the fold: PRIMARY KEY (tenant_id, agent_account_id), not (agent_account_id).
-// Two rows for one account id, one per tenant, must COEXIST — under an un-folded
-// PK the second bind is not a conflict but something worse: it resolves as
-// ON CONFLICT DO UPDATE and OVERWRITES the other tenant's binding, silently
-// moving a foreign tenant's account onto this tenant's session.
-//
-// accounts.id is a GLOBAL primary key, so the two tenants cannot own two distinct
-// agent rows sharing an id; the second tenant necessarily binds the first
-// tenant's account id. The FK to agent_accounts permits it — referential-integrity
-// checks are not RLS-constrained — and that is the point: the DEFENCE against one
-// tenant's write reaching another's binding is the tenant in the KEY, not the FK.
-func TestSessionBindingSameAccountIDInTwoTenantsCoexist(t *testing.T) {
+// TestSessionBindingForeignTenantAgentIsInvalidArgument: accounts.id is global
+// and owned by one tenant, so tenant B binding tenant A's agent has no real
+// caller. The FK cannot catch it (FK checks ignore RLS), but the interval start
+// cannot see A's agent row, so the bind fails closed rather than commit unbilled.
+func TestSessionBindingForeignTenantAgentIsInvalidArgument(t *testing.T) {
 	s := newTestStore(t)
 	tenantB := seedTenant(t, s, "tenant-b")
 	ctxA := context.Background() // no tenant set → the bootstrap tenant
 	ctxB := WithTenant(context.Background(), tenantB)
 
-	ownerA := mustUser(t, s, "owner-a")
-	shared := mustAgent(t, s, ownerA.ID, "agent-shared")
+	agentA := mustAgent(t, s, mustUser(t, s, "owner-a").ID, "agent-a")
+	mustBind(t, ctxA, s, "sess-a", agentA.ID, "runner-a")
 
-	mustBind(t, ctxA, s, "sess-a", shared.ID, "runner-a")
+	_, _, err := s.RecordSessionBinding(ctxB, "sess-b", agentA.ID, "runner-b")
+	sentinelIs(t, err, ErrInvalidArgument, "tenant B binding tenant A's agent")
 
-	// The load-bearing write: tenant B binds the SAME account id to its own
-	// session. Under PRIMARY KEY (agent_account_id) this upserts over A's row.
-	if displaced := mustBind(t, ctxB, s, "sess-b", shared.ID, "runner-b"); displaced != "" {
-		t.Fatalf("tenant B's bind of the shared account id displaced %q, want \"\" — a non-empty value means it read (and overwrote) tenant A's row", displaced)
+	if n := countBindings(t, ctxB, s, agentA.ID); n != 0 {
+		t.Fatalf("tenant B holds %d bindings for tenant A's agent after the refusal, want 0", n)
+	}
+	if got, runner, _, err := s.SessionForAccount(ctxA, agentA.ID); err != nil || got != "sess-a" || runner != "runner-a" {
+		t.Fatalf("tenant A SessionForAccount = (%q, %q, %v), want (sess-a, runner-a, nil)", got, runner, err)
+	}
+	if n := countAsSystem(t, s, "SELECT count(*) FROM compute_usage_events WHERE session_id = 'sess-b'"); n != 0 {
+		t.Fatalf("the refused bind left %d compute usage events, want 0", n)
+	}
+}
+
+// TestSessionBindingSameAccountIDInTwoTenantsIsolated pins the PRIMARY KEY half
+// of the fold: PRIMARY KEY (tenant_id, agent_account_id). Each tenant binds its
+// own agent; a bind in B must neither read nor displace A's row.
+func TestSessionBindingSameAccountIDInTwoTenantsIsolated(t *testing.T) {
+	s := newTestStore(t)
+	tenantB := seedTenant(t, s, "tenant-b")
+	ctxA := context.Background() // no tenant set → the bootstrap tenant
+	ctxB := WithTenant(context.Background(), tenantB)
+
+	agentA := mustAgent(t, s, mustUser(t, s, "owner-a").ID, "agent-a")
+	agentB := seedTenantAgent(t, ctxB, s, "agent-b")
+
+	mustBind(t, ctxA, s, "sess-a", agentA.ID, "runner-a")
+	if displaced := mustBind(t, ctxB, s, "sess-b", agentB.ID, "runner-b"); displaced != "" {
+		t.Fatalf("tenant B's first bind displaced %q, want \"\" — it read tenant A's row", displaced)
 	}
 
-	// Both rows survive, one per tenant, each resolving its own session.
-	if got, runner, _, err := s.SessionForAccount(ctxA, shared.ID); err != nil || got != "sess-a" || runner != "runner-a" {
+	if got, runner, _, err := s.SessionForAccount(ctxA, agentA.ID); err != nil || got != "sess-a" || runner != "runner-a" {
 		t.Fatalf("tenant A SessionForAccount = (%q, %q, %v), want (sess-a, runner-a, nil) — B's write reached A's row", got, runner, err)
 	}
-	if got, runner, _, err := s.SessionForAccount(ctxB, shared.ID); err != nil || got != "sess-b" || runner != "runner-b" {
+	if got, runner, _, err := s.SessionForAccount(ctxB, agentB.ID); err != nil || got != "sess-b" || runner != "runner-b" {
 		t.Fatalf("tenant B SessionForAccount = (%q, %q, %v), want (sess-b, runner-b, nil)", got, runner, err)
-	}
-
-	// Exactly one row PER TENANT — countBindings carries the tenant predicate,
-	// so this is 1 and 1, not a cross-tenant 2.
-	if n := countBindings(t, ctxA, s, shared.ID); n != 1 {
-		t.Fatalf("tenant A holds %d bindings for the shared account, want 1", n)
-	}
-	if n := countBindings(t, ctxB, s, shared.ID); n != 1 {
-		t.Fatalf("tenant B holds %d bindings for the shared account, want 1", n)
 	}
 
 	// Each tenant's session resolves only in its own tenant.
@@ -705,7 +710,10 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 	ownerA := mustUser(t, s, "owner-a")
 	shared := mustAgent(t, s, ownerA.ID, "agent-shared")
 	mustBind(t, ctxA, s, "sess-a", shared.ID, "runner-a")
-	mustBind(t, ctxB, s, "sess-b", shared.ID, "runner-b")
+	// RecordSessionBinding refuses a foreign-tenant agent, so seed B's row raw:
+	// the read hazard is about rows already present, however they got there.
+	execAsSystem(t, s, "INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id) VALUES ($1, $2, 'sess-b', 'runner-b')",
+		string(tenantB), string(shared.ID))
 
 	// Under the system role BOTH rows are visible, so the :one read is ambiguous.
 	// It does NOT error — that is the hazard. It returns one of the two, and
