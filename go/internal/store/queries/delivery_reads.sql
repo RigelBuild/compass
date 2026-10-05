@@ -1,7 +1,5 @@
--- Delivery-consumer read queries. The recipient sets are reach-gated: a member
--- outside the author's owner or live peering is absent from these results.
--- Keep the marked reach predicate in sync with delivery_cursors.sql.
--- MessageByID shares the message projection the Go drains via messageFromParts.
+-- The marked reach predicate is one gate shared with delivery_cursors.sql;
+-- sql_parity_test.go fails if the copies drift.
 
 -- name: SubscribedAgents :many
 SELECT aa.account_id
