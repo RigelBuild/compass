@@ -17,6 +17,8 @@ export const MAX_TABS = 10;
 const MIN_RATIO = 0.2;
 const MAX_RATIO = 0.8;
 const STORAGE_KEY = "compass.windowLayout";
+// Far above any real session's id count, far below where +1 stops working.
+const MAX_SEED = 1e9;
 
 export type LayoutAction =
 	| { kind: "open"; path: string; background?: boolean }
@@ -339,8 +341,11 @@ function readStored(storage: Storage | undefined): WindowLayout | undefined {
 	const seeds = [
 		seq,
 		...ids.map((id) => Number(/-(\d+)$/.exec(id)?.[1] ?? 0)),
-	].filter((n): n is number => Number.isSafeInteger(n) && (n as number) >= 0);
-	// An unsafe seed (1e309) would mint the same id forever.
+	].filter(
+		(n): n is number =>
+			typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= MAX_SEED,
+	);
+	// Untrusted seeds near 2^53 stop incrementing and would mint repeat ids.
 	idSeq = Math.max(idSeq, ...seeds);
 	return layout;
 }

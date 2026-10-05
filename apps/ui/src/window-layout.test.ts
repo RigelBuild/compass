@@ -219,16 +219,18 @@ describe("loadLayout / saveLayout", () => {
 		);
 	});
 
-	test("an unsafe stored sequence never mints duplicate view ids", () => {
-		const stored = JSON.stringify({ seq: 1, layout: singleTabLayout("/") });
-		const raw = stored.replace('"seq":1', '"seq":1e309');
-		const restored = loadLayout(
-			memoryStorage({ "compass.windowLayout": raw }),
-			"/",
-		);
-		const a = reduce(restored, { kind: "open", path: "/backlog" });
-		const b = reduce(a, { kind: "open", path: "/done" });
-		const ids = layoutViews(b).map((view) => view.id);
-		expect(new Set(ids).size).toBe(ids.length);
+	test("an out-of-range stored sequence never mints duplicate view ids", () => {
+		for (const seed of ["1e309", String(Number.MAX_SAFE_INTEGER)]) {
+			const stored = JSON.stringify({ seq: 1, layout: singleTabLayout("/") });
+			const raw = stored.replace('"seq":1', `"seq":${seed}`);
+			const restored = loadLayout(
+				memoryStorage({ "compass.windowLayout": raw }),
+				"/",
+			);
+			const a = reduce(restored, { kind: "open", path: "/backlog" });
+			const b = reduce(a, { kind: "open", path: "/done" });
+			const ids = layoutViews(b).map((view) => view.id);
+			expect(new Set(ids).size).toBe(ids.length);
+		}
 	});
 });
