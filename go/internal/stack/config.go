@@ -235,8 +235,9 @@ func (c Config) checkBundledPortsDistinct() error {
 	}
 	var ports []port
 	add := func(field, addr string) {
+		// LookupPort also maps a service name such as "http", which net.Listen accepts.
 		if _, p, ok := splitPort(addr); ok {
-			if n, err := strconv.Atoi(p); err == nil {
+			if n, err := net.LookupPort("tcp", p); err == nil {
 				ports = append(ports, port{field, n})
 			}
 		}
