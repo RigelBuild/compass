@@ -330,10 +330,8 @@ func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error
 // redelivering forever is the worse failure, and the reason is logged either
 // way.
 //
-// A final attempt whose Term lands after AckWait also draws the max-deliveries
-// advisory, so both paths claim (durable, stream seq) and only the first publishes.
-// A claim is pinned while its callback runs, then kept for MaxAge plus two AckWaits.
-// The claim is per process: across instances the advisory may still park twice.
+// A late final-attempt Term also draws the max-deliveries advisory; both paths claim
+// (durable, stream seq) and only one publishes (lifetime in SUBJECTS.md).
 //
 // The reason on the wire is sanitized and bounded (see sanitizeReason); the
 // full cause goes to the log, which has no wire limit.
@@ -433,19 +431,24 @@ func (f *Fabric) claimPark(ctx context.Context, key parkKey, path string) (*park
 		if hook := f.parkClaimWaiting; hook != nil {
 			hook(path)
 		}
+		// Prefer a settled claim over ctx: drained events run after Subscribe's ctx ends.
 		select {
 		case <-claim.done:
-			f.parkedMu.Lock()
-			published := claim.published
-			if published && f.parkedSequences[key] == claim {
-				claim.expires = time.Now().Add(f.cfg.maxAge() + 2*f.cfg.ackWait())
+		default:
+			select {
+			case <-claim.done:
+			case <-ctx.Done():
+				return claim, false, ctx.Err()
 			}
-			f.parkedMu.Unlock()
-			if published {
-				return claim, false, nil
-			}
-		case <-ctx.Done():
-			return claim, false, ctx.Err()
+		}
+		f.parkedMu.Lock()
+		published := claim.published
+		if published && f.parkedSequences[key] == claim {
+			claim.expires = time.Now().Add(f.cfg.maxAge() + 2*f.cfg.ackWait())
+		}
+		f.parkedMu.Unlock()
+		if published {
+			return claim, false, nil
 		}
 	}
 }
@@ -532,7 +535,10 @@ func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats
 			f.notifyParkDecided(path, false)
 			return
 		}
-		raw, err := stream.GetMsg(context.WithoutCancel(ctx), adv.StreamSeq)
+		// Bounded so a stalled fetch cannot hold the claim in flight and park its waiters.
+		getCtx, cancelGet := context.WithTimeout(context.WithoutCancel(ctx), f.cfg.ackWait())
+		raw, err := stream.GetMsg(getCtx, adv.StreamSeq)
+		cancelGet()
 		if err != nil {
 			f.finishParkClaim(key, claim, false)
 			f.log.WarnContext(ctx, "fabric: event dropped at max_deliver is no longer in the stream; not parked",

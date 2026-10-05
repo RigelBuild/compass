@@ -2326,6 +2326,9 @@ func TestAdvisoryRetriesAfterCallbackParkFailure(t *testing.T) {
 	if !seen["advisory:"+durableName(wildcard)] {
 		t.Fatal("advisory did not retry the failed callback publish")
 	}
+	if err := f.nc.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing fabric publishes: %v", err)
+	}
 	if err := raw.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flushing DLQ publish: %v", err)
 	}
