@@ -89,6 +89,19 @@ export class EventMapper {
 		this.#capturedStarts.push(this.#turnSequence?.start() ?? 0n);
 	}
 
+	// A terminal end means idle, so every started run has settled. The SDK can
+	// supersede an end, or drop one on abort, so only non-terminal ends pair FIFO.
+	#endSequence(event: { readonly isTerminal?: boolean }): bigint {
+		if (event.isTerminal === false) {
+			return (
+				this.#endingSequences.shift() ?? this.#turnSequence?.current() ?? 0n
+			);
+		}
+		this.#capturedStarts.length = 0;
+		this.#endingSequences.length = 0;
+		return this.#turnSequence?.current() ?? 0n;
+	}
+
 	// Map one session event to zero or more compass.v1 frames. Zero frames is
 	// normal (delta accumulation, turn boundaries); an event the map does not cover
 	// yields a single UnmappedEvent so the caller can log + count it.
@@ -108,12 +121,7 @@ export class EventMapper {
 				return [this.#sessionState(AgentSessionState.WORKING)];
 			case "agent_end":
 				return [
-					this.#sessionState(
-						AgentSessionState.READY,
-						this.#endingSequences.shift() ??
-							this.#turnSequence?.current() ??
-							0n,
-					),
+					this.#sessionState(AgentSessionState.READY, this.#endSequence(event)),
 				];
 			case "message_update":
 				return this.#onMessageUpdate(event.assistantMessageEvent);

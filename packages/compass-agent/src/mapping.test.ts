@@ -226,19 +226,52 @@ describe("EventMapper turn sequence", () => {
 		}
 	});
 
-	test("an earlier end stamps its own start after overlapping starts", () => {
+	test("a terminal end settles every started run after a superseded end", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		for (let i = 0; i < 2; i++) {
+			mapper.captureTurnStart();
+			mapper.map({ type: "agent_start" });
+		}
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(2n);
+		mapper.captureTurnStart();
+		mapper.map({ type: "agent_start" });
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(3n);
+	});
+
+	test("a terminal end settles a start whose session event never arrived", () => {
 		const sequence = new TurnSequence(SessionManager.inMemory());
 		const mapper = new EventMapper(() => FIXED_NOW, sequence);
 		mapper.captureTurnStart();
 		mapper.map({ type: "agent_start" });
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(1n);
+		mapper.captureTurnStart();
 		mapper.captureTurnStart();
 		mapper.map({ type: "agent_start" });
-		const frame = mapper.map({ type: "agent_end", messages: [] })[0];
-		if (frame?.kind !== "session")
-			throw new Error("expected lifecycle session frame");
-		expect(frame.value.turnSequence).toBe(1n);
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(3n);
+	});
+
+	test("a non-terminal end keeps later starts open", () => {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const mapper = new EventMapper(() => FIXED_NOW, sequence);
+		for (let i = 0; i < 2; i++) {
+			mapper.captureTurnStart();
+			mapper.map({ type: "agent_start" });
+		}
+		expect(settledTurn(mapper, { isTerminal: false })).toBe(1n);
+		expect(settledTurn(mapper, { isTerminal: true })).toBe(2n);
 	});
 });
+
+function settledTurn(
+	mapper: EventMapper,
+	end: { readonly isTerminal: boolean },
+): bigint {
+	const frame = mapper.map({ type: "agent_end", messages: [], ...end })[0];
+	if (frame?.kind !== "session")
+		throw new Error("expected lifecycle session frame");
+	return frame.value.turnSequence;
+}
 
 describe("EventMapper — injected clock stamps at_unix_ms (as bigint)", () => {
 	// The mapper takes an injectable clock; every trace SessionEvent stamps its

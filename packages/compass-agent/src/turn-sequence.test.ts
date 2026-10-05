@@ -60,13 +60,14 @@ describe("TurnSequence", () => {
 		expect(turnSequence(session).start()).toBe(5n);
 	});
 
-	test("restores after an in-place identity change", () => {
+	test("never decreases across an in-place identity change", () => {
 		const session = new FakeSession("first");
 		const sequence = turnSequence(session);
 		expect(sequence.start()).toBe(1n);
+		expect(sequence.start()).toBe(2n);
 		session.sessionId = "empty";
 		session.entries = [];
-		expect(sequence.start()).toBe(1n);
+		expect(sequence.start()).toBe(3n);
 		session.sessionId = "stored";
 		session.entries = [
 			{

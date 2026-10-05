@@ -47,7 +47,10 @@ export class TurnSequence {
 	start(): bigint {
 		if (this.#manager.getSessionId() !== this.#identity) {
 			this.#identity = this.#manager.getSessionId();
-			this.#current = this.#restore();
+			// The server keeps one settle high-water mark per Compass session, which
+			// outlives an SDK identity change, so a lower restore would release holds.
+			const restored = this.#restore();
+			if (restored > this.#current) this.#current = restored;
 		}
 		if (this.#current === MAX_SEQUENCE) {
 			throw new Error("compass-agent: turn sequence exceeds int64 maximum");
