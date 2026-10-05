@@ -204,6 +204,10 @@ func (h *Hub) SessionState(ctx context.Context, sessionID string) (compassv1.Age
 // alongside the result for the one caller that must attribute the command to a
 // Runner (Provision, recording a durable placement); the rest discard it.
 func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, string, error) {
+	if len(cmd.GetRequestId()) > maxClientRequestIDBytes {
+		return nil, "", connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("client_request_id is %d bytes; the limit is %d", len(cmd.GetRequestId()), maxClientRequestIDBytes))
+	}
 	router, runnerID, err := h.routerFor(sessionKey)
 	if err != nil {
 		return nil, "", connect.NewError(connect.CodeUnavailable, err)
@@ -233,6 +237,10 @@ func runnerErrorToConnect(e *compassv1internal.RunnerError) error {
 	}
 	return connect.NewError(code, fmt.Errorf("runner: %s", e.GetMessage()))
 }
+
+// maxClientRequestIDBytes bounds the caller's client_request_id, which the Hub
+// echoes into every Sessions frame; ids are minted as 32 hex chars.
+const maxClientRequestIDBytes = 256
 
 // orNewRequestID returns id when non-empty, else a fresh random correlation id.
 func orNewRequestID(id string) string {

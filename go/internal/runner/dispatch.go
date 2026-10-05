@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"unicode/utf8"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -70,7 +71,12 @@ var (
 	errSessionUnknown        = errors.New("session unknown to runner")
 	errContainerGone         = errors.New("agent container no longer exists; re-provision it")
 	errFreshSessionIDMissing = errors.New("fresh session start missing server-minted session id")
+	errTooManySessions       = errors.New("runner holds more sessions than one status reply carries")
 )
+
+// maxStatusEntries bounds one Status reply. A status entry is a few hundred
+// bytes, so this keeps the frame far under the read cap.
+const maxStatusEntries = 4096
 
 // dispatcher runs the Sessions command loop with request-id idempotency.
 type dispatcher struct {
@@ -370,6 +376,9 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		if err != nil {
 			return d.errorResult(ctx, id, err)
 		}
+		if len(statuses) > maxStatusEntries {
+			return d.errorResult(ctx, id, fmt.Errorf("%w: %d > %d", errTooManySessions, len(statuses), maxStatusEntries))
+		}
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
 			Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{Statuses: statuses}},
@@ -420,7 +429,7 @@ func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *com
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING
 	case errors.Is(err, errSessionUnknown), errors.Is(err, errContainerGone):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
-	case errors.Is(err, errFreshSessionIDMissing), errors.Is(err, gateway.ErrOperatorConfig):
+	case errors.Is(err, errFreshSessionIDMissing), errors.Is(err, gateway.ErrOperatorConfig), errors.Is(err, errTooManySessions):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION
 	}
 
@@ -438,7 +447,27 @@ func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *com
 		RequestId: id,
 		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 			Code:    code,
-			Message: err.Error(),
+			Message: truncateMessage(err.Error()),
 		}},
 	}
+}
+
+// maxRunnerErrorMessageBytes bounds a RunnerError's text, which can carry engine
+// stderr; the full error is still logged locally above.
+const maxRunnerErrorMessageBytes = 4096
+
+// truncatedMarker ends a message cut to maxRunnerErrorMessageBytes.
+const truncatedMarker = "… (truncated)"
+
+// truncateMessage cuts msg to the bound on a rune boundary, since protobuf
+// string fields must stay valid UTF-8.
+func truncateMessage(msg string) string {
+	if len(msg) <= maxRunnerErrorMessageBytes {
+		return msg
+	}
+	cut := maxRunnerErrorMessageBytes - len(truncatedMarker)
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + truncatedMarker
 }
