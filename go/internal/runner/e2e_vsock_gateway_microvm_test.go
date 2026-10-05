@@ -125,8 +125,9 @@ func newMicroVMGatewayFixture(t *testing.T, relay *w3Relay) (*agentHost, *runtim
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, relay))
 	specs := &fakeSpecBuilder{spec: w3LiveSpec(t)}
-	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
-	return host.(*agentHost), engine
+	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner()).(*agentHost)
+	closeHostAtCleanup(t, host)
+	return host, engine
 }
 
 // w3MicroVMConfig builds a MicroVMConfig from the resolved test env and a fresh,
