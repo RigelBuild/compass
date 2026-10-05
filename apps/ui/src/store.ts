@@ -21,7 +21,9 @@ import {
 	createMemo,
 	createSignal,
 	getOwner,
+	mapArray,
 	onCleanup,
+	untrack,
 } from "solid-js";
 import type { Pane } from "./agent-tabs";
 import { type PrRow, prRows } from "./board";
@@ -72,6 +74,18 @@ import {
 } from "./tracker";
 import { parseRoute } from "./view-route";
 import { createViewScope, type ViewScope } from "./view-scope";
+import {
+	focusedViewOf,
+	focusView,
+	type LayoutAction,
+	layoutViews,
+	loadLayout,
+	reduceLayout,
+	saveLayout,
+	setViewPath,
+	singleTabLayout,
+	type WindowLayout,
+} from "./window-layout";
 
 /** The caller — whose visibility scopes every listing and whose membership the
  *  rail reflects. The daemon derives this from the authenticated connection
@@ -174,9 +188,13 @@ export function modelRegistryRows(
  */
 export interface AppStore {
 	// ── View routing ──
-	/** The view the window chrome reads routed selection through. One view
-	 *  per window for now; the router's path is applied to it. */
+	/** The view the window chrome reads routed selection through: the window
+	 *  layout's focused view. The router mirrors its path (record A2). */
 	focusedView: Accessor<ViewScope>;
+	/** The window's tabs and splits; restored from `sessionStorage` at boot. */
+	layout: Accessor<WindowLayout>;
+	/** Apply a layout action; an eleventh tab is refused and leaves it as is. */
+	dispatchLayout: (action: LayoutAction) => void;
 	/** The focused view's top-level surface. */
 	view: Accessor<View>;
 	/** Jump to the Bridge board. */
@@ -207,13 +225,17 @@ export interface AppStore {
 	 *  Mod+K toggle, running a result) funnels here (D3). */
 	closePalette: () => void;
 	/** Inject the router seam (record A3). Called once from App (inside the
-	 *  router tree): supplies the real navigate + a reactive currentPath and
-	 *  installs the single-writer route-sync effect. The store stays
-	 *  router-import-free; before this the actions route through an in-memory
-	 *  default so createAppStore is constructible with no router. */
+	 *  router tree): supplies the real navigate + the reactive current location,
+	 *  restores the window layout against it, and installs the hash sync both
+	 *  ways. The store stays router-import-free; before this the actions route
+	 *  through an in-memory default so createAppStore needs no router. */
 	bindRouter: (r: {
-		navigate: (path: string) => void;
+		navigate: (
+			path: string,
+			options?: { replace?: boolean; state?: unknown },
+		) => void;
 		currentPath: () => string;
+		currentState: () => unknown;
 	}) => void;
 	/** The app's keyboard spine (RIG-2456): the shared command registry and the
 	 *  set of published roving groups. `App.tsx` installs the single window keymap
@@ -538,6 +560,9 @@ export interface AppStoreOptions {
 	 *  `postMessage` rejects to its caller instead (the composer must keep the
 	 *  user's text) and does NOT route here. */
 	readonly onCommsError?: (error: unknown) => void;
+	/** Where the window layout persists (record A8): the boot passes
+	 *  `sessionStorage`. Absent, the layout lives only as long as the store. */
+	readonly layoutStorage?: Storage;
 }
 
 /** The `localStorage` handle, or undefined where it is absent or throwing (SSR,
@@ -629,38 +654,94 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		(options.initialIssues ?? STUB_ISSUES)[0]?.id ?? null,
 	);
 
-	// ── Router seam (record A3): routes are the source of truth ──────────────
-	// The store lives outside the router tree, so the router is INJECTED. Until App
-	// binds it, navigation applies straight to the focused view, synchronously.
-	let routerNavigate = (path: string): void => {
-		// Pre-bind navigation: nothing in production navigates before App binds (comms
-		// stream and assigned-issues query never navigate), so reaching here in a dev
-		// build signals a future violation where the URL would silently diverge. Warn
-		// loudly. Offline tests (import.meta.env.DEV undefined) drive this path quietly.
-		if (import.meta.env?.DEV) {
+	// ── Window layout and router seam (record A2) ─────────────────────────────
+	// The layout owns every view's path; the URL hash mirrors the focused view.
+	// ownedWrite: bindRouter restores the layout while App renders.
+	const [layout, setLayout] = createSignal<WindowLayout>(singleTabLayout("/"), {
+		ownedWrite: true,
+	});
+	const dispatchLayout = (action: LayoutAction): void => {
+		setLayout((prev) => {
+			const next = reduceLayout(prev, action);
+			return "refused" in next ? prev : next;
+		});
+	};
+	let routerBound = false;
+	const navigateTo = (path: string): void => {
+		// Before App binds, the layout moves but bindRouter then restores over it,
+		// so a dev build warns about the lost navigation.
+		if (!routerBound && import.meta.env?.DEV) {
 			// biome-ignore lint/suspicious/noConsole: DEV-only pre-bindRouter navigation warning
 			console.warn(
 				`compass: navigate("${path}") before bindRouter — the URL will not ` +
 					"update until App wires the router",
 			);
 		}
-		applyFocusedPath(path);
+		anchorAgentEntry(path);
+		dispatchLayout({ kind: "navigateFocused", path });
 	};
-	const navigateTo = (path: string): void => routerNavigate(path);
-	// Wire the real router (once, from App). The URL is applied to the focused view,
-	// and a redirect the view makes itself (an unknown id after the first snapshot)
-	// is pushed back to the URL, so the two never drift.
 	const bindRouter = (r: {
-		navigate: (path: string) => void;
+		navigate: (
+			path: string,
+			options?: { replace?: boolean; state?: unknown },
+		) => void;
 		currentPath: () => string;
+		currentState: () => unknown;
 	}): void => {
-		routerNavigate = r.navigate;
-		createEffect(r.currentPath, (path) => applyFocusedPath(path));
+		routerBound = true;
+		const storage = options.layoutStorage;
+		setLayout(loadLayout(storage, untrack(r.currentPath)));
+		createEffect(layout, (next) => {
+			saveLayout(storage, next);
+		});
+		// Hash → layout: the entry's path goes to the view its state names, else
+		// (no id, or a closed view) to the focused view.
 		createEffect(
-			() => focusedView().path(),
-			(path, prev) => {
-				// The first run is the boot path, before the URL has been applied.
-				if (prev !== undefined && path !== r.currentPath()) r.navigate(path);
+			() => {
+				const state = r.currentState();
+				const viewId =
+					typeof state === "object" && state !== null && "viewId" in state
+						? state.viewId
+						: undefined;
+				return {
+					path: r.currentPath(),
+					viewId: typeof viewId === "string" ? viewId : undefined,
+				};
+			},
+			({ path, viewId }) => {
+				setLayout((prev) => {
+					const known =
+						viewId !== undefined &&
+						layoutViews(prev).some((view) => view.id === viewId);
+					const target = known ? viewId : focusedViewOf(prev).id;
+					return setViewPath(focusView(prev, target), target, path);
+				});
+			},
+		);
+		// Layout → hash: a move within one view pushes; a focus change (and the
+		// boot entry, stamped with its view) replaces, so tab switches never stack.
+		// Deferred: the router's first navigate flushes, which is a no-op in here.
+		createEffect(
+			() => focusedViewOf(layout()),
+			(current, prev) => {
+				queueMicrotask(() => {
+					// A later layout change queued its own sync; this one is stale.
+					if (untrack(() => focusedViewOf(layout())) !== current) return;
+					const state = untrack(r.currentState);
+					const stamped =
+						typeof state === "object" &&
+						state !== null &&
+						"viewId" in state &&
+						state.viewId === current.id;
+					const samePath = untrack(r.currentPath) === current.path;
+					if (samePath && stamped) return;
+					const push =
+						!samePath && prev !== undefined && prev.id === current.id;
+					r.navigate(current.path, {
+						replace: !push,
+						state: { viewId: current.id },
+					});
+				});
 			},
 		);
 	};
@@ -881,19 +962,35 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const agentSessionById = (agentId: string): AgentSession | undefined =>
 		sessions[agentId];
 
-	// ── The focused view (record A1): the one view per window. The router's path is
-	// applied to it, and the routed accessors the chrome reads derive from it. ──
-	const focused = createViewScope(
-		{ channels, topics, agentById, agentSessionById, firstSnapshotArrived },
-		"main",
-		"/",
+	// ── View scopes (record A1): one per view instance in the layout, keyed by
+	// view id, so a view keeps its workspace state while its path moves. ──
+	const scopes = mapArray(
+		() => layoutViews(layout()),
+		(instance) => {
+			const id = untrack(instance).id;
+			return createViewScope(
+				{ channels, topics, agentById, agentSessionById, firstSnapshotArrived },
+				id,
+				untrack(instance).path,
+				{
+					path: () => instance().path,
+					navigate: (path) => setLayout((prev) => setViewPath(prev, id, path)),
+				},
+			);
+		},
+		{ keyed: (instance) => instance.id },
 	);
-	const focusedView = () => focused;
-	const view = createMemo<View>(() => focused.route().view);
+	const focusedView = createMemo<ViewScope>(() => {
+		const id = focusedViewOf(layout()).id;
+		const scope = scopes().find((item) => item.id === id);
+		if (!scope) throw new Error(`no view scope for ${id}`);
+		return scope;
+	});
+	const view = createMemo<View>(() => focusedView().route().view);
 	// Last-visited: an agent or board route keeps the channel the user left, and a
 	// channel the push dropped falls back to the first subscribed one.
 	const selectedChannelId = createMemo<string | null>((prev) => {
-		const match = focused.route();
+		const match = focusedView().route();
 		if (match.view === "channel" || match.view === "topic") {
 			return match.channelId;
 		}
@@ -903,7 +1000,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			: firstChannelId(known);
 	});
 	const selectedTopicId = createMemo<string | null>(() => {
-		const match = focused.route();
+		const match = focusedView().route();
 		return match.view === "topic" ? match.topicId : null;
 	});
 	const selectedChannel = createMemo(() =>
@@ -915,28 +1012,30 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// The agent the log panel was last reset open for, so re-entering the same
 	// agent keeps the user's minimize.
 	let logResetForAgentId: string | null = null;
-	// Apply a path to the focused view. Entering an agent anchors the window-wide
-	// issue selection on every entry, even onto the same path: keep the current
-	// issue when this agent owns it, else its primary.
-	const applyFocusedPath = (path: string): void => {
+	// Entering an agent anchors the window-wide issue selection on every entry,
+	// even onto the same path: keep the current issue when this agent owns it,
+	// else its primary.
+	const anchorAgentEntry = (path: string): void => {
 		const match = parseRoute(path);
-		if (match.view === "agent") {
-			const owned = issues().filter((w) => w.assignee === match.agentId);
-			setPickedAgentId(match.agentId);
-			setSelectedIssueId(
-				owned.find((w) => w.id === selectedIssueId())?.id ??
-					owned[0]?.id ??
-					null,
-			);
-			if (match.agentId !== logResetForAgentId) {
-				setLogOpen(true);
-				logResetForAgentId = match.agentId;
-			}
+		if (match.view !== "agent") return;
+		const owned = issues().filter((w) => w.assignee === match.agentId);
+		setPickedAgentId(match.agentId);
+		setSelectedIssueId(
+			owned.find((w) => w.id === selectedIssueId())?.id ?? owned[0]?.id ?? null,
+		);
+		if (match.agentId !== logResetForAgentId) {
+			setLogOpen(true);
+			logResetForAgentId = match.agentId;
 		}
-		focused.navigate(path);
 	};
+	// A focused view that becomes an agent view by any path (back, a deep link, a
+	// tab switch) re-anchors too, as an explicit navigation does.
+	createEffect(
+		() => focusedView().path(),
+		(path) => untrack(() => anchorAgentEntry(path)),
+	);
 	const selectedAgentId = createMemo<string | null>(() => {
-		const match = focused.route();
+		const match = focusedView().route();
 		return match.view === "agent" ? match.agentId : pickedAgentId();
 	});
 	const selectedAgent = createMemo(() =>
@@ -976,7 +1075,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// else the first clone (so a stale pick from a previous agent can't dangle).
 	const activeRepo = createMemo<RepoClone | undefined>(() => {
 		const repos = agentRepos();
-		const picked = repos.find((r) => r.id === focused.activeRepoId());
+		const picked = repos.find((r) => r.id === focusedView().activeRepoId());
 		return picked ?? repos[0];
 	});
 
@@ -1377,7 +1476,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// Stop is idempotent server-side, so a retry after a refusal is safe.
 	const stopAgent = async (): Promise<void> => {
 		setStopError(undefined);
-		const session = focused.agentSession();
+		const session = focusedView().agentSession();
 		if (!session) return;
 		// A fixture-sourced session's id was never minted by a server. Issuing Stop for it
 		// is worse than nothing: the server's unknown-session path is idempotent-success,
@@ -1510,7 +1609,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// ── Right sidebar actions (T6) ──
 	const setActiveRepo = (repoId: string) => {
 		if (agentRepos().some((r) => r.id === repoId)) {
-			focused.setActiveRepoId(repoId);
+			focusedView().setActiveRepoId(repoId);
 		}
 	};
 
@@ -1613,7 +1712,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		agentById,
 		rightTabGroups,
 		agentRepos,
-		activeRepoId: focused.activeRepoId,
+		activeRepoId: () => focusedView().activeRepoId(),
 		activeRepo,
 		setActiveRepo,
 		setActiveBranch,
@@ -1632,6 +1731,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		selectedTopic,
 		openTopic,
 		focusedView,
+		layout,
+		dispatchLayout,
 		joinChannel,
 		toggleSubscribe,
 		answerAsk,

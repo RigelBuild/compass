@@ -7,6 +7,7 @@ import { createRoot } from "solid-js";
 import { STUB_COMMS_STATE } from "./comms-stub";
 import { mountShell, newAppQueryClient } from "./mount";
 import { createAppStore } from "./store";
+import { sessionLayoutStorage } from "./window-layout";
 
 /** The unique build-scan sentinel — the literal `fixture-wall.test.ts` asserts
  *  is ABSENT from a production bundle. Referenced by the PROD tripwire so the
@@ -39,6 +40,7 @@ export function bootFixture(root: HTMLElement): () => void {
 			queryClient,
 			initialComms: STUB_COMMS_STATE,
 			workspaceKey: "fixture",
+			layoutStorage: sessionLayoutStorage(),
 			...(emptyBoard ? { initialIssues: [] } : {}),
 		}),
 	);

@@ -41,8 +41,9 @@ const App: Component<
 	const navigate = useNavigate();
 	const location = useLocation();
 	store.bindRouter({
-		navigate: (path) => navigate(path),
+		navigate: (path, options) => navigate(path, options),
 		currentPath: () => location.pathname,
+		currentState: () => location.state,
 	});
 	// Install the single production window keymap listener over the store's
 	// keyboard spine (RIG-2456): registry + focus-gated active-group/zone
@@ -171,7 +172,11 @@ const App: Component<
 			</Show>
 
 			<main class="main">
-				<ViewHost scope={store.focusedView()} />
+				{/* Keyed: a context provider's value is read once, so a new focused
+				    view needs a fresh ViewHost. */}
+				<Show when={store.focusedView()} keyed>
+					{(scope) => <ViewHost scope={scope} />}
+				</Show>
 			</main>
 
 			<Show when={store.rightOpen()}>

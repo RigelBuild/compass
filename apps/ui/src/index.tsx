@@ -7,6 +7,7 @@ import type { ResolvedConnection } from "./live/provider";
 import { mountShell, newAppQueryClient } from "./mount";
 import { shellMode } from "./shell-globals";
 import { createAppStore } from "./store";
+import { sessionLayoutStorage } from "./window-layout";
 
 const root = document.getElementById("root");
 if (!root) {
@@ -89,6 +90,7 @@ async function main(
 			// pins on another (Record A §T3). The door URL + caller identity is
 			// the stable key.
 			workspaceKey: `${connection.baseUrl}#${callerId}`,
+			layoutStorage: sessionLayoutStorage(),
 			// The one failure funnel: a comms stream/write error AND a refused
 			// StopAgentSession (Runner-backed — `Unavailable` when the server has
 			// no RunnerHub attached) land here, so neither is swallowed.

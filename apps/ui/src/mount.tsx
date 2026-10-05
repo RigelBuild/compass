@@ -11,7 +11,7 @@
 // `newAppQueryClient` is the SINGLE source of the app's query defaults so the
 // fixture boot (T2) cannot silently drift from the live client.
 
-import { createRouter, hashHistory } from "@solidjs/router";
+import { createRouter, hashHistory, type RouterHistory } from "@solidjs/router";
 import { render } from "@solidjs/web";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import App from "./App";
@@ -30,6 +30,34 @@ export function newAppQueryClient(): QueryClient {
 	});
 }
 
+/** `hashHistory` whose reads carry the entry's state, so back/forward sees the
+ *  view id a navigation stamped (record A2). It also listens to `popstate`:
+ *  two entries with the same hash but different views fire no `hashchange`. */
+export function stateHashHistory(): RouterHistory {
+	const base = hashHistory();
+	const read = (): { value: string; state: unknown } => {
+		const value = base.get();
+		return {
+			value: typeof value === "string" ? value : value.value,
+			state: window.history.state,
+		};
+	};
+	const baseInit = base.init;
+	return {
+		...base,
+		get: read,
+		init: (notify) => {
+			const onPop = (): void => notify(read());
+			const stopBase = baseInit?.(onPop);
+			window.addEventListener("popstate", onPop);
+			return () => {
+				stopBase?.();
+				window.removeEventListener("popstate", onPop);
+			};
+		},
+	};
+}
+
 /** Mount the full App shell — the store in a `StoreContext` provider wrapping
  *  the `QueryClientProvider` and the router instance, whose render-prop child is
  *  the `App` root layout receiving the matched route as `props.children`. Router
@@ -43,7 +71,10 @@ export function mountShell(
 	queryClient: QueryClient,
 	clients?: Pick<LiveClients, "comms" | "compass">,
 ): () => void {
-	const Router = createRouter({ routes: appRoutes, history: hashHistory() });
+	const Router = createRouter({
+		routes: appRoutes,
+		history: stateHashHistory(),
+	});
 	return render(
 		() => (
 			<StoreContext value={store}>
