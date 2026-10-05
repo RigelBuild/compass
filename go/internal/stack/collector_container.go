@@ -19,22 +19,24 @@ import (
 // containerStopTimeout because the two components have different shutdown costs.
 const collectorStopTimeout = 10 * time.Second
 
-// The collector's fixed listen ports (D3): OTLP grpc + http are the fan-in
-// endpoint compass surfaces emit to, and the health_check extension is the
-// readiness probe target. These are container-internal ports the generated
-// config binds on 0.0.0.0; the run spec publishes them on the host loopback so
-// on-host surfaces (and, in T4b, server/runner) can reach the OTLP endpoint and
-// the readiness poll can reach health. They are the upstream collector defaults,
-// kept literal so the generated config and the published ports never drift.
+// The collector's fixed container-internal listen ports (D3): OTLP grpc + http
+// are the fan-in endpoint compass surfaces emit to, and the health_check
+// extension is the readiness probe target. The generated config binds them on
+// 0.0.0.0 inside the container and the adapter publishes them; exported so the
+// two sides share one literal. They are the upstream collector defaults.
 const (
-	collectorGRPCPort   = "4317"
-	collectorHTTPPort   = "4318"
-	collectorHealthPort = "13133"
-	// collectorListenHost is the host interface the ports are published on: the
-	// loopback only, never 0.0.0.0 — the bundled collector is a local fan-in
-	// endpoint for on-host surfaces, not a network-exposed service. An operator
-	// wanting remote ingestion runs --otel-external and points at their own.
-	collectorListenHost = "127.0.0.1"
+	CollectorContainerGRPCPort   = "4317"
+	CollectorContainerHTTPPort   = "4318"
+	CollectorContainerHealthPort = "13133"
+)
+
+// DefaultCollector*Port are the host loopback ports the CLI publishes on unless
+// told otherwise: today's fixed values. The collector publishes on loopback only
+// (loopbackEndpoint); remote ingestion is --otel-external.
+const (
+	DefaultCollectorGRPCPort   = 4317
+	DefaultCollectorHTTPPort   = 4318
+	DefaultCollectorHealthPort = 13133
 )
 
 // CollectorContainerSpec is the fully-resolved description of the Plane-B fan-in
@@ -47,10 +49,7 @@ type CollectorContainerSpec struct {
 	// Name is the stable per-state-dir container name (derived from StateDir),
 	// the teardown identity a fresh `down` reconstructs and the v2 pgid record
 	// persists. Unique per state dir so concurrent stacks never collide in
-	// podman's flat container namespace. Note this scopes only the container
-	// name: the loopback ports below publish on fixed host ports (like postgres's
-	// default 5432), so two stacks on one host still contend for those binds —
-	// the embedded stack is one-per-host by design.
+	// podman's flat container namespace; the host ports below come from Config.
 	Name string
 	// Image is the collector image ref to run (Config.CollectorImage; the pinned
 	// DefaultCollectorImage on the installed path).
@@ -83,10 +82,10 @@ type CollectorContainerSpec struct {
 // collectorContainerSpec builds the T4 collector run spec from the resolved
 // config: it derives the stable container name and config dir from the state
 // dir, renders the D3-posture config, and fixes the published loopback
-// endpoints. It is pure (no I/O) so the config and endpoint set it encodes is
-// unit-tested directly, and it errors on a config missing the state dir the
-// container's config bind-mount and name derivation need rather than running
-// podman against a half-formed spec.
+// endpoints from Config's host ports. It is pure (no I/O) so the config and
+// endpoint set it encodes is unit-tested directly, and it errors on a config
+// missing what the run needs rather than running podman against a half-formed
+// spec.
 func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 	if cfg.StateDir == "" {
 		return CollectorContainerSpec{}, errors.New("stack config: StateDir is required for the collector container (config bind-mount + name derivation)")
@@ -94,14 +93,29 @@ func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 	if cfg.CollectorImage == "" {
 		return CollectorContainerSpec{}, errors.New("stack config: CollectorImage is required to bundle the collector (set --collector-image or use --otel-external to opt out)")
 	}
+	var eps [3]string
+	for i, p := range []struct {
+		field string
+		port  int
+	}{
+		{"CollectorGRPCPort", cfg.CollectorGRPCPort},
+		{"CollectorHTTPPort", cfg.CollectorHTTPPort},
+		{"CollectorHealthPort", cfg.CollectorHealthPort},
+	} {
+		ep, err := loopbackEndpoint(p.field, p.port)
+		if err != nil {
+			return CollectorContainerSpec{}, err
+		}
+		eps[i] = ep
+	}
 	return CollectorContainerSpec{
 		Name:           collectorContainerName(cfg.StateDir),
 		Image:          cfg.CollectorImage,
 		ConfigDir:      filepath.Join(cfg.StateDir, "collector"),
 		ConfigYAML:     collectorConfigYAML(),
-		GRPCEndpoint:   collectorListenHost + ":" + collectorGRPCPort,
-		HTTPEndpoint:   collectorListenHost + ":" + collectorHTTPPort,
-		HealthEndpoint: collectorListenHost + ":" + collectorHealthPort,
+		GRPCEndpoint:   eps[0],
+		HTTPEndpoint:   eps[1],
+		HealthEndpoint: eps[2],
 		StopTimeout:    collectorStopTimeout,
 	}, nil
 }
@@ -110,8 +124,7 @@ func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 // name. Like containerName (the postgres derivation) it is a deterministic
 // function of the state dir alone so a fresh `down` with no in-memory handle
 // reconstructs the same name, and the hash keeps concurrent stacks on different
-// state dirs from colliding in podman's flat container namespace (the host-port
-// binds are fixed, so multi-stack-per-host is out of scope either way). A
+// state dirs from colliding in podman's flat container namespace. A
 // distinct prefix from the postgres name keeps the two components' containers
 // legible apart in `podman ps`.
 func collectorContainerName(stateDir string) string {
@@ -141,16 +154,16 @@ func collectorConfigYAML() string {
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:` + collectorGRPCPort + `
+        endpoint: 0.0.0.0:` + CollectorContainerGRPCPort + `
       http:
-        endpoint: 0.0.0.0:` + collectorHTTPPort + `
+        endpoint: 0.0.0.0:` + CollectorContainerHTTPPort + `
 
 exporters:
   nop: {}
 
 extensions:
   health_check:
-    endpoint: 0.0.0.0:` + collectorHealthPort + `
+    endpoint: 0.0.0.0:` + CollectorContainerHealthPort + `
 
 service:
   extensions: [health_check]

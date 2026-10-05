@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -70,6 +71,12 @@ type Config struct {
 	// endpoint. Empty is the D3 default posture: the bundled collector is
 	// provisioned per CollectorImage (present and receiving, exporting nowhere).
 	ExternalOTLPEndpoint string
+	// CollectorGRPCPort, CollectorHTTPPort and CollectorHealthPort are the host
+	// loopback ports the bundled collector publishes on. The container-internal
+	// ports stay fixed; the CLI defaults these to DefaultCollector*Port.
+	CollectorGRPCPort   int
+	CollectorHTTPPort   int
+	CollectorHealthPort int
 	// NatsImage selects the image the bundled NATS component runs, mirroring
 	// CollectorImage. Non-empty is the installed-stack default: a
 	// container-backed nats-server run from this image ref (the pinned
@@ -84,6 +91,11 @@ type Config struct {
 	// posture: NATS is provisioned as a bundled stack service, reachable on the
 	// fixed loopback client endpoint.
 	ExternalNatsURL string
+	// NatsClientPort and NatsMonitorPort are the host loopback ports the bundled
+	// NATS publishes on. The container-internal ports stay fixed; the CLI
+	// defaults these to DefaultNats*Port.
+	NatsClientPort  int
+	NatsMonitorPort int
 	// GatewayImage is the bundled LLM gateway image; required unless ExternalGatewayURL is set.
 	GatewayImage string
 	// ExternalGatewayURL opts out of starting the bundled gateway.
@@ -202,4 +214,13 @@ func splitPort(addr string) (host, port string, ok bool) {
 		return "", "", false
 	}
 	return addr[:i], addr[i+1:], true
+}
+
+// loopbackEndpoint renders a bundled component's host publish endpoint, refusing
+// an unset or out-of-range port so podman never sees a `127.0.0.1:0` publish.
+func loopbackEndpoint(field string, port int) (string, error) {
+	if port < 1 || port > 65535 {
+		return "", fmt.Errorf("stack config: %s %d must be a host port in 1-65535", field, port)
+	}
+	return "127.0.0.1:" + strconv.Itoa(port), nil
 }

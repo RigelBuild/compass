@@ -14,8 +14,11 @@ import (
 // health endpoints, the stop timeout, and a stable derived name.
 func TestCollectorContainerSpecBuildsFromConfig(t *testing.T) {
 	cfg := Config{
-		StateDir:       "/state",
-		CollectorImage: "docker.io/otel/opentelemetry-collector-contrib@sha256:abc",
+		StateDir:            "/state",
+		CollectorImage:      "docker.io/otel/opentelemetry-collector-contrib@sha256:abc",
+		CollectorGRPCPort:   DefaultCollectorGRPCPort,
+		CollectorHTTPPort:   DefaultCollectorHTTPPort,
+		CollectorHealthPort: DefaultCollectorHealthPort,
 	}
 	spec, err := collectorContainerSpec(cfg)
 	if err != nil {
@@ -47,6 +50,27 @@ func TestCollectorContainerSpecBuildsFromConfig(t *testing.T) {
 	}
 }
 
+// TestCollectorContainerSpecPublishesConfiguredHostPorts pins that the host
+// publish side follows Config while the container-internal ports stay fixed.
+func TestCollectorContainerSpecPublishesConfiguredHostPorts(t *testing.T) {
+	spec, err := collectorContainerSpec(Config{
+		StateDir: "/state", CollectorImage: "img:pinned",
+		CollectorGRPCPort: 14317, CollectorHTTPPort: 14318, CollectorHealthPort: 23133,
+	})
+	if err != nil {
+		t.Fatalf("collectorContainerSpec() = %v, want nil", err)
+	}
+	want := [3]string{"127.0.0.1:14317", "127.0.0.1:14318", "127.0.0.1:23133"}
+	if got := [3]string{spec.GRPCEndpoint, spec.HTTPEndpoint, spec.HealthEndpoint}; got != want {
+		t.Errorf("endpoints = %q, want %q", got, want)
+	}
+	for _, internal := range []string{"0.0.0.0:4317", "0.0.0.0:4318", "0.0.0.0:13133"} {
+		if !strings.Contains(spec.ConfigYAML, internal) {
+			t.Errorf("config lost container-internal %q:\n%s", internal, spec.ConfigYAML)
+		}
+	}
+}
+
 // TestCollectorContainerSpecRejectsMissingStateDir pins that a config with no
 // state dir is a hard error, not a run against a half-formed spec (the state dir
 // is both the config bind-mount root and the name-derivation input).
@@ -74,6 +98,18 @@ func TestCollectorContainerSpecRejectsMissingImage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "CollectorImage") {
 		t.Fatalf("error %q does not mention CollectorImage", err.Error())
+	}
+}
+
+// TestCollectorContainerSpecRejectsBadHostPort pins that an unset or
+// out-of-range collector host port fails at spec time, naming the field.
+func TestCollectorContainerSpecRejectsBadHostPort(t *testing.T) {
+	_, err := collectorContainerSpec(Config{
+		StateDir: "/state", CollectorImage: "img:pinned",
+		CollectorGRPCPort: 4317, CollectorHTTPPort: 70000, CollectorHealthPort: 0,
+	})
+	if err == nil || !strings.Contains(err.Error(), "CollectorHTTPPort") || !strings.Contains(err.Error(), "70000") {
+		t.Fatalf("collectorContainerSpec() err = %v, want a rejection naming CollectorHTTPPort=70000", err)
 	}
 }
 

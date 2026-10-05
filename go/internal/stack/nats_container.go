@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -23,20 +24,23 @@ import (
 // caller's patience runs out.
 const natsStopTimeout = 20 * time.Second
 
-// The NATS server's fixed listen ports: the client port surfaces reach over
-// nats://, and the HTTP monitoring port is the readiness probe target (/healthz).
-// These are container-internal ports the generated config binds on 0.0.0.0; the
-// run spec publishes them on the host loopback. They are the upstream nats-server
-// defaults, kept literal so the generated config and the published ports never
-// drift.
+// The NATS server's fixed container-internal listen ports: the client port
+// surfaces reach over nats://, and the HTTP monitoring port is the readiness
+// probe target (/healthz). The generated config binds them on 0.0.0.0 inside the
+// container and the adapter publishes them; exported so the two sides share one
+// literal. They are the upstream nats-server defaults.
 const (
-	natsClientPort  = "4222"
-	natsMonitorPort = "8222"
-	// natsListenHost is the host interface the ports publish on: loopback only,
-	// never 0.0.0.0. NATS sits on the trusted control-plane tier and carries no
-	// credentials in this shape, so it must never be network-exposed; an operator
-	// wanting a shared NATS runs --nats-external.
-	natsListenHost = "127.0.0.1"
+	NatsContainerClientPort  = "4222"
+	NatsContainerMonitorPort = "8222"
+)
+
+// DefaultNatsClientPort and DefaultNatsMonitorPort are the host loopback ports
+// the CLI publishes on unless told otherwise: today's fixed values. NATS
+// publishes on loopback only (loopbackEndpoint); it carries no credentials in
+// this shape, so an operator wanting a shared NATS runs --nats-external.
+const (
+	DefaultNatsClientPort  = 4222
+	DefaultNatsMonitorPort = 8222
 )
 
 // NatsStoreDir is the in-container directory JetStream's file storage lives in:
@@ -61,9 +65,7 @@ type NatsContainerSpec struct {
 	// Name is the stable per-state-dir container name (derived from StateDir),
 	// the teardown identity a fresh `down` reconstructs and the v2 container
 	// entry persists. Unique per state dir so concurrent stacks never collide in
-	// podman's flat container namespace. Like the collector this scopes only the
-	// name: the loopback ports below are fixed, so two stacks on one host still
-	// contend for those binds — the embedded stack is one-per-host by design.
+	// podman's flat container namespace; the host ports below come from Config.
 	Name string
 	// Image is the NATS image ref to run (Config.NatsImage; the pinned
 	// DefaultNatsImage on the installed path).
@@ -101,10 +103,10 @@ type NatsContainerSpec struct {
 // natsContainerSpec builds the NATS run spec from the resolved config: it
 // derives the stable container name and the config + data dirs from the state
 // dir, renders the JetStream-on config, and fixes the published loopback
-// endpoints. It is pure (no I/O) so the config and endpoint set it encodes is
-// unit-tested directly, and it errors on a config missing the state dir the
-// bind-mounts and name derivation need rather than running podman against a
-// half-formed spec.
+// endpoints from Config's host ports. It is pure (no I/O) so the config and
+// endpoint set it encodes is unit-tested directly, and it errors on a config
+// missing what the run needs rather than running podman against a half-formed
+// spec.
 func natsContainerSpec(cfg Config) (NatsContainerSpec, error) {
 	if cfg.StateDir == "" {
 		return NatsContainerSpec{}, errors.New("stack config: StateDir is required for the nats container (config + JetStream data bind-mounts + name derivation)")
@@ -112,17 +114,24 @@ func natsContainerSpec(cfg Config) (NatsContainerSpec, error) {
 	if cfg.NatsImage == "" {
 		return NatsContainerSpec{}, errors.New("stack config: NatsImage is required to bundle nats (set --nats-image or use --nats-external to opt out)")
 	}
-	spec := NatsContainerSpec{
+	client, err := loopbackEndpoint("NatsClientPort", cfg.NatsClientPort)
+	if err != nil {
+		return NatsContainerSpec{}, err
+	}
+	monitor, err := loopbackEndpoint("NatsMonitorPort", cfg.NatsMonitorPort)
+	if err != nil {
+		return NatsContainerSpec{}, err
+	}
+	return NatsContainerSpec{
 		Name:            natsContainerName(cfg.StateDir),
 		Image:           cfg.NatsImage,
 		ConfigDir:       filepath.Join(cfg.StateDir, "nats-config"),
+		ConfigYAML:      natsConfigYAML(),
 		DataDir:         filepath.Join(cfg.StateDir, "nats"),
-		ClientEndpoint:  natsListenHost + ":" + natsClientPort,
-		MonitorEndpoint: natsListenHost + ":" + natsMonitorPort,
+		ClientEndpoint:  client,
+		MonitorEndpoint: monitor,
 		StopTimeout:     natsStopTimeout,
-	}
-	spec.ConfigYAML = natsConfigYAML()
-	return spec, nil
+	}, nil
 }
 
 // natsURL is the endpoint every NATS consumer dials: the operator's URL on
@@ -131,7 +140,7 @@ func natsURL(cfg Config) string {
 	if cfg.ExternalNatsURL != "" {
 		return cfg.ExternalNatsURL
 	}
-	return "nats://" + natsListenHost + ":" + natsClientPort
+	return "nats://127.0.0.1:" + strconv.Itoa(cfg.NatsClientPort)
 }
 
 // natsContainerName derives the stable per-state-dir NATS container name. Like
@@ -168,9 +177,9 @@ func natsContainerName(stateDir string) string {
 //     uniformly for every stream the server holds.
 func natsConfigYAML() string {
 	return `host: "0.0.0.0"
-port: ` + natsClientPort + `
+port: ` + NatsContainerClientPort + `
 
-http: "0.0.0.0:` + natsMonitorPort + `"
+http: "0.0.0.0:` + NatsContainerMonitorPort + `"
 
 jetstream {
   store_dir: "` + NatsStoreDir + `"

@@ -326,12 +326,18 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		ExternalOTLPEndpoint: f.otelExternal,
 		NatsImage:            f.natsImage,
 		ExternalNatsURL:      f.natsExternal,
-		RuntimeBackend:       runtimeBackend,
-		GuestArtifact:        guestArtifact,
-		GuestDir:             guestDir,
-		GatewayImage:         f.gatewayImage,
-		ExternalGatewayURL:   f.gatewayExternal,
-		Linger:               f.linger,
+		// No flags for these (RIG-3856): the CLI pins today's host ports.
+		NatsClientPort:      stack.DefaultNatsClientPort,
+		NatsMonitorPort:     stack.DefaultNatsMonitorPort,
+		CollectorGRPCPort:   stack.DefaultCollectorGRPCPort,
+		CollectorHTTPPort:   stack.DefaultCollectorHTTPPort,
+		CollectorHealthPort: stack.DefaultCollectorHealthPort,
+		RuntimeBackend:      runtimeBackend,
+		GuestArtifact:       guestArtifact,
+		GuestDir:            guestDir,
+		GatewayImage:        f.gatewayImage,
+		ExternalGatewayURL:  f.gatewayExternal,
+		Linger:              f.linger,
 	}
 	if err := cfg.Validate(); err != nil {
 		return stack.Config{}, fmt.Errorf("invalid stack config: %w", err)
