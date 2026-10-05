@@ -1448,6 +1448,10 @@ func updateCaptureSpecs() []captureSpec {
 // into committed testdata and into the bot PR this lane opens, and would break
 // the prelude accounting the specs assert.
 func githubUpdateSpecs() []captureSpec {
+	return append(githubCreateReadSpecs(), githubTransitionSpecs()...)
+}
+
+func githubCreateReadSpecs() []captureSpec {
 	return []captureSpec{
 		{provider: providerGitHub, name: "create_issue", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
@@ -1567,6 +1571,11 @@ func githubUpdateSpecs() []captureSpec {
 				return fixtureRequest{Op: "comment_on_issue", Repo: repo, Number: issue.Number,
 					Input: &fixtureInput{Body: body}}
 			}},
+	}
+}
+
+func githubTransitionSpecs() []captureSpec {
+	return []captureSpec{
 		{provider: providerGitHub, name: "transition_issue_close_default", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
@@ -1687,6 +1696,10 @@ func githubUpdateSpecs() []captureSpec {
 // reads are single-shot (prelude 0). Each run drives the SAME live op its sibling
 // oracle scenario runs, with the same teardown hygiene.
 func linearUpdateSpecs() []captureSpec {
+	return append(linearCreateReadSpecs(), linearTransitionSpecs()...)
+}
+
+func linearCreateReadSpecs() []captureSpec {
 	return []captureSpec{
 		{provider: providerLinear, name: "create_issue", prelude: 2,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
@@ -1746,6 +1759,11 @@ func linearUpdateSpecs() []captureSpec {
 				return fixtureRequest{Op: "comment_on_issue", Repo: team, Number: issue.Number,
 					Input: &fixtureInput{Body: body}}
 			}},
+	}
+}
+
+func linearTransitionSpecs() []captureSpec {
+	return []captureSpec{
 		{provider: providerLinear, name: "transition_issue_close_default", prelude: 3,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
