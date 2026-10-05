@@ -415,6 +415,12 @@ type capturePublish struct {
 	// test can force the config-materialize path to fail.
 	configBundle AgentConfigBundle
 	configErr    error
+	// bindReqs records each BindLifetime; bindErr, when set, is returned instead
+	// of success; onBind, when set, runs inside the call so a test can observe
+	// host state at the moment of the bind.
+	bindReqs []*compassv1internal.BindLifetimeRequest
+	bindErr  error
+	onBind   func()
 }
 
 func newCapturePublish() *capturePublish {
@@ -444,6 +450,21 @@ func (c *capturePublish) FetchSecrets(_ context.Context, req *connect.Request[co
 		return nil, fetchErr
 	}
 	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: secrets}), nil
+}
+
+// BindLifetime records the Runner's resume/reload bind and returns bindErr.
+func (c *capturePublish) BindLifetime(_ context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest]) (*connect.Response[compassv1internal.BindLifetimeResponse], error) {
+	c.mu.Lock()
+	c.bindReqs = append(c.bindReqs, req.Msg)
+	bindErr, onBind := c.bindErr, c.onBind
+	c.mu.Unlock()
+	if onBind != nil {
+		onBind()
+	}
+	if bindErr != nil {
+		return nil, bindErr
+	}
+	return connect.NewResponse(&compassv1internal.BindLifetimeResponse{}), nil
 }
 
 // FetchAgentConfig serves the Runner's config fetch as a server stream: it sends
@@ -516,6 +537,20 @@ func (c *capturePublish) fetchRequests() []*compassv1internal.FetchSecretsReques
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]*compassv1internal.FetchSecretsRequest(nil), c.fetchReqs...)
+}
+
+// setBind sets the BindLifetime error and observation hook.
+func (c *capturePublish) setBind(err error, onBind func()) {
+	c.mu.Lock()
+	c.bindErr, c.onBind = err, onBind
+	c.mu.Unlock()
+}
+
+// bindRequests returns a copy of the BindLifetime requests seen so far.
+func (c *capturePublish) bindRequests() []*compassv1internal.BindLifetimeRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*compassv1internal.BindLifetimeRequest(nil), c.bindReqs...)
 }
 
 // --- capturing diagnostic log ------------------------------------------------

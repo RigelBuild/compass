@@ -19,8 +19,9 @@ import (
 // session-JSONL the Runner materializes into the container before exec
 // (dispatch.go reads cmd.GetResumeBody().GetSessionBody()); it is attached ONLY
 // here, never on the public request. The caller (the service handler) has
-// already authorized the resume_session_id and bound the lifetime before this
-// relay — the record's "authz BEFORE any Runner call" ordering.
+// already authorized the resume_session_id before this relay — the record's
+// "authz BEFORE any Runner call" ordering. The Runner binds the lifetime itself
+// after accepting (Hub.BindLifetime).
 //
 // Post-relay it promotes the container's account binding onto the minted live
 // session id exactly as Start does, so a resumed session's comms calls resolve

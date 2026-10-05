@@ -167,6 +167,14 @@ service RunnerService {
   // shape (the Runner still initiates; the Server gains no inbound route).
   rpc FetchSecrets(FetchSecretsRequest) returns (FetchSecretsResponse);
 
+  // BindLifetime (unary, Runner->Server): snapshot a resumed session's
+  // transcript rebase base. The Runner calls it under the container lock after
+  // accepting a resume Start and before the agent runs, so a refused resume
+  // never moves a live session's base. Authorized on the container->account
+  // binding recorded at Provision; an unbound container, a session of another
+  // account, and an unknown session are all PermissionDenied.
+  rpc BindLifetime(BindLifetimeRequest) returns (BindLifetimeResponse);
+
   // FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
   // fleet config bundle to materialize into the agent container at provision
   // (RIG-1568 T3/T4). Server-streaming so the bundle is never bounded by the
@@ -367,6 +375,14 @@ message FetchSecretsRequest {
 message FetchSecretsResponse {
   repeated ResolvedSecret secrets = 1;
 }
+// BindLifetime request: the container the Runner owns and the logical session
+// it is about to resume in it.
+message BindLifetimeRequest {
+  string container_name = 1;
+  string session_id = 2;
+}
+// BindLifetime response: empty; success means the base is bound.
+message BindLifetimeResponse {}
 // One resolved secret: name + value + content-hash version + delivery/kind
 // routing. The SecretDelivery/SecretKind enums are the public ones from
 // compass.proto (this internal file already imports it). `value` is the no-log

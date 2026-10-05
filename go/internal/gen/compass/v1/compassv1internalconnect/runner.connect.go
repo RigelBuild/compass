@@ -82,6 +82,9 @@ const (
 	// RunnerServiceFetchSecretsProcedure is the fully-qualified name of the RunnerService's
 	// FetchSecrets RPC.
 	RunnerServiceFetchSecretsProcedure = "/compass.v1.RunnerService/FetchSecrets"
+	// RunnerServiceBindLifetimeProcedure is the fully-qualified name of the RunnerService's
+	// BindLifetime RPC.
+	RunnerServiceBindLifetimeProcedure = "/compass.v1.RunnerService/BindLifetime"
 	// RunnerServiceFetchAgentConfigProcedure is the fully-qualified name of the RunnerService's
 	// FetchAgentConfig RPC.
 	RunnerServiceFetchAgentConfigProcedure = "/compass.v1.RunnerService/FetchAgentConfig"
@@ -200,6 +203,13 @@ type RunnerServiceClient interface {
 	// interceptor must never dump resolved values. Additive to the dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
+	// BindLifetime (unary, Runner->Server): snapshot a resumed session's
+	// transcript rebase base. The Runner calls it under the container lock after
+	// accepting a resume Start and before the agent runs, so a refused resume
+	// never moves a live session's base. Authorized on the container->account
+	// binding recorded at Provision; an unbound container, a session of another
+	// account, and an unknown session are all PermissionDenied.
+	BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision
 	// (RIG-1568 T3/T4). Server-streaming so the bundle is never bounded by the
@@ -282,6 +292,12 @@ func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
 			connect.WithClientOptions(opts...),
 		),
+		bindLifetime: connect.NewClient[v1.BindLifetimeRequest, v1.BindLifetimeResponse](
+			httpClient,
+			baseURL+RunnerServiceBindLifetimeProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("BindLifetime")),
+			connect.WithClientOptions(opts...),
+		),
 		fetchAgentConfig: connect.NewClient[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse](
 			httpClient,
 			baseURL+RunnerServiceFetchAgentConfigProcedure,
@@ -302,6 +318,7 @@ type runnerServiceClient struct {
 	relayBoardCall          *connect.Client[v1.RelayBoardCallRequest, v1.RelayBoardCallResponse]
 	commitConversationFrame *connect.Client[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse]
 	fetchSecrets            *connect.Client[v1.FetchSecretsRequest, v1.FetchSecretsResponse]
+	bindLifetime            *connect.Client[v1.BindLifetimeRequest, v1.BindLifetimeResponse]
 	fetchAgentConfig        *connect.Client[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse]
 }
 
@@ -348,6 +365,11 @@ func (c *runnerServiceClient) CommitConversationFrame(ctx context.Context, req *
 // FetchSecrets calls compass.v1.RunnerService.FetchSecrets.
 func (c *runnerServiceClient) FetchSecrets(ctx context.Context, req *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
 	return c.fetchSecrets.CallUnary(ctx, req)
+}
+
+// BindLifetime calls compass.v1.RunnerService.BindLifetime.
+func (c *runnerServiceClient) BindLifetime(ctx context.Context, req *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error) {
+	return c.bindLifetime.CallUnary(ctx, req)
 }
 
 // FetchAgentConfig calls compass.v1.RunnerService.FetchAgentConfig.
@@ -468,6 +490,13 @@ type RunnerServiceHandler interface {
 	// interceptor must never dump resolved values. Additive to the dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
+	// BindLifetime (unary, Runner->Server): snapshot a resumed session's
+	// transcript rebase base. The Runner calls it under the container lock after
+	// accepting a resume Start and before the agent runs, so a refused resume
+	// never moves a live session's base. Authorized on the container->account
+	// binding recorded at Provision; an unbound container, a session of another
+	// account, and an unknown session are all PermissionDenied.
+	BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision
 	// (RIG-1568 T3/T4). Server-streaming so the bundle is never bounded by the
@@ -546,6 +575,12 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runnerServiceBindLifetimeHandler := connect.NewUnaryHandler(
+		RunnerServiceBindLifetimeProcedure,
+		svc.BindLifetime,
+		connect.WithSchema(runnerServiceMethods.ByName("BindLifetime")),
+		connect.WithHandlerOptions(opts...),
+	)
 	runnerServiceFetchAgentConfigHandler := connect.NewServerStreamHandler(
 		RunnerServiceFetchAgentConfigProcedure,
 		svc.FetchAgentConfig,
@@ -572,6 +607,8 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 			runnerServiceCommitConversationFrameHandler.ServeHTTP(w, r)
 		case RunnerServiceFetchSecretsProcedure:
 			runnerServiceFetchSecretsHandler.ServeHTTP(w, r)
+		case RunnerServiceBindLifetimeProcedure:
+			runnerServiceBindLifetimeHandler.ServeHTTP(w, r)
 		case RunnerServiceFetchAgentConfigProcedure:
 			runnerServiceFetchAgentConfigHandler.ServeHTTP(w, r)
 		default:
@@ -617,6 +654,10 @@ func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context
 
 func (UnimplementedRunnerServiceHandler) FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchSecrets is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.BindLifetime is not implemented"))
 }
 
 func (UnimplementedRunnerServiceHandler) FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error {

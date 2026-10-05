@@ -228,8 +228,8 @@ resume still moves the base.
   (a) Reload is a resume: materialize a reconstructed body, then bind
   (recommended); (b) Reload mints a new logical session id; (c) Reload keeps
   the id and the new process opens with a checkpoint. Tracked on RIG-4451
-  (human-action); a follow-up record designs the chosen option. The bind
-  RPC above is the mechanism (a) and (c) would call.
+  (human-action); a follow-up record designs the chosen option. Reload now
+  calls the bind before `StartAgent` (option (a)'s bind half, RIG-4418).
 - **Non-load-bearing deferral: in-flight commit across a rebind.** A dead
   process can have one `CommitConversationFrame` still in the Server after
   the Runner sees its call cancelled: the Gateway commits on the agent's

@@ -43,8 +43,9 @@ type systemRoleKey struct{}
 // tenant's rows. It is the OQ-4 (Matt-ruled option 1) exemption, applied ONLY at
 // named entrypoints (the delivery consumer's Run, the hub's deliver-ack /
 // forge-notification-ack arms, reattach recovery, the compute-usage orphan
-// sweep, Hub.runnerSessionCtx's tenant lookup, and Hub.enroll's reap keyed by the
-// authenticated Runner id). Every other request-path call stays tenant-scoped.
+// sweep, Hub.runnerSessionCtx's tenant lookup, Hub.BindLifetime's tenant
+// lookup, and Hub.enroll's reap keyed by the authenticated Runner id). Every
+// other request-path call stays tenant-scoped.
 func WithSystemRole(ctx context.Context) context.Context {
 	return context.WithValue(ctx, systemRoleKey{}, true)
 }

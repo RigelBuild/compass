@@ -279,6 +279,20 @@ func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(resp), nil
 }
 
+// BindLifetime binds a resumed session's transcript base for the authenticated
+// Runner. The Runner calls it under its container lock after accepting a
+// resume Start and before the agent runs (Hub.BindLifetime has the authz).
+func (h *Handler) BindLifetime(ctx context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest]) (*connect.Response[compassv1internal.BindLifetimeResponse], error) {
+	subj, ok := runnerSubjectFrom(ctx)
+	if !ok {
+		return nil, errUnauthenticated
+	}
+	if err := h.hub.BindLifetime(ctx, subj.ID, req.Msg.GetContainerName(), req.Msg.GetSessionId()); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&compassv1internal.BindLifetimeResponse{}), nil
+}
+
 // FetchSecrets resolves the secret set for a live session (or a provisioned
 // container) and returns it to the Runner. Auth is already at the door (the
 // Runner-subject bearer interceptor Kind-gates every RunnerService RPC — an
