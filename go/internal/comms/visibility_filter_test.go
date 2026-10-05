@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -475,19 +476,25 @@ func TestSubscribeCommsDepartingMemberFinalEventOmitsSameBatchAdd(t *testing.T) 
 	if len(rccs) != 1 {
 		t.Fatalf("departing member received %d ChannelChanged, want exactly 1", len(rccs))
 	}
-	final := rccs[0]
-	if !containsString(final.GetRemovedAccountIds(), string(departing.ID)) {
-		t.Fatalf("final event does not name the departing member as removed: %v", final.GetRemovedAccountIds())
-	}
-	if got := final.GetChannel(); containsString(got.GetMemberAccountIds(), string(added.ID)) || containsString(got.GetSubscriberAccountIds(), string(added.ID)) {
-		t.Fatalf("LEAK: departing member's final event shows the same-batch add %s: members %v subscribers %v",
-			added.ID, got.GetMemberAccountIds(), got.GetSubscriberAccountIds())
-	}
+	assertDepartingView(t, rccs[0], chID, departing.ID)
 
 	// A remaining member still gets the post-mutation roster, including the add.
 	ownerCCs := channelChanges(drainReplayAsActor(t, h, owner.ID, canary), chID)
 	if len(ownerCCs) == 0 || !containsString(ownerCCs[len(ownerCCs)-1].GetChannel().GetMemberAccountIds(), string(added.ID)) {
 		t.Fatalf("remaining member's last ChannelChanged lacks the added member %s", added.ID)
+	}
+}
+
+// assertDepartingView fails unless cc is exactly the trimmed final event a
+// departed account may see: the channel id and its own removal, nothing else.
+func assertDepartingView(t *testing.T, cc *compassv1.ChannelChanged, chID string, departed store.AccountID) {
+	t.Helper()
+	want := &compassv1.ChannelChanged{
+		Channel:           &compassv1.Channel{Id: chID},
+		RemovedAccountIds: []string{string(departed)},
+	}
+	if !proto.Equal(cc, want) {
+		t.Fatalf("LEAK: departing member's final ChannelChanged = %v, want only %v", cc, want)
 	}
 }
 

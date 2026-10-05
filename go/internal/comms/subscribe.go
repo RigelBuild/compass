@@ -181,7 +181,7 @@ func commsToResponse(actor store.AccountID, event events.Stamped[*compassv1.Subs
 	}
 	// A departed account gets only the channel id: the roster, name, and policy
 	// are post-change state it was never a member alongside (a same-batch add).
-	if cc := event.Payload.GetChannelChanged(); cc != nil && slices.Contains(cc.GetRemovedAccountIds(), string(actor)) {
+	if cc := event.Payload.GetChannelChanged(); cc.GetChannel() != nil && slices.Contains(cc.GetRemovedAccountIds(), string(actor)) {
 		resp.Payload = &compassv1.SubscribeCommsResponse_ChannelChanged{ChannelChanged: &compassv1.ChannelChanged{
 			Channel:           &compassv1.Channel{Id: cc.GetChannel().GetId()},
 			RemovedAccountIds: cc.GetRemovedAccountIds(),
