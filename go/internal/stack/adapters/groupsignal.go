@@ -64,8 +64,12 @@ func (g *GroupSignaller) Liveness(pgid int, startTime uint64) stack.GroupLivenes
 	if pgid <= 1 {
 		return stack.GroupGone
 	}
-	if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.ESRCH) {
+	switch err := syscall.Kill(-pgid, 0); {
+	case errors.Is(err, syscall.ESRCH):
 		return stack.GroupGone
+	case errors.Is(err, syscall.EPERM):
+		// Another uid's group: our children share our uid, so this pgid was reused.
+		return stack.GroupRecycled
 	}
 	got, err := readGroupLeaderStartTime(pgid)
 	if err != nil {

@@ -207,7 +207,7 @@ const (
 	GroupOwned
 	// GroupOrphaned means the group exists but its leader is gone or unreadable.
 	GroupOrphaned
-	// GroupRecycled means the leader's start time differs: the pid is someone else's.
+	// GroupRecycled means the pid is someone else's: a different leader start time, or another uid's group.
 	GroupRecycled
 )
 
