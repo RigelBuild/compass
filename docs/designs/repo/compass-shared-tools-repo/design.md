@@ -39,9 +39,9 @@ record names no path in the private repo.
 
 ### One public repo, one package per tool
 
-Use the public repo `RigelBuild/meissa` (see Decisions). Its creation and its
-Nix side (a pinned nixpkgs, the shared rumdl and biome, a daily relock) come
-from a separate plan; this record adds the TS tools to it. They form a bun
+Use the public repo `RigelBuild/meissa` (see Decisions). The tooling lane
+creates it and builds its Nix side: a pinned nixpkgs, the shared rumdl and
+biome, and a daily relock. This record adds the TS tools to it. They form a bun
 workspace with one package per tool
 under `packages/<tool>/`, published as `@rigelbuild/<tool>` with a bin of the
 same name. Each consumer pins exact versions and deletes its own copy in
@@ -105,7 +105,7 @@ repos carry. T10 measured it. Only one file is shared, the vendored bun, node
 and moon builder, with 6 lines of drift. Matt then ruled (RIG-4548) to
 reconcile that file by hand in each repo instead of shipping it from meissa.
 So this record moves no Nix code. Meissa's own Nix exports (rumdl, biome, the
-rumdl base policy) come from its separate plan.
+rumdl base policy) are the tooling lane's work.
 
 ### What may move (the public boundary)
 
@@ -179,7 +179,7 @@ scope is T4, T5, and the ledger part of T7 and T8.
 
 ### T1 — Meissa exists
 
-Not built here. Meissa's own plan creates it through the org's GitHub IaC,
+Not built here. The tooling lane creates meissa through the org's GitHub IaC,
 with a seeded `main`, a ruleset, and a place in the Trunk queue, then adds its
 Nix exports and daily relock. This record's T2 starts once that lands.
 
@@ -189,15 +189,18 @@ Interfaces: consumes meissa's `main`, ruleset, and CI.
 
 Lands in: meissa, plus one org GitHub IaC change after its CI first runs
 (meissa's ruleset gains the required checks). A bun workspace over
-`packages/*`, moon, the licence files (after the outside-contribution check),
-a GitHub Actions CI job that runs typecheck, lint, and test per package, and
+`packages/*`, moon, a licence file under each package (after the
+outside-contribution check), a GitHub Actions CI job that runs typecheck,
+lint, and test per package, and
 the release lane: release-please per package, then
 `npm publish --provenance` through trusted publishing, after the bootstrap
 publish of each package. It reuses the rumdl and biome meissa already exports.
-Meissa's plan owns its devenv, flake, and relock rules. T2 adds only the npm
-and release-please Renovate rules. Any secret the release lane needs on meissa
-is a separate org GitHub IaC change in T2; meissa's plan provisions only the
-Renovate App credentials.
+The tooling lane owns meissa's devenv, flake, and relock rules, and they
+export only rumdl and biome. So T2 adds bun, node, and moon to meissa's dev
+shell and CI, from nixpkgs at meissa's pin, as an addition the tooling lane
+reviews. T2 adds only the npm and release-please Renovate rules. Any secret
+the release lane needs on meissa is a separate org GitHub IaC change in T2;
+the tooling lane provisions only the Renovate App credentials.
 
 Interfaces: each `packages/<tool>/package.json` has
 `"name": "@rigelbuild/<tool>"` and `"bin": { "<tool>": "./index.ts" }`.
@@ -375,9 +378,10 @@ Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 
 ### T10 — Shared Nix tooling inventory
 
-Done. The record `docs/designs/repo/compass-shared-nix-tooling/design.md`
+Its record is `docs/designs/repo/compass-shared-nix-tooling/design.md`. It
 measured the Nix both repos carry. Matt ruled to reconcile the one shared
-builder by hand (RIG-4548), so no Nix moves to meissa.
+builder by hand (RIG-4548), so no Nix moves to meissa. The task is done when
+that record merges.
 
 ### Out of scope
 
@@ -389,7 +393,7 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 
 ## Tasks
 
-- [ ] T1 — Meissa exists (its own plan).
+- [ ] T1 — Meissa exists (tooling lane).
 - [ ] T2 — Add the bun workspace and release lane to meissa.
 - [ ] T3 — Ship `ref-gate` and make it the shared repo's required check.
 - [ ] T4 — Port `design-ledger-gate` onto a list of ledgers.
@@ -398,9 +402,9 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 - [ ] T7 — Cut compass over and delete its six local tools.
 - [ ] T8 — Cut the private consumer over and delete its local copies.
 - [ ] T9 — Turn on compass's extra ledger legs.
-- [x] T10 — Write the shared Nix tooling inventory record.
+- [ ] T10 — Write the shared Nix tooling inventory record.
 
-## Decisions (Matt, 2026-10-04, RIG-4440)
+## Decisions (Matt, 2026-10-04 RIG-4440; repo name and Nix 2026-10-05)
 
 - **OQ1 — pin mechanism:** npm packages for the TS tools. Matt added Nix;
   T10 measured it and RIG-4548 ruled reconcile by hand, so no Nix moves.
