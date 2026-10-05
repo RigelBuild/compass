@@ -57,8 +57,15 @@ RETURNING m.id, m.topic_id, m.author_account_id,
           COALESCE((SELECT (CASE WHEN author_handles.owner_user_id IS NULL THEN author_handles.handle WHEN owner_handles.handle IS NULL THEN '' ELSE owner_handles.handle || '/' || author_handles.handle END)::text FROM account_handles AS author_handles LEFT JOIN account_handles AS owner_handles ON owner_handles.account_id = author_handles.owner_user_id WHERE author_handles.account_id = $4), '')::text AS author_handle,
           m.at_unix_ms, m.blocks;
 
--- name: GetMessageBlocks :one
-SELECT blocks FROM messages WHERE id = $1;
+-- name: GetMessageBlocksAsAuthor :one
+SELECT m.blocks FROM messages m
+JOIN topics t ON t.id = m.topic_id
+WHERE m.id = $1
+  AND m.author_account_id = $2
+  AND EXISTS (
+    SELECT 1 FROM channel_members cm
+    WHERE cm.channel_id = t.channel_id AND cm.account_id = $2
+  );
 
 -- name: GetPageCursorSeq :one
 SELECT m.seq FROM messages m

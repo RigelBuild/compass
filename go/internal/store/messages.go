@@ -368,27 +368,22 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 }
 
 // MessageAskIDs returns the ask_id of every ask block on the message, in block
-// order, for the relayed-update write-through's ask_id reconciliation
-// (comms.CommitAgentUpdate). It exists so the UPDATE path can source the
-// server-owned ask_id from the stored row instead of stripping it (the POST
-// path's mintAskIDs behavior, wrong for an update) or trusting a wire value.
-//
-// Safe as a SEPARATE statement from the authz UPDATE precisely because ask_id is
-// immutable: mintAskIDs (blocks.go) assigns it once at append and nothing ever
-// reassigns it, so a value read here cannot be invalidated by a later write —
-// unlike the mutable post-state the UPDATE returns via RETURNING, this read
-// observes a field that is stable for the row's life. It is scoped by message id
-// ALONE — the same scope the UPDATE addresses — and performs NO membership or
-// authorship check and returns NO distinct not-found (an unknown id or a message
-// with no ask yields an empty slice), so it cannot be turned into an
-// authz/session enumeration oracle: the sole authz gate remains the
-// single-statement UpdateMessageBlocksAsAuthor that follows, and its result is
-// never derived from what this read returned.
-func (s *Store) MessageAskIDs(ctx context.Context, id MessageID) ([]string, error) {
-	blocksJSON, err := s.q.GetMessageBlocks(ctx, string(id))
+// order, for the relayed-update ask_id reconciliation (comms.CommitAgentUpdate).
+// It applies UpdateMessageBlocksAsAuthor's authz predicate (author + current
+// member), so a message the actor cannot edit is ErrNotFound — the same answer
+// as an unknown id — and the reconciliation never branches on an unseen row.
+// A separate read is race-free because ask_id is immutable once minted.
+func (s *Store) MessageAskIDs(ctx context.Context, actor AccountID, id MessageID) ([]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("%w: message id is required", ErrInvalidArgument)
+	}
+	blocksJSON, err := s.q.GetMessageBlocksAsAuthor(ctx, db.GetMessageBlocksAsAuthorParams{
+		ID:              string(id),
+		AuthorAccountID: string(actor),
+	})
 	if err != nil {
 		if noRows(err) {
-			return nil, nil
+			return nil, fmt.Errorf("%w: message %q", ErrNotFound, id)
 		}
 		return nil, fmt.Errorf("store: read message ask ids: %w", err)
 	}

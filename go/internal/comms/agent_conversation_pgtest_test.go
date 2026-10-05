@@ -600,3 +600,33 @@ func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
 		t.Fatalf("stored ask_id = %q, want the untouched %q", msgs[0].Blocks[0].Ask.AskID, storedAskID)
 	}
 }
+
+// An update naming another account's ask-bearing message must refuse exactly as
+// a nonexistent id does (NotFound), and never echo the stored ask_id: a distinct
+// mismatch/surplus refusal would reveal the message exists and holds an ask.
+func TestCommitAgentUpdateForeignAskMessageIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, st, "owner")
+	agentA := mustAgent(t, st, owner.ID, "agent-a")
+	agentB := mustAgent(t, st, owner.ID, "agent-b")
+	posted, err := svc.CommitAgentPost(ctx, agentA.ID, postedFrame([]*compassv1.MessageBlock{askBlockWire()}))
+	if err != nil {
+		t.Fatalf("CommitAgentPost(A ask): %v", err)
+	}
+	id := posted.GetMessage().GetId()
+	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
+
+	frames := map[string][]*compassv1.MessageBlock{
+		"mismatched ask_id": {askBlockWireID("forged-ask")},
+		"surplus ask":       {askBlockWireID(storedAskID), askBlockWireID("forged-surplus")},
+	}
+	for name, blocks := range frames {
+		_, err := svc.CommitAgentUpdate(ctx, agentB.ID, updatedFrame(id, blocks))
+		connectCodeIs(t, err, connect.CodeNotFound, "CommitAgentUpdate(foreign, "+name+")")
+		if strings.Contains(err.Error(), storedAskID) {
+			t.Fatalf("%s: refusal %q leaks A's stored ask_id", name, err)
+		}
+	}
+}
