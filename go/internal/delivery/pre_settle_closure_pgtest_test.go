@@ -276,8 +276,8 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	// Agent-authored mention, committed NULL, unpublished — the held message the
 	// restart severs from any live author turn.
 	msg := postThroughStore(t, ctx, s, ch, author.ID, "@aa agent-authored mention held then lost")
-	if got := msg.AuthorHandle; got != author.Handle {
-		t.Fatalf("stored agent author handle = %q, want %q", got, author.Handle)
+	if want := owner.Handle + "/" + author.Handle; msg.AuthorHandle != want {
+		t.Fatalf("stored agent author handle = %q, want %q", msg.AuthorHandle, want)
 	}
 
 	c, disp, res := newPgConsumer(t, s) // fresh consumer => c.held empty, no live author
@@ -307,8 +307,8 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 			continue
 		}
 		steered++
-		if rec.kind != opSteer || rec.messageAuthorHandle != author.Handle || rec.fromHandle != author.Handle {
-			t.Fatalf("owed-sweep dispatch = %+v, want a steer with author handle %q", rec, author.Handle)
+		if rec.kind != opSteer || rec.messageAuthorHandle != owner.Handle+"/"+author.Handle || rec.fromHandle != owner.Handle+"/"+author.Handle {
+			t.Fatalf("owed-sweep dispatch = %+v, want a steer with author handle %q", rec, owner.Handle+"/"+author.Handle)
 		}
 	}
 	if steered == 0 {

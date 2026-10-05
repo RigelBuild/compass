@@ -1185,8 +1185,8 @@ type Message struct {
 	AtUnixMs        int64  `protobuf:"varint,4,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
 	// Ordered content; the block sequence a streaming agent turn appends to (D5).
 	Blocks []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
-	// Agent authors use `owner/handle` as a resolvable address; users and system stay bare.
-	// `author_account_id` remains the stable key.
+	// Agent authors use `owner/handle` as a resolvable address; unresolved owners render empty.
+	// Users and system stay bare; `author_account_id` remains the stable key.
 	AuthorHandle string `protobuf:"bytes,6,opt,name=author_handle,json=authorHandle,proto3" json:"author_handle,omitempty"`
 	// Set on SearchMessages hits to identify the topic's channel; empty otherwise.
 	ChannelId     string `protobuf:"bytes,7,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`

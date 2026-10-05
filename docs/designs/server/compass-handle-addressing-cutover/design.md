@@ -605,6 +605,8 @@ id, never a retype.
 Amendment (2026-09-27, RIG-4026): `author_handle` (and therefore `from_handle`)
 is `owner/handle` for agents and bare for users/system. The owner's global
 handle is resolved by joining the agent's `account_handles.owner_user_id`.
+This refines DL-270's display sibling into an address; an agent whose owner
+handle is unresolved yields an empty value.
 
 ## Tasks
 

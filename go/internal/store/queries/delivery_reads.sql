@@ -27,7 +27,7 @@ ORDER BY aa.account_id;
 SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE account_id = $1);
 
 -- name: MessageByID :one
-SELECT m.id, m.topic_id, m.author_account_id, (COALESCE(oh.handle || '/', '') || COALESCE(ah.handle, ''))::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id

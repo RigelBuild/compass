@@ -54,8 +54,8 @@ func TestPostAsAccountAttributesToAgentAccount(t *testing.T) {
 	if got := resp.GetMessage().GetAuthorAccountId(); got != string(agent.ID) {
 		t.Fatalf("posted message author = %q, want the agent account %q (not admin)", got, agent.ID)
 	}
-	if got := resp.GetMessage().GetAuthorHandle(); got != agent.Handle {
-		t.Fatalf("posted message author handle = %q, want %q", got, agent.Handle)
+	if want := owner.Handle + "/" + agent.Handle; resp.GetMessage().GetAuthorHandle() != want {
+		t.Fatalf("posted message author handle = %q, want %q", resp.GetMessage().GetAuthorHandle(), want)
 	}
 
 	// Read it back as the agent (a member) — it persisted under the agent.
@@ -72,8 +72,8 @@ func TestPostAsAccountAttributesToAgentAccount(t *testing.T) {
 			if got := m.GetAuthorAccountId(); got != string(agent.ID) {
 				t.Fatalf("stored message author = %q, want the agent account %q", got, agent.ID)
 			}
-			if got := m.GetAuthorHandle(); got != agent.Handle {
-				t.Fatalf("stored message author handle = %q, want %q", got, agent.Handle)
+			if want := owner.Handle + "/" + agent.Handle; m.GetAuthorHandle() != want {
+				t.Fatalf("stored message author handle = %q, want %q", m.GetAuthorHandle(), want)
 			}
 		}
 	}
