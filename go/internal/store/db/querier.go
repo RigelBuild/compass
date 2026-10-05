@@ -641,10 +641,9 @@ type Querier interface {
 	// Linear-agent-session queries (sqlc adoption T6, RIG-3034). These replace the
 	// inline SQL literals in internal/store/linear_sessions.go; the hand-written
 	// Store methods keep their signatures, the RowsAffected branch (Upsert returns
-	// created via :execrows), the textOrNull linear_issue_id NULL discipline, and the
+	// created via :execrows), the textOrNull nullable issue fields, and the
 	// ErrNotFound/ErrInvalidArgument mapping. The LinearAgentSession read maps the
-	// generated row (nullable linear_issue_id, created_at timestamp) back to the
-	// domain LinearAgentSessionRow inline.
+	// generated nullable fields back to LinearAgentSessionRow inline.
 	UpsertLinearAgentSession(ctx context.Context, arg UpsertLinearAgentSessionParams) (int64, error)
 	// UpsertSecret writes declaration+value in one row and, on a re-write of an
 	// existing (name, scope_kind, scope_id), rewrites value/nonce/key_version and the

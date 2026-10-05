@@ -113,11 +113,11 @@ type ServeConfig struct {
 	CORSAllowedOrigin string
 	// PublicURL is the per-deployment public base URL Compass is reachable at
 	// (e.g. "https://host.example.ts.net"), the base for the Linear Agent
-	// responder's "Open in Compass" deep links (RIG-2717 T5, design Part 6).
+	// responder's stable session link and the channel it redirects to.
 	// Per-deployment, never hardcoded and with no default — the managed-service
 	// host is a deployment concern that does not live in this repo. The CLI
 	// supplies it (flag --public-url / $COMPASS_PUBLIC_URL); a deployment that
-	// consumes Linear webhooks needs it non-empty, enforced by deepLinkFor's
+	// consumes Linear webhooks needs it non-empty, enforced by requirePublicURL's
 	// boot guard where the responder is assembled.
 	PublicURL string
 	// Forge is the board webhook-ingestion lane + forge-write config (RIG-2883).
@@ -1066,7 +1066,7 @@ func buildDoors(
 	// drift apart and the recorded instance is always the delivered one.
 	netResolver := resolver
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink)
 		if err != nil {
 			return serveDoors{}, err
 		}
