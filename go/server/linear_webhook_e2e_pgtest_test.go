@@ -268,7 +268,8 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 
 	linear := newFakeLinearAPI(t)
 	tokens := linearagent.NewTokenSource(linE2EClientID, linE2ESecret, linear.srv.Client(), linear.srv.URL+"/oauth/token")
-	d := buildLinearResponder(ServeConfig{PublicURL: linE2EPublicURL}, st, cm, admin.ID, bridge.ID, tokens, linear.srv.URL+"/graphql")
+	resolver := buildLinearResolver(st, admin.ID)
+	d := buildLinearResponder(ServeConfig{PublicURL: linE2EPublicURL}, st, cm, bridge.ID, tokens, linear.srv.URL+"/graphql", resolver)
 	if d == nil {
 		t.Fatal("buildLinearResponder returned nil with a token source")
 	}
@@ -458,7 +459,7 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	if len(thoughts) != 1 || thoughts[0].Status != http.StatusOK || thoughts[0].Content.Type != "thought" || thoughts[0].Content.Body == "" {
 		t.Errorf("thought activities = %+v, want one accepted non-empty thought", thoughts)
 	}
-	wantURL := linE2EPublicURL + "/#/channel/" + string(home)
+	wantURL := sessionLinkFor(linE2EPublicURL, sessionID)
 	if len(updates) != 1 || updates[0].Status != http.StatusOK || len(updates[0].ExternalURLs) != 1 || updates[0].ExternalURLs[0].URL != wantURL {
 		t.Errorf("session updates = %+v, want one accepted update with external URL %s", updates, wantURL)
 	}

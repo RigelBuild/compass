@@ -267,6 +267,7 @@ func buildNetworkServer(
 	webhookSink ForgeEventSink,
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearWebhookHandler http.Handler,
+	linearSessionLinkHandler http.Handler,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -345,6 +346,11 @@ func buildNetworkServer(
 	// with the webhook secret, so VerifySignature is its whole authentication.
 	if linearWebhookHandler != nil {
 		netMux.Handle(linearWebhookPath, linearWebhookHandler)
+	}
+	// Unauthenticated by design: it mutates nothing, and the redirect target is
+	// itself an auth-gated Compass surface.
+	if linearSessionLinkHandler != nil {
+		netMux.Handle(linearSessionLinkPath, linearSessionLinkHandler)
 	}
 	var netRoot http.Handler = netMux
 	if cfg.CORSAllowedOrigin != "" {

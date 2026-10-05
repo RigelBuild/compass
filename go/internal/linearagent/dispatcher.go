@@ -13,12 +13,12 @@ import (
 // ackThoughtBody is the receipt the dispatcher emits on a `created` event — the
 // 10-second liveness SLA leg (linear.app/developers/agent-interaction §Session
 // webhooks): Linear marks a session unresponsive unless the agent emits within
-// 10s. It tells the human what happened and pairs with the session external URL
-// (the "Open in Compass" deep link) as the whole Option B return path (§Part 3).
+// 10s. It tells the human what happened and pairs with the stable session link
+// as the whole Option B return path (§Part 3).
 const ackThoughtBody = "Compass received the session; opening in Compass\u2026"
 
-// externalURLLabel is the label on the session external URL entry — the
-// "Open in Compass" deep link to the resolved Manager's home channel (§Part 3).
+// externalURLLabel is the label on the stable session return link, which resolves
+// to the current Compass channel when the human opens it (§Part 3).
 const externalURLLabel = "Open in Compass"
 
 // replyResponseBody is the `response` emitted on the Manager's first reply after
@@ -88,9 +88,8 @@ type DispatcherParams struct {
 	Associations Associations
 	// Client is the T2 Linear API client (CreateActivity + UpdateSession).
 	Client Client
-	// DeepLinkFor is T5's deep-link builder, taken as a func seam because T5's
-	// builder lives in go/server (no import from this package).
-	DeepLinkFor func(channelID string) string
+	// SessionLinkFor builds the stable return link from the Linear session id.
+	SessionLinkFor func(linearSessionID string) string
 	// Bridge is the seeded @linear bridge system account id (T3a).
 	Bridge store.AccountID
 }
@@ -102,15 +101,15 @@ type DispatcherParams struct {
 // moves on. It does not mirror agent output: beyond the two `created` emits, it
 // emits one `response` on the Manager's first reply after each prompt.
 type Dispatcher struct {
-	ch          chan *SessionEvent
-	resolve     ResolveFunc
-	poster      CommsPoster
-	members     Memberships
-	topics      Topics
-	assoc       Associations
-	client      Client
-	deepLinkFor func(channelID string) string
-	bridge      store.AccountID
+	ch             chan *SessionEvent
+	resolve        ResolveFunc
+	poster         CommsPoster
+	members        Memberships
+	topics         Topics
+	assoc          Associations
+	client         Client
+	sessionLinkFor func(linearSessionID string) string
+	bridge         store.AccountID
 
 	// awaiting maps a session's topic to the reply that ends its "Thinking"
 	// state. In memory: a restart drops it, leaving that one session in Thinking.
@@ -132,16 +131,16 @@ func NewDispatcher(p DispatcherParams) *Dispatcher {
 		buf = 1
 	}
 	return &Dispatcher{
-		ch:          make(chan *SessionEvent, buf),
-		resolve:     p.Resolve,
-		poster:      p.Poster,
-		members:     p.Members,
-		topics:      p.Topics,
-		assoc:       p.Associations,
-		client:      p.Client,
-		deepLinkFor: p.DeepLinkFor,
-		bridge:      p.Bridge,
-		awaiting:    make(map[string]awaitedReply),
+		ch:             make(chan *SessionEvent, buf),
+		resolve:        p.Resolve,
+		poster:         p.Poster,
+		members:        p.Members,
+		topics:         p.Topics,
+		assoc:          p.Associations,
+		client:         p.Client,
+		sessionLinkFor: p.SessionLinkFor,
+		bridge:         p.Bridge,
+		awaiting:       make(map[string]awaitedReply),
 	}
 }
 
@@ -263,7 +262,7 @@ func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error 
 	}
 	if err := d.client.UpdateSession(ctx, ev.AgentSession.ID, []ExternalURL{{
 		Label: externalURLLabel,
-		URL:   d.deepLinkFor(homeChannel),
+		URL:   d.sessionLinkFor(ev.AgentSession.ID),
 	}}); err != nil {
 		return err
 	}

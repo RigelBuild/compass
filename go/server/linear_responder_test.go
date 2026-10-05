@@ -55,6 +55,12 @@ func TestBuildLinearWiringSessionSink(t *testing.T) {
 		if lh.sessionSink != SessionEventSink(w.responder) {
 			t.Fatalf("session sink = %v, want the built dispatcher", lh.sessionSink)
 		}
+		if w.sessionLink == nil {
+			t.Fatal("session link handler = nil with both responder and webhook mounted")
+		}
+		if _, ok := w.sessionLink.(*linearSessionLinkHandler); !ok {
+			t.Fatalf("session link handler = %T, want *linearSessionLinkHandler", w.sessionLink)
+		}
 		// Nothing drains, so the queue fills: every POST up to the buffer is
 		// accepted, and the next one is the 500 that makes Linear retry.
 		for i := range linearResponderBuffer {
@@ -71,6 +77,9 @@ func TestBuildLinearWiringSessionSink(t *testing.T) {
 		w, lh := mount(t, cfg, nil)
 		if w.responder != nil || w.notify != nil {
 			t.Fatalf("Linear lanes built while off: responder=%v notify=%v", w.responder, w.notify)
+		}
+		if w.sessionLink != nil {
+			t.Fatalf("session link handler = %T, want nil without a responder", w.sessionLink)
 		}
 		// A typed-nil *Dispatcher would compare non-nil here and panic on Enqueue.
 		if lh.sessionSink != nil {
