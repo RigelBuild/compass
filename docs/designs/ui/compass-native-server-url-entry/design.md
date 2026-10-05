@@ -3,7 +3,7 @@
 Linear: RIG-3102 (design); RIG-1746 (parent)
 Refines: `ui/compass-native-client-mode/design.md` (the connect probe and its
 failure kinds) and `ui/compass-native-embedded-revival/design.md` §A1 (the
-app.toml contract). Supersedes DL-320 if OQ-1 is ruled as recommended; see
+app.toml contract). Supersedes DL-320 via DL-406 (Matt, 2026-10-05); see
 §Ledger-impact.
 
 ## Problem / Intent
@@ -55,7 +55,7 @@ exists. A user who wants a server gets a local stack they did not ask for or,
 without podman, `exit 1` with no window (`run` in `go/cmd/compass-app/main.go`
 returns the `launch` error before `application.New`).
 
-Recommended (OQ-1): when `Load` reports no file and no override
+Ruled (OQ-1 (a)): when `Load` reports no file and no override
 (`appconfig.ErrNoConfig`), the window opens at once to two choices:
 
 - **Run Compass on this computer** (primary). The shell runs the embedded
@@ -541,11 +541,13 @@ fixed below.
 - [ ] T-5 — SMOKE.md, onboarding, runner-tiers spec, dev example + README, e2e
   writer; smoke run
 
-## Open Questions
+## Decisions (ruled)
 
-OQ-1 and OQ-6 are load-bearing. OQ-5 (an editable URL on a configured client)
-is deferred: it is outside RIG-3102's acceptance, it would rewrite hand-written
-files, and it needs a keep / system / file CA choice.
+Matt ruled OQ-1 and OQ-6 on 2026-10-05 (RIG-4480): OQ-1 **(a)** and OQ-6
+**(d)**. OQ-2, OQ-3 and OQ-4 take the recommendations below. OQ-5 (an
+editable URL on a configured client) is deferred: it is outside RIG-3102's
+acceptance, it would rewrite hand-written files, and it needs a keep / system
+/ file CA choice.
 
 ### OQ-1 — Where the URL entry appears (conflicts with DL-320) — load-bearing
 
@@ -564,8 +566,8 @@ can enter a URL in the UI", cannot pass while absent means embedded.
   contradicts DL-320's graduation clause, and a client-only user must pass the
   embedded preflight first.
 
-**Recommendation: (a)**, the only option that meets acceptance without making
-client users pass through embedded.
+**Ruled: (a)** (Matt, 2026-10-05), the only option that meets acceptance
+without making client users pass through embedded.
 
 ### OQ-2 — How the TLS target gets a URL that arrives after startup
 
@@ -577,7 +579,7 @@ client users pass through embedded.
 - **(c) A hot swap at any time.** It must drain streams and rebuild the UI's
   provider; that is a separate design.
 
-**Recommendation: (a).**
+**Ruled: (a).**
 
 ### OQ-3 — Where the choice persists
 
@@ -588,7 +590,7 @@ client users pass through embedded.
 - **(c) Both, with the store used when app.toml is absent.** The same
   precedence problem, and deleting app.toml no longer resets.
 
-**Recommendation: (a).**
+**Ruled: (a).**
 
 ### OQ-4 — The private CA from the UI
 
@@ -600,7 +602,7 @@ client users pass through embedded.
 - **(d) Trust on first use with a fingerprint check.** A trust-model design of
   its own.
 
-**Recommendation: (a)**; defer (d).
+**Ruled: (a)**; (d) deferred.
 
 ### OQ-6 — How the embedded choice starts the stack — load-bearing
 
@@ -622,7 +624,7 @@ client users pass through embedded.
   untouched. Cost: one extra click, and the reopened app's cold pull is
   today's pre-window wait.
 
-**Recommendation: (d).** It meets the need with the least new code and no new
+**Ruled: (d)** (Matt, 2026-10-05). It meets the need with the least new code and no new
 failure modes. (c) is the better long-term experience, but it belongs with the
 provisioning-state UI that the `bringUpTimeout` doc in `main.go` says is "not
 built yet", which would fix the same wait for every embedded launch, not only
@@ -631,23 +633,8 @@ in the app stays out of scope.
 
 ## Ledger-impact
 
-This PR does not edit `DECISIONS.md`. DL-406 is claimed for it
-(`bun tools/dl-claim --ref RIG-3102`). Once Matt rules OQ-1 (a), the same PR:
-
-- **Adds the row:**
-
-  The Record cell links `ui/compass-native-server-url-entry/design.md#a1--first-run-is-a-chooser`
-  in `DECISIONS.md`.
-
-  | ID | Decision | Status | Record |
-  | --- | --- | --- | --- |
-  | DL-406 | app.toml stays the native app's only connection config and becomes writable from the app on first run. An absent app.toml with no `--mode`/`$COMPASS_APP_MODE` override opens a first-run chooser. "Run Compass on this computer" (primary) runs the embedded preflight in the window, writes `mode="embedded"`, and asks the user to reopen the app. "Connect to a server" takes a URL, an optional CA file, and the bearer, probes in-process, then stores the bearer and writes `mode="client"` with the normalized server_url and a copied `server-ca.pem`. The app writes app.toml only on a first-run choice; a configured client's server_url stays a file edit, and the chooser never returns while app.toml exists. DL-320's surviving clauses are restated: flag > env > file, else the chooser; `mode="embedded"` accepts no server_url/ca_cert; `mode="client"` requires an https origin server_url (no userinfo, path, query, or fragment; a trailing `/` is normalized away; one validator for file and UI) with optional ca_cert; embedded→client graduation stays a config edit. The bearer stays keychain-first per DL-109; this row partial-supersedes DL-109's "(absent → embedded default)" clause by citation. Supersedes DL-320 | Active (Matt, YYYY-MM-DD) | [server URL entry §A1](#a1--first-run-is-a-chooser) |
-
-- **Flips DL-320** to `Superseded by DL-406 (Matt, YYYY-MM-DD)`; its Decision
-  cell is unchanged.
-- **Leaves DL-109** `Active` and unedited; the partial override lives in
-  DL-406's text, as DL-319 does for DL-259.
-
-If OQ-6 is ruled other than (d), the row's embedded clause follows the ruling.
-If OQ-1 is ruled (b), there is no row, the header's "Supersedes" line goes,
-and the PR body declares `Ledger-impact: none`.
+This PR adds DL-406 to `DECISIONS.md` (claimed with
+`bun tools/dl-claim --ref RIG-3102`); its Record cell links §A1. It flips
+DL-320 to `Superseded by DL-406 (Matt, 2026-10-05)`, with its Decision cell
+unchanged. DL-109 stays `Active` and unedited; the partial override lives in
+DL-406's text, as DL-319 does for DL-259.
