@@ -390,7 +390,8 @@ describe("assertCoherent", () => {
 	});
 });
 
-// The workflow's RUNNER_IMAGE_CLOSURE_PATHS block, as the env var delivers it.
+// A subset of the workflow's RUNNER_IMAGE_CLOSURE_PATHS shape, as the env var
+// delivers it: both entry kinds (`/**` prefix, exact file), not a mirror.
 const CLOSURE = `runner-image/**
 tools/runner-image/**
 go/go.mod
