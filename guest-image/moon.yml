@@ -1,19 +1,9 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# compass-guest-image (guest-image/): the microVM guest image — a direct-boot
-# kernel, an erofs rootfs, and an initrd the cloud-hypervisor runtime boots.
-# The rootfs userland is the published compass-agent OCI image pinned in
-# agent-oci.lock; this tree adds only the boot layer. A standalone nix build,
-# not a bun package, with a thin moon project so the build rides the gate.
-#
-# WHY THIS IS A MOON PROJECT. Registering it in .moon/workspace.yml is what puts
-# the guest-image build in the affected-gated pre-merge gate: on a PR
-# `moon ci :ci` runs this project's `ci` only when the PR affects the guest
-# closure (the `inputs` below), and every push to main runs it unconditionally
-# (ci.yml's affected-PR / full-main split). Without it a guest-image break — a
-# stale agent-oci.lock, a broken layer assembly — would surface only post-merge
-# in the publish lane, not on the PR that caused it. The kernel is substituted
-# free from cache.nixos.org (never built).
+# The microVM guest image: kernel, erofs rootfs, and initrd. The rootfs userland
+# is the compass-agent OCI image pinned in agent-oci.lock, plus a boot layer.
+# A moon project so a stale lock or broken layer assembly fails on the PR that
+# caused it, not post-merge in the publish lane.
 layer: 'application'
 language: 'nix'
 tags: ['ci-group.nix']
@@ -28,19 +18,9 @@ workspace:
 
 tasks:
   build:
-    # Realise the three guest-image attrs. cloud-hypervisor direct-boots the
-    # kernel (substituted free from cache.nixos.org) with the erofs rootfs and
-    # the initrd. A plain `nix build -f` of the
-    # standalone default.nix (the same shape app-bundle/build.sh uses,
-    # app-bundle/build.sh:30-35) — this is a bare nix file, not a flake, so
-    # there is no `#attr` flake-ref form. Runs from guest-image/ (moon's default
-    # project-dir cwd). The substituters the build fetches from are named in
-    # ci.yml's install-nix-action config, the reviewed trust surface for this
-    # gate.
-    #
-    # cache:false — nix owns its store-path caching; moon must not false-green a
-    # build it did not re-run (the same posture agent-image/moon.yml:46-48 and
-    # app-bundle/moon.yml:33-35 take).
+    # A bare nix file, not a flake, so attrs are named on the command line. Its
+    # substituters are set in ci.yml's install-nix-action config. cache:false:
+    # nix caches store paths, so moon must not false-green a skipped build.
     command: 'nix build -f default.nix compass-guest-kernel compass-guest-rootfs compass-guest-initrd --no-link --print-out-paths'
     options:
       cache: false

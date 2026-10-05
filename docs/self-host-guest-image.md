@@ -44,9 +44,10 @@ Both flags require `--runtime-backend microvm` (or
 `$COMPASS_RUNTIME_BACKEND=microvm`). They are mutually exclusive. For each, the
 flag wins over the environment variable.
 
-"Guest fetch" covers the guest only. The bundled database, NATS, and collector
-are container images that `up` also pulls. An air-gapped host must preload them
-or use the matching `--*-external` options.
+"Guest fetch" covers the guest only. The bundled database, NATS, collector, and
+LLM gateway are container images that `up` also pulls. An air-gapped host must
+preload them or use the matching `--*-external` options. The gateway has no
+default image: `up` needs `--gateway-image` or `--gateway-external`.
 
 ### Pulled artifact
 
@@ -64,6 +65,7 @@ that reference.
 $ compass-stack up \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex> \
     --runtime-backend microvm \
     --guest-artifact ghcr.io/rigelbuild/compass-guest-image@sha256:<hex>
 ```
@@ -172,9 +174,10 @@ podman rm "$ctr"
 
 This manifest only records what you extracted. Verify it against a published
 guest artifact before you trust it. The Runner and guest images publish under
-separate path gates, so a Runner tag may have no guest tag at the same commit.
-Compare against the newest guest artifact published at or before the Runner
-image's commit.
+separate path gates, so a Runner tag may have no guest tag at the same commit,
+and no published artifact is guaranteed to match it. Compare against the newest
+guest artifact published at or before the Runner image's commit. If no artifact
+matches, use Option A instead.
 
 The artifact manifest carries one annotation per asset, holding bare hex:
 
@@ -192,13 +195,15 @@ Each value must equal the matching line of your `manifest.sha256`.
 
 ### Bring up the air-gapped host
 
-Transfer the directory, for example to `/var/lib/compass-guest/<sha12>/`. Set
-the run root (see [Run root](#run-root)), then start the stack:
+Transfer the directory, for example to `/var/lib/compass-guest/<sha12>/`.
+Create the run root, owned by the user the stack runs as (see
+[Run root](#run-root)). Then start the stack:
 
 ```console
-$ COMPASS_MICROVM_RUNROOT=/run/compass-vm compass-stack up \
+$ COMPASS_MICROVM_RUNROOT=/var/lib/compass-vm compass-stack up \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex> \
     --runtime-backend microvm \
     --guest-dir /var/lib/compass-guest/<sha12>
 ```
@@ -241,22 +246,24 @@ validate it.
 When the guest-image build fails on the agent lock, do not edit hashes. Rerun
 the pin tool and commit the refreshed lock on the same branch.
 
-The nix evaluation fails closed with one of two errors, and each names the fix:
+The nix evaluation fails closed with one of two errors:
 
-- `agent-oci.lock is not a valid pin`: the lock is malformed.
-- `agent-oci.lock layers do not match the manifest it pins`: the layer list is
-  stale. The usual cause is a partial bump.
+- `agent-oci.lock layers do not match the manifest it pins`: the lock is valid,
+  but its layer list is stale. The usual cause is a partial bump. Run the relock
+  that Renovate's post-upgrade task runs:
 
-Both are recovered with the relock that Renovate's post-upgrade task runs:
+  ```console
+  bun tools/guest-image/pin-agent-image.ts --relock
+  ```
 
-```console
-bun tools/guest-image/pin-agent-image.ts --relock
-```
-
-`--relock` re-resolves the immutable tag that `:latest` points at, and rewrites
-every field from the registry. To keep the currently pinned build instead,
-re-pin its tag (the `tag` field in the lock) with `--tag git-<sha12>`. That
-prints `no change` when the lock already matches.
+  `--relock` re-resolves the immutable tag that `:latest` points at, and
+  rewrites every field from the registry. To keep the currently pinned build
+  instead, re-pin its tag (the `tag` field in the lock) with
+  `--tag git-<sha12>`.
+- `agent-oci.lock is not a valid pin`: the lock is malformed. The pin tool
+  validates the existing lock before it rewrites it, so both modes refuse to
+  run. Restore the lock from `main`, or delete it, then re-pin with
+  `--tag git-<sha12>`.
 
 Commit the rewritten `guest-image/agent-oci.lock`. The gate then rebuilds
 against digests read from the registry.
