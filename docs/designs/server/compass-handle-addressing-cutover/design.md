@@ -664,7 +664,7 @@ confirm at freeze):
 
 Amendment (2026-09-25, ruling 9) adds **DL-375**: the adminOnly door resolves
 handles without the D9 visibility clip.
-Amendment (2026-09-27, RIG-4026) adds **DL-401**: agent message authors are
+Amendment (2026-09-27, RIG-4026) adds **DL-408**: agent message authors are
 owner-qualified (`owner/handle`); users and system remain bare.
 
 ## Rulings (Open Questions — all closed)
