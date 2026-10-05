@@ -82,7 +82,7 @@
   // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
   // quietly.)
   //
-  // Eight entries, all load-bearing:
+  // Nine entries, all load-bearing:
   //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
   //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
   //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
@@ -104,9 +104,9 @@
   //      image build fails `hash mismatch in fixed-output derivation` (PR #579).
   //      Wired at the top-level (branch mode), catalog-rule (update mode),
   //      devenv-nixpkgs channel rule (branch mode), devenv fork (root) rule
-  //      (branch mode), and go↔go-overlay lockstep rule (branch mode)
-  //      postUpgradeTasks in config.json5 — one command string, so ONE
-  //      allowlist entry covers all five sites.
+  //      (branch mode), go↔go-overlay lockstep rule (branch mode), and agent-image
+  //      devenv fork rule (branch mode) — one command string, so ONE allowlist
+  //      entry covers all six sites.
   //   5. the go↔go-overlay lockstep, which on a go.nix toolchain bump advances
   //      the go-overlay input in devenv.lock to a rev that provides the new go
   //      release and validates it resolves through gate-tools.nix's `langs.go`
@@ -136,7 +136,9 @@
   //      descriptor. The descriptors are the rootfs's fixed-output fetch keys
   //      and Renovate cannot compute them, so a digest-only rewrite would
   //      redden every fetch.
-  // (1), (3), (4), (5), (6), (7), and (8) are `bun <script>.ts` — the Renovate
+  //   9. the Go analysis pin refresh, which derives the paired fields and refreshes
+  //      both source and vendor hashes after a nilaway or golangci-lint bump.
+  // (1), (3), (4), (5), (6), (7), (8), and (9) are `bun <script>.ts` — the Renovate
   // hooks are TypeScript run via bun (AGENTS.md "Scripts: TypeScript over
   // bash"); bun is on the runner PATH.
   allowedCommands: [
@@ -148,5 +150,6 @@
     "^bun tools/renovate/refresh-devenv-lock\\.ts$",
     "^bun tools/renovate/refresh-agent-image-nixpkgs\\.ts$",
     "^bun tools/guest-image/pin-agent-image\\.ts --relock$",
+    "^bun tools/renovate/refresh-go-analysis-hashes\\.ts$",
   ],
 }

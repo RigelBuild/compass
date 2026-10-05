@@ -87,4 +87,5 @@ in
     go-licenses = identityOf goAnalysis.go-licenses;
     nilaway = identityOf goAnalysis.nilaway;
   };
+  analysis = goAnalysis;
 }
