@@ -367,12 +367,10 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AuthorHandle, row.AtUnixMs, row.Blocks)
 }
 
-// MessageAskIDs returns the ask_id of every ask block on the message, in block
-// order, for the relayed-update ask_id reconciliation (comms.CommitAgentUpdate).
-// It applies UpdateMessageBlocksAsAuthor's authz predicate (author + current
-// member), so a message the actor cannot edit is ErrNotFound — the same answer
-// as an unknown id — and the reconciliation never branches on an unseen row.
-// A separate read is race-free because ask_id is immutable once minted.
+// MessageAskIDs returns the message's ask_ids in block order for the relayed
+// UPDATE's reconciliation. It applies UpdateMessageBlocksAsAuthor's author +
+// member predicate, so an uneditable message is ErrNotFound like an unknown id;
+// the UPDATE re-checks authz, and each ask_id is immutable once minted.
 func (s *Store) MessageAskIDs(ctx context.Context, actor AccountID, id MessageID) ([]string, error) {
 	if id == "" {
 		return nil, fmt.Errorf("%w: message id is required", ErrInvalidArgument)

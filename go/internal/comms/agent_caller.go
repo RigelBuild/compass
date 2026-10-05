@@ -478,10 +478,8 @@ func (c *Comms) CommitAgentUpdate(
 
 // reconcileUpdateAskIDs makes the ask blocks of a relayed UPDATE frame carry the
 // stored, server-owned ask_id — the safe alternative to trusting the wire value.
-// It reads the stored row's ask_ids (an immutable field, so a separate read from
-// the authz UPDATE that follows is race-free, and authz-scoped so a message the
-// actor cannot edit is NotFound before any branch — see store.MessageAskIDs) and, for
-// the k-th ask block of the frame, reconciles it against the k-th stored ask:
+// It reads the stored row's ask_ids (authz-scoped: see store.MessageAskIDs) and,
+// for the k-th ask block of the frame, reconciles it against the k-th stored ask:
 //
 //   - an id-LESS update ask is filled from the stored ask_id (the common case —
 //     the id the append minted, which the store then requires);

@@ -223,8 +223,8 @@ func TestUpdateMessageBlocksAsAuthorRejectsMalformedInput(t *testing.T) {
 
 // MessageAskIDs backs the comms edge's UPDATE ask_id reconciliation: for the
 // author it returns only the ask blocks' ids, in block order (the positional
-// match the edge relies on). A non-author reader and an unknown id both get
-// ErrNotFound — one answer, so the read reveals nothing about an unseen row.
+// match the edge relies on). A co-member non-author, a revoked author, and an
+// unknown id all get ErrNotFound, so the read reveals nothing about the row.
 func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -250,12 +250,21 @@ func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
 		t.Fatalf("ask ids = %v, want %v (asks only, in block order)", ids, want)
 	}
 
-	// reader is a co-member, so only the authorship half refuses it.
+	// reader posts its own ask, then loses membership: the revoked author case.
+	readerMsg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: reader.ID, Blocks: []MessageBlock{askBlockID("ask-reader")}}, string(ch.ID), TopicRef{Name: "general"}, "")
+	if err != nil {
+		t.Fatalf("AppendMessage(reader): %v", err)
+	}
+	if _, _, err := s.UpdateChannelMembers(ctx, author.ID, ch.ID, []MemberUpdate{{AccountID: reader.ID, Remove: true}}, MemberUpdatesOptions{}); err != nil {
+		t.Fatalf("UpdateChannelMembers(remove reader): %v", err)
+	}
+
 	for name, tc := range map[string]struct {
 		actor AccountID
 		id    MessageID
 	}{
-		"co-member, not the author": {reader.ID, msg.ID},
+		"co-member, not the author": {author.ID, readerMsg.ID},
+		"revoked author":            {reader.ID, readerMsg.ID},
 		"unknown id":                {author.ID, MessageID("ghost")},
 	} {
 		_, err := s.MessageAskIDs(ctx, tc.actor, tc.id)
