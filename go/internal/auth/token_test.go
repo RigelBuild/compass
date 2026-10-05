@@ -38,9 +38,8 @@ func TestIssueThenResolveRoundTripsToTheIssuedAccount(t *testing.T) {
 	}
 }
 
-// unknown_token_resolves_to_none: a token the store never issued must not
-// resolve — even with an unrelated live token present — and the failure is the
-// distinct ErrTokenNotFound sentinel.
+// Unknown tokens return ErrTokenNotFound, while operational lookup errors use
+// ErrTokenLookupFailed and retain their cause.
 func TestUnknownTokenResolvesToNotFound(t *testing.T) {
 	ctx := context.Background()
 	st, admin, _ := openTestStore(t)
@@ -56,10 +55,49 @@ func TestUnknownTokenResolvesToNotFound(t *testing.T) {
 	}
 }
 
-// a revoked token stops resolving and surfaces the distinct ErrTokenRevoked
-// sentinel — separate from ErrTokenNotFound so the server can tell a withdrawn
-// credential from an unknown one (the distinction is audit-only; the door still
-// maps both to one CodeUnauthenticated).
+func TestResolveTokenLookupFailuresAreNotNotFound(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := openTestStore(t)
+
+	_, err := ResolveToken(ctx, st, "never-issued", store.SubjectAccount)
+	if !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("not-found lookup error = %v, want ErrTokenNotFound", err)
+	}
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = ResolveToken(canceledCtx, st, "lookup-failure", store.SubjectAccount)
+	if !errors.Is(err, ErrTokenLookupFailed) {
+		t.Fatalf("canceled lookup error = %v, want ErrTokenLookupFailed", err)
+	}
+	if errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("canceled lookup error = %v, must not be ErrTokenNotFound", err)
+	}
+}
+
+func TestResolveTokenStoreLookupFailureIsNotNotFound(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := openTestStore(t)
+	st.Close()
+
+	_, err := ResolveToken(ctx, st, "lookup-failure", store.SubjectAccount)
+	if !errors.Is(err, ErrTokenLookupFailed) {
+		t.Fatalf("closed-store lookup error = %v, want ErrTokenLookupFailed", err)
+	}
+	if errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("closed-store lookup error = %v, must not be ErrTokenNotFound", err)
+	}
+}
+
+func TestTokenResolutionErrorPreservesCause(t *testing.T) {
+	cause := errors.New("conn refused")
+	err := tokenResolutionError(cause)
+	if !errors.Is(err, ErrTokenLookupFailed) || !errors.Is(err, cause) {
+		t.Fatalf("lookup error = %v, want lookup sentinel and original cause", err)
+	}
+}
+
+// a revoked token stops resolving and surfaces ErrTokenRevoked, separate from
+// ErrTokenNotFound; both are credential verdicts that doors map to Unauthenticated.
 func TestRevokedTokenResolvesToRevoked(t *testing.T) {
 	ctx := context.Background()
 	st, admin, _ := openTestStore(t)
