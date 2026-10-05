@@ -180,10 +180,10 @@ type connectCase struct {
 	whoAmI       func(*authRecorder) func(context.Context, *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error)
 	serverInfo   func(context.Context, *connect.Request[compassv1.GetServerInfoRequest]) (*connect.Response[compassv1.GetServerInfoResponse], error)
 	token        string
-	badURL       bool // point the target at an unreachable URL
-	untrusted    bool // do not pin the server's cert
-	preStore     bool // pre-store probeToken for the empty-token path
-	nilService   bool // build the service with nil target+tokens (test wiring)
+	badURL       bool   // point the target at an unreachable URL
+	untrusted    bool   // do not pin the server's cert
+	preStore     bool   // pre-store probeToken for the empty-token path
+	wiring       string // "", or how the service is miswired: nilConn, emptyConn, nilStore, failingStore
 	wantKind     string
 	wantOK       bool
 	wantAccount  string
@@ -220,7 +220,27 @@ func connectClassificationCases() []connectCase {
 		{name: "success path", serverInfo: okServerInfo, whoAmI: recordingWhoAmI("acct-123"), token: probeToken, wantOK: true, wantAccount: "acct-123"},
 		{name: "empty token with stored succeeds", serverInfo: okServerInfo, whoAmI: recordingWhoAmI("acct-stored"), token: "", preStore: true, wantOK: true, wantAccount: "acct-stored"},
 		{name: "empty token nothing stored", serverInfo: okServerInfo, whoAmI: staticWhoAmI(unauthWhoAmI), token: "", wantKind: connectKindBadToken},
-		{name: "nil target fails closed", serverInfo: okServerInfo, whoAmI: staticWhoAmI(unauthWhoAmI), token: probeToken, nilService: true, wantKind: connectKindOther},
+		{name: "nil connection fails closed", serverInfo: okServerInfo, whoAmI: staticWhoAmI(unauthWhoAmI), token: probeToken, wiring: "nilConn", wantKind: connectKindOther},
+		{name: "nil target fails closed", serverInfo: okServerInfo, whoAmI: staticWhoAmI(unauthWhoAmI), token: probeToken, wiring: "emptyConn", wantKind: connectKindOther},
+		{name: "nil token store fails closed", serverInfo: okServerInfo, whoAmI: recordingWhoAmI("acct-123"), token: probeToken, wiring: "nilStore", wantKind: connectKindOther, wantDisarmed: true},
+		{name: "token save failure disarms", serverInfo: okServerInfo, whoAmI: recordingWhoAmI("acct-123"), token: probeToken, wiring: "failingStore", wantKind: connectKindOther, wantDisarmed: true},
+	}
+}
+
+// failingWriteStore reads through to a real store but refuses every Write.
+type failingWriteStore struct{ tokenstore.Store }
+
+func (failingWriteStore) Write(string, string) error { return errors.New("keyring locked") }
+
+// assertWiringOutcome checks the miswired rows: no store means no probe, and a
+// failed save reports the save failure.
+func assertWiringOutcome(t *testing.T, wiring string, res connectResult, rec *authRecorder) {
+	t.Helper()
+	if wiring == "failingStore" && res.Message != "Connected, but could not save the token" {
+		t.Errorf("Message = %q, want the save-failure message", res.Message)
+	}
+	if wiring == "nilStore" && rec.get() != "" {
+		t.Errorf("probe ran with no token store (Authorization %q)", rec.get())
 	}
 }
 
@@ -241,10 +261,15 @@ func TestConnectClassification(t *testing.T) {
 			}
 
 			svc, store := connectService(t, serverURL, caPEM)
-			if tc.nilService {
-				// Test wiring: the service is bound with no target/tokenstore.
-				// Connect must fail closed rather than nil-deref.
+			switch tc.wiring {
+			case "nilConn":
+				svc = newBridgeService(nil, nil, nil)
+			case "emptyConn":
 				svc = newBridgeService(&connection{}, nil, nil)
+			case "nilStore":
+				svc = newBridgeService(svc.conn.Load(), nil, nil)
+			case "failingStore":
+				svc = newBridgeService(svc.conn.Load(), nil, failingWriteStore{store})
 			}
 			if tc.preStore {
 				if err := store.Write(serverURL, probeToken); err != nil {
@@ -266,6 +291,7 @@ func TestConnectClassification(t *testing.T) {
 			if res.Kind != tc.wantKind {
 				t.Errorf("Kind = %q, want %q (Message=%q)", res.Kind, tc.wantKind, res.Message)
 			}
+			assertWiringOutcome(t, tc.wiring, res, rec)
 			if res.OK != tc.wantOK {
 				t.Errorf("OK = %v, want %v", res.OK, tc.wantOK)
 			}

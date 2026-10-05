@@ -396,7 +396,10 @@ func (s *bridgeService) run(callCtx context.Context, call *inflightCall, req rpc
 	eventName := "compass_rpc:" + req.RequestID
 	conn := s.conn.Load()
 	if conn == nil {
-		s.emitFrame(call, eventName, responseFrame{Kind: frameKindError, Message: "Not connected to a server"})
+		// A canceled call stays silent, as a canceled pump does.
+		if callCtx.Err() == nil {
+			s.emitFrame(call, eventName, responseFrame{Kind: frameKindError, Message: "Not connected to a server"})
+		}
 		return
 	}
 	rpc := bridge.Call{

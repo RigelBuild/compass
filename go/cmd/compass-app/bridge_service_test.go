@@ -354,21 +354,25 @@ func TestCompassRPCWithoutConnection(t *testing.T) {
 			}
 			const requestID = "req-no-connection"
 
-			svc.CompassRPC(context.Background(), rpcRequest{RequestID: requestID})
+			// Drive run synchronously so its deferred finish has run before asserting.
+			callCtx, call := svc.register(context.Background(), requestID)
+			svc.run(callCtx, call, rpcRequest{RequestID: requestID})
 
 			ev := recv(t, emitter)
 			if ev.name != "compass_rpc:"+requestID {
 				t.Errorf("event name = %q, want per-requestId key", ev.name)
 			}
-			want := responseFrame{Kind: frameKindError, Message: "Not connected to a server"}
-			if ev.frame.Kind != want.Kind || ev.frame.Message != want.Message || ev.frame.Status != want.Status || len(ev.frame.Headers) != 0 || ev.frame.Chunk != want.Chunk {
-				t.Errorf("frame = %+v, want %+v", ev.frame, want)
+			f := ev.frame
+			if f.Kind != frameKindError || f.Message != "Not connected to a server" ||
+				f.Status != 0 || len(f.Headers) != 0 || f.Chunk != "" {
+				t.Errorf("frame = %+v, want one error frame %q", f, "Not connected to a server")
 			}
 			select {
 			case extra := <-emitter.ch:
 				t.Fatalf("frame after the no-connection error: kind=%q", extra.frame.Kind)
 			default:
 			}
+			assertNotInflight(t, svc, requestID)
 
 			if tc.phase == "reopen" {
 				mode, serverURL := svc.shellState()
@@ -382,6 +386,23 @@ func TestCompassRPCWithoutConnection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCompassRPCWithoutConnectionCanceledIsSilent(t *testing.T) {
+	emitter := newFakeEmitter()
+	svc := newBridgeService(nil, emitter, nil)
+	const requestID = "req-no-connection-canceled"
+	callCtx, call := svc.register(context.Background(), requestID)
+	svc.CompassRPCCancel(context.Background(), cancelRequest{RequestID: requestID})
+
+	svc.run(callCtx, call, rpcRequest{RequestID: requestID})
+
+	select {
+	case ev := <-emitter.ch:
+		t.Fatalf("canceled call emitted a frame: kind=%q message=%q", ev.frame.Kind, ev.frame.Message)
+	default:
+	}
+	assertNotInflight(t, svc, requestID)
 }
 
 func TestShellStatePrefersInstalledConnection(t *testing.T) {
