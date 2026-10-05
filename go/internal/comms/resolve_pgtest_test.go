@@ -325,8 +325,8 @@ func TestResolveVisibleAgentHandleVisibleAgentResolves(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	worker := mustAgent(t, st, owner.ID, "worker")
 
-	// The owner and its agents see the fleet's agents, even without a shared
-	// channel; roster visibility still excludes unrelated owners.
+	// The user owner sees its own agent without a shared channel.
+	// The foreign-target exclusion is covered by TestResolveVisibleAgentHandleInvisibleIsIndistinguishableFromUnknown.
 	got, err := c.resolveVisibleAgentHandle(ctx, owner.ID, "worker")
 	if err != nil {
 		t.Fatalf("resolveVisibleAgentHandle(owner, \"worker\") = %v, want the owner's own visible agent", err)

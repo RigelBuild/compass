@@ -43,14 +43,19 @@ func TestAccountsVisibilityPredicateParity(t *testing.T) {
 		"ResolveVisibleGlobalHandles": globalResolver,
 		"ResolveVisibleAgentHandles":  agentResolver,
 	} {
-		withoutPeering := removePeeredDisjunct(t, name, resolver)
+		withoutPeering, disjunct := removePeeredDisjunct(t, name, resolver)
+		if disjunct != wantPeeredDisjunct {
+			t.Errorf("%s peered disjunct = %q, want %q", name, disjunct, wantPeeredDisjunct)
+		}
 		if withoutPeering != list {
 			t.Errorf("%s without its peered disjunct differs from list predicate:\n got: %s\nwant: %s", name, withoutPeering, list)
 		}
 	}
 }
 
-func removePeeredDisjunct(t *testing.T, name, predicate string) string {
+const wantPeeredDisjunct = "OR EXISTS ( SELECT 1 FROM user_peers p_out JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1) AND p_out.peer_user_id = ag.owner_user_id )"
+
+func removePeeredDisjunct(t *testing.T, name, predicate string) (string, string) {
 	t.Helper()
 	const marker = "OR EXISTS ( SELECT 1 FROM user_peers p_out"
 	if count := strings.Count(predicate, marker); count != 1 {
@@ -76,7 +81,9 @@ func removePeeredDisjunct(t *testing.T, name, predicate string) string {
 	if end < 0 {
 		t.Fatalf("%s peered disjunct has no closing parenthesis", name)
 	}
-	return strings.Join(strings.Fields(predicate[:start]+predicate[end:]), " ")
+	stripped := strings.Join(strings.Fields(predicate[:start]+predicate[end:]), " ")
+	disjunct := strings.Join(strings.Fields(predicate[start:end]), " ")
+	return stripped, disjunct
 }
 
 func readAccountVisibilityPredicates(t *testing.T, path string) map[string]string {

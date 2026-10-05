@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
@@ -102,4 +103,16 @@ func (s *Store) OwnersPeered(ctx context.Context, a, b AccountID) (bool, error) 
 		return false, fmt.Errorf("store: check peering: %w", err)
 	}
 	return peered, nil
+}
+
+// OwnersPeeredTx locks both approvals against revoke until tx ends.
+func (s *Store) OwnersPeeredTx(ctx context.Context, tx pgx.Tx, a, b AccountID) (bool, error) {
+	rows, err := db.New(tx).OwnersPeeredRowsForShare(ctx, db.OwnersPeeredRowsForShareParams{
+		UserID:     string(a),
+		PeerUserID: string(b),
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: lock peering: %w", err)
+	}
+	return len(rows) == 2, nil
 }

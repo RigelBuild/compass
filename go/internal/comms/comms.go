@@ -691,20 +691,13 @@ func (c *Comms) OpenDM(
 		}
 		name = dmChannelName(callerAcc.Handle, peer.Handle)
 	} else {
-		peered, err := c.store.OwnersPeered(ctx, callerOwner, peerOwner)
-		if err != nil {
-			return nil, edgeError(err)
-		}
-		if !peered {
-			return nil, edgeError(notFoundHandle(store.ErrNotFound, peerHandle))
-		}
 		if peerOwner < host {
 			host = peerOwner
 		}
 		name = crossOwnerDMName(caller, peer.ID)
 	}
 
-	channelID, created, err := c.openDMTx(ctx, host, name, []store.AccountID{caller, peer.ID})
+	channelID, created, err := c.openDMTx(ctx, host, callerOwner, peerOwner, name, peerHandle, []store.AccountID{caller, peer.ID})
 	if err != nil {
 		return nil, edgeError(err)
 	}

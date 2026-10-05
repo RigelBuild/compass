@@ -13,10 +13,8 @@ import (
 // store stays id-typed. A resolver miss flows through edgeError as an in-band
 // NOT_FOUND, never a transport teardown.
 
-// Two resolution shapes: member/owner fields (resolveHandles) name users too and
-// ARE visibility-scoped, so an invisible handle misses like an unknown one;
-// singular agent fields (resolveAgentHandle) are owner-namespaced but NOT viewer-
-// scoped, except the roster vantage which layers its own check (resolveVisibleAgentHandle).
+// Member/owner and OpenDM resolution is viewer-scoped; roster vantages remain
+// list-scoped, so mutual peering never widens roster visibility.
 
 // resolveHandles resolves a batch of member/owner handles (which legitimately
 // name users as well as agents) to their account ids, in the caller's own
@@ -53,12 +51,10 @@ func (c *Comms) resolveHandles(ctx context.Context, caller store.AccountID, hand
 
 // resolveAgentHandle resolves a singular agent handle (owner-qualified or bare)
 // to its agent account id, in the caller's own owner namespace for a bare
-// handle. Owner-namespaced but NOT viewer-scoped (§GetRoster's dual vantage: an
-// invisible-but-real agent in the resolution owner's namespace still resolves) —
-// the roster vantage adds its own visibility check separately. An unknown,
+// handle. This owner-namespaced lookup stays outside viewer visibility checks;
+// the roster path applies its narrower list check after resolving the vantage.
 // wrong-owner, or non-agent handle is store.ErrNotFound naming the submitted
-// handle (edgeError → CodeNotFound), the oracle-safe merge every handle-addressed
-// agent target holds.
+// handle (edgeError → CodeNotFound), matching other handle-addressed targets.
 func (c *Comms) resolveAgentHandle(ctx context.Context, caller store.AccountID, handle string) (store.AccountID, error) {
 	acc, err := c.resolveAgentAccount(ctx, caller, handle)
 	if err != nil {

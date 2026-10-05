@@ -37,16 +37,9 @@ func crossOwnerDMName(a, b store.AccountID) string {
 	return "xdm:" + lo + ":" + hi
 }
 
-// openDMTx runs the whole peer-DM open for owner in ONE store transaction — the
-// same shape the store's openDM test helper (dm_pgtest_test.go:27-49) and
-// EnsureCoordinationChannel (coordination.go:179-195) use: take the per-owner DM
-// advisory lock, ensure the owner's reserved __dm__ group, then upsert the
-// deterministic-name channel for the two agent parties. Returns the resolved
-// channel id and whether it was created this call (a resume returns false). The
-// lock serializes every open under owner's DM namespace, so the group-ensure and
-// the channel-upsert cannot race a concurrent first-open into two groups or two
-// channels.
-func (c *Comms) openDMTx(ctx context.Context, owner store.AccountID, name string, members []store.AccountID) (store.ChannelID, bool, error) {
+// openDMTx runs peer-DM authorization and the upsert in one store transaction.
+// Row locks held by the peering check serialize a revoke through this commit.
+func (c *Comms) openDMTx(ctx context.Context, owner, callerOwner, peerOwner store.AccountID, name, peerHandle string, members []store.AccountID) (store.ChannelID, bool, error) {
 	var (
 		channelID store.ChannelID
 		created   bool
@@ -54,6 +47,15 @@ func (c *Comms) openDMTx(ctx context.Context, owner store.AccountID, name string
 	if err := c.store.WithTx(ctx, func(tx pgx.Tx) error {
 		if err := store.LockOwnerDMTx(ctx, tx, owner); err != nil {
 			return err
+		}
+		if callerOwner != peerOwner {
+			peered, err := c.store.OwnersPeeredTx(ctx, tx, callerOwner, peerOwner)
+			if err != nil {
+				return err
+			}
+			if !peered {
+				return notFoundHandle(store.ErrNotFound, peerHandle)
+			}
 		}
 		gid, err := c.store.EnsureOwnerDMGroupTx(ctx, tx, owner)
 		if err != nil {

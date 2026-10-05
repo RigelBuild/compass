@@ -31,3 +31,11 @@ SELECT EXISTS (
       ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
     WHERE p_out.user_id = $1 AND p_out.peer_user_id = $2
 );
+
+-- name: OwnersPeeredRowsForShare :many
+SELECT user_id, peer_user_id
+FROM user_peers
+WHERE (user_id = $1 AND peer_user_id = $2)
+   OR (user_id = $2 AND peer_user_id = $1)
+ORDER BY user_id, peer_user_id
+FOR SHARE;

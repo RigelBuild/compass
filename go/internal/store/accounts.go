@@ -811,9 +811,8 @@ func ParseQualifiedHandle(raw string) QualifiedHandle {
 //     (callerOwner). The system account is never a member/owner target, so the
 //     global arm excludes system_accounts rows.
 //
-// Every arm is intersected with the account-visibility predicate keyed on viewer
-// (OQ-6 SCOPED): a real-but-invisible handle misses exactly like an unknown one,
-// so resolution and the roster clip stay aligned by construction.
+// Agent resolution uses the viewer-scoped resolver predicate; account lists
+// retain the narrower predicate, and roster clipping uses its own visibility check.
 //
 // ATOMIC (OQ-2): any handle that fails to resolve fails the whole call with
 // ErrNotFound naming EVERY unresolved handle in its submitted spelling (same
@@ -963,9 +962,8 @@ func (s *Store) visibleGlobalHandleIDs(ctx context.Context, viewer AccountID, ha
 	return ids, nil
 }
 
-// visibleAgentHandleIDs resolves (owner, handle) pairs in each owner's agent
-// namespace (owner_user_id = owner), intersecting the viewer's account-visible
-// set. A miss (unknown or invisible) is absent from the map.
+// visibleAgentHandleIDs resolves owner/handle pairs through viewer-scoped access;
+// misses (unknown or unauthorized) are omitted from the result map.
 func (s *Store) visibleAgentHandleIDs(ctx context.Context, viewer AccountID, keys []agentHandleKey) (map[agentHandleKey]AccountID, error) {
 	owners := make([]string, len(keys))
 	handles := make([]string, len(keys))

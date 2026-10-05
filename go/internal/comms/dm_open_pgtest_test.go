@@ -8,8 +8,11 @@ package comms
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -47,6 +50,89 @@ func TestOpenDMSameOwnerCreatesDMChannel(t *testing.T) {
 	}
 	if !containsString(ch.GetMemberAccountIds(), string(alice.ID)) || !containsString(ch.GetMemberAccountIds(), string(bob.ID)) {
 		t.Fatalf("members = %v, want both alice %s and bob %s", ch.GetMemberAccountIds(), alice.ID, bob.ID)
+	}
+	groups, err := st.ListChannelGroups(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListChannelGroups(owner): %v", err)
+	}
+	if !slices.ContainsFunc(groups, func(group store.ChannelGroup) bool {
+		return group.ID == store.ChannelGroupID(ch.GetGroupId()) && group.Name == "__dm__" && group.OwnerUserID == owner.ID
+	}) {
+		t.Fatalf("same-owner DM group = %q; want caller owner's reserved __dm__ group", ch.GetGroupId())
+	}
+}
+
+// TestOpenDMRevokeWaitsForLockedPeering requires revoke to wait until the opener commits.
+func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
+	_, st := newHandler(t)
+	ctx := context.Background()
+	ownerA := mustUser(t, st, "dm-lock-owner-a")
+	ownerB := mustUser(t, st, "dm-lock-owner-b")
+	for _, edge := range [][2]store.AccountID{{ownerA.ID, ownerB.ID}, {ownerB.ID, ownerA.ID}} {
+		if _, err := st.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
+		}
+	}
+
+	revokeDone := make(chan error, 1)
+	observedWait := false
+	err := st.WithTx(ctx, func(tx pgx.Tx) error {
+		peered, err := st.OwnersPeeredTx(ctx, tx, ownerA.ID, ownerB.ID)
+		if err != nil {
+			return err
+		}
+		if !peered {
+			return errors.New("OwnersPeeredTx did not find both approvals")
+		}
+		go func() {
+			_, err := st.RevokePeer(ctx, ownerA.ID, ownerB.ID)
+			revokeDone <- err
+		}()
+
+		poll := time.NewTicker(10 * time.Millisecond)
+		defer poll.Stop()
+		guard := time.NewTimer(10 * time.Second)
+		defer guard.Stop()
+		for {
+			var blocked bool
+			if err := tx.QueryRow(ctx, `
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_locks waiting
+                    JOIN pg_locks deleting ON deleting.pid = waiting.pid
+                    WHERE NOT waiting.granted
+                      AND waiting.locktype = 'transactionid'
+                      AND deleting.granted
+                      AND deleting.mode = 'RowExclusiveLock'
+                      AND deleting.relation = 'user_peers'::regclass
+                )
+            `).Scan(&blocked); err != nil {
+				return fmt.Errorf("observe revoke lock wait: %w", err)
+			}
+			if blocked {
+				observedWait = true
+				return nil
+			}
+			select {
+			case revokeErr := <-revokeDone:
+				if revokeErr == nil {
+					return errors.New("RevokePeer finished before the opener transaction committed")
+				}
+				return fmt.Errorf("RevokePeer returned before commit: %w", revokeErr)
+			case <-poll.C:
+			case <-guard.C:
+				return errors.New("timed out waiting for RevokePeer to block on the peering row lock")
+			}
+		}
+	})
+	if !observedWait {
+		t.Fatalf("revoke did not wait on OwnersPeeredTx row locks: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("opener transaction: %v", err)
+	}
+	if err := <-revokeDone; err != nil {
+		t.Fatalf("RevokePeer after opener commit: %v", err)
 	}
 }
 
@@ -214,7 +300,7 @@ func TestOpenDMRejectsUnpeeredCoMemberAndRevokedPeer(t *testing.T) {
 	agentB := mustAgent(t, st, ownerB.ID, "dm-revoke-agent-b")
 	agentB2 := mustAgent(t, st, ownerB.ID, "dm-revoke-agent-b2")
 	shared, err := st.CreateChannel(ctx, ownerA.ID, store.NewChannel{
-		Name: "dm-shared-room", Kind: store.ChannelKindGroupDM, MemberAccountIDs: []store.AccountID{agentB.ID},
+		Name: "dm-shared-room", Kind: store.ChannelKindGroupDM, MemberAccountIDs: []store.AccountID{agentA.ID, agentB.ID},
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel(shared room): %v", err)
@@ -228,6 +314,11 @@ func TestOpenDMRejectsUnpeeredCoMemberAndRevokedPeer(t *testing.T) {
 			t.Fatalf("OpenDM(%q) error = %v, want %q", handle, err, notFoundFor(handle))
 		}
 	}
+	resolved, err := svc.resolveAddressableAgent(ctx, agentA.ID, ownerB.Handle+"/"+agentB.Handle)
+	if err != nil || resolved.ID != agentB.ID {
+		t.Fatalf("resolveAddressableAgent(co-member) = (%q, %v); want %q", resolved.ID, err, agentB.ID)
+	}
+
 	assertOpenNotFound("dm-revoke-owner-b/dm-revoke-agent-b")
 
 	for _, edge := range [][2]store.AccountID{{ownerA.ID, ownerB.ID}, {ownerB.ID, ownerA.ID}} {

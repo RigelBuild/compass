@@ -436,6 +436,7 @@ func TestAccountsByHandlesQueryCountBounded(t *testing.T) {
 		t.Fatalf("AccountsByHandles(no callerOwner) ran %d queries, want 1 (global only)", n)
 	}
 }
+
 func TestAccountsByHandlesOwnFleetAndPeeredOwners(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -484,5 +485,25 @@ func TestAccountsByHandlesOwnFleetAndPeeredOwners(t *testing.T) {
 	got, err := s.AccountsByHandles(ctx, aAgent.ID, a.ID, []QualifiedHandle{ParseQualifiedHandle("sibling-a")})
 	if err != nil || got["sibling-a"] != aSibling.ID {
 		t.Fatalf("AccountsByHandles(agent own sibling) = %v, %v; want %q", got, err, aSibling.ID)
+	}
+}
+
+// TestAccountsByHandlesPeeringDoesNotLeakAnotherPair resolves only mutual peers of the viewer.
+func TestAccountsByHandlesPeeringDoesNotLeakAnotherPair(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	a := mustUser(t, s, "peering-isolation-a")
+	b := mustUser(t, s, "peering-isolation-b")
+	c := mustUser(t, s, "peering-isolation-c")
+	mustAgent(t, s, b.ID, "x")
+
+	for _, edge := range [][2]AccountID{{b.ID, c.ID}, {c.ID, b.ID}} {
+		if _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
+		}
+	}
+
+	if _, err := s.AccountsByHandles(ctx, a.ID, a.ID, []QualifiedHandle{ParseQualifiedHandle("peering-isolation-b/x")}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AccountsByHandles(A, B/x) error = %v; want ErrNotFound when only B and C are peers", err)
 	}
 }
