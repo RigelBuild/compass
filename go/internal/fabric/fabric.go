@@ -269,11 +269,14 @@ type Fabric struct {
 	consumerClosed func()
 	// beforeTerm is a test hook between DLQ publish and Term.
 	beforeTerm func()
+	// parkDecided is a test hook reporting each park path's decision.
+	parkDecided func(path string, published bool)
 
-	// parkedSequences holds stream sequences parked recently, keyed to claim time,
-	// so the callback and advisory park paths publish one DLQ record per event.
+	// parkedSequences holds recent (durable, stream seq) park claims and their expiry;
+	// activePark pins a claim while that delivery's callback is still running.
 	parkedMu        sync.Mutex
-	parkedSequences map[uint64]time.Time
+	parkedSequences map[parkKey]time.Time
+	activePark      map[parkKey]int
 
 	// reconnectHooks is read by the hook goroutine New starts; reconnectSignal
 	// wakes it. One slot, sent non-blocking, so a reconnect burst coalesces and

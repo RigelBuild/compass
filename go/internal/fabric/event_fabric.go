@@ -246,6 +246,12 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(con
 	// Detached from ctx so an event drained after Subscribe's ctx ends still runs
 	// live; the 0.9 margin lets the final attempt's Term reach the server first.
 	// The subscriber's span is stripped so only the publisher's trace carries.
+
+	if md, err := msg.Metadata(); err == nil && md != nil {
+		key := parkKey{durable: md.Consumer, seq: md.Sequence.Stream}
+		f.activeParkAttempt(key, 1)
+		defer f.activeParkAttempt(key, -1)
+	}
 	base := trace.ContextWithSpanContext(context.WithoutCancel(ctx), trace.SpanContext{})
 	deliveryCtx, cancel := context.WithTimeout(otelx.ContextWithTraceparent(base, traceparent(msg.Headers())), f.cfg.ackWait()*9/10)
 	err := invoke(deliveryCtx, fn, ref)
@@ -326,55 +332,117 @@ func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error
 // way.
 //
 // A final attempt whose Term lands after AckWait also draws the max-deliveries
-// advisory, so both paths claim the stream sequence and only the first publishes.
+// advisory, so both paths claim (durable, stream seq) and only the first publishes.
+// A claim is pinned while its callback runs, then kept for MaxAge plus two AckWaits.
 // The claim is per process: across instances the advisory may still park twice.
 //
 // The reason on the wire is sanitized and bounded (see sanitizeReason); the
 // full cause goes to the log, which has no wire limit.
 func (f *Fabric) park(ctx context.Context, msg jetstream.Msg, cause error) {
+	md, err := msg.Metadata()
 	reason := sanitizeReason(cause.Error())
-	// Unreadable metadata has no sequence to claim; publish rather than drop the record.
-	if md, err := msg.Metadata(); err == nil && md != nil && !f.claimPark(md.Sequence.Stream) {
-		f.log.DebugContext(ctx, "fabric: event already claimed for dead-letter parking",
-			"subject", msg.Subject(), "stream_seq", md.Sequence.Stream)
-	} else {
-		reason = f.publishDLQ(ctx, msg.Subject(), msg.Data(), cause)
+	key := parkKey{}
+	hasKey := err == nil && md != nil
+	if hasKey {
+		key = parkKey{durable: md.Consumer, seq: md.Sequence.Stream}
+	}
+	claimTTL := f.cfg.maxAge() + 2*f.cfg.ackWait()
+	shouldPublish := !hasKey || f.claimPark(key, claimTTL)
+	published := false
+	if shouldPublish {
+		var publishErr error
+		reason, publishErr = f.publishDLQ(ctx, msg.Subject(), msg.Data(), cause)
+		published = publishErr == nil
+		if hasKey && publishErr != nil {
+			f.releasePark(key)
+		}
 		if hook := f.beforeTerm; hook != nil {
 			hook()
 		}
+	} else {
+		f.log.DebugContext(ctx, "fabric: event already claimed for dead-letter parking",
+			"subject", msg.Subject(), "stream_seq", md.Sequence.Stream)
 	}
 	if err := msg.TermWithReason(reason); err != nil {
 		f.log.ErrorContext(ctx, "fabric: terminating a parked message failed; it may redeliver until max_deliver",
 			"subject", msg.Subject(), "error", err)
 	}
+	if hasKey {
+		f.notifyParkDecided("callback:"+key.durable, published)
+	}
 }
 
-// claimPark reserves a stream sequence once while keeping recently seen claims
-// long enough for a delayed Term or max-deliveries advisory to arrive.
-func (f *Fabric) claimPark(seq uint64) bool {
+type parkKey struct {
+	durable string
+	seq     uint64
+}
+
+// activeParkAttempt pins a claim while a callback for key runs; the last exit starts its expiry.
+func (f *Fabric) activeParkAttempt(key parkKey, delta int) {
+	f.parkedMu.Lock()
+	defer f.parkedMu.Unlock()
+	if f.activePark == nil {
+		f.activePark = make(map[parkKey]int)
+	}
+	f.activePark[key] += delta
+	if delta < 0 && f.activePark[key] == 0 {
+		delete(f.activePark, key)
+		if expiry, ok := f.parkedSequences[key]; ok {
+			claimExpiry := time.Now().Add(f.cfg.maxAge() + 2*f.cfg.ackWait())
+			if claimExpiry.After(expiry) {
+				f.parkedSequences[key] = claimExpiry
+			}
+		}
+	}
+}
+
+// claimPark reserves a key until expiry and extends an existing claim on a hit.
+func (f *Fabric) claimPark(key parkKey, ttl time.Duration) bool {
+	if ttl < 2*f.cfg.ackWait() {
+		ttl = 2 * f.cfg.ackWait()
+	}
+	return f.claimParkUntil(key, time.Now().Add(ttl))
+}
+
+func (f *Fabric) claimParkUntil(key parkKey, expiry time.Time) bool {
 	now := time.Now()
-	// Two AckWaits cover expiry and advisory dispatch, with one second of margin.
-	ttl := 2*f.cfg.ackWait() + time.Second
 	f.parkedMu.Lock()
 	defer f.parkedMu.Unlock()
 	if f.parkedSequences == nil {
-		f.parkedSequences = make(map[uint64]time.Time)
+		f.parkedSequences = make(map[parkKey]time.Time)
 	}
-	for seen, claimed := range f.parkedSequences {
-		if now.Sub(claimed) > ttl {
+	for seen, until := range f.parkedSequences {
+		if f.activePark[seen] > 0 {
+			continue
+		}
+		if now.After(until) {
 			delete(f.parkedSequences, seen)
 		}
 	}
-	if _, ok := f.parkedSequences[seq]; ok {
+	if until, ok := f.parkedSequences[key]; ok {
+		refresh := time.Now().Add(f.cfg.maxAge() + 2*f.cfg.ackWait())
+		if refresh.After(until) {
+			f.parkedSequences[key] = refresh
+		}
 		return false
 	}
-	f.parkedSequences[seq] = now
+	f.parkedSequences[key] = expiry
 	return true
 }
+func (f *Fabric) releasePark(key parkKey) {
+	f.parkedMu.Lock()
+	delete(f.parkedSequences, key)
+	f.parkedMu.Unlock()
+}
 
-// publishDLQ writes one DLQ record and returns the sanitized reason it carried.
-// Shared by both park paths so a DLQ consumer sees one header convention.
-func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, cause error) string {
+func (f *Fabric) notifyParkDecided(path string, published bool) {
+	if f.parkDecided != nil {
+		f.parkDecided(path, published)
+	}
+}
+
+// publishDLQ writes one DLQ record and returns its sanitized reason and publish error.
+func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, cause error) (string, error) {
 	f.log.ErrorContext(ctx, "fabric: parking event on the dlq",
 		"subject", subject, "dlq_subject", DLQSubject, "error", cause)
 	dlq := nats.NewMsg(DLQSubject)
@@ -385,8 +453,9 @@ func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, ca
 	if err := f.nc.PublishMsg(dlq); err != nil {
 		f.log.ErrorContext(ctx, "fabric: publishing to the dlq failed",
 			"subject", subject, "error", err)
+		return reason, err
 	}
-	return reason
+	return reason, nil
 }
 
 // maxDeliveriesAdvisory is the server's notice that a consumer gave up on a
@@ -414,19 +483,28 @@ func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats
 			f.log.WarnContext(ctx, "fabric: undecodable max-deliveries advisory", "subject", subject, "error", err)
 			return
 		}
-		if !f.claimPark(adv.StreamSeq) {
+		key := parkKey{durable: durableName(subject), seq: adv.StreamSeq}
+		path := "advisory:" + durableName(subject)
+		if !f.claimPark(key, f.cfg.maxAge()+2*f.cfg.ackWait()) {
 			f.log.DebugContext(ctx, "fabric: event already claimed for dead-letter parking",
 				"subject", subject, "stream_seq", adv.StreamSeq)
+			f.notifyParkDecided(path, false)
 			return
 		}
 		raw, err := stream.GetMsg(context.WithoutCancel(ctx), adv.StreamSeq)
 		if err != nil {
+			f.releasePark(key)
 			f.log.WarnContext(ctx, "fabric: event dropped at max_deliver is no longer in the stream; not parked",
 				"subject", subject, "stream_seq", adv.StreamSeq, "error", err)
 			return
 		}
-		f.publishDLQ(ctx, raw.Subject, raw.Data,
+		_, publishErr := f.publishDLQ(ctx, raw.Subject, raw.Data,
 			fmt.Errorf("fabric: dropped by the server after %d delivery attempts (callback outlived ack_wait)", adv.Deliveries))
+		published := publishErr == nil
+		if publishErr != nil {
+			f.releasePark(key)
+		}
+		f.notifyParkDecided(path, published)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("fabric: subscribing to max-deliveries advisory for %q: %w", subject, err)

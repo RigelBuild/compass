@@ -2047,6 +2047,16 @@ func TestLateTermOnFinalAttemptParksOnce(t *testing.T) {
 	releaseTerm := make(chan struct{})
 	termOnce := sync.OnceFunc(func() { close(releaseTerm) })
 	defer termOnce()
+	decisions := make(chan struct {
+		path      string
+		published bool
+	}, 2)
+	f.parkDecided = func(path string, published bool) {
+		decisions <- struct {
+			path      string
+			published bool
+		}{path, published}
+	}
 	f.beforeTerm = func() {
 		termEntered <- struct{}{}
 		<-releaseTerm
@@ -2078,7 +2088,24 @@ func TestLateTermOnFinalAttemptParksOnce(t *testing.T) {
 		t.Fatalf("server did not emit max-deliveries advisory before Term: %v", err)
 	}
 	termOnce()
-
+	seenPaths := make(map[string]bool)
+	for len(seenPaths) < 2 {
+		select {
+		case decision := <-decisions:
+			if decision.path == "callback:"+durableName(wildcard) && !decision.published {
+				t.Fatal("callback park did not publish the event")
+			}
+			if decision.path == "advisory:"+durableName(wildcard) && decision.published {
+				t.Fatal("advisory duplicate published the event")
+			}
+			seenPaths[decision.path] = true
+		case <-ctx.Done():
+			t.Fatal("callback and advisory park decisions did not both finish")
+		}
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ subscription: %v", err)
+	}
 	first, err := dlq.NextMsgWithContext(ctx)
 	if err != nil {
 		t.Fatalf("final-attempt failure was not parked: %v", err)
@@ -2086,10 +2113,10 @@ func TestLateTermOnFinalAttemptParksOnce(t *testing.T) {
 	if got := first.Header.Get(dlqHeaderSubject); got != subject {
 		t.Fatalf("parked subject = %q, want %q", got, subject)
 	}
-	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
-	defer cancelDup()
-	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
-		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
+	if pending, _, err := dlq.Pending(); err != nil {
+		t.Fatalf("reading DLQ pending count: %v", err)
+	} else if pending != 0 {
+		t.Fatalf("received %d DLQ records after both park paths completed; want exactly one", pending+1)
 	}
 }
 
@@ -2119,6 +2146,16 @@ func TestAdvisoryParksBeforeCallbackParksOnce(t *testing.T) {
 	releaseCallbackOnce := sync.OnceFunc(func() { close(releaseCallback) })
 	defer releaseCallbackOnce()
 	callbackReturned := make(chan struct{}, 1)
+	decisions := make(chan struct {
+		path      string
+		published bool
+	}, 2)
+	f.parkDecided = func(path string, published bool) {
+		decisions <- struct {
+			path      string
+			published bool
+		}{path, published}
+	}
 	subject, err := CommsSubject("t1", KindMessagePosted)
 	if err != nil {
 		t.Fatalf("CommsSubject: %v", err)
@@ -2157,10 +2194,146 @@ func TestAdvisoryParksBeforeCallbackParksOnce(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("callback failure did not reach its park path")
 	}
+	seenPaths := make(map[string]bool)
+	for len(seenPaths) < 2 {
+		select {
+		case decision := <-decisions:
+			if decision.path == "advisory:"+durableName(subject) && !decision.published {
+				t.Fatal("initial advisory park did not publish the event")
+			}
+			if decision.path == "callback:"+durableName(subject) && decision.published {
+				t.Fatal("callback duplicate published the event")
+			}
+			seenPaths[decision.path] = true
+		case <-ctx.Done():
+			t.Fatal("callback and advisory park decisions did not both finish")
+		}
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ subscription: %v", err)
+	}
+	if pending, _, err := dlq.Pending(); err != nil {
+		t.Fatalf("reading DLQ pending count: %v", err)
+	} else if pending != 0 {
+		t.Fatalf("received %d DLQ records after both park paths completed; want exactly one", pending+1)
+	}
+}
 
-	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
-	defer cancelDup()
-	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
-		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
+func TestBothDurablesParkSameSequence(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, AckWait: 300 * time.Millisecond, MaxDeliver: 1, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ subscription: %v", err)
+	}
+	subject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	decisions := make(chan struct {
+		path      string
+		published bool
+	}, 2)
+	f.parkDecided = func(path string, published bool) {
+		decisions <- struct {
+			path      string
+			published bool
+		}{path, published}
+	}
+	delivered := make(chan struct{}, 2)
+	callback := func(context.Context, EventRef) error {
+		delivered <- struct{}{}
+		return errors.New("both durable callbacks fail")
+	}
+	concreteUnsub, err := f.Subscribe(ctx, subject, callback)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer concreteUnsub()
+	wildcardUnsub, err := f.SubscribeKind(ctx, KindMessagePosted, callback)
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer wildcardUnsub()
+	if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "both-durables"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	for range 2 {
+		select {
+		case <-delivered:
+		case <-ctx.Done():
+			t.Fatal("both durable callbacks did not run")
+		}
+	}
+	stream, err := f.ensureStream(ctx)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	concrete, err := stream.Consumer(ctx, durableName(subject))
+	if err != nil {
+		t.Fatalf("opening concrete consumer: %v", err)
+	}
+	wildcard := kindConsumer(t, ctx, f)
+	pollUntil(t, "both durable consumers finish the failed delivery", func() bool {
+		for _, cons := range []jetstream.Consumer{concrete, wildcard} {
+			info, err := cons.Info(ctx)
+			if err != nil {
+				t.Fatalf("consumer Info: %v", err)
+			}
+			if info.NumAckPending != 0 {
+				return false
+			}
+		}
+		return true
+	})
+	seenPaths := make(map[string]bool)
+	for len(seenPaths) < 2 {
+		select {
+		case decision := <-decisions:
+			if !decision.published {
+				t.Fatalf("%s durable did not publish its park", decision.path)
+			}
+			seenPaths[decision.path] = true
+		case <-ctx.Done():
+			t.Fatal("both durable park paths did not finish")
+		}
+	}
+	wildcardSubject, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	wantPaths := []string{"callback:" + durableName(subject), "callback:" + durableName(wildcardSubject)}
+	for _, path := range wantPaths {
+		if !seenPaths[path] {
+			t.Errorf("missing park decision for %s", path)
+		}
+	}
+	if err := f.nc.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ publishes: %v", err)
+	}
+	for range 2 {
+		parked, err := dlq.NextMsgWithContext(ctx)
+		if err != nil {
+			t.Fatalf("both durable consumers should park this sequence independently: %v", err)
+		}
+		if got := parked.Header.Get(dlqHeaderSubject); got != subject {
+			t.Fatalf("parked subject = %q, want %q", got, subject)
+		}
+	}
+	if pending, _, err := dlq.Pending(); err != nil {
+		t.Fatalf("reading DLQ pending count: %v", err)
+	} else if pending != 0 {
+		t.Fatalf("received %d extra DLQ records after both durables parked", pending)
 	}
 }
