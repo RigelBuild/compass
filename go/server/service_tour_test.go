@@ -5,6 +5,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -56,7 +57,7 @@ func TestTourRPCsWithoutCallerAreUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestSetTourStateUnspecifiedIsInvalidArgument(t *testing.T) {
+func TestTourRPCsRejectInvalidInput(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	service := newService("tour-test", bus, nil, nil, nil, nil, nil)
@@ -69,9 +70,29 @@ func TestSetTourStateUnspecifiedIsInvalidArgument(t *testing.T) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 	client := newH2CClient(t, srv.URL)
+	oversized := strings.Repeat("x", maxTourStepIDBytes+1)
 
-	_, err := client.SetTourState(t.Context(), connect.NewRequest(&compassv1.SetTourStateRequest{}))
-	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("SetTourState(UNSPECIFIED) error = %v, want CodeInvalidArgument", err)
+	checks := map[string]func() error{
+		"SetTourState UNSPECIFIED": func() error {
+			_, err := client.SetTourState(t.Context(), connect.NewRequest(&compassv1.SetTourStateRequest{}))
+			return err
+		},
+		"SetTourState oversized step_id": func() error {
+			_, err := client.SetTourState(t.Context(), connect.NewRequest(&compassv1.SetTourStateRequest{
+				Outcome: compassv1.TourOutcome_TOUR_OUTCOME_STARTED, StepId: oversized,
+			}))
+			return err
+		},
+		"ClaimTourStart oversized step_id": func() error {
+			_, err := client.ClaimTourStart(t.Context(), connect.NewRequest(&compassv1.ClaimTourStartRequest{StepId: oversized}))
+			return err
+		},
+	}
+	for name, call := range checks {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("error = %v, want CodeInvalidArgument", err)
+			}
+		})
 	}
 }

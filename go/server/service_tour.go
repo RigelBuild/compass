@@ -14,6 +14,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
+// Step ids are short code-defined names; the bound stops one account storing megabytes.
+const maxTourStepIDBytes = 128
+
 func (s *service) GetTourState(
 	ctx context.Context,
 	_ *connect.Request[compassv1.GetTourStateRequest],
@@ -40,6 +43,9 @@ func (s *service) ClaimTourStart(
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller)
 	}
+	if err := checkTourStepID(req.Msg.GetStepId()); err != nil {
+		return nil, err
+	}
 	claimed, err := s.store.ClaimTourStart(ctx, caller, req.Msg.GetStepId())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claim tour start: %w", err))
@@ -59,6 +65,9 @@ func (s *service) SetTourState(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	if err := checkTourStepID(req.Msg.GetStepId()); err != nil {
+		return nil, err
+	}
 	if err := s.store.SetTourState(ctx, caller, outcome, req.Msg.GetStepId()); err != nil {
 		if errors.Is(err, store.ErrInvalidArgument) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -66,6 +75,14 @@ func (s *service) SetTourState(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set tour state: %w", err))
 	}
 	return connect.NewResponse(&compassv1.SetTourStateResponse{}), nil
+}
+
+func checkTourStepID(stepID string) error {
+	if len(stepID) > maxTourStepIDBytes {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("tour step_id exceeds %d bytes", maxTourStepIDBytes))
+	}
+	return nil
 }
 
 func tourOutcomeFromProto(outcome compassv1.TourOutcome) (store.TourOutcome, error) {
