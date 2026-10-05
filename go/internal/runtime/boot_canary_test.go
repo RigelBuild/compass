@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -100,10 +101,13 @@ type canaryLaunchRecorder struct {
 	breakWorkspaceRemoval bool
 	// workspaceCleanup runs after launch releases r.mu and may inspect the recorder.
 	workspaceCleanup func(string)
-	vms              []*canaryFakeVM
-	calls            int
-	lastDeadline     time.Time
-	lastHasDeadln    bool
+	// onLaunch runs after launch releases r.mu, inside BootCanary's window.
+	onLaunch      func()
+	workspaces    []string
+	vms           []*canaryFakeVM
+	calls         int
+	lastDeadline  time.Time
+	lastHasDeadln bool
 }
 
 func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfig) (guestVM, error) {
@@ -112,6 +116,7 @@ func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfi
 	deadline, ok := ctx.Deadline()
 	r.lastDeadline = deadline
 	r.lastHasDeadln = ok
+	r.workspaces = append(r.workspaces, cfg.FSSharedDir)
 	if r.launchErr != nil {
 		r.mu.Unlock()
 		return nil, r.launchErr
@@ -140,7 +145,11 @@ func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfi
 	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr, shutdownErr: r.shutdownErr, sharedDir: cfg.FSSharedDir}
 	r.vms = append(r.vms, vm)
 	cleanup := r.workspaceCleanup
+	onLaunch := r.onLaunch
 	r.mu.Unlock()
+	if onLaunch != nil {
+		onLaunch()
+	}
 	if blocked != "" && cleanup != nil {
 		cleanup(blocked)
 	}
@@ -233,28 +242,24 @@ func sessionCount(m *MicroVMRuntime) int {
 	return len(m.sessions)
 }
 
-// canaryTempDirs is the set of leftover throwaway-workspace dirs BootCanary
-// creates under os.TempDir(), so a test can assert it removed its own.
-func canaryTempDirs(t *testing.T) map[string]bool {
+// assertWorkspaceRemoved fails unless every throwaway workspace the canary
+// handed to launch is gone. It checks only the minted paths, so a canary dir
+// another process creates in the shared temp dir cannot fail this test.
+func assertWorkspaceRemoved(t *testing.T, rec *canaryLaunchRecorder) {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(os.TempDir(), canaryNamePrefix+"*"))
-	if err != nil {
-		t.Fatalf("globbing canary temp dirs: %v", err)
+	rec.mu.Lock()
+	workspaces := slices.Clone(rec.workspaces)
+	rec.mu.Unlock()
+	if len(workspaces) == 0 {
+		t.Fatal("launch recorded no throwaway workspace, so the leak check proves nothing")
 	}
-	set := make(map[string]bool, len(matches))
-	for _, p := range matches {
-		set[p] = true
-	}
-	return set
-}
-
-// assertNoTempLeak fails if any canary workspace dir exists now that did not
-// before the call — proving BootCanary deleted the throwaway dir it minted.
-func assertNoTempLeak(t *testing.T, before map[string]bool) {
-	t.Helper()
-	for p := range canaryTempDirs(t) {
-		if !before[p] {
-			t.Errorf("canary leaked a throwaway workspace dir: %s", p)
+	for _, ws := range workspaces {
+		_, err := os.Stat(ws)
+		switch {
+		case err == nil:
+			t.Errorf("canary leaked its throwaway workspace dir: %s", ws)
+		case !errors.Is(err, fs.ErrNotExist):
+			t.Errorf("checking throwaway workspace %s: %v", ws, err)
 		}
 	}
 }
@@ -264,7 +269,6 @@ func assertNoTempLeak(t *testing.T, before map[string]bool) {
 // GuestRSSBytes summed from PSS kB→bytes), the launched VM is torn down, the
 // session table is empty after, and no throwaway workspace leaks (record §(e)).
 func TestBootCanarySequencing(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, _ := seamCanary(t, map[string]int64{"cloud-hypervisor": 100, "virtiofsd": 50})
 
 	report, err := m.BootCanary(t.Context())
@@ -290,14 +294,13 @@ func TestBootCanarySequencing(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryStartFailureLeaksNothing: a launchFunc error fails BootCanary and
 // leaves no session in the table and no throwaway workspace on disk — Create's
 // entry is torn down by the always-run Remove (record §(e)/(f)).
 func TestBootCanaryStartFailureLeaksNothing(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, _ := seamCanary(t, nil)
 	rec.launchErr = errors.New("boom: launch refused")
 
@@ -311,14 +314,13 @@ func TestBootCanaryStartFailureLeaksNothing(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after a failed BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryEchoFailureStillTearsDown: an echo-exec transport failure fails
 // BootCanary, but the always-run Remove still shuts the VM down, empties the
 // session table, and deletes the throwaway workspace (record §(e)).
 func TestBootCanaryEchoFailureStillTearsDown(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, client := seamCanary(t, nil)
 	client.execErr = errors.New("boom: exec refused")
 
@@ -332,14 +334,13 @@ func TestBootCanaryEchoFailureStillTearsDown(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after a failed BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryNonZeroExitFails: an echo exec that returns a non-zero exit code
 // (a successful call, not a transport error) is still a canary failure — the
 // canary is a health gate, so a bad exit fails it.
 func TestBootCanaryNonZeroExitFails(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, client := seamCanary(t, nil)
 	client.exitCode = 3
 
@@ -356,7 +357,7 @@ func TestBootCanaryNonZeroExitFails(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after a failed BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryNonceMismatchFails: an echo exec that returns exit 0 but stdout
@@ -368,7 +369,6 @@ func TestBootCanaryNonZeroExitFails(t *testing.T) {
 // canary as a healthy boot, the exact fail-open the gate prevents; this test
 // breaks on that. The always-run teardown must still fire.
 func TestBootCanaryNonceMismatchFails(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, client := seamCanary(t, nil)
 	wrong := "not-the-nonce"
 	client.stdout = &wrong // exit 0, but stdout never carries the minted nonce
@@ -386,7 +386,7 @@ func TestBootCanaryNonceMismatchFails(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after a failed BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryPSSErrorNonFatal pins the one fail-open seam on an otherwise
@@ -396,7 +396,6 @@ func TestBootCanaryNonceMismatchFails(t *testing.T) {
 // make the canary spuriously refuse Runner startup on a host with an unreadable
 // smaps_rollup, and this test breaks on that flip.
 func TestBootCanaryPSSErrorNonFatal(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, _ := seamCanary(t, nil)
 	rec.pssErr = errors.New("boom: smaps_rollup unreadable")
 
@@ -413,7 +412,7 @@ func TestBootCanaryPSSErrorNonFatal(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryPartialPSSStillReported pins the OTHER half of the PSS contract:
@@ -424,7 +423,6 @@ func TestBootCanaryPSSErrorNonFatal(t *testing.T) {
 // branch (a plausible "tidy the error path" refactor) silently drops real
 // telemetry, and this test breaks on that (record §(e)/OQ-10).
 func TestBootCanaryPartialPSSStillReported(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, _ := seamCanary(t, map[string]int64{"cloud-hypervisor": 100, "virtiofsd": 50})
 	rec.pssErr = errors.New("boom: one child's smaps_rollup unreadable")
 
@@ -443,14 +441,13 @@ func TestBootCanaryPartialPSSStillReported(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryTeardownErrorJoined pins shutdown-error composition: a canary
 // that otherwise succeeds must still invoke VM shutdown, empty the session
 // table, and retain the shutdown error when teardown fails (record §(e)).
 func TestBootCanaryTeardownErrorJoined(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, _ := seamCanary(t, nil)
 	wantErr := errors.New("boom: vmm refused to die")
 	rec.shutdownErr = wantErr
@@ -471,14 +468,13 @@ func TestBootCanaryTeardownErrorJoined(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
 }
 
 // TestBootCanaryBodyAndTeardownErrorsJoined pins the Remove defer's join of a
 // body failure with the shutdown failure, catching a regression that overwrites
 // the body error at teardown instead of retaining both errors (record §(e)).
 func TestBootCanaryBodyAndTeardownErrorsJoined(t *testing.T) {
-	before := canaryTempDirs(t)
 	m, rec, client := seamCanary(t, nil)
 	wantErr := errors.New("boom: vmm refused to die")
 	rec.shutdownErr = wantErr
@@ -498,7 +494,30 @@ func TestBootCanaryBodyAndTeardownErrorsJoined(t *testing.T) {
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
 	}
-	assertNoTempLeak(t, before)
+	assertWorkspaceRemoved(t, rec)
+}
+
+// TestBootCanaryLeakCheckIgnoresForeignCanaryDirs: a canary dir another process
+// creates mid-run is not this canary's leak; only the workspace it minted counts.
+func TestBootCanaryLeakCheckIgnoresForeignCanaryDirs(t *testing.T) {
+	m, rec, _ := seamCanary(t, nil)
+	rec.onLaunch = func() {
+		// The foreign dir must sit in the shared temp dir the canary uses; t.TempDir nests it out of reach.
+		foreign, err := os.MkdirTemp("", canaryNamePrefix+"RACE") //nolint:usetesting // see above
+		if err != nil {
+			t.Fatalf("creating a foreign canary dir: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Remove(foreign); err != nil {
+				t.Errorf("removing foreign canary dir: %v", err)
+			}
+		})
+	}
+
+	if _, err := m.BootCanary(t.Context()); err != nil {
+		t.Fatalf("BootCanary = %v, want nil", err)
+	}
+	assertWorkspaceRemoved(t, rec)
 }
 
 // Root bypasses this local 0500 DAC check. This package runs non-root in the
