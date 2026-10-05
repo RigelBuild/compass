@@ -543,7 +543,7 @@ type Querier interface {
 	SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error)
 	SessionBase(ctx context.Context, sessionID string) (int64, error)
 	SessionBinding(ctx context.Context, sessionID string) (SessionBindingRow, error)
-	SessionBindingForAccount(ctx context.Context, agentAccountID string) (string, error)
+	SessionBindingForAccount(ctx context.Context, agentAccountID string) (SessionBindingForAccountRow, error)
 	// The prior-value read follows the account advisory lock. It shares a tx with
 	// event writes and the binding upsert. FOR UPDATE also protects against a writer
 	// that reaches the row without taking the advisory lock.

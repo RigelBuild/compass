@@ -343,13 +343,13 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
-	reapStale := h.reapStale
+	enrollSeq := h.enrollSeq
 	h.mu.Unlock()
 
 	if bindings == nil {
 		return sessionBinding{}, bindingNotFound
 	}
-	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
+	if !h.readThroughAllowed(ctx, bindings, enrolled) {
 		return sessionBinding{}, bindingUnverifiable
 	}
 	account, runnerID, err := bindings.ResolveSessionBinding(ctx, sessionID)
@@ -369,20 +369,19 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 		h.mu.Unlock()
 		return live, bindingFound
 	}
+	if h.reapStale[runnerID] || h.runnerEnrollSeq[runnerID] > enrollSeq {
+		h.mu.Unlock()
+		return sessionBinding{}, bindingUnverifiable
+	}
 	h.sessionAccounts[sessionID] = resolved
 	h.mu.Unlock()
 	return resolved, bindingFound
 }
 
-// readThroughAllowed reports whether a cache-miss binding read may fall through
-// to the durable table: a store must be wired, a Runner must be currently
-// enrolled (a miss with none enrolled means the reconnect reap cleared every
-// binding — fail closed), the ctx must be request-scoped (a system-role read
-// is the unscoped-row hazard, refused), and the last enroll's durable reap
-// must not have faulted — rows it failed to delete name sessions this hub has
-// already declared dead, so reading them back would resurrect them.
-func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingStore, enrolled, reapStale bool) bool {
-	return bindings != nil && enrolled && !reapStale && !store.IsSystemRole(ctx)
+// readThroughAllowed permits a store read only for an enrolled Runner and a
+// request-scoped context; the per-Runner reap check happens after the read.
+func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingStore, enrolled bool) bool {
+	return bindings != nil && enrolled && !store.IsSystemRole(ctx)
 }
 
 // SessionForAccount resolves the LIVE session bound to an agent account — the
@@ -401,7 +400,8 @@ func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingSto
 // (delivery/consumer.go Run), so its resolve REFUSES the read-through and falls
 // to the D2 cursor sweep — the consumer's own miss contract, unchanged. A
 // request-scoped caller resolves a binding recorded since the last enroll from
-// the row. store.ErrNotFound and any store fault map to ok=false.
+// the row. store.ErrNotFound and any store fault map to ok=false, as do rows
+// refused by that Runner's reap or by a concurrent enroll.
 func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (string, bool) {
 	h.mu.Lock()
 	if sessionID, ok := h.accountSessions[account]; ok {
@@ -410,13 +410,13 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
-	reapStale := h.reapStale
+	enrollSeq := h.enrollSeq
 	h.mu.Unlock()
 
-	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
+	if !h.readThroughAllowed(ctx, bindings, enrolled) {
 		return "", false
 	}
-	sessionID, err := bindings.SessionForAccount(ctx, account)
+	sessionID, runnerID, err := bindings.SessionForAccount(ctx, account)
 	if err != nil {
 		return "", false
 	}
@@ -424,6 +424,10 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 	if live, ok := h.accountSessions[account]; ok {
 		h.mu.Unlock()
 		return live, true
+	}
+	if h.reapStale[runnerID] || h.runnerEnrollSeq[runnerID] > enrollSeq {
+		h.mu.Unlock()
+		return "", false
 	}
 	h.accountSessions[account] = sessionID
 	h.mu.Unlock()

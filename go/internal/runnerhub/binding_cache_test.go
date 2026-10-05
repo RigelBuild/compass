@@ -107,18 +107,18 @@ func (f *fakeBindingStore) ResolveSessionBinding(ctx context.Context, sessionID 
 	return b.AccountID, b.RunnerID, nil
 }
 
-func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.AccountID) (string, error) {
+func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.AccountID) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.reverseErr != nil {
-		return "", f.reverseErr
+		return "", "", f.reverseErr
 	}
 	for sid, b := range f.bindings {
 		if b.AccountID == accountID {
-			return sid, nil
+			return sid, b.RunnerID, nil
 		}
 	}
-	return "", store.ErrNotFound
+	return "", "", store.ErrNotFound
 }
 
 func (f *fakeBindingStore) DeleteSessionBinding(_ context.Context, sessionID string) error {
@@ -150,7 +150,7 @@ func (f *fakeBindingStore) EffectiveTenant(context.Context) store.TenantID {
 	return f.tenant
 }
 
-// testRunnerID is the single Runner every fake binding is seeded under.
+// testRunnerID is the default Runner id used by fakeBindingStore.seed.
 const testRunnerID = "runner-1"
 
 // seed inserts a binding directly (test setup), bypassing the displacement path.
@@ -167,9 +167,13 @@ func (f *fakeBindingStore) SessionBindingTenant(_ context.Context, sessionID, ru
 }
 
 func (f *fakeBindingStore) seed(sessionID string) {
+	f.seedBinding(sessionID, testAgentAccount, testRunnerID)
+}
+
+func (f *fakeBindingStore) seedBinding(sessionID string, accountID store.AccountID, runnerID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.bindings[sessionID] = store.SessionBinding{TenantID: f.tenant, SessionID: sessionID, AccountID: testAgentAccount, RunnerID: testRunnerID}
+	f.bindings[sessionID] = store.SessionBinding{TenantID: f.tenant, SessionID: sessionID, AccountID: accountID, RunnerID: runnerID}
 }
 
 // fakeRoutingFabric is an in-memory RoutingFabric double: PublishBindingChange
@@ -275,6 +279,53 @@ func TestColdCacheResolvesPostEnrollBindingBothDirections(t *testing.T) {
 	sessionID, ok := hub.SessionForAccount(context.Background(), testAgentAccount)
 	if !ok || sessionID != "sess-1" {
 		t.Fatalf("SessionForAccount(%s) = (%q, %v), want (sess-1, true) — the reverse binding must resolve from the durable table too", testAgentAccount, sessionID, ok)
+	}
+}
+func TestFaultedReapForOneRunnerKeepsOtherRunnersReadThrough(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	bindings.seedBinding("sess-1", "acct-runner-1", "runner-1")
+	bindings.deleteForRunnerErr = errors.New("durable fault")
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seedBinding("sess-y", "acct-runner-2", "runner-2")
+
+	account, ok := hub.accountForSession(context.Background(), "sess-y")
+	if !ok || account != "acct-runner-2" {
+		t.Fatalf("accountForSession(sess-y) = (%q, %v), want (acct-runner-2, true)", account, ok)
+	}
+	if sessionID, ok := hub.SessionForAccount(context.Background(), "acct-runner-2"); !ok || sessionID != "sess-y" {
+		t.Fatalf("SessionForAccount(acct-runner-2) = (%q, %v), want (sess-y, true)", sessionID, ok)
+	}
+	if account, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
+		t.Fatalf("accountForSession(sess-1) = (%q, true), want fail-closed after runner-1 reap fault", account)
+	}
+	if sessionID, ok := hub.SessionForAccount(context.Background(), "acct-runner-1"); ok {
+		t.Fatalf("SessionForAccount(acct-runner-1) = (%q, true), want fail-closed after runner-1 reap fault", sessionID)
+	}
+}
+
+func TestSuccessfulReenrollClearsOnlyItsOwnRunnerFlag(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	bindings.seedBinding("sess-1", "acct-runner-1-stale", "runner-1")
+	bindings.deleteForRunnerErr = errors.New("durable fault")
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	bindings.deleteForRunnerErr = nil
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seedBinding("sess-fresh", "acct-runner-1-fresh", "runner-1")
+
+	if account, ok := hub.accountForSession(context.Background(), "sess-fresh"); !ok || account != "acct-runner-1-fresh" {
+		t.Fatalf("accountForSession(sess-fresh) = (%q, %v), want (acct-runner-1-fresh, true) after runner-1 reap succeeds", account, ok)
+	}
+	if sessionID, ok := hub.SessionForAccount(context.Background(), "acct-runner-1-fresh"); !ok || sessionID != "sess-fresh" {
+		t.Fatalf("SessionForAccount(acct-runner-1-fresh) = (%q, %v), want (sess-fresh, true) after runner-1 reap succeeds", sessionID, ok)
 	}
 }
 
@@ -672,6 +723,102 @@ func TestConcurrentResolveDuringAFaultingReapCannotResurrect(t *testing.T) {
 	if ok {
 		t.Fatalf("accountForSession(sess-1) = (%q, true) while a faulting reap was in flight, want fail-closed: the surviving row must not be readable between the map-clear and the reap's return", acct)
 	}
+}
+
+func TestResolveStartedBeforeSuccessfulReapCannotResurrect(t *testing.T) {
+	hub := newHubOnly()
+	plain := newFakeBindingStore()
+	hub.SetSessionBindingStore(plain)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	plain.seed("sess-racing")
+
+	bindings := &blockingReadBindingStore{
+		fakeBindingStore: plain,
+		entered:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	hub.SetSessionBindingStore(bindings)
+	resolved := make(chan store.AccountID, 1)
+	go func() {
+		account, _ := hub.accountForSession(store.WithTenant(context.Background(), "tenant-a"), "sess-racing")
+		resolved <- account
+	}()
+	select {
+	case <-bindings.entered:
+	case account := <-resolved:
+		t.Fatalf("read-through did not reach blocking store: accountForSession returned %q", account)
+	}
+
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	close(bindings.release)
+	if account := <-resolved; account != "" {
+		t.Fatalf("accountForSession(sess-racing) = %q after successful reap, want fail-closed", account)
+	}
+	hub.mu.Lock()
+	_, ok := hub.sessionAccounts["sess-racing"]
+	hub.mu.Unlock()
+	if ok {
+		t.Fatal("successful-reap race populated the session cache with a deleted row")
+	}
+}
+
+func TestReverseResolveStartedBeforeSuccessfulReapCannotResurrect(t *testing.T) {
+	hub := newHubOnly()
+	plain := newFakeBindingStore()
+	hub.SetSessionBindingStore(plain)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	plain.seed("sess-racing")
+
+	bindings := &blockingReadBindingStore{
+		fakeBindingStore: plain,
+		entered:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	hub.SetSessionBindingStore(bindings)
+	resolved := make(chan string, 1)
+	go func() {
+		sessionID, _ := hub.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount)
+		resolved <- sessionID
+	}()
+	select {
+	case <-bindings.entered:
+	case sessionID := <-resolved:
+		t.Fatalf("read-through did not reach blocking store: SessionForAccount returned %q", sessionID)
+	}
+
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	close(bindings.release)
+	if sessionID := <-resolved; sessionID != "" {
+		t.Fatalf("SessionForAccount(%s) = %q after successful reap, want fail-closed", testAgentAccount, sessionID)
+	}
+	hub.mu.Lock()
+	_, ok := hub.accountSessions[testAgentAccount]
+	hub.mu.Unlock()
+	if ok {
+		t.Fatal("successful-reap race populated the account cache with a deleted row")
+	}
+}
+
+// blockingReadBindingStore snapshots a durable row, then parks its return until
+// the test completes a concurrent successful reap.
+type blockingReadBindingStore struct {
+	*fakeBindingStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingReadBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error) {
+	account, runnerID, err := b.fakeBindingStore.ResolveSessionBinding(ctx, sessionID)
+	close(b.entered)
+	<-b.release
+	return account, runnerID, err
+}
+
+func (b *blockingReadBindingStore) SessionForAccount(ctx context.Context, accountID store.AccountID) (string, string, error) {
+	sessionID, runnerID, err := b.fakeBindingStore.SessionForAccount(ctx, accountID)
+	close(b.entered)
+	<-b.release
+	return sessionID, runnerID, err
 }
 
 // blockingBindingStore parks DeleteSessionBindingsForRunner so a test can act
