@@ -980,6 +980,9 @@ func TestErrorResultTruncatesLongMessage(t *testing.T) {
 	if len(msg) > 4096 || !strings.HasSuffix(msg, truncatedMarker) {
 		t.Fatalf("message length %d (suffix %q), want <= 4096 ending in %q", len(msg), msg[max(0, len(msg)-20):], truncatedMarker)
 	}
+	if got := d.errorResult(context.Background(), "r", errors.New("boom")).GetError().GetMessage(); got != "boom" {
+		t.Fatalf("short message = %q, want it unchanged", got)
+	}
 	exact := strings.Repeat("y", 4096)
 	if got := d.errorResult(context.Background(), "r", errors.New(exact)).GetError().GetMessage(); got != exact {
 		t.Fatalf("a 4096-byte message was changed (len %d), want it unchanged", len(got))
