@@ -429,9 +429,9 @@ jobs:
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
           # secretspec: the CLI the Go secrets READ path spawns BY NAME
           # (go/internal/secrets/resolver.go's `defaultCLI = "secretspec"`,
-          # exec.CommandContext). The pgtest-tagged armed forge test and the
-          # stack-booted compass-server both spawn it and fail without it, so
-          # `compass-go:test` keeps the binary present. It is realized
+          # exec.CommandContext). No untagged test spawns it today; staging is
+          # defensive so a future real-resolver test here fails on its own
+          # logic, not a missing binary. It is realized
           # out-of-band from its own pinned
           # helper, NOT the parity `attrs` above, for the same dotted-input
           # reason chromium and skopeo are: it comes from the second
