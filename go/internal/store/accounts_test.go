@@ -591,6 +591,8 @@ var invalidHandles = []string{
 // TestCreateUserReservedHandleInvalid pins the T1 guard on CreateUser: every
 // reserved/malformed handle is ErrInvalidArgument and writes no row (the handle
 // resolves to nothing afterward).
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestCreateUserReservedHandleInvalid(t *testing.T) {
 	ctx := context.Background()
 	for _, h := range invalidHandles {
@@ -604,6 +606,8 @@ func TestCreateUserReservedHandleInvalid(t *testing.T) {
 }
 
 // TestBootstrapAdminReservedHandleInvalid pins the T1 guard on BootstrapAdmin.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestBootstrapAdminReservedHandleInvalid(t *testing.T) {
 	ctx := context.Background()
 	for _, h := range invalidHandles {
@@ -618,6 +622,8 @@ func TestBootstrapAdminReservedHandleInvalid(t *testing.T) {
 
 // TestCreateAgentReservedHandleInvalid pins the T1 guard on CreateAgent. A valid
 // owner exists first so the rejection is the handle guard, not the owner check.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestCreateAgentReservedHandleInvalid(t *testing.T) {
 	ctx := context.Background()
 	for _, h := range invalidHandles {
@@ -645,6 +651,8 @@ var validHandles = []string{
 
 // TestCreateAccountsAcceptGrammarHandles pins the accept side of the T1 guard on
 // all three creation paths: each valid handle creates a resolvable row.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestCreateAccountsAcceptGrammarHandles(t *testing.T) {
 	ctx := context.Background()
 	for _, h := range validHandles {
@@ -775,6 +783,8 @@ func TestEnsureSystemAccountRoundTripsThroughGetAccount(t *testing.T) {
 // planted too, since handle ownership now lives there (RIG-2751 handle cutover)
 // and systemByHandle resolves through it — a squatter that owns only the legacy
 // accounts.handle column but not the resolution index would not contend.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 	ctx := context.Background()
 
