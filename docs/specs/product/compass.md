@@ -43,7 +43,8 @@ accounts, channels, messages, and their event stream), described in turn below.
 `CompassService` exposes:
 
 - **`GetServerInfo`** — a unary liveness probe returning the server's build and
-  contract version. The first round-trip a UI makes after connecting.
+  contract version and the most recently enrolled Runner with its per-server
+  enrollment sequence. The first round-trip a UI makes after connecting.
 - **`SubscribeEvents`** — a server-streaming event channel, the sole push path
   from the server to the UI (see [The event stream](#the-event-stream) for its
   ordering and resubscribe semantics).
@@ -70,24 +71,33 @@ The server SHALL implement the `compass.v1` `CompassService` with exactly the
 RPCs the schema declares. `GetServerInfo` SHALL return the server's semantic
 `version`, the `api_version` string identifying the contract it serves
 (`compass.v1`), the `rev` (full git commit) the binary was built from, empty
-when the build was not stamped, and the ids of Runners enrolled with this
-server. The Runner id list is empty before the first enrollment and when no
-Runner door is mounted; enrollment remains reported for the life of the server
-because disconnects are not tracked. `SubscribeEvents` SHALL be the only
-server-streaming RPC and the only path by which the server pushes state to a UI.
+when the build was not stamped, and the most recently enrolled Runner id and its
+per-server enrollment sequence. The reported Runner remains present across
+disconnects; the sequence increases on every enrollment so clients can detect a
+fresh enroll. The list is empty before the first enrollment and when no Runner
+door is mounted. `SubscribeEvents` SHALL be the only server-streaming RPC and
+the only path by which the server pushes state to a UI.
 
 #### Scenario: A UI probes a freshly connected server
 
 - **Given** a running server reachable over its local transport
 - **When** a client calls `GetServerInfo`
 - **Then** the server returns its build `version`, `api_version = "compass.v1"`,
-  and no enrolled Runner ids before a Runner enrolls.
+  and no enrolled Runner records before a Runner enrolls.
 
 #### Scenario: A client probes after a Runner enrolls
 
 - **Given** a Runner has enrolled with the server
 - **When** a client calls `GetServerInfo`
-- **Then** the server includes that Runner id in `enrolled_runner_ids`.
+- **Then** the server includes the Runner id and its per-server enrollment
+  sequence in `enrolled_runners`, retaining that record across disconnects.
+
+#### Scenario: A client detects a fresh Runner enrollment
+
+- **Given** a Runner has previously enrolled with the server
+- **When** the Runner enrolls again and a client calls `GetServerInfo`
+- **Then** the server reports the same Runner id with a higher per-server
+  enrollment sequence.
 
 ### Requirement: A generated client is the only door to the server
 

@@ -709,8 +709,8 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 		garage:      garage,
 	}
 
-	// A cold stack.Up already waits for this runner to enroll; the WithSite attach
-	// path does not, so gate here too. Event-gated on an enrollment-gated probe.
+	// Keep this fixture wait after cold Up: the Sessions stream attaches after Enroll.
+	// WithSite also needs it because that attach path does not own the Runner gate.
 	if err := f.waitRunnerEnrolled(ctx); err != nil {
 		tb.Fatalf("wait for runner enrollment: %v", err)
 	}

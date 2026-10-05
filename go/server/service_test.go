@@ -149,8 +149,8 @@ func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServerInfo before enroll: %v", err)
 	}
-	if got := resp.Msg.GetEnrolledRunnerIds(); len(got) != 0 {
-		t.Fatalf("EnrolledRunnerIds before enroll = %v, want empty", got)
+	if got := resp.Msg.GetEnrolledRunners(); len(got) != 0 {
+		t.Fatalf("EnrolledRunners before enroll = %v, want empty", got)
 	}
 	runnerURL := mountInfoRunner(t, hub)
 	tr := h2cTransport(func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -170,8 +170,8 @@ func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServerInfo after enroll: %v", err)
 	}
-	if got := resp.Msg.GetEnrolledRunnerIds(); len(got) != 1 || got[0] != "runner-1" {
-		t.Fatalf("EnrolledRunnerIds after enroll = %v, want [runner-1]", got)
+	if got := resp.Msg.GetEnrolledRunners(); len(got) != 1 || got[0].GetId() != "runner-1" || got[0].GetEnrollment() != 1 {
+		t.Fatalf("EnrolledRunners after enroll = %v, want runner-1 at enrollment 1", got)
 	}
 	if got := resp.Msg.GetVersion(); got != "9.9.9-test" {
 		t.Fatalf("Version = %q, want %q (the configured build version)", got, "9.9.9-test")

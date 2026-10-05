@@ -326,15 +326,15 @@ func (s *service) GetServerInfo(
 	_ context.Context,
 	_ *connect.Request[compassv1.GetServerInfoRequest],
 ) (*connect.Response[compassv1.GetServerInfoResponse], error) {
-	var enrolledRunnerIDs []string
+	var enrolledRunners []*compassv1.EnrolledRunner
 	if s.hub != nil {
-		enrolledRunnerIDs = s.hub.EnrolledRunnerIDs()
+		enrolledRunners = s.hub.EnrolledRunners()
 	}
 	return connect.NewResponse(&compassv1.GetServerInfoResponse{
-		Version:           s.version,
-		ApiVersion:        apiVersion,
-		Rev:               s.rev,
-		EnrolledRunnerIds: enrolledRunnerIDs,
+		Version:         s.version,
+		ApiVersion:      apiVersion,
+		Rev:             s.rev,
+		EnrolledRunners: enrolledRunners,
 	}), nil
 }
 

@@ -294,21 +294,24 @@ func TestRunnerEnrolledFalseAfterReenrollUntilAttach(t *testing.T) {
 	}
 }
 
-func TestEnrolledRunnerIDs(t *testing.T) {
+func TestEnrolledRunners(t *testing.T) {
 	hub := newHubOnly()
-	if got := hub.EnrolledRunnerIDs(); len(got) != 0 {
-		t.Fatalf("EnrolledRunnerIDs before enroll = %v, want empty", got)
+	if got := hub.EnrolledRunners(); len(got) != 0 {
+		t.Fatalf("EnrolledRunners before enroll = %v, want empty", got)
 	}
 
 	subj := store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}
-	hub.enroll(context.Background(), subj.ID, subj, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	got := hub.EnrolledRunnerIDs()
-	if len(got) != 1 || got[0] != subj.ID {
-		t.Fatalf("EnrolledRunnerIDs after enroll = %v, want [%q]", got, subj.ID)
+	for enrollment := uint64(1); enrollment <= 2; enrollment++ {
+		hub.enroll(context.Background(), subj.ID, subj, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+		got := hub.EnrolledRunners()
+		if len(got) != 1 || got[0].GetId() != subj.ID || got[0].GetEnrollment() != enrollment {
+			t.Fatalf("EnrolledRunners after enroll %d = %v, want id %q and sequence %d", enrollment, got, subj.ID, enrollment)
+		}
+		got[0].Id = "changed"
+		got[0].Enrollment = 0
 	}
-	got[0] = "changed"
-	if next := hub.EnrolledRunnerIDs(); len(next) != 1 || next[0] != subj.ID {
-		t.Fatalf("EnrolledRunnerIDs returned mutable hub state: %v", next)
+	if next := hub.EnrolledRunners(); len(next) != 1 || next[0].GetId() != subj.ID || next[0].GetEnrollment() != 2 {
+		t.Fatalf("EnrolledRunners exposed mutable hub state: %v", next)
 	}
 }
 

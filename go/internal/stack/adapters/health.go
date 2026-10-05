@@ -50,5 +50,9 @@ func (p *HealthProber) Probe(ctx context.Context, socketPath string) (stack.Serv
 	if err != nil {
 		return stack.ServerInfo{}, err
 	}
-	return stack.ServerInfo{Version: resp.Msg.GetVersion(), EnrolledRunnerIDs: resp.Msg.GetEnrolledRunnerIds()}, nil
+	enrolledRunners := make([]stack.EnrolledRunner, 0, len(resp.Msg.GetEnrolledRunners()))
+	for _, runner := range resp.Msg.GetEnrolledRunners() {
+		enrolledRunners = append(enrolledRunners, stack.EnrolledRunner{ID: runner.GetId(), Enrollment: runner.GetEnrollment()})
+	}
+	return stack.ServerInfo{Version: resp.Msg.GetVersion(), EnrolledRunners: enrolledRunners}, nil
 }

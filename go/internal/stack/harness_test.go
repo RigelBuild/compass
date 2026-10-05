@@ -5,8 +5,8 @@ package stack
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -46,11 +46,19 @@ type stubProcess struct {
 	waitDone chan struct{}
 	waitMu   sync.Mutex
 	waitErr  error
+	exited   bool
 	waitOnce sync.Once
 }
 
 func (p *stubProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal " + p.name)
+	p.waitMu.Lock()
+	if p.exited {
+		p.waitMu.Unlock()
+		return os.ErrProcessDone
+	}
+	p.exited = true
+	p.waitMu.Unlock()
 	p.waitOnce.Do(func() {
 		if p.waitDone != nil {
 			close(p.waitDone)
@@ -81,21 +89,24 @@ func (p *stubProcess) Pid() int { return p.pid }
 func (p *stubProcess) exit(err error) {
 	p.waitMu.Lock()
 	p.waitErr = err
+	p.exited = true
 	p.waitMu.Unlock()
 	p.waitOnce.Do(func() { close(p.waitDone) })
 }
 
 // stubSupervisor records component starts and exposes their process handles.
 type stubSupervisor struct {
-	rec           *recorder
-	startErr      map[Component]error
-	gate          map[Component]chan struct{}
-	entered       map[Component]chan struct{}
-	serverStarted *atomic.Bool
-	runnerStarted *atomic.Bool
-	mu            sync.Mutex
-	specs         map[Component]ProcessSpec
-	processes     map[Component]*stubProcess
+	rec                  *recorder
+	startErr             map[Component]error
+	gate                 map[Component]chan struct{}
+	entered              map[Component]chan struct{}
+	serverStarted        *atomic.Bool
+	runnerProcessStarted *atomic.Bool
+	runnerStarted        *atomic.Bool
+	runnerEnrollments    *atomic.Uint64
+	mu                   sync.Mutex
+	specs                map[Component]ProcessSpec
+	processes            map[Component]*stubProcess
 }
 
 func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
@@ -120,8 +131,16 @@ func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, 
 	s.mu.Lock()
 	s.processes[spec.Component] = proc
 	s.mu.Unlock()
-	if spec.Component == ComponentRunner && s.runnerStarted != nil {
-		s.runnerStarted.Store(true)
+	if spec.Component == ComponentRunner {
+		if s.runnerStarted != nil {
+			s.runnerStarted.Store(true)
+		}
+		if s.runnerEnrollments != nil {
+			s.runnerEnrollments.Add(1)
+		}
+		if s.runnerProcessStarted != nil {
+			s.runnerProcessStarted.Store(true)
+		}
 	}
 	return proc, nil
 }
@@ -172,52 +191,44 @@ func fakePid(c Component) int {
 }
 
 // stubProber answers GetServerInfo. forceLive makes it answer unconditionally
-// (attach-if-live); otherwise it answers only once compass-server has started,
-// which models the socket-binds-before-migrations reality (readiness is the
-// first answering probe, not socket existence).
+// (attach-if-live); otherwise it answers only once compass-server has started.
 type stubProber struct {
-	rec                *recorder
-	forceLive          bool
-	version            string
-	serverStarted      *atomic.Bool
-	runnerStarted      *atomic.Bool
-	runnerProbes       chan struct{}
-	manualRunnerEnroll *atomic.Bool
-	mu                 sync.Mutex
-	enrolled           []string
+	rec                  *recorder
+	forceLive            bool
+	version              string
+	serverStarted        *atomic.Bool
+	runnerProcessStarted *atomic.Bool
+	runnerEnrollments    *atomic.Uint64
+	runnerProbes         chan struct{}
+	manualRunnerEnroll   *atomic.Bool
+	mu                   sync.Mutex
+	enrolled             []EnrolledRunner
 }
 
 func (p *stubProber) Probe(ctx context.Context, socketPath string) (ServerInfo, error) {
 	p.rec.add("probe")
-	if p.runnerProbes != nil && p.runnerStarted != nil && p.runnerStarted.Load() {
-		p.mu.Lock()
-		enrolled := append([]string(nil), p.enrolled...)
-		if p.manualRunnerEnroll == nil || !p.manualRunnerEnroll.Load() {
-			if !slices.Contains(enrolled, embeddedRunnerID) {
-				enrolled = append(enrolled, embeddedRunnerID)
-			}
-		}
-		p.mu.Unlock()
-
+	p.mu.Lock()
+	enrolled := append([]EnrolledRunner(nil), p.enrolled...)
+	p.mu.Unlock()
+	if p.runnerProcessStarted != nil && p.runnerProcessStarted.Load() {
 		select {
 		case p.runnerProbes <- struct{}{}:
 		default:
 		}
-		return ServerInfo{Version: p.version, EnrolledRunnerIDs: enrolled}, nil
+		if p.manualRunnerEnroll != nil && p.manualRunnerEnroll.Load() {
+			return ServerInfo{Version: p.version, EnrolledRunners: enrolled}, nil
+		}
+		return ServerInfo{Version: p.version, EnrolledRunners: []EnrolledRunner{{ID: embeddedRunnerID, Enrollment: p.runnerEnrollments.Load()}}}, nil
 	}
-	p.mu.Lock()
-	enrolled := append([]string(nil), p.enrolled...)
-	p.mu.Unlock()
 	if p.forceLive || (p.serverStarted != nil && p.serverStarted.Load()) {
-		return ServerInfo{Version: p.version, EnrolledRunnerIDs: enrolled}, nil
+		return ServerInfo{Version: p.version, EnrolledRunners: enrolled}, nil
 	}
 	return ServerInfo{}, errNotAnswering
-
 }
 
-func (p *stubProber) setEnrolledRunnerIDs(ids ...string) {
+func (p *stubProber) setEnrolledRunners(runners ...EnrolledRunner) {
 	p.mu.Lock()
-	p.enrolled = append([]string(nil), ids...)
+	p.enrolled = append([]EnrolledRunner(nil), runners...)
 	p.mu.Unlock()
 }
 
@@ -821,21 +832,17 @@ func newHarnessWithRunnerEnrollmentFlag(t *testing.T, manualRunnerEnroll *atomic
 	rec := &recorder{}
 	started := &atomic.Bool{}
 	sup := &stubSupervisor{
-		rec:           rec,
-		startErr:      map[Component]error{},
-		gate:          map[Component]chan struct{}{},
-		entered:       map[Component]chan struct{}{},
-		serverStarted: started,
-		runnerStarted: &atomic.Bool{},
-		specs:         map[Component]ProcessSpec{},
-		processes:     map[Component]*stubProcess{},
+		rec: rec, startErr: map[Component]error{}, gate: map[Component]chan struct{}{}, entered: map[Component]chan struct{}{},
+		serverStarted: started, runnerStarted: &atomic.Bool{}, runnerEnrollments: &atomic.Uint64{}, runnerProcessStarted: &atomic.Bool{},
+		specs: map[Component]ProcessSpec{}, processes: map[Component]*stubProcess{},
 	}
 	cert := &stubCert{rec: rec, notAfter: time.Now().Add(365 * 24 * time.Hour), rotateWindow: 30 * 24 * time.Hour}
 	token := &stubToken{rec: rec}
 	image := &stubImage{rec: rec}
 	prober := &stubProber{
-		rec: rec, version: testVersion, serverStarted: started, runnerStarted: sup.runnerStarted,
-		runnerProbes: make(chan struct{}, 1), manualRunnerEnroll: manualRunnerEnroll,
+		rec: rec, version: testVersion, serverStarted: started, runnerProcessStarted: sup.runnerProcessStarted,
+		runnerEnrollments: sup.runnerEnrollments,
+		runnerProbes:      make(chan struct{}, 1), manualRunnerEnroll: manualRunnerEnroll,
 	}
 	dbProber := &stubDBProber{rec: rec}
 	groupSig := newFakeGroupSignaller(rec)

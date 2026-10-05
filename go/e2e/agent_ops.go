@@ -272,9 +272,8 @@ func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequ
 	return nil
 }
 
-// waitRunnerEnrolled blocks until the embedded compass-runner has enrolled with
-// the server, or the budget elapses. A cold stack.Up already gates on enrollment;
-// this covers the WithSite attach path and explicit Runner restarts in legs.
+// waitRunnerEnrolled waits for the Runner's Sessions stream to attach after Enroll.
+// Cold Up gates on Enroll; this fixture wait checks the later attach event.
 //
 // The observable enrollment signal available to the cross-process fixture is a
 // lightweight enrollment-gated probe. StopAgentSession relays through the hub's
@@ -285,11 +284,8 @@ func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequ
 // session; the session-end transcript flush is skipped since the id has no
 // entries), so the probe has NO container or session side effect. ONLY that
 // specific unavailable-no-runner condition is treated as not-yet-ready; any
-// other error is a real failure and is returned immediately. Enrollment is a
-// MONOTONIC one-time transition, so this is an event-gated readiness poll on a
-// real cross-process signal, not a retry-as-sync: it returns the instant the
-// probe stops reporting no-runner. The poll respects ctx cancellation; a budget
-// timeout is a legible error.
+// other error is a real failure and is returned immediately. The poll respects
+// ctx cancellation and returns a legible error if its budget expires.
 func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 	deadline := f.now().Add(enrollPollBudget)
 	ticker := time.NewTicker(enrollPollInterval)

@@ -327,7 +327,7 @@ func TestUpWaitsForRunnerEnrollment(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Up did not probe Runner enrollment")
 	}
-	h.prober.setEnrolledRunnerIDs(embeddedRunnerID)
+	h.prober.setEnrolledRunners(EnrolledRunner{ID: embeddedRunnerID, Enrollment: 1})
 	result := <-done
 	if result.err != nil {
 		t.Fatalf("Up() = %v, want nil after Runner enrollment", result.err)
@@ -396,31 +396,67 @@ func TestUpRunnerEnrollmentBudgetExhausted(t *testing.T) {
 func TestRestartRunnerWaitsForEnrollment(t *testing.T) {
 	cfg, h := newHarness(t)
 	h.manualRunnerEnrollFlag.Store(true)
-	h.prober.setEnrolledRunnerIDs(embeddedRunnerID)
-	s, err := Up(context.Background(), cfg, h.deps)
-	if err != nil {
-		t.Fatalf("initial Up() = %v", err)
-	}
+	doneUp := make(chan struct {
+		stack *Stack
+		err   error
+	}, 1)
+	go func() {
+		s, err := Up(context.Background(), cfg, h.deps)
+		doneUp <- struct {
+			stack *Stack
+			err   error
+		}{stack: s, err: err}
+	}()
 	select {
 	case <-h.prober.runnerProbes:
 	case <-time.After(5 * time.Second):
 		t.Fatal("initial Up did not probe Runner enrollment")
 	}
-	h.prober.setEnrolledRunnerIDs()
-
+	h.prober.setEnrolledRunners(EnrolledRunner{ID: embeddedRunnerID, Enrollment: 1})
+	initial := <-doneUp
+	if initial.err != nil {
+		t.Fatalf("initial Up() = %v", initial.err)
+	}
+	s := initial.stack
+	if s == nil {
+		t.Fatal("initial Up() returned nil stack")
+	}
+	oldRunner := h.sup.process(ComponentRunner)
 	done := make(chan error, 1)
 	go func() { done <- s.RestartRunner(context.Background()) }()
+	select {
+	case <-oldRunner.waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not stop old Runner")
+	}
 	select {
 	case <-h.prober.runnerProbes:
 	case <-time.After(5 * time.Second):
 		t.Fatal("RestartRunner did not probe Runner enrollment")
 	}
-	h.prober.setEnrolledRunnerIDs(embeddedRunnerID)
+	select {
+	case err := <-done:
+		t.Fatalf("RestartRunner() = %v with old enrollment, want it to keep waiting", err)
+	default:
+	}
+	h.prober.setEnrolledRunners(EnrolledRunner{ID: embeddedRunnerID, Enrollment: 2})
 	if err := <-done; err != nil {
-		t.Fatalf("RestartRunner() = %v, want nil after Runner enrollment", err)
+		t.Fatalf("RestartRunner() = %v, want nil after fresh Runner enrollment", err)
 	}
 	if err := s.Down(context.Background()); err != nil {
 		t.Fatalf("Down() = %v", err)
+	}
+}
+
+func TestDownAfterRunnerExitsFollowingEnrollment(t *testing.T) {
+	cfg, h := newHarness(t)
+	s, err := Up(context.Background(), cfg, h.deps)
+	if err != nil {
+		t.Fatalf("Up() = %v", err)
+	}
+	h.sup.process(ComponentRunner).exit(nil)
+	if err := s.Down(context.Background()); err != nil {
+		t.Fatalf("Down() after runner exit = %v, want nil", err)
 	}
 }
 
@@ -604,23 +640,25 @@ func stopEvents(events []string) []string {
 	return out
 }
 
-// assertDrainedCleanly asserts every child the stub supervisor started was
-// subsequently signalled (no orphaned child on a failed Up).
+// assertDrainedCleanly ensures every child is stopped or already exited.
 func assertDrainedCleanly(t *testing.T, h *harness) {
 	t.Helper()
 	started := map[string]bool{}
 	signalled := map[string]bool{}
+	finished := map[string]bool{}
 	for _, e := range h.rec.snapshot() {
 		switch {
-		case len(e) > 6 && e[:6] == "start " && e != "start-failed":
+		case len(e) > 6 && e[:6] == "start ":
 			started[e[6:]] = true
 		case len(e) > 7 && e[:7] == "signal ":
 			signalled[e[7:]] = true
+		case len(e) > 5 && e[:5] == "wait ":
+			finished[e[5:]] = true
 		}
 	}
 	for name := range started {
-		if !signalled[name] {
-			t.Errorf("child %q started but never drained on failure", name)
+		if !signalled[name] && !finished[name] {
+			t.Errorf("child %q started but was neither stopped nor waited after exit", name)
 		}
 	}
 }

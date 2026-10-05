@@ -451,6 +451,8 @@ type Hub struct {
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
 	runner *attachedRunner
+	// enrollCount numbers enrollments so a probe can tell a fresh enroll from a retained one.
+	enrollCount uint64
 	// containerAccounts binds a provisioned container_name to its agent account and
 	// owning Runner, from the resolved account id the caller passes Hub.Provision.
 	// It authorizes every Start's pre-exec secrets fetch, so it lives from
@@ -500,10 +502,11 @@ type Hub struct {
 	secretsVersion atomic.Uint64
 }
 
-// attachedRunner is one enrolled Runner: its id, its authenticated token
-// subject, and the command router that reaches its live Sessions stream.
+// attachedRunner is one enrolled Runner: its id, its enrollment number, its
+// authenticated token subject, and the command router that reaches its live Sessions stream.
 type attachedRunner struct {
 	id            string
+	enrollment    uint64
 	subject       store.Subject
 	router        *commandRouter
 	tier          compassv1.RuntimeTier
@@ -549,15 +552,14 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 	}
 }
 
-// EnrolledRunnerIDs returns Runner ids enrolled since this server started.
-// No disconnect path clears h.runner; the returned slice is caller-owned.
-func (h *Hub) EnrolledRunnerIDs() []string {
+// EnrolledRunners returns the most recently enrolled Runner, retained after disconnect.
+func (h *Hub) EnrolledRunners() []*compassv1.EnrolledRunner {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.runner == nil {
 		return nil
 	}
-	return []string{h.runner.id}
+	return []*compassv1.EnrolledRunner{{Id: h.runner.id, Enrollment: h.runner.enrollment}}
 }
 
 // SetSettleSink wires the delivery consumer as the hub's settle-edge sink,
@@ -1188,9 +1190,10 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	h.bindingWriteMu.Lock()
 	h.mu.Lock()
 	reattached = h.runner != nil
+	h.enrollCount++
 	router := newCommandRouter()
 	router.log = h.log
-	h.runner = &attachedRunner{id: id, subject: subject, router: router, tier: tier, egressPosture: egressPosture}
+	h.runner = &attachedRunner{id: id, enrollment: h.enrollCount, subject: subject, router: router, tier: tier, egressPosture: egressPosture}
 	// Snapshot the live (account -> session) bindings BEFORE clearing, for the no-store
 	// path: each bound account loses its live session on this re-enroll and must be
 	// driven to presence OFFLINE (RIG-1569 T8) — enroll emits no lifecycle frames of its

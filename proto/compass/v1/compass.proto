@@ -296,8 +296,15 @@ message GetServerInfoResponse {
   // suffixed "-dirty" for an uncommitted tree. Empty when the build was not
   // stamped (e.g. a build outside a git checkout).
   string rev = 3;
-  // Runner ids attached to this server; empty without a Runner door or before the first enroll.
-  repeated string enrolled_runner_ids = 4;
+  // The Runner most recently enrolled with this server, retained across disconnects.
+  // Enrollment increases per server so clients can detect a fresh enrollment.
+  repeated EnrolledRunner enrolled_runners = 4;
+}
+
+// A Runner enrollment observed by this server.
+message EnrolledRunner {
+  string id = 1;
+  uint64 enrollment = 2;
 }
 
 message WhoAmIRequest {}

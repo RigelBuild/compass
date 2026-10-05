@@ -24,8 +24,8 @@ const settleTimeout = 2 * time.Minute
 // the go-test timeout. A deterministic deadline, never a retry loop.
 const deliverTimeout = 1 * time.Minute
 
-// enrollPollInterval and enrollPollBudget bound waitRunnerEnrolled: enrollment is
-// one server dial, so a wedged enroll fails legibly well before the go-test timeout.
+// enrollPollInterval and enrollPollBudget bound waitRunnerEnrolled's Sessions
+// stream attach check, which follows the cold Up enrollment gate.
 const (
 	enrollPollInterval = 100 * time.Millisecond
 	enrollPollBudget   = 15 * time.Second
