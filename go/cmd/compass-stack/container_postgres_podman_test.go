@@ -128,7 +128,7 @@ func TestContainerPostgresUpDown(t *testing.T) {
 
 	// The container is gone and the record removed.
 	waitContainerGone(t, name, containerGoneBudget)
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
 		t.Fatalf("stack.pgids record %q still present after a full down: stat err = %v", recordPath, err)
 	}
@@ -182,7 +182,7 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compass-stack down (external db): %v\n%s", err, out)
 	}
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 
 	// The external postgres is UNTOUCHED by the stack's teardown — still up.
 	if !externalPostgresReachable(externalDSN) {
