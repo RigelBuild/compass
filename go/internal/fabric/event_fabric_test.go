@@ -166,6 +166,9 @@ func TestCallbackContextSurvivesSubscribeCancel(t *testing.T) {
 		release = make(chan struct{})
 		errs    = make(chan error, 2)
 	)
+	// InMsgs counts every message on f.nc: Subscribe's one CreateOrUpdateConsumer
+	// reply and each Publish ack, so the gate below subtracts both.
+	baseline := f.nc.Stats().InMsgs
 	unsub, err := f.Subscribe(subCtx, subject, func(cbCtx context.Context, _ EventRef) error {
 		if calls.Add(1) == 1 {
 			close(firstIn)
@@ -190,22 +193,12 @@ func TestCallbackContextSurvivesSubscribeCancel(t *testing.T) {
 	publish("one")
 	<-firstIn
 	publish("two")
-	stream, err := f.ensureStream(ctx)
-	if err != nil {
-		t.Fatalf("ensureStream: %v", err)
-	}
-	cons, err := stream.Consumer(ctx, durableName(subject))
-	if err != nil {
-		t.Fatalf("Consumer: %v", err)
-	}
-	// The second event must be in this client's buffer before the cancel, so it
-	// is delivered by the drain rather than by a live consumer.
+	// The second event must have reached this client before the cancel, so the
+	// drain delivers it. Not the server's NumAckPending: the server counts a
+	// message pending before sending it, so the drain can overtake it.
+	const createReply, publishAcks = 1, 2
 	pollUntil(t, "the second event buffered behind the first", func() bool {
-		info, err := cons.Info(ctx)
-		if err != nil {
-			t.Fatalf("consumer Info: %v", err)
-		}
-		return info.NumAckPending > 1
+		return f.nc.Stats().InMsgs-baseline-createReply-publishAcks >= 2
 	})
 	cancel()
 	close(release)
