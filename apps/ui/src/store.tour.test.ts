@@ -314,6 +314,28 @@ describe("tour first-run arming", () => {
 			]);
 		});
 	});
+
+	test("a failed boot read releases a held resume at step 0, reported once", async () => {
+		const read = gate();
+		const fake = tourFake({
+			getError: new Error("read down"),
+			readGate: read.promise,
+		});
+		const errors: unknown[] = [];
+		await withStore(
+			{ tour: fake.client, onCommsError: (e) => errors.push(e) },
+			async (store) => {
+				store.tour.start("resume");
+				flush();
+				expect(store.tour.open()).toBe(false);
+				read.open();
+				await settle();
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(0);
+				expect(errors.map(String)).toEqual(["Error: read down"]);
+			},
+		);
+	});
 });
 
 describe("tour transitions", () => {

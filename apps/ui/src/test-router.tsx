@@ -16,7 +16,11 @@
 // one reactive tick later. Tests await `flush()` between an action and a routed
 // read (record A2/A4).
 
-import { createRouter, memoryHistory } from "@solidjs/router";
+import {
+	createRouter,
+	type MemoryHistoryAdapter,
+	memoryHistory,
+} from "@solidjs/router";
 import { render } from "@solidjs/testing-library";
 import App from "./App";
 import { STUB_COMMS_STATE } from "./comms-stub";
@@ -33,19 +37,18 @@ export const flush = async (): Promise<void> => {
 
 /** Mount the full App shell over a fixture-backed store on `initialPath`,
  *  through the shared route table on a memory-history router. Returns the live
- *  store (to drive actions) and container (to query the DOM). */
+ *  store (to drive actions), container (to query the DOM) and history (Back). */
 export function mountApp(
 	initialPath = "/",
 	layoutStorage?: Storage,
 ): {
 	store: AppStore;
 	container: HTMLElement;
+	history: MemoryHistoryAdapter;
 } {
 	let store!: AppStore;
-	const Router = createRouter({
-		routes: appRoutes,
-		history: memoryHistory(initialPath),
-	});
+	const history = memoryHistory(initialPath);
+	const Router = createRouter({ routes: appRoutes, history });
 	const { container } = render(() => {
 		store = createAppStore({
 			initialComms: STUB_COMMS_STATE,
@@ -58,5 +61,5 @@ export function mountApp(
 			</StoreContext>
 		);
 	});
-	return { store, container };
+	return { store, container, history };
 }
