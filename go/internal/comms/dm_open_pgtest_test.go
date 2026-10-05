@@ -10,8 +10,6 @@ package comms
 import (
 	"context"
 	"errors"
-	"strconv"
-	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -97,9 +95,9 @@ func TestOpenDMUnknownHandleIsNotFound(t *testing.T) {
 }
 
 // TestOpenDMCrossOwnerIsIndistinguishableNotFound: an owner-qualified handle
-// naming ANOTHER owner's agent must refuse with the same code AND message as an
-// unknown handle, once the submitted handle is redacted. The message is the
-// oracle: a leaked owner id or "different owner" phrase keeps the code NOT_FOUND.
+// naming ANOTHER owner's agent must refuse with the exact message an unknown
+// handle of the same shape gets. The message is the oracle: a leaked owner id
+// or "different owner" phrase would keep the code NOT_FOUND.
 func TestOpenDMCrossOwnerIsIndistinguishableNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -108,17 +106,9 @@ func TestOpenDMCrossOwnerIsIndistinguishableNotFound(t *testing.T) {
 	other := mustUser(t, st, "other")
 	mustAgent(t, st, other.ID, "foreign")
 
-	redacted := func(peer string) string {
-		t.Helper()
+	for _, peer := range []string{"other/foreign", "other/ghost"} {
 		_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peer}))
 		connectNotFoundFor(t, err, peer, "OpenDM("+peer+")")
-		var ce *connect.Error
-		errors.As(err, &ce)
-		return strings.ReplaceAll(ce.Message(), strconv.Quote(peer), `"<peer>"`)
-	}
-	// A full-text compare, because a leak's shape cannot be listed in advance.
-	if cross, unknown := redacted("other/foreign"), redacted("other/ghost"); cross != unknown {
-		t.Fatalf("cross-owner and unknown refusals differ after redaction:\n cross-owner: %q\n unknown:     %q", cross, unknown)
 	}
 }
 
