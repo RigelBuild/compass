@@ -601,6 +601,8 @@ function fakeSession(
 		setTools: () => {},
 	});
 	Object.assign(rec, {
+		isStreaming: false,
+		waitForIdle: () => Promise.resolve(),
 		subscribe(fn: AgentSessionEventListener): () => void {
 			gate.resolve(fn);
 			return () => {};

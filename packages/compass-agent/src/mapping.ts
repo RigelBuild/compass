@@ -89,16 +89,17 @@ export class EventMapper {
 		this.#capturedStarts.push(this.#turnSequence?.start() ?? 0n);
 	}
 
-	// A terminal end settles every run whose session agent_start was seen; the SDK
-	// can supersede or drop an end. A core start not yet seen belongs to a later run.
+	// A terminal end settles every started run; the SDK can supersede or drop an end.
+	// Clearing captured starts drops one whose session start a detach swallowed.
 	#endSequence(event: { readonly isTerminal?: boolean }): bigint {
-		const current = this.#turnSequence?.current() ?? 0n;
 		if (event.isTerminal === false) {
-			return this.#endingSequences.shift() ?? current;
+			return (
+				this.#endingSequences.shift() ?? this.#turnSequence?.current() ?? 0n
+			);
 		}
 		this.#endingSequences.length = 0;
-		const nextUnseen = this.#capturedStarts[0];
-		return nextUnseen === undefined ? current : nextUnseen - 1n;
+		this.#capturedStarts.length = 0;
+		return this.#turnSequence?.current() ?? 0n;
 	}
 
 	// Map one session event to zero or more compass.v1 frames. Zero frames is

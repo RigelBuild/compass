@@ -350,17 +350,43 @@ describe("CompassAgent — barrier lifts on ReplayComplete", () => {
 	});
 });
 
-describe("CompassAgent — a control prompt waits for the session turn to settle", () => {
+describe("CompassAgent — a control prompt waits for the session to go idle", () => {
 	// The core loop clears isStreaming before the session emits its terminal
-	// agent_end. A prompt in that gap would start a run whose holds the pending
-	// end then settles; it must wait for the session edge.
-	test("a prompt while the session turn is open starts only after its agent_end", async () => {
+	// agent_end. A prompt in that gap would start a run the pending end settles.
+	const openTurn = async () => {
 		const h = startControlAgent();
 		await h.feed({ kind: "replayComplete" });
+		h.session.agent.state.isStreaming = true;
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
 		await h.feed({ kind: "prompt", input: "next" });
-		expect(h.session.agent.prompts).toEqual([]);
+		return h;
+	};
+
+	test("a prompt during a turn starts only once the session is idle", async () => {
+		const h = await openTurn();
 		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		h.session.settleIdle();
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["next"]);
+		await h.close();
+	});
+
+	test("a prompt waits out a continuation scheduled at the end", async () => {
+		const h = await openTurn();
+		h.session.settleIdle({ keepStreaming: true });
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		h.session.settleIdle();
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["next"]);
+		await h.close();
+	});
+
+	test("a prompt still starts when the session agent_end never arrives", async () => {
+		const h = await openTurn();
+		h.session.settleIdle();
 		await tick();
 		expect(h.session.agent.prompts).toEqual(["next"]);
 		await h.close();
