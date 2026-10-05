@@ -8,12 +8,13 @@ import (
 	"net"
 	"reflect"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// coldStartSequence is the ordered event log a successful cold Up produces, with
-// probes filtered out.
+// coldStartSequence is the ordered cold-start event log with poll probes filtered out.
 var coldStartSequence = []string{
 	"start postgres",
 	"start otel-collector",
@@ -304,6 +305,123 @@ func TestUpServerNeverReady(t *testing.T) {
 	// postgres and compass-server started, then were drained in reverse.
 	assertDrainedCleanly(t, h)
 	assertLockFree(t, cfg.StateDir)
+}
+
+func TestUpWaitsForRunnerEnrollment(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	done := make(chan struct {
+		stack *Stack
+		err   error
+	}, 1)
+	go func() {
+		s, err := Up(context.Background(), cfg, h.deps)
+		done <- struct {
+			stack *Stack
+			err   error
+		}{stack: s, err: err}
+	}()
+
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not probe Runner enrollment")
+	}
+	h.prober.setEnrolledRunnerIDs(embeddedRunnerID)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("Up() = %v, want nil after Runner enrollment", result.err)
+	}
+	if result.stack == nil || result.stack.attached {
+		t.Fatalf("Up() stack = %+v, want spawned stack", result.stack)
+	}
+	if err := result.stack.Down(context.Background()); err != nil {
+		t.Fatalf("Down() = %v", err)
+	}
+}
+
+func TestUpRunnerExitBeforeEnrollmentDrainsChildren(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	exitErr := errors.New("preflight failed")
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := Up(context.Background(), cfg, h.deps)
+		done <- err
+	}()
+
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not probe Runner enrollment")
+	}
+	h.sup.process(ComponentRunner).exit(exitErr)
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), exitErr.Error()) || !strings.Contains(err.Error(), "compass-runner exited before enrolling") {
+		t.Fatalf("Up() error = %v, want Runner exit before enrollment: %v", err, exitErr)
+	}
+	assertDrainedCleanly(t, h)
+}
+
+func TestUpRunnerEnrollmentBudgetExhausted(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var runnerClockReads atomic.Int32
+	h.deps.Now = func() time.Time {
+		if h.sup.runnerStarted.Load() && runnerClockReads.Add(1) > 1 {
+			return start.Add(runnerEnrollPollBudget + time.Second)
+		}
+		return start
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Up(context.Background(), cfg, h.deps)
+		done <- err
+	}()
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not probe Runner enrollment")
+	}
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), embeddedRunnerID) || !strings.Contains(err.Error(), runnerEnrollPollBudget.String()) {
+		t.Fatalf("Up() error = %v, want enrollment timeout naming %q and %s", err, embeddedRunnerID, runnerEnrollPollBudget)
+	}
+	assertDrainedCleanly(t, h)
+}
+
+func TestRestartRunnerWaitsForEnrollment(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	h.prober.setEnrolledRunnerIDs(embeddedRunnerID)
+	s, err := Up(context.Background(), cfg, h.deps)
+	if err != nil {
+		t.Fatalf("initial Up() = %v", err)
+	}
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial Up did not probe Runner enrollment")
+	}
+	h.prober.setEnrolledRunnerIDs()
+
+	done := make(chan error, 1)
+	go func() { done <- s.RestartRunner(context.Background()) }()
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not probe Runner enrollment")
+	}
+	h.prober.setEnrolledRunnerIDs(embeddedRunnerID)
+	if err := <-done; err != nil {
+		t.Fatalf("RestartRunner() = %v, want nil after Runner enrollment", err)
+	}
+	if err := s.Down(context.Background()); err != nil {
+		t.Fatalf("Down() = %v", err)
+	}
 }
 
 // TestUpWaitsForPostgresBeforeServer pins the cold-start gate: when postgres is

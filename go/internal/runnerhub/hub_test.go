@@ -294,6 +294,24 @@ func TestRunnerEnrolledFalseAfterReenrollUntilAttach(t *testing.T) {
 	}
 }
 
+func TestEnrolledRunnerIDs(t *testing.T) {
+	hub := newHubOnly()
+	if got := hub.EnrolledRunnerIDs(); len(got) != 0 {
+		t.Fatalf("EnrolledRunnerIDs before enroll = %v, want empty", got)
+	}
+
+	subj := store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}
+	hub.enroll(context.Background(), subj.ID, subj, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	got := hub.EnrolledRunnerIDs()
+	if len(got) != 1 || got[0] != subj.ID {
+		t.Fatalf("EnrolledRunnerIDs after enroll = %v, want [%q]", got, subj.ID)
+	}
+	got[0] = "changed"
+	if next := hub.EnrolledRunnerIDs(); len(next) != 1 || next[0] != subj.ID {
+		t.Fatalf("EnrolledRunnerIDs returned mutable hub state: %v", next)
+	}
+}
+
 // TestRunnerReadyHookFiresOnEachStreamAttach pins the RIG-1820 seam: a hook wired
 // via SetRunnerReadyHook is invoked once per fireRunnerReady (the Sessions
 // handler calls it each time a Runner's command stream attaches), on its own

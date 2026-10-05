@@ -709,15 +709,8 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 		garage:      garage,
 	}
 
-	// stack.Up returns as soon as the compass-runner CHILD is spawned, but the
-	// runner enrolls with the server ASYNCHRONOUSLY over the TLS door AFTER Up
-	// returns. A leg that Provisions immediately would otherwise race that
-	// enrollment and fail `unavailable: no runner enrolled to serve session`.
-	// Gate the fixture's post-Up readiness on the runner being enrolled — the
-	// enrollment counterpart to the stack's own waitReady/waitPostgres — so every
-	// leg starts against an enrolled runner. Event-gated on a real cross-process
-	// signal (an enrollment-gated probe), never a sleep. On the WithSite re-attach
-	// path the runner is already enrolled, so the first probe passes immediately.
+	// A cold stack.Up already waits for this runner to enroll; the WithSite attach
+	// path does not, so gate here too. Event-gated on an enrollment-gated probe.
 	if err := f.waitRunnerEnrolled(ctx); err != nil {
 		tb.Fatalf("wait for runner enrollment: %v", err)
 	}

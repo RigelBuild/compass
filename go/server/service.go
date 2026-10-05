@@ -321,15 +321,20 @@ func (s *service) SearchIssues(
 	return connect.NewResponse(&compassv1.SearchIssuesResponse{Issues: out}), nil
 }
 
-// GetServerInfo is the connect-time liveness/version probe.
+// GetServerInfo is the connect-time liveness, version, and Runner enrollment probe.
 func (s *service) GetServerInfo(
 	_ context.Context,
 	_ *connect.Request[compassv1.GetServerInfoRequest],
 ) (*connect.Response[compassv1.GetServerInfoResponse], error) {
+	var enrolledRunnerIDs []string
+	if s.hub != nil {
+		enrolledRunnerIDs = s.hub.EnrolledRunnerIDs()
+	}
 	return connect.NewResponse(&compassv1.GetServerInfoResponse{
-		Version:    s.version,
-		ApiVersion: apiVersion,
-		Rev:        s.rev,
+		Version:           s.version,
+		ApiVersion:        apiVersion,
+		Rev:               s.rev,
+		EnrolledRunnerIds: enrolledRunnerIDs,
 	}), nil
 }
 

@@ -38,15 +38,11 @@ package main
 // whole up path; the local-only compass-agent:latest is deliberately avoided (it
 // is not pullable, so EnsureImage's real `podman pull` would fail).
 //
-// STRONGEST RELIABLE ASSERTION — "spawned + Ready" encodes the full chain:
-// stack.spawnChain (stack.go:136-185) runs the seven cold-start steps IN ORDER,
-// returning nil only after step 7 (start compass-runner) succeeds; Up then hands
-// back a non-attached Stack whose Health is Ready. So a spawned Ready stack is
-// itself proof that postgres came up, the server answered GetServerInfo, the
-// runner token was minted, the agent image was pulled into the store, and the
-// runner process was exec'd — the T2 gate, asserted without racing on the
-// runner's async enrollment (which happens after Up has returned and does not
-// gate readiness).
+// STRONGEST RELIABLE ASSERTION — spawned + Ready now proves Runner enrollment:
+// stack.spawnChain waits for the specific embedded Runner id in GetServerInfo,
+// after preflight and before Up returns. So this covers postgres readiness,
+// server readiness, token issuance, image presence, Runner spawn, and enrollment.
+// ProvisionAgentWorkspace remains outside this test's assertion scope.
 
 import (
 	"context"

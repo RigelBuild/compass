@@ -549,6 +549,17 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 	}
 }
 
+// EnrolledRunnerIDs returns Runner ids enrolled since this server started.
+// No disconnect path clears h.runner; the returned slice is caller-owned.
+func (h *Hub) EnrolledRunnerIDs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.runner == nil {
+		return nil
+	}
+	return []string{h.runner.id}
+}
+
 // SetSettleSink wires the delivery consumer as the hub's settle-edge sink,
 // AFTER both exist — the post-construction setter that breaks the consumer<->hub
 // construction cycle (the consumer takes the hub as its ControlDispatcher, the

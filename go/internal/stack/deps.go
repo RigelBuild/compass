@@ -390,7 +390,8 @@ type NatsProber interface {
 
 // ServerInfo is the subset of GetServerInfo the core consumes.
 type ServerInfo struct {
-	Version string
+	Version           string
+	EnrolledRunnerIDs []string
 }
 
 // now returns the configured clock or time.Now when unset, so callers need not

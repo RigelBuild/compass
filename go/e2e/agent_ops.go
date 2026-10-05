@@ -273,13 +273,8 @@ func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequ
 }
 
 // waitRunnerEnrolled blocks until the embedded compass-runner has enrolled with
-// the server, or the budget elapses. It is the enrollment counterpart to the
-// stack's own waitReady/waitPostgres poll (stack.go): stack.Up returns as soon
-// as the runner CHILD is spawned, but the runner enrolls ASYNCHRONOUSLY over the
-// TLS door AFTER Up returns, so a leg that Provisions immediately races that
-// enrollment and fails `unavailable: no runner enrolled to serve session`. This
-// gate closes that race so every Provisioning leg starts against an enrolled
-// runner.
+// the server, or the budget elapses. A cold stack.Up already gates on enrollment;
+// this covers the WithSite attach path and explicit Runner restarts in legs.
 //
 // The observable enrollment signal available to the cross-process fixture is a
 // lightweight enrollment-gated probe. StopAgentSession relays through the hub's

@@ -1383,9 +1383,11 @@ type GetServerInfoResponse struct {
 	// The git commit the server binary was built from: the full commit hash,
 	// suffixed "-dirty" for an uncommitted tree. Empty when the build was not
 	// stamped (e.g. a build outside a git checkout).
-	Rev           string `protobuf:"bytes,3,opt,name=rev,proto3" json:"rev,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Rev string `protobuf:"bytes,3,opt,name=rev,proto3" json:"rev,omitempty"`
+	// Runner ids attached to this server; empty without a Runner door or before the first enroll.
+	EnrolledRunnerIds []string `protobuf:"bytes,4,rep,name=enrolled_runner_ids,json=enrolledRunnerIds,proto3" json:"enrolled_runner_ids,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetServerInfoResponse) Reset() {
@@ -1437,6 +1439,13 @@ func (x *GetServerInfoResponse) GetRev() string {
 		return x.Rev
 	}
 	return ""
+}
+
+func (x *GetServerInfoResponse) GetEnrolledRunnerIds() []string {
+	if x != nil {
+		return x.EnrolledRunnerIds
+	}
+	return nil
 }
 
 type WhoAmIRequest struct {
@@ -6322,12 +6331,13 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x12ServerSecretStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x15\n" +
 	"\x06is_set\x18\x02 \x01(\bR\x05isSet\"\x16\n" +
-	"\x14GetServerInfoRequest\"d\n" +
+	"\x14GetServerInfoRequest\"\x94\x01\n" +
 	"\x15GetServerInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1f\n" +
 	"\vapi_version\x18\x02 \x01(\tR\n" +
 	"apiVersion\x12\x10\n" +
-	"\x03rev\x18\x03 \x01(\tR\x03rev\"\x0f\n" +
+	"\x03rev\x18\x03 \x01(\tR\x03rev\x12.\n" +
+	"\x13enrolled_runner_ids\x18\x04 \x03(\tR\x11enrolledRunnerIds\"\x0f\n" +
 	"\rWhoAmIRequest\"/\n" +
 	"\x0eWhoAmIResponse\x12\x1d\n" +
 	"\n" +

@@ -50,5 +50,5 @@ func (p *HealthProber) Probe(ctx context.Context, socketPath string) (stack.Serv
 	if err != nil {
 		return stack.ServerInfo{}, err
 	}
-	return stack.ServerInfo{Version: resp.Msg.GetVersion()}, nil
+	return stack.ServerInfo{Version: resp.Msg.GetVersion(), EnrolledRunnerIDs: resp.Msg.GetEnrolledRunnerIds()}, nil
 }
