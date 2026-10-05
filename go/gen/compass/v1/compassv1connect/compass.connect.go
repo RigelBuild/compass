@@ -48,6 +48,15 @@ const (
 	CompassServiceGetServerInfoProcedure = "/compass.v1.CompassService/GetServerInfo"
 	// CompassServiceWhoAmIProcedure is the fully-qualified name of the CompassService's WhoAmI RPC.
 	CompassServiceWhoAmIProcedure = "/compass.v1.CompassService/WhoAmI"
+	// CompassServiceGetTourStateProcedure is the fully-qualified name of the CompassService's
+	// GetTourState RPC.
+	CompassServiceGetTourStateProcedure = "/compass.v1.CompassService/GetTourState"
+	// CompassServiceClaimTourStartProcedure is the fully-qualified name of the CompassService's
+	// ClaimTourStart RPC.
+	CompassServiceClaimTourStartProcedure = "/compass.v1.CompassService/ClaimTourStart"
+	// CompassServiceSetTourStateProcedure is the fully-qualified name of the CompassService's
+	// SetTourState RPC.
+	CompassServiceSetTourStateProcedure = "/compass.v1.CompassService/SetTourState"
 	// CompassServiceSubscribeEventsProcedure is the fully-qualified name of the CompassService's
 	// SubscribeEvents RPC.
 	CompassServiceSubscribeEventsProcedure = "/compass.v1.CompassService/SubscribeEvents"
@@ -133,6 +142,11 @@ type CompassServiceClient interface {
 	// authenticatedOpen: any authenticated caller may learn its OWN identity
 	// (not admin-gated). account_id is server-derived, never client-supplied.
 	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
+	// Per-account first-run progress. No account id is accepted; the server keys
+	// each operation to the authenticated caller.
+	GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error)
+	ClaimTourStart(context.Context, *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error)
+	SetTourState(context.Context, *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error)
 	// The event channel: board, agent, and audit updates as a server stream
 	// (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
@@ -291,6 +305,24 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
 			connect.WithClientOptions(opts...),
 		),
+		getTourState: connect.NewClient[v1.GetTourStateRequest, v1.GetTourStateResponse](
+			httpClient,
+			baseURL+CompassServiceGetTourStateProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("GetTourState")),
+			connect.WithClientOptions(opts...),
+		),
+		claimTourStart: connect.NewClient[v1.ClaimTourStartRequest, v1.ClaimTourStartResponse](
+			httpClient,
+			baseURL+CompassServiceClaimTourStartProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("ClaimTourStart")),
+			connect.WithClientOptions(opts...),
+		),
+		setTourState: connect.NewClient[v1.SetTourStateRequest, v1.SetTourStateResponse](
+			httpClient,
+			baseURL+CompassServiceSetTourStateProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("SetTourState")),
+			connect.WithClientOptions(opts...),
+		),
 		subscribeEvents: connect.NewClient[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse](
 			httpClient,
 			baseURL+CompassServiceSubscribeEventsProcedure,
@@ -412,6 +444,9 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 type compassServiceClient struct {
 	getServerInfo           *connect.Client[v1.GetServerInfoRequest, v1.GetServerInfoResponse]
 	whoAmI                  *connect.Client[v1.WhoAmIRequest, v1.WhoAmIResponse]
+	getTourState            *connect.Client[v1.GetTourStateRequest, v1.GetTourStateResponse]
+	claimTourStart          *connect.Client[v1.ClaimTourStartRequest, v1.ClaimTourStartResponse]
+	setTourState            *connect.Client[v1.SetTourStateRequest, v1.SetTourStateResponse]
 	subscribeEvents         *connect.Client[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse]
 	listBoardIssues         *connect.Client[v1.ListBoardIssuesRequest, v1.ListBoardIssuesResponse]
 	searchIssues            *connect.Client[v1.SearchIssuesRequest, v1.SearchIssuesResponse]
@@ -441,6 +476,21 @@ func (c *compassServiceClient) GetServerInfo(ctx context.Context, req *connect.R
 // WhoAmI calls compass.v1.CompassService.WhoAmI.
 func (c *compassServiceClient) WhoAmI(ctx context.Context, req *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
 	return c.whoAmI.CallUnary(ctx, req)
+}
+
+// GetTourState calls compass.v1.CompassService.GetTourState.
+func (c *compassServiceClient) GetTourState(ctx context.Context, req *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error) {
+	return c.getTourState.CallUnary(ctx, req)
+}
+
+// ClaimTourStart calls compass.v1.CompassService.ClaimTourStart.
+func (c *compassServiceClient) ClaimTourStart(ctx context.Context, req *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error) {
+	return c.claimTourStart.CallUnary(ctx, req)
+}
+
+// SetTourState calls compass.v1.CompassService.SetTourState.
+func (c *compassServiceClient) SetTourState(ctx context.Context, req *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error) {
+	return c.setTourState.CallUnary(ctx, req)
 }
 
 // SubscribeEvents calls compass.v1.CompassService.SubscribeEvents.
@@ -552,6 +602,11 @@ type CompassServiceHandler interface {
 	// authenticatedOpen: any authenticated caller may learn its OWN identity
 	// (not admin-gated). account_id is server-derived, never client-supplied.
 	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
+	// Per-account first-run progress. No account id is accepted; the server keys
+	// each operation to the authenticated caller.
+	GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error)
+	ClaimTourStart(context.Context, *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error)
+	SetTourState(context.Context, *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error)
 	// The event channel: board, agent, and audit updates as a server stream
 	// (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
@@ -706,6 +761,24 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceGetTourStateHandler := connect.NewUnaryHandler(
+		CompassServiceGetTourStateProcedure,
+		svc.GetTourState,
+		connect.WithSchema(compassServiceMethods.ByName("GetTourState")),
+		connect.WithHandlerOptions(opts...),
+	)
+	compassServiceClaimTourStartHandler := connect.NewUnaryHandler(
+		CompassServiceClaimTourStartProcedure,
+		svc.ClaimTourStart,
+		connect.WithSchema(compassServiceMethods.ByName("ClaimTourStart")),
+		connect.WithHandlerOptions(opts...),
+	)
+	compassServiceSetTourStateHandler := connect.NewUnaryHandler(
+		CompassServiceSetTourStateProcedure,
+		svc.SetTourState,
+		connect.WithSchema(compassServiceMethods.ByName("SetTourState")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceSubscribeEventsHandler := connect.NewServerStreamHandler(
 		CompassServiceSubscribeEventsProcedure,
 		svc.SubscribeEvents,
@@ -826,6 +899,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceGetServerInfoHandler.ServeHTTP(w, r)
 		case CompassServiceWhoAmIProcedure:
 			compassServiceWhoAmIHandler.ServeHTTP(w, r)
+		case CompassServiceGetTourStateProcedure:
+			compassServiceGetTourStateHandler.ServeHTTP(w, r)
+		case CompassServiceClaimTourStartProcedure:
+			compassServiceClaimTourStartHandler.ServeHTTP(w, r)
+		case CompassServiceSetTourStateProcedure:
+			compassServiceSetTourStateHandler.ServeHTTP(w, r)
 		case CompassServiceSubscribeEventsProcedure:
 			compassServiceSubscribeEventsHandler.ServeHTTP(w, r)
 		case CompassServiceListBoardIssuesProcedure:
@@ -879,6 +958,18 @@ func (UnimplementedCompassServiceHandler) GetServerInfo(context.Context, *connec
 
 func (UnimplementedCompassServiceHandler) WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.WhoAmI is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) GetTourState(context.Context, *connect.Request[v1.GetTourStateRequest]) (*connect.Response[v1.GetTourStateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetTourState is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) ClaimTourStart(context.Context, *connect.Request[v1.ClaimTourStartRequest]) (*connect.Response[v1.ClaimTourStartResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ClaimTourStart is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) SetTourState(context.Context, *connect.Request[v1.SetTourStateRequest]) (*connect.Response[v1.SetTourStateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SetTourState is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest], *connect.ServerStream[v1.SubscribeEventsResponse]) error {

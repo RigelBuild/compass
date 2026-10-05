@@ -80,6 +80,8 @@ type Querier interface {
 	ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMembersByChannelIDsRow, error)
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
+	// The unique key makes concurrent first-run attempts a single-winner claim.
+	ClaimTourStart(ctx context.Context, arg ClaimTourStartParams) (string, error)
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
 	// Close intervals only after both binding deletion and its end event are absent.
 	// The tenant id comes from each start because the system role has no tenant GUC.
@@ -224,6 +226,8 @@ type Querier interface {
 	GetTopic(ctx context.Context, id string) (Topic, error)
 	GetTopicByName(ctx context.Context, arg GetTopicByNameParams) (GetTopicByNameRow, error)
 	GetTopicChannel(ctx context.Context, id string) (string, error)
+	// The caller is bound to one tenant by the store's scoped query path.
+	GetTourState(ctx context.Context, accountID string) (GetTourStateRow, error)
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)
@@ -571,6 +575,7 @@ type Querier interface {
 	SetForgeRepoSubscriptionEnabled(ctx context.Context, arg SetForgeRepoSubscriptionEnabledParams) (int64, error)
 	SetIssueState(ctx context.Context, arg SetIssueStateParams) (int64, error)
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
+	SetTourState(ctx context.Context, arg SetTourStateParams) error
 	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)
 	// Event writes share RecordSessionBinding's transaction, so neither half of an
 	// interval can commit without its binding transition.

@@ -27,6 +27,11 @@ service CompassService {
   // authenticatedOpen: any authenticated caller may learn its OWN identity
   // (not admin-gated). account_id is server-derived, never client-supplied.
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  // Per-account first-run progress. No account id is accepted; the server keys
+  // each operation to the authenticated caller.
+  rpc GetTourState(GetTourStateRequest) returns (GetTourStateResponse);
+  rpc ClaimTourStart(ClaimTourStartRequest) returns (ClaimTourStartResponse);
+  rpc SetTourState(SetTourStateRequest) returns (SetTourStateResponse);
 
   // The event channel: board, agent, and audit updates as a server stream
   // (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
@@ -296,6 +301,30 @@ message WhoAmIResponse {
   // credential — never a client-supplied field.
   string account_id = 1;
 }
+
+enum TourOutcome {
+  TOUR_OUTCOME_UNSPECIFIED = 0; // no row: never seen
+  TOUR_OUTCOME_STARTED = 1;
+  TOUR_OUTCOME_DISMISSED = 2;
+  TOUR_OUTCOME_COMPLETED = 3;
+}
+
+message GetTourStateRequest {}
+message GetTourStateResponse {
+  TourOutcome outcome = 1;
+  string step_id = 2; // resume cursor; empty when none
+}
+message ClaimTourStartRequest {
+  string step_id = 1; // the first step's id
+}
+message ClaimTourStartResponse {
+  bool claimed = 1; // true only when this call created the row
+}
+message SetTourStateRequest {
+  TourOutcome outcome = 1; // UNSPECIFIED is InvalidArgument
+  string step_id = 2;
+}
+message SetTourStateResponse {}
 
 // Subscribe to the server event stream.
 message SubscribeEventsRequest {
