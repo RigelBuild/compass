@@ -18,11 +18,18 @@ import (
 	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/agentmsg"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+// runnerMaxReadBytes caps one inbound RunnerService message. Each Runner→Server
+// request carries at most one agent message (a relayed call or AgentFrame,
+// verbatim) plus a session id and small envelope fields; 1 MiB of headroom
+// covers that envelope with room to spare.
+const runnerMaxReadBytes = agentmsg.MaxBytes + 1<<20
 
 // AgentConfigStore is the Server-side fleet config-bundle resolve surface that
 // FetchAgentConfig delegates to — the RIG-1568 T1 store (`*store.Store` satisfies
@@ -481,5 +488,6 @@ func NewMountedHandler(
 	return compassv1internalconnect.NewRunnerServiceHandler(
 		NewHandler(hub, resolver, configStore),
 		connect.WithInterceptors(otelIC, auth.unaryInterceptor(), auth.streamInterceptor()),
+		connect.WithReadMaxBytes(runnerMaxReadBytes),
 	)
 }
