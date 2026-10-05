@@ -121,6 +121,7 @@ type recordingClient struct {
 	events   []string
 	bodies   []string
 	sessions []string
+	urls     []ExternalURL
 	errCh    chan struct{}
 }
 
@@ -136,10 +137,11 @@ func (c *recordingClient) CreateActivity(_ context.Context, sessionID string, co
 	return nil
 }
 
-func (c *recordingClient) UpdateSession(_ context.Context, sessionID string, _ []ExternalURL) error {
+func (c *recordingClient) UpdateSession(_ context.Context, sessionID string, urls []ExternalURL) error {
 	c.mu.Lock()
 	c.events = append(c.events, "external-url")
 	c.sessions = append(c.sessions, sessionID)
+	c.urls = append(c.urls, urls...)
 	c.mu.Unlock()
 	return nil
 }
@@ -198,15 +200,15 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 	client := &recordingClient{}
 
 	d := NewDispatcher(DispatcherParams{
-		Buffer:       4,
-		Resolve:      res.resolve,
-		Poster:       comms,
-		Members:      members,
-		Topics:       topics,
-		Associations: assoc,
-		Client:       client,
-		DeepLinkFor:  func(ch string) string { return "https://compass.rigel.build/c/" + ch },
-		Bridge:       testBridge,
+		Buffer:         4,
+		Resolve:        res.resolve,
+		Poster:         comms,
+		Members:        members,
+		Topics:         topics,
+		Associations:   assoc,
+		Client:         client,
+		SessionLinkFor: func(id string) string { return "https://compass.rigel.build/l/session/" + id },
+		Bridge:         testBridge,
 	})
 	stop := runDispatcher(t, d)
 	defer stop()
@@ -231,13 +233,17 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 	if got := client.seq(); len(got) != 2 || got[0] != "thought" || got[1] != "external-url" {
 		t.Fatalf("emit sequence = %v, want [thought external-url] before the post", got)
 	}
+	if len(client.urls) != 1 || client.urls[0].URL != "https://compass.rigel.build/l/session/sess-1" {
+		t.Fatalf("external URLs = %+v, want the session link for sess-1", client.urls)
+	}
 	// Association upserted with the resolved manager/channel/topic.
 	if len(assoc.rows) != 1 {
 		t.Fatalf("association rows = %d, want 1", len(assoc.rows))
 	}
 	row := assoc.rows[0]
-	if row.ManagerAccountID != "mgr-1" || row.ChannelID != "chan-1" || row.TopicID != "topic-1" || row.LinearIssueID != "iss-1" {
-		t.Fatalf("association row = %+v, want mgr-1/chan-1/topic-1/iss-1", row)
+	if row.ManagerAccountID != "mgr-1" || row.ChannelID != "chan-1" || row.TopicID != "topic-1" ||
+		row.LinearIssueID != "iss-1" || row.LinearIssueIdentifier != "RIG-9" {
+		t.Fatalf("association row = %+v, want mgr-1/chan-1/topic-1/iss-1/RIG-9", row)
 	}
 	// Topic named for the issue identifier.
 	if len(topics.names) != 1 || topics.names[0] != "RIG-9" {
@@ -382,7 +388,7 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 	if err := d.Enqueue(&SessionEvent{
 		Action:        "prompted",
 		DeliveryID:    "delivery-9",
-		AgentSession:  AgentSession{ID: "sess-orphan"},
+		AgentSession:  AgentSession{ID: "sess-orphan", Issue: Issue{ID: "iss-orphan", Identifier: "RIG-77"}},
 		AgentActivity: AgentActivity{Content: ActivityBody{Body: "orphaned follow-up"}},
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -394,6 +400,9 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 	}
 	if len(assoc.rows) != 1 || assoc.rows[0].ChannelID != "chan-9" || assoc.rows[0].TopicID != "topic-9" {
 		t.Fatalf("synthesized association = %+v, want chan-9/topic-9", assoc.rows)
+	}
+	if assoc.rows[0].LinearIssueIdentifier != "RIG-77" {
+		t.Fatalf("synthesized linear issue identifier = %q, want RIG-77", assoc.rows[0].LinearIssueIdentifier)
 	}
 	if comms.topics[0] != "topic-9" || comms.bodies[0] != "orphaned follow-up" {
 		t.Fatalf("post topic/body = %q/%q, want topic-9/orphaned follow-up", comms.topics[0], comms.bodies[0])
@@ -407,15 +416,15 @@ func TestDispatcherEnqueueWhenFull(t *testing.T) {
 	// Buffer 1, no Run goroutine draining: the first Enqueue fills the channel,
 	// the second must fail rather than block.
 	d := NewDispatcher(DispatcherParams{
-		Buffer:       1,
-		Resolve:      (&fakeResolver{}).resolve,
-		Poster:       &recordingComms{},
-		Members:      &fakeMembers{},
-		Topics:       &fakeTopics{},
-		Associations: &fakeAssoc{},
-		Client:       &recordingClient{},
-		DeepLinkFor:  func(string) string { return "" },
-		Bridge:       testBridge,
+		Buffer:         1,
+		Resolve:        (&fakeResolver{}).resolve,
+		Poster:         &recordingComms{},
+		Members:        &fakeMembers{},
+		Topics:         &fakeTopics{},
+		Associations:   &fakeAssoc{},
+		Client:         &recordingClient{},
+		SessionLinkFor: func(string) string { return "" },
+		Bridge:         testBridge,
 	})
 	if err := d.Enqueue(&SessionEvent{Action: "created"}); err != nil {
 		t.Fatalf("first Enqueue: %v", err)
@@ -511,15 +520,15 @@ type dispatcherDeps struct {
 func newTestDispatcher(t *testing.T, deps dispatcherDeps) *Dispatcher {
 	t.Helper()
 	return NewDispatcher(DispatcherParams{
-		Buffer:       4,
-		Resolve:      deps.res.resolve,
-		Poster:       deps.comms,
-		Members:      &fakeMembers{},
-		Topics:       deps.topics,
-		Associations: deps.assoc,
-		Client:       deps.client,
-		DeepLinkFor:  func(ch string) string { return "https://compass.rigel.build/c/" + ch },
-		Bridge:       testBridge,
+		Buffer:         4,
+		Resolve:        deps.res.resolve,
+		Poster:         deps.comms,
+		Members:        &fakeMembers{},
+		Topics:         deps.topics,
+		Associations:   deps.assoc,
+		Client:         deps.client,
+		SessionLinkFor: func(id string) string { return "https://compass.rigel.build/l/session/" + id },
+		Bridge:         testBridge,
 	})
 }
 

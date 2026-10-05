@@ -1,9 +1,7 @@
 //go:build unix
 
-// The Linear Agent responder's "Open in Compass" deep-link builder (RIG-2717 T5).
-// It emits one externalUrls deep link on a Linear `created` session, targeting the
-// resolved Manager's HOME CHANNEL (OQ-4). Base is ServeConfig.PublicURL; the path
-// is the UI's channel hash route, so the wire form is `<base>/#/channel/<id>`.
+// The responder emits a stable /l/session/<id> link, which redirects at click time
+// to the current Manager home channel built by deepLinkFor. Both use PublicURL.
 package server
 
 import (
@@ -32,14 +30,14 @@ func requirePublicURL(base string) error {
 	return nil
 }
 
-// deepLinkFor builds the "Open in Compass" URL to a Manager's home channel from
-// the per-deployment public base (design T5 / OQ-4). The UI is a HashRouter, so
-// the channel surface lives at the `/#/channel/<id>` fragment route
-// (apps/ui/src/routes.tsx:40); the channelID is path-escaped so an id with URL
-// metacharacters cannot break out of the fragment. A trailing slash on the base
-// is trimmed so `https://host/` and `https://host` yield the same link. An empty
-// base yields a base-less (relative) fragment — callers gate on requirePublicURL
-// at boot so this never happens for a Linear-webhook-consuming deploy.
+// deepLinkFor builds the UI's HashRouter channel link from the per-deployment
+// public base. The channel ID is escaped and trailing slashes are trimmed.
 func deepLinkFor(base, channelID string) string {
 	return strings.TrimRight(base, "/") + "/#/channel/" + url.PathEscape(channelID)
+}
+
+// sessionLinkFor builds the stable click-time redirect URL from the Linear
+// session ID; trimming and escaping match deepLinkFor's base and path handling.
+func sessionLinkFor(base, linearSessionID string) string {
+	return strings.TrimRight(base, "/") + "/l/session/" + url.PathEscape(linearSessionID)
 }

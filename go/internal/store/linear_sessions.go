@@ -15,15 +15,16 @@ import (
 
 // LinearAgentSessionRow is one association row: the Linear session id, the Compass
 // Manager the delegated issue routed to, that Manager's home channel, the comms
-// topic the conversation landed in, and the issue it was delegated on
-// (provenance; "" when none). CreatedAt is the server-assigned birth time.
+// topic the conversation landed in, and the issue's UUID and forge coordinate
+// (both provenance; "" when absent). CreatedAt is the server-assigned birth time.
 type LinearAgentSessionRow struct {
-	LinearSessionID  string
-	ManagerAccountID AccountID
-	ChannelID        ChannelID
-	TopicID          string
-	LinearIssueID    string // provenance; "" = no issue recorded (stored as SQL NULL)
-	CreatedAt        time.Time
+	LinearSessionID       string
+	ManagerAccountID      AccountID
+	ChannelID             ChannelID
+	TopicID               string
+	LinearIssueID         string // Linear UUID provenance; "" = SQL NULL
+	LinearIssueIdentifier string // forge coordinate; "" = SQL NULL
+	CreatedAt             time.Time
 }
 
 // UpsertLinearAgentSession idempotently records the association at row's
@@ -32,17 +33,18 @@ type LinearAgentSessionRow struct {
 // replay (the session was already associated) — the caller uses that to skip
 // the one-time `created`-side work (routing, ack thought, deep link) on a
 // redelivered `created` event. An empty linear_session_id is a caller bug
-// (ErrInvalidArgument). LinearIssueID "" is stored as SQL NULL.
+// (ErrInvalidArgument). LinearIssueID and LinearIssueIdentifier "" are stored as SQL NULL.
 func (s *Store) UpsertLinearAgentSession(ctx context.Context, row LinearAgentSessionRow) (created bool, err error) {
 	if row.LinearSessionID == "" {
 		return false, fmt.Errorf("%w: linear session id is required", ErrInvalidArgument)
 	}
 	affected, err := s.q.UpsertLinearAgentSession(ctx, db.UpsertLinearAgentSessionParams{
-		LinearSessionID:  row.LinearSessionID,
-		ManagerAccountID: string(row.ManagerAccountID),
-		ChannelID:        string(row.ChannelID),
-		TopicID:          row.TopicID,
-		LinearIssueID:    textOrNull(row.LinearIssueID),
+		LinearSessionID:       row.LinearSessionID,
+		ManagerAccountID:      string(row.ManagerAccountID),
+		ChannelID:             string(row.ChannelID),
+		TopicID:               row.TopicID,
+		LinearIssueID:         textOrNull(row.LinearIssueID),
+		LinearIssueIdentifier: textOrNull(row.LinearIssueIdentifier),
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: upsert linear agent session: %w", err)
@@ -72,6 +74,9 @@ func (s *Store) LinearAgentSession(ctx context.Context, linearSessionID string) 
 	}
 	if row.LinearIssueID.Valid {
 		out.LinearIssueID = row.LinearIssueID.String
+	}
+	if row.LinearIssueIdentifier.Valid {
+		out.LinearIssueIdentifier = row.LinearIssueIdentifier.String
 	}
 	if row.CreatedAt.Valid {
 		out.CreatedAt = row.CreatedAt.Time
