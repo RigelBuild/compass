@@ -121,6 +121,7 @@ type recordingClient struct {
 	events   []string
 	bodies   []string
 	sessions []string
+	urls     []ExternalURL
 	errCh    chan struct{}
 }
 
@@ -136,10 +137,11 @@ func (c *recordingClient) CreateActivity(_ context.Context, sessionID string, co
 	return nil
 }
 
-func (c *recordingClient) UpdateSession(_ context.Context, sessionID string, _ []ExternalURL) error {
+func (c *recordingClient) UpdateSession(_ context.Context, sessionID string, urls []ExternalURL) error {
 	c.mu.Lock()
 	c.events = append(c.events, "external-url")
 	c.sessions = append(c.sessions, sessionID)
+	c.urls = append(c.urls, urls...)
 	c.mu.Unlock()
 	return nil
 }
@@ -198,15 +200,15 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 	client := &recordingClient{}
 
 	d := NewDispatcher(DispatcherParams{
-		Buffer:       4,
-		Resolve:      res.resolve,
-		Poster:       comms,
-		Members:      members,
-		Topics:       topics,
-		Associations: assoc,
-		Client:       client,
-		DeepLinkFor:  func(ch string) string { return "https://compass.rigel.build/c/" + ch },
-		Bridge:       testBridge,
+		Buffer:         4,
+		Resolve:        res.resolve,
+		Poster:         comms,
+		Members:        members,
+		Topics:         topics,
+		Associations:   assoc,
+		Client:         client,
+		SessionLinkFor: func(id string) string { return "https://compass.rigel.build/l/session/" + id },
+		Bridge:         testBridge,
 	})
 	stop := runDispatcher(t, d)
 	defer stop()
@@ -230,6 +232,9 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 	// both emits must already be recorded).
 	if got := client.seq(); len(got) != 2 || got[0] != "thought" || got[1] != "external-url" {
 		t.Fatalf("emit sequence = %v, want [thought external-url] before the post", got)
+	}
+	if len(client.urls) != 1 || client.urls[0].URL != "https://compass.rigel.build/l/session/sess-1" {
+		t.Fatalf("external URLs = %+v, want the session link for sess-1", client.urls)
 	}
 	// Association upserted with the resolved manager/channel/topic.
 	if len(assoc.rows) != 1 {
@@ -411,15 +416,15 @@ func TestDispatcherEnqueueWhenFull(t *testing.T) {
 	// Buffer 1, no Run goroutine draining: the first Enqueue fills the channel,
 	// the second must fail rather than block.
 	d := NewDispatcher(DispatcherParams{
-		Buffer:       1,
-		Resolve:      (&fakeResolver{}).resolve,
-		Poster:       &recordingComms{},
-		Members:      &fakeMembers{},
-		Topics:       &fakeTopics{},
-		Associations: &fakeAssoc{},
-		Client:       &recordingClient{},
-		DeepLinkFor:  func(string) string { return "" },
-		Bridge:       testBridge,
+		Buffer:         1,
+		Resolve:        (&fakeResolver{}).resolve,
+		Poster:         &recordingComms{},
+		Members:        &fakeMembers{},
+		Topics:         &fakeTopics{},
+		Associations:   &fakeAssoc{},
+		Client:         &recordingClient{},
+		SessionLinkFor: func(string) string { return "" },
+		Bridge:         testBridge,
 	})
 	if err := d.Enqueue(&SessionEvent{Action: "created"}); err != nil {
 		t.Fatalf("first Enqueue: %v", err)
@@ -515,15 +520,15 @@ type dispatcherDeps struct {
 func newTestDispatcher(t *testing.T, deps dispatcherDeps) *Dispatcher {
 	t.Helper()
 	return NewDispatcher(DispatcherParams{
-		Buffer:       4,
-		Resolve:      deps.res.resolve,
-		Poster:       deps.comms,
-		Members:      &fakeMembers{},
-		Topics:       deps.topics,
-		Associations: deps.assoc,
-		Client:       deps.client,
-		DeepLinkFor:  func(ch string) string { return "https://compass.rigel.build/c/" + ch },
-		Bridge:       testBridge,
+		Buffer:         4,
+		Resolve:        deps.res.resolve,
+		Poster:         deps.comms,
+		Members:        &fakeMembers{},
+		Topics:         deps.topics,
+		Associations:   deps.assoc,
+		Client:         deps.client,
+		SessionLinkFor: func(id string) string { return "https://compass.rigel.build/l/session/" + id },
+		Bridge:         testBridge,
 	})
 }
 

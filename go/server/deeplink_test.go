@@ -7,11 +7,10 @@ import (
 	"testing"
 )
 
-// TestDeepLinkFor pins the "Open in Compass" builder (RIG-2717 T5, OQ-4): the
-// URL targets the Manager's home channel at the UI's `/#/channel/<id>` hash
-// route, a trailing slash on the base collapses so `host/` and `host` agree, and
-// a channel id carrying URL metacharacters is path-escaped so it cannot break
-// out of the fragment.
+// TestDeepLinkFor pins the channel deep-link builder: the URL targets the
+// Manager's home channel at the UI's `/#/channel/<id>` hash route, a trailing
+// slash on the base collapses so `host/` and `host` agree, and a channel id
+// carrying URL metacharacters is escaped so it cannot break out of the fragment.
 func TestDeepLinkFor(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -48,6 +47,41 @@ func TestDeepLinkFor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := deepLinkFor(tc.base, tc.channelID); got != tc.want {
 				t.Errorf("deepLinkFor(%q, %q) = %q, want %q", tc.base, tc.channelID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSessionLinkFor(t *testing.T) {
+	tests := []struct {
+		name            string
+		base            string
+		linearSessionID string
+		want            string
+	}{
+		{
+			name:            "session id link",
+			base:            "https://compass.example.com",
+			linearSessionID: "session-123",
+			want:            "https://compass.example.com/l/session/session-123",
+		},
+		{
+			name:            "trailing slash on base is collapsed",
+			base:            "https://compass.example.com///",
+			linearSessionID: "session-123",
+			want:            "https://compass.example.com/l/session/session-123",
+		},
+		{
+			name:            "session id is path-escaped",
+			base:            "https://compass.example.com",
+			linearSessionID: "sess a/b?c",
+			want:            "https://compass.example.com/l/session/sess%20a%2Fb%3Fc",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionLinkFor(tc.base, tc.linearSessionID); got != tc.want {
+				t.Errorf("sessionLinkFor(%q, %q) = %q, want %q", tc.base, tc.linearSessionID, got, tc.want)
 			}
 		})
 	}
