@@ -2061,14 +2061,18 @@ func buildForgeWriteService(
 	// client, reviewer = reviewer App client, F1) plus a Linear coordinate when
 	// the shared Linear token source is configured.
 	registry := newForgeProviderRegistry()
-	registerGitHubForgeCoordinate(registry, fc, primaryClient, reviewerClient)
+	if err := registerGitHubForgeCoordinate(registry, fc, primaryClient, reviewerClient); err != nil {
+		return nil, err
+	}
 
 	// Linear write coordinate — registered ONLY when Linear is configured (else
 	// GitHub-only). Linear is issues-only (DL-051): PR/review ops return ErrUnsupported.
 	// One client serves both roles, riding the SAME linearTokens instance (DEC-4).
 	// isDefault=false: GitHub is the default, Linear is selected explicitly.
 	if linearTokens != nil {
-		registerLinearForgeCoordinate(registry, forge.NewLinear(forge.LinearConfig{Token: linearTokens, Log: log}))
+		if err := registerLinearForgeCoordinate(registry, forge.NewLinear(forge.LinearConfig{Token: linearTokens, Log: log})); err != nil {
+			return nil, err
+		}
 	}
 
 	return newForgeService(st, issueBrd, registry), nil
@@ -2081,15 +2085,15 @@ func buildForgeWriteService(
 // approving a PR it authored dispatches submit_review on a different account than
 // it authored with, dissolving the author-approving-own-PR rejection at the
 // credential layer.
-func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer *forge.GitHub) {
-	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: fc.Host}, author, reviewer, true)
+func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer *forge.GitHub) error {
+	return reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: fc.Host}, author, reviewer, true)
 }
 
 // registerLinearForgeCoordinate registers the Linear write coordinate. It must
 // carry forge.LinearHost: the DL-055 row rejects an empty host. One client
 // serves both roles (Linear has no author/reviewer split).
-func registerLinearForgeCoordinate(reg *forgeProviderRegistry, linear forge.Provider) {
-	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host: forge.LinearHost}, linear, linear, false)
+func registerLinearForgeCoordinate(reg *forgeProviderRegistry, linear forge.Provider) error {
+	return reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host: forge.LinearHost}, linear, linear, false)
 }
 
 // buildLinearTokenSource builds the ONE shared Linear OAuth client-credentials

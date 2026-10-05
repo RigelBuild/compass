@@ -195,7 +195,9 @@ func newForgeServiceForTest(t *testing.T, author, reviewer *forge.FakeProvider) 
 	st.seedAgent(testAgentID, testAgentHandle, testOwnerID, testOwnerHandle)
 
 	reg := newForgeProviderRegistry()
-	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: testHost}, author, reviewer, true)
+	if err := reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: testHost}, author, reviewer, true); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
@@ -1041,4 +1043,28 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// An empty host would become the provider's default and resolve every
+// host-less ForgeRef to a coordinate the DL-055 row rejects, so register refuses it.
+func TestForgeProviderRegistryRejectsEmptyHost(t *testing.T) {
+	reg := newForgeProviderRegistry()
+	gh := forge.NewFakeProvider("gh")
+	err := reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB}, gh, gh, true)
+	if err == nil {
+		t.Fatal("register with an empty host returned nil, want an error")
+	}
+	if _, ok := reg.resolve(nil); ok {
+		t.Fatal("rejected registration still resolves as the default coordinate")
+	}
+	if err := reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: testHost}, gh, gh, true); err != nil {
+		t.Fatalf("register with a host: %v", err)
+	}
+	if got, ok := reg.resolve(nil); !ok || got.host != testHost {
+		t.Fatalf("resolve(nil) = %+v, %v; want host %q", got, ok, testHost)
+	}
+	hostless := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB}
+	if got, ok := reg.resolve(hostless); !ok || got.host != testHost {
+		t.Fatalf("resolve(github, no host) = %+v, %v; want host %q", got, ok, testHost)
+	}
 }

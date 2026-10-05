@@ -46,7 +46,9 @@ func newLinearForgeServiceForTest(t *testing.T, author *forge.FakeProvider) (*fo
 	t.Helper()
 	svc, st := newForgeServiceForTest(t, author, forge.NewFakeProvider("lin-reviewer"))
 	reg := newForgeProviderRegistry()
-	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host: "linear.app"}, author, author, true)
+	if err := reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host: "linear.app"}, author, author, true); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 	svc.providers = reg
 	return svc, st
 }
