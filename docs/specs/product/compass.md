@@ -771,8 +771,10 @@ rather than tearing it down and re-spawning.
 
 The workspaces sidebar derives its tree from `parent_agent_id` rather than a
 user-defined folder organization, and an agent reads its own parent off its
-account through `ListAccounts`. Every tree node carries a role from the closed
-Manager taxonomy (`supervisor`, `owner`, `manager`), set at creation. Composing
+account through `ListAccounts`. Every agent created through spawn or
+`CreateAgent` carries a role from the closed Manager taxonomy (`supervisor`,
+`owner`, `manager`); rows created before that check may hold an empty role,
+which means the default block-0. Composing
 channels or subtree-applied roles onto the tree is named for later (RIG-1622,
 RIG-1623) and is not yet built.
 

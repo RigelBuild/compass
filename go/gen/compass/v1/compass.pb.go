@@ -3601,7 +3601,7 @@ type ProvisionAgentWorkspaceRequest struct {
 	// it into the container
 	// (compass-runner consumer). Empty = no persona baked (default).
 	Persona string `protobuf:"bytes,3,opt,name=persona,proto3" json:"persona,omitempty"`
-	// The agent's role, selected at spawn from the closed taxonomy
+	// The agent's role, selected at creation from the closed taxonomy
 	// (supervisor/owner/manager) and server-validated, selecting the container's
 	// block-0 system prompt at provision so it survives compaction (a
 	// system-prompt config block is not part of the message history a snapcompact
@@ -3617,7 +3617,7 @@ type ProvisionAgentWorkspaceRequest struct {
 	// overlay, role REPLACES block-0: the label selects
 	// config/prompts/<role>/SYSTEM.md, materialized by the Runner into the
 	// container's customSystemPrompt (compass-runner consumer). A role is
-	// required at spawn; this provision field is optional and an empty stored
+	// required at creation; this provision field is optional and an empty stored
 	// role yields the default OMP block-0.
 	Role          string `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields

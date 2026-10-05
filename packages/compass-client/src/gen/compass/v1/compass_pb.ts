@@ -1392,7 +1392,7 @@ export type ProvisionAgentWorkspaceRequest = Message<"compass.v1.ProvisionAgentW
   persona: string;
 
   /**
-   * The agent's role, selected at spawn from the closed taxonomy
+   * The agent's role, selected at creation from the closed taxonomy
    * (supervisor/owner/manager) and server-validated, selecting the container's
    * block-0 system prompt at provision so it survives compaction (a
    * system-prompt config block is not part of the message history a snapcompact
@@ -1408,7 +1408,7 @@ export type ProvisionAgentWorkspaceRequest = Message<"compass.v1.ProvisionAgentW
    * overlay, role REPLACES block-0: the label selects
    * config/prompts/<role>/SYSTEM.md, materialized by the Runner into the
    * container's customSystemPrompt (compass-runner consumer). A role is
-   * required at spawn; this provision field is optional and an empty stored
+   * required at creation; this provision field is optional and an empty stored
    * role yields the default OMP block-0.
    *
    * @generated from field: string role = 4;

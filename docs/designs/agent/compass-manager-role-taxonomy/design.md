@@ -600,16 +600,13 @@ Ledger-impact: applied at freeze, not in this draft. Rows to add:
   `owner` (owns a product/service/domain; delegation + area ownership),
   `manager` (owns a lane; drives it to done). Roles set capability; node names
   still state function (composes with the name-by-function tenet).
-- **DL-new-B:** Every tree node is created WITH a role: both creation doors,
-  `agents_spawn_peer` and the `CommsService.CreateAgent` RPC (`role` on
-  `CreateAgentRequest`), carry a required role from the closed taxonomy,
-  server-validated against one shared set, `store.IsManagerRole`
-  (`CodeInvalidArgument` on unknown or empty). REVISES the
-  server-authoritative-empty spawn invariant (lifecycle.go): role is
-  caller-selected-but-server-validated; prompt text remains
-  operator-bundle-only; store remains provision source of record. Domain
-  validation, not an authz allowlist — does not reverse RIG-2673 OQ-1, and
-  adds no agent-facing `create_agent` tool.
+- **DL-new-B:** Every tree node spawns WITH a role: `agents_spawn_peer` carries
+  a required role from the closed taxonomy, server-validated
+  (`CodeInvalidArgument` on unknown). REVISES the server-authoritative-empty
+  spawn invariant (lifecycle.go): role is caller-selected-but-server-validated;
+  prompt text remains operator-bundle-only; store remains provision source of
+  record. Domain validation, not an authz allowlist — does not reverse
+  RIG-2673 OQ-1.
 - **DL-new-C:** NO worker role. Workers are subagents inside a Manager's
   session — no handle, no container, no comms tools — enforcing centralized
   comms structurally; all user-facing traffic routes through Managers.
@@ -661,4 +658,4 @@ assumption, none blocks the tasks above.
 
 ## Errata
 
-- The taxonomy set ships as `store.IsManagerRole` (a private set in `go/internal/store`), not the `spawnableRoles` server constant T1 names, so `SpawnAsAccount` and `CommsService.CreateAgent` validate against one set.
+- DL-new-B widened: `CommsService.CreateAgent` is a second creation door and now also requires a taxonomy `role` on `CreateAgentRequest` (`CodeInvalidArgument` on unknown or empty). Both doors validate against one shared set, `store.IsManagerRole` (a private set in `go/internal/store`), which replaces the `spawnableRoles` server constant T1 names. No agent-facing `create_agent` tool is added.
