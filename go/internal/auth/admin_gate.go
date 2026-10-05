@@ -68,9 +68,13 @@ func classifyProcedure(procedure string) (privilege, bool) {
 	// The connect-time probe, the two event streams, the board catch-up read, and the
 	// config info view: open to any authenticated account. SubscribeAgentSession
 	// carries its own per-account authorization, so the door admits non-admin members;
-	// GetAgentConfigInfo returns names only; WhoAmI reflects the caller's own identity.
+	// GetAgentConfigInfo returns names only; WhoAmI reflects the caller's own identity;
+	// tour state is keyed to the caller's account.
 	case compassv1connect.CompassServiceGetServerInfoProcedure,
 		compassv1connect.CompassServiceWhoAmIProcedure,
+		compassv1connect.CompassServiceGetTourStateProcedure,
+		compassv1connect.CompassServiceClaimTourStartProcedure,
+		compassv1connect.CompassServiceSetTourStateProcedure,
 		compassv1connect.CompassServiceSubscribeEventsProcedure,
 		compassv1connect.CompassServiceListBoardIssuesProcedure,
 		compassv1connect.CompassServiceSearchIssuesProcedure,
