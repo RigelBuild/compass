@@ -3,6 +3,8 @@
 # compass-runner-image (runner-image/): the Runner container image — the
 # compass-runner binary, the KVM userland it exec's (cloud-hypervisor,
 # virtiofsd, passt) and the three guest assets the microVM backend direct-boots.
+# The baked assets are the same guest-image build the compass-guest-image
+# artifact publishes; a deployment uses one or the other, never both.
 # This project carries the Dockerfile and the staged build context; the
 # realise-and-stage logic is tools/runner-image (TypeScript, not a shell script).
 #
@@ -50,9 +52,9 @@ tasks:
     # (the convention the sibling image projects use); the bare glob is this
     # project's own tree. Each entry is an input whose change alters the built
     # image: the Dockerfile and the build script directly, the Go module +
-    # runner command for the binary, and the guest-image/VMM-env closures for
-    # the carried assets. A glob that misses one would leave a stale image
-    # passing as current.
+    # runner command for the binary, and the guest-image tree (including its
+    # agent-oci.lock pin) plus the VMM-env for the carried assets. A glob that
+    # misses one would leave a stale image passing as current.
     # Named tracked files, NOT a `**/*` glob. moon hashes with its native walker,
     # which reads contents directly and does not skip gitignored paths — a bare
     # glob here would hash the multi-GB staged closure this task itself writes

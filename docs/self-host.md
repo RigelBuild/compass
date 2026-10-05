@@ -145,6 +145,14 @@ The tarball does not carry the microVM userspace trio; install cloud-hypervisor,
 virtiofsd, and passt from your distribution and confirm the floors with
 `compass-stack preflight`.
 
+## Guest image
+
+Agent sessions boot a guest kernel, rootfs, and initrd. `compass-stack up`
+pulls them by digest (`--guest-artifact`), uses a directory you staged
+(`--guest-dir`, the air-gapped path), or leaves the Runner image's baked copy
+live. The strategies, the air-gapped runbook, and the agent-image bump flow are
+in [the guest image guide](self-host-guest-image.md).
+
 ## Database
 
 By default the stack provisions its own PostgreSQL as a bundled rootless

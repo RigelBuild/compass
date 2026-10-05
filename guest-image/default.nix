@@ -1,6 +1,6 @@
-# The Compass microVM guest image: the three nix attrs V2a's cloud-hypervisor
-# runtime consumes to boot a session guest. The rootfs userland IS the published
-# agent OCI image unpacked, fetched fixed-output against `agent-oci.lock`, so
+# The Compass microVM guest image: the three nix attrs the cloud-hypervisor
+# runtime boots per session guest. The rootfs userland IS the published agent
+# OCI image unpacked, fetched fixed-output against `agent-oci.lock`, so
 # guest/container drift is not expressible. Only the boot layer is added on top.
 let
   # The root devenv.lock-pinned nixpkgs, resolved as the other plain nix gates do

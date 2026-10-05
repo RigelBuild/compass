@@ -1,22 +1,19 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# compass-guest-image (guest-image/): the microVM guest image — a
-# direct-boot kernel and a root filesystem contents closure the V2a
-# cloud-hypervisor runtime consumes. A standalone nix build, not a bun package,
-# the same standalone-not-a-moon-project posture agent-image/ established, plus a
-# thin moon project so the build rides the gate.
+# compass-guest-image (guest-image/): the microVM guest image — a direct-boot
+# kernel, an erofs rootfs, and an initrd the cloud-hypervisor runtime boots.
+# The rootfs userland is the published compass-agent OCI image pinned in
+# agent-oci.lock; this tree adds only the boot layer. A standalone nix build,
+# not a bun package, with a thin moon project so the build rides the gate.
 #
 # WHY THIS IS A MOON PROJECT. Registering it in .moon/workspace.yml is what puts
 # the guest-image build in the affected-gated pre-merge gate: on a PR
-# `moon ci :ci` runs this project's `ci` only when the PR affects the rootfs
+# `moon ci :ci` runs this project's `ci` only when the PR affects the guest
 # closure (the `inputs` below), and every push to main runs it unconditionally
 # (ci.yml's affected-PR / full-main split). Without it a guest-image break — a
-# toolchain-closure drift, a broken rootfs assembly — would surface only
-# post-merge (in E4's cache-population lane or V2a's boot bring-up), not on the
-# PR that caused it. The same pre-merge-build-gate move agent-image/ made
-# (agent-image/moon.yml:10-20). The kernel is substituted free from
-# cache.nixos.org (never built); the rootfs is the closure this gate proves
-# realises.
+# stale agent-oci.lock, a broken layer assembly — would surface only post-merge
+# in the publish lane, not on the PR that caused it. The kernel is substituted
+# free from cache.nixos.org (never built).
 layer: 'application'
 language: 'nix'
 tags: ['ci-group.nix']
@@ -31,10 +28,10 @@ workspace:
 
 tasks:
   build:
-    # Realise both guest-image attrs. cloud-hypervisor direct-boots the kernel
-    # (substituted free from cache.nixos.org), and the rootfs is the contents
-    # closure V2a packs into its chosen image format. A plain `nix build -f` of
-    # the standalone default.nix (the same shape app-bundle/build.sh uses,
+    # Realise the three guest-image attrs. cloud-hypervisor direct-boots the
+    # kernel (substituted free from cache.nixos.org) with the erofs rootfs and
+    # the initrd. A plain `nix build -f` of the
+    # standalone default.nix (the same shape app-bundle/build.sh uses,
     # app-bundle/build.sh:30-35) — this is a bare nix file, not a flake, so
     # there is no `#attr` flake-ref form. Runs from guest-image/ (moon's default
     # project-dir cwd). The substituters the build fetches from are named in
