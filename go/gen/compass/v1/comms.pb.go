@@ -3029,8 +3029,9 @@ type CreateChannelRequest struct {
 	// Initial members party to the channel. Each is a `@handle`; the server
 	// resolves it to an account id; unknown → NOT_FOUND.
 	MemberHandles []string `protobuf:"bytes,4,rep,name=member_handles,json=memberHandles,proto3" json:"member_handles,omitempty"`
-	// The agent to hang the channel off; mutually exclusive with group_id. A
-	// `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+	// The agent to hang the channel off; mutually exclusive with group_id and
+	// group_name. A `@handle`; the server resolves it to an account id; unknown →
+	// NOT_FOUND.
 	ParentAgentHandle string `protobuf:"bytes,5,opt,name=parent_agent_handle,json=parentAgentHandle,proto3" json:"parent_agent_handle,omitempty"`
 	// TREE requires parent_agent_handle.
 	MembershipMode ChannelMembershipMode `protobuf:"varint,6,opt,name=membership_mode,json=membershipMode,proto3,enum=compass.v1.ChannelMembershipMode" json:"membership_mode,omitempty"`

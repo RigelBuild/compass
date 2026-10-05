@@ -454,3 +454,11 @@ func TestCreateChannelHumanRPCRejectsGroupRef(t *testing.T) {
 	}))
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "human CreateChannel group_name")
 }
+
+func TestCreateChannelGroupHumanRPCRejectsParentGroupRef(t *testing.T) {
+	svc, _ := newHandler(t)
+	_, err := svc.CreateChannelGroup(WithActor(context.Background(), "human"), connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+		Name: "child", ParentGroupName: "team",
+	}))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "human CreateChannelGroup parent_group_name")
+}

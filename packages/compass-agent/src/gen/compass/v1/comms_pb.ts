@@ -1429,8 +1429,9 @@ export type CreateChannelRequest = Message$1<"compass.v1.CreateChannelRequest"> 
   memberHandles: string[];
 
   /**
-   * The agent to hang the channel off; mutually exclusive with group_id. A
-   * `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+   * The agent to hang the channel off; mutually exclusive with group_id and
+   * group_name. A `@handle`; the server resolves it to an account id; unknown →
+   * NOT_FOUND.
    *
    * @generated from field: string parent_agent_handle = 5;
    */

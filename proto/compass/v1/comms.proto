@@ -693,8 +693,9 @@ message CreateChannelRequest {
   // Initial members party to the channel. Each is a `@handle`; the server
   // resolves it to an account id; unknown → NOT_FOUND.
   repeated string member_handles = 4;
-  // The agent to hang the channel off; mutually exclusive with group_id. A
-  // `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+  // The agent to hang the channel off; mutually exclusive with group_id and
+  // group_name. A `@handle`; the server resolves it to an account id; unknown →
+  // NOT_FOUND.
   string parent_agent_handle = 5;
   // TREE requires parent_agent_handle.
   ChannelMembershipMode membership_mode = 6;

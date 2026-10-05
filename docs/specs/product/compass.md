@@ -589,8 +589,9 @@ caller is a founding member by construction.
 
 Agent tools SHALL never pass group ids. `create_channel` and
 `create_channel_group` SHALL name the parent group as a leaf name, or as a slash
-path from the root when the name contains `/`. Resolution SHALL use the caller's
-visible groups; unknown or invisible groups SHALL return not-found. A leaf that
+path from the root when the name contains `/`; a group name SHALL NOT contain
+`/`. Resolution SHALL use the caller's visible groups; unknown or invisible
+groups SHALL return not-found. A leaf that
 names more than one visible group, or a path whose last step matches more than
 one visible group, SHALL return invalid-argument. The human RPC SHALL take ids
 and reject the name fields.
