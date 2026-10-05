@@ -76,9 +76,9 @@ between them is a host change, not a data migration.
 
 **The tier is chosen at bring-up by the `COMPASS_RUNTIME_BACKEND` environment
 variable, not by the host's capabilities.** A KVM-capable host still runs the
-entry tier's containers unless you ask for microVMs. Note that the microVM tier
-needs guest images that are not packaged yet, so a documented bring-up is not
-available today — see [Bringing the stack up](#bringing-the-stack-up).
+entry tier's containers unless you ask for microVMs. The microVM tier also
+needs guest images and a run root; see
+[Bringing the stack up](#bringing-the-stack-up).
 
 ## What to run it on
 
@@ -166,19 +166,20 @@ is no database to install:
 compass-stack up \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex> \
     --listen 0.0.0.0:50052
 ```
 
-This runs the entry tier, which is the default backend.
+This runs the entry tier, which is the default backend. The LLM gateway has no
+default image, so `up` needs `--gateway-image` or `--gateway-external`.
 
-> **microVM tier:** selecting the backend is not sufficient to bring the
-> microVM tier up today. The runner also requires a guest kernel, rootfs, and
-> initrd image plus a run-root, and those images are not yet published through
-> the flake or the release tarball. `compass-stack` has no way to pass them, and
-> `compass-stack up` does not check the runner started, so a microVM-tier
-> bring-up returns success and leaves a stack where no session can start.
-> Documented microVM bring-up is pending that packaging; use the entry tier
-> meanwhile.
+> **microVM tier:** selecting the backend is not sufficient on its own. The
+> runner also needs a guest kernel, rootfs, and initrd, plus a run root. Pull
+> or stage the guest with `--guest-artifact` or `--guest-dir`, or set the
+> `COMPASS_MICROVM_*` paths, and set `COMPASS_MICROVM_RUNROOT`; the
+> [guest image guide](self-host-guest-image.md) covers each. `compass-stack up`
+> does not yet check that the runner started, so a runner that fails preflight
+> still reports ready. Check the `up` output for `compass-runner:` errors.
 
 Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. To
 check on the stack afterwards, `compass-stack status` takes the same
