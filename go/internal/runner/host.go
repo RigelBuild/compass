@@ -1109,7 +1109,7 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 		}
 	}
 	// The relaunch reuses the session id, so rebind before the new process's frame 1.
-	if err := h.link.BindLifetime(ctx, s.containerName, sessionID); err != nil {
+	if err := h.bindReload(ctx, s.containerName, sessionID); err != nil {
 		h.markErrored(ctx, sessionID, s.containerName, nil)
 		return err
 	}
@@ -1128,6 +1128,19 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 		h.retireOnExit(ctx, sessionID, s.containerName, stream)
 	}()
 	return nil
+}
+
+// bindReload rebinds a reloaded session's transcript base. A denial on this
+// Runner's own container means no session row yet (a Reload before the Server
+// records a fresh Start); with no row there are no transcript rows, so base 0 holds.
+func (h *agentHost) bindReload(ctx context.Context, containerName, sessionID string) error {
+	err := h.link.BindLifetime(ctx, containerName, sessionID)
+	if connect.CodeOf(err) == connect.CodePermissionDenied {
+		h.log.Warn("no session row yet; relaunching without a bind",
+			slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
+		return nil
+	}
+	return err
 }
 
 // bindAndStartAgent launches Start's agent, first binding a resumed lifetime's

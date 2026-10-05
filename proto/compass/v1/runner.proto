@@ -167,12 +167,12 @@ service RunnerService {
   // shape (the Runner still initiates; the Server gains no inbound route).
   rpc FetchSecrets(FetchSecretsRequest) returns (FetchSecretsResponse);
 
-  // BindLifetime (unary, Runner->Server): snapshot a resumed session's
-  // transcript rebase base. The Runner calls it under the container lock after
-  // accepting a resume Start and before the agent runs, so a refused resume
-  // never moves a live session's base. Authorized on the container->account
-  // binding recorded at Provision; an unbound container, a session of another
-  // account, and an unknown session are all PermissionDenied.
+  // BindLifetime (unary, Runner->Server): snapshot a session's transcript
+  // rebase base for a new lifetime. The Runner calls it under the container
+  // lock for a resume or a Reload, after accepting and before the agent runs,
+  // so a refused resume never moves a live session's base. Authorized on the
+  // container->account binding recorded at Provision; an unbound container, a
+  // session of another account, and an unknown session are all PermissionDenied.
   rpc BindLifetime(BindLifetimeRequest) returns (BindLifetimeResponse);
 
   // FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the

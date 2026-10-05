@@ -203,12 +203,12 @@ type RunnerServiceClient interface {
 	// interceptor must never dump resolved values. Additive to the dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
-	// BindLifetime (unary, Runner->Server): snapshot a resumed session's
-	// transcript rebase base. The Runner calls it under the container lock after
-	// accepting a resume Start and before the agent runs, so a refused resume
-	// never moves a live session's base. Authorized on the container->account
-	// binding recorded at Provision; an unbound container, a session of another
-	// account, and an unknown session are all PermissionDenied.
+	// BindLifetime (unary, Runner->Server): snapshot a session's transcript
+	// rebase base for a new lifetime. The Runner calls it under the container
+	// lock for a resume or a Reload, after accepting and before the agent runs,
+	// so a refused resume never moves a live session's base. Authorized on the
+	// container->account binding recorded at Provision; an unbound container, a
+	// session of another account, and an unknown session are all PermissionDenied.
 	BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision
@@ -490,12 +490,12 @@ type RunnerServiceHandler interface {
 	// interceptor must never dump resolved values. Additive to the dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
-	// BindLifetime (unary, Runner->Server): snapshot a resumed session's
-	// transcript rebase base. The Runner calls it under the container lock after
-	// accepting a resume Start and before the agent runs, so a refused resume
-	// never moves a live session's base. Authorized on the container->account
-	// binding recorded at Provision; an unbound container, a session of another
-	// account, and an unknown session are all PermissionDenied.
+	// BindLifetime (unary, Runner->Server): snapshot a session's transcript
+	// rebase base for a new lifetime. The Runner calls it under the container
+	// lock for a resume or a Reload, after accepting and before the agent runs,
+	// so a refused resume never moves a live session's base. Authorized on the
+	// container->account binding recorded at Provision; an unbound container, a
+	// session of another account, and an unknown session are all PermissionDenied.
 	BindLifetime(context.Context, *connect.Request[v1.BindLifetimeRequest]) (*connect.Response[v1.BindLifetimeResponse], error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision

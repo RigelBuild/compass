@@ -1,3 +1,5 @@
+//go:build unix
+
 package runnerhub
 
 import (
@@ -10,9 +12,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// LifetimeBinder is the store surface Hub.BindLifetime binds a resumed
-// session's transcript base through. *store.Store implements it. Wired via
-// SetLifetimeBinder; nil-safe: a hub with none fails the bind CodeUnavailable.
+// LifetimeBinder is the store surface Hub.BindLifetime binds a session's
+// transcript base through for a resume or a Reload. *store.Store implements it.
+// Wired via SetLifetimeBinder; nil-safe: a hub with none fails the bind
+// CodeUnavailable.
 type LifetimeBinder interface {
 	// AccountTenant resolves the tenant that owns account.
 	AccountTenant(ctx context.Context, account store.AccountID) (store.TenantID, error)
@@ -37,11 +40,11 @@ var errLifetimeBinderUnavailable = errors.New("runnerhub: no lifetime binder wir
 // foreign container, a foreign session, and an unknown session are identical.
 var errBindDenied = errors.New("runnerhub: session is not bindable from this container")
 
-// BindLifetime binds sessionID's transcript base for a resume the Runner has
-// accepted in containerName. The container must be provisioned on runnerID; its
-// account must own the session. The bind runs under that account's tenant: the
-// Runner door carries none, so the tenant is read under the system role and the
-// write runs tenant-scoped.
+// BindLifetime binds sessionID's transcript base for a resume or a Reload the
+// Runner has accepted in containerName. The container must be provisioned on
+// runnerID; its account must own the session. The bind runs under that
+// account's tenant: the Runner door carries none, so the tenant is read under
+// the system role and the write runs tenant-scoped.
 func (h *Hub) BindLifetime(ctx context.Context, runnerID, containerName, sessionID string) error {
 	h.mu.Lock()
 	binder := h.binder

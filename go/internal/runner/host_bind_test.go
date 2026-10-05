@@ -194,3 +194,29 @@ func TestReloadBindErrorFailsBeforeStartAgent(t *testing.T) {
 		t.Fatalf("Status after failed Reload bind = %v, %v; want one ERRORED session", statuses, err)
 	}
 }
+
+// A Reload between a fresh Start and the Server's session-row write is denied
+// (no row). With no row there are no transcript rows, so the relaunch proceeds.
+func TestReloadBindDeniedStillRelaunches(t *testing.T) {
+	host, engine, pub := provisionForBind(t)
+	sessionID, err := host.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "reload-3")
+	if err != nil {
+		t.Fatalf("fresh Start = %v", err)
+	}
+	pub.setBind(connect.NewError(connect.CodePermissionDenied, errors.New("no row")), nil)
+
+	if err := host.Reload(t.Context(), sessionID); err != nil {
+		t.Fatalf("Reload with a denied bind = %v, want the relaunch to proceed", err)
+	}
+	if n := len(pub.bindRequests()); n != 1 {
+		t.Fatalf("Reload made %d binds, want 1", n)
+	}
+	if n := engine.countCall("exec_streaming"); n != 2 {
+		t.Fatalf("agent launches after denied Reload bind = %d, want 2 (relaunched)", n)
+	}
+	statuses, err := host.Status(t.Context(), sessionID)
+	if err != nil || len(statuses) != 1 || statuses[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
+		t.Fatalf("Status after denied Reload bind = %v, %v; want one READY session", statuses, err)
+	}
+	stopSession(t, host, sessionID)
+}
