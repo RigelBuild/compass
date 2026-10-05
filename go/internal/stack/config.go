@@ -176,7 +176,7 @@ func (c Config) Validate() error {
 	// ":0" (and any ":0" host variant) requests an ephemeral port. The server
 	// has no bound-address discovery API, so the runner could never be told the
 	// real port — reject it up front rather than spawn an unreachable door.
-	if port, ok := splitPort(c.ListenAddr); ok && port == "0" {
+	if _, port, ok := splitPort(c.ListenAddr); ok && port == "0" {
 		return fmt.Errorf("stack config: ListenAddr %q must be a fixed port, not :0 (no bound-address discovery API exists)", c.ListenAddr)
 	}
 	// Both guest knobs name the same thing by different means, so accepting
@@ -208,12 +208,12 @@ func (c Config) Validate() error {
 
 // splitPort extracts the port from a host:port authority without importing net's
 // resolution machinery. It returns ok=false when there is no ":port" tail.
-func splitPort(addr string) (port string, ok bool) {
+func splitPort(addr string) (host, port string, ok bool) {
 	i := strings.LastIndexByte(addr, ':')
 	if i < 0 {
-		return "", false
+		return "", "", false
 	}
-	return addr[i+1:], true
+	return addr[:i], addr[i+1:], true
 }
 
 // loopbackEndpoint renders a bundled component's host publish endpoint, refusing
@@ -234,13 +234,16 @@ func (c Config) checkBundledPortsDistinct() error {
 	}
 	var ports []port
 	add := func(field, addr string) {
-		if p, ok := splitPort(addr); ok {
+		if _, p, ok := splitPort(addr); ok {
 			if n, err := strconv.Atoi(p); err == nil {
 				ports = append(ports, port{field, n})
 			}
 		}
 	}
-	add("ListenAddr", c.ListenAddr)
+	// Bundled ports publish on 127.0.0.1; ListenAddr clashes only on a host that covers it.
+	if host, _, ok := splitPort(c.ListenAddr); ok && overlapsLoopbackPublish(host) {
+		add("ListenAddr", c.ListenAddr)
+	}
 	if c.ExternalGatewayURL == "" {
 		add("the bundled gateway", gatewayHostEndpoint)
 	}
@@ -259,4 +262,13 @@ func (c Config) checkBundledPortsDistinct() error {
 		seen[p.port] = p.field
 	}
 	return nil
+}
+
+// overlapsLoopbackPublish reports whether a bind on host also takes 127.0.0.1.
+func overlapsLoopbackPublish(host string) bool {
+	switch strings.Trim(host, "[]") {
+	case "", "127.0.0.1", "localhost", "0.0.0.0", "::":
+		return true
+	}
+	return false
 }

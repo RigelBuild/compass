@@ -368,4 +368,14 @@ func TestBundledPortsDistinctCoversGatewayAndListenAddr(t *testing.T) {
 	if err := la.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorGRPCPort") {
 		t.Fatalf("ListenAddr on a collector port = %v, want a refusal", err)
 	}
+	for _, addr := range []string{"0.0.0.0", "[::]", "localhost"} {
+		la.ListenAddr = addr + ":" + strconv.Itoa(cfg.CollectorGRPCPort)
+		if err := la.checkBundledPortsDistinct(); err == nil {
+			t.Fatalf("ListenAddr %q on a collector port = nil, want a refusal", la.ListenAddr)
+		}
+	}
+	la.ListenAddr = "127.0.0.2:" + strconv.Itoa(cfg.CollectorGRPCPort)
+	if err := la.checkBundledPortsDistinct(); err != nil {
+		t.Fatalf("ListenAddr on another loopback address = %v, want nil (no shared bind)", err)
+	}
 }
