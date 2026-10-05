@@ -1208,15 +1208,21 @@ describe("tools/renovate go-analysis pins (RIG-3306)", () => {
 	});
 
 	test("no matching rule-level task can evict the top-level refresher", () => {
-		for (const depName of ["golangci/golangci-lint", "uber-go/nilaway"]) {
-			const dep = {
-				manager: "custom.regex",
-				fileName: goAnalysisFile,
-				depName,
-				depType: "go-analysis",
-			};
-			for (const rule of cfg.packageRules.filter((r) => r.postUpgradeTasks)) {
-				expect(ruleMatches(rule, dep)).toBe(false);
+		for (const [depName, updateTypes] of [
+			["golangci/golangci-lint", ["patch", "minor", "major"]],
+			["uber-go/nilaway", ["digest"]],
+		] as const) {
+			for (const updateType of updateTypes) {
+				const dep = {
+					manager: "custom.regex",
+					fileName: goAnalysisFile,
+					depName,
+					depType: "go-analysis",
+					updateType,
+				};
+				for (const rule of cfg.packageRules.filter((r) => r.postUpgradeTasks)) {
+					expect(ruleMatches(rule, dep)).toBe(false);
+				}
 			}
 		}
 	});

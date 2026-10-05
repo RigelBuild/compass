@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { watch } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { $ } from "bun";
@@ -30,6 +32,7 @@ const STUB_NIX = `#!/usr/bin/env bun
 import { appendFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const pinText = readFileSync("tools/toolchain/versions/go-analysis.nix", "utf8");
@@ -80,6 +83,12 @@ if (args[0] === "build") {
   const tool = names.find((name) => expression === "analysis." + name);
   if (!tool) throw new Error("unexpected build target: " + expression);
   await record({ action: "build", expression });
+  if (process.env.STUB_NIX_BLOCK_BUILD === "1") {
+    const readyDir = process.env.STUB_NIX_READY_DIR;
+    if (!readyDir) throw new Error("missing stub readiness directory");
+    await Bun.write(join(readyDir, "nix-ready-" + process.pid), "ready\\n");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  }
   if (process.env.STUB_NIX_NO_GOT === "1") {
     process.stderr.write("error: build failed without a hash mismatch\\n");
     process.exit(1);
@@ -228,19 +237,51 @@ async function createNilawayUpstream(): Promise<void> {
 	nilawayFetchUrl = pathToFileURL(upstream).href;
 }
 
-async function runRefresh(extraEnv: Record<string, string> = {}) {
-	return await $`bun ${SCRIPT_REL}`
+async function runRefresh(
+	extraEnv: Record<string, string> = {},
+	baseBranch: string | undefined = "main",
+) {
+	const env: Record<string, string> = {
+		...HERMETIC_ENV,
+		PATH: `${join(repo, "stubbin")}:${process.env.PATH}`,
+		NIX_CALLS: join(repo, CALLS_FILE),
+		NILAWAY_FETCH_URL: nilawayFetchUrl,
+		...extraEnv,
+	};
+	if (baseBranch === undefined) delete env.RENOVATE_BASE_BRANCH;
+	else env.RENOVATE_BASE_BRANCH = baseBranch;
+	return await $`bun ${SCRIPT_REL}`.cwd(repo).env(env).quiet().nothrow();
+}
+
+async function commitMainPin(contents: string): Promise<void> {
+	await Bun.write(join(repo, PIN_FILE), contents);
+	await $`git add ${PIN_FILE}`.cwd(repo).env(HERMETIC_ENV).quiet();
+	await $`git commit -q -m diverged-main-pin`
 		.cwd(repo)
-		.env({
-			...HERMETIC_ENV,
-			PATH: `${join(repo, "stubbin")}:${process.env.PATH}`,
-			RENOVATE_BASE_BRANCH: "main",
-			NIX_CALLS: join(repo, CALLS_FILE),
-			NILAWAY_FETCH_URL: nilawayFetchUrl,
-			...extraEnv,
-		})
-		.quiet()
-		.nothrow();
+		.env(HERMETIC_ENV)
+		.quiet();
+	await $`git update-ref refs/remotes/origin/main HEAD`
+		.cwd(repo)
+		.env(HERMETIC_ENV)
+		.quiet();
+	await $`git update-ref refs/heads/main HEAD^`
+		.cwd(repo)
+		.env(HERMETIC_ENV)
+		.quiet();
+}
+
+async function waitForNixBuildReady(): Promise<number> {
+	return await new Promise<number>((resolve, reject) => {
+		const watcher = watch(join(repo, ".scratch"), (_eventType, filename) => {
+			const name = filename?.toString() ?? "";
+			if (!name.startsWith("nix-ready-")) return;
+			watcher.close();
+			const pid = Number(name.slice("nix-ready-".length));
+			if (!Number.isInteger(pid)) reject(new Error("invalid stub nix pid"));
+			else resolve(pid);
+		});
+		watcher.on("error", reject);
+	});
 }
 
 async function readCalls(): Promise<StubCall[]> {
@@ -253,14 +294,83 @@ async function readCalls(): Promise<StubCall[]> {
 
 describe("tools/renovate/refresh-go-analysis-hashes.ts", () => {
 	beforeEach(async () => {
-		await mkdir(join(repoRoot, ".scratch"), { recursive: true });
-		scratchRoot = await mkdtemp(join(repoRoot, ".scratch", "go-analysis-"));
+		scratchRoot = await mkdtemp(join(tmpdir(), "go-analysis-"));
 		await buildBaselineRepo();
 		await createNilawayUpstream();
 	});
 
 	afterEach(async () => {
 		if (scratchRoot) await rm(scratchRoot, { recursive: true, force: true });
+	});
+
+	test("refreshes against origin/main when RENOVATE_BASE_BRANCH is unset", async () => {
+		const entry = entryFor("golangci-lint");
+		const before = await readFile(join(repo, PIN_FILE), "utf8");
+		await commitMainPin(setField(before, entry, "version", "2.14.9"));
+		await Bun.write(join(repo, PIN_FILE), before);
+		const bumped = setField(before, entry, "version", "2.14.0");
+		await Bun.write(join(repo, PIN_FILE), bumped);
+		const result = await runRefresh({}, undefined);
+		const block = blockFrom(
+			await readFile(join(repo, PIN_FILE), "utf8"),
+			entry,
+		);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout.toString()).toContain("refreshed golangci-lint");
+		expect(block).toContain('hash = "sha256-stub-golangci-lint-source";');
+		expect(block).toContain('vendorHash = "sha256-stub-golangci-lint-vendor";');
+	});
+
+	test("no-ops against origin/main when RENOVATE_BASE_BRANCH is unset", async () => {
+		const entry = entryFor("golangci-lint");
+		const before = await readFile(join(repo, PIN_FILE), "utf8");
+		const basePin = setField(before, entry, "version", "2.14.9");
+		await commitMainPin(basePin);
+		await Bun.write(join(repo, PIN_FILE), basePin);
+
+		const result = await runRefresh({}, undefined);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout.toString()).toContain(
+			`${PIN_FILE} unchanged vs origin/main; nothing to do.`,
+		);
+		expect(await readFile(join(repo, PIN_FILE), "utf8")).toBe(basePin);
+		expect(await readCalls()).toEqual([]);
+	});
+
+	test("restores the original pin file when SIGTERM interrupts a build", async () => {
+		const entry = entryFor("golangci-lint");
+		const before = await readFile(join(repo, PIN_FILE), "utf8");
+		const bumped = setField(before, entry, "version", "2.14.8");
+		await Bun.write(join(repo, PIN_FILE), bumped);
+		const ready = waitForNixBuildReady();
+		const env = {
+			...HERMETIC_ENV,
+			PATH: `${join(repo, "stubbin")}:${process.env.PATH}`,
+			NIX_CALLS: join(repo, CALLS_FILE),
+			NILAWAY_FETCH_URL: nilawayFetchUrl,
+			STUB_NIX_BLOCK_BUILD: "1",
+			STUB_NIX_READY_DIR: join(repo, ".scratch"),
+		};
+		const child = Bun.spawn([process.execPath, SCRIPT_REL], {
+			cwd: repo,
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		let nixPid: number | undefined;
+		try {
+			nixPid = await ready;
+			child.kill("SIGTERM");
+			const [exitCode, stderr] = await Promise.all([
+				child.exited,
+				new Response(child.stderr).text(),
+			]);
+			expect(exitCode).not.toBe(0);
+			expect(stderr).toContain("interrupted by SIGTERM");
+			expect(await readFile(join(repo, PIN_FILE), "utf8")).toBe(bumped);
+		} finally {
+			if (nixPid !== undefined) process.kill(nixPid, "SIGTERM");
+		}
 	});
 
 	test("refreshes a golangci-lint bump and leaves nilaway byte-identical", async () => {

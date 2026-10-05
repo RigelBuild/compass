@@ -1186,10 +1186,10 @@
     },
   ],
 
-  // ── Toolchain hash + FOD hash coupling (top-level branch-mode tasks) ──
-  // Two refreshers ride the single per-branch task slot Renovate builds from the
-  // collapsed branch config; both self-gate on their trigger files, so each is a
-  // cheap no-op on a branch it doesn't apply to.
+  // ── Renovate hash refreshers (top-level branch-mode tasks) ──
+  // Three refreshers ride the single per-branch task slot Renovate builds from the
+  // collapsed branch config. Each self-gates on its trigger files, so it is a
+  // cheap no-op on a branch it does not apply to.
   //
   //  1. refresh-toolchain-hashes.ts — a versions/*.nix toolchain pin bump
   //     (bun/node/moon) leaves the vendored-binary sha256 pins beside each version
@@ -1208,6 +1208,8 @@
   //     collapsed config carries the catalog rule's update-mode task instead), so
   //     the SAME fod command also rides that rule above — one command, one
   //     allowlist entry, idempotent on a double-fire.
+  //  3. refresh-go-analysis-hashes.ts — recomputes the source and vendor hashes
+  //     when go-analysis.nix differs from the base branch; otherwise it no-ops.
   //
   // `executionMode: branch` runs each once per branch after the update is applied.
   //

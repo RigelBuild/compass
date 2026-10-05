@@ -268,6 +268,27 @@ async function main(): Promise<void> {
 		fail(`could not read ${PIN_FILE} from ${baseRef}`);
 	const baseText = baseResult.stdout.toString();
 	let currentText = initialText;
+	let signalHandled = false;
+	const onSignal = (signal: "SIGINT" | "SIGTERM") => {
+		if (signalHandled) return;
+		signalHandled = true;
+		void Bun.write(PIN_FILE, initialText).then(
+			() => {
+				console.error(`renovate-go-analysis: interrupted by ${signal}`);
+				process.exit(1);
+			},
+			(error: unknown) => {
+				console.error(
+					`renovate-go-analysis: interrupted by ${signal}; could not restore ${PIN_FILE}: ${errorMessage(error)}`,
+				);
+				process.exit(1);
+			},
+		);
+	};
+	const onSigint = () => onSignal("SIGINT");
+	const onSigterm = () => onSignal("SIGTERM");
+	process.on("SIGINT", onSigint);
+	process.on("SIGTERM", onSigterm);
 	try {
 		for (const entry of TOOL_ENTRIES) {
 			if (toolBlock(initialText, entry) === toolBlock(baseText, entry))
@@ -279,6 +300,9 @@ async function main(): Promise<void> {
 		const message = errorMessage(error);
 		if (message.startsWith("renovate-go-analysis:")) throw error;
 		fail(message);
+	} finally {
+		process.off("SIGINT", onSigint);
+		process.off("SIGTERM", onSigterm);
 	}
 }
 
