@@ -2130,6 +2130,7 @@ func (x *TopicUpserted) GetTopic() *Topic {
 // could no longer match the stream's visibility filter — removed_account_ids
 // carries exactly those departed accounts so the server can deliver each of them
 // this one final event (their removal), which they would otherwise never see.
+// A departed account's copy carries only channel.id, never the post-change roster.
 // Empty on a create or a pure add/subscribe change.
 type ChannelChanged struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`

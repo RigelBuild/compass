@@ -441,6 +441,56 @@ func TestSubscribeCommsRemovedMemberGetsFinalChannelChanged(t *testing.T) {
 	}
 }
 
+// TestSubscribeCommsDepartingMemberFinalEventOmitsSameBatchAdd pins that one
+// UpdateChannelMembers batch adding X and removing Y never shows X to Y: Y's
+// final event drops the roster, while a remaining member sees the new roster.
+func TestSubscribeCommsDepartingMemberFinalEventOmitsSameBatchAdd(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, h.store, "owner")
+	departing := mustUser(t, h.store, "departing")
+	added := mustUser(t, h.store, "added")
+
+	ch, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberHandles: []string{departing.Handle},
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := ch.Msg.GetChannel().GetId()
+
+	if _, err := h.svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		ChannelId:           chID,
+		AddMemberHandles:    []string{added.Handle},
+		RemoveMemberHandles: []string{departing.Handle},
+	})); err != nil {
+		t.Fatalf("UpdateChannelMembers(add+remove): %v", err)
+	}
+
+	canary := mkCanary(t, h, "canary")
+
+	rccs := channelChanges(drainReplayAsActor(t, h, departing.ID, canary), chID)
+	if len(rccs) != 1 {
+		t.Fatalf("departing member received %d ChannelChanged, want exactly 1", len(rccs))
+	}
+	final := rccs[0]
+	if !containsString(final.GetRemovedAccountIds(), string(departing.ID)) {
+		t.Fatalf("final event does not name the departing member as removed: %v", final.GetRemovedAccountIds())
+	}
+	if got := final.GetChannel(); containsString(got.GetMemberAccountIds(), string(added.ID)) || containsString(got.GetSubscriberAccountIds(), string(added.ID)) {
+		t.Fatalf("LEAK: departing member's final event shows the same-batch add %s: members %v subscribers %v",
+			added.ID, got.GetMemberAccountIds(), got.GetSubscriberAccountIds())
+	}
+
+	// A remaining member still gets the post-mutation roster, including the add.
+	ownerCCs := channelChanges(drainReplayAsActor(t, h, owner.ID, canary), chID)
+	if len(ownerCCs) == 0 || !containsString(ownerCCs[len(ownerCCs)-1].GetChannel().GetMemberAccountIds(), string(added.ID)) {
+		t.Fatalf("remaining member's last ChannelChanged lacks the added member %s", added.ID)
+	}
+}
+
 // TestSubscribeCommsChannelGroupChangedScoping pins ChannelGroupChanged at
 // ListChannelGroups read-parity: a SHARED group's change reaches a non-owner,
 // an OWNER group's does not. Pre-rework this passed through unfiltered, leaking
