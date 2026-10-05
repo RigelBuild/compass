@@ -12,6 +12,38 @@ import (
 	"testing"
 )
 
+// TestCreateChannelGroupSiblingNamesUnique: a name is unique among one owner's
+// siblings, so agent tools can address it; other parents and owners may reuse it.
+func TestCreateChannelGroupSiblingNamesUnique(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	other := mustUser(t, s, "other")
+	mk := func(by AccountID, name string, parent ChannelGroupID) error {
+		_, err := s.CreateChannelGroup(ctx, by, NewChannelGroup{Name: name, ParentGroupID: parent, Visibility: VisibilityOwner})
+		return err
+	}
+	parent, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{Name: "parent", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(parent): %v", err)
+	}
+	otherParent, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{Name: "other-parent", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(other-parent): %v", err)
+	}
+	if err := mk(owner.ID, "same", parent.ID); err != nil {
+		t.Fatalf("first sibling: %v", err)
+	}
+	sentinelIs(t, mk(owner.ID, "same", parent.ID), ErrConflict, "duplicate nested sibling")
+	sentinelIs(t, mk(owner.ID, "parent", ""), ErrConflict, "duplicate top-level sibling")
+	if err := mk(owner.ID, "same", otherParent.ID); err != nil {
+		t.Fatalf("same name under another parent: %v", err)
+	}
+	if err := mk(other.ID, "parent", ""); err != nil {
+		t.Fatalf("same top-level name for another owner: %v", err)
+	}
+}
+
 func TestCreateChannelGroupCeilingRejectsWiderChild(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

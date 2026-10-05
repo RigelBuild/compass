@@ -651,7 +651,8 @@ message ListAccountsResponse {
 }
 
 message CreateChannelGroupRequest {
-  // Leaf name of the group, e.g. "matt".
+  // Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name an
+  // owner already uses under the same parent is ALREADY_EXISTS.
   string name = 1;
   // Parent group; empty for a top-level group.
   string parent_group_id = 2;

@@ -68,6 +68,9 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 		OwnerUserID: string(ownerUserID),
 		Visibility:  int16(g.Visibility), //nolint:gosec // G115: ChannelGroupVisibility is a CHECK-constrained 0/1 enum (channel_groups.visibility), always within int16
 	}); err != nil {
+		if pgErrIs(err, pgUniqueViolation) && pgConstraintName(err) == "channel_groups_owner_parent_name_key" {
+			return ChannelGroup{}, fmt.Errorf("%w: sibling group %q already exists", ErrConflict, g.Name)
+		}
 		return ChannelGroup{}, fmt.Errorf("store: insert channel group: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

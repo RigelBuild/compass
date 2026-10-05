@@ -2732,7 +2732,8 @@ func (x *ListAccountsResponse) GetAccounts() []*Account {
 
 type CreateChannelGroupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Leaf name of the group, e.g. "matt".
+	// Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name an
+	// owner already uses under the same parent is ALREADY_EXISTS.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Parent group; empty for a top-level group.
 	ParentGroupId string                 `protobuf:"bytes,2,opt,name=parent_group_id,json=parentGroupId,proto3" json:"parent_group_id,omitempty"`
