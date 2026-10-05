@@ -28,13 +28,9 @@ func (c *Comms) ApprovePeer(
 	if _, err := c.store.ApprovePeer(ctx, actor, peer.ID); err != nil {
 		return nil, edgeError(err)
 	}
-	state, err := c.store.PeeringWith(ctx, actor, peer.ID)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && state == store.PeeringPendingIncoming) {
-		// Only the caller can delete its own row, so it revoked during this call.
-		return nil, connect.NewError(connect.CodeAborted, errPeerRevokedDuringApprove)
-	}
+	state, err := approvedState(c.store.PeeringWith(ctx, actor, peer.ID))
 	if err != nil {
-		return nil, edgeError(err)
+		return nil, err
 	}
 	p := store.Peering{PeerID: peer.ID, Handle: peer.Handle, State: state}
 	return connect.NewResponse(&compassv1.ApprovePeerResponse{Peering: peeringToWire(p)}), nil
@@ -108,4 +104,17 @@ func (c *Comms) resolvePeerPair(ctx context.Context, handle string) (store.Accou
 		return "", store.Account{}, connect.NewError(connect.CodeInvalidArgument, errPeerSelf)
 	}
 	return actor, peer, nil
+}
+
+// approvedState checks the state read after an approve. The caller's own row
+// must still exist; only its own revoke can delete it, so a missing row means
+// the caller revoked mid-call and the approve is reported aborted.
+func approvedState(state store.PeeringState, err error) (store.PeeringState, error) {
+	if errors.Is(err, store.ErrNotFound) || (err == nil && state == store.PeeringPendingIncoming) {
+		return 0, connect.NewError(connect.CodeAborted, errPeerRevokedDuringApprove)
+	}
+	if err != nil {
+		return 0, edgeError(err)
+	}
+	return state, nil
 }
