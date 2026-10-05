@@ -320,6 +320,8 @@ func containerExists(t *testing.T, name string) bool {
 
 // waitContainerGone polls until the named container is absent or the budget
 // elapses — the event-gate for the teardown, never a sleep.
+//
+//nolint:unparam // read-clarity signature: the budget stays visible at each teardown call site
 func waitContainerGone(t *testing.T, name string, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
