@@ -137,8 +137,10 @@ row to attach. These orphans are accepted.
   writes the DL-055 row, the `pull_requests` row and the explicit link in **one
   transaction**, then publishes through `IssueProjection`, so the PR is on its
   issue at once. The PR row comes from the `forge.PullRequest` the create returned,
-  with its timestamps (§4), and is inserted `ON CONFLICT DO NOTHING`: the `opened`
-  webhook can race ahead, and its hydrated row is always at least as complete.
+  with its real `forge_created_at` but `forge_updated_at` set to the epoch, and is
+  inserted `ON CONFLICT DO NOTHING`. The `opened` webhook can race ahead, and its
+  hydrated row is always at least as complete. The epoch makes the row lose the
+  reconciler gate, so a dropped `opened` webhook is healed by the next sweep.
 - **A retried create** that hits the DL-206 memo returns the original artifact
   and writes nothing. The memo is in the same transaction as the link, so a hit
   means the link already exists.
@@ -265,7 +267,7 @@ Scoping forge relay calls per tenant must move all three writers together.
 ### Global Constraints
 
 - New tables follow `0003_token_usage.sql`: the tenant default, ENABLE and FORCE RLS, the fail-closed policy, and an explicit GRANT. They go in the next migration file on main at build time, appended after whatever the migration collapse leaves. Never edit an existing migration.
-- `updated_at` is maintained only by the `updated_at_tables` trigger.
+- `pull_requests.updated_at` is maintained only by a `set_updated_at` trigger created in the new migration.
 - Go: no `context.Background()` outside `main` and tests, and no `time.Sleep` in tests. The `ingest` package imports no store.
 - GitHub repos are lowercased at every store boundary.
 
@@ -322,12 +324,13 @@ Scoping forge relay calls per tenant must move all three writers together.
 ### T5 — Ingest admission
 
 - `boardRelevant` admits PR events. `boardCoord` gains a kind. Add a PR arm to `hydrateAndSink`. The reconciler hydrates PR rows behind the `updated_at` gate, runs the backfill pass, and stops on `ErrBudgetExhausted`.
-- `BoardStore` gains `PullRequestUpdatedAt`, `PRsBackfilledAt` and `MarkPRsBackfilled` with the same shapes as the T2 store methods. The server adapter and the `newBoardStore` fake implement them.
+- `BoardStore` gains `PullRequestUpdatedAt(ctx, repo string, number uint64) (time.Time, bool, error)`, `PRsBackfilledAt(ctx, repo string) (time.Time, bool, error)` and `MarkPRsBackfilled(ctx, repo string, at time.Time) error`. The server adapter (`boardReconcileStore`) builds the `store.ForgeCoord` from its bound provider and host. The `newBoardStore` fake implements them too.
 - Tests:
   - a PR webhook reaches the projection;
   - an unchanged PR row is not re-hydrated;
   - a budget error on a PR row aborts the sweep, keeps the watermark at `since`, clears the ETag, and the next sweep re-lists an older issue row instead of getting a 304;
   - a repo with a watermark but NULL `prs_backfilled_at` hydrates its open PRs once;
+  - a create whose `opened` webhook is dropped is hydrated by the next sweep;
   - on cold start, a closed PR older than 30 days is skipped.
 
 Order: T1, then T2. Then T3. Then T4 and T5 in parallel.
