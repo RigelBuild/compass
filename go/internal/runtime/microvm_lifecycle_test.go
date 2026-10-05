@@ -111,8 +111,8 @@ func TestCreateRefusesDuplicateName(t *testing.T) {
 		t.Fatalf("first Create: %v", err)
 	}
 	_, err := m.Create(context.Background(), WorkloadSpec{Name: "dup", UID: 1000})
-	var dupErr *DuplicateNameError
-	if !errors.As(err, &dupErr) {
+	dupErr, ok := errors.AsType[*DuplicateNameError](err)
+	if !ok {
 		t.Fatalf("second Create err = %v, want *DuplicateNameError", err)
 	}
 	if dupErr.Name != "dup" {
@@ -152,8 +152,8 @@ func TestCreateRefusesInexpressibleMount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := m.Create(context.Background(), WorkloadSpec{Name: tt.name, UID: 1000, Mounts: tt.mounts})
-			var mountErr *UnsupportedMountError
-			if !errors.As(err, &mountErr) {
+			mountErr, ok := errors.AsType[*UnsupportedMountError](err)
+			if !ok {
 				t.Fatalf("Create err = %v, want *UnsupportedMountError", err)
 			}
 			if mountErr.Mount != tt.wantMount {
@@ -184,8 +184,8 @@ func TestWorkspaceShare(t *testing.T) {
 	if _, err := workspaceShare([]Mount{rw}); err == nil {
 		t.Fatalf("single read-write mount at /config: want UnsupportedMountError, got nil")
 	} else {
-		var mountErr *UnsupportedMountError
-		if !errors.As(err, &mountErr) {
+		mountErr, ok := errors.AsType[*UnsupportedMountError](err)
+		if !ok {
 			t.Fatalf("err = %v, want *UnsupportedMountError", err)
 		}
 		if mountErr.Mount != rw {
@@ -357,8 +357,8 @@ func TestExecUnstartedSession(t *testing.T) {
 func TestExitErrorMapping(t *testing.T) {
 	// (a) signalled exit → *ExitStatusError with the signal.
 	err := exitError(microvm.ExitStatus{Signal: int(syscall.SIGKILL)})
-	var signalled *ExitStatusError
-	if !errors.As(err, &signalled) {
+	signalled, ok := errors.AsType[*ExitStatusError](err)
+	if !ok {
 		t.Fatalf("signalled exit err = %v, want *ExitStatusError", err)
 	}
 	if signalled.Signal != syscall.SIGKILL {
@@ -370,8 +370,8 @@ func TestExitErrorMapping(t *testing.T) {
 
 	// (b) non-zero code → *ExitStatusError with the code, no signal.
 	err = exitError(microvm.ExitStatus{Code: 3})
-	var coded *ExitStatusError
-	if !errors.As(err, &coded) {
+	coded, ok := errors.AsType[*ExitStatusError](err)
+	if !ok {
 		t.Fatalf("non-zero code err = %v, want *ExitStatusError", err)
 	}
 	if coded.Code != 3 || coded.Signal != 0 {

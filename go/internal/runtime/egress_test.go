@@ -124,8 +124,8 @@ func TestShellUnsafeHostsAreRejected(t *testing.T) {
 	for _, host := range bad {
 		t.Run(host, func(t *testing.T) {
 			_, err := AllowEgress(host)
-			var invalid *InvalidHostError
-			if !errors.As(err, &invalid) {
+			invalid, ok := errors.AsType[*InvalidHostError](err)
+			if !ok {
 				t.Fatalf("AllowEgress(%q) error = %v, want *InvalidHostError", host, err)
 			}
 			if invalid.Host != host {
@@ -165,8 +165,8 @@ func TestZoneScopedHostIsRejectedAtTheEgressSink(t *testing.T) {
 	for _, host := range bad {
 		t.Run(host, func(t *testing.T) {
 			_, err := AllowEgress(host)
-			var invalid *InvalidHostError
-			if !errors.As(err, &invalid) {
+			invalid, ok := errors.AsType[*InvalidHostError](err)
+			if !ok {
 				t.Fatalf("AllowEgress(%q) error = %v, want *InvalidHostError", host, err)
 			}
 			if invalid.Host != host {

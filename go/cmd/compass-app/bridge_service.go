@@ -527,16 +527,22 @@ type connectResult struct {
 
 // classifyConnectErr maps a probe error to a sealed connect kind + safe message.
 // connect wraps transport failures, so a TLS/dial cause surfaces as a
-// *connect.Error (CodeUnavailable) wrapping the net/tls error; errors.As reaches
+// *connect.Error (CodeUnavailable) wrapping the net/tls error; errors.AsType reaches
 // the underlying cause THROUGH the connect wrapper.
 func classifyConnectErr(err error) (kind, message string) {
 	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
 		return connectKindBadCert, "The server's certificate is not trusted"
 	}
 
-	var dnsErr *net.DNSError
-	var opErr *net.OpError
-	if errors.As(err, &dnsErr) || errors.As(err, &opErr) || errors.Is(err, context.DeadlineExceeded) {
+	badURL := false
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
+		badURL = true
+	} else if _, ok := errors.AsType[*net.OpError](err); ok {
+		badURL = true
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		badURL = true
+	}
+	if badURL {
 		return connectKindBadURL, "Could not reach the server at this URL"
 	}
 

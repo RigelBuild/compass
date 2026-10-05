@@ -90,7 +90,7 @@ func TestTLSTargetDialUntrustedCA(t *testing.T) {
 	}
 
 	// The pump surfaces the transport error's string; drive the same dial
-	// directly to assert the typed cause via errors.As.
+	// directly to assert the typed cause via errors.AsType.
 	resp, err := tlsTarget(t, srv, nil).client.Get(srv.URL)
 	if resp != nil {
 		_ = resp.Body.Close()

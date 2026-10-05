@@ -598,8 +598,8 @@ func TestNetworkDoorRejectionIsOracleSafe(t *testing.T) {
 		rpcCtx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
 		_, err := client.GetServerInfo(rpcCtx, req)
-		var ce *connect.Error
-		if !errors.As(err, &ce) {
+		ce, ok := errors.AsType[*connect.Error](err)
+		if !ok {
 			t.Fatalf("expected a connect.Error rejection, got %v", err)
 		}
 		return ce

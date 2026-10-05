@@ -264,8 +264,8 @@ func TestFailedProvisionRemovesThePartialContainer(t *testing.T) {
 
 	_, err := rt.Launch(t.Context(), specWithCreds(true))
 
-	var inContainer *InWorkloadError
-	if !errors.As(err, &inContainer) {
+	inContainer, ok := errors.AsType[*InWorkloadError](err)
+	if !ok {
 		t.Fatalf("Launch error = %v, want *InWorkloadError", err)
 	}
 	if inContainer.Stage != "arm egress" {

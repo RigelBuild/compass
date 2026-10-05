@@ -311,8 +311,7 @@ func containerExists(t *testing.T, name string) bool {
 	if err == nil {
 		return true
 	}
-	var ee *exec.ExitError
-	if errorsAsExit(err, &ee) && ee.ExitCode() == 1 {
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok && ee.ExitCode() == 1 {
 		return false
 	}
 	t.Fatalf("podman container exists %q: %v", name, err)
@@ -423,10 +422,4 @@ func externalPostgresReachable(dsn string) bool {
 	}
 	defer func() { _ = conn.Close(ctx) }() // probe-only conn; close error is not the verdict (the ping is)
 	return conn.Ping(ctx) == nil
-}
-
-// errorsAsExit is errors.As specialized to *exec.ExitError for the exists
-// exit-code read.
-func errorsAsExit(err error, target **exec.ExitError) bool {
-	return errors.As(err, target)
 }
