@@ -28,6 +28,15 @@ func dmChannelName(h1, h2 string) string {
 	return "dm:" + lo + ":" + hi
 }
 
+// crossOwnerDMName keys a peer DM on both party ids, not reclaimable handles.
+func crossOwnerDMName(a, b store.AccountID) string {
+	lo, hi := string(a), string(b)
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return "xdm:" + lo + ":" + hi
+}
+
 // openDMTx runs the whole peer-DM open for owner in ONE store transaction — the
 // same shape the store's openDM test helper (dm_pgtest_test.go:27-49) and
 // EnsureCoordinationChannel (coordination.go:179-195) use: take the per-owner DM

@@ -752,10 +752,15 @@ describe("comms parameter schemas", () => {
 	// the only place a caller reads them — asserted here so dropping the rule
 	// from a description reddens rather than silently blinding the model.
 	test("open_dm/dm descriptions carry the rules unrepresentable in JSON Schema", () => {
-		// peer_handle: the semantic miss rule (a blank/unknown/cross-owner handle
-		// is rejected) lives only here.
-		expect(openDmParameters.get("peer_handle").description).toContain("error");
-		expect(dmParameters.get("peer_handle").description).toContain("error");
+		// peer_handle: blank, unknown, and unpeered handles are rejected without
+		// revealing whether the foreign agent exists.
+		for (const description of [
+			openDmParameters.get("peer_handle").description,
+			dmParameters.get("peer_handle").description,
+		]) {
+			expect(description).toContain("NOT_FOUND");
+			expect(description).toContain("unpeered");
+		}
 		// text: the non-blank rule the `.narrow` enforces but the schema cannot show.
 		expect(dmParameters.get("text").description).toContain("blank");
 		// topic: the create_topic gate that turns a name-miss from a mint into an error.

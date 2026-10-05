@@ -263,10 +263,13 @@ type Querier interface {
 	// sqlc has no query-fragment composition. It is column-identical to the former
 	// scanAccount projection (accounts LEFT JOIN user_accounts LEFT JOIN
 	// agent_accounts LEFT JOIN system_accounts), with the two `role` columns aliased
-	// (user_role / agent_role) so the generated row fields do not collide. The
-	// account-visibility predicate (formerly the accountVisibleFromWhere Go const) is
-	// likewise inlined into each read that needs it; the four copies MUST stay
-	// textually identical so the roster clip cannot drift from the ListAccounts read.
+	// (user_role / agent_role) so the generated row fields do not collide.
+	//
+	// The visibility predicate is inlined into each read that needs it. The two
+	// list copies (ListVisibleAccounts, AccountVisibleTo) stay identical. The two
+	// resolver copies (ResolveVisibleGlobalHandles, ResolveVisibleAgentHandles) stay
+	// identical and equal the list predicate plus only the live-peering disjunct.
+	// All four include the caller's own fleet; peering grants name resolution only.
 	InsertAccount(ctx context.Context, arg InsertAccountParams) error
 	InsertAccountHandle(ctx context.Context, arg InsertAccountHandleParams) error
 	InsertAgentAccount(ctx context.Context, arg InsertAgentAccountParams) error
@@ -482,6 +485,7 @@ type Querier interface {
 	// reach: the author may reach agent aa
 	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
+	OwnersPeered(ctx context.Context, arg OwnersPeeredParams) (bool, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
 	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
 	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) error

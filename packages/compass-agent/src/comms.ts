@@ -298,7 +298,7 @@ export const openDmParameters = type({
 	peer_handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"The peer agent's handle to open a DM with (must not be blank); unknown or cross-owner is an error",
+			"The peer agent's handle to open a DM with (must not be blank); same owner or a peered owner; unknown and unpeered both return NOT_FOUND",
 		),
 });
 
@@ -307,7 +307,7 @@ export const dmParameters = type({
 	peer_handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"The peer agent's handle to DM (must not be blank); unknown or cross-owner is an error",
+			"The peer agent's handle to DM (must not be blank); same owner or a peered owner; unknown and unpeered both return NOT_FOUND",
 		),
 	text: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))

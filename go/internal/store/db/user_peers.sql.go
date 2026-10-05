@@ -92,6 +92,28 @@ func (q *Queries) ListUserPeerings(ctx context.Context, userID string) ([]ListUs
 	return items, nil
 }
 
+const ownersPeered = `-- name: OwnersPeered :one
+SELECT EXISTS (
+    SELECT 1
+    FROM user_peers p_out
+    JOIN user_peers p_in
+      ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+    WHERE p_out.user_id = $1 AND p_out.peer_user_id = $2
+)
+`
+
+type OwnersPeeredParams struct {
+	UserID     string
+	PeerUserID string
+}
+
+func (q *Queries) OwnersPeered(ctx context.Context, arg OwnersPeeredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, ownersPeered, arg.UserID, arg.PeerUserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const userPeerPair = `-- name: UserPeerPair :one
 SELECT EXISTS (SELECT 1 FROM user_peers p_out WHERE p_out.user_id = $1 AND p_out.peer_user_id = $2) AS outgoing,
        EXISTS (SELECT 1 FROM user_peers p_in WHERE p_in.user_id = $2 AND p_in.peer_user_id = $1) AS incoming

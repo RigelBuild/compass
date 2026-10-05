@@ -94,3 +94,12 @@ func (s *Store) ListPeerings(ctx context.Context, user AccountID) ([]Peering, er
 	}
 	return peers, nil
 }
+
+// OwnersPeered reports whether both users have approved each other.
+func (s *Store) OwnersPeered(ctx context.Context, a, b AccountID) (bool, error) {
+	peered, err := s.q.OwnersPeered(ctx, db.OwnersPeeredParams{UserID: string(a), PeerUserID: string(b)})
+	if err != nil {
+		return false, fmt.Errorf("store: check peering: %w", err)
+	}
+	return peered, nil
+}

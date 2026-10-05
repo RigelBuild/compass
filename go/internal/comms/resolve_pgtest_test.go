@@ -235,37 +235,14 @@ func TestResolveAgentHandleUnknownOwnerQualifierNamesSubmittedHandle(t *testing.
 	}
 }
 
-// TestResolveVisibleAgentHandleInvisibleIsIndistinguishableFromUnknown closes the
-// vantage-probe oracle (resolve.go:95-113): a real-but-caller-INVISIBLE agent maps
-// to the SAME NOT_FOUND an unknown handle gets. The equivalence IS the security
-// property — a NOT_FOUND-vs-anything-else split would let a caller enumerate
-// agents it cannot see by watching which spelling errors differently.
-//
-// And it pins the DELIBERATE ASYMMETRY in one place: resolveAgentHandle is
-// owner-namespaced but NOT viewer-scoped (resolve.go:59-66), so the very same
-// invisible-but-real agent STILL resolves there. Both halves in one test because
-// each is only meaningful against the other: if resolveAgentHandle also hid it,
-// the visibility check in resolveVisibleAgentHandle would be dead code and this
-// test would still pass on the NOT_FOUND half alone.
-//
-// Driven from BOTH caller kinds — an AGENT caller and a USER caller — because
-// store.AccountVisibleTo(viewer, target) is ASYMMETRIC in its two arguments
-// (store/db/accounts.sql.go:14-33: the predicate matches when the TARGET is a
-// user, `u.account_id IS NOT NULL`, or when the VIEWER owns the target agent,
-// `ag.owner_user_id = viewer`). For an agent-caller/agent-target pair the relation
-// is false in BOTH directions, so an agent-only vantage cannot tell
-// AccountVisibleTo(caller, target) from AccountVisibleTo(target, caller): a
-// swapped-argument regression at resolve.go:105 would hand every USER caller a
-// real-but-invisible agent — the exact oracle this function exists to close — and
-// an agent-only test would stay green. The user vantage is the discriminating one,
-// so each subtest asserts the relation in BOTH directions to record why the caller
-// kind is load-bearing here.
+// TestResolveVisibleAgentHandleInvisibleIsIndistinguishableFromUnknown keeps
+// roster vantages on the list predicate: peering alone does not expose foreign
+// agents, though addressing admits a mutually peered owner.
 func TestResolveVisibleAgentHandleInvisibleIsIndistinguishableFromUnknown(t *testing.T) {
 	c, st := newHandler(t)
 	ctx := context.Background()
-	// The ownerA/ownerB/workerA/victim fixture shape: two owner namespaces, so
-	// `owner-b/victim` is real and owner-qualified-resolvable from owner-a's side
-	// while sharing no channel with it — invisible to both of owner-a's vantages.
+	// Two owners and an agent caller set up an unrelated foreign target. The
+	// peered resolver path is tested separately; this function remains list-scoped.
 	ownerA := mustUser(t, st, "owner-a")
 	ownerB := mustUser(t, st, "owner-b")
 	workerA := mustAgent(t, st, ownerA.ID, "worker")
@@ -274,34 +251,14 @@ func TestResolveVisibleAgentHandleInvisibleIsIndistinguishableFromUnknown(t *tes
 	for _, tc := range []struct {
 		name   string
 		caller store.AccountID
-		// wantReverseVisible is AccountVisibleTo(victim, caller): the SWAPPED
-		// argument order. TRUE for the user caller (a user target is visible to
-		// anyone) and false for the agent caller — which is precisely why only the
-		// user vantage can observe a swapped-argument regression.
-		wantReverseVisible bool
 	}{
-		{"agent caller", workerA.ID, false},
-		{"user caller", ownerA.ID, true},
+		{"agent caller", workerA.ID},
+		{"user caller", ownerA.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			forward, err := st.AccountVisibleTo(ctx, tc.caller, victim.ID)
-			if err != nil {
-				t.Fatalf("AccountVisibleTo(%s, victim): %v", tc.name, err)
-			}
-			if forward {
-				t.Fatalf("victim is VISIBLE to the %s; this fixture no longer sets up the invisible-vantage case and the assertions below would be vacuous", tc.name)
-			}
-			reverse, err := st.AccountVisibleTo(ctx, victim.ID, tc.caller)
-			if err != nil {
-				t.Fatalf("AccountVisibleTo(victim, %s): %v", tc.name, err)
-			}
-			if reverse != tc.wantReverseVisible {
-				t.Fatalf("AccountVisibleTo(victim, %s) = %v, want %v — the relation's asymmetry is what makes a swapped-argument regression in resolveVisibleAgentHandle observable from the user vantage; if this changed, re-derive which caller kind discriminates before trusting the assertions below",
-					tc.name, reverse, tc.wantReverseVisible)
-			}
 
-			// Asymmetry, half one: NOT viewer-scoped. The invisible-but-real agent
-			// still resolves through the plain singular-agent path.
+			// The singular resolver stays list-independent; the roster vantage
+			// enforces caller visibility separately through AccountVisibleTo.
 			resolved, err := c.resolveAgentHandle(ctx, tc.caller, "owner-b/victim")
 			if err != nil {
 				t.Fatalf("resolveAgentHandle(%s, \"owner-b/victim\") = %v, want the victim's id: this path is owner-namespaced but NOT viewer-scoped, so an invisible-but-real agent in the resolution owner's namespace STILL resolves", tc.name, err)
@@ -368,14 +325,63 @@ func TestResolveVisibleAgentHandleVisibleAgentResolves(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	worker := mustAgent(t, st, owner.ID, "worker")
 
-	// The owner sees its own agent (ag.owner_user_id = viewer) and resolves it
-	// bare in its own namespace.
+	// The owner and its agents see the fleet's agents, even without a shared
+	// channel; roster visibility still excludes unrelated owners.
 	got, err := c.resolveVisibleAgentHandle(ctx, owner.ID, "worker")
 	if err != nil {
 		t.Fatalf("resolveVisibleAgentHandle(owner, \"worker\") = %v, want the owner's own visible agent", err)
 	}
 	if got != worker.ID {
 		t.Fatalf("resolveVisibleAgentHandle(owner, \"worker\") = %q, want %q", got, worker.ID)
+	}
+}
+
+func TestResolveAddressableAgentPeeringAndRosterClip(t *testing.T) {
+	c, st := newHandler(t)
+	ctx := context.Background()
+	ownerA := mustUser(t, st, "address-owner-a")
+	ownerB := mustUser(t, st, "address-owner-b")
+	caller := mustAgent(t, st, ownerA.ID, "address-caller")
+	target := mustAgent(t, st, ownerB.ID, "address-target")
+
+	for _, handle := range []string{"address-owner-b/address-target", "address-target"} {
+		if _, err := c.resolveAddressableAgent(ctx, caller.ID, handle); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("resolveAddressableAgent(%q) error = %v; want not-found before peering", handle, err)
+		}
+	}
+	if _, err := st.ApprovePeer(ctx, ownerA.ID, ownerB.ID); err != nil {
+		t.Fatalf("ApprovePeer(a->b): %v", err)
+	}
+	if _, err := c.resolveAddressableAgent(ctx, caller.ID, "address-owner-b/address-target"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("one-sided resolveAddressableAgent error = %v; want not-found", err)
+	}
+	if _, err := st.ApprovePeer(ctx, ownerB.ID, ownerA.ID); err != nil {
+		t.Fatalf("ApprovePeer(b->a): %v", err)
+	}
+	got, err := c.resolveAddressableAgent(ctx, caller.ID, "address-owner-b/address-target")
+	if err != nil || got.ID != target.ID {
+		t.Fatalf("resolveAddressableAgent(peered) = (%q, %v), want %q", got.ID, err, target.ID)
+	}
+	if _, err := c.resolveVisibleAgentHandle(ctx, caller.ID, "address-owner-b/address-target"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("resolveVisibleAgentHandle(peered target) error = %v; want not-found", err)
+	}
+
+	if _, err := st.CreateChannel(ctx, ownerA.ID, store.NewChannel{
+		Name: "address-shared-room", Kind: store.ChannelKindGroupDM,
+		MemberAccountIDs: []store.AccountID{caller.ID, target.ID},
+	}); err != nil {
+		t.Fatalf("CreateChannel(shared room): %v", err)
+	}
+	got, err = c.resolveAddressableAgent(ctx, caller.ID, "address-owner-b/address-target")
+	if err != nil || got.ID != target.ID {
+		t.Fatalf("resolveAddressableAgent(co-member) = (%q, %v), want %q", got.ID, err, target.ID)
+	}
+	if _, err := st.RevokePeer(ctx, ownerA.ID, ownerB.ID); err != nil {
+		t.Fatalf("RevokePeer(a->b): %v", err)
+	}
+	got, err = c.resolveAddressableAgent(ctx, caller.ID, "address-owner-b/address-target")
+	if err != nil || got.ID != target.ID {
+		t.Fatalf("resolveAddressableAgent(revoked co-member) = (%q, %v), want %q", got.ID, err, target.ID)
 	}
 }
 

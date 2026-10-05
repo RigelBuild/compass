@@ -87,6 +87,21 @@ func (c *Comms) resolveAgentAccount(ctx context.Context, caller store.AccountID,
 	return acc, nil
 }
 
+// resolveAddressableAgent applies the resolver visibility rule to a singular
+// handle while leaving roster vantages on the narrower list visibility rule.
+func (c *Comms) resolveAddressableAgent(ctx context.Context, caller store.AccountID, handle string) (store.Account, error) {
+	qh := store.ParseQualifiedHandle(handle)
+	owner, err := c.agentOwnerNamespace(ctx, caller, qh)
+	if err != nil {
+		return store.Account{}, notFoundHandle(err, qh.Raw)
+	}
+	acc, err := c.store.VisibleAgentByHandle(ctx, caller, owner, qh.Handle)
+	if err != nil {
+		return store.Account{}, notFoundHandle(err, qh.Raw)
+	}
+	return acc, nil
+}
+
 // resolveVisibleAgentHandle is resolveAgentAccount plus a caller-visibility
 // check — the roster vantage's DEFINED error posture (§GetRoster's dual vantage):
 // a real-but-caller-invisible vantage maps to the SAME NOT_FOUND an unknown

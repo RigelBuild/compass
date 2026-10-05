@@ -3723,9 +3723,9 @@ func (x *UpdateChannelMembersResponse) GetChannel() *Channel {
 
 type OpenDMRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The peer agent's handle (owner-namespaced per DL-271). The server resolves
-	// it and enforces same-owner; unknown and cross-owner both return NOT_FOUND.
-	// A self-handle is INVALID_ARGUMENT.
+	// Peer agent's owner-namespaced handle; same-owner or mutually peered owners
+	// are allowed. Unknown and unpeered peers return NOT_FOUND; self is
+	// INVALID_ARGUMENT.
 	PeerHandle    string `protobuf:"bytes,1,opt,name=peer_handle,json=peerHandle,proto3" json:"peer_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
