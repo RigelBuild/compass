@@ -944,11 +944,11 @@ func stampOwnerBody(t *testing.T, body, agentHandle, ownerHandle string) string 
 // waitForDeliveredRevisionChange event-gates until the subscription's
 // delivered_revision moves off `from`, then returns the new value — the sync
 // point proving the router's suppress-path CAS advance ran, never a sleep.
-func waitForDeliveredRevisionChange(t *testing.T, st *store.Store, agent store.AccountID, subID, from string) string {
+func waitForDeliveredRevisionChange(t *testing.T, st *store.Store, subID, from string) string {
 	t.Helper()
 	deadline := timeAfter()
 	for {
-		got := deliveredRevision(t, st, agent, subID)
+		got := deliveredRevision(t, st, subID)
 		if got != from {
 			return got
 		}
@@ -1025,7 +1025,7 @@ func TestForgeNotifyE2E_SelfOriginSuppressed(t *testing.T) {
 	// The acting agent's suppress-path CAS advance is the definitive sync point:
 	// once delivered_revision moves off the acked cursor revision, the suppressed
 	// dispatch is fully routed.
-	advanced := waitForDeliveredRevisionChange(t, w.store, selfAcct, selfSub, cur.Revision)
+	advanced := waitForDeliveredRevisionChange(t, w.store, selfSub, cur.Revision)
 
 	// The self-comment reached NO DeliverControl on the acting agent's session:
 	// it still holds exactly its one human-comment frame.

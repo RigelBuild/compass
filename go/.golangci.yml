@@ -156,6 +156,8 @@ linters:
     # stale-flagged machinery nolintlint enforces above.
     forbidigo:
       forbid:
+        - pattern: '^errors\.As$'
+          msg: "use errors.AsType[T](err) (house style, RIG-4493)"
         - pattern: '^time\.Sleep$'
           msg: "fixed sleeps are non-deterministic (rule://go-no-sleep-in-test); event-gate on the observed state, or //nolint:forbidigo // <reason> for an irreducible poll-tick / synctest advance / timing-under-test site"
         # Restore forbidigo's default identifiers (dropped once `forbid` is set).

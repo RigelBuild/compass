@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -152,7 +153,7 @@ func (f *Fixture) AwaitDelivery(ctx context.Context, stream *connect.ServerStrea
 			out <- received{err: fmt.Errorf("SubscribeComms stream: %w", err)}
 			return
 		}
-		out <- received{err: fmt.Errorf("SubscribeComms stream ended before a matching MessagePosted arrived")}
+		out <- received{err: errors.New("SubscribeComms stream ended before a matching MessagePosted arrived")}
 	}()
 
 	select {

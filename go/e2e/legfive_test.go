@@ -20,7 +20,7 @@ import (
 // session started. Modeled EXACTLY on TestLegTwoRealTurn and
 // TestLegThreeFourSpawnAndMessaging: //go:build podman, the podmanUsable() skip
 // guard first, context.Background() as the test root, sharedFixture(t) with
-// this file's init()-registered canned route, a container-reaping t.Cleanup registered before each
+// this file's TestMain-registered canned route, a container-reaping t.Cleanup registered before each
 // container's session start, and store-side assertions via store.Open(ctx,
 // f.DSN()).
 //
@@ -254,6 +254,6 @@ const (
 	leg5Reply2 = "canned leg-5 resumed turn settled OK"
 )
 
-func init() {
+func registerLegFiveFixtureOptions() {
 	registerSharedFixtureOption(WithCannedMarkerScript(leg5Marker, CannedText(leg5Reply1), CannedText(leg5Reply2)))
 }

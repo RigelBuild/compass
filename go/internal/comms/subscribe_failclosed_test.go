@@ -221,8 +221,8 @@ func TestForwardCommsFailsClosedOnStoreFault(t *testing.T) {
 	if code := connect.CodeOf(got.streamErr); code != connect.CodeInternal {
 		t.Fatalf("client code = %v, want CodeInternal", code)
 	}
-	var connErr *connect.Error
-	if !errors.As(got.streamErr, &connErr) {
+	connErr, ok := errors.AsType[*connect.Error](got.streamErr)
+	if !ok {
 		t.Fatalf("stream error is not a *connect.Error: %v", got.streamErr)
 	}
 	if connErr.Message() != errStreamVisibility.Error() {

@@ -31,7 +31,6 @@ package runnerhub_test
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -242,11 +241,10 @@ func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.Cance
 	// Mirror run.go's deferred host.Close after RunSessions returns: drain the
 	// AgentGateway socket Provision served so its listener goroutine is torn down
 	// deterministically rather than left serving until the runtime dir is
-	// removed. ctx is cancelled by now, so the bounded drain rides a fresh
-	// short-deadline context rooted at the test root (Background is the
-	// sanctioned test root; ctx here is already done).
-	if closer, ok := host.(interface{ Close(context.Context) }); ok {
-		closeCtx, cancelClose := context.WithTimeout(context.Background(), integrationTimeout)
+	// removed. ctx is cancelled by now, so the bounded drain detaches from its
+	// cancellation and carries its own short deadline.
+	if closer, ok := host.(interface{ Close(ctx context.Context) }); ok {
+		closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), integrationTimeout)
 		defer cancelClose()
 		closer.Close(closeCtx)
 	}
@@ -458,7 +456,7 @@ func textOf(m store.Message) string {
 	return ""
 }
 
-func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+func discardLog() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // agentNamePrefix is the container-name prefix this test wires into its
 // SpecDefaults, hoisted so runnertest.ShortRuntimeDir models the same name the Runner

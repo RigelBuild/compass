@@ -82,8 +82,9 @@ tasks:
     # golangci-lint over the module against .golangci.yml (F1 enable-all +
     # reasoned disable-list, with the load-bearing gochecksumtype/exhaustive
     # exhaustiveness gate on). The gate (L1/L2). `--config` is explicit so the
-    # run can't silently fall back to a discovered or absent config.
-    command: 'golangci-lint run --config .golangci.yml ./...'
+    # run can't silently fall back to a discovered or absent config. The second
+    # pass lints the build-tagged test files; unix,gtk4 needs cgo+GTK, so the gtk4 CI job lints it.
+    script: 'set -e; golangci-lint run --config .golangci.yml ./...; golangci-lint run --config .golangci.yml --build-tags pgtest,podman,microvm,livegithub,keyring_integration ./...'
     env:
       # Give each workspace its own golangci-lint cache. The default shared
       # ~/.cache/golangci-lint is a single-writer resource: when several agents

@@ -360,8 +360,8 @@ func isDeliberateKill(err error) bool {
 		// to inspect, and Stop's SIGTERM teardown must still classify as a kill.
 		return exitStatus.Signal != 0
 	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok {
 		return false
 	}
 	ws, ok := exitErr.Sys().(syscall.WaitStatus)

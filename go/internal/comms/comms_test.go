@@ -9,6 +9,7 @@ package comms
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -850,10 +851,5 @@ func pendingAskStore(id string) store.MessageBlock {
 }
 
 func containsString(ids []string, want string) bool {
-	for _, id := range ids {
-		if id == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, want)
 }
