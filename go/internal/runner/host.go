@@ -1132,7 +1132,8 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 
 // bindReload rebinds a reloaded session's transcript base. A denial on this
 // Runner's own container means no session row yet (a Reload before the Server
-// records a fresh Start); with no row there are no transcript rows, so base 0 holds.
+// records a fresh Start), so base 0 holds. Single-Server only: a multi-Server
+// placement miss is also a denial, and must be told apart before that ships.
 func (h *agentHost) bindReload(ctx context.Context, containerName, sessionID string) error {
 	err := h.link.BindLifetime(ctx, containerName, sessionID)
 	if connect.CodeOf(err) == connect.CodePermissionDenied {

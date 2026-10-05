@@ -241,4 +241,5 @@ resume still moves the base.
   is a detached commit ctx plus a drain, or row locks between bind and append.
 - **Non-load-bearing deferral: cross-Runner fence.** Multi-Runner placement
   must refuse a bind when the durable `session_bindings` row names another
-  Runner, before more than one Runner can hold an agent.
+  Runner, before more than one Runner can hold an agent. Reload treats any bind
+  denial as "no row yet"; that must split from a placement miss by then.
