@@ -386,3 +386,16 @@ func (s *service) hasSpawn(key spawnKey) bool {
 	_, ok := s.spawns[key]
 	return ok
 }
+
+// An over-long client_request_id is refused before the spawn memo or any Runner
+// command: hashing it for Provision dedup would otherwise hide its length.
+func TestSpawnAgentRejectsOversizedClientRequestID(t *testing.T) {
+	f := newPlacementFixture(t)
+	_, err := f.client.SpawnAgent(context.Background(), connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: fixtureAgentHandle, ClientRequestId: strings.Repeat("a", 257)}))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("SpawnAgent with a 257-byte id = %v (code %v), want InvalidArgument", err, got)
+	}
+	if cmds := f.runner.commands(); len(cmds) != 0 {
+		t.Fatalf("Runner commands = %v, want none", cmds)
+	}
+}
