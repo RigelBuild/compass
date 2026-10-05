@@ -248,11 +248,12 @@ func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error 
 		return err
 	}
 	if _, err := d.assoc.UpsertLinearAgentSession(ctx, store.LinearAgentSessionRow{
-		LinearSessionID:  ev.AgentSession.ID,
-		ManagerAccountID: manager,
-		ChannelID:        store.ChannelID(homeChannel),
-		TopicID:          topicID,
-		LinearIssueID:    ev.AgentSession.Issue.ID,
+		LinearSessionID:       ev.AgentSession.ID,
+		ManagerAccountID:      manager,
+		ChannelID:             store.ChannelID(homeChannel),
+		TopicID:               topicID,
+		LinearIssueID:         ev.AgentSession.Issue.ID,
+		LinearIssueIdentifier: ev.AgentSession.Issue.Identifier,
 	}); err != nil {
 		return err
 	}
@@ -293,11 +294,12 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 			return topErr
 		}
 		if _, upErr := d.assoc.UpsertLinearAgentSession(ctx, store.LinearAgentSessionRow{
-			LinearSessionID:  ev.AgentSession.ID,
-			ManagerAccountID: manager,
-			ChannelID:        store.ChannelID(homeChannel),
-			TopicID:          topicID,
-			LinearIssueID:    ev.AgentSession.Issue.ID,
+			LinearSessionID:       ev.AgentSession.ID,
+			ManagerAccountID:      manager,
+			ChannelID:             store.ChannelID(homeChannel),
+			TopicID:               topicID,
+			LinearIssueID:         ev.AgentSession.Issue.ID,
+			LinearIssueIdentifier: ev.AgentSession.Issue.Identifier,
 		}); upErr != nil {
 			return upErr
 		}

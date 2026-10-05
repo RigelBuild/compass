@@ -236,8 +236,9 @@ func TestDispatcherCreatedHappyPath(t *testing.T) {
 		t.Fatalf("association rows = %d, want 1", len(assoc.rows))
 	}
 	row := assoc.rows[0]
-	if row.ManagerAccountID != "mgr-1" || row.ChannelID != "chan-1" || row.TopicID != "topic-1" || row.LinearIssueID != "iss-1" {
-		t.Fatalf("association row = %+v, want mgr-1/chan-1/topic-1/iss-1", row)
+	if row.ManagerAccountID != "mgr-1" || row.ChannelID != "chan-1" || row.TopicID != "topic-1" ||
+		row.LinearIssueID != "iss-1" || row.LinearIssueIdentifier != "RIG-9" {
+		t.Fatalf("association row = %+v, want mgr-1/chan-1/topic-1/iss-1/RIG-9", row)
 	}
 	// Topic named for the issue identifier.
 	if len(topics.names) != 1 || topics.names[0] != "RIG-9" {
@@ -382,7 +383,7 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 	if err := d.Enqueue(&SessionEvent{
 		Action:        "prompted",
 		DeliveryID:    "delivery-9",
-		AgentSession:  AgentSession{ID: "sess-orphan"},
+		AgentSession:  AgentSession{ID: "sess-orphan", Issue: Issue{ID: "iss-orphan", Identifier: "RIG-77"}},
 		AgentActivity: AgentActivity{Content: ActivityBody{Body: "orphaned follow-up"}},
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -394,6 +395,9 @@ func TestDispatcherPromptedMissSynthesizes(t *testing.T) {
 	}
 	if len(assoc.rows) != 1 || assoc.rows[0].ChannelID != "chan-9" || assoc.rows[0].TopicID != "topic-9" {
 		t.Fatalf("synthesized association = %+v, want chan-9/topic-9", assoc.rows)
+	}
+	if assoc.rows[0].LinearIssueIdentifier != "RIG-77" {
+		t.Fatalf("synthesized linear issue identifier = %q, want RIG-77", assoc.rows[0].LinearIssueIdentifier)
 	}
 	if comms.topics[0] != "topic-9" || comms.bodies[0] != "orphaned follow-up" {
 		t.Fatalf("post topic/body = %q/%q, want topic-9/orphaned follow-up", comms.topics[0], comms.bodies[0])

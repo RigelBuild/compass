@@ -12,18 +12,19 @@ import (
 )
 
 const linearAgentSession = `-- name: LinearAgentSession :one
-SELECT linear_session_id, manager_account_id, channel_id, topic_id, linear_issue_id, created_at
+SELECT linear_session_id, manager_account_id, channel_id, topic_id, linear_issue_id, linear_issue_identifier, created_at
 FROM linear_agent_sessions
 WHERE linear_session_id = $1
 `
 
 type LinearAgentSessionRow struct {
-	LinearSessionID  string
-	ManagerAccountID string
-	ChannelID        string
-	TopicID          string
-	LinearIssueID    pgtype.Text
-	CreatedAt        pgtype.Timestamptz
+	LinearSessionID       string
+	ManagerAccountID      string
+	ChannelID             string
+	TopicID               string
+	LinearIssueID         pgtype.Text
+	LinearIssueIdentifier pgtype.Text
+	CreatedAt             pgtype.Timestamptz
 }
 
 func (q *Queries) LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSessionRow, error) {
@@ -35,6 +36,7 @@ func (q *Queries) LinearAgentSession(ctx context.Context, linearSessionID string
 		&i.ChannelID,
 		&i.TopicID,
 		&i.LinearIssueID,
+		&i.LinearIssueIdentifier,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -43,26 +45,26 @@ func (q *Queries) LinearAgentSession(ctx context.Context, linearSessionID string
 const upsertLinearAgentSession = `-- name: UpsertLinearAgentSession :execrows
 
 INSERT INTO linear_agent_sessions
-    (linear_session_id, manager_account_id, channel_id, topic_id, linear_issue_id)
-VALUES ($1, $2, $3, $4, $5)
+    (linear_session_id, manager_account_id, channel_id, topic_id, linear_issue_id, linear_issue_identifier)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (linear_session_id) DO NOTHING
 `
 
 type UpsertLinearAgentSessionParams struct {
-	LinearSessionID  string
-	ManagerAccountID string
-	ChannelID        string
-	TopicID          string
-	LinearIssueID    pgtype.Text
+	LinearSessionID       string
+	ManagerAccountID      string
+	ChannelID             string
+	TopicID               string
+	LinearIssueID         pgtype.Text
+	LinearIssueIdentifier pgtype.Text
 }
 
 // Linear-agent-session queries (sqlc adoption T6, RIG-3034). These replace the
 // inline SQL literals in internal/store/linear_sessions.go; the hand-written
 // Store methods keep their signatures, the RowsAffected branch (Upsert returns
-// created via :execrows), the textOrNull linear_issue_id NULL discipline, and the
+// created via :execrows), the textOrNull nullable issue fields, and the
 // ErrNotFound/ErrInvalidArgument mapping. The LinearAgentSession read maps the
-// generated row (nullable linear_issue_id, created_at timestamp) back to the
-// domain LinearAgentSessionRow inline.
+// generated nullable fields back to LinearAgentSessionRow inline.
 func (q *Queries) UpsertLinearAgentSession(ctx context.Context, arg UpsertLinearAgentSessionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, upsertLinearAgentSession,
 		arg.LinearSessionID,
@@ -70,6 +72,7 @@ func (q *Queries) UpsertLinearAgentSession(ctx context.Context, arg UpsertLinear
 		arg.ChannelID,
 		arg.TopicID,
 		arg.LinearIssueID,
+		arg.LinearIssueIdentifier,
 	)
 	if err != nil {
 		return 0, err

@@ -253,13 +253,14 @@ type Issue struct {
 }
 
 type LinearAgentSession struct {
-	LinearSessionID  string
-	ManagerAccountID string
-	ChannelID        string
-	TopicID          string
-	LinearIssueID    pgtype.Text
-	CreatedAt        pgtype.Timestamptz
-	TenantID         string
+	LinearSessionID       string
+	ManagerAccountID      string
+	ChannelID             string
+	TopicID               string
+	LinearIssueID         pgtype.Text
+	CreatedAt             pgtype.Timestamptz
+	TenantID              string
+	LinearIssueIdentifier pgtype.Text
 }
 
 type Message struct {
