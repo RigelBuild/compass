@@ -399,14 +399,12 @@ type Hub struct {
 	// fans over (RIG-3108 §T4). Nil until SetRoutingFabric; read under mu. Nil-safe: a
 	// single-instance hub wires none — its own writes keep its own cache honest.
 	routing RoutingFabric
-	// reapStale tracks Runner ids whose durable reap faulted after clearing their
-	// cache rows; their surviving rows cannot be read through until that Runner's reap succeeds.
-	reapStale map[string]bool
-	// enrollSeq invalidates durable reads that began before an enroll and may
-	// otherwise cache rows that its successful reap deleted.
-	enrollSeq uint64
-	// runnerEnrollSeq records the latest enroll sequence for each Runner.
-	runnerEnrollSeq map[string]uint64
+	// reapStale maps each Runner to the epoch of its faulted durable reap.
+	reapStale map[string]uint64
+	// bindingEpoch fences read-throughs across reap start and completion.
+	bindingEpoch uint64
+	// runnerEpoch entries are bounded by the number of distinct Runner ids.
+	runnerEpoch map[string]uint64
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall delegates
 	// to (spawn/despawn record T4). Nil until SetLifecycleCaller (breaking the
 	// hub<->lifecycleService cycle); read under mu. Nil-safe fails CodeUnavailable.
@@ -498,8 +496,8 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
-		reapStale:         make(map[string]bool),
-		runnerEnrollSeq:   make(map[string]uint64),
+		reapStale:         make(map[string]uint64),
+		runnerEpoch:       make(map[string]uint64),
 	}
 }
 
@@ -996,7 +994,6 @@ type promotedPair struct {
 // so none of its pre-enroll sessions live.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool) {
 	h.mu.Lock()
-	h.enrollSeq++
 	reattached = h.runner != nil
 	router := newCommandRouter()
 	router.log = h.log
@@ -1025,9 +1022,11 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	clear(h.accountSessions)
 	// Refuse read-through for this Runner from the instant the maps are cleared:
 	// a concurrent lookup could otherwise resurrect rows while the reap is in flight.
+	h.bindingEpoch++
+	epoch := h.bindingEpoch
+	h.runnerEpoch[id] = epoch
 	if bindings != nil {
-		h.runnerEnrollSeq[id] = h.enrollSeq
-		h.reapStale[id] = true
+		h.reapStale[id] = epoch
 	}
 	h.mu.Unlock()
 
@@ -1038,15 +1037,16 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	reapedSessions := ramReaped
 	var durableReaped []store.SessionBinding
 	durableReapSucceeded := false
+	var reapErr error
 	if bindings != nil {
+		var rows []store.SessionBinding
 		// Cross-tenant on purpose: a Runner serves every tenant, and id is the
 		// authenticated token subject, so the sweep reaches only this Runner's rows.
-		rows, err := bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
-		if err != nil {
-			// A durable-reap fault must not wedge reconnect; fall back to the in-RAM
-			// snapshot while this Runner's read-through stays disabled until its reap succeeds.
+		rows, reapErr = bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
+		if reapErr != nil {
+			// A durable-reap fault must not wedge reconnect; fall back to the in-RAM snapshot.
 			h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled for this Runner until a reap succeeds",
-				"runner_id", id, "error", err)
+				"runner_id", id, "error", reapErr)
 		} else {
 			durableReaped = rows
 			durableReapSucceeded = true
@@ -1056,12 +1056,21 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 				offline = append(offline, promotedPair{account: b.AccountID, sessionID: b.SessionID})
 				reapedSessions = append(reapedSessions, b.SessionID)
 			}
-			// The table now agrees with the cleared cache again for this Runner.
-			h.mu.Lock()
-			delete(h.reapStale, id)
-			h.mu.Unlock()
 		}
 	}
+	// Completion also bumps the epoch, so a read started before it is refused; only this
+	// enroll's own mark is cleared, so an older reap cannot reopen a newer fault.
+	h.mu.Lock()
+	h.bindingEpoch++
+	h.runnerEpoch[id] = h.bindingEpoch
+	if h.reapStale[id] == epoch {
+		if reapErr == nil {
+			delete(h.reapStale, id)
+		} else {
+			h.reapStale[id] = h.bindingEpoch
+		}
+	}
+	h.mu.Unlock()
 
 	// Fire the terminal edges AFTER releasing the lock (the sink enqueues into the
 	// presence loop and returns promptly) — the discipline promoteSession uses. Order

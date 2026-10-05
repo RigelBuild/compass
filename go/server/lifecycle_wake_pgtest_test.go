@@ -144,8 +144,8 @@ func TestWakeAgentStaleBindingRowStillResumes(t *testing.T) {
 		t.Fatalf("RecordSessionBinding: %v", err)
 	}
 	// Checked on the store, not the hub: a hub read-through would warm the cache.
-	if got, err := f.store.SessionForAccount(ctx, f.agentID); err != nil || got != "sess-dead" {
-		t.Fatalf("precondition: durable row = (%q, %v), want sess-dead", got, err)
+	if got, runnerID, err := f.store.SessionForAccount(ctx, f.agentID); err != nil || got != "sess-dead" || runnerID != fakeRunnerID {
+		t.Fatalf("precondition: durable row = (%q, %q, %v), want (sess-dead, %s, nil)", got, runnerID, err, fakeRunnerID)
 	}
 	f.runner.forget()
 

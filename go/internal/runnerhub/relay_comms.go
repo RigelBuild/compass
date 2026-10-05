@@ -343,7 +343,7 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
-	enrollSeq := h.enrollSeq
+	bindingEpoch := h.bindingEpoch
 	h.mu.Unlock()
 
 	if bindings == nil {
@@ -369,7 +369,8 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 		h.mu.Unlock()
 		return live, bindingFound
 	}
-	if h.reapStale[runnerID] || h.runnerEnrollSeq[runnerID] > enrollSeq {
+	// A row recorded after a newer enroll may be refused once; retry then passes.
+	if h.reapStale[runnerID] != 0 || h.runnerEpoch[runnerID] > bindingEpoch {
 		h.mu.Unlock()
 		return sessionBinding{}, bindingUnverifiable
 	}
@@ -410,7 +411,7 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
-	enrollSeq := h.enrollSeq
+	bindingEpoch := h.bindingEpoch
 	h.mu.Unlock()
 
 	if !h.readThroughAllowed(ctx, bindings, enrolled) {
@@ -425,7 +426,8 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 		h.mu.Unlock()
 		return live, true
 	}
-	if h.reapStale[runnerID] || h.runnerEnrollSeq[runnerID] > enrollSeq {
+	// A row recorded after a newer enroll may be refused once; retry then passes.
+	if h.reapStale[runnerID] != 0 || h.runnerEpoch[runnerID] > bindingEpoch {
 		h.mu.Unlock()
 		return "", false
 	}
