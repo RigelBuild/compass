@@ -387,6 +387,10 @@ func TestLoadDanglingConfigSymlinkIsNotNoConfig(t *testing.T) {
 	if err := SaveEmbedded(path); !errors.Is(err, ErrConfigExists) {
 		t.Fatalf("SaveEmbedded over a dangling symlink = %v, want ErrConfigExists", err)
 	}
+	// An explicit override still resolves, as with any unreadable-as-absent file.
+	if got, err := Load(dir, "", "embedded"); err != nil || got.Mode != ModeEmbedded {
+		t.Fatalf("Load with a dangling symlink and the embedded override = (%v, %v), want embedded", got.Mode, err)
+	}
 }
 
 func TestLoadNormalizesAndRejectsServerURLPath(t *testing.T) {

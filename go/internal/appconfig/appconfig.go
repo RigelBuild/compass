@@ -197,15 +197,13 @@ func Load(configHome, home, override string) (Config, error) {
 		return Config{}, err
 	}
 	data, readErr := os.ReadFile(path) //nolint:gosec // G304: caller-resolved app config path, not user input
-	if errors.Is(readErr, os.ErrNotExist) {
+	if errors.Is(readErr, os.ErrNotExist) && strings.TrimSpace(override) == "" {
 		// A dangling symlink reads as absent but blocks the exclusive save, so it
 		// must surface as a read error, not as a first run that can never finish.
 		if _, lerr := os.Lstat(path); lerr == nil {
 			return Config{}, fmt.Errorf("appconfig: reading %s: %w", path, readErr)
 		}
-		if strings.TrimSpace(override) == "" {
-			return Config{}, ErrNoConfig
-		}
+		return Config{}, ErrNoConfig
 	}
 
 	cfg := Config{Mode: ModeEmbedded}
