@@ -154,6 +154,12 @@ air-gapped path). The Runner container image carries its own baked copy. The
 sources, the air-gapped runbook, and the agent-image bump flow are in
 [the guest image guide](self-host-guest-image.md).
 
+## Runner enrollment
+
+The Runner retries transient enrollment failures five times with exponential
+backoff, then exits. The stack supervisor restarts it after that cap; invalid
+credentials and other permanent request errors fail immediately.
+
 ## Database
 
 By default the stack provisions its own PostgreSQL as a bundled rootless

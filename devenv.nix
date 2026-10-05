@@ -397,7 +397,7 @@ in
     # with $XDG_RUNTIME_DIR/compass-runner: per-container socket paths must fit
     # the 107-byte AF_UNIX limit (validateRuntimeDir caps the dir at 38 bytes),
     # which the deep $DEVENV_STATE checkout overflows and a short /run path does
-    # not. Restarts on failure because Dial/Enroll is single-shot with no retry.
+    # not. The process restarts if the Runner exits after its bounded Dial/Enroll retry cap.
     compass-runner = {
       exec = ''
         set -euo pipefail

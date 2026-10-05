@@ -5,18 +5,139 @@ package runner
 // Startup validation of the Runner's runtime dir against the AF_UNIX sun_path
 // budget (RIG-1443): a misconfigured deployment must refuse to boot with a
 // legible message instead of failing at the first provision with a bare EINVAL.
-
 import (
 	"context"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"connectrpc.com/connect"
 )
+
+func TestRunDialWithRetryTransientThenSuccess(t *testing.T) {
+	cfg := RunnerConfig{RunnerID: "runner-1", RuntimeDir: t.TempDir(), Engine: newPipeRuntime()}
+	want := &ServerLink{}
+	var attempts int
+	var delays []time.Duration
+	got, err := runDialWithRetry(context.Background(), cfg, discardLoggerRunner(), func(context.Context, RunnerConfig) (*ServerLink, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("server restarting"))
+		}
+		return want, nil
+	}, func(_ context.Context, delay time.Duration) bool {
+		delays = append(delays, delay)
+		return true
+	})
+	if err != nil || got != want {
+		t.Fatalf("runDialWithRetry = (%p, %v), want successful link %p", got, err, want)
+	}
+	if attempts != 3 || !slices.Equal(delays, []time.Duration{time.Second, 2 * time.Second}) {
+		t.Fatalf("attempts/delays = %d/%v, want 3/[1s 2s]", attempts, delays)
+	}
+}
+
+func TestRunDialWithRetryExhaustsBoundedAttempts(t *testing.T) {
+	cfg := RunnerConfig{RunnerID: "runner-1", RuntimeDir: t.TempDir(), Engine: newPipeRuntime()}
+	logs := newCaptureLog()
+	var attempts int
+	var delays []time.Duration
+	_, err := runDialWithRetry(context.Background(), cfg, logs.logger(), func(context.Context, RunnerConfig) (*ServerLink, error) {
+		attempts++
+		return nil, errors.New("last dial failure")
+	}, func(_ context.Context, delay time.Duration) bool {
+		delays = append(delays, delay)
+		return true
+	})
+	if err == nil || !strings.Contains(err.Error(), "5 attempts") || !strings.Contains(err.Error(), "last dial failure") {
+		t.Fatalf("runDialWithRetry error = %v, want five attempts and last error", err)
+	}
+	if attempts != 5 || !slices.Equal(delays, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}) {
+		t.Fatalf("attempts/delays = %d/%v, want 5/[1s 2s 4s 8s]", attempts, delays)
+	}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		line := logs.recvLine(t)
+		if line.level != slog.LevelWarn || line.attrs["attempt"] != strconv.Itoa(attempt) || line.attrs["max_attempts"] != "5" || !strings.Contains(line.attrs["error"], "last dial failure") {
+			t.Fatalf("warning %d = %+v, want Warn with attempt/max/error", attempt, line)
+		}
+	}
+}
+
+func TestRunDialWithRetryFailsFastOnNonRetryableErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "unauthenticated", err: connect.NewError(connect.CodeUnauthenticated, errors.New("bad token"))},
+		{name: "permission denied", err: connect.NewError(connect.CodePermissionDenied, errors.New("denied"))},
+		{name: "invalid argument", err: connect.NewError(connect.CodeInvalidArgument, errors.New("bad request"))},
+		{name: "failed precondition", err: connect.NewError(connect.CodeFailedPrecondition, errors.New("not ready"))},
+		{name: "dial configuration", err: &dialConfigurationError{err: errors.New("bad client config")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := RunnerConfig{RunnerID: "runner-1", RuntimeDir: t.TempDir(), Engine: newPipeRuntime()}
+			attempts := 0
+			delays := 0
+			wantErr := fmt.Errorf("enrolling: %w", tc.err)
+			_, err := runDialWithRetry(context.Background(), cfg, discardLoggerRunner(), func(context.Context, RunnerConfig) (*ServerLink, error) {
+				attempts++
+				return nil, wantErr
+			}, func(context.Context, time.Duration) bool {
+				delays++
+				return true
+			})
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("runDialWithRetry error = %v, want original error %v", err, tc.err)
+			}
+			if attempts != 1 || delays != 0 {
+				t.Fatalf("attempts/delays = %d/%d, want 1/0", attempts, delays)
+			}
+		})
+	}
+}
+
+func TestRunDialWithRetryCancelDuringBackoffReturnsCtxErr(t *testing.T) {
+	cfg := RunnerConfig{RunnerID: "runner-1", RuntimeDir: t.TempDir(), Engine: newPipeRuntime()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := runDialWithRetry(ctx, cfg, discardLoggerRunner(), func(context.Context, RunnerConfig) (*ServerLink, error) {
+			return nil, errors.New("temporary failure")
+		}, func(ctx context.Context, _ time.Duration) bool {
+			close(entered)
+			<-ctx.Done()
+			return false
+		})
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-timeAfter():
+		t.Fatal("retry backoff did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runDialWithRetry after cancellation = %v, want context.Canceled", err)
+		}
+	case <-timeAfter():
+		t.Fatal("runDialWithRetry did not return after backoff cancellation")
+	}
+}
 
 // socketTailWidth measures the fixed tail the Runner appends to the runtime dir
 // — /containers/ + compass-agent- + a 32-char account id + /agent.sock — by
