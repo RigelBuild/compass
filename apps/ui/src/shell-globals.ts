@@ -6,7 +6,7 @@
 /** The shell-injected launch mode. Client boots the connect-screen probe;
  *  embedded resolves the bridge connection directly. Owned here — the single
  *  source of truth both the injected global and every boot consumer name. */
-export type ShellMode = "embedded" | "client";
+export type ShellMode = "embedded" | "client" | "setup" | "reopen";
 
 declare global {
 	interface Window {

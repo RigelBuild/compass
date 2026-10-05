@@ -57,7 +57,10 @@ export function createDaemonFetch(ipc: ShellIpc): DaemonFetch {
 		input: RequestInfo | URL,
 		init?: RequestInit,
 	): Promise<Response> => {
-		const request = new Request(input as RequestInfo, init);
+		const request =
+			input instanceof Request
+				? new Request(input, init)
+				: new Request(input.toString(), init);
 		const url = new URL(request.url);
 		const path = url.pathname + url.search;
 
@@ -173,7 +176,7 @@ export function createDaemonFetch(ipc: ShellIpc): DaemonFetch {
 // subscribes to the per-request runtime event BEFORE invoking `CompassRPC`, delivers each
 // `ResponseFrame` to `onFrame`, and unsubscribes on the terminal frame; `cancel` invokes
 // `CompassRPCCancel`. The Go shell emits one runtime event per ordered frame.
-import { Call, Events } from "@wailsio/runtime";
+import { Application, Call, Events } from "@wailsio/runtime";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 
 // The fully-qualified names of the bound Go methods, as the Wails generator computes them
@@ -182,6 +185,9 @@ import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 const RPC_METHOD = "main.bridgeService.CompassRPC";
 const RPC_CANCEL_METHOD = "main.bridgeService.CompassRPCCancel";
 const CONNECT_METHOD = "main.bridgeService.Connect";
+const PICK_CA_METHOD = "main.dialogService.PickCACert";
+const CHOOSE_EMBEDDED_METHOD = "main.setupService.ChooseEmbedded";
+const SHELL_STATE_METHOD = "main.bridgeService.ShellState";
 
 /** Build the Wails binding of the shell IPC seam. `rpc` wires the response-frame
  *  subscription up before firing the call so no frame can race ahead of the
@@ -238,21 +244,135 @@ export type ConnectResult = {
 		| "bad-cert"
 		| "bad-token"
 		| "version-mismatch"
+		| "invalid-url"
+		| "invalid-ca"
 		| "other";
 	message: string;
 	accountId: string;
 	serverVersion: string;
 	apiVersion: string;
+	serverUrl: string;
 };
 
-/** Invoke the Go shell's `Connect` bound method by name, passing the pasted
- *  token (or `""` for the boot-internal "use the stored one" probe, T5.5), and
- *  return its classified result. The method lives in the (unmerged) T5.3 stack;
- *  it is called purely by string name through the Wails runtime, never imported,
- *  so this compiles and is testable against a fake runtime without the Go method
- *  existing on main. */
-export function shellConnect(token: string): Promise<ConnectResult> {
-	return Call.ByName(CONNECT_METHOD, { token }) as Promise<ConnectResult>;
+export type ServerChoice = { url: string; caRef: string };
+export type PickedCA = { ref: string; name: string };
+export type SetupResult = { ok: boolean; message: string };
+
+export type ShellMode = "embedded" | "client" | "setup" | "reopen";
+export type ShellState = { mode: ShellMode; serverUrl: string };
+
+function isConnectResult(value: unknown): value is ConnectResult {
+	if (value === null || typeof value !== "object") return false;
+	if (
+		!("ok" in value) ||
+		!("kind" in value) ||
+		!("message" in value) ||
+		!("accountId" in value) ||
+		!("serverVersion" in value) ||
+		!("apiVersion" in value) ||
+		!("serverUrl" in value)
+	)
+		return false;
+	const kinds: ConnectResult["kind"][] = [
+		"",
+		"bad-url",
+		"bad-cert",
+		"bad-token",
+		"version-mismatch",
+		"invalid-url",
+		"invalid-ca",
+		"other",
+	];
+	return (
+		typeof value.ok === "boolean" &&
+		typeof value.kind === "string" &&
+		kinds.some((kind) => kind === value.kind) &&
+		typeof value.message === "string" &&
+		typeof value.accountId === "string" &&
+		typeof value.serverVersion === "string" &&
+		typeof value.apiVersion === "string" &&
+		typeof value.serverUrl === "string"
+	);
+}
+
+function isPickedCA(value: unknown): value is PickedCA {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		"ref" in value &&
+		typeof value.ref === "string" &&
+		"name" in value &&
+		typeof value.name === "string"
+	);
+}
+
+function isSetupResult(value: unknown): value is SetupResult {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		"ok" in value &&
+		typeof value.ok === "boolean" &&
+		"message" in value &&
+		typeof value.message === "string"
+	);
+}
+
+function isShellState(value: unknown): value is ShellState {
+	if (
+		value === null ||
+		typeof value !== "object" ||
+		!("mode" in value) ||
+		!("serverUrl" in value)
+	)
+		return false;
+	return (
+		(value.mode === "embedded" ||
+			value.mode === "client" ||
+			value.mode === "setup" ||
+			value.mode === "reopen") &&
+		typeof value.serverUrl === "string"
+	);
+}
+
+/** Call the shell's configured or first-run connect method. */
+export async function shellConnect(
+	token: string,
+	server?: ServerChoice,
+): Promise<ConnectResult> {
+	const request = server === undefined ? { token } : { token, server };
+	const result: unknown = await Call.ByName(CONNECT_METHOD, request);
+	if (!isConnectResult(result))
+		throw new TypeError("Invalid Connect result from shell");
+	return result;
+}
+
+export async function pickCACert(): Promise<PickedCA> {
+	const picked: unknown = await Call.ByName(PICK_CA_METHOD);
+	if (!isPickedCA(picked))
+		throw new TypeError("Invalid PickCACert result from shell");
+	return picked;
+}
+
+export async function chooseEmbedded(): Promise<SetupResult> {
+	const result: unknown = await Call.ByName(CHOOSE_EMBEDDED_METHOD);
+	if (!isSetupResult(result))
+		throw new TypeError("Invalid ChooseEmbedded result from shell");
+	return result;
+}
+
+export async function shellState(): Promise<ShellState> {
+	const result: unknown = await Call.ByName(SHELL_STATE_METHOD);
+	if (!isShellState(result))
+		throw new TypeError("Invalid ShellState result from shell");
+	return result;
+}
+
+export function onSetupDecided(fn: () => void): () => void {
+	return Events.On("setup:decided", fn);
+}
+
+export async function quitApp(): Promise<void> {
+	await Application.Quit();
 }
 
 /** The native (desktop-shell) connection provider. `resolve()` hands back the

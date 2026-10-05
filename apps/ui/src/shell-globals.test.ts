@@ -33,4 +33,10 @@ describe("shellMode / shellServerUrl", () => {
 		w.__COMPASS_MODE__ = "embedded";
 		expect(shellMode()).toBe("embedded");
 	});
+	test("recognizes setup and reopen shell modes", () => {
+		w.__COMPASS_MODE__ = "setup";
+		expect(shellMode()).toBe("setup");
+		w.__COMPASS_MODE__ = "reopen";
+		expect(shellMode()).toBe("reopen");
+	});
 });

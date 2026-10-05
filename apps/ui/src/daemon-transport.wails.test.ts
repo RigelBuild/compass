@@ -11,8 +11,8 @@
 //  - nativeConnectionProvider().resolve() yields token === undefined (DL-109:
 //    the UI-side Connection never carries a bearer in client mode) and a defined
 //    fetchImpl.
-//  - shellConnect(token) invokes the Connect method by name with the token and
-//    maps the returned ConnectResult through faithfully (ok and failure kinds).
+//    the server choice and returns the expanded ConnectResult.
+//  - setup bindings call their bound Go methods with the specified JSON shapes.
 //
 // The Wails runtime is a hand-installed fake via mock.module: Events.On records
 // each subscription and hands back an unsubscribe that flips a flag, and
@@ -23,8 +23,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import * as realRuntime from "@wailsio/runtime";
 import {
+	chooseEmbedded,
 	nativeConnectionProvider,
+	onSetupDecided,
+	pickCACert,
+	quitApp,
 	shellConnect,
+	shellState,
 	wailsShellIpc,
 } from "./daemon-transport";
 
@@ -47,6 +52,7 @@ type Invocation = {
 
 let subscriptions: Subscription[];
 let calls: Invocation[];
+let quitCalls: number;
 
 /** Install a fresh fake `@wailsio/runtime` for a test. Bun's `mock.module`
  *  retroactively updates the live ESM binding, so the statically-imported
@@ -55,7 +61,14 @@ let calls: Invocation[];
 function installFakeRuntime(): void {
 	subscriptions = [];
 	calls = [];
+	quitCalls = 0;
 	mock.module("@wailsio/runtime", () => ({
+		Application: {
+			Quit() {
+				quitCalls++;
+				return Promise.resolve();
+			},
+		},
 		Events: {
 			On(name: string, cb: (event: { name: string; data: unknown }) => void) {
 				const sub: Subscription = { name, cb, off: false };
@@ -197,6 +210,7 @@ describe("shellConnect", () => {
 			accountId: "acc-1",
 			serverVersion: "1.2.3",
 			apiVersion: "compass.v1",
+			serverUrl: "https://compass.example",
 		});
 		const result = await promise;
 		expect(result.ok).toBe(true);
@@ -215,10 +229,76 @@ describe("shellConnect", () => {
 			accountId: "",
 			serverVersion: "",
 			apiVersion: "",
+			serverUrl: "",
 		});
 		const result = await promise;
 		expect(result.ok).toBe(false);
 		expect(result.kind).toBe("bad-token");
 		expect(result.message).toBe("the token was rejected");
+	});
+});
+describe("setup bindings", () => {
+	test("send server choice and call the exact setup methods", async () => {
+		const connect = shellConnect("first-token", {
+			url: "https://host",
+			caRef: "ca-ref",
+		});
+		expect(calls[0]?.method).toBe("main.bridgeService.Connect");
+		expect(calls[0]?.args).toEqual([
+			{
+				token: "first-token",
+				server: { url: "https://host", caRef: "ca-ref" },
+			},
+		]);
+		calls[0]?.resolve({
+			ok: true,
+			kind: "",
+			message: "",
+			accountId: "",
+			serverVersion: "",
+			apiVersion: "",
+			serverUrl: "https://host",
+		});
+		expect(await connect).toMatchObject({
+			ok: true,
+			serverUrl: "https://host",
+		});
+
+		const picked = pickCACert();
+		expect(calls[1]?.method).toBe("main.dialogService.PickCACert");
+		calls[1]?.resolve({ ref: "opaque-ref", name: "root.pem" });
+		expect(await picked).toEqual({ ref: "opaque-ref", name: "root.pem" });
+
+		const embedded = chooseEmbedded();
+		expect(calls[2]?.method).toBe("main.setupService.ChooseEmbedded");
+		calls[2]?.resolve({ ok: false, message: "not ready" });
+		expect(await embedded).toEqual({ ok: false, message: "not ready" });
+
+		const state = shellState();
+		expect(calls[3]?.method).toBe("main.bridgeService.ShellState");
+		calls[3]?.resolve({ mode: "setup", serverUrl: "" });
+		expect(await state).toEqual({ mode: "setup", serverUrl: "" });
+
+		const off = onSetupDecided(() => {});
+		expect(subscriptions[0]?.name).toBe("setup:decided");
+		off();
+		expect(subscriptions[0]?.off).toBe(true);
+		await quitApp();
+		expect(quitCalls).toBe(1);
+	});
+
+	test("send only token for a configured connect", async () => {
+		const connect = shellConnect("configured-token");
+		expect(calls[0]?.args).toEqual([{ token: "configured-token" }]);
+		calls[0]?.resolve({
+			ok: false,
+			kind: "invalid-ca",
+			message: "bad CA",
+			accountId: "",
+			serverVersion: "",
+			apiVersion: "",
+			serverUrl: "",
+		});
+		expect((await connect).kind).toBe("invalid-ca");
 	});
 });

@@ -1,18 +1,18 @@
 import { bootConnection } from "./boot";
 import { bootBrowser } from "./boot-browser";
 import { bootNativeClient } from "./boot-native";
-import { nativeConnectionProvider } from "./daemon-transport";
+import { bootSetup } from "./boot-setup";
+import { nativeConnectionProvider, quitApp } from "./daemon-transport";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 import { type ShellMode, shellServerUrl } from "./shell-globals";
 
-/** The launch mode `bootForMode` dispatches on: the shell-injected `ShellMode`,
- *  or undefined in a browser dev build where no shell sets it. */
 export type BootMode = ShellMode | undefined;
 
 export type BootModeDeps = {
 	bootNativeClient: (
 		root: HTMLElement,
 	) => Promise<ResolvedConnection | undefined>;
+	bootSetup: (root: HTMLElement) => Promise<ResolvedConnection | undefined>;
 	embeddedConnectionProvider: () => ConnectionProvider;
 	bootBrowser: (root: HTMLElement) => Promise<ResolvedConnection | undefined>;
 	bootConnection: (
@@ -23,17 +23,30 @@ export type BootModeDeps = {
 
 export const defaultDeps: BootModeDeps = {
 	bootNativeClient,
-	// Embedded never receives __COMPASS_SERVER_URL__ (injected in client mode only), and the
-	// bridge fetch routes over Wails IPC by path — so this is a syntactic same-origin
-	// placeholder, never dialed. Must be ABSOLUTE: createDaemonFetch does `new Request(url)`,
-	// which rejects a relative URL. Matches the packages/compass-client convention.
+	bootSetup,
 	embeddedConnectionProvider: () =>
 		nativeConnectionProvider(shellServerUrl() ?? "http://compass.localhost"),
 	bootBrowser,
 	bootConnection,
 };
 
-/** Select the runtime boot thunk for the shell-injected launch mode. */
+function showReopen(root: HTMLElement): void {
+	const screen = document.createElement("div");
+	screen.setAttribute(
+		"style",
+		"margin:0;padding:2rem;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6;background:#1a1a1a;min-height:100vh",
+	);
+	const message = document.createElement("p");
+	message.textContent =
+		"Compass is already set up. Quit and reopen it to change this.";
+	const button = document.createElement("button");
+	button.type = "button";
+	button.textContent = "Quit";
+	button.addEventListener("click", () => void quitApp());
+	screen.append(message, button);
+	root.replaceChildren(screen);
+}
+
 export function bootForMode(
 	mode: BootMode,
 	root: HTMLElement,
@@ -47,7 +60,18 @@ export function bootForMode(
 				deps.bootConnection(root, () =>
 					deps.embeddedConnectionProvider().resolve(),
 				);
-		default:
+		case "setup":
+			return () => deps.bootSetup(root);
+		case "reopen":
+			return async () => {
+				showReopen(root);
+				return undefined;
+			};
+		case undefined:
 			return () => deps.bootBrowser(root);
+		default: {
+			const exhaustive: never = mode;
+			throw new Error(`Unhandled boot mode: ${exhaustive}`);
+		}
 	}
 }
