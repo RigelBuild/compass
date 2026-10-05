@@ -5,7 +5,8 @@ package store
 import "testing"
 
 // TestCreateChannelGroupRefusesReservedTopLevelNames pins that a caller cannot
-// squat a system group name at top level, while nested reuse stays legal.
+// squat a system group name at top level (nested reuse stays legal), and that no
+// group name holds a slash, which agent tools read as a path separator.
 func TestCreateChannelGroupRefusesReservedTopLevelNames(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
@@ -26,6 +27,8 @@ func TestCreateChannelGroupRefusesReservedTopLevelNames(t *testing.T) {
 		{"linear owner", NewChannelGroup{Name: linearRoutingGroupName, Visibility: VisibilityOwner}, true},
 		{"linear shared", NewChannelGroup{Name: linearRoutingGroupName, Visibility: VisibilityShared}, true},
 		{"dm nested", NewChannelGroup{Name: dmGroupName, ParentGroupID: parent.ID, Visibility: VisibilityOwner}, false},
+		{"slash top level", NewChannelGroup{Name: "a/b", Visibility: VisibilityOwner}, true},
+		{"slash nested", NewChannelGroup{Name: "a/b", ParentGroupID: parent.ID, Visibility: VisibilityOwner}, true},
 		{"ordinary", NewChannelGroup{Name: "ordinary", Visibility: VisibilityShared}, false},
 	}
 	for _, tc := range cases {

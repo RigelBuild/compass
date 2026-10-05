@@ -2727,8 +2727,13 @@ type CreateChannelGroupRequest struct {
 	// Parent group; empty for a top-level group.
 	ParentGroupId string                 `protobuf:"bytes,2,opt,name=parent_group_id,json=parentGroupId,proto3" json:"parent_group_id,omitempty"`
 	Visibility    ChannelGroupVisibility `protobuf:"varint,3,opt,name=visibility,proto3,enum=compass.v1.ChannelGroupVisibility" json:"visibility,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
+	// when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
+	// or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
+	// use parent_group_id.
+	ParentGroupName string `protobuf:"bytes,4,opt,name=parent_group_name,json=parentGroupName,proto3" json:"parent_group_name,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CreateChannelGroupRequest) Reset() {
@@ -2780,6 +2785,13 @@ func (x *CreateChannelGroupRequest) GetVisibility() ChannelGroupVisibility {
 		return x.Visibility
 	}
 	return ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_OWNER
+}
+
+func (x *CreateChannelGroupRequest) GetParentGroupName() string {
+	if x != nil {
+		return x.ParentGroupName
+	}
+	return ""
 }
 
 type CreateChannelGroupResponse struct {
@@ -3017,13 +3029,19 @@ type CreateChannelRequest struct {
 	// Initial members party to the channel. Each is a `@handle`; the server
 	// resolves it to an account id; unknown → NOT_FOUND.
 	MemberHandles []string `protobuf:"bytes,4,rep,name=member_handles,json=memberHandles,proto3" json:"member_handles,omitempty"`
-	// The agent to hang the channel off; mutually exclusive with group_id. A
-	// `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+	// The agent to hang the channel off; mutually exclusive with group_id and
+	// group_name. A `@handle`; the server resolves it to an account id; unknown →
+	// NOT_FOUND.
 	ParentAgentHandle string `protobuf:"bytes,5,opt,name=parent_agent_handle,json=parentAgentHandle,proto3" json:"parent_agent_handle,omitempty"`
 	// TREE requires parent_agent_handle.
 	MembershipMode ChannelMembershipMode `protobuf:"varint,6,opt,name=membership_mode,json=membershipMode,proto3,enum=compass.v1.ChannelMembershipMode" json:"membership_mode,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
+	// when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
+	// or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
+	// use group_id.
+	GroupName     string `protobuf:"bytes,7,opt,name=group_name,json=groupName,proto3" json:"group_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateChannelRequest) Reset() {
@@ -3096,6 +3114,13 @@ func (x *CreateChannelRequest) GetMembershipMode() ChannelMembershipMode {
 		return x.MembershipMode
 	}
 	return ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_EXPLICIT
+}
+
+func (x *CreateChannelRequest) GetGroupName() string {
+	if x != nil {
+		return x.GroupName
+	}
+	return ""
 }
 
 type CreateChannelResponse struct {
@@ -5245,13 +5270,14 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x13ListAccountsRequest\x12!\n" +
 	"\fsnapshot_seq\x18\x01 \x01(\x04R\vsnapshotSeq\"G\n" +
 	"\x14ListAccountsResponse\x12/\n" +
-	"\baccounts\x18\x01 \x03(\v2\x13.compass.v1.AccountR\baccounts\"\x9b\x01\n" +
+	"\baccounts\x18\x01 \x03(\v2\x13.compass.v1.AccountR\baccounts\"\xc7\x01\n" +
 	"\x19CreateChannelGroupRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12&\n" +
 	"\x0fparent_group_id\x18\x02 \x01(\tR\rparentGroupId\x12B\n" +
 	"\n" +
 	"visibility\x18\x03 \x01(\x0e2\".compass.v1.ChannelGroupVisibilityR\n" +
-	"visibility\"L\n" +
+	"visibility\x12*\n" +
+	"\x11parent_group_name\x18\x04 \x01(\tR\x0fparentGroupName\"L\n" +
 	"\x1aCreateChannelGroupResponse\x12.\n" +
 	"\x05group\x18\x01 \x01(\v2\x18.compass.v1.ChannelGroupR\x05group\"=\n" +
 	"\x18ListChannelGroupsRequest\x12!\n" +
@@ -5261,14 +5287,16 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x13ListChannelsRequest\x12!\n" +
 	"\fsnapshot_seq\x18\x01 \x01(\x04R\vsnapshotSeq\"G\n" +
 	"\x14ListChannelsResponse\x12/\n" +
-	"\bchannels\x18\x01 \x03(\v2\x13.compass.v1.ChannelR\bchannels\"\x95\x02\n" +
+	"\bchannels\x18\x01 \x03(\v2\x13.compass.v1.ChannelR\bchannels\"\xb4\x02\n" +
 	"\x14CreateChannelRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\bgroup_id\x18\x02 \x01(\tR\agroupId\x12+\n" +
 	"\x04kind\x18\x03 \x01(\x0e2\x17.compass.v1.ChannelKindR\x04kind\x12%\n" +
 	"\x0emember_handles\x18\x04 \x03(\tR\rmemberHandles\x12.\n" +
 	"\x13parent_agent_handle\x18\x05 \x01(\tR\x11parentAgentHandle\x12J\n" +
-	"\x0fmembership_mode\x18\x06 \x01(\x0e2!.compass.v1.ChannelMembershipModeR\x0emembershipMode\"F\n" +
+	"\x0fmembership_mode\x18\x06 \x01(\x0e2!.compass.v1.ChannelMembershipModeR\x0emembershipMode\x12\x1d\n" +
+	"\n" +
+	"group_name\x18\a \x01(\tR\tgroupName\"F\n" +
 	"\x15CreateChannelResponse\x12-\n" +
 	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"\xae\x02\n" +
 	"\x1bUpdateChannelMembersRequest\x12\x1d\n" +
