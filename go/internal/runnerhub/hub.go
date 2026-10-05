@@ -216,8 +216,8 @@ type SessionBindingStore interface {
 	ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error)
 	// SessionForAccount resolves the live session bound to an account — the
 	// cache-miss read behind SessionForAccount (the reverse direction). Same
-	// fail-closed store.ErrNotFound contract.
-	SessionForAccount(ctx context.Context, accountID store.AccountID) (string, error)
+	// fail-closed store.ErrNotFound contract. Returns the owning Runner id too.
+	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID string, err error)
 	// DeleteSessionBinding releases one session's binding — the unbind write.
 	// Idempotent: releasing an already-released session is a no-op success.
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
@@ -402,11 +402,12 @@ type Hub struct {
 	// fans over (RIG-3108 §T4). Nil until SetRoutingFabric; read under mu. Nil-safe: a
 	// single-instance hub wires none — its own writes keep its own cache honest.
 	routing RoutingFabric
-	// reapStale records that the table may still hold rows for sessions this hub has
-	// declared dead: raised with the re-enroll map-clear, lowered only by a successful
-	// reap. readThroughAllowed refuses while set (fail-closed). Hub-wide is correct
-	// only under the single-Runner-id MVP; multi-Runner MUST key it by runner id.
-	reapStale bool
+	// reapStale maps each Runner to the epoch of its faulted durable reap.
+	reapStale map[string]uint64
+	// bindingEpoch fences read-throughs across reap start and completion.
+	bindingEpoch uint64
+	// runnerEpoch entries are bounded by the number of distinct Runner ids.
+	runnerEpoch map[string]uint64
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall delegates
 	// to (spawn/despawn record T4). Nil until SetLifecycleCaller (breaking the
 	// hub<->lifecycleService cycle); read under mu. Nil-safe fails CodeUnavailable.
@@ -498,6 +499,8 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
+		reapStale:         make(map[string]uint64),
+		runnerEpoch:       make(map[string]uint64),
 	}
 }
 
@@ -1020,11 +1023,13 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	clear(h.accountSessions)
-	// Refuse read-through from the instant the maps are cleared, not after the reap
-	// returns: the reap can block for seconds, and a concurrent resolver in that gap
-	// would read a not-yet-deleted row back, resurrecting a session just declared dead.
+	// Refuse read-through for this Runner from the instant the maps are cleared:
+	// a concurrent lookup could otherwise resurrect rows while the reap is in flight.
+	h.bindingEpoch++
+	epoch := h.bindingEpoch
+	h.runnerEpoch[id] = epoch
 	if bindings != nil {
-		h.reapStale = true
+		h.reapStale[id] = epoch
 	}
 	h.mu.Unlock()
 
@@ -1035,15 +1040,16 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	reapedSessions := ramReaped
 	var durableReaped []store.SessionBinding
 	durableReapSucceeded := false
+	var reapErr error
 	if bindings != nil {
+		var rows []store.SessionBinding
 		// Cross-tenant on purpose: a Runner serves every tenant, and id is the
 		// authenticated token subject, so the sweep reaches only this Runner's rows.
-		rows, err := bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
-		if err != nil {
-			// A durable-reap fault must not wedge reconnect; fall back to the in-RAM
-			// snapshot while read-through stays disabled until a reap succeeds.
-			h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled until a reap succeeds",
-				"runner_id", id, "error", err)
+		rows, reapErr = bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
+		if reapErr != nil {
+			// A durable-reap fault must not wedge reconnect; fall back to the in-RAM snapshot.
+			h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled for this Runner until a reap succeeds",
+				"runner_id", id, "error", reapErr)
 		} else {
 			durableReaped = rows
 			durableReapSucceeded = true
@@ -1053,12 +1059,17 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 				offline = append(offline, promotedPair{account: b.AccountID, sessionID: b.SessionID})
 				reapedSessions = append(reapedSessions, b.SessionID)
 			}
-			// The table now agrees with the cleared cache again.
-			h.mu.Lock()
-			h.reapStale = false
-			h.mu.Unlock()
 		}
 	}
+	// Completion also bumps the epoch, so a read started before it is refused; only this
+	// enroll's own mark is cleared, so an older reap cannot reopen a newer fault.
+	h.mu.Lock()
+	h.bindingEpoch++
+	h.runnerEpoch[id] = h.bindingEpoch
+	if reapErr == nil && h.reapStale[id] == epoch {
+		delete(h.reapStale, id)
+	}
+	h.mu.Unlock()
 
 	// Fire the terminal edges AFTER releasing the lock (the sink enqueues into the
 	// presence loop and returns promptly) — the discipline promoteSession uses. Order
