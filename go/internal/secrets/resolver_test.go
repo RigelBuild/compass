@@ -355,7 +355,7 @@ func TestResolveErrors(t *testing.T) {
 	}{
 		{name: "declared name missing from output", stdout: `{"API_KEY":"v"}`, wantSub: `"OTHER" not in resolver output`},
 		{name: "null value", stdout: `{"API_KEY":"v","OTHER":null}`, wantSub: `"OTHER" resolved with no value`},
-		{name: "CLI failure carries stderr", stderr: "Error: Secret 'OTHER' is required but not set", rc: 1, wantSub: "Secret 'OTHER' is required"},
+		{name: "CLI failure withholds stderr", stderr: "2 | B=\"unterminated s3cr3tval", rc: 1, wantSub: "exit status 1"},
 		{name: "non-JSON output", stdout: `API_KEY=hunter2`, wantSub: "not valid JSON"},
 		{name: "non-string value", stdout: `{"API_KEY":12345,"OTHER":"v"}`, wantSub: "non-string value"},
 	}
@@ -371,7 +371,7 @@ func TestResolveErrors(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err, tt.wantSub)
 			}
 			// A value from stdout must never reach the error text.
-			for _, leak := range []string{"hunter2", "12345"} {
+			for _, leak := range []string{"hunter2", "12345", "s3cr3tval"} {
 				if strings.Contains(err.Error(), leak) {
 					t.Errorf("error %q leaks stdout content %q", err, leak)
 				}
@@ -399,15 +399,16 @@ func TestStatusesParsesReportOnNonZeroExit(t *testing.T) {
 }
 
 func TestStatusesProviderFaultIsAnError(t *testing.T) {
-	cli := newFakeCLI(t, "", "Error: Provider backend 'bogus' not found", 1)
+	// A dotenv parse error quotes the offending line, which can hold a value.
+	cli := newFakeCLI(t, "", "2 | B=\"unterminated s3cr3tval", 1)
 	r := NewSpecResolver(declsNamed("API_KEY"), t.TempDir(), WithCLI(cli.path))
 
 	out, err := r.Statuses(context.Background(), "test")
 	if err == nil {
 		t.Fatalf("Statuses = %+v, want an error; a broken provider must not read as all-unset", out)
 	}
-	if !strings.Contains(err.Error(), "Provider backend 'bogus' not found") {
-		t.Errorf("error %q does not carry the CLI stderr", err)
+	if strings.Contains(err.Error(), "s3cr3tval") {
+		t.Errorf("error %q leaks CLI stderr", err)
 	}
 }
 

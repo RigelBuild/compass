@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec" //nolint:depguard // secrets read seam: spawns the secretspec CLI by name (G204 site justified below)
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -24,8 +26,11 @@ const manifestProject = "compass"
 const defaultProfile = "default"
 
 // defaultCLI is the SecretSpec binary both read paths spawn, resolved off PATH.
-// hostcheck.SecretSpecFloor names the same binary and guards it at boot.
+// hostcheck.SecretSpecFloor names the same binary and guards the stack preflight.
 const defaultCLI = "secretspec"
+
+// cliWaitDelay matches the other CLI spawns (runtime/clispawn.go).
+const cliWaitDelay = 10 * time.Second
 
 // reportStatusResolved is the SecretSpec report status meaning the provider
 // holds a value for a declared secret. The report's other statuses
@@ -167,11 +172,11 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 	// once resolved; the registry, not this file, is the durable source.
 	defer func() { _ = os.Remove(manifestPath) }()
 
-	stdout, stderr, err := r.run(ctx, r.cliArgs("export", manifestPath, profile, reason, "--format=json"))
+	stdout, err := r.run(ctx, r.cliArgs("export", manifestPath, profile, reason, "--format=json"))
 	if err != nil {
-		// stderr carries names and kinds only (the CLI never echoes a value);
-		// stdout, which may hold values, is never put in an error.
-		return nil, fmt.Errorf("secrets: resolve via %s: %w: %s", r.cli, err, stderr)
+		// stdout and stderr both stay out of the error: a provider parse error
+		// quotes the offending source line, which can hold a value.
+		return nil, fmt.Errorf("secrets: resolve via %s: %w", r.cli, err)
 	}
 	// A nil entry is a JSON null: the name is present with no usable value.
 	var resolved map[string]*string
@@ -248,7 +253,7 @@ func (r *SpecResolver) Statuses(ctx context.Context, reason string) ([]SecretSta
 	// failed unlink of a temp file is not actionable.
 	defer func() { _ = os.Remove(manifestPath) }()
 
-	stdout, stderr, runErr := r.run(ctx, r.cliArgs("check", manifestPath, profile, reason, "--json"))
+	stdout, runErr := r.run(ctx, r.cliArgs("check", manifestPath, profile, reason, "--json"))
 	var report struct {
 		Secrets []struct {
 			Name   string `json:"name"`
@@ -260,7 +265,7 @@ func (r *SpecResolver) Statuses(ctx context.Context, reason string) ([]SecretSta
 		// return that, never an all-unset set. The report is value-free, so
 		// its decode error is safe to wrap.
 		if runErr != nil {
-			return nil, fmt.Errorf("secrets: report via %s: %w: %s", r.cli, runErr, stderr)
+			return nil, fmt.Errorf("secrets: report via %s: %w", r.cli, runErr)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("secrets: report via %s: %w", r.cli, err)
@@ -309,16 +314,22 @@ func (r *SpecResolver) cliArgs(sub, manifestPath, profile, reason string, extra 
 	return append(args, extra...)
 }
 
-// run spawns the CLI and returns its stdout and trimmed stderr. stdout may hold
-// secret values, so callers must never log it or put it in an error.
-func (r *SpecResolver) run(ctx context.Context, args []string) ([]byte, string, error) {
+// run spawns the CLI and returns its stdout, which may hold secret values, so
+// callers must never log it or put it in an error. stderr is discarded for the
+// same reason: diagnostics quote provider source lines.
+func (r *SpecResolver) run(ctx context.Context, args []string) ([]byte, error) {
 	//nolint:gosec // G204: r.cli is the operator-pinned secretspec binary and args is an argv slice handed straight to exec (no shell); each variable is one joined --flag=value token, so none can add an argv element.
 	cmd := exec.CommandContext(ctx, r.cli, args...)
-	var stdout, stderr bytes.Buffer
+	// An ambient scope would silently retarget the export; flags cover the rest.
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return strings.HasPrefix(kv, "SECRETSPEC_SCOPE=")
+	})
+	// Provider helpers (op, gpg) inherit the stdout pipe; bound the wait after cancel.
+	cmd.WaitDelay = cliWaitDelay
+	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
 	err := cmd.Run()
-	return stdout.Bytes(), strings.TrimSpace(stderr.String()), err
+	return stdout.Bytes(), err
 }
 
 // redactDecodeError rewrites a JSON decode error of the export without its

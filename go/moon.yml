@@ -165,10 +165,10 @@ tasks:
     options:
       runFromWorkspaceRoot: false
     # Can't use the *go_sources anchor: this lane also depends on the pinned
-    # secretspec helper, because TestSecretSpecCLIVersionFloor now FAILS CLOSED
-    # and CI resolves the binary from that file. Moving the pin inside it must
+    # secretspec helper, because the armed forge pgtest spawns the real CLI and
+    # CI resolves the binary from that file. Moving the pin inside it must
     # reschedule this battery, or a stale cache would report green against a
-    # version the floor no longer accepts. Same reason lint: spells its own
+    # version that was never run. Same reason lint: spells its own
     # inputs to add .golangci.yml.
     inputs:
       - '**/*.go'

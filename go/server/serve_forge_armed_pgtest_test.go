@@ -5,7 +5,7 @@ package server
 // Store-gated SUCCESS-case proof for the armed forge-secret boot path:
 // buildBoardWebhookWiring with a configured App against the REAL secrets.SpecResolver
 // (the secretspec CLI read path), not a fake — exercising the fail-closed boot no
-// other forge pgtest reaches. The CLI is a hard boot requirement, so its absence FAILS.
+// other forge pgtest reaches. The server cannot boot without the CLI, so its absence FAILS.
 
 import (
 	"context"
@@ -159,7 +159,7 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 
 	resolver := newArmedResolver(t, st, dotenvPath)
 
-	// The CLI is a hard boot requirement (hostcheck.SecretSpecFloor), so a
+	// The server cannot read secrets without the CLI, so a
 	// missing one fails here with a clear cause rather than as a resolve error.
 	if _, err := exec.LookPath(secretspecCLI); err != nil {
 		t.Fatalf("secretspec CLI not on PATH; the server read path cannot boot without it: %v", err)

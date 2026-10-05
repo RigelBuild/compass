@@ -429,10 +429,10 @@ jobs:
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
           # secretspec: the CLI the Go secrets READ path spawns BY NAME
           # (go/internal/secrets/resolver.go's `defaultCLI = "secretspec"`,
-          # exec.CommandContext). TestSecretSpecCLIVersionFloor now FAILS CLOSED
-          # rather than skipping when exec.LookPath finds nothing — secrets not
-          # working is a failure either way — so `compass-go:test` needs the
-          # binary present. It is realized out-of-band from its own pinned
+          # exec.CommandContext). The pgtest-tagged armed forge test and the
+          # stack-booted compass-server both spawn it and fail without it, so
+          # `compass-go:test` keeps the binary present. It is realized
+          # out-of-band from its own pinned
           # helper, NOT the parity `attrs` above, for the same dotted-input
           # reason chromium and skopeo are: it comes from the second
           # `secretspec-nixpkgs` input, so it lives outside devenv.nix's parsed
@@ -965,9 +965,9 @@ jobs:
           # (internal/secrets' `defaultCLI`). The `go test` below is an UNSCOPED
           # `./...`, so it walks internal/secrets too — a build tag selects which
           # FILES compile, not which PACKAGES `./...` visits, and
-          # resolver_test.go carries no tag. TestSecretSpecCLIVersionFloor now
-          # FAILS CLOSED rather than skipping, so this job needs the binary as
-          # much as the moon and pgtest lanes do. Same out-of-band helper and the
+          # resolver_test.go carries no tag. Anything here that boots the real
+          # resolver needs the binary as much as the moon and pgtest lanes do.
+          # Same out-of-band helper and the
           # same in-process `export PATH` as the VMM trio above: the consumer is
           # this very step, which a $GITHUB_PATH append alone would not reach.
           # Absolute -f for the working-directory reason documented above.
