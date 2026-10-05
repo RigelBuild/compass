@@ -6,6 +6,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestGatewayTokenRotateResolveRevoke(t *testing.T) {
@@ -118,6 +121,90 @@ func TestGatewayTokenOneLivePerAgent(t *testing.T) {
 		[]byte("raw-second"), string(agent.ID))
 	if !pgErrIs(err, pgUniqueViolation) {
 		t.Fatalf("second live token insert err = %v, want unique violation", err)
+	}
+}
+
+// A Rotate that meets an in-flight rotation waits on the agent row, then
+// replaces that rotation's token, so exactly one token stays live.
+func TestGatewayTokenConcurrentRotatesSerialize(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner, err := s.CreateUser(ctx, NewUser{Handle: "gw-race-owner", DisplayName: "owner"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "gw-race-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	gate, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate tx: %v", err)
+	}
+	defer func() {
+		if err := gate.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("rollback gate: %v", err)
+		}
+	}()
+	// The gate is a rotation in flight: it holds the agent-row lock and an uncommitted live token.
+	if _, err := gate.Exec(ctx, `SELECT 1 FROM agent_accounts WHERE account_id = $1 FOR NO KEY UPDATE`, string(agent.ID)); err != nil {
+		t.Fatalf("gate agent-row lock: %v", err)
+	}
+	first := sha256.Sum256([]byte("race-first"))
+	if _, err := gate.Exec(ctx,
+		`INSERT INTO gateway_tokens (hash, agent_account_id, owner_user_id, tenant_id)
+		 SELECT $1, account_id, owner_user_id, tenant_id FROM agent_accounts WHERE account_id = $2`,
+		first[:], string(agent.ID)); err != nil {
+		t.Fatalf("gate insert token: %v", err)
+	}
+
+	second := sha256.Sum256([]byte("race-second"))
+	done := make(chan error, 1)
+	go func() { done <- s.RotateGatewayToken(ctx, agent.ID, second) }()
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		// A row-lock waiter holds the tuple lock on the agent row while it waits on the gate's xid.
+		var waiters int
+		if err := gate.QueryRow(ctx,
+			`SELECT count(*) FROM pg_locks w JOIN pg_locks r ON r.pid = w.pid
+			 WHERE w.locktype = 'transactionid' AND NOT w.granted
+			   AND w.transactionid = (SELECT transactionid FROM pg_locks
+			                          WHERE pid = pg_backend_pid() AND locktype = 'transactionid')
+			   AND r.locktype = 'tuple' AND r.relation = 'agent_accounts'::regclass`,
+		).Scan(&waiters); err != nil {
+			t.Fatalf("poll pg_locks: %v", err)
+		}
+		if waiters >= 1 {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Rotate finished (err=%v) while the gate held the agent row", err)
+		case <-deadline:
+			t.Fatal("Rotate never waited on the agent-row lock")
+		case <-tick.C:
+		}
+	}
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("release gate: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("RotateGatewayToken after release: %v", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `SELECT hash FROM gateway_tokens WHERE agent_account_id = $1 AND revoked_at IS NULL`, string(agent.ID))
+	if err != nil {
+		t.Fatalf("read live tokens: %v", err)
+	}
+	live, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	if err != nil {
+		t.Fatalf("scan live tokens: %v", err)
+	}
+	if len(live) != 1 || string(live[0]) != string(second[:]) {
+		t.Fatalf("live tokens = %x, want only the second rotation's hash", live)
 	}
 }
 

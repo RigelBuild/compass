@@ -27,7 +27,8 @@ const (
 
 type VerifyAgentTokenRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The bearer the agent presented to the gateway, verbatim.
+	// The bearer the agent presented, verbatim. debug_redact is metadata only in
+	// protobuf-go, so the handler never logs req.Msg.
 	Token         string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

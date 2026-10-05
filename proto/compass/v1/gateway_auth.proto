@@ -15,7 +15,8 @@ service GatewayAuth {
 }
 
 message VerifyAgentTokenRequest {
-  // The bearer the agent presented to the gateway, verbatim.
+  // The bearer the agent presented, verbatim. debug_redact is metadata only in
+  // protobuf-go, so the handler never logs req.Msg.
   string token = 1 [debug_redact = true];
 }
 

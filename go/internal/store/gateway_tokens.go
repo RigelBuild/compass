@@ -42,7 +42,8 @@ func (s *Store) RotateGatewayToken(ctx context.Context, agentID AccountID, hash 
 	if err := qtx.InsertGatewayToken(ctx, db.InsertGatewayTokenParams{
 		Hash: hash[:], AgentAccountID: string(agentID), OwnerUserID: agent.OwnerUserID, TenantID: agent.TenantID,
 	}); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
+		// Only a hash collision is a conflict the caller can retry with a fresh token.
+		if pgErrIs(err, pgUniqueViolation) && pgConstraintName(err) == "gateway_tokens_pkey" {
 			return fmt.Errorf("%w: gateway token hash already stored", ErrConflict)
 		}
 		return fmt.Errorf("store: insert gateway token: %w", err)

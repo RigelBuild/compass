@@ -34,7 +34,8 @@ func newGatewayAuthService(tokens gatewayTokenVerifier) *gatewayAuthService {
 // errGatewayTokenInvalid is fixed so the response never says why a token failed.
 var errGatewayTokenInvalid = errors.New("invalid agent token")
 
-// VerifyAgentToken resolves an agent's gateway bearer to its agent and owner.
+// VerifyAgentToken resolves an agent's gateway bearer to its agent and owner. It
+// never logs req.Msg: protobuf-go treats debug_redact as metadata, not redaction.
 func (s *gatewayAuthService) VerifyAgentToken(ctx context.Context, req *connect.Request[compassv1internal.VerifyAgentTokenRequest]) (*connect.Response[compassv1internal.VerifyAgentTokenResponse], error) {
 	caller, err := s.tokens.Verify(ctx, req.Msg.GetToken())
 	if err != nil {

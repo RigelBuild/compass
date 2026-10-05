@@ -4,8 +4,13 @@ package auth
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -142,5 +147,50 @@ func TestGatewayTokenMintUnknownAgent(t *testing.T) {
 	g, _, _ := newGatewayAgents(t)
 	if _, err := g.Mint(t.Context(), "no-such-agent"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Mint(unknown) err = %v, want store.ErrNotFound", err)
+	}
+}
+
+// A live-index violation is not a hash collision: Mint must not re-mint, and the
+// error must name the index. A live row stamped with another tenant evades the revoke.
+func TestGatewayTokenMintLiveIndexViolationNotRetried(t *testing.T) {
+	ctx := t.Context()
+	dsn := pgtest.RequireDSN(t)
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("store Open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	owner, err := st.CreateUser(ctx, store.NewUser{Handle: "gw-idx-owner", DisplayName: "owner"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	agent, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "gw-idx-agent", DisplayName: "agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(ctx); err != nil {
+			t.Errorf("close conn: %v", err)
+		}
+	})
+	if _, err := conn.Exec(ctx,
+		`INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ('gw-idx-other', 'gw-idx-other', 'other', $1)`,
+		time.Now().UnixMilli()); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if _, err := conn.Exec(ctx,
+		`INSERT INTO gateway_tokens (hash, agent_account_id, owner_user_id, tenant_id)
+		 SELECT 'stray', account_id, owner_user_id, 'gw-idx-other' FROM agent_accounts WHERE account_id = $1`,
+		string(agent.ID)); err != nil {
+		t.Fatalf("seed stray live token: %v", err)
+	}
+
+	_, err = NewGatewayTokens(st).Mint(ctx, string(agent.ID))
+	if err == nil || errors.Is(err, store.ErrConflict) || !strings.Contains(err.Error(), "gateway_tokens_live_agent_idx") {
+		t.Fatalf("Mint err = %v, want a non-conflict error naming gateway_tokens_live_agent_idx", err)
 	}
 }

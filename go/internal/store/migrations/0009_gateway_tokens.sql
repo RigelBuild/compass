@@ -11,6 +11,8 @@ CREATE TABLE gateway_tokens (
     tenant_id        TEXT        NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_at       TIMESTAMPTZ,
+    -- RESTRICT pins revoked rows too: deleting an agent must purge its
+    -- gateway_tokens first, and changing its owner fails closed.
     FOREIGN KEY (agent_account_id, owner_user_id)
         REFERENCES agent_accounts (account_id, owner_user_id) ON DELETE RESTRICT
 );
