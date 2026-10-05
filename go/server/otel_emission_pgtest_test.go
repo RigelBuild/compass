@@ -72,6 +72,8 @@ func installGlobalSpanExporter(t *testing.T) *tracetest.InMemoryExporter {
 // the admin is a member of — so PostMessage's D9 membership gate admits a post
 // over the socket. It returns the DSN (so Serve opens the SAME isolated schema)
 // and the channel id. Serve's own BootstrapAdmin later finds this same admin.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func seedAdminChannel(t *testing.T, ctx context.Context) (dsn string, channelID string) {
 	t.Helper()
 	dsn = pgtest.RequireDSN(t)

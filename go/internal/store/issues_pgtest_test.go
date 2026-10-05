@@ -432,6 +432,8 @@ func TestSearchIssuesRejectsEmptyQuery(t *testing.T) {
 // write is the observable proxy for "which write's forge fields won" (GetIssue
 // does not surface forge_updated_at; the write-path threading is what T4a
 // lands, not a new read column).
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestUpsertRecencyGuardFresherWinsBothOrders(t *testing.T) {
 	ctx := context.Background()
 
@@ -503,6 +505,8 @@ func TestUpsertRecencyGuardFresherWinsBothOrders(t *testing.T) {
 // second-granularity), and a write with NO timestamp on either side always
 // applies — the two NULL arms of the ON CONFLICT predicate keep a not-yet-
 // threaded writer (and any row written before threading) from ever being gated.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestUpsertRecencyGuardEqualAndNullAlwaysApply(t *testing.T) {
 	ctx := context.Background()
 

@@ -299,6 +299,8 @@ func TestPutModelRegistryMetadataRoundTripViaRPC(t *testing.T) {
 // seeded registry succeeds and Get then reports version 0; a clear that would
 // strand a published profile's pin maps the store's ErrInvalidArgument to
 // CodeInvalidArgument.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestDeleteModelRegistryClearsAndOrphaningIsInvalidArgument(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
