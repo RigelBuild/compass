@@ -43,18 +43,14 @@ func devClients(t *testing.T, devAddr string) (compassv1connect.CompassServiceCl
 func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "compass.sock")
-	devAddr := freeLoopbackAddr(t)
-	devAddrPort, err := netip.ParseAddrPort(devAddr)
-	if err != nil {
-		t.Fatalf("parsing dev loopback addr %q: %v", devAddr, err)
-	}
+	devAddrPort := netip.MustParseAddrPort(loopbackAny)
 
-	serveInBackground(t, ServeConfig{
+	devAddr := serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: pgtest.RequireDSN(t),
 		Version:     "dev-door-test",
 		DevHTTP:     &devAddrPort,
-	})
+	}).dev
 	// Serve binds the dev listener before the socket and serves both off the same
 	// startup, so once the socket serves an RPC the dev port is bound and serving.
 	waitServing(t, socketPath)

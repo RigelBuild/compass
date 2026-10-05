@@ -107,6 +107,9 @@ func bindListeners(cfg ServeConfig) (boundListeners, error) {
 		}
 		b.network, b.netTLS = l, t
 	}
+	if cfg.OnBound != nil { // report what bound, so a port-0 caller learns the real port
+		cfg.OnBound(listenerAddr(b.dev), listenerAddr(b.network))
+	}
 	return b, nil
 }
 
