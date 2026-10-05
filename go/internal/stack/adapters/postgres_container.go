@@ -341,10 +341,11 @@ func (e *podmanExec) term(ctx context.Context, name string) error {
 	return nil
 }
 
-// remove force-removes the container (`podman rm -f`). An absent container is
-// already removed — not an error.
+// remove force-removes the container without the stop-timeout grace (`podman rm
+// -f -t 0`): it is the hard-kill tier, reached only after the drain budget. An
+// absent container is already removed — not an error.
 func (e *podmanExec) remove(ctx context.Context, name string) error {
-	if err := e.fireAndCheck(ctx, []string{"rm", "--force", "--volumes", name}); err != nil {
+	if err := e.fireAndCheck(ctx, []string{"rm", "--force", "--time", "0", "--volumes", name}); err != nil {
 		if isNoSuchContainer(err) {
 			return nil
 		}
@@ -390,6 +391,7 @@ func (e *podmanExec) fireAndCheck(ctx context.Context, args []string) error {
 	cctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, e.program, args...) //nolint:gosec // G204: the container seam — program is the operator-set engine and args are Stack-built from a state-dir-derived spec, neither attacker-controlled
+	cmd.WaitDelay = podmanWaitDelay
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -408,6 +410,7 @@ func (e *podmanExec) output(ctx context.Context, args []string) (string, error) 
 	cctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, e.program, args...) //nolint:gosec // G204: same seam as fireAndCheck; args are Stack-built from a state-dir-derived name
+	cmd.WaitDelay = podmanWaitDelay
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -419,6 +422,10 @@ func (e *podmanExec) output(ctx context.Context, args []string) (string, error) 
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// podmanWaitDelay bounds how long a podman call waits on stdio a child still
+// holds open after podman exits or is killed, so a leaked pipe cannot hang down.
+const podmanWaitDelay = 2 * time.Second
 
 // isNoSuchContainer reports whether err is podman's "no such container" (the
 // container vanished in the verify→signal gap, or was already gone). The

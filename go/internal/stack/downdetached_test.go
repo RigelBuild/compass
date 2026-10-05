@@ -983,10 +983,10 @@ func TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors(t *testin
 	}
 }
 
-// TestDownDetachedPhaseADoesNotWaitOnContainerDrain: Phase A only signals. A
-// container's removal belongs to the drain phase, so the TERM to every later
-// target goes out before any container is removed.
-func TestDownDetachedPhaseADoesNotWaitOnContainerDrain(t *testing.T) {
+// TestDownDetachedTierSignalDoesNotWaitOnContainerDrain: signalling a tier never
+// blocks on a container's drain. The gateway's stop is sent first in its tier,
+// and the runner and server get their SIGTERM before any container is removed.
+func TestDownDetachedTierSignalDoesNotWaitOnContainerDrain(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedGatewayRecord(t, cfg, h)
 	deps := sidecarContainerDownDeps(t, h)
@@ -994,19 +994,59 @@ func TestDownDetachedPhaseADoesNotWaitOnContainerDrain(t *testing.T) {
 		pgid := p
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
+	// The gateway is listed after the runner and server in its tier, so move it
+	// first to prove its stop does not hold up the signals behind it.
+	rec, err := readPgidFile(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExited(gatewayContainerNameTest) }
+	targets := liveTargets(context.Background(), cfg, deps, rec)
+	for i, tg := range targets {
+		if tg.entry.Component == ComponentGateway {
+			targets[0], targets[i] = targets[i], targets[0]
+		}
+	}
+	if survivors := drainTier(context.Background(), deps, targets[:3]); len(survivors) != 0 {
+		t.Fatalf("survivors = %v, want none", survivors)
+	}
+	events := h.rec.snapshot()
+	runnerTerm := indexOf(events, "group-term "+strconv.Itoa(runnerPgid))
+	serverTerm := indexOf(events, "group-term "+strconv.Itoa(serverPgid))
+	if indexOf(events, "ctr-stop "+gatewayContainerNameTest) != 0 || runnerTerm < 0 || serverTerm < 0 {
+		t.Fatalf("want the gateway stop first and both consumers signalled: %v", events)
+	}
+	lastTerm := max(runnerTerm, serverTerm)
+	for i, e := range events[:lastTerm] {
+		if strings.HasPrefix(e, "ctr-rm") {
+			t.Fatalf("event %d %q removed a container before its tier was signalled: %v", i, e, events)
+		}
+	}
+}
+
+// TestDownDetachedInfraTierWaitsForConsumerTier: nats and postgres are not
+// signalled while a consumer still drains. The server ignores SIGTERM, so its
+// budget runs out and it is killed; only then may the infra tier get its stop.
+func TestDownDetachedInfraTierWaitsForConsumerTier(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedNatsRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	h.groupSig.onKill[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.containers.onStop[natsContainerNameTest] = func(context.Context) { h.containers.setExistsName(natsContainerNameTest, false) }
 
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatal(err)
 	}
 	events := h.rec.snapshot()
-	pgTerm := indexOf(events, "group-term "+strconv.Itoa(pgPgid))
-	if pgTerm < 0 {
-		t.Fatalf("postgres never SIGTERMed: %v", events)
+	serverKill := indexOf(events, "group-kill "+strconv.Itoa(serverPgid))
+	if serverKill < 0 {
+		t.Fatalf("server never escalated: %v", events)
 	}
-	for i, e := range events[:pgTerm] {
-		if strings.HasPrefix(e, "ctr-rm") {
-			t.Fatalf("event %d %q removed a container before the last target was signalled: %v", i, e, events)
+	for _, infra := range []string{"ctr-stop " + natsContainerNameTest, "group-term " + strconv.Itoa(pgPgid)} {
+		if i := indexOf(events, infra); i < serverKill {
+			t.Fatalf("%q at %d, before the server's budget expired at %d: %v", infra, i, serverKill, events)
 		}
 	}
 }
@@ -1256,6 +1296,28 @@ func TestDownDetachedGatewayExitedIsRemovedAndConfirmed(t *testing.T) {
 		t.Fatalf("gateway teardown = %v, want stop then non-forced rm", got)
 	}
 	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedGatewayGoneSkipsRemoveExited: once the gateway is absent the
+// confirm is done; it must not issue a podman rm for a container already gone.
+func TestDownDetachedGatewayGoneSkipsRemoveExited(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	for _, p := range []int{pgPgid, serverPgid, runnerPgid} {
+		pgid := p
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExistsName(gatewayContainerNameTest, false) }
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatal(err)
+	}
+	h.containers.mu.Lock()
+	calls := h.containers.rmExitedCalls[gatewayContainerNameTest]
+	h.containers.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("RemoveExited called %d times on an absent gateway, want 0", calls)
+	}
 }
 
 // TestDownDetachedGatewayStillRunningEscalatesToRemove: while the gateway runs,

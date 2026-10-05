@@ -104,8 +104,8 @@ func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 	// process entries dropped in consumeRecord.
 	targets := liveTargets(ctx, cfg, deps, rec)
 
-	// 4/5/6. SIGTERM every live target up front (reverse order), then per-target
-	// bounded wait → SIGKILL escalation → per-component confirmation.
+	// 4/5/6. Per tier (consumers, then infra): SIGTERM every live target, then
+	// per-target bounded wait → SIGKILL escalation → per-component confirmation.
 	survivors := drainTargets(ctx, deps, targets)
 
 	// 7. Removal / partial-failure policy.
@@ -247,6 +247,9 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		{comp: ComponentGateway, budget: gatewayDrainBudget, confirm: func(e pgidEntry) func() bool {
 			// It runs without --rm, so an exited gateway lingers; remove it once exited.
 			return func() bool {
+				if !deps.Containers.Exists(ctx, e.ContainerName) {
+					return true
+				}
 				if err := deps.Containers.RemoveExited(ctx, e.ContainerName); err != nil {
 					logContainerSignalMiss("rm", e, err)
 				}
@@ -302,28 +305,38 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 	return targets
 }
 
-// drainTargets SIGTERMs every live target (reverse order, already ordered by
-// liveTargets), then per target waits the drain budget, escalates to a group
-// SIGKILL, and confirms per component. It returns the components that were still
-// alive at budget expiry after the SIGKILL — the survivor set for the
-// partial-failure rewrite.
+// consumerTier holds the components that publish to or query the infra tier;
+// they drain first so no consumer outlives the broker or database it uses.
+var consumerTier = map[Component]bool{ComponentRunner: true, ComponentServer: true, ComponentGateway: true}
+
+// drainTargets tears targets down in two tiers, consumers (runner, server,
+// gateway) then infra (nats, collector, postgres), each in reverse start order.
+// It returns the components still alive after their drain budget and hard kill —
+// the survivor set for the partial-failure rewrite.
 func drainTargets(ctx context.Context, deps Deps, targets []target) []Component {
-	// Phase A: SIGTERM all live groups up front. Signaling the server also makes a
-	// surviving runner exit when its link drops, belt-and-suspenders alongside
-	// signaling the runner group. A delivery error is not the verdict — the confirm
-	// below is — so it is not fatal here (an ESRCH means the group already vanished).
-	// No signal here waits for its target to exit: every drain budget runs in Phase B.
+	var consumers, infra []target
 	for _, t := range targets {
+		if consumerTier[t.entry.Component] {
+			consumers = append(consumers, t)
+		} else {
+			infra = append(infra, t)
+		}
+	}
+	return append(drainTier(ctx, deps, consumers), drainTier(ctx, deps, infra)...)
+}
+
+// drainTier signals every target in the tier, then drains each one in turn.
+// Signalling never waits for exit, so each drain budget is measured by waitDead.
+// A delivery error is not the verdict — the confirm is — so it is not fatal here.
+func drainTier(ctx context.Context, deps Deps, tier []target) []Component {
+	for _, t := range tier {
 		signalTerm(ctx, deps, t.entry)
 	}
-
-	// Phase B: per-target confirm with bounded SIGKILL escalation.
 	var survivors []Component
-	for _, t := range targets {
-		if drainOne(ctx, deps, t) {
-			continue
+	for _, t := range tier {
+		if !drainOne(ctx, deps, t) {
+			survivors = append(survivors, t.entry.Component)
 		}
-		survivors = append(survivors, t.entry.Component)
 	}
 	return survivors
 }
@@ -448,7 +461,7 @@ func groupReleased(deps Deps, e pgidEntry) bool {
 
 // signalTerm delivers the graceful-stop tier, dispatched on kind: a group
 // SIGTERM for a process, the container's stop signal for a container. Neither
-// waits for exit, so Phase B's waitDead measures every drain budget. A delivery
+// waits for exit, so waitDead in drainTier measures every drain budget. A delivery
 // error is not the teardown verdict — the per-component confirm channel is — so
 // it is logged, never fatal.
 func signalTerm(ctx context.Context, deps Deps, e pgidEntry) {

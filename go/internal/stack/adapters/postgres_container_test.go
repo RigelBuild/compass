@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,16 +226,93 @@ func TestRemoveExitedToleratesRunningAndAbsent(t *testing.T) {
 		{"engine failure", "Error: database is locked", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			prog := filepath.Join(t.TempDir(), "podman")
-			script := "#!/bin/sh\necho '" + tc.stderr + "' >&2\nexit 2\n"
-			if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			e := &podmanExec{program: prog, timeout: 5 * time.Second}
+			e, _ := fakePodman(t, "echo '"+tc.stderr+"' >&2\nexit 2\n")
 			if err := e.removeExited(context.Background(), "x"); (err != nil) != tc.wantErr {
 				t.Fatalf("removeExited() = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// fakePodman returns a podmanExec over a shell script with the given body. Each
+// invocation's argv is appended, one line per call, to the returned log path.
+func fakePodman(t *testing.T, body string) (*podmanExec, string) {
+	t.Helper()
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "podman")
+	argvLog := filepath.Join(dir, "argv")
+	script := "#!/bin/sh\necho \"$*\" >> '" + argvLog + "'\n" + body
+	if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return &podmanExec{program: prog, timeout: 5 * time.Second}, argvLog
+}
+
+// readArgv returns the recorded podman invocations, one per element.
+func readArgv(t *testing.T, argvLog string) []string {
+	t.Helper()
+	data, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+// TestRemoveSkipsStopTimeout: a force-remove is the hard kill, so it must not
+// wait out the container's --stop-timeout grace first.
+func TestRemoveSkipsStopTimeout(t *testing.T) {
+	e, argvLog := fakePodman(t, "exit 0\n")
+	if err := e.remove(context.Background(), "x"); err != nil {
+		t.Fatalf("remove() = %v", err)
+	}
+	if got, want := readArgv(t, argvLog), []string{"rm --force --time 0 --volumes x"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+// TestTermSendsConfiguredStopSignal: term reads the container's stop signal and
+// kills with it (postgres stops on SIGINT), defaults to SIGTERM when none is
+// set, and treats a vanished container as already stopped.
+func TestTermSendsConfiguredStopSignal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		inspect  string
+		wantArgv []string
+	}{
+		{"configured", "echo SIGINT", []string{"container inspect --format {{.Config.StopSignal}} x", "kill --signal SIGINT x"}},
+		{"unset", "echo", []string{"container inspect --format {{.Config.StopSignal}} x", "kill --signal SIGTERM x"}},
+		{"absent", "echo 'Error: no such container x' >&2; exit 125", []string{"container inspect --format {{.Config.StopSignal}} x"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, argvLog := fakePodman(t, "if [ \"$1\" = container ]; then "+tc.inspect+"; fi\n")
+			if err := e.term(context.Background(), "x"); err != nil {
+				t.Fatalf("term() = %v", err)
+			}
+			if got := readArgv(t, argvLog); !reflect.DeepEqual(got, tc.wantArgv) {
+				t.Fatalf("argv = %q, want %q", got, tc.wantArgv)
+			}
+		})
+	}
+}
+
+// TestPodmanCallReturnsWhenGrandchildHoldsStderr: a podman that exits while a
+// child it spawned keeps stderr open must not hang the call past WaitDelay.
+func TestPodmanCallReturnsWhenGrandchildHoldsStderr(t *testing.T) {
+	e, _ := fakePodman(t, "sleep 8 &\nexit 0\n")
+	done := make(chan error, 2)
+	go func() { done <- e.fireAndCheck(context.Background(), []string{"rm", "x"}) }()
+	go func() {
+		_, err := e.output(context.Background(), []string{"inspect", "x"})
+		done <- err
+	}()
+	deadline := time.NewTimer(e.timeout - time.Second)
+	defer deadline.Stop()
+	for range 2 {
+		select {
+		case <-done:
+		case <-deadline.C:
+			t.Fatal("podman call still blocked on an inherited stderr pipe")
+		}
 	}
 }
 

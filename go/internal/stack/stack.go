@@ -207,6 +207,8 @@ func attachContended(ctx context.Context, cfg Config, deps Deps) (*Stack, error)
 // cross-process teardown record has nothing left to describe. A partial or
 // failed drain leaves the file in place so a later fresh down can still finish
 // the job. An attached stack recorded no children, so removal is a no-op.
+// An expired ctx fails each stop and wait fast, so children may survive; the
+// record stays in place and a later DownDetached finishes them.
 func (s *Stack) Down(ctx context.Context) error {
 	err := s.drainChildren(ctx)
 	if err == nil {
