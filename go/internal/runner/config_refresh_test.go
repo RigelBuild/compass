@@ -86,6 +86,7 @@ func newConfigRefreshFixture(t *testing.T) (*agentHost, *configFanoutRuntime, *c
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: shortRuntimeDir(t)}
 	host := NewSessionHost(link, rt, registry, engine, accountSpecBuilder{}, cfg, discardLoggerRunner()).(*agentHost)
+	closeHostAtCleanup(t, host)
 	return host, engine, pub
 }
 

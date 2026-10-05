@@ -92,6 +92,7 @@ func newVsockGatewayFixture(t *testing.T, relay compassv1internalconnect.RunnerS
 	link := newLink(newRunnerServiceServer(t, relay))
 	specs := &fakeSpecBuilder{spec: liveSpec()}
 	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	closeHostAtCleanup(t, host)
 	return host.(*agentHost), engine
 }
 
