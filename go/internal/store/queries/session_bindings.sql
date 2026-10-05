@@ -50,6 +50,11 @@
 -- name: LockSessionBindingAccount :exec
 SELECT pg_advisory_xact_lock(hashtext('binding:' || $1 || ':' || $2));
 
+-- Under RLS, an agent of another tenant is invisible exactly like an unknown id;
+-- the FK cannot tell them apart because FK checks ignore RLS.
+-- name: AgentAccountVisible :one
+SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE account_id = $1);
+
 -- The prior-value read follows the account advisory lock. It shares a tx with
 -- event writes and the binding upsert. FOR UPDATE also protects against a writer
 -- that reaches the row without taking the advisory lock.
@@ -74,8 +79,8 @@ SELECT b.session_id, b.usage_interval_id, b.runner_id
 -- Event writes share RecordSessionBinding's transaction, so neither half of an
 -- interval can commit without its binding transition.
 -- clock_timestamp records after lock waits, unlike now() which uses tx start time.
--- :execrows: the interval id is fresh, so zero rows means RLS hid the agent row
--- (an agent of another tenant), and the Store refuses the bind.
+-- :execrows: the interval id is fresh, so zero rows means no visible agent row,
+-- and the Store fails the bind rather than commit it unbilled.
 -- name: StartComputeUsageInterval :execrows
 INSERT INTO compute_usage_events (
     id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
