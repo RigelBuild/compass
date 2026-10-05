@@ -514,9 +514,12 @@ fixed below.
       already set up. Quit and reopen it to change this." and Quit). Reading
       after subscribing means a decision made before the subscription is
       still seen.
-    - While this window's own action is in flight, and after it has handed
-      off or shown its result, it unsubscribes and ignores events, so its own
-      decision cannot trigger a second transition.
+    - The listener stays active across this window's failed or refused
+      attempts. It is dropped only when this window reaches a terminal result
+      of its own (the embedded success text, or a successful connect), so its
+      own event cannot cause a second transition. While the window's own
+      action is in flight, an event is deferred and handled only if that
+      action ends non-terminal.
     - Connect hands off to `deps.bootNativeClient(root, "setup")`. The default
       deps wrap `bootNativeClient(root, undefined, entry)`.
   - `boot-native.ts` setup entry: no auto-probe; the form from A4; submit
@@ -580,6 +583,8 @@ fixed below.
       returns `"reopen"`) shows the reopen screen with no event;
     - the window that chose embedded keeps its embedded success text when its
       own `setup:decided` arrives, and the window that connected boots once;
+    - a window whose attempt failed or was refused keeps listening: when
+      another window then decides, it transitions exactly once;
     - connect hands off with `"setup"`.
   - `boot-mode`: `"setup"` routes to `bootSetup`; `"reopen"` renders the
     neutral reopen screen.
