@@ -87,14 +87,17 @@ app.toml brings the chooser back but does not stop a lingering embedded stack
 ### A2 — Persist by writing app.toml
 
 `appconfig.SaveClient` writes `mode = "client"`, the normalized `server_url`,
-and `ca_cert`; `SaveEmbedded` writes `mode = "embedded"`. Each encodes with
-`toml.NewEncoder` after a comment header saying the app wrote the file,
-re-`Parse`s the bytes, writes a same-directory temp file, fsyncs, and links it
-to `app.toml` with `os.Link`, then removes the temp name. The link fails if
-`app.toml` exists, so a file written meanwhile by another process or by hand
-is never replaced; that failure returns `ErrConfigExists`. A chosen CA is first
-written to `server-ca.pem` beside app.toml, and `ca_cert` names that copy
-(OQ-4), so a moved download cannot break a later launch. The next launch reads
+and `ca_cert` only when the user picked a CA file; `SaveEmbedded` writes
+`mode = "embedded"`. Each encodes with `toml.NewEncoder` after a comment
+header saying the app wrote the file, then re-`Parse`s the bytes. A picked CA
+is written first to a new `server-ca-<16 hex>.pem` beside app.toml, created
+with `O_EXCL`, so no existing trust anchor is ever replaced; `ca_cert` names
+that copy (OQ-4), so a moved download cannot break a later launch. The TOML
+goes to a same-directory temp file, is fsynced, and is linked to `app.toml`
+with `os.Link`; then the directory is fsynced. The link fails if `app.toml`
+exists, so a file written meanwhile by another process or by hand is never
+replaced; that failure returns `ErrConfigExists`. Every exit removes the temp
+file, and every failure also removes the new CA copy. The next launch reads
 the file through the unchanged parse path.
 
 ### A3 — The URL reaches the running shell (OQ-2)
@@ -110,10 +113,12 @@ setup there is no target yet, so `Connect` gains an optional server choice:
    its "CA PEM contained no usable certificate" error).
 3. Run the existing probe (GetServerInfo → API version → WhoAmI) against the
    candidate.
-4. On success: store the token under the normalized URL, `SaveClient`, then
-   install the candidate and a new pump on it as one atomic value. Token first
-   means a saved config always has its token, so the next launch
-   auto-connects.
+4. On success: `SaveClient`, then store the token under the normalized URL,
+   then install the candidate and a new pump on it as one atomic value. Saving
+   first means the token is written only by the process that created
+   app.toml, so a lost first-run race never touches another process's token.
+   A token-store failure after the save asks the user to reopen and enter the
+   token again, which the configured connect screen already supports.
 
 The webview never names a file. `PickCACert` reads the picked file in the
 shell and returns an opaque ref, which is all `Connect` accepts.
@@ -193,13 +198,12 @@ fixed below.
     `appconfig: server_url %q must not include a path, query, or fragment (e.g. https://host:8443)`.
   - Export `configPath` as `ConfigPath`.
   - `SaveClient` and `SaveEmbedded` per A2: directory 0700, files 0600, through
-    a package-local create-exclusive helper (temp file, fsync, `os.Link`;
-    `certgen.atomicWrite` and tokenstore's `fileStore.writeAtomic` rename over
-    the target, so they are the wrong primitive here). An existing `app.toml`
-    returns `ErrConfigExists` and leaves it byte-identical. `SaveClient` with
-    non-empty `caPEM` writes `server-ca.pem` first and sets `CACert` to it. It
-    refuses a `cfg.Mode` other than `ModeClient`, and a failed re-`Parse`
-    leaves `app.toml` absent.
+    a package-local create-exclusive helper (`certgen.atomicWrite` and
+    tokenstore's `fileStore.writeAtomic` rename over the target, so they are
+    the wrong primitive here). An existing `app.toml` returns
+    `ErrConfigExists`. `SaveClient` refuses a `cfg.Mode` other than
+    `ModeClient`. Any failure, including a failed re-`Parse`, leaves no
+    `app.toml`, no new CA copy, and no temp file.
   - Update `doc.go` ("precedence is override > file > embedded-default",
     "the zero-config onboarding default").
 - **Interfaces:**
@@ -231,10 +235,12 @@ fixed below.
   - No file, no override → `errors.Is(err, ErrNoConfig)`. No file with
     `"embedded"` → embedded.
   - `SaveClient` with `caPEM` → `Load` returns client mode, the URL, and
-    `CACert` equal to `filepath.Join(dir, "server-ca.pem")` holding the bytes.
-    `SaveEmbedded` → `Load` returns embedded. `SaveClient` with `http://h`
-    fails and leaves no `app.toml`. Both `SaveClient` and `SaveEmbedded` onto
-    an existing `app.toml` return `ErrConfigExists` and leave it byte-identical.
+    `CACert` naming a `server-ca-*.pem` in the dir that holds the bytes.
+    Without `caPEM`, no `ca_cert` and no CA file. `SaveEmbedded` → `Load`
+    returns embedded. `SaveClient` with `http://h` fails.
+  - Onto an existing `app.toml` and `server-ca-*.pem`, both savers return
+    `ErrConfigExists` and leave both byte-identical.
+  - Every failure above leaves no temp file and no new CA file in the dir.
 
 ### T-2a — Shell: one connection value (behaviour-preserving)
 
@@ -248,8 +254,10 @@ fixed below.
     success, and stores nothing. Plain `Connect` keeps today's token lookup,
     store, messages, and fail-closed path when there is no target or
     tokenstore.
-  - `shellState` reads the connection without a lock, so a New Window click
-    never waits on `connectMu`.
+  - `shellState` reads the connection and a separate `setupPhase` without a
+    lock, so a New Window click never waits on `connectMu`. An installed
+    connection wins; with none it returns the phase. `setupPhase` is never a
+    connection, so `CompassRPC` stays on the no-connection error in `"reopen"`.
   - Move the six `newBridgeService` call sites to `&connection{…}`:
     `runClient`, `launch`'s embedded arm, `bridge_service_test.go`,
     `bridge_service_connect_test.go` (two sites), and
@@ -266,9 +274,17 @@ fixed below.
 
   func newBridgeService(conn *connection, events eventEmitter, tokens tokenstore.Store) *bridgeService
 
-  // shellState returns the startup globals for a new window: ("setup", "")
-  // before a first-run choice, ("reopen", "") after an embedded save.
+  // bridgeService gains phase atomic.Pointer[string]: "setup" until a
+  // first-run choice ends, then "reopen". Unused on a configured service.
+  func (s *bridgeService) setPhase(phase string)
+
+  // shellState returns the startup globals for a new window: the installed
+  // connection's (mode, serverURL), else (phase, "").
   func (s *bridgeService) shellState() (mode, serverURL string)
+
+  // ShellState is the bound form, so a window can re-check after it
+  // subscribes to setup:decided.
+  func (s *bridgeService) ShellState() shellStateResult // {mode, serverUrl}
 
   // probe runs the connect probe against target with token. It does not
   // store the token.
@@ -278,14 +294,20 @@ fixed below.
 - **Test cycle:** the existing `bridge_service_test.go` and
   `bridge_service_connect_test.go` assertions pass unchanged (they are the
   regression net). New: a service with no connection emits exactly one error
-  frame for `CompassRPC`.
+  frame for `CompassRPC`, including after `setPhase("reopen")`, and
+  `shellState` returns `("reopen", "")` then.
 
 ### T-2b — Shell: `Connect` with a server choice
 
 - **Do:**
   - `firstRunGate`: `begin` fails with "Another window is setting up Compass."
     while an attempt runs, and with "Compass is already set up. Quit and
-    reopen it to change this." after a save. `end(saved)` releases it.
+    reopen it to change this." after a decision. `end(false)` releases it.
+  - `decide(svc)` is the one terminal step for every path that ends first
+    run: it makes the gate final, then (for every path except a client
+    install) calls `svc.setPhase("reopen")`, then emits `setup:decided`. State
+    is set before the event, so a window that reads `ShellState` after it
+    subscribes cannot miss the decision.
   - `caPicks`: the shell-side store of picked CA bytes, keyed by a 128-bit
     random hex ref. `get` leaves the entry, so a failed probe can be retried
     with the same pick; `clear` drops every entry after a save.
@@ -304,14 +326,20 @@ fixed below.
     5. an empty token reads the stored token for the normalized URL, as plain
        `Connect` does;
     6. `probe` the candidate; failure → its kind;
-    7. store the token, then `SaveClient(configPath, Config{Mode: ModeClient,
-       ServerURL: url}, caPEM)`. Either failure disarms the candidate, calls
-       `end(false)`, and returns kind `other` ("Connected, but could not save
-       the token" / "Connected, but the settings could not be saved: <err>").
-       `ErrConfigExists` instead calls `end(true)` and returns the gate's
-       "already set up" message;
+    7. `SaveClient(configPath, Config{Mode: ModeClient, ServerURL: url},
+       caPEM)`, then store the token. The token is written only after this
+       process owns `app.toml`, so a lost race never touches another
+       process's token. `ErrConfigExists` disarms the candidate, calls
+       `decide`, and returns kind `other` with the "already set up" message.
+       Any other `SaveClient` failure disarms, calls `end(false)`, and
+       returns kind `other` ("Connected, but the settings could not be
+       saved: <err>"). A token-store failure after the save installs nothing,
+       calls `decide`, and returns kind `other` ("Saved, but could not store
+       the token. Quit and reopen Compass, then enter it again.");
     8. install `&connection{mode: "client", serverURL: url, target: candidate,
-       pump: bridge.NewPump(candidate)}`, then `picks.clear()` and `end(true)`.
+       pump: bridge.NewPump(candidate)}`, then `picks.clear()` and `decide`.
+       Other open setup windows read `ShellState` on the event and boot as
+       the connected client.
   - Every successful `connectResult` carries `serverUrl`.
 - **Interfaces:**
 
@@ -322,6 +350,9 @@ fixed below.
   }
   func (g *firstRunGate) begin() error
   func (g *firstRunGate) end(saved bool)
+  // decide makes the gate final, sets "reopen" unless clientInstalled, then
+  // emits setup:decided.
+  func decide(g *firstRunGate, svc *bridgeService, clientInstalled bool)
 
   type caPicks struct {
       mu    sync.Mutex
@@ -335,6 +366,7 @@ fixed below.
       configPath string // appconfig.ConfigPath result
       gate       *firstRunGate
       picks      *caPicks
+      saveClient func(path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error) // appconfig.SaveClient; a seam for tests
   }
   func newSetupBridgeService(events eventEmitter, tokens tokenstore.Store, setup *setupWiring) *bridgeService
 
@@ -367,13 +399,18 @@ fixed below.
     a plain token `Connect` → `ok`.
   - A server choice on a `newBridgeService` client service → `other`, nothing
     written.
-  - Gate: a second `begin` while busy fails; `end(false)` reopens; `end(true)`
+  - Gate: a second `begin` while busy fails; `end(false)` reopens; `decide`
     is final.
-  - Injected token-store failure, and a `SaveClient` failure from a read-only
-    config dir: kind `other`, no connection installed, no `app.toml`, the gate
-    open after. A following valid attempt → `ok`.
-  - An `app.toml` created after the chooser opened → the "already set up"
-    message, the file byte-identical, and the gate final.
+  - An injected `saveClient` error: kind `other`, no connection installed, no
+    token written, the gate open after; a following valid attempt → `ok`.
+  - An injected token-store failure after a good save: kind `other`, no
+    connection installed, `shellState` → `("reopen", "")`, and one
+    `setup:decided` event.
+  - An `app.toml` (and token) created after the chooser opened → the
+    "already set up" message, both byte-identical, `shellState` →
+    `("reopen", "")`, and one `setup:decided` event.
+  - A successful client setup emits one `setup:decided`, and `ShellState`
+    then returns `("client", url)`.
   - Under `-race`: `CompassRPC` concurrent with a successful setup `Connect`.
 
 ### T-3 — Shell: setup launch, live window globals, embedded choice, CA dialog
@@ -390,14 +427,12 @@ fixed below.
     launch-time `startupJS` local goes. `shellStartupJS` is unchanged:
     `"setup"` and `"reopen"` inject no URL global.
   - `setupService.ChooseEmbedded`: `gate.begin()` → preflight → on failure
-    `end(false)` and return its message → `SaveEmbedded` → on success
-    `end(true)`, record the embedded choice on the bridge service so
-    `shellState` returns `"reopen"`, and emit a `setup:decided` event so open
-    setup windows switch to the reopen screen; on `ErrConfigExists` the same
-    `end(true)` path with the "already set up" message; on any other error
-    `end(false)`. No relaunch and no quit. `main.go` wires preflight as
-    `realPreflight(image)` under `bringUpTimeout`, which is already sized for
-    darwin machine creation.
+    `end(false)` and return its message → `SaveEmbedded`. On success,
+    `decide(gate, svc, false)` and return `ok` with the embedded reopen text.
+    On `ErrConfigExists`, the same `decide` and the neutral "already set up"
+    message, which names no mode. Any other error → `end(false)`. No relaunch
+    and no quit. `main.go` wires preflight as `realPreflight(image)` under
+    `bringUpTimeout`, which is already sized for darwin machine creation.
   - `dialogService.PickCACert`:
     `app.Dialog.OpenFile().SetTitle("Choose CA certificate").AddFilter("Certificates", "*.pem;*.crt").PromptForSingleSelection()`.
     Cancel returns the zero `pickedCA`. Otherwise it reads the file, calls
@@ -415,9 +450,9 @@ fixed below.
   }
   type setupService struct {
       gate      *firstRunGate
+      svc       *bridgeService // for decide
       preflight func(ctx context.Context) error
       save      func() error   // appconfig.SaveEmbedded(path)
-      decided   func()         // marks the bridge service "reopen" and emits setup:decided
   }
   func (s *setupService) ChooseEmbedded(ctx context.Context) setupResult
 
@@ -440,8 +475,9 @@ fixed below.
   - preflight passes → one save, `ok`, `shellState` → `("reopen", "")`, and
     one `setup:decided` event;
   - save fails → the message, and the gate is open after;
-  - save returns `ErrConfigExists` → the "already set up" message, the gate
-    final;
+  - save returns `ErrConfigExists` → the "already set up" message (no mode
+    named), `shellState` → `("reopen", "")`, one `setup:decided` event, and
+    the gate final;
   - gate held by an in-flight connect → refused without running preflight;
   - after a save → refused.
 
@@ -457,15 +493,19 @@ fixed below.
     - `ConnectResult` gains `serverUrl` and the two kinds;
     - `shellConnect` sends `{token}` or `{token, server}`;
     - add `pickCACert` (`main.dialogService.PickCACert`), `chooseEmbedded`
-      (`main.setupService.ChooseEmbedded`), and `quitApp`
-      (`Application.Quit`).
+      (`main.setupService.ChooseEmbedded`), `shellState`
+      (`main.bridgeService.ShellState`), and `quitApp` (`Application.Quit`).
   - New `boot-setup.ts`, with the two choices:
     - Embedded shows "Checking this computer… The first check on a Mac can
-      take several minutes." Success shows the reopen screen: "Compass is set
-      up to run on this computer. Quit and reopen it to start." with a Quit
-      button. Failure shows the message and both choices again.
-    - A `setup:decided` event moves any other open setup window to the reopen
-      screen.
+      take several minutes." Success shows "Compass is set up to run on this
+      computer. Quit and reopen it to start." with a Quit button. Any other
+      result shows its message; when the gate is final that message is the
+      neutral "already set up" text, otherwise both choices return.
+    - The window subscribes to `setup:decided`, then calls `shellState` once,
+      and again on each event. `"client"` boots the connected client;
+      `"reopen"` shows the neutral reopen screen ("Compass is already set up.
+      Quit and reopen it to change this." and Quit). Reading after subscribing
+      means a decision made before the subscription is still seen.
     - Connect hands off to `deps.bootNativeClient(root, "setup")`. The default
       deps wrap `bootNativeClient(root, undefined, "setup")`.
   - `boot-native.ts` setup entry: no auto-probe; the form from A4; submit
@@ -473,7 +513,7 @@ fixed below.
     and `invalid-ca` show `message` via `textContent`; on `ok` the provider
     uses `result.serverUrl`. The configured entry is unchanged.
   - `boot-mode.ts`: `BootModeDeps` gains `bootSetup`; `bootForMode` routes
-    `"setup"` to it and `"reopen"` to the reopen screen.
+    `"setup"` to it and `"reopen"` to the neutral reopen screen.
 - **Interfaces:**
 
   ```ts
@@ -500,6 +540,8 @@ fixed below.
 
   export type SetupBootDeps = {
     chooseEmbedded: () => Promise<SetupResult>;
+    shellState: () => Promise<{ mode: ShellMode; serverUrl: string }>;
+    onSetupDecided: (fn: () => void) => () => void; // returns unsubscribe
     quitApp: () => Promise<void>;
     bootNativeClient: (root: HTMLElement, entry: "setup") => Promise<ResolvedConnection | undefined>;
   };
@@ -519,11 +561,14 @@ fixed below.
     - the existing configured-entry tests stay green.
   - New `boot-setup.test.ts`:
     - an embedded failure re-renders both choices with the message;
-    - success shows the reopen text, and Quit calls `quitApp`;
-    - a `setup:decided` event switches an idle chooser to the reopen screen;
+    - success shows the embedded reopen text, and Quit calls `quitApp`;
+    - a `setup:decided` event with `shellState` → `"reopen"` shows the
+      neutral reopen screen; with `"client"` it boots the connected client;
+    - a decision made before the subscription (the first `shellState` already
+      returns `"reopen"`) shows the reopen screen with no event;
     - connect hands off with `"setup"`.
   - `boot-mode`: `"setup"` routes to `bootSetup`; `"reopen"` renders the
-    reopen screen.
+    neutral reopen screen.
 
 ### T-5 — Docs, examples, smoke run
 
@@ -547,8 +592,8 @@ fixed below.
 - **Interfaces:** none.
 - **Test cycle:** a smoke run on a Linux GTK4 build with an empty config home:
   1. connect with the stack's CA, then quit;
-  2. reopen: it auto-connects, and app.toml holds the origin URL and
-     `server-ca.pem`;
+  2. reopen: it auto-connects, and app.toml holds the origin URL and a
+     `ca_cert` naming a `server-ca-*.pem` copy;
   3. delete app.toml and choose embedded: the reopen message appears, and
      reopening runs the embedded bring-up;
   4. `http://x` and `https://h/p` each show their message and write nothing;
