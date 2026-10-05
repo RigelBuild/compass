@@ -28,6 +28,12 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
+// dialConfigurationError marks local Dial setup failures that no server retry can fix.
+type dialConfigurationError struct{ err error }
+
+func (e *dialConfigurationError) Error() string { return "runner dial configuration: " + e.err.Error() }
+func (e *dialConfigurationError) Unwrap() error { return e.err }
+
 // RunnerConfig is everything the Runner needs to attach to a Server and host
 // agents. ServerAddr is the Server's base URL (the authenticated TCP door);
 // Token is the per-Runner bearer credential (OQ7, operator-provisioned, stored
@@ -112,7 +118,7 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 	}
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	if err != nil {
-		return nil, fmt.Errorf("otel: connect interceptor: %w", err)
+		return nil, &dialConfigurationError{err: fmt.Errorf("otel: connect interceptor: %w", err)}
 	}
 	client := compassv1internalconnect.NewRunnerServiceClient(
 		httpClient, cfg.ServerAddr,
