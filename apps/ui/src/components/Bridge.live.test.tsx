@@ -12,6 +12,7 @@ import { StoreContext } from "../context";
 import { createFakeComms, type FakeComms } from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { Bridge } from "./Bridge";
 
 // The LIVE render path for the Bridge board (T4): the board no longer reads
@@ -70,7 +71,9 @@ async function mountLive(fake: FakeComms): Promise<{
 		});
 		return (
 			<StoreContext value={store}>
-				<Bridge />
+				<ViewContext value={store.focusedView()}>
+					<Bridge />
+				</ViewContext>
 			</StoreContext>
 		);
 	});

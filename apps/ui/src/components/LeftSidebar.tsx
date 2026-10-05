@@ -16,6 +16,7 @@ import { useStore } from "../context";
 import type { CommandId } from "../keyboard/commands";
 import { detectPlatform } from "../keyboard/dispatch";
 import { shortcutForAria } from "../keyboard/keymap";
+import { openLink } from "../open-link";
 import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
 import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
 import { Glyph } from "./Glyph";
@@ -45,7 +46,11 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 							store.view() === "agent",
 					},
 				]}
-				onClick={() => store.openAgent(a().account.id)}
+				{...openLink(
+					store,
+					() => `/agent/${a().account.id}`,
+					() => store.openAgent(a().account.id),
+				)}
 			>
 				<StateDot state={a().lifecycle ?? "idle"} />
 				<Show when={a().runtime}>{(m) => <RuntimeMarker marker={m()} />}</Show>
@@ -192,7 +197,11 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 				<button
 					type="button"
 					class="ch-row-select"
-					onClick={() => store.openChannel(channel().id)}
+					{...openLink(
+						store,
+						() => store.channelPath(channel().id),
+						() => store.openChannel(channel().id),
+					)}
 				>
 					<span class="ch-glyph" aria-hidden="true">
 						{channelGlyph(channel().kind)}
@@ -262,7 +271,11 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 									store.view() === "topic",
 							},
 						]}
-						onClick={() => store.openTopic(group.topic.id)}
+						{...openLink(
+							store,
+							() => store.topicPath(group.topic.id),
+							() => store.openTopic(group.topic.id),
+						)}
 					>
 						<span class="ch-topic-name">{group.topic.name}</span>
 					</button>
@@ -438,7 +451,11 @@ export const LeftSidebar: Component = () => {
 					as="button"
 					type="button"
 					class={["bridge-link", { active: store.view() === "bridge" }]}
-					onClick={() => store.showBridge()}
+					{...openLink(
+						store,
+						() => "/",
+						() => store.showBridge(),
+					)}
 					aria-keyshortcuts={ariaChord("view.bridge")}
 				>
 					<span class="glyph" aria-hidden="true">
@@ -454,7 +471,11 @@ export const LeftSidebar: Component = () => {
 					as="button"
 					type="button"
 					class={["bridge-link", { active: store.view() === "backlog" }]}
-					onClick={() => store.showBacklog()}
+					{...openLink(
+						store,
+						() => "/backlog",
+						() => store.showBacklog(),
+					)}
 					aria-keyshortcuts={ariaChord("view.backlog")}
 				>
 					<span class="glyph" aria-hidden="true">
@@ -473,7 +494,11 @@ export const LeftSidebar: Component = () => {
 					as="button"
 					type="button"
 					class={["bridge-link", { active: store.view() === "done" }]}
-					onClick={() => store.showDone()}
+					{...openLink(
+						store,
+						() => "/done",
+						() => store.showDone(),
+					)}
 					aria-keyshortcuts={ariaChord("view.done")}
 				>
 					<span class="glyph" aria-hidden="true">
@@ -488,7 +513,11 @@ export const LeftSidebar: Component = () => {
 					as="button"
 					type="button"
 					class={["bridge-link", { active: store.view() === "settings" }]}
-					onClick={() => store.showSettings()}
+					{...openLink(
+						store,
+						() => "/settings",
+						() => store.showSettings(),
+					)}
 					aria-keyshortcuts={ariaChord("view.settings")}
 				>
 					<span class="glyph" aria-hidden="true">

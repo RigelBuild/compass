@@ -11,6 +11,7 @@ import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
 import { flush, mountApp } from "../test-router";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { Bridge } from "./Bridge";
 
 // Render acceptance spec for the Bridge Issues/PRs tabs (Record B / DL-097). The
@@ -27,7 +28,9 @@ function mountBridge(): { store: AppStore; container: HTMLElement } {
 		store = createAppStore({ queryClient: testQueryClient() });
 		return (
 			<StoreContext value={store}>
-				<Bridge />
+				<ViewContext value={store.focusedView()}>
+					<Bridge />
+				</ViewContext>
 			</StoreContext>
 		);
 	});
@@ -665,7 +668,9 @@ function mountEmptyBridge(): { store: AppStore; container: HTMLElement } {
 		});
 		return (
 			<StoreContext value={store}>
-				<Bridge />
+				<ViewContext value={store.focusedView()}>
+					<Bridge />
+				</ViewContext>
 			</StoreContext>
 		);
 	});

@@ -209,7 +209,7 @@ describe("TopBarSearch", () => {
 
 	test("Escape clears and returns focus to the prior element", async () => {
 		const { container } = mountApp("/");
-		const prior = container.querySelector<HTMLElement>(".topbar .view-tab");
+		const prior = container.querySelector<HTMLElement>('.topbar [role="tab"]');
 		const search = input(container) as HTMLInputElement;
 		prior?.focus();
 		search.focus();

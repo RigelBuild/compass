@@ -1,0 +1,56 @@
+/* Tab strip — .cx-tab-strip, the topbar view-tab row built on .cx-tabs. Each
+   item pairs a .cx-tab with a close button; the row scrolls rather than wraps
+   so the topbar keeps its height at the tab cap. */
+.cx-tab-strip {
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.cx-tab-strip-item {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	border-radius: var(--cx-radius-sm);
+}
+
+.cx-tab-strip-item:hover {
+	background: var(--cx-bg-hover);
+}
+
+.cx-tab-strip-item .cx-tab {
+	padding-inline-end: var(--cx-space-1);
+	border-radius: var(--cx-radius-sm);
+}
+
+.cx-tab-strip-label {
+	max-width: 16em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.cx-tab-strip-close {
+	display: inline-flex;
+	align-items: center;
+	padding: var(--cx-space-1);
+	margin-inline-end: var(--cx-space-1);
+	border: 0;
+	border-radius: var(--cx-radius-sm);
+	background: transparent;
+	color: var(--cx-text-faint);
+	font-size: var(--cx-text-xs);
+	line-height: 1;
+	cursor: pointer;
+	transition: color var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+.cx-tab-strip-close:hover {
+	color: var(--cx-text);
+	background: var(--cx-bg-active);
+}
+
+.cx-tab-strip-close:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -2px;
+}

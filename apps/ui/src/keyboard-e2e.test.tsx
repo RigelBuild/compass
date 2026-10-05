@@ -165,7 +165,9 @@ describe("shortcuts overlay (RIG-2482)", () => {
 		expect(dialog(container)).toBeNull();
 
 		// Focus a topbar button first, so restore has a target.
-		const button = container.querySelector<HTMLButtonElement>(".view-tab");
+		const button = container.querySelector<HTMLButtonElement>(
+			'.cx-tab-strip [role="tab"]',
+		);
 		if (!button) throw new Error("no topbar button");
 		button.focus();
 
@@ -322,7 +324,9 @@ describe("shortcuts overlay (RIG-2482)", () => {
 		const { container } = mountApp("/");
 		expect(container.querySelector(".bridge")).not.toBeNull();
 
-		const button = container.querySelector<HTMLButtonElement>(".view-tab");
+		const button = container.querySelector<HTMLButtonElement>(
+			'.cx-tab-strip [role="tab"]',
+		);
 		if (!button) throw new Error("no topbar button");
 		button.focus();
 
