@@ -17,9 +17,9 @@ import (
 // a waitFunc reporting a guest child's exit has no way to forge one. This
 // exported concrete type is the portable stand-in — a plain (code, signal)
 // pair the microVM waitFunc returns and isDeliberateKill matches with
-// errors.As, alongside the existing *exec.ExitError branch so the podman
+// errors.AsType, alongside the existing *exec.ExitError branch so the podman
 // byte-path is unchanged (OQ-G, design §(e)). It is a concrete struct rather
-// than an interface: it is the simplest errors.As target and no caller needs
+// than an interface: it is the simplest typed-error target and no caller needs
 // the abstraction today.
 type ExitStatusError struct {
 	// Code is the child's exit code, meaningful when Signal == 0.

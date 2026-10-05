@@ -716,8 +716,8 @@ func exitStatus(werr error) (code int, ok bool) {
 	if werr == nil {
 		return 0, true
 	}
-	var ee *exec.ExitError
-	if !errors.As(werr, &ee) {
+	ee, ok := errors.AsType[*exec.ExitError](werr)
+	if !ok {
 		return 0, false
 	}
 	if ws, wok := ee.Sys().(syscall.WaitStatus); wok {
@@ -736,8 +736,8 @@ func exitStatusSignal(werr error) (code int, sig syscall.Signal) {
 	if werr == nil {
 		return 0, 0
 	}
-	var ee *exec.ExitError
-	if !errors.As(werr, &ee) {
+	ee, ok := errors.AsType[*exec.ExitError](werr)
+	if !ok {
 		// A non-exit wait fault (e.g. a stream write error killed the copy):
 		// report a generic failure code, no signal.
 		return -1, 0

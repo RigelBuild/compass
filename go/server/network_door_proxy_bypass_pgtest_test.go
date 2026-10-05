@@ -80,8 +80,8 @@ func TestNetworkDoorProxyHeadersGrantNoIdentity(t *testing.T) {
 			applyHeaders(req.Header(), forgedProxyHeaders("admin"))
 		}
 		_, err := client.GetServerInfo(t.Context(), req)
-		var ce *connect.Error
-		if !errors.As(err, &ce) {
+		ce, ok := errors.AsType[*connect.Error](err)
+		if !ok {
 			t.Fatalf("expected a connect.Error rejection, got %v", err)
 		}
 		return ce
@@ -247,8 +247,8 @@ func TestNetworkDoorProxyHeadersGrantNoIdentityStreaming(t *testing.T) {
 		defer cancel()
 		stream, err := client.SubscribeEvents(ctx, req)
 		if err != nil {
-			var ce *connect.Error
-			if !errors.As(err, &ce) {
+			ce, ok := errors.AsType[*connect.Error](err)
+			if !ok {
 				t.Fatalf("expected a connect.Error rejection on open, got %v", err)
 			}
 			return ce
@@ -257,8 +257,8 @@ func TestNetworkDoorProxyHeadersGrantNoIdentityStreaming(t *testing.T) {
 		if recvStreamOrTimeout(t, stream) {
 			t.Fatalf("a rejected stream delivered an event: %+v", stream.Msg())
 		}
-		var ce *connect.Error
-		if !errors.As(stream.Err(), &ce) {
+		ce, ok := errors.AsType[*connect.Error](stream.Err())
+		if !ok {
 			t.Fatalf("expected a connect.Error rejection, got %v", stream.Err())
 		}
 		return ce

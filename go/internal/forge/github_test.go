@@ -265,8 +265,8 @@ func TestGitHubRateLimitHint(t *testing.T) {
 		if !errors.Is(err, ErrBudgetExhausted) {
 			t.Fatalf("err = %v, want ErrBudgetExhausted", err)
 		}
-		var rle *RateLimitError
-		if !errors.As(err, &rle) {
+		rle, ok := errors.AsType[*RateLimitError](err)
+		if !ok {
 			t.Fatalf("err = %v, want recoverable *RateLimitError", err)
 		}
 		if rle.RetryAfter != 60*time.Second {
@@ -284,8 +284,8 @@ func TestGitHubRateLimitHint(t *testing.T) {
 		g.now = func() time.Time { return clock }
 
 		_, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, "")
-		var rle *RateLimitError
-		if !errors.As(err, &rle) {
+		rle, ok := errors.AsType[*RateLimitError](err)
+		if !ok {
 			t.Fatalf("err = %v, want *RateLimitError", err)
 		}
 		if rle.RetryAfter != 0 {
@@ -318,8 +318,8 @@ func TestGitHubRateLimitHint(t *testing.T) {
 		// Advance 59s: 1s remains of the window.
 		clock = base.Add(59 * time.Second)
 		_, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 2, "")
-		var rle *RateLimitError
-		if !errors.As(err, &rle) {
+		rle, ok := errors.AsType[*RateLimitError](err)
+		if !ok {
 			t.Fatalf("gated err = %v, want *RateLimitError", err)
 		}
 		if rle.RetryAfter != time.Second {
@@ -617,8 +617,8 @@ func TestErrorMappingAndInvalidate(t *testing.T) {
 			g := newTestGitHub(rt, ts)
 
 			_, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, "")
-			var se *StatusError
-			if !errors.As(err, &se) {
+			se, ok := errors.AsType[*StatusError](err)
+			if !ok {
 				t.Fatalf("err = %v, want *StatusError", err)
 			}
 			if se.Status != tc.status {
@@ -929,8 +929,8 @@ func TestWriteErrorMapping(t *testing.T) {
 		ts := &fakeTokenSource{token: "t"}
 		g := newTestGitHub(rt, ts)
 		_, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "x")
-		var se *StatusError
-		if !errors.As(err, &se) || se.Status != 403 {
+		se, ok := errors.AsType[*StatusError](err)
+		if !ok || se.Status != 403 {
 			t.Fatalf("err = %v, want *StatusError 403", err)
 		}
 		if ts.invalidated != 1 {
@@ -944,8 +944,8 @@ func TestWriteErrorMapping(t *testing.T) {
 		ts := &fakeTokenSource{token: "t"}
 		g := newTestGitHub(rt, ts)
 		_, err := g.CreatePullRequest(context.Background(), "org/repo", CreatePR{Title: "x"})
-		var se *StatusError
-		if !errors.As(err, &se) || se.Status != 404 {
+		se, ok := errors.AsType[*StatusError](err)
+		if !ok || se.Status != 404 {
 			t.Fatalf("err = %v, want *StatusError 404", err)
 		}
 		if se.Message != "Not Found" {
@@ -1056,8 +1056,8 @@ func TestGitHubTransitionRespectsBudgetGate(t *testing.T) {
 			g.resetAt[resourceCore] = now.Add(90 * time.Second)
 
 			err := tc.call(g)
-			var rle *RateLimitError
-			if !errors.As(err, &rle) {
+			rle, ok := errors.AsType[*RateLimitError](err)
+			if !ok {
 				t.Fatalf("err = %v, want *RateLimitError", err)
 			}
 			if rle.RetryAfter != 90*time.Second {
@@ -1265,8 +1265,8 @@ func TestSubmitReviewOffDiff422(t *testing.T) {
 		Body:     "b",
 		Comments: []ReviewCommentInput{{Path: "a.go", Line: 9999, Body: "off diff"}},
 	})
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != 422 {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != 422 {
 		t.Fatalf("err = %v, want *StatusError 422", err)
 	}
 	if ts.invalidated != 0 {
@@ -1298,8 +1298,8 @@ func TestSubmitReviewErrorMapping(t *testing.T) {
 		ts := &fakeTokenSource{token: "t"}
 		g := newTestGitHub(rt, ts)
 		_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "approve"})
-		var se *StatusError
-		if !errors.As(err, &se) || se.Status != 403 {
+		se, ok := errors.AsType[*StatusError](err)
+		if !ok || se.Status != 403 {
 			t.Fatalf("err = %v, want *StatusError 403", err)
 		}
 		if ts.invalidated != 1 {
@@ -1313,8 +1313,8 @@ func TestSubmitReviewErrorMapping(t *testing.T) {
 		ts := &fakeTokenSource{token: "t"}
 		g := newTestGitHub(rt, ts)
 		_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "approve"})
-		var se *StatusError
-		if !errors.As(err, &se) || se.Status != 404 {
+		se, ok := errors.AsType[*StatusError](err)
+		if !ok || se.Status != 404 {
 			t.Fatalf("err = %v, want *StatusError 404", err)
 		}
 		if ts.invalidated != 0 {
@@ -1381,8 +1381,8 @@ func TestGetIssueNotFound(t *testing.T) {
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
 	_, err := g.GetIssue(context.Background(), "org/repo", 7)
-	var se *StatusError
-	if !errors.As(err, &se) {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
 		t.Fatalf("err = %v, want *StatusError", err)
 	}
 	if se.Status != 404 {
@@ -1616,8 +1616,8 @@ func TestGetPullRequestLegError(t *testing.T) {
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
 	_, err := g.GetPullRequest(context.Background(), "org/repo", 1)
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != 500 {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != 500 {
 		t.Fatalf("err = %v, want *StatusError 500", err)
 	}
 	// Only the detail + reviews legs ran; the checks legs never fired.
@@ -1764,8 +1764,8 @@ func TestChecksLegError(t *testing.T) {
 	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
 
 	_, err := g.Checks(context.Background(), "org/repo", 9)
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != 500 {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != 500 {
 		t.Fatalf("err = %v, want *StatusError 500", err)
 	}
 	if rt.calls != 2 {
