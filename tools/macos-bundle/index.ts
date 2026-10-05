@@ -419,15 +419,23 @@ export function imageHolderPids(info: string, imagePath: string): string[] {
 		);
 }
 
-export async function settleBeforeCreate(stageRoot: string): Promise<void> {
+// A system-wide sync blocks on host I/O, so tests inject a fake flush.
+const flushFilesystems = async (): Promise<void> => {
 	await $`sync`.quiet();
+};
+export async function settleBeforeCreate(
+	stageRoot: string,
+	flush: () => Promise<void> = flushFilesystems,
+): Promise<void> {
+	await flush();
 	await writeFile(join(stageRoot, ".metadata_never_index"), "");
 }
 export async function settleAndCreate<T>(
 	stageRoot: string,
 	create: () => Promise<T>,
+	flush: () => Promise<void> = flushFilesystems,
 ): Promise<T> {
-	await settleBeforeCreate(stageRoot);
+	await settleBeforeCreate(stageRoot, flush);
 	return create();
 }
 const PROBE_TIMEOUT_MS = 10_000;
