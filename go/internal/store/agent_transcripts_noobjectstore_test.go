@@ -49,7 +49,7 @@ func TestAppendWithoutObjectStoreKeepsEntriesAndRetrySucceeds(t *testing.T) {
 				s.SetSafetyValveCapBytes(tc.cap)
 			}
 			sess := seedSession(t, s, "noos-"+strings.ReplaceAll(tc.name, " ", ""), "sess-noos-"+strings.ReplaceAll(tc.name, " ", "-"))
-			if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+			if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 				t.Fatalf("BindLifetime: %v", err)
 			}
 			tc.setup(t, s, sess)

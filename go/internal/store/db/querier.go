@@ -72,7 +72,7 @@ type Querier interface {
 	// SessionTranscript and SafetyValveSegments reads are each issued on BOTH the
 	// pool (the eponymous method) and a snapshot tx (SessionResumeSnapshot, via
 	// WithTx), so one generated query backs both call sites.
-	BindLifetime(ctx context.Context, sessionID string) (int64, error)
+	BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error)
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]string, error)
 	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)

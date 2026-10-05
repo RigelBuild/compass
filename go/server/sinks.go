@@ -57,6 +57,8 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 		log,
 	)
 	hub.SetTranscriptStore(st)
+	// The Runner binds a resumed lifetime's rebase base through the same store.
+	hub.SetLifetimeBinder(st)
 	// RIG-3108 T4: the same store is the durable session-binding surface the hub's
 	// in-RAM maps are demoted to a read-through cache over (record on promote, delete
 	// on unbind, sweep on re-enroll). No RoutingFabric is wired: single-Server MVP, so

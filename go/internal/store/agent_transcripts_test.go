@@ -189,7 +189,7 @@ func TestAppendTranscriptEntryUnknownSessionInvalidArgument(t *testing.T) {
 func TestAppendTranscriptEntryRejectsOutOfRangeSeq(t *testing.T) {
 	s, _ := storeWithFake(t)
 	sess := seedSession(t, s, "oor", "sess-oor")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	err := s.AppendTranscriptEntry(t.Context(), sess, uint64(math.MaxInt64)+1, false, `{"e":1}`, "idem-oor")
@@ -206,7 +206,7 @@ func TestAppendTranscriptEntryRejectsOutOfRangeSeq(t *testing.T) {
 func TestAppendTranscriptEntryIdempotentDuplicateKey(t *testing.T) {
 	s, _ := storeWithFake(t)
 	sess := seedSession(t, s, "dup", "sess-dup")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	if err := s.AppendTranscriptEntry(t.Context(), sess, 1, false, `{"e":1}`, "idem-1"); err != nil {
@@ -226,7 +226,7 @@ func TestAppendTranscriptEntryIdempotentDuplicateKey(t *testing.T) {
 func TestAppendTranscriptEntryOrdersByEntrySeq(t *testing.T) {
 	s, _ := storeWithFake(t)
 	sess := seedSession(t, s, "order", "sess-order")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	// Append 3, 1, 2 (distinct keys) — no checkpoint, so all retained.
@@ -253,7 +253,7 @@ func TestBindLifetimeRebasesAcrossLifetimes(t *testing.T) {
 	sess := seedSession(t, s, "rebase", "sess-rebase")
 
 	// Lifetime 1: base 0, three deltas stamped 1..3 -> entry_seq 1..3.
-	base1, err := s.BindLifetime(t.Context(), sess)
+	base1, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess))
 	if err != nil {
 		t.Fatalf("BindLifetime L1: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestBindLifetimeRebasesAcrossLifetimes(t *testing.T) {
 
 	// Lifetime 2 (resume): base snapshots the stored max (3). The agent again
 	// stamps from 1, so its first delta rebases to entry_seq 4 — no collision.
-	base2, err := s.BindLifetime(t.Context(), sess)
+	base2, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess))
 	if err != nil {
 		t.Fatalf("BindLifetime L2: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestBindLifetimeRebasesAcrossLifetimes(t *testing.T) {
 func TestBindLifetimeIdempotentWithinLifetime(t *testing.T) {
 	s, _ := storeWithFake(t)
 	sess := seedSession(t, s, "bindidem", "sess-bindidem")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	if err := s.AppendTranscriptEntry(t.Context(), sess, 1, false, `{"e":1}`, "idem-1"); err != nil {
@@ -305,7 +305,7 @@ func TestBindLifetimeIdempotentWithinLifetime(t *testing.T) {
 	}
 	// A retried bind for the SAME lifetime, before any further frames, must
 	// re-read the same max (1) — not advance the base.
-	base, err := s.BindLifetime(t.Context(), sess)
+	base, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess))
 	if err != nil {
 		t.Fatalf("re-bind: %v", err)
 	}
@@ -318,8 +318,42 @@ func TestBindLifetimeIdempotentWithinLifetime(t *testing.T) {
 // against a session that was never recorded.
 func TestBindLifetimeUnknownSessionNotFound(t *testing.T) {
 	s, _ := storeWithFake(t)
-	_, err := s.BindLifetime(t.Context(), "never-recorded")
+	_, err := s.BindLifetime(t.Context(), "never-recorded", "acct-any")
 	sentinelIs(t, err, ErrNotFound, "bind unknown session")
+}
+
+// TestBindLifetimeForeignAccountNotFound: a bind naming an account that does
+// not own the session is the same ErrNotFound and leaves the base untouched.
+func TestBindLifetimeForeignAccountNotFound(t *testing.T) {
+	s, _ := storeWithFake(t)
+	sess := seedSession(t, s, "bindforeign", "sess-bindforeign")
+	other := seedSession(t, s, "bindforeign-other", "sess-bindforeign-other")
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
+		t.Fatalf("BindLifetime: %v", err)
+	}
+	if err := s.AppendTranscriptEntry(t.Context(), sess, 1, false, `{"e":1}`, "idem-foreign-1"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	_, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, other))
+	sentinelIs(t, err, ErrNotFound, "bind with a foreign account")
+	var base int64
+	if err := s.pool.QueryRow(t.Context(), `SELECT base_entry_seq FROM agent_sessions WHERE session_id = $1`, sess).Scan(&base); err != nil {
+		t.Fatalf("read base: %v", err)
+	}
+	if base != 0 {
+		t.Fatalf("base after foreign bind = %d, want 0 (untouched)", base)
+	}
+}
+
+// sessionOwner reads the agent account that owns sessionID — the account a
+// bind must name.
+func sessionOwner(t *testing.T, s *Store, sessionID string) AccountID {
+	t.Helper()
+	var owner string
+	if err := s.pool.QueryRow(t.Context(), `SELECT agent_account_id FROM agent_sessions WHERE session_id = $1`, sessionID).Scan(&owner); err != nil {
+		t.Fatalf("read owner of %q: %v", sessionID, err)
+	}
+	return AccountID(owner)
 }
 
 // TestSessionTranscriptSupersessionView pins the post-supersession read: after
@@ -329,7 +363,7 @@ func TestBindLifetimeUnknownSessionNotFound(t *testing.T) {
 func TestSessionTranscriptSupersessionView(t *testing.T) {
 	s, _ := storeWithFake(t)
 	sess := seedSession(t, s, "supersede", "sess-supersede")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	// deltas 1,2 ; checkpoint 3 (fires PRIMARY flush of 1,2) ; deltas 4,5.
@@ -371,7 +405,7 @@ func TestSessionTranscriptUnknownNotFound(t *testing.T) {
 func TestPrimaryFlushOnCheckpointArrival(t *testing.T) {
 	s, fake := storeWithFake(t)
 	sess := seedSession(t, s, "primary", "sess-primary")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	for _, a := range []struct {
@@ -409,7 +443,7 @@ func TestPrimaryFlushOnCheckpointArrival(t *testing.T) {
 func TestFlushPutBeforePrune(t *testing.T) {
 	s, fake := storeWithFake(t)
 	sess := seedSession(t, s, "putfail", "sess-putfail")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	for _, seq := range []uint64{1, 2} {
@@ -440,7 +474,7 @@ func TestFlushPutBeforePrune(t *testing.T) {
 func TestFlushCrashAfterPutBeforeCommitReRunCompletes(t *testing.T) {
 	s, fake := storeWithFake(t)
 	sess := seedSession(t, s, "crash", "sess-crash")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	for _, seq := range []uint64{1, 2} {
@@ -482,7 +516,7 @@ func TestFlushCrashAfterPutBeforeCommitReRunCompletes(t *testing.T) {
 func TestFlushManifestInsertIdempotentOnConflict(t *testing.T) {
 	s, fake := storeWithFake(t)
 	sess := seedSession(t, s, "onconflict", "sess-onconflict")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	for _, seq := range []uint64{1, 2} {
@@ -520,7 +554,7 @@ func TestFlushManifestInsertIdempotentOnConflict(t *testing.T) {
 func TestReconstructionIsPGOnlyAfterFlush(t *testing.T) {
 	s, fake := storeWithFake(t)
 	sess := seedSession(t, s, "pgonly", "sess-pgonly")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	for _, a := range []struct {
@@ -553,7 +587,7 @@ func TestSafetyValveFlushOnSizeCap(t *testing.T) {
 	s, _ := storeWithFake(t)
 	s.safetyValveCapBytes = 40 // well below the payload sizes below
 	sess := seedSession(t, s, "valve", "sess-valve")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	// A checkpoint anchors the post-checkpoint window, then oversize deltas.
@@ -591,7 +625,7 @@ func TestSafetyValveResupersededByLaterCheckpoint(t *testing.T) {
 	s, _ := storeWithFake(t)
 	s.safetyValveCapBytes = 40
 	sess := seedSession(t, s, "remark", "sess-remark")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	if err := s.AppendTranscriptEntry(t.Context(), sess, 1, true, `{"cp":1}`, "idem-cp1"); err != nil {
@@ -637,7 +671,7 @@ func TestSafetyValveResupersededByLaterCheckpoint(t *testing.T) {
 func TestSessionEndFlushRecordsWithoutPruning(t *testing.T) {
 	s, fake := storeWithFake(t)
 	sess := seedSession(t, s, "sessend", "sess-sessend")
-	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+	if _, err := s.BindLifetime(t.Context(), sess, sessionOwner(t, s, sess)); err != nil {
 		t.Fatalf("BindLifetime: %v", err)
 	}
 	for _, a := range []struct {

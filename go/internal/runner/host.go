@@ -461,7 +461,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		h.log.Warn("resume body supplied without resume_session_id; dropping", "container", name)
 	}
 
-	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, env, h.log)
+	stream, err := h.bindAndStartAgent(ctx, req, sessionID, handle.ID(), env)
 	if err != nil {
 		return "", err
 	}
@@ -1108,6 +1108,11 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 			return err
 		}
 	}
+	// The relaunch reuses the session id, so rebind before the new process's frame 1.
+	if err := h.bindReload(ctx, s.containerName, sessionID); err != nil {
+		h.markErrored(ctx, sessionID, s.containerName, nil)
+		return err
+	}
 	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
 	if err != nil {
 		h.markErrored(ctx, sessionID, s.containerName, nil)
@@ -1123,6 +1128,33 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 		h.retireOnExit(ctx, sessionID, s.containerName, stream)
 	}()
 	return nil
+}
+
+// bindReload rebinds a reloaded session's transcript base. A denial on this
+// Runner's own container means no session row yet (a Reload before the Server
+// records a fresh Start), so base 0 holds. Single-Server only: a multi-Server
+// placement miss is also a denial, and must be told apart before that ships.
+func (h *agentHost) bindReload(ctx context.Context, containerName, sessionID string) error {
+	err := h.link.BindLifetime(ctx, containerName, sessionID)
+	if connect.CodeOf(err) == connect.CodePermissionDenied {
+		h.log.Warn("no session row yet; relaunching without a bind",
+			slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
+		return nil
+	}
+	return err
+}
+
+// bindAndStartAgent launches Start's agent, first binding a resumed lifetime's
+// transcript base. It runs under the container lock after the live-session
+// checks, so a refused resume never moves a live base and no frame of the new
+// lifetime precedes the bind. A fresh Start has no session row yet; base stays 0.
+func (h *agentHost) bindAndStartAgent(ctx context.Context, req *compassv1.StartAgentSessionRequest, sessionID string, id runtime.WorkloadID, env AgentEnv) (*AgentStream, error) {
+	if resumeID := req.GetResumeSessionId(); resumeID != "" {
+		if err := h.link.BindLifetime(ctx, req.GetContainerName(), resumeID); err != nil {
+			return nil, err
+		}
+	}
+	return h.link.StartAgent(ctx, sessionID, id, h.engine, env, h.log)
 }
 
 // requireContainer fails fast when a registered container was removed outside

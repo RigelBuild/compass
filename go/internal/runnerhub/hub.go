@@ -391,6 +391,9 @@ type Hub struct {
 	// through. Nil until SetTranscriptReader; read under mu. Nil-safe fails
 	// ReconstructSessionBody closed CodeUnavailable — the resume read leg is unmounted.
 	reader TranscriptReader
+	// binder binds a resumed session's transcript base (Hub.BindLifetime). Nil
+	// until SetLifetimeBinder; read under mu. Nil-safe fails the bind Unavailable.
+	binder LifetimeBinder
 	// bindings is the durable session-binding store the maps below are a read-through
 	// cache over (RIG-3108 §T4). Nil until SetSessionBindingStore; read under mu.
 	// Nil-safe: a hub with none keeps its maps as truth (today's behaviour).

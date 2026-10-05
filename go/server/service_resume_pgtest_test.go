@@ -4,8 +4,8 @@ package server
 
 // T6 (RIG-1667): the resume branch of StartAgentSession. A non-empty resume_session_id
 // gates the caller BEFORE any Runner call (unknown/foreign is NotFound, no Start),
-// BindLifetime write-once, ReconstructSessionBody, and carries the body on the INTERNAL
-// resume_body envelope. Fake Runner records every command, so the claims are wire facts.
+// ReconstructSessionBody, and carries the body on the INTERNAL resume_body envelope.
+// Fake Runner records every command, so the claims are wire facts.
 
 import (
 	"context"
@@ -248,9 +248,7 @@ func TestStartAgentSessionFreshAttachesNoResumeBody(t *testing.T) {
 }
 
 // 4. The stored transcript is keyed on the STABLE LOGICAL id across resumes: two
-// resumes both reconstruct from the SAME stored transcript, and each BindLifetime
-// re-reads the same stored max as the base (idempotent within a lifetime,
-// monotonic across them).
+// resumes both reconstruct from the SAME stored transcript.
 func TestStartAgentSessionResumeKeyedOnStableLogicalIdAcrossResumes(t *testing.T) {
 	ctx := context.Background() // test root
 	f := newResumeFixture(t)
@@ -269,7 +267,7 @@ func TestStartAgentSessionResumeKeyedOnStableLogicalIdAcrossResumes(t *testing.T
 
 	// A placement is recorded for completeness, though the resume branch no longer
 	// reads it (ownership is recorded only on a fresh start). What matters is that
-	// both resumes reconstruct from and bind the SAME stable logical transcript.
+	// both resumes reconstruct from the SAME stable logical transcript.
 	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
 		t.Fatalf("RecordAgentPlacement: %v", err)
 	}
@@ -287,27 +285,7 @@ func TestStartAgentSessionResumeKeyedOnStableLogicalIdAcrossResumes(t *testing.T
 		if body != want {
 			t.Fatalf("resume %s body = %q, want %q (reconstructed from the stable logical transcript)", attempt, body, want)
 		}
-		// BindLifetime snapshotted the base as the stored max (2) — write-once per
-		// lifetime, re-reads the same max on a re-resume (monotonic across resumes).
-		if base := boundBase(t, ctx, f.dsn, logical); base != 2 {
-			t.Fatalf("resume %s bound base = %d, want 2 (max entry_seq over the stored transcript)", attempt, base)
-		}
 	}
-}
-
-// boundBase reads agent_sessions.base_entry_seq for a session directly — the
-// write-once rebase base BindLifetime snapshots (the store exposes no public
-// read).
-func boundBase(t *testing.T, ctx context.Context, dsn, sessionID string) uint64 {
-	t.Helper()
-	conn := connectPG(t, ctx, dsn)
-	var base int64
-	if err := conn.QueryRow(ctx,
-		`SELECT base_entry_seq FROM agent_sessions WHERE session_id = $1`, sessionID,
-	).Scan(&base); err != nil {
-		t.Fatalf("read base_entry_seq: %v", err)
-	}
-	return uint64(base)
 }
 
 // memObjectStore is a tiny in-memory store.ObjectStore fake used by the S3

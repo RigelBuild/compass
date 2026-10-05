@@ -49,6 +49,7 @@ type recordingRelay struct {
 	mu            sync.Mutex
 	received      []*compassv1internal.RelayCommsCallRequest
 	boardReceived []*compassv1internal.RelayBoardCallRequest
+	binds         []*compassv1internal.BindLifetimeRequest
 
 	started   chan struct{} // non-nil => block the forward until release/ctx-cancel
 	release   chan struct{}
@@ -62,6 +63,17 @@ func (r *recordingRelay) FetchSecrets(
 	context.Context, *connect.Request[compassv1internal.FetchSecretsRequest],
 ) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
 	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{}), nil
+}
+
+// BindLifetime accepts and records the resume bind Start makes before the agent
+// runs.
+func (r *recordingRelay) BindLifetime(
+	_ context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest],
+) (*connect.Response[compassv1internal.BindLifetimeResponse], error) {
+	r.mu.Lock()
+	r.binds = append(r.binds, req.Msg)
+	r.mu.Unlock()
+	return connect.NewResponse(&compassv1internal.BindLifetimeResponse{}), nil
 }
 
 // FetchAgentConfig serves the unconfigured-fleet bundle so Provision's config
