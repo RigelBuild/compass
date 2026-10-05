@@ -2,6 +2,14 @@
 
 Tracking: RIG-2863 (parent RIG-1715)
 
+> **Superseded in part by DL-355 (Matt, 2026-09-11; RIG-3655).** Master-key
+> custody is operator-seeded, not compass-written. Compass never generates or
+> writes the key: boot only reads `COMPASS_MASTER_KEY` and fails closed naming
+> the provisioning runbook (`masterKeyProvisioningHint`, `go/server/serve.go`).
+> The key was renamed from `GATEWAY_CREDENTIALS_MASTER_KEY` and carries the
+> reserved `COMPASS_` prefix. The auto-provision write path (D2, T2) was never
+> implemented. DL-328's envelope crypto stands, carried forward by DL-351.
+
 Addendum to the merged record
 [`compass-server-llm-gateway`](./compass-server-llm-gateway/design.md)
 (§Credential storage and rotation, L312–373). Scope: encryption-at-rest for the
@@ -88,40 +96,24 @@ session: no `crypto/aes` / `cipher.NewGCM` usage exists anywhere under `go/`
 justified) package: no existing abstraction carries symmetric at-rest crypto,
 and the seam must be reusable if a later store ever needs the same discipline.
 
-### D2 — Master key auto-provisioned into the existing SecretSpec provider
+### D2 — Master key operator-seeded into the existing SecretSpec provider
 
-The master key never touches the DB and never requires a human step
-(rule://no-human-clicks). Every running Compass already has exactly one
-configured SecretSpec provider — the seam described at
+The master key never touches the DB. Every running Compass already has exactly
+one configured SecretSpec provider — the seam described at
 `go/internal/secrets/secrets.go:10-13`:
 
 > "this package reads that registry, generates the SecretSpec manifest the
 > resolver resolves against, calls SecretSpec to resolve the actual values
 > from the configured provider (keyring/1Password/Vault/…)"
 
-On boot, Compass resolves the declared master-key secret
-(`GATEWAY_CREDENTIALS_MASTER_KEY`). If absent, it generates a fresh 256-bit
-key from `crypto/rand` and — serialized against concurrent booters through a
-Postgres advisory lock (T2) — provisions it:
-
-- writes the value into the provider via `secrets.Resolver.Set`
-  (`go/internal/secrets/resolver.go:237`, `func (r *SpecResolver) Set(ctx
-  context.Context, name, value, reason string) error` — "Set writes value into
-  the provider for name via the pinned CLI, feeding the value on stdin (never
-  argv, so it is not visible in the host process list)",
-  resolver.go:213-214);
-- registers the name in the SEPARATE `server_secrets` store (D6) via the
-  server-internal `DeclareServerSecret` (T0) — a mirror of
-  `store.DeclareSecret` (`go/internal/store/secrets.go:82`, `func (s *Store)
-  DeclareSecret(ctx context.Context, actor AccountID, name string, delivery
-  SecretDelivery, kind SecretKind, provider, host string) error` — "It
-  stores NO value — the value lives in the SecretSpec provider",
-  secrets.go:74-75) MINUS the delivery/kind routing parameters, which do not
-  exist for server secrets (they are never container-delivered and never
-  reach the T5 materializer) — never into the user `secrets` table, whose
-  every row rides the container-delivery manifest;
-- re-resolves and byte-compares before the key is ever used to encrypt (the
-  read-back verify, T2).
+The operator seeds `COMPASS_MASTER_KEY` into that provider before first boot
+(DL-355). Compass never generates or writes the key. Boot secrets are
+read-only, so no write path exists to provision it. On boot, Compass resolves
+the declared master-key secret. If it is absent or malformed, boot fails
+closed with an error that names the provisioning runbook
+(`masterKeyProvisioningHint`, `go/server/serve.go`). The name carries the
+reserved `COMPASS_` prefix (D6). Before the key is used to encrypt, the
+fingerprint tripwire checks it (T2).
 
 Thereafter the key is resolved at boot — through the SERVER-SECRET resolver
 instance (D6), the second `SpecResolver` reading `server_secrets` — and held
@@ -222,8 +214,9 @@ a SECOND `SpecResolver` instance. The container resolver keeps reading
 secret is undeliverable to containers via the container manifest — there is
 nothing to filter. That structural property holds only while no name is
 ever present in BOTH tables. F1 makes that structural, by NAME construction:
-every server-secret name carries a RESERVED PREFIX (the master-key family keeps
-`GATEWAY_CREDENTIALS_`; the six configured forge secrets carry `SERVER_`), and
+every server-secret name carries a RESERVED PREFIX (the master key carries
+`COMPASS_` per DL-355, the future gateway-credentials family keeps
+`GATEWAY_CREDENTIALS_`, and the six configured forge secrets carry `SERVER_`), and
 the two store doors enforce the partition with a pure string check — the admin
 `SetServerSecret`/`DeclareServerSecret` path REQUIRES a reserved server-secret
 prefix, and the user `SetSecret`/`DeclareSecret` path REJECTS any name carrying
@@ -318,7 +311,7 @@ wiring path encode this. (Matt-ruled; resolves OQ-3.)
 
 ## Alternatives considered
 
-The core choice (envelope encryption + auto-provisioned key in the existing
+The core choice (envelope encryption + an operator-seeded key in the existing
 provider) is Matt-ruled and not re-opened; the custody fork and the
 server-secret containment-mechanism fork are recorded here because the
 rejected branches are the ones a future reader will reach for first.
@@ -395,8 +388,8 @@ rejected branches are the ones a future reader will reach for first.
   never counter-derived; key is 256-bit from `crypto/rand`.
 - The master key NEVER appears in the DB, in logs, in argv (Set feeds stdin,
   resolver.go:213-214), or in error strings.
-- Auto-provisioning is zero-human-step (rule://no-human-clicks): first boot
-  generates, stores, and declares the key with no operator action.
+- Master-key custody is operator-seeded (DL-355): compass never generates or
+  writes the key, and boot fails closed naming the provisioning runbook.
 - The names-only invariant (`secrets.go:20-22`) is preserved for EVERYTHING
   except `gateway_credentials` values; both declared-name registries
   (`secrets` AND the new `server_secrets`) stay names-only — the master
@@ -466,8 +459,8 @@ declared into a store that does not exist.
     creds) is a gateway-topology property of the parent record
     (design.md:333-337), out of scope here and tracked as a follow-up
     (RIG-3237).
-  - declared_by nullability, justified: the boot provisioner declares the
-    master key with no human actor. `NULL` = server-provisioned is honest
+  - declared_by nullability, justified: the server declares the operator-seeded
+    master key with no human actor. `NULL` = server-declared is honest
     provenance; attributing the row to the bootstrap-admin account
     (available at that point in boot, serve.go:358-362) would falsify the
     audit trail and couple key provisioning to account-bootstrap ordering.
@@ -479,7 +472,7 @@ declared into a store that does not exist.
     minus delivery/kind/provider/host (actor nullable-empty for the
     server-provisioned path). `DeclareServerSecret` carries the F1 PREFIX guard
     at the store door — it REQUIRES the name to carry a reserved server-secret
-    prefix (`SERVER_` or `GATEWAY_CREDENTIALS_`), rejecting any unprefixed name —
+    prefix (`SERVER_`, `GATEWAY_CREDENTIALS_`, or `COMPASS_`), rejecting any unprefixed name —
     so no writer (the admin RPC, or any future second writer) can create a
     `server_secrets` row under a name the user keyspace owns. Combined with the
     user path's rejection of those same prefixes (below), the two doors partition
@@ -580,7 +573,8 @@ declared into a store that does not exist.
     `server_secrets`; admin-gated (`adminOnly` in `classifyProcedure`,
     admin_gate.go:47). Carries the F1 PREFIX guard: it REQUIRES the declared
     name to carry a reserved server-secret prefix (`SERVER_` for the six forge
-    secrets, `GATEWAY_CREDENTIALS_` for the master-key family), rejecting any
+    secrets, `COMPASS_` for the master key, `GATEWAY_CREDENTIALS_` for
+    the gateway-credentials family), rejecting any
     unprefixed name with an actionable error. This is the admin half of the
     structural partition (D6): because the user path (below) rejects those same
     prefixes, a reserved-prefix name can only ever live in `server_secrets` and
@@ -588,9 +582,9 @@ declared into a store that does not exist.
     disjoint by name, so no name DECLARED THROUGH EITHER GUARDED DOOR is ever
     live in both tables in either order (against the wiped pre-production
     baseline, D6), with no cross-table read. The reserved master-key name
-    `GATEWAY_CREDENTIALS_MASTER_KEY` is additionally rejected on
+    `COMPASS_MASTER_KEY` is additionally rejected on
     `SetServerSecret`/`DeleteServerSecret` (rotation is OQ-1 machinery, never a
-    raw overwrite), so an admin cannot clobber the auto-provisioned key.
+    raw overwrite), so an admin cannot clobber the operator-seeded key.
   - User-path prefix guard (F1 — mandatory, NOT admin-RPC-only, and
     NOT dependent on the shared-keyspace default): C1 shares the provider
     keyspace by DEFAULT (§D2 read-back verify, F2 WIRING SEAM), under which the
@@ -601,14 +595,14 @@ declared into a store that does not exist.
     delivers into every container. So the user path is the other half of the
     partition: `SetSecret`/`DeleteSecret` (and `DeclareSecret` at the store
     door, so the shadow row can never be created at all) MUST REJECT any name
-    carrying a reserved server-secret prefix (`SERVER_` or
-    `GATEWAY_CREDENTIALS_`) — checked BEFORE `resolver.Set`/`Delete`
+    carrying a reserved server-secret prefix (`SERVER_`,
+    `GATEWAY_CREDENTIALS_`, or `COMPASS_`) — checked BEFORE `resolver.Set`/`Delete`
     (secrets_service.go:134/219). A pure string check, not a membership SELECT:
     it needs no read of `server_secrets` and no cross-tenant visibility. A T0
     deliverable on the existing user path, not only the new
     admin RPC.
   - Value custody + operator provisioning (Matt-ruled, F2): the VALUES of all
-    server secrets — the six forge secrets and the `GATEWAY_CREDENTIALS_`
+    server secrets — the six forge secrets and the `COMPASS_MASTER_KEY`
     master key — live in an operator-chosen WRITABLE SecretSpec provider, not
     in the DB. The self-hosted default is `age://` (an age-encrypted file with
     a local age identity key: writable, so the master key can mint into it;
@@ -713,7 +707,7 @@ declared into a store that does not exist.
   name; the new RPC rejects a non-admin caller; the reserved master-key name
   is rejected on SetServerSecret/DeleteServerSecret AND on the user-path
   SetSecret/DeleteSecret (a non-admin authenticated user calling SetSecret
-  with a `GATEWAY_CREDENTIALS_`-prefixed name is rejected and the provider
+  with a `COMPASS_`-prefixed name is rejected and the provider
   value is unchanged — F1); the server resolver can READ `server_secrets`
   through the normal compass_app store path (the GRANT is present — F3); all
   six configured names (primary + reviewer App PEM, webhook, and the three
@@ -760,7 +754,7 @@ declared into a store that does not exist.
   `CodeUnavailable`) — i.e. the forge read AND write lanes still wire off the
   server resolver, not just that the names are in `server_secrets`. F1 PREFIX
   PARTITION assertions: (user path) a non-admin authenticated caller invoking
-  `SetSecret`/`DeclareSecret` with a `SERVER_`- or
+  `SetSecret`/`DeclareSecret` with a `SERVER_`-, `COMPASS_`-, or
   `GATEWAY_CREDENTIALS_`-prefixed name is REJECTED before `resolver.Set`, no
   `secrets` row is created, and the provider value is unchanged; (admin path)
   an admin invoking `SetServerSecret` with an UNPREFIXED name is REJECTED
@@ -794,104 +788,35 @@ serves; no import cycle — it depends on nothing in `secrets`).
   under a different `aad` → error; nonce uniqueness across calls; redaction
   of `Key` under all three verbs; `KeyFromBytes` length validation.
 
-### T2 — Master-key boot-provision seam
+### T2 — Master-key boot-resolve seam
 
-Boot-time resolve-or-provision, in the server wiring next to the existing
-declared-secret consumers (`go/server/serve.go`). DEPENDS ON T0 (the
-`server_secrets` store and its resolver instance must exist before the key
-is declared into it) and T1.
+Boot-time resolve, in the server wiring next to the existing declared-secret
+consumers (`go/server/serve.go`). DEPENDS ON T0 (the `server_secrets` store
+and its resolver instance) and T1. Custody is operator-seeded (DL-355):
+compass never generates, writes, or declares-on-absence the key.
 
 - `Interfaces:`
-  - `func provisionGatewayMasterKey(ctx context.Context, resolver secrets.Resolver, st *store.Store) (envelope.Key, error)`
-    — `resolver` is the SERVER-SECRET resolver instance (T0). Resolve
-    `GATEWAY_CREDENTIALS_MASTER_KEY` through it; on absence:
-    `envelope.NewKey()` → `resolver.Set(ctx, name, encodedKey, "compass:
-    provision gateway credentials master key")`
-    (resolver.go:237; the value rides stdin, never argv,
-    resolver.go:213-214) → `st.DeclareServerSecret(ctx, "", name)` with
-    `declared_by = NULL` (server-provisioned; T0's nullable FK). No
-    delivery, no kind — those columns do not exist on `server_secrets`.
-  - **Concurrency — advisory-lock serialized (mandatory):** the whole
-    resolve→generate→Set→Declare sequence runs under a Postgres advisory
-    lock (`pg_advisory_xact_lock` on a constant key) — Postgres is the one
-    store all instances share. This replaces the draft's Set-then-Declare
-    with tolerated ErrConflict, which was a check-then-set race: two
-    concurrently booting instances both resolve-absent and both Set (last
-    writer wins in the provider); the loser's Declare hits ErrConflict, is
-    tolerated, and that instance proceeds to encrypt with a key the
-    provider no longer holds — silently undecryptable rows, discovered at
-    read time. The write path this builds on explicitly disclaims
-    concurrent safety: "The declare/set/rollback trio is not atomic and
-    assumes no concurrent same-name writer (the single-Runner MVP:
-    SetSecret is user-driven CLI)" (go/server/secrets_service.go:88-91).
-    Ordering inside the lock stays Set-before-Declare: the inverse leaves a
-    crash-window orphan declaration, and "an orphaned declaration is
-    required=true in the resolve manifest and would poison EVERY live
-    session's FetchSecrets" (secrets_service.go:86-88) — under C1 the
-    blast radius shifts but stays severe: an orphaned `server_secrets`
-    declaration is required=true in the SERVER resolver's manifest and
-    would fail every server-side resolve (master key, PEM, webhook,
-    Linear). A crash between Set
-    and Declare converges on the next boot (the undeclared name does not
-    resolve, so the provisioner re-generates, re-Sets, and Declares — no
-    row was ever encrypted under the orphaned value).
-  - **Bounded critical section (mandatory — a stuck provider must not wedge
-    the fleet):** the provider round-trips inside the lock inherit only the
-    caller's ctx, which at boot is long-lived — but the two halves bound
-    DIFFERENTLY. `SpecResolver.Set` IS ctx-bounded: it shells out via
-    `exec.CommandContext(ctx, r.cli, …)` (resolver.go:273), so a ctx deadline
-    genuinely kills it. `SpecResolver.Resolve` is NOT: it threads ctx only into
-    `DeclaredSecrets` (resolver.go:147); the actual provider round-trip is
+  - Resolve `COMPASS_MASTER_KEY` through the SERVER-SECRET resolver instance
+    (T0). If it is absent or malformed, return a startup error that names the
+    provisioning runbook (`masterKeyProvisioningHint`). No generate, no
+    `Set`, no advisory lock: with no write path there is no concurrent-writer
+    race to serialize.
+  - **Bounded resolve (mandatory):** `SpecResolver.Resolve` threads ctx only
+    into `DeclaredSecrets` (resolver.go:147); the provider round-trip is
     `b.Load()` (resolver.go:172), whose SDK signature carries NO ctx
-    (`func (b *Builder) Load() (*Resolved, error)`, verified against
-    secretspec-go v0.20.0 secretspec.go:293, the current pin — `Load` still
-    carries no ctx after the bump, so the goroutine-offload design below
-    stands) and which blocks in an uncancellable
-    FFI call
-    (`nativeResolve` → `C.secretspec_resolve`, binding_cgo.go:28 /
-    binding_purego.go:142). A hung provider (1Password awaiting biometric
-    approval, an unreachable Vault, a half-open TCP) would otherwise hold the
-    transaction-scoped lock indefinitely, and because the key is a shared
-    constant EVERY other booting instance blocks on it — one stuck provider
-    becomes a fleet-wide boot wedge. So the provisioner (1) derives a ctx with
-    an explicit timeout (mirror the 30s `&http.Client{Timeout: 30 *
-    time.Second}` precedent that already bounds the Linear boot mint at
-    serve.go:1731) and, because the Resolve-side call cannot be cancelled, RUNS
-    THE ctx-LESS `Resolve` ON ITS OWN GOROUTINE AND SELECTS ON THAT CTX (`Set` is
-    ctx-bounded and stays on the parent, inside the lock) — so the
-    provisioner returns a diagnosable bounded startup error (naming the hung
-    provider) and its transaction is rolled back, RELEASING the xact-scoped
-    advisory lock, while the orphaned FFI goroutine is knowingly leaked for the
-    process's remaining boot-failing lifetime (acceptable: the boot is aborting
-    anyway). The PARENT goroutine owns the transaction (`pgx.Tx` is not
-    concurrency-safe): it takes the advisory lock, offloads ONLY the ctx-less
-    provider READ (`Resolve`) and NEVER a provider write, and on the timeout
-    branch performs the `Rollback` itself and discards the buffered result
-    without acting on it. A `Set` reached after the parent's Rollback would land
-    OUTSIDE the released advisory lock and could overwrite a key another booter
-    has already provisioned and begun sealing rows under — reintroducing the
-    silently-undecryptable-rows failure the lock exists to prevent — so the
-    offloaded goroutine performs no `Set`; the parent runs the (ctx-bounded)
-    `Set` itself, in-lock, only on the success branch. The offloaded call
-    reports through a BUFFERED (cap-1) channel so the orphaned FFI goroutine can
-    complete its send and exit rather than blocking forever on an abandoned
-    receiver (bounding the leak on a crash-looping boot). And (2)
-    acquires the lock with `pg_try_advisory_xact_lock` in a
-    bounded retry loop (or sets a session `lock_timeout`) so a booter that
-    cannot get the lock fails closed with a diagnosable startup error naming
-    the contended provisioning lock rather than parking forever. Test (T2): a
-    provider that never returns yields a bounded, diagnosable boot failure
-    whose transaction (and advisory lock) is released even though the provider
-    call itself cannot be cancelled, and a second instance blocked on the lock
-    also fails bounded rather than hanging.
-  - **Read-back verify, every boot:** after provisioning AND on every
-    subsequent boot, re-resolve the name and byte-compare against the key
+    (`func (b *Builder) Load() (*Resolved, error)`, secretspec-go v0.20.0
+    secretspec.go:293) and blocks in an uncancellable FFI call. So the resolve
+    runs on its own goroutine under a timeout ctx (mirror the 30s
+    `&http.Client{Timeout: 30 * time.Second}` precedent at serve.go:1731) and
+    reports through a BUFFERED (cap-1) channel, so a hung provider yields a
+    bounded, diagnosable startup error and the orphaned goroutine can exit.
+  - **Read-back verify, every boot:** on every boot, re-resolve the name and
+    byte-compare against the key
     the process is about to encrypt with; on mismatch, refuse to serve
     gateway-credential writes (fail closed). This re-resolve is the SAME
     uncancellable `Load` (resolver.go:172) and uses the SAME bounded-offload
-    path as the provisioning resolve (timeout ctx + own goroutine + buffered
-    cap-1 channel), so on a steady-state boot — key already provisioned,
-    nothing to serialize — a hung provider still yields a bounded, diagnosable
+    path as the initial resolve (timeout ctx + own goroutine + buffered
+    cap-1 channel), so a hung provider yields a bounded, diagnosable
     startup error rather than a parked process. This is necessary because the
     provider keyspace is a shared mutable surface under the DEFAULT single-URI
     wiring (F2): C1 pins BOTH resolver instances to the same SecretSpec
@@ -927,7 +852,7 @@ is declared into it) and T1.
     --profile=<P>`
     (resolver.go:325-331) against the keyspace that is SHARED under the default
     single-URI wiring (F2) — so absent a guard a user
-    calling `SetSecret` with name `GATEWAY_CREDENTIALS_MASTER_KEY` would
+    calling `SetSecret` with name `COMPASS_MASTER_KEY` would
     OVERWRITE the master key's provider value (the running process keeps its
     cached key, but the next boot adopts the attacker-chosen key → every existing
     row fails GCM auth, every new row is sealed under a known key: the exact
@@ -935,12 +860,12 @@ is declared into it) and T1.
     Layer-B split too, where the user path can no longer reach the master key's
     keyspace: F1 is a declaration-layer NAME partition independent of provider,
     so it does not become redundant. The F1 prefix guard (D6) closes this: the
-    master-key name carries the reserved `GATEWAY_CREDENTIALS_` prefix, which the
+    master-key name carries the reserved `COMPASS_` prefix, which the
     user `secretsService.SetSecret`/`DeleteSecret` path REJECTS BEFORE
     `resolver.Set`/`Delete` — a T0/T2 deliverable, the SAME string check that
     enforces the keyspace partition, so no separate membership read is needed.
     Tested red-green (a non-admin user calling `SetSecret` with a
-    `GATEWAY_CREDENTIALS_`-prefixed name is rejected and the provider value is
+    `COMPASS_`-prefixed name is rejected and the provider value is
     unchanged). Rotation is OQ-1's machinery, never a raw overwrite through
     either surface. The name-keyed global user delete ("a row is keyed by name
     alone, not (actor, name)", go/internal/store/secrets.go:150-153) is why the
@@ -958,20 +883,18 @@ is declared into it) and T1.
     pointed at the SERVER-SECRET resolver instance and invoked once at
     boot; the decoded `envelope.Key` is held in memory for the process
     lifetime.
-  - Boot fails closed: a resolve/provision fault is a startup error, never a
-    fall-back-to-plaintext.
+  - Boot fails closed: a resolve fault or an absent key is a startup error
+    naming the provisioning runbook, never a fall-back-to-plaintext and
+    never a generated key.
 - Consumes: T0's `server_secrets` store + server resolver instance, T1
-  `envelope`, `secrets.Resolver`, `store.DeclareServerSecret`.
+  `envelope`, `secrets.Resolver`.
 - Produces: the process-lifetime `envelope.Key` handed to T4.
-- Tests: fresh-boot provisions (Set + Declare called, key usable);
-  second-boot resolves without Set; two-writer interleaving (concurrent
-  provisioners converge on ONE key both read back identically);
-  Set-succeeded/Declare-crashed reboot converges; read-back mismatch →
-  fail closed; reserved-name SetServerSecret/DeleteServerSecret →
-  actionable reject;
-  nil-resolver + gateway enabled → configuration error naming the missing
-  surface; nil-resolver without gateway → boot proceeds unchanged;
-  provider fault → boot error.
+- Tests: seeded key resolves and is usable; absent key → boot error naming
+  the runbook, nothing written to the provider; read-back mismatch → fail
+  closed; reserved-name SetServerSecret/DeleteServerSecret → actionable
+  reject; nil-resolver + gateway enabled → configuration error naming the
+  missing surface; nil-resolver without gateway → boot proceeds unchanged;
+  hung provider → bounded boot error.
 
 ### T3 — Schema: ciphertext columns on gateway_credentials
 
@@ -1066,8 +989,8 @@ RPC exactly as the gateway record already specifies.
       + bucketA allow-list edit in rls_pgtest_test.go),
       `ServerDeclaredSecrets` store view + second SpecResolver instance (same
       profile), admin-gated SetServerSecret/DeleteServerSecret RPC carrying
-      the F1 PREFIX guard (REQUIRE a reserved server-secret prefix — `SERVER_`
-      or `GATEWAY_CREDENTIALS_` — checked before the `server_secrets` insert
+      the F1 PREFIX guard (REQUIRE a reserved server-secret prefix — `SERVER_`,
+      `GATEWAY_CREDENTIALS_`, or `COMPASS_` — checked before the `server_secrets` insert
       and before `resolver.Set`, AND at the `store.DeclareServerSecret` store
       door, so no writer can create a `server_secrets` row under an unprefixed
       name) AND the matching user-path half on
@@ -1076,7 +999,7 @@ RPC exactly as the gateway record already specifies.
       together the STRUCTURAL F1 PREFIX PARTITION, the two doors making the
       keyspaces disjoint by name so no name is ever live in both tables in
       either order, a pure string check with no cross-table read; PLUS the
-      reserved `GATEWAY_CREDENTIALS_MASTER_KEY` name rejected on the admin
+      reserved `COMPASS_MASTER_KEY` name rejected on the admin
       path too (rotation is OQ-1 machinery, not a raw overwrite), and operator
       provisioning of the SIX server-secret values (primary + reviewer App
       PEM, webhook, three Linear): their VALUES live in an operator-chosen
@@ -1168,9 +1091,10 @@ RPC exactly as the gateway record already specifies.
       (`go/internal/auth/classify_exhaustive_test.go`).
 - [ ] T1 — `go/internal/secrets/envelope`: Key/NewKey/KeyFromBytes/Seal/Open
       (AAD-carrying) + redaction + unit tests
-- [ ] T2 — boot resolve-or-provision seam via the server-secret resolver
-      (advisory-lock serialized, read-back verify + key-fingerprint tripwire,
-      nil-resolver gating, fail-closed boot; the F1 prefix guards are T0's, on BOTH
+- [ ] T2 — boot resolve seam via the server-secret resolver (operator-seeded
+      key per DL-355, bounded resolve, read-back verify + key-fingerprint
+      tripwire, nil-resolver gating, fail-closed boot naming the runbook; the
+      F1 prefix guards are T0's, on BOTH
       the admin SetServerSecret/DeleteServerSecret RPC AND the authenticatedOpen
       user SetSecret/DeleteSecret path).
       DEPENDS ON T0 + T1.
