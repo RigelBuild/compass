@@ -81,8 +81,8 @@ func TestCommitAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
 	if got := resp.GetMessage().GetAuthorAccountId(); got != string(agent.ID) {
 		t.Fatalf("committed message author = %q, want the agent account %q (never the bootstrap admin)", got, agent.ID)
 	}
-	if got := resp.GetMessage().GetAuthorHandle(); got != agent.Handle {
-		t.Fatalf("committed message author handle = %q, want %q", got, agent.Handle)
+	if want := owner.Handle + "/" + agent.Handle; resp.GetMessage().GetAuthorHandle() != want {
+		t.Fatalf("committed message author handle = %q, want %q", resp.GetMessage().GetAuthorHandle(), want)
 	}
 
 	// Durable: the row is readable back out of the store of record.
@@ -129,8 +129,8 @@ func TestCommitAgentPostFansOutOnSubscribeComms(t *testing.T) {
 	if got := posted.GetMessage().GetAuthorAccountId(); got != string(agent.ID) {
 		t.Fatalf("fanned message author = %q, want the agent account %q", got, agent.ID)
 	}
-	if got := posted.GetMessage().GetAuthorHandle(); got != agent.Handle {
-		t.Fatalf("fanned message author handle = %q, want %q", got, agent.Handle)
+	if want := owner.Handle + "/" + agent.Handle; posted.GetMessage().GetAuthorHandle() != want {
+		t.Fatalf("fanned message author handle = %q, want %q", posted.GetMessage().GetAuthorHandle(), want)
 	}
 }
 

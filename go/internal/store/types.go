@@ -335,7 +335,7 @@ type Message struct {
 	ChannelID ChannelID
 	// AuthorAccountID is the posting account, a user or an agent.
 	AuthorAccountID AccountID
-	// AuthorHandle is the author's current handle from account_handles.
+	// AuthorHandle is bare for user/system authors and owner-qualified for agents.
 	AuthorHandle string
 	// At is the server-assigned post time.
 	At time.Time
