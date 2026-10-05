@@ -40,7 +40,7 @@ func TestRunClientBuildsServiceWithoutPipelineEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runClient err = %v, want nil for a valid client config", err)
 	}
-	if svc.target == nil {
+	if svc.conn.Load().target == nil {
 		t.Error("client service target is nil, want a TLS target wired for Connect")
 	}
 	if svc.tokens == nil {
@@ -134,13 +134,14 @@ func TestRunClientSharesOneTargetAcrossPumpAndService(t *testing.T) {
 	}
 
 	// Arm the bearer on the SERVICE's target (the point Connect arms it).
-	svc.target.SetBearer(bearer)
+	conn := svc.conn.Load()
+	conn.target.SetBearer(bearer)
 
 	// Forward one call through the SERVICE's pump; block until the terminal
 	// frame so the request has completed (no time.Sleep — the pump's Do is
 	// synchronous and signals completion by emitting a terminal frame).
 	done := make(chan struct{})
-	svc.pump.Do(context.Background(), bridge.Call{Path: "/probe"}, func(f bridge.Frame) {
+	conn.pump.Do(context.Background(), bridge.Call{Path: "/probe"}, func(f bridge.Frame) {
 		switch f.(type) {
 		case bridge.EndFrame, bridge.ErrorFrame:
 			close(done)

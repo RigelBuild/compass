@@ -168,7 +168,8 @@ func connectService(t *testing.T, serverURL string, caPEM []byte) (*bridgeServic
 		t.Fatalf("NewTLSTarget: %v", err)
 	}
 	store := tokenstore.New(t.TempDir())
-	svc := newBridgeService(nil, nil, target, store)
+	conn := &connection{mode: "client", serverURL: serverURL, target: target, pump: bridge.NewPump(target)}
+	svc := newBridgeService(conn, nil, store)
 	return svc, store
 }
 
@@ -243,7 +244,7 @@ func TestConnectClassification(t *testing.T) {
 			if tc.nilService {
 				// Test wiring: the service is bound with no target/tokenstore.
 				// Connect must fail closed rather than nil-deref.
-				svc = newBridgeService(nil, nil, nil, nil)
+				svc = newBridgeService(&connection{}, nil, nil)
 			}
 			if tc.preStore {
 				if err := store.Write(serverURL, probeToken); err != nil {
@@ -316,7 +317,7 @@ func assertConnectSuccess(t *testing.T, svc *bridgeService, store tokenstore.Sto
 // asserts the success-armed bearer is still injected (SetBearer left armed).
 func assertStillArmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 	t.Helper()
-	cc := compassv1connect.NewCompassServiceClient(svc.target.Client())
+	cc := compassv1connect.NewCompassServiceClient(svc.conn.Load().target.Client())
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
 	if _, err := cc.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{})); err != nil {
@@ -338,7 +339,7 @@ func assertDisarmed(t *testing.T, svc *bridgeService, rec *authRecorder) {
 	// still proves what the target injected — the RPC error itself is expected
 	// and ignored; only the recorded header is the assertion.
 	rec.set("<not-probed>")
-	cc := compassv1connect.NewCompassServiceClient(svc.target.Client())
+	cc := compassv1connect.NewCompassServiceClient(svc.conn.Load().target.Client())
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
 	_, _ = cc.GetServerInfo(ctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))

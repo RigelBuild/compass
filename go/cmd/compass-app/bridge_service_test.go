@@ -83,7 +83,8 @@ func stubServer(t *testing.T, handler http.HandlerFunc) (socketPath string) {
 // emitter the test drains.
 func newService(socket string) (*bridgeService, *fakeEmitter) {
 	emitter := newFakeEmitter()
-	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), emitter, nil, nil)
+	conn := &connection{pump: bridge.NewPump(bridge.NewUnixTarget(socket))}
+	svc := newBridgeService(conn, emitter, nil)
 	return svc, emitter
 }
 
@@ -335,6 +336,63 @@ func TestCompassRPCDialErrorBeforeHead(t *testing.T) {
 	default:
 	}
 	assertNotInflight(t, svc, requestID)
+}
+
+func TestCompassRPCWithoutConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase string
+	}{
+		{name: "no phase"},
+		{name: "reopen phase", phase: "reopen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitter := newFakeEmitter()
+			svc := newBridgeService(nil, emitter, nil)
+			if tc.phase != "" {
+				svc.setPhase(tc.phase)
+			}
+			const requestID = "req-no-connection"
+
+			svc.CompassRPC(context.Background(), rpcRequest{RequestID: requestID})
+
+			ev := recv(t, emitter)
+			if ev.name != "compass_rpc:"+requestID {
+				t.Errorf("event name = %q, want per-requestId key", ev.name)
+			}
+			want := responseFrame{Kind: frameKindError, Message: "Not connected to a server"}
+			if ev.frame.Kind != want.Kind || ev.frame.Message != want.Message || ev.frame.Status != want.Status || len(ev.frame.Headers) != 0 || ev.frame.Chunk != want.Chunk {
+				t.Errorf("frame = %+v, want %+v", ev.frame, want)
+			}
+			select {
+			case extra := <-emitter.ch:
+				t.Fatalf("frame after the no-connection error: kind=%q", extra.frame.Kind)
+			default:
+			}
+
+			if tc.phase == "reopen" {
+				mode, serverURL := svc.shellState()
+				if mode != "reopen" || serverURL != "" {
+					t.Errorf("shellState() = (%q, %q), want (%q, empty)", mode, serverURL, "reopen")
+				}
+				state := svc.ShellState()
+				if state.Mode != "reopen" || state.ServerURL != "" {
+					t.Errorf("ShellState() = %+v, want {Mode:reopen ServerURL:}", state)
+				}
+			}
+		})
+	}
+}
+
+func TestShellStatePrefersInstalledConnection(t *testing.T) {
+	conn := &connection{mode: "client", serverURL: "https://server.example"}
+	svc := newBridgeService(conn, nil, nil)
+	svc.setPhase("reopen")
+
+	want := shellStateResult{Mode: "client", ServerURL: "https://server.example"}
+	if got := svc.ShellState(); got != want {
+		t.Errorf("ShellState() = %+v, want %+v", got, want)
+	}
 }
 
 // hasHeader reports whether pairs contains a [name, value] header tuple.

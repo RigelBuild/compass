@@ -284,7 +284,8 @@ func launch(
 			return nil, nil, err
 		}
 
-		svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), nil, nil, nil)
+		conn := &connection{mode: cfg.Mode.String(), pump: bridge.NewPump(bridge.NewUnixTarget(socket))}
+		svc := newBridgeService(conn, nil, nil)
 		svc.accountID = accountID
 		return svc, quitter, nil
 	case appconfig.ModeClient:
