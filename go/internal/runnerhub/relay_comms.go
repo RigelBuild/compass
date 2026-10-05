@@ -370,7 +370,7 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 		return live, bindingFound
 	}
 	// Refuse a row read across an enroll of its Runner, or while that Runner's reap is
-	// faulted; the caller's next lookup re-reads under a fresh epoch.
+	// faulted. The refusal is final for this call; a later lookup re-reads under a fresh epoch.
 	if h.reapStale[runnerID] != 0 || h.runnerEpoch[runnerID] > bindingEpoch {
 		h.mu.Unlock()
 		return sessionBinding{}, bindingUnverifiable
