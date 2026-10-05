@@ -27,9 +27,11 @@ hooks {
         steps {
             // The whole local CI gate in one target. `moon ci` resolves the
             // affected `runInCI` tasks and runs them with its own cache.
-            // Nothing is hand-listed.
+            // Nothing is hand-listed. Unbounded concurrency (one thread per
+            // core) OOMs a 12G cgroup on the Go analyzers; 4 peaks near 7G at
+            // the same wall time. MOON_CONCURRENCY overrides it.
             ["ci"] = new Step {
-                check = "moon ci"
+                check = "moon ci --concurrency \"${MOON_CONCURRENCY:-4}\""
             }
         }
     }
