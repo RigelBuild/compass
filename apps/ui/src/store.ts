@@ -619,11 +619,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		...(options.initialIssues ?? STUB_ISSUES),
 	]);
 
-	// The roster's agent selection: written when the focused view lands on an
-	// agent route, and by a board pick (`selectIssue`) that stays on the board.
-	const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(
-		null,
-	);
+	// A board pick's agent (`selectIssue`). On an agent route the focused view's
+	// agent wins, so the roster and chrome never disagree with the agent surface.
+	const [pickedAgentId, setPickedAgentId] = createSignal<string | null>(null);
 	// Default to the first issue so the seam survives swapping the fixture
 	// for the real @compass/client (no hardcoded stub id); an empty board
 	// starts with no selection.
@@ -924,7 +922,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		const match = parseRoute(path);
 		if (match.view === "agent") {
 			const owned = issues().filter((w) => w.assignee === match.agentId);
-			setSelectedAgentId(match.agentId);
+			setPickedAgentId(match.agentId);
 			setSelectedIssueId(
 				owned.find((w) => w.id === selectedIssueId())?.id ??
 					owned[0]?.id ??
@@ -937,6 +935,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		}
 		focused.navigate(path);
 	};
+	const selectedAgentId = createMemo<string | null>(() => {
+		const match = focused.route();
+		return match.view === "agent" ? match.agentId : pickedAgentId();
+	});
 	const selectedAgent = createMemo(() =>
 		agents().find((a) => a.account.id === selectedAgentId()),
 	);
@@ -1025,7 +1027,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const selectIssue = (issueId: string) => {
 		setSelectedIssueId(issueId);
 		const ws = issues().find((w) => w.id === issueId);
-		setSelectedAgentId(ws?.assignee ?? null);
+		setPickedAgentId(ws?.assignee ?? null);
 	};
 
 	// ── Comms mutations (design: architecture-lineage) ──

@@ -11,18 +11,9 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { LogPanel } from "./LogPanel";
 
-// Acceptance spec for T-U2 (design.md §440-478): LogPanel's `TracePane` is
-// rebuilt over `foldSession(view.agentSession().events)` and renders the typed
-// `SessionTrace`; `FrameRow`/`FRAME_TAG` are deleted. The panel SHELL is
-// UNCHANGED — header handle, running dot, Stop (disabled when idle), minimize
-// toggle, trace body removed when minimized — so the shell + no-input-box tests
-// stay GREEN. The two typed-trace tests are RED until SessionTrace.tsx lands and
-// the view's agentSession() is re-pointed to the new AgentSession (`.events`) shape.
-//
-// Session subtlety (store.ts:602-604): the view's `agentSession()` keys off
-// its route's agent, NOT off the `agent` prop. So each test must
-// `store.openAgent(id)` (sets selectedAgentId AND resolves selectedAgent) and
-// pass the resolved agent as the prop — both are driven below.
+// LogPanel's trace renders the typed `SessionTrace` from the view's
+// `agentSession()`, which keys off the route's agent, not the `agent` prop.
+// So each test calls `store.openAgent(id)` and passes the resolved agent.
 //
 // Fixture ground truth (session-events-stub.ts STUB_SESSION_EVENTS):
 //   - acc-compass-server: running:true — a thinking beat, ~10 one-word

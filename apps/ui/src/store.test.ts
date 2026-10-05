@@ -315,18 +315,17 @@ describe("openAgent", () => {
 		});
 	});
 
-	// A board roster move (selectIssue) sets selectedAgentId to a new agent
-	// WITHOUT initializing that agent's view. Opening that agent must still reset
-	// the selection — the reset keys on agentViewAgentId, not selectedAgentId, so a
-	// move can't suppress it and leak the previous agent's selection (PR #467).
-	test("opening a different agent after a roster move still resets the selection", () => {
+	// A board pick (selectIssue) while an agent view is focused must not move the
+	// roster off the agent the surface shows; opening the picked agent still anchors.
+	test("opening a different agent after a board pick still resets the selection", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 
-			// Board move to compass-server's issue: selects the agent, no init.
+			// Board pick of compass-server's issue: the focused view stays on compass-ui.
 			s.selectIssue("ws-1023");
 			flush();
-			expect(s.selectedAgentId()).toBe("acc-compass-server");
+			expect(s.selectedAgentId()).toBe("acc-compass-ui");
+			expect(s.focusedView().agent()?.account.id).toBe("acc-compass-ui");
 
 			s.openAgent("acc-compass-server");
 			flush();
@@ -356,19 +355,17 @@ describe("openAgent", () => {
 		});
 	});
 
-	// A cross-agent roster move sets selectedAgentId to another agent WITHOUT
-	// initializing the view — agentViewAgentId stays on the opened agent. Re-opening
-	// the agent-view agent hits the early-return path, which must re-anchor to an
-	// OWNED issue — the other agent's ws must not leak (greptile's finding).
-	test("re-opening the agent-view agent after a cross-agent roster move re-anchors the issue", () => {
+	// A cross-agent board pick leaves the agent view in place. Re-opening that
+	// agent must re-anchor to an OWNED issue so the other agent's ws can't leak.
+	test("re-opening the agent-view agent after a cross-agent board pick re-anchors the issue", () => {
 		withStore((s) => {
-			s.openAgent("acc-compass-ui"); // agentViewAgentId = compass-ui
+			s.openAgent("acc-compass-ui");
 			flush();
 			expect(s.selectedIssueId()).toBe("ws-1022");
 
 			s.selectIssue("ws-1023"); // compass-server's ws; view still compass-ui
 			flush();
-			expect(s.selectedAgentId()).toBe("acc-compass-server");
+			expect(s.selectedAgentId()).toBe("acc-compass-ui");
 
 			s.openAgent("acc-compass-ui"); // early-return path (compass-ui is still agentViewAgentId)
 			flush();
@@ -379,14 +376,8 @@ describe("openAgent", () => {
 		});
 	});
 
-	// The workspace chat pane and the standalone channel surface are decoupled by
-	// construction: the pane renders <ChannelView channel={workspaceChannel()}/>
-	// (derived from the selected agent's home DM), while `selectedChannelId` is the
-	// standalone surface's own state. `openAgent` no longer writes
-	// `selectedChannelId` on either path — so a standalone channel opened in
-	// between can never bleed into the workspace, and re-opening the already-open
-	// agent (early-return path) restores the agent view without disturbing the
-	// standalone selection (PR #783 / RIG-1195).
+	// The workspace pane shows the agent's home DM, while `selectedChannelId` keeps
+	// the last-visited channel across an agent route (no bleed either way).
 	test("re-opening the agent-view agent shows its home DM while leaving the standalone selection intact", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui"); // agentViewAgentId = compass-ui
