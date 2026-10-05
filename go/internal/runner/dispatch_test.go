@@ -16,9 +16,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -966,5 +968,62 @@ func TestExecuteProvisionCancelledIsDebugNoise(t *testing.T) {
 	}
 	if recs[0].Level != slog.LevelDebug {
 		t.Fatalf("cancelled-provision record level = %v, want Debug (shutdown noise)", recs[0].Level)
+	}
+}
+
+// A runner error carrying unbounded text (engine stderr) is truncated to
+// maxRunnerErrorMessageBytes with a marker, so the reply frame stays small.
+func TestErrorResultTruncatesLongMessage(t *testing.T) {
+	d := newDispatcher(&fakeSessionHost{}, discardLoggerRunner())
+	long := errors.New(strings.Repeat("x", 3*4096))
+	msg := d.errorResult(context.Background(), "r", long).GetError().GetMessage()
+	if len(msg) > 4096 || !strings.HasSuffix(msg, truncatedMarker) {
+		t.Fatalf("message length %d (suffix %q), want <= 4096 ending in %q", len(msg), msg[max(0, len(msg)-20):], truncatedMarker)
+	}
+	if got := d.errorResult(context.Background(), "r", errors.New("boom")).GetError().GetMessage(); got != "boom" {
+		t.Fatalf("short message = %q, want it unchanged", got)
+	}
+	exact := strings.Repeat("y", 4096)
+	if got := d.errorResult(context.Background(), "r", errors.New(exact)).GetError().GetMessage(); got != exact {
+		t.Fatalf("a 4096-byte message was changed (len %d), want it unchanged", len(got))
+	}
+}
+
+// A status list past maxStatusEntries is refused rather than truncated: the
+// Server's spawn guard decides on the whole list, so a partial one would lie.
+func TestExecuteStatusRefusesOversizedList(t *testing.T) {
+	statuses := make([]*compassv1.AgentSessionStatus, 4097)
+	for i := range statuses {
+		statuses[i] = &compassv1.AgentSessionStatus{SessionId: strconv.Itoa(i)}
+	}
+	d := newDispatcher(&fakeSessionHost{statuses: statuses}, discardLoggerRunner())
+	cmd := &compassv1internal.SessionsResponse{RequestId: "r", Command: &compassv1internal.SessionsResponse_Status{Status: &compassv1.GetAgentStatusRequest{}}}
+	re := d.execute(context.Background(), "r", cmd).GetError()
+	if re == nil || re.GetCode() != compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION {
+		t.Fatalf("oversized status list = %v, want a FAILED_PRECONDITION error result", re)
+	}
+	d = newDispatcher(&fakeSessionHost{statuses: statuses[:4096]}, discardLoggerRunner())
+	if got := len(d.execute(context.Background(), "r", cmd).GetStatus().GetStatuses()); got != 4096 {
+		t.Fatalf("status list at the bound = %d entries, want 4096", got)
+	}
+}
+
+// Truncation never splits a multibyte rune: protobuf rejects a string field
+// that is not valid UTF-8, which would fail the whole Sessions reply.
+func TestTruncateMessageKeepsUTF8(t *testing.T) {
+	msg := strings.Repeat("é", maxRunnerErrorMessageBytes)
+	if got := truncateMessage(msg); !utf8.ValidString(got) || len(got) > maxRunnerErrorMessageBytes {
+		t.Fatalf("truncated message valid=%v len=%d, want valid UTF-8 within %d bytes", utf8.ValidString(got), len(got), maxRunnerErrorMessageBytes)
+	}
+}
+
+// Engine stderr can hold bytes that are not UTF-8; the message must still be a
+// valid protobuf string, both under and over the bound.
+func TestTruncateMessageRepairsInvalidUTF8(t *testing.T) {
+	for _, msg := range []string{"bad \xff byte", "\xff" + strings.Repeat("x", 5000), strings.Repeat("x", 4094) + "\xe2\x82"} {
+		got := truncateMessage(msg)
+		if !utf8.ValidString(got) || len(got) > 4096 {
+			t.Fatalf("truncateMessage(len %d) valid=%v len=%d, want valid UTF-8 within 4096 bytes", len(msg), utf8.ValidString(got), len(got))
+		}
 	}
 }
