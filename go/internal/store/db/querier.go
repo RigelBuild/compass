@@ -580,7 +580,9 @@ type Querier interface {
 	// Event writes share RecordSessionBinding's transaction, so neither half of an
 	// interval can commit without its binding transition.
 	// clock_timestamp records after lock waits, unlike now() which uses tx start time.
-	StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) error
+	// :execrows: the interval id is fresh, so zero rows means RLS hid the agent row
+	// (an agent of another tenant), and the Store refuses the bind.
+	StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) (int64, error)
 	StoreForgeRepoWatermark(ctx context.Context, arg StoreForgeRepoWatermarkParams) (int64, error)
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error
 	// Delivery-consumer read queries (sqlc adoption T4, RIG-3034). These replace the

@@ -74,7 +74,9 @@ SELECT b.session_id, b.usage_interval_id, b.runner_id
 -- Event writes share RecordSessionBinding's transaction, so neither half of an
 -- interval can commit without its binding transition.
 -- clock_timestamp records after lock waits, unlike now() which uses tx start time.
--- name: StartComputeUsageInterval :exec
+-- :execrows: the interval id is fresh, so zero rows means RLS hid the agent row
+-- (an agent of another tenant), and the Store refuses the bind.
+-- name: StartComputeUsageInterval :execrows
 INSERT INTO compute_usage_events (
     id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
     session_id, runner_id
