@@ -20,7 +20,7 @@ const (
 	forgeLegRepo         = "owner/repo"
 )
 
-func init() {
+func registerForgeFixtureOptions() {
 	args := func(v any) string {
 		raw, err := json.Marshal(v)
 		if err != nil {

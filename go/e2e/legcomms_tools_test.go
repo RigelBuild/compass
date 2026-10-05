@@ -52,7 +52,7 @@ const (
 // returns; its content is never asserted.
 const toolsSettle = "tools agent standing by"
 
-func init() {
+func registerToolsFixtureOptions() {
 	statusArgs := fmt.Sprintf(`{"activity":%q}`, toolsActivity)
 	// Neighborhood is the scope an omitted `scope` defaults to.
 	rosterArgs := `{}`

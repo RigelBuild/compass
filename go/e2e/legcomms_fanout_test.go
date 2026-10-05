@@ -47,7 +47,7 @@ const (
 	t3Settle         = "t3 poster standing by"
 )
 
-func init() {
+func registerFanoutFixtureOptions() {
 	// The poster's ordered script: five comms_post_message tool calls, each
 	// paired with a following text turn so the tool-call turn's second round-trip
 	// terminates. create_topic mirrors the R2/R5 contract (legcomms_test.go, "As
