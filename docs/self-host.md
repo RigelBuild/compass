@@ -147,11 +147,12 @@ virtiofsd, and passt from your distribution and confirm the floors with
 
 ## Guest image
 
-Agent sessions boot a guest kernel, rootfs, and initrd. `compass-stack up`
-pulls them by digest (`--guest-artifact`), uses a directory you staged
-(`--guest-dir`, the air-gapped path), or leaves the Runner image's baked copy
-live. The strategies, the air-gapped runbook, and the agent-image bump flow are
-in [the guest image guide](self-host-guest-image.md).
+MicroVM agent sessions boot a guest kernel, rootfs, and initrd. With
+`--runtime-backend microvm`, `compass-stack up` pulls them by digest
+(`--guest-artifact`) or uses a directory you staged (`--guest-dir`, the
+air-gapped path). The Runner container image carries its own baked copy. The
+sources, the air-gapped runbook, and the agent-image bump flow are in
+[the guest image guide](self-host-guest-image.md).
 
 ## Database
 
