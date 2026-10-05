@@ -1051,6 +1051,46 @@ func TestDownDetachedInfraTierWaitsForConsumerTier(t *testing.T) {
 	}
 }
 
+// TestDownDetachedCancelInConsumerTierStillStopsInfra: a down cancelled while
+// consumers drain must still send the infra tier its stop on a live ctx, and
+// record every infra target as a survivor so a retry can finish them.
+func TestDownDetachedCancelInConsumerTierStillStopsInfra(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedNatsRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.groupSig.onTerm[runnerPgid] = func() {
+		cancel() // the down process is signalled during the consumer tier
+		h.groupSig.set(runnerPgid, pgToken(runnerPgid), false)
+	}
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	var stopCtxErr error
+	h.containers.onStop[natsContainerNameTest] = func(stopCtx context.Context) { stopCtxErr = stopCtx.Err() }
+
+	err := DownDetached(ctx, cfg, deps)
+	if err == nil {
+		t.Fatal("DownDetached = nil, want a survivor error for the unconfirmed infra tier")
+	}
+	if indexOf(h.rec.snapshot(), "ctr-stop "+natsContainerNameTest) < 0 {
+		t.Fatalf("nats never got its stop after cancel: %v", h.rec.snapshot())
+	}
+	if stopCtxErr != nil {
+		t.Fatalf("nats stop ran on a done ctx (%v); exec would refuse it", stopCtxErr)
+	}
+	rec, rerr := readPgidFile(cfg.StateDir)
+	if rerr != nil {
+		t.Fatalf("survivor record read = %v", rerr)
+	}
+	got := map[Component]bool{}
+	for _, e := range rec.Entries {
+		got[e.Component] = true
+	}
+	if !got[ComponentNats] || !got[ComponentPostgres] {
+		t.Fatalf("survivor record = %+v, want nats and postgres", rec.Entries)
+	}
+}
+
 // The stable name a v2 collector container entry carries in these tests.
 const collectorContainerNameTest = "compass-otel-collector-test01"
 
@@ -1296,28 +1336,6 @@ func TestDownDetachedGatewayExitedIsRemovedAndConfirmed(t *testing.T) {
 		t.Fatalf("gateway teardown = %v, want stop then non-forced rm", got)
 	}
 	assertPgidFileGone(t, cfg.StateDir)
-}
-
-// TestDownDetachedGatewayGoneSkipsRemoveExited: once the gateway is absent the
-// confirm is done; it must not issue a podman rm for a container already gone.
-func TestDownDetachedGatewayGoneSkipsRemoveExited(t *testing.T) {
-	cfg, h := newHarness(t)
-	seedGatewayRecord(t, cfg, h)
-	deps := sidecarContainerDownDeps(t, h)
-	for _, p := range []int{pgPgid, serverPgid, runnerPgid} {
-		pgid := p
-		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
-	}
-	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExistsName(gatewayContainerNameTest, false) }
-	if err := DownDetached(context.Background(), cfg, deps); err != nil {
-		t.Fatal(err)
-	}
-	h.containers.mu.Lock()
-	calls := h.containers.rmExitedCalls[gatewayContainerNameTest]
-	h.containers.mu.Unlock()
-	if calls != 0 {
-		t.Fatalf("RemoveExited called %d times on an absent gateway, want 0", calls)
-	}
 }
 
 // TestDownDetachedGatewayStillRunningEscalatesToRemove: while the gateway runs,

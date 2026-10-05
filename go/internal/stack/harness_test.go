@@ -362,23 +362,21 @@ func (f *fakeGroupSignaller) failSignal(pgid int, sig ProcessSignal, err error) 
 // can model a graceful stop, a stop-ignored→rm-f escalation, or a genuine
 // survivor; an onStop hook receives the caller's ctx so it can model a slow stop.
 type fakeContainerController struct {
-	rec           *recorder
-	mu            sync.Mutex
-	exists        map[string]bool
-	exited        map[string]bool
-	rmExitedCalls map[string]int
-	onStop        map[string]func(ctx context.Context)
-	onRemove      map[string]func()
+	rec      *recorder
+	mu       sync.Mutex
+	exists   map[string]bool
+	exited   map[string]bool
+	onStop   map[string]func(ctx context.Context)
+	onRemove map[string]func()
 }
 
 func newFakeContainerController(rec *recorder) *fakeContainerController {
 	return &fakeContainerController{
-		rec:           rec,
-		exists:        map[string]bool{},
-		exited:        map[string]bool{},
-		rmExitedCalls: map[string]int{},
-		onStop:        map[string]func(context.Context){},
-		onRemove:      map[string]func(){},
+		rec:      rec,
+		exists:   map[string]bool{},
+		exited:   map[string]bool{},
+		onStop:   map[string]func(context.Context){},
+		onRemove: map[string]func(){},
 	}
 }
 
@@ -404,7 +402,6 @@ func (c *fakeContainerController) Stop(ctx context.Context, name string) error {
 func (c *fakeContainerController) RemoveExited(_ context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.rmExitedCalls[name]++
 	if c.exists[name] && c.exited[name] {
 		c.rec.add("ctr-rm-exited " + name)
 		c.exists[name] = false

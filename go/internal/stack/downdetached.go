@@ -49,6 +49,9 @@ var (
 	// downPollInterval paces the confirmation polls. Real wall-time; a test
 	// shrinks it so the suite does not pay a full interval per poll.
 	downPollInterval = 100 * time.Millisecond
+	// infraStopOnCancel bounds the detached stop sent to the infra tier when the
+	// caller's ctx is cancelled before that tier is reached.
+	infraStopOnCancel = 3 * time.Second
 )
 
 // ErrStackStarting is returned by DownDetached when a live up holds the state-dir
@@ -247,9 +250,6 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		{comp: ComponentGateway, budget: gatewayDrainBudget, confirm: func(e pgidEntry) func() bool {
 			// It runs without --rm, so an exited gateway lingers; remove it once exited.
 			return func() bool {
-				if !deps.Containers.Exists(ctx, e.ContainerName) {
-					return true
-				}
 				if err := deps.Containers.RemoveExited(ctx, e.ContainerName); err != nil {
 					logContainerSignalMiss("rm", e, err)
 				}
@@ -322,7 +322,19 @@ func drainTargets(ctx context.Context, deps Deps, targets []target) []Component 
 			infra = append(infra, t)
 		}
 	}
-	return append(drainTier(ctx, deps, consumers), drainTier(ctx, deps, infra)...)
+	survivors := drainTier(ctx, deps, consumers)
+	if ctx.Err() == nil {
+		return append(survivors, drainTier(ctx, deps, infra)...)
+	}
+	// Cancelled mid-teardown: exec refuses a done ctx, so stop infra on a short
+	// detached one and record it all as survivors rather than wait.
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), infraStopOnCancel)
+	defer cancel()
+	for _, t := range infra {
+		signalTerm(sctx, deps, t.entry)
+		survivors = append(survivors, t.entry.Component)
+	}
+	return survivors
 }
 
 // drainTier signals every target in the tier, then drains each one in turn.
