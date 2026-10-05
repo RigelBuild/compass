@@ -20,5 +20,6 @@ JOIN accounts a
 JOIN account_handles ah ON ah.account_id = a.id
 ORDER BY ah.handle;
 
--- name: UserPeerExists :one
-SELECT EXISTS (SELECT 1 FROM user_peers WHERE user_id = $1 AND peer_user_id = $2) AS exists;
+-- name: UserPeerPair :one
+SELECT EXISTS (SELECT 1 FROM user_peers p_out WHERE p_out.user_id = sqlc.arg(user_id) AND p_out.peer_user_id = sqlc.arg(peer_user_id)) AS outgoing,
+       EXISTS (SELECT 1 FROM user_peers p_in WHERE p_in.user_id = sqlc.arg(peer_user_id) AND p_in.peer_user_id = sqlc.arg(user_id)) AS incoming;

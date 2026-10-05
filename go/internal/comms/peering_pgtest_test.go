@@ -68,6 +68,10 @@ func TestApprovePeerHandlerReturnsPeeringState(t *testing.T) {
 	}
 	if p := resp.Msg.GetPeering(); p.GetUserAccountId() != string(a.ID) || p.GetHandle() != a.Handle || p.GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
 		t.Fatalf("ApprovePeer(b->a) peering = %+v, want %s/%s approved", p, a.ID, a.Handle)
+	} // A retry after the peering is live must report it, not the caller's own row alone.
+	resp, err = svc.ApprovePeer(WithActor(ctx, a.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: b.Handle}))
+	if err != nil || resp.Msg.GetPeering().GetState() != compassv1.PeeringState_PEERING_STATE_APPROVED {
+		t.Fatalf("repeat ApprovePeer(a->b) = %+v, %v; want approved", resp, err)
 	}
 }
 
@@ -80,7 +84,7 @@ func TestListPeersHandlerShowsThreeStates(t *testing.T) {
 	d := mustUser(t, st, "peering-state-d")
 
 	for _, edge := range [][2]store.AccountID{{a.ID, b.ID}, {c.ID, a.ID}, {a.ID, d.ID}, {d.ID, a.ID}} {
-		if _, _, err := st.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+		if _, err := st.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
 			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
 		}
 	}
@@ -114,7 +118,7 @@ func TestRevokePeerHandlerReclaimedHandleDoesNotRevokeOldAccount(t *testing.T) {
 	a := mustUser(t, s, "peering-reclaim-a")
 	b := mustUser(t, s, "peering-reclaim-b")
 	for _, edge := range [][2]store.AccountID{{a.ID, b.ID}, {b.ID, a.ID}} {
-		if _, _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+		if _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
 			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
 		}
 	}

@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	errPeerUserRequired = errors.New("peer management requires a user account")
-	errPeerSelf         = errors.New("a user cannot peer with itself")
+	errPeerUserRequired         = errors.New("peer management requires a user account")
+	errPeerSelf                 = errors.New("a user cannot peer with itself")
+	errPeerRevokedDuringApprove = errors.New("approval was revoked while it was being recorded; retry")
 )
 
 // ApprovePeer records the calling user's approval of another user.
@@ -24,7 +25,14 @@ func (c *Comms) ApprovePeer(
 	if err != nil {
 		return nil, err
 	}
-	state, _, err := c.store.ApprovePeer(ctx, actor, peer.ID)
+	if _, err := c.store.ApprovePeer(ctx, actor, peer.ID); err != nil {
+		return nil, edgeError(err)
+	}
+	state, err := c.store.PeeringWith(ctx, actor, peer.ID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && state == store.PeeringPendingIncoming) {
+		// Only the caller can delete its own row, so it revoked during this call.
+		return nil, connect.NewError(connect.CodeAborted, errPeerRevokedDuringApprove)
+	}
 	if err != nil {
 		return nil, edgeError(err)
 	}

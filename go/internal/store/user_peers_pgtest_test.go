@@ -21,14 +21,25 @@ func TestApprovePeerIdempotentAndListStates(t *testing.T) {
 	a := mustUser(t, s, "peer-a")
 	b := mustUser(t, s, "peer-b")
 
-	state, inserted, err := s.ApprovePeer(ctx, a.ID, b.ID)
-	if err != nil || !inserted || state != PeeringPendingOutgoing {
-		t.Fatalf("ApprovePeer(a, b) = (%v, %v, %v), want (pending outgoing, true, nil)", state, inserted, err)
+	assertPair := func(user, peer AccountID, want PeeringState) {
+		t.Helper()
+		if got, err := s.PeeringWith(ctx, user, peer); err != nil || got != want {
+			t.Fatalf("PeeringWith(%q, %q) = %v, %v; want %v", user, peer, got, err, want)
+		}
 	}
-	_, inserted, err = s.ApprovePeer(ctx, a.ID, b.ID)
+	if _, err := s.PeeringWith(ctx, a.ID, b.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("PeeringWith before any approval error = %v, want ErrNotFound", err)
+	}
+	inserted, err := s.ApprovePeer(ctx, a.ID, b.ID)
+	if err != nil || !inserted {
+		t.Fatalf("ApprovePeer(a, b) = (%v, %v), want (true, nil)", inserted, err)
+	}
+	inserted, err = s.ApprovePeer(ctx, a.ID, b.ID)
 	if err != nil || inserted {
 		t.Fatalf("second ApprovePeer(a, b) = (%v, %v), want (false, nil)", inserted, err)
 	}
+	assertPair(a.ID, b.ID, PeeringPendingOutgoing)
+	assertPair(b.ID, a.ID, PeeringPendingIncoming)
 
 	assertPeerings := func(user AccountID, wantID AccountID, wantHandle string, wantState PeeringState) {
 		t.Helper()
@@ -43,10 +54,15 @@ func TestApprovePeerIdempotentAndListStates(t *testing.T) {
 	assertPeerings(a.ID, b.ID, b.Handle, PeeringPendingOutgoing)
 	assertPeerings(b.ID, a.ID, a.Handle, PeeringPendingIncoming)
 
-	state, inserted, err = s.ApprovePeer(ctx, b.ID, a.ID)
-	if err != nil || !inserted || state != PeeringApproved {
-		t.Fatalf("ApprovePeer(b, a) = (%v, %v, %v), want (approved, true, nil)", state, inserted, err)
+	inserted, err = s.ApprovePeer(ctx, b.ID, a.ID)
+	if err != nil || !inserted {
+		t.Fatalf("ApprovePeer(b, a) = (%v, %v), want (true, nil)", inserted, err)
 	}
+	if inserted, err := s.ApprovePeer(ctx, b.ID, a.ID); err != nil || inserted {
+		t.Fatalf("repeat ApprovePeer(b, a) = (%v, %v), want (false, nil)", inserted, err)
+	}
+	assertPair(a.ID, b.ID, PeeringApproved)
+	assertPair(b.ID, a.ID, PeeringApproved)
 	assertPeerings(a.ID, b.ID, b.Handle, PeeringApproved)
 	assertPeerings(b.ID, a.ID, a.Handle, PeeringApproved)
 }
@@ -57,7 +73,7 @@ func TestListPeeringsOrdersByHandle(t *testing.T) {
 	me := mustUser(t, s, "peer-order-me")
 	for _, h := range []string{"peer-order-c", "peer-order-a", "peer-order-b"} {
 		u := mustUser(t, s, h)
-		if _, _, err := s.ApprovePeer(ctx, me.ID, u.ID); err != nil {
+		if _, err := s.ApprovePeer(ctx, me.ID, u.ID); err != nil {
 			t.Fatalf("ApprovePeer(%s): %v", h, err)
 		}
 	}
@@ -81,7 +97,7 @@ func TestRevokePeerTransitions(t *testing.T) {
 	a := mustUser(t, s, "revoke-a")
 	b := mustUser(t, s, "revoke-b")
 	for _, edge := range [][2]AccountID{{a.ID, b.ID}, {b.ID, a.ID}} {
-		if _, _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+		if _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
 			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
 		}
 	}
@@ -114,10 +130,10 @@ func TestApprovePeerRejectsSelfAndInvalidPeer(t *testing.T) {
 	user := mustUser(t, s, "invalid-peer-user")
 	agent := mustAgent(t, s, user.ID, "invalid-peer-agent")
 
-	if _, _, err := s.ApprovePeer(ctx, user.ID, user.ID); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.ApprovePeer(ctx, user.ID, user.ID); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("ApprovePeer(self) error = %v, want ErrInvalidArgument", err)
 	}
-	if _, _, err := s.ApprovePeer(ctx, user.ID, agent.ID); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.ApprovePeer(ctx, user.ID, agent.ID); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("ApprovePeer(agent id) error = %v, want ErrInvalidArgument", err)
 	}
 }
@@ -127,10 +143,10 @@ func TestUserPeerRenameAndReclaim(t *testing.T) {
 	s := newTestStore(t)
 	a := mustUser(t, s, "peer-rename-a")
 	b := mustUser(t, s, "peer-rename-b")
-	if _, _, err := s.ApprovePeer(ctx, a.ID, b.ID); err != nil {
+	if _, err := s.ApprovePeer(ctx, a.ID, b.ID); err != nil {
 		t.Fatalf("ApprovePeer: %v", err)
 	}
-	if _, _, err := s.ApprovePeer(ctx, b.ID, a.ID); err != nil {
+	if _, err := s.ApprovePeer(ctx, b.ID, a.ID); err != nil {
 		t.Fatalf("ApprovePeer reverse: %v", err)
 	}
 	if _, err := s.pool.Exec(ctx,
@@ -154,7 +170,7 @@ func TestUserPeerRenameAndReclaim(t *testing.T) {
 	if err != nil || len(peers) != 1 || peers[0].PeerID != b.ID || peers[0].Handle != "peer-rename-b-old" || peers[0].State != PeeringApproved {
 		t.Fatalf("peer after reclaim = %+v, %v; want original id approved", peers, err)
 	}
-	if _, inserted, err := s.ApprovePeer(ctx, a.ID, reclaimed.ID); err != nil || !inserted {
+	if inserted, err := s.ApprovePeer(ctx, a.ID, reclaimed.ID); err != nil || !inserted {
 		t.Fatalf("ApprovePeer(reclaimed account) = (%v, %v), want fresh row", inserted, err)
 	}
 	peers, err = s.ListPeerings(ctx, a.ID)
@@ -174,7 +190,7 @@ func TestUserPeerCrossTenantIsolation(t *testing.T) {
 		t.Fatalf("CreateUser(B): %v", err)
 	}
 
-	if _, _, err := s.ApprovePeer(ctxA, a.ID, b.ID); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.ApprovePeer(ctxA, a.ID, b.ID); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("cross-tenant ApprovePeer error = %v, want ErrInvalidArgument", err)
 	}
 	peers, err := s.ListPeerings(ctxA, a.ID)
@@ -183,7 +199,7 @@ func TestUserPeerCrossTenantIsolation(t *testing.T) {
 	}
 
 	other := mustUser(t, s, "peer-tenant-a-peer")
-	if _, _, err := s.ApprovePeer(ctxA, a.ID, other.ID); err != nil {
+	if _, err := s.ApprovePeer(ctxA, a.ID, other.ID); err != nil {
 		t.Fatalf("same-tenant ApprovePeer: %v", err)
 	}
 	if peers, err := s.ListPeerings(ctxA, a.ID); err != nil || len(peers) != 1 {
@@ -191,12 +207,12 @@ func TestUserPeerCrossTenantIsolation(t *testing.T) {
 	}
 	// Probe user_peers alone: ListPeerings also joins RLS-scoped handles, which
 	// would hide the row even if user_peers itself leaked.
-	pair := db.UserPeerExistsParams{UserID: string(a.ID), PeerUserID: string(other.ID)}
-	if seen, err := s.q.UserPeerExists(ctxA, pair); err != nil || !seen {
-		t.Fatalf("tenant A row under tenant A = %v, %v; want visible", seen, err)
+	pair := db.UserPeerPairParams{UserID: string(a.ID), PeerUserID: string(other.ID)}
+	if row, err := s.q.UserPeerPair(ctxA, pair); err != nil || !row.Outgoing {
+		t.Fatalf("tenant A row under tenant A = %+v, %v; want visible", row, err)
 	}
-	if seen, err := s.q.UserPeerExists(ctxB, pair); err != nil || seen {
-		t.Fatalf("tenant A row under tenant B = %v, %v; want hidden", seen, err)
+	if row, err := s.q.UserPeerPair(ctxB, pair); err != nil || row.Outgoing {
+		t.Fatalf("tenant A row under tenant B = %+v, %v; want hidden", row, err)
 	}
 }
 
@@ -269,7 +285,7 @@ func TestOpenUpgradesPreviousMigrationToUserPeers(t *testing.T) {
 	defer upgraded.Close()
 	tctx := WithTenant(ctx, tenant)
 	for _, edge := range [][2]AccountID{{"upgrade-peer-a", "upgrade-peer-b"}, {"upgrade-peer-b", "upgrade-peer-a"}} {
-		if _, _, err := upgraded.ApprovePeer(tctx, edge[0], edge[1]); err != nil {
+		if _, err := upgraded.ApprovePeer(tctx, edge[0], edge[1]); err != nil {
 			t.Fatalf("ApprovePeer(%s, %s) after upgrade: %v", edge[0], edge[1], err)
 		}
 	}

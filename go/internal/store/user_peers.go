@@ -26,30 +26,44 @@ type Peering struct {
 	State  PeeringState
 }
 
-// ApprovePeer records user's approval of peer and returns the resulting state;
-// inserted is false when the approval already existed. A non-user, unknown, or
-// other-tenant peer fails its composite foreign key and is ErrInvalidArgument.
-func (s *Store) ApprovePeer(ctx context.Context, user, peer AccountID) (state PeeringState, inserted bool, err error) {
+// ApprovePeer records user's approval of peer; inserted is false when it
+// already existed. A non-user, unknown, or other-tenant peer fails its
+// composite foreign key and is ErrInvalidArgument.
+func (s *Store) ApprovePeer(ctx context.Context, user, peer AccountID) (bool, error) {
 	if user == peer {
-		return 0, false, fmt.Errorf("%w: a user cannot peer with itself", ErrInvalidArgument)
+		return false, fmt.Errorf("%w: a user cannot peer with itself", ErrInvalidArgument)
 	}
 	rows, err := s.q.InsertUserPeer(ctx, db.InsertUserPeerParams{UserID: string(user), PeerUserID: string(peer)})
 	if err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
-			return 0, false, fmt.Errorf("%w: peer %q is not a user in this tenant", ErrInvalidArgument, peer)
+			return false, fmt.Errorf("%w: peer %q is not a user in this tenant", ErrInvalidArgument, peer)
 		}
-		return 0, false, fmt.Errorf("store: approve peer: %w", err)
+		return false, fmt.Errorf("store: approve peer: %w", err)
 	}
-	// The caller's own row was just written, so only the reverse row decides the state.
-	reverse, err := s.q.UserPeerExists(ctx, db.UserPeerExistsParams{UserID: string(peer), PeerUserID: string(user)})
+	return rows != 0, nil
+}
+
+// PeeringWith returns user's peering state with peer, read from both directed
+// rows in one statement; ErrNotFound when neither row exists.
+func (s *Store) PeeringWith(ctx context.Context, user, peer AccountID) (PeeringState, error) {
+	row, err := s.q.UserPeerPair(ctx, db.UserPeerPairParams{UserID: string(user), PeerUserID: string(peer)})
 	if err != nil {
-		return 0, false, fmt.Errorf("store: approve peer: %w", err)
+		return 0, fmt.Errorf("store: peering with: %w", err)
 	}
-	state = PeeringPendingOutgoing
-	if reverse {
-		state = PeeringApproved
+	return peeringState(row.Outgoing, row.Incoming)
+}
+
+func peeringState(outgoing, incoming bool) (PeeringState, error) {
+	switch {
+	case outgoing && incoming:
+		return PeeringApproved, nil
+	case outgoing:
+		return PeeringPendingOutgoing, nil
+	case incoming:
+		return PeeringPendingIncoming, nil
+	default:
+		return 0, ErrNotFound
 	}
-	return state, rows != 0, nil
 }
 
 // RevokePeer deletes user's approval of peer; deleted reports whether one existed.
@@ -72,12 +86,9 @@ func (s *Store) ListPeerings(ctx context.Context, user AccountID) ([]Peering, er
 	}
 	peers := make([]Peering, 0, len(rows))
 	for _, row := range rows {
-		state := PeeringPendingIncoming
-		switch {
-		case row.Outgoing && row.Incoming:
-			state = PeeringApproved
-		case row.Outgoing:
-			state = PeeringPendingOutgoing
+		state, err := peeringState(row.Outgoing, row.Incoming)
+		if err != nil {
+			return nil, fmt.Errorf("store: list peerings: %w", err)
 		}
 		peers = append(peers, Peering{PeerID: AccountID(row.PeerID), Handle: row.Handle, State: state})
 	}
