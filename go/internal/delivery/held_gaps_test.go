@@ -263,6 +263,123 @@ func TestQueuedSettleFiresOnlyItsTurn(t *testing.T) {
 	}
 }
 
+// A STARTING edge (fresh agent identity on reload) resets the settle mark, so
+// the restarted counter's turn 1 is held until its own settle.
+func TestStartingEdgeResetsSettleSequence(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.drainSettles(t.Context())
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+
+	m := messageAt("m-restart", "restarted turn partial", time.UnixMilli(600))
+	m.TurnSequence = 1
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 0 {
+		t.Fatalf("restarted turn 1 dispatched %d times before its settle, want 0", n)
+	}
+	if !c.isHeld("sess-author", "m-restart") {
+		t.Fatal("restarted turn 1 must stay held until its own settle")
+	}
+
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 1 {
+		t.Fatalf("restarted turn 1 dispatched %d times after its settle, want 1", n)
+	}
+}
+
+// An old identity's settle still queued at STARTING cannot release a post from
+// the restarted counter.
+func TestQueuedOldSettleCannotFireRestartedTurn(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	m := messageAt("m-restart", "restarted turn partial", time.UnixMilli(600))
+	m.TurnSequence = 1
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 0 {
+		t.Fatalf("old queued settle dispatched the restarted turn %d times, want 0", n)
+	}
+
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 1 {
+		t.Fatalf("restarted turn dispatched %d times after its settle, want 1", n)
+	}
+}
+
+// A post held at the old identity's turn N, interrupted by a reload before its
+// settle, is released by the new identity's first settle.
+func TestRestartReleasesOldIdentityHoldOnFirstSettle(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	m := messageAt("m-old", "old turn", time.UnixMilli(100))
+	m.TurnSequence = 10
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-old"); n != 1 {
+		t.Fatalf("old-identity hold dispatched %d times after the new first settle, want 1", n)
+	}
+}
+
+// An old-identity post whose event is handled only after STARTING is still
+// released by the new identity's first settle, not stranded at its old turn.
+func TestDelayedOldIdentityPostReleasedAfterRestart(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	m := messageAt("m-delayed", "old turn", time.UnixMilli(100))
+	m.TurnSequence = 10
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-delayed"); n != 0 {
+		t.Fatalf("delayed old post dispatched %d times before any settle, want 0", n)
+	}
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-delayed"); n != 1 {
+		t.Fatalf("delayed old post dispatched %d times after the new first settle, want 1", n)
+	}
+}
+
+// An old-identity post handled only after the new identity already settled
+// replays that settle instead of waiting for another.
+func TestOldIdentityPostAfterNewSettleReplays(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	m := messageAt("m-late-old", "old turn", time.UnixMilli(100))
+	m.TurnSequence = 10
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-late-old"); n != 1 {
+		t.Fatalf("late old-identity post dispatched %d times, want 1", n)
+	}
+}
+
 // Zero sequence preserves fire-all behavior and logs once; late holds compare turns.
 func TestSettleSequenceCompatibilityAndLateHold(t *testing.T) {
 	t.Run("legacy settle logs once and fires all", func(t *testing.T) {

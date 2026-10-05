@@ -17,19 +17,19 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// OnSessionSettled is the hub's SettleSink hook (§2), called at the hub's
-// deliverSession arm right after the LifecycleSink publish, from the hub's
-// Deliver goroutine. It must NOT block that goroutine on store work and must NOT
-// store the caller's ctx (the loop owns the serve ctx), so it only enqueues the
-// edge and wakes the loop; the loop drains it under its own ctx. A settle to a
-// non-terminal, non-READY state (STARTING) is ignored — only a SETTLED edge
-// fires held delivers.
+// OnSessionSettled is the hub's SettleSink hook. It runs on the hub's Deliver
+// goroutine, so it only enqueues the edge and wakes the loop. STARTING fires
+// nothing but starts a new identity generation (a fresh agent restarts at 1).
 func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessionState, turnSequence uint64) {
+	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING {
+		c.startGeneration(sessionID)
+		return
+	}
 	if !firesHeldDelivers(state) {
 		return
 	}
 	c.mu.Lock()
-	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state, turnSequence: turnSequence, upTo: math.MaxInt64})
+	c.settleQueue = append(c.settleQueue, settleEvent{sessionID: sessionID, state: state, turnSequence: turnSequence, upTo: math.MaxInt64, generation: c.generation[sessionID]})
 	c.lastSettle[sessionID] = c.now().UnixMilli()
 	if turnSequence > c.lastSettleSequence[sessionID] {
 		c.lastSettleSequence[sessionID] = turnSequence
@@ -117,7 +117,7 @@ func (c *Consumer) drainSettles(ctx context.Context) {
 		if logFallback {
 			c.log.WarnContext(ctx, "delivery: zero turn sequence settle; using legacy fire-all fallback", "session_id", ev.sessionID)
 		}
-		c.fireHeld(ctx, ev.sessionID, ev.upTo, ev.turnSequence)
+		c.fireHeld(ctx, ev.sessionID, ev.upTo, ev.turnSequence, ev.generation)
 	}
 }
 
@@ -273,13 +273,15 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 
 // fireHeld dispatches entries at or before both the commit-time and sequence
 // bounds, re-reading each under its hold-time tenant before dispatch.
-func (c *Consumer) fireHeld(ctx context.Context, authorSession string, upTo int64, turnSequence uint64) {
+func (c *Consumer) fireHeld(ctx context.Context, authorSession string, upTo int64, turnSequence, generation uint64) {
 	c.mu.Lock()
 	var fire, keep []heldEntry
 	for _, e := range c.held[authorSession] {
 		withinTime := e.atUnixMs <= upTo
 		// Legacy entries have no turn identity, so they never wait on a sequence.
-		withinTurn := turnSequence == 0 || e.turnSequence == 0 || e.turnSequence <= turnSequence
+		// An edge queued before a restart cannot release the new identity's posts.
+		withinTurn := e.generation <= generation &&
+			(turnSequence == 0 || e.turnSequence == 0 || e.turnSequence <= turnSequence)
 		if withinTime && withinTurn {
 			fire = append(fire, e)
 		} else {
@@ -322,7 +324,27 @@ func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
 		delete(c.lastSettle, sid)
 		delete(c.lastSettleSequence, sid)
 		delete(c.lastSettleLegacy, sid)
+		delete(c.generation, sid)
+		delete(c.generationStart, sid)
 		delete(c.fallbackLogged, sid)
+	}
+}
+
+// startGeneration begins a new identity generation for sessionID. Settle marks
+// reset, and old-identity posts (held now or held later with an earlier commit
+// time) drop their turn sequence, so the new identity's first settle frees them.
+func (c *Consumer) startGeneration(sessionID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	gen := c.generation[sessionID] + 1
+	c.generation[sessionID] = gen
+	c.generationStart[sessionID] = c.now().UnixMilli()
+	delete(c.lastSettle, sessionID)
+	delete(c.lastSettleSequence, sessionID)
+	delete(c.lastSettleLegacy, sessionID)
+	for i := range c.held[sessionID] {
+		c.held[sessionID][i].turnSequence = 0
+		c.held[sessionID][i].generation = gen
 	}
 }
 

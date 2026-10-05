@@ -133,6 +133,8 @@ type settleEvent struct {
 	// upTo bounds the commit times this edge fires. A real settle fires all; a
 	// late hold's replay is bounded when no turn sequence is available.
 	upTo int64
+	// generation is the author's identity generation when the edge was queued.
+	generation uint64
 }
 
 // startEvent is one queued session-start edge handed from the hub's Start (or
@@ -184,6 +186,8 @@ type heldEntry struct {
 	tenant       store.TenantID
 	atUnixMs     int64
 	turnSequence uint64
+	// generation is the author's identity generation at hold time.
+	generation uint64
 }
 
 // Consumer consumes message_posted refs and fans posted messages out to
@@ -221,6 +225,11 @@ type Consumer struct {
 	lastSettle         map[string]int64
 	lastSettleSequence map[string]uint64
 	lastSettleLegacy   map[string]bool
+	// generation counts each session's STARTING edges; turn sequences compare
+	// only within one generation because a fresh identity restarts at 1.
+	generation map[string]uint64
+	// generationStart is when each session's current generation began (ms).
+	generationStart map[string]int64
 	// fallbackLogged records sessions warned about legacy settles until teardown.
 	fallbackLogged map[string]struct{}
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
@@ -308,6 +317,8 @@ func NewConsumer(st DeliveryReads, dispatch ControlDispatcher, resolver SessionR
 		lastSettle:         make(map[string]int64),
 		lastSettleSequence: make(map[string]uint64),
 		lastSettleLegacy:   make(map[string]bool),
+		generation:         make(map[string]uint64),
+		generationStart:    make(map[string]int64),
 		fallbackLogged:     make(map[string]struct{}),
 		notify:             make(chan struct{}, 1),
 		gates:              make(map[string]*sync.Mutex),
@@ -448,7 +459,16 @@ func (c *Consumer) drainRecovery(ctx context.Context) {
 			delete(c.lastSettle, sid)
 			delete(c.lastSettleSequence, sid)
 			delete(c.lastSettleLegacy, sid)
+			delete(c.generation, sid)
+			delete(c.generationStart, sid)
 			delete(c.fallbackLogged, sid)
+		}
+	}
+	// A session restarted but never settled has no lastSettle entry.
+	for sid := range c.generation {
+		if _, ok := live[sid]; !ok {
+			delete(c.generation, sid)
+			delete(c.generationStart, sid)
 		}
 	}
 	c.pruneErroredWakes()

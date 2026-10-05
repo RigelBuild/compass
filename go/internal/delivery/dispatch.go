@@ -89,6 +89,16 @@ func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, at
 		entry.tenant = tenant
 	}
 	c.mu.Lock()
+	entry.generation = c.generation[authorSession]
+	// Committed before the restart (same server clock as the insert): the old
+	// identity's turn, whose settle won't come; any new-identity settle frees it.
+	oldIdentity := false
+	start, started := c.generationStart[authorSession]
+	if started && atUnixMs < start {
+		entry.turnSequence = 0
+		turnSequence = 0
+		oldIdentity = true
+	}
 	entries := c.held[authorSession]
 	// First index strictly after atUnixMs: equal stamps keep arrival order.
 	i, _ := slices.BinarySearchFunc(entries, atUnixMs, func(e heldEntry, at int64) int {
@@ -104,15 +114,19 @@ func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, at
 	// Compare sequences when both sides have one; fall back to commit time only
 	// after a legacy (zero-sequence) settle.
 	sequenceObserved := turnSequence > 0 && settledSequence >= turnSequence
-	eligible := ok && (sequenceObserved || legacySettle && settled >= atUnixMs)
+	eligible := ok && (sequenceObserved || oldIdentity || legacySettle && settled >= atUnixMs)
 	if eligible {
 		upTo := int64(math.MaxInt64)
 		replaySequence := turnSequence
-		if turnSequence == 0 || legacySettle {
+		if oldIdentity {
+			upTo = start - 1
+			replaySequence = 0
+		} else if turnSequence == 0 || legacySettle {
 			upTo = settled
 			replaySequence = 0
 		}
 		c.settleQueue = append(c.settleQueue, settleEvent{
+			generation:   entry.generation,
 			sessionID:    authorSession,
 			state:        compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
 			turnSequence: replaySequence,
