@@ -94,11 +94,13 @@ is written first to a new `server-ca-<16 hex>.pem` beside app.toml, created
 with `O_EXCL`, so no existing trust anchor is ever replaced; `ca_cert` names
 that copy (OQ-4), so a moved download cannot break a later launch. The TOML
 goes to a same-directory temp file, is fsynced, and is linked to `app.toml`
-with `os.Link`; then the directory is fsynced. The link fails if `app.toml`
-exists, so a file written meanwhile by another process or by hand is never
-replaced; that failure returns `ErrConfigExists`. Every exit removes the temp
-file, and every failure also removes the new CA copy. The next launch reads
-the file through the unchanged parse path.
+with `os.Link`. The link fails if `app.toml` exists, so a file written
+meanwhile by another process or by hand is never replaced; that failure
+returns `ErrConfigExists`. The link is the commit point: after it the save has
+succeeded, and a following directory fsync failure is logged, not returned.
+Every exit removes the temp file, and every returned failure also removes the
+new CA copy, so a returned error always means no `app.toml` was written. The
+next launch reads the file through the unchanged parse path.
 
 ### A3 — The URL reaches the running shell (OQ-2)
 
@@ -240,7 +242,9 @@ fixed below.
     returns embedded. `SaveClient` with `http://h` fails.
   - Onto an existing `app.toml` and `server-ca-*.pem`, both savers return
     `ErrConfigExists` and leave both byte-identical.
-  - Every failure above leaves no temp file and no new CA file in the dir.
+  - Every failure above leaves no temp file and no new CA file in the dir. An
+    injected directory-fsync failure after the link returns success, and
+    `Load` reads the saved file.
 
 ### T-2a — Shell: one connection value (behaviour-preserving)
 
@@ -303,11 +307,11 @@ fixed below.
   - `firstRunGate`: `begin` fails with "Another window is setting up Compass."
     while an attempt runs, and with "Compass is already set up. Quit and
     reopen it to change this." after a decision. `end(false)` releases it.
-  - `decide(svc)` is the one terminal step for every path that ends first
-    run: it makes the gate final, then (for every path except a client
-    install) calls `svc.setPhase("reopen")`, then emits `setup:decided`. State
-    is set before the event, so a window that reads `ShellState` after it
-    subscribes cannot miss the decision.
+  - `decide(g, svc, clientInstalled bool)` is the one terminal step for every
+    path that ends first run: it makes the gate final, then, unless
+    `clientInstalled`, calls `svc.setPhase("reopen")`, then emits
+    `setup:decided`. State is set before the event, so a window that reads
+    `ShellState` after it subscribes cannot miss the decision.
   - `caPicks`: the shell-side store of picked CA bytes, keyed by a 128-bit
     random hex ref. `get` leaves the entry, so a failed probe can be retried
     with the same pick; `clear` drops every entry after a save.
@@ -330,16 +334,18 @@ fixed below.
        caPEM)`, then store the token. The token is written only after this
        process owns `app.toml`, so a lost race never touches another
        process's token. `ErrConfigExists` disarms the candidate, calls
-       `decide`, and returns kind `other` with the "already set up" message.
-       Any other `SaveClient` failure disarms, calls `end(false)`, and
-       returns kind `other` ("Connected, but the settings could not be
-       saved: <err>"). A token-store failure after the save installs nothing,
-       calls `decide`, and returns kind `other` ("Saved, but could not store
-       the token. Quit and reopen Compass, then enter it again.");
+       `decide(g, svc, false)`, and returns kind `other` with the "already
+       set up" message. Any other `SaveClient` failure disarms, calls
+       `end(false)`, and returns kind `other` ("Connected, but the settings
+       could not be saved: <err>"). A token-store failure after the save
+       disarms the candidate, calls `picks.clear()` and
+       `decide(g, svc, false)`, installs nothing, and returns kind `other`
+       ("Saved, but could not store the token. Quit and reopen Compass, then
+       enter it again.");
     8. install `&connection{mode: "client", serverURL: url, target: candidate,
-       pump: bridge.NewPump(candidate)}`, then `picks.clear()` and `decide`.
-       Other open setup windows read `ShellState` on the event and boot as
-       the connected client.
+       pump: bridge.NewPump(candidate)}`, then `picks.clear()` and
+       `decide(g, svc, true)`. Other open setup windows read `ShellState` on
+       the event and boot as the configured client.
   - Every successful `connectResult` carries `serverUrl`.
 - **Interfaces:**
 
@@ -404,8 +410,8 @@ fixed below.
   - An injected `saveClient` error: kind `other`, no connection installed, no
     token written, the gate open after; a following valid attempt → `ok`.
   - An injected token-store failure after a good save: kind `other`, no
-    connection installed, `shellState` → `("reopen", "")`, and one
-    `setup:decided` event.
+    connection installed, the candidate disarmed, `picks` empty, `shellState`
+    → `("reopen", "")`, and one `setup:decided` event.
   - An `app.toml` (and token) created after the chooser opened → the
     "already set up" message, both byte-identical, `shellState` →
     `("reopen", "")`, and one `setup:decided` event.
@@ -429,7 +435,7 @@ fixed below.
   - `setupService.ChooseEmbedded`: `gate.begin()` → preflight → on failure
     `end(false)` and return its message → `SaveEmbedded`. On success,
     `decide(gate, svc, false)` and return `ok` with the embedded reopen text.
-    On `ErrConfigExists`, the same `decide` and the neutral "already set up"
+    On `ErrConfigExists`, the same `decide(gate, svc, false)` and the neutral "already set up"
     message, which names no mode. Any other error → `end(false)`. No relaunch
     and no quit. `main.go` wires preflight as `realPreflight(image)` under
     `bringUpTimeout`, which is already sized for darwin machine creation.
@@ -502,12 +508,17 @@ fixed below.
       result shows its message; when the gate is final that message is the
       neutral "already set up" text, otherwise both choices return.
     - The window subscribes to `setup:decided`, then calls `shellState` once,
-      and again on each event. `"client"` boots the connected client;
-      `"reopen"` shows the neutral reopen screen ("Compass is already set up.
-      Quit and reopen it to change this." and Quit). Reading after subscribing
-      means a decision made before the subscription is still seen.
+      and again on each event. `"client"` hands off to
+      `deps.bootNativeClient(root, "configured")`, which reuses the installed
+      connection; `"reopen"` shows the neutral reopen screen ("Compass is
+      already set up. Quit and reopen it to change this." and Quit). Reading
+      after subscribing means a decision made before the subscription is
+      still seen.
+    - While this window's own action is in flight, and after it has handed
+      off or shown its result, it unsubscribes and ignores events, so its own
+      decision cannot trigger a second transition.
     - Connect hands off to `deps.bootNativeClient(root, "setup")`. The default
-      deps wrap `bootNativeClient(root, undefined, "setup")`.
+      deps wrap `bootNativeClient(root, undefined, entry)`.
   - `boot-native.ts` setup entry: no auto-probe; the form from A4; submit
     disabled while the URL is empty; it always sends `server`; `invalid-url`
     and `invalid-ca` show `message` via `textContent`; on `ok` the provider
@@ -543,7 +554,7 @@ fixed below.
     shellState: () => Promise<{ mode: ShellMode; serverUrl: string }>;
     onSetupDecided: (fn: () => void) => () => void; // returns unsubscribe
     quitApp: () => Promise<void>;
-    bootNativeClient: (root: HTMLElement, entry: "setup") => Promise<ResolvedConnection | undefined>;
+    bootNativeClient: (root: HTMLElement, entry: "setup" | "configured") => Promise<ResolvedConnection | undefined>;
   };
   export async function bootSetup(
     root: HTMLElement,
@@ -563,9 +574,12 @@ fixed below.
     - an embedded failure re-renders both choices with the message;
     - success shows the embedded reopen text, and Quit calls `quitApp`;
     - a `setup:decided` event with `shellState` → `"reopen"` shows the
-      neutral reopen screen; with `"client"` it boots the connected client;
+      neutral reopen screen; with `"client"` it calls `bootNativeClient`
+      with `"configured"`;
     - a decision made before the subscription (the first `shellState` already
       returns `"reopen"`) shows the reopen screen with no event;
+    - the window that chose embedded keeps its embedded success text when its
+      own `setup:decided` arrives, and the window that connected boots once;
     - connect hands off with `"setup"`.
   - `boot-mode`: `"setup"` routes to `bootSetup`; `"reopen"` renders the
     neutral reopen screen.
