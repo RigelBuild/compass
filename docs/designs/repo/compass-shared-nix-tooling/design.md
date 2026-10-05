@@ -2,9 +2,9 @@
 
 ## Problem / Intent
 
-The shared tools record (repo/compass-shared-tools-repo, T10) rules that the
-shared tools repo is also a flake for the Nix code that compass and the private
-consumer both carry, but it does not say which Nix code that is. This record
+The shared tools record (repo/compass-shared-tools-repo, T10) asked which Nix
+code compass and the private consumer both carry, so the shared public repo
+could export it. This record
 measures it. The measurement found one shared file, the vendored-binary
 toolchain builder, with 6 lines of code drift. Matt ruled to reconcile that
 drift by hand rather than ship a flake output (RIG-4548, see Resolved
@@ -174,8 +174,9 @@ Order: R1, then R2. R2 copies compass's builder as it is after R1.
 Lands in: compass. `tools/toolchain/toolchain-tools.nix` only.
 
 Change: the four `lib.optionals stdenv.isLinux` tests (two in `bun`, two in
-`node`) become `lib.optionals stdenv.hostPlatform.isLinux`. No other line
-changes.
+`node`) become `lib.optionals stdenv.hostPlatform.isLinux`. The header's
+second line becomes "and the CI toolchain import this one module", which R2
+copies too. No other line changes.
 
 Acceptance:
 
