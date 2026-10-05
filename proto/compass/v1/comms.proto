@@ -652,6 +652,11 @@ message CreateChannelGroupRequest {
   // Parent group; empty for a top-level group.
   string parent_group_id = 2;
   ChannelGroupVisibility visibility = 3;
+  // Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
+  // when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
+  // or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
+  // use parent_group_id.
+  string parent_group_name = 4;
 }
 
 message CreateChannelGroupResponse {
@@ -688,11 +693,17 @@ message CreateChannelRequest {
   // Initial members party to the channel. Each is a `@handle`; the server
   // resolves it to an account id; unknown → NOT_FOUND.
   repeated string member_handles = 4;
-  // The agent to hang the channel off; mutually exclusive with group_id. A
-  // `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+  // The agent to hang the channel off; mutually exclusive with group_id and
+  // group_name. A `@handle`; the server resolves it to an account id; unknown →
+  // NOT_FOUND.
   string parent_agent_handle = 5;
   // TREE requires parent_agent_handle.
   ChannelMembershipMode membership_mode = 6;
+  // Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
+  // when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
+  // or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
+  // use group_id.
+  string group_name = 7;
 }
 
 message CreateChannelResponse {

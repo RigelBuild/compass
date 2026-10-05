@@ -105,6 +105,10 @@ service AgentGateway {
 // message is the `RelayCommsCallRequest.call` payload on the Runner->Server leg.
 message CommsCallRequest {
   string call_id = 1;
+  // create_channel and create_channel_group use group_name / parent_group_name
+  // as a leaf or root slash path, resolved within visible groups. Unknown or
+  // invisible is NOT_FOUND; ambiguous leaf or path is INVALID_ARGUMENT. Setting
+  // group_id / parent_group_id is INVALID_ARGUMENT.
   oneof call {
     // post, list and update_members carry a channel NAME in channel_id, resolved
     // within the caller's visible set: unknown or invisible is NOT_FOUND,
