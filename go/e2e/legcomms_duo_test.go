@@ -304,9 +304,9 @@ func TestCommsTwoAgentConversation(t *testing.T) {
 	}
 }
 
-// assertDuoDMChannel checks the DM landed in a store-side DM channel under the
-// deterministic pair name with both agents as members: comms_open_dm and comms_dm
-// agree with the server on which channel a pair's DM is.
+// assertDuoDMChannel reads persisted state because a fanned-out DM does not show
+// where it was stored: an agent-side and server-side disagreement on a pair's DM
+// channel would still deliver.
 func assertDuoDMChannel(ctx context.Context, t *testing.T, st *store.Store, topicID, agentAID, agentBID string) {
 	t.Helper()
 	wantDM := "dm:" + duoAgentAHandle + ":" + duoAgentBHandle
