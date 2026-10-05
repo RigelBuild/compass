@@ -3,9 +3,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +58,24 @@ func TestLinearSessionLinkRedirectsToResolvedHome(t *testing.T) {
 	if resolvedEvent == nil || resolvedEvent.AgentSession.ID != sessionID ||
 		resolvedEvent.AgentSession.Issue.ID != issueID || resolvedEvent.AgentSession.Issue.Identifier != issueKey {
 		t.Fatalf("resolved event = %+v, want session %q and issue %q/%q", resolvedEvent, sessionID, issueID, issueKey)
+	}
+}
+
+func TestLinearSessionLinkEscapedIDLookup(t *testing.T) {
+	var gotID string
+	handler := newLinearSessionLinkHandler(linearSessionLookupFunc(func(_ context.Context, id string) (store.LinearAgentSessionRow, error) {
+		gotID = id
+		return store.LinearAgentSessionRow{LinearIssueIdentifier: "RIG-7"}, nil
+	}), func(context.Context, *linearagent.SessionEvent) (store.AccountID, string, error) {
+		return "manager", "home", nil
+	}, "https://compass.example.com", nil)
+
+	rec := serveLinearSessionLink(t, handler, http.MethodGet, "a/b")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	if gotID != "a/b" {
+		t.Fatalf("lookup id = %q, want a/b", gotID)
 	}
 }
 
@@ -115,7 +135,7 @@ func TestLinearSessionLinkNotFound(t *testing.T) {
 	}{
 		{name: "unknown session", id: "unknown-session", err: store.ErrNotFound},
 		{name: "empty session id"},
-		{name: "session id contains slash", id: "session/child"},
+		{name: "unknown session id contains slash", id: "session/child", err: store.ErrNotFound},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,8 +150,10 @@ func TestLinearSessionLinkNotFound(t *testing.T) {
 			if rec.Code != http.StatusNotFound {
 				t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
 			}
-			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-				t.Errorf("Cache-Control = %q, want no-store", got)
+			if tc.id != "" {
+				if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+					t.Errorf("Cache-Control = %q, want no-store", got)
+				}
 			}
 		})
 	}
@@ -157,26 +179,38 @@ func TestLinearSessionLinkRejectsUnsupportedMethod(t *testing.T) {
 
 func TestLinearSessionLinkErrors(t *testing.T) {
 	tests := []struct {
-		name       string
-		lookupErr  error
-		resolveErr error
-		wantStatus int
+		name             string
+		lookupErr        error
+		resolveErr       error
+		wantStatus       int
+		wantRetryAfter   string
+		wantQuietLogging bool
 	}{
-		{name: "unseeded routing fallback", resolveErr: fmt.Errorf("resolve: %w", errRoutingSupervisor), wantStatus: http.StatusServiceUnavailable},
+		{name: "unseeded routing fallback", resolveErr: fmt.Errorf("resolve: %w", errRoutingSupervisor), wantStatus: http.StatusServiceUnavailable, wantRetryAfter: "5"},
+		{name: "lookup canceled", lookupErr: fmt.Errorf("lookup: %w", context.Canceled), wantStatus: http.StatusOK, wantQuietLogging: true},
+		{name: "resolve canceled", resolveErr: fmt.Errorf("resolve: %w", context.Canceled), wantStatus: http.StatusOK, wantQuietLogging: true},
 		{name: "unexpected resolver error", resolveErr: errors.New("internal resolver detail"), wantStatus: http.StatusInternalServerError},
 		{name: "unexpected store error", lookupErr: errors.New("internal store detail"), wantStatus: http.StatusInternalServerError},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			handler := newLinearSessionLinkHandler(linearSessionLookupFunc(func(context.Context, string) (store.LinearAgentSessionRow, error) {
 				return store.LinearAgentSessionRow{}, tc.lookupErr
 			}), func(context.Context, *linearagent.SessionEvent) (store.AccountID, string, error) {
 				return "", "", tc.resolveErr
-			}, "https://compass.example.com", nil)
+			}, "https://compass.example.com", logger)
 
 			rec := serveLinearSessionLink(t, handler, http.MethodGet, "session-123")
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d; body = %q", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if got := rec.Header().Get("Retry-After"); got != tc.wantRetryAfter {
+				t.Errorf("Retry-After = %q, want %q", got, tc.wantRetryAfter)
+			}
+			if tc.wantQuietLogging && logs.Len() != 0 {
+				t.Errorf("canceled request logged an error: %s", logs.String())
 			}
 			if strings.Contains(rec.Body.String(), "internal") || strings.Contains(rec.Body.String(), "linear routing") {
 				t.Errorf("response body exposes internal error: %q", rec.Body.String())
@@ -190,14 +224,10 @@ func TestLinearSessionLinkErrors(t *testing.T) {
 
 func serveLinearSessionLink(t *testing.T, handler http.Handler, method, id string) *httptest.ResponseRecorder {
 	t.Helper()
-	path := "/l/session/" + id
-	if id == "" {
-		path = "/l/session/"
-	}
-	pattern := http.NewServeMux()
-	pattern.Handle(linearSessionLinkPath, handler)
-	req := httptest.NewRequest(method, path, nil)
+	mux := http.NewServeMux()
+	mux.Handle(linearSessionLinkPattern, handler)
+	req := httptest.NewRequest(method, sessionLinkFor("https://compass.example.com", id), nil)
 	rec := httptest.NewRecorder()
-	pattern.ServeHTTP(rec, req)
+	mux.ServeHTTP(rec, req)
 	return rec
 }

@@ -7,15 +7,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// linearSessionLinkPath is the stable link the responder hands Linear; the
+// linearSessionLinkPattern matches the stable link the responder hands Linear; the
 // handler resolves its target at click time, so the stored URL never goes stale.
-const linearSessionLinkPath = "/l/session/"
+const linearSessionLinkPattern = "/l/session/{id}"
 
 type linearAgentSessionReader interface {
 	LinearAgentSession(ctx context.Context, linearSessionID string) (store.LinearAgentSessionRow, error)
@@ -45,8 +44,8 @@ func (h *linearSessionLinkHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	id := strings.TrimPrefix(r.URL.Path, linearSessionLinkPath)
-	if !strings.HasPrefix(r.URL.Path, linearSessionLinkPath) || id == "" || strings.Contains(id, "/") {
+	id := r.PathValue("id")
+	if id == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -55,6 +54,9 @@ func (h *linearSessionLinkHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
+			return
+		}
+		if errors.Is(err, context.Canceled) {
 			return
 		}
 		h.log.Error("linear session link lookup failed", "error", err)
@@ -74,6 +76,12 @@ func (h *linearSessionLinkHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		status := http.StatusInternalServerError
 		if isLinearRoutingNotSeeded(err) {
 			status = http.StatusServiceUnavailable
+		}
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		if status == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", "5")
 		}
 		h.log.Error("linear session link resolution failed", "error", err)
 		http.Error(w, http.StatusText(status), status)

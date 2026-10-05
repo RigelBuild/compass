@@ -89,6 +89,17 @@ func TestBuildLinearWiringSessionSink(t *testing.T) {
 			t.Fatalf("code = %d, want 200 (logged and dropped)", code)
 		}
 	})
+	t.Run("tokens without a webhook secret have no session link", func(t *testing.T) {
+		withoutSecret := cfg
+		withoutSecret.Forge.LinearWebhookSecretName = ""
+		w, err := buildLinearWiring(ctx, withoutSecret, nil, nil, nil, res, "acct-admin", "acct-bridge", linearagent.NewTokenSource("cid", "csecret", nil, ""))
+		if err != nil {
+			t.Fatalf("buildLinearWiring: %v", err)
+		}
+		if w.sessionLink != nil {
+			t.Fatalf("session link handler = %T, want nil without a webhook secret", w.sessionLink)
+		}
+	})
 
 	t.Run("configured without a public URL fails boot", func(t *testing.T) {
 		noURL := cfg

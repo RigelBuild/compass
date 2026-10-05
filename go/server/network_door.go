@@ -350,7 +350,7 @@ func buildNetworkServer(
 	// Unauthenticated by design: it mutates nothing, and the redirect target is
 	// itself an auth-gated Compass surface.
 	if linearSessionLinkHandler != nil {
-		netMux.Handle(linearSessionLinkPath, linearSessionLinkHandler)
+		netMux.Handle(linearSessionLinkPattern, linearSessionLinkHandler)
 	}
 	var netRoot http.Handler = netMux
 	if cfg.CORSAllowedOrigin != "" {

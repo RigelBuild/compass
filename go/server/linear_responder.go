@@ -124,10 +124,7 @@ func buildLinearWiring(
 	if notify != nil {
 		dataSink = notify.sink
 	}
-	var routeResolver *linearagent.Resolver
-	if tokens != nil {
-		routeResolver = buildLinearResolver(st, adminID)
-	}
+	routeResolver := buildLinearResolver(st, adminID)
 	responder := buildLinearResponder(cfg, st, cm, bridgeID, tokens, "", routeResolver)
 	// A nil *Dispatcher boxed in the interface is non-nil, so off must stay a nil interface.
 	var sessionSink SessionEventSink
