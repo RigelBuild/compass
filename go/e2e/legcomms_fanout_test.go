@@ -47,7 +47,7 @@ const (
 	t3Settle         = "t3 poster standing by"
 )
 
-func init() {
+func registerFanoutFixtureOptions() {
 	// The poster's ordered script: five comms_post_message tool calls, each
 	// paired with a following text turn so the tool-call turn's second round-trip
 	// terminates. create_topic mirrors the R2/R5 contract (legcomms_test.go, "As
@@ -188,22 +188,7 @@ func TestCommsFanOutAndIsolation(t *testing.T) {
 	outsiderStream := t3ObserverStream(ctx, t, f, outsiderID)
 	defer outsiderStream.Close()
 
-	// Drive the poster's five posts, one trigger per marker round-trip.
-	for i, desc := range []string{
-		"fan-out post",
-		"name-miss post without create_topic",
-		"mint-negative canary",
-		"cross-topic post",
-		"cross-channel canary",
-	} {
-		trigger := t3FanoutMarker + ": " + desc
-		if _, err := f.PostMessage(ctx, string(poster.Agent.HomeChannelID), "general", trigger); err != nil {
-			t.Fatalf("PostMessage(trigger %d %q): %v", i, desc, err)
-		}
-		if err := f.AwaitTurnSettled(ctx, tail); err != nil {
-			t.Fatalf("AwaitTurnSettled(trigger %d %q): %v", i, desc, err)
-		}
-	}
+	t3DrivePosts(ctx, t, f, poster, tail)
 
 	// ── Assertion 1: fan-out reaches all three member streams ────────────────
 	// The three sub1Stream assertions (fan → mint canary → topic-2) MUST stay in
@@ -300,4 +285,25 @@ func t3AwaitBody(ctx context.Context, t *testing.T, f *Fixture, stream *connect.
 		t.Fatalf("%s stream never carried %q: %v", who, body, err)
 	}
 	return m
+}
+
+func t3DrivePosts(ctx context.Context, t *testing.T, f *Fixture, poster store.Account, tail *connect.ServerStreamForClient[compassv1.AgentSessionFrame]) {
+	t.Helper()
+
+	// Drive the poster's five posts, one trigger per marker round-trip.
+	for i, desc := range []string{
+		"fan-out post",
+		"name-miss post without create_topic",
+		"mint-negative canary",
+		"cross-topic post",
+		"cross-channel canary",
+	} {
+		trigger := t3FanoutMarker + ": " + desc
+		if _, err := f.PostMessage(ctx, string(poster.Agent.HomeChannelID), "general", trigger); err != nil {
+			t.Fatalf("PostMessage(trigger %d %q): %v", i, desc, err)
+		}
+		if err := f.AwaitTurnSettled(ctx, tail); err != nil {
+			t.Fatalf("AwaitTurnSettled(trigger %d %q): %v", i, desc, err)
+		}
+	}
 }

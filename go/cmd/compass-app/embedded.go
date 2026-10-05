@@ -23,7 +23,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // embedded stack supervisor: runs the compass-stack up/down binaries through the injected launch seams
 	"path/filepath"
 	"runtime"
 	"strings"

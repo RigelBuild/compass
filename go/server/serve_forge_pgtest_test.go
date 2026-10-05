@@ -318,6 +318,8 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 // makes the consumer re-point work. Without it the server registry is empty,
 // Resolve short-circuits an empty registry to (nil, nil), and a configured App
 // hard-fails its boot at validateForgeSecret.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background()

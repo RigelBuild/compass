@@ -117,8 +117,8 @@ func subscribeErr(t *testing.T, client compassv1connect.CompassServiceClient, be
 		}
 		err = stream.Err()
 	}
-	var ce *connect.Error
-	if !errors.As(err, &ce) {
+	ce, ok := errors.AsType[*connect.Error](err)
+	if !ok {
 		t.Fatalf("expected a connect.Error, got %v", err)
 	}
 	return ce

@@ -263,8 +263,8 @@ func TestLinearGetIssueNotFound(t *testing.T) {
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
 
 	_, err := l.GetIssue(context.Background(), "SEA", 999)
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != 404 {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != 404 {
 		t.Fatalf("err = %v, want *StatusError 404", err)
 	}
 }
@@ -413,8 +413,8 @@ func TestLinearRateLimitHint(t *testing.T) {
 		l.now = func() time.Time { return base }
 
 		_, err := l.GetIssue(context.Background(), "SEA", 7)
-		var rle *RateLimitError
-		if !errors.As(err, &rle) {
+		rle, ok := errors.AsType[*RateLimitError](err)
+		if !ok {
 			t.Fatalf("err = %v, want *RateLimitError", err)
 		}
 		if rle.RetryAfter != 60*time.Second {
@@ -436,8 +436,8 @@ func TestLinearRateLimitHint(t *testing.T) {
 		l.now = func() time.Time { return base }
 
 		_, err := l.GetIssue(context.Background(), "SEA", 7)
-		var rle *RateLimitError
-		if !errors.As(err, &rle) {
+		rle, ok := errors.AsType[*RateLimitError](err)
+		if !ok {
 			t.Fatalf("err = %v, want *RateLimitError", err)
 		}
 		if rle.RetryAfter != 90*time.Second {
@@ -454,8 +454,8 @@ func TestLinearRateLimitHint(t *testing.T) {
 		l.now = func() time.Time { return clock }
 
 		_, err := l.GetIssue(context.Background(), "SEA", 7)
-		var rle *RateLimitError
-		if !errors.As(err, &rle) {
+		rle, ok := errors.AsType[*RateLimitError](err)
+		if !ok {
 			t.Fatalf("err = %v, want *RateLimitError", err)
 		}
 		if rle.RetryAfter != 0 {
@@ -484,8 +484,8 @@ func TestLinearRateLimitHint(t *testing.T) {
 		}
 		clock = base.Add(59 * time.Second) // 1s remains of the window
 		_, err := l.GetIssue(context.Background(), "SEA", 8)
-		var rle *RateLimitError
-		if !errors.As(err, &rle) {
+		rle, ok := errors.AsType[*RateLimitError](err)
+		if !ok {
 			t.Fatalf("gated err = %v, want *RateLimitError", err)
 		}
 		if rle.RetryAfter != time.Second {
@@ -506,8 +506,8 @@ func TestLinearGraphQLErrorsOn200(t *testing.T) {
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
 
 	_, err := l.GetIssue(context.Background(), "SEA", 7)
-	var se *StatusError
-	if !errors.As(err, &se) {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
 		t.Fatalf("err = %v, want *StatusError", err)
 	}
 	if se.Status != 200 {
@@ -565,8 +565,8 @@ func TestLinear401Invalidates(t *testing.T) {
 	l := newTestLinear(rt, ts, slog.New(&capturingHandler{}))
 
 	_, err := l.GetIssue(context.Background(), "SEA", 7)
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != 401 {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != 401 {
 		t.Fatalf("err = %v, want *StatusError 401", err)
 	}
 	if ts.invalidated != 1 {
@@ -1003,8 +1003,8 @@ func TestLinearTransitionDoesNotRetryOnNonStaleness200(t *testing.T) {
 		t.Fatalf("warm-up transition: %v", err)
 	}
 	_, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed})
-	var se *StatusError
-	if !errors.As(err, &se) {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
 		t.Fatalf("err = %v, want *StatusError", err)
 	}
 	if !strings.Contains(se.Message, "do not have permission") {
@@ -1034,8 +1034,8 @@ func TestLinearTransitionRejectsTruncatedWorkflowStatePage(t *testing.T) {
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
 
 	_, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed, WorkflowState: "S0"})
-	var se *StatusError
-	if !errors.As(err, &se) {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
 		t.Fatalf("err = %v, want *StatusError", err)
 	}
 	if se.Status != http.StatusUnprocessableEntity {

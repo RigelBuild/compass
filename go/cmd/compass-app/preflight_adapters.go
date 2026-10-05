@@ -12,7 +12,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"os/exec" //nolint:depguard // embedded preflight adapters: podman info and podman image exists <ref>, the ref passed as one argv operand
 	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/runtime"

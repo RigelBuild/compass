@@ -55,8 +55,7 @@ func TestContractSuite_MicroVM(t *testing.T) {
 		portableKillError:       true,
 		assertDuplicateName: func(t *testing.T, err error) {
 			t.Helper()
-			var dup *DuplicateNameError
-			if !errors.As(err, &dup) {
+			if _, ok := errors.AsType[*DuplicateNameError](err); !ok {
 				t.Fatalf("duplicate-name Create error = %v (%T), want *DuplicateNameError", err, err)
 			}
 		},

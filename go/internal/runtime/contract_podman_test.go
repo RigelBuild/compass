@@ -55,8 +55,7 @@ func TestContractSuite_Podman(t *testing.T) {
 		portableKillError: false,
 		assertDuplicateName: func(t *testing.T, err error) {
 			t.Helper()
-			var cmdErr *CommandError
-			if !errors.As(err, &cmdErr) {
+			if _, ok := errors.AsType[*CommandError](err); !ok {
 				t.Fatalf("duplicate-name Create error = %v (%T), want *CommandError (the engine's name-collision refusal)", err, err)
 			}
 		},

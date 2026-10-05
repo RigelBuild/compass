@@ -617,11 +617,11 @@ func deliberateKill(err error, caps backendCaps) bool {
 		return false
 	}
 	if caps.portableKillError {
-		var e *ExitStatusError
-		return errors.As(err, &e) && e.Signal != 0
+		e, ok := errors.AsType[*ExitStatusError](err)
+		return ok && e.Signal != 0
 	}
-	var e *exec.ExitError
-	return errors.As(err, &e) && e.ExitCode() == -1
+	e, ok := errors.AsType[*exec.ExitError](err)
+	return ok && e.ExitCode() == -1
 }
 
 // assertDeliberateKill fails unless err is the expected deliberate-kill error

@@ -56,8 +56,8 @@ func TestNewChildHandleFuncs_WaitSignalledExit(t *testing.T) {
 		func() error { return &ExitStatusError{Signal: syscall.SIGKILL} },
 	)
 	err := h.Wait()
-	var exitStatus *ExitStatusError
-	if !errors.As(err, &exitStatus) {
+	exitStatus, ok := errors.AsType[*ExitStatusError](err)
+	if !ok {
 		t.Fatalf("Wait error = %T, want *ExitStatusError", err)
 	}
 	if exitStatus.Signal != syscall.SIGKILL {

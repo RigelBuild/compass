@@ -117,7 +117,7 @@ func TestNatsUpDown(t *testing.T) {
 	}
 
 	waitContainerGone(t, natsName, containerGoneBudget)
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
 		t.Fatalf("stack.pgids record %q still present after a full down: stat err = %v", recordPath, err)
 	}
@@ -184,7 +184,7 @@ func TestExternalNatsUpDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compass-stack down (--nats-external): %v\n%s", err, out)
 	}
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 }
 
 // startTestNats runs an in-process JetStream NATS server on loopback and
