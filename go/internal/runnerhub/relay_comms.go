@@ -369,7 +369,8 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 		h.mu.Unlock()
 		return live, bindingFound
 	}
-	// A row recorded after a newer enroll may be refused once; retry then passes.
+	// Refuse a row read across an enroll of its Runner, or while that Runner's reap is
+	// faulted; the caller's next lookup re-reads under a fresh epoch.
 	if h.reapStale[runnerID] != 0 || h.runnerEpoch[runnerID] > bindingEpoch {
 		h.mu.Unlock()
 		return sessionBinding{}, bindingUnverifiable
@@ -426,7 +427,7 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 		h.mu.Unlock()
 		return live, true
 	}
-	// A row recorded after a newer enroll may be refused once; retry then passes.
+	// Same fence as lookupSessionBinding.
 	if h.reapStale[runnerID] != 0 || h.runnerEpoch[runnerID] > bindingEpoch {
 		h.mu.Unlock()
 		return "", false

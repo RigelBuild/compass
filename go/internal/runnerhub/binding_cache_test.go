@@ -307,7 +307,7 @@ func TestFaultedReapForOneRunnerKeepsOtherRunnersReadThrough(t *testing.T) {
 	}
 }
 
-func TestSuccessfulReenrollClearsOnlyItsOwnRunnerFlag(t *testing.T) {
+func TestSuccessfulReenrollClearsOnlyItsOwnReapFault(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
 	hub.SetSessionBindingStore(bindings)
@@ -333,6 +333,32 @@ func TestSuccessfulReenrollClearsOnlyItsOwnRunnerFlag(t *testing.T) {
 	}
 	if sessionID, ok := hub.SessionForAccount(context.Background(), "acct-runner-2-stale"); ok {
 		t.Fatalf("SessionForAccount(acct-runner-2-stale) = (%q, true), want fail-closed after runner-2 reap fault", sessionID)
+	}
+}
+
+func TestSuccessfulReenrollRestoresItsOwnReadThrough(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seedBinding("sess-runner-1-stale", "acct-runner-1-stale", "runner-1")
+	bindings.deleteForRunnerErr = errors.New("durable fault")
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	if account, ok := hub.accountForSession(context.Background(), "sess-runner-1-stale"); ok {
+		t.Fatalf("accountForSession(sess-runner-1-stale) = (%q, true), want refused after faulted reap", account)
+	}
+	if sessionID, ok := hub.SessionForAccount(context.Background(), "acct-runner-1-stale"); ok {
+		t.Fatalf("SessionForAccount(acct-runner-1-stale) = (%q, true), want refused after faulted reap", sessionID)
+	}
+
+	bindings.deleteForRunnerErr = nil
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	bindings.seedBinding("sess-runner-1-fresh", "acct-runner-1-fresh", "runner-1")
+	if account, ok := hub.accountForSession(context.Background(), "sess-runner-1-fresh"); !ok || account != "acct-runner-1-fresh" {
+		t.Fatalf("accountForSession(sess-runner-1-fresh) = (%q, %v), want fresh binding after successful reap", account, ok)
+	}
+	if sessionID, ok := hub.SessionForAccount(context.Background(), "acct-runner-1-fresh"); !ok || sessionID != "sess-runner-1-fresh" {
+		t.Fatalf("SessionForAccount(acct-runner-1-fresh) = (%q, %v), want fresh binding after successful reap", sessionID, ok)
 	}
 }
 
@@ -755,6 +781,7 @@ func TestOlderSuccessfulReapCannotClearNewerFault(t *testing.T) {
 		firstEntered:     make(chan struct{}),
 		firstRelease:     make(chan struct{}),
 		secondEntered:    make(chan struct{}),
+		secondErr:        errors.New("newer reap fault"),
 	}
 	hub.SetSessionBindingStore(bindings)
 	firstDone := make(chan struct{})
@@ -779,6 +806,47 @@ func TestOlderSuccessfulReapCannotClearNewerFault(t *testing.T) {
 	}
 	if sessionID, ok := hub.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), "acct-runner-1-after"); ok {
 		t.Fatalf("SessionForAccount(acct-runner-1-after) = (%q, true), want refusal while newer enroll reap remains faulted", sessionID)
+	}
+}
+
+func TestOlderFaultedReapAfterNewerSuccessKeepsReadThrough(t *testing.T) {
+	hub := newHubOnly()
+	plain := newFakeBindingStore()
+	hub.SetSessionBindingStore(plain)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	bindings := &overlappingReapBindingStore{
+		fakeBindingStore: plain,
+		firstEntered:     make(chan struct{}),
+		firstRelease:     make(chan struct{}),
+		firstErr:         errors.New("older reap fault"),
+		secondEntered:    make(chan struct{}),
+		secondRelease:    make(chan struct{}),
+	}
+	hub.SetSessionBindingStore(bindings)
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	}()
+	<-bindings.firstEntered
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	}()
+	<-bindings.secondEntered
+	close(bindings.secondRelease)
+	<-secondDone
+	close(bindings.firstRelease)
+	<-firstDone
+
+	plain.seedBinding("sess-runner-1-after", "acct-runner-1-after", "runner-1")
+	if account, ok := hub.accountForSession(store.WithTenant(context.Background(), "tenant-a"), "sess-runner-1-after"); !ok || account != "acct-runner-1-after" {
+		t.Fatalf("accountForSession(sess-runner-1-after) = (%q, %v), want read-through after newer successful reap", account, ok)
+	}
+	if sessionID, ok := hub.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), "acct-runner-1-after"); !ok || sessionID != "sess-runner-1-after" {
+		t.Fatalf("SessionForAccount(acct-runner-1-after) = (%q, %v), want read-through after newer successful reap", sessionID, ok)
 	}
 }
 
@@ -816,7 +884,10 @@ type overlappingReapBindingStore struct {
 	calls         int
 	firstEntered  chan struct{}
 	firstRelease  chan struct{}
+	firstErr      error
 	secondEntered chan struct{}
+	secondRelease chan struct{}
+	secondErr     error
 }
 
 func (b *overlappingReapBindingStore) DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]store.SessionBinding, error) {
@@ -827,12 +898,22 @@ func (b *overlappingReapBindingStore) DeleteSessionBindingsForRunner(ctx context
 	if call == 1 {
 		close(b.firstEntered)
 		<-b.firstRelease
+		if b.firstErr != nil {
+			return nil, b.firstErr
+		}
 		return b.fakeBindingStore.DeleteSessionBindingsForRunner(ctx, runnerID)
 	}
 	close(b.secondEntered)
-	return nil, errors.New("newer reap fault")
+	if b.secondRelease != nil {
+		<-b.secondRelease
+	}
+	if b.secondErr != nil {
+		return nil, b.secondErr
+	}
+	return b.fakeBindingStore.DeleteSessionBindingsForRunner(ctx, runnerID)
 }
 
+// TestConcurrentResolveDuringAFaultingReapCannotResurrect fences the window
 // between the re-enroll map-clear and the reap's return. The reap is a store
 // round-trip that can block for seconds, and a resolver arriving in that gap
 // misses the just-cleared cache — so if read-through were still permitted it

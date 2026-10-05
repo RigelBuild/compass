@@ -1063,12 +1063,8 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	h.mu.Lock()
 	h.bindingEpoch++
 	h.runnerEpoch[id] = h.bindingEpoch
-	if h.reapStale[id] == epoch {
-		if reapErr == nil {
-			delete(h.reapStale, id)
-		} else {
-			h.reapStale[id] = h.bindingEpoch
-		}
+	if reapErr == nil && h.reapStale[id] == epoch {
+		delete(h.reapStale, id)
 	}
 	h.mu.Unlock()
 
