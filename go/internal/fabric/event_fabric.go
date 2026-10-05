@@ -434,10 +434,10 @@ func (f *Fabric) claimPark(ctx context.Context, key parkKey, path string) (*park
 		// Prefer a settled claim over ctx: drained events run after Subscribe's ctx ends.
 		select {
 		case <-claim.done:
-		default:
+		case <-ctx.Done():
 			select {
 			case <-claim.done:
-			case <-ctx.Done():
+			default:
 				return claim, false, ctx.Err()
 			}
 		}
@@ -537,7 +537,13 @@ func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats
 		}
 		// Bounded so a stalled fetch cannot hold the claim in flight and park its waiters.
 		getCtx, cancelGet := context.WithTimeout(context.WithoutCancel(ctx), f.cfg.ackWait())
-		raw, err := stream.GetMsg(getCtx, adv.StreamSeq)
+		getParkedMsg := f.getParkedMsg
+		if getParkedMsg == nil {
+			getParkedMsg = func(ctx context.Context, seq uint64) (*jetstream.RawStreamMsg, error) {
+				return stream.GetMsg(ctx, seq)
+			}
+		}
+		raw, err := getParkedMsg(getCtx, adv.StreamSeq)
 		cancelGet()
 		if err != nil {
 			f.finishParkClaim(key, claim, false)

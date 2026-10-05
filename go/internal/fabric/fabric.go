@@ -272,6 +272,7 @@ type Fabric struct {
 	// parkDecided is a test hook reporting each park path's decision.
 	parkDecided      func(path string, published bool)
 	beforeDLQPublish func() error
+	getParkedMsg     func(ctx context.Context, seq uint64) (*jetstream.RawStreamMsg, error)
 	parkClaimWaiting func(path string)
 
 	// parkedSequences holds recent (durable, stream seq) park claims and their expiry;

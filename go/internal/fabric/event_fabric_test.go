@@ -2346,6 +2346,160 @@ func TestAdvisoryRetriesAfterCallbackParkFailure(t *testing.T) {
 	}
 }
 
+type parkDecision struct {
+	path      string
+	published bool
+}
+
+func awaitTwoParkDecisions(t *testing.T, ctx context.Context, decisions <-chan parkDecision) map[string]bool {
+	t.Helper()
+	seen := make(map[string]bool)
+	for len(seen) < 2 {
+		select {
+		case decision := <-decisions:
+			seen[decision.path] = decision.published
+		case <-ctx.Done():
+			t.Fatal("park decisions did not both finish")
+		}
+	}
+	return seen
+}
+
+// newParkRaceFabric creates a server and subscriptions for a park race test.
+func newParkRaceFabric(t *testing.T, ackWait time.Duration) (*Fabric, context.Context, *nats.Conn, *nats.Subscription, *nats.Subscription, string) {
+	t.Helper()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, AckWait: ackWait, MaxDeliver: 1, Log: quietLogger(t)})
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	wildcard, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES." + DefaultStreamName + "." + durableName(wildcard)
+	advisories, err := raw.SubscribeSync(advisorySubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(max deliveries advisory): %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing raw subscriptions: %v", err)
+	}
+	return f, ctx, raw, dlq, advisories, wildcard
+}
+
+func TestCallbackRetriesAfterAdvisoryFetchTimeout(t *testing.T) {
+	t.Parallel()
+	ackWait := 100 * time.Millisecond
+	f, ctx, raw, dlq, advisories, wildcard := newParkRaceFabric(t, ackWait)
+	callbackStarted := make(chan struct{}, 1)
+	releaseCallback := make(chan struct{})
+	releaseCallbackOnce := sync.OnceFunc(func() { close(releaseCallback) })
+	defer releaseCallbackOnce()
+	fetchStarted := make(chan struct{})
+	fetchResult := make(chan error, 1)
+	releaseFetch := make(chan struct{})
+	releaseFetchOnce := sync.OnceFunc(func() { close(releaseFetch) })
+	defer releaseFetchOnce()
+	waitingClaim := make(chan string, 1)
+	f.parkClaimWaiting = func(path string) { waitingClaim <- path }
+	f.getParkedMsg = func(ctx context.Context, _ uint64) (*jetstream.RawStreamMsg, error) {
+		close(fetchStarted)
+		<-ctx.Done()
+		fetchResult <- ctx.Err()
+		<-releaseFetch
+		return nil, context.DeadlineExceeded
+	}
+	decisions := make(chan parkDecision, 2)
+	f.parkDecided = func(path string, published bool) {
+		decisions <- parkDecision{path: path, published: published}
+	}
+	subject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error {
+		callbackStarted <- struct{}{}
+		<-releaseCallback
+		return errors.New("final attempt failed")
+	})
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer func() {
+		releaseCallbackOnce()
+		releaseFetchOnce()
+		unsub()
+	}()
+	if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "fetch-timeout"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case <-callbackStarted:
+	case <-ctx.Done():
+		t.Fatal("callback did not start")
+	}
+	if _, err := advisories.NextMsgWithContext(ctx); err != nil {
+		t.Fatalf("server did not emit max-deliveries advisory: %v", err)
+	}
+	select {
+	case <-fetchStarted:
+	case <-ctx.Done():
+		t.Fatal("advisory did not claim the park before fetching the message")
+	}
+	var fetchErr error
+	select {
+	case fetchErr = <-fetchResult:
+	case <-ctx.Done():
+		t.Fatalf("advisory fetch did not time out before the test context: %v", ctx.Err())
+	}
+	if !errors.Is(fetchErr, context.DeadlineExceeded) {
+		t.Fatalf("advisory fetch error = %v, want context deadline exceeded", fetchErr)
+	}
+	releaseCallbackOnce()
+	select {
+	case path := <-waitingClaim:
+		if path != "callback:"+durableName(wildcard) {
+			t.Fatalf("callback claim waiter path = %q", path)
+		}
+	case <-ctx.Done():
+		t.Fatal("callback did not wait for the advisory's in-flight fetch claim")
+	}
+	releaseFetchOnce()
+	seen := awaitTwoParkDecisions(t, ctx, decisions)
+	if seen["advisory:"+durableName(wildcard)] {
+		t.Fatal("timed-out advisory fetch was reported as published")
+	}
+	if !seen["callback:"+durableName(wildcard)] {
+		t.Fatal("callback did not reclaim and publish after advisory fetch timed out")
+	}
+	if err := f.nc.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing fabric publish: %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ publish: %v", err)
+	}
+	parked, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("callback did not park the event after advisory fetch timeout: %v", err)
+	}
+	if got := parked.Header.Get(dlqHeaderSubject); got != subject {
+		t.Fatalf("parked subject = %q, want %q", got, subject)
+	}
+	if pending, _, err := dlq.Pending(); err != nil {
+		t.Fatalf("reading DLQ pending count: %v", err)
+	} else if pending != 0 {
+		t.Fatalf("received %d extra DLQ records; want exactly one", pending)
+	}
+}
+
 func TestBothDurablesParkSameSequence(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
