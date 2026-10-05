@@ -975,21 +975,21 @@ func TestExecuteProvisionCancelledIsDebugNoise(t *testing.T) {
 // maxRunnerErrorMessageBytes with a marker, so the reply frame stays small.
 func TestErrorResultTruncatesLongMessage(t *testing.T) {
 	d := newDispatcher(&fakeSessionHost{}, discardLoggerRunner())
-	long := errors.New(strings.Repeat("x", 3*maxRunnerErrorMessageBytes))
+	long := errors.New(strings.Repeat("x", 3*4096))
 	msg := d.errorResult(context.Background(), "r", long).GetError().GetMessage()
-	if len(msg) > maxRunnerErrorMessageBytes || !strings.HasSuffix(msg, truncatedMarker) {
-		t.Fatalf("message length %d (suffix %q), want <= %d ending in %q", len(msg), msg[max(0, len(msg)-20):], maxRunnerErrorMessageBytes, truncatedMarker)
+	if len(msg) > 4096 || !strings.HasSuffix(msg, truncatedMarker) {
+		t.Fatalf("message length %d (suffix %q), want <= 4096 ending in %q", len(msg), msg[max(0, len(msg)-20):], truncatedMarker)
 	}
-	short := d.errorResult(context.Background(), "r", errors.New("boom")).GetError().GetMessage()
-	if short != "boom" {
-		t.Fatalf("short message = %q, want it unchanged", short)
+	exact := strings.Repeat("y", 4096)
+	if got := d.errorResult(context.Background(), "r", errors.New(exact)).GetError().GetMessage(); got != exact {
+		t.Fatalf("a 4096-byte message was changed (len %d), want it unchanged", len(got))
 	}
 }
 
 // A status list past maxStatusEntries is refused rather than truncated: the
 // Server's spawn guard decides on the whole list, so a partial one would lie.
 func TestExecuteStatusRefusesOversizedList(t *testing.T) {
-	statuses := make([]*compassv1.AgentSessionStatus, maxStatusEntries+1)
+	statuses := make([]*compassv1.AgentSessionStatus, 4097)
 	for i := range statuses {
 		statuses[i] = &compassv1.AgentSessionStatus{SessionId: strconv.Itoa(i)}
 	}
@@ -999,9 +999,9 @@ func TestExecuteStatusRefusesOversizedList(t *testing.T) {
 	if re == nil || re.GetCode() != compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION {
 		t.Fatalf("oversized status list = %v, want a FAILED_PRECONDITION error result", re)
 	}
-	d = newDispatcher(&fakeSessionHost{statuses: statuses[:maxStatusEntries]}, discardLoggerRunner())
-	if got := len(d.execute(context.Background(), "r", cmd).GetStatus().GetStatuses()); got != maxStatusEntries {
-		t.Fatalf("status list at the bound = %d entries, want %d", got, maxStatusEntries)
+	d = newDispatcher(&fakeSessionHost{statuses: statuses[:4096]}, discardLoggerRunner())
+	if got := len(d.execute(context.Background(), "r", cmd).GetStatus().GetStatuses()); got != 4096 {
+		t.Fatalf("status list at the bound = %d entries, want 4096", got)
 	}
 }
 

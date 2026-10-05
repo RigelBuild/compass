@@ -446,14 +446,48 @@ func TestRemoveRejectsOversizedClientRequestID(t *testing.T) {
 		return nil
 	})
 
-	if _, err := hub.Remove(context.Background(), strings.Repeat("a", maxClientRequestIDBytes), &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err != nil {
+	if _, err := hub.Remove(context.Background(), strings.Repeat("a", 256), &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err != nil {
 		t.Fatalf("Remove at the id bound = %v, want success", err)
 	}
-	_, err := hub.Remove(context.Background(), strings.Repeat("a", maxClientRequestIDBytes+1), &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"})
+	_, err := hub.Remove(context.Background(), strings.Repeat("a", 257), &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"})
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("Remove over the id bound = %v (code %v), want InvalidArgument", err, got)
 	}
 	if pushed != 1 {
 		t.Fatalf("commands pushed to the Runner = %d, want 1 (the over-bound id must not be relayed)", pushed)
+	}
+}
+
+// Provision hashes its id for dedup, so the raw and nested ids are checked first.
+func TestProvisionRejectsOversizedClientRequestID(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	router, _, _ := hub.routerFor("any")
+	pushed := 0
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		pushed++
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Provision{Provision: &compassv1.ProvisionAgentWorkspaceResponse{}},
+		})
+		return nil
+	})
+	long := strings.Repeat("a", 257)
+	for name, call := range map[string]func() error{
+		"raw id": func() error {
+			_, _, err := hub.Provision(context.Background(), long, "acct", &compassv1.ProvisionAgentWorkspaceRequest{})
+			return err
+		},
+		"nested id": func() error {
+			_, _, err := hub.Provision(context.Background(), "", "acct", &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: long})
+			return err
+		},
+	} {
+		if got := connect.CodeOf(call()); got != connect.CodeInvalidArgument {
+			t.Fatalf("Provision with an oversized %s: code %v, want InvalidArgument", name, got)
+		}
+	}
+	if pushed != 0 {
+		t.Fatalf("commands pushed to the Runner = %d, want 0", pushed)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -85,6 +86,9 @@ func (s *service) SpawnAgent(
 // acc: the memo, reject-on-live, and runSpawn. The root-supervisor seed calls it
 // directly with the account it already holds. The caller has checked s.hub.
 func (s *service) spawnAccount(ctx context.Context, acc store.Account, crid string) (*connect.Response[compassv1.SpawnAgentResponse], error) {
+	if err := runnerhub.CheckClientRequestID(crid); err != nil {
+		return nil, err
+	}
 	// The dedup-join lookup. A non-empty client_request_id memoizes the spawn, keyed
 	// by (account, id): the first caller runs it, every retry for the SAME account
 	// joins the entry. An empty id is not memoized. Keying on the account matches
