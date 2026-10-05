@@ -5,7 +5,9 @@ package stack
 import (
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -70,6 +72,12 @@ type Config struct {
 	// endpoint. Empty is the D3 default posture: the bundled collector is
 	// provisioned per CollectorImage (present and receiving, exporting nowhere).
 	ExternalOTLPEndpoint string
+	// CollectorGRPCPort, CollectorHTTPPort and CollectorHealthPort are the host
+	// loopback ports the bundled collector publishes on. The container-internal
+	// ports stay fixed; the CLI defaults these to DefaultCollector*Port.
+	CollectorGRPCPort   int
+	CollectorHTTPPort   int
+	CollectorHealthPort int
 	// NatsImage selects the image the bundled NATS component runs, mirroring
 	// CollectorImage. Non-empty is the installed-stack default: a
 	// container-backed nats-server run from this image ref (the pinned
@@ -82,8 +90,13 @@ type Config struct {
 	// set, Up skips the nats component and consumers point at this
 	// operator/managed-plane-supplied nats:// URL instead. Empty is the default
 	// posture: NATS is provisioned as a bundled stack service, reachable on the
-	// fixed loopback client endpoint.
+	// configured loopback client endpoint (NatsClientPort).
 	ExternalNatsURL string
+	// NatsClientPort and NatsMonitorPort are the host loopback ports the bundled
+	// NATS publishes on. The container-internal ports stay fixed; the CLI
+	// defaults these to DefaultNats*Port.
+	NatsClientPort  int
+	NatsMonitorPort int
 	// GatewayImage is the bundled LLM gateway image; required unless ExternalGatewayURL is set.
 	GatewayImage string
 	// ExternalGatewayURL opts out of starting the bundled gateway.
@@ -202,4 +215,60 @@ func splitPort(addr string) (host, port string, ok bool) {
 		return "", "", false
 	}
 	return addr[:i], addr[i+1:], true
+}
+
+// loopbackEndpoint renders a bundled component's host publish endpoint, refusing
+// an unset or out-of-range port so podman never sees a `127.0.0.1:0` publish.
+func loopbackEndpoint(field string, port int) (string, error) {
+	if port < 1 || port > 65535 {
+		return "", fmt.Errorf("stack config: %s %d must be a host port in 1-65535", field, port)
+	}
+	return "127.0.0.1:" + strconv.Itoa(port), nil
+}
+
+// checkBundledPortsDistinct refuses two host binds of one spawn sharing a port
+// before any child starts. It is not in Validate: attach and down use no ports.
+func (c Config) checkBundledPortsDistinct() error {
+	type port struct {
+		field string
+		port  int
+	}
+	var ports []port
+	add := func(field, addr string) {
+		// LookupPort also maps a service name such as "http", which net.Listen accepts.
+		if _, p, ok := splitPort(addr); ok {
+			if n, err := net.LookupPort("tcp", p); err == nil {
+				ports = append(ports, port{field, n})
+			}
+		}
+	}
+	// Bundled ports publish on 127.0.0.1; ListenAddr clashes only on a host that covers it.
+	if host, _, ok := splitPort(c.ListenAddr); ok && overlapsLoopbackPublish(host) {
+		add("ListenAddr", c.ListenAddr)
+	}
+	if c.ExternalGatewayURL == "" {
+		add("the bundled gateway", gatewayHostEndpoint)
+	}
+	if c.ExternalOTLPEndpoint == "" {
+		ports = append(ports, port{"CollectorGRPCPort", c.CollectorGRPCPort},
+			port{"CollectorHTTPPort", c.CollectorHTTPPort}, port{"CollectorHealthPort", c.CollectorHealthPort})
+	}
+	if c.ExternalNatsURL == "" {
+		ports = append(ports, port{"NatsClientPort", c.NatsClientPort}, port{"NatsMonitorPort", c.NatsMonitorPort})
+	}
+	seen := make(map[int]string, len(ports))
+	for _, p := range ports {
+		if prev, ok := seen[p.port]; ok {
+			return fmt.Errorf("stack config: %s and %s both use host port %d", prev, p.field, p.port)
+		}
+		seen[p.port] = p.field
+	}
+	return nil
+}
+
+// overlapsLoopbackPublish reports whether a bind on host may also take
+// 127.0.0.1. A hostname counts, since it may resolve there; only another IP is clear.
+func overlapsLoopbackPublish(host string) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip == nil || ip.IsUnspecified() || ip.Equal(net.IPv4(127, 0, 0, 1))
 }

@@ -318,6 +318,16 @@ func TestResolveConfigNatsFlags(t *testing.T) {
 			t.Fatal("resolveConfig(--nats-external \"\") = nil error, want the naming rejection")
 		}
 	})
+	t.Run("bundled host ports default to the upstream values", func(t *testing.T) {
+		cfg, err := resolveConfig(baseFlags(t.TempDir()))
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		got := [5]int{cfg.NatsClientPort, cfg.NatsMonitorPort, cfg.CollectorGRPCPort, cfg.CollectorHTTPPort, cfg.CollectorHealthPort}
+		if want := [5]int{4222, 8222, 4317, 4318, 13133}; got != want {
+			t.Errorf("bundled host ports = %v, want %v", got, want)
+		}
+	})
 }
 func TestResolveConfigGatewayFlags(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")

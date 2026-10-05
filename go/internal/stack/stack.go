@@ -289,6 +289,10 @@ func (s *Stack) startRunner(ctx context.Context) error {
 // recorded on the Stack before the next step, so drainChildren can reverse
 // exactly what started.
 func (s *Stack) spawnChain(ctx context.Context) error {
+	if err := s.cfg.checkBundledPortsDistinct(); err != nil {
+		return err
+	}
+
 	// 1. Private postgres child. Three paths (S4): external (skip the component,
 	// probe the caller's DSN as-is), container-backed (the installed default), or
 	// the dev-path wrapper process. Start returns at launch, not readiness — the
