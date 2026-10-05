@@ -73,3 +73,87 @@ func TestMessageReadsKeepAuthorWithoutHandleRow(t *testing.T) {
 		t.Fatalf("AppendMessage(replay) = %+v inserted=%v err=%v, want %s replayed with an empty handle", again, inserted, err, first.ID)
 	}
 }
+
+// TestMessageAuthorHandleOwnerQualification pins the displayed author address at
+// append, list, and delivery-cursor reads while user authors stay bare.
+func TestMessageAuthorHandleOwnerQualification(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "matt")
+	author := mustAgent(t, s, owner.ID, "compass-ux")
+	recipient := mustAgent(t, s, owner.ID, "reader")
+	ch := mustNamedChannelWith(t, s, owner.ID, "shared", author.ID, recipient.ID)
+	subscribeAgent(t, s, owner.ID, ch, author.ID)
+	subscribeAgent(t, s, owner.ID, ch, recipient.ID)
+
+	agentMessage, inserted, err := s.AppendMessage(ctx, Message{
+		AuthorAccountID: author.ID,
+		Blocks:          []MessageBlock{textBlock("agent note")},
+	}, string(ch), TopicRef{Name: "general", Create: true}, "")
+	if err != nil {
+		t.Fatalf("AppendMessage(agent): %v", err)
+	}
+	if !inserted {
+		t.Fatal("AppendMessage(agent) returned inserted=false, want an inserted message")
+	}
+	qualified := owner.Handle + "/" + author.Handle
+	if agentMessage.AuthorHandle != qualified {
+		t.Fatalf("AppendMessage(agent) author_handle = %q, want %q", agentMessage.AuthorHandle, qualified)
+	}
+
+	userMessage, inserted, err := s.AppendMessage(ctx, Message{
+		AuthorAccountID: owner.ID,
+		Blocks:          []MessageBlock{textBlock("user note")},
+	}, string(ch), TopicRef{Name: "general", Create: true}, "")
+	if err != nil {
+		t.Fatalf("AppendMessage(user): %v", err)
+	}
+	if !inserted {
+		t.Fatal("AppendMessage(user) returned inserted=false, want an inserted message")
+	}
+	if userMessage.AuthorHandle != owner.Handle {
+		t.Fatalf("AppendMessage(user) author_handle = %q, want bare %q", userMessage.AuthorHandle, owner.Handle)
+	}
+
+	list, err := s.ListMessages(ctx, ListMessagesQuery{Actor: owner.ID, ChannelID: ch})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	byID := make(map[MessageID]string, len(list))
+	for _, message := range list {
+		byID[message.ID] = message.AuthorHandle
+	}
+	if byID[agentMessage.ID] != qualified || byID[userMessage.ID] != owner.Handle {
+		t.Fatalf("ListMessages author handles = agent %q, user %q; want %q and %q", byID[agentMessage.ID], byID[userMessage.ID], qualified, owner.Handle)
+	}
+
+	owed, err := s.UndeliveredMessages(ctx, recipient.ID)
+	if err != nil {
+		t.Fatalf("UndeliveredMessages: %v", err)
+	}
+	messages := owed[ch]
+	if len(messages) != 2 {
+		t.Fatalf("UndeliveredMessages[%s] = %v, want both messages", ch, messages)
+	}
+	for _, message := range messages {
+		want := owner.Handle
+		if message.ID == agentMessage.ID {
+			want = qualified
+		}
+		if message.AuthorHandle != want {
+			t.Errorf("UndeliveredMessages author_handle for %s = %q, want %q", message.ID, message.AuthorHandle, want)
+		}
+	}
+
+	if err := s.RecordOwedMention(ctx, recipient.ID, ch, string(agentMessage.ID)); err != nil {
+		t.Fatalf("RecordOwedMention: %v", err)
+	}
+	owedMentions, err := s.OwedMentions(ctx, recipient.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	mentions := owedMentions[ch]
+	if len(mentions) != 1 || mentions[0].AuthorHandle != qualified {
+		t.Fatalf("OwedMentions author_handle = %v, want one message with %q", mentions, qualified)
+	}
+}

@@ -472,9 +472,8 @@ function framedRead(records: string[]): string {
 }
 
 // ── Write-ack rendering (single renderer-authored line, no fence) ────────────
-// A write ack is one line: numbers/verdict pass through `attr` (in its `[\w.:-]+` class),
-// and `url`/`repo` pass through the `ref` shape guard (`attr` rejects `/`). No fence: a
-// single line names none.
+// A write ack is one line: numbers/verdict pass through `attr` (which also admits `/`),
+// and `url`/`repo` pass through the `ref` shape guard. No fence: a single line names none.
 
 function reviewAck(
 	prNumber: bigint,

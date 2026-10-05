@@ -516,8 +516,8 @@ export type Message = Message$1<"compass.v1.Message"> & {
   blocks: MessageBlock[];
 
   /**
-   * The author's bare handle, for display only: not unique across owners (two
-   * owners' agents can share one) and not an address. author_account_id is the stable key.
+   * Agent authors use `owner/handle` as a resolvable address; users and system stay bare.
+   * `author_account_id` remains the stable key.
    *
    * @generated from field: string author_handle = 6;
    */

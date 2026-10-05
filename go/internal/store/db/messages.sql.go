@@ -10,9 +10,10 @@ import (
 )
 
 const findAskMessage = `-- name: FindAskMessage :many
-SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (COALESCE(oh.handle || '/', '') || COALESCE(ah.handle, ''))::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.blocks @> $2::jsonb
@@ -99,9 +100,10 @@ func (q *Queries) GetMessageBlocks(ctx context.Context, id string) ([]byte, erro
 }
 
 const getMessageByRequestID = `-- name: GetMessageByRequestID :many
-SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (COALESCE(oh.handle || '/', '') || COALESCE(ah.handle, ''))::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 WHERE m.author_account_id = $1 AND m.client_request_id = $2
 `
 
@@ -204,7 +206,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
 DO NOTHING
 RETURNING id, at_unix_ms, seq,
-          COALESCE((SELECT handle FROM account_handles WHERE account_id = $3), '')::text AS author_handle
+          COALESCE((SELECT (COALESCE(owner_handles.handle || '/', '') || COALESCE(author_handles.handle, ''))::text FROM account_handles AS author_handles LEFT JOIN account_handles AS owner_handles ON owner_handles.account_id = author_handles.owner_user_id WHERE author_handles.account_id = $3), '')::text AS author_handle
 `
 
 type InsertMessageParams struct {
@@ -270,9 +272,10 @@ func (q *Queries) InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnorePa
 }
 
 const listMessages = `-- name: ListMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, m.author_account_id, (COALESCE(oh.handle || '/', '') || COALESCE(ah.handle, ''))::text AS author_handle, m.at_unix_ms, m.blocks
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
@@ -354,9 +357,10 @@ func (q *Queries) ReviveTopic(ctx context.Context, id string) error {
 }
 
 const searchMessages = `-- name: SearchMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, COALESCE(ah.handle, '')::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id
+SELECT m.id, m.topic_id, m.author_account_id, (COALESCE(oh.handle || '/', '') || COALESCE(ah.handle, ''))::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
+LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
@@ -448,7 +452,7 @@ WHERE m.id = $3
     WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
   )
 RETURNING m.id, m.topic_id, m.author_account_id,
-          COALESCE((SELECT handle FROM account_handles WHERE account_id = $4), '')::text AS author_handle,
+          COALESCE((SELECT (COALESCE(owner_handles.handle || '/', '') || COALESCE(author_handles.handle, ''))::text FROM account_handles AS author_handles LEFT JOIN account_handles AS owner_handles ON owner_handles.account_id = author_handles.owner_user_id WHERE author_handles.account_id = $4), '')::text AS author_handle,
           m.at_unix_ms, m.blocks
 `
 
