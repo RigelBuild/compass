@@ -1026,7 +1026,7 @@ func (r *recordingRunner) provisionCount() int {
 
 // sawRemove reports whether the Server pushed a Remove for containerName — the
 // despawn/rollback teardown observed on the wire.
-func (r *recordingRunner) sawRemove(containerName string) bool {
+func (r *recordingRunner) sawRemove(containerName string) bool { //nolint:unparam // read-clarity signature: containerName names which container's Remove is asserted; currently constant, not dead code.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, c := range r.seen {

@@ -38,7 +38,7 @@ import (
 // trace-response header the interceptor sets (otel.NewTraceResponseInterceptor).
 const (
 	messageIDAttr     = "compass.message.id"
-	traceResponseHdr  = "traceresponse"
+	traceResponseHdr  = "Traceresponse"
 	exposeHeadersHdr  = "Access-Control-Expose-Headers"
 	allowHeadersHdr   = "Access-Control-Allow-Headers"
 	corsOriginForTest = "https://app.example.com"
@@ -331,7 +331,7 @@ func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
 	const wantSession = "0198f2c1-7b3a-7000-8b1e-2f9d4c5a6e70"
 	req := httptest.NewRequest(http.MethodPost, compassv1connect.CompassServiceGetServerInfoProcedure, strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-POSTHOG-SESSION-ID", wantSession)
+	req.Header.Set("X-Posthog-Session-Id", wantSession)
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -407,7 +407,7 @@ func spanWithMessageID(t *testing.T, spans tracetest.SpanStubs, msgID string) tr
 // headerListContains reports whether a comma-separated header value (as rs/cors
 // joins Access-Control-Expose-Headers) contains target, case-insensitively.
 func headerListContains(list, target string) bool {
-	for _, part := range strings.Split(list, ",") {
+	for part := range strings.SplitSeq(list, ",") {
 		if strings.EqualFold(strings.TrimSpace(part), target) {
 			return true
 		}

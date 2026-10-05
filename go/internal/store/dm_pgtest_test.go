@@ -24,7 +24,7 @@ import (
 // one WithTx so the lock, group, channel, members, and cursor seeds commit
 // atomically — the same shape the real edge uses. Returns the channel id and
 // whether it was created this call.
-func openDM(t *testing.T, s *Store, ownerUserID AccountID, name string, members []AccountID) (ChannelID, bool) {
+func openDM(t *testing.T, s *Store, ownerUserID AccountID, name string, members []AccountID) (ChannelID, bool) { //nolint:unparam // read-clarity signature: name is the DM channel name each test asserts against; currently constant, not dead code.
 	t.Helper()
 	var (
 		id      ChannelID
