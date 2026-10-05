@@ -5,6 +5,7 @@ package stack
 import (
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -264,11 +265,9 @@ func (c Config) checkBundledPortsDistinct() error {
 	return nil
 }
 
-// overlapsLoopbackPublish reports whether a bind on host also takes 127.0.0.1.
+// overlapsLoopbackPublish reports whether a bind on host may also take
+// 127.0.0.1. A hostname counts, since it may resolve there; only another IP is clear.
 func overlapsLoopbackPublish(host string) bool {
-	switch strings.Trim(host, "[]") {
-	case "", "127.0.0.1", "localhost", "0.0.0.0", "::":
-		return true
-	}
-	return false
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip == nil || ip.IsUnspecified() || ip.Equal(net.IPv4(127, 0, 0, 1))
 }
