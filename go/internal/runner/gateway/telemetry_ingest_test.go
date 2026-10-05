@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -490,7 +491,9 @@ func TestPublishAfterSessionStateIsRefused(t *testing.T) {
 	state := capture.recvFrame(t)
 	client := newAgentGatewayServer(t, g)
 	stream := client.Publish(context.Background())
-	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil {
+	// The sealed handler may refuse before this Send lands (io.EOF); the code
+	// comes from CloseAndReceive either way.
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("send late Publish frame: %v", err)
 	}
 	if _, err := stream.CloseAndReceive(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
@@ -526,7 +529,9 @@ func TestPublishHandlerOpenedDuringWaitIsRefused(t *testing.T) {
 	}()
 	<-waitCtx.entered
 	second := client.Publish(context.Background())
-	if err := second.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil {
+	// The handler may refuse before this Send lands; connect then returns io.EOF
+	// here and the refusal comes from CloseAndReceive.
+	if err := second.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame("late")}); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("send frame on late handler: %v", err)
 	}
 	if _, err := second.CloseAndReceive(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
