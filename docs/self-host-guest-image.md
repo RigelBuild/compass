@@ -149,6 +149,24 @@ digest from the publish job summary, as above. Then copy
 needs, and `up` wrote its `manifest.sha256` only after the blobs matched the
 pinned digest.
 
+The directory also holds `manifest.oci.json`, the raw artifact manifest. On the
+receiving host, check it against the trusted digest from the publish job
+summary, then check each asset against its layer descriptor. Do not trust the
+copied `manifest.sha256` alone: someone who replaces an asset can replace it
+too.
+
+```bash
+set -euo pipefail
+dir=/var/lib/compass-guest/<sha12>
+digest=<hex from the publish job summary, without sha256:>
+test "$(sha256sum < "$dir/manifest.oci.json" | cut -d' ' -f1)" = "$digest"
+jq -r '.layers
+  | "\(.[0].digest[7:])  kernel\n\(.[1].digest[7:])  rootfs.erofs\n\(.[2].digest[7:])  initrd"' \
+  "$dir/manifest.oci.json" | (cd "$dir" && sha256sum -c -)
+```
+
+Both steps must pass. Layer order is fixed: kernel, rootfs, initrd.
+
 ### Option B: extract from the Runner image
 
 Run this on a machine with podman and registry access. The baked environment

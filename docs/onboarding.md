@@ -166,16 +166,18 @@ is no database to install:
 compass-stack up \
     --state-dir /var/lib/compass \
     --image ghcr.io/rigelbuild/compass-agent:latest \
+    --gateway-image <gateway-image>@sha256:<hex> \
     --listen 0.0.0.0:50052
 ```
 
-This runs the entry tier, which is the default backend.
+This runs the entry tier, which is the default backend. The LLM gateway has no
+default image, so `up` needs `--gateway-image` or `--gateway-external`.
 
 > **microVM tier:** selecting the backend is not sufficient on its own. The
-> runner also needs a guest kernel, rootfs, and initrd, plus a run root. Pass
-> the guest with `--guest-artifact` or `--guest-dir`, and set
-> `COMPASS_MICROVM_RUNROOT`; the
-> [guest image guide](self-host-guest-image.md) covers both. `compass-stack up`
+> runner also needs a guest kernel, rootfs, and initrd, plus a run root. Pull
+> or stage the guest with `--guest-artifact` or `--guest-dir`, or set the
+> `COMPASS_MICROVM_*` paths, and set `COMPASS_MICROVM_RUNROOT`; the
+> [guest image guide](self-host-guest-image.md) covers each. `compass-stack up`
 > does not yet check that the runner started, so a runner that fails preflight
 > still reports ready. Check the `up` output for `compass-runner:` errors.
 

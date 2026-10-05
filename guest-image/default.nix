@@ -56,7 +56,7 @@ let
     if bad == null then
       agentLock
     else
-      throw "guest-image: agent-oci.lock is not a valid pin: ${bad}. Rewrite it with `bun tools/guest-image/pin-agent-image.ts --relock`, never by hand.";
+      throw "guest-image: agent-oci.lock is not a valid pin: ${bad}. Restore it from main or delete it, then run `bun tools/guest-image/pin-agent-image.ts --tag git-<sha12>`; never edit it by hand.";
 
   # The pinned manifest, fetched fixed-output against the lock's digest: a
   # manifest digest IS the sha256 of its body, so nix's hash check authenticates
