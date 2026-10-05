@@ -4,9 +4,11 @@ Tracker: RIG-4034
 
 > **Extends `compass-issue-model` (frozen).** That record defines `Issue.prs`
 > as "every PR opened for this issue", in discovery order, newest last, but never
-> says how a PR is linked or which feed finds it. This amendment settles both.
-> All other rules stand: ingestion still never moves canonical `state`,
-> `priority` or `assignee`.
+> says how a PR is linked or which feed finds it. This amendment settles both,
+> and replaces "discovery order" with forge creation order (§5): backfill finds
+> old PRs late, so discovery order would misplace them. The primary-PR selector
+> reads its "first"/"last" against the new order. All other rules stand:
+> ingestion still never moves canonical `state`, `priority` or `assignee`.
 
 Ledger: this PR appends DL-409, DL-410 and DL-411 to `docs/designs/DECISIONS.md`. It supersedes no row.
 
@@ -105,7 +107,7 @@ CREATE INDEX pull_request_issue_links_issue_idx ON pull_request_issue_links
     (tenant_id, issue_forge_provider, issue_forge_host, issue_repo, issue_number);
 ```
 
-`pull_requests` joins `updated_at_tables`. The links table has no foreign keys: the
+The new migration registers the `set_updated_at` trigger on `pull_requests` with a direct `CREATE TRIGGER`, as `0007_account_tour_state.sql` does. The links table has no foreign keys: the
 issue may be on Linear or not ingested yet.
 
 One row per (PR, issue) pair, so an explicit link and a closing reference to the
@@ -181,8 +183,14 @@ only when its `updated_at` is newer than the stored `forge_updated_at`.
 **Budget exhaustion is not poison.** `reconcileRepo` counts a failed row sink as
 poison and still advances the watermark. That is safe for issue rows, which make
 no forge calls, but not for a PR hydrate. A PR hydrate that fails with
-`ErrBudgetExhausted` aborts the repo's sweep and returns the error. The
-watermark advances only to just below the oldest PR row it did not hydrate.
+`ErrBudgetExhausted` aborts the repo's sweep and returns the error. The repo's
+watermark stays at `since` and its list ETag is cleared, so the next sweep
+re-lists every row of the window, not a 304. Rows sunk before the abort are
+re-listed too, and the `forge_updated_at` gate skips them cheaply.
+
+**Cold start bounds the main walk too.** With `since` zero, the walk lists every
+PR the repo ever had. The sweep hydrates only PR rows that are open or were
+updated in the last 30 days, and leaves the rest unhydrated.
 
 **Backfill.** Hydrating every historical PR is too expensive. Two cases trigger a
 bounded pass:
@@ -192,7 +200,8 @@ bounded pass:
 
 The pass hydrates every open PR (one `GET /pulls?state=open` walk) and every PR
 row updated in the 30 days before the watermark (or before now on cold start),
-then sets `prs_backfilled_at`. Recent merged PRs reach Done issues.
+then sets `prs_backfilled_at`. Recent merged PRs reach Done issues. The
+`ingest` package reaches this state only through `BoardStore` (T5).
 
 **Rate cost.** A hydrate costs four paginated REST reads (detail, reviews,
 check-runs, status) plus GraphQL pages. The `updated_at` gate stops the sweep
@@ -288,6 +297,7 @@ Scoping forge relay calls per tenant must move all three writers together.
 - `pullReadQuery` reads closing references behind `$refs`.
 - `ListUpdatedIssues` returns `ConditionalResult[UpdatedRows]`. The `updatedLister` interface and its fakes (`fakeUpdatedLister`, `sinceAwareLister`, `perRepoLister`) follow.
 - Add `ListOpenPullRequests(ctx, repo string) ([]UpdatedPull, error)` for the backfill.
+- Store methods for the reconciler: `func (s *Store) PullRequestUpdatedAt(ctx, pr ForgeCoord) (time.Time, bool, error)`, `func (s *Store) PRsBackfilledAt(ctx, repo string) (time.Time, bool, error)`, `func (s *Store) MarkPRsBackfilled(ctx, repo string, at time.Time) error`.
 - Tests (httptest): timestamps decode on create and read, a GraphQL error reads as an error, closing refs are fetched on the first page only, and PR rows come back in order.
 
 ### T3 — Projection
@@ -312,10 +322,11 @@ Scoping forge relay calls per tenant must move all three writers together.
 ### T5 — Ingest admission
 
 - `boardRelevant` admits PR events. `boardCoord` gains a kind. Add a PR arm to `hydrateAndSink`. The reconciler hydrates PR rows behind the `updated_at` gate, runs the backfill pass, and stops on `ErrBudgetExhausted`.
+- `BoardStore` gains `PullRequestUpdatedAt`, `PRsBackfilledAt` and `MarkPRsBackfilled` with the same shapes as the T2 store methods. The server adapter and the `newBoardStore` fake implement them.
 - Tests:
   - a PR webhook reaches the projection;
   - an unchanged PR row is not re-hydrated;
-  - a budget error on a PR row aborts the sweep and the watermark stays below that row;
+  - a budget error on a PR row aborts the sweep, keeps the watermark at `since`, clears the ETag, and the next sweep re-lists an older issue row instead of getting a 304;
   - a repo with a watermark but NULL `prs_backfilled_at` hydrates its open PRs once;
   - on cold start, a closed PR older than 30 days is skipped.
 
