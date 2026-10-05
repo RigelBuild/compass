@@ -96,17 +96,16 @@ func (p *stubProcess) exit(err error) {
 
 // stubSupervisor records component starts and exposes their process handles.
 type stubSupervisor struct {
-	rec                  *recorder
-	startErr             map[Component]error
-	gate                 map[Component]chan struct{}
-	entered              map[Component]chan struct{}
-	serverStarted        *atomic.Bool
-	runnerProcessStarted *atomic.Bool
-	runnerStarted        *atomic.Bool
-	runnerEnrollments    *atomic.Uint64
-	mu                   sync.Mutex
-	specs                map[Component]ProcessSpec
-	processes            map[Component]*stubProcess
+	rec               *recorder
+	startErr          map[Component]error
+	gate              map[Component]chan struct{}
+	entered           map[Component]chan struct{}
+	serverStarted     *atomic.Bool
+	runnerStarted     *atomic.Bool
+	runnerEnrollments *atomic.Uint64
+	mu                sync.Mutex
+	specs             map[Component]ProcessSpec
+	processes         map[Component]*stubProcess
 }
 
 func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
@@ -138,18 +137,16 @@ func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, 
 		if s.runnerEnrollments != nil {
 			s.runnerEnrollments.Add(1)
 		}
-		if s.runnerProcessStarted != nil {
-			s.runnerProcessStarted.Store(true)
-		}
 	}
 	return proc, nil
 }
 
-func (s *stubSupervisor) process(component Component) *stubProcess {
+func (s *stubSupervisor) process() *stubProcess {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.processes[component]
+	return s.processes[ComponentRunner]
 }
+
 func (s *stubSupervisor) spec(t *testing.T, c Component) ProcessSpec {
 	t.Helper()
 	s.mu.Lock()
@@ -193,32 +190,33 @@ func fakePid(c Component) int {
 // stubProber answers GetServerInfo. forceLive makes it answer unconditionally
 // (attach-if-live); otherwise it answers only once compass-server has started.
 type stubProber struct {
-	rec                  *recorder
-	forceLive            bool
-	version              string
-	serverStarted        *atomic.Bool
-	runnerProcessStarted *atomic.Bool
-	runnerEnrollments    *atomic.Uint64
-	runnerProbes         chan struct{}
-	manualRunnerEnroll   *atomic.Bool
-	mu                   sync.Mutex
-	enrolled             []EnrolledRunner
+	rec                *recorder
+	forceLive          bool
+	version            string
+	serverStarted      *atomic.Bool
+	runnerStarted      *atomic.Bool
+	runnerEnrollments  *atomic.Uint64
+	runnerProbes       chan runnerProbeResult
+	manualRunnerEnroll *atomic.Bool
+	mu                 sync.Mutex
+	enrolled           []EnrolledRunner
+	runnerProbeErr     error
+}
+
+type runnerProbeResult struct {
+	enrollment uint64
+	err        error
 }
 
 func (p *stubProber) Probe(ctx context.Context, socketPath string) (ServerInfo, error) {
 	p.rec.add("probe")
 	p.mu.Lock()
 	enrolled := append([]EnrolledRunner(nil), p.enrolled...)
+	runnerProbeErr := p.runnerProbeErr
+	p.runnerProbeErr = nil
 	p.mu.Unlock()
-	if p.runnerProcessStarted != nil && p.runnerProcessStarted.Load() {
-		select {
-		case p.runnerProbes <- struct{}{}:
-		default:
-		}
-		if p.manualRunnerEnroll != nil && p.manualRunnerEnroll.Load() {
-			return ServerInfo{Version: p.version, EnrolledRunners: enrolled}, nil
-		}
-		return ServerInfo{Version: p.version, EnrolledRunners: []EnrolledRunner{{ID: embeddedRunnerID, Enrollment: p.runnerEnrollments.Load()}}}, nil
+	if p.runnerStarted != nil && p.runnerStarted.Load() {
+		return p.probeRunner(enrolled, runnerProbeErr)
 	}
 	if p.forceLive || (p.serverStarted != nil && p.serverStarted.Load()) {
 		return ServerInfo{Version: p.version, EnrolledRunners: enrolled}, nil
@@ -226,9 +224,39 @@ func (p *stubProber) Probe(ctx context.Context, socketPath string) (ServerInfo, 
 	return ServerInfo{}, errNotAnswering
 }
 
+func (p *stubProber) probeRunner(enrolled []EnrolledRunner, runnerProbeErr error) (ServerInfo, error) {
+	info := ServerInfo{Version: p.version, EnrolledRunners: enrolled}
+	if p.manualRunnerEnroll == nil || !p.manualRunnerEnroll.Load() {
+		info.EnrolledRunners = []EnrolledRunner{{ID: embeddedRunnerID, Enrollment: p.runnerEnrollments.Load()}}
+	}
+	if runnerProbeErr != nil {
+		info = ServerInfo{}
+	}
+	var enrollment uint64
+	for _, runner := range info.EnrolledRunners {
+		if runner.ID == embeddedRunnerID {
+			enrollment = runner.Enrollment
+			break
+		}
+	}
+	if p.runnerProbes != nil {
+		p.runnerProbes <- runnerProbeResult{enrollment: enrollment, err: runnerProbeErr}
+	}
+	if runnerProbeErr != nil {
+		return ServerInfo{}, runnerProbeErr
+	}
+	return info, nil
+}
+
 func (p *stubProber) setEnrolledRunners(runners ...EnrolledRunner) {
 	p.mu.Lock()
 	p.enrolled = append([]EnrolledRunner(nil), runners...)
+	p.mu.Unlock()
+}
+
+func (p *stubProber) setRunnerProbeError(err error) {
+	p.mu.Lock()
+	p.runnerProbeErr = err
 	p.mu.Unlock()
 }
 
@@ -833,16 +861,15 @@ func newHarnessWithRunnerEnrollmentFlag(t *testing.T, manualRunnerEnroll *atomic
 	started := &atomic.Bool{}
 	sup := &stubSupervisor{
 		rec: rec, startErr: map[Component]error{}, gate: map[Component]chan struct{}{}, entered: map[Component]chan struct{}{},
-		serverStarted: started, runnerStarted: &atomic.Bool{}, runnerEnrollments: &atomic.Uint64{}, runnerProcessStarted: &atomic.Bool{},
+		serverStarted: started, runnerStarted: &atomic.Bool{}, runnerEnrollments: &atomic.Uint64{},
 		specs: map[Component]ProcessSpec{}, processes: map[Component]*stubProcess{},
 	}
 	cert := &stubCert{rec: rec, notAfter: time.Now().Add(365 * 24 * time.Hour), rotateWindow: 30 * 24 * time.Hour}
 	token := &stubToken{rec: rec}
 	image := &stubImage{rec: rec}
 	prober := &stubProber{
-		rec: rec, version: testVersion, serverStarted: started, runnerProcessStarted: sup.runnerProcessStarted,
-		runnerEnrollments: sup.runnerEnrollments,
-		runnerProbes:      make(chan struct{}, 1), manualRunnerEnroll: manualRunnerEnroll,
+		rec: rec, version: testVersion, serverStarted: started, runnerStarted: sup.runnerStarted,
+		runnerEnrollments: sup.runnerEnrollments, manualRunnerEnroll: manualRunnerEnroll,
 	}
 	dbProber := &stubDBProber{rec: rec}
 	groupSig := newFakeGroupSignaller(rec)

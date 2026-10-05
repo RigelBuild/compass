@@ -292,7 +292,7 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		if !f.now().Before(deadline) {
-			return fmt.Errorf("runner did not enroll within %s", enrollPollBudget)
+			return fmt.Errorf("runner Sessions stream did not attach within %s", enrollPollBudget)
 		}
 		if ready, err := f.runnerEnrolledProbe(ctx, deadline); err != nil {
 			return err

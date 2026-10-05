@@ -259,15 +259,32 @@ func (s *Stack) RestartRunner(ctx context.Context) error {
 	if len(s.pgids) == 0 || s.pgids[len(s.pgids)-1].Component != ComponentRunner {
 		return errors.New("stack: runner teardown record is missing")
 	}
-	after := s.runnerEnrollment(ctx)
-	if err := s.stopRunner(ctx); err != nil {
-		return fmt.Errorf("stop runner: %w", err)
+	after, err := s.runnerEnrollment(ctx)
+	if err != nil {
+		return fmt.Errorf("stack: read runner enrollment before restart: %w", err)
+	}
+	stopErr := s.stopRunner(ctx)
+	if stopErr != nil {
+		if s.runnerWait == nil {
+			return fmt.Errorf("stop runner: %w", stopErr)
+		}
+		select {
+		case <-s.runnerWait.done:
+		default:
+			return fmt.Errorf("stop runner: %w", stopErr)
+		}
 	}
 	s.runner = nil
 	s.runnerWait = nil
 	s.pgids = s.pgids[:len(s.pgids)-1]
 	if err := writePgidFile(s.cfg.StateDir, pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}); err != nil {
+		if stopErr != nil {
+			return errors.Join(fmt.Errorf("stop runner: %w", stopErr), fmt.Errorf("persist runner stop: %w", err))
+		}
 		return fmt.Errorf("persist runner stop: %w", err)
+	}
+	if stopErr != nil {
+		return fmt.Errorf("stop runner: %w", stopErr)
 	}
 	if err := s.startRunner(ctx); err != nil {
 		return err
@@ -706,17 +723,17 @@ func runnerExitedError(err error) error {
 }
 
 // runnerEnrollment is the Runner's current enrollment number, or 0 when the probe has none.
-func (s *Stack) runnerEnrollment(ctx context.Context) uint64 {
+func (s *Stack) runnerEnrollment(ctx context.Context) (uint64, error) {
 	info, err := s.deps.Prober.Probe(ctx, s.cfg.SocketPath)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	for _, enrolled := range info.EnrolledRunners {
 		if enrolled.ID == embeddedRunnerID {
-			return enrolled.Enrollment
+			return enrolled.Enrollment, nil
 		}
 	}
-	return 0
+	return 0, nil
 }
 
 // stopRunner terminates the owned Runner and reaps it through the watcher when one runs.

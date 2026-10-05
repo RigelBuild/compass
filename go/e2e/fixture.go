@@ -712,7 +712,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// Keep this fixture wait after cold Up: the Sessions stream attaches after Enroll.
 	// WithSite also needs it because that attach path does not own the Runner gate.
 	if err := f.waitRunnerEnrolled(ctx); err != nil {
-		tb.Fatalf("wait for runner enrollment: %v", err)
+		tb.Fatalf("wait for runner Sessions attach: %v", err)
 	}
 
 	// The first-launch root-supervisor seed fires on the SAME Sessions-stream attach
