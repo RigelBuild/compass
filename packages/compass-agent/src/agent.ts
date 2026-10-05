@@ -68,6 +68,8 @@ export class CompassAgent {
 	// `#turnActive` tracks the turn-start→agent_end window off the session stream;
 	// the idle-deliver trigger also gates on `#session.isStreaming` (see `deliver`).
 	#turnActive = false;
+	// Control prompts parked until the session's agent_end clears `#turnActive`.
+	#turnSettledWaiters: (() => void)[] = [];
 	// The coalescing queue: messages delivered mid-turn, drained into one prompt
 	// at the next flush.
 	#deliverQueue: Message[] = [];
@@ -392,7 +394,7 @@ export class CompassAgent {
 		started.catch((err) => {
 			if (acked) return;
 			rejected = true;
-			this.#turnActive = false;
+			this.#settleTurn();
 			// Re-attach (RIG-2894): a refused prompt starts no turn, so clear the trigger
 			// set above — else it leaks onto the NEXT turn's posts.
 			this.#tracer?.clearTurnTrigger();
@@ -453,10 +455,19 @@ export class CompassAgent {
 				this.#turnActive = true;
 				return;
 			case "agent_end":
-				this.#turnActive = false;
+				this.#settleTurn();
 				this.#flushTurnEnd();
 				return;
 		}
+	}
+
+	// Clear the active turn and release control prompts parked on it. A flush may
+	// start the next turn first; each released prompt re-checks before starting.
+	#settleTurn(): void {
+		this.#turnActive = false;
+		const waiters = this.#turnSettledWaiters;
+		this.#turnSettledWaiters = [];
+		for (const resolve of waiters) resolve();
 	}
 
 	// RIG-2732 W3 — flush BOTH coalesced turn-end queues (DELIVER + FORGE) as EXACTLY ONE
@@ -519,7 +530,7 @@ export class CompassAgent {
 			// — leave the injected batches alone.
 			if (acked) return;
 			rejected = true;
-			this.#turnActive = false;
+			this.#settleTurn();
 			// Re-attach (RIG-2894): a refused prompt starts no turn, so clear any trigger
 			// the N=1 branch set above — else it leaks onto the next turn.
 			this.#tracer?.clearTurnTrigger();
@@ -630,6 +641,13 @@ export class CompassAgent {
 							"live prompt arrived before ReplayComplete — refused by replay barrier",
 					});
 					return;
+				}
+				// The core loop goes idle before the session emits its terminal end, and
+				// that end settles every run started by then; wait for the session edge.
+				while (this.#turnActive) {
+					await new Promise<void>((resolve) => {
+						this.#turnSettledWaiters.push(resolve);
+					});
 				}
 				// A control prompt STARTS a fresh turn, so reset the accumulator like every
 				// other turn-start site — else a prior deliver-flush's ids would leak into

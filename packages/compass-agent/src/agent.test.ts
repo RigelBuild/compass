@@ -350,6 +350,23 @@ describe("CompassAgent — barrier lifts on ReplayComplete", () => {
 	});
 });
 
+describe("CompassAgent — a control prompt waits for the session turn to settle", () => {
+	// The core loop clears isStreaming before the session emits its terminal
+	// agent_end. A prompt in that gap would start a run whose holds the pending
+	// end then settles; it must wait for the session edge.
+	test("a prompt while the session turn is open starts only after its agent_end", async () => {
+		const h = startControlAgent();
+		await h.feed({ kind: "replayComplete" });
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		await h.feed({ kind: "prompt", input: "next" });
+		expect(h.session.agent.prompts).toEqual([]);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toEqual(["next"]);
+		await h.close();
+	});
+});
+
 // An AskQuestion fixture: id + text + options + inline answer state (the
 // chosen option ids / free-text the server records on RespondToAsk). Only the
 // axes the answer formatter reads are load-bearing. Option ids are the
