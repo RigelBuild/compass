@@ -283,6 +283,8 @@ export function loadLayout(
 ): WindowLayout {
 	const restored = readStored(storage);
 	if (!restored) return singleTabLayout(hashPath);
+	// Keep the saved focus when it already shows the hash: split panes can share it.
+	if (focusedViewOf(restored).path === hashPath) return restored;
 	const shown = layoutViews(restored).find((view) => view.path === hashPath);
 	if (shown) return focusView(restored, shown.id);
 	const opened = open(restored, hashPath, false);
@@ -333,9 +335,13 @@ function readStored(storage: Storage | undefined): WindowLayout | undefined {
 		...layout.tabs.map((tab) => tab.id),
 		...layoutViews(layout).map((view) => view.id),
 	];
-	const suffixes = ids.map((id) => Number(/-(\d+)$/.exec(id)?.[1] ?? 0));
 	const seq = field(parsed, "seq");
-	idSeq = Math.max(idSeq, typeof seq === "number" ? seq : 0, ...suffixes);
+	const seeds = [
+		seq,
+		...ids.map((id) => Number(/-(\d+)$/.exec(id)?.[1] ?? 0)),
+	].filter((n): n is number => Number.isSafeInteger(n) && (n as number) >= 0);
+	// An unsafe seed (1e309) would mint the same id forever.
+	idSeq = Math.max(idSeq, ...seeds);
 	return layout;
 }
 

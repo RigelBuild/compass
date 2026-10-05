@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+	focusedViewOf,
 	type LayoutAction,
+	layoutViews,
 	loadLayout,
 	MAX_TABS,
 	reduceLayout,
@@ -201,5 +203,32 @@ describe("loadLayout / saveLayout", () => {
 	test("with no storage the hash opens as a single view", () => {
 		const restored = loadLayout(undefined, "/done");
 		expect(tabPaths(restored)).toEqual(["/done"]);
+	});
+
+	test("a split whose panes share the hash keeps its saved focused pane", () => {
+		const storage = memoryStorage();
+		const split = reduce(singleTabLayout("/backlog"), {
+			kind: "split",
+			direction: "row",
+		});
+		const tab = split.tabs[0]?.layout;
+		if (tab?.kind !== "split") throw new Error("expected a split tab");
+		saveLayout(storage, split);
+		expect(focusedViewOf(loadLayout(storage, "/backlog")).id).toBe(
+			tab.second.id,
+		);
+	});
+
+	test("an unsafe stored sequence never mints duplicate view ids", () => {
+		const stored = JSON.stringify({ seq: 1, layout: singleTabLayout("/") });
+		const raw = stored.replace('"seq":1', '"seq":1e309');
+		const restored = loadLayout(
+			memoryStorage({ "compass.windowLayout": raw }),
+			"/",
+		);
+		const a = reduce(restored, { kind: "open", path: "/backlog" });
+		const b = reduce(a, { kind: "open", path: "/done" });
+		const ids = layoutViews(b).map((view) => view.id);
+		expect(new Set(ids).size).toBe(ids.length);
 	});
 });
