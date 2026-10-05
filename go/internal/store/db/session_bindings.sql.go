@@ -268,14 +268,19 @@ func (q *Queries) SessionBinding(ctx context.Context, sessionID string) (Session
 }
 
 const sessionBindingForAccount = `-- name: SessionBindingForAccount :one
-SELECT session_id FROM session_bindings WHERE agent_account_id = $1
+SELECT session_id, runner_id FROM session_bindings WHERE agent_account_id = $1
 `
 
-func (q *Queries) SessionBindingForAccount(ctx context.Context, agentAccountID string) (string, error) {
+type SessionBindingForAccountRow struct {
+	SessionID string
+	RunnerID  string
+}
+
+func (q *Queries) SessionBindingForAccount(ctx context.Context, agentAccountID string) (SessionBindingForAccountRow, error) {
 	row := q.db.QueryRow(ctx, sessionBindingForAccount, agentAccountID)
-	var session_id string
-	err := row.Scan(&session_id)
-	return session_id, err
+	var i SessionBindingForAccountRow
+	err := row.Scan(&i.SessionID, &i.RunnerID)
+	return i, err
 }
 
 const sessionBindingForUpdate = `-- name: SessionBindingForUpdate :one

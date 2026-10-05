@@ -214,13 +214,14 @@ func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (Ac
 // SessionForAccount resolves the live session bound to an agent account — the
 // REVERSE of ResolveSessionAccount, and the direction the delivery consumer
 // needs to dispatch a deliver to an already-resolved subscriber
-// (runnerhub/relay_comms.go, Hub.SessionForAccount). Exactly one row can answer PER TENANT: the
-// table's key is (tenant_id, agent_account_id), so the account alone is not
-// unique and the query is single-valued only because RLS has already narrowed
-// the visible rows to the acting tenant's. Under WithSystemRole (BYPASSRLS, no
-// tenant GUC) that narrowing is gone, several tenants' rows can match, and pgx
-// takes whichever comes first — so this method is a REQUEST-PATH read. Nothing
-// calls it under the system role today; a PR3 caller that wants to must scope it
+// (runnerhub/relay_comms.go, Hub.SessionForAccount). Returns the owning Runner
+// id with the session id. Exactly one row can answer PER TENANT: the table's
+// key is (tenant_id, agent_account_id), so the account alone is not unique and
+// the query is single-valued only because RLS has already narrowed the visible
+// rows to the acting tenant's. Under WithSystemRole (BYPASSRLS, no tenant GUC)
+// that narrowing is gone, several tenants' rows can match, and pgx takes
+// whichever comes first — so this method is a REQUEST-PATH read. Nothing calls
+// it under the system role today; a PR3 caller that wants to must scope it
 // itself.
 //
 // An account with no live session is ErrNotFound — never started, stopped, or
@@ -228,18 +229,18 @@ func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (Ac
 // empty session id with a nil error would be dispatched to as if it were a live
 // session. The consumer's own contract turns this into "push nothing now, let
 // the cursor sweep deliver on the recipient's next start".
-func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (string, error) {
+func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (string, string, error) {
 	if accountID == "" {
-		return "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+		return "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	sessionID, err := s.q.SessionBindingForAccount(ctx, string(accountID))
+	row, err := s.q.SessionBindingForAccount(ctx, string(accountID))
 	if err != nil {
 		if noRows(err) {
-			return "", fmt.Errorf("%w: agent %q has no live session", ErrNotFound, accountID)
+			return "", "", fmt.Errorf("%w: agent %q has no live session", ErrNotFound, accountID)
 		}
-		return "", fmt.Errorf("store: resolve session for account: %w", err)
+		return "", "", fmt.Errorf("store: resolve session for account: %w", err)
 	}
-	return sessionID, nil
+	return row.SessionID, row.RunnerID, nil
 }
 
 // DeleteSessionBinding releases the binding for sessionID — the single-session
