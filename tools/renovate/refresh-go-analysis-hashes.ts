@@ -2,6 +2,7 @@
 // Refresh the source and vendor FOD hashes coupled to the two pinned analysis tools.
 // Renovate runs this after a pin update; every hash is recomputed from its Nix derivation.
 
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -49,6 +50,11 @@ function errorMessage(error: unknown): string {
 
 function fail(message: string): never {
 	throw new Error(`renovate-go-analysis: ${message}`);
+}
+
+// Synchronous so a signal handler can never interleave with a half-done pin write.
+function writePin(text: string): void {
+	writeFileSync(PIN_FILE, text);
 }
 
 function toolBlock(fileText: string, entry: ToolEntry): string {
@@ -167,7 +173,7 @@ async function recomputeHash(
 	let currentBlock = toolBlock(currentText, entry);
 	currentBlock = rewriteBlockHash(currentBlock, SOURCE_MARKER, FAKE_SRI, entry);
 	currentBlock = rewriteBlockHash(currentBlock, VENDOR_MARKER, FAKE_SRI, entry);
-	await Bun.write(PIN_FILE, replaceToolBlock(currentText, entry, currentBlock));
+	writePin(replaceToolBlock(currentText, entry, currentBlock));
 
 	const sourceFragment = await resolveDrvPath(entry, entry.srcAttr);
 	const sourceBuild =
@@ -188,9 +194,8 @@ async function recomputeHash(
 		sourceHash,
 		entry,
 	);
-	await Bun.write(
-		PIN_FILE,
-		replaceToolBlock(await Bun.file(PIN_FILE).text(), entry, currentBlock),
+	writePin(
+		replaceToolBlock(readFileSync(PIN_FILE, "utf8"), entry, currentBlock),
 	);
 
 	const vendorFragment = await resolveDrvPath(entry, entry.vendorAttr);
@@ -212,7 +217,7 @@ async function recomputeHash(
 		vendorHash,
 		entry,
 	);
-	return replaceToolBlock(await Bun.file(PIN_FILE).text(), entry, currentBlock);
+	return replaceToolBlock(readFileSync(PIN_FILE, "utf8"), entry, currentBlock);
 }
 
 async function refreshTool(
@@ -230,9 +235,9 @@ async function refreshTool(
 		block = rewriteField(block, "version", `0-unstable-${date}`, entry);
 	}
 	let updatedText = replaceToolBlock(initialText, entry, block);
-	await Bun.write(PIN_FILE, updatedText);
+	writePin(updatedText);
 	updatedText = await recomputeHash(entry, updatedText);
-	await Bun.write(PIN_FILE, updatedText);
+	writePin(updatedText);
 	console.log(
 		`renovate-go-analysis: refreshed ${entry.attr} source and vendor hashes`,
 	);
@@ -268,22 +273,16 @@ async function main(): Promise<void> {
 		fail(`could not read ${PIN_FILE} from ${baseRef}`);
 	const baseText = baseResult.stdout.toString();
 	let currentText = initialText;
-	let signalHandled = false;
 	const onSignal = (signal: "SIGINT" | "SIGTERM") => {
-		if (signalHandled) return;
-		signalHandled = true;
-		void Bun.write(PIN_FILE, initialText).then(
-			() => {
-				console.error(`renovate-go-analysis: interrupted by ${signal}`);
-				process.exit(1);
-			},
-			(error: unknown) => {
-				console.error(
-					`renovate-go-analysis: interrupted by ${signal}; could not restore ${PIN_FILE}: ${errorMessage(error)}`,
-				);
-				process.exit(1);
-			},
-		);
+		try {
+			writePin(initialText);
+			console.error(`renovate-go-analysis: interrupted by ${signal}`);
+		} catch (error) {
+			console.error(
+				`renovate-go-analysis: interrupted by ${signal}; could not restore ${PIN_FILE}: ${errorMessage(error)}`,
+			);
+		}
+		process.exit(1);
 	};
 	const onSigint = () => onSignal("SIGINT");
 	const onSigterm = () => onSignal("SIGTERM");
@@ -296,7 +295,7 @@ async function main(): Promise<void> {
 			currentText = await refreshTool(entry, currentText);
 		}
 	} catch (error) {
-		await Bun.write(PIN_FILE, initialText);
+		writePin(initialText);
 		const message = errorMessage(error);
 		if (message.startsWith("renovate-go-analysis:")) throw error;
 		fail(message);
