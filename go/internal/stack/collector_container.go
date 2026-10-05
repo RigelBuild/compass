@@ -19,11 +19,9 @@ import (
 // containerStopTimeout because the two components have different shutdown costs.
 const collectorStopTimeout = 10 * time.Second
 
-// The collector's fixed container-internal listen ports (D3): OTLP grpc + http
-// are the fan-in endpoint compass surfaces emit to, and the health_check
-// extension is the readiness probe target. The generated config binds them on
-// 0.0.0.0 inside the container and the adapter publishes them; exported so the
-// two sides share one literal. They are the upstream collector defaults.
+// The collector's fixed container-internal ports (D3): OTLP grpc and http, and
+// the health_check probe target. The generated config binds them inside the
+// container and the adapter publishes them, so both share these upstream defaults.
 const (
 	CollectorContainerGRPCPort   = "4317"
 	CollectorContainerHTTPPort   = "4318"
@@ -79,13 +77,9 @@ type CollectorContainerSpec struct {
 	StopTimeout time.Duration
 }
 
-// collectorContainerSpec builds the T4 collector run spec from the resolved
-// config: it derives the stable container name and config dir from the state
-// dir, renders the D3-posture config, and fixes the published loopback
-// endpoints from Config's host ports. It is pure (no I/O) so the config and
-// endpoint set it encodes is unit-tested directly, and it errors on a config
-// missing what the run needs rather than running podman against a half-formed
-// spec.
+// collectorContainerSpec builds the collector run spec from the resolved config:
+// name and config dir from the state dir, the D3 config, and loopback endpoints
+// from Config's host ports. It does no I/O and refuses an incomplete config.
 func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 	if cfg.StateDir == "" {
 		return CollectorContainerSpec{}, errors.New("stack config: StateDir is required for the collector container (config bind-mount + name derivation)")

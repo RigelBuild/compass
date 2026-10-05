@@ -24,11 +24,9 @@ import (
 // caller's patience runs out.
 const natsStopTimeout = 20 * time.Second
 
-// The NATS server's fixed container-internal listen ports: the client port
-// surfaces reach over nats://, and the HTTP monitoring port is the readiness
-// probe target (/healthz). The generated config binds them on 0.0.0.0 inside the
-// container and the adapter publishes them; exported so the two sides share one
-// literal. They are the upstream nats-server defaults.
+// The NATS server's fixed container-internal ports (client, and the /healthz
+// monitor). The generated config binds them inside the container and the
+// adapter publishes them, so both sides share these upstream defaults.
 const (
 	NatsContainerClientPort  = "4222"
 	NatsContainerMonitorPort = "8222"
@@ -100,13 +98,9 @@ type NatsContainerSpec struct {
 	StopTimeout time.Duration
 }
 
-// natsContainerSpec builds the NATS run spec from the resolved config: it
-// derives the stable container name and the config + data dirs from the state
-// dir, renders the JetStream-on config, and fixes the published loopback
-// endpoints from Config's host ports. It is pure (no I/O) so the config and
-// endpoint set it encodes is unit-tested directly, and it errors on a config
-// missing what the run needs rather than running podman against a half-formed
-// spec.
+// natsContainerSpec builds the NATS run spec from the resolved config: name and
+// dirs from the state dir, the JetStream config, and loopback endpoints from
+// Config's host ports. It does no I/O and refuses an incomplete config.
 func natsContainerSpec(cfg Config) (NatsContainerSpec, error) {
 	if cfg.StateDir == "" {
 		return NatsContainerSpec{}, errors.New("stack config: StateDir is required for the nats container (config + JetStream data bind-mounts + name derivation)")

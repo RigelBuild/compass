@@ -89,7 +89,7 @@ type Config struct {
 	// set, Up skips the nats component and consumers point at this
 	// operator/managed-plane-supplied nats:// URL instead. Empty is the default
 	// posture: NATS is provisioned as a bundled stack service, reachable on the
-	// fixed loopback client endpoint.
+	// configured loopback client endpoint (NatsClientPort).
 	ExternalNatsURL string
 	// NatsClientPort and NatsMonitorPort are the host loopback ports the bundled
 	// NATS publishes on. The container-internal ports stay fixed; the CLI
@@ -223,4 +223,29 @@ func loopbackEndpoint(field string, port int) (string, error) {
 		return "", fmt.Errorf("stack config: %s %d must be a host port in 1-65535", field, port)
 	}
 	return "127.0.0.1:" + strconv.Itoa(port), nil
+}
+
+// checkBundledPortsDistinct refuses two enabled bundled components sharing a host
+// port before any child starts. It is not in Validate: attach and down use no ports.
+func (c Config) checkBundledPortsDistinct() error {
+	type port struct {
+		field string
+		port  int
+	}
+	var ports []port
+	if c.ExternalOTLPEndpoint == "" {
+		ports = append(ports, port{"CollectorGRPCPort", c.CollectorGRPCPort},
+			port{"CollectorHTTPPort", c.CollectorHTTPPort}, port{"CollectorHealthPort", c.CollectorHealthPort})
+	}
+	if c.ExternalNatsURL == "" {
+		ports = append(ports, port{"NatsClientPort", c.NatsClientPort}, port{"NatsMonitorPort", c.NatsMonitorPort})
+	}
+	seen := make(map[int]string, len(ports))
+	for _, p := range ports {
+		if prev, ok := seen[p.port]; ok {
+			return fmt.Errorf("stack config: %s and %s both use host port %d", prev, p.field, p.port)
+		}
+		seen[p.port] = p.field
+	}
+	return nil
 }

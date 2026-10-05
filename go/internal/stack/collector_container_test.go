@@ -324,3 +324,28 @@ func TestCollectorNeverReady(t *testing.T) {
 	}
 	assertLockFree(t, cfg.StateDir)
 }
+
+// Two enabled bundled components on one host port would fail late at podman
+// publish, after earlier children started; Up refuses it before any spawn.
+func TestUpRejectsSharedBundledHostPortBeforeSpawn(t *testing.T) {
+	cfg, h := newHarness(t)
+	cfg.NatsMonitorPort = cfg.CollectorHealthPort
+	_, err := Up(context.Background(), cfg, h.deps)
+	if err == nil || !strings.Contains(err.Error(), "CollectorHealthPort and NatsMonitorPort both use host port") {
+		t.Fatalf("Up error = %v, want a shared-host-port refusal", err)
+	}
+	if got := filterEvents(h.rec.snapshot()); len(got) != 0 {
+		t.Fatalf("started children before rejecting config: %v", got)
+	}
+}
+
+// A port of an opted-out component is never published, so it may repeat one in use.
+func TestBundledPortsDistinctIgnoresExternalComponent(t *testing.T) {
+	cfg := Config{
+		CollectorGRPCPort: 1, CollectorHTTPPort: 2, CollectorHealthPort: 3,
+		NatsClientPort: 1, NatsMonitorPort: 1, ExternalNatsURL: "nats://elsewhere:4222",
+	}
+	if err := cfg.checkBundledPortsDistinct(); err != nil {
+		t.Fatalf("checkBundledPortsDistinct with external NATS = %v, want nil", err)
+	}
+}

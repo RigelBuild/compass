@@ -326,7 +326,7 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		ExternalOTLPEndpoint: f.otelExternal,
 		NatsImage:            f.natsImage,
 		ExternalNatsURL:      f.natsExternal,
-		// No flags for these (RIG-3856): the CLI pins today's host ports.
+		// No flags for these: the CLI pins the default host ports.
 		NatsClientPort:      stack.DefaultNatsClientPort,
 		NatsMonitorPort:     stack.DefaultNatsMonitorPort,
 		CollectorGRPCPort:   stack.DefaultCollectorGRPCPort,
