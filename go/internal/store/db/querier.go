@@ -73,7 +73,8 @@ type Querier interface {
 	// pool (the eponymous method) and a snapshot tx (SessionResumeSnapshot, via
 	// WithTx), so one generated query backs both call sites.
 	BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error)
-	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]string, error)
+	// Keep handle joins optional so missing handle rows do not hide @everyone members.
+	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]ChannelAgentMembersRow, error)
 	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
 	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
