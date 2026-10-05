@@ -736,6 +736,10 @@ func newHarness(t *testing.T) (Config, *harness) {
 		// --nats-external opt-out set ExternalNatsURL explicitly.
 		NatsImage:    "nats:test",
 		GatewayImage: "gateway:test",
+		// Bundle-path host ports: the spec builders reject 0.
+		NatsClientPort: DefaultNatsClientPort, NatsMonitorPort: DefaultNatsMonitorPort,
+		CollectorGRPCPort: DefaultCollectorGRPCPort, CollectorHTTPPort: DefaultCollectorHTTPPort,
+		CollectorHealthPort: DefaultCollectorHealthPort,
 	}
 	return cfg, h
 }

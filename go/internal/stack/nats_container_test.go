@@ -15,8 +15,10 @@ import (
 // endpoints, the stop timeout, and a stable derived name.
 func TestNatsContainerSpecBuildsFromConfig(t *testing.T) {
 	cfg := Config{
-		StateDir:  "/state",
-		NatsImage: "docker.io/library/nats@sha256:abc",
+		StateDir:        "/state",
+		NatsImage:       "docker.io/library/nats@sha256:abc",
+		NatsClientPort:  DefaultNatsClientPort,
+		NatsMonitorPort: DefaultNatsMonitorPort,
 	}
 	spec, err := natsContainerSpec(cfg)
 	if err != nil {
@@ -54,6 +56,26 @@ func TestNatsContainerSpecBuildsFromConfig(t *testing.T) {
 	}
 }
 
+// TestNatsContainerSpecPublishesConfiguredHostPorts pins that the host publish
+// side follows Config while the container-internal ports stay the upstream
+// defaults, so two stacks on one host can bundle NATS side by side.
+func TestNatsContainerSpecPublishesConfiguredHostPorts(t *testing.T) {
+	cfg := Config{StateDir: "/state", NatsImage: "nats:test", NatsClientPort: 14222, NatsMonitorPort: 18222}
+	spec, err := natsContainerSpec(cfg)
+	if err != nil {
+		t.Fatalf("natsContainerSpec() = %v, want nil", err)
+	}
+	if spec.ClientEndpoint != "127.0.0.1:14222" || spec.MonitorEndpoint != "127.0.0.1:18222" {
+		t.Errorf("endpoints = %q, %q; want 127.0.0.1:14222, 127.0.0.1:18222", spec.ClientEndpoint, spec.MonitorEndpoint)
+	}
+	if !strings.Contains(spec.ConfigYAML, "port: 4222") || !strings.Contains(spec.ConfigYAML, `"0.0.0.0:8222"`) {
+		t.Errorf("container-internal ports moved with the host ports:\n%s", spec.ConfigYAML)
+	}
+	if got := natsURL(cfg); got != "nats://127.0.0.1:14222" {
+		t.Errorf("natsURL = %q, want nats://127.0.0.1:14222", got)
+	}
+}
+
 // TestNatsContainerSpecRejectsMissingStateDir pins that a config with no state
 // dir is a hard error, not a run against a half-formed spec (the state dir is
 // the root of both bind-mounts and the name-derivation input).
@@ -79,6 +101,27 @@ func TestNatsContainerSpecRejectsMissingImage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "NatsImage") {
 		t.Fatalf("error %q does not mention NatsImage", err.Error())
+	}
+}
+
+// TestNatsContainerSpecRejectsBadHostPort pins that a bundle-path config with an
+// unset or out-of-range host port fails at spec time, naming the field, rather
+// than handing podman a `127.0.0.1:0` publish.
+func TestNatsContainerSpecRejectsBadHostPort(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		client, mon    int
+		wantField, val string
+	}{
+		{name: "unset client", client: 0, mon: 8222, wantField: "NatsClientPort", val: "0"},
+		{name: "monitor over range", client: 4222, mon: 70000, wantField: "NatsMonitorPort", val: "70000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := natsContainerSpec(Config{StateDir: "/state", NatsImage: "nats:test", NatsClientPort: tc.client, NatsMonitorPort: tc.mon})
+			if err == nil || !strings.Contains(err.Error(), tc.wantField) || !strings.Contains(err.Error(), tc.val) {
+				t.Fatalf("natsContainerSpec() err = %v, want a rejection naming %s=%s", err, tc.wantField, tc.val)
+			}
+		})
 	}
 }
 
@@ -136,11 +179,11 @@ func TestNatsConfigYAMLRealizesJetStreamPosture(t *testing.T) {
 	}
 
 	// The client listener and the monitoring endpoint the probe GETs /healthz on.
-	if !strings.Contains(conf, "port: "+natsClientPort) {
-		t.Errorf("config missing the client port %s:\n%s", natsClientPort, conf)
+	if !strings.Contains(conf, "port: "+NatsContainerClientPort) {
+		t.Errorf("config missing the client port %s:\n%s", NatsContainerClientPort, conf)
 	}
-	if !strings.Contains(conf, `http: "0.0.0.0:`+natsMonitorPort+`"`) {
-		t.Errorf("config missing the http monitoring endpoint on %s:\n%s", natsMonitorPort, conf)
+	if !strings.Contains(conf, `http: "0.0.0.0:`+NatsContainerMonitorPort+`"`) {
+		t.Errorf("config missing the http monitoring endpoint on %s:\n%s", NatsContainerMonitorPort, conf)
 	}
 
 	// Out of scope for this shape, and each would be a silent posture change:

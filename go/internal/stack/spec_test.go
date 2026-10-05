@@ -196,9 +196,10 @@ func TestRunnerSpecOmitsAgentImageUnderMicroVM(t *testing.T) {
 // resolveConfig both leave it zero.
 func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 	base := Config{
-		SocketPath:  "/state/compass.sock",
-		DatabaseDSN: "host=/state/pg dbname=compass",
-		ListenAddr:  "127.0.0.1:50052",
+		SocketPath:     "/state/compass.sock",
+		DatabaseDSN:    "host=/state/pg dbname=compass",
+		ListenAddr:     "127.0.0.1:50052",
+		NatsClientPort: DefaultNatsClientPort,
 	}
 	cert := CertResult{CertPath: "/state/tls.crt", KeyPath: "/state/tls.key"}
 
@@ -251,7 +252,7 @@ func TestServerSpecAlwaysForwardsNatsURL(t *testing.T) {
 	tests := []struct {
 		name, external, want string
 	}{
-		{name: "bundled nats passes the loopback client endpoint", want: "nats://127.0.0.1:4222"},
+		{name: "bundled nats passes the configured loopback client port", want: "nats://127.0.0.1:14222"},
 		{name: "external nats passes the operator URL", external: "nats://nats.example.com:4222", want: "nats://nats.example.com:4222"},
 	}
 	for _, tt := range tests {
@@ -261,6 +262,7 @@ func TestServerSpecAlwaysForwardsNatsURL(t *testing.T) {
 				DatabaseDSN:     "host=/state/pg dbname=compass",
 				ListenAddr:      "127.0.0.1:50052",
 				ExternalNatsURL: tt.external,
+				NatsClientPort:  14222,
 			}
 			args := serverSpec(cfg, cert).Args
 			i := slices.Index(args, "--nats-url")

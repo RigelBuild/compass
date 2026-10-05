@@ -4,6 +4,7 @@ package stack
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +15,11 @@ import (
 // health endpoints, the stop timeout, and a stable derived name.
 func TestCollectorContainerSpecBuildsFromConfig(t *testing.T) {
 	cfg := Config{
-		StateDir:       "/state",
-		CollectorImage: "docker.io/otel/opentelemetry-collector-contrib@sha256:abc",
+		StateDir:            "/state",
+		CollectorImage:      "docker.io/otel/opentelemetry-collector-contrib@sha256:abc",
+		CollectorGRPCPort:   DefaultCollectorGRPCPort,
+		CollectorHTTPPort:   DefaultCollectorHTTPPort,
+		CollectorHealthPort: DefaultCollectorHealthPort,
 	}
 	spec, err := collectorContainerSpec(cfg)
 	if err != nil {
@@ -47,6 +51,27 @@ func TestCollectorContainerSpecBuildsFromConfig(t *testing.T) {
 	}
 }
 
+// TestCollectorContainerSpecPublishesConfiguredHostPorts pins that the host
+// publish side follows Config while the container-internal ports stay fixed.
+func TestCollectorContainerSpecPublishesConfiguredHostPorts(t *testing.T) {
+	spec, err := collectorContainerSpec(Config{
+		StateDir: "/state", CollectorImage: "img:pinned",
+		CollectorGRPCPort: 14317, CollectorHTTPPort: 14318, CollectorHealthPort: 23133,
+	})
+	if err != nil {
+		t.Fatalf("collectorContainerSpec() = %v, want nil", err)
+	}
+	want := [3]string{"127.0.0.1:14317", "127.0.0.1:14318", "127.0.0.1:23133"}
+	if got := [3]string{spec.GRPCEndpoint, spec.HTTPEndpoint, spec.HealthEndpoint}; got != want {
+		t.Errorf("endpoints = %q, want %q", got, want)
+	}
+	for _, internal := range []string{"0.0.0.0:4317", "0.0.0.0:4318", "0.0.0.0:13133"} {
+		if !strings.Contains(spec.ConfigYAML, internal) {
+			t.Errorf("config lost container-internal %q:\n%s", internal, spec.ConfigYAML)
+		}
+	}
+}
+
 // TestCollectorContainerSpecRejectsMissingStateDir pins that a config with no
 // state dir is a hard error, not a run against a half-formed spec (the state dir
 // is both the config bind-mount root and the name-derivation input).
@@ -74,6 +99,18 @@ func TestCollectorContainerSpecRejectsMissingImage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "CollectorImage") {
 		t.Fatalf("error %q does not mention CollectorImage", err.Error())
+	}
+}
+
+// TestCollectorContainerSpecRejectsBadHostPort pins that an unset or
+// out-of-range collector host port fails at spec time, naming the field.
+func TestCollectorContainerSpecRejectsBadHostPort(t *testing.T) {
+	_, err := collectorContainerSpec(Config{
+		StateDir: "/state", CollectorImage: "img:pinned",
+		CollectorGRPCPort: 4317, CollectorHTTPPort: 70000, CollectorHealthPort: 0,
+	})
+	if err == nil || !strings.Contains(err.Error(), "CollectorHTTPPort") || !strings.Contains(err.Error(), "70000") {
+		t.Fatalf("collectorContainerSpec() err = %v, want a rejection naming CollectorHTTPPort=70000", err)
 	}
 }
 
@@ -287,4 +324,64 @@ func TestCollectorNeverReady(t *testing.T) {
 		t.Fatalf("collector signalled %d times on the never-ready drain; want 1", n)
 	}
 	assertLockFree(t, cfg.StateDir)
+}
+
+// Two enabled bundled components on one host port would fail late at podman
+// publish, after earlier children started; Up refuses it before any spawn.
+func TestUpRejectsSharedBundledHostPortBeforeSpawn(t *testing.T) {
+	cfg, h := newHarness(t)
+	cfg.NatsMonitorPort = cfg.CollectorHealthPort
+	_, err := Up(context.Background(), cfg, h.deps)
+	if err == nil || !strings.Contains(err.Error(), "CollectorHealthPort and NatsMonitorPort both use host port") {
+		t.Fatalf("Up error = %v, want a shared-host-port refusal", err)
+	}
+	if got := filterEvents(h.rec.snapshot()); len(got) != 0 {
+		t.Fatalf("started children before rejecting config: %v", got)
+	}
+}
+
+// A port of an opted-out component is never published, so it may repeat one in use.
+func TestBundledPortsDistinctIgnoresExternalComponent(t *testing.T) {
+	cfg := Config{
+		CollectorGRPCPort: 1, CollectorHTTPPort: 2, CollectorHealthPort: 3,
+		NatsClientPort: 1, NatsMonitorPort: 1, ExternalNatsURL: "nats://elsewhere:4222",
+	}
+	if err := cfg.checkBundledPortsDistinct(); err != nil {
+		t.Fatalf("checkBundledPortsDistinct with external NATS = %v, want nil", err)
+	}
+}
+
+// The fixed gateway endpoint and the server's ListenAddr take part in the check.
+func TestBundledPortsDistinctCoversGatewayAndListenAddr(t *testing.T) {
+	cfg, _ := newHarness(t)
+	gw := cfg
+	gw.NatsClientPort = 4100
+	if err := gw.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "the bundled gateway and NatsClientPort") {
+		t.Fatalf("NATS on the gateway port = %v, want a refusal", err)
+	}
+	gw.ExternalGatewayURL = "http://elsewhere:4000"
+	if err := gw.checkBundledPortsDistinct(); err != nil {
+		t.Fatalf("NATS on the gateway port with an external gateway = %v, want nil", err)
+	}
+	la := cfg
+	la.ListenAddr = "127.0.0.1:" + strconv.Itoa(cfg.CollectorGRPCPort)
+	if err := la.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorGRPCPort") {
+		t.Fatalf("ListenAddr on a collector port = %v, want a refusal", err)
+	}
+	for _, addr := range []string{"0.0.0.0", "[::]", "localhost", "localhost.localdomain"} {
+		la.ListenAddr = addr + ":" + strconv.Itoa(cfg.CollectorGRPCPort)
+		if err := la.checkBundledPortsDistinct(); err == nil {
+			t.Fatalf("ListenAddr %q on a collector port = nil, want a refusal", la.ListenAddr)
+		}
+	}
+	svc := cfg
+	svc.CollectorHTTPPort = 80
+	svc.ListenAddr = "127.0.0.1:http"
+	if err := svc.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorHTTPPort") {
+		t.Fatalf("ListenAddr service-name port on a collector port = %v, want a refusal", err)
+	}
+	la.ListenAddr = "127.0.0.2:" + strconv.Itoa(cfg.CollectorGRPCPort)
+	if err := la.checkBundledPortsDistinct(); err != nil {
+		t.Fatalf("ListenAddr on another loopback address = %v, want nil (no shared bind)", err)
+	}
 }

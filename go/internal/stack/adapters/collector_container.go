@@ -157,9 +157,9 @@ func collectorRunArgs(spec stack.CollectorContainerSpec, configFile string) []st
 		flagPodmanReplace,
 		flagPodmanName, spec.Name,
 		flagPodmanStopTimeout, strconv.FormatInt(stopSeconds(spec.StopTimeout), 10),
-		"-p", spec.GRPCEndpoint + ":4317",
-		"-p", spec.HTTPEndpoint + ":4318",
-		"-p", spec.HealthEndpoint + ":13133",
+		"-p", spec.GRPCEndpoint + ":" + stack.CollectorContainerGRPCPort,
+		"-p", spec.HTTPEndpoint + ":" + stack.CollectorContainerHTTPPort,
+		"-p", spec.HealthEndpoint + ":" + stack.CollectorContainerHealthPort,
 		"-v", configFile + ":" + collectorConfigPath + ":ro,Z",
 		spec.Image,
 	}
