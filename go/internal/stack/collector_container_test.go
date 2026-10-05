@@ -4,6 +4,7 @@ package stack
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -347,5 +348,24 @@ func TestBundledPortsDistinctIgnoresExternalComponent(t *testing.T) {
 	}
 	if err := cfg.checkBundledPortsDistinct(); err != nil {
 		t.Fatalf("checkBundledPortsDistinct with external NATS = %v, want nil", err)
+	}
+}
+
+// The fixed gateway endpoint and the server's ListenAddr take part in the check.
+func TestBundledPortsDistinctCoversGatewayAndListenAddr(t *testing.T) {
+	cfg, _ := newHarness(t)
+	gw := cfg
+	gw.NatsClientPort = 4100
+	if err := gw.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "the bundled gateway and NatsClientPort") {
+		t.Fatalf("NATS on the gateway port = %v, want a refusal", err)
+	}
+	gw.ExternalGatewayURL = "http://elsewhere:4000"
+	if err := gw.checkBundledPortsDistinct(); err != nil {
+		t.Fatalf("NATS on the gateway port with an external gateway = %v, want nil", err)
+	}
+	la := cfg
+	la.ListenAddr = "127.0.0.1:" + strconv.Itoa(cfg.CollectorGRPCPort)
+	if err := la.checkBundledPortsDistinct(); err == nil || !strings.Contains(err.Error(), "ListenAddr and CollectorGRPCPort") {
+		t.Fatalf("ListenAddr on a collector port = %v, want a refusal", err)
 	}
 }

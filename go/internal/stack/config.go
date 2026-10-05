@@ -176,7 +176,7 @@ func (c Config) Validate() error {
 	// ":0" (and any ":0" host variant) requests an ephemeral port. The server
 	// has no bound-address discovery API, so the runner could never be told the
 	// real port — reject it up front rather than spawn an unreachable door.
-	if _, port, ok := splitPort(c.ListenAddr); ok && port == "0" {
+	if port, ok := splitPort(c.ListenAddr); ok && port == "0" {
 		return fmt.Errorf("stack config: ListenAddr %q must be a fixed port, not :0 (no bound-address discovery API exists)", c.ListenAddr)
 	}
 	// Both guest knobs name the same thing by different means, so accepting
@@ -208,12 +208,12 @@ func (c Config) Validate() error {
 
 // splitPort extracts the port from a host:port authority without importing net's
 // resolution machinery. It returns ok=false when there is no ":port" tail.
-func splitPort(addr string) (host, port string, ok bool) {
+func splitPort(addr string) (port string, ok bool) {
 	i := strings.LastIndexByte(addr, ':')
 	if i < 0 {
-		return "", "", false
+		return "", false
 	}
-	return addr[:i], addr[i+1:], true
+	return addr[i+1:], true
 }
 
 // loopbackEndpoint renders a bundled component's host publish endpoint, refusing
@@ -225,14 +225,25 @@ func loopbackEndpoint(field string, port int) (string, error) {
 	return "127.0.0.1:" + strconv.Itoa(port), nil
 }
 
-// checkBundledPortsDistinct refuses two enabled bundled components sharing a host
-// port before any child starts. It is not in Validate: attach and down use no ports.
+// checkBundledPortsDistinct refuses two host binds of one spawn sharing a port
+// before any child starts. It is not in Validate: attach and down use no ports.
 func (c Config) checkBundledPortsDistinct() error {
 	type port struct {
 		field string
 		port  int
 	}
 	var ports []port
+	add := func(field, addr string) {
+		if p, ok := splitPort(addr); ok {
+			if n, err := strconv.Atoi(p); err == nil {
+				ports = append(ports, port{field, n})
+			}
+		}
+	}
+	add("ListenAddr", c.ListenAddr)
+	if c.ExternalGatewayURL == "" {
+		add("the bundled gateway", gatewayHostEndpoint)
+	}
 	if c.ExternalOTLPEndpoint == "" {
 		ports = append(ports, port{"CollectorGRPCPort", c.CollectorGRPCPort},
 			port{"CollectorHTTPPort", c.CollectorHTTPPort}, port{"CollectorHealthPort", c.CollectorHealthPort})
