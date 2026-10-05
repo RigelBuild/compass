@@ -79,9 +79,10 @@ type SessionBinding struct {
 // updated_at is maintained by the set_updated_at() trigger, never here
 // (RIG-3495) — the query file assigns it nowhere.
 //
-// An unknown agent_account_id is ErrInvalidArgument (the FK), and so is an
-// agent of another tenant: the FK ignores RLS, but the interval start cannot see
-// that agent's row and inserts nothing, so the bind would commit unbilled.
+// An agent this tenant cannot see is ErrInvalidArgument: an unknown id, or an
+// agent of another tenant. The FK ignores RLS, so it would admit the second and
+// the bind would commit unbilled. Checked first, on every path, including a
+// same-session rebind of a row that predates the check.
 //
 // ErrConflict means ONE thing, and it is not about the account: the account path
 // is an upsert and cannot conflict. Both unique indexes on this table can raise
@@ -133,6 +134,13 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 	}); err != nil {
 		return "", "", fmt.Errorf("store: lock session binding account: %w", err)
 	}
+	visible, err := qtx.AgentAccountVisible(ctx, string(accountID))
+	if err != nil {
+		return "", "", fmt.Errorf("store: check agent account: %w", err)
+	}
+	if !visible {
+		return "", "", fmt.Errorf("%w: agent account %q does not exist in this tenant", ErrInvalidArgument, accountID)
+	}
 
 	prior, err := qtx.SessionBindingForUpdate(ctx, string(accountID))
 	if err != nil && !noRows(err) {
@@ -172,7 +180,7 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 			return "", "", fmt.Errorf("store: start compute usage interval: %w", err)
 		}
 		if started == 0 {
-			return "", "", fmt.Errorf("%w: agent account %q does not exist in this tenant", ErrInvalidArgument, accountID)
+			return "", "", fmt.Errorf("%w: agent account %q is not visible for its usage start", ErrInvalidArgument, accountID)
 		}
 	}
 

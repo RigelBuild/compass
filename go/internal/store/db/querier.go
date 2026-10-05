@@ -31,6 +31,9 @@ type Querier interface {
 	// AdvanceTokenUsagePruneHorizon commits before the prune deletes anything, and
 	// waits for a rebuild that holds the old horizon. It only moves forward.
 	AdvanceTokenUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	// Under RLS, an agent of another tenant is invisible exactly like an unknown id;
+	// the FK cannot tell them apart because FK checks ignore RLS.
+	AgentAccountVisible(ctx context.Context, accountID string) (bool, error)
 	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the
@@ -625,8 +628,8 @@ type Querier interface {
 	// Event writes share RecordSessionBinding's transaction, so neither half of an
 	// interval can commit without its binding transition.
 	// clock_timestamp records after lock waits, unlike now() which uses tx start time.
-	// :execrows: the interval id is fresh, so zero rows means RLS hid the agent row
-	// (an agent of another tenant), and the Store refuses the bind.
+	// :execrows: the interval id is fresh, so zero rows means no visible agent row,
+	// and the Store fails the bind rather than commit it unbilled.
 	StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) (int64, error)
 	StoreForgeRepoWatermark(ctx context.Context, arg StoreForgeRepoWatermarkParams) (int64, error)
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error

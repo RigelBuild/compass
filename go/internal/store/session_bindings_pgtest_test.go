@@ -652,6 +652,24 @@ func TestSessionBindingForeignTenantAgentIsInvalidArgument(t *testing.T) {
 	}
 }
 
+// A foreign-tenant row that predates the refusal must not survive a same-session
+// rebind: that path writes no new interval, so the check cannot ride on it.
+func TestSessionBindingForeignTenantSameSessionRebindIsInvalidArgument(t *testing.T) {
+	s := newTestStore(t)
+	tenantB := seedTenant(t, s, "tenant-b")
+	ctxB := WithTenant(context.Background(), tenantB)
+
+	agentA := mustAgent(t, s, mustUser(t, s, "owner-a").ID, "agent-a")
+	execAsSystem(t, s, "INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id) VALUES ($1, $2, 'sess-b', 'runner-b')",
+		string(tenantB), string(agentA.ID))
+
+	_, _, err := s.RecordSessionBinding(ctxB, "sess-b", agentA.ID, "runner-c")
+	sentinelIs(t, err, ErrInvalidArgument, "same-session rebind of tenant A's agent in tenant B")
+	if _, runner, _, err := s.ResolveSessionBinding(ctxB, "sess-b"); err != nil || runner != "runner-b" {
+		t.Fatalf("legacy row after the refusal = (runner %q, %v), want runner-b unchanged", runner, err)
+	}
+}
+
 // TestSessionBindingSameAccountIDInTwoTenantsIsolated pins the PRIMARY KEY half
 // of the fold: PRIMARY KEY (tenant_id, agent_account_id). Each tenant binds its
 // own agent; a bind in B must neither read nor displace A's row.
