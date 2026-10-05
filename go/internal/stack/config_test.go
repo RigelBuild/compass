@@ -3,6 +3,7 @@
 package stack
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -182,5 +183,14 @@ func TestConfigValidateBudgetError(t *testing.T) {
 	}
 	if budget <= 0 || budget >= sunPathMax {
 		t.Fatalf("computed budget %d is implausible (sunPathMax=%d, tail=%d)", budget, sunPathMax, agentSocketTailWidth)
+	}
+}
+
+// The microVM run root defaults to RuntimeDir, so the agent-socket budget Validate
+// enforces must also fit the runner's worst-case microVM gateway socket path.
+func TestAgentSocketBudgetCoversMicroVMRunRoot(t *testing.T) {
+	gatewayTail := len(filepath.Join("microvm", strings.Repeat("0", 32), "vsock.sock_1025")) + 1
+	if gatewayTail > agentSocketTailWidth {
+		t.Fatalf("microVM gateway tail %d exceeds agent socket tail %d; Validate must budget it separately", gatewayTail, agentSocketTailWidth)
 	}
 }
