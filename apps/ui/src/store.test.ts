@@ -237,9 +237,8 @@ describe("openAgent", () => {
 		});
 	});
 
-	// The tab reset keys on the workspace-init guard (agentViewAgentId): re-opening
-	// the SAME agent preserves the tabs the user opened. A guard that keyed on
-	// selectedAgentId, or no guard at all, would wipe the terminal tab on re-open.
+	// The view keeps its workspace while the route names the same agent, so
+	// re-opening that agent keeps the terminal tab the user opened.
 	test("re-opening the same agent preserves an opened terminal tab (init-guard)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
@@ -293,8 +292,7 @@ describe("openAgent", () => {
 	});
 
 	// Re-selecting the current agent is a no-op beyond re-asserting the view: a
-	// user who switched the branch must NOT have it snapped back on a re-open. The
-	// `agentId === agentViewAgentId()` guard returns before any reset.
+	// user who switched the branch must NOT have it snapped back on a re-open.
 	test("re-opening the already-selected agent preserves the user's branch context", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
@@ -317,7 +315,7 @@ describe("openAgent", () => {
 
 	// A board pick (selectIssue) while an agent view is focused must not move the
 	// roster off the agent the surface shows; opening the picked agent still anchors.
-	test("opening a different agent after a board pick still resets the selection", () => {
+	test("opening a different agent after a board pick keeps the picked issue", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
 
@@ -330,7 +328,7 @@ describe("openAgent", () => {
 			s.openAgent("acc-compass-server");
 			flush();
 
-			// The reset keys on agentViewAgentId — the move didn't suppress it.
+			// The board pick is compass-server's own issue, so opening it keeps it.
 			expect(s.selectedIssueId()).toBe("ws-1023");
 		});
 	});
@@ -367,7 +365,7 @@ describe("openAgent", () => {
 			flush();
 			expect(s.selectedAgentId()).toBe("acc-compass-ui");
 
-			s.openAgent("acc-compass-ui"); // early-return path (compass-ui is still agentViewAgentId)
+			s.openAgent("acc-compass-ui");
 			flush();
 
 			// Re-anchored to a compass-ui-owned ws — compass-server's ws-1023 did NOT leak.
@@ -380,7 +378,7 @@ describe("openAgent", () => {
 	// the last-visited channel across an agent route (no bleed either way).
 	test("re-opening the agent-view agent shows its home DM while leaving the standalone selection intact", () => {
 		withStore((s) => {
-			s.openAgent("acc-compass-ui"); // agentViewAgentId = compass-ui
+			s.openAgent("acc-compass-ui");
 			const home = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui")
 				?.account.homeChannelId;
 			expect(home).toBeDefined();
@@ -392,8 +390,7 @@ describe("openAgent", () => {
 			expect(s.view()).toBe("channel");
 			expect(s.selectedChannelId()).toBe("ch-svc-compass");
 
-			// Re-open the same agent → early-return path (compass-ui is still
-			// agentViewAgentId).
+			// Re-open the same agent.
 			s.openAgent("acc-compass-ui");
 			flush();
 

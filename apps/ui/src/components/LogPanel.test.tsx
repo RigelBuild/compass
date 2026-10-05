@@ -11,9 +11,8 @@ import { testQueryClient } from "../test-support";
 import { ViewContext } from "../view-scope";
 import { LogPanel } from "./LogPanel";
 
-// LogPanel's trace renders the typed `SessionTrace` from the view's
-// `agentSession()`, which keys off the route's agent, not the `agent` prop.
-// So each test calls `store.openAgent(id)` and passes the resolved agent.
+// The trace reads the view's `agentSession()`, keyed on the route's agent, not
+// the `agent` prop, so each test calls `store.openAgent(id)` first.
 //
 // Fixture ground truth (session-events-stub.ts STUB_SESSION_EVENTS):
 //   - acc-compass-server: running:true — a thinking beat, ~10 one-word

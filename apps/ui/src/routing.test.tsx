@@ -180,7 +180,7 @@ describe("pending-aware channel deep-link (record A3)", () => {
 		await flush();
 
 		expect(store.selectedChannelId()).toBe(DEEP);
-		// The fallback reaches the URL, so a reload or copied link leaves the dead id.
+		// The fallback reaches the URL, so a reload no longer names the dead id.
 		expect(history.get()).toBe(`/channel/${DEEP}`);
 
 		fake.close();
