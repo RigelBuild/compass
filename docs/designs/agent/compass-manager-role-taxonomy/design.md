@@ -658,4 +658,4 @@ assumption, none blocks the tasks above.
 
 ## Errata
 
-- DL-new-B widened: `CommsService.CreateAgent` is a second creation door and now also requires a taxonomy `role` on `CreateAgentRequest` (`CodeInvalidArgument` on unknown or empty). Both doors validate against one shared set, `store.IsManagerRole` (a private set in `go/internal/store`), which replaces the `spawnableRoles` server constant T1 names. No agent-facing `create_agent` tool is added.
+- DL-new-B widened: `CommsService.CreateAgent` is a second creation door and now also requires a taxonomy `role` on `CreateAgentRequest` (`CodeInvalidArgument` on unknown or empty). Both doors call `store.IsManagerRole`, backed by a private set in `go/internal/store`, which replaces the `spawnableRoles` server constant T1 names. No agent-facing `create_agent` tool is added.

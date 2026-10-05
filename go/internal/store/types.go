@@ -197,11 +197,10 @@ type AgentAccount struct {
 	// Persona is the agent's system-prompt text, baked at creation (RIG-1571);
 	// empty means no persona override.
 	Persona string
-	// Role is the agent's block-0 selector (RIG-1732 T10), chosen by the creator
-	// and validated by IsManagerRole on every request path; empty (rows from
-	// before that guard) means the default OMP block-0. Unlike Persona (an append overlay),
-	// the label selects config/prompts/<role>/SYSTEM.md, delivered as the
-	// container's customSystemPrompt.
+	// Role selects block-0 (config/prompts/<role>/SYSTEM.md), replacing it where
+	// Persona appends. Request paths validate it with IsManagerRole; rows from
+	// before that guard may hold an empty or unknown label, which falls back to
+	// the default OMP block-0.
 	Role string
 	// ParentAgentID is the agent's parent in the agent tree; empty = root. Set
 	// at creation and editable via ReparentAgent (comms.proto).
