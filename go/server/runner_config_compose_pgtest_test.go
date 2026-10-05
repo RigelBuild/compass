@@ -128,7 +128,6 @@ func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 	socketPath := filepath.Join(dir, "compass.sock")
 	stateDir := filepath.Join(dir, "state")
 	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
-	addr := freeLoopbackAddr(t)
 
 	// Mint the Runner token and PUT the bundle against the SAME per-test schema
 	// Serve will open, synchronously before Serve starts (no concurrent-Open race;
@@ -155,14 +154,14 @@ func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 		t.Fatalf("PutAgentConfig: %v", err)
 	}
 
-	serveInBackground(t, ServeConfig{
+	addr := serveInBackground(t, ServeConfig{
 		SocketPath:  socketPath,
 		DatabaseDSN: dsn,
 		Version:     "runner-config-test",
-		Listen:      addr,
+		Listen:      loopbackAny,
 		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
 		StateDir:    stateDir,
-	})
+	}).network
 	// The network listener binds before the socket (Serve's ordering), so once the
 	// socket serves an RPC the TLS door — RunnerService included — is accepting.
 	waitServing(t, socketPath)
