@@ -517,11 +517,15 @@ fixed below.
     - The listener stays active across this window's failed or refused
       attempts. It is dropped only when this window reaches a terminal result
       of its own (the embedded success text, or a successful connect), so its
-      own event cannot cause a second transition. While the window's own
-      action is in flight, an event is deferred and handled only if that
-      action ends non-terminal.
-    - Connect hands off to `deps.bootNativeClient(root, "setup")`. The default
-      deps wrap `bootNativeClient(root, undefined, entry)`.
+      own event cannot cause a second transition. "In flight" means one shell
+      call (`chooseEmbedded` or one `shellConnect`), not the open form: an
+      event during that call is handled when the call returns non-terminal,
+      and an event while the form is idle is handled at once. Handling it
+      aborts the setup connect form through the `signal` that `bootSetup`
+      passes to `bootNativeClient` (which then resolves `undefined`), and
+      applies the new state.
+    - Connect hands off to `deps.bootNativeClient(root, "setup", signal)`.
+      The default deps wrap `bootNativeClient(root, undefined, entry, signal)`.
   - `boot-native.ts` setup entry: no auto-probe; the form from A4; submit
     disabled while the URL is empty; it always sends `server`; `invalid-url`
     and `invalid-ca` show `message` via `textContent`; on `ok` the provider
@@ -550,6 +554,7 @@ fixed below.
     root: HTMLElement,
     deps?: NativeBootDeps,
     entry?: "configured" | "setup", // default "configured"
+    signal?: AbortSignal, // abort clears root and resolves undefined
   ): Promise<ResolvedConnection | undefined>;
 
   export type SetupBootDeps = {
@@ -557,7 +562,7 @@ fixed below.
     shellState: () => Promise<{ mode: ShellMode; serverUrl: string }>;
     onSetupDecided: (fn: () => void) => () => void; // returns unsubscribe
     quitApp: () => Promise<void>;
-    bootNativeClient: (root: HTMLElement, entry: "setup" | "configured") => Promise<ResolvedConnection | undefined>;
+    bootNativeClient: (root: HTMLElement, entry: "setup" | "configured", signal?: AbortSignal) => Promise<ResolvedConnection | undefined>;
   };
   export async function bootSetup(
     root: HTMLElement,
@@ -585,7 +590,9 @@ fixed below.
       own `setup:decided` arrives, and the window that connected boots once;
     - a window whose attempt failed or was refused keeps listening: when
       another window then decides, it transitions exactly once;
-    - connect hands off with `"setup"`.
+    - a sibling decision while the connect form is open and idle aborts the
+      pending `bootNativeClient` and transitions with no local connect;
+    - connect hands off with `"setup"` and a signal.
   - `boot-mode`: `"setup"` routes to `bootSetup`; `"reopen"` renders the
     neutral reopen screen.
 
