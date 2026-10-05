@@ -279,9 +279,12 @@ server resolves that id AS a handle → miss → in-band NOT_FOUND tool error
 until the container is respawned on the new bundle. Acceptable because the
 failure is in-band (no decode error, no transport teardown — a point FOR
 rename-in-place), the affected surface for existing agents is despawn +
-roster-vantage only, and the fleet respawns on deploy cadence. If fleet
-respawn is NOT guaranteed on the deploy that ships the cutover, T5 adds the
-explicit respawn step and names who forces it.
+roster-vantage only, and the fleet respawns on deploy cadence.
+
+**Close-out (ruled):** no respawn step. Fleet respawn is not automatic on a
+server deploy, but current agent bundles already send a handle in
+`agent_handle`, so the cutover removes the skew rather than opening it. The only
+running server is the test deployment, which is redeployed with the change.
 
 ## Field inventory (verified against current main)
 
@@ -520,10 +523,8 @@ payload messages verbatim). #630's adapters
 inherit T3's resolution for free since they delegate to the shared handler
 path; its pgtests gain unknown-handle legs.
 
-T5 also owns the §Sequencing skew-window close-out: confirm live agents are
-respawned on the deploy that ships the cutover; if fleet respawn is not
-automatic on server deploy, this task adds the explicit respawn step and names
-its operator.
+T5's §Sequencing skew-window close-out is settled there: no respawn step is
+needed, so T5 adds none.
 
 - **Interfaces**: no new ones — a coordination task with its own verify
   (stack CI green post-rebase).
