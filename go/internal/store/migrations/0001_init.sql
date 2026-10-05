@@ -9,16 +9,15 @@
 -- tenant-owned table hangs off (RIG-2861).
 --
 -- History note: this replaces the original sequential 0001..0016 migration
--- chain PLUS the two migrations added after it (the forge authored-artifact
--- ownership table and the messages author-index), all folded back into this
--- single init. Pre-dogfood — zero users, zero deployed databases — so migration
--- history was dead weight and Matt ruled (2026-08-07) to collapse it; the same
--- reasoning folds each later migration in as it accretes. It is a schema RESET,
--- correct ONLY because no deployed DB exists to migrate; the resulting schema
--- is byte-identical (pg_dump) to applying the collapsed 0001..0016 chain and
--- those later files in order. The `schema_migrations` bookkeeping table is
--- deliberately NOT here: the Go runner creates it (store.go ensureMigrationsTable)
--- so it can record v1 itself.
+-- chain PLUS every migration added after it, all folded back into this single
+-- init. Pre-dogfood — zero users, zero deployed databases — so migration
+-- history was dead weight and Matt ruled (2026-08-07) to collapse it; the
+-- 2026-10-05 dogfood reset (wiped dev database) folded 0002..0008 the same
+-- way. It is a schema RESET, correct ONLY because no deployed DB exists to
+-- migrate; the resulting schema is identical (pg_dump) to applying the folded
+-- files in order. The `schema_migrations` bookkeeping table is deliberately
+-- NOT here: the Go runner creates it (store.go ensureMigrationsTable) so it
+-- can record v1 itself.
 --
 -- Convention: text ids are server-assigned (the store generates a UUID per
 -- row); FKs are ON DELETE RESTRICT so a referenced account/channel/agent cannot
@@ -372,12 +371,15 @@ CREATE TABLE channel_pins (
 -- (the plaintext token is returned once and never stored). subject_kind is 0
 -- account / 1 runner / 2 service; subject_id spans those id spaces. revoked_at
 -- is set on RevokeToken so ResolveTokenHash tells revoked from never-issued.
+-- tenant_id is the tenant the token was issued under, so the bearer door can
+-- scope a request before any tenant GUC exists (tokens stays outside RLS).
 CREATE TABLE tokens (
     hash         BYTEA PRIMARY KEY,
     subject_kind SMALLINT NOT NULL CHECK (subject_kind IN (0, 1, 2)),
     subject_id   TEXT NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    revoked_at   TIMESTAMPTZ
+    revoked_at   TIMESTAMPTZ,
+    tenant_id    TEXT NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT
 );
 
 CREATE INDEX tokens_subject_idx ON tokens (subject_kind, subject_id);
@@ -644,13 +646,16 @@ CREATE UNIQUE INDEX agent_placements_container_key ON agent_placements (containe
 -- table to reference. It stays NOT NULL — a binding with no Runner cannot be
 -- swept by the reconnect sweep below, and an unswept binding is a stale session
 -- that outlives its Runner.
+-- usage_interval_id names the binding's billable compute interval
+-- (compute_usage_events); the default covers an INSERT that omits it.
 CREATE TABLE session_bindings (
-    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
-    agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
-    session_id       TEXT NOT NULL,
-    runner_id        TEXT NOT NULL,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id         TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    agent_account_id  TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    session_id        TEXT NOT NULL,
+    runner_id         TEXT NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    usage_interval_id TEXT NOT NULL DEFAULT gen_random_uuid()::TEXT,
     PRIMARY KEY (tenant_id, agent_account_id)
 );
 
@@ -844,6 +849,16 @@ CREATE TABLE model_registry (
 -- across every re-poll. state DEFAULT BACKLOG(1) with CHECK 1..8 says a persisted
 -- issue ALWAYS has a real lifecycle — NEVER UNSPECIFIED(0); the forge-only upsert
 -- never touches state, so a human-set lifecycle survives a re-poll.
+--
+-- search_tsv is the weighted full-text search document. A STORED generated
+-- column stays current on every upsert with no writer or trigger.
+
+-- CREATE OR REPLACE does not recompute stored rows; changing output needs a backfill.
+CREATE FUNCTION compass_labels_text(labels TEXT[]) RETURNS TEXT
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
+    SET search_path = pg_catalog
+    AS $$ SELECT array_to_string(labels, ' ') $$;
+
 CREATE TABLE issues (
     id             TEXT PRIMARY KEY,
 
@@ -875,12 +890,21 @@ CREATE TABLE issues (
     assignee       TEXT     NOT NULL DEFAULT '',
     summary        TEXT     NOT NULL DEFAULT '',
     branch         TEXT     NOT NULL DEFAULT '',
-    tenant_id      TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+    tenant_id      TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+
+    search_tsv     TSVECTOR GENERATED ALWAYS AS (
+        setweight(to_tsvector('english', title), 'A') ||
+        setweight(to_tsvector('english', body), 'B') ||
+        setweight(to_tsvector('english', summary), 'B') ||
+        setweight(to_tsvector('english', compass_labels_text(labels)), 'C')
+    ) STORED
 );
 
 -- The idempotency key: one board item per forge coordinate.
 CREATE UNIQUE INDEX issues_coordinate_key
     ON issues (tenant_id, forge_provider, forge_host, repo, number);
+
+CREATE INDEX issues_search_idx ON issues USING gin (search_tsv);
 
 -- ── Forge subscriptions & reconcile watermarks ───────────────────────────────
 -- The DL-053 forge webhook-lane target machinery (RIG-1810; webhook-driven per
@@ -1086,7 +1110,126 @@ CREATE TABLE linear_agent_sessions (
     topic_id           TEXT NOT NULL,                  -- comms topic of the conversation
     linear_issue_id    TEXT,                           -- provenance (issue delegated on); NULL if none
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+    tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    linear_issue_identifier TEXT                       -- Linear issue key (ENG-123); ownership lookup keys on it
+);
+
+-- ── Token usage (Plane A) ────────────────────────────────────────────────────
+-- token_usage_events: the append-only raw log of upstream model calls the LLM
+-- gateway reports, idempotent on the server-assigned id. Retention deletes old
+-- rows; the rollups keep their sums. No FK to accounts: a log row outlives its
+-- account.
+CREATE TABLE token_usage_events (
+    tenant_id          TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    id                 TEXT        NOT NULL,
+    occurred_at        TIMESTAMPTZ NOT NULL,
+    agent_account_id   TEXT        NOT NULL,
+    owner_user_id      TEXT        NOT NULL,
+    session_id         TEXT        NOT NULL,
+    request_id         TEXT        NOT NULL,
+    provider           TEXT        NOT NULL,
+    model              TEXT        NOT NULL,
+    credential_id      TEXT        NOT NULL,
+    input_tokens       BIGINT      NOT NULL,
+    output_tokens      BIGINT      NOT NULL,
+    cache_read_tokens  BIGINT      NOT NULL,
+    cache_write_tokens BIGINT      NOT NULL,
+    total_tokens       BIGINT      NOT NULL,
+    cost_micro_usd     BIGINT      NOT NULL,
+    rate_version       TEXT        NOT NULL,
+    outcome            TEXT        NOT NULL CHECK (outcome IN ('ok', 'error', 'aborted')),
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, id)
+);
+
+-- The rebuild re-rolls one tenant's events from the prune horizon on.
+CREATE INDEX token_usage_events_occurred_at_idx ON token_usage_events (tenant_id, occurred_at);
+
+-- token_usage_rollups_hourly / _daily: the per-bucket sums of the events, keyed
+-- like the in-memory reference. bucket_start is the UTC-aligned bucket start.
+-- Rows outlive the events they sum, so a prune never touches them. bucket_start
+-- follows tenant_id in the key because the series read and the rebuild range
+-- over it.
+CREATE TABLE token_usage_rollups_hourly (
+    tenant_id          TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    bucket_start       TIMESTAMPTZ NOT NULL,
+    owner_user_id      TEXT        NOT NULL,
+    agent_account_id   TEXT        NOT NULL,
+    provider           TEXT        NOT NULL,
+    model              TEXT        NOT NULL,
+    input_tokens       BIGINT      NOT NULL,
+    output_tokens      BIGINT      NOT NULL,
+    cache_read_tokens  BIGINT      NOT NULL,
+    cache_write_tokens BIGINT      NOT NULL,
+    total_tokens       BIGINT      NOT NULL,
+    cost_micro_usd     BIGINT      NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id, provider, model)
+);
+
+CREATE TABLE token_usage_rollups_daily (
+    tenant_id          TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    bucket_start       TIMESTAMPTZ NOT NULL,
+    owner_user_id      TEXT        NOT NULL,
+    agent_account_id   TEXT        NOT NULL,
+    provider           TEXT        NOT NULL,
+    model              TEXT        NOT NULL,
+    input_tokens       BIGINT      NOT NULL,
+    output_tokens      BIGINT      NOT NULL,
+    cache_read_tokens  BIGINT      NOT NULL,
+    cache_write_tokens BIGINT      NOT NULL,
+    total_tokens       BIGINT      NOT NULL,
+    cost_micro_usd     BIGINT      NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id, provider, model)
+);
+
+-- token_usage_prune_horizon: the one global row holding the UTC day the latest
+-- prune cut at. Rollups before it may count pruned events, so a rebuild keeps
+-- them. Not tenant-scoped, because a prune spans every tenant. It only moves
+-- forward, and '-infinity' means no prune has run.
+CREATE TABLE token_usage_prune_horizon (
+    singleton  BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    horizon    TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO token_usage_prune_horizon (horizon) VALUES ('-infinity');
+
+-- ── Compute usage ────────────────────────────────────────────────────────────
+-- The append-only compute interval event log. Each session binding is one
+-- billable interval; starts and ends commit with its row.
+CREATE TABLE compute_usage_events (
+    tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    id               TEXT        NOT NULL,
+    interval_id      TEXT        NOT NULL,
+    kind             TEXT        NOT NULL CHECK (kind IN ('start', 'end')),
+    occurred_at      TIMESTAMPTZ NOT NULL,
+    agent_account_id TEXT        NOT NULL,
+    owner_user_id    TEXT        NOT NULL,
+    session_id       TEXT        NOT NULL,
+    runner_id        TEXT        NOT NULL,
+    estimated        BOOLEAN     NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (tenant_id, id),
+    UNIQUE (tenant_id, interval_id, kind)
+);
+
+CREATE INDEX compute_usage_events_occurred_at_idx ON compute_usage_events (tenant_id, occurred_at);
+
+-- ── First-run tour state ─────────────────────────────────────────────────────
+-- Per-account first-run tour progress. The composite key scopes each account's
+-- one-way first-run claim to its tenant.
+CREATE TABLE account_tour_state (
+    tenant_id  TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    account_id TEXT        NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+    outcome    TEXT        NOT NULL CHECK (outcome IN ('started', 'dismissed', 'completed')),
+    step_id    TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, account_id)
 );
 
 -- ── Row-Level Security: tenant isolation (RIG-2861 T2 / RIG-3106) ────────────
@@ -1169,6 +1312,15 @@ END $$;
 -- pinned rather than incidental.
 REVOKE DELETE ON server_key_state FROM compass_app, compass_system;
 
+-- token_usage_prune_horizon holds the one row inserted above. Re-inserting it
+-- at '-infinity' would let a rebuild drop pruned-day rollups; UPDATE stays.
+REVOKE INSERT, DELETE ON token_usage_prune_horizon FROM compass_app, compass_system;
+
+-- compute_usage_events is an append-only log: rows are inserted, never rewritten.
+REVOKE UPDATE, DELETE ON compute_usage_events FROM compass_app, compass_system;
+
+GRANT EXECUTE ON FUNCTION compass_labels_text(TEXT[]) TO compass_app, compass_system;
+
 -- ENABLE + FORCE RLS + the per-tenant policy on every tenant-owned table. The
 -- policy shape is the T2 form: a scalar-subquery GUC read (evaluated once
 -- per statement), a non-empty guard (fail-closed on an unset/empty GUC), and
@@ -1188,7 +1340,9 @@ DECLARE
         'agent_forge_subscriptions', 'forge_authored_artifacts',
         'linear_agent_sessions',
         'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
-        'forge_state_transitions'
+        'forge_state_transitions',
+        'token_usage_events', 'token_usage_rollups_hourly', 'token_usage_rollups_daily',
+        'compute_usage_events', 'account_tour_state'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -1270,7 +1424,11 @@ DECLARE
         'forge_repo_subscriptions',
         'forge_state_transitions',
         'server_secrets',
-        'server_key_state'
+        'server_key_state',
+        'token_usage_rollups_hourly',
+        'token_usage_rollups_daily',
+        'token_usage_prune_horizon',
+        'account_tour_state'
     ];
 BEGIN
     FOREACH t IN ARRAY updated_at_tables LOOP

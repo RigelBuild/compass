@@ -10,7 +10,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The two Postgres roles the store's queries run under (0002_rls.sql).
+// The two Postgres roles the store's queries run under (0001_init.sql).
 //
 //   - appRole is the NON-owner, non-BYPASSRLS request-path role. Every
 //     request-path statement runs as this role so RLS + FORCE actually apply
