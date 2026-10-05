@@ -25,6 +25,7 @@ func (f *Fixture) CreateAgent(ctx context.Context, handle, displayName string) (
 	resp, err := f.Comms().CreateAgent(rctx, connect.NewRequest(&compassv1.CreateAgentRequest{
 		Handle:      handle,
 		DisplayName: displayName,
+		Role:        "manager",
 	}))
 	if err != nil {
 		return "", fmt.Errorf("CreateAgent RPC: %w", err)

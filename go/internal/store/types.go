@@ -19,7 +19,10 @@
 // never a client-supplied filter.
 package store
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // AccountID, ChannelID, ChannelGroupID, WorkspaceID, and MessageID are the
 // server-assigned stable ids for their rows. Distinct named types (not bare
@@ -162,6 +165,19 @@ func (a Account) IsAgent() bool { return a.Agent != nil }
 type UserAccount struct {
 	Role UserRole
 }
+
+// ManagerRoles is the closed agent-role taxonomy, validated at every creation
+// door. It is a product contract, not derived from the mutable config bundle's
+// prompts/ members.
+var ManagerRoles = map[string]struct{}{
+	"supervisor": {},
+	"owner":      {},
+	"manager":    {},
+}
+
+// ErrUnknownRole is the CodeInvalidArgument cause for a role outside
+// ManagerRoles, including empty: the label is validated, never prompt text.
+var ErrUnknownRole = errors.New("unknown agent role")
 
 // AgentAccount is the owned-agent payload (comms.proto:136-142) plus the
 // additive home_channel_id (RT-2): the agent's named channel, minted at

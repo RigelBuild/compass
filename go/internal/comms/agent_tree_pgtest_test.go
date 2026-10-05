@@ -9,6 +9,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -185,6 +186,7 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 		Handle:       "child",
 		DisplayName:  "Child",
 		ParentHandle: "parent",
+		Role:         "manager",
 	}))
 	if err != nil {
 		t.Fatalf("CreateAgent with parent: %v", err)
@@ -198,6 +200,7 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 		Handle:       "orphan",
 		DisplayName:  "Orphan",
 		ParentHandle: "no-such-agent",
+		Role:         "manager",
 	}))
 	connectNotFoundFor(t, err, "no-such-agent", "create with missing parent")
 
@@ -209,14 +212,88 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 		Handle:       "cross",
 		DisplayName:  "Cross",
 		ParentHandle: "other/foreign",
+		Role:         "manager",
 	}))
 	connectNotFoundFor(t, err, "other/foreign", "create with cross-owner parent")
 	_, err = svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
 		Handle:       "cross",
 		DisplayName:  "Cross",
 		ParentHandle: "other/ghost",
+		Role:         "manager",
 	}))
 	connectNotFoundFor(t, err, "other/ghost", "create with unknown parent under a real owner")
+}
+
+func TestCreateAgentRequiresTaxonomyRole(t *testing.T) {
+	tests := []struct {
+		name         string
+		handle       string
+		role         string
+		parentHandle string
+	}{
+		{name: "empty", handle: "role-empty"},
+		{name: "off taxonomy", handle: "role-worker", role: "worker"},
+		{name: "parented empty", handle: "role-parented-empty", parentHandle: "parent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, st := newHandler(t)
+			ctx := context.Background()
+			owner := mustUser(t, st, "owner")
+			if tt.parentHandle != "" {
+				mustAgent(t, st, owner.ID, tt.parentHandle)
+			}
+
+			_, err := svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+				Handle:       tt.handle,
+				DisplayName:  tt.handle,
+				ParentHandle: tt.parentHandle,
+				Role:         tt.role,
+			}))
+			if err == nil {
+				t.Fatal("CreateAgent with invalid role = nil error, want CodeInvalidArgument")
+			}
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("CreateAgent code = %v, want CodeInvalidArgument (err: %v)", got, err)
+			}
+			if !errors.Is(err, store.ErrUnknownRole) {
+				t.Fatalf("CreateAgent error = %v, want store.ErrUnknownRole", err)
+			}
+			if _, err := st.AgentByHandle(ctx, owner.ID, tt.handle); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("AgentByHandle(%q) = %v, want ErrNotFound (no account created)", tt.handle, err)
+			}
+		})
+	}
+}
+
+func TestCreateAgentPersistsRole(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+
+	for _, role := range []string{"supervisor", "owner", "manager"} {
+		t.Run(role, func(t *testing.T) {
+			handle := "role-" + role
+			if _, err := svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+				Handle:      handle,
+				DisplayName: handle,
+				Role:        role,
+			})); err != nil {
+				t.Fatalf("CreateAgent(role=%q): %v", role, err)
+			}
+
+			created, err := st.AgentByHandle(ctx, owner.ID, handle)
+			if err != nil {
+				t.Fatalf("AgentByHandle(%q): %v", handle, err)
+			}
+			if created.Agent == nil {
+				t.Fatal("stored account is not an agent")
+			}
+			if created.Agent.Role != role {
+				t.Fatalf("stored agent role = %q, want %q", created.Agent.Role, role)
+			}
+		})
+	}
 }
 
 // TestCreateAgentByAgentCallerResolvesOwner is the RIG-1644 red-green teeth:
@@ -237,6 +314,7 @@ func TestCreateAgentByAgentCallerResolvesOwner(t *testing.T) {
 		Handle:       "child",
 		DisplayName:  "Child",
 		ParentHandle: "parent",
+		Role:         "manager",
 	}))
 	if err != nil {
 		t.Fatalf("CreateAgent by agent caller: %v", err)
@@ -262,6 +340,7 @@ func TestCreateAgentByAgentCallerResolvesOwner(t *testing.T) {
 		Handle:       "hijack",
 		DisplayName:  "Hijack",
 		ParentHandle: "parent",
+		Role:         "manager",
 	}))
 	connectCodeIs(t, err, connect.CodeNotFound, "cross-owner agent caller")
 }

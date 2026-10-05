@@ -121,7 +121,8 @@ type CommsServiceClient interface {
 	// field a signup can set.
 	CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error)
 	// Create an agent account owned by the authenticated caller (D9). The owner
-	// is the caller, not a request field — a user creates agents they own.
+	// is the caller, not a request field — a user creates agents they own. The
+	// request must name a role from the closed Manager taxonomy.
 	CreateAgent(context.Context, *connect.Request[v1.CreateAgentRequest]) (*connect.Response[v1.CreateAgentResponse], error)
 	// List the accounts visible to the caller.
 	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
@@ -492,7 +493,8 @@ type CommsServiceHandler interface {
 	// field a signup can set.
 	CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error)
 	// Create an agent account owned by the authenticated caller (D9). The owner
-	// is the caller, not a request field — a user creates agents they own.
+	// is the caller, not a request field — a user creates agents they own. The
+	// request must name a role from the closed Manager taxonomy.
 	CreateAgent(context.Context, *connect.Request[v1.CreateAgentRequest]) (*connect.Response[v1.CreateAgentResponse], error)
 	// List the accounts visible to the caller.
 	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)

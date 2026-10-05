@@ -107,8 +107,8 @@ func TestSpawnEmptyRoleIsRejected(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("empty-role spawn code = %v, want CodeInvalidArgument", got)
 	}
-	if !errors.Is(err, errUnknownRole) {
-		t.Fatalf("empty-role spawn cause = %v, want errUnknownRole", err)
+	if !errors.Is(err, store.ErrUnknownRole) {
+		t.Fatalf("empty-role spawn cause = %v, want store.ErrUnknownRole", err)
 	}
 	if _, err := f.store.AgentByHandle(ctx, f.ownerAdmin, "peer-empty-role"); err == nil {
 		t.Fatal("an account was created for an empty-role spawn, want none (rejected before CreateAgent)")
@@ -136,8 +136,8 @@ func TestSpawnOffTaxonomyRoleIsRejected(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("off-taxonomy-role spawn code = %v, want CodeInvalidArgument", got)
 	}
-	if !errors.Is(err, errUnknownRole) {
-		t.Fatalf("off-taxonomy-role spawn cause = %v, want errUnknownRole", err)
+	if !errors.Is(err, store.ErrUnknownRole) {
+		t.Fatalf("off-taxonomy-role spawn cause = %v, want store.ErrUnknownRole", err)
 	}
 	if _, err := f.store.AgentByHandle(ctx, f.ownerAdmin, "peer-director"); err == nil {
 		t.Fatal("an account was created for an off-taxonomy-role spawn, want none (rejected before CreateAgent)")
