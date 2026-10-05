@@ -59,5 +59,6 @@ tasks:
       - '/go/cmd/compass-runner/**'
       - '/go/internal/**'
       - '/guest-image/**'
+      - '/devenv.lock'
       - '/tools/toolchain/microvm-vmm-env.nix'
       - '/version.txt'

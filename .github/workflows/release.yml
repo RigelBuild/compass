@@ -72,6 +72,7 @@ env:
     go/cmd/compass-runner/**
     go/internal/**
     guest-image/**
+    devenv.lock
     flake.nix
     flake.lock
     tools/toolchain/microvm-vmm-env.nix
@@ -88,6 +89,7 @@ env:
     go/go.sum
     go/cmd/compass-guestd/**
     go/internal/**
+    devenv.lock
     .github/workflows/release.yml
 
 jobs:
