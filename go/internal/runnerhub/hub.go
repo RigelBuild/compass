@@ -426,7 +426,10 @@ type Hub struct {
 	// would race it. Idempotent. Nil until SetRunnerReadyHook; read under mu.
 	runnerReadyHook func()
 
-	mu sync.Mutex
+	// bindingWriteMu serializes durable reaps with promotion writes and cache updates.
+	bindingWriteMu sync.Mutex
+	mu             sync.Mutex
+
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
 	runner *attachedRunner
@@ -1043,34 +1046,49 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	durableReapSucceeded := false
 	var reapErr error
 	if bindings != nil {
-		var rows []store.SessionBinding
-		// Cross-tenant on purpose: a Runner serves every tenant, and id is the
-		// authenticated token subject, so the sweep reaches only this Runner's rows.
-		rows, reapErr = bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
-		if reapErr != nil {
-			// Fall back to the in-RAM snapshot so this enroll still drives edges; the caller sees the error.
-			h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled for this Runner until a reap succeeds",
-				"runner_id", id, "error", reapErr)
-		} else {
-			durableReaped = rows
-			durableReapSucceeded = true
-			offline = make([]promotedPair, 0, len(rows))
-			reapedSessions = make([]string, 0, len(rows))
-			for _, b := range rows {
-				offline = append(offline, promotedPair{account: b.AccountID, sessionID: b.SessionID})
-				reapedSessions = append(reapedSessions, b.SessionID)
+		h.bindingWriteMu.Lock()
+		h.mu.Lock()
+		current := h.reapStale[id] == epoch
+		h.mu.Unlock()
+		if current {
+			var rows []store.SessionBinding
+			// Cross-tenant on purpose: a Runner serves every tenant, and id is the
+			// authenticated token subject, so the sweep reaches only this Runner's rows.
+			rows, reapErr = bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
+			if reapErr != nil {
+				// Fall back to the in-RAM snapshot so this enroll still drives edges; the caller sees the error.
+				h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled for this Runner until a reap succeeds",
+					"runner_id", id, "error", reapErr)
+			} else {
+				durableReaped = rows
+				durableReapSucceeded = true
+				offline = make([]promotedPair, 0, len(rows))
+				reapedSessions = make([]string, 0, len(rows))
+				for _, b := range rows {
+					offline = append(offline, promotedPair{account: b.AccountID, sessionID: b.SessionID})
+					reapedSessions = append(reapedSessions, b.SessionID)
+				}
 			}
+		} else {
+			offline = ramOffline
+			reapedSessions = ramReaped
 		}
 	}
 	// Completion also bumps the epoch, so a read started before it is refused; only this
-	// enroll's own mark is cleared, so an older reap cannot reopen a newer fault.
+	// enroll's own mark is cleared, so an older reap cannot reopen a newer fault. A stale
+	// enroll leaves the epoch alone, or it would void a promotion made after the newer one.
 	h.mu.Lock()
-	h.bindingEpoch++
-	h.runnerEpoch[id] = h.bindingEpoch
+	if bindings == nil || h.reapStale[id] == epoch {
+		h.bindingEpoch++
+		h.runnerEpoch[id] = h.bindingEpoch
+	}
 	if reapErr == nil && h.reapStale[id] == epoch {
 		delete(h.reapStale, id)
 	}
 	h.mu.Unlock()
+	if bindings != nil {
+		h.bindingWriteMu.Unlock()
+	}
 
 	// Fire the terminal edges AFTER releasing the lock (the sink enqueues into the
 	// presence loop and returns promptly) — the discipline promoteSession uses. Order

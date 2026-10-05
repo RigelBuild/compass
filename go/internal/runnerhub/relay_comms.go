@@ -54,6 +54,7 @@ func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID
 // instances drop any stale cache entry for it. The store write and the publish
 // both run with h.mu RELEASED — never hold the lock across a store call or a
 // sink — exactly the lock-then-store-then-map discipline the design requires.
+// bindingWriteMu spans the write and map update so an enroll reap cannot interleave.
 func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID string) {
 	if containerName == "" || sessionID == "" {
 		return
@@ -72,8 +73,21 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	bindings := h.bindings
 	routing := h.routing
 	var runnerID string
+	var runnerEpoch uint64
 	if h.runner != nil {
 		runnerID = h.runner.id
+		runnerEpoch = h.runnerEpoch[runnerID]
+	}
+	h.mu.Unlock()
+
+	// Serialize durable binding writes with enroll's reap, and reject stale Runner epochs.
+	h.bindingWriteMu.Lock()
+	h.mu.Lock()
+	if (runnerID != "" && (h.runner == nil || h.runner.id != runnerID || h.runnerEpoch[runnerID] != runnerEpoch)) ||
+		(runnerID == "" && (h.runner != nil || h.runnerEpoch[runnerID] != runnerEpoch)) {
+		h.mu.Unlock()
+		h.bindingWriteMu.Unlock()
+		return
 	}
 	h.mu.Unlock()
 
@@ -97,12 +111,18 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 		}
 	}
 
-	// Now update the maps under h.mu (store already written).
+	// Now update the maps under h.mu; an enroll cannot advance the epoch mid-write.
 	h.mu.Lock()
-	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: runnerID}
-	h.accountSessions[account] = sessionID
+	if (runnerID != "" && (h.runner == nil || h.runner.id != runnerID || h.runnerEpoch[runnerID] != runnerEpoch)) ||
+		(runnerID == "" && (h.runner != nil || h.runnerEpoch[runnerID] != runnerEpoch)) {
+		h.mu.Unlock()
+		h.bindingWriteMu.Unlock()
+		return
+	}
 	// Keep the container->account entry: a resume Start on this container fetches
 	// secrets by container_name before exec. Remove and re-enroll clear it.
+	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: runnerID}
+	h.accountSessions[account] = sessionID
 	// Evict the displaced session from the forward map: the account moved off it,
 	// so it now resolves nowhere. Guard displaced != sessionID for the rebind
 	// case (an account re-pointed onto the SAME session displaces itself, and
@@ -117,7 +137,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	sessionStart := h.sessionStart
 	presence := h.presence
 	h.mu.Unlock()
-
+	h.bindingWriteMu.Unlock()
 	// Invalidate peer instances' caches (h.mu released, nil-safe, best-effort):
 	// the displaced session has no row any more (BindingUnbound), and the new
 	// session's binding changed (BindingBound). A single-instance hub wires no
@@ -407,32 +427,43 @@ func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingSto
 func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (string, bool) {
 	h.mu.Lock()
 	if sessionID, ok := h.accountSessions[account]; ok {
-		h.mu.Unlock()
-		return sessionID, true
+		binding, live := h.sessionAccounts[sessionID]
+		if live && (h.runner == nil || binding.runnerID == h.runner.id) {
+			h.mu.Unlock()
+			return sessionID, true
+		}
+		delete(h.accountSessions, account)
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
+	var runnerID string
+	if h.runner != nil {
+		runnerID = h.runner.id
+	}
 	bindingEpoch := h.bindingEpoch
 	h.mu.Unlock()
-
 	if !h.readThroughAllowed(ctx, bindings, enrolled) {
 		return "", false
 	}
-	sessionID, runnerID, err := bindings.SessionForAccount(ctx, account)
-	if err != nil {
+	sessionID, ownerID, err := bindings.SessionForAccount(ctx, account)
+	if err != nil || ownerID != runnerID {
 		return "", false
 	}
 	h.mu.Lock()
 	if live, ok := h.accountSessions[account]; ok {
-		h.mu.Unlock()
-		return live, true
+		binding, exists := h.sessionAccounts[live]
+		if exists && h.runner != nil && binding.runnerID == h.runner.id {
+			h.mu.Unlock()
+			return live, true
+		}
+		delete(h.accountSessions, account)
 	}
-	// Same fence as lookupSessionBinding.
-	if h.reapStale[runnerID] != 0 || h.runnerEpoch[runnerID] > bindingEpoch {
+	if (h.runner != nil && (h.runner.id != runnerID || h.runnerEpoch[ownerID] > bindingEpoch)) || h.reapStale[ownerID] != 0 {
 		h.mu.Unlock()
 		return "", false
 	}
 	h.accountSessions[account] = sessionID
+	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: ownerID}
 	h.mu.Unlock()
 	return sessionID, true
 }
