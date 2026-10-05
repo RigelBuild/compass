@@ -122,22 +122,14 @@
 	position: fixed;
 	inset: 0;
 	background: var(--cx-tour-scrim);
-	mask-image: radial-gradient(
-		ellipse var(--cx-tour-cutout-width, 0px) var(--cx-tour-cutout-height, 0px)
-			at
-			calc(var(--cx-tour-cutout-x, 0px) + var(--cx-tour-cutout-width, 0px) / 2)
-			calc(var(--cx-tour-cutout-y, 0px) + var(--cx-tour-cutout-height, 0px) / 2),
-		transparent 98%,
-		black 100%
-	);
-	-webkit-mask-image: radial-gradient(
-		ellipse var(--cx-tour-cutout-width, 0px) var(--cx-tour-cutout-height, 0px)
-			at
-			calc(var(--cx-tour-cutout-x, 0px) + var(--cx-tour-cutout-width, 0px) / 2)
-			calc(var(--cx-tour-cutout-y, 0px) + var(--cx-tour-cutout-height, 0px) / 2),
-		transparent 98%,
-		black 100%
-	);
+	/* Two opaque layers XOR'd leave a hole exactly the anchor rect plus padding;
+	   only the mask's alpha counts, so the colour is any opaque token. */
+	mask:
+		linear-gradient(var(--cx-text) 0 0),
+		linear-gradient(var(--cx-text) 0 0) var(--cx-tour-cutout-x)
+		var(--cx-tour-cutout-y) / var(--cx-tour-cutout-width)
+		var(--cx-tour-cutout-height) no-repeat;
+	mask-composite: exclude;
 	z-index: var(--cx-z-overlay);
 	transition:
 		--cx-tour-cutout-x var(--cx-motion-base) var(--cx-ease-out),

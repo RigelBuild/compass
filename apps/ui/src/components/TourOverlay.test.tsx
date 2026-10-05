@@ -68,8 +68,9 @@ describe("TourOverlay", () => {
 		).toBe("Welcome to Compass");
 	});
 
-	test("dialog traps focus and restores it when Escape closes", async () => {
-		const { store, container } = mountApp();
+	test("dialog traps focus and Escape restores it without a permanent write", async () => {
+		const fake = tourClient();
+		const { store, container } = mountApp("/", { tour: fake.client });
 		const returnFocus = container.querySelector<HTMLElement>('[role="tab"]');
 		if (!returnFocus) throw new Error("no view tab");
 		returnFocus.focus();
@@ -88,9 +89,16 @@ describe("TourOverlay", () => {
 		fireEvent.keyDown(dialog, { key: "Tab" });
 		expect(document.activeElement).toBe(first);
 		fireEvent.keyDown(dialog, { key: "Escape" });
-		await flush();
+		await settle();
 		expect(store.tour.open()).toBe(false);
 		expect(document.activeElement).toBe(returnFocus);
+		expect(
+			fake.writes.some(
+				(write) =>
+					write.outcome === TourOutcome.DISMISSED ||
+					write.outcome === TourOutcome.COMPLETED,
+			),
+		).toBe(false);
 	});
 
 	test("callout anchors to its element and positions the spotlight cutout", async () => {
