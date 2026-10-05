@@ -8,6 +8,7 @@ import {
 } from "../board-render";
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
+import { isDemoId } from "../tour/demo";
 import { BadgeGlyph } from "./BadgeGlyph";
 
 /** A single issue card — used in the Bridge swimlane cells. Single-click selects
@@ -109,6 +110,9 @@ export const IssueCard: Component<{
 					)}
 				</Show>
 			</span>
+			<Show when={isDemoId(props.issue.id)}>
+				<span class="cx-tour-demo-badge">Demo</span>
+			</Show>
 			<span class="card-title">{props.issue.title}</span>
 			<span class="card-foot">
 				<span class="card-author">
