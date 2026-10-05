@@ -2,13 +2,16 @@
 
 Tracking: RIG-2863 (parent RIG-1715)
 
-> **Superseded in part by DL-355 (Matt, 2026-09-11; RIG-3655).** Master-key
-> custody is operator-seeded, not compass-written. Compass never generates or
-> writes the key: boot only reads `COMPASS_MASTER_KEY` and fails closed naming
-> the provisioning runbook (`masterKeyProvisioningHint`, `go/server/serve.go`).
-> The key was renamed from `GATEWAY_CREDENTIALS_MASTER_KEY` and carries the
-> reserved `COMPASS_` prefix. The auto-provision write path (D2, T2) was never
-> implemented. DL-328's envelope crypto stands, carried forward by DL-351.
+> **Superseded in part by DL-355 and DL-356 (Matt, 2026-09-11; RIG-3655).**
+> Master-key custody is operator-seeded, not compass-written. Compass never
+> generates or writes the key: boot only reads `COMPASS_MASTER_KEY` (64 hex
+> characters) and fails closed. The key was renamed from
+> `GATEWAY_CREDENTIALS_MASTER_KEY` and carries the reserved `COMPASS_` prefix.
+> The auto-provision write path (D2, T2) was never implemented. DL-356 also
+> deletes the server-secret write surface this record plans in D6/T0
+> (`SetServerSecret`/`DeleteServerSecret` and `compass server-secret set`);
+> only `server-secret list` ships, and operators write values directly into
+> the provider. DL-328's envelope crypto stands, carried forward by DL-351.
 
 Addendum to the merged record
 [`compass-server-llm-gateway`](./compass-server-llm-gateway/design.md)
@@ -109,9 +112,9 @@ one configured SecretSpec provider — the seam described at
 The operator seeds `COMPASS_MASTER_KEY` into that provider before first boot
 (DL-355). Compass never generates or writes the key. Boot secrets are
 read-only, so no write path exists to provision it. On boot, Compass resolves
-the declared master-key secret. If it is absent or malformed, boot fails
-closed with an error that names the provisioning runbook
-(`masterKeyProvisioningHint`, `go/server/serve.go`). The name carries the
+the declared master-key secret and fails closed if it is unresolved,
+empty, or not 64 hex characters. An empty value's error names the
+provisioning runbook (`masterKeyProvisioningHint`, `go/server/serve.go`). The name carries the
 reserved `COMPASS_` prefix (D6). Before the key is used to encrypt, the
 fingerprint tripwire checks it (T2).
 
@@ -674,12 +677,9 @@ declared into a store that does not exist.
     (secrets_service.go:116-117) — so every boot after the first re-declares
     the six names cleanly rather than surfacing a duplicate-name error as a
     startup failure. Because the operator populates the provider DIRECTLY (an
-    age file or a cloud secret store — the provider MUST be writable, since
-    the master key is server-minted and written back through `resolver.Set`;
-    `env` is read-only in secretspec and so is NOT a valid SERVER-resolver
-    provider even though it would suffice for the six operator-supplied forge
-    values) BEFORE the server runs, the six values are present at first boot
-    with NO running server required to bootstrap them — the R16
+    age file or a cloud secret store; the master key included, which compass
+    only reads, DL-355) BEFORE the server runs, the six values are present at
+    first boot with NO running server required to bootstrap them — the R16
     chicken-and-egg (a running server needed to reach the provisioning RPC) is
     dissolved. `validateForgeSecret` (serve.go:1013/1016) keeps its hard-fail,
     but it is now a clean STATIC deploy-time error: a configured App whose
@@ -732,13 +732,8 @@ declared into a store that does not exist.
   provider, boot fails with an actionable static "set `SERVER_<NAME>` in the
   provider" error (`validateForgeSecret`, serve.go:1013/1016) — fixed by
   populating the provider and rebooting, not by reaching a running-server RPC.
-  The master-key write-back and the `compass server-secret set` rotation path
-  both resolve their provider (`age://` on the self-hosted default) through
-  the STAGED CLI binary, not only the SDK: red if the write path shells a
-  `secretspec` older than 0.17 (or one built without the `age` feature),
-  which surfaces as an unknown-provider error from `resolver.Set` rather than
-  a successful encrypted write — the assertion that closes the two-closure
-  gap the version prerequisite exists to cover.
+  The `compass server-secret set` rotation path once planned here is deleted
+  by DL-356; operators rotate a value with the provider's own tooling.
   A deployment with the Linear pair configured under the DEFAULT names
   (`defaultForgeLinearClientIDSecretName` /
   `defaultForgeLinearClientSecretName`) and NO flag/env set is provisioned and
@@ -781,8 +776,9 @@ serves; no import cycle — it depends on nothing in `secrets`).
   - `func (k Key) Open(ciphertext, nonce, aad []byte) ([]byte, error)` — GCM
     auth failure (tamper OR aad mismatch) returns an error naming no
     plaintext/key material.
-  - Key encoding for provider storage: base64(std) of the 32 raw bytes
-    (SecretSpec values are strings; `Set` rejects empty, resolver.go:242-244).
+  - Key encoding for provider storage: 64 hex characters of the 32 raw bytes
+    (`decodeMasterKey`, `go/server/serve.go`; generated with
+    `openssl rand -hex 32`).
 - Consumes: `crypto/aes`, `crypto/cipher`, `crypto/rand` only.
 - Tests: round-trip; tamper (flip a ciphertext/nonce byte → error); `Open`
   under a different `aad` → error; nonce uniqueness across calls; redaction
@@ -797,8 +793,9 @@ compass never generates, writes, or declares-on-absence the key.
 
 - `Interfaces:`
   - Resolve `COMPASS_MASTER_KEY` through the SERVER-SECRET resolver instance
-    (T0). If it is absent or malformed, return a startup error that names the
-    provisioning runbook (`masterKeyProvisioningHint`). No generate, no
+    (T0). If it is unresolved, empty, or not 64 hex characters, return a
+    startup error; the empty-value error names the provisioning runbook
+    (`masterKeyProvisioningHint`). No generate, no
     `Set`, no advisory lock: with no write path there is no concurrent-writer
     race to serialize.
   - **Bounded resolve (mandatory):** `SpecResolver.Resolve` threads ctx only
@@ -889,8 +886,9 @@ compass never generates, writes, or declares-on-absence the key.
 - Consumes: T0's `server_secrets` store + server resolver instance, T1
   `envelope`, `secrets.Resolver`.
 - Produces: the process-lifetime `envelope.Key` handed to T4.
-- Tests: seeded key resolves and is usable; absent key → boot error naming
-  the runbook, nothing written to the provider; read-back mismatch → fail
+- Tests: seeded key resolves and is usable; empty key → boot error naming
+  the runbook, nothing written to the provider; malformed key → boot error
+  naming the 64-hex requirement; read-back mismatch → fail
   closed; reserved-name SetServerSecret/DeleteServerSecret → actionable
   reject; nil-resolver + gateway enabled → configuration error naming the
   missing surface; nil-resolver without gateway → boot proceeds unchanged;
