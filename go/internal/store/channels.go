@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,6 +16,10 @@ import (
 func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g NewChannelGroup) (ChannelGroup, error) {
 	if g.Name == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
+	}
+	// Agent tools read a slash as a path separator, so a name cannot hold one.
+	if strings.Contains(g.Name, "/") {
+		return ChannelGroup{}, fmt.Errorf("%w: group name %q cannot contain '/'", ErrInvalidArgument, g.Name)
 	}
 	// System groups own these names at top level; nested reuse is an ordinary group.
 	if g.ParentGroupID == "" && isReservedGroupName(g.Name) {
@@ -299,6 +304,74 @@ func (s *Store) ChannelVisibleTo(ctx context.Context, actor AccountID, channelID
 		return false, fmt.Errorf("store: check channel visibility: %w", err)
 	}
 	return visible, nil
+}
+
+// ChannelGroupByRefForViewer resolves an agent's group reference (a leaf name, or
+// a slash path from the root) within the groups visible to viewer.
+func (s *Store) ChannelGroupByRefForViewer(ctx context.Context, viewer AccountID, ref string) (ChannelGroup, error) {
+	groups, err := s.ListChannelGroups(ctx, viewer)
+	if err != nil {
+		return ChannelGroup{}, err
+	}
+	return resolveGroupRef(groups, ref)
+}
+
+// resolveGroupRef picks one group from the viewer's visible set. Unknown and
+// invisible both give ErrNotFound; a leaf matches at any depth, a path walks from
+// the root and may pass through same-named groups if it ends on exactly one.
+func resolveGroupRef(groups []ChannelGroup, ref string) (ChannelGroup, error) {
+	if ref == "" {
+		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
+	}
+
+	if !strings.Contains(ref, "/") {
+		var matches []ChannelGroup
+		for _, group := range groups {
+			if group.Name == ref {
+				matches = append(matches, group)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			return ChannelGroup{}, fmt.Errorf("%w: group %q", ErrNotFound, ref)
+		case 1:
+			return matches[0], nil
+		default:
+			return ChannelGroup{}, fmt.Errorf("%w: group name %q is ambiguous — it names %d visible groups; use a slash path from the root", ErrInvalidArgument, ref, len(matches))
+		}
+	}
+	segments := strings.Split(ref, "/")
+	if slices.Contains(segments, "") {
+		return ChannelGroup{}, fmt.Errorf("%w: group path %q has an empty segment", ErrInvalidArgument, ref)
+	}
+
+	candidates := make(map[ChannelGroupID]ChannelGroup)
+	for _, segment := range segments {
+		next := make(map[ChannelGroupID]ChannelGroup)
+		for _, group := range groups {
+			if group.Name != segment {
+				continue
+			}
+			if len(candidates) == 0 {
+				if group.ParentGroupID == "" {
+					next[group.ID] = group
+				}
+			} else if _, ok := candidates[group.ParentGroupID]; ok {
+				next[group.ID] = group
+			}
+		}
+		if len(next) == 0 {
+			return ChannelGroup{}, fmt.Errorf("%w: group %q", ErrNotFound, ref)
+		}
+		candidates = next
+	}
+	if len(candidates) > 1 {
+		return ChannelGroup{}, fmt.Errorf("%w: group path %q is ambiguous", ErrInvalidArgument, ref)
+	}
+	for _, group := range candidates {
+		return group, nil
+	}
+	return ChannelGroup{}, fmt.Errorf("%w: group %q", ErrNotFound, ref)
 }
 
 // ChannelByNameForViewer resolves a channel NAME to its Channel within the set

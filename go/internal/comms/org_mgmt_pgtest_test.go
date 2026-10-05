@@ -28,15 +28,14 @@ func TestCreateChannelAsAccountSeatsFounderAndEmitsChannelChanged(t *testing.T) 
 	ctx := context.Background()
 	owner := mustUser(t, h.store, "owner")
 	agent := mustAgent(t, h.store, owner.ID, "manager")
-	grp, err := h.store.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "team", Visibility: store.VisibilityOwner})
-	if err != nil {
+	if _, err := h.store.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "team", Visibility: store.VisibilityOwner}); err != nil {
 		t.Fatalf("CreateChannelGroup: %v", err)
 	}
 
 	events := firstEventAfterBoundary(t, h, owner.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
 	resp, err := h.svc.CreateChannelAsAccount(ctx, agent.ID, &compassv1.CreateChannelRequest{
-		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupId: string(grp.ID),
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupName: "team",
 	})
 	if err != nil {
 		t.Fatalf("CreateChannelAsAccount: %v", err)
@@ -73,13 +72,12 @@ func TestCreateChannelAsAccountInvisibleGroupIsNotFound(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	stranger := mustUser(t, st, "stranger")
 	strangerAgent := mustAgent(t, st, stranger.ID, "outsider")
-	grp, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "private", Visibility: store.VisibilityOwner})
-	if err != nil {
+	if _, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "private", Visibility: store.VisibilityOwner}); err != nil {
 		t.Fatalf("CreateChannelGroup: %v", err)
 	}
 
-	_, err = svc.CreateChannelAsAccount(ctx, strangerAgent.ID, &compassv1.CreateChannelRequest{
-		Name: "intrusion", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupId: string(grp.ID),
+	_, err := svc.CreateChannelAsAccount(ctx, strangerAgent.ID, &compassv1.CreateChannelRequest{
+		Name: "intrusion", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupName: "private",
 	})
 	connectCodeIs(t, err, connect.CodeNotFound, "CreateChannelAsAccount in invisible group")
 }
@@ -325,13 +323,142 @@ func TestCreateChannelGroupAsAccountInvisibleParentIsNotFound(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	stranger := mustUser(t, st, "stranger")
 	strangerAgent := mustAgent(t, st, stranger.ID, "outsider")
-	parent, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "private", Visibility: store.VisibilityOwner})
+	if _, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "private", Visibility: store.VisibilityOwner}); err != nil {
+		t.Fatalf("CreateChannelGroup: %v", err)
+	}
+
+	_, err := svc.CreateChannelGroupAsAccount(ctx, strangerAgent.ID, &compassv1.CreateChannelGroupRequest{
+		Name: "child", ParentGroupName: "private", Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_OWNER,
+	})
+	connectCodeIs(t, err, connect.CodeNotFound, "CreateChannelGroupAsAccount under invisible parent")
+}
+
+func TestCreateChannelAsAccountResolvesGroupNameLeaf(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+	group, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "team", Visibility: store.VisibilityOwner})
 	if err != nil {
 		t.Fatalf("CreateChannelGroup: %v", err)
 	}
 
-	_, err = svc.CreateChannelGroupAsAccount(ctx, strangerAgent.ID, &compassv1.CreateChannelGroupRequest{
-		Name: "child", ParentGroupId: string(parent.ID), Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_OWNER,
+	resp, err := svc.CreateChannelAsAccount(ctx, agent.ID, &compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupName: "team",
 	})
-	connectCodeIs(t, err, connect.CodeNotFound, "CreateChannelGroupAsAccount under invisible parent")
+	if err != nil {
+		t.Fatalf("CreateChannelAsAccount: %v", err)
+	}
+	if got := resp.GetChannel().GetGroupId(); got != string(group.ID) {
+		t.Fatalf("channel group_id = %q, want %q", got, group.ID)
+	}
+}
+
+func TestCreateChannelAsAccountResolvesGroupNamePath(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+
+	var target store.ChannelGroup
+	for _, rootName := range []string{"one", "two"} {
+		root, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: rootName, Visibility: store.VisibilityOwner})
+		if err != nil {
+			t.Fatalf("CreateChannelGroup(%q): %v", rootName, err)
+		}
+		group, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{
+			Name: "svc", ParentGroupID: root.ID, Visibility: store.VisibilityOwner,
+		})
+		if err != nil {
+			t.Fatalf("CreateChannelGroup(%q/svc): %v", rootName, err)
+		}
+		if rootName == "two" {
+			target = group
+		}
+	}
+
+	resp, err := svc.CreateChannelAsAccount(ctx, agent.ID, &compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupName: "two/svc",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannelAsAccount: %v", err)
+	}
+	if got := resp.GetChannel().GetGroupId(); got != string(target.ID) {
+		t.Fatalf("channel group_id = %q, want %q", got, target.ID)
+	}
+}
+
+func TestCreateChannelAsAccountAmbiguousGroupNameIsInvalidArgument(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+	for _, rootName := range []string{"one", "two"} {
+		root, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: rootName, Visibility: store.VisibilityOwner})
+		if err != nil {
+			t.Fatalf("CreateChannelGroup(%q): %v", rootName, err)
+		}
+		if _, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{
+			Name: "svc", ParentGroupID: root.ID, Visibility: store.VisibilityOwner,
+		}); err != nil {
+			t.Fatalf("CreateChannelGroup(%q/svc): %v", rootName, err)
+		}
+	}
+
+	_, err := svc.CreateChannelAsAccount(ctx, agent.ID, &compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL, GroupName: "svc",
+	})
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "CreateChannelAsAccount ambiguous group name")
+}
+
+func TestCreateChannelAsAccountGroupIDIsInvalidArgument(t *testing.T) {
+	svc, _ := newHandler(t)
+	_, err := svc.CreateChannelAsAccount(context.Background(), "agent", &compassv1.CreateChannelRequest{
+		Name: "room", GroupId: "group-id",
+	})
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "CreateChannelAsAccount group_id")
+}
+
+func TestCreateChannelGroupAsAccountResolvesParentGroupNamePath(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "manager")
+	root, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{Name: "projects", Visibility: store.VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(root): %v", err)
+	}
+	parent, err := st.CreateChannelGroup(ctx, owner.ID, store.NewChannelGroup{
+		Name: "compass", ParentGroupID: root.ID, Visibility: store.VisibilityOwner,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(parent): %v", err)
+	}
+
+	resp, err := svc.CreateChannelGroupAsAccount(ctx, agent.ID, &compassv1.CreateChannelGroupRequest{
+		Name: "tools", ParentGroupName: "projects/compass",
+		Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_OWNER,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannelGroupAsAccount: %v", err)
+	}
+	if got := resp.GetGroup().GetParentGroupId(); got != string(parent.ID) {
+		t.Fatalf("group parent_group_id = %q, want %q", got, parent.ID)
+	}
+}
+
+func TestCreateChannelHumanRPCRejectsGroupRef(t *testing.T) {
+	svc, _ := newHandler(t)
+	_, err := svc.CreateChannel(WithActor(context.Background(), "human"), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", GroupName: "team",
+	}))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "human CreateChannel group_name")
+}
+
+func TestCreateChannelGroupHumanRPCRejectsParentGroupRef(t *testing.T) {
+	svc, _ := newHandler(t)
+	_, err := svc.CreateChannelGroup(WithActor(context.Background(), "human"), connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+		Name: "child", ParentGroupName: "team",
+	}))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "human CreateChannelGroup parent_group_name")
 }
