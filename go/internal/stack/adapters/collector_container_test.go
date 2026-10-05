@@ -155,25 +155,26 @@ func TestCollectorProbeUnhealthy(t *testing.T) {
 }
 
 // TestCollectorControllerDispatch pins the ContainerController seam this adapter
-// also fills: Exists reads the fake's existence map, Stop and Remove drive the
-// respective podman calls by name.
+// also fills: Exists reads the fake's existence map, Stop sends the non-blocking
+// stop signal, and Remove drives the force-remove, all by name.
 func TestCollectorControllerDispatch(t *testing.T) {
+	ctx := context.Background()
 	cli := &fakeContainerCLI{existsResp: map[string]bool{"compass-otel-collector-x": true}}
 	cc := &CollectorContainer{cli: cli, health: &fakeHealthGetter{}}
 
-	if !cc.Exists("compass-otel-collector-x") {
+	if !cc.Exists(ctx, "compass-otel-collector-x") {
 		t.Error("Exists(present) = false, want true")
 	}
-	if cc.Exists("absent") {
+	if cc.Exists(ctx, "absent") {
 		t.Error("Exists(absent) = true, want false")
 	}
-	if err := cc.Stop("compass-otel-collector-x", 10*time.Second); err != nil {
+	if err := cc.Stop(ctx, "compass-otel-collector-x"); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
-	if !reflect.DeepEqual(cli.stopped, []string{"compass-otel-collector-x"}) {
-		t.Errorf("stop calls = %v, want one stop", cli.stopped)
+	if len(cli.stopped) != 0 || !reflect.DeepEqual(cli.termed, []string{"compass-otel-collector-x"}) {
+		t.Errorf("stop calls = %v, term calls = %v, want one term", cli.stopped, cli.termed)
 	}
-	if err := cc.Remove("compass-otel-collector-x"); err != nil {
+	if err := cc.Remove(ctx, "compass-otel-collector-x"); err != nil {
 		t.Fatalf("Remove() = %v", err)
 	}
 	if !reflect.DeepEqual(cli.removed, []string{"compass-otel-collector-x"}) {
@@ -188,7 +189,7 @@ func TestCollectorControllerDispatch(t *testing.T) {
 func TestCollectorExistsAssumesPresentOnEngineError(t *testing.T) {
 	cli := &fakeContainerCLI{existsErr: errors.New("podman daemon wedged")}
 	cc := &CollectorContainer{cli: cli, health: &fakeHealthGetter{}}
-	if !cc.Exists("compass-otel-collector-x") {
+	if !cc.Exists(context.Background(), "compass-otel-collector-x") {
 		t.Fatal("Exists on engine error = false, want true (assume present, drive teardown)")
 	}
 }

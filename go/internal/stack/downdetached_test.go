@@ -792,7 +792,7 @@ type containerBackedDBProber struct {
 }
 
 func (p *containerBackedDBProber) ProbeDB(ctx context.Context, dsn string) error {
-	if p.c.Exists(p.name) {
+	if p.c.Exists(ctx, p.name) {
 		return nil // container up → socket answers → reachable
 	}
 	return errPostgresNotReady // container gone → socket dark → confirmed dead
@@ -832,7 +832,7 @@ func TestDownDetachedContainerGracefulStop(t *testing.T) {
 	// SIGTERM tears the two groups down; `podman stop` removes the container.
 	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
 	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
-	h.containers.onStop[pgContainerName] = func() { h.containers.setExists(false) }
+	h.containers.onStop[pgContainerName] = func(context.Context) { h.containers.setExists(false) }
 
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatalf("DownDetached = %v, want nil", err)
@@ -951,6 +951,66 @@ func TestDownDetachedContainerDarkDBStillExistsIsSurvivor(t *testing.T) {
 	}
 }
 
+// TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors: a SIGTERM
+// to down lands while a slow container stop is in flight. The stop must see the
+// cancelled ctx and return, and down must still rewrite the survivor record.
+func TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedContainerRecord(t, cfg, h)
+	deps := containerDownDeps(t, h)
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.containers.onStop[pgContainerName] = func(stopCtx context.Context) {
+		cancel() // the down process is signalled mid-stop
+		if stopCtx.Err() == nil {
+			t.Error("container stop ran on a ctx the caller's cancellation cannot reach")
+		}
+	}
+
+	err := DownDetached(ctx, cfg, deps)
+	if err == nil || !strings.Contains(err.Error(), "postgres") {
+		t.Fatalf("DownDetached = %v, want a survivor error naming postgres", err)
+	}
+	rec, rerr := readPgidFile(cfg.StateDir)
+	if rerr != nil {
+		t.Fatalf("survivor record read = %v, want the rewritten survivor set", rerr)
+	}
+	if len(rec.Entries) != 1 || rec.Entries[0].ContainerName != pgContainerName {
+		t.Fatalf("survivor record = %+v, want exactly the postgres container entry", rec.Entries)
+	}
+}
+
+// TestDownDetachedPhaseADoesNotWaitOnContainerDrain: Phase A only signals. A
+// container's removal belongs to the drain phase, so the TERM to every later
+// target goes out before any container is removed.
+func TestDownDetachedPhaseADoesNotWaitOnContainerDrain(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	for _, p := range []int{pgPgid, serverPgid, runnerPgid} {
+		pgid := p
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExited(gatewayContainerNameTest) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatal(err)
+	}
+	events := h.rec.snapshot()
+	pgTerm := indexOf(events, "group-term "+strconv.Itoa(pgPgid))
+	if pgTerm < 0 {
+		t.Fatalf("postgres never SIGTERMed: %v", events)
+	}
+	for i, e := range events[:pgTerm] {
+		if strings.HasPrefix(e, "ctr-rm") {
+			t.Fatalf("event %d %q removed a container before the last target was signalled: %v", i, e, events)
+		}
+	}
+}
+
 // The stable name a v2 collector container entry carries in these tests.
 const collectorContainerNameTest = "compass-otel-collector-test01"
 
@@ -1017,7 +1077,7 @@ func TestDownDetachedCollectorContainerTornDownByName(t *testing.T) {
 	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
-	h.containers.onStop[collectorContainerNameTest] = func() {
+	h.containers.onStop[collectorContainerNameTest] = func(context.Context) {
 		h.containers.setExistsName(collectorContainerNameTest, false)
 	}
 
@@ -1114,7 +1174,7 @@ func TestDownDetachedNatsContainerTornDownByName(t *testing.T) {
 	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
-	h.containers.onStop[natsContainerNameTest] = func() {
+	h.containers.onStop[natsContainerNameTest] = func(context.Context) {
 		h.containers.setExistsName(natsContainerNameTest, false)
 	}
 
@@ -1175,7 +1235,10 @@ func seedGatewayRecord(t *testing.T, cfg Config, h *harness) {
 	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
 }
 
-func TestDownDetachedGatewayStopsThenRemoves(t *testing.T) {
+// TestDownDetachedGatewayExitedIsRemovedAndConfirmed: the gateway runs without
+// --rm, so after the stop signal it exits but lingers; the confirm poll removes
+// it with a non-forced rm and confirms by absence, with no rm -f escalation.
+func TestDownDetachedGatewayExitedIsRemovedAndConfirmed(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedGatewayRecord(t, cfg, h)
 	deps := sidecarContainerDownDeps(t, h)
@@ -1183,15 +1246,38 @@ func TestDownDetachedGatewayStopsThenRemoves(t *testing.T) {
 		pgid := p
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
-	h.containers.onStop[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
+	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExited(gatewayContainerNameTest) }
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatal(err)
+	}
+	got := ctrEvents(h.rec.snapshot())
+	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm-exited " + gatewayContainerNameTest}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gateway teardown = %v, want stop then non-forced rm", got)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedGatewayStillRunningEscalatesToRemove: while the gateway runs,
+// the non-forced rm is a no-op, so it stays present until the budget's rm -f.
+func TestDownDetachedGatewayStillRunningEscalatesToRemove(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	for _, p := range []int{pgPgid, serverPgid, runnerPgid} {
+		pgid := p
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onRemove[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatal(err)
 	}
 	got := ctrEvents(h.rec.snapshot())
 	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm " + gatewayContainerNameTest}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("gateway teardown = %v, want stop then remove", got)
+		t.Fatalf("gateway teardown = %v, want stop then rm -f", got)
 	}
+	assertPgidFileGone(t, cfg.StateDir)
 }
 
 // assertPgidFileGone fails if the pgid record still exists.

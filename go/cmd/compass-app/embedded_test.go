@@ -16,9 +16,11 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -380,6 +382,37 @@ func TestRunStackDownZeroExitSucceeds(t *testing.T) {
 	stackDown := runStackDown("/bin/sh")
 	if err := stackDown(ctx, []string{"-c", "exit 0"}); err != nil {
 		t.Fatalf("stackDown on a zero exit err = %v, want nil", err)
+	}
+}
+
+// TestRunStackDownCancelSendsSIGTERM: a timed-out down has already consumed its
+// teardown record, so cancel must SIGTERM it (letting it rewrite survivors), not
+// SIGKILL it. The child traps TERM and leaves a marker only a SIGTERM can write.
+func TestRunStackDownCancelSendsSIGTERM(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	marker := filepath.Join(dir, "rewrote")
+	if err := syscall.Mkfifo(ready, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
+	defer cancel()
+	go func() {
+		// Opening the FIFO blocks until the child has armed its trap.
+		f, err := os.Open(ready)
+		if err == nil {
+			_ = f.Close() // read end of a gate FIFO; nothing to flush
+		}
+		cancel()
+	}()
+
+	script := "trap 'echo ok > \"$1\"; exit 3' TERM; echo > \"$2\"; while :; do sleep 1 & wait; done"
+	err := runStackDown("/bin/sh")(ctx, []string{"-c", script, "sh", marker, ready})
+	if err == nil {
+		t.Fatal("stackDown err = nil, want the cancelled child's exit error")
+	}
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("child did not run its SIGTERM handler (marker: %v); err = %v", statErr, err)
 	}
 }
 

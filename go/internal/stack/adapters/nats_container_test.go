@@ -191,25 +191,26 @@ func TestNatsProbeUnhealthy(t *testing.T) {
 }
 
 // TestNatsControllerDispatch pins the ContainerController seam this adapter also
-// fills: Exists reads the fake's existence map, Stop and Remove drive the
-// respective podman calls by name.
+// fills: Exists reads the fake's existence map, Stop sends the non-blocking stop
+// signal, and Remove drives the force-remove, all by name.
 func TestNatsControllerDispatch(t *testing.T) {
+	ctx := context.Background()
 	cli := &fakeContainerCLI{existsResp: map[string]bool{"compass-nats-x": true}}
 	nc := &NatsContainer{cli: cli, health: &fakeHealthGetter{}}
 
-	if !nc.Exists("compass-nats-x") {
+	if !nc.Exists(ctx, "compass-nats-x") {
 		t.Error("Exists(present) = false, want true")
 	}
-	if nc.Exists("absent") {
+	if nc.Exists(ctx, "absent") {
 		t.Error("Exists(absent) = true, want false")
 	}
-	if err := nc.Stop("compass-nats-x", 20*time.Second); err != nil {
+	if err := nc.Stop(ctx, "compass-nats-x"); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
-	if !reflect.DeepEqual(cli.stopped, []string{"compass-nats-x"}) {
-		t.Errorf("stop calls = %v, want one stop", cli.stopped)
+	if len(cli.stopped) != 0 || !reflect.DeepEqual(cli.termed, []string{"compass-nats-x"}) {
+		t.Errorf("stop calls = %v, term calls = %v, want one term", cli.stopped, cli.termed)
 	}
-	if err := nc.Remove("compass-nats-x"); err != nil {
+	if err := nc.Remove(ctx, "compass-nats-x"); err != nil {
 		t.Fatalf("Remove() = %v", err)
 	}
 	if !reflect.DeepEqual(cli.removed, []string{"compass-nats-x"}) {
@@ -224,7 +225,7 @@ func TestNatsControllerDispatch(t *testing.T) {
 func TestNatsExistsAssumesPresentOnEngineError(t *testing.T) {
 	cli := &fakeContainerCLI{existsErr: errors.New("podman daemon wedged")}
 	nc := &NatsContainer{cli: cli, health: &fakeHealthGetter{}}
-	if !nc.Exists("compass-nats-x") {
+	if !nc.Exists(context.Background(), "compass-nats-x") {
 		t.Fatal("Exists on engine error = false, want true (assume present, drive teardown)")
 	}
 }

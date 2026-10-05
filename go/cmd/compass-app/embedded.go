@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"connectrpc.com/connect"
 
@@ -245,6 +246,10 @@ func runStackDown(bin string) func(ctx context.Context, args []string) error {
 		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
 		// the argv is pipeline-assembled (stackDownArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
+		// down has already consumed its teardown record, so a timeout must SIGTERM
+		// it: SIGKILL would skip the survivor rewrite and leak the stack.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+		cmd.WaitDelay = stackDownCancelGrace
 		cmd.Env = prependExecDirToPath(os.Environ(), filepath.Dir(bin))
 		stderr, cleanup, capErr := captureStderr(cmd)
 		if capErr != nil {

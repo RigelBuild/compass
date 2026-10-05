@@ -181,7 +181,7 @@ func waitReady(t *testing.T, readyPath string, proc stack.Process) {
 		}
 		time.Sleep(time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the child's ready file above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
-	_ = proc.Signal(stack.SignalTerm)
+	_ = proc.Signal(context.Background(), stack.SignalTerm)
 	t.Fatalf("child never armed (ready file %s absent within deadline)", readyPath)
 }
 
@@ -270,7 +270,7 @@ func TestLifecycleGracefulStopThreadsEnv(t *testing.T) {
 	echoOut := filepath.Join(t.TempDir(), "echo")
 	proc := startHelper(t, "trapecho", stack.ComponentServer,
 		[]string{helperEchoKey + "=expected", helperEchoOutKey + "=" + echoOut})
-	if err := proc.Signal(stack.SignalTerm); err != nil {
+	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
 	if err := proc.Wait(context.Background()); err != nil {
@@ -293,7 +293,7 @@ func TestLifecycleEnvNotThreadedIsObservablyEmpty(t *testing.T) {
 	echoOut := filepath.Join(t.TempDir(), "echo")
 	proc := startHelper(t, "trapecho", stack.ComponentServer,
 		[]string{helperEchoOutKey + "=" + echoOut})
-	if err := proc.Signal(stack.SignalTerm); err != nil {
+	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
 	if err := proc.Wait(context.Background()); err != nil {
@@ -314,7 +314,7 @@ func TestLifecycleEnvNotThreadedIsObservablyEmpty(t *testing.T) {
 // window the embedded runner also has must not make a clean drain look failed.
 func TestWaitNormalizesRawSignalTermDeath(t *testing.T) {
 	proc := startHelper(t, "notrap", stack.ComponentRunner, nil)
-	if err := proc.Signal(stack.SignalTerm); err != nil {
+	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
 	if err := proc.Wait(context.Background()); err != nil {
@@ -329,7 +329,7 @@ func TestWaitNormalizesRawSignalTermDeath(t *testing.T) {
 // miss (that only normalizes a signaled death, not an exit code).
 func TestWaitNormalizesNonzeroExitAfterSignal(t *testing.T) {
 	proc := startHelper(t, "trapexit1", stack.ComponentRunner, nil)
-	if err := proc.Signal(stack.SignalTerm); err != nil {
+	if err := proc.Signal(context.Background(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v", err)
 	}
 	if err := proc.Wait(context.Background()); err != nil {
@@ -377,10 +377,10 @@ func TestUnknownSignal(t *testing.T) {
 	proc := startHelper(t, "trap", stack.ComponentServer, []string{helperEchoKey + "=expected"})
 	// Clean up the child so the test does not leak it.
 	t.Cleanup(func() {
-		_ = proc.Signal(stack.SignalTerm)
+		_ = proc.Signal(context.Background(), stack.SignalTerm)
 		_ = proc.Wait(context.Background())
 	})
-	if err := proc.Signal(stack.ProcessSignal(99)); err == nil {
+	if err := proc.Signal(context.Background(), stack.ProcessSignal(99)); err == nil {
 		t.Fatal("Signal with unknown disposition err = nil, want error")
 	}
 }

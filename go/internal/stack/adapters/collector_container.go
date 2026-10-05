@@ -93,23 +93,28 @@ func (c *CollectorContainer) Start(ctx context.Context, spec stack.CollectorCont
 // treated as PRESENT, not absent: a false "absent" would drop the teardown
 // target after the pgid record is consumed, stranding a live container. Stop/
 // Remove are idempotent, so assuming-present is safe.
-func (c *CollectorContainer) Exists(name string) bool {
-	present, err := c.cli.exists(context.Background(), name)
+func (c *CollectorContainer) Exists(ctx context.Context, name string) bool {
+	present, err := c.cli.exists(ctx, name)
 	if err != nil {
 		return true // cannot confirm absence → assume present and drive teardown
 	}
 	return present
 }
 
-// Stop requests a graceful `podman stop -t <timeout>` (stack.ContainerController).
-func (c *CollectorContainer) Stop(name string, timeout time.Duration) error {
-	return c.cli.stop(context.Background(), name, timeout)
+// Stop sends the container its stop signal without waiting (stack.ContainerController).
+func (c *CollectorContainer) Stop(ctx context.Context, name string) error {
+	return c.cli.term(ctx, name)
+}
+
+// RemoveExited removes the container once it has exited (stack.ContainerController).
+func (c *CollectorContainer) RemoveExited(ctx context.Context, name string) error {
+	return c.cli.removeExited(ctx, name)
 }
 
 // Remove force-removes the container, the SIGKILL-tier escalation
 // (stack.ContainerController): `podman rm -f`.
-func (c *CollectorContainer) Remove(name string) error {
-	return c.cli.remove(context.Background(), name)
+func (c *CollectorContainer) Remove(ctx context.Context, name string) error {
+	return c.cli.remove(ctx, name)
 }
 
 // ProbeCollector issues an HTTP GET against the collector's health_check

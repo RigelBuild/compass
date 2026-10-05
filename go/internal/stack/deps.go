@@ -163,13 +163,14 @@ func (c Component) String() string {
 	}
 }
 
-// Process is a handle to a started child. Signal requests a graceful stop; Wait
-// blocks until the child exits (or ctx is done) and returns its exit error, if
+// Process is a handle to a started child. Signal requests a graceful stop,
+// bounded by ctx; Wait blocks until the child exits (or ctx is done) and
+// returns its exit error, if
 // any. Pid reports the child's PID, which doubles as its process-group ID (the
 // adapter sets Setpgid at Start), so the supervisor can persist the pgid for a
 // cross-process teardown that no longer holds this in-memory handle.
 type Process interface {
-	Signal(sig ProcessSignal) error
+	Signal(ctx context.Context, sig ProcessSignal) error
 	Wait(ctx context.Context) error
 	Pid() int
 }
@@ -230,13 +231,19 @@ type GroupSignaller interface {
 // Exists reports whether a container with this name is present (the real adapter
 // runs `podman container exists <name>`) — the liveness channel, the container
 // analogue of GroupSignaller.Liveness; a container needs no start-time identity
-// token because its name is unique per state dir (S4). Stop requests a graceful
-// stop bounded by timeout (`podman stop -t <seconds> <name>`); Remove is the
+// token because its name is unique per state dir (S4). Stop delivers the graceful
+// stop signal without waiting for the container to exit (`podman kill --signal
+// <stop signal>`), so the caller's drain wait measures the budget; Remove is the
 // SIGKILL-tier escalation that force-removes it (`podman rm -f <name>`).
+// RemoveExited removes the container only once it has exited (`podman rm` without
+// --force); a still-running container is left alone and is not an error. It lets
+// a container run without --rm (the gateway) be confirmed gone by absence. Each
+// call is bounded by ctx.
 type ContainerController interface {
-	Exists(name string) bool
-	Stop(name string, timeout time.Duration) error
-	Remove(name string) error
+	Exists(ctx context.Context, name string) bool
+	Stop(ctx context.Context, name string) error
+	RemoveExited(ctx context.Context, name string) error
+	Remove(ctx context.Context, name string) error
 }
 
 // PostgresContainer starts the container-backed postgres child (S4): the

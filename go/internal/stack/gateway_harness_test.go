@@ -36,7 +36,7 @@ func (c *fakeGatewayContainer) spec() GatewayContainerSpec {
 
 type stubGatewayProcess struct{ rec *recorder }
 
-func (p *stubGatewayProcess) Signal(sig ProcessSignal) error {
+func (p *stubGatewayProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal llm-gateway")
 	return nil
 }

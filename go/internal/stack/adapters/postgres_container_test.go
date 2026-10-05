@@ -21,7 +21,9 @@ type fakeContainerCLI struct {
 	runErr     error
 	waited     []string
 	stopped    []string
+	termed     []string
 	removed    []string
+	rmExited   []string
 	existsResp map[string]bool
 	existsErr  error
 }
@@ -41,8 +43,18 @@ func (f *fakeContainerCLI) stop(_ context.Context, name string, _ time.Duration)
 	return nil
 }
 
+func (f *fakeContainerCLI) term(_ context.Context, name string) error {
+	f.termed = append(f.termed, name)
+	return nil
+}
+
 func (f *fakeContainerCLI) remove(_ context.Context, name string) error {
 	f.removed = append(f.removed, name)
+	return nil
+}
+
+func (f *fakeContainerCLI) removeExited(_ context.Context, name string) error {
+	f.rmExited = append(f.rmExited, name)
 	return nil
 }
 
@@ -144,7 +156,7 @@ func TestContainerProcessSignalStopsWaitBlocks(t *testing.T) {
 	cli := &fakeContainerCLI{}
 	p := &containerProcess{cli: cli, name: "compass-postgres-x", stopTimeout: 30 * time.Second}
 
-	if err := p.Signal(stack.SignalTerm); err != nil {
+	if err := p.Signal(context.Background(), stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SignalTerm) = %v, want nil", err)
 	}
 	if !reflect.DeepEqual(cli.stopped, []string{"compass-postgres-x"}) {
@@ -156,7 +168,7 @@ func TestContainerProcessSignalStopsWaitBlocks(t *testing.T) {
 	if !reflect.DeepEqual(cli.waited, []string{"compass-postgres-x"}) {
 		t.Fatalf("wait calls = %v, want one wait of the container", cli.waited)
 	}
-	if err := p.Signal(stack.SignalKill); err == nil {
+	if err := p.Signal(context.Background(), stack.SignalKill); err == nil {
 		t.Fatal("Signal(SignalKill) = nil, want a rejection (in-process handle is graceful-only)")
 	}
 	if p.Pid() != 0 {
@@ -165,29 +177,64 @@ func TestContainerProcessSignalStopsWaitBlocks(t *testing.T) {
 }
 
 // TestControllerDispatch pins the ContainerController seam this adapter also
-// fills: Exists reads the fake's existence map, Stop and Remove drive the
-// respective podman calls by name.
+// fills: Exists reads the fake's existence map; Stop sends the non-blocking
+// stop signal, never the blocking `podman stop`; RemoveExited and Remove drive
+// their podman calls by name.
 func TestControllerDispatch(t *testing.T) {
+	ctx := context.Background()
 	cli := &fakeContainerCLI{existsResp: map[string]bool{"live": true}}
 	pc := &PostgresContainer{cli: cli, superuser: "bob"}
 
-	if !pc.Exists("live") {
+	if !pc.Exists(ctx, "live") {
 		t.Error("Exists(live) = false, want true")
 	}
-	if pc.Exists("gone") {
+	if pc.Exists(ctx, "gone") {
 		t.Error("Exists(gone) = true, want false")
 	}
-	if err := pc.Stop("live", 10*time.Second); err != nil {
+	if err := pc.Stop(ctx, "live"); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
-	if err := pc.Remove("live"); err != nil {
+	if err := pc.RemoveExited(ctx, "live"); err != nil {
+		t.Fatalf("RemoveExited() = %v", err)
+	}
+	if err := pc.Remove(ctx, "live"); err != nil {
 		t.Fatalf("Remove() = %v", err)
 	}
-	if !reflect.DeepEqual(cli.stopped, []string{"live"}) {
-		t.Errorf("stop calls = %v, want [live]", cli.stopped)
+	if len(cli.stopped) != 0 || !reflect.DeepEqual(cli.termed, []string{"live"}) {
+		t.Errorf("stop calls = %v, term calls = %v, want only a term of [live]", cli.stopped, cli.termed)
+	}
+	if !reflect.DeepEqual(cli.rmExited, []string{"live"}) {
+		t.Errorf("non-forced remove calls = %v, want [live]", cli.rmExited)
 	}
 	if !reflect.DeepEqual(cli.removed, []string{"live"}) {
 		t.Errorf("remove calls = %v, want [live]", cli.removed)
+	}
+}
+
+// TestRemoveExitedToleratesRunningAndAbsent: a non-forced rm that podman refuses
+// because the container still runs, or because it is gone, is not an error; any
+// other failure still surfaces. The stderr lines are podman 5's real output.
+func TestRemoveExitedToleratesRunningAndAbsent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stderr  string
+		wantErr bool
+	}{
+		{"running", "Error: cannot remove container x as it is running - running or paused containers cannot be removed without force: container state improper", false},
+		{"absent", `Error: no container with ID or name "x" found: no such container`, false},
+		{"engine failure", "Error: database is locked", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prog := filepath.Join(t.TempDir(), "podman")
+			script := "#!/bin/sh\necho '" + tc.stderr + "' >&2\nexit 2\n"
+			if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			e := &podmanExec{program: prog, timeout: 5 * time.Second}
+			if err := e.removeExited(context.Background(), "x"); (err != nil) != tc.wantErr {
+				t.Fatalf("removeExited() = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -200,7 +247,7 @@ func TestExistsAssumesPresentOnEngineError(t *testing.T) {
 	cli := &fakeContainerCLI{existsErr: errors.New("podman: daemon wedged")}
 	pc := &PostgresContainer{cli: cli, superuser: "bob"}
 
-	if !pc.Exists("compass-postgres-x") {
+	if !pc.Exists(context.Background(), "compass-postgres-x") {
 		t.Error("Exists() on a podman engine error = false, want true (assume present so teardown still drives Stop/Remove)")
 	}
 }

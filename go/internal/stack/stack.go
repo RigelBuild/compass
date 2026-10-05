@@ -231,7 +231,7 @@ func (s *Stack) RestartRunner(ctx context.Context) error {
 	if len(s.pgids) == 0 || s.pgids[len(s.pgids)-1].Component != ComponentRunner {
 		return errors.New("stack: runner teardown record is missing")
 	}
-	if err := s.runner.Signal(SignalTerm); err != nil {
+	if err := s.runner.Signal(ctx, SignalTerm); err != nil {
 		return fmt.Errorf("stop runner: %w", err)
 	}
 	if err := s.runner.Wait(ctx); err != nil {
@@ -705,7 +705,7 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 		if c.p == nil {
 			continue
 		}
-		if err := c.p.Signal(SignalTerm); err != nil {
+		if err := c.p.Signal(ctx, SignalTerm); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("signal %s: %w", c.name, err))
 			continue
 		}
