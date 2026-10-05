@@ -1,10 +1,16 @@
 -- Agent tools read '/' as a path separator and address a group by sibling name,
--- so a name holds no '/' and is unique among its siblings. Owner ids are global,
--- so the key is owner/parent/name; tenant_id is not part of it.
+-- so a name holds no '/' and is unique among one account's siblings. Owner ids
+-- are global, so the key is owner/parent/name; tenant_id is not part of it.
+
+-- Fail fast rather than queue every channel read behind a long transaction.
+SET LOCAL lock_timeout = '5s';
 
 -- Under FORCE RLS a non-superuser owner sees no rows, so the repair runs as
 -- compass_system.
 SET LOCAL ROLE compass_system;
+-- Freeze writers from the repair through the index build, or a concurrent
+-- create could commit a duplicate the repair never saw.
+LOCK TABLE channel_groups IN SHARE ROW EXCLUSIVE MODE;
 
 -- Rewrite separators first, then suffix duplicates. A valid original keeps its
 -- name; each free suffix is found first so no existing name is overwritten.
@@ -65,7 +71,7 @@ CREATE UNIQUE INDEX channel_groups_owner_parent_name_key
     ON channel_groups (owner_user_id, COALESCE(parent_group_id, ''), name)
     WHERE NOT (parent_group_id IS NULL AND name IN ('__dm__', '__linear__', '__coordination__'));
 
--- The repair above leaves no '/' behind. The validating scan holds the write lock
--- only over this small table, inside the runner's single transaction.
+-- The repair above leaves no '/' behind. This takes ACCESS EXCLUSIVE until the
+-- migration commits; brief on a small table.
 -- squawk-ignore constraint-missing-not-valid
 ALTER TABLE channel_groups ADD CONSTRAINT channel_groups_name_no_slash CHECK (POSITION('/' IN name) = 0);

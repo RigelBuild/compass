@@ -72,7 +72,9 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 			('group-j', 'nested', 'owner-e', 'boot', 'group-i'),
 			('group-k', 'nested', 'owner-e', 'boot', 'group-i'),
 			('group-l', 'tenant-name', 'owner-f', 'boot', NULL),
-			('group-m', 'tenant-name', 'owner-f', 'boot-2', NULL)`); err != nil {
+			('group-m', 'tenant-name', 'owner-f', 'boot-2', NULL),
+			('group-n', '__dm__', 'owner-e', 'boot', 'group-i'),
+			('group-o', '__dm__', 'owner-e', 'boot', 'group-i')`); err != nil {
 		t.Fatalf("seed pre-migration groups: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -98,6 +100,8 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 		"group-k": "nested-2",      // nested siblings dedupe too
 		"group-l": "tenant-name",   // owner ids are global, so tenants share a namespace
 		"group-m": "tenant-name-2", // owner ids are global, so tenants share a namespace
+		"group-n": "__dm__",        // the reserved exemption is top-level only
+		"group-o": "__dm__-2",      // the reserved exemption is top-level only
 	}
 	for id, name := range want {
 		if got[id] != name {
