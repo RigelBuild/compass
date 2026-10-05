@@ -23,6 +23,15 @@ type AccountHandle struct {
 	TenantID    string
 }
 
+type AccountTourState struct {
+	TenantID  string
+	AccountID string
+	Outcome   string
+	StepID    pgtype.Text
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
 type AgentAccount struct {
 	AccountID     string
 	OwnerUserID   string
