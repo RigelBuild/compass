@@ -6,6 +6,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRunPeerCommands(t *testing.T) {
@@ -64,19 +66,33 @@ func TestRunPeerCommands(t *testing.T) {
 }
 
 func TestPeerCommandRegistered(t *testing.T) {
-	root := newRootCmd()
-	var found bool
-	for _, cmd := range root.Commands() {
+	var peer *cobra.Command
+	for _, cmd := range newRootCmd().Commands() {
 		if cmd.Name() == "peer" {
-			found = true
-			break
+			peer = cmd
 		}
 	}
-	if !found {
+	if peer == nil {
 		t.Fatal("newRootCmd does not register peer")
 	}
-	cmd, _, err := newPeerCmd().Find([]string{"approve"})
-	if err != nil || cmd == nil || cmd.Use != "approve <handle>" {
-		t.Fatalf("peer approve command = %v, %v, want approve <handle>", cmd, err)
+	for _, tc := range []struct {
+		verb    string
+		okArgs  []string
+		badArgs []string
+	}{
+		{"approve", []string{"alice"}, []string{}},
+		{"revoke", []string{"alice"}, []string{"alice", "bob"}},
+		{"list", []string{}, []string{"alice"}},
+	} {
+		cmd, _, err := peer.Find([]string{tc.verb})
+		if err != nil || cmd.Name() != tc.verb {
+			t.Fatalf("peer %s: Find = %v, %v", tc.verb, cmd, err)
+		}
+		if err := cmd.Args(cmd, tc.okArgs); err != nil {
+			t.Errorf("peer %s %v rejected: %v", tc.verb, tc.okArgs, err)
+		}
+		if err := cmd.Args(cmd, tc.badArgs); err == nil {
+			t.Errorf("peer %s %v accepted, want an argument error", tc.verb, tc.badArgs)
+		}
 	}
 }

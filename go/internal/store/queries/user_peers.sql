@@ -19,3 +19,6 @@ JOIN accounts a
   ON a.id = COALESCE(outgoing.peer_user_id, incoming.user_id)
 JOIN account_handles ah ON ah.account_id = a.id
 ORDER BY ah.handle;
+
+-- name: UserPeerExists :one
+SELECT EXISTS (SELECT 1 FROM user_peers WHERE user_id = $1 AND peer_user_id = $2) AS exists;

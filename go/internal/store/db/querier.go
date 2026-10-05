@@ -690,6 +690,7 @@ type Querier interface {
 	// routing metadata. updated_at is maintained by the set_updated_at trigger, which
 	// fires on the ON CONFLICT DO UPDATE path — never set here.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) error
+	UserPeerExists(ctx context.Context, arg UserPeerExistsParams) (bool, error)
 }
 
 var _ Querier = (*Queries)(nil)

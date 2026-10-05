@@ -11,9 +11,8 @@ import (
 )
 
 var (
-	errPeerUserRequired           = errors.New("peer management requires a user account")
-	errPeerSelf                   = errors.New("a user cannot peer with itself")
-	errPeeringMissingAfterApprove = errors.New("approved peering missing from list")
+	errPeerUserRequired = errors.New("peer management requires a user account")
+	errPeerSelf         = errors.New("a user cannot peer with itself")
 )
 
 // ApprovePeer records the calling user's approval of another user.
@@ -25,19 +24,12 @@ func (c *Comms) ApprovePeer(
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.store.ApprovePeer(ctx, actor, peer); err != nil {
-		return nil, edgeError(err)
-	}
-	peers, err := c.store.ListPeerings(ctx, actor)
+	state, _, err := c.store.ApprovePeer(ctx, actor, peer.ID)
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	for _, p := range peers {
-		if p.PeerID == peer {
-			return connect.NewResponse(&compassv1.ApprovePeerResponse{Peering: peeringToWire(p)}), nil
-		}
-	}
-	return nil, connect.NewError(connect.CodeInternal, errPeeringMissingAfterApprove)
+	p := store.Peering{PeerID: peer.ID, Handle: peer.Handle, State: state}
+	return connect.NewResponse(&compassv1.ApprovePeerResponse{Peering: peeringToWire(p)}), nil
 }
 
 // RevokePeer withdraws the calling user's approval; deleted is false when none
@@ -50,7 +42,7 @@ func (c *Comms) RevokePeer(
 	if err != nil {
 		return nil, err
 	}
-	deleted, err := c.store.RevokePeer(ctx, actor, peer)
+	deleted, err := c.store.RevokePeer(ctx, actor, peer.ID)
 	if err != nil {
 		return nil, edgeError(err)
 	}
@@ -92,20 +84,20 @@ func (c *Comms) requireUserActor(ctx context.Context) (store.AccountID, error) {
 
 // resolvePeerPair resolves the user caller and the named peer user. Agent,
 // system, and unknown handles share one not-found so none is distinguishable.
-func (c *Comms) resolvePeerPair(ctx context.Context, handle string) (store.AccountID, store.AccountID, error) {
+func (c *Comms) resolvePeerPair(ctx context.Context, handle string) (store.AccountID, store.Account, error) {
 	actor, err := c.requireUserActor(ctx)
 	if err != nil {
-		return "", "", err
+		return "", store.Account{}, err
 	}
 	peer, err := c.store.UserByHandle(ctx, handle)
 	if err != nil {
-		return "", "", edgeError(notFoundHandle(err, handle))
+		return "", store.Account{}, edgeError(notFoundHandle(err, handle))
 	}
 	if peer.System != nil || peer.User == nil {
-		return "", "", edgeError(notFoundHandle(store.ErrNotFound, handle))
+		return "", store.Account{}, edgeError(notFoundHandle(store.ErrNotFound, handle))
 	}
 	if peer.ID == actor {
-		return "", "", connect.NewError(connect.CodeInvalidArgument, errPeerSelf)
+		return "", store.Account{}, connect.NewError(connect.CodeInvalidArgument, errPeerSelf)
 	}
-	return actor, peer.ID, nil
+	return actor, peer, nil
 }

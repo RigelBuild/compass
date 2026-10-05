@@ -91,3 +91,19 @@ func (q *Queries) ListUserPeerings(ctx context.Context, userID string) ([]ListUs
 	}
 	return items, nil
 }
+
+const userPeerExists = `-- name: UserPeerExists :one
+SELECT EXISTS (SELECT 1 FROM user_peers WHERE user_id = $1 AND peer_user_id = $2) AS exists
+`
+
+type UserPeerExistsParams struct {
+	UserID     string
+	PeerUserID string
+}
+
+func (q *Queries) UserPeerExists(ctx context.Context, arg UserPeerExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, userPeerExists, arg.UserID, arg.PeerUserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}

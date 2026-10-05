@@ -5,11 +5,14 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 func TestApprovePeerIdempotentAndListStates(t *testing.T) {
@@ -18,11 +21,11 @@ func TestApprovePeerIdempotentAndListStates(t *testing.T) {
 	a := mustUser(t, s, "peer-a")
 	b := mustUser(t, s, "peer-b")
 
-	inserted, err := s.ApprovePeer(ctx, a.ID, b.ID)
-	if err != nil || !inserted {
-		t.Fatalf("ApprovePeer(a, b) = (%v, %v), want (true, nil)", inserted, err)
+	state, inserted, err := s.ApprovePeer(ctx, a.ID, b.ID)
+	if err != nil || !inserted || state != PeeringPendingOutgoing {
+		t.Fatalf("ApprovePeer(a, b) = (%v, %v, %v), want (pending outgoing, true, nil)", state, inserted, err)
 	}
-	inserted, err = s.ApprovePeer(ctx, a.ID, b.ID)
+	_, inserted, err = s.ApprovePeer(ctx, a.ID, b.ID)
 	if err != nil || inserted {
 		t.Fatalf("second ApprovePeer(a, b) = (%v, %v), want (false, nil)", inserted, err)
 	}
@@ -40,12 +43,36 @@ func TestApprovePeerIdempotentAndListStates(t *testing.T) {
 	assertPeerings(a.ID, b.ID, b.Handle, PeeringPendingOutgoing)
 	assertPeerings(b.ID, a.ID, a.Handle, PeeringPendingIncoming)
 
-	inserted, err = s.ApprovePeer(ctx, b.ID, a.ID)
-	if err != nil || !inserted {
-		t.Fatalf("ApprovePeer(b, a) = (%v, %v), want (true, nil)", inserted, err)
+	state, inserted, err = s.ApprovePeer(ctx, b.ID, a.ID)
+	if err != nil || !inserted || state != PeeringApproved {
+		t.Fatalf("ApprovePeer(b, a) = (%v, %v, %v), want (approved, true, nil)", state, inserted, err)
 	}
 	assertPeerings(a.ID, b.ID, b.Handle, PeeringApproved)
 	assertPeerings(b.ID, a.ID, a.Handle, PeeringApproved)
+}
+
+func TestListPeeringsOrdersByHandle(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	me := mustUser(t, s, "peer-order-me")
+	for _, h := range []string{"peer-order-c", "peer-order-a", "peer-order-b"} {
+		u := mustUser(t, s, h)
+		if _, _, err := s.ApprovePeer(ctx, me.ID, u.ID); err != nil {
+			t.Fatalf("ApprovePeer(%s): %v", h, err)
+		}
+	}
+	want := []string{"peer-order-a", "peer-order-b", "peer-order-c"}
+	peers, err := s.ListPeerings(ctx, me.ID)
+	if err != nil {
+		t.Fatalf("ListPeerings: %v", err)
+	}
+	got := make([]string, len(peers))
+	for i, p := range peers {
+		got[i] = p.Handle
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ListPeerings handles = %v, want %v", got, want)
+	}
 }
 
 func TestRevokePeerTransitions(t *testing.T) {
@@ -54,7 +81,7 @@ func TestRevokePeerTransitions(t *testing.T) {
 	a := mustUser(t, s, "revoke-a")
 	b := mustUser(t, s, "revoke-b")
 	for _, edge := range [][2]AccountID{{a.ID, b.ID}, {b.ID, a.ID}} {
-		if _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+		if _, _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
 			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
 		}
 	}
@@ -87,10 +114,10 @@ func TestApprovePeerRejectsSelfAndInvalidPeer(t *testing.T) {
 	user := mustUser(t, s, "invalid-peer-user")
 	agent := mustAgent(t, s, user.ID, "invalid-peer-agent")
 
-	if _, err := s.ApprovePeer(ctx, user.ID, user.ID); !errors.Is(err, ErrInvalidArgument) {
+	if _, _, err := s.ApprovePeer(ctx, user.ID, user.ID); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("ApprovePeer(self) error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := s.ApprovePeer(ctx, user.ID, agent.ID); !errors.Is(err, ErrInvalidArgument) {
+	if _, _, err := s.ApprovePeer(ctx, user.ID, agent.ID); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("ApprovePeer(agent id) error = %v, want ErrInvalidArgument", err)
 	}
 }
@@ -100,10 +127,10 @@ func TestUserPeerRenameAndReclaim(t *testing.T) {
 	s := newTestStore(t)
 	a := mustUser(t, s, "peer-rename-a")
 	b := mustUser(t, s, "peer-rename-b")
-	if _, err := s.ApprovePeer(ctx, a.ID, b.ID); err != nil {
+	if _, _, err := s.ApprovePeer(ctx, a.ID, b.ID); err != nil {
 		t.Fatalf("ApprovePeer: %v", err)
 	}
-	if _, err := s.ApprovePeer(ctx, b.ID, a.ID); err != nil {
+	if _, _, err := s.ApprovePeer(ctx, b.ID, a.ID); err != nil {
 		t.Fatalf("ApprovePeer reverse: %v", err)
 	}
 	if _, err := s.pool.Exec(ctx,
@@ -127,7 +154,7 @@ func TestUserPeerRenameAndReclaim(t *testing.T) {
 	if err != nil || len(peers) != 1 || peers[0].PeerID != b.ID || peers[0].Handle != "peer-rename-b-old" || peers[0].State != PeeringApproved {
 		t.Fatalf("peer after reclaim = %+v, %v; want original id approved", peers, err)
 	}
-	if inserted, err := s.ApprovePeer(ctx, a.ID, reclaimed.ID); err != nil || !inserted {
+	if _, inserted, err := s.ApprovePeer(ctx, a.ID, reclaimed.ID); err != nil || !inserted {
 		t.Fatalf("ApprovePeer(reclaimed account) = (%v, %v), want fresh row", inserted, err)
 	}
 	peers, err = s.ListPeerings(ctx, a.ID)
@@ -147,7 +174,7 @@ func TestUserPeerCrossTenantIsolation(t *testing.T) {
 		t.Fatalf("CreateUser(B): %v", err)
 	}
 
-	if _, err := s.ApprovePeer(ctxA, a.ID, b.ID); !errors.Is(err, ErrInvalidArgument) {
+	if _, _, err := s.ApprovePeer(ctxA, a.ID, b.ID); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("cross-tenant ApprovePeer error = %v, want ErrInvalidArgument", err)
 	}
 	peers, err := s.ListPeerings(ctxA, a.ID)
@@ -156,12 +183,20 @@ func TestUserPeerCrossTenantIsolation(t *testing.T) {
 	}
 
 	other := mustUser(t, s, "peer-tenant-a-peer")
-	if _, err := s.ApprovePeer(ctxA, a.ID, other.ID); err != nil {
+	if _, _, err := s.ApprovePeer(ctxA, a.ID, other.ID); err != nil {
 		t.Fatalf("same-tenant ApprovePeer: %v", err)
 	}
-	peers, err = s.ListPeerings(ctxB, b.ID)
-	if err != nil || len(peers) != 0 {
-		t.Fatalf("tenant B peerings = %+v, %v; want no tenant A rows", peers, err)
+	if peers, err := s.ListPeerings(ctxA, a.ID); err != nil || len(peers) != 1 {
+		t.Fatalf("tenant A peerings = %+v, %v; want the same-tenant row", peers, err)
+	}
+	// Probe user_peers alone: ListPeerings also joins RLS-scoped handles, which
+	// would hide the row even if user_peers itself leaked.
+	pair := db.UserPeerExistsParams{UserID: string(a.ID), PeerUserID: string(other.ID)}
+	if seen, err := s.q.UserPeerExists(ctxA, pair); err != nil || !seen {
+		t.Fatalf("tenant A row under tenant A = %v, %v; want visible", seen, err)
+	}
+	if seen, err := s.q.UserPeerExists(ctxB, pair); err != nil || seen {
+		t.Fatalf("tenant A row under tenant B = %v, %v; want hidden", seen, err)
 	}
 }
 
@@ -172,8 +207,10 @@ func TestOpenUpgradesPreviousMigrationToUserPeers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	if len(migs) < 2 {
-		t.Fatalf("migration count = %d, need prior migration and user_peers", len(migs))
+	// Apply only what precedes user_peers, so later migrations never pre-apply it.
+	boundary := slices.IndexFunc(migs, func(m migration) bool { return strings.HasSuffix(m.name, "_user_peers.sql") })
+	if boundary < 1 {
+		t.Fatalf("user_peers migration index = %d, want a prior migration before it", boundary)
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -189,10 +226,20 @@ func TestOpenUpgradesPreviousMigrationToUserPeers(t *testing.T) {
 		pool.Close()
 		t.Fatalf("acquire migration lock: %v", err)
 	}
+	locked := true
+	unlock := func() {
+		if locked {
+			_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey)
+			conn.Release()
+			pool.Close()
+			locked = false
+		}
+	}
+	t.Cleanup(unlock)
 	if err := ensureMigrationsTable(ctx, conn); err != nil {
 		t.Fatalf("ensure migrations table: %v", err)
 	}
-	for _, migration := range migs[:len(migs)-1] {
+	for _, migration := range migs[:boundary] {
 		if err := applyMigration(ctx, conn, migration); err != nil {
 			t.Fatalf("apply prior migration %q: %v", migration.name, err)
 		}
@@ -213,11 +260,7 @@ func TestOpenUpgradesPreviousMigrationToUserPeers(t *testing.T) {
 			}
 		}
 	}
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
-		t.Fatalf("release migration lock: %v", err)
-	}
-	conn.Release()
-	pool.Close()
+	unlock()
 
 	upgraded, err := Open(ctx, dsn)
 	if err != nil {
@@ -226,7 +269,7 @@ func TestOpenUpgradesPreviousMigrationToUserPeers(t *testing.T) {
 	defer upgraded.Close()
 	tctx := WithTenant(ctx, tenant)
 	for _, edge := range [][2]AccountID{{"upgrade-peer-a", "upgrade-peer-b"}, {"upgrade-peer-b", "upgrade-peer-a"}} {
-		if _, err := upgraded.ApprovePeer(tctx, edge[0], edge[1]); err != nil {
+		if _, _, err := upgraded.ApprovePeer(tctx, edge[0], edge[1]); err != nil {
 			t.Fatalf("ApprovePeer(%s, %s) after upgrade: %v", edge[0], edge[1], err)
 		}
 	}
