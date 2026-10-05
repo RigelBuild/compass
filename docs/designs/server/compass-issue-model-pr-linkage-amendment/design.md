@@ -41,14 +41,16 @@ message PullRequestIssueLink {
 ```
 
 A full coordinate lets a GitHub PR name an issue in another repo or on Linear.
+Linear issues are not board rows yet (`issues` admits providers 1–3), so a Linear
+link is stored but always falls back (§3) until they are.
 
 **The create path checks the link's shape but never reads the issue.** A tracker
 outage must not fail a PR create. `createPullRequest` rejects the call with an
-`invalid_argument` `ForgeCallError` in three cases:
+in-band `ForgeCallError` when:
 
-- `number` is 0;
-- `forge` names a provider that `forgeProviderRegistry.resolve` cannot resolve, which also fills an empty host;
-- `repo` is empty while `forge` differs from the PR's forge.
+- `number` is 0 (`invalid_argument`);
+- `forge` names a provider that `forgeProviderRegistry.resolve` cannot resolve (`not_found`, the code `ForgeCallRequest.forge` already uses); `resolve` also fills an empty host;
+- `repo` is empty while `forge` differs from the PR's forge (`invalid_argument`).
 
 An empty `repo` on the same forge means the PR's repo. GitHub repos are lowercased with the `normalizeBoardRepo` rule, on the PR side and the issue side alike, so the board join cannot miss on case.
 
@@ -106,6 +108,13 @@ CREATE INDEX pull_request_issue_links_issue_idx ON pull_request_issue_links
 `pull_requests` joins `updated_at_tables`. The links table has no foreign keys: the
 issue may be on Linear or not ingested yet.
 
+One row per (PR, issue) pair, so an explicit link and a closing reference to the
+same issue share a row. The write rules keep explicit links safe:
+
+- an explicit write is `ON CONFLICT DO UPDATE SET source = 1`;
+- a closing-ref insert is `ON CONFLICT DO NOTHING`;
+- a closing-ref removal deletes only `WHERE source = 2`.
+
 **Why links get their own table.** DL-055 makes `forge_authored_artifacts` "an
 ownership index, never a mirror of forge content"; human PRs have no authored
 row; one PR can close several issues.
@@ -123,22 +132,22 @@ row to attach. These orphans are accepted.
 ### 3. Precedence
 
 - **An explicit link wins.** At create, after the forge succeeds, `forgeService`
-  writes the DL-055 row, the `pull_requests` row (from the `forge.PullRequest`
-  the create returned, through `translatePR`) and the explicit link in **one
-  transaction**. The same transaction deletes any `closing_ref` rows for that PR,
-  because the `opened` webhook can race ahead of it. It then publishes through
-  `IssueProjection`. The PR is on its issue at once, not after the webhook.
-- **A retried create** (the DL-206 memo hit) rewrites the link idempotently
-  through the primary key, so a link lost to a failed first attempt is restored.
+  writes the DL-055 row, the `pull_requests` row and the explicit link in **one
+  transaction**, then publishes through `IssueProjection`, so the PR is on its
+  issue at once. The PR row comes from the `forge.PullRequest` the create returned,
+  with its timestamps (§4), and is inserted `ON CONFLICT DO NOTHING`: the `opened`
+  webhook can race ahead, and its hydrated row is always at least as complete.
+- **A retried create** that hits the DL-206 memo returns the original artifact
+  and writes nothing. The memo is in the same transaction as the link, so a hit
+  means the link already exists.
 - **Otherwise, every `closingIssuesReferences` entry is a link**, and the set is
   recomputed on each hydrate. A reference removed from the PR body is unlinked.
 - **Ingestion never removes an explicit link.**
 - **A link that cannot resolve falls back when read.** If none of a PR's explicit
-  targets is on the board, the projection attaches the PR through its stored
-  closing references instead. A typo then costs the explicit link, not the PR's
-  place on the board. To make this possible, closing references are stored even
-  when an explicit link exists, but with `source = closing_ref` they are used only
-  in this case.
+  targets is on the board, the projection attaches the PR through its closing
+  references instead. A typo costs the explicit link, not the PR's place on the
+  board. For this, closing references are stored even when an explicit link
+  exists, and are used only in this case.
 
 GitHub reads closing keywords only on PRs that target the default branch, so in a
 stack only the bottom PR gets fallback links.
@@ -146,8 +155,10 @@ stack only the bottom PR gets fallback links.
 ### 4. Discovery
 
 **Hydrate.** `pullReadQuery` (`go/internal/forge/github_graphql.go`) gains
-`closingIssuesReferences(first: 25) { nodes { number repository { nameWithOwner } } }`
-on its first page, so the closing references cost no extra round trip.
+`closingIssuesReferences(first: 25) @include(if: $refs) { nodes { number repository { nameWithOwner } } }`,
+with `$refs` true only on the first page, so it costs no extra round trip and is
+not re-fetched on thread pages. `ghPull` and `ghPullDetail` decode `created_at`
+and `updated_at`, so both the create response and a hydrate carry them.
 `forge.PullRequest` gains `CreatedAt`, `UpdatedAt` and `ClosingRefs []IssueRef`,
 where `IssueRef` is a new forge-layer `{ Repo string; Number uint64 }`. The cap of
 25 is logged when reached.
@@ -161,13 +172,27 @@ and `UPDATE`. `boardCoord` gains a kind, and the PR arm does three things:
 
 **Reconciler.** There is no second list walk. `ListUpdatedIssues` already pages
 `/issues?state=all&sort=updated` and sees PR rows in the same order under the
-same watermark. Instead of dropping them, it returns them as PR coordinates with
-their `updated_at`. The sweep hydrates a PR row only when its `updated_at` is
-newer than the stored `forge_updated_at`. The watermark rule is unchanged.
+same watermark. Instead of dropping them, it returns them beside the issues as
+`ConditionalResult[UpdatedRows]`, where `UpdatedRows` is
+`{ Issues []Issue; Pulls []UpdatedPull }` and `UpdatedPull` is
+`{ Number uint64; State string; UpdatedAt time.Time }`. The sweep hydrates a PR row
+only when its `updated_at` is newer than the stored `forge_updated_at`.
 
-**Cold start.** The listing is free, but hydrating every historical PR is not.
-With no watermark, the sweep hydrates PR rows that are open or were updated in
-the last 30 days, so recent merged PRs reach Done issues.
+**Budget exhaustion is not poison.** `reconcileRepo` counts a failed row sink as
+poison and still advances the watermark. That is safe for issue rows, which make
+no forge calls, but not for a PR hydrate. A PR hydrate that fails with
+`ErrBudgetExhausted` aborts the repo's sweep and returns the error. The
+watermark advances only to just below the oldest PR row it did not hydrate.
+
+**Backfill.** Hydrating every historical PR is too expensive. Two cases trigger a
+bounded pass:
+
+- a repo with no watermark (cold start);
+- a repo whose new `prs_backfilled_at` column on `forge_repo_subscriptions` is NULL. That is every repo already enabled when this ships, since the migration adds the column NULL.
+
+The pass hydrates every open PR (one `GET /pulls?state=open` walk) and every PR
+row updated in the 30 days before the watermark (or before now on cold start),
+then sets `prs_backfilled_at`. Recent merged PRs reach Done issues.
 
 **Rate cost.** A hydrate costs four paginated REST reads (detail, reviews,
 check-runs, status) plus GraphQL pages. The `updated_at` gate stops the sweep
@@ -179,7 +204,15 @@ re-hydrating what the webhook handled. PR hydrates share the drain queue and the
 ```go
 // prSink is the ingest-side seam; it names forge types only (ingest imports no store).
 type prSink interface {
-    PublishPullRequestUpdate(ctx context.Context, pr *compassv1.PullRequest, closingRefs []forge.IssueRef) error
+    PublishPullRequestUpdate(ctx context.Context, pr IngestedPullRequest) error
+}
+
+// IngestedPullRequest carries what the wire PullRequest lacks: forge times and closing refs.
+type IngestedPullRequest struct {
+    PR          *compassv1.PullRequest
+    CreatedAt   time.Time
+    UpdatedAt   time.Time
+    ClosingRefs []forge.IssueRef
 }
 ```
 
@@ -201,7 +234,9 @@ That is "newest last", it is stable across restart, and it never compares bare
 PR numbers across repos, which the parent record forbids.
 
 **Issue not on the board.** The link row waits. When `PublishIssueUpdate` later
-upserts that issue, it loads the issue's `prs` by the link index.
+upserts that issue, it loads the issue's `prs` by the link index. If that issue is
+the explicit target of PRs that were falling back, it also republishes those PRs'
+closing-ref issues without them, so no PR shows on two cards.
 
 **Tenancy.** Like `issues` and `forge_authored_artifacts`, every writer runs
 under the bootstrap tenant today: the runner door, the webhook drain and the
@@ -212,7 +247,7 @@ Scoping forge relay calls per tenant must move all three writers together.
 
 - **Columns on `forge_authored_artifacts`**: see §2.
 - **An opaque BYTEA blob**: no recency guard, unreadable in SQL.
-- **A separate `/pulls` walk and watermark**: `/issues` already returns PR rows in order.
+- **A separate `/pulls` sweep and watermark**: `/issues` already returns PR rows in order. Only the one-time backfill walks `/pulls?state=open`.
 - **Re-fetch PRs on `Rehydrate`**: rate cost on every start, and the board depends on the forge.
 - **Tracker-validate the explicit link at create**: an outage would fail PR creation.
 
@@ -229,61 +264,70 @@ Scoping forge relay calls per tenant must move all three writers together.
 
 - Interfaces:
   - Add `PullRequestIssueLink` and `CreatePullRequestRequest.issue = 7`.
+  - Migration: both tables, the index, and `forge_repo_subscriptions.prs_backfilled_at TIMESTAMPTZ` (NULL).
   - `type ForgeCoord struct { Provider ForgeProvider; Host, Repo string; Number uint64 }`.
-  - `func (s *Store) CreatePullRequestWithLink(ctx, a AuthoredArtifact, pr PullRequestRow, issue *ForgeCoord) error` writes the DL-055 row, the PR and the explicit link, and deletes `closing_ref` rows, in one transaction.
+  - `type PullRequestRow struct { Coord ForgeCoord; State string; CreatedAt, UpdatedAt time.Time; PR []byte }`.
+  - `func (s *Store) CreatePullRequestWithLink(ctx, a AuthoredArtifact, pr PullRequestRow, issue *ForgeCoord) error` writes the DL-055 row, the PR row (`ON CONFLICT DO NOTHING`) and the explicit link in one transaction.
   - `func (s *Store) UpsertPullRequest(ctx, pr PullRequestRow, closingRefs []ForgeCoord) (affected []ForgeCoord, err error)` returns the union of the old and new linked issues.
   - `func (s *Store) PullRequestsForIssues(ctx, issues []ForgeCoord) (map[ForgeCoord][]PullRequestRow, error)`.
+  - `func (s *Store) FallbackIssuesForTarget(ctx, issue ForgeCoord) ([]ForgeCoord, error)` returns the closing-ref issues of PRs whose explicit target is `issue`.
 - Tests (pgtest):
   - an explicit link survives an upsert;
+  - an explicit target that is also a closing ref stays linked when the ref is removed from the body;
   - an unresolvable explicit link falls back;
   - removed closing refs are returned in `affected`;
   - an older `forge_updated_at` is skipped;
+  - a create after the webhook hydrate keeps the hydrated row;
   - order follows `forge_created_at`;
-  - RLS rejects a foreign tenant;
+  - RLS rejects a foreign tenant, and a create plus an ingest under one ctx share a tenant;
   - mixed-case repos join.
 
-### T2 — Create path and agent tool
+### T2 — Forge reads
 
-- `createPullRequest` checks the shape of `issue`, then calls `CreatePullRequestWithLink` instead of `record` on the PR arm, and publishes. `forgeStore` and its fake gain the method.
-- `forge.ts` gains the `issue` parameter, and the role prompt gains its line.
-- Tests:
-  - a create with a link shows the PR on the issue at once;
-  - each shape error is rejected;
-  - a memo hit restores the link.
+- `ghPull` and `ghPullDetail` decode `created_at` and `updated_at`. `forge.PullRequest` gains `CreatedAt`, `UpdatedAt` and `ClosingRefs []IssueRef`.
+- `pullReadQuery` reads closing references behind `$refs`.
+- `ListUpdatedIssues` returns `ConditionalResult[UpdatedRows]`. The `updatedLister` interface and its fakes (`fakeUpdatedLister`, `sinceAwareLister`, `perRepoLister`) follow.
+- Add `ListOpenPullRequests(ctx, repo string) ([]UpdatedPull, error)` for the backfill.
+- Tests (httptest): timestamps decode on create and read, a GraphQL error reads as an error, closing refs are fetched on the first page only, and PR rows come back in order.
 
-### T3 — Forge reads
+### T3 — Projection
 
-- `pullReadQuery` reads closing references.
-- `forge.PullRequest` gains `CreatedAt`, `UpdatedAt` and `ClosingRefs`.
-- `ListUpdatedIssues` returns PR rows as `UpdatedRow{Kind, Number, UpdatedAt, State}`.
-- Tests (httptest): decoding, a GraphQL error read as an error, and PR rows returned in order.
-
-### T4 — Projection
-
-- Add `PublishPullRequestUpdate`. Load `prs` in `PublishIssueUpdate`, `Rehydrate`, `IssueToProto` and `SearchIssues`. Make `RecordAndPublish` keep `Prs`.
+- Add `PublishPullRequestUpdate(ctx, IngestedPullRequest)`. Load `prs` in `PublishIssueUpdate`, `Rehydrate`, `IssueToProto` and `SearchIssues`. Make `RecordAndPublish` keep `Prs`. `PublishIssueUpdate` republishes fallback issues through `FallbackIssuesForTarget`.
 - Tests:
   - a state change keeps `prs`;
   - an issue that lost a closing ref is republished without the PR;
   - a PR that arrives before its issue attaches later;
+  - a PR falling back to issue A moves when explicit target B arrives, and A is republished without it;
   - order survives `Rehydrate`.
+
+### T4 — Create path and agent tool
+
+- `createPullRequest` checks the shape of `issue`, then calls `CreatePullRequestWithLink` instead of `record` on the PR arm, and publishes. `forgeStore` and its fake gain the method.
+- `forge.ts` gains the `issue` parameter, and the role prompt gains its line.
+- Tests:
+  - a create with a link shows the PR on the issue at once, with `forge_created_at` stored;
+  - each shape error is rejected with its code;
+  - a memo hit writes nothing.
 
 ### T5 — Ingest admission
 
-- `boardRelevant` admits PR events. Add a PR arm to `hydrateAndSink`. The reconciler hydrates PR rows behind the `updated_at` gate and the cold-start window.
+- `boardRelevant` admits PR events. `boardCoord` gains a kind. Add a PR arm to `hydrateAndSink`. The reconciler hydrates PR rows behind the `updated_at` gate, runs the backfill pass, and stops on `ErrBudgetExhausted`.
 - Tests:
   - a PR webhook reaches the projection;
   - an unchanged PR row is not re-hydrated;
+  - a budget error on a PR row aborts the sweep and the watermark stays below that row;
+  - a repo with a watermark but NULL `prs_backfilled_at` hydrates its open PRs once;
   - on cold start, a closed PR older than 30 days is skipped.
 
-Order: T1 first. Then T2, T3 and T4 in parallel. T5 last.
+Order: T1, then T2. Then T3. Then T4 and T5 in parallel.
 
 ## Tasks
 
 - [ ] T1 — Proto, migration and store
-- [ ] T2 — Create-path link and agent tool
-- [ ] T3 — Closing refs, PR timestamps and PR rows from the issue walk
-- [ ] T4 — Projection attach, fan-out, rehydrate and every wire build
-- [ ] T5 — Webhook PR arm and reconciler PR hydrate
+- [ ] T2 — PR timestamps, closing refs and PR rows from the issue walk
+- [ ] T3 — Projection attach, fan-out, rehydrate and every wire build
+- [ ] T4 — Create-path link and agent tool
+- [ ] T5 — Webhook PR arm, reconciler PR hydrate and backfill
 
 ## Open Questions
 
