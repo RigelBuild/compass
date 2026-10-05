@@ -641,9 +641,12 @@ export interface AppStoreOptions {
 	 *  `sessionStorage`. Absent, the layout lives only as long as the store. */
 	readonly layoutStorage?: Storage;
 	/** The per-account tour state RPCs. Present → the store reads the stored
-	 *  state at construction and claims the first run; absent → the tour never
-	 *  auto-arms and step writes are skipped. */
+	 *  state at construction for resume; absent → the tour never auto-arms and
+	 *  step writes are skipped. */
 	readonly tour?: TourClient;
+	/** Claim the first run at boot (needs `tour`). Only a boot whose app reacts
+	 *  to `shouldAutoStart` may set it: the claim writes STARTED server-side. */
+	readonly claimFirstRun?: boolean;
 }
 
 /** One live session's tailed trace and the last lifecycle state the tail saw.
@@ -1192,21 +1195,39 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// CommsState's collections are `readonly` (a pure value the reducer rebuilds each
 	// transition) and the accessors keep that: every write goes through setComms with a
 	// fresh array. The `readonly` signature is what lets the compiler hold that true.
-	const withDemo = <T>(real: readonly T[], demo: readonly T[]): readonly T[] =>
-		demoActive() ? [...real, ...demo] : real;
-	const accounts = createMemo(() => withDemo(comms().accounts, DEMO_ACCOUNTS));
+	// Each merged accessor reads its own raw-slice memo, so a push that leaves a
+	// slice's identity alone (structural sharing) leaves the merged view alone too.
+	const withDemo = <T>(
+		slice: Accessor<readonly T[]>,
+		demo: readonly T[],
+	): Accessor<readonly T[]> =>
+		createMemo(() => (demoActive() ? [...slice(), ...demo] : slice()));
+	const accounts = withDemo(
+		createMemo(() => comms().accounts),
+		DEMO_ACCOUNTS,
+	);
 	const channelGroups = createMemo(() => comms().channelGroups);
-	const channels = createMemo(() => withDemo(comms().channels, DEMO_CHANNELS));
-	const messages = createMemo(() => withDemo(comms().messages, DEMO_MESSAGES));
-	const topics = createMemo(() => withDemo(comms().topics, DEMO_TOPICS));
+	const channels = withDemo(
+		createMemo(() => comms().channels),
+		DEMO_CHANNELS,
+	);
+	const messages = withDemo(
+		createMemo(() => comms().messages),
+		DEMO_MESSAGES,
+	);
+	const topics = withDemo(
+		createMemo(() => comms().topics),
+		DEMO_TOPICS,
+	);
 	// The board's fleet (§T3). Intermediate presence memo: re-notifies only when the
 	// presence map's identity changes — each posted message replaces the whole
 	// CommsState, and `===` equality plus structural sharing absorb that. The join
 	// then gates on live/offline: offline the fixture, live re-joins on account/presence.
+	const livePresence = createMemo(() => comms().presence);
 	const presence = createMemo(() =>
 		demoActive()
-			? new Map([...comms().presence, ...DEMO_PRESENCE])
-			: comms().presence,
+			? new Map([...livePresence(), ...DEMO_PRESENCE])
+			: livePresence(),
 	);
 	// Runtime markers arrive on the session-status stream, not the comms one, so
 	// they are their own signal joined in beside presence.
@@ -1231,11 +1252,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			: undefined;
 	// Live, the demo accounts and presence already ride the merged inputs; the
 	// offline fixture roster has no join, so the demo agents append directly.
-	const agents = createMemo<readonly Agent[]>(() =>
-		options.comms
-			? joinAgents(accounts(), presence(), runtimeMarkers())
-			: withDemo(STUB_AGENTS, DEMO_AGENTS),
-	);
+	const agents: Accessor<readonly Agent[]> = options.comms
+		? createMemo(() => joinAgents(accounts(), presence(), runtimeMarkers()))
+		: withDemo(() => STUB_AGENTS, DEMO_AGENTS);
 	// Boot default (Record A §T5): the first hydrated pin resolving to a visible
 	// agent, else the static `status` pane (RIG-1645 P4, OQ-1 ruled kept). An
 	// unresolvable leading pin is skipped but still shows its marked bar item.
@@ -1470,6 +1489,19 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				displayName: callerId,
 				kind: "user",
 			},
+	);
+	// Demo rows exist only while the tour runs; a reload or deep-link naming one
+	// would strand an empty surface, so any view on a demo path lands on the Bridge.
+	createEffect(
+		() =>
+			demoActive()
+				? []
+				: layoutViews(layout())
+						.filter((item) => item.path.split("/").some(isDemoId))
+						.map((item) => item.id),
+		(stale) => {
+			for (const id of stale) setLayout((prev) => setViewPath(prev, id, "/"));
+		},
 	);
 
 	// Open an agent's workspace by navigating, so the click and a `/agent/:agentId`
@@ -1935,10 +1967,17 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// The server's resume cursor; updated on every step so a replay after
 	// close resumes where the user left.
 	let resumeStepId = "";
-	// Best-effort: a failed write is reported once and never retried.
+	// Set by any start, so a claim that lands after a manual start arms nothing.
+	let tourStarted = false;
+	// One chain: the server upserts in arrival order, so a slow STARTED must
+	// never land after a later DISMISSED or COMPLETED. A failed write is
+	// reported once and never retried.
+	let tourWrites: Promise<unknown> = Promise.resolve();
 	const writeTourState = (outcome: TourOutcome, stepId: string) => {
-		void options.tour
-			?.setTourState({ outcome, stepId })
+		const client = options.tour;
+		if (!client) return;
+		tourWrites = tourWrites
+			.then(() => client.setTourState({ outcome, stepId }))
 			.catch((error: unknown) => options.onCommsError?.(error));
 	};
 	const showStep = (index: number, persist: boolean) => {
@@ -1968,6 +2007,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			// Only a won claim arms the first run; the claim already wrote STARTED.
 			if (trigger === "first-run" && !shouldAutoStart()) return;
 			setShouldAutoStart(false);
+			tourStarted = true;
 			const resumed = TOUR_STEPS.findIndex((s) => s.id === resumeStepId);
 			setTourOpen(true);
 			setDemoActive(true);
@@ -2000,22 +2040,24 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			endTour();
 		},
 	};
-	// Boot: the stored state feeds resume only; a first run arms solely on a won
+	// Boot: the stored state feeds resume; a first run arms solely on a won
 	// claim, so a failed read, a failed claim, or a lost race arms nothing.
 	if (options.tour) {
 		const client = options.tour;
+		const claimFirstRun = options.claimFirstRun ?? false;
 		let disposed = false;
 		if (getOwner()) onCleanup(() => (disposed = true));
 		void client
 			.getTourState({})
 			.then(async (state) => {
 				if (disposed) return;
-				resumeStepId = state.stepId;
-				if (state.outcome !== TourOutcome.UNSPECIFIED) return;
+				// A step the user reached while the read was in flight is newer.
+				if (resumeStepId === "") resumeStepId = state.stepId;
+				if (!claimFirstRun || state.outcome !== TourOutcome.UNSPECIFIED) return;
 				const { claimed } = await client.claimTourStart({
 					stepId: TOUR_STEPS[0]?.id ?? "",
 				});
-				if (claimed && !disposed) setShouldAutoStart(true);
+				if (claimed && !disposed && !tourStarted) setShouldAutoStart(true);
 			})
 			.catch((error: unknown) => {
 				if (!disposed) options.onCommsError?.(error);

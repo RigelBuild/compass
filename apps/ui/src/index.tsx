@@ -83,8 +83,8 @@ async function main(
 			comms: clients.comms,
 			compass: clients.compass,
 			transport: clients.transport,
-			// Read after WhoAmI: the caller is known, so the store's boot read and
-			// first-run claim key on the right account.
+			// Read after WhoAmI so the resume read keys on the right account. No
+			// claimFirstRun yet: nothing in the app opens the tour on a won claim.
 			tour: clients.compass,
 			queryClient,
 			callerId,

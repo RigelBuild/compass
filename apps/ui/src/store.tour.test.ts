@@ -8,6 +8,7 @@ import {
 	type FakeCommsSnapshot,
 	wireAskMessage,
 	wireChannel,
+	wireTextMessage,
 } from "./live/comms-fake";
 import { createFakeCompass, type FakeCompass } from "./live/compass-fake";
 import {
@@ -27,9 +28,7 @@ import {
 } from "./tour/demo";
 import { TOUR_STEPS } from "./tour/state";
 
-// The tour controller and the demo read seam. A fake TourClient records every
-// write and scripts the boot read + claim, so the tests can tell a claimed
-// first run from a lost or failed one.
+// A fake TourClient scripts the boot read and claim and records every write.
 
 interface TourFake {
 	readonly client: TourClient;
@@ -43,6 +42,10 @@ function tourFake(script: {
 	claim?: boolean | Error;
 	getError?: Error;
 	setError?: Error;
+	/** Holds the boot read until it resolves. */
+	readGate?: Promise<void>;
+	/** Holds the claim until it resolves. */
+	claimGate?: Promise<void>;
 }): TourFake {
 	const claims: string[] = [];
 	const writes: { outcome: TourOutcome; stepId: string }[] = [];
@@ -51,6 +54,7 @@ function tourFake(script: {
 		writes,
 		client: {
 			getTourState: async () => {
+				await script.readGate;
 				if (script.getError) throw script.getError;
 				return {
 					outcome: script.outcome ?? TourOutcome.UNSPECIFIED,
@@ -59,6 +63,7 @@ function tourFake(script: {
 			},
 			claimTourStart: async ({ stepId }) => {
 				claims.push(stepId);
+				await script.claimGate;
 				if (script.claim instanceof Error) throw script.claim;
 				return { claimed: script.claim ?? true };
 			},
@@ -71,9 +76,14 @@ function tourFake(script: {
 	};
 }
 
-// Drain the boot read + claim promise chain.
+function gate(): { promise: Promise<void>; open: () => void } {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	return { promise, open: () => resolve() };
+}
+
+// Drain the boot read + claim chain and the serialized write chain.
 async function settle(): Promise<void> {
-	for (let i = 0; i < 20; i++) {
+	for (let i = 0; i < 50; i++) {
 		await Promise.resolve();
 		flush();
 	}
@@ -98,41 +108,71 @@ function withStore(
 const LAST = TOUR_STEPS.length - 1;
 const stepId = (i: number): string => TOUR_STEPS[i]?.id ?? "";
 const DEMO_AGENT = DEMO_AGENTS[0]?.account.id ?? "";
+const wireText = (id: string) =>
+	wireTextMessage({
+		id,
+		topicId: "top-1",
+		authorAccountId: "acc-matt",
+		atUnixMs: 5000,
+		text: id,
+	});
 
 describe("tour first-run arming", () => {
-	test("a claimed first run arms auto-start and start opens the tour", async () => {
-		const fake = tourFake({ claim: true });
+	test("without claimFirstRun the boot reads resume state but never claims", async () => {
+		const fake = tourFake({ claim: true, stepId: stepId(2) });
 		await withStore({ tour: fake.client }, async (store) => {
 			await settle();
-			expect(fake.claims).toEqual([stepId(0)]);
-			expect(store.tour.shouldAutoStart()).toBe(true);
-			store.tour.start("first-run");
-			flush();
-			expect(store.tour.open()).toBe(true);
-			expect(store.tour.stepIndex()).toBe(0);
+			expect(fake.claims).toEqual([]);
 			expect(store.tour.shouldAutoStart()).toBe(false);
-			// The claim already wrote the started row.
-			expect(fake.writes).toEqual([]);
+			store.tour.start("resume");
+			flush();
+			expect(store.tour.stepIndex()).toBe(2);
 		});
+	});
+
+	test("a claimed first run arms auto-start and start opens the tour", async () => {
+		const fake = tourFake({ claim: true });
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims).toEqual([stepId(0)]);
+				expect(store.tour.shouldAutoStart()).toBe(true);
+				store.tour.start("first-run");
+				flush();
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(0);
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				// The claim already wrote the started row.
+				expect(fake.writes).toEqual([]);
+			},
+		);
 	});
 
 	test("a lost claim arms nothing and first-run start stays closed", async () => {
 		const fake = tourFake({ claim: false });
-		await withStore({ tour: fake.client }, async (store) => {
-			await settle();
-			expect(fake.claims.length).toBe(1);
-			expect(store.tour.shouldAutoStart()).toBe(false);
-			store.tour.start("first-run");
-			flush();
-			expect(store.tour.open()).toBe(false);
-		});
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims.length).toBe(1);
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				store.tour.start("first-run");
+				flush();
+				expect(store.tour.open()).toBe(false);
+			},
+		);
 	});
 
 	test("a failed claim arms nothing and is reported", async () => {
 		const fake = tourFake({ claim: new Error("claim down") });
 		const errors: unknown[] = [];
 		await withStore(
-			{ tour: fake.client, onCommsError: (e) => errors.push(e) },
+			{
+				tour: fake.client,
+				claimFirstRun: true,
+				onCommsError: (e) => errors.push(e),
+			},
 			async (store) => {
 				await settle();
 				expect(store.tour.shouldAutoStart()).toBe(false);
@@ -149,24 +189,71 @@ describe("tour first-run arming", () => {
 			outcome: TourOutcome.DISMISSED,
 			stepId: stepId(3),
 		});
-		await withStore({ tour: fake.client }, async (store) => {
-			await settle();
-			expect(fake.claims).toEqual([]);
-			expect(store.tour.shouldAutoStart()).toBe(false);
-			store.tour.start("resume");
-			flush();
-			expect(store.tour.open()).toBe(true);
-			expect(store.tour.stepIndex()).toBe(3);
-			expect(fake.writes).toEqual([
-				{ outcome: TourOutcome.STARTED, stepId: stepId(3) },
-			]);
-		});
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims).toEqual([]);
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				store.tour.start("resume");
+				await settle();
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(3);
+				expect(fake.writes).toEqual([
+					{ outcome: TourOutcome.STARTED, stepId: stepId(3) },
+				]);
+			},
+		);
 	});
 
 	test("an offline store never arms", async () => {
-		await withStore({}, async (store) => {
+		await withStore({ claimFirstRun: true }, async (store) => {
 			await settle();
 			expect(store.tour.shouldAutoStart()).toBe(false);
+		});
+	});
+
+	test("a manual start while the claim is pending suppresses auto-start", async () => {
+		const claim = gate();
+		const fake = tourFake({ claim: true, claimGate: claim.promise });
+		await withStore(
+			{ tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				expect(fake.claims.length).toBe(1);
+				store.tour.start("replay");
+				flush();
+				store.tour.next();
+				flush();
+				claim.open();
+				await settle();
+				expect(store.tour.shouldAutoStart()).toBe(false);
+				store.tour.start("first-run");
+				flush();
+				expect(store.tour.stepIndex()).toBe(1);
+			},
+		);
+	});
+
+	test("a slow boot read does not overwrite a cursor the user moved", async () => {
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.close();
+			flush();
+			read.open();
+			await settle();
+			store.tour.start("resume");
+			flush();
+			expect(store.tour.stepIndex()).toBe(1);
 		});
 	});
 });
@@ -183,7 +270,7 @@ describe("tour transitions", () => {
 			store.tour.next();
 			flush();
 			store.tour.back();
-			flush();
+			await settle();
 			expect(store.tour.stepIndex()).toBe(1);
 			expect(fake.writes).toEqual([
 				{ outcome: TourOutcome.STARTED, stepId: stepId(0) },
@@ -203,7 +290,7 @@ describe("tour transitions", () => {
 			store.tour.next();
 			flush();
 			store.tour.dismiss();
-			flush();
+			await settle();
 			expect(store.tour.open()).toBe(false);
 			expect(store.tour.demoActive()).toBe(false);
 			expect(fake.writes.at(-1)).toEqual({
@@ -220,7 +307,7 @@ describe("tour transitions", () => {
 			store.tour.start("replay");
 			flush();
 			store.tour.complete();
-			flush();
+			await settle();
 			expect(store.tour.open()).toBe(false);
 			expect(store.tour.demoActive()).toBe(false);
 			expect(fake.writes.at(-1)?.outcome).toBe(TourOutcome.COMPLETED);
@@ -240,7 +327,7 @@ describe("tour transitions", () => {
 			expect(store.tour.stepIndex()).toBe(LAST);
 			expect(store.tour.open()).toBe(true);
 			store.tour.next();
-			flush();
+			await settle();
 			expect(store.tour.open()).toBe(false);
 			expect(fake.writes.at(-1)?.outcome).toBe(TourOutcome.COMPLETED);
 		});
@@ -275,6 +362,45 @@ describe("tour transitions", () => {
 				expect(store.tour.open()).toBe(true);
 			},
 		);
+	});
+
+	test("a stale STARTED never lands after a later DISMISSED", async () => {
+		// The server applies each write when it arrives; the fake releases the
+		// newest pending write first, so unordered writes would land backwards.
+		let stored: { outcome: TourOutcome; stepId: string } | undefined;
+		const pending: (() => void)[] = [];
+		const client: TourClient = {
+			getTourState: async () => ({
+				outcome: TourOutcome.DISMISSED,
+				stepId: "",
+			}),
+			claimTourStart: async () => ({ claimed: false }),
+			setTourState: (req) => {
+				const { promise, resolve } = Promise.withResolvers<unknown>();
+				pending.push(() => {
+					stored = { outcome: req.outcome, stepId: req.stepId };
+					resolve({});
+				});
+				return promise;
+			},
+		};
+		await withStore({ tour: client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.dismiss();
+			await settle();
+			for (let release = pending.pop(); release; release = pending.pop()) {
+				release();
+				await settle();
+			}
+			expect(stored).toEqual({
+				outcome: TourOutcome.DISMISSED,
+				stepId: stepId(1),
+			});
+		});
 	});
 });
 
@@ -337,7 +463,56 @@ describe("tour demo seam", () => {
 		});
 	});
 
-	test("derived memos see demo rows: selectedAgent and prs", async () => {
+	test("message-only updates keep the merged slices' identity", async () => {
+		const comms = createFakeComms({
+			channels: [wireChannel("chan-1", "acc-matt")],
+		});
+		await withStore({ comms: comms.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			const before = {
+				agents: store.agents(),
+				accounts: store.accounts(),
+				channels: store.channels(),
+				topics: store.topics(),
+			};
+			await comms.emit(
+				{ case: "messagePosted", value: { message: wireText("m-new") } },
+				1n,
+			);
+			await settle();
+			expect(store.messages().some((m) => m.id === "m-new")).toBe(true);
+			expect(store.agents()).toBe(before.agents);
+			expect(store.accounts()).toBe(before.accounts);
+			expect(store.channels()).toBe(before.channels);
+			expect(store.topics()).toBe(before.topics);
+		});
+	});
+
+	test("a live update keeps a selected demo channel", async () => {
+		const comms = createFakeComms({
+			channels: [wireChannel("chan-1", "acc-matt")],
+		});
+		const demoChannel = DEMO_CHANNELS[0]?.id ?? "";
+		await withStore({ comms: comms.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.openChannel(demoChannel);
+			flush();
+			expect(store.selectedChannelId()).toBe(demoChannel);
+			await comms.emit(
+				{ case: "messagePosted", value: { message: wireText("m-new") } },
+				1n,
+			);
+			await settle();
+			expect(store.selectedChannelId()).toBe(demoChannel);
+			expect(store.view()).toBe("channel");
+		});
+	});
+
+	test("derived memos see demo rows: selectedAgent, prs and agentRepos", async () => {
 		await withStore({}, async (store) => {
 			const demoPr = DEMO_ISSUES.find((i) => i.prs.length > 0);
 			expect(demoPr).toBeDefined();
@@ -350,13 +525,18 @@ describe("tour demo seam", () => {
 			expect(store.selectedAgent()?.account.id).toBe(DEMO_AGENT);
 			// The workspace anchors on the demo agent's own issue.
 			expect(store.selectedIssue()?.assignee).toBe(DEMO_AGENT);
+			const owned = DEMO_ISSUES.filter((i) => i.assignee === DEMO_AGENT);
+			expect(store.agentRepos()[0]?.branches).toEqual(
+				owned.map((i) => i.branch),
+			);
 		});
 	});
 
-	test("without the tour a demo route resolves nothing", async () => {
+	test("without the tour a demo route redirects to the Bridge", async () => {
 		await withStore({}, async (store) => {
 			store.openAgent(DEMO_AGENT);
 			flush();
+			expect(store.view()).toBe("bridge");
 			expect(store.selectedAgent()).toBeUndefined();
 		});
 	});
@@ -435,11 +615,18 @@ describe("demo targets never reach the server or storage", () => {
 		);
 	};
 
-	test("postMessage to a demo channel or topic sends nothing", async () => {
+	// One demo id per call, so each half of a guard is exercised on its own.
+	test("postMessage to a demo channel with a real topic sends nothing", async () => {
 		await withLive(async ({ store, comms }) => {
 			await store
-				.postMessage(DEMO_CHANNEL, { case: "topicId", value: DEMO_TOPIC }, "hi")
+				.postMessage(DEMO_CHANNEL, { case: "topicId", value: "top-1" }, "hi")
 				.catch(() => {});
+			expect(comms.posts).toEqual([]);
+		});
+	});
+
+	test("postMessage to a real channel with a demo topic sends nothing", async () => {
+		await withLive(async ({ store, comms }) => {
 			await store
 				.postMessage("chan-real", { case: "topicId", value: DEMO_TOPIC }, "hi")
 				.catch(() => {});
@@ -447,34 +634,80 @@ describe("demo targets never reach the server or storage", () => {
 		});
 	});
 
-	// A `demo:` ask served in a real channel: with the guard gone the recorders
-	// would stage an answer and submit would send it.
-	test("ask recorders and submit on a demo ask send nothing", async () => {
-		const snapshot: FakeCommsSnapshot = {
-			channels: [wireChannel("chan-1", "acc-matt")],
-			messagesByChannel: {
-				"chan-1": [
-					wireAskMessage({
-						id: "demo:msg-ask",
-						topicId: "top-1",
-						authorAccountId: "acc-matt",
-						askId: "demo:ask",
-						questionIds: ["q"],
-					}),
-				],
-			},
-		};
-		await withLive(async ({ store, comms }) => {
-			expect(store.messages().some((m) => m.id === "demo:msg-ask")).toBe(true);
-			store.answerAsk("demo:msg-ask", "demo:ask", "q", "q-a");
-			store.answerAskText("demo:msg-ask", "demo:ask", "q", "text");
-			flush();
-			store.submitAsk("demo:msg-ask", "demo:ask");
-			await settle();
-			expect(comms.askResponses).toEqual([]);
-			expect(store.isAskSubmitted("demo:ask")).toBe(false);
-		}, snapshot);
-	});
+	// Asks served in a real channel, each naming exactly one `demo:` id. The
+	// staged asks arrive with a recorded answer, so a recorder must leave it
+	// as is and only submit's guard stands between it and the wire.
+	const ASKS = [
+		{
+			label: "demo message",
+			blank: { messageId: "demo:msg-a", askId: "ask-a" },
+			staged: { messageId: "demo:msg-c", askId: "ask-c" },
+		},
+		{
+			label: "demo ask",
+			blank: { messageId: "msg-b", askId: "demo:ask-b" },
+			staged: { messageId: "msg-d", askId: "demo:ask-d" },
+		},
+	] as const;
+	const askSnapshot: FakeCommsSnapshot = {
+		channels: [wireChannel("chan-1", "acc-matt")],
+		messagesByChannel: {
+			"chan-1": ASKS.flatMap(({ blank, staged }) => [
+				wireAskMessage({
+					id: blank.messageId,
+					topicId: "top-1",
+					authorAccountId: "acc-matt",
+					askId: blank.askId,
+					questionIds: ["q"],
+				}),
+				wireAskMessage({
+					id: staged.messageId,
+					topicId: "top-1",
+					authorAccountId: "acc-matt",
+					askId: staged.askId,
+					questionIds: ["q"],
+					freeText: ["q"],
+					recordedText: { q: "staged" },
+				}),
+			]),
+		},
+	};
+	const question = (store: AppStore, messageId: string) => {
+		const block = store
+			.messages()
+			.find((m) => m.id === messageId)
+			?.blocks.find((b) => b.kind === "ask");
+		return block?.kind === "ask" ? block.ask.questions[0] : undefined;
+	};
+
+	for (const { label, blank, staged } of ASKS) {
+		test(`answerAsk on a ${label} stages nothing`, async () => {
+			await withLive(async ({ store }) => {
+				expect(question(store, blank.messageId)?.chosenOptionIds).toEqual([]);
+				store.answerAsk(blank.messageId, blank.askId, "q", "q-a");
+				flush();
+				expect(question(store, blank.messageId)?.chosenOptionIds).toEqual([]);
+			}, askSnapshot);
+		});
+
+		test(`answerAskText on a ${label} keeps the staged answer`, async () => {
+			await withLive(async ({ store }) => {
+				expect(question(store, staged.messageId)?.customText).toBe("staged");
+				store.answerAskText(staged.messageId, staged.askId, "q", "changed");
+				flush();
+				expect(question(store, staged.messageId)?.customText).toBe("staged");
+			}, askSnapshot);
+		});
+
+		test(`submitAsk on a staged ${label} sends nothing`, async () => {
+			await withLive(async ({ store, comms }) => {
+				store.submitAsk(staged.messageId, staged.askId);
+				await settle();
+				expect(comms.askResponses).toEqual([]);
+				expect(store.isAskSubmitted(staged.askId)).toBe(false);
+			}, askSnapshot);
+		});
+	}
 
 	test("pin and unpin of a demo agent write nothing", async () => {
 		await withLive(async ({ store }) => {
