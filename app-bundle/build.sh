@@ -2,8 +2,9 @@
 # build.sh — build the versioned Compass native-app release tarball
 # (compass-app-<version>-linux-amd64.tar.gz): the gtk4 shell (compass-app) + the
 # four embedded sidecars (compass-stack, compass-server, compass-runner,
-# compass-clear-token) + the UI dist + the desktop file + LICENSE, every binary
-# stamped with the ONE version. No postgres tooling and no compass-postgres
+# compass-clear-token) + the pinned secretspec CLI + the UI dist + the desktop
+# file + LICENSE, every compass binary stamped with the ONE version. No postgres
+# tooling and no compass-postgres
 # sidecar — the embedded stack's postgres is a stock postgres:18 container via
 # rootless podman (§A4).
 #
@@ -97,6 +98,13 @@ for b in compass-stack compass-server compass-runner compass-clear-token; do
     -o "$STAGE/bin/$b" "./cmd/$b"
 done
 
+# secretspec: compass-server spawns it by name at boot, and the bundle bin/ is
+# on the stack's PATH. The upstream release binary, which runs off-store.
+log "Staging secretspec"
+nix build -f "$REPO_ROOT/tools/toolchain/secretspec-env.nix" secretspecRelease \
+  -o "$SCRIPT_DIR/result-secretspec"
+install -m 755 "$SCRIPT_DIR/result-secretspec/bin/secretspec" "$STAGE/bin/secretspec"
+
 # --- 5. Stage the rest of the layout — dist + desktop + LICENSE (§156-168).
 
 # dist: the compass-ui:build output (apps/ui/dist), staged beside the shell.
@@ -144,6 +152,12 @@ if [[ ! -f "$STAGE/bin/dist/index.html" ]]; then
   exit 1
 fi
 log "  bin/dist/index.html present"
+
+if ! got="$("$STAGE/bin/secretspec" --version 2>&1)"; then
+  err "sanity: bin/secretspec --version exited non-zero: $got"
+  exit 1
+fi
+log "  bin/secretspec --version = $got"
 
 # --- 7. Tar the bundle dir. Clear ALL prior release tarballs first, not just
 # this version's: build.sh stamps the name with the git sha, so a dev box that

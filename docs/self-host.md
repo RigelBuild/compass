@@ -25,24 +25,19 @@ rootless container, so the host needs:
   cloud-hypervisor, virtiofsd, and passt. The nix flake channel provides these
   at the sanctioned pin; the release tarball assumes you supply them (they are
   packaged in most distributions).
-- **The `secretspec` CLI**, at or above 0.20.0. The secrets *write* path (the
-  admin `SetSecret` RPC) spawns it by name to write values into
-  your configured provider. Reading secrets at boot does not need it — the
-  server links the SecretSpec library directly — so a missing CLI does not stop
-  the stack starting; it fails the first secret write instead. Unlike the
-  microVM trio, the nix flake channel does NOT carry it — the flake's nixpkgs
-  pin resolves 0.14.0, below the floor above — so install it on every shape:
+- **The `secretspec` CLI**, at or above 0.20.0. The server spawns it by name to
+  read its secrets at boot, the master key included, so the server will not
+  start without it. The nix flake's `compass-server` and `compass-stack-env`
+  and the app bundles carry the pinned CLI already. The bare `compass-server`
+  release binary does not, so on that shape install it yourself:
 
   ```sh
   brew install secretspec
   ```
 
   It is in `homebrew/core` with bottles for macOS arm64 and Linux (x86_64 and
-  arm64); on Linux the bottle pulls `dbus`, which the keyring provider needs.
-  Prebuilt tarballs per platform are also published on each
-  [upstream release](https://github.com/cachix/secretspec/releases). The floor
-  tracks the library version the server links, so the two halves of the secrets
-  path cannot drift.
+  arm64). Prebuilt tarballs per platform are also published on each
+  [upstream release](https://github.com/cachix/secretspec/releases).
 
 Run the preflight check before your first bring-up to surface any missing
 prerequisite at install time rather than mid-`up`:
@@ -119,7 +114,7 @@ instead of a container.
 
 The flake tracks `main` and builds each binary as its own package, plus
 `compass-stack-env` (the cloud-hypervisor/virtiofsd/passt trio at the sanctioned
-pin). Install the stack binaries and the trio together so `compass-stack up`
+pin, plus the pinned `secretspec`). Install the stack binaries and the trio together so `compass-stack up`
 resolves `compass-server` and `compass-runner` on `PATH` and the trio is present
 for the microVM boot:
 
