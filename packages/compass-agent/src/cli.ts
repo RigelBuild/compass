@@ -33,12 +33,14 @@ import {
 	type Rule,
 	ruleCapability,
 } from "@oh-my-pi/pi-coding-agent/capability/rule";
+import type { ResolvedModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { serviceTierSettingToTier } from "@oh-my-pi/pi-coding-agent/config/service-tier";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
 import {
 	initTelemetryExport,
 	isTelemetryExportEnabled,
 } from "@oh-my-pi/pi-coding-agent/telemetry-export";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
 import { BoardBroker, createBoardTools } from "./board";
@@ -257,20 +259,30 @@ async function reapplyConfiguredDefaultModelRole(
 		try {
 			await session.setModel(role.model, "default", { persist: false });
 		} catch (error) {
+			// setModel can fail after switching, so report the model actually active.
 			const reason = String(error).replaceAll(/[\r\n]+/g, " ");
+			const active = session.model
+				? `${session.model.provider}/${session.model.id}`
+				: "none";
 			console.error(
-				`[compass-agent] configured default model role could not be applied: ${reason}`,
+				`[compass-agent] configured default model role could not be applied (active model: ${active}): ${reason}`,
 			);
 			return;
 		}
 	}
-	if (
-		settings.isConfigured("defaultThinkingLevel") !== true &&
-		role.explicitThinkingLevel &&
-		role.thinkingLevel !== undefined
-	) {
-		session.setThinkingLevel(role.thinkingLevel);
+	const thinkingLevel = reappliedThinkingLevel(settings, role);
+	if (thinkingLevel !== undefined) session.setThinkingLevel(thinkingLevel);
+}
+
+// setModel re-applies the new model's default level, so explicit config is applied last.
+function reappliedThinkingLevel(
+	settings: Settings,
+	role: ResolvedModelRoleValue,
+): ConfiguredThinkingLevel | undefined {
+	if (settings.isConfigured("defaultThinkingLevel")) {
+		return settings.get("defaultThinkingLevel");
 	}
+	return role.explicitThinkingLevel ? role.thinkingLevel : undefined;
 }
 async function resolveContinuationSessionFile(
 	home: string,

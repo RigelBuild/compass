@@ -480,7 +480,7 @@ describe("main injects fleet config as objects into createAgentSession", () => {
 		expect(session.modelSetCalls).toHaveLength(1);
 		expect(session.thinkingLevelCalls).toEqual([ThinkingLevel.High]);
 	});
-	test("a failed fleet model switch keeps the continued session model and boots", async () => {
+	test("a failed fleet model switch logs the active model and boots", async () => {
 		const mount = scratch();
 		writeMember(
 			mount,
@@ -531,7 +531,24 @@ describe("main injects fleet config as objects into createAgentSession", () => {
 			session,
 		);
 		expect(options.thinkingLevel).toBe(ThinkingLevel.Low);
-		expect(session.thinkingLevelCalls).toEqual([]);
+		// Applied after the switch, which would otherwise reset to the model default.
+		expect(session.thinkingLevelCalls).toEqual([ThinkingLevel.Low]);
+	});
+
+	test("a plain boot with a fleet default role makes no role reapply", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const session = fakeSession(
+			{},
+			{ roleResolution: roleResolution(modelFixture("openai", "gpt-4o")) },
+		);
+		await runMainOverMount(mount, {}, session);
+		expect(session.roleCalls).toEqual([]);
+		expect(session.modelSetCalls).toEqual([]);
 	});
 
 	test("a project-only default role is not reapplied over the continued model", async () => {
