@@ -476,7 +476,8 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 // the actor is a member of. Results are best-match-first, clamped to the page
 // bounds. Visibility is enforced in SQL — the actor sees a message only in a
 // channel it belongs to — so a scope pointing at a channel the actor cannot see
-// yields nothing rather than leaking.
+// yields nothing rather than leaking. Under FORCE RLS messages_search_idx cannot
+// serve the `@@` filter (it is not LEAKPROOF); the membership join may narrow rows.
 func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope SearchScope, query string, page Page) ([]Message, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("%w: search query is required", ErrInvalidArgument)

@@ -251,7 +251,14 @@ Mirror the message pipeline end to end:
    Verified on 18.4: the DDL applies, a label search for `triage` matches a
    row labelled `Needs-Triage` (the wrapper's text goes through normal
    stemming, yielding `'needs-triag'`, `'need'`, `'triag'`), and
-   `EXPLAIN` shows a `Bitmap Index Scan on issues_search_idx`.
+   `EXPLAIN` shows a `Bitmap Index Scan on issues_search_idx`. That plan was
+   measured as the table owner. As `compass_app` under FORCE RLS, `@@` is not
+   LEAKPROOF, so Postgres filters the tenant's rows instead of using the GIN
+   index. For the same reason `messages_search_idx` cannot serve the `@@`
+   filter. `SearchMessages` may still reach fewer rows through its
+   `channel_members` join, but no plan has been measured there as `compass_app`.
+   This is accepted for now; measure each query again as `compass_app` when one
+   tenant's issues or messages grow large.
 
    **Operational hazard, for whoever later edits the wrapper:** a
    `CREATE OR REPLACE` of `compass_labels_text` does **not** recompute

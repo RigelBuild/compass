@@ -216,6 +216,8 @@ func (s *Store) ListIssues(ctx context.Context) ([]Issue, error) {
 
 // SearchIssues searches all issues visible under the caller's tenant context,
 // ranked by full-text relevance and bounded to the requested page size.
+// Under FORCE RLS the planner cannot use issues_search_idx, because `@@` is not
+// LEAKPROOF; the search scans the tenant's rows.
 func (s *Store) SearchIssues(ctx context.Context, query string, limit uint32) ([]Issue, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("%w: search query is required", ErrInvalidArgument)
