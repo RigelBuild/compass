@@ -279,7 +279,8 @@ fixed below.
     while an attempt runs, and with "Compass is already set up. Quit and
     reopen it to change this." after a save. `end(saved)` releases it.
   - `caPicks`: the shell-side store of picked CA bytes, keyed by a 128-bit
-    random hex ref; `take` removes the entry.
+    random hex ref. `get` leaves the entry, so a failed probe can be retried
+    with the same pick; `clear` drops every entry after a save.
   - `newSetupBridgeService` builds the setup-mode service: no connection, a
     tokenstore, and the setup wiring. `newBridgeService` services have no
     setup wiring.
@@ -300,7 +301,7 @@ fixed below.
        returns kind `other` ("Connected, but could not save the token" /
        "Connected, but the settings could not be saved: <err>");
     8. install `&connection{mode: "client", serverURL: url, target: candidate,
-       pump: bridge.NewPump(candidate)}`, then `end(true)`.
+       pump: bridge.NewPump(candidate)}`, then `picks.clear()` and `end(true)`.
   - Every successful `connectResult` carries `serverUrl`.
 - **Interfaces:**
 
@@ -317,7 +318,8 @@ fixed below.
       byRef map[string][]byte
   }
   func (p *caPicks) add(pem []byte) string
-  func (p *caPicks) take(ref string) ([]byte, bool)
+  func (p *caPicks) get(ref string) ([]byte, bool)
+  func (p *caPicks) clear()
 
   type setupWiring struct {
       configPath string // appconfig.ConfigPath result
@@ -349,6 +351,8 @@ fixed below.
   - No `app.toml` and no install after: `http://…` → `invalid-url`; an unknown
     ref and a non-PEM pick → `invalid-ca`; a wrong token → `bad-token`; no
     CA → `bad-cert`.
+  - A wrong token with a CA ref, then the right token with the same ref →
+    `ok`.
   - After a success, a different URL → `other` and `app.toml` byte-identical;
     a plain token `Connect` → `ok`.
   - A server choice on a `newBridgeService` client service → `other`, nothing
@@ -436,7 +440,8 @@ fixed below.
       take several minutes." Success shows "Compass is set up to run on this
       computer. Quit and reopen it to start." with a Quit button. Failure shows
       the message and both choices again.
-    - Connect hands off to `bootNativeClient(root, deps, "setup")`.
+    - Connect hands off to `deps.bootNativeClient(root, "setup")`. The default
+      deps wrap `bootNativeClient(root, undefined, "setup")`.
   - `boot-native.ts` setup entry: no auto-probe; the form from A4; submit
     disabled while the URL is empty; it always sends `server`; `invalid-url`
     and `invalid-ca` show `message` via `textContent`; on `ok` the provider
