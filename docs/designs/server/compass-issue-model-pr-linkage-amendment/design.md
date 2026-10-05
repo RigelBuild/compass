@@ -287,7 +287,7 @@ Order: T1 first. Then T2, T3 and T4 in parallel. T5 last.
 
 ## Open Questions
 
-- **Load-bearing: how fresh must PR review and CI state be on the board?**
+- **Load-bearing (RIG-4604): how fresh must PR review and CI state be on the board?**
   `boardRelevant` drops `REVIEW`, `COMMENT` and `CHECKS` events, and
   `gitHubStateOrUpdateKind` drops `synchronize` and `ready_for_review`. So a PR's
   reviews, checks and draft flag refresh only on a title or state edit, or when a
