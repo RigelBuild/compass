@@ -83,7 +83,7 @@ func TranslatePullRequest(in PullRequest, attr *compassv1.AgentAttribution) *com
 			Additions: in.Changed.Additions,
 			Deletions: in.Changed.Deletions,
 		},
-		Checks:  TranslateChecks(in.Checks),
+		Checks:  translatePRChecks(in.Checks),
 		Reviews: translateReviews(in.Reviews),
 		Threads: translateThreads(in.Threads),
 	}
@@ -97,6 +97,15 @@ func TranslateChecks(in Checks) *compassv1.ChecksSummary {
 		State:   in.State,
 		Checks:  translateChecks(in.Checks),
 	}
+}
+
+// translatePRChecks leaves the PR's checks unset when no roll-up was fetched
+// (a transition response carries none), per the proto's "unset for no CI".
+func translatePRChecks(in Checks) *compassv1.ChecksSummary {
+	if in.HeadSHA == "" && in.State == "" && len(in.Checks) == 0 {
+		return nil
+	}
+	return TranslateChecks(in)
 }
 
 func translateChecks(in []Check) []*compassv1.Check {

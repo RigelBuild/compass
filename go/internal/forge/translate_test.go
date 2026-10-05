@@ -306,14 +306,30 @@ func TestTranslateEmptySlicesYieldNil(t *testing.T) {
 	if pr.GetThreads() != nil {
 		t.Errorf("Threads = %v, want nil for empty source", pr.GetThreads())
 	}
-	// A PR with no checks still gets a ChecksSummary (value struct), but its
-	// Checks slice must be nil for an empty source.
-	if pr.GetChecks() != nil && pr.GetChecks().GetChecks() != nil {
-		t.Errorf("Checks.Checks = %v, want nil for empty source", pr.GetChecks().GetChecks())
+	// A PR with no checks roll-up (e.g. a transition response) leaves the wire
+	// field unset, so a renderer never sees an empty roll-up state.
+	if pr.GetChecks() != nil {
+		t.Errorf("Checks = %v, want nil for a PR with no checks roll-up", pr.GetChecks())
 	}
 
 	cs := TranslateChecks(Checks{HeadSHA: "s"})
 	if cs.GetChecks() != nil {
 		t.Errorf("ChecksSummary.Checks = %v, want nil for empty source", cs.GetChecks())
+	}
+}
+
+// A head with zero CI runs is still a fetched roll-up (GitHub reports
+// success): it must keep its summary, not be mistaken for an absent one.
+func TestTranslatePullRequestKeepsZeroRunRollup(t *testing.T) {
+	pr := TranslatePullRequest(PullRequest{Number: 1, Checks: Checks{HeadSHA: "abc", State: "success"}}, nil)
+	cs := pr.GetChecks()
+	if cs == nil {
+		t.Fatal("Checks = nil, want the fetched zero-run roll-up kept")
+	}
+	if cs.GetHeadSha() != "abc" || cs.GetState() != "success" {
+		t.Errorf("Checks = {%q %q}, want {abc success}", cs.GetHeadSha(), cs.GetState())
+	}
+	if cs.GetChecks() != nil {
+		t.Errorf("Checks.Checks = %v, want nil for zero runs", cs.GetChecks())
 	}
 }

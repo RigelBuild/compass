@@ -119,6 +119,11 @@ func TestForgeTransitionPullRequestStateDispatchesAndReturnsUpdatedPR(t *testing
 	if pr.GetNumber() != 9 || pr.GetRepo() != testRepo {
 		t.Fatalf("PR coordinate = %s#%d, want %s#9", pr.GetRepo(), pr.GetNumber(), testRepo)
 	}
+	// The transition response carries no checks roll-up; an empty summary
+	// renders as a malformed checks attribute downstream.
+	if pr.GetChecks() != nil {
+		t.Errorf("Checks = %v, want unset on a transition response", pr.GetChecks())
+	}
 
 	calls := author.Calls()
 	if len(calls) != 1 || calls[0].Method != "TransitionPullRequestState" {
