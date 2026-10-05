@@ -11,9 +11,8 @@
 //     anchor.
 //
 // A --mode/$COMPASS_APP_MODE override, resolved by the caller and passed to
-// Load, wins over the file: precedence is override > file > embedded-default.
-// With no file or override, Load returns ErrNoConfig; launch uses the zero-config
-// onboarding default (embedded) until the chooser is implemented.
+// Load, wins over the file. With neither, Load returns ErrNoConfig; the native
+// app falls back to embedded until the first-run chooser is implemented.
 //
 // The core is pure: Parse decodes and validates a TOML byte slice with no I/O,
 // Load takes configHome and home parameters instead of reading environment state,

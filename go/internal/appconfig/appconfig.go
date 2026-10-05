@@ -41,7 +41,7 @@ func NormalizeServerURL(raw string) (string, error) {
 		return fail("The server URL must use https.", fmt.Sprintf(
 			"appconfig: server_url %q must use https (got scheme %q): cleartext connections are not allowed", raw, u.Scheme))
 	}
-	if u.Host == "" {
+	if u.Hostname() == "" {
 		return fail("The server URL must include a host.",
 			fmt.Sprintf("appconfig: server_url %q must be absolute with a host (e.g. https://host:8443)", raw))
 	}
@@ -67,11 +67,10 @@ const (
 	// loopback/network door; it requires a ServerURL and may carry a CACert.
 	// It KEEPS the zero value so a client Config need not be spelled out.
 	ModeClient Mode = iota
-	// ModeEmbedded is the local-supervisor onboarding mode: the app brings up
-	// and supervises a private stack in-process. It is the zero-config default
-	// an absent app.toml (and an empty/absent mode) resolves to, so a first
-	// launch of the installed app just works without any server_url. It is
-	// declared AFTER ModeClient so ModeClient retains the zero value.
+	// ModeEmbedded is the local-supervisor mode: the app brings up and
+	// supervises a private stack in-process. An app.toml with an empty or
+	// absent mode selects it. It is declared AFTER ModeClient so ModeClient
+	// retains the zero value.
 	ModeEmbedded
 )
 
@@ -123,8 +122,8 @@ type fileConfig struct {
 
 // Parse decodes and validates an app.toml byte slice into a Config. It performs
 // no I/O. The rules (design §A1):
-//   - absent/empty mode or mode="embedded" → ModeEmbedded (the zero-config
-//     onboarding default). server_url and ca_cert are client-only fields, so a
+//   - absent/empty mode or mode="embedded" → ModeEmbedded. server_url and
+//     ca_cert are client-only fields, so a
 //     non-empty value under embedded mode is a legible error;
 //   - mode="client" requires a non-empty server_url that parses as an absolute
 //     https URL (ca_cert is optional);
@@ -198,8 +197,15 @@ func Load(configHome, home, override string) (Config, error) {
 		return Config{}, err
 	}
 	data, readErr := os.ReadFile(path) //nolint:gosec // G304: caller-resolved app config path, not user input
-	if errors.Is(readErr, os.ErrNotExist) && strings.TrimSpace(override) == "" {
-		return Config{}, ErrNoConfig
+	if errors.Is(readErr, os.ErrNotExist) {
+		// A dangling symlink reads as absent but blocks the exclusive save, so it
+		// must surface as a read error, not as a first run that can never finish.
+		if _, lerr := os.Lstat(path); lerr == nil {
+			return Config{}, fmt.Errorf("appconfig: reading %s: %w", path, readErr)
+		}
+		if strings.TrimSpace(override) == "" {
+			return Config{}, ErrNoConfig
+		}
 	}
 
 	cfg := Config{Mode: ModeEmbedded}

@@ -290,39 +290,56 @@ func writeConfig(t *testing.T, contents string) string {
 }
 
 func TestNormalizeServerURL(t *testing.T) {
+	const (
+		reasonHTTPS = "The server URL must use https."
+		reasonHost  = "The server URL must include a host."
+		reasonCreds = "The server URL must not include credentials."
+		reasonPath  = "The server URL must not include a path, query, or fragment."
+	)
 	tests := []struct {
-		name      string
-		raw       string
-		want      string
-		wantError string
+		name       string
+		raw        string
+		want       string
+		wantReason string
+		wantError  string
 	}{
 		{name: "trim and trailing slash", raw: " https://h:8443/ ", want: "https://h:8443"},
 		{
-			name:      "http scheme keeps legacy error",
-			raw:       "http://h",
-			wantError: `appconfig: server_url "http://h" must use https (got scheme "http"): cleartext connections are not allowed`,
+			name:       "http scheme keeps legacy error",
+			raw:        "http://h",
+			wantReason: reasonHTTPS,
+			wantError:  `appconfig: server_url "http://h" must use https (got scheme "http"): cleartext connections are not allowed`,
 		},
 		{
-			name:      "relative host-form keeps legacy error",
-			raw:       "h:8443",
-			wantError: `appconfig: server_url "h:8443" must use https (got scheme "h"): cleartext connections are not allowed`,
+			name:       "relative host-form keeps legacy error",
+			raw:        "h:8443",
+			wantReason: reasonHTTPS,
+			wantError:  `appconfig: server_url "h:8443" must use https (got scheme "h"): cleartext connections are not allowed`,
 		},
 		{
-			name:      "relative path keeps legacy error",
-			raw:       "/x",
-			wantError: `appconfig: server_url "/x" must use https (got scheme ""): cleartext connections are not allowed`,
+			name:       "relative path keeps legacy error",
+			raw:        "/x",
+			wantReason: reasonHTTPS,
+			wantError:  `appconfig: server_url "/x" must use https (got scheme ""): cleartext connections are not allowed`,
 		},
 		{
-			name:      "credentials keep legacy error",
-			raw:       "https://u:p@h",
-			wantError: `appconfig: server_url "https://u:p@h" must not embed credentials; the bearer token is entered in the connect screen and stored in the OS keychain (DL-109)`,
+			name:       "credentials keep legacy error",
+			raw:        "https://u:p@h",
+			wantReason: reasonCreds,
+			wantError:  `appconfig: server_url "https://u:p@h" must not embed credentials; the bearer token is entered in the connect screen and stored in the OS keychain (DL-109)`,
 		},
-		{name: "path", raw: "https://h/p"},
-		{name: "trailing path", raw: "https://h/p/"},
-		{name: "query", raw: "https://h?x=1"},
-		{name: "fragment", raw: "https://h#f"},
-		{name: "malformed escape", raw: "%"},
-		{name: "missing host", raw: "https:///x"},
+		{
+			name:       "path",
+			raw:        "https://h/p",
+			wantReason: reasonPath,
+			wantError:  `appconfig: server_url "https://h/p" must not include a path, query, or fragment (e.g. https://host:8443)`,
+		},
+		{name: "trailing path", raw: "https://h/p/", wantReason: reasonPath},
+		{name: "query", raw: "https://h?x=1", wantReason: reasonPath},
+		{name: "fragment", raw: "https://h#f", wantReason: reasonPath},
+		{name: "malformed escape", raw: "%", wantReason: "The server URL is not valid."},
+		{name: "missing host", raw: "https:///x", wantReason: reasonHost},
+		{name: "port without hostname", raw: "https://:443", wantReason: reasonHost},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -336,23 +353,39 @@ func TestNormalizeServerURL(t *testing.T) {
 				}
 				return
 			}
-			if err == nil {
-				t.Fatalf("NormalizeServerURL(%q): want a *URLError, got nil", tt.raw)
-			}
 			var urlErr *URLError
 			if !errors.As(err, &urlErr) {
-				t.Fatalf("error %v has type %T, want *URLError", err, err)
+				t.Fatalf("NormalizeServerURL(%q) error = %v (%T), want *URLError", tt.raw, err, err)
+			}
+			if urlErr.URL != tt.raw || urlErr.Reason != tt.wantReason {
+				t.Errorf("URLError = {URL: %q, Reason: %q}, want {%q, %q}", urlErr.URL, urlErr.Reason, tt.raw, tt.wantReason)
 			}
 			if tt.wantError != "" && err.Error() != tt.wantError {
-				t.Fatalf("NormalizeServerURL(%q) error = %v, want %q", tt.raw, err, tt.wantError)
-			}
-			if urlErr.URL != tt.raw {
-				t.Errorf("URLError.URL = %q, want raw input %q", urlErr.URL, tt.raw)
-			}
-			if tt.wantError == "" && (strings.HasPrefix(tt.raw, "https://h/") || strings.Contains(tt.raw, "?")) && err.Error() != `appconfig: server_url "`+tt.raw+`" must not include a path, query, or fragment (e.g. https://host:8443)` {
-				t.Errorf("path error = %q", err)
+				t.Errorf("Error() = %q, want %q", err, tt.wantError)
 			}
 		})
+	}
+}
+
+// A dangling app.toml symlink blocks the exclusive save, so Load must not
+// report it as a first run the chooser could then never complete.
+func TestLoadDanglingConfigSymlinkIsNotNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	path, err := ConfigPath(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "gone.toml"), path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "", ""); err == nil || errors.Is(err, ErrNoConfig) {
+		t.Fatalf("Load with a dangling app.toml symlink = %v, want a read error that is not ErrNoConfig", err)
+	}
+	if err := SaveEmbedded(path); !errors.Is(err, ErrConfigExists) {
+		t.Fatalf("SaveEmbedded over a dangling symlink = %v, want ErrConfigExists", err)
 	}
 }
 
