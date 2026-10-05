@@ -267,6 +267,13 @@ type Fabric struct {
 	// consumer has fully drained and closed. Tests only: ctx-done teardown is
 	// asynchronous, so this is the event that says the old consumer is gone.
 	consumerClosed func()
+	// beforeTerm is a test hook between DLQ publish and Term.
+	beforeTerm func()
+
+	// parkedSequences holds stream sequences parked recently, keyed to claim time,
+	// so the callback and advisory park paths publish one DLQ record per event.
+	parkedMu        sync.Mutex
+	parkedSequences map[uint64]time.Time
 
 	// reconnectHooks is read by the hook goroutine New starts; reconnectSignal
 	// wakes it. One slot, sent non-blocking, so a reconnect burst coalesces and

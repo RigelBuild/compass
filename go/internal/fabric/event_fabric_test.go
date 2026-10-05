@@ -2012,3 +2012,155 @@ func TestQueuedFinalAttemptParksOnce(t *testing.T) {
 		t.Fatalf("B parked twice; second reason %q", dup.Header.Get(dlqHeaderReason))
 	}
 }
+
+// TestLateTermOnFinalAttemptParksOnce gates Term until the server has dropped
+// the final attempt, forcing the callback and advisory park paths to overlap.
+func TestLateTermOnFinalAttemptParksOnce(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	ackWait := 300 * time.Millisecond
+	f := newFabric(t, Config{URL: url, AckWait: ackWait, MaxDeliver: 1, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	wildcard, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	advisories, err := raw.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES." + DefaultStreamName + "." + durableName(wildcard))
+	if err != nil {
+		t.Fatalf("SubscribeSync(max deliveries advisory): %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing raw subscriptions: %v", err)
+	}
+
+	termEntered := make(chan struct{}, 1)
+	releaseTerm := make(chan struct{})
+	termOnce := sync.OnceFunc(func() { close(releaseTerm) })
+	defer termOnce()
+	f.beforeTerm = func() {
+		termEntered <- struct{}{}
+		<-releaseTerm
+	}
+	subject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error {
+		return errors.New("final attempt failed")
+	})
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer func() {
+		termOnce()
+		unsub()
+	}()
+	if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "late-term"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	select {
+	case <-termEntered:
+	case <-ctx.Done():
+		t.Fatal("final-attempt park did not reach Term")
+	}
+	if _, err := advisories.NextMsgWithContext(ctx); err != nil {
+		t.Fatalf("server did not emit max-deliveries advisory before Term: %v", err)
+	}
+	termOnce()
+
+	first, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("final-attempt failure was not parked: %v", err)
+	}
+	if got := first.Header.Get(dlqHeaderSubject); got != subject {
+		t.Fatalf("parked subject = %q, want %q", got, subject)
+	}
+	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelDup()
+	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
+		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
+	}
+}
+
+// TestAdvisoryParksBeforeCallbackParksOnce releases a callback only after its
+// max-deliveries advisory has already published the event to the DLQ.
+func TestAdvisoryParksBeforeCallbackParksOnce(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, AckWait: 300 * time.Millisecond, MaxDeliver: 1, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ subscription: %v", err)
+	}
+
+	callbackStarted := make(chan struct{}, 1)
+	releaseCallback := make(chan struct{})
+	releaseCallbackOnce := sync.OnceFunc(func() { close(releaseCallback) })
+	defer releaseCallbackOnce()
+	callbackReturned := make(chan struct{}, 1)
+	subject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error {
+		callbackStarted <- struct{}{}
+		<-releaseCallback
+		callbackReturned <- struct{}{}
+		return errors.New("final attempt failed")
+	})
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer func() {
+		releaseCallbackOnce()
+		unsub()
+	}()
+	if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "advisory-first"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case <-callbackStarted:
+	case <-ctx.Done():
+		t.Fatal("callback did not start")
+	}
+	first, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("max-deliveries advisory did not park the event: %v", err)
+	}
+	if got := first.Header.Get(dlqHeaderSubject); got != subject {
+		t.Fatalf("parked subject = %q, want %q", got, subject)
+	}
+	releaseCallbackOnce()
+	select {
+	case <-callbackReturned:
+	case <-ctx.Done():
+		t.Fatal("callback failure did not reach its park path")
+	}
+
+	dupCtx, cancelDup := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelDup()
+	if dup, err := dlq.NextMsgWithContext(dupCtx); err == nil {
+		t.Fatalf("event parked twice; second record reason %q", dup.Header.Get(dlqHeaderReason))
+	}
+}
