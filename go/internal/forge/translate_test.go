@@ -317,3 +317,19 @@ func TestTranslateEmptySlicesYieldNil(t *testing.T) {
 		t.Errorf("ChecksSummary.Checks = %v, want nil for empty source", cs.GetChecks())
 	}
 }
+
+// A head with zero CI runs is still a fetched roll-up (GitHub reports
+// success): it must keep its summary, not be mistaken for an absent one.
+func TestTranslatePullRequestKeepsZeroRunRollup(t *testing.T) {
+	pr := TranslatePullRequest(PullRequest{Number: 1, Checks: Checks{HeadSHA: "abc", State: "success"}}, nil)
+	cs := pr.GetChecks()
+	if cs == nil {
+		t.Fatal("Checks = nil, want the fetched zero-run roll-up kept")
+	}
+	if cs.GetHeadSha() != "abc" || cs.GetState() != "success" {
+		t.Errorf("Checks = {%q %q}, want {abc success}", cs.GetHeadSha(), cs.GetState())
+	}
+	if cs.GetChecks() != nil {
+		t.Errorf("Checks.Checks = %v, want nil for zero runs", cs.GetChecks())
+	}
+}
