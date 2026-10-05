@@ -154,6 +154,14 @@ air-gapped path). The Runner container image carries its own baked copy. The
 sources, the air-gapped runbook, and the agent-image bump flow are in
 [the guest image guide](self-host-guest-image.md).
 
+## Runner enrollment
+
+The Runner makes up to five enrollment attempts with 1s, 2s, 4s, and 8s backoffs,
+then exits non-zero. Under devenv, `restart.on = "on_failure"` restarts the
+Runner. `compass-stack` does not watch the Runner after `up` returns, and `up`
+attaches to a live server without starting one, so run `compass-stack down` and
+then the same `compass-stack up` command to restart it.
+
 ## Database
 
 By default the stack provisions its own PostgreSQL as a bundled rootless

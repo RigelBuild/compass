@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
@@ -134,11 +135,74 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 	}
 }
 
-// Run attaches the Runner to the Server and hosts agent sessions until ctx is
-// cancelled. It Dials (constructs the RunnerService client + enrolls), sweeps
-// this Runner's stale agent state, builds the production SessionHost over the
-// container engine, and runs the Sessions command loop. A returned error is a
-// fatal attach/stream failure; a cancelled ctx is a clean shutdown (nil).
+// Five attempts with 1s, 2s, 4s, and 8s backoffs cover brief restarts, then fail loud;
+// the per-attempt timeout stops a stalled server from blocking an attempt forever.
+const (
+	dialMaxAttempts      = 5
+	dialInitialBackoff   = time.Second
+	enrollAttemptTimeout = 10 * time.Second
+)
+
+type dialFunc func(context.Context, RunnerConfig) (*ServerLink, error)
+type waitFunc func(context.Context, time.Duration) bool
+
+// runDialWithRetry returns ctx.Err() once ctx is cancelled, so Run can treat it as shutdown.
+func runDialWithRetry(ctx context.Context, cfg RunnerConfig, log *slog.Logger, dial dialFunc, wait waitFunc) (*ServerLink, error) {
+	var lastErr error
+	for attempt := 1; attempt <= dialMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, enrollAttemptTimeout)
+		link, err := dial(attemptCtx, cfg)
+		attemptTimedOut := attemptCtx.Err() == context.DeadlineExceeded
+		cancel()
+		if err == nil {
+			return link, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+		// The attempt's own deadline is a stalled server, which is retryable.
+		timedOut := attemptTimedOut && errors.Is(err, context.DeadlineExceeded)
+		log.Warn("runner enrollment attempt failed", slog.Int("attempt", attempt),
+			slog.Int("max_attempts", dialMaxAttempts), slog.Bool("timed_out", timedOut), slog.Any("error", err))
+		if !timedOut && !retryableDialError(err) {
+			return nil, fmt.Errorf("runner enrollment failed (not retryable, attempt %d): %w", attempt, err)
+		}
+		if attempt < dialMaxAttempts && !wait(ctx, dialInitialBackoff<<uint(attempt-1)) {
+			return nil, ctx.Err()
+		}
+	}
+	return nil, fmt.Errorf("runner enrollment failed after %d attempts: %w", dialMaxAttempts, lastErr)
+}
+
+func retryableDialError(err error) bool {
+	if _, ok := errors.AsType[*dialConfigurationError](err); ok {
+		return false
+	}
+	switch connect.CodeOf(err) {
+	case connect.CodeUnauthenticated, connect.CodePermissionDenied, connect.CodeInvalidArgument, connect.CodeFailedPrecondition:
+		return false
+	default:
+		return true
+	}
+}
+
+func waitDialBackoff(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// Run attaches to the Server with bounded enrollment retries, then hosts sessions until ctx is cancelled.
+// A cancelled ctx is a clean shutdown (nil); exhausted retries or a dropped session stream return an error.
 func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
@@ -152,8 +216,11 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	if err := validateRuntimeDir(cfg.RuntimeDir); err != nil {
 		return err
 	}
-	link, err := Dial(ctx, cfg)
+	link, err := runDialWithRetry(ctx, cfg, log, Dial, waitDialBackoff)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, cfg.RunnerID, log)
