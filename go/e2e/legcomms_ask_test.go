@@ -190,46 +190,7 @@ func TestCommsAskRoundTripThroughAgentLoop(t *testing.T) {
 		t.Fatalf("RespondToAsk(%q): %v", raised.AskID, err)
 	}
 
-	// Both halves of the answer commit in ONE store transaction, so re-reading the
-	// channel after the RPC returns sees the flip AND the answer message.
-	answered := askChannelMessages(ctx, t, st, agentID, channelID)
-	_, flipped := askPostedAsk(answered)
-	if flipped == nil {
-		t.Fatalf("the raised ask vanished from %q after RespondToAsk; want it preserved and marked answered", askChannel)
-	}
-	// Answered is the only reliable answered-signal: a fully-skipped ask leaves
-	// every question's answer fields empty, indistinguishable from pending.
-	if !flipped.Answered {
-		t.Fatal("the ask is still unanswered in the store after RespondToAsk returned")
-	}
-	// The chosen id is the durable record of WHICH option the operator picked; a
-	// bare Answered flip would pass with the choice dropped.
-	if got := flipped.Questions[0].ChosenOptionIDs; len(got) != 1 || got[0] != askChosenOptionID {
-		t.Fatalf("answered question chose %v, want exactly the operator's option id %q", got, askChosenOptionID)
-	}
-
-	// The answer landed as its OWN message, not as a mutation of the ask: that is
-	// what puts it on the normal message rail the phase below rides.
-	answerMsg, answer := askAnswerBlock(answered)
-	if answer == nil {
-		t.Fatalf("no ask_answer block on %q; RespondToAsk posted no answer message", askChannel)
-	}
-	if answerMsg.ID == raisedMsg.ID {
-		t.Fatalf("the answer block rides the ask's own message %s; RespondToAsk must post the answer as a distinct message", raisedMsg.ID)
-	}
-	// The snapshot correlates the answer to the ask it answers, and names the
-	// asking agent so the delivery consumer targets it without a lookup.
-	if answer.Ask.AskID != raised.AskID {
-		t.Fatalf("answer snapshot correlates ask id %q, want the raised %q", answer.Ask.AskID, raised.AskID)
-	}
-	if answer.AskerAccountID != store.AccountID(agentID) {
-		t.Fatalf("answer names asker %q, want the asking agent %q", answer.AskerAccountID, agentID)
-	}
-	// The operator authored the answer, not the agent: an agent-attributed answer
-	// would mean the asymmetry this leg rests on had collapsed.
-	if answerMsg.AuthorAccountID == store.AccountID(agentID) {
-		t.Fatalf("the answer is authored by the asking agent %q; RespondToAsk must attribute it to the answering operator", agentID)
-	}
+	answerMsg := assertAskAnswered(t, ctx, st, agentID, channelID, askChannel, raisedMsg, raised, askChosenOptionID)
 
 	// ── Phase 3: the agent receives the answer on a later turn ───────────────
 
@@ -355,4 +316,48 @@ func askOffersOption(opts []store.AskOption, optionID string) bool {
 		}
 	}
 	return false
+}
+func assertAskAnswered(t *testing.T, ctx context.Context, st *store.Store, agentID, channelID, askChannel string, raisedMsg store.Message, raised *store.Ask, askChosenOptionID string) store.Message {
+	t.Helper()
+	// Both halves of the answer commit in ONE store transaction, so re-reading the
+	// channel after the RPC returns sees the flip AND the answer message.
+	answered := askChannelMessages(ctx, t, st, agentID, channelID)
+	_, flipped := askPostedAsk(answered)
+	if flipped == nil {
+		t.Fatalf("the raised ask vanished from %q after RespondToAsk; want it preserved and marked answered", askChannel)
+	}
+	// Answered is the only reliable answered-signal: a fully-skipped ask leaves
+	// every question's answer fields empty, indistinguishable from pending.
+	if !flipped.Answered {
+		t.Fatal("the ask is still unanswered in the store after RespondToAsk returned")
+	}
+	// The chosen id is the durable record of WHICH option the operator picked; a
+	// bare Answered flip would pass with the choice dropped.
+	if got := flipped.Questions[0].ChosenOptionIDs; len(got) != 1 || got[0] != askChosenOptionID {
+		t.Fatalf("answered question chose %v, want exactly the operator's option id %q", got, askChosenOptionID)
+	}
+
+	// The answer landed as its OWN message, not as a mutation of the ask: that is
+	// what puts it on the normal message rail the phase below rides.
+	answerMsg, answer := askAnswerBlock(answered)
+	if answer == nil {
+		t.Fatalf("no ask_answer block on %q; RespondToAsk posted no answer message", askChannel)
+	}
+	if answerMsg.ID == raisedMsg.ID {
+		t.Fatalf("the answer block rides the ask's own message %s; RespondToAsk must post the answer as a distinct message", raisedMsg.ID)
+	}
+	// The snapshot correlates the answer to the ask it answers, and names the
+	// asking agent so the delivery consumer targets it without a lookup.
+	if answer.Ask.AskID != raised.AskID {
+		t.Fatalf("answer snapshot correlates ask id %q, want the raised %q", answer.Ask.AskID, raised.AskID)
+	}
+	if answer.AskerAccountID != store.AccountID(agentID) {
+		t.Fatalf("answer names asker %q, want the asking agent %q", answer.AskerAccountID, agentID)
+	}
+	// The operator authored the answer, not the agent: an agent-attributed answer
+	// would mean the asymmetry this leg rests on had collapsed.
+	if answerMsg.AuthorAccountID == store.AccountID(agentID) {
+		t.Fatalf("the answer is authored by the asking agent %q; RespondToAsk must attribute it to the answering operator", agentID)
+	}
+	return answerMsg
 }

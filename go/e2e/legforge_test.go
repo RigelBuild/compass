@@ -103,77 +103,8 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	}
 
 	requests := f.ForgeStub().Requests()
-	if len(requests) != 7 {
-		paths := make([]string, 0, len(requests))
-		for _, request := range requests {
-			paths = append(paths, request.Method+" "+request.Path)
-		}
-		t.Fatalf("forge requests = %d, want 7 (one mint plus six API calls); saw %v", len(requests), paths)
-	}
-	if requests[0].Path != "/api/v3/app/installations/1/access_tokens" || requests[0].Method != http.MethodPost {
-		t.Fatalf("mint request = %#v", requests[0])
-	}
-	wantPaths := []string{
-		"/api/v3/repos/owner/repo/issues",
-		"/api/v3/repos/owner/repo/issues/4242",
-		"/api/v3/repos/owner/repo/issues/4242/comments",
-		"/api/v3/repos/owner/repo/issues/4242",
-		"/api/v3/repos/owner/repo/issues/4242",
-		"/api/v3/repos/owner/repo/pulls",
-	}
-	wantMethods := []string{http.MethodPost, http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodGet, http.MethodPost}
-	for i, want := range wantPaths {
-		request := requests[i+1]
-		if request.Path != want {
-			t.Fatalf("forge request %d path = %q, want %q", i+1, request.Path, want)
-		}
-		if request.Method != wantMethods[i] {
-			t.Fatalf("forge request %d method = %q, want %q", i+1, request.Method, wantMethods[i])
-		}
-		if request.Authorization != "Bearer forge-stub-installation-1" {
-			t.Fatalf("request %d authorization = %q", i+1, request.Authorization)
-		}
-	}
 
-	var transitionBody map[string]any
-	if err := json.Unmarshal(requests[4].Body, &transitionBody); err != nil {
-		t.Fatalf("decode transition body: %v", err)
-	}
-	if transitionBody["state"] != "closed" || transitionBody["state_reason"] != "completed" {
-		t.Fatalf("transition body = %#v, want state=closed state_reason=completed", transitionBody)
-	}
-
-	var createBody map[string]any
-	if err := json.Unmarshal(requests[1].Body, &createBody); err != nil {
-		t.Fatalf("decode create body: %v", err)
-	}
-	createTitle, titleOK := createBody["title"].(string)
-	createText, bodyOK := createBody["body"].(string)
-	if !titleOK || createTitle != "forge leg issue" || !bodyOK || !strings.Contains(createText, "authored by the forge leg") || !strings.Contains(createText, "compass:owner") || !strings.Contains(createText, "agent="+handle) {
-		t.Fatalf("create body = %#v", createBody)
-	}
-	if !reflect.DeepEqual(createBody["labels"], []any{"e2e"}) {
-		t.Fatalf("create body labels = %#v, want [e2e]", createBody["labels"])
-	}
-
-	var commentBody map[string]any
-	if err := json.Unmarshal(requests[3].Body, &commentBody); err != nil {
-		t.Fatalf("decode comment body: %v", err)
-	}
-	commentText, commentOK := commentBody["body"].(string)
-	if !commentOK || !strings.Contains(commentText, "forge leg comment") || !strings.Contains(commentText, "compass:owner") || !strings.Contains(commentText, "agent="+handle) {
-		t.Fatalf("comment body = %q", commentBody["body"])
-	}
-
-	var pullRequestBody map[string]any
-	if err := json.Unmarshal(requests[6].Body, &pullRequestBody); err != nil {
-		t.Fatalf("decode pull request body: %v", err)
-	}
-	pullTitle, pullTitleOK := pullRequestBody["title"].(string)
-	pullText, pullBodyOK := pullRequestBody["body"].(string)
-	if !pullTitleOK || pullTitle != "forge leg pull request" || !pullBodyOK || !strings.Contains(pullText, "authored by the forge leg") || !strings.Contains(pullText, "compass:owner") || !strings.Contains(pullText, "agent="+handle) || pullRequestBody["head"] != "forge-leg" || pullRequestBody["base"] != "main" || pullRequestBody["draft"] != true {
-		t.Fatalf("pull request body = %#v", pullRequestBody)
-	}
+	assertForgeRequests(t, requests, handle)
 	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, "Created pull request #4243 in owner/repo: https://forge.stub/pulls/4243"); err != nil {
 		t.Fatalf("awaitTranscriptPersisted (pull request response): %v", err)
 	}
@@ -215,5 +146,81 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 	}
 	if !consumed || transitionAgent != store.AccountID(agentID) {
 		t.Fatalf("ConsumeStateTransition agent=%q consumed=%v, want %q true", transitionAgent, consumed, store.AccountID(agentID))
+	}
+}
+
+func assertForgeRequests(t *testing.T, requests []forgeStubRequest, handle string) {
+	t.Helper()
+	if len(requests) != 7 {
+		paths := make([]string, 0, len(requests))
+		for _, request := range requests {
+			paths = append(paths, request.Method+" "+request.Path)
+		}
+		t.Fatalf("forge requests = %d, want 7 (one mint plus six API calls); saw %v", len(requests), paths)
+	}
+	if requests[0].Path != "/api/v3/app/installations/1/access_tokens" || requests[0].Method != http.MethodPost {
+		t.Fatalf("mint request = %#v", requests[0])
+	}
+	wantPaths := []string{
+		"/api/v3/repos/owner/repo/issues",
+		"/api/v3/repos/owner/repo/issues/4242",
+		"/api/v3/repos/owner/repo/issues/4242/comments",
+		"/api/v3/repos/owner/repo/issues/4242",
+		"/api/v3/repos/owner/repo/issues/4242",
+		"/api/v3/repos/owner/repo/pulls",
+	}
+	wantMethods := []string{http.MethodPost, http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodGet, http.MethodPost}
+	for i, want := range wantPaths {
+		request := requests[i+1]
+		if request.Path != want {
+			t.Fatalf("forge request %d path = %q, want %q", i+1, request.Path, want)
+		}
+		if request.Method != wantMethods[i] {
+			t.Fatalf("forge request %d method = %q, want %q", i+1, request.Method, wantMethods[i])
+		}
+		if request.Authorization != "Bearer forge-stub-installation-1" {
+			t.Fatalf("request %d authorization = %q", i+1, request.Authorization)
+		}
+	}
+	assertForgeRequestBodies(t, requests, handle)
+}
+
+func assertForgeRequestBodies(t *testing.T, requests []forgeStubRequest, handle string) {
+	t.Helper()
+	var transitionBody map[string]any
+	if err := json.Unmarshal(requests[4].Body, &transitionBody); err != nil {
+		t.Fatalf("decode transition body: %v", err)
+	}
+	if transitionBody["state"] != "closed" || transitionBody["state_reason"] != "completed" {
+		t.Fatalf("transition body = %#v, want state=closed state_reason=completed", transitionBody)
+	}
+	var createBody map[string]any
+	if err := json.Unmarshal(requests[1].Body, &createBody); err != nil {
+		t.Fatalf("decode create body: %v", err)
+	}
+	createTitle, titleOK := createBody["title"].(string)
+	createText, bodyOK := createBody["body"].(string)
+	if !titleOK || createTitle != "forge leg issue" || !bodyOK || !strings.Contains(createText, "authored by the forge leg") || !strings.Contains(createText, "compass:owner") || !strings.Contains(createText, "agent="+handle) {
+		t.Fatalf("create body = %#v", createBody)
+	}
+	if !reflect.DeepEqual(createBody["labels"], []any{"e2e"}) {
+		t.Fatalf("create body labels = %#v, want [e2e]", createBody["labels"])
+	}
+	var commentBody map[string]any
+	if err := json.Unmarshal(requests[3].Body, &commentBody); err != nil {
+		t.Fatalf("decode comment body: %v", err)
+	}
+	commentText, commentOK := commentBody["body"].(string)
+	if !commentOK || !strings.Contains(commentText, "forge leg comment") || !strings.Contains(commentText, "compass:owner") || !strings.Contains(commentText, "agent="+handle) {
+		t.Fatalf("comment body = %q", commentBody["body"])
+	}
+	var pullRequestBody map[string]any
+	if err := json.Unmarshal(requests[6].Body, &pullRequestBody); err != nil {
+		t.Fatalf("decode pull request body: %v", err)
+	}
+	pullTitle, pullTitleOK := pullRequestBody["title"].(string)
+	pullText, pullBodyOK := pullRequestBody["body"].(string)
+	if !pullTitleOK || pullTitle != "forge leg pull request" || !pullBodyOK || !strings.Contains(pullText, "authored by the forge leg") || !strings.Contains(pullText, "compass:owner") || !strings.Contains(pullText, "agent="+handle) || pullRequestBody["head"] != "forge-leg" || pullRequestBody["base"] != "main" || pullRequestBody["draft"] != true {
+		t.Fatalf("pull request body = %#v", pullRequestBody)
 	}
 }

@@ -212,6 +212,28 @@ func TestCommsNativeToolsThroughRelay(t *testing.T) {
 	// Same ordering as the activity above: AppendMessage commits before the tool
 	// result returns, so the settle implies the row. Read AS the agent — the
 	// member whose membership gates the store's visibility JOIN.
+	assertToolsPostedAsk(t, ctx, st, agentID, askChannelID)
+}
+
+// toolsPostedAsk returns the ask this leg posted — the single-question block
+// keyed by toolsAskQID — with the message carrying it, so the caller can check
+// where it landed. A nil ask means no message carried one.
+func toolsPostedAsk(msgs []store.Message) (store.Message, *store.Ask) {
+	for _, m := range msgs {
+		for _, b := range m.Blocks {
+			if b.Ask == nil || len(b.Ask.Questions) != 1 {
+				continue
+			}
+			if b.Ask.Questions[0].QuestionID == toolsAskQID {
+				return m, b.Ask
+			}
+		}
+	}
+	return store.Message{}, nil
+}
+
+func assertToolsPostedAsk(t *testing.T, ctx context.Context, st *store.Store, agentID, askChannelID string) {
+	t.Helper()
 	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{
 		Actor:     store.AccountID(agentID),
 		ChannelID: store.ChannelID(askChannelID),
@@ -252,21 +274,4 @@ func TestCommsNativeToolsThroughRelay(t *testing.T) {
 	if topicName != toolsAskTopic || channelName != toolsAskChannel {
 		t.Fatalf("ask landed in %q/%q, want %q/%q; create_topic did not route it", channelName, topicName, toolsAskChannel, toolsAskTopic)
 	}
-}
-
-// toolsPostedAsk returns the ask this leg posted — the single-question block
-// keyed by toolsAskQID — with the message carrying it, so the caller can check
-// where it landed. A nil ask means no message carried one.
-func toolsPostedAsk(msgs []store.Message) (store.Message, *store.Ask) {
-	for _, m := range msgs {
-		for _, b := range m.Blocks {
-			if b.Ask == nil || len(b.Ask.Questions) != 1 {
-				continue
-			}
-			if b.Ask.Questions[0].QuestionID == toolsAskQID {
-				return m, b.Ask
-			}
-		}
-	}
-	return store.Message{}, nil
 }
