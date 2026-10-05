@@ -631,9 +631,8 @@ in the app stays out of scope.
 
 ## Ledger-impact
 
-This PR does not edit `DECISIONS.md`. Once Matt rules OQ-1 (a), the driver
-claims the ID with `bun tools/dl-claim --ref RIG-3102` (DL-399 is the next
-free ID today) and, in the same PR:
+This PR does not edit `DECISIONS.md`. DL-406 is claimed for it
+(`bun tools/dl-claim --ref RIG-3102`). Once Matt rules OQ-1 (a), the same PR:
 
 - **Adds the row:**
 
@@ -642,12 +641,12 @@ free ID today) and, in the same PR:
 
   | ID | Decision | Status | Record |
   | --- | --- | --- | --- |
-  | DL-399 | app.toml stays the native app's only connection config and becomes writable from the app on first run. An absent app.toml with no `--mode`/`$COMPASS_APP_MODE` override opens a first-run chooser. "Run Compass on this computer" (primary) runs the embedded preflight in the window, writes `mode="embedded"`, and asks the user to reopen the app. "Connect to a server" takes a URL, an optional CA file, and the bearer, probes in-process, then stores the bearer and writes `mode="client"` with the normalized server_url and a copied `server-ca.pem`. The app writes app.toml only on a first-run choice; a configured client's server_url stays a file edit, and the chooser never returns while app.toml exists. DL-320's surviving clauses are restated: flag > env > file, else the chooser; `mode="embedded"` accepts no server_url/ca_cert; `mode="client"` requires an https origin server_url (no userinfo, path, query, or fragment; a trailing `/` is normalized away; one validator for file and UI) with optional ca_cert; embedded→client graduation stays a config edit. The bearer stays keychain-first per DL-109; this row partial-supersedes DL-109's "(absent → embedded default)" clause by citation. Supersedes DL-320 | Active (Matt, YYYY-MM-DD) | [server URL entry §A1](#a1--first-run-is-a-chooser) |
+  | DL-406 | app.toml stays the native app's only connection config and becomes writable from the app on first run. An absent app.toml with no `--mode`/`$COMPASS_APP_MODE` override opens a first-run chooser. "Run Compass on this computer" (primary) runs the embedded preflight in the window, writes `mode="embedded"`, and asks the user to reopen the app. "Connect to a server" takes a URL, an optional CA file, and the bearer, probes in-process, then stores the bearer and writes `mode="client"` with the normalized server_url and a copied `server-ca.pem`. The app writes app.toml only on a first-run choice; a configured client's server_url stays a file edit, and the chooser never returns while app.toml exists. DL-320's surviving clauses are restated: flag > env > file, else the chooser; `mode="embedded"` accepts no server_url/ca_cert; `mode="client"` requires an https origin server_url (no userinfo, path, query, or fragment; a trailing `/` is normalized away; one validator for file and UI) with optional ca_cert; embedded→client graduation stays a config edit. The bearer stays keychain-first per DL-109; this row partial-supersedes DL-109's "(absent → embedded default)" clause by citation. Supersedes DL-320 | Active (Matt, YYYY-MM-DD) | [server URL entry §A1](#a1--first-run-is-a-chooser) |
 
-- **Flips DL-320** to `Superseded by DL-399 (Matt, YYYY-MM-DD)`; its Decision
+- **Flips DL-320** to `Superseded by DL-406 (Matt, YYYY-MM-DD)`; its Decision
   cell is unchanged.
 - **Leaves DL-109** `Active` and unedited; the partial override lives in
-  DL-399's text, as DL-319 does for DL-259.
+  DL-406's text, as DL-319 does for DL-259.
 
 If OQ-6 is ruled other than (d), the row's embedded clause follows the ruling.
 If OQ-1 is ruled (b), there is no row, the header's "Supersedes" line goes,
