@@ -182,11 +182,21 @@ func TestRunnerTokenAcceptedOverWire(t *testing.T) {
 func TestEnrollFaultedDurableReapReturnsUnavailableOverWire(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
+	reap := &fakeSessionReapSink{}
+	presence := &fakePresenceSink{}
 	hub.SetSessionBindingStore(bindings)
-	bindings.seedBinding("sess-stale", "acct-stale", "runner-1")
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, 0, 0)
+	hub.SetSessionReapSink(reap)
+	hub.SetPresenceSink(presence)
+
+	reattached, err := hub.enroll(context.Background(), "runner-1", runnerSubject(), 0, 0)
+	if err != nil || reattached {
+		t.Fatalf("priming Enroll = (%v, %v), want fresh success", reattached, err)
+	}
+	bindSession(hub, "sess-live")
+
+	reapErr := errors.New("private durable store detail")
 	bindings.mu.Lock()
-	bindings.deleteForRunnerErr = errors.New("private durable store detail")
+	bindings.deleteForRunnerErr = reapErr
 	bindings.mu.Unlock()
 
 	resolver := &fakeResolver{tokens: map[string]resolverEntry{
@@ -194,21 +204,29 @@ func TestEnrollFaultedDurableReapReturnsUnavailableOverWire(t *testing.T) {
 	}}
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 	client := newRawRunnerClient(t, url, "runner-tok")
-	_, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	_, err = client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
 	if err == nil {
 		t.Fatal("Enroll with a durable reap fault succeeded, want Unavailable")
 	}
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Fatalf("Enroll error code = %v, want Unavailable: %v", got, err)
 	}
-	if strings.Contains(err.Error(), "private durable store detail") {
+	if strings.Contains(err.Error(), reapErr.Error()) {
 		t.Fatalf("Enroll error leaked internal store detail: %v", err)
 	}
-	if account, ok := hub.accountForSession(context.Background(), "sess-stale"); ok {
+	lifecycle := presence.lifecycleSnapshot()
+	if len(lifecycle) != 1 || lifecycle[0].sessionID != "sess-live" || lifecycle[0].account != testAgentAccount {
+		t.Fatalf("presence lifecycle callbacks = %+v, want sess-live disconnected before Enroll returns", lifecycle)
+	}
+	reapCalls := reap.snapshot()
+	if len(reapCalls) != 2 || len(reapCalls[1]) != 1 || reapCalls[1][0] != "sess-live" {
+		t.Fatalf("session reap callbacks = %+v, want sess-live reaped before Enroll returns", reapCalls)
+	}
+	if account, ok := hub.accountForSession(context.Background(), "sess-live"); ok {
 		t.Fatalf("faulted Enroll resurrected stale row for %q", account)
 	}
-	reattached, err := hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, 0, 0)
-	if !reattached || err == nil || err.Error() != "private durable store detail" {
+	reattached, err = hub.enroll(context.Background(), "runner-1", runnerSubject(), 0, 0)
+	if !reattached || !errors.Is(err, reapErr) {
 		t.Fatalf("faulted Hub.enroll = (%v, %v), want reattached and original reap error", reattached, err)
 	}
 }
