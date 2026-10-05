@@ -4,8 +4,18 @@
 // exported function tested in cli.test.ts; main() is the thin IO composition over MainDeps.
 
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
-import { join } from "node:path";
+import {
+	lstat,
+	mkdir,
+	readFile,
+	readlink,
+	rename,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { ApiKey, Model } from "@oh-my-pi/pi-ai";
 import {
@@ -23,6 +33,7 @@ import {
 	type Rule,
 	ruleCapability,
 } from "@oh-my-pi/pi-coding-agent/capability/rule";
+import { serviceTierSettingToTier } from "@oh-my-pi/pi-coding-agent/config/service-tier";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
 import {
 	initTelemetryExport,
@@ -124,6 +135,92 @@ export function parseEnvFile(contents: string): Record<string, string> {
 	return out;
 }
 
+async function resolveResumeFile(
+	env: Record<string, string | undefined>,
+	home: string,
+): Promise<string | undefined> {
+	const explicit = env.COMPASS_RESUME_SESSION_FILE?.trim();
+	if (explicit) return explicit;
+	if (env.COMPASS_CONTINUE_SESSION !== "1") return undefined;
+	return resolveContinuationSessionFile(home);
+}
+
+function configuredThinkingLevel(
+	settings: Settings | undefined,
+): Pick<CreateAgentSessionOptions, "thinkingLevel"> {
+	if (settings?.isConfigured("defaultThinkingLevel") !== true) return {};
+	return { thinkingLevel: settings.get("defaultThinkingLevel") };
+}
+
+function reapplyConfiguredServiceTiers(
+	session: AgentSession,
+	settings: Settings | undefined,
+): void {
+	if (!settings) return;
+	for (const family of ["openai", "anthropic", "google"] as const) {
+		const settingPath = `tier.${family}` as const;
+		if (settings.isConfigured(settingPath)) {
+			session.setServiceTierFamily(
+				family,
+				serviceTierSettingToTier(settings.get(settingPath)),
+			);
+		}
+	}
+}
+async function resolveContinuationSessionFile(
+	home: string,
+): Promise<string | undefined> {
+	const pointerPath = join(home, ".compass", "current-session");
+	let sessionFile: string;
+	try {
+		sessionFile = (await readFile(pointerPath, "utf8")).trim();
+	} catch {
+		console.error(
+			"[compass-agent] continuation skipped: current-session pointer is missing or unreadable",
+		);
+		return undefined;
+	}
+	if (!sessionFile) {
+		console.error(
+			"[compass-agent] continuation skipped: current-session pointer is empty",
+		);
+		return undefined;
+	}
+	try {
+		const file = await stat(sessionFile);
+		if (!file.isFile() || file.size === 0) {
+			console.error(
+				"[compass-agent] continuation skipped: pointed-to session file is not a non-empty file",
+			);
+			return undefined;
+		}
+	} catch {
+		console.error(
+			"[compass-agent] continuation skipped: pointed-to session file is missing or unreadable",
+		);
+		return undefined;
+	}
+	return sessionFile;
+}
+
+async function writeCurrentSessionPointer(
+	home: string,
+	sessionFile: string,
+): Promise<void> {
+	const directory = join(home, ".compass");
+	const pointerPath = join(directory, "current-session");
+	const temporaryPath = join(directory, "current-session.tmp");
+	await mkdir(directory, { recursive: true });
+	try {
+		await writeFile(temporaryPath, `${resolve(sessionFile)}\n`, {
+			mode: 0o600,
+		});
+		await rename(temporaryPath, pointerPath);
+	} catch (error) {
+		await rm(temporaryPath, { force: true });
+		throw error;
+	}
+}
 /**
  * The model selector for this container, from `COMPASS_MODEL`.
  *
@@ -660,27 +757,16 @@ export async function main(
 	);
 	const sink = createSocketFrameSink(transport);
 
-	// The tee session storage, wrapped + initialize()d (its scan of the session dir
-	// must finish before SessionManager.create so synchronous resume lookups see the
-	// keyspace). SESSION_DIR is the SDK-default HOME-relative dir for this cwd —
-	// checkout-independent (anchored on the agent's scoped $HOME; DL-090 no-auto-clone).
+	// Resolve any file before storage initialization so external paths are indexed.
 	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
-	// Resume (RIG-1570): T8 exports COMPASS_RESUME_SESSION_FILE. Resolve it BEFORE the
-	// storage is built so it can be threaded into the tee backend and indexed at
-	// initialize()→loadIndex() — the resume file lives at an absolute path OUTSIDE
-	// sessionDir (Option B, T2), else setSessionFile's statSync gate would ENOENT it.
-	const resumeFile = env.COMPASS_RESUME_SESSION_FILE?.trim();
+	const resumeFile = await resolveResumeFile(env, home);
+	// A continued session reapplies explicit fleet config over its stored choices.
+	const continued =
+		resumeFile !== undefined && !env.COMPASS_RESUME_SESSION_FILE?.trim();
 	const { storage } = await (
 		deps.createSessionStorage ?? createTeeSessionStorage
 	)(sink, sessionDir, resumeFile ? { resumeFile } : undefined);
-	// SYNCHRONOUS (session-manager.ts:1839 returns SessionManager, not a Promise):
-	// do NOT await. The wrapped IndexedSessionStorage is the 3rd arg.
 	const manager = SessionManager.create(cwd, sessionDir, storage);
-
-	// When set, load it through the SDK-native path (setSessionFile → drain → migrate
-	// → resolveBlobRefs → apply) BEFORE creating the session; reads flow through the
-	// tee backend, no replay code. The reconstructed body is authoritative; the load
-	// never tees. The resume file is now indexed at initialize() so this gate passes.
 	if (resumeFile) await manager.setSessionFile(resumeFile);
 
 	// The Runner-mounted agent-config bundle (design §CD-3): read the mount and map
@@ -801,8 +887,8 @@ export async function main(
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
 		modelPattern,
-		// The tee-backed manager, so every session write teems upstream and the
-		// resumed history (if any) is already loaded.
+		...(continued ? configuredThinkingLevel(fleetSettings) : {}),
+		// The resumed history is already loaded through the tee-backed manager.
 		sessionManager: manager,
 		// The Runner-mounted agent-config (design §CD-3): each field passed
 		// UNCONDITIONALLY, empty when unconfigured, so "unconfigured → none" is a
@@ -860,6 +946,9 @@ export async function main(
 				}
 			: {}),
 	});
+	if (continued) reapplyConfiguredServiceTiers(session, fleetSettings);
+	const sessionFile = manager.getSessionFile();
+	if (sessionFile) await writeCurrentSessionPointer(home, sessionFile);
 
 	// Boot-model-health belt. createAgentSession SWALLOWS a models.yml validation
 	// error, leaving the registry with a recorded error and booting model-less when

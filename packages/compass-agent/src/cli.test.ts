@@ -17,7 +17,13 @@ import {
 	setDefaultTimeout,
 	test,
 } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
@@ -323,7 +329,7 @@ describe("parseEnvFile", () => {
 				// The ratified four, plus a COMPASS_ control var the four-key list
 				// predated (COMPASS_RESUME_SESSION_FILE, RIG-1570 T8): the prefix
 				// rule reserves it too, so a file can never hijack the resume path.
-				"HOME=/evil\nCOMPASS_MODEL=x\nCOMPASS_WORKDIR=y\nCOMPASS_PERSONA=z\nCOMPASS_RESUME_SESSION_FILE=/evil\nCOMPASS_FUTURE_VAR=nope\nOK=1",
+				"HOME=/evil\nCOMPASS_MODEL=x\nCOMPASS_WORKDIR=y\nCOMPASS_PERSONA=z\nCOMPASS_RESUME_SESSION_FILE=/evil\nCOMPASS_CONTINUE_SESSION=1\nCOMPASS_FUTURE_VAR=nope\nOK=1",
 			),
 		).toEqual({ OK: "1" });
 	});
@@ -1473,6 +1479,110 @@ describe("main", () => {
 			})
 			.map((e) => e.message.content);
 		expect(texts).toContain("resumed turn");
+	});
+
+	// Reload continuation uses the same SDK-native load path, but discovers the
+	// previous file through the agent-home pointer when no explicit resume is set.
+	test("continues the session from the atomic current-session pointer", async () => {
+		const home = scratch();
+		const resumeFile = join(scratch(), "continued.jsonl");
+		writeFileSync(resumeFile, sessionFixture([userLine("continued turn")]));
+		const pointer = join(home, ".compass", "current-session");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(pointer, `${resumeFile}\n`);
+		let managerAtCreate: SessionManager | undefined;
+		await main(
+			{ HOME: home, COMPASS_CONTINUE_SESSION: "1" },
+			{
+				createSession: (options) => {
+					managerAtCreate = options.sessionManager as SessionManager;
+					return Promise.resolve({
+						session: fakeSession() as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		const texts = (managerAtCreate?.getEntries() ?? []).map((e) =>
+			e.type === "message" && "content" in e.message ? e.message.content : "",
+		);
+		expect(texts).toContain("continued turn");
+		expect(readFileSync(pointer, "utf8")).toBe(
+			`${managerAtCreate?.getSessionFile()}\n`,
+		);
+	});
+
+	test("continues fresh when the pointer target is missing or empty", async () => {
+		for (const [name, target] of [
+			["missing", join(scratch(), "missing.jsonl")],
+			["empty", join(scratch(), "empty.jsonl")],
+		]) {
+			const home = scratch();
+			const pointer = join(home, ".compass", "current-session");
+			mkdirSync(join(home, ".compass"), { recursive: true });
+			writeFileSync(pointer, target);
+			if (name === "empty") writeFileSync(target, "");
+			const errors: string[] = [];
+			const originalError = console.error;
+			console.error = (...args: unknown[]) =>
+				errors.push(args.map(String).join(" "));
+			let managerAtCreate: SessionManager | undefined;
+			try {
+				await main(
+					{ HOME: home, COMPASS_CONTINUE_SESSION: "1" },
+					{
+						createSession: (options) => {
+							managerAtCreate = options.sessionManager as SessionManager;
+							return Promise.resolve({
+								session: fakeSession() as unknown as AgentSession,
+							});
+						},
+						createTransport: () =>
+							fakeCarrier(emptyLog(), { control: emptyControlStream }),
+					},
+				);
+			} finally {
+				console.error = originalError;
+			}
+			expect(managerAtCreate?.getEntries()).toEqual([]);
+			expect(
+				errors.filter((line) => line.includes("continuation skipped")),
+			).toHaveLength(1);
+		}
+	});
+
+	test("explicit resume file takes precedence over continuation pointer", async () => {
+		const home = scratch();
+		const explicitFile = join(scratch(), "explicit.jsonl");
+		const pointerFile = join(scratch(), "pointer.jsonl");
+		writeFileSync(explicitFile, sessionFixture([userLine("explicit turn")]));
+		writeFileSync(pointerFile, sessionFixture([userLine("pointer turn")]));
+		const pointer = join(home, ".compass", "current-session");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(pointer, `${pointerFile}\n`);
+		let entriesAtCreate: unknown[] = [];
+		await main(
+			{
+				HOME: home,
+				COMPASS_CONTINUE_SESSION: "1",
+				COMPASS_RESUME_SESSION_FILE: explicitFile,
+			},
+			{
+				createSession: (options) => {
+					entriesAtCreate = (
+						options.sessionManager as SessionManager
+					).getEntries();
+					return Promise.resolve({
+						session: fakeSession() as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(textsOf(entriesAtCreate)).toContain("explicit turn");
+		expect(textsOf(entriesAtCreate)).not.toContain("pointer turn");
 	});
 
 	// The storage drain is in the same `finally` as the sink drain, so it runs on

@@ -51,6 +51,7 @@ import type {
 	CreateAgentSessionOptions,
 } from "@oh-my-pi/pi-coding-agent";
 import { Settings } from "@oh-my-pi/pi-coding-agent";
+import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import {
 	buildFleetSettings,
 	ensureAgentDirLink,
@@ -115,7 +116,9 @@ function mkdirMember(mount: string, rel: string): string {
 // PublishSpine (as createUnixSocketTransport does) so the sink/control wiring is
 // production code; only the RPC handlers and the session are faked.
 
-function fakeSession(): AgentSession {
+function fakeSession(
+	initialTiers: Partial<Record<"openai" | "anthropic" | "google", string>> = {},
+): AgentSession {
 	const gate = Promise.withResolvers<() => void>();
 	const agent = {
 		prompt: () => Promise.resolve(),
@@ -130,11 +133,16 @@ function fakeSession(): AgentSession {
 	};
 	const session = {
 		agent,
-		// The boot-model-health belt reads these: a clean registry (no swallowed
-		// config error) and a resolved model, so the belt is a no-op for every
-		// config-passthrough fixture (none pin an unresolvable model).
 		modelRegistry: { getError: () => undefined },
 		model: { id: "resolved" },
+		serviceTierByFamily: { ...initialTiers },
+		setServiceTierFamily(
+			family: "openai" | "anthropic" | "google",
+			tier: string | undefined,
+		) {
+			if (tier === undefined) delete this.serviceTierByFamily[family];
+			else this.serviceTierByFamily[family] = tier;
+		},
 		subscribe(fn: () => void): () => void {
 			gate.resolve(fn);
 			return () => {};
@@ -143,6 +151,22 @@ function fakeSession(): AgentSession {
 	return session as unknown as AgentSession;
 }
 
+function continuationFixture(): string {
+	const timestamp = "2026-01-01T00:00:00.000Z";
+	return `${serializeTitleSlot({ updatedAt: timestamp })}${JSON.stringify({
+		type: "session",
+		version: 3,
+		id: "continued-session",
+		timestamp,
+		cwd: process.cwd(),
+	})}\n${JSON.stringify({
+		type: "message",
+		id: "continued-entry",
+		parentId: null,
+		timestamp,
+		message: { role: "user", content: "prior turn" },
+	})}\n`;
+}
 function fakeCarrier(): RunnerTransport {
 	const spine = createPublishSpine(async (stream) => {
 		for await (const _ of stream) {
@@ -169,6 +193,15 @@ async function runMainOverMount(
 ): Promise<CreateAgentSessionOptions> {
 	const home = scratch();
 	process.env.HOME = home;
+	if (env.COMPASS_CONTINUE_SESSION === "1") {
+		const sessionFile = join(home, "continued.jsonl");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(sessionFile, continuationFixture());
+		writeFileSync(
+			join(home, ".compass", "current-session"),
+			`${sessionFile}\n`,
+		);
+	}
 	let captured: CreateAgentSessionOptions | undefined;
 	const deps: MainDeps = {
 		configMount: mount,
@@ -261,6 +294,49 @@ describe("main injects fleet config as objects into createAgentSession", () => {
 		const resolved = await settingsManager;
 		expect(resolved).toBeInstanceOf(Settings);
 		expect((resolved as Settings).get("compaction.keepRecentTokens")).toBe(222);
+	});
+
+	test("continued session reapplies configured tiers and preserves unset tiers", async () => {
+		const home = scratch();
+		process.env.HOME = home;
+		const mount = scratch();
+		writeMember(mount, "settings/config.yml", "tier:\n  openai: priority\n");
+		const sessionFile = join(scratch(), "continued.jsonl");
+		writeFileSync(sessionFile, continuationFixture());
+		const pointer = join(home, ".compass", "current-session");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(pointer, sessionFile);
+		const session = fakeSession({ anthropic: "default", google: "flex" });
+		const deps: MainDeps = {
+			configMount: mount,
+			createSession: () => Promise.resolve({ session }),
+			createTransport: () => fakeCarrier(),
+		};
+		await main({ HOME: home, COMPASS_CONTINUE_SESSION: "1" }, deps);
+		expect(session.serviceTierByFamily).toEqual({
+			openai: "priority",
+			anthropic: "default",
+			google: "flex",
+		});
+	});
+	test("explicit fleet defaultThinkingLevel is provided for a continued session", async () => {
+		const mount = scratch();
+		writeMember(mount, "settings/config.yml", "defaultThinkingLevel: low\n");
+		const options = await runMainOverMount(mount, {
+			COMPASS_CONTINUE_SESSION: "1",
+			COMPASS_MODEL: "openai/gpt-4o",
+		});
+		expect(options.thinkingLevel).toEqual(
+			"low" as typeof options.thinkingLevel,
+		);
+	});
+
+	test("implicit defaultThinkingLevel is not passed when a session resumes", async () => {
+		const options = await runMainOverMount(scratch(), {
+			COMPASS_CONTINUE_SESSION: "1",
+			COMPASS_MODEL: "openai/gpt-4o",
+		});
+		expect(options.thinkingLevel).toBeUndefined();
 	});
 
 	// (b) no settings member ⇒ no settingsManager key (SDK inits its own default).
