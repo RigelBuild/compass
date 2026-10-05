@@ -83,6 +83,9 @@ async function main(
 			comms: clients.comms,
 			compass: clients.compass,
 			transport: clients.transport,
+			// Read after WhoAmI: the caller is known, so the store's boot read and
+			// first-run claim key on the right account.
+			tour: clients.compass,
 			queryClient,
 			callerId,
 			// Namespace persisted UI prefs (the pinned-agent set) to this

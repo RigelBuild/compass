@@ -12,6 +12,7 @@ import {
 	type CompassClient,
 	CompassService,
 	type GetModelRegistryResponse,
+	TourOutcome,
 	type Transport,
 } from "@compass/client";
 import type { QueryClient } from "@tanstack/solid-query";
@@ -75,6 +76,17 @@ import {
 	STUB_ISSUES,
 	type TrackerConfig,
 } from "./stub-data";
+import {
+	DEMO_ACCOUNTS,
+	DEMO_AGENTS,
+	DEMO_CHANNELS,
+	DEMO_ISSUES,
+	DEMO_MESSAGES,
+	DEMO_PRESENCE,
+	DEMO_TOPICS,
+	isDemoId,
+} from "./tour/demo";
+import { TOUR_STEPS, type TourStep } from "./tour/state";
 import {
 	createFixtureTrackerSeam,
 	DEFAULT_TRACKER_CONFIG,
@@ -200,6 +212,16 @@ export function modelRegistryRows(
 		}));
 }
 
+/** The three per-account tour RPCs the store drives. The live `CompassClient`
+ *  satisfies it; the fixture boot and tests pass an in-memory double. */
+export interface TourClient {
+	getTourState(
+		req: Record<string, never>,
+	): Promise<{ outcome: TourOutcome; stepId: string }>;
+	claimTourStart(req: { stepId: string }): Promise<{ claimed: boolean }>;
+	setTourState(req: { outcome: TourOutcome; stepId: string }): Promise<unknown>;
+}
+
 /**
  * The UI state contract every component reads. Accessors are reactive getters
  * (call them in JSX to subscribe); the remaining members are actions that mutate
@@ -245,6 +267,27 @@ export interface AppStore {
 	hideShortcuts: () => void;
 	/** Toggle the keyboard-shortcuts overlay — the `?` / `view.shortcuts` action. */
 	toggleShortcuts: () => void;
+	/** The first-run tour controller. The overlay reads it; `TOUR_STEPS` is the
+	 *  step table `stepIndex` points into. */
+	tour: {
+		open: Accessor<boolean>;
+		stepIndex: Accessor<number>;
+		/** True while demo rows are merged into the read accessors. */
+		demoActive: Accessor<boolean>;
+		/** True only after ClaimTourStart returned claimed = true. */
+		shouldAutoStart: Accessor<boolean>;
+		start: (trigger: "first-run" | "replay" | "resume") => void;
+		next: () => void;
+		back: () => void;
+		/** Escape: hides, clears demo rows and leaves a `demo:` route, with no
+		 *  permanent write; resume stays available. */
+		close: () => void;
+		/** Skip tour: writes DISMISSED + current step id, closes, clears demo rows,
+		 *  and leaves a `demo:` route. */
+		dismiss: () => void;
+		/** Writes COMPLETED, closes, clears demo rows, leaves a `demo:` route. */
+		complete: () => void;
+	};
 	/** Whether the command palette is open (RIG-2483). */
 	paletteOpen: Accessor<boolean>;
 	/** The focus zone captured at palette-open time — read by the palette's
@@ -597,6 +640,10 @@ export interface AppStoreOptions {
 	/** Where the window layout persists (record A8): the boot passes
 	 *  `sessionStorage`. Absent, the layout lives only as long as the store. */
 	readonly layoutStorage?: Storage;
+	/** The per-account tour state RPCs. Present → the store reads the stored
+	 *  state at construction and claims the first run; absent → the tour never
+	 *  auto-arms and step writes are skipped. */
+	readonly tour?: TourClient;
 }
 
 /** One live session's tailed trace and the last lifecycle state the tail saw.
@@ -880,11 +927,17 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const callerId = options.callerId ?? CALLER_ID;
 	// The issue list is reactive so promote/archive (below) are visible on
 	// every surface at once. Seeded from the fixture (or an explicit override);
-	// the real @compass/client stream replaces the seed later (the accessor
-	// stays the seam).
-	const [issues, setIssues] = createSignal<Issue[]>([
+	// the real @compass/client stream replaces the seed later. Reads go through
+	// the merged `issues` memo below, never this raw signal.
+	const [realIssues, setRealIssues] = createSignal<Issue[]>([
 		...(options.initialIssues ?? STUB_ISSUES),
 	]);
+	// While the tour is open the base read accessors append the demo rows, so
+	// every derived read sees them and no write path stores them.
+	const [demoActive, setDemoActive] = createSignal(false);
+	const issues = createMemo<Issue[]>(() =>
+		demoActive() ? [...realIssues(), ...DEMO_ISSUES] : realIssues(),
+	);
 
 	// A board pick's agent (`selectIssue`). On an agent route the focused view's
 	// agent wins, so the roster and chrome never disagree with the agent surface.
@@ -1139,16 +1192,22 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// CommsState's collections are `readonly` (a pure value the reducer rebuilds each
 	// transition) and the accessors keep that: every write goes through setComms with a
 	// fresh array. The `readonly` signature is what lets the compiler hold that true.
-	const accounts = createMemo(() => comms().accounts);
+	const withDemo = <T>(real: readonly T[], demo: readonly T[]): readonly T[] =>
+		demoActive() ? [...real, ...demo] : real;
+	const accounts = createMemo(() => withDemo(comms().accounts, DEMO_ACCOUNTS));
 	const channelGroups = createMemo(() => comms().channelGroups);
-	const channels = createMemo(() => comms().channels);
-	const messages = createMemo(() => comms().messages);
-	const topics = createMemo(() => comms().topics);
+	const channels = createMemo(() => withDemo(comms().channels, DEMO_CHANNELS));
+	const messages = createMemo(() => withDemo(comms().messages, DEMO_MESSAGES));
+	const topics = createMemo(() => withDemo(comms().topics, DEMO_TOPICS));
 	// The board's fleet (§T3). Intermediate presence memo: re-notifies only when the
 	// presence map's identity changes — each posted message replaces the whole
 	// CommsState, and `===` equality plus structural sharing absorb that. The join
 	// then gates on live/offline: offline the fixture, live re-joins on account/presence.
-	const presence = createMemo(() => comms().presence);
+	const presence = createMemo(() =>
+		demoActive()
+			? new Map([...comms().presence, ...DEMO_PRESENCE])
+			: comms().presence,
+	);
 	// Runtime markers arrive on the session-status stream, not the comms one, so
 	// they are their own signal joined in beside presence.
 	const [runtimeMarkers, setRuntimeMarkers] = createSignal<
@@ -1170,10 +1229,12 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 					onError: (error) => options.onCommsError?.(error),
 				})
 			: undefined;
+	// Live, the demo accounts and presence already ride the merged inputs; the
+	// offline fixture roster has no join, so the demo agents append directly.
 	const agents = createMemo<readonly Agent[]>(() =>
 		options.comms
 			? joinAgents(accounts(), presence(), runtimeMarkers())
-			: STUB_AGENTS,
+			: withDemo(STUB_AGENTS, DEMO_AGENTS),
 	);
 	// Boot default (Record A §T5): the first hydrated pin resolving to a visible
 	// agent, else the static `status` pane (RIG-1645 P4, OQ-1 ruled kept). An
@@ -1240,7 +1301,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		if (getOwner()) onCleanup(() => eventsAbort.abort());
 		void runEventStream({
 			client,
-			onIssues: setIssues,
+			onIssues: setRealIssues,
 			onRuntime: setRuntimeMarkers,
 			onSessions: live?.setAccountSessions,
 			signal: eventsAbort.signal,
@@ -1713,6 +1774,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		questionId: string,
 		optionId: string,
 	) => {
+		if (isDemoId(messageId) || isDemoId(askId)) return;
 		recordAnswer(messageId, askId, questionId, (q) =>
 			answerQuestion(q, optionId),
 		);
@@ -1723,6 +1785,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		questionId: string,
 		text: string,
 	) => {
+		if (isDemoId(messageId) || isDemoId(askId)) return;
 		recordAnswer(messageId, askId, questionId, (q) =>
 			answerQuestionText(q, text),
 		);
@@ -1732,6 +1795,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// answer for each skipped question. Inert on a submitted, CLOSED, unknown,
 	// or wholly unanswered ask.
 	const submitAsk = (messageId: string, askId: string) => {
+		if (isDemoId(messageId) || isDemoId(askId)) return;
 		if (isAskSubmitted(askId)) return;
 		const ask = findAsk(messageId, askId);
 		if (!ask) return;
@@ -1757,6 +1821,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			| { case: "topicName"; value: string },
 		text: string,
 	): Promise<void> => {
+		// Rejects like the offline path, so the composer keeps the typed text and
+		// says why instead of clearing it with nothing sent.
+		if (
+			isDemoId(channelId) ||
+			(topic.case === "topicId" && isDemoId(topic.value))
+		) {
+			throw new Error("cannot post: this is a demo channel from the tour");
+		}
 		const client = options.comms;
 		if (!client) {
 			throw new Error(
@@ -1800,6 +1872,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// Stop is idempotent server-side, so a retry after a refusal is safe.
 	const stopAgent = async (): Promise<void> => {
 		setStopError(undefined);
+		// A demo agent has no server session to stop.
+		if (isDemoId(selectedAgentId())) return;
 		const session = focusedView().agentSession();
 		if (!session) return;
 		// A fixture-sourced session's id was never minted by a server. Issuing Stop for it
@@ -1854,6 +1928,99 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		hideShortcuts();
 		navigateTo("/settings");
 	};
+	// ── First-run tour (A4/A5): open state, step cursor, and server writes ──
+	const [tourOpen, setTourOpen] = createSignal(false);
+	const [tourStepIndex, setTourStepIndex] = createSignal(0);
+	const [shouldAutoStart, setShouldAutoStart] = createSignal(false);
+	// The server's resume cursor; updated on every step so a replay after
+	// close resumes where the user left.
+	let resumeStepId = "";
+	// Best-effort: a failed write is reported once and never retried.
+	const writeTourState = (outcome: TourOutcome, stepId: string) => {
+		void options.tour
+			?.setTourState({ outcome, stepId })
+			.catch((error: unknown) => options.onCommsError?.(error));
+	};
+	const showStep = (index: number, persist: boolean) => {
+		const step: TourStep | undefined = TOUR_STEPS[index];
+		if (!step) return;
+		setTourStepIndex(index);
+		resumeStepId = step.id;
+		if (step.route === "/") showBridge();
+		else if (step.route === "/backlog") showBacklog();
+		else if (step.route === "/done") showDone();
+		else if (step.route === "/settings") showSettings();
+		if (persist) writeTourState(TourOutcome.STARTED, step.id);
+	};
+	// Every exit drops the demo rows; applyAgentRoute has no unknown-id bounce,
+	// so a route still naming a demo id would strand an empty workspace.
+	const endTour = () => {
+		setTourOpen(false);
+		setDemoActive(false);
+		if (focusedView().path().split("/").some(isDemoId)) showBridge();
+	};
+	const tour: AppStore["tour"] = {
+		open: tourOpen,
+		stepIndex: tourStepIndex,
+		demoActive,
+		shouldAutoStart,
+		start: (trigger) => {
+			// Only a won claim arms the first run; the claim already wrote STARTED.
+			if (trigger === "first-run" && !shouldAutoStart()) return;
+			setShouldAutoStart(false);
+			const resumed = TOUR_STEPS.findIndex((s) => s.id === resumeStepId);
+			setTourOpen(true);
+			setDemoActive(true);
+			showStep(
+				trigger === "resume" ? Math.max(resumed, 0) : 0,
+				trigger !== "first-run",
+			);
+		},
+		next: () => {
+			if (!tourOpen()) return;
+			if (tourStepIndex() >= TOUR_STEPS.length - 1) tour.complete();
+			else showStep(tourStepIndex() + 1, true);
+		},
+		back: () => {
+			if (tourOpen() && tourStepIndex() > 0) {
+				showStep(tourStepIndex() - 1, true);
+			}
+		},
+		close: () => {
+			if (tourOpen()) endTour();
+		},
+		dismiss: () => {
+			if (!tourOpen()) return;
+			writeTourState(TourOutcome.DISMISSED, resumeStepId);
+			endTour();
+		},
+		complete: () => {
+			if (!tourOpen()) return;
+			writeTourState(TourOutcome.COMPLETED, resumeStepId);
+			endTour();
+		},
+	};
+	// Boot: the stored state feeds resume only; a first run arms solely on a won
+	// claim, so a failed read, a failed claim, or a lost race arms nothing.
+	if (options.tour) {
+		const client = options.tour;
+		let disposed = false;
+		if (getOwner()) onCleanup(() => (disposed = true));
+		void client
+			.getTourState({})
+			.then(async (state) => {
+				if (disposed) return;
+				resumeStepId = state.stepId;
+				if (state.outcome !== TourOutcome.UNSPECIFIED) return;
+				const { claimed } = await client.claimTourStart({
+					stepId: TOUR_STEPS[0]?.id ?? "",
+				});
+				if (claimed && !disposed) setShouldAutoStart(true);
+			})
+			.catch((error: unknown) => {
+				if (!disposed) options.onCommsError?.(error);
+			});
+	}
 	// Command palette (RIG-2483): the open signal plus the D3 pre-open snapshot
 	// `{ zone, element }`. `openPalette` captures the snapshot ONLY on the false→true
 	// transition — re-entering with focus already in the palette input would clobber the
@@ -1950,6 +2117,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// dependence on effect scheduling (§T3).
 	const pinAgent = (accountId: string) =>
 		setPinnedAgents((prev) => {
+			if (isDemoId(accountId)) return prev;
 			if (prev.some((p) => p.id === accountId)) return prev;
 			const handle = agentById(accountId)?.account.handle ?? accountId;
 			const next = [...prev, { id: accountId, handle }];
@@ -1960,6 +2128,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// static `status` pane if it was this agent's tab — a deliberate user gesture
 	// (§T3; retained by RIG-1645, the only removal path).
 	const unpinAgent = (accountId: string) => {
+		if (isDemoId(accountId)) return;
 		setPinnedAgents((prev) => {
 			const next = prev.filter((p) => p.id !== accountId);
 			savePinnedAgents(workspaceKey, next);
@@ -2010,6 +2179,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		showDone,
 		showSettings,
 		shortcutsOpen,
+		tour,
 		hideShortcuts,
 		toggleShortcuts,
 		paletteOpen,

@@ -519,4 +519,5 @@ export {
 	SessionEventSchema,
 	SessionInjectionKind,
 	SubscribeEventsResponseSchema,
+	TourOutcome,
 } from "./gen/compass/v1/compass_pb";

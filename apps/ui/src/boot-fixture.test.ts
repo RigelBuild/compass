@@ -3,7 +3,12 @@
 // `HTMLElement` are available to mount the shell against.
 
 import { describe, expect, test } from "bun:test";
-import { bootFixture, FIXTURE_SENTINEL } from "./boot-fixture";
+import { TourOutcome } from "@compass/client";
+import {
+	bootFixture,
+	createMemoryTourClient,
+	FIXTURE_SENTINEL,
+} from "./boot-fixture";
 import { STUB_ISSUES } from "./stub-data";
 
 // import.meta.env is the process-wide Vite env object, mutable at runtime (the
@@ -57,5 +62,30 @@ describe("bootFixture (offline fixture boot)", () => {
 		} finally {
 			env.PROD = priorProd;
 		}
+	});
+});
+
+describe("createMemoryTourClient (fixture tour state)", () => {
+	// One load claims once; a second claim in the same load loses, so the
+	// fixture shows the tour at most once per page load.
+	test("claims once, then reads back what was written", async () => {
+		const client = createMemoryTourClient();
+		expect((await client.getTourState({})).outcome).toBe(
+			TourOutcome.UNSPECIFIED,
+		);
+		expect(await client.claimTourStart({ stepId: "welcome" })).toEqual({
+			claimed: true,
+		});
+		expect(await client.claimTourStart({ stepId: "welcome" })).toEqual({
+			claimed: false,
+		});
+		await client.setTourState({
+			outcome: TourOutcome.DISMISSED,
+			stepId: "board",
+		});
+		expect(await client.getTourState({})).toEqual({
+			outcome: TourOutcome.DISMISSED,
+			stepId: "board",
+		});
 	});
 });
