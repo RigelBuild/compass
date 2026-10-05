@@ -54,16 +54,19 @@ func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID
 // instances drop any stale cache entry for it. The store write and the publish
 // both run with h.mu RELEASED — never hold the lock across a store call or a
 // sink — exactly the lock-then-store-then-map discipline the design requires.
-// bindingWriteMu spans the write and map update so an enroll reap cannot interleave.
+// bindingWriteMu spans the lookup, write and map update, so a whole enroll orders
+// before or after this promotion, never inside it.
 func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID string) {
 	if containerName == "" || sessionID == "" {
 		return
 	}
+	h.bindingWriteMu.Lock()
 	h.mu.Lock()
 	binding, ok := h.containerAccounts[containerName]
 	account := binding.account
 	if !ok {
 		h.mu.Unlock()
+		h.bindingWriteMu.Unlock()
 		return
 	}
 	// Capture the store handle, routing fabric, and enrolled Runner id under the
@@ -73,21 +76,8 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	bindings := h.bindings
 	routing := h.routing
 	var runnerID string
-	var runnerEpoch uint64
 	if h.runner != nil {
 		runnerID = h.runner.id
-		runnerEpoch = h.runnerEpoch[runnerID]
-	}
-	h.mu.Unlock()
-
-	// Serialize durable binding writes with enroll's reap, and reject stale Runner epochs.
-	h.bindingWriteMu.Lock()
-	h.mu.Lock()
-	if (runnerID != "" && (h.runner == nil || h.runner.id != runnerID || h.runnerEpoch[runnerID] != runnerEpoch)) ||
-		(runnerID == "" && (h.runner != nil || h.runnerEpoch[runnerID] != runnerEpoch)) {
-		h.mu.Unlock()
-		h.bindingWriteMu.Unlock()
-		return
 	}
 	h.mu.Unlock()
 
@@ -111,14 +101,8 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 		}
 	}
 
-	// Now update the maps under h.mu; an enroll cannot advance the epoch mid-write.
+	// Now update the maps under h.mu (store already written).
 	h.mu.Lock()
-	if (runnerID != "" && (h.runner == nil || h.runner.id != runnerID || h.runnerEpoch[runnerID] != runnerEpoch)) ||
-		(runnerID == "" && (h.runner != nil || h.runnerEpoch[runnerID] != runnerEpoch)) {
-		h.mu.Unlock()
-		h.bindingWriteMu.Unlock()
-		return
-	}
 	// Keep the container->account entry: a resume Start on this container fetches
 	// secrets by container_name before exec. Remove and re-enroll clear it.
 	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: runnerID}
@@ -138,6 +122,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	presence := h.presence
 	h.mu.Unlock()
 	h.bindingWriteMu.Unlock()
+
 	// Invalidate peer instances' caches (h.mu released, nil-safe, best-effort):
 	// the displaced session has no row any more (BindingUnbound), and the new
 	// session's binding changed (BindingBound). A single-instance hub wires no

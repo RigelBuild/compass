@@ -778,18 +778,17 @@ func TestReadDuringSuccessfulReapCannotResurrect(t *testing.T) {
 	}
 }
 
-// Two enrolls queue behind bindingWriteMu; only the newer reap runs, so its fault stands.
+// Enrolls are serialized, so a newer faulted reap always completes last and its fault stands.
 func TestOlderSuccessfulReapCannotClearNewerFault(t *testing.T) {
 	hub := newHubOnly()
 	plain := newFakeBindingStore()
 	hub.SetSessionBindingStore(plain)
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	bindings := &countingReapBindingStore{fakeBindingStore: plain, err: errors.New("newer reap fault")}
-	hub.SetSessionBindingStore(bindings)
-	runQueuedEnrolls(t, hub)
-
-	if n := bindings.reaps(); n != 1 {
-		t.Fatalf("durable reaps = %d, want 1 (the older, stale reap must skip)", n)
+	plain.mu.Lock()
+	plain.deleteForRunnerErr = errors.New("newer reap fault")
+	plain.mu.Unlock()
+	if _, err := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err == nil {
+		t.Fatal("faulting reap succeeded, want durable error")
 	}
 	plain.seedBinding("sess-after", "acct-runner-1-after", "runner-1")
 	if account, ok := hub.accountForSession(store.WithTenant(context.Background(), "tenant-a"), "sess-after"); ok {
@@ -800,18 +799,22 @@ func TestOlderSuccessfulReapCannotClearNewerFault(t *testing.T) {
 	}
 }
 
-// The older reap is skipped, so it can never fault the newer successful one's read-through.
+// A successful reap after a faulted one restores read-through.
 func TestOlderFaultedReapAfterNewerSuccessKeepsReadThrough(t *testing.T) {
 	hub := newHubOnly()
 	plain := newFakeBindingStore()
 	hub.SetSessionBindingStore(plain)
-	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	bindings := &countingReapBindingStore{fakeBindingStore: plain}
-	hub.SetSessionBindingStore(bindings)
-	runQueuedEnrolls(t, hub)
-
-	if n := bindings.reaps(); n != 1 {
-		t.Fatalf("durable reaps = %d, want 1 (the older, stale reap must skip)", n)
+	plain.mu.Lock()
+	plain.deleteForRunnerErr = errors.New("older reap fault")
+	plain.mu.Unlock()
+	if _, err := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err == nil {
+		t.Fatal("faulting reap succeeded, want error")
+	}
+	plain.mu.Lock()
+	plain.deleteForRunnerErr = nil
+	plain.mu.Unlock()
+	if _, err := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+		t.Fatalf("newer successful reap = %v, want nil", err)
 	}
 	plain.seedBinding("sess-runner-1-after", "acct-runner-1-after", "runner-1")
 	if account, ok := hub.accountForSession(store.WithTenant(context.Background(), "tenant-a"), "sess-runner-1-after"); !ok || account != "acct-runner-1-after" {
@@ -820,89 +823,6 @@ func TestOlderFaultedReapAfterNewerSuccessKeepsReadThrough(t *testing.T) {
 	if sessionID, ok := hub.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), "acct-runner-1-after"); !ok || sessionID != "sess-runner-1-after" {
 		t.Fatalf("SessionForAccount(acct-runner-1-after) = (%q, %v), want read-through after newer successful reap", sessionID, ok)
 	}
-}
-
-// A queued enroll that a newer one overtook must not advance the epoch on completion:
-// a promotion that captured the newer epoch would otherwise be rejected and lost.
-func TestStaleEnrollCompletionKeepsNewerEpoch(t *testing.T) {
-	hub := newHubOnly()
-	plain := newFakeBindingStore()
-	hub.SetSessionBindingStore(plain)
-	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	hub.mu.Lock()
-	base := hub.runnerEpoch["runner-1"]
-	hub.mu.Unlock()
-
-	hub.bindingWriteMu.Lock()
-	staleDone := make(chan struct{})
-	go func() {
-		defer close(staleDone)
-		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	}()
-	waitRunnerEpochGreater(t, hub, "runner-1", base)
-	// Model a newer enroll that marked and completed its reap while this one waited.
-	hub.mu.Lock()
-	hub.bindingEpoch += 2
-	hub.runnerEpoch["runner-1"] = hub.bindingEpoch
-	delete(hub.reapStale, "runner-1")
-	newer := hub.bindingEpoch
-	hub.mu.Unlock()
-	hub.bindingWriteMu.Unlock()
-	<-staleDone
-
-	hub.mu.Lock()
-	got := hub.runnerEpoch["runner-1"]
-	hub.mu.Unlock()
-	if got != newer {
-		t.Fatalf("runnerEpoch after stale enroll = %d, want %d (unchanged)", got, newer)
-	}
-	hub.bindContainer("cont-new", "acct-new", "runner-1")
-	hub.promoteSession(context.Background(), "cont-new", "sess-new")
-	if sessionID, ok := hub.CachedSessionForAccount("acct-new"); !ok || sessionID != "sess-new" {
-		t.Fatalf("CachedSessionForAccount(acct-new) = (%q, %v), want sess-new", sessionID, ok)
-	}
-}
-
-// runQueuedEnrolls starts two enrolls while bindingWriteMu is held, so both mark
-// their reap stale before either reaps, then releases them and waits.
-func runQueuedEnrolls(t *testing.T, hub *Hub) {
-	t.Helper()
-	hub.mu.Lock()
-	base := hub.runnerEpoch["runner-1"]
-	hub.mu.Unlock()
-	hub.bindingWriteMu.Lock()
-	var wg sync.WaitGroup
-	for range 2 {
-		wg.Go(func() {
-			hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-		})
-	}
-	waitRunnerEpochGreater(t, hub, "runner-1", base+1)
-	hub.bindingWriteMu.Unlock()
-	wg.Wait()
-}
-
-type countingReapBindingStore struct {
-	*fakeBindingStore
-	err   error
-	mu    sync.Mutex
-	calls int
-}
-
-func (b *countingReapBindingStore) DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]store.SessionBinding, error) {
-	b.mu.Lock()
-	b.calls++
-	b.mu.Unlock()
-	if b.err != nil {
-		return nil, b.err
-	}
-	return b.fakeBindingStore.DeleteSessionBindingsForRunner(ctx, runnerID)
-}
-
-func (b *countingReapBindingStore) reaps() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.calls
 }
 
 type reapAndReadBlockingBindingStore struct {
@@ -991,8 +911,8 @@ func (b *blockingBindingStore) DeleteSessionBindingsForRunner(ctx context.Contex
 	return b.fakeBindingStore.DeleteSessionBindingsForRunner(ctx, runnerID)
 }
 
-// A promotion racing an in-flight older reap must wait for it; on main the write
-// landed mid-delete and the older reap's WHERE runner_id sweep then erased it.
+// A promotion racing an in-flight reap waits for the whole enroll; on main the write
+// landed mid-delete and the reap's WHERE runner_id sweep then erased the live binding.
 func TestOlderEnrollReapCannotDeleteNewerPromotion(t *testing.T) {
 	hub := newHubOnly()
 	plain := newFakeBindingStore()
@@ -1018,7 +938,7 @@ func TestOlderEnrollReapCannotDeleteNewerPromotion(t *testing.T) {
 		defer close(promoteDone)
 		hub.promoteSession(context.Background(), "cont-new", "sess-new")
 	}()
-	waitPromotionBlockedOrRecorded(t, bindings.recorded)
+	waitParkedOrDone(t, "(*Hub).promoteSession", bindings.recorded)
 	bindings.releaseDelete()
 	<-oldReapDone
 	<-promoteDone
@@ -1026,12 +946,12 @@ func TestOlderEnrollReapCannotDeleteNewerPromotion(t *testing.T) {
 	if bindings.overlapped() {
 		t.Fatal("promotion wrote its binding while the older reap's delete was in flight")
 	}
-	// The promotion captured the pre-reap epoch, so it is fenced: no stale row or cache entry.
-	if sessionID, _, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("durable SessionForAccount = (%q, %v), want ErrNotFound", sessionID, err)
+	// Ordered after the reap, the live session's binding survives in the store and cache.
+	if sessionID, runnerID, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); err != nil || sessionID != "sess-new" || runnerID != testRunnerID {
+		t.Fatalf("durable SessionForAccount = (%q, %q, %v), want (sess-new, %s, nil)", sessionID, runnerID, err, testRunnerID)
 	}
-	if sessionID, ok := hub.CachedSessionForAccount(testAgentAccount); ok {
-		t.Fatalf("CachedSessionForAccount = %q, want none", sessionID)
+	if sessionID, ok := hub.CachedSessionForAccount(testAgentAccount); !ok || sessionID != "sess-new" {
+		t.Fatalf("CachedSessionForAccount = (%q, %v), want sess-new", sessionID, ok)
 	}
 }
 
@@ -1084,23 +1004,23 @@ func (b *overlapDetectingBindingStore) overlapped() bool {
 	return b.overlap
 }
 
-// waitPromotionBlockedOrRecorded returns once promoteSession either wrote (unserialized)
-// or is parked acquiring a mutex, read from goroutine stacks rather than a timer.
-func waitPromotionBlockedOrRecorded(t *testing.T, recorded <-chan struct{}) {
+// waitParkedOrDone returns once fn's goroutine is parked acquiring a mutex (read from
+// goroutine stacks rather than a timer) or done is closed.
+func waitParkedOrDone(t *testing.T, fn string, done <-chan struct{}) {
 	t.Helper()
 	deadline := timeAfter()
 	buf := make([]byte, 1<<20)
 	for {
 		select {
-		case <-recorded:
+		case <-done:
 			return
 		case <-deadline:
-			t.Fatalf("promotion neither wrote nor blocked; stacks:\n%s", buf[:runtime.Stack(buf, true)])
+			t.Fatalf("%s neither finished nor parked on a mutex", fn)
 		default:
 		}
 		stacks := string(buf[:runtime.Stack(buf, true)])
 		for g := range strings.SplitSeq(stacks, "\n\n") {
-			if strings.Contains(g, "(*Hub).promoteSession") && strings.Contains(g, "[sync.Mutex.Lock") {
+			if strings.Contains(g, fn) && strings.Contains(g, "[sync.Mutex.Lock") {
 				return
 			}
 		}
@@ -1115,9 +1035,6 @@ func TestEnrollDuringPromotionCannotResurrectBinding(t *testing.T) {
 	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("cont-racing", testAgentAccount, testRunnerID)
 
-	hub.mu.Lock()
-	epoch := hub.runnerEpoch[testRunnerID]
-	hub.mu.Unlock()
 	bindings := &blockingRecordBindingStore{
 		fakeBindingStore: plain,
 		recordEntered:    make(chan struct{}),
@@ -1136,7 +1053,7 @@ func TestEnrollDuringPromotionCannotResurrectBinding(t *testing.T) {
 		defer close(enrollDone)
 		hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	}()
-	waitRunnerEpochGreater(t, hub, testRunnerID, epoch)
+	waitParkedOrDone(t, "(*Hub).enroll", enrollDone)
 	close(bindings.recordRelease)
 	<-promoteDone
 	<-enrollDone
@@ -1217,23 +1134,4 @@ func (b *blockingRecordBindingStore) RecordSessionBinding(ctx context.Context, s
 	close(b.recordEntered)
 	<-b.recordRelease
 	return b.fakeBindingStore.RecordSessionBinding(ctx, sessionID, accountID, runnerID)
-}
-
-func waitRunnerEpochGreater(t *testing.T, hub *Hub, runnerID string, epoch uint64) {
-	t.Helper()
-	deadline := timeAfter()
-	for {
-		hub.mu.Lock()
-		current := hub.runnerEpoch[runnerID]
-		hub.mu.Unlock()
-		if current > epoch {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("runner epoch for %s did not advance past %d", runnerID, epoch)
-		default:
-			runtime.Gosched()
-		}
-	}
 }
