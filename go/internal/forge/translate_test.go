@@ -306,10 +306,10 @@ func TestTranslateEmptySlicesYieldNil(t *testing.T) {
 	if pr.GetThreads() != nil {
 		t.Errorf("Threads = %v, want nil for empty source", pr.GetThreads())
 	}
-	// A PR with no checks still gets a ChecksSummary (value struct), but its
-	// Checks slice must be nil for an empty source.
-	if pr.GetChecks() != nil && pr.GetChecks().GetChecks() != nil {
-		t.Errorf("Checks.Checks = %v, want nil for empty source", pr.GetChecks().GetChecks())
+	// A PR with no checks roll-up (e.g. a transition response) leaves the wire
+	// field unset, so a renderer never sees an empty roll-up state.
+	if pr.GetChecks() != nil {
+		t.Errorf("Checks = %v, want nil for a PR with no checks roll-up", pr.GetChecks())
 	}
 
 	cs := TranslateChecks(Checks{HeadSHA: "s"})
