@@ -319,6 +319,31 @@ describe("main injects fleet config as objects into createAgentSession", () => {
 			google: "flex",
 		});
 	});
+	test("continued session applies an explicitly configured default model role", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const options = await runMainOverMount(mount, {
+			COMPASS_CONTINUE_SESSION: "1",
+		});
+		expect(options.modelPattern).toBe("openai/gpt-4o");
+	});
+	test("explicit COMPASS_MODEL still wins over the fleet default role", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const options = await runMainOverMount(mount, {
+			COMPASS_CONTINUE_SESSION: "1",
+			COMPASS_MODEL: "anthropic/claude-sonnet",
+		});
+		expect(options.modelPattern).toBe("anthropic/claude-sonnet");
+	});
 	test("explicit fleet defaultThinkingLevel is provided for a continued session", async () => {
 		const mount = scratch();
 		writeMember(mount, "settings/config.yml", "defaultThinkingLevel: low\n");

@@ -1480,6 +1480,119 @@ describe("main", () => {
 			.map((e) => e.message.content);
 		expect(texts).toContain("resumed turn");
 	});
+	test("plain boot writes its live session path to the pointer", async () => {
+		const home = scratch();
+		let managerAtCreate: SessionManager | undefined;
+		await main(
+			{ HOME: home },
+			{
+				createSession: (options) => {
+					managerAtCreate = options.sessionManager as SessionManager;
+					return Promise.resolve({
+						session: fakeSession() as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		const sessionFile = managerAtCreate?.getSessionFile();
+		if (!sessionFile)
+			throw new Error("session manager has no live session path");
+		expect(
+			readFileSync(join(home, ".compass", "current-session"), "utf8"),
+		).toBe(`${sessionFile}\n`);
+	});
+
+	test("plain boot removes the old pointer before session construction", async () => {
+		const home = scratch();
+		const pointer = join(home, ".compass", "current-session");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(pointer, "/old/session.jsonl\n");
+		const boom = new Error("session construction failed");
+		await expect(
+			main(
+				{ HOME: home },
+				{
+					createSession: () => Promise.reject(boom),
+					createTransport: () =>
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				},
+			),
+		).rejects.toBe(boom);
+		expect(() => readFileSync(pointer, "utf8")).toThrow();
+	});
+
+	test("plain boot ignores pointer history and replaces the pointer", async () => {
+		const home = scratch();
+		const priorFile = join(scratch(), "prior.jsonl");
+		writeFileSync(priorFile, sessionFixture([userLine("must not resume")]));
+		const pointer = join(home, ".compass", "current-session");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(pointer, `${priorFile}\n`);
+		let managerAtCreate: SessionManager | undefined;
+		await main(
+			{ HOME: home },
+			{
+				createSession: (options) => {
+					managerAtCreate = options.sessionManager as SessionManager;
+					return Promise.resolve({
+						session: fakeSession() as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(managerAtCreate?.getEntries()).toEqual([]);
+		expect(readFileSync(pointer, "utf8")).toBe(
+			`${managerAtCreate?.getSessionFile()}\n`,
+		);
+	});
+
+	test("invalid continuation data falls back and rewrites the pointer", async () => {
+		const home = scratch();
+		const badFile = join(scratch(), "garbage.jsonl");
+		writeFileSync(badFile, "not a session transcript\n");
+		const pointer = join(home, ".compass", "current-session");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(pointer, `${badFile}\n`);
+		const storageResumeFiles: (string | undefined)[] = [];
+		const errors: string[] = [];
+		const originalError = console.error;
+		console.error = (...args: unknown[]) =>
+			errors.push(args.map(String).join(" "));
+		let managerAtCreate: SessionManager | undefined;
+		try {
+			await main(
+				{ HOME: home, COMPASS_CONTINUE_SESSION: "1" },
+				{
+					createSessionStorage: async (sink, sessionDir, options) => {
+						storageResumeFiles.push(options?.resumeFile);
+						return createTeeSessionStorage(sink, sessionDir, options);
+					},
+					createSession: (options) => {
+						managerAtCreate = options.sessionManager as SessionManager;
+						return Promise.resolve({
+							session: fakeSession() as unknown as AgentSession,
+						});
+					},
+					createTransport: () =>
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				},
+			);
+		} finally {
+			console.error = originalError;
+		}
+		expect(managerAtCreate?.getEntries()).toEqual([]);
+		expect(storageResumeFiles).toEqual([badFile, undefined]);
+		expect(readFileSync(pointer, "utf8")).toBe(
+			`${managerAtCreate?.getSessionFile()}\n`,
+		);
+		expect(
+			errors.filter((line) => line.includes("continuation skipped")),
+		).toHaveLength(1);
+	});
 
 	// Reload continuation uses the same SDK-native load path, but discovers the
 	// previous file through the agent-home pointer when no explicit resume is set.

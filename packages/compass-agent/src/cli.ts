@@ -145,11 +145,87 @@ async function resolveResumeFile(
 	return resolveContinuationSessionFile(home);
 }
 
+async function prepareResume(
+	env: Record<string, string | undefined>,
+	home: string,
+): Promise<{ resumeFile: string | undefined; continued: boolean }> {
+	const resumeFile = await resolveResumeFile(env, home);
+	if (env.COMPASS_CONTINUE_SESSION !== "1") {
+		await rm(join(home, ".compass", "current-session"), { force: true });
+	}
+	return {
+		resumeFile,
+		continued:
+			resumeFile !== undefined && !env.COMPASS_RESUME_SESSION_FILE?.trim(),
+	};
+}
+
 function configuredThinkingLevel(
 	settings: Settings | undefined,
 ): Pick<CreateAgentSessionOptions, "thinkingLevel"> {
 	if (settings?.isConfigured("defaultThinkingLevel") !== true) return {};
 	return { thinkingLevel: settings.get("defaultThinkingLevel") };
+}
+
+function continuedModelSelector(
+	env: Record<string, string | undefined>,
+	continued: boolean,
+	settings: Settings | undefined,
+): string | undefined {
+	const explicit = resolveModelSelector(env);
+	if (explicit !== undefined) return explicit;
+	if (
+		!continued ||
+		settings?.isConfigured("modelRoles") !== true ||
+		settings.getModelRoleProvenance("default") !== "overlay"
+	) {
+		return undefined;
+	}
+	return settings.getModelRole("default") || undefined;
+}
+
+interface BootSession {
+	storage: IndexedSessionStorage;
+	manager: SessionManager;
+	continued: boolean;
+}
+
+async function createBootSession(
+	sink: FrameSink,
+	cwd: string,
+	sessionDir: string,
+	resumeFile: string | undefined,
+	continued: boolean,
+	deps: MainDeps,
+): Promise<BootSession> {
+	const { storage } = await (
+		deps.createSessionStorage ?? createTeeSessionStorage
+	)(sink, sessionDir, resumeFile ? { resumeFile } : undefined);
+	const manager = SessionManager.create(cwd, sessionDir, storage);
+	if (resumeFile) {
+		if (continued) {
+			try {
+				await manager.setSessionFile(resumeFile);
+			} catch (error) {
+				const reason = String(error).replaceAll(/[\r\n]+/g, " ");
+				console.error(
+					`[compass-agent] continuation skipped: session could not be loaded: ${reason}`,
+				);
+				continued = false;
+				const freshStorage = await (
+					deps.createSessionStorage ?? createTeeSessionStorage
+				)(sink, sessionDir);
+				return {
+					storage: freshStorage.storage,
+					manager: SessionManager.create(cwd, sessionDir, freshStorage.storage),
+					continued,
+				};
+			}
+		} else {
+			await manager.setSessionFile(resumeFile);
+		}
+	}
+	return { storage, manager, continued };
 }
 
 function reapplyConfiguredServiceTiers(
@@ -748,7 +824,13 @@ export async function main(
 	// caller building an AgentEnv with a blank Workdir would otherwise hand bun
 	// `cwd: ""` — which silently loads the wrong tree instead of throwing.
 	const cwd = env.COMPASS_WORKDIR?.trim() || process.cwd();
+	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
 
+	const { resumeFile, continued: initialContinuation } = await prepareResume(
+		env,
+		home,
+	);
+	let continued = initialContinuation;
 	// The socket carrier + sink come FIRST: the tee storage backend teems every
 	// committed session write onto the sink's DURABLE lane (RIG-1570), so the
 	// sink must exist before the storage that holds it.
@@ -756,18 +838,16 @@ export async function main(
 		resolveSocketPath(env),
 	);
 	const sink = createSocketFrameSink(transport);
-
-	// Resolve any file before storage initialization so external paths are indexed.
-	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
-	const resumeFile = await resolveResumeFile(env, home);
-	// A continued session reapplies explicit fleet config over its stored choices.
-	const continued =
-		resumeFile !== undefined && !env.COMPASS_RESUME_SESSION_FILE?.trim();
-	const { storage } = await (
-		deps.createSessionStorage ?? createTeeSessionStorage
-	)(sink, sessionDir, resumeFile ? { resumeFile } : undefined);
-	const manager = SessionManager.create(cwd, sessionDir, storage);
-	if (resumeFile) await manager.setSessionFile(resumeFile);
+	const bootSession = await createBootSession(
+		sink,
+		cwd,
+		sessionDir,
+		resumeFile,
+		continued,
+		deps,
+	);
+	const { storage, manager } = bootSession;
+	continued = bootSession.continued;
 
 	// The Runner-mounted agent-config bundle (design §CD-3): read the mount and map
 	// it to the createAgentSession surfaces below; unconfigured yields every field
@@ -879,10 +959,9 @@ export async function main(
 		...createBoardTools(boardBroker),
 	] as ToolDefinition[];
 
-	// Resolve the pinned model selector ONCE and share it between the session
-	// option and the boot-model-health belt below, so the "was a model pinned?"
-	// signal the two consult can never diverge.
-	const modelPattern = resolveModelSelector(env);
+	// A continued session has a baked model choice, so only an explicit fleet
+	// default role can replace it when COMPASS_MODEL is absent.
+	const modelPattern = continuedModelSelector(env, continued, fleetSettings);
 
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
