@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+func approvePeersBothWays(t *testing.T, s *Store, a, b AccountID) {
+	t.Helper()
+	approvePeer(t, s, a, b)
+	approvePeer(t, s, b, a)
+}
+
 // mustPolicyChannel creates a channel owned+operated by owner with the given
 // initial policy and extra members.
 func mustPolicyChannel(t *testing.T, s *Store, owner AccountID, name string, p ChannelPolicy, members ...AccountID) Channel {
@@ -106,6 +112,7 @@ func TestUndeliveredMessagesReachesUnsubscribedMandatoryMember(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	author := mustUser(t, s, "author")
 	recip := mustAgent(t, s, owner.ID, "recip")
+	approvePeersBothWays(t, s, owner.ID, author.ID)
 	ch := mustPolicyChannel(t, s, owner.ID, "mandatory", ChannelPolicy{
 		MandatorySubscription: true,
 	}, author.ID, recip.ID)
@@ -144,6 +151,7 @@ func TestSetChannelPolicySeedsCursorsForNewlyMandatory(t *testing.T) {
 	// neither has a delivery cursor row yet. author is a member so it can post
 	// the pre-flip head.
 	author := mustUser(t, s, "author")
+	approvePeersBothWays(t, s, owner.ID, author.ID)
 	ch := mustPolicyChannel(t, s, owner.ID, "coord", ChannelPolicy{}, author.ID, a1.ID, a2.ID)
 	unsubscribeMember(t, s, ch.ID, a1.ID)
 	unsubscribeMember(t, s, ch.ID, a2.ID)
@@ -393,6 +401,7 @@ func TestUpdateChannelMembersSeedsUnsubscribedAddOnMandatory(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	author := mustUser(t, s, "author")
 	late := mustAgent(t, s, owner.ID, "late")
+	approvePeersBothWays(t, s, owner.ID, author.ID)
 	// A mandatory channel; author is a member so it may post the pre-add head.
 	ch := mustPolicyChannel(t, s, owner.ID, "mandatory", ChannelPolicy{
 		MandatorySubscription: true,
@@ -491,6 +500,7 @@ func TestUpdateChannelMembersConcurrentFlipSeedsLateMember(t *testing.T) {
 	author := mustUser(t, s, "author")
 	existing := mustAgent(t, s, owner.ID, "existing")
 	late := mustAgent(t, s, owner.ID, "late")
+	approvePeersBothWays(t, s, owner.ID, author.ID)
 	// A non-mandatory channel; author is a member so it may post the head, and
 	// `existing` is an agent member that B will seed under the flip. `late` (M)
 	// is NOT yet a member — A adds it concurrently with B's flip.

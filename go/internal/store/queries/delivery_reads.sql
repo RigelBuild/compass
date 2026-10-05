@@ -1,9 +1,7 @@
--- Delivery-consumer read queries (sqlc adoption T4, RIG-3034). These replace the
--- inline SQL literals in internal/store/delivery_reads.go; the hand-written Store
--- methods keep their signatures, the D1 sweep-set disjunct (kept textually in
--- sync with delivery_cursors.sql UndeliveredMessages/InSweepSet), and the D9
--- error mapping. MessageByID shares the message projection the Go drains via
--- messageFromParts.
+-- Delivery-consumer read queries. The recipient sets are reach-gated: a member
+-- outside the author's owner or live peering is absent from these results.
+-- Keep the marked reach predicate in sync with delivery_cursors.sql.
+-- MessageByID shares the message projection the Go drains via messageFromParts.
 
 -- name: SubscribedAgents :many
 SELECT aa.account_id
@@ -13,6 +11,15 @@ JOIN channels ch ON ch.id = cm.channel_id
 WHERE cm.channel_id = $1
   AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
   AND cm.account_id <> $2
+  AND
+-- reach: the author may reach agent aa
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $2), $2)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = $2)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $2), $2)
+              AND p_out.peer_user_id = aa.owner_user_id)
+)
 ORDER BY aa.account_id;
 
 -- name: ChannelAgentMembers :many
@@ -27,6 +34,15 @@ LEFT JOIN account_handles oh ON oh.account_id = aa.owner_user_id
     AND oh.owner_user_id IS NULL AND oh.tenant_id = aa.tenant_id
 WHERE cm.channel_id = $1
   AND cm.account_id <> $2
+  AND
+-- reach: the author may reach agent aa
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $2), $2)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = $2)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $2), $2)
+              AND p_out.peer_user_id = aa.owner_user_id)
+)
 ORDER BY aa.account_id;
 
 -- name: IsAgentAccount :one

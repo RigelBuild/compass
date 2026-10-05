@@ -212,9 +212,8 @@ func (s *Store) UnroutedMentionMessages(ctx context.Context, afterSeq int64, lim
 // cursor). Once the message is resolved to this channel it ALSO clears any
 // owed_mention row for (agent, message_id) — the RIG-1641 T1 no-loss backstop —
 // inside this same txn. It then marks the seq acked (retained in above_seqs) and
-// advances the contiguous cursor across every seq that is EITHER acked (in
-// above_seqs) OR self-authored in this channel (author_account_id = agent —
-// never dispatched).
+// advances the contiguous cursor across seqs that are acked, self-authored, or
+// out of reach at ack time.
 //
 // The owed-clear runs FIRST, before the cursor arm, because the mention-gap
 // population it exists for (unsubscribed, non-home, non-mandatory) has NO
@@ -298,34 +297,31 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 		return commitIfCleared()
 	}
 
-	// Record the acked seq in the above-set (idempotent), then drain the
-	// contiguous prefix.
+	// Record the acked seq in the above-set (idempotent), then drain the contiguous prefix.
 	above := make(map[int64]bool, len(aboveSeqs)+1)
 	for _, s := range aboveSeqs {
 		above[s] = true
 	}
 	above[seq] = true
 
-	// Advance the contiguous cursor across every next seq that is acked or
-	// self-authored (never dispatched). Query the exclusion set once so a run of
-	// self-posts can't wedge the advance. It stops at the first un-acked seq; a
-	// cross-channel BIGSERIAL gap leaves acked seqs undrained (parked, PR #55 OQ).
-	ownSeqList, err := qtx.SelfAuthoredSeqsAbove(ctx, db.SelfAuthoredSeqsAboveParams{
-		ChannelID:       string(channel),
-		Seq:             ackedSeq,
-		AuthorAccountID: string(agent),
+	// Advance the contiguous cursor across acked, self-authored, or out-of-reach seqs.
+	// Query the skippable set once so these seqs cannot wedge the advance.
+	skippableSeqs, err := qtx.SkippableSeqsAbove(ctx, db.SkippableSeqsAboveParams{
+		ChannelID:      string(channel),
+		Seq:            ackedSeq,
+		AgentAccountID: string(agent),
 	})
 	if err != nil {
-		return fmt.Errorf("store: load self-authored seqs: %w", err)
+		return fmt.Errorf("store: load skippable seqs: %w", err)
 	}
-	ownSeqs := make(map[int64]bool, len(ownSeqList))
-	for _, s := range ownSeqList {
-		ownSeqs[s] = true
+	skippable := make(map[int64]bool, len(skippableSeqs))
+	for _, seq := range skippableSeqs {
+		skippable[seq] = true
 	}
 
 	for {
 		next := ackedSeq + 1
-		if above[next] || ownSeqs[next] {
+		if above[next] || skippable[next] {
 			ackedSeq = next
 			delete(above, next)
 			continue
@@ -357,15 +353,9 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 	return nil
 }
 
-// UndeliveredMessages is the sweep read: over the D1 disjunct channel set —
-// every channel the agent is subscribed to PLUS its home channel (which sweeps
-// regardless of its subscribed flag) — returns the messages still owed to this
-// agent, ascending seq per channel:
-// seq > acked_seq AND seq <> ALL(above_seqs) AND author_account_id <> agent. An
-// absent cursor row is the legacy fail-safe: the agent is treated as caught-up to
-// the current channel head (no history replay), NOT seq 0 — so a subscribed
-// channel with no cursor contributes nothing rather than a full replay. Channels
-// with no owed messages are omitted from the map.
+// UndeliveredMessages returns unacked messages from the agent's sweep channels
+// only when their author may reach it; self-authored and out-of-reach posts are
+// excluded. An absent cursor treats the agent as caught up to channel head.
 func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[ChannelID][]Message, error) {
 	// One query over the agent's sweep set: the D1 disjunct — a channel the
 	// agent is subscribed to OR its home channel (which always sweeps). The

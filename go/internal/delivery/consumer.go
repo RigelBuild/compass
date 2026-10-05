@@ -53,10 +53,10 @@ type SessionResolver interface {
 	LiveAgentSessions() map[store.AccountID]string
 }
 
-// DeliveryReads is the store surface the consumer reads: subscribers, authors,
-// messages, channel-member mention routing, and durable delivery recovery.
+// DeliveryReads provides the recipient sets and recovery reads for the consumer.
 // *store.Store implements it.
 type DeliveryReads interface { //nolint:interfacebloat // one method per store read the consumer drives; the surface is the delivery-read contract, not incidental sprawl
+	// SubscribedAgents returns subscribed channel agents the author may reach.
 	SubscribedAgents(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
 	IsAgentAccount(ctx context.Context, account store.AccountID) (bool, error)
 	MessageByID(ctx context.Context, messageID string) (store.Message, error)
@@ -73,8 +73,8 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// treats as empty names — never a delivery block.
 	TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
-	// ChannelAgentMembers returns every non-author agent member and its handles,
-	// regardless of subscribe state.
+	// ChannelAgentMembers returns members the author may reach and their handles;
+	// out-of-reach members are absent even when they share the channel.
 	ChannelAgentMembers(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.ChannelAgentMember, error)
 	// ResolveOwner scopes bare mentions to the posting author's owner namespace.
 	ResolveOwner(ctx context.Context, caller store.AccountID) (store.AccountID, error)

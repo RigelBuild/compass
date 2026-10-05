@@ -1,10 +1,5 @@
--- Delivery-cursor queries (sqlc adoption T4, RIG-3034). These replace the inline
--- SQL literals in internal/store/delivery_cursors.go; the hand-written Store
--- methods keep their signatures, the AckDelivery tx orchestration (the owed-clear
--- FIRST, the commit-if-cleared arm, the contiguous-advance loop in Go), and the
--- D2 seed self-guard/idempotency contract. The two message-fanout reads
--- (OwedMentions, UndeliveredMessages) share the per-channel projection the Go
--- drains with an inline loop calling messageFromParts.
+-- Delivery-cursor reads share the author's reach predicate with delivery_reads.sql.
+-- A member outside the author's owner or live peering is not delivered.
 
 -- name: SeedDeliveryCursor :exec
 INSERT INTO agent_delivery_cursors (agent_account_id, channel_id, acked_seq)
@@ -39,10 +34,20 @@ ON CONFLICT (agent_account_id, message_id) DO NOTHING;
 SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM owed_mentions om
 JOIN messages m ON m.id = om.message_id
+JOIN agent_accounts aa ON aa.account_id = om.agent_account_id
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
 WHERE om.agent_account_id = $1
+  AND
+-- reach: the author may reach agent aa
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = m.author_account_id)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+              AND p_out.peer_user_id = aa.owner_user_id)
+)
 ORDER BY t.channel_id, m.seq ASC;
 
 -- name: ClearOwedMention :execrows
@@ -71,9 +76,19 @@ SELECT acked_seq, above_seqs FROM agent_delivery_cursors
 WHERE agent_account_id = $1 AND channel_id = $2
 FOR UPDATE;
 
--- name: SelfAuthoredSeqsAbove :many
+-- name: SkippableSeqsAbove :many
 SELECT m.seq FROM messages m JOIN topics t ON t.id = m.topic_id
-WHERE t.channel_id = $1 AND m.seq > $2 AND m.author_account_id = $3;
+JOIN agent_accounts aa ON aa.account_id = sqlc.arg(agent_account_id)
+WHERE t.channel_id = $1 AND m.seq > $2
+  AND (m.author_account_id = sqlc.arg(agent_account_id) OR NOT
+-- reach: the author may reach agent aa
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = m.author_account_id)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+              AND p_out.peer_user_id = aa.owner_user_id)
+));
 
 -- name: AdvanceDeliveryCursor :exec
 UPDATE agent_delivery_cursors
@@ -93,6 +108,15 @@ LEFT JOIN agent_delivery_cursors dc
 WHERE cm.account_id = $1
   AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
   AND m.author_account_id <> $1
+  AND
+-- reach: the author may reach agent aa
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = m.author_account_id)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+              AND p_out.peer_user_id = aa.owner_user_id)
+)
   AND m.seq > COALESCE(
         dc.acked_seq,
         (SELECT COALESCE(MAX(mh.seq), 0) FROM messages mh JOIN topics th ON th.id = mh.topic_id WHERE th.channel_id = cm.channel_id))

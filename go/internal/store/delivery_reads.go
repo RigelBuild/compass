@@ -12,20 +12,8 @@ import (
 // Postgres in one pgtest-tagged file. All four are pure reads — the only
 // delivery mutation is AckDelivery (T2).
 
-// SubscribedAgents resolves the agent accounts that should receive a message
-// posted to channel, EXCLUDING the author (an agent never receives its own post
-// back as a deliver). It is D1's one subscriber-resolution query: a member
-// delivers when it
-// is flagged subscribed, OR the channel is that agent's home channel, OR the
-// channel is mandatory_subscription (T4, design.md:521-522) — every member of a
-// mandatory channel is a delivery target regardless of its stored subscribed
-// flag. The home-channel and mandatory disjuncts are model-fidelity
-// repairs, not optimizations — a member row flipped subscribed=false MUST still
-// deliver on a home or mandatory channel, so the query enforces the guarantee
-// read-side, independent of the stored flag. The JOIN to agent_accounts is what
-// scopes the result to AGENT members: a human member has no agent_accounts row
-// and is excluded, so a deliver is only ever dispatched to an agent session. $1
-// is the channel, $2 the author account excluded from the result.
+// SubscribedAgents resolves subscribed agent members the author may reach,
+// author excluded. Home and mandatory channels still bypass the stored flag.
 func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author AccountID) ([]AccountID, error) {
 	rows, err := s.q.SubscribedAgents(ctx, db.SubscribedAgentsParams{
 		ChannelID: string(channel),
@@ -37,8 +25,8 @@ func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author 
 	return accountIDs(rows), nil
 }
 
-// ChannelAgentMembers resolves every AGENT member of a channel, author excluded,
-// regardless of subscribe state — the mention routing set.
+// ChannelAgentMembers resolves every reachable agent member, author excluded,
+// regardless of subscribe state; out-of-reach members are absent.
 func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, author AccountID) ([]ChannelAgentMember, error) {
 	rows, err := s.q.ChannelAgentMembers(ctx, db.ChannelAgentMembersParams{
 		ChannelID: string(channel),
