@@ -135,10 +135,12 @@ func sweepStaleAgentContainers(ctx context.Context, engine runtime.WorkloadRunti
 	}
 }
 
-// Five attempts with 1s, 2s, 4s, and 8s backoffs cover brief restarts, then fail loud.
+// Five attempts with 1s, 2s, 4s, and 8s backoffs cover brief restarts, then fail loud;
+// the per-attempt timeout stops a stalled server from blocking an attempt forever.
 const (
-	dialMaxAttempts    = 5
-	dialInitialBackoff = time.Second
+	dialMaxAttempts      = 5
+	dialInitialBackoff   = time.Second
+	enrollAttemptTimeout = 10 * time.Second
 )
 
 type dialFunc func(context.Context, RunnerConfig) (*ServerLink, error)
@@ -148,7 +150,13 @@ type waitFunc func(context.Context, time.Duration) bool
 func runDialWithRetry(ctx context.Context, cfg RunnerConfig, log *slog.Logger, dial dialFunc, wait waitFunc) (*ServerLink, error) {
 	var lastErr error
 	for attempt := 1; attempt <= dialMaxAttempts; attempt++ {
-		link, err := dial(ctx, cfg)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, enrollAttemptTimeout)
+		link, err := dial(attemptCtx, cfg)
+		attemptTimedOut := attemptCtx.Err() == context.DeadlineExceeded
+		cancel()
 		if err == nil {
 			return link, nil
 		}
@@ -156,10 +164,12 @@ func runDialWithRetry(ctx context.Context, cfg RunnerConfig, log *slog.Logger, d
 			return nil, ctx.Err()
 		}
 		lastErr = err
-		log.Warn("runner enrollment attempt failed",
-			slog.Int("attempt", attempt), slog.Int("max_attempts", dialMaxAttempts), slog.Any("error", err))
-		if !retryableDialError(err) {
-			return nil, fmt.Errorf("runner enrollment failed after %d attempts: %w", attempt, err)
+		// The attempt's own deadline is a stalled server, which is retryable.
+		timedOut := attemptTimedOut && errors.Is(err, context.DeadlineExceeded)
+		log.Warn("runner enrollment attempt failed", slog.Int("attempt", attempt),
+			slog.Int("max_attempts", dialMaxAttempts), slog.Bool("timed_out", timedOut), slog.Any("error", err))
+		if !timedOut && !retryableDialError(err) {
+			return nil, fmt.Errorf("runner enrollment failed (not retryable, attempt %d): %w", attempt, err)
 		}
 		if attempt < dialMaxAttempts && !wait(ctx, dialInitialBackoff<<uint(attempt-1)) {
 			return nil, ctx.Err()

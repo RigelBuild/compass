@@ -156,9 +156,10 @@ sources, the air-gapped runbook, and the agent-image bump flow are in
 
 ## Runner enrollment
 
-The Runner retries transient enrollment failures five times with exponential
-backoff, then exits. The stack supervisor restarts it after that cap; invalid
-credentials and other permanent request errors fail immediately.
+The Runner makes up to five enrollment attempts with 1s, 2s, 4s, and 8s backoffs,
+then exits non-zero. Under devenv, `restart.on = "on_failure"` restarts the
+Runner. `compass-stack` does not watch the Runner after `up` returns; rerun
+`compass-stack up` to restart it.
 
 ## Database
 

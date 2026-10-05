@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -97,6 +98,9 @@ func TestRunDialWithRetryFailsFastOnNonRetryableErrors(t *testing.T) {
 				delays++
 				return true
 			})
+			if !strings.Contains(err.Error(), "not retryable") {
+				t.Fatalf("runDialWithRetry error = %v, want explicit not-retryable wording", err)
+			}
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("runDialWithRetry error = %v, want original error %v", err, tc.err)
 			}
@@ -105,6 +109,30 @@ func TestRunDialWithRetryFailsFastOnNonRetryableErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunDialWithRetryTimeoutsStalledAttempt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 65*time.Second)
+		defer cancel()
+		cfg := RunnerConfig{RunnerID: "runner-1", RuntimeDir: t.TempDir(), Engine: newPipeRuntime()}
+		var attempts int
+		var delays []time.Duration
+		got, err := runDialWithRetry(ctx, cfg, discardLoggerRunner(), func(ctx context.Context, _ RunnerConfig) (*ServerLink, error) {
+			attempts++
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}, func(_ context.Context, delay time.Duration) bool {
+			delays = append(delays, delay)
+			return true
+		})
+		if got != nil || err == nil {
+			t.Fatalf("runDialWithRetry = (%p, %v), want a timeout error", got, err)
+		}
+		if attempts != 5 || !slices.Equal(delays, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}) {
+			t.Fatalf("attempts/delays = %d/%v, want 5/[1s 2s 4s 8s]", attempts, delays)
+		}
+	})
 }
 
 func TestRunDialWithRetryCancelDuringBackoffReturnsCtxErr(t *testing.T) {
