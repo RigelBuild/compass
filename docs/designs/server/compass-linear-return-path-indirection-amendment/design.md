@@ -96,8 +96,11 @@ DECISIONS.md:360). At CLICK time it:
 
 1. Reads the `linear_agent_sessions` association row for the session id
    (#625 design.md:279-286) — **only to recover the session's
-   `linear_issue_id`** (the issue's forge coordinate) for the ownership
-   lookup. The row's stored `channel_id` / `manager_account_id` are the
+   `linear_issue_identifier`** (`TEAM-NUMBER`, the coordinate
+   `ResolveResponder` parses) for the ownership lookup. `linear_issue_id` stores
+   the Linear UUID, not a forge coordinate. Rows written before this column was
+   added, and bare `@mention` sessions, have no identifier and fall back to the
+   routing channel. The row's stored `channel_id` / `manager_account_id` are the
    **created-time** target #646 wrote, and are deliberately **NOT** used as
    the redirect target — that stale value (e.g. the routing channel an issue
    was unrouted to at `created`) is exactly what this indirection exists to
@@ -117,7 +120,7 @@ DECISIONS.md:360). At CLICK time it:
      ownership row yet — the DL-255 supervisor-fallback state, #625
      design.md:230-237);
    - the **dedicated routing channel** also for a **bare `@mention` session
-     with no issue** — `linear_issue_id` is nullable (#625 design.md:284) and
+     with no issue** — `linear_issue_identifier` is nullable (#625 design.md:284) and
      #625 supports a session with no issue (the topic "[falls] back to the
      session id for a bare @mention with no issue", #625 design.md:262-266).
      With no forge coordinate no ownership row can ever resolve, so the
