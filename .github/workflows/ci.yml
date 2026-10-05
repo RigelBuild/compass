@@ -427,7 +427,7 @@ jobs:
             exit 1
           }
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
-          # secretspec: the CLI the Go secrets WRITE path spawns BY NAME
+          # secretspec: the CLI the Go secrets READ path spawns BY NAME
           # (go/internal/secrets/resolver.go's `defaultCLI = "secretspec"`,
           # exec.CommandContext). TestSecretSpecCLIVersionFloor now FAILS CLOSED
           # rather than skipping when exec.LookPath finds nothing — secrets not
@@ -660,28 +660,18 @@ jobs:
           for store in $stores; do
             echo "$store/bin" >>"$GITHUB_PATH"
           done
-          # secretspec: the CLI the Go secrets WRITE path spawns BY NAME
+          # secretspec: the CLI the Go secrets READ path spawns BY NAME
           # (go/internal/secrets/resolver.go's `defaultCLI`). The Real-Postgres
-          # step below runs `go test -tags pgtest ./...`, which INCLUDES
-          # internal/secrets, and TestSecretSpecCLIVersionFloor now FAILS CLOSED
-          # rather than skipping when exec.LookPath finds nothing — so this job
-          # needs the binary too, not just the moon battery. Realized from the
-          # same pinned helper for the same dotted-input reason (it comes from the
-          # second `secretspec-nixpkgs` input, outside devenv.nix's parsed
-          # `packages` literal, so parity.ts never emits it — devenv.nix:251-253).
+          # step below runs `go test -tags pgtest ./...`, whose armed
+          # forge-secret test resolves through the real CLI and FAILS without it.
+          # Realized from the same pinned helper for the same dotted-input reason
+          # (it comes from the second `secretspec-nixpkgs` input, outside
+          # devenv.nix's parsed `packages` literal, so parity.ts never emits it).
           # Staged HERE, not in the later sqlc-vet bootstrap: $GITHUB_PATH only
           # affects SUBSEQUENT steps, and the consumer is the very next one.
           secretspec=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/secretspec-env.nix secretspec)
           echo "$secretspec/bin" >>"$GITHUB_PATH"
-
-          # The FFI cdylib the secrets READ path dlopens, distinct from the
-          # write-path CLI above; without it the armed forge-secret pgtest in
-          # the next step SKIPs. Built from the upstream workspace member
-          # because nixpkgs packages only the `secretspec` crate.
-          libsecretspec=$(nix build --no-link --print-out-paths \
-            -f tools/toolchain/secretspec-env.nix libsecretspec)
-          echo "SECRETSPEC_FFI_LIB=$libsecretspec/lib/libsecretspec.so" >>"$GITHUB_ENV"
 
       - name: Real-Postgres suites
         working-directory: go
@@ -751,22 +741,6 @@ jobs:
               echo "::error::real-Postgres package '$pkg' did not report ok — it failed, skipped, or never ran"
               rc=1
             fi
-          done
-          # The FFI-gated tests skip when libsecretspec is absent, which is right
-          # for a sandbox but defeats the staging step here. Derive their names
-          # from the skip call itself, so renaming a test cannot leave this inert.
-          ffi=$({ grep -rlF 'libsecretspec FFI read path unavailable' --include='*_test.go' . || true; })
-          if [ -z "$ffi" ]; then
-            echo "::error::no test carries the libsecretspec skip message — this guard has drifted and checks nothing"
-            exit 1
-          fi
-          for f in $ffi; do
-            for name in $(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(t \*testing\.T).*/\1/p' "$f"); do
-              if grep -qF -- "--- SKIP: $name" /tmp/pgtest.log; then
-                echo "::error::$name skipped — SECRETSPEC_FFI_LIB did not reach it, so the real resolver was never exercised"
-                exit 1
-              fi
-            done
           done
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
@@ -987,7 +961,7 @@ jobs:
           done
           export PATH
 
-          # secretspec: the CLI the Go secrets WRITE path spawns by name
+          # secretspec: the CLI the Go secrets READ path spawns by name
           # (internal/secrets' `defaultCLI`). The `go test` below is an UNSCOPED
           # `./...`, so it walks internal/secrets too — a build tag selects which
           # FILES compile, not which PACKAGES `./...` visits, and
@@ -2297,12 +2271,13 @@ jobs:
             -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
           echo "$out/bin" >>"$GITHUB_PATH"
 
-      - name: Stage the secretspec cdylib
-        # The fixture seeds its own master key; CI only stages the cdylib its read path dlopens.
+      - name: Put the secretspec CLI on PATH
+        # The stack's compass-server resolves its server secrets by spawning the
+        # secretspec CLI by name, so the e2e step below needs it on PATH.
         run: |
-          libsecretspec=$(nix build --no-link --print-out-paths \
-            -f tools/toolchain/secretspec-env.nix libsecretspec)
-          echo "SECRETSPEC_FFI_LIB=$libsecretspec/lib/libsecretspec.so" >>"$GITHUB_ENV"
+          secretspec=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/secretspec-env.nix secretspec)
+          echo "$secretspec/bin" >>"$GITHUB_PATH"
 
       - name: Detect whether this PR changes the compass-agent image
         id: image_affected

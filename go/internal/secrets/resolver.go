@@ -1,14 +1,17 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec" //nolint:depguard // secrets read seam: spawns the secretspec CLI by name (G204 site justified below)
 	"sort"
 	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/store"
-	secretspec "github.com/cachix/secretspec/secretspec-go"
 )
 
 // manifestProject is the single SecretSpec project name Compass resolves under.
@@ -19,6 +22,10 @@ const manifestProject = "compass"
 // defaultProfile is the SecretSpec profile Compass resolves under when none is
 // configured — the Server owns one project, one profile.
 const defaultProfile = "default"
+
+// defaultCLI is the SecretSpec binary both read paths spawn, resolved off PATH.
+// hostcheck.SecretSpecFloor names the same binary and guards it at boot.
+const defaultCLI = "secretspec"
 
 // reportStatusResolved is the SecretSpec report status meaning the provider
 // holds a value for a declared secret. The report's other statuses
@@ -65,24 +72,27 @@ type Resolver interface {
 // values, never provider access.
 type SpecResolver struct {
 	store    declarations
-	provider string // SecretSpec provider URI (e.g. "keyring://"); "" = SDK default chain
+	provider string // SecretSpec provider URI (e.g. "keyring://"); "" = the CLI's default chain
 	profile  string // SecretSpec profile (e.g. "default")
 	// stateDir is where the generated manifest is written — the Server's own
-	// state directory, never repo state. The SDK builder takes provider/profile
-	// plus a manifest path, so the resolver points WithPath at this manifest.
+	// state directory, never repo state. The CLI reads it through --file.
 	stateDir string
+	cli      string // the secretspec binary, by name or path
 }
 
 // SpecOption configures a SpecResolver.
 type SpecOption func(*SpecResolver)
 
 // WithProvider pins the SecretSpec provider URI (e.g. "keyring://",
-// "onepassword://Production"). Empty uses the SDK's default provider chain.
+// "onepassword://Production"). Empty uses the CLI's default provider chain.
 func WithProvider(uri string) SpecOption { return func(r *SpecResolver) { r.provider = uri } }
 
 // WithProfile pins the SecretSpec profile. Empty resolves to defaultProfile
-// (see resolvedProfile), never the SDK/CLI built-in default.
+// (see resolvedProfile), never the CLI built-in default.
 func WithProfile(profile string) SpecOption { return func(r *SpecResolver) { r.profile = profile } }
+
+// WithCLI pins the secretspec CLI binary the read paths spawn (default: "secretspec" on PATH).
+func WithCLI(path string) SpecOption { return func(r *SpecResolver) { r.cli = path } }
 
 // NewSpecResolver constructs a SecretSpec-backed Resolver over the store's
 // names registry. stateDir is the Server-owned directory the generated manifest
@@ -92,6 +102,7 @@ func NewSpecResolver(st declarations, stateDir string, opts ...SpecOption) *Spec
 		store:    st,
 		profile:  defaultProfile,
 		stateDir: stateDir,
+		cli:      defaultCLI,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -104,7 +115,7 @@ func NewSpecResolver(st declarations, stateDir string, opts ...SpecOption) *Spec
 // as a required key. Value-free — the manifest declares names, never values.
 // Names are re-validated here (defense in depth) so a malformed name can never
 // reach the emitted TOML. A pure function of its inputs, so it is unit-testable
-// without a store or the FFI resolver.
+// without a store or the CLI.
 func buildManifest(profile string, decls []store.SecretDeclaration) (string, error) {
 	if profile == "" {
 		profile = defaultProfile
@@ -124,7 +135,7 @@ func buildManifest(profile string, decls []store.SecretDeclaration) (string, err
 			return "", err
 		}
 		// required = true: the store declared it, so the provider must hold it;
-		// a missing one is a MissingRequiredError at resolve, surfaced loudly.
+		// a missing one fails the export, surfaced loudly.
 		fmt.Fprintf(&b, "%s = { description = %q, required = true }\n", d.Name, "compass declared secret")
 	}
 	return b.String(), nil
@@ -145,52 +156,48 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 	}
 	// One accessor for the profile so the manifest header and the resolving
 	// profile can never diverge: buildManifest emits [profiles.<profile>] and
-	// the SDK resolves the same <profile>.
+	// the CLI resolves the same <profile>.
 	profile := r.resolvedProfile()
 	manifestPath, err := r.writeManifest(profile, decls)
 	if err != nil {
 		return nil, err
 	}
-	// The manifest is a transient input to Load — a per-resolve temp file, so
+	// The manifest is a transient input to the CLI — a per-resolve temp file, so
 	// concurrent resolves never share one path (each gets its own). Remove it
 	// once resolved; the registry, not this file, is the durable source.
 	defer func() { _ = os.Remove(manifestPath) }()
 
-	b := secretspec.New().WithPath(manifestPath).WithReason(reason)
-	if r.provider != "" {
-		b = b.WithProvider(r.provider)
-	}
-	b = b.WithProfile(profile)
-	resolved, err := b.Load()
+	stdout, stderr, err := r.run(ctx, r.cliArgs("export", manifestPath, profile, reason, "--format=json"))
 	if err != nil {
-		// MissingRequiredError and *secretspec.Error both carry a value-free
-		// message (names + kind), so wrapping cannot leak a value.
-		return nil, fmt.Errorf("secrets: resolve: %w", err)
+		// stderr carries names and kinds only (the CLI never echoes a value);
+		// stdout, which may hold values, is never put in an error.
+		return nil, fmt.Errorf("secrets: resolve via %s: %w: %s", r.cli, err, stderr)
 	}
-
-	// resolved.Close removes the 0400 temp files SecretSpec creates for as_path
-	// secrets. The manifest declares none today, so this is a no-op. If as_path is
-	// ever declared, out[].Value would hold a file PATH read after Resolve returns
-	// — move this Close after materialization, or it removes the file too early.
-	defer func() { _ = resolved.Close() }()
+	// A nil entry is a JSON null: the name is present with no usable value.
+	var resolved map[string]*string
+	if err := json.Unmarshal(stdout, &resolved); err != nil {
+		return nil, fmt.Errorf("secrets: resolve via %s: %w", r.cli, redactDecodeError(err))
+	}
+	if resolved == nil {
+		return nil, fmt.Errorf("secrets: resolve via %s: output is not a JSON object", r.cli)
+	}
 
 	out := make([]ResolvedSecret, 0, len(decls))
 	for _, d := range decls {
-		rs, ok := resolved.Secrets[d.Name]
+		value, ok := resolved[d.Name]
 		if !ok {
-			// The manifest declared it required, so Load would have errored on a
-			// genuine miss; a name present in decls but absent here means the
-			// resolver dropped it — surface it rather than emit an empty value.
+			// The manifest declared it required, so the export would have failed
+			// on a genuine miss; a declared name absent here means the CLI dropped
+			// it — surface it rather than emit an empty value.
 			return nil, fmt.Errorf("secrets: declared secret %q not in resolver output", d.Name)
 		}
-		value, present := rs.Usable()
-		if !present {
+		if value == nil {
 			return nil, fmt.Errorf("secrets: declared secret %q resolved with no value", d.Name)
 		}
 		out = append(out, ResolvedSecret{
 			Name:     d.Name,
-			Value:    value,
-			Version:  Version(value),
+			Value:    *value,
+			Version:  Version(*value),
 			Delivery: deliveryFromStore(d.Delivery),
 			Kind:     kindFromStore(d.Kind),
 			Host:     d.Host,
@@ -201,32 +208,27 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 }
 
 // Statuses reports each declared secret's value-free set/unset state, reading
-// the SecretSpec RESOLUTION REPORT rather than resolving values. reason is
-// recorded in the SecretSpec audit log exactly as on the resolve path. An empty
-// registry reports an empty set with no provider call.
+// the SecretSpec RESOLUTION REPORT (`secretspec check --json`) rather than
+// resolving values. reason is recorded in the SecretSpec audit log exactly as on
+// the resolve path. An empty registry reports an empty set with no provider call.
 //
-// Report, not Load, is the primitive this needs, for two independent reasons:
+// The report, not an export, is the primitive this needs, for two reasons:
 //
-//   - buildManifest declares every name required = true, so Load fails
-//     WHOLESALE with a MissingRequiredError (and a nil set) the moment ONE
-//     declared secret is unpopulated. That is the common state for a server
-//     secret — the row is self-declared at boot, the value populated
-//     separately — so a Load-based status path would error out in precisely the
-//     case it exists to describe. Report instead reports a missing required
-//     secret as a per-secret status, so it describes a profile even when its
-//     secrets are not all available.
-//   - Report never returns a value. Load would pull every deployment secret's
-//     VALUE into this process just to answer a names-and-flags question, the
-//     same read the user-facing list path deliberately refuses.
+//   - buildManifest declares every name required = true, so an export fails
+//     WHOLESALE the moment ONE declared secret is unpopulated. That is the
+//     common state for a server secret — the row is self-declared at boot, the
+//     value populated separately — so an export-based status path would error
+//     out in precisely the case it exists to describe. The report lists a
+//     missing required secret as a per-secret status instead.
+//   - The report never carries a value. An export would pull every deployment
+//     secret's VALUE into this process just to answer a names-and-flags question.
 //
-// Report is a SecretSpec 0.20+ surface (both the SDK method and the underlying
-// libsecretspec report mode); hostcheck.SecretSpecFloor is the floor that keeps
-// it available, so it is not an optional capability to feature-detect here.
-//
-// A genuine provider fault (a *secretspec.Error — provider unreachable, bad
-// manifest, reason policy refused) is returned as an error, never flattened
-// into an all-unset report: a broken provider must not read as an
-// unprovisioned one.
+// `check --json` exits 1 when a required secret is missing but still prints
+// the full report, so a parseable report is success whatever the exit code.
+// A provider fault (provider unreachable, bad manifest, reason policy refused)
+// prints no report and is returned as an error, never flattened into an
+// all-unset report: a broken provider must not read as an unprovisioned one.
+// The report is a SecretSpec 0.20+ surface; hostcheck.SecretSpecFloor keeps it.
 func (r *SpecResolver) Statuses(ctx context.Context, reason string) ([]SecretStatus, error) {
 	decls, err := r.store.DeclaredSecrets(ctx)
 	if err != nil {
@@ -246,16 +248,24 @@ func (r *SpecResolver) Statuses(ctx context.Context, reason string) ([]SecretSta
 	// failed unlink of a temp file is not actionable.
 	defer func() { _ = os.Remove(manifestPath) }()
 
-	b := secretspec.New().WithPath(manifestPath).WithReason(reason)
-	if r.provider != "" {
-		b = b.WithProvider(r.provider)
+	stdout, stderr, runErr := r.run(ctx, r.cliArgs("check", manifestPath, profile, reason, "--json"))
+	var report struct {
+		Secrets []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"secrets"`
 	}
-	b = b.WithProfile(profile)
-	report, err := b.Report()
-	if err != nil {
-		// *secretspec.Error carries a value-free message (kind + message), so
-		// wrapping cannot leak a value.
-		return nil, fmt.Errorf("secrets: report: %w", err)
+	if err := json.Unmarshal(stdout, &report); err != nil || report.Secrets == nil {
+		// No report means the CLI failed before resolving (a provider fault):
+		// return that, never an all-unset set. The report is value-free, so
+		// its decode error is safe to wrap.
+		if runErr != nil {
+			return nil, fmt.Errorf("secrets: report via %s: %w: %s", r.cli, runErr, stderr)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("secrets: report via %s: %w", r.cli, err)
+		}
+		return nil, fmt.Errorf("secrets: report via %s: no secrets list in the report", r.cli)
 	}
 
 	// Index the report by name: it is a slice, and the declared set is the
@@ -279,7 +289,7 @@ func (r *SpecResolver) Statuses(ctx context.Context, reason string) ([]SecretSta
 // resolvedProfile is the SecretSpec profile every invocation runs under: the
 // pinned profile, or defaultProfile when none is configured (an explicit
 // WithProfile("")). One accessor for both paths so the generated manifest
-// header and the profile the CLI/SDK acts under can never diverge.
+// header and the profile the CLI acts under can never diverge.
 func (r *SpecResolver) resolvedProfile() string {
 	if r.profile == "" {
 		return defaultProfile
@@ -287,12 +297,49 @@ func (r *SpecResolver) resolvedProfile() string {
 	return r.profile
 }
 
+// cliArgs builds the argv for one secretspec subcommand. Every flag uses the
+// joined --flag=value form: the two-token form parses a value that starts with
+// "-" (a reason, say) as the next flag and exits 2. No secret value is in argv.
+func (r *SpecResolver) cliArgs(sub, manifestPath, profile, reason string, extra ...string) []string {
+	args := []string{sub, "--file=" + manifestPath}
+	if r.provider != "" {
+		args = append(args, "--provider="+r.provider)
+	}
+	args = append(args, "--profile="+profile, "--reason="+reason)
+	return append(args, extra...)
+}
+
+// run spawns the CLI and returns its stdout and trimmed stderr. stdout may hold
+// secret values, so callers must never log it or put it in an error.
+func (r *SpecResolver) run(ctx context.Context, args []string) ([]byte, string, error) {
+	//nolint:gosec // G204: r.cli is the operator-pinned secretspec binary and args is an argv slice handed straight to exec (no shell); each variable is one joined --flag=value token, so none can add an argv element.
+	cmd := exec.CommandContext(ctx, r.cli, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.Bytes(), strings.TrimSpace(stderr.String()), err
+}
+
+// redactDecodeError rewrites a JSON decode error of the export without its
+// text: a syntax error quotes the offending byte and a type error the literal,
+// either of which can be part of a secret value. Offsets and kinds are kept.
+func redactDecodeError(err error) error {
+	if syn, ok := errors.AsType[*json.SyntaxError](err); ok {
+		return fmt.Errorf("export output is not valid JSON (offset %d)", syn.Offset)
+	}
+	if typ, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		return fmt.Errorf("export output has a non-string value (offset %d)", typ.Offset)
+	}
+	return errors.New("export output is not a JSON object of strings")
+}
+
 // writeManifest renders the manifest for the current declared set and writes it
 // to a unique 0600 temp file in the resolver's state dir, returning its path.
-// A per-resolve file (not one shared path) so concurrent resolves never race on
-// the write-to-Load interval — each gets its own manifest and reads exactly the
+// A per-call file (not one shared path) so concurrent resolves never race on
+// the write-to-read interval — each gets its own manifest and reads exactly the
 // snapshot it wrote. The state dir is created 0700 if absent. Server state,
-// never repo state; the caller removes the file after Load.
+// never repo state; the caller removes the file after the CLI returns.
 func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclaration) (string, error) {
 	if err := os.MkdirAll(r.stateDir, 0o700); err != nil {
 		return "", fmt.Errorf("secrets: create state dir: %w", err)

@@ -57,11 +57,11 @@
         name = "compass-go-src";
       };
 
-      # proxyVendor: the backend pulls wails/secretspec, whose //go:embed patterns
+      # proxyVendor: the backend pulls wails, whose //go:embed patterns
       # reference darwin/windows-only files a vendor-tree build fails on;
       # proxyVendor touches only compiled packages. vendorHash pins the whole
       # module graph (matches guestd's); recompute with lib.fakeHash on a go.sum move.
-      vendorHash = "sha256-hxjuJ8jRbNNnk4ZhXDIaFpSwno1hb6P7aeH0G9OWd8o=";
+      vendorHash = "sha256-qAbWUMkWM4s0u2IJUJ4coutW0h+y97m1UNSMi6rI3WE=";
     in
     {
       packages = forAllSystems (
