@@ -21,11 +21,12 @@ func TestUpsertLinearAgentSession(t *testing.T) {
 	s := newTestStore(t)
 
 	row := LinearAgentSessionRow{
-		LinearSessionID:  "sess-abc",
-		ManagerAccountID: "mgr-1",
-		ChannelID:        "chan-1",
-		TopicID:          "topic-1",
-		LinearIssueID:    "issue-1",
+		LinearSessionID:       "sess-abc",
+		ManagerAccountID:      "mgr-1",
+		ChannelID:             "chan-1",
+		TopicID:               "topic-1",
+		LinearIssueID:         "issue-1",
+		LinearIssueIdentifier: "RIG-9",
 	}
 	created, err := s.UpsertLinearAgentSession(ctx, row)
 	if err != nil {
@@ -55,7 +56,8 @@ func TestUpsertLinearAgentSession(t *testing.T) {
 		got.ManagerAccountID != row.ManagerAccountID ||
 		got.ChannelID != row.ChannelID ||
 		got.TopicID != row.TopicID ||
-		got.LinearIssueID != row.LinearIssueID {
+		got.LinearIssueID != row.LinearIssueID ||
+		got.LinearIssueIdentifier != row.LinearIssueIdentifier {
 		t.Fatalf("read-back = %+v, want %+v (replay must not clobber)", got, row)
 	}
 	if got.CreatedAt.IsZero() {
@@ -75,12 +77,12 @@ func TestLinearAgentSession(t *testing.T) {
 	_, err = s.LinearAgentSession(ctx, "")
 	sentinelIs(t, err, ErrInvalidArgument, "lookup empty session id")
 
-	// Empty LinearIssueID stores as SQL NULL and reads back as "".
 	if _, err := s.UpsertLinearAgentSession(ctx, LinearAgentSessionRow{
-		LinearSessionID:  "sess-noissue",
-		ManagerAccountID: "mgr-1",
-		ChannelID:        "chan-1",
-		TopicID:          "topic-1",
+		LinearSessionID:       "sess-noissue",
+		ManagerAccountID:      "mgr-1",
+		ChannelID:             "chan-1",
+		TopicID:               "topic-1",
+		LinearIssueIdentifier: "",
 	}); err != nil {
 		t.Fatalf("upsert no-issue: %v", err)
 	}
@@ -90,6 +92,9 @@ func TestLinearAgentSession(t *testing.T) {
 	}
 	if got.LinearIssueID != "" {
 		t.Fatalf("linear_issue_id = %q, want \"\" (NULL → empty)", got.LinearIssueID)
+	}
+	if got.LinearIssueIdentifier != "" {
+		t.Fatalf("linear_issue_identifier = %q, want \"\" (NULL → empty)", got.LinearIssueIdentifier)
 	}
 
 	// Empty session id on the write path is a caller bug too.

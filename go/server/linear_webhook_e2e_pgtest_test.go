@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -205,6 +206,7 @@ type linE2EWire struct {
 	cm         *comms.Comms
 	linear     *fakeLinearAPI
 	handler    http.Handler
+	resolver   *linearagent.Resolver
 	secret     []byte
 	adminID    store.AccountID
 	bridgeID   store.AccountID
@@ -268,7 +270,8 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 
 	linear := newFakeLinearAPI(t)
 	tokens := linearagent.NewTokenSource(linE2EClientID, linE2ESecret, linear.srv.Client(), linear.srv.URL+"/oauth/token")
-	d := buildLinearResponder(ServeConfig{PublicURL: linE2EPublicURL}, st, cm, admin.ID, bridge.ID, tokens, linear.srv.URL+"/graphql")
+	resolver := buildLinearResolver(st, admin.ID)
+	d := buildLinearResponder(ServeConfig{PublicURL: linE2EPublicURL}, st, cm, bridge.ID, tokens, linear.srv.URL+"/graphql", resolver)
 	if d == nil {
 		t.Fatal("buildLinearResponder returned nil with a token source")
 	}
@@ -286,7 +289,7 @@ func newLinE2EWire(t *testing.T) *linE2EWire {
 	// The mount path is the network door's concern; this test drives the handler directly.
 	_, handler := NewLinearWebhookHandler(func(context.Context) ([]byte, error) { return secret, nil }, nil, d, nil)
 	return &linE2EWire{
-		st: st, cm: cm, linear: linear, handler: handler, secret: secret,
+		st: st, cm: cm, linear: linear, handler: handler, resolver: resolver, secret: secret,
 		adminID: admin.ID, bridgeID: bridge.ID, supervisor: supervisor, manager: manager, routingCh: routingCh,
 	}
 }
@@ -408,6 +411,7 @@ func TestLinearWebhookE2E(t *testing.T) {
 	t.Run("graphql_401_remints_once", w.scenario401)
 	t.Run("tampered_signature_rejected", w.scenarioTampered)
 	t.Run("stale_timestamp_dropped", w.scenarioStale)
+	t.Run("session_link_follows_later_ownership", w.scenarioSessionLinkFollowsOwnership)
 }
 
 func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
@@ -458,9 +462,52 @@ func (w *linE2EWire) scenarioCreatedRecordedOwner(t *testing.T) {
 	if len(thoughts) != 1 || thoughts[0].Status != http.StatusOK || thoughts[0].Content.Type != "thought" || thoughts[0].Content.Body == "" {
 		t.Errorf("thought activities = %+v, want one accepted non-empty thought", thoughts)
 	}
-	wantURL := linE2EPublicURL + "/#/channel/" + string(home)
+	wantURL := sessionLinkFor(linE2EPublicURL, sessionID)
 	if len(updates) != 1 || updates[0].Status != http.StatusOK || len(updates[0].ExternalURLs) != 1 || updates[0].ExternalURLs[0].URL != wantURL {
 		t.Errorf("session updates = %+v, want one accepted update with external URL %s", updates, wantURL)
+	}
+}
+
+// scenarioSessionLinkFollowsOwnership: the one stored link points at the routing
+// channel while unrouted, then at the owner's home once an authored row exists.
+func (w *linE2EWire) scenarioSessionLinkFollowsOwnership(t *testing.T) {
+	sessionID := uuid.NewString()
+	text := "<issue>RIG-606 prompt context " + sessionID + "</issue>"
+	body := linE2ESessionBody(t, "created", sessionID, linearagent.Issue{ID: "issue-606", Identifier: "RIG-606"}, text, time.Now())
+	if code := w.deliverSigned(t, body); code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	w.waitForMessage(t, w.routingCh, text)
+
+	mux := http.NewServeMux()
+	mux.Handle(linearSessionLinkPattern, newLinearSessionLinkHandler(w.st, w.resolver.ResolveResponder, linE2EPublicURL, nil))
+	click := func() string {
+		t.Helper()
+		link, err := url.Parse(sessionLinkFor(linE2EPublicURL, sessionID))
+		if err != nil {
+			t.Fatalf("parse session link: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, link.RequestURI(), nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("status = %d, want 302", rec.Code)
+		}
+		return rec.Header().Get("Location")
+	}
+	if got, want := click(), deepLinkFor(linE2EPublicURL, string(w.routingCh)); got != want {
+		t.Errorf("unrouted Location = %q, want %q", got, want)
+	}
+
+	if err := w.st.RecordAuthoredArtifact(t.Context(), store.AuthoredArtifact{
+		Provider: store.ForgeProviderLinear, Host: forge.LinearHost, Repo: "RIG",
+		Kind: store.ForgeArtifactKindIssue, Number: 606,
+		AgentAccountID: w.manager.ID, OwnerUserID: w.adminID,
+		CreatedAtUnixMS: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("RecordAuthoredArtifact(RIG-606): %v", err)
+	}
+	if got, want := click(), deepLinkFor(linE2EPublicURL, string(w.manager.Agent.HomeChannelID)); got != want {
+		t.Errorf("routed Location = %q, want %q", got, want)
 	}
 }
 

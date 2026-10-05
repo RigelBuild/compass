@@ -50,9 +50,10 @@ var (
 
 // linearWiring is the Linear half of the doors; each part is nil when off.
 type linearWiring struct {
-	notify    *forgeNotifyLane
-	responder *linearagent.Dispatcher
-	webhook   http.Handler
+	notify      *forgeNotifyLane
+	responder   *linearagent.Dispatcher
+	webhook     http.Handler
+	sessionLink http.Handler
 }
 
 // linearRouting backs the resolver's store-side routing seams.
@@ -123,7 +124,8 @@ func buildLinearWiring(
 	if notify != nil {
 		dataSink = notify.sink
 	}
-	responder := buildLinearResponder(cfg, st, cm, adminID, bridgeID, tokens, "")
+	routeResolver := buildLinearResolver(st, adminID)
+	responder := buildLinearResponder(cfg, st, cm, bridgeID, tokens, "", routeResolver)
 	// A nil *Dispatcher boxed in the interface is non-nil, so off must stay a nil interface.
 	var sessionSink SessionEventSink
 	if responder != nil {
@@ -133,23 +135,28 @@ func buildLinearWiring(
 	if err != nil {
 		return linearWiring{}, err
 	}
-	// A mounted responder emits deep links, so it cannot boot without a public base URL.
+	var sessionLink http.Handler
 	if responder != nil && webhook != nil {
 		if err := requirePublicURL(cfg.PublicURL); err != nil {
 			return linearWiring{}, err
 		}
+		sessionLink = newLinearSessionLinkHandler(st, routeResolver.ResolveResponder, cfg.PublicURL, slog.Default())
 	}
-	return linearWiring{notify: notify, responder: responder, webhook: webhook}, nil
+	return linearWiring{notify: notify, responder: responder, webhook: webhook, sessionLink: sessionLink}, nil
+}
+
+// buildLinearResolver shares the click-time routing walk between dispatch and redirects.
+func buildLinearResolver(st *store.Store, adminID store.AccountID) *linearagent.Resolver {
+	routing := &linearRouting{st: st, adminID: adminID}
+	return linearagent.NewResolver(st, routing, forge.LinearHost, routing)
 }
 
 // buildLinearResponder assembles the session dispatcher over the shared Linear
 // token source; nil when Linear is not configured. An empty graphQLURL is Linear's own.
-func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, adminID, bridgeID store.AccountID, tokens *linearagent.TokenSource, graphQLURL string) *linearagent.Dispatcher {
+func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, bridgeID store.AccountID, tokens *linearagent.TokenSource, graphQLURL string, resolver *linearagent.Resolver) *linearagent.Dispatcher {
 	if tokens == nil {
 		return nil
 	}
-	routing := &linearRouting{st: st, adminID: adminID}
-	resolver := linearagent.NewResolver(st, routing, forge.LinearHost, routing)
 	return linearagent.NewDispatcher(linearagent.DispatcherParams{
 		Buffer:       linearResponderBuffer,
 		Resolve:      resolver.ResolveResponder,
@@ -158,8 +165,10 @@ func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, adm
 		Topics:       st,
 		Associations: st,
 		Client:       linearagent.NewClient(tokens, &http.Client{Timeout: linearAPITimeout}, graphQLURL),
-		DeepLinkFor:  func(channelID string) string { return deepLinkFor(cfg.PublicURL, channelID) },
-		Bridge:       bridgeID,
+		SessionLinkFor: func(id string) string {
+			return sessionLinkFor(cfg.PublicURL, id)
+		},
+		Bridge: bridgeID,
 	})
 }
 

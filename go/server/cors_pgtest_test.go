@@ -60,7 +60,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
 	usageSvc := newUsageService(usage.NewPostgres(st), st)
-	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
@@ -142,4 +142,41 @@ func TestNetworkDoorCORSPolicy(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
+	ctx := context.Background()
+	st, admin, _ := newNetworkStore(t)
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	svc := newService("linear-link-test", bus, st, nil, nil, nil, nil)
+	commsSvc := comms.NewComms(st, commsBus, nil, admin)
+	secretsSvc := newSecretsService(st, nil, nil, nil)
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	linkHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/l/session/session-123" {
+			t.Errorf("request path = %q, want /l/session/session-123", r.URL.Path)
+		}
+		w.Header().Set("Location", "https://compass.example.com/#/channel/home")
+		w.WriteHeader(http.StatusFound)
+	})
+	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()}, svc, commsSvc, secretsSvc,
+		newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, linkHandler)
+	if err != nil {
+		t.Fatalf("buildNetworkServer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://compass.example.com/l/session/session-123", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("unauthenticated session link status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if got, want := rec.Header().Get("Location"), "https://compass.example.com/#/channel/home"; got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
 }
