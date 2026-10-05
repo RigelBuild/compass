@@ -14,6 +14,7 @@ describe("omp test sandbox", () => {
 	});
 
 	// Non-vacuity: a real session does write a model cache, and it lands here.
+	// biome-ignore lint/plugin: 30s bounds a real session boot (one-time SDK module init made it 5.6s in CI); the awaits gate on the session, so the ceiling only bounds a genuine hang.
 	test("a real session writes its model cache into the sandbox", async () => {
 		const { session } = await createAgentSession({
 			skills: [],
@@ -23,5 +24,5 @@ describe("omp test sandbox", () => {
 		});
 		await session.dispose();
 		expect(existsSync(join(getAgentDir(), "models.db"))).toBe(true);
-	});
+	}, 30_000);
 });
