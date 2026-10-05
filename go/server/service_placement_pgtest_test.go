@@ -690,71 +690,61 @@ func (r *recordingRunner) serve(
 				<-gate
 			}
 		}
-		if cmd.GetDeliverControl() != nil {
-			if sid := cmd.GetDeliverControl().GetSessionId(); r.isLostSession(sid) {
-				if err := r.send(stream, &compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId(), Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
-					Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND, Message: "session unknown to runner",
-				}}}); err != nil {
-					done <- err
-					return
-				}
-				continue
-			}
-			// A send-only control deliver (RIG-1569 §5): a real Runner answers a
-			// SUCCESSFUL deliver with NO result (success rides a later
-			// delivery_ack), so record it and send nothing — the RIG-1641 T4 e2e
-			// observes the pushed steer/deliver as this recorded wire command.
+		reply, ok := r.reply(cmd)
+		if !ok {
 			continue
 		}
-		if r.withholdStop && cmd.GetStop() != nil {
-			continue // record it, but never answer: the wedged-Runner shape
-		}
-		if reply := r.startErrorReply(cmd); reply != nil {
-			if err := r.send(stream, reply); err != nil {
-				done <- err
-				return
-			}
-			continue
-		}
-		if cmd.GetStart() != nil {
-			if id, ok := r.nextStartID(); ok {
-				if err := r.send(stream, &compassv1internal.SessionsRequest{
-					RequestId: cmd.GetRequestId(),
-					Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: id}},
-				}); err != nil {
-					done <- err
-					return
-				}
-				continue
-			}
-		}
-		if cmd.GetProvision() != nil {
-			if name, ok := r.nextContainerName(); ok {
-				if err := r.send(stream, &compassv1internal.SessionsRequest{
-					RequestId: cmd.GetRequestId(),
-					Result:    &compassv1internal.SessionsRequest_Provision{Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: name}},
-				}); err != nil {
-					done <- err
-					return
-				}
-				continue
-			}
-		}
-		if cmd.GetStatus() != nil {
-			if err := r.send(stream, &compassv1internal.SessionsRequest{
-				RequestId: cmd.GetRequestId(),
-				Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{Statuses: r.statusSet()}},
-			}); err != nil {
-				done <- err
-				return
-			}
-			continue
-		}
-		if err := r.send(stream, answer(cmd)); err != nil {
+		if err := r.send(stream, reply); err != nil {
 			done <- err
 			return
 		}
 	}
+}
+
+// reply picks serve's answer to one recorded command; ok=false means send
+// nothing (a send-only deliver or a withheld Stop).
+func (r *recordingRunner) reply(cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, bool) {
+	if cmd.GetDeliverControl() != nil {
+		if sid := cmd.GetDeliverControl().GetSessionId(); r.isLostSession(sid) {
+			return &compassv1internal.SessionsRequest{RequestId: cmd.GetRequestId(), Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+				Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND, Message: "session unknown to runner",
+			}}}, true
+		}
+		// A send-only control deliver (RIG-1569 §5): a real Runner answers a
+		// SUCCESSFUL deliver with NO result (success rides a later
+		// delivery_ack), so record it and send nothing — the RIG-1641 T4 e2e
+		// observes the pushed steer/deliver as this recorded wire command.
+		return nil, false
+	}
+	if r.withholdStop && cmd.GetStop() != nil {
+		return nil, false // record it, but never answer: the wedged-Runner shape
+	}
+	if reply := r.startErrorReply(cmd); reply != nil {
+		return reply, true
+	}
+	if cmd.GetStart() != nil {
+		if id, ok := r.nextStartID(); ok {
+			return &compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: id}},
+			}, true
+		}
+	}
+	if cmd.GetProvision() != nil {
+		if name, ok := r.nextContainerName(); ok {
+			return &compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result:    &compassv1internal.SessionsRequest_Provision{Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: name}},
+			}, true
+		}
+	}
+	if cmd.GetStatus() != nil {
+		return &compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{Statuses: r.statusSet()}},
+		}, true
+	}
+	return answer(cmd), true
 }
 
 // send writes one reply under sendMu, so a reply and teardown's CloseRequest can

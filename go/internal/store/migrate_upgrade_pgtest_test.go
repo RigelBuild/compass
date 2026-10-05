@@ -26,52 +26,7 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 	const agentID = "upgrade-agent"
 
 	applyV1Only(t, dsn)
-	// The tenant predates the upgrade; the token-usage foreign keys must accept it.
-	seed, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect to seed: %v", err)
-	}
-	err = db.New(seed).InsertTenant(ctx, db.InsertTenantParams{
-		ID: string(tenant), Slug: string(tenant), DisplayName: string(tenant),
-		CreatedAtUnixMs: time.Now().UnixMilli(),
-	})
-	seed.Close()
-	if err != nil {
-		t.Fatalf("seed tenant at v1: %v", err)
-	}
-	seed, err = pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect to seed binding: %v", err)
-	}
-	_, err = seed.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, 'upgrade-user', 'Upgrade User', $2)",
-		userID, tenant,
-	)
-	if err == nil {
-		_, err = seed.Exec(ctx, "INSERT INTO user_accounts (account_id, tenant_id) VALUES ($1, $2)", userID, tenant)
-	}
-	if err == nil {
-		_, err = seed.Exec(ctx,
-			"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, 'upgrade-agent', 'Upgrade Agent', $2)",
-			agentID, tenant,
-		)
-	}
-	if err == nil {
-		_, err = seed.Exec(ctx,
-			"INSERT INTO agent_accounts (account_id, owner_user_id, tenant_id) VALUES ($1, $2, $3)",
-			agentID, userID, tenant,
-		)
-	}
-	if err == nil {
-		_, err = seed.Exec(ctx,
-			"INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id, updated_at) VALUES ($1, $2, 'upgrade-session', 'upgrade-runner', now() - interval '3 days')",
-			tenant, agentID,
-		)
-	}
-	seed.Close()
-	if err != nil {
-		t.Fatalf("seed v1 session binding: %v", err)
-	}
+	seedV1Upgrade(t, ctx, dsn, tenant, userID, agentID)
 
 	s := openStore(t, dsn)
 
@@ -169,6 +124,56 @@ func TestOpenUpgradesV1DatabaseToTokenUsage(t *testing.T) {
 	// The bootstrap tenant Open seeds must not see another tenant's usage.
 	if got := readSeries(t, s, WithTenant(ctx, s.bootstrapTenantID), daily); len(got) != 0 {
 		t.Errorf("bootstrap tenant daily series = %+v, want none (RLS leak)", got)
+	}
+}
+
+func seedV1Upgrade(t *testing.T, ctx context.Context, dsn string, tenant TenantID, userID, agentID string) {
+	t.Helper()
+	// The tenant predates the upgrade; the token-usage foreign keys must accept it.
+	seed, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to seed: %v", err)
+	}
+	err = db.New(seed).InsertTenant(ctx, db.InsertTenantParams{
+		ID: string(tenant), Slug: string(tenant), DisplayName: string(tenant),
+		CreatedAtUnixMs: time.Now().UnixMilli(),
+	})
+	seed.Close()
+	if err != nil {
+		t.Fatalf("seed tenant at v1: %v", err)
+	}
+	seed, err = pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to seed binding: %v", err)
+	}
+	_, err = seed.Exec(ctx,
+		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, 'upgrade-user', 'Upgrade User', $2)",
+		userID, tenant,
+	)
+	if err == nil {
+		_, err = seed.Exec(ctx, "INSERT INTO user_accounts (account_id, tenant_id) VALUES ($1, $2)", userID, tenant)
+	}
+	if err == nil {
+		_, err = seed.Exec(ctx,
+			"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, 'upgrade-agent', 'Upgrade Agent', $2)",
+			agentID, tenant,
+		)
+	}
+	if err == nil {
+		_, err = seed.Exec(ctx,
+			"INSERT INTO agent_accounts (account_id, owner_user_id, tenant_id) VALUES ($1, $2, $3)",
+			agentID, userID, tenant,
+		)
+	}
+	if err == nil {
+		_, err = seed.Exec(ctx,
+			"INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id, updated_at) VALUES ($1, $2, 'upgrade-session', 'upgrade-runner', now() - interval '3 days')",
+			tenant, agentID,
+		)
+	}
+	seed.Close()
+	if err != nil {
+		t.Fatalf("seed v1 session binding: %v", err)
 	}
 }
 
