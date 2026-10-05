@@ -245,8 +245,8 @@ func TestFirstEnrollReapsPreRestartBindings(t *testing.T) {
 	bindings.seed("sess-1")
 	hub.SetSessionBindingStore(bindings)
 
-	if reattached := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); reattached {
-		t.Fatal("first enroll on a fresh hub reported reattached=true, want false")
+	if reattached, err := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil || reattached {
+		t.Fatalf("first enroll = (%v, %v), want (false, nil)", reattached, err)
 	}
 
 	if _, ok := bindings.bindings["sess-1"]; ok {
@@ -418,8 +418,8 @@ func TestFailClosedStoppedNeverSeenAndPostReconnect(t *testing.T) {
 		t.Fatalf("accountForSession(sess-pre) before reconnect = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
 	// Runner reconnects: a re-enroll (reattached=true) durably reaps.
-	if reattached := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); !reattached {
-		t.Fatal("second enroll reported reattached=false, want true (a Runner reconnect)")
+	if reattached, err := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil || !reattached {
+		t.Fatalf("second enroll = (%v, %v), want (true, nil)", reattached, err)
 	}
 	if acct, ok := hub.accountForSession(context.Background(), "sess-pre"); ok {
 		t.Fatalf("accountForSession(sess-pre) after reconnect = (%q, true), want ok=false — the reconnect reap must fail-close a pre-reconnect session", acct)
