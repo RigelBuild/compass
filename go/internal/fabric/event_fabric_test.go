@@ -2156,6 +2156,10 @@ func TestAdvisoryParksBeforeCallbackParksOnce(t *testing.T) {
 			published bool
 		}{path, published}
 	}
+	wildcard, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
 	subject, err := CommsSubject("t1", KindMessagePosted)
 	if err != nil {
 		t.Fatalf("CommsSubject: %v", err)
@@ -2198,10 +2202,10 @@ func TestAdvisoryParksBeforeCallbackParksOnce(t *testing.T) {
 	for len(seenPaths) < 2 {
 		select {
 		case decision := <-decisions:
-			if decision.path == "advisory:"+durableName(subject) && !decision.published {
+			if decision.path == "advisory:"+durableName(wildcard) && !decision.published {
 				t.Fatal("initial advisory park did not publish the event")
 			}
-			if decision.path == "callback:"+durableName(subject) && decision.published {
+			if decision.path == "callback:"+durableName(wildcard) && decision.published {
 				t.Fatal("callback duplicate published the event")
 			}
 			seenPaths[decision.path] = true
@@ -2216,6 +2220,126 @@ func TestAdvisoryParksBeforeCallbackParksOnce(t *testing.T) {
 		t.Fatalf("reading DLQ pending count: %v", err)
 	} else if pending != 0 {
 		t.Fatalf("received %d DLQ records after both park paths completed; want exactly one", pending+1)
+	}
+}
+
+// TestAdvisoryRetriesAfterCallbackParkFailure pins the owner-failure handoff:
+// an advisory waits for the callback's failed publish and retries the DLQ write.
+func TestAdvisoryRetriesAfterCallbackParkFailure(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	ackWait := 300 * time.Millisecond
+	f := newFabric(t, Config{URL: url, AckWait: ackWait, MaxDeliver: 1, Log: quietLogger(t)})
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	wildcard, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	advisorySubject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES." + DefaultStreamName + "." + durableName(wildcard)
+	advisories, err := raw.SubscribeSync(advisorySubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(max deliveries advisory): %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing raw subscriptions: %v", err)
+	}
+	ownerStarted := make(chan struct{})
+	releaseOwner := make(chan struct{})
+	releaseOwnerOnce := sync.OnceFunc(func() { close(releaseOwner) })
+	defer releaseOwnerOnce()
+	waitingAdvisory := make(chan string, 1)
+	f.parkClaimWaiting = func(path string) { waitingAdvisory <- path }
+	var publishCalls atomic.Int32
+	f.beforeDLQPublish = func() error {
+		if publishCalls.Add(1) == 1 {
+			close(ownerStarted)
+			<-releaseOwner
+			return errors.New("injected first publish failure")
+		}
+		return nil
+	}
+	decisions := make(chan struct {
+		path      string
+		published bool
+	}, 2)
+	f.parkDecided = func(path string, published bool) {
+		decisions <- struct {
+			path      string
+			published bool
+		}{path, published}
+	}
+	subject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(context.Context, EventRef) error {
+		return errors.New("final attempt failed")
+	})
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer func() {
+		releaseOwnerOnce()
+		unsub()
+	}()
+	if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "failed-owner"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case <-ownerStarted:
+	case <-ctx.Done():
+		t.Fatal("callback park did not become claim owner")
+	}
+	if _, err := advisories.NextMsgWithContext(ctx); err != nil {
+		t.Fatalf("server did not emit max-deliveries advisory while owner was blocked: %v", err)
+	}
+	select {
+	case path := <-waitingAdvisory:
+		if path != "advisory:"+durableName(wildcard) {
+			t.Fatalf("claim waiter path = %q", path)
+		}
+	case <-ctx.Done():
+		t.Fatal("advisory did not observe the in-flight callback claim")
+	}
+	releaseOwnerOnce()
+	seen := make(map[string]bool)
+	for len(seen) < 2 {
+		select {
+		case decision := <-decisions:
+			seen[decision.path] = decision.published
+		case <-ctx.Done():
+			t.Fatal("callback and advisory park decisions did not both finish")
+		}
+	}
+	if seen["callback:"+durableName(wildcard)] {
+		t.Fatal("injected callback publish failure was reported as successful")
+	}
+	if !seen["advisory:"+durableName(wildcard)] {
+		t.Fatal("advisory did not retry the failed callback publish")
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing DLQ publish: %v", err)
+	}
+	parked, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("advisory retry did not park the event: %v", err)
+	}
+	if got := parked.Header.Get(dlqHeaderSubject); got != subject {
+		t.Fatalf("parked subject = %q, want %q", got, subject)
+	}
+	if pending, _, err := dlq.Pending(); err != nil {
+		t.Fatalf("reading DLQ pending count: %v", err)
+	} else if pending != 0 {
+		t.Fatalf("received %d extra DLQ records; want exactly one", pending)
 	}
 }
 
