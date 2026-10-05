@@ -41,8 +41,8 @@ func notFoundFor(handle string) string {
 func connectNotFoundFor(t *testing.T, err error, handle, ctx string) {
 	t.Helper()
 	connectCodeIs(t, err, connect.CodeNotFound, ctx)
-	var ce *connect.Error
-	if !errors.As(err, &ce) || ce.Message() != notFoundFor(handle) {
+	ce, ok := errors.AsType[*connect.Error](err)
+	if !ok || ce.Message() != notFoundFor(handle) {
 		t.Fatalf("%s: error = %v, want message %q naming the submitted handle", ctx, err, notFoundFor(handle))
 	}
 }

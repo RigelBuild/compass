@@ -3,7 +3,7 @@ package forge
 // Contracts for the exported FakeProvider: an ordered, inspectable call log
 // (so a test can assert exactly what a Service invoked, and ZERO on short-
 // circuit), scripted results and errors (a *StatusError the 403/404 flattening
-// reads via errors.As), and the compile-time proof it satisfies Provider.
+// reads via errors.AsType), and the compile-time proof it satisfies Provider.
 
 import (
 	"context"
@@ -117,8 +117,8 @@ func TestFakeScriptedStatusError(t *testing.T) {
 	f.SetError("GetIssue", &StatusError{Status: 404, Message: "not found"})
 
 	_, err := f.GetIssue(ctx, "org/repo", 123)
-	var se *StatusError
-	if !errors.As(err, &se) {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
 		t.Fatalf("scripted error not a *StatusError: %v", err)
 	}
 	if se.Status != 404 {

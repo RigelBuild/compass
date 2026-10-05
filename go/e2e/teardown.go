@@ -24,7 +24,7 @@ import (
 // absence is not an error. A non-zero exit is a real removal failure and is
 // wrapped with the combined output for a legible diagnostic.
 func podmanRemoveForce(ctx context.Context, name string) error {
-	cmd := exec.CommandContext(ctx, "podman", "rm", "-f", name)
+	cmd := exec.CommandContext(ctx, "podman", "rm", "-f", name) //nolint:gosec // G204: fixed podman binary and argument vector; name is an exact container id.
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("podman rm -f %q: %w: %s", name, err, out)
 	}

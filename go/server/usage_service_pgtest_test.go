@@ -108,15 +108,7 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 		}
 		tokens[account.ID] = token
 	}
-	cases := []struct {
-		name       string
-		caller     store.AccountID
-		req        *compassv1.GetUsageSeriesRequest
-		wantInput  int64
-		wantCount  int
-		wantCode   connect.Code
-		wantBucket *compassv1.UsageBucket
-	}{
+	cases := []usageCase{
 		{name: "owner all agents", caller: owner1.ID, req: base, wantInput: 6, wantCount: 1, wantBucket: &compassv1.UsageBucket{BucketStartUnixMs: start, InputTokens: 6, OutputTokens: 9, CacheReadTokens: 12, CacheWriteTokens: 15, CostMicroUsd: 60}},
 		{name: "owner mid-tree subtree", caller: owner1.ID, req: withUsageFilter(base, b.ID, true), wantInput: 5, wantCount: 1},
 		{name: "owner subtree", caller: owner1.ID, req: withUsageFilter(base, a.ID, true), wantInput: 6, wantCount: 1},
@@ -142,28 +134,43 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := connect.NewRequest(proto.Clone(tc.req).(*compassv1.GetUsageSeriesRequest))
-			req.Header().Set("Authorization", "Bearer "+tokens[tc.caller])
-			resp, err := client.GetUsageSeries(ctx, req)
-			if tc.wantCode != 0 {
-				if connect.CodeOf(err) != tc.wantCode {
-					t.Fatalf("error = %v, code = %v, want %v", err, connect.CodeOf(err), tc.wantCode)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("GetUsageSeries: %v", err)
-			}
-			if len(resp.Msg.Buckets) != tc.wantCount {
-				t.Fatalf("bucket count = %d, want %d (%+v)", len(resp.Msg.Buckets), tc.wantCount, resp.Msg.Buckets)
-			}
-			if tc.wantCount > 0 && resp.Msg.Buckets[0].InputTokens != tc.wantInput {
-				t.Fatalf("input tokens = %d, want %d", resp.Msg.Buckets[0].InputTokens, tc.wantInput)
-			}
-			if tc.wantBucket != nil && !proto.Equal(resp.Msg.Buckets[0], tc.wantBucket) {
-				t.Fatalf("bucket = %+v, want %+v", resp.Msg.Buckets[0], tc.wantBucket)
-			}
+			checkUsageCase(t, ctx, client, tokens[tc.caller], tc)
 		})
+	}
+}
+
+type usageCase struct {
+	name       string
+	caller     store.AccountID
+	req        *compassv1.GetUsageSeriesRequest
+	wantInput  int64
+	wantCount  int
+	wantCode   connect.Code
+	wantBucket *compassv1.UsageBucket
+}
+
+func checkUsageCase(t *testing.T, ctx context.Context, client compassv1connect.UsageServiceClient, token string, tc usageCase) {
+	t.Helper()
+	req := connect.NewRequest(proto.Clone(tc.req).(*compassv1.GetUsageSeriesRequest))
+	req.Header().Set("Authorization", "Bearer "+token)
+	resp, err := client.GetUsageSeries(ctx, req)
+	if tc.wantCode != 0 {
+		if connect.CodeOf(err) != tc.wantCode {
+			t.Fatalf("error = %v, code = %v, want %v", err, connect.CodeOf(err), tc.wantCode)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("GetUsageSeries: %v", err)
+	}
+	if len(resp.Msg.GetBuckets()) != tc.wantCount {
+		t.Fatalf("bucket count = %d, want %d (%+v)", len(resp.Msg.GetBuckets()), tc.wantCount, resp.Msg.GetBuckets())
+	}
+	if tc.wantCount > 0 && resp.Msg.GetBuckets()[0].GetInputTokens() != tc.wantInput {
+		t.Fatalf("input tokens = %d, want %d", resp.Msg.GetBuckets()[0].GetInputTokens(), tc.wantInput)
+	}
+	if tc.wantBucket != nil && !proto.Equal(resp.Msg.GetBuckets()[0], tc.wantBucket) {
+		t.Fatalf("bucket = %+v, want %+v", resp.Msg.GetBuckets()[0], tc.wantBucket)
 	}
 }
 
@@ -209,8 +216,8 @@ func TestUsageSeriesNetworkDoor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("network GetUsageSeries: %v", err)
 	}
-	if len(resp.Msg.Buckets) != 1 || resp.Msg.Buckets[0].InputTokens != 17 {
-		t.Fatalf("network buckets = %+v, want one bucket with 17 input tokens", resp.Msg.Buckets)
+	if len(resp.Msg.GetBuckets()) != 1 || resp.Msg.GetBuckets()[0].GetInputTokens() != 17 {
+		t.Fatalf("network buckets = %+v, want one bucket with 17 input tokens", resp.Msg.GetBuckets())
 	}
 }
 

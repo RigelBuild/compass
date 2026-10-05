@@ -148,6 +148,8 @@ func TestSystemAccountByHandleIsNotFound(t *testing.T) {
 // outside the broad user disjunct); a co-member sharing a channel with @compass
 // does see it (the EXISTS disjunct). Reddens if @compass gained a user_accounts
 // row: the stranger sub-case would then see it via the user disjunct.
+//
+//nolint:contextcheck // test helpers (newTestStore, RequireDSN, must*) root their own context; threading ctx through them would touch every caller
 func TestSystemAccountListAccountsVisibility(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

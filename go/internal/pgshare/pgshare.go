@@ -30,6 +30,7 @@ package pgshare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec" //nolint:depguard // postgres test harness: LookPath + container-CLI (podman/docker) subprocess management
@@ -227,6 +228,7 @@ func startContainer(t *testing.T, cli string) string {
 	)
 
 	// -P publishes to an ephemeral host port so parallel runs don't collide.
+	//nolint:gosec // G204: containerCLI LookPath-resolves the runtime; all arguments are fixture-generated.
 	out, err := exec.Command(cli, "run", "-d", "--rm",
 		"--name", name,
 		"-e", "POSTGRES_PASSWORD="+password,
@@ -240,7 +242,10 @@ func startContainer(t *testing.T, cli string) string {
 	// removeContainerArgs adds --volumes so the container's anonymous data volume
 	// is removed with it (see removeContainerArgs for why a bare rm --force
 	// leaks).
-	t.Cleanup(func() { _ = exec.Command(cli, removeContainerArgs(name)...).Run() })
+	t.Cleanup(func() {
+		//nolint:gosec // G204: runtime is LookPath-resolved; this removes only the fixture-minted container name.
+		_ = exec.Command(cli, removeContainerArgs(name)...).Run()
+	})
 
 	hostPort := publishedPort(t, cli, name, port)
 	dsn := fmt.Sprintf("postgres://postgres:%s@127.0.0.1:%s/compass?sslmode=disable", password, hostPort)
@@ -268,13 +273,14 @@ func removeContainerArgs(name string) []string {
 // to.
 func publishedPort(t *testing.T, cli, name, containerPort string) string {
 	t.Helper()
+	//nolint:gosec // G204: containerCLI LookPath-resolves the runtime; the name and port are fixture-generated.
 	out, err := exec.Command(cli, "port", name, containerPort).CombinedOutput()
 	if err != nil {
 		t.Fatalf("pgtest: read published port: %v\n%s", err, out)
 	}
 	// Output like "0.0.0.0:49153" (possibly several lines); take the last field
 	// of the first line after the colon.
-	line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	idx := strings.LastIndex(line, ":")
 	if idx < 0 {
 		t.Fatalf("pgtest: unexpected port mapping output: %q", line)
@@ -356,7 +362,7 @@ func StartSuitePostgresMain(stateDir, sockDir string, port int) (string, func(),
 // it reaps a started child and returns a nil stop.
 func startSuitePostgres(stateDir, sockDir string, port int) (string, func(), error) {
 	if stateDir == "" {
-		return "", nil, fmt.Errorf("pgshare: a state directory is required")
+		return "", nil, errors.New("pgshare: a state directory is required")
 	}
 	bin, err := exec.LookPath(suitePGBinary)
 	if err != nil {
@@ -371,6 +377,7 @@ func startSuitePostgres(stateDir, sockDir string, port int) (string, func(), err
 	// <sockDir>/.s.PGSQL.<port>.
 	dsn := fmt.Sprintf("host=%s port=%d dbname=compass sslmode=disable", sockDir, port)
 
+	//nolint:gosec // G204: the wrapper is LookPath-resolved; arguments are suite-fixture paths and a constructed DSN.
 	cmd := exec.Command(bin, "--state-dir", stateDir, "--database", dsn)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

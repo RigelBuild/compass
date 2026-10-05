@@ -25,6 +25,7 @@ func TestAppendWithoutObjectStoreKeepsEntriesAndRetrySucceeds(t *testing.T) {
 		{
 			name: "checkpoint flush",
 			setup: func(t *testing.T, s *Store, sess string) {
+				t.Helper()
 				appendOK(t, s, sess, 1, false, `{"e":1}`)
 				appendOK(t, s, sess, 2, false, `{"e":2}`)
 			},
@@ -35,6 +36,7 @@ func TestAppendWithoutObjectStoreKeepsEntriesAndRetrySucceeds(t *testing.T) {
 			name: "safety valve",
 			cap:  40,
 			setup: func(t *testing.T, s *Store, sess string) {
+				t.Helper()
 				appendOK(t, s, sess, 1, true, `{"cp":1}`)
 				appendOK(t, s, sess, 2, false, `{"e":2}`)
 			},
