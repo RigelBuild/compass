@@ -591,7 +591,7 @@ func originServerSpan(t *testing.T, spans tracetest.SpanStubs, procedure string)
 }
 
 // spanAttr returns the string value of key on s, and whether it was present.
-func spanAttr(s tracetest.SpanStub, key string) (string, bool) {
+func spanAttr(s tracetest.SpanStub, key string) (string, bool) { //nolint:unparam // read-clarity signature: key names which span attribute is read; currently constant, not dead code.
 	for _, a := range s.Attributes {
 		if string(a.Key) == key {
 			return a.Value.AsString(), true

@@ -402,11 +402,9 @@ func TestWakeAgentSingleflightCoalescesToOneStart(t *testing.T) {
 	// The LEADER: launched alone and confirmed in-flight before any follower, so
 	// the singleflight key is provably held busy when the followers arrive.
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		lc.WakeAgent(ctx, f.agentID)
-	}()
+	})
 	waitForOneInflightStart(t, f.runner)
 
 	// The FOLLOWERS: gate on the observed park, never a pre-call signal. A
@@ -498,7 +496,7 @@ func countGoroutinesParkedInSingleflight(t *testing.T) int {
 		}
 		followers := 0
 		// runtime.Stack separates goroutines with a blank line.
-		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		for g := range strings.SplitSeq(string(buf[:n]), "\n\n") {
 			if !strings.Contains(g, "singleflight.(*Group).Do") || strings.Contains(g, "singleflight.(*Group).doCall") {
 				continue
 			}

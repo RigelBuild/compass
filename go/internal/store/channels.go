@@ -966,33 +966,6 @@ func (s *Store) getChannel(ctx context.Context, id ChannelID) (Channel, error) {
 	return channels[0], nil
 }
 
-// scanChannels reads channel rows and populates each channel's member set with
-// one follow-up query over the whole id set, so member loading is O(1)
-// round-trips rather than one per channel.
-func scanChannels(ctx context.Context, q db.DBTX, rows pgx.Rows) ([]Channel, error) { //nolint:unused // called by the pgtest-tagged test helper coordChannels (coordination_pgtest_test.go); the untagged lint build excludes that file and reads this as dead
-	var channels []Channel
-	for rows.Next() {
-		var (
-			id, name, groupID     string
-			kind                  int16
-			postPolicy            int16
-			ownerAccountID        string
-			mandatorySubscription bool
-		)
-		if err := rows.Scan(&id, &name, &groupID, &kind, &postPolicy, &ownerAccountID, &mandatorySubscription); err != nil {
-			return nil, fmt.Errorf("store: scan channel: %w", err)
-		}
-		channels = append(channels, channelFromRow(id, name, groupID, kind, postPolicy, ownerAccountID, mandatorySubscription))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate channels: %w", err)
-	}
-	if err := loadChannelMembers(ctx, q, channels); err != nil {
-		return nil, err
-	}
-	return channels, nil
-}
-
 // channelFromRow builds the base Channel (id, name, group, kind, policy) from
 // the shared seven-column channel projection every channel read selects; the
 // caller populates the member/subscriber sets with loadChannelMembers.
