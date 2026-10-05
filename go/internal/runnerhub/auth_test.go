@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -175,6 +176,60 @@ func TestRunnerTokenAcceptedOverWire(t *testing.T) {
 	}
 	if resp.Msg.GetReattached() {
 		t.Fatal("first Enroll reattached = true, want false")
+	}
+}
+
+func TestEnrollFaultedDurableReapReturnsUnavailableOverWire(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	bindings.seedBinding("sess-stale", "acct-stale", "runner-1")
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, 0, 0)
+	bindings.mu.Lock()
+	bindings.deleteForRunnerErr = errors.New("private durable store detail")
+	bindings.mu.Unlock()
+
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{
+		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}},
+	}}
+	url := newMountedH2CServer(t, hub, resolver.resolve)
+	client := newRawRunnerClient(t, url, "runner-tok")
+	_, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	if err == nil {
+		t.Fatal("Enroll with a durable reap fault succeeded, want Unavailable")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("Enroll error code = %v, want Unavailable: %v", got, err)
+	}
+	if strings.Contains(err.Error(), "private durable store detail") {
+		t.Fatalf("Enroll error leaked internal store detail: %v", err)
+	}
+	if account, ok := hub.accountForSession(context.Background(), "sess-stale"); ok {
+		t.Fatalf("faulted Enroll resurrected stale row for %q", account)
+	}
+	reattached, err := hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, 0, 0)
+	if !reattached || err == nil || err.Error() != "private durable store detail" {
+		t.Fatalf("faulted Hub.enroll = (%v, %v), want reattached and original reap error", reattached, err)
+	}
+}
+
+func TestSuccessfulDurableReapEnrollsNormallyOverWire(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{
+		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}},
+	}}
+	url := newMountedH2CServer(t, hub, resolver.resolve)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	first, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	if err != nil || first.Msg.GetReattached() {
+		t.Fatalf("first Enroll = (%v, %v), want fresh success", first, err)
+	}
+	second, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	if err != nil || !second.Msg.GetReattached() {
+		t.Fatalf("second Enroll = (%v, %v), want successful reattached response", second, err)
 	}
 }
 

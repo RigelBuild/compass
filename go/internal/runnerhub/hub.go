@@ -991,8 +991,9 @@ type promotedPair struct {
 // cache over session_bindings whose rows survive process death. Every enroll reaps
 // this Runner's rows across tenants under the system role and drives OFFLINE + reap
 // edges from them: a Runner enrolls once per process and sweeps its stale containers,
-// so none of its pre-enroll sessions live.
-func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool) {
+// so none of its pre-enroll sessions live. A failed durable reap still runs the
+// in-RAM fallback, then returns the error so the Runner retries enrollment.
+func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
 	h.mu.Lock()
 	reattached = h.runner != nil
 	router := newCommandRouter()
@@ -1044,7 +1045,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 		// authenticated token subject, so the sweep reaches only this Runner's rows.
 		rows, reapErr = bindings.DeleteSessionBindingsForRunner(store.WithSystemRole(ctx), id)
 		if reapErr != nil {
-			// A durable-reap fault must not wedge reconnect; fall back to the in-RAM snapshot.
+			// Fall back to the in-RAM snapshot so this enroll still drives edges; the caller sees the error.
 			h.log.Error("durable session-binding reap failed on enroll; using in-RAM snapshot, read-through disabled for this Runner until a reap succeeds",
 				"runner_id", id, "error", reapErr)
 		} else {
@@ -1095,7 +1096,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 			}
 		}
 	}
-	return reattached
+	return reattached, reapErr
 }
 
 // routerFor returns the attached Runner's command router and its id, or an error when

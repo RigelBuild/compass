@@ -81,7 +81,8 @@ var _ compassv1internalconnect.RunnerServiceHandler = (*Handler)(nil)
 // subject; an account token never reaches here (it failed the interceptor with
 // Unauthenticated — the RunnerService cross-door rejection). The declared
 // runner_id is cross-checked against the token subject: a mismatch is a spoofing
-// attempt, rejected Unauthenticated.
+// attempt, rejected Unauthenticated. A failed durable reap is Unavailable, so the
+// Runner's bounded redial retries it; store detail stays server-side.
 func (h *Handler) Enroll(ctx context.Context, req *connect.Request[compassv1internal.EnrollRequest]) (*connect.Response[compassv1internal.EnrollResponse], error) {
 	subj, ok := runnerSubjectFrom(ctx)
 	if !ok {
@@ -94,7 +95,10 @@ func (h *Handler) Enroll(ctx context.Context, req *connect.Request[compassv1inte
 		// enroll under an identity other than its token's.
 		return nil, errUnauthenticated
 	}
-	reattached := h.hub.enroll(ctx, subj.ID, subj, req.Msg.GetRuntimeTier(), req.Msg.GetEgressPosture())
+	reattached, err := h.hub.enroll(ctx, subj.ID, subj, req.Msg.GetRuntimeTier(), req.Msg.GetEgressPosture())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("runner session cleanup is temporarily unavailable"))
+	}
 	return connect.NewResponse(&compassv1internal.EnrollResponse{Reattached: reattached}), nil
 }
 
