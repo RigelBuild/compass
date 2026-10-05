@@ -533,15 +533,15 @@ func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) 
 }
 
 // resumeSession runs the SYSTEM-AUTHORIZED internal resume of sessionID: the same
-// ordered chain startResumeSession runs (BindLifetime → ReconstructSessionBody →
-// hub.StartResume, in startResumeSession) MINUS RequireAgentSessionSubscriber — the
-// wake holds an agent_account_id, not a caller, and the wake IS the authorization
-// (§Decisions OQ-2). StartResume relays on the CONTAINER (Hub.StartResume), so
-// the container is resolved from the durable placement while the bind/reconstruct
-// legs key on the stable logical session_id.
+// ordered chain startResumeSession runs (ReconstructSessionBody → hub.StartResume)
+// MINUS RequireAgentSessionSubscriber — the wake holds an agent_account_id, not a
+// caller, and the wake IS the authorization (§Decisions OQ-2). The Runner binds
+// the lifetime after it accepts the Start. StartResume relays on the CONTAINER
+// (Hub.StartResume), so the container is resolved from the durable placement
+// while the reconstruct leg keys on the stable logical session_id.
 func (l *lifecycleService) resumeSession(ctx context.Context, agent store.AccountID, sessionID string) error {
 	// Resolve the container the resume relays on FIRST (StartResume keys on it),
-	// so a placement miss fails before any bind/reconstruct work.
+	// so a placement miss fails before any reconstruct work.
 	_, container, err := l.store.PlacementForAgent(ctx, agent)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -550,11 +550,6 @@ func (l *lifecycleService) resumeSession(ctx context.Context, agent store.Accoun
 			return errWakeNoPlacement
 		}
 		return fmt.Errorf("resolving placement: %w", err)
-	}
-	// Accepted race: as in startResumeSession, the bind precedes the Runner's
-	// accept, so a resume refused ALREADY_RUNNING still moves the live base.
-	if _, err := l.store.BindLifetime(ctx, sessionID); err != nil {
-		return fmt.Errorf("binding resume lifetime: %w", err)
 	}
 	body, err := l.hub.ReconstructSessionBody(ctx, sessionID)
 	if err != nil {

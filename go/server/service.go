@@ -585,14 +585,13 @@ func handleLookupError(raw string, err error) error {
 // on the resumed session via RequireAgentSessionSubscriber — an unknown or
 // foreign resume_session_id is one indistinguishable NotFound (the
 // not-found/forbidden merge, D9), so a caller holding a foreign id cannot probe
-// existence and NO Start is ever relayed; (2) BindLifetime write-once to
-// snapshot the entry_seq rebase base for the new lifetime onto the stable
-// logical session, so the new lifetime's agent-stamped frames rebase onto the
-// stored maximum (a re-resume re-reads the same max — idempotent); (3)
-// reconstruct the resume body from the durable transcript (T5); (4) relay the
-// verbatim public start request with the reconstructed body attached to the
-// INTERNAL envelope (hub.StartResume). The public request carries only the
-// authz-checked resume_session_id — no locator, no body a client could forge.
+// existence and NO Start is ever relayed; (2) reconstruct the resume body from
+// the durable transcript (T5); (3) relay the verbatim public start request with
+// the reconstructed body attached to the INTERNAL envelope (hub.StartResume).
+// The Runner binds the new lifetime's rebase base itself once it accepts the
+// Start, so a refused resume never moves a live base. The public request
+// carries only the authz-checked resume_session_id — no locator, no body a
+// client could forge.
 func (s *service) startResumeSession(
 	ctx context.Context,
 	resumeSessionID string,
@@ -611,19 +610,6 @@ func (s *service) startResumeSession(
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", resumeSessionID))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("authorizing resume: %w", err))
-	}
-	// Snapshot the rebase base before the new lifetime emits a frame. Accepted
-	// race: this binds before the Runner accepts, and nothing here checks
-	// liveness, so resuming a live session moves its base even though the Runner
-	// refuses ALREADY_RUNNING, leaving a gap in its seqs.
-	if _, err := s.store.BindLifetime(ctx, resumeSessionID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// TOCTOU: the session vanished between the authz check and the bind.
-			// Surface the same indistinguishable NotFound as the authz branch
-			// above, not a 500.
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", resumeSessionID))
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("binding resume lifetime: %w", err))
 	}
 	body, err := s.hub.ReconstructSessionBody(ctx, resumeSessionID)
 	if err != nil {

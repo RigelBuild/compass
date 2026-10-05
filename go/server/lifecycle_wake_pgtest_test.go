@@ -71,15 +71,13 @@ func TestWakeAgentLiveIsNoOp(t *testing.T) {
 
 // TestWakeAgentPriorSessionResumes pins the system-authorized internal resume: an
 // OFFLINE agent with a recorded prior session (and a placement + a stored
-// transcript) is woken by RESUMING that session — BindLifetime +
-// ReconstructSessionBody + StartResume — NOT a fresh Start. Proven on the wire:
-// the Start command carries the reconstructed resume_body (the internal envelope
-// only StartResume attaches), and no second session row is recorded (resume
-// reuses the logical id).
+// transcript) is woken by RESUMING that session — ReconstructSessionBody +
+// StartResume — NOT a fresh Start. Proven on the wire: the Start command carries
+// the reconstructed resume_body (the internal envelope only StartResume
+// attaches), and no second session row is recorded (resume reuses the logical id).
 //
 // Mutation: routing a prior-session agent through the fresh hub.Start path (no
-// StartResume) leaves resume_body empty, reddening the body assertion; skipping
-// BindLifetime leaves base_entry_seq unbound.
+// StartResume) leaves resume_body empty, reddening the body assertion.
 func TestWakeAgentPriorSessionResumes(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -116,10 +114,6 @@ func TestWakeAgentPriorSessionResumes(t *testing.T) {
 	// A resume reuses the logical id: no NEW session row is recorded.
 	if got := sessionRowCount(t, ctx, f.dsn, logical); got != 1 {
 		t.Fatalf("session rows for %q = %d, want 1 (resume reuses the logical id, never records a second)", logical, got)
-	}
-	// BindLifetime snapshotted the rebase base as the stored max (2).
-	if base := boundBase(t, ctx, f.dsn, logical); base != 2 {
-		t.Fatalf("resume bound base = %d, want 2 (BindLifetime ran on the resume path)", base)
 	}
 }
 
@@ -168,7 +162,7 @@ func TestWakeAgentStaleBindingRowStillResumes(t *testing.T) {
 
 // A wake for an agent live on a Runner but not in this hub's cache (another Server
 // promoted it) resumes, and the Runner refuses with ALREADY_RUNNING. No container is
-// touched, but BindLifetime already re-based the live session (witnessed below).
+// touched; the Runner binds only after accepting, so the live base never moves.
 func TestWakeAgentLiveElsewhereIsRefusedByRunner(t *testing.T) {
 	ctx := context.Background() // test root
 	f, lc := newWakeFixture(t)
@@ -205,11 +199,6 @@ func TestWakeAgentLiveElsewhereIsRefusedByRunner(t *testing.T) {
 	}
 	if got := sessionRowCount(t, ctx, f.dsn, logical); got != 1 {
 		t.Fatalf("session rows for %q = %d, want 1 (a refused resume records nothing)", logical, got)
-	}
-	// Witness, not a guarantee: the bind runs before the Runner refuses, so the live
-	// session's base moves to the stored max. Binding only after acceptance flips this.
-	if base := boundBase(t, ctx, f.dsn, logical); base != 1 {
-		t.Fatalf("base after refused resume = %d, want 1 (BindLifetime ran before the refusal)", base)
 	}
 }
 

@@ -189,11 +189,12 @@ func TestLegFivePersistAndResume(t *testing.T) {
 
 	// The carried transcript lives under the logical session id, which on resume
 	// IS the resumed live id (resumedSessionID == originalSessionID). The resumed
-	// lifetime's frames commit under that same key, and BindLifetime rebases the
-	// new lifetime's agent-stamped entry_seq onto the session's stored maximum so
-	// the persisted sequence stays monotonic per session across the resume
-	// (agent_transcripts.go:20-26, BindLifetime; server startResumeSession). Query
-	// originalSessionID (== resumedSessionID) for the one durable lineage.
+	// lifetime's frames commit under that same key. The Runner's resume Start
+	// calls BindLifetime before the agent runs, which rebases the new lifetime's
+	// agent-stamped entry_seq onto the session's stored maximum, so the persisted
+	// sequence stays monotonic per session across the resume. This leg fails if
+	// the Server never wires the binder. Query originalSessionID
+	// (== resumedSessionID) for the one durable lineage.
 	// The resumed turn's transcript commits on the CommitConversationFrame unary,
 	// one runner→server round-trip AFTER the WORKING→READY settle above — so gate
 	// the read on reply2 (the resumed turn's own reply) converging rather than

@@ -109,12 +109,15 @@ func (s *Store) SetSafetyValveCapBytes(n int) {
 // agent-stamped sequence rebases onto the session's stored maximum and the PK
 // (session_id, entry_seq) holds across resumes. Idempotent within a lifetime:
 // called once before any of the lifetime's frames, a retry re-reads the same max
-// -> the same base (no double-rebase). An unknown session_id is ErrNotFound.
-func (s *Store) BindLifetime(ctx context.Context, sessionID string) (uint64, error) {
+// -> the same base (no double-rebase). The Runner calls it (via the hub) under
+// its container lock after accepting a resume, so a refused resume never moves a
+// live base. The row must belong to account: an unknown session or one owned by
+// another account is ErrNotFound.
+func (s *Store) BindLifetime(ctx context.Context, sessionID string, account AccountID) (uint64, error) {
 	if sessionID == "" {
 		return 0, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	base, err := s.q.BindLifetime(ctx, sessionID)
+	base, err := s.q.BindLifetime(ctx, db.BindLifetimeParams{SessionID: sessionID, AgentAccountID: string(account)})
 	if err != nil {
 		if noRows(err) {
 			return 0, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)

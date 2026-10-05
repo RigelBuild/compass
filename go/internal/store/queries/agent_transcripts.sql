@@ -18,7 +18,7 @@ UPDATE agent_sessions
            (SELECT MAX(te.entry_seq)
               FROM agent_session_transcript_entries te
              WHERE te.session_id = $1), 0)
- WHERE session_id = $1
+ WHERE session_id = $1 AND agent_account_id = $2
 RETURNING base_entry_seq;
 
 -- name: SessionBase :one

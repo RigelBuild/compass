@@ -46,11 +46,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { Model } from "@oh-my-pi/pi-ai";
 import type {
 	AgentSession,
 	CreateAgentSessionOptions,
 } from "@oh-my-pi/pi-coding-agent";
 import { Settings } from "@oh-my-pi/pi-coding-agent";
+import type { ResolvedModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
 import {
 	buildFleetSettings,
 	ensureAgentDirLink,
@@ -115,8 +120,31 @@ function mkdirMember(mount: string, rel: string): string {
 // PublishSpine (as createUnixSocketTransport does) so the sink/control wiring is
 // production code; only the RPC handlers and the session are faked.
 
-function fakeSession(): AgentSession {
+interface RecordedModelChange {
+	model: Model;
+	role: string | undefined;
+	options: { persist?: boolean } | undefined;
+}
+
+interface RecordingSession extends AgentSession {
+	modelSetCalls: RecordedModelChange[];
+	thinkingLevelCalls: (ConfiguredThinkingLevel | undefined)[];
+	roleCalls: string[];
+}
+
+function fakeSession(
+	initialTiers: Partial<Record<"openai" | "anthropic" | "google", string>> = {},
+	options: {
+		model?: Model;
+		roleResolution?: ResolvedModelRoleValue;
+		setModelError?: Error;
+	} = {},
+): RecordingSession {
 	const gate = Promise.withResolvers<() => void>();
+	let currentModel = options.model ?? modelFixture("anthropic", "resolved");
+	const modelSetCalls: RecordedModelChange[] = [];
+	const thinkingLevelCalls: (ConfiguredThinkingLevel | undefined)[] = [];
+	const roleCalls: string[] = [];
 	const agent = {
 		prompt: () => Promise.resolve(),
 		steer: () => {},
@@ -130,19 +158,78 @@ function fakeSession(): AgentSession {
 	};
 	const session = {
 		agent,
-		// The boot-model-health belt reads these: a clean registry (no swallowed
-		// config error) and a resolved model, so the belt is a no-op for every
-		// config-passthrough fixture (none pin an unresolvable model).
 		modelRegistry: { getError: () => undefined },
-		model: { id: "resolved" },
+		get model() {
+			return currentModel;
+		},
+		resolveRoleModelWithThinking(role: string) {
+			roleCalls.push(role);
+			return options.roleResolution ?? roleResolution(undefined);
+		},
+		async setModel(
+			model: Model,
+			role?: string,
+			setOptions?: { persist?: boolean },
+		) {
+			modelSetCalls.push({ model, role, options: setOptions });
+			if (options.setModelError) throw options.setModelError;
+			currentModel = model;
+			return { switched: true };
+		},
+		setThinkingLevel(level: ConfiguredThinkingLevel | undefined) {
+			thinkingLevelCalls.push(level);
+		},
+		serviceTierByFamily: { ...initialTiers },
+		setServiceTierFamily(
+			family: "openai" | "anthropic" | "google",
+			tier: string | undefined,
+		) {
+			if (tier === undefined) delete this.serviceTierByFamily[family];
+			else this.serviceTierByFamily[family] = tier;
+		},
 		subscribe(fn: () => void): () => void {
 			gate.resolve(fn);
 			return () => {};
 		},
+		modelSetCalls,
+		thinkingLevelCalls,
+		roleCalls,
 	};
-	return session as unknown as AgentSession;
+	return session as unknown as RecordingSession;
 }
 
+function modelFixture(provider: string, id: string): Model {
+	return { provider, id } as unknown as Model;
+}
+
+function roleResolution(
+	model: Model | undefined,
+	options: Partial<Omit<ResolvedModelRoleValue, "model">> = {},
+): ResolvedModelRoleValue {
+	return {
+		model,
+		explicitThinkingLevel: false,
+		warning: undefined,
+		...options,
+	};
+}
+
+function continuationFixture(): string {
+	const timestamp = "2026-01-01T00:00:00.000Z";
+	return `${serializeTitleSlot({ updatedAt: timestamp })}${JSON.stringify({
+		type: "session",
+		version: 3,
+		id: "continued-session",
+		timestamp,
+		cwd: process.cwd(),
+	})}\n${JSON.stringify({
+		type: "message",
+		id: "continued-entry",
+		parentId: null,
+		timestamp,
+		message: { role: "user", content: "prior turn" },
+	})}\n`;
+}
 function fakeCarrier(): RunnerTransport {
 	const spine = createPublishSpine(async (stream) => {
 		for await (const _ of stream) {
@@ -166,15 +253,25 @@ function fakeCarrier(): RunnerTransport {
 async function runMainOverMount(
 	mount: string,
 	env: Record<string, string | undefined> = {},
+	session = fakeSession(),
 ): Promise<CreateAgentSessionOptions> {
 	const home = scratch();
 	process.env.HOME = home;
+	if (env.COMPASS_CONTINUE_SESSION === "1") {
+		const sessionFile = join(home, "continued.jsonl");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(sessionFile, continuationFixture());
+		writeFileSync(
+			join(home, ".compass", "current-session"),
+			`${sessionFile}\n`,
+		);
+	}
 	let captured: CreateAgentSessionOptions | undefined;
 	const deps: MainDeps = {
 		configMount: mount,
 		createSession: (options) => {
 			captured = options;
-			return Promise.resolve({ session: fakeSession() });
+			return Promise.resolve({ session });
 		},
 		createTransport: () => fakeCarrier(),
 	};
@@ -261,6 +358,236 @@ describe("main injects fleet config as objects into createAgentSession", () => {
 		const resolved = await settingsManager;
 		expect(resolved).toBeInstanceOf(Settings);
 		expect((resolved as Settings).get("compaction.keepRecentTokens")).toBe(222);
+	});
+
+	test("continued session reapplies configured tiers and preserves unset tiers", async () => {
+		const home = scratch();
+		process.env.HOME = home;
+		const mount = scratch();
+		writeMember(mount, "settings/config.yml", "tier:\n  openai: priority\n");
+		const sessionFile = join(scratch(), "continued.jsonl");
+		writeFileSync(sessionFile, continuationFixture());
+		const pointer = join(home, ".compass", "current-session");
+		mkdirSync(join(home, ".compass"), { recursive: true });
+		writeFileSync(pointer, sessionFile);
+		const session = fakeSession({ anthropic: "default", google: "flex" });
+		const deps: MainDeps = {
+			configMount: mount,
+			createSession: () => Promise.resolve({ session }),
+			createTransport: () => fakeCarrier(),
+		};
+		await main({ HOME: home, COMPASS_CONTINUE_SESSION: "1" }, deps);
+		expect(session.serviceTierByFamily).toEqual({
+			openai: "priority",
+			anthropic: "default",
+			google: "flex",
+		});
+	});
+	test("an unresolvable fleet role keeps the continued model and logs a warning", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: missing-provider/missing-model\n",
+		);
+		const session = fakeSession(
+			{},
+			{
+				roleResolution: roleResolution(undefined, {
+					warning: 'No models match pattern "missing-provider/missing-model"',
+				}),
+			},
+		);
+		const errors: string[] = [];
+		const originalError = console.error;
+		console.error = (...args: unknown[]) =>
+			errors.push(args.map(String).join(" "));
+		let options: CreateAgentSessionOptions;
+		try {
+			options = await runMainOverMount(
+				mount,
+				{ COMPASS_CONTINUE_SESSION: "1" },
+				session,
+			);
+		} finally {
+			console.error = originalError;
+		}
+		expect(options.modelPattern).toBeUndefined();
+		expect(session.modelSetCalls).toEqual([]);
+		expect(session.model?.provider).toBe("anthropic");
+		expect(
+			errors.filter((line) => line.includes("default model role")).length,
+		).toBe(1);
+	});
+	test("explicit COMPASS_MODEL prevents fleet default-role reapplication", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const session = fakeSession(
+			{},
+			{ roleResolution: roleResolution(modelFixture("openai", "gpt-4o")) },
+		);
+		const options = await runMainOverMount(
+			mount,
+			{
+				COMPASS_CONTINUE_SESSION: "1",
+				COMPASS_MODEL: "anthropic/claude-sonnet",
+			},
+			session,
+		);
+		expect(options.modelPattern).toBe("anthropic/claude-sonnet");
+		expect(session.modelSetCalls).toEqual([]);
+		expect(session.roleCalls).toEqual([]);
+	});
+
+	test("a resolvable fleet default role selects its model after session creation", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const target = modelFixture("openai", "gpt-4o");
+		const session = fakeSession({}, { roleResolution: roleResolution(target) });
+		await runMainOverMount(mount, { COMPASS_CONTINUE_SESSION: "1" }, session);
+		expect(session.modelSetCalls).toEqual([
+			{ model: target, role: "default", options: { persist: false } },
+		]);
+		expect(session.model?.provider).toBe("openai");
+	});
+
+	test("a fleet role thinking suffix is applied on continued sessions", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o:high\n",
+		);
+		const target = modelFixture("openai", "gpt-4o");
+		const session = fakeSession(
+			{},
+			{
+				roleResolution: roleResolution(target, {
+					thinkingLevel: ThinkingLevel.High,
+					explicitThinkingLevel: true,
+				}),
+			},
+		);
+		await runMainOverMount(mount, { COMPASS_CONTINUE_SESSION: "1" }, session);
+		expect(session.modelSetCalls).toHaveLength(1);
+		expect(session.thinkingLevelCalls).toEqual([ThinkingLevel.High]);
+	});
+	test("a failed fleet model switch logs the active model and boots", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const session = fakeSession(
+			{},
+			{
+				roleResolution: roleResolution(modelFixture("openai", "gpt-4o")),
+				setModelError: new Error("missing model credential"),
+			},
+		);
+		const errors: string[] = [];
+		const originalError = console.error;
+		console.error = (...args: unknown[]) =>
+			errors.push(args.map(String).join(" "));
+		try {
+			await runMainOverMount(mount, { COMPASS_CONTINUE_SESSION: "1" }, session);
+		} finally {
+			console.error = originalError;
+		}
+		expect(session.model?.provider).toBe("anthropic");
+		expect(
+			errors.filter((line) => line.includes("could not be applied")).length,
+		).toBe(1);
+	});
+
+	test("explicit fleet defaultThinkingLevel takes precedence over role suffix", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"defaultThinkingLevel: low\nmodelRoles:\n  default: openai/gpt-4o:high\n",
+		);
+		const session = fakeSession(
+			{},
+			{
+				roleResolution: roleResolution(modelFixture("openai", "gpt-4o"), {
+					thinkingLevel: ThinkingLevel.High,
+					explicitThinkingLevel: true,
+				}),
+			},
+		);
+		const options = await runMainOverMount(
+			mount,
+			{ COMPASS_CONTINUE_SESSION: "1" },
+			session,
+		);
+		expect(options.thinkingLevel).toBe(ThinkingLevel.Low);
+		// Applied after the switch, which would otherwise reset to the model default.
+		expect(session.thinkingLevelCalls).toEqual([ThinkingLevel.Low]);
+	});
+
+	test("a plain boot with a fleet default role makes no role reapply", async () => {
+		const mount = scratch();
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const session = fakeSession(
+			{},
+			{ roleResolution: roleResolution(modelFixture("openai", "gpt-4o")) },
+		);
+		await runMainOverMount(mount, {}, session);
+		expect(session.roleCalls).toEqual([]);
+		expect(session.modelSetCalls).toEqual([]);
+	});
+
+	test("a project-only default role is not reapplied over the continued model", async () => {
+		const cwd = scratch();
+		mkdirSync(join(cwd, ".omp"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".omp", "config.yml"),
+			"modelRoles:\n  default: openai/gpt-4o\n",
+		);
+		const session = fakeSession(
+			{},
+			{ roleResolution: roleResolution(modelFixture("openai", "gpt-4o")) },
+		);
+		await runMainOverMount(
+			scratch(),
+			{ COMPASS_CONTINUE_SESSION: "1", COMPASS_WORKDIR: cwd },
+			session,
+		);
+		expect(session.modelSetCalls).toEqual([]);
+		expect(session.roleCalls).toEqual([]);
+	});
+	test("explicit fleet defaultThinkingLevel is provided for a continued session", async () => {
+		const mount = scratch();
+		writeMember(mount, "settings/config.yml", "defaultThinkingLevel: low\n");
+		const options = await runMainOverMount(mount, {
+			COMPASS_CONTINUE_SESSION: "1",
+			COMPASS_MODEL: "openai/gpt-4o",
+		});
+		expect(options.thinkingLevel).toEqual(
+			"low" as typeof options.thinkingLevel,
+		);
+	});
+
+	test("implicit defaultThinkingLevel is not passed when a session resumes", async () => {
+		const options = await runMainOverMount(scratch(), {
+			COMPASS_CONTINUE_SESSION: "1",
+			COMPASS_MODEL: "openai/gpt-4o",
+		});
+		expect(options.thinkingLevel).toBeUndefined();
 	});
 
 	// (b) no settings member ⇒ no settingsManager key (SDK inits its own default).

@@ -66,6 +66,55 @@ func TestSelfExitKeepsErroredSessionReloadable(t *testing.T) {
 	assertNoTerminalFrame(t, server)
 }
 
+// Reloading an ERRORED session (nil stream, no stop step) still rebinds exactly
+// once, before the relaunch: the new process reuses the session id.
+func TestReloadErroredSessionBindsOnceBeforeStartAgent(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "stay-up")
+	engine := newStubStreamingRuntimeWithScript(t, "#!/bin/sh\nif [ -e '"+marker+"' ]; then exec sleep 120; fi\nexit 7\n")
+	server := newCapturePublish()
+	h := newTransportFixtureWithEngine(t, server, engine)
+	ctx := context.Background() // test root
+	t.Cleanup(func() { h.Close(ctx) })
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1")
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "sess-errored-bind")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	assertErroredFrame(t, server, sessionID)
+	if n := len(server.bindRequests()); n != 0 {
+		t.Fatalf("fresh Start made %d binds, want 0", n)
+	}
+	var mu sync.Mutex
+	var launchesAtBind []int
+	server.setBind(nil, func() {
+		n := engine.countCall("exec_streaming")
+		mu.Lock()
+		launchesAtBind = append(launchesAtBind, n)
+		mu.Unlock()
+	})
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatalf("writing marker: %v", err)
+	}
+	if err := h.Reload(ctx, sessionID); err != nil {
+		t.Fatalf("Reload of ERRORED session = %v", err)
+	}
+	binds := server.bindRequests()
+	if len(binds) != 1 || binds[0].GetSessionId() != sessionID || binds[0].GetContainerName() != name {
+		t.Fatalf("Reload of ERRORED session binds = %v, want exactly one for (%q, %q)", binds, name, sessionID)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if launchesAtBind[0] != 1 {
+		t.Fatalf("bind arrived after %d launches, want 1 (bind precedes the relaunch)", launchesAtBind[0])
+	}
+	if err := h.Stop(ctx, sessionID); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+}
+
 func assertFirstReplayComplete(t *testing.T, client compassv1internalconnect.AgentGatewayClient) *connect.ServerStreamForClient[compassv1internal.AgentControl] {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)

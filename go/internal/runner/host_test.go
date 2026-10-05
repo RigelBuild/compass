@@ -17,6 +17,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1257,7 +1258,7 @@ func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 // continuity.
 func TestReloadReusesSessionId(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
-	host, _, _ := newHostFixture(t, specs)
+	host, engine, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
@@ -1268,8 +1269,18 @@ func TestReloadReusesSessionId(t *testing.T) {
 		t.Fatalf("Start = %v", err)
 	}
 
+	// Start remains a fresh boot; only the Reload exec asks the agent to continue.
+	launches := engine.streamingSpecs()
+	if got, ok := launches[0].Env["COMPASS_CONTINUE_SESSION"]; ok {
+		t.Fatalf("Start set COMPASS_CONTINUE_SESSION = %q, want unset", got)
+	}
+
 	if err := host.Reload(ctx, sessionID); err != nil {
 		t.Fatalf("Reload = %v", err)
+	}
+	launches = engine.streamingSpecs()
+	if got := launches[1].Env["COMPASS_CONTINUE_SESSION"]; got != "1" {
+		t.Fatalf("Reload COMPASS_CONTINUE_SESSION = %q, want 1", got)
 	}
 
 	// The session still exists under the SAME id after reload.
@@ -1405,8 +1416,14 @@ func TestReloadRelaunchesWithTheSameAgentEnv(t *testing.T) {
 	if execs[0].User == nil || execs[0].Workdir == nil {
 		t.Fatalf("the initial Start exec carried no user/workdir (%+v); the equality below would be vacuous", execs[0])
 	}
-	if !reflect.DeepEqual(execs[0], execs[1]) {
-		t.Fatalf("Reload relaunched with %+v (user %v, workdir %v), want the same exec spec Start used: %+v (user %v, workdir %v)",
+	startSpec := execs[0]
+	reloadSpec := execs[1]
+	startSpec.Env = maps.Clone(startSpec.Env)
+	reloadSpec.Env = maps.Clone(reloadSpec.Env)
+	delete(startSpec.Env, "COMPASS_CONTINUE_SESSION")
+	delete(reloadSpec.Env, "COMPASS_CONTINUE_SESSION")
+	if !reflect.DeepEqual(startSpec, reloadSpec) {
+		t.Fatalf("Reload relaunched with %+v (user %v, workdir %v), want the same exec spec Start used aside from the continue control: %+v (user %v, workdir %v)",
 			execs[1], derefOr(execs[1].User), derefOr(execs[1].Workdir),
 			execs[0], derefOr(execs[0].User), derefOr(execs[0].Workdir))
 	}

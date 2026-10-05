@@ -16,9 +16,14 @@ UPDATE agent_sessions
            (SELECT MAX(te.entry_seq)
               FROM agent_session_transcript_entries te
              WHERE te.session_id = $1), 0)
- WHERE session_id = $1
+ WHERE session_id = $1 AND agent_account_id = $2
 RETURNING base_entry_seq
 `
+
+type BindLifetimeParams struct {
+	SessionID      string
+	AgentAccountID string
+}
 
 // Agent-transcript queries (sqlc adoption T5, RIG-3034). These replace the
 // inline SQL literals in internal/store/agent_transcripts.go; the hand-written
@@ -33,8 +38,8 @@ RETURNING base_entry_seq
 // SessionTranscript and SafetyValveSegments reads are each issued on BOTH the
 // pool (the eponymous method) and a snapshot tx (SessionResumeSnapshot, via
 // WithTx), so one generated query backs both call sites.
-func (q *Queries) BindLifetime(ctx context.Context, sessionID string) (int64, error) {
-	row := q.db.QueryRow(ctx, bindLifetime, sessionID)
+func (q *Queries) BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, bindLifetime, arg.SessionID, arg.AgentAccountID)
 	var base_entry_seq int64
 	err := row.Scan(&base_entry_seq)
 	return base_entry_seq, err
