@@ -148,7 +148,9 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 	// into a new author client would let this write through as call 2.
 	reg := newForgeProviderRegistry()
 	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: host, Token: staticTokenSource{}})
-	registerGitHubForgeCoordinate(reg, cfg.Forge.resolved(), client, reviewerClient)
+	if err := registerGitHubForgeCoordinate(reg, cfg.Forge.resolved(), client, reviewerClient); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 	resolved, ok := reg.resolve(nil)
 	if !ok {
 		t.Fatal("registry did not resolve the default GitHub coordinate")
