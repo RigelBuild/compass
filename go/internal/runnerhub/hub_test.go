@@ -173,11 +173,11 @@ func TestEnrollDuplicateReattaches(t *testing.T) {
 	hub := newHubOnly()
 	subj := store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}
 
-	if reattached := hub.enroll(context.Background(), "runner-1", subj, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); reattached {
-		t.Fatal("first enroll reattached = true, want false (fresh registration)")
+	if reattached, err := hub.enroll(context.Background(), "runner-1", subj, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil || reattached {
+		t.Fatalf("first enroll = (%v, %v), want (false, nil)", reattached, err)
 	}
-	if reattached := hub.enroll(context.Background(), "runner-1", subj, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); !reattached {
-		t.Fatal("second enroll reattached = false, want true (single-Runner MVP re-attaches)")
+	if reattached, err := hub.enroll(context.Background(), "runner-1", subj, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil || !reattached {
+		t.Fatalf("second enroll = (%v, %v), want (true, nil)", reattached, err)
 	}
 	// A router is resolvable after enrollment (a session command has a Runner to
 	// serve it).
