@@ -15,8 +15,8 @@ import { sessionLayoutStorage } from "./window-layout";
  *  literal is guaranteed present in this module. */
 export const FIXTURE_SENTINEL = "COMPASS-FIXTURE-BOOT-SENTINEL-7f3a";
 
-/** Per-page-load tour state: the fixture has no server or account, so the
- *  tour arms once per load and nothing persists past a reload. */
+/** Per-page-load tour state: the fixture has no server or account, so nothing
+ *  persists past a reload. The boot claims only once a consumer sets `claimFirstRun`. */
 export function createMemoryTourClient(): TourClient {
 	let outcome = TourOutcome.UNSPECIFIED;
 	let stepId = "";

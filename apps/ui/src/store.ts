@@ -1039,6 +1039,19 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		anchorAgentEntry(path);
 		dispatchLayout({ kind: "navigateFocused", path });
 	};
+	// Leaving a dead demo path replaces its history entry, so Back cannot loop onto it.
+	let replaceNextHashSync = false;
+	const isDemoPath = (path: string): boolean => path.split("/").some(isDemoId);
+	const leaveDemoPaths = (): void => {
+		if (isDemoPath(focusedViewOf(untrack(layout)).path)) {
+			replaceNextHashSync = true;
+		}
+		setLayout((prev) =>
+			layoutViews(prev)
+				.filter((item) => isDemoPath(item.path))
+				.reduce((next, item) => setViewPath(next, item.id, "/"), prev),
+		);
+	};
 	const bindRouter = (r: {
 		navigate: (
 			path: string,
@@ -1093,9 +1106,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 						"viewId" in state &&
 						state.viewId === current.id;
 					const samePath = untrack(r.currentPath) === current.path;
+					const forceReplace = replaceNextHashSync;
+					replaceNextHashSync = false;
 					if (samePath && stamped) return;
 					const push =
-						!samePath && prev !== undefined && prev.id === current.id;
+						!samePath &&
+						prev !== undefined &&
+						prev.id === current.id &&
+						!forceReplace;
 					r.navigate(current.path, {
 						replace: !push,
 						state: { viewId: current.id },
@@ -1490,17 +1508,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				kind: "user",
 			},
 	);
-	// Demo rows exist only while the tour runs; a reload or deep-link naming one
-	// would strand an empty surface, so any view on a demo path lands on the Bridge.
+	// Demo rows exist only while the tour runs; a reload, deep-link or Back onto a
+	// demo path would strand an empty surface, so that view lands on the Bridge.
 	createEffect(
 		() =>
-			demoActive()
-				? []
-				: layoutViews(layout())
-						.filter((item) => item.path.split("/").some(isDemoId))
-						.map((item) => item.id),
+			!demoActive() &&
+			layoutViews(layout()).some((item) => isDemoPath(item.path)),
 		(stale) => {
-			for (const id of stale) setLayout((prev) => setViewPath(prev, id, "/"));
+			if (stale) leaveDemoPaths();
 		},
 	);
 
@@ -1964,9 +1979,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [tourOpen, setTourOpen] = createSignal(false);
 	const [tourStepIndex, setTourStepIndex] = createSignal(0);
 	const [shouldAutoStart, setShouldAutoStart] = createSignal(false);
-	// The server's resume cursor; updated on every step so a replay after
-	// close resumes where the user left.
+	// The cursor the user last reached this session, and the one the boot read
+	// fetched; the session's wins on resume.
 	let resumeStepId = "";
+	let savedStepId = "";
+	// A resume asked for before the boot read lands waits for it, so it opens
+	// at the saved step instead of writing welcome over it.
+	let bootReadPending = options.tour !== undefined;
+	let pendingResume = false;
 	// Set by any start, so a claim that lands after a manual start arms nothing.
 	let tourStarted = false;
 	// One chain: the server upserts in arrival order, so a slow STARTED must
@@ -1991,12 +2011,13 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		else if (step.route === "/settings") showSettings();
 		if (persist) writeTourState(TourOutcome.STARTED, step.id);
 	};
-	// Every exit drops the demo rows; applyAgentRoute has no unknown-id bounce,
-	// so a route still naming a demo id would strand an empty workspace.
+	// Every exit drops the demo rows. A route still naming a demo id is replaced,
+	// not pushed, so Back cannot return to the dead demo URL.
 	const endTour = () => {
 		setTourOpen(false);
 		setDemoActive(false);
-		if (focusedView().path().split("/").some(isDemoId)) showBridge();
+		if (isDemoPath(focusedView().path())) hideShortcuts();
+		leaveDemoPaths();
 	};
 	const tour: AppStore["tour"] = {
 		open: tourOpen,
@@ -2006,9 +2027,13 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		start: (trigger) => {
 			// Only a won claim arms the first run; the claim already wrote STARTED.
 			if (trigger === "first-run" && !shouldAutoStart()) return;
+			pendingResume = trigger === "resume" && bootReadPending;
+			if (pendingResume) return;
 			setShouldAutoStart(false);
 			tourStarted = true;
-			const resumed = TOUR_STEPS.findIndex((s) => s.id === resumeStepId);
+			const resumed = TOUR_STEPS.findIndex(
+				(s) => s.id === (resumeStepId || savedStepId),
+			);
 			setTourOpen(true);
 			setDemoActive(true);
 			showStep(
@@ -2047,12 +2072,16 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		const claimFirstRun = options.claimFirstRun ?? false;
 		let disposed = false;
 		if (getOwner()) onCleanup(() => (disposed = true));
+		const readSettled = () => {
+			bootReadPending = false;
+			if (pendingResume) tour.start("resume");
+		};
 		void client
 			.getTourState({})
 			.then(async (state) => {
 				if (disposed) return;
-				// A step the user reached while the read was in flight is newer.
-				if (resumeStepId === "") resumeStepId = state.stepId;
+				savedStepId = state.stepId;
+				readSettled();
 				if (!claimFirstRun || state.outcome !== TourOutcome.UNSPECIFIED) return;
 				const { claimed } = await client.claimTourStart({
 					stepId: TOUR_STEPS[0]?.id ?? "",
@@ -2060,7 +2089,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				if (claimed && !disposed && !tourStarted) setShouldAutoStart(true);
 			})
 			.catch((error: unknown) => {
-				if (!disposed) options.onCommsError?.(error);
+				if (disposed) return;
+				// A failed read still releases a waiting resume, at step 0.
+				if (bootReadPending) readSettled();
+				options.onCommsError?.(error);
 			});
 	}
 	// Command palette (RIG-2483): the open signal plus the D3 pre-open snapshot

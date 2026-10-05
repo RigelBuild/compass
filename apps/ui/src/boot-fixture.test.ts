@@ -66,9 +66,9 @@ describe("bootFixture (offline fixture boot)", () => {
 });
 
 describe("createMemoryTourClient (fixture tour state)", () => {
-	// One load claims once; a second claim in the same load loses, so the
-	// fixture shows the tour at most once per page load.
-	test("claims once, then reads back what was written", async () => {
+	// The double's own insert-if-absent rule. Boot does not claim through it
+	// until a consumer sets `claimFirstRun`.
+	test("a second claim loses, and reads return what was written", async () => {
 		const client = createMemoryTourClient();
 		expect((await client.getTourState({})).outcome).toBe(
 			TourOutcome.UNSPECIFIED,

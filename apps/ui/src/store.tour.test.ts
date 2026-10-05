@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { TourOutcome } from "@compass/client";
-import { createRoot, flush } from "solid-js";
+import { createRoot, createSignal, flush } from "solid-js";
 import { STUB_COMMS_STATE } from "./comms-stub";
 import {
 	createFakeComms,
@@ -103,6 +103,44 @@ function withStore(
 		});
 	});
 	return Promise.resolve(body(store)).finally(() => dispose());
+}
+
+interface Nav {
+	readonly path: string;
+	readonly replace: boolean;
+}
+
+// The store bound to a fake router that records push vs. replace.
+function withRouter(
+	initialPath: string,
+	body: (store: AppStore, navs: Nav[]) => Promise<void> | void,
+): Promise<void> {
+	const navs: Nav[] = [];
+	let dispose!: () => void;
+	const store = createRoot((d) => {
+		dispose = d;
+		const [path, setPath] = createSignal(initialPath);
+		const [state, setState] = createSignal<unknown>(undefined);
+		const s = createAppStore({
+			queryClient: testQueryClient(),
+			initialComms: STUB_COMMS_STATE,
+		});
+		s.bindRouter({
+			navigate: (to, opts) => {
+				navs.push({ path: to, replace: opts?.replace ?? false });
+				setState(opts?.state);
+				setPath(to);
+			},
+			currentPath: path,
+			currentState: state,
+		});
+		return s;
+	});
+	flush();
+	// The layout → hash sync runs in a microtask; let the boot entry land.
+	return settle()
+		.then(() => body(store, navs))
+		.finally(() => dispose());
 }
 
 const LAST = TOUR_STEPS.length - 1;
@@ -254,6 +292,26 @@ describe("tour first-run arming", () => {
 			store.tour.start("resume");
 			flush();
 			expect(store.tour.stepIndex()).toBe(1);
+		});
+	});
+
+	test("a resume started before the boot read opens at the saved step", async () => {
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			store.tour.start("resume");
+			flush();
+			read.open();
+			await settle();
+			expect(store.tour.open()).toBe(true);
+			expect(store.tour.stepIndex()).toBe(3);
+			expect(fake.writes).toEqual([
+				{ outcome: TourOutcome.STARTED, stepId: stepId(3) },
+			]);
 		});
 	});
 });
@@ -568,6 +626,31 @@ describe("tour teardown leaves a demo route", () => {
 			store.tour.close();
 			flush();
 			expect(store.view()).toBe("backlog");
+		});
+	});
+
+	test("teardown off a demo route replaces the history entry", async () => {
+		await withRouter("/", async (store, navs) => {
+			// Drop the boot entry's view stamp; only the tour's moves matter here.
+			navs.length = 0;
+			store.tour.start("replay");
+			flush();
+			store.openAgent(DEMO_AGENT);
+			await settle();
+			store.tour.close();
+			await settle();
+			expect(navs).toEqual([
+				{ path: `/agent/${DEMO_AGENT}`, replace: false },
+				{ path: "/", replace: true },
+			]);
+			expect(store.view()).toBe("bridge");
+		});
+	});
+
+	test("a demo route with the tour off replaces, so Back cannot loop", async () => {
+		await withRouter(`/agent/${DEMO_AGENT}`, async (store, navs) => {
+			expect(navs).toEqual([{ path: "/", replace: true }]);
+			expect(store.view()).toBe("bridge");
 		});
 	});
 });
