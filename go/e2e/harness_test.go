@@ -129,7 +129,7 @@ func assertRunnerHasConfiguredFlags(t *testing.T, f *Fixture) {
 		t.Fatalf("ps -eo args: %v\n%s", err, out)
 	}
 	var runnerLine string
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if strings.Contains(line, "compass-runner") &&
 			strings.Contains(line, "--runtime-dir "+runtimeDir) {
 			runnerLine = line

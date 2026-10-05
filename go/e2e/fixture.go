@@ -64,7 +64,7 @@ func configureForgeStub(tb testing.TB, secretsPath string) *forgeStub {
 	tb.Helper()
 	stub := newForgeStub(tb)
 	primary, reviewer := forgePEM(tb), forgePEM(tb)
-	file, err := os.OpenFile(secretsPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(secretsPath, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: secretsPath is the fixture's own state-dir secrets file
 	if err != nil {
 		tb.Fatalf("open forge secrets: %v", err)
 	}
@@ -90,7 +90,7 @@ func configureForgeStub(tb testing.TB, secretsPath string) *forgeStub {
 	} {
 		tb.Setenv(name, "")
 	}
-	for k, v := range map[string]string{"COMPASS_FORGE_HOST": stub.Host(), "COMPASS_FORGE_APP_ID": "1001", "COMPASS_FORGE_INSTALLATION_ID": "1", "COMPASS_FORGE_APP_KEY_SECRET": "FORGE_APP_PRIVATE_KEY", "COMPASS_FORGE_APP_WEBHOOK_SECRET": "FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID": "1002", "COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID": "2", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET": "FORGE_REVIEWER_APP_PRIVATE_KEY", "COMPASS_FORGE_CA": stub.CAPath()} {
+	for k, v := range map[string]string{"COMPASS_FORGE_HOST": stub.Host(), "COMPASS_FORGE_APP_ID": "1001", "COMPASS_FORGE_INSTALLATION_ID": "1", "COMPASS_FORGE_APP_KEY_SECRET": "FORGE_APP_PRIVATE_KEY", "COMPASS_FORGE_APP_WEBHOOK_SECRET": "FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID": "1002", "COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID": "2", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET": "FORGE_REVIEWER_APP_PRIVATE_KEY", "COMPASS_FORGE_CA": stub.CAPath()} { //nolint:gosec // G101 false positive: secret-store key names and stub app IDs, not credentials
 		tb.Setenv(k, v)
 	}
 	return stub
@@ -282,236 +282,6 @@ func WithForgeStub() fixtureOption {
 	return func(fc *fixtureConfig) { fc.forge = true }
 }
 
-// Compass is the authenticated CompassService client dialed at the loopback TLS
-// door with the admin bearer.
-func (f *Fixture) Compass() compassServiceClient { return f.compass }
-
-// Comms is the authenticated CommsService client dialed at the same door.
-func (f *Fixture) Comms() commsServiceClient { return f.comms }
-
-// Stack is the live *stack.Stack handle (Health, Down) the fixture stood up.
-func (f *Fixture) Stack() *stack.Stack { return f.stack }
-
-// DSN is the private-postgres keyword/value DSN for store-side assertions.
-func (f *Fixture) DSN() string { return f.dsn }
-
-// ServerURL is the https loopback TLS-door base URL the stack listens on — the
-// server_url a native client-mode connection dials. Exposed for a client-mode
-// leg that builds its own bridge target against the real door.
-func (f *Fixture) ServerURL() string { return f.serverURL }
-
-// CAPath is the filesystem path to the stack's self-signed TLS anchor
-// (StateDir/tls.crt) — the ca_cert a native client-mode connection pins.
-func (f *Fixture) CAPath() string { return f.caPath }
-
-// AdminToken is the bootstrap-admin bearer the stack minted at Up. Exposed for a
-// client-mode leg that arms its own bridge target; it is the same credential the
-// authed clients carry. Never log it.
-func (f *Fixture) AdminToken() string { return f.adminToken }
-
-// ForgeStub returns the fixture's forge stub backend, when configured.
-func (f *Fixture) ForgeStub() *forgeStub { return f.forgeStub }
-
-// RuntimeDir is this fixture's unique runner runtime-dir (shortRoot/rt). Exposed
-// so a process-hygiene assertion can scope its /proc scan to this fixture's own
-// child processes rather than matching unrelated host processes.
-func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
-
-// AsObserver mints a NON-ADMIN bearer for an existing account and returns the
-// two Connect clients scoped to it, so a leg can assert what that account CAN
-// and CANNOT see over the real TLS door (RIG-3528 T1). Every other fixture RPC
-// rides the bootstrap-admin bearer (newAuthedClients), which is why no existing
-// leg can prove a NEGATIVE — an admin sees everything.
-//
-// It mints a CLIENT/observer credential, NOT an agent identity. Agent
-// authorship needs no credential at all: the Runner asserts no account and the
-// server resolves session_id → account from its own binding
-// (runnerhub/relay_comms.go:7-15, the ratified OQ-2 trust model). Do not reach
-// for this to author an agent's post — script the agent's turn instead.
-//
-// IssueToken is admin-gated (server/service.go:407-415), so the mint rides the
-// fixture's admin client; the returned clients then dial the SAME door through
-// newAuthedClients with the minted bearer, so there is exactly one dial path.
-// An account the server cannot resolve is NOT_FOUND, surfaced as the returned
-// error (never a panic — the caller, a test, decides fatality).
-//
-// The argument accepts an account id, a bare handle, or an `owner/agent` handle,
-// and is mapped to the wire handle IssueTokenRequest.account_handle takes (see
-// wireHandle); `owner/agent` passes through as-is. An unresolvable ref is passed
-// through UNCHANGED so the SERVER decides the code — that keeps NOT_FOUND the
-// server's answer rather than a locally-synthesized one.
-func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassServiceClient, commsServiceClient, error) {
-	target, err := f.wireHandle(ctx, handle)
-	if err != nil {
-		target = handle
-	}
-	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	resp, err := f.Compass().IssueToken(rctx, connect.NewRequest(&compassv1.IssueTokenRequest{
-		AccountHandle: target,
-	}))
-	if err != nil {
-		return nil, nil, fmt.Errorf("IssueToken RPC: %w", err)
-	}
-	token := resp.Msg.GetToken()
-	if token == "" {
-		return nil, nil, fmt.Errorf("IssueToken for %q returned an empty token", handle)
-	}
-	compass, comms, err := newAuthedClients(f.caPath, f.serverURL, token)
-	if err != nil {
-		return nil, nil, fmt.Errorf("observer clients for %q: %w", handle, err)
-	}
-	return compass, comms, nil
-}
-
-// wireHandle maps an account ref (an id or a bare handle) to the handle the admin
-// door takes: a user's bare handle, or `owner/agent` for an agent. A ref already
-// spelled `owner/agent` passes through unchanged. Legs hold ids from
-// CreateAgent/CreateUser, so the fixture does the mapping in one place.
-func (f *Fixture) wireHandle(ctx context.Context, ref string) (string, error) {
-	// Already the `owner/agent` wire form: nothing to map.
-	if strings.Contains(ref, "/") {
-		return ref, nil
-	}
-	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
-	if err != nil {
-		return "", fmt.Errorf("ListAccounts RPC: %w", err)
-	}
-	byID := make(map[string]*compassv1.Account, len(resp.Msg.GetAccounts()))
-	for _, acc := range resp.Msg.GetAccounts() {
-		byID[acc.GetId()] = acc
-	}
-	for _, acc := range resp.Msg.GetAccounts() {
-		if acc.GetId() != ref && acc.GetHandle() != ref {
-			continue
-		}
-		agent := acc.GetAgent()
-		if agent == nil {
-			return acc.GetHandle(), nil
-		}
-		owner, ok := byID[agent.GetOwnerUserId()]
-		if !ok {
-			return "", fmt.Errorf("owner %q of agent %q is not visible", agent.GetOwnerUserId(), ref)
-		}
-		return owner.GetHandle() + "/" + acc.GetHandle(), nil
-	}
-	return "", fmt.Errorf("no visible account matching %q (by id or handle)", ref)
-}
-
-// lookupAccount resolves an account ref — an id OR a handle — to its Account
-// over ListAccounts (the only account read CommsService exposes; there is no
-// GetAccount RPC). An unmatched ref is store-shaped ErrNotFound-like: a plain
-// error naming the ref, for the caller to wrap or ignore.
-func (f *Fixture) lookupAccount(ctx context.Context, ref string) (*compassv1.Account, error) {
-	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
-	if err != nil {
-		return nil, fmt.Errorf("ListAccounts RPC: %w", err)
-	}
-	for _, acc := range resp.Msg.GetAccounts() {
-		if acc.GetId() == ref || acc.GetHandle() == ref {
-			return acc, nil
-		}
-	}
-	return nil, fmt.Errorf("no visible account matching %q (by id or handle)", ref)
-}
-
-// CreateUser creates a human user account over CommsService and returns its
-// account id — the owner-tier setup primitive a multi-tenant leg needs (two
-// owner users, each with its own agents). Thin client-RPC primitive in the style
-// of CreateAgent; returns an error rather than panicking so the caller (a test)
-// decides fatality, and the per-call deadline is threaded from ctx.
-func (f *Fixture) CreateUser(ctx context.Context, handle, displayName string) (ownerID string, err error) {
-	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	resp, err := f.Comms().CreateUser(rctx, connect.NewRequest(&compassv1.CreateUserRequest{
-		Handle:      handle,
-		DisplayName: displayName,
-	}))
-	if err != nil {
-		return "", fmt.Errorf("CreateUser RPC: %w", err)
-	}
-	return resp.Msg.GetAccount().GetId(), nil
-}
-
-// CreateChannel creates a plain (kind=CHANNEL) channel over CommsService with
-// ownerID as a founding member, and returns its channel id.
-//
-// private selects the channel's D9 VISIBILITY, which in this schema is a
-// property of the channel's GROUP, not of ChannelKind — the ChannelKind enum is
-// CHANNEL / DM / (retired) GROUP_DM and carries no private member
-// (comms.proto:289-295), and a DM is a two-party conversation the manual create
-// path is server-FORBIDDEN from minting (store/channels.go:126-139), so it is
-// not the private form of a channel. Both cases are therefore
-// CHANNEL_KIND_CHANNEL and differ in placement:
-//   - private=true → UNGROUPED (empty group_id): membership-only visibility.
-//     comms.proto:237-239 ("empty for an ungrouped channel, which is
-//     owner-scoped to its creating caller (the OWNER default), not global"), and
-//     the read predicate agrees — its group arm requires group_id NOT NULL with
-//     effective visibility SHARED (store/db/channels.sql.go:495-505), so an
-//     ungrouped channel is reachable only through channel_members.
-//   - private=false → created inside a freshly minted SHARED channel group, so
-//     every account can see it (the globally-visible canary surface).
-//
-// ownerID is threaded as a MEMBER, not an owner field: CreateChannelRequest has
-// NO owner field (name/group_id/kind/member_handles, comms.proto:654-664) and the
-// store derives owner scoping from the CALLER plus transitive owner-membership
-// (store/channels.go:76-83) — a user is added automatically for any of its agents
-// in the member set. Membership is what makes the channel readable by that
-// account, which is the property a leg asserts. The creating caller is the
-// fixture's admin client, so the admin is a founding member by construction.
-//
-// member_handles resolves strictly through account_handles.handle (an account id
-// never resolves — store/db/accounts.sql.go:248-265), while the signature takes
-// an id, so the id is converted to its handle first via lookupAccount. An
-// unresolvable ownerID is passed through unchanged so the SERVER answers
-// NOT_FOUND rather than a locally-synthesized error.
-func (f *Fixture) CreateChannel(ctx context.Context, ownerID, name string, private bool) (channelID string, err error) {
-	ownerHandle := ownerID
-	if acc, lookupErr := f.lookupAccount(ctx, ownerID); lookupErr == nil {
-		ownerHandle = acc.GetHandle()
-	}
-	var groupID string
-	if !private {
-		groupID, err = f.createSharedGroup(ctx, name+"-group")
-		if err != nil {
-			return "", err
-		}
-	}
-	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	resp, err := f.Comms().CreateChannel(rctx, connect.NewRequest(&compassv1.CreateChannelRequest{
-		Name:          name,
-		GroupId:       groupID,
-		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberHandles: []string{ownerHandle},
-	}))
-	if err != nil {
-		return "", fmt.Errorf("CreateChannel RPC: %w", err)
-	}
-	return resp.Msg.GetChannel().GetId(), nil
-}
-
-// createSharedGroup mints a top-level SHARED-visibility channel group and
-// returns its id — the container that makes a channel globally visible (see
-// CreateChannel's private=false arm). Top-level, so no parent visibility
-// ceiling applies (store/channels.go:13-22).
-func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID string, err error) {
-	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	resp, err := f.Comms().CreateChannelGroup(rctx, connect.NewRequest(&compassv1.CreateChannelGroupRequest{
-		Name:       name,
-		Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_SHARED,
-	}))
-	if err != nil {
-		return "", fmt.Errorf("CreateChannelGroup RPC: %w", err)
-	}
-	return resp.Msg.GetGroup().GetId(), nil
-}
-
 // NewFixture stands up the real embedded stack over stack.Up with the real
 // adapter set and returns a Fixture with authenticated Connect clients. It
 // registers a t.Cleanup that Downs the stack (safe to call twice), so a t.Fatal
@@ -677,7 +447,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// exists by the time Up returns; no sleep-poll.
 	caPath := filepath.Join(cfg.StateDir, "tls.crt")
 	adminTokenPath := filepath.Join(filepath.Dir(serverSock), "admin-token")
-	raw, err := os.ReadFile(adminTokenPath)
+	raw, err := os.ReadFile(adminTokenPath) //nolint:gosec // G304: adminTokenPath sits beside the fixture-owned server socket
 	if err != nil {
 		tb.Fatalf("read admin-token file %q: %v", adminTokenPath, err)
 	}
@@ -737,6 +507,236 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	}
 
 	return f
+}
+
+// Compass is the authenticated CompassService client dialed at the loopback TLS
+// door with the admin bearer.
+func (f *Fixture) Compass() compassServiceClient { return f.compass }
+
+// Comms is the authenticated CommsService client dialed at the same door.
+func (f *Fixture) Comms() commsServiceClient { return f.comms }
+
+// Stack is the live *stack.Stack handle (Health, Down) the fixture stood up.
+func (f *Fixture) Stack() *stack.Stack { return f.stack }
+
+// DSN is the private-postgres keyword/value DSN for store-side assertions.
+func (f *Fixture) DSN() string { return f.dsn }
+
+// ServerURL is the https loopback TLS-door base URL the stack listens on — the
+// server_url a native client-mode connection dials. Exposed for a client-mode
+// leg that builds its own bridge target against the real door.
+func (f *Fixture) ServerURL() string { return f.serverURL }
+
+// CAPath is the filesystem path to the stack's self-signed TLS anchor
+// (StateDir/tls.crt) — the ca_cert a native client-mode connection pins.
+func (f *Fixture) CAPath() string { return f.caPath }
+
+// AdminToken is the bootstrap-admin bearer the stack minted at Up. Exposed for a
+// client-mode leg that arms its own bridge target; it is the same credential the
+// authed clients carry. Never log it.
+func (f *Fixture) AdminToken() string { return f.adminToken }
+
+// ForgeStub returns the fixture's forge stub backend, when configured.
+func (f *Fixture) ForgeStub() *forgeStub { return f.forgeStub }
+
+// RuntimeDir is this fixture's unique runner runtime-dir (shortRoot/rt). Exposed
+// so a process-hygiene assertion can scope its /proc scan to this fixture's own
+// child processes rather than matching unrelated host processes.
+func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
+
+// AsObserver mints a NON-ADMIN bearer for an existing account and returns the
+// two Connect clients scoped to it, so a leg can assert what that account CAN
+// and CANNOT see over the real TLS door (RIG-3528 T1). Every other fixture RPC
+// rides the bootstrap-admin bearer (newAuthedClients), which is why no existing
+// leg can prove a NEGATIVE — an admin sees everything.
+//
+// It mints a CLIENT/observer credential, NOT an agent identity. Agent
+// authorship needs no credential at all: the Runner asserts no account and the
+// server resolves session_id → account from its own binding
+// (runnerhub/relay_comms.go:7-15, the ratified OQ-2 trust model). Do not reach
+// for this to author an agent's post — script the agent's turn instead.
+//
+// IssueToken is admin-gated (server/service.go:407-415), so the mint rides the
+// fixture's admin client; the returned clients then dial the SAME door through
+// newAuthedClients with the minted bearer, so there is exactly one dial path.
+// An account the server cannot resolve is NOT_FOUND, surfaced as the returned
+// error (never a panic — the caller, a test, decides fatality).
+//
+// The argument accepts an account id, a bare handle, or an `owner/agent` handle,
+// and is mapped to the wire handle IssueTokenRequest.account_handle takes (see
+// wireHandle); `owner/agent` passes through as-is. An unresolvable ref is passed
+// through UNCHANGED so the SERVER decides the code — that keeps NOT_FOUND the
+// server's answer rather than a locally-synthesized one.
+func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassServiceClient, commsServiceClient, error) {
+	target, err := f.wireHandle(ctx, handle)
+	if err != nil {
+		target = handle
+	}
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Compass().IssueToken(rctx, connect.NewRequest(&compassv1.IssueTokenRequest{
+		AccountHandle: target,
+	}))
+	if err != nil {
+		return nil, nil, fmt.Errorf("IssueToken RPC: %w", err)
+	}
+	token := resp.Msg.GetToken()
+	if token == "" {
+		return nil, nil, fmt.Errorf("IssueToken for %q returned an empty token", handle)
+	}
+	compass, comms, err := newAuthedClients(f.caPath, f.serverURL, token)
+	if err != nil {
+		return nil, nil, fmt.Errorf("observer clients for %q: %w", handle, err)
+	}
+	return compass, comms, nil
+}
+
+// CreateUser creates a human user account over CommsService and returns its
+// account id — the owner-tier setup primitive a multi-tenant leg needs (two
+// owner users, each with its own agents). Thin client-RPC primitive in the style
+// of CreateAgent; returns an error rather than panicking so the caller (a test)
+// decides fatality, and the per-call deadline is threaded from ctx.
+func (f *Fixture) CreateUser(ctx context.Context, handle, displayName string) (ownerID string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().CreateUser(rctx, connect.NewRequest(&compassv1.CreateUserRequest{
+		Handle:      handle,
+		DisplayName: displayName,
+	}))
+	if err != nil {
+		return "", fmt.Errorf("CreateUser RPC: %w", err)
+	}
+	return resp.Msg.GetAccount().GetId(), nil
+}
+
+// CreateChannel creates a plain (kind=CHANNEL) channel over CommsService with
+// ownerID as a founding member, and returns its channel id.
+//
+// private selects the channel's D9 VISIBILITY, which in this schema is a
+// property of the channel's GROUP, not of ChannelKind — the ChannelKind enum is
+// CHANNEL / DM / (retired) GROUP_DM and carries no private member
+// (comms.proto:289-295), and a DM is a two-party conversation the manual create
+// path is server-FORBIDDEN from minting (store/channels.go:126-139), so it is
+// not the private form of a channel. Both cases are therefore
+// CHANNEL_KIND_CHANNEL and differ in placement:
+//   - private=true → UNGROUPED (empty group_id): membership-only visibility.
+//     comms.proto:237-239 ("empty for an ungrouped channel, which is
+//     owner-scoped to its creating caller (the OWNER default), not global"), and
+//     the read predicate agrees — its group arm requires group_id NOT NULL with
+//     effective visibility SHARED (store/db/channels.sql.go:495-505), so an
+//     ungrouped channel is reachable only through channel_members.
+//   - private=false → created inside a freshly minted SHARED channel group, so
+//     every account can see it (the globally-visible canary surface).
+//
+// ownerID is threaded as a MEMBER, not an owner field: CreateChannelRequest has
+// NO owner field (name/group_id/kind/member_handles, comms.proto:654-664) and the
+// store derives owner scoping from the CALLER plus transitive owner-membership
+// (store/channels.go:76-83) — a user is added automatically for any of its agents
+// in the member set. Membership is what makes the channel readable by that
+// account, which is the property a leg asserts. The creating caller is the
+// fixture's admin client, so the admin is a founding member by construction.
+//
+// member_handles resolves strictly through account_handles.handle (an account id
+// never resolves — store/db/accounts.sql.go:248-265), while the signature takes
+// an id, so the id is converted to its handle first via lookupAccount. An
+// unresolvable ownerID is passed through unchanged so the SERVER answers
+// NOT_FOUND rather than a locally-synthesized error.
+func (f *Fixture) CreateChannel(ctx context.Context, ownerID, name string, private bool) (channelID string, err error) {
+	ownerHandle := ownerID
+	if acc, lookupErr := f.lookupAccount(ctx, ownerID); lookupErr == nil {
+		ownerHandle = acc.GetHandle()
+	}
+	var groupID string
+	if !private {
+		groupID, err = f.createSharedGroup(ctx, name+"-group")
+		if err != nil {
+			return "", err
+		}
+	}
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().CreateChannel(rctx, connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name:          name,
+		GroupId:       groupID,
+		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberHandles: []string{ownerHandle},
+	}))
+	if err != nil {
+		return "", fmt.Errorf("CreateChannel RPC: %w", err)
+	}
+	return resp.Msg.GetChannel().GetId(), nil
+}
+
+// wireHandle maps an account ref (an id or a bare handle) to the handle the admin
+// door takes: a user's bare handle, or `owner/agent` for an agent. A ref already
+// spelled `owner/agent` passes through unchanged. Legs hold ids from
+// CreateAgent/CreateUser, so the fixture does the mapping in one place.
+func (f *Fixture) wireHandle(ctx context.Context, ref string) (string, error) {
+	// Already the `owner/agent` wire form: nothing to map.
+	if strings.Contains(ref, "/") {
+		return ref, nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	if err != nil {
+		return "", fmt.Errorf("ListAccounts RPC: %w", err)
+	}
+	byID := make(map[string]*compassv1.Account, len(resp.Msg.GetAccounts()))
+	for _, acc := range resp.Msg.GetAccounts() {
+		byID[acc.GetId()] = acc
+	}
+	for _, acc := range resp.Msg.GetAccounts() {
+		if acc.GetId() != ref && acc.GetHandle() != ref {
+			continue
+		}
+		agent := acc.GetAgent()
+		if agent == nil {
+			return acc.GetHandle(), nil
+		}
+		owner, ok := byID[agent.GetOwnerUserId()]
+		if !ok {
+			return "", fmt.Errorf("owner %q of agent %q is not visible", agent.GetOwnerUserId(), ref)
+		}
+		return owner.GetHandle() + "/" + acc.GetHandle(), nil
+	}
+	return "", fmt.Errorf("no visible account matching %q (by id or handle)", ref)
+}
+
+// lookupAccount resolves an account ref — an id OR a handle — to its Account
+// over ListAccounts (the only account read CommsService exposes; there is no
+// GetAccount RPC). An unmatched ref is store-shaped ErrNotFound-like: a plain
+// error naming the ref, for the caller to wrap or ignore.
+func (f *Fixture) lookupAccount(ctx context.Context, ref string) (*compassv1.Account, error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("ListAccounts RPC: %w", err)
+	}
+	for _, acc := range resp.Msg.GetAccounts() {
+		if acc.GetId() == ref || acc.GetHandle() == ref {
+			return acc, nil
+		}
+	}
+	return nil, fmt.Errorf("no visible account matching %q (by id or handle)", ref)
+}
+
+// createSharedGroup mints a top-level SHARED-visibility channel group and
+// returns its id — the container that makes a channel globally visible (see
+// CreateChannel's private=false arm). Top-level, so no parent visibility
+// ceiling applies (store/channels.go:13-22).
+func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().CreateChannelGroup(rctx, connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+		Name:       name,
+		Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_SHARED,
+	}))
+	if err != nil {
+		return "", fmt.Errorf("CreateChannelGroup RPC: %w", err)
+	}
+	return resp.Msg.GetGroup().GetId(), nil
 }
 
 // cannedAgentDir is the in-container path the canned models.yml is delivered
@@ -839,7 +839,11 @@ func freePorts(tb testing.TB, n int) []int {
 			tb.Fatalf("reserve port: %v", err)
 		}
 		lns = append(lns, ln)
-		ports = append(ports, ln.Addr().(*net.TCPAddr).Port)
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok {
+			tb.Fatalf("reserved listener address %T, want *net.TCPAddr", ln.Addr())
+		}
+		ports = append(ports, addr.Port)
 	}
 	for _, ln := range lns {
 		if err := ln.Close(); err != nil {

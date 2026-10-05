@@ -67,7 +67,7 @@ const (
 	duoSettleBRoom = "duo agent B standing by after the reply"
 )
 
-func init() {
+func registerDuoFixtureOptions() {
 	// A's ordered script across BOTH its actions: post to the room (tool-call +
 	// settle), then DM the peer (open_dm, dm, settle). A tool-call turn needs a
 	// SECOND round-trip to terminate, so every tool-call turn is paired with a
