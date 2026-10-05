@@ -181,6 +181,9 @@ func TestCallbackContextSurvivesSubscribeCancel(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	defer unsub()
+	// Sampled after Subscribe, whose setup replies are all synchronous, so from here
+	// f.nc receives only each publish's ack and its delivery.
+	baseline := f.nc.Stats().InMsgs
 	publish := func(id string) {
 		t.Helper()
 		if err := f.Publish(ctx, subject, EventRef{Tenant: "t-cancel", Kind: KindMessagePosted, RowID: id}); err != nil {
@@ -190,22 +193,12 @@ func TestCallbackContextSurvivesSubscribeCancel(t *testing.T) {
 	publish("one")
 	<-firstIn
 	publish("two")
-	stream, err := f.ensureStream(ctx)
-	if err != nil {
-		t.Fatalf("ensureStream: %v", err)
-	}
-	cons, err := stream.Consumer(ctx, durableName(subject))
-	if err != nil {
-		t.Fatalf("Consumer: %v", err)
-	}
-	// The second event must be in this client's buffer before the cancel, so it
-	// is delivered by the drain rather than by a live consumer.
+	// The second event must have reached this client before the cancel, so the
+	// drain delivers it. Not the server's NumAckPending: the server counts a
+	// message pending before sending it, so the drain can overtake it.
+	const publishAcks = 2
 	pollUntil(t, "the second event buffered behind the first", func() bool {
-		info, err := cons.Info(ctx)
-		if err != nil {
-			t.Fatalf("consumer Info: %v", err)
-		}
-		return info.NumAckPending > 1
+		return f.nc.Stats().InMsgs-baseline-publishAcks >= 2
 	})
 	cancel()
 	close(release)
@@ -1303,8 +1296,8 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 		firstIn = make(chan struct{})
 		gateOne sync.Once
 	)
-	// Taken before Subscribe so no delivery is missed. Subscribe adds exactly
-	// one reply of its own (CreateOrUpdateConsumer), so gates below subtract it.
+	// Taken before Subscribe so no delivery is missed. Subscribe adds two replies of
+	// its own (CreateOrUpdateConsumer and the advisory's stream lookup); gates subtract them.
 	baseline := f.nc.Stats().InMsgs
 	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
 		got <- r
@@ -1331,9 +1324,9 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 	// Second: a delivery beyond the parked one must have reached this client.
 	// Not the server's NumAckPending: the server counts a message pending
 	// before sending it, so an UNSUB can overtake it and strand it server-side.
-	const createReply = 1
+	const setupReplies = 2
 	pollUntil(t, "an event buffered behind the in-flight one", func() bool {
-		return f.nc.Stats().InMsgs-baseline-createReply >= 2
+		return f.nc.Stats().InMsgs-baseline-setupReplies >= 2
 	})
 
 	// Tear down with events buffered, THEN let the blocked callback go: a
