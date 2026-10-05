@@ -43,6 +43,12 @@ import (
 // idempotency scoping (store/migrations/0001_init.sql), keyed to the agent
 // account the provision creates an isolated container for.
 func (h *Hub) Provision(ctx context.Context, requestID string, accountID store.AccountID, req *compassv1.ProvisionAgentWorkspaceRequest) (*compassv1.ProvisionAgentWorkspaceResponse, string, error) {
+	// Check before hashing: provisionDedupID is fixed-size, and the nested field rides verbatim.
+	for _, id := range []string{requestID, req.GetClientRequestId()} {
+		if err := CheckClientRequestID(id); err != nil {
+			return nil, "", err
+		}
+	}
 	result, runnerID, err := h.relay(ctx, "", &compassv1internal.SessionsResponse{
 		RequestId:      provisionDedupID(requestID, accountID),
 		AgentAccountId: string(accountID),
@@ -204,6 +210,9 @@ func (h *Hub) SessionState(ctx context.Context, sessionID string) (compassv1.Age
 // alongside the result for the one caller that must attribute the command to a
 // Runner (Provision, recording a durable placement); the rest discard it.
 func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, string, error) {
+	if err := CheckClientRequestID(cmd.GetRequestId()); err != nil {
+		return nil, "", err
+	}
 	router, runnerID, err := h.routerFor(sessionKey)
 	if err != nil {
 		return nil, "", connect.NewError(connect.CodeUnavailable, err)
@@ -232,6 +241,19 @@ func runnerErrorToConnect(e *compassv1internal.RunnerError) error {
 		code = connect.CodeInternal
 	}
 	return connect.NewError(code, fmt.Errorf("runner: %s", e.GetMessage()))
+}
+
+// MaxClientRequestIDBytes bounds a caller's client_request_id, which the Hub
+// echoes into Sessions frames; server-minted ids are 32 hex chars.
+const MaxClientRequestIDBytes = 256
+
+// CheckClientRequestID refuses an over-long client_request_id with InvalidArgument.
+func CheckClientRequestID(id string) error {
+	if len(id) > MaxClientRequestIDBytes {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("client_request_id is %d bytes; the limit is %d", len(id), MaxClientRequestIDBytes))
+	}
+	return nil
 }
 
 // orNewRequestID returns id when non-empty, else a fresh random correlation id.

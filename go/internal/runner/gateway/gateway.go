@@ -16,6 +16,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 
+	"github.com/RigelBuild/compass/go/internal/agentmsg"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
@@ -32,15 +33,10 @@ var errNoSessionForContainer = errors.New("gateway: no live session bound to con
 var errNilRelayResult = errors.New("gateway: relay returned no comms result")
 
 // maxAgentMessageBytes bounds every AgentGateway message the socket handler reads
-// (Comms, Publish, PostConversationFrame). Retiring the stdout scanner also
-// retired its 4 MiB line cap (relay.go:145), which was the only per-message size
-// bound on the agent→Runner hop; connect-go imposes none unless WithReadMaxBytes
-// is set, so without this a compromised in-container agent could stream one
-// arbitrarily large message the Runner buffers in memory. Set to a small multiple
-// of the retired 4 MiB, chosen once here (Global Constraints, transport-
-// consolidation record). A message past it is a Connect stream/unary error routed
-// to the agent's reconnect path, not an OOM.
-const maxAgentMessageBytes = 16 * 1024 * 1024
+// (Comms, Publish, PostConversationFrame). The value lives in agentmsg so the
+// Runner→Server door derives its own cap from it; a message past it is a Connect
+// stream/unary error routed to the agent's reconnect path, not an OOM.
+const maxAgentMessageBytes = agentmsg.MaxBytes
 
 // committedKeysMax bounds the advisory idempotency fast-path cache
 // (Gateway.committedKeys). A durable conversation frame carries a distinct
