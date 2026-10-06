@@ -91,10 +91,34 @@ func (q *Queries) ChannelMemberExists(ctx context.Context, arg ChannelMemberExis
 }
 
 const channelMembersByChannelIDs = `-- name: ChannelMembersByChannelIDs :many
-SELECT channel_id, account_id, subscribed
-FROM channel_members
-WHERE channel_id = ANY($1::text[])
-ORDER BY account_id
+WITH RECURSIVE stored AS (
+    SELECT cm.channel_id, cm.account_id, cm.subscribed
+    FROM channel_members cm
+    JOIN channels c ON c.id = cm.channel_id
+    WHERE cm.channel_id = ANY($1::text[]) AND c.membership_mode = 0
+), subtree AS (
+    SELECT c.id AS channel_id, c.parent_agent_id AS account_id
+    FROM channels c
+    WHERE c.id = ANY($1::text[]) AND c.membership_mode = 1
+    UNION
+    SELECT s.channel_id, a.account_id
+    FROM agent_accounts a
+    JOIN subtree s ON a.parent_agent_id = s.account_id
+), participants AS (
+    SELECT channel_id, account_id FROM subtree
+    UNION
+    SELECT c.id AS channel_id, aa.owner_user_id AS account_id
+    FROM channels c
+    JOIN agent_accounts aa ON aa.account_id = c.parent_agent_id
+    WHERE c.id = ANY($1::text[]) AND c.membership_mode = 1
+)
+SELECT channel_id, account_id, subscribed FROM stored
+UNION
+SELECT p.channel_id, p.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
+FROM participants p
+LEFT JOIN channel_subscriptions cs
+    ON cs.channel_id = p.channel_id AND cs.account_id = p.account_id
+ORDER BY channel_id, account_id
 `
 
 type ChannelMembersByChannelIDsRow struct {
@@ -178,6 +202,11 @@ effective AS (
 	SELECT id, MIN(min_vis) AS eff_vis
 	FROM ancestry
 	GROUP BY id
+),
+viewer AS (
+	SELECT owner_user_id AS uid FROM agent_accounts WHERE account_id = $1
+	UNION ALL
+	SELECT $1 AS uid
 )
 SELECT EXISTS (
 	SELECT 1 FROM channels c
@@ -190,6 +219,11 @@ SELECT EXISTS (
 		    c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
 		        SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
 		    )
+		)
+		OR (
+		    c.parent_agent_id IS NOT NULL
+		    AND (SELECT aa.owner_user_id FROM agent_accounts aa WHERE aa.account_id = c.parent_agent_id)
+		        IN (SELECT uid FROM viewer)
 		)
 	)
 )
@@ -220,9 +254,15 @@ effective AS (
 	SELECT id, MIN(min_vis) AS eff_vis
 	FROM ancestry
 	GROUP BY id
+),
+viewer AS (
+	SELECT owner_user_id AS uid FROM agent_accounts WHERE account_id = $1
+	UNION ALL
+	SELECT $1 AS uid
 )
 SELECT c.id, c.name, COALESCE(c.group_id, '') AS group_id, c.kind, c.post_policy,
-       COALESCE(c.owner_account_id, '') AS owner_account_id, c.mandatory_subscription
+       COALESCE(c.owner_account_id, '') AS owner_account_id, c.mandatory_subscription,
+       COALESCE(c.parent_agent_id, '') AS parent_agent_id, c.membership_mode
 FROM channels c
 WHERE c.name = $2 AND (
 		EXISTS (
@@ -233,6 +273,11 @@ WHERE c.name = $2 AND (
 		    c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
 		        SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
 		    )
+		)
+		OR (
+		    c.parent_agent_id IS NOT NULL
+		    AND (SELECT aa.owner_user_id FROM agent_accounts aa WHERE aa.account_id = c.parent_agent_id)
+		        IN (SELECT uid FROM viewer)
 		)
 	)
 ORDER BY c.id
@@ -251,6 +296,8 @@ type ChannelsByNameForViewerRow struct {
 	PostPolicy            int16
 	OwnerAccountID        string
 	MandatorySubscription bool
+	ParentAgentID         string
+	MembershipMode        int16
 }
 
 func (q *Queries) ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error) {
@@ -270,6 +317,8 @@ func (q *Queries) ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNam
 			&i.PostPolicy,
 			&i.OwnerAccountID,
 			&i.MandatorySubscription,
+			&i.ParentAgentID,
+			&i.MembershipMode,
 		); err != nil {
 			return nil, err
 		}
@@ -339,7 +388,8 @@ func (q *Queries) GetAgentWorkspaceID(ctx context.Context, agentAccountID string
 
 const getChannel = `-- name: GetChannel :one
 SELECT id, name, COALESCE(group_id, '') AS group_id, kind, post_policy,
-       COALESCE(owner_account_id, '') AS owner_account_id, mandatory_subscription
+       COALESCE(owner_account_id, '') AS owner_account_id, mandatory_subscription,
+       COALESCE(parent_agent_id, '') AS parent_agent_id, membership_mode
 FROM channels WHERE id = $1
 `
 
@@ -351,6 +401,8 @@ type GetChannelRow struct {
 	PostPolicy            int16
 	OwnerAccountID        string
 	MandatorySubscription bool
+	ParentAgentID         string
+	MembershipMode        int16
 }
 
 func (q *Queries) GetChannel(ctx context.Context, id string) (GetChannelRow, error) {
@@ -364,6 +416,8 @@ func (q *Queries) GetChannel(ctx context.Context, id string) (GetChannelRow, err
 		&i.PostPolicy,
 		&i.OwnerAccountID,
 		&i.MandatorySubscription,
+		&i.ParentAgentID,
+		&i.MembershipMode,
 	)
 	return i, err
 }
@@ -575,9 +629,15 @@ effective AS (
 	SELECT id, MIN(min_vis) AS eff_vis
 	FROM ancestry
 	GROUP BY id
+),
+viewer AS (
+	SELECT owner_user_id AS uid FROM agent_accounts WHERE account_id = $1
+	UNION ALL
+	SELECT $1 AS uid
 )
 SELECT c.id, c.name, COALESCE(c.group_id, '') AS group_id, c.kind, c.post_policy,
-       COALESCE(c.owner_account_id, '') AS owner_account_id, c.mandatory_subscription
+       COALESCE(c.owner_account_id, '') AS owner_account_id, c.mandatory_subscription,
+       COALESCE(c.parent_agent_id, '') AS parent_agent_id, c.membership_mode
 FROM channels c
 WHERE (
 		EXISTS (
@@ -588,6 +648,11 @@ WHERE (
 		    c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
 		        SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
 		    )
+		)
+		OR (
+		    c.parent_agent_id IS NOT NULL
+		    AND (SELECT aa.owner_user_id FROM agent_accounts aa WHERE aa.account_id = c.parent_agent_id)
+		        IN (SELECT uid FROM viewer)
 		)
 	)
 ORDER BY c.name
@@ -601,6 +666,8 @@ type ListChannelsRow struct {
 	PostPolicy            int16
 	OwnerAccountID        string
 	MandatorySubscription bool
+	ParentAgentID         string
+	MembershipMode        int16
 }
 
 func (q *Queries) ListChannels(ctx context.Context, accountID string) ([]ListChannelsRow, error) {
@@ -620,6 +687,8 @@ func (q *Queries) ListChannels(ctx context.Context, accountID string) ([]ListCha
 			&i.PostPolicy,
 			&i.OwnerAccountID,
 			&i.MandatorySubscription,
+			&i.ParentAgentID,
+			&i.MembershipMode,
 		); err != nil {
 			return nil, err
 		}

@@ -73,7 +73,9 @@ func coordChannels(t *testing.T, s *Store, owner AccountID) []Channel {
 	t.Helper()
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
-		`SELECT c.id, c.name, COALESCE(c.group_id,''), c.kind, c.post_policy, COALESCE(c.owner_account_id,''), c.mandatory_subscription
+		`SELECT c.id, c.name, COALESCE(c.group_id,''), c.kind, c.post_policy,
+		        COALESCE(c.owner_account_id,''), c.mandatory_subscription,
+		        COALESCE(c.parent_agent_id,''), c.membership_mode
 		   FROM channels c
 		   JOIN channel_groups g ON g.id = c.group_id
 		  WHERE g.owner_user_id = $1 AND g.name = '__coordination__'
@@ -95,16 +97,15 @@ func scanChannels(ctx context.Context, q db.DBTX, rows pgx.Rows) ([]Channel, err
 	var channels []Channel
 	for rows.Next() {
 		var (
-			id, name, groupID     string
-			kind                  int16
-			postPolicy            int16
-			ownerAccountID        string
-			mandatorySubscription bool
+			id, name, groupID, parentAgentID string
+			kind, postPolicy, membershipMode int16
+			ownerAccountID                   string
+			mandatorySubscription            bool
 		)
-		if err := rows.Scan(&id, &name, &groupID, &kind, &postPolicy, &ownerAccountID, &mandatorySubscription); err != nil {
+		if err := rows.Scan(&id, &name, &groupID, &kind, &postPolicy, &ownerAccountID, &mandatorySubscription, &parentAgentID, &membershipMode); err != nil {
 			return nil, fmt.Errorf("store: scan channel: %w", err)
 		}
-		channels = append(channels, channelFromRow(id, name, groupID, kind, postPolicy, ownerAccountID, mandatorySubscription))
+		channels = append(channels, channelFromRow(id, name, groupID, kind, postPolicy, ownerAccountID, mandatorySubscription, parentAgentID, membershipMode))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate channels: %w", err)

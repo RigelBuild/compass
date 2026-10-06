@@ -161,8 +161,7 @@ func validateNewChannel(c NewChannel) error {
 //
 // A ParentAgentID attaches the channel under an agent the actor's owner set
 // owns (else ErrNotFound). A TREE channel writes no member rows: its
-// participants derive from the anchor's subtree, which need not include the
-// actor, and it returns no members until reads derive them.
+// participants derive from the anchor's subtree.
 func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel) (Channel, error) {
 	if err := validateNewChannel(c); err != nil {
 		return Channel{}, err
@@ -242,22 +241,13 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		if err := s.writeExplicitMembers(ctx, tx, ChannelID(id), c.Policy, members); err != nil {
 			return Channel{}, err
 		}
-	} else {
-		// No member rows exist, so report none: a later ListChannels reads the same.
-		members = nil
 	}
+	// The post-commit read projects TREE participants instead of stored rows.
 	if err := tx.Commit(ctx); err != nil {
 		return Channel{}, fmt.Errorf("store: commit create channel: %w", err)
 	}
 
-	return Channel{
-		ID:               ChannelID(id),
-		Name:             c.Name,
-		GroupID:          c.GroupID,
-		Kind:             c.Kind,
-		MemberAccountIDs: members,
-		Policy:           c.Policy,
-	}, nil
+	return s.getChannel(ctx, ChannelID(id))
 }
 
 // writeExplicitMembers stores an EXPLICIT channel's member rows inside the
@@ -450,7 +440,7 @@ func (s *Store) ListChannels(ctx context.Context, visibleTo AccountID) ([]Channe
 	}
 	var channels []Channel
 	for _, row := range rows {
-		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
+		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription, row.ParentAgentID, row.MembershipMode))
 	}
 	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return nil, err
@@ -655,7 +645,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 	}
 	var channels []Channel
 	for _, row := range rows {
-		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
+		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription, row.ParentAgentID, row.MembershipMode))
 	}
 	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return Channel{}, err
@@ -1104,22 +1094,23 @@ func (s *Store) getChannel(ctx context.Context, id ChannelID) (Channel, error) {
 		}
 		return Channel{}, fmt.Errorf("store: get channel: %w", err)
 	}
-	channels := []Channel{channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription)}
+	channels := []Channel{channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription, row.ParentAgentID, row.MembershipMode)}
 	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return Channel{}, err
 	}
 	return channels[0], nil
 }
 
-// channelFromRow builds the base Channel (id, name, group, kind, policy) from
-// the shared seven-column channel projection every channel read selects; the
-// caller populates the member/subscriber sets with loadChannelMembers.
-func channelFromRow(id, name, groupID string, kind, postPolicy int16, ownerAccountID string, mandatorySubscription bool) Channel {
+// channelFromRow builds the base Channel from the shared nine-column channel
+// projection; the caller populates member/subscriber sets with loadChannelMembers.
+func channelFromRow(id, name, groupID string, kind, postPolicy int16, ownerAccountID string, mandatorySubscription bool, parentAgentID string, membershipMode int16) Channel {
 	return Channel{
-		ID:      ChannelID(id),
-		Name:    name,
-		GroupID: ChannelGroupID(groupID),
-		Kind:    ChannelKind(kind),
+		ID:             ChannelID(id),
+		Name:           name,
+		GroupID:        ChannelGroupID(groupID),
+		Kind:           ChannelKind(kind),
+		ParentAgentID:  AccountID(parentAgentID),
+		MembershipMode: ChannelMembershipMode(membershipMode),
 		Policy: ChannelPolicy{
 			PostPolicy:            ChannelPostPolicy(postPolicy),
 			OwnerAccountID:        AccountID(ownerAccountID),

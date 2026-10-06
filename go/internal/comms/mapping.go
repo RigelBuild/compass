@@ -99,9 +99,17 @@ func channelToWire(c store.Channel) *compassv1.Channel {
 		PostPolicy:            channelPostPolicyToWire(c.Policy.PostPolicy),
 		OwnerAccountId:        string(c.Policy.OwnerAccountID),
 		MandatorySubscription: c.Policy.MandatorySubscription,
+		ParentAgentId:         string(c.ParentAgentID),
+		MembershipMode:        channelMembershipModeToWire(c.MembershipMode),
 	}
 }
 
+func channelMembershipModeToWire(m store.ChannelMembershipMode) compassv1.ChannelMembershipMode {
+	if m == store.ChannelMembershipModeTree {
+		return compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_TREE
+	}
+	return compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_EXPLICIT
+}
 func channelKindToWire(k store.ChannelKind) compassv1.ChannelKind {
 	switch k {
 	case store.ChannelKindDM:

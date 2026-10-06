@@ -131,9 +131,39 @@ func (q *Queries) RenameTopic(ctx context.Context, arg RenameTopicParams) error 
 }
 
 const resolveTopicForUpdate = `-- name: ResolveTopicForUpdate :one
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $1
+      AND EXISTS (
+          SELECT 1 FROM topics t
+          JOIN channels c ON c.id = t.channel_id
+          WHERE t.id = $2 AND c.membership_mode = 1
+      )
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
 SELECT t.channel_id FROM topics t
-JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE t.id = $2
+  AND (
+    EXISTS (
+        SELECT 1 FROM channel_members cm
+        WHERE cm.channel_id = t.channel_id AND cm.account_id = $1
+    )
+    OR (
+        EXISTS (SELECT 1 FROM channels WHERE id = t.channel_id AND membership_mode = 1)
+        AND EXISTS (
+            SELECT 1 FROM channels c
+            WHERE c.id = t.channel_id AND (
+                c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+                OR $1 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                         WHERE aa.account_id = c.parent_agent_id)
+            )
+        )
+    )
+  )
 FOR UPDATE OF t
 `
 

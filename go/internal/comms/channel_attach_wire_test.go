@@ -7,6 +7,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // The channel-attach fields are additive: their numbers are the wire contract
@@ -67,5 +68,15 @@ func TestChannelAttachRoundTrip(t *testing.T) {
 	}
 	if !proto.Equal(in, &out) {
 		t.Fatalf("round trip: got %v, want %v", &out, in)
+	}
+}
+
+func TestChannelToWireCarriesTreeAttachment(t *testing.T) {
+	got := channelToWire(store.Channel{
+		ParentAgentID:  "agent-anchor",
+		MembershipMode: store.ChannelMembershipModeTree,
+	})
+	if got.GetParentAgentId() != "agent-anchor" || got.GetMembershipMode() != compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_TREE {
+		t.Fatalf("channelToWire attachment = parent %q mode %v, want agent-anchor and TREE", got.GetParentAgentId(), got.GetMembershipMode())
 	}
 }

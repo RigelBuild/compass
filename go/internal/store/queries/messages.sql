@@ -43,15 +43,43 @@ SELECT COALESCE(MAX(seq), 0)::BIGINT AS head FROM messages;
 UPDATE messages SET blocks = $1, text_content = $2 WHERE id = $3;
 
 -- name: UpdateMessageBlocksAsAuthor :one
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $4
+      AND EXISTS (
+          SELECT 1 FROM messages m
+          JOIN topics t ON t.id = m.topic_id
+          JOIN channels c ON c.id = t.channel_id
+          WHERE m.id = $3 AND c.membership_mode = 1
+      )
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
 UPDATE messages m
 SET blocks = $1, text_content = $2
 FROM topics t
 WHERE m.id = $3
   AND t.id = m.topic_id
   AND m.author_account_id = $4
-  AND EXISTS (
-    SELECT 1 FROM channel_members cm
-    WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
+  AND (
+    EXISTS (
+        SELECT 1 FROM channel_members cm
+        WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
+    )
+    OR (
+        EXISTS (SELECT 1 FROM channels WHERE id = t.channel_id AND membership_mode = 1)
+        AND EXISTS (
+            SELECT 1 FROM channels c
+            WHERE c.id = t.channel_id AND (
+                c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+                OR $4 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                         WHERE aa.account_id = c.parent_agent_id)
+            )
+        )
+    )
   )
 RETURNING m.id, m.topic_id, m.author_account_id,
           COALESCE((SELECT (CASE WHEN author_handles.owner_user_id IS NULL THEN author_handles.handle WHEN owner_handles.handle IS NULL THEN '' ELSE owner_handles.handle || '/' || author_handles.handle END)::text FROM account_handles AS author_handles LEFT JOIN account_handles AS owner_handles ON owner_handles.account_id = author_handles.owner_user_id WHERE author_handles.account_id = $4), '')::text AS author_handle,
@@ -68,44 +96,150 @@ WHERE m.id = $1
   );
 
 -- name: GetPageCursorSeq :one
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $1
+      AND EXISTS (SELECT 1 FROM channels WHERE id = $3 AND membership_mode = 1)
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
 SELECT m.seq FROM messages m
 JOIN topics t ON t.id = m.topic_id
-JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
-WHERE m.id = $2 AND t.channel_id = $3;
+WHERE m.id = $2 AND t.channel_id = $3
+  AND (
+    EXISTS (
+        SELECT 1 FROM channel_members cm
+        WHERE cm.channel_id = t.channel_id AND cm.account_id = $1
+    )
+    OR (
+        EXISTS (SELECT 1 FROM channels WHERE id = t.channel_id AND membership_mode = 1)
+        AND EXISTS (
+            SELECT 1 FROM channels c
+            WHERE c.id = t.channel_id AND (
+                c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+                OR $1 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                         WHERE aa.account_id = c.parent_agent_id)
+            )
+        )
+    )
+  );
 
 -- name: ListMessages :many
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $1
+      AND EXISTS (SELECT 1 FROM channels WHERE id = $2 AND membership_mode = 1)
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
 SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
-JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
   AND ($6 = '' OR m.topic_id = $6)
+  AND (
+    EXISTS (
+        SELECT 1 FROM channel_members cm
+        WHERE cm.channel_id = t.channel_id AND cm.account_id = $1
+    )
+    OR (
+        EXISTS (SELECT 1 FROM channels WHERE id = t.channel_id AND membership_mode = 1)
+        AND EXISTS (
+            SELECT 1 FROM channels c
+            WHERE c.id = t.channel_id AND (
+                c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+                OR $1 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                         WHERE aa.account_id = c.parent_agent_id)
+            )
+        )
+    )
+  )
 ORDER BY m.seq DESC
 LIMIT $4;
-
 -- name: SearchMessages :many
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $1
+      AND EXISTS (
+          SELECT 1 FROM channels c
+          WHERE c.membership_mode = 1 AND ($3 = '' OR c.id = $3)
+      )
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
 SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
-JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
   AND ($3 = '' OR t.channel_id = $3)
   AND ($5 = 0 OR m.seq <= $5)
+  AND (
+    EXISTS (
+        SELECT 1 FROM channel_members cm
+        WHERE cm.channel_id = t.channel_id AND cm.account_id = $1
+    )
+    OR (
+        EXISTS (SELECT 1 FROM channels WHERE id = t.channel_id AND membership_mode = 1)
+        AND EXISTS (
+            SELECT 1 FROM channels c
+            WHERE c.id = t.channel_id AND (
+                c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+                OR $1 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                         WHERE aa.account_id = c.parent_agent_id)
+            )
+        )
+    )
+  )
 ORDER BY ts_rank(m.search_tsv, websearch_to_tsquery('english', $2)) DESC, m.seq DESC
 LIMIT $4;
 
 -- name: FindAskMessage :many
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $1
+      AND EXISTS (SELECT 1 FROM channels WHERE membership_mode = 1)
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
 SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
-JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 WHERE m.blocks @> $2::jsonb
+  AND (
+    EXISTS (
+        SELECT 1 FROM channel_members cm
+        WHERE cm.channel_id = t.channel_id AND cm.account_id = $1
+    )
+    OR (
+        EXISTS (SELECT 1 FROM channels WHERE id = t.channel_id AND membership_mode = 1)
+        AND EXISTS (
+            SELECT 1 FROM channels c
+            WHERE c.id = t.channel_id AND (
+                c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+                OR $1 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                         WHERE aa.account_id = c.parent_agent_id)
+            )
+        )
+    )
+  )
 FOR UPDATE OF m;
 
 -- name: GetMessageByRequestID :many
