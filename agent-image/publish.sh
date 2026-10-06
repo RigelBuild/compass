@@ -78,7 +78,9 @@ if [[ -n "$ARCH_SUFFIX" ]]; then
     err "--arch-suffix cannot be combined with explicit positional tags"
     exit 1
   fi
-  SHA="$(git rev-parse --short=12 HEAD)"
+  # Truncate, not --short=12: a prefix collision would lengthen the tag and the
+  # CI index job, which reads exactly 12 chars, would miss it.
+  SHA="$(git rev-parse HEAD | cut -c1-12)"
   TAGS=("git-${SHA}-${ARCH_SUFFIX}")
 elif [[ $# -gt 0 ]]; then
   TAGS=("$@")

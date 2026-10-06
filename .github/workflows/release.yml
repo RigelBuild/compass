@@ -564,6 +564,12 @@ jobs:
       cancel-in-progress: false
       queue: max
     steps:
+      # Full history: the :latest guard walks main's first-parent commits newer
+      # than this run's sha.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
       - name: Pin the registry auth file
         run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
 
@@ -581,6 +587,7 @@ jobs:
         run: |
           set -euo pipefail
           ref="docker://ghcr.io/rigelbuild/compass-agent"
+          # Truncate exactly as publish.sh does; --short=12 can return more.
           sha12="${GH_SHA:0:12}"
           local_list="localhost/compass-agent:${sha12}"
           amd64_tag="$ref:git-${sha12}-amd64"
@@ -649,14 +656,34 @@ jobs:
             exit 1
           fi
 
-          podman manifest push --format oci --authfile "$REGISTRY_AUTH_FILE" \
-            "$local_list" "$ref:latest"
+          # Runs reach this job in arch-build finish order, not commit order. If a
+          # newer main commit already has its :git index, a newer run has moved
+          # :latest, so this older run must leave it alone.
+          newer_index=""
+          newer_commits="$(git rev-list --first-parent "$GH_SHA..origin/main")"
+          while IFS= read -r commit; do
+            [ -n "$commit" ] || continue
+            newer_sha12="${commit:0:12}"
+            if probe="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" \
+              "$ref:git-$newer_sha12" 2>&1 >/dev/null)"; then
+              newer_index="$newer_sha12"
+              break
+            fi
+            if ! grep -qiE '(^|[^[:alnum:]_])manifest unknown([^[:alnum:]_]|$)' <<< "$probe"; then
+              echo "::error::ambiguous inspect failure probing newer :git-$newer_sha12; refusing to move :latest: $probe" >&2
+              exit 1
+            fi
+          done <<< "$newer_commits"
+
+          if [ -z "$newer_index" ]; then
+            podman manifest push --format oci --authfile "$REGISTRY_AUTH_FILE" \
+              "$local_list" "$ref:latest"
+          else
+            echo "::warning::newer :git-$newer_index is published; leaving :latest unmoved"
+          fi
           git_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12")"
-          latest_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:latest")"
           git_digest="$(printf '%s' "$git_raw" | sha256sum | cut -d' ' -f1)"
-          latest_digest="$(printf '%s' "$latest_raw" | sha256sum | cut -d' ' -f1)"
           git_digest="sha256:$git_digest"
-          latest_digest="sha256:$latest_digest"
           if [ "$git_digest" != "$local_digest" ]; then
             echo "::error::pushed :git-$sha12 index changed: local=$local_digest remote=$git_digest" >&2
             exit 1
@@ -697,6 +724,12 @@ jobs:
           done < <(jq -r '.manifests[] | [.digest, .platform.os, .platform.architecture] | @tsv' \
             "$RUNNER_TEMP/published-index.json")
 
+          if [ -n "$newer_index" ]; then
+            echo "verified OCI index $git_digest: linux/amd64,linux/arm64; :latest left to newer :git-$newer_index"
+            exit 0
+          fi
+          latest_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:latest")"
+          latest_digest="sha256:$(printf '%s' "$latest_raw" | sha256sum | cut -d' ' -f1)"
           if [ "$latest_digest" != "$git_digest" ]; then
             echo "::error::latest index differs from immutable tag: :git-$sha12=$git_digest :latest=$latest_digest" >&2
             exit 1
@@ -888,7 +921,7 @@ jobs:
           done
 
       - name: Put the fork's patched skopeo on PATH
-        # The release-notes generator queries GHCR for the image config digest
+        # The release-notes generator queries GHCR for the image index digest
         # with a plain `skopeo` (the RigelBuild/nix2container fork's patched
         # build). The langs bootstrap above carries only go/bun/node/moon, so
         # skopeo must be provisioned here or the digest query — a core T2
@@ -1262,20 +1295,19 @@ jobs:
             exit 1
           fi
 
-          # Registry-side manifest write: copy the resolved source tag's
-          # digest-resolved manifest to :vX.Y.Z. No nix build at all.
-          skopeo copy --authfile "$REGISTRY_AUTH_FILE" \
+          # Registry-side write: copy the resolved index and every member to
+          # :vX.Y.Z byte-for-byte, so the release tag names the same list digest.
+          skopeo copy --multi-arch all --preserve-digests --authfile "$REGISTRY_AUTH_FILE" \
             "$ref:git-$resolved_sha12" "$ref:$tag"
 
-          # Verify :vX.Y.Z resolves AND shares the source tag's config digest —
-          # the same coherence shape, converted to list digests in T5.
-          src_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$resolved_sha12" | jq -r .config.digest)"
-          tag_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:$tag" | jq -r .config.digest)"
+          # Verify :vX.Y.Z is the same index: equal list digests over the raw bytes.
+          src_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$resolved_sha12" | sha256sum | cut -d' ' -f1)"
+          tag_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:$tag" | sha256sum | cut -d' ' -f1)"
           if [ "$src_digest" != "$tag_digest" ]; then
             echo "re-tag incoherent: :git-$resolved_sha12=$src_digest != :$tag=$tag_digest" >&2
             exit 1
           fi
-          echo "verified: $ref:$tag re-tagged from :git-$resolved_sha12, config digests coherent"
+          echo "verified: $ref:$tag re-tagged from :git-$resolved_sha12, list digests coherent"
 
           # Publish the resolved identity for release-assets (see the job-level
           # outputs: block). Reuse the digest the coherence check above already
