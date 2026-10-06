@@ -43,7 +43,7 @@ import (
 const DefaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"
 
 // The compass-stack CLI flag names the embedded pipeline drives. Shared by
-// StackUpArgs and StackDownArgs so the two argv builders cannot drift on a flag
+// stackUpArgs and StackDownArgs so the two argv builders cannot drift on a flag
 // spelling (and so the strings are named once rather than repeated inline).
 const (
 	flagStateDir = "--state-dir"
@@ -92,7 +92,7 @@ func (p Pipeline) Run(ctx context.Context, params Params) (string, error) {
 		return "", err
 	}
 
-	args := StackUpArgs(params)
+	args := stackUpArgs(params)
 	if err := p.StackUp(ctx, args); err != nil {
 		return "", err
 	}
@@ -106,7 +106,7 @@ func (p Pipeline) Run(ctx context.Context, params Params) (string, error) {
 	return accountID, nil
 }
 
-// StackUpArgs builds the `compass-stack up` argv from the resolved params. It is
+// stackUpArgs builds the `compass-stack up` argv from the resolved params. It is
 // pure (no I/O, no exec) so the exact invocation is unit-testable without
 // running anything — mirroring cmd/compass-stack's pure resolveConfig. It passes
 // ONLY --state-dir/--image/--socket: --database is omitted (compass-stack
@@ -114,7 +114,7 @@ func (p Pipeline) Run(ctx context.Context, params Params) (string, error) {
 // duplicate that logic), and --postgres-image/--collector-image/--listen are
 // omitted so the CLI's defaults are the contract (the app re-learns nothing the
 // stack already owns — §A2 reconciliation 2).
-func StackUpArgs(p Params) []string {
+func stackUpArgs(p Params) []string {
 	args := []string{
 		"up",
 		flagStateDir, p.StateDir,
@@ -166,7 +166,7 @@ func captureStderr(cmd *exec.Cmd) (read func() string, cleanup func(), err error
 func RunStackUp(bin string) func(ctx context.Context, args []string) error {
 	return func(ctx context.Context, args []string) error {
 		//nolint:gosec // G204: bin is operator/PATH-resolved (ResolveStackBin) and
-		// the argv is pipeline-assembled (StackUpArgs), not user input.
+		// the argv is pipeline-assembled (stackUpArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = prependExecDirToPath(os.Environ(), filepath.Dir(bin))
 		stderr, cleanup, capErr := captureStderr(cmd)
@@ -191,7 +191,7 @@ func RunStackUp(bin string) func(ctx context.Context, args []string) error {
 }
 
 // StackDownArgs builds the `compass-stack down` argv from the resolved params.
-// It mirrors StackUpArgs (pure, no I/O, no exec) so the exact teardown
+// It mirrors stackUpArgs (pure, no I/O, no exec) so the exact teardown
 // invocation is unit-testable without running anything. down parses the SAME
 // config flags as up, and its resolveConfig REQUIRES a non-empty --state-dir AND
 // --image (both rejected if empty), so --image is carried even though teardown

@@ -47,7 +47,7 @@ var baseParams = Params{
 // the contract and the app re-learns nothing the stack already owns (§A2
 // reconciliation 2).
 func TestStackUpArgsOmitsCLIDefaultedFlags(t *testing.T) {
-	args := StackUpArgs(baseParams)
+	args := stackUpArgs(baseParams)
 	for _, flag := range []string{
 		"--database", "--postgres-image", "--collector-image", "--listen",
 	} {
@@ -76,7 +76,7 @@ func (s *stubWhoAmIServer) WhoAmI(
 }
 
 // serveWhoAmI stands up a real h2c compass.v1 server on a UDS listener, torn
-// down via t.Cleanup, and returns the socket path whoAmIOverUDS dials.
+// down via t.Cleanup, and returns the socket path WhoAmIOverUDS dials.
 func serveWhoAmI(t *testing.T, srv *stubWhoAmIServer) string {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "server.sock")
@@ -165,7 +165,7 @@ func TestRunStackUpZeroExitSucceeds(t *testing.T) {
 // TestRunStackUpReturnsWhileChildrenLinger is the regression guard for the
 // fire-and-return hang: `compass-stack up` exits 0 once the stack is Ready while
 // its postgres/server/runner children keep running, and those children inherit
-// the exec'd command's stderr. If runStackUp captured stderr into a bytes.Buffer
+// the exec'd command's stderr. If RunStackUp captured stderr into a bytes.Buffer
 // (os/exec's pipe + copy-goroutine path), cmd.Wait would block until the pipe
 // hit EOF — which the lingering children hold open — so Run would hang for the
 // children's whole lifetime. Capturing to a temp *os.File (captureStderr) makes
@@ -281,7 +281,7 @@ var classifyParams = preflight.Params{
 }
 
 // classify runs deps and folds through the boundary classifier, the exact path
-// realPreflight uses.
+// RealPreflight uses.
 func classify(t *testing.T, deps preflight.Deps) error {
 	t.Helper()
 	return classifyPreflight(deps.Run(context.Background(), classifyParams))

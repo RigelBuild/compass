@@ -3,7 +3,7 @@
 // a rootless-podman probe, a podman-version floor probe, and an agent-image
 // presence check. They are thin shells around os/exec and the runtime package,
 // mirroring how go/internal/stack/adapters wires real effects behind the stack
-// core seams; the pipeline's composition root (realPreflight in embedded.go)
+// core seams; the pipeline's composition root (RealPreflight in embedded.go)
 // supplies them.
 package embedded
 

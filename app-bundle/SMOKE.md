@@ -144,8 +144,8 @@ With those flags the app invokes this stack command:
 compass-stack up --state-dir <state-dir> --image ghcr.io/rigelbuild/compass-agent:latest --socket <socket>
 ```
 
-`StackUpArgs` passes only `up`, `--state-dir`, `--image`, and `--socket`
-(`StackUpArgs` in `go/internal/embedded/embedded.go`). It deliberately does not pass
+`stackUpArgs` passes only `up`, `--state-dir`, `--image`, and `--socket`
+(`stackUpArgs` in `go/internal/embedded/embedded.go`). It deliberately does not pass
 `--database`, `--postgres-image`, `--collector-image`, or `--listen`. The image
 ref is the locked GHCR default unless `--image` or `$COMPASS_AGENT_IMAGE`
 overrides it (`ResolveImage` in `go/internal/embedded/embedded.go`).

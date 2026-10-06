@@ -43,7 +43,7 @@ func TestStackDownArgs(t *testing.T) {
 }
 
 // TestStopStackAndQuitHappyPath: a successful teardown runs down with EXACTLY
-// the stackDownArgs(params) argv and then quits the app exactly once.
+// the StackDownArgs(params) argv and then quits the app exactly once.
 func TestStopStackAndQuitHappyPath(t *testing.T) {
 	var gotArgs []string
 	quitCount := 0
