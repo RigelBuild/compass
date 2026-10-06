@@ -2193,13 +2193,10 @@ func (x *TopicUpserted) GetTopic() *Topic {
 	return nil
 }
 
-// A channel was created, or its membership changed. On a membership change, a
-// member who was removed is no longer in the channel's member_account_ids, so it
-// could no longer match the stream's visibility filter — removed_account_ids
-// carries exactly those departed accounts so the server can deliver each of them
-// this one final event (their removal), which they would otherwise never see.
-// A departed account's copy carries only channel.id, never the post-change roster.
-// Empty on a create or a pure add/subscribe change.
+// A channel was created, or its membership, policy, or tree placement
+// changed. A subscriber the change cut off from the channel still receives this
+// one final event, with its own id in removed_account_ids. A departed account's
+// copy carries only channel.id, never the post-change roster.
 type ChannelChanged struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Channel *Channel               `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
