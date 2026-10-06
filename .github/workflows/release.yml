@@ -570,6 +570,29 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          # Caches are named here rather than via accept-flake-config, which
+          # would trust any evaluated flake's own substituters and keys.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned bun toolchain on PATH
+        # The publisher has no runtime dependencies; resolve the same pinned bun
+        # derivation used by the other image jobs without running bun install.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+
       - name: Pin the registry auth file
         run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
 
@@ -584,166 +607,7 @@ jobs:
       - name: Compose, guard, push, and verify the image index
         env:
           GH_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          ref="docker://ghcr.io/rigelbuild/compass-agent"
-          # Truncate exactly as publish.sh does; --short=12 can return more.
-          sha12="${GH_SHA:0:12}"
-          local_list="localhost/compass-agent:${sha12}"
-          amd64_tag="$ref:git-${sha12}-amd64"
-          arm64_tag="$ref:git-${sha12}-arm64"
-
-          amd64_digest="$(skopeo inspect --authfile "$REGISTRY_AUTH_FILE" \
-            --format '{{.Digest}}' "$amd64_tag")"
-          arm64_digest="$(skopeo inspect --authfile "$REGISTRY_AUTH_FILE" \
-            --format '{{.Digest}}' "$arm64_tag")"
-          for digest in "$amd64_digest" "$arm64_digest"; do
-            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::invalid per-arch manifest digest: $digest" >&2
-              exit 1
-            fi
-          done
-
-          podman manifest create "$local_list"
-          # The list digest depends on add order; C.2 needs a stable digest to skip.
-          podman manifest add --authfile "$REGISTRY_AUTH_FILE" "$local_list" "$ref@$amd64_digest"
-          podman manifest add --authfile "$REGISTRY_AUTH_FILE" "$local_list" "$ref@$arm64_digest"
-          podman manifest inspect "$local_list" > "$RUNNER_TEMP/local-index.json"
-          local_count="$(jq -er '.manifests | length' "$RUNNER_TEMP/local-index.json")"
-          if [ "$local_count" -ne 2 ]; then
-            echo "::error::composed index has $local_count members, expected exactly 2" >&2
-            exit 1
-          fi
-          local_platforms="$(jq -er '[.manifests[].platform | "\(.os)/\(.architecture)"] | sort | join(",")' \
-            "$RUNNER_TEMP/local-index.json")"
-          if [ "$local_platforms" != "linux/amd64,linux/arm64" ]; then
-            echo "::error::composed platform set is '$local_platforms', expected linux/amd64,linux/arm64" >&2
-            exit 1
-          fi
-          podman manifest push --format oci \
-            --digestfile "$RUNNER_TEMP/local-index.digest" \
-            "$local_list" "oci:$RUNNER_TEMP/local-index:index"
-          local_digest="$(cat "$RUNNER_TEMP/local-index.digest")"
-          if [[ ! "$local_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::podman returned an invalid local index digest: $local_digest" >&2
-            exit 1
-          fi
-
-          # Guard the immutable pin: skip on an equal list digest, fail on a
-          # different one, push only on a definitive manifest-unknown.
-          remote_err="$RUNNER_TEMP/git-index-inspect.err"
-          if remote_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" \
-            "$ref:git-$sha12" 2>"$remote_err")"; then
-            inspect_status=0
-          else
-            inspect_status=$?
-          fi
-          cat "$remote_err" >&2
-          if [ "$inspect_status" -eq 0 ]; then
-            remote_digest="$(printf '%s' "$remote_raw" | sha256sum | cut -d' ' -f1)"
-            remote_digest="sha256:$remote_digest"
-            if [ "$remote_digest" = "$local_digest" ]; then
-              echo "immutable index already matches: $local_digest"
-            else
-              echo "::error::immutable :git-$sha12 index differs: remote=$remote_digest local=$local_digest" >&2
-              exit 1
-            fi
-          elif grep -qiE '(^|[^[:alnum:]_])manifest unknown([^[:alnum:]_]|$)' "$remote_err"; then
-            podman manifest push --format oci --authfile "$REGISTRY_AUTH_FILE" \
-              "$local_list" "$ref:git-$sha12"
-          else
-            echo "::error::ambiguous inspect failure probing :git-$sha12; refusing to push" >&2
-            exit 1
-          fi
-
-          # Runs reach this job in arch-build finish order, not commit order. If a
-          # newer main commit already has its :git index, that run owns :latest,
-          # so this older run only checks it. A sha no longer on main never moves it.
-          if ! git merge-base --is-ancestor "$GH_SHA" origin/main; then
-            echo "::error::$GH_SHA is not on origin/main (rewritten?); refusing to move :latest" >&2
-            exit 1
-          fi
-          newer_index=""
-          newer_commits="$(git rev-list --first-parent "$GH_SHA..origin/main")"
-          while IFS= read -r commit; do
-            [ -n "$commit" ] || continue
-            newer_sha12="${commit:0:12}"
-            if probe="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" \
-              "$ref:git-$newer_sha12" 2>&1 >/dev/null)"; then
-              newer_index="$newer_sha12"
-              break
-            fi
-            if ! grep -qiE '(^|[^[:alnum:]_])manifest unknown([^[:alnum:]_]|$)' <<< "$probe"; then
-              echo "::error::ambiguous inspect failure probing newer :git-$newer_sha12; refusing to move :latest: $probe" >&2
-              exit 1
-            fi
-          done <<< "$newer_commits"
-
-          if [ -z "$newer_index" ]; then
-            podman manifest push --format oci --authfile "$REGISTRY_AUTH_FILE" \
-              "$local_list" "$ref:latest"
-          else
-            echo "::warning::newer :git-$newer_index is published; leaving :latest to it"
-          fi
-          git_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12")"
-          git_digest="$(printf '%s' "$git_raw" | sha256sum | cut -d' ' -f1)"
-          git_digest="sha256:$git_digest"
-          if [ "$git_digest" != "$local_digest" ]; then
-            echo "::error::pushed :git-$sha12 index changed: local=$local_digest remote=$git_digest" >&2
-            exit 1
-          fi
-
-          printf '%s' "$git_raw" > "$RUNNER_TEMP/published-index.json"
-          media_type="$(jq -er '.mediaType' "$RUNNER_TEMP/published-index.json")"
-          case "$media_type" in
-            application/vnd.oci.image.index.v1+json|application/vnd.docker.distribution.manifest.list.v2+json) ;;
-            *)
-              echo "::error::unexpected index mediaType: $media_type" >&2
-              exit 1
-              ;;
-          esac
-          platforms="$(jq -er '[.manifests[].platform | "\(.os)/\(.architecture)"] | sort | join(",")' \
-            "$RUNNER_TEMP/published-index.json")"
-          if [ "$platforms" != "linux/amd64,linux/arm64" ]; then
-            echo "::error::platform set is '$platforms', expected linux/amd64,linux/arm64" >&2
-            exit 1
-          fi
-          member_digests="$(jq -er '[.manifests[].digest] | sort | join(",")' \
-            "$RUNNER_TEMP/published-index.json")"
-          expected_digests="$(printf '%s\n%s\n' "$amd64_digest" "$arm64_digest" | sort | paste -sd, -)"
-          if [ "$member_digests" != "$expected_digests" ]; then
-            echo "::error::index member digest set differs: got=$member_digests expected=$expected_digests" >&2
-            exit 1
-          fi
-
-          while IFS=$'\t' read -r member_digest member_os member_arch; do
-            config="$(skopeo inspect --config --authfile "$REGISTRY_AUTH_FILE" \
-              "$ref@$member_digest")"
-            config_os="$(printf '%s' "$config" | jq -er '.os')"
-            config_arch="$(printf '%s' "$config" | jq -er '.architecture')"
-            if [ "$config_os" != "$member_os" ] || [ "$config_arch" != "$member_arch" ]; then
-              echo "::error::member $member_digest config is $config_os/$config_arch, declared $member_os/$member_arch" >&2
-              exit 1
-            fi
-          done < <(jq -r '.manifests[] | [.digest, .platform.os, .platform.architecture] | @tsv' \
-            "$RUNNER_TEMP/published-index.json")
-
-          # :latest must name the newest published index: ours, or the newer one
-          # found above. A newer run that failed before :latest reds this run.
-          expected_tag="git-$sha12"
-          expected_digest="$git_digest"
-          if [ -n "$newer_index" ]; then
-            expected_tag="git-$newer_index"
-            expected_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" \
-              "$ref:$expected_tag" | sha256sum | cut -d' ' -f1)"
-          fi
-          latest_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:latest")"
-          latest_digest="sha256:$(printf '%s' "$latest_raw" | sha256sum | cut -d' ' -f1)"
-          if [ "$latest_digest" != "$expected_digest" ]; then
-            echo "::error::latest index differs from newest immutable tag: :$expected_tag=$expected_digest :latest=$latest_digest" >&2
-            exit 1
-          fi
-          echo "verified OCI index $git_digest: linux/amd64,linux/arm64; :latest matches :$expected_tag"
+        run: bun tools/agent-image-index/index.ts
 
   release-assets-macos:
     name: release-assets-macos
