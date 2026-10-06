@@ -106,8 +106,6 @@ func startSpawnServer(t *testing.T, f *spawnFakes) agentSpawnClients {
 	return agentSpawnClients{comms: comms, compass: compass}
 }
 
-// TestRunAgentSpawn asserts spawn creates the account, then spawns it under the
-// owner-qualified handle with the request id, and prints the session.
 func TestAgentSpawnCommandRejectsRoleBeforeResolvingConnection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -132,6 +130,8 @@ func TestAgentSpawnCommandRejectsRoleBeforeResolvingConnection(t *testing.T) {
 	}
 }
 
+// TestRunAgentSpawn asserts spawn creates the account, then spawns it under the
+// owner-qualified handle with the request id, and prints the session.
 func TestRunAgentSpawn(t *testing.T) {
 	f := newSpawnFakes()
 	clients := startSpawnServer(t, f)
@@ -166,6 +166,7 @@ func TestRunAgentSpawn(t *testing.T) {
 		}
 	}
 }
+
 func TestRunAgentSpawnPassesRoleAndPersonaFile(t *testing.T) {
 	f := newSpawnFakes()
 	clients := startSpawnServer(t, f)
@@ -183,6 +184,26 @@ func TestRunAgentSpawnPassesRoleAndPersonaFile(t *testing.T) {
 	}
 	if got := f.gotCreate.GetPersona(); got != "You are the lead." {
 		t.Errorf("CreateAgent persona = %q, want trimmed persona", got)
+	}
+}
+
+// TestRunAgentSpawnAtCapPersonaKeepsEditorWhitespace asserts the cap applies after
+// trimming a BOM and a trailing newline, matching the server's bound.
+func TestRunAgentSpawnAtCapPersonaKeepsEditorWhitespace(t *testing.T) {
+	f := newSpawnFakes()
+	clients := startSpawnServer(t, f)
+	path := filepath.Join(t.TempDir(), "persona.txt")
+	persona := strings.Repeat("x", 64*1024)
+	if err := os.WriteFile(path, []byte("\ufeff"+persona+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	args := agentSpawnArgs{handle: "lead", role: "owner", personaFile: path}
+	if err := runAgentSpawn(context.Background(), clients, args, &strings.Builder{}); err != nil {
+		t.Fatalf("runAgentSpawn: %v", err)
+	}
+	if got := f.gotCreate.GetPersona(); got != persona {
+		t.Errorf("CreateAgent persona length = %d, want %d without BOM or newline", len(got), len(persona))
 	}
 }
 
@@ -219,6 +240,9 @@ func TestRunAgentSpawnPersonaFileValidation(t *testing.T) {
 	}{
 		{name: "empty", content: " \n\t", wantError: "empty"},
 		{name: "oversize", content: strings.Repeat("x", 64*1024+1), wantError: "64 KiB"},
+		{name: "oversize after trim", content: strings.Repeat("x", 64*1024+1) + "\n", wantError: "64 KiB"},
+		{name: "invalid utf-8", content: "persona \xff", wantError: "UTF-8"},
+		{name: "nul byte", content: "persona\x00", wantError: "NUL"},
 		{name: "missing file", missing: true, wantError: "persona"},
 	}
 	for _, tt := range tests {

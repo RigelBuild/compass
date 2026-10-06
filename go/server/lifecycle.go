@@ -220,6 +220,8 @@ func (l *lifecycleService) SpawnAsAccount(
 		resp, err = l.provisionAndStart(ctx, created.ID, created.Agent.Persona, created.Agent.Role, req)
 	case errors.Is(err, store.ErrConflict):
 		resp, err = l.resumeOrReject(ctx, callerOwner, req)
+	case errors.Is(err, store.ErrInvalidArgument):
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("creating agent: %w", err))
 	default:
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("creating agent: %w", err))
 	}
