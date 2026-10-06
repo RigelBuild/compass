@@ -8,10 +8,6 @@ SET LOCAL lock_timeout = '5s';
 -- Under FORCE RLS a non-superuser owner sees no rows, so the repair runs as
 -- compass_system.
 SET LOCAL ROLE compass_system;
--- Freeze writers from the repair through the index build, or a concurrent
--- create could commit a duplicate the repair never saw.
-LOCK TABLE channel_groups IN SHARE ROW EXCLUSIVE MODE;
-
 -- Rewrite separators first, then suffix duplicates. A valid original keeps its
 -- name; each free suffix is found first so no existing name is overwritten.
 DO $$
@@ -21,6 +17,10 @@ DECLARE
     candidate TEXT;
     suffix INTEGER;
 BEGIN
+    -- Freeze writers through the index build so no concurrent create commits a
+    -- duplicate the repair never saw. Inside DO so autocommit replays accept it.
+    LOCK TABLE channel_groups IN SHARE ROW EXCLUSIVE MODE;
+
     WITH rewritten AS (
         UPDATE channel_groups SET name = REPLACE(name, '/', '-')
          WHERE name LIKE '%/%'
