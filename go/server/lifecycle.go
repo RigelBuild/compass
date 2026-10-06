@@ -180,6 +180,9 @@ func (l *lifecycleService) SpawnAsAccount(
 	if !store.IsSpawnableRole(req.GetRole()) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errUnknownRole)
 	}
+	if len(req.GetPersona()) > store.MaxPersonaBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("persona is %d bytes; the limit is %d", len(req.GetPersona()), store.MaxPersonaBytes))
+	}
 	// Before CreateAgent: a later Provision refusal would leave the handle taken.
 	if err := runnerhub.CheckClientRequestID(req.GetClientRequestId()); err != nil {
 		return nil, err
@@ -225,8 +228,6 @@ func (l *lifecycleService) SpawnAsAccount(
 		resp, err = l.provisionAndStart(ctx, created.ID, created.Agent.Persona, created.Agent.Role, req)
 	case errors.Is(err, store.ErrConflict):
 		resp, err = l.resumeOrReject(ctx, callerOwner, req)
-	case errors.Is(err, store.ErrInvalidArgument):
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("creating agent: %w", err))
 	default:
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("creating agent: %w", err))
 	}

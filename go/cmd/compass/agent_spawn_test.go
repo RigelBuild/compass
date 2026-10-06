@@ -243,6 +243,7 @@ func TestRunAgentSpawnPersonaFileValidation(t *testing.T) {
 		{name: "oversize after trim", content: strings.Repeat("x", 64*1024+1) + "\n", wantError: "64 KiB"},
 		{name: "invalid utf-8", content: "persona \xff", wantError: "UTF-8"},
 		{name: "nul byte", content: "persona\x00", wantError: "NUL"},
+		{name: "oversize past the whitespace slack", content: strings.Repeat("x", 64*1024) + strings.Repeat("\n", 8192) + "tail", wantError: "64 KiB"},
 		{name: "missing file", missing: true, wantError: "persona"},
 	}
 	for _, tt := range tests {
