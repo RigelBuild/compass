@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# runner-manifests: values-driven DaemonSet rendering and behavior tests.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock', 'seccomp/*.json', '../../runner-image/Dockerfile']

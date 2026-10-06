@@ -1,0 +1,31 @@
+{
+	"namespace": "compass-runners",
+	"image": "ghcr.io/example/compass-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	"nodeSelector": {
+		"key": "workload",
+		"value": "compass"
+	},
+	"toleration": {
+		"key": "workload",
+		"value": "compass",
+		"effect": "NoSchedule"
+	},
+	"kvmResourceName": "devices.kubelet.io/kvm",
+	"seccompProfilePath": "profiles/compass-runner.json",
+	"sessionCapacity": 4,
+	"guestMemoryMiB": 2048,
+	"guestCpus": 2,
+	"runnerOverheadMiB": 512,
+	"hostPaths": {
+		"sessionVolumeRoot": "/srv/compass/sessions",
+		"runtimeRoot": "/srv/compass/runtime"
+	},
+	"serverAddr": "https://compass-server.example.test:7443",
+	"runnerTokenSecret": {
+		"name": "compass-runner-token",
+		"key": "token"
+	},
+	"maxUnavailable": 1,
+	"perSessionReapSeconds": 180,
+	"priorityClassValue": 1000000
+}
