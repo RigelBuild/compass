@@ -246,6 +246,13 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 			wantSpawn: true,
 		},
 		{
+			name:      "internal failure is not rejoinable",
+			setup:     spawnFails(connect.CodeInternal),
+			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			wantErr:   []string{"spawning agent matt/lead"},
+			wantSpawn: true,
+		},
+		{
 			name:      "errored agent is not retryable",
 			setup:     spawnFails(connect.CodeFailedPrecondition),
 			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
