@@ -55,9 +55,9 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
 	// D9 write-authz: the author must participate in the target channel (member
-	// row or TREE derivation), so a non-participant cannot persist into a channel
-	// it can't read. A non-participant gets ErrNotFound, never a hint the channel exists. Checked in
-	// the insert tx so a concurrent removal cannot race the gate.
+	// row or TREE derivation); a non-participant gets ErrNotFound, never a hint
+	// the channel exists. Checked in the insert tx so a concurrent removal or
+	// tree move cannot race the gate.
 	if err := requireChannelMember(ctx, tx, m.AuthorAccountID, ChannelID(channelID)); err != nil {
 		return Message{}, false, err
 	}
@@ -353,9 +353,8 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 
 	// One statement, so the authz predicate and the write cannot race: a
 	// concurrent membership revocation or tree move lands before the UPDATE
-	// (matches no row) or after it, never between. The visible join is the
-	// participation half and
-	// the author_account_id equality the authorship half; both must hold.
+	// (matches no row) or after it, never between. The participating join is the
+	// participation half, author_account_id equality the authorship half.
 	row, err := s.q.UpdateMessageBlocksAsAuthor(ctx, db.UpdateMessageBlocksAsAuthorParams{
 		Blocks:          blocksJSON,
 		TextContent:     textContent(blocks),

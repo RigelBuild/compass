@@ -5,6 +5,11 @@
 -- (id, channel_id, name, created_by_account_id, created_at_unix_ms, archived,
 -- last_seq) matches the former scanTopics order so the Go maps each row to Topic.
 
+-- Participant-channel copies: every `chain` + `participating` CTE in this
+-- file and topics.sql MUST stay identical and equal to ChannelParticipant
+-- (authz.sql). It is participation, not channel visibility: never widen it to
+-- the owner-set visibility predicate. A future ACL conjunct goes in each copy.
+
 -- name: ListTopics :many
 SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id
 FROM topics
@@ -20,7 +25,7 @@ WITH RECURSIVE chain AS (
     SELECT a.account_id, a.parent_agent_id
     FROM agent_accounts a
     JOIN chain ch ON a.account_id = ch.parent_agent_id
-), visible AS (
+), participating AS (
     SELECT cm.channel_id FROM channel_members cm WHERE cm.account_id = $1
     UNION
     SELECT c.id FROM channels c
@@ -31,7 +36,7 @@ WITH RECURSIVE chain AS (
       )
 )
 SELECT t.channel_id FROM topics t
-JOIN visible v ON v.channel_id = t.channel_id
+JOIN participating p ON p.channel_id = t.channel_id
 WHERE t.id = $2
 FOR UPDATE OF t;
 

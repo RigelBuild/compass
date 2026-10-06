@@ -159,6 +159,14 @@ func TestChannelTreeParticipantReadsAndWrites(t *testing.T) {
 	if err != nil || len(ownerSearch) != 1 || ownerSearch[0].ID != message.ID {
 		t.Fatalf("SearchMessages for anchor owner = %v, %v; want message %q", ownerSearch, err, message.ID)
 	}
+	unscoped, err := s.SearchMessages(t.Context(), f.leaf.ID, SearchScope{}, "subtree searchable", Page{})
+	if err != nil || len(unscoped) != 1 || unscoped[0].ID != message.ID {
+		t.Fatalf("unscoped SearchMessages for subtree agent = %v, %v; want message %q", unscoped, err, message.ID)
+	}
+	ownerListed, err := s.ListMessages(t.Context(), ListMessagesQuery{Actor: f.owner.ID, ChannelID: f.channel.ID})
+	if err != nil || len(ownerListed) != 1 || ownerListed[0].ID != message.ID {
+		t.Fatalf("ListMessages for anchor owner = %v, %v; want message %q", ownerListed, err, message.ID)
+	}
 
 	cursorSeq, err := s.q.GetPageCursorSeq(t.Context(), db.GetPageCursorSeqParams{
 		AccountID: string(f.leaf.ID), ID: string(message.ID), ChannelID: string(f.channel.ID),
@@ -204,6 +212,10 @@ func TestChannelTreeOwnerSetSiblingReadWriteDenials(t *testing.T) {
 	if err != nil || len(ownerSearch) != 0 {
 		t.Fatalf("owner-set sibling search = %v, %v; want no messages", ownerSearch, err)
 	}
+	unscopedSearch, err := s.SearchMessages(t.Context(), f.sibling.ID, SearchScope{}, "subtree searchable", Page{})
+	if err != nil || len(unscopedSearch) != 0 {
+		t.Fatalf("owner-set sibling unscoped search = %v, %v; want no messages", unscopedSearch, err)
+	}
 	ownerCursorSeq, err := s.q.GetPageCursorSeq(t.Context(), db.GetPageCursorSeqParams{
 		AccountID: string(f.sibling.ID), ID: string(message.ID), ChannelID: string(f.channel.ID),
 	})
@@ -239,6 +251,13 @@ func TestChannelTreeOwnerSetSiblingReadWriteDenials(t *testing.T) {
 	}
 	_, _, err = s.AnswerAsk(t.Context(), f.sibling.ID, "tree-ask", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	sentinelIs(t, err, ErrNotFound, "owner-set sibling AnswerAsk")
+
+	if rows, err := s.q.FindAskMessage(t.Context(), db.FindAskMessageParams{AccountID: string(f.leaf.ID), Column2: askFilter}); err != nil || len(rows) != 1 {
+		t.Fatalf("FindAskMessage for subtree agent = %d rows, %v; want one ask", len(rows), err)
+	}
+	if _, _, err := s.AnswerAsk(t.Context(), f.leaf.ID, "tree-ask", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}}); err != nil {
+		t.Fatalf("AnswerAsk by subtree agent: %v", err)
+	}
 }
 
 func TestChannelTreeMembersAreAttributedAndSubscriptionsIntersect(t *testing.T) {

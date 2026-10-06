@@ -7,6 +7,11 @@
 -- calls. Every message read shares the id/topic_id/author_account_id/author_handle/
 -- at_unix_ms/blocks/turn_sequence projection so Go maps each row through messageFromParts.
 
+-- Participant-channel copies: every `chain` + `participating` CTE in this
+-- file and topics.sql MUST stay identical and equal to ChannelParticipant
+-- (authz.sql). It is participation, not channel visibility: never widen it to
+-- the owner-set visibility predicate. A future ACL conjunct goes in each copy.
+
 -- name: GetChannelPostPolicy :one
 SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id, name
 FROM channels WHERE id = $1;
@@ -51,7 +56,7 @@ WITH RECURSIVE chain AS (
     SELECT a.account_id, a.parent_agent_id
     FROM agent_accounts a
     JOIN chain ch ON a.account_id = ch.parent_agent_id
-), visible AS (
+), participating AS (
     SELECT cm.channel_id FROM channel_members cm WHERE cm.account_id = $4
     UNION
     SELECT c.id FROM channels c
@@ -63,7 +68,7 @@ WITH RECURSIVE chain AS (
 UPDATE messages m
 SET blocks = $1, text_content = $2
 FROM topics t
-JOIN visible v ON v.channel_id = t.channel_id
+JOIN participating p ON p.channel_id = t.channel_id
 WHERE m.id = $3 AND t.id = m.topic_id AND m.author_account_id = $4
 RETURNING m.id, m.topic_id, m.author_account_id,
           COALESCE((SELECT (CASE WHEN author_handles.owner_user_id IS NULL THEN author_handles.handle WHEN owner_handles.handle IS NULL THEN '' ELSE owner_handles.handle || '/' || author_handles.handle END)::text FROM account_handles AS author_handles LEFT JOIN account_handles AS owner_handles ON owner_handles.account_id = author_handles.owner_user_id WHERE author_handles.account_id = $4), '')::text AS author_handle,
@@ -88,7 +93,7 @@ WITH RECURSIVE chain AS (
     SELECT a.account_id, a.parent_agent_id
     FROM agent_accounts a
     JOIN chain ch ON a.account_id = ch.parent_agent_id
-), visible AS (
+), participating AS (
     SELECT cm.channel_id FROM channel_members cm WHERE cm.account_id = $1
     UNION
     SELECT c.id FROM channels c
@@ -100,7 +105,7 @@ WITH RECURSIVE chain AS (
 )
 SELECT m.seq FROM messages m
 JOIN topics t ON t.id = m.topic_id
-JOIN visible v ON v.channel_id = t.channel_id
+JOIN participating p ON p.channel_id = t.channel_id
 WHERE m.id = $2 AND t.channel_id = $3;
 
 -- name: ListMessages :many
@@ -112,7 +117,7 @@ WITH RECURSIVE chain AS (
     SELECT a.account_id, a.parent_agent_id
     FROM agent_accounts a
     JOIN chain ch ON a.account_id = ch.parent_agent_id
-), visible AS (
+), participating AS (
     SELECT cm.channel_id FROM channel_members cm WHERE cm.account_id = $1
     UNION
     SELECT c.id FROM channels c
@@ -127,7 +132,7 @@ FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
-JOIN visible v ON v.channel_id = t.channel_id
+JOIN participating p ON p.channel_id = t.channel_id
 WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
   AND ($6 = '' OR m.topic_id = $6)
 ORDER BY m.seq DESC
@@ -141,7 +146,7 @@ WITH RECURSIVE chain AS (
     SELECT a.account_id, a.parent_agent_id
     FROM agent_accounts a
     JOIN chain ch ON a.account_id = ch.parent_agent_id
-), visible AS (
+), participating AS (
     SELECT cm.channel_id FROM channel_members cm WHERE cm.account_id = $1
     UNION
     SELECT c.id FROM channels c
@@ -156,7 +161,7 @@ FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
-JOIN visible v ON v.channel_id = t.channel_id
+JOIN participating p ON p.channel_id = t.channel_id
 WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
   AND ($3 = '' OR t.channel_id = $3)
   AND ($5 = 0 OR m.seq <= $5)
@@ -172,7 +177,7 @@ WITH RECURSIVE chain AS (
     SELECT a.account_id, a.parent_agent_id
     FROM agent_accounts a
     JOIN chain ch ON a.account_id = ch.parent_agent_id
-), visible AS (
+), participating AS (
     SELECT cm.channel_id FROM channel_members cm WHERE cm.account_id = $1
     UNION
     SELECT c.id FROM channels c
@@ -187,7 +192,7 @@ FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
-JOIN visible v ON v.channel_id = t.channel_id
+JOIN participating p ON p.channel_id = t.channel_id
 WHERE m.blocks @> $2::jsonb
 FOR UPDATE OF m;
 
