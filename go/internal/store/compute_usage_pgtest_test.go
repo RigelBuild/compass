@@ -425,3 +425,22 @@ func TestComputeUsageEventsAreTenantIsolated(t *testing.T) {
 		t.Fatalf("tenant B sees %d events, want none from tenant A", count)
 	}
 }
+
+func execAsSystem(t *testing.T, s *Store, sql string, args ...any) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+systemRole); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}

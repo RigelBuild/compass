@@ -120,7 +120,7 @@ DECISIONS.md:360). At CLICK time it:
      ownership row yet — the DL-255 supervisor-fallback state, #625
      design.md:230-237);
    - the **dedicated routing channel** also for a **bare `@mention` session
-     with no issue** — `linear_issue_identifier` is nullable (`go/internal/store/migrations/0008_linear_issue_identifier.sql`) and
+     with no issue** — `linear_issue_identifier` is nullable (`linear_agent_sessions` in `go/internal/store/migrations/0001_init.sql`) and
      #625 supports a session with no issue (the topic "[falls] back to the
      session id for a bare @mention with no issue", #625 design.md:262-266).
      With no forge coordinate no ownership row can ever resolve, so the

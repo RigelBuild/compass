@@ -55,12 +55,11 @@ func TestT0ServerSecretsShape(t *testing.T) {
 		}
 	}
 
-	// The load-bearing half: grants are NOT inherited from 0001's snapshot, so
-	// each table needs its own. Each table is asserted with their OWN expected
-	// privilege set, and server_key_state's withheld DELETE is asserted ABSENT —
-	// that omission is a deliberate least-privilege choice (the tripwire digest
-	// must not be droppable), so it is pinned, not left to chance. The usage
-	// prune horizon withholds INSERT and DELETE for the reason in 0003_token_usage.sql.
+	// Each table is asserted with its OWN expected privilege set, and
+	// server_key_state's withheld DELETE is asserted ABSENT — that omission is a
+	// deliberate least-privilege choice (the tripwire digest must not be
+	// droppable), so it is pinned, not left to chance. The usage prune horizon and
+	// the compute log withhold the writes 0001_init.sql revokes for them.
 	for _, tc := range []struct {
 		tbl     string
 		granted []string
@@ -69,6 +68,7 @@ func TestT0ServerSecretsShape(t *testing.T) {
 		{"server_secrets", []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, nil},
 		{"server_key_state", []string{"SELECT", "INSERT", "UPDATE"}, []string{"DELETE"}},
 		{"token_usage_prune_horizon", []string{"SELECT", "UPDATE"}, []string{"INSERT", "DELETE"}},
+		{"compute_usage_events", []string{"SELECT", "INSERT"}, []string{"UPDATE", "DELETE"}},
 	} {
 		for _, role := range []string{"compass_app", "compass_system"} {
 			for _, priv := range tc.granted {

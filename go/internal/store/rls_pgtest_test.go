@@ -518,7 +518,7 @@ func channelsContain(chs []Channel, want ChannelID) bool {
 // probing behavior because the harness connects as a superuser (which bypasses
 // even FORCE), so FORCE cannot be proven by a query returning zero rows — only
 // by the flag. This is the test that fails if a future edit drops FORCE, ENABLE,
-// or a table from 0002_rls.sql: TestCrossTenant* prove the non-owner request
+// or a table from 0001_init.sql: TestCrossTenant* prove the non-owner request
 // path is scoped (which ENABLE alone gives), but only this catalog check defends
 // the owner-binding FORCE guarantee the design requires, and the bucket-A
 // exemption auth depends on.

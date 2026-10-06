@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -75,5 +76,42 @@ func execOnDSN(t *testing.T, dsn, sql string) {
 	defer pool.Close()
 	if _, err := pool.Exec(t.Context(), sql); err != nil {
 		t.Fatalf("exec %q: %v", sql, err)
+	}
+}
+
+// applyV1Only migrates the empty schema at dsn to v1 through the runner's own
+// steps. With 0001 the only migration, that is the full schema.
+func applyV1Only(t *testing.T, dsn string) {
+	t.Helper()
+	ctx := t.Context()
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect for v1: %v", err)
+	}
+	defer pool.Close()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire for v1: %v", err)
+	}
+	defer conn.Release()
+	// 0001 edits cluster-global roles, so it must hold the same lock migrate
+	// holds, or a parallel package's Open can race it.
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		t.Fatalf("acquire migration lock: %v", err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+			t.Errorf("release migration lock: %v", err)
+		}
+	}()
+	if err := ensureMigrationsTable(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMigration(ctx, conn, migs[0]); err != nil {
+		t.Fatal(err)
 	}
 }
