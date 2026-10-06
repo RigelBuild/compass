@@ -16,8 +16,10 @@
 // Inputs (env):
 //   GATE_ROOT  - directory to scan (default: git toplevel). Tests point the
 //                injected reads at fixtures instead.
-//   REPO, PR_NUMBER, GH_TOKEN - set by the design-ledger meta job on
-//                pull_request events, for the touch-coupling leg.
+//   REPO, PR_NUMBER, GH_TOKEN - set by ci.yml's moon job on pull_request and
+//                base-re-point dispatch runs, for the touch-coupling leg. A
+//                pull_request event without them, or any set PR_NUMBER without
+//                a valid pair, is an error (exit 2), never a skip.
 // Exit codes:
 //   0 - all checks pass
 //   1 - one or more violations (printed one per line as `<file>:<line>: <msg>`)
@@ -705,6 +707,35 @@ export async function runOnce(deps: Deps): Promise<number> {
 	return 1;
 }
 
+/** Whether the touch-coupling leg runs, and against which PR. */
+export type PrContext =
+	| { kind: "pr"; repo: string; prNumber: string }
+	| { kind: "skip" }
+	| { kind: "error"; message: string };
+
+/**
+ * Decide the touch-coupling leg's PR context from the environment. A
+ * pull_request event MUST carry REPO and PR_NUMBER, and any event whose
+ * PR_NUMBER is set must carry a valid pair: either gap would silently pass the
+ * leg, so it is an error. With no PR_NUMBER off a PR event, the leg skips.
+ */
+export function prContextFrom(
+	env: Readonly<Record<string, string | undefined>>,
+): PrContext {
+	const repo = env.REPO ?? "";
+	const prNumber = env.PR_NUMBER ?? "";
+	if (repo !== "" && /^[1-9][0-9]*$/.test(prNumber)) {
+		return { kind: "pr", repo, prNumber };
+	}
+	if (env.GITHUB_EVENT_NAME === "pull_request" || prNumber !== "") {
+		return {
+			kind: "error",
+			message: `the touch-coupling leg needs REPO and a numeric PR_NUMBER (event ${JSON.stringify(env.GITHUB_EVENT_NAME ?? "")}, got REPO=${JSON.stringify(repo)}, PR_NUMBER=${JSON.stringify(prNumber)})`,
+		};
+	}
+	return { kind: "skip" };
+}
+
 /** Compute a target record's heading slugs + byte size from its text. */
 export function recordContentFromText(text: string): RecordContent {
 	const headings: string[] = [];
@@ -729,13 +760,17 @@ if (import.meta.main) {
 		process.env.GATE_ROOT ??
 		(await $`git rev-parse --show-toplevel`.nothrow().quiet().text()).trim();
 
-	// Touch-coupling needs PR context (mirrors tools/spec-impact-gate). Absent
-	// it (push, local `moon ci`), the changed set is empty and the leg no-ops;
-	// the snapshot checks still run off GATE_ROOT.
+	// Touch-coupling needs PR context. Without PR coordinates (push, schedule,
+	// local `moon ci`) the changed set is empty and the leg no-ops; the
+	// snapshot checks still run off GATE_ROOT.
 	let changed: Changed = { files: [], body: null, headBranch: "" };
-	const repo = process.env.REPO;
-	const prNumber = process.env.PR_NUMBER;
-	if (repo && prNumber) {
+	const ctx = prContextFrom(process.env);
+	if (ctx.kind === "error") {
+		console.error(`design-ledger-gate: ${ctx.message}`);
+		process.exit(2);
+	}
+	if (ctx.kind === "pr") {
+		const { repo, prNumber } = ctx;
 		try {
 			const view =
 				await $`timeout 30 gh pr view ${prNumber} --repo ${repo} --json headRefName,body`.json();

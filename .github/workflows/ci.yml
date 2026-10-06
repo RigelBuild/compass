@@ -485,6 +485,15 @@ jobs:
         # bare `${{ matrix.targets }}` would inline the raw JSON, not a target
         # list). A running leg always has >=1 target, so this is never an empty
         # `moon run`.
+        #
+        # REPO/PR_NUMBER/GH_TOKEN feed design-ledger-gate's touch-coupling leg
+        # (a record change needs a DECISIONS.md change or `Ledger-impact:`); the
+        # gate exits 2 on a PR run without them. A base-re-point dispatch carries
+        # its PR in inputs.pr. Only the leg running the gate gets GH_TOKEN.
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+          GH_TOKEN: ${{ contains(matrix.targets, 'design-ledger-gate:ci') && github.token || '' }}
         run: moon run ${{ join(matrix.targets, ' ') }}
 
       - name: Retrospect
