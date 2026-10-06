@@ -195,6 +195,7 @@ One durable pull consumer per subscribed subject, created with
 | `AckWait` | 30s | Redelivery backstop for a subscriber that hangs or dies mid-callback; a callback that *fails* is Nak'd for immediate redelivery instead. The callback's ctx deadline is 0.9 × `AckWait` from when it starts, and `InProgress()` resets the server's timer at that start, giving a ctx-respecting final attempt time to park and Term. A delayed Term can still race the server's max-deliveries advisory; per-process claims are scoped by durable and stream sequence, contenders wait for the owner's result within their context, claims stay pinned during callbacks, then expire after `MaxAge + 2×AckWait`. |
 | `MaxDeliver` | 5 | Finite budget of total delivery **attempts**, not retries: `MaxDeliver=1` parks on the first failure with no retry at all. Enforced twice by design — the app-level check parks a *failed* attempt at the budget, and the consumer's server-side `MaxDeliver` drops a delivery that never answered (every attempt outlived `AckWait`, or its metadata was unreadable). The server's drop is parked from its advisory (see Dead-letter). Both derive from the SAME fabric `Config`, and the consumer is shared, so every Server instance on a subject must run one config (RIG-2861: one stack config) or the shared consumer's server-side budget flip-flops with whichever instance last ran `CreateOrUpdateConsumer`. |
 | `Replicas` | matches the stream | — |
+| `InactiveThreshold` | max(2 × `MaxAge`, 1h), 48h by default; not separately configurable | The server deletes a durable that no Server has pulled from for this long. See Consumer lifecycle. |
 
 Delivery semantics per message:
 
@@ -211,6 +212,33 @@ Delivery semantics per message:
 5. No answer within `AckWait` on every attempt → the server drops the message
    at `MaxDeliver` and emits a max-deliveries advisory → the fabric parks it
    from the advisory.
+
+### Consumer lifecycle
+
+Each subscribed subject gets its own durable consumer, so the concrete
+`Subscribe` path creates one per (tenant, kind). The fabric never calls
+`DeleteConsumer`, and `Unsubscribe` drains instead of deleting, because the
+consumer is shared. The server reaps a consumer through `InactiveThreshold`:
+
+- **Live consumer:** an open subscription re-pulls at least every 30s, and the
+  server waits out every pending ack's `AckWait` before it counts a consumer
+  inactive, so a callback blocked in flight does not start the clock. The 1h
+  floor keeps a short `MaxAge` from bringing the threshold near those windows.
+- **Restart or rolling deploy:** the threshold is hours above any restart
+  window, so a restarted Server resumes the same durable from its ack floor.
+- **Reaped under a live subscription** (a partition longer than the
+  threshold): nats.go's `Consume` stops on the terminal consumer-deleted error.
+  The subscription recreates the durable and resumes, retrying every `AckWait`
+  until it succeeds or the subscription ends.
+- **Abandoned consumer** (a deleted tenant, a kind no Server subscribes to any
+  more): the server deletes it after the threshold, so the consumer count tracks
+  live subscriptions instead of every subject ever subscribed.
+- **Why 2 × `MaxAge`:** a consumer recreated after a reap starts from the
+  default deliver-all policy. When the threshold is at least `MaxAge`, every
+  event the old consumer acked has already aged out of the stream, so the new
+  consumer replays nothing it already handled. The threshold is derived from
+  `MaxAge`, so it scales when `MaxAge` changes, and there is no separate knob
+  that could break this bound.
 
 ### Backlog gauge
 
