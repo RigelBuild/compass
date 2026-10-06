@@ -755,7 +755,7 @@ message ProvisionAgentWorkspaceRequest {
   // (supervisor/owner/manager) and server-validated, selecting the container's
   // block-0 system prompt at provision so it survives compaction (a
   // system-prompt config block is not part of the message history a snapcompact
-  // archives). The label's ORIGIN is the creator: SpawnPeer requires one and
+  // archives). The label's ORIGIN is the creator: an agent-initiated spawn requires one and
   // CreateAgent accepts one (empty there means none); both validate it with the
   // server's IsSpawnableRole predicate (INVALID_ARGUMENT on an unknown label) before
   // it is stored. This provision field stays SERVER-AUTHORITATIVE: the Server
