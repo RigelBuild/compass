@@ -100,9 +100,8 @@ func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 
 	// 3. Build the live teardown targets in reverse start order, identity-checking
 	// each recorded group. A gone (ESRCH) or recycled (start-time mismatch) group
-	// is skipped — never signaled, never an error. A record from an earlier boot
-	// has no live group at all, so its process entries are dropped unsignalled.
-	rec = dropPriorBootGroups(rec)
+	// is skipped — never signaled, never an error. A prior-boot record had its
+	// process entries dropped in consumeRecord.
 	targets := liveTargets(ctx, cfg, deps, rec)
 
 	// 4/5/6. SIGTERM every live target up front (reverse order), then per-target
@@ -151,6 +150,10 @@ func consumeRecord(ctx context.Context, cfg Config, deps Deps) (rec pgidRecord, 
 		}
 		return pgidRecord{}, false, fmt.Errorf("read pgid record: %w", err)
 	}
+	rec, err = dropPriorBootGroups(ctx, cfg, deps, rec)
+	if err != nil {
+		return pgidRecord{}, false, err
+	}
 
 	// Consume: remove the record under the guard so a concurrent down cannot also
 	// act on it. A partial teardown re-publishes the survivor set at the end.
@@ -164,13 +167,22 @@ func consumeRecord(ctx context.Context, cfg Config, deps Deps) (rec pgidRecord, 
 // earlier boot: a reboot frees every pgid, so a match now would be a stranger.
 // An unknown boot on either side (older record, unreadable id) keeps rec as is.
 // Container entries stay, since a name is not recycled by a reboot.
-func dropPriorBootGroups(rec pgidRecord) pgidRecord {
+// A live server socket contradicts the mismatch, so down refuses and keeps rec.
+func dropPriorBootGroups(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) (pgidRecord, error) {
 	if rec.BootID == "" {
-		return rec
+		return rec, nil
 	}
 	current, err := readBootID()
-	if err != nil || current == "" || current == rec.BootID {
-		return rec
+	if err != nil {
+		// An unreadable current boot is unknown; per-entry identity checks still guard.
+		slog.Warn("cannot read the current boot id; keeping per-entry identity checks", "err", err)
+		return rec, nil
+	}
+	if current == "" || current == rec.BootID {
+		return rec, nil
+	}
+	if _, perr := deps.Prober.Probe(ctx, cfg.SocketPath); perr == nil {
+		return pgidRecord{}, fmt.Errorf("pgid record claims boot %s but this is boot %s and the stack socket still answers; refusing to tear down", rec.BootID, current)
 	}
 	slog.Info("pgid record is from an earlier boot; its process groups are gone", "record_boot", rec.BootID, "current_boot", current)
 	out := pgidRecord{WriterPid: rec.WriterPid, Version: rec.Version, BootID: rec.BootID}
@@ -179,7 +191,7 @@ func dropPriorBootGroups(rec pgidRecord) pgidRecord {
 			out.Entries = append(out.Entries, e)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // target is one live child to tear down: its recorded identity, confirmation

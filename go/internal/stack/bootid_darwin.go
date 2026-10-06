@@ -8,11 +8,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// readCurrentBootID renders kern.boottime, which is fixed for the life of one boot.
+// readCurrentBootID reads kern.bootsessionuuid, a read-only UUID minted per boot.
+// Unlike kern.boottime it does not move when the wall clock steps.
 func readCurrentBootID() (string, error) {
-	tv, err := unix.SysctlTimeval("kern.boottime")
+	id, err := unix.Sysctl("kern.bootsessionuuid")
 	if err != nil {
-		return "", fmt.Errorf("sysctl kern.boottime: %w", err)
+		return "", fmt.Errorf("sysctl kern.bootsessionuuid: %w", err)
 	}
-	return fmt.Sprintf("%d.%06d", tv.Sec, tv.Usec), nil
+	return id, nil
 }

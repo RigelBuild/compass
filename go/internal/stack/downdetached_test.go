@@ -1256,11 +1256,11 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 }
 
 // TestDownDetachedRebootedRecordSignalsNothing proves a record from an earlier
-// boot signals no group (its pgids cannot be ours) and is removed.
+// boot, with no answering socket, signals no group and is removed.
 func TestDownDetachedRebootedRecordSignalsNothing(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedFullRecord(t, cfg, h)
-	deps := downTestDeps(t, h)
+	deps := darkSocketDownDeps(t, h)
 	// The live groups now belong to whoever holds those pids this boot.
 	stubBootID(t, "99999999-8888-7777-6666-555555555555")
 
@@ -1273,12 +1273,33 @@ func TestDownDetachedRebootedRecordSignalsNothing(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
+// TestDownDetachedRebootedRecordLiveSocketRefuses proves an answering socket
+// contradicts a boot mismatch: down refuses, keeps the record, and signals nothing.
+func TestDownDetachedRebootedRecordLiveSocketRefuses(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := downTestDeps(t, h)
+	deps.Prober = fixedServerProber(true)
+	stubBootID(t, "99999999-8888-7777-6666-555555555555")
+
+	if err := DownDetached(context.Background(), cfg, deps); err == nil {
+		t.Fatal("DownDetached with a live socket under a boot mismatch = nil, want a refusal")
+	}
+	if got := signalEvents(h.rec.snapshot()); len(got) != 0 {
+		t.Fatalf("refusal signalled groups: %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, pgidFileName)); err != nil {
+		t.Fatalf("pgid record after refusal: %v; want it kept", err)
+	}
+}
+
 // TestDownDetachedRebootedRecordStillChecksContainers proves a reboot drops only
 // process entries: a container keeps its name identity and is confirmed by absence.
 func TestDownDetachedRebootedRecordStillChecksContainers(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedGatewayRecord(t, cfg, h)
 	deps := sidecarContainerDownDeps(t, h)
+	deps.Prober = fixedServerProber(false)
 	stubBootID(t, "99999999-8888-7777-6666-555555555555")
 	h.containers.onStop[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
 

@@ -269,6 +269,9 @@ func TestReadPgidFileMalformed(t *testing.T) {
 		"header only one col":  "1\n",
 		"header four cols":     "2 7 boot extra\n",
 		"v1 header with boot":  "1 7 boot\npostgres 200 999\n",
+		"boot id not a uuid":   "2 7 1700000000.000123\nproc postgres 200 999\n",
+		"boot id short group":  "2 7 1111111-2222-3333-4444-555555555555\n",
+		"boot id non-hex":      "2 7 1111111g-2222-3333-4444-555555555555\n",
 		"bad writer pid":       "1 notanumber\n",
 		"entry too few fields": "1 7\npostgres 200\n",
 		"unknown component":    "1 7\nnot-a-component 200 999\n",
@@ -398,5 +401,22 @@ func TestReadPgidFileLegacyHeaderNoBootID(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("legacy parse:\n got  %+v\n want %+v", got, want)
+	}
+}
+
+// TestReadPgidFileUppercaseBootID proves the boot id shape check accepts either
+// hex case, so a darwin bootsessionuuid (uppercase) parses.
+func TestReadPgidFileUppercaseBootID(t *testing.T) {
+	dir := t.TempDir()
+	const boot = "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D"
+	if err := os.WriteFile(filepath.Join(dir, pgidFileName), []byte("2 7 "+boot+"\n"), 0o600); err != nil {
+		t.Fatalf("seed file = %v", err)
+	}
+	got, err := readPgidFile(dir)
+	if err != nil {
+		t.Fatalf("readPgidFile = %v, want a parsed record", err)
+	}
+	if got.BootID != boot {
+		t.Fatalf("BootID = %q, want %q", got.BootID, boot)
 	}
 }

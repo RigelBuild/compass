@@ -126,9 +126,9 @@ type pgidRecord struct {
 func writePgidFile(stateDir string, rec pgidRecord) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %d", pgidFileVersion, rec.WriterPid)
-	if boot, err := readBootID(); err != nil || boot == "" || strings.ContainsAny(boot, " \t\n") {
+	if boot, err := readBootID(); err != nil || !isBootUUID(boot) {
 		// An unknown boot only forgoes the reboot shortcut; identity checks still guard every signal.
-		slog.Debug("pgid record written without a boot id", "err", err)
+		slog.Warn("pgid record written without a boot id", "boot_id", boot, "err", err)
 	} else {
 		fmt.Fprintf(&b, " %s", boot)
 	}
@@ -216,6 +216,9 @@ func readPgidFile(stateDir string) (pgidRecord, error) {
 	}
 	rec := pgidRecord{WriterPid: writerPid, Version: version}
 	if len(header) == 3 {
+		if !isBootUUID(header[2]) {
+			return pgidRecord{}, fmt.Errorf("pgid file %q: malformed boot id in header %q", path, lines[0])
+		}
 		rec.BootID = header[2]
 	}
 
@@ -230,6 +233,26 @@ func readPgidFile(stateDir string) (pgidRecord, error) {
 		rec.Entries = append(rec.Entries, entry)
 	}
 	return rec, nil
+}
+
+// isBootUUID reports whether s has the 8-4-4-4-12 hex UUID shape, in either case.
+func isBootUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // parsePgidLine parses one entry line, dispatched on the record version.
