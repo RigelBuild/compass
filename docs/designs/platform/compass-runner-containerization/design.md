@@ -1,6 +1,6 @@
 # Containerizing the Compass Runner
 
-Status: Draft — freezes on merge. §Privilege shape names the grants R7 must confirm are *necessary*; R7 narrows the grant set, it does not decide whether containerization works.
+Status: Draft — freezes on merge. R7's nested-KVM VM run widened pod and node requirements; a real-node rerun remains required. No capability or privileged mode was needed.
 
 Ledger-impact: mints DL-358
 
@@ -56,13 +56,14 @@ already verified to boot on Linux with `/dev/kvm`: the
 [microVM CI/dev enablement](../../infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md)
 record runs KVM-backed boot tests as a required leg on GitHub Actions'
 `ubuntu-latest`. What a pod adds over that environment is confinement — a
-cgroup device controller, a seccomp filter, and a memory cgroup — so R7 asks
-**which grants the confinement makes necessary**, not whether microVMs run in
-containers. Each plausible R7 outcome costs a wider pod spec (a seccomp
-profile, a device plugin, a supplemental gid), all of which this record already
-specifies; none of them reopens the container-vs-host ruling. The one result
-that *would* reopen it is a requirement for a Linux **capability** or
-`privileged: true`, which no identified mechanism in the composition needs.
+cgroup device controller, a seccomp filter, and a memory cgroup. R7's
+nested-KVM VM run found that the original pod shape does not boot. The pod now
+uses `hostUsers: false`, `procMount: Unmasked`, `appArmorProfile: Unconfined`,
+and the required `Localhost` seccomp profile. The node must support Kubernetes
+user namespaces, set `kernel.apparmor_restrict_unprivileged_userns=0` where the
+node image enables it, and set `/dev/kvm` to mode `0666`. This widens the pod
+and node settings but adds no capability and does not require `privileged:
+true`.
 
 ### Container vs host process: why the container wins
 
@@ -95,12 +96,11 @@ in-guest; the Runner dials **out** to the Server over gRPC with its per-Runner
 token (`go/cmd/compass-runner/main.go`), so the pod needs no host port and no
 inbound service.
 
-### Privilege shape (the pod spec — the grant set R7 narrows)
+### Privilege shape (pod spec and required node settings)
 
-Every grant is justified; anything not listed is denied. R7 confirms which
-grants are *necessary* rather than inert, on real hardware, before R3 encodes
-them — a grant that proves inert drops out, which is the outcome to hope for. The rulings pick what R7 verifies first; they do not remove the
-verification.
+Every grant listed here is required; anything not listed is denied. The
+nested-KVM VM run found this shape, but it does not meet the real-hardware bar.
+A real-node rerun must verify it.
 
 - **`/dev/kvm` via a device plugin — NOT `privileged: true`, NOT a raw
   hostPath char-device mount.** `/dev/kvm` is a world-irrelevant char device
@@ -110,60 +110,49 @@ verification.
   runtime injects the device node with the correct cgroup device-controller
   allowance; the pod requests it via `resources.limits`.
 
-  The hostPath char-device route is rejected as **non-functional**, not merely
-  as a worse posture. **[INFERENCE]** A hostPath mount exposes the node's
-  device into the mount namespace, but the cgroup device controller (eBPF-backed
-  on cgroup v2) still denies `open()` unless the runtime injects the device via
-  CRI's `Devices` field — which is exactly what a device plugin's
-  `ContainerAllocateResponse` does — so a hostPath char device functions only
-  under privileged mode, which is banned here. Marked inference because this is
-  upstream Kubernetes/CRI/cgroup-v2 behaviour, grounded in no artifact in this
-  repo, and because it is what demotes hostPath from *worse-posture* to *not a
-  candidate*. If it is wrong, hostPath returns to the option set and the
-  device-plugin requirement must be re-argued on posture grounds — a change to
-  *which* mechanism delivers the device, not to whether containerization works.
-  **R7 verifies it**:
-  attempt the hostPath route on a real node and confirm `open()` actually fails
-  without device-plugin injection.
+  The hostPath char-device route was tested on the nested-KVM VM node.
+  `/dev/kvm` `open()` failed with `EPERM`; the privileged control opened. The
+  device plugin remains required to supply the cgroup device allowance. This
+  measured result replaces the earlier inference; see [R7 spike
+  findings](spike-findings.md).
 
   The device-plugin implementation is an operator pick, not frozen here; any
   community plugin image an operator pins is thinly maintained and should be
   pinned by digest. The contract this record carries is *scoped device node,
-  zero capabilities, no privileged mode*; R7 confirms the device-plugin
-  mechanism is the one that delivers it.
+  zero capabilities, no privileged mode*; the plugin supplies the cgroup
+  allowance.
 
-- **`securityContext`:** `runAsNonRoot: true`, `runAsUser`/`runAsGroup` fixed
-  to a dedicated runner uid, `allowPrivilegeEscalation: false`,
-  `capabilities.drop: ["ALL"]`, and seccomp `type: Localhost` with a custom
-  profile permitting `unshare`/`mount`/`pivot_root`. The custom profile is a
-  new deliverable: authored with R3, staged on-node under the kubelet's seccomp
-  root by operator node provisioning, and asserted by R3's test.
+- **Pod and container security:** `hostUsers: false` creates a
+  user-namespaced pod. The container `securityContext` sets
+  `runAsNonRoot: true`, fixed `runAsUser`/`runAsGroup`,
+  `allowPrivilegeEscalation: false`, and `capabilities.drop: ["ALL"]`.
+  `procMount: Unmasked` lets `virtiofsd --sandbox=namespace` mount a fresh
+  `/proc`; masked or read-only `/proc` submounts block it. Kubernetes requires
+  `hostUsers: false` for `procMount: Unmasked`.
 
-  `RuntimeDefault` is not sufficient, which is the whole reason the profile
-  exists — see §Alternatives considered.
+  `appArmorProfile: Unconfined` is required because the runtime default profile
+  denies the mount passt performs inside its own user namespace. A custom
+  AppArmor profile is an optional R3 follow-up (OQ-6).
+
+  `seccompProfile.type: Localhost` with a custom profile remains required.
+  `RuntimeDefault` failed with passt reporting `Couldn't create user
+  namespace`. The profile is staged on-node under the kubelet's seccomp root
+  by operator node provisioning. R3 must minimize its allow list and assert
+  the reference.
 
   No capability is added. Project-quota *assignment*
   (`FS_IOC_FSSETXATTR` + `quotactl`) needs `CAP_SYS_ADMIN` the rootless Runner
   lacks, so it stays an operator-provisioning concern verified by Runner
   preflight (the runtime record's D7). Networking needs nothing (passt).
 
-  One filesystem grant IS required. **[INFERENCE]** `/dev/kvm` is typically
-  `root:kvm 0660` — **measured `crw-rw---- root:kvm` on the compass dev box
-  (2026-09-12)**, which supersedes the `crw-rw-rw-` reading in the
-  microVM CI/dev enablement record; the grant is inert under a world-readable
-  mode and required under `0660`, so R7 must record the node's actual mode —
-  and device injection grants a *cgroup allowance*, not
-  filesystem permission — so the non-root runner uid needs the `kvm` gid via
-  `securityContext.supplementalGroups` (or a node-provisioning chmod), or the
-  first real `open()` fails `EACCES`. The errno is the observable that separates
-  the two layers: a DAC permission denial is `EACCES`, while the cgroup
-  device-controller denial in the `/dev/kvm` bullet above is `EPERM`. Marked inference because the device node's
-  mode and ownership are properties of the node image's udev rules, not of
-  anything in this repo, and because it is the sole justification for the
-  `supplementalGroups` grant. **R7 verifies it directly**, and the negative
-  control is the one that matters: confirm a non-root uid *without* the kvm gid
-  actually fails to open the device. If it opens without the gid, the grant is
-  unnecessary and drops out of the contract.
+  With `hostUsers: false`, `/dev/kvm` appeared as `65534:65534` in the pod.
+  The host `kvm` gid is outside the pod's id mapping, so a
+  `supplementalGroups` grant cannot provide access and is dropped. The
+  nested-KVM VM run booted only with node `/dev/kvm` mode `0666`: the device
+  plugin supplies the cgroup allowance, and mode `0666` supplies DAC access.
+  The node must support Kubernetes user namespaces and set
+  `kernel.apparmor_restrict_unprivileged_userns=0` where the node image enables
+  that restriction.
 
 - **`hostNetwork: false`, `hostPID: false`.** Guest networking is in-guest and
   the Runner dials out, so no host ports and no inbound service. hostPID is
@@ -274,9 +263,9 @@ capacity sizing); this record fixes the *shape*.
 
 This record does not amend the runtime record's D3/D6/D7. It *consumes* them
 and adds the container/pod layer beneath: D3's "openable by the Runner uid"
-becomes a device-plugin grant plus a gid; D6's passt backend is unchanged; D7's
-quota assignment stays outside the Runner, satisfied by operator provisioning
-and checked by preflight.
+becomes a device-plugin grant plus node mode `0666`; D6's passt backend is
+unchanged; D7's quota assignment stays outside the Runner, satisfied by
+operator provisioning and checked by preflight.
 
 ## Alternatives considered
 
@@ -299,13 +288,9 @@ re-opens that path from the other side.
 
 ### `RuntimeDefault` seccomp with no custom profile — rejected
 
-Preferred if it worked, since it needs no on-node artifact. Rejected because
-the composition needs `unshare`/`mount`/`pivot_root`, which `RuntimeDefault`
-restricts — this is precisely the host-rootless affordance a pod removes, and
-the reason §Privilege shape carries a custom `Localhost` profile as a new
-deliverable. The cost is real: `Localhost` requires the profile be staged on
-the node before the pod starts, which couples the DaemonSet to operator node
-provisioning.
+Rejected because the nested-KVM VM run failed with passt reporting
+`Couldn't create user namespace`. The required `Localhost` profile is staged
+on-node before the pod starts. R3 must minimize its allow list.
 
 ### Static pod / runner-in-node-image hybrid — rejected
 
@@ -322,15 +307,17 @@ first thing a Kubernetes reader reaches for.
 
 ## Global Constraints
 
-- **No capability, no `privileged`.** The grant set may widen along the axes
-  §Privilege shape already names (seccomp profile, device plugin, supplemental
-  gid) — that is R7 narrowing or confirming a spec, and is expected. What is
-  banned is patching a shortfall with a Linux capability or `privileged: true`:
-  if the composition genuinely needed one, the container-vs-host ruling is
-  reopened instead. No mechanism in the composition is known to need one.
+- **No capability, no `privileged`.** R7 widened the pod and node shape along
+  these axes: user namespaces (`hostUsers: false`), `procMount: Unmasked`,
+  `appArmorProfile: Unconfined`, the `Localhost` seccomp profile, node sysctl,
+  `/dev/kvm` mode, and device-plugin delivery. None adds a capability or
+  permits privileged mode. A requirement for either would reopen the
+  container-vs-host ruling.
 - **The image is the unit of version.** Anything in the KVM userland or guest
-  asset set ships in the image; nothing is expected on the node except the two
-  hostPath trees and the seccomp profile.
+  asset set ships in the image. The only node requirements are the two hostPath
+  trees, the seccomp profile, Kubernetes user-namespace support,
+  `kernel.apparmor_restrict_unprivileged_userns=0` where enabled by the node
+  image, and `/dev/kvm` mode `0666`.
 - **A rollout is session-affecting — and so is anything else that replaces or
   restarts the pod.** Any change to the pod template terminates sessions on
   each replaced node, so every delivery mechanism must rate-limit it. The same
@@ -398,19 +385,21 @@ run output; a second build of the same input yields the same digest.
 
 Author the object contract from §Kubernetes object contract as plain
 manifests, parameterized where §Global Constraints says the operator supplies
-values. Test cycle: the rendered objects assert the full §Privilege shape
-(no `privileged`, `drop: ["ALL"]`, `runAsNonRoot`, the device resource, the
-`Localhost` profile reference, exactly two hostPath mounts); requests and
+values. Test cycle: rendered objects assert the full §Privilege shape: no
+`privileged`, `drop: ["ALL"]`, `runAsNonRoot`, `hostUsers: false`,
+`procMount: Unmasked`, `appArmorProfile: Unconfined`, the device resource, the
+`Localhost` profile reference, and exactly two hostPath mounts. Requests and
 limits are present and sized per the capacity model; `maxUnavailable` is
 bounded.
 
 ### R4 — `/dev/kvm` device-plugin delivery
 
-Document and encode the device-plugin requirement, including the resource-name
-parameterization and the `supplementalGroups` gid — both confirmed necessary
-(or dropped as inert) by R7.
-Test cycle: rendered pod spec requests the device resource and carries the gid;
-a spec that omits either fails the assertion.
+Document and encode the device-plugin requirement and resource-name
+parameterization. The device plugin supplies the device's cgroup allowance;
+the node's `/dev/kvm` mode `0666` supplies DAC access. The host `kvm` gid grant
+is dropped because user namespaces make it ineffective.
+Test cycle: rendered pod spec requests the device resource and sets
+`hostUsers: false` and `procMount: Unmasked`; assertions fail if any is absent.
 
 ### R5 — entrypoint fix for `--backend microvm`
 
@@ -424,27 +413,26 @@ without launching a VM.
 Mint DL-358 recording the containerize ruling and the zero-privilege
 constraint.
 
-### R7 — privilege-shape spike on real hardware (gates the §Privilege shape freeze)
+### R7 — privilege-shape spike and real-node rerun
 
-Confirms which grants the confinement makes necessary. Findings land in
-`spike-findings.md` beside this record. It must answer, each with a negative
-control:
+R7 ran on a nested-KVM VM node, which does not meet the real-hardware bar. A
+real-node rerun must verify the spec. Findings land in `spike-findings.md`
+beside this record. The rerun must answer:
 
-1. Does an unprivileged pod with the §Privilege shape grants boot
-   cloud-hypervisor + virtiofsd + passt end to end?
+1. Does a pod with the §Privilege shape boot cloud-hypervisor + virtiofsd +
+   passt end to end?
 2. Does the hostPath char-device route actually fail `open()` without
    device-plugin injection? (If it succeeds, the option set reopens.)
-3. Does a non-root uid without the kvm gid fail to open `/dev/kvm`? (If it
-   opens, the `supplementalGroups` grant drops.)
-4. Is the custom `Localhost` profile actually required — does
-   `RuntimeDefault` fail, and on which syscall?
+3. Does the pod open `/dev/kvm` with node mode `0666`, without the host gid?
+4. Does `RuntimeDefault` seccomp fail with passt reporting
+   `Couldn't create user namespace`?
 5. Does guest RAM appear in the pod's memory cgroup as §Pod resources claims?
 6. Does a container restart leave zero stranded VMM/virtiofsd/passt processes?
 
 ### Task ordering
 
-R7 gates R3 and R4 (it freezes the contract they encode). R1 gates R2. R5 is
-independent. R6 lands with the freeze.
+R7's real-node rerun gates R3 and R4. R1 gates R2. R5 is independent. R6
+lands with the freeze.
 
 ## Tasks
 
@@ -453,34 +441,23 @@ independent. R6 lands with the freeze.
 | R1 | `runner-image/` Dockerfile on a minimal hardened base | — |
 | R2 | publish lane by digest | R1 |
 | R3 | DaemonSet + RBAC manifests + render tests | R7 |
-| R4 | device-plugin resource + gid wiring | R7 |
+| R4 | device-plugin resource wiring | R7 |
 | R5 | entrypoint agent-image fix under `--backend microvm` | — |
 | R6 | DL-358 ledger row | R7 |
-| R7 | real-hardware privilege spike + `spike-findings.md` | R1 |
+| R7 | real-node rerun of privilege-shape spike + `spike-findings.md` | R1 |
 
 ## Open Questions
 
 ### OQ-1 [non-load-bearing] — which grants does confinement make necessary?
 
-Not a feasibility question. The composition boots on KVM today (see §Approach);
-R7 determines which of the specified grants — seccomp profile, device plugin,
-`supplementalGroups` — are load-bearing rather than inert, so the pod spec can
-be narrowed to the minimum that works. Every outcome is a pod-spec edit this
-record already anticipates.
+The nested-KVM VM run found the required pod and node settings now recorded in
+§Privilege shape. It found that no capability or privileged mode was needed.
 
-The ruling *would* reopen only if some component required a Linux **capability**
-or `privileged: true`. No mechanism in the composition is known to: cloud-
-hypervisor, virtiofsd and passt are ordinary user binaries by the
-runtime record's Global Constraint. Treat that as the low-probability tail, not
-the expected case.
+### OQ-2 [non-load-bearing] — minimize the required seccomp profile
 
-### OQ-2 [load-bearing] — is the custom seccomp profile avoidable?
-
-The genuinely open question, and the only one with a real cost attached. If
-`RuntimeDefault` suffices, the `Localhost` profile and its on-node staging
-requirement both drop, which materially simplifies the operator's job. If it
-does not, we ship the profile — a known, bounded cost this record already
-specifies, not a setback. R7 item 4 settles it.
+`RuntimeDefault` failed with passt reporting `Couldn't create user namespace`,
+so the `Localhost` profile and its on-node staging requirement remain required.
+R3 must minimize the profile's allow list.
 
 ### OQ-3 [non-load-bearing] — device-plugin implementation pick
 
@@ -488,21 +465,34 @@ The contract names a resource, not a plugin. Which plugin an operator runs is
 an implementation choice; the community options are thinly maintained and want
 a digest pin.
 
-### OQ-4 [non-load-bearing] — runner uid and kvm gid values
+A plugin that sets the device mode per pod would avoid a world-rw node device.
+No plugin was tested for this. Adopting one is a later narrowing of the node
+requirement, not a change to the pod spec.
 
-Fixed values chosen at implementation and single-sourced between the image, the
-manifests, and operator node provisioning.
+### OQ-4 [non-load-bearing] — runner uid and dropped kvm gid grant
+
+The Runner uid is fixed at implementation and single-sourced between the
+image and manifests. The host `kvm` gid grant was dropped: with
+`hostUsers: false`, the device appears as `65534:65534` in the pod and the host
+gid is outside its id mapping. Node mode `0666` replaces the gid grant.
 
 ### OQ-5 [non-load-bearing] — session-volume host path and filesystem
 
 The path is operator-supplied; the filesystem must support project quotas for
 D7. Default path chosen at implementation.
 
+### OQ-6 [non-load-bearing] — custom AppArmor profile
+
+`appArmorProfile: Unconfined` is required for the current pod because the
+runtime default profile denies the mount passt performs inside its user
+namespace. R3 may follow up with a custom AppArmor profile instead. This is
+optional and does not change the required pod shape.
+
 ## Resolved decisions
 
 - **Containerize the Runner** as the Kubernetes delivery unit, rather than a
-  host systemd service — only if R7 surfaced a capability requirement, which
-  no known mechanism in the composition needs (§Container vs host process).
+  host systemd service. The measured pod spec needs no capability (§Privilege
+  shape).
 - **Never `privileged: true`** — the microVM isolation boundary is the reason
   the Runner exists, and a privileged Runner re-opens the host path
   (§Alternatives considered).
@@ -515,3 +505,8 @@ D7. Default path chosen at implementation.
 - **The image carries the whole KVM userland and guest assets**, keeping
   hostPath to exactly two mounts (§Where the KVM userland and guest assets
   live).
+- **Use a user-namespaced pod** with `hostUsers: false` and `procMount:
+  Unmasked`; provision Kubernetes user-namespace support, the node sysctl
+  where enabled by its image, and `/dev/kvm` mode `0666`. The device plugin
+  supplies the cgroup allowance. The `supplementalGroups` grant is dropped
+  (§Privilege shape).
