@@ -178,6 +178,10 @@ in
     SECRETSPEC_FFI_LIB =
       "${(import ./tools/toolchain/secretspec-env.nix).libsecretspec}/lib/libsecretspec${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
 
+    # Same per-clone cache as `compass-go:lint` (go/moon.yml), so a bare shell
+    # `golangci-lint` never shares ~/.cache/golangci-lint across clones.
+    GOLANGCI_LINT_CACHE = "${config.devenv.root}/go/.golangci-cache";
+
   }
   # The Compass native app (Wails v3) links the Linux GTK4/WebKitGTK stack
   # through cgo. pkg-config finds each `.pc` file along PKG_CONFIG_PATH, built
