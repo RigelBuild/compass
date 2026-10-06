@@ -293,9 +293,9 @@ func (s *Store) writeExplicitMembers(ctx context.Context, tx pgx.Tx, id ChannelI
 }
 
 // ReparentChannel moves an ungrouped CHANNEL within its participant owner set.
-// The row lock comes first so the authz reads see committed membership and
-// anchor; both gates then run before any shape refusal, so an InvalidArgument
-// never tells a non-participant that the channel exists.
+// Participation is checked before the row lock, so a non-participant never
+// holds it, and again after, against committed membership. Both gates run
+// before any shape refusal, so an InvalidArgument never reveals the channel.
 func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID ChannelID, newParentAgentID AccountID) (Channel, error) {
 	if actor == "" {
 		return Channel{}, fmt.Errorf("%w: actor is required", ErrInvalidArgument)
@@ -311,6 +311,9 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
+	if err := requireChannelParticipant(ctx, qtx, actor, channelID); err != nil {
+		return Channel{}, err
+	}
 	row, err := qtx.LockChannelForReparent(ctx, string(channelID))
 	if err != nil {
 		if noRows(err) {
@@ -318,16 +321,8 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 		}
 		return Channel{}, fmt.Errorf("store: lock channel for reparent: %w", err)
 	}
-
-	participant, err := qtx.ChannelParticipant(ctx, db.ChannelParticipantParams{
-		ChannelID: string(channelID),
-		AccountID: string(actor),
-	})
-	if err != nil {
-		return Channel{}, fmt.Errorf("store: check channel participation: %w", err)
-	}
-	if !participant.Valid || !participant.Bool {
-		return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+	if err := requireChannelParticipant(ctx, qtx, actor, channelID); err != nil {
+		return Channel{}, err
 	}
 
 	if newParentAgentID != "" {
@@ -374,6 +369,22 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 		return Channel{}, fmt.Errorf("store: commit reparent channel: %w", err)
 	}
 	return s.getChannel(ctx, channelID)
+}
+
+// requireChannelParticipant is the ReparentChannel gate: non-participant and
+// unknown channel both merge to ErrNotFound.
+func requireChannelParticipant(ctx context.Context, q *db.Queries, actor AccountID, channelID ChannelID) error {
+	participant, err := q.ChannelParticipant(ctx, db.ChannelParticipantParams{
+		ChannelID: string(channelID),
+		AccountID: string(actor),
+	})
+	if err != nil {
+		return fmt.Errorf("store: check channel participation: %w", err)
+	}
+	if !participant.Valid || !participant.Bool {
+		return fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+	}
+	return nil
 }
 
 // expandOwnerMembership computes the final member set for a new channel: the
