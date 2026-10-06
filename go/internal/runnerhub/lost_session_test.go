@@ -198,6 +198,93 @@ func TestErroredOlderThanNewLifetimeIsIgnored(t *testing.T) {
 	lost.none(t, "an older ERRORED must not retire the resumed lifetime")
 }
 
+func TestLostSessionCleanupFromOldEnrollmentKeepsRebinding(t *testing.T) {
+	ctx := t.Context()
+	hub, _, _ := newHub()
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	oldGen := hub.EnrollGeneration()
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+
+	hub.dropLostSessionIfCurrent(ctx, oldGen, "runner-1", "sess-1", true)
+	lost.none(t, "cleanup from the old enrollment must not unbind the re-bound session")
+	if account, ok := hub.accountForSession(ctx, "sess-1"); !ok || account != testAgentAccount {
+		t.Fatalf("binding after stale cleanup = (%s, %v), want (%s, true)", account, ok, testAgentAccount)
+	}
+
+	hub.dropLostSessionIfCurrent(ctx, hub.EnrollGeneration(), "runner-1", "sess-1", true)
+	if account, errored := lost.waitOne(t); account != testAgentAccount || !errored {
+		t.Fatalf("current-enrollment cleanup report = (%s, %v), want (%s, true)", account, errored, testAgentAccount)
+	}
+}
+
+func TestLowerSeqCannotOvertakeHigherSeqMidDelivery(t *testing.T) {
+	ctx := t.Context()
+	hub, lifecycle, _ := newHub()
+	store := &pausingResolveBindingStore{fakeBindingStore: newFakeBindingStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(store)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(store.release) }) }
+	t.Cleanup(release)
+
+	// READY seq 6 has recorded its seq and pauses resolving the (uncached) binding.
+	readyDone := make(chan error, 1)
+	go func() {
+		readyDone <- hub.Deliver(ctx, RunnerEvent{
+			RunnerID: "runner-1", RunnerSeq: 6, SessionID: "sess-1",
+			Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
+		})
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("READY did not reach the binding lookup")
+	}
+	if hub.lifecycleMu.TryLock() {
+		hub.lifecycleMu.Unlock()
+		t.Fatal("lifecycle lock free while READY seq 6 is mid-delivery; seq 5 could overtake it")
+	}
+	erroredDone := make(chan error, 1)
+	go func() {
+		erroredDone <- hub.Deliver(ctx, RunnerEvent{
+			RunnerID: "runner-1", RunnerSeq: 5, SessionID: "sess-1",
+			Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
+		})
+	}()
+	release()
+	for name, done := range map[string]chan error{"READY": readyDone, "ERRORED": erroredDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Deliver(%s) = %v, want nil", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("Deliver(%s) did not complete", name)
+		}
+	}
+	assertPublished(t, lifecycle, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+}
+
+// pausingResolveBindingStore holds the first ResolveSessionBinding until released.
+type pausingResolveBindingStore struct {
+	*fakeBindingStore
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *pausingResolveBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error) {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.release
+	})
+	return b.fakeBindingStore.ResolveSessionBinding(ctx, sessionID)
+}
+
 func TestReenrollClearsErroredBoundary(t *testing.T) {
 	ctx := t.Context()
 	hub, lifecycle, _ := newHub()
@@ -213,7 +300,7 @@ func TestReenrollClearsErroredBoundary(t *testing.T) {
 		compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 }
 
-func TestReenrollWaitsForInFlightErroredAndFencesItsCleanup(t *testing.T) {
+func TestReenrollWaitsForInFlightErrored(t *testing.T) {
 	ctx := t.Context()
 	lifecycle := &fakeLifecycleSink{}
 	tail := &pausingTailSink{entered: make(chan struct{}), release: make(chan struct{})}
@@ -272,10 +359,6 @@ func TestReenrollWaitsForInFlightErroredAndFencesItsCleanup(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("re-enroll did not complete")
 	}
-	// Readers queued behind enroll, the cleanup among them, finish before this Lock.
-	hub.enrollMu.Lock()
-	lost.none(t, "the old ERRORED's cleanup must not unbind the re-bound session")
-	hub.enrollMu.Unlock()
 	if _, _, err := hub.routerFor("sess-1"); err != nil {
 		t.Fatalf("routerFor(sess-1) after re-bind = %v, want the binding kept", err)
 	}

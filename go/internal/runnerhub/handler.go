@@ -121,14 +121,13 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	if !ok {
 		return errUnauthenticated
 	}
-	router, _, err := h.hub.routerFor(subj.ID)
+	router, enrollGen, err := h.hub.routerForStream(subj.ID)
 	if err != nil {
 		// A Sessions stream with no enrolled Runner — the Runner must Enroll
 		// before opening Sessions.
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
-	enrollGen := h.hub.EnrollGeneration()
 	router.setSessionUnknown(func(sessionID string) {
 		h.hub.dropLostSessionDetached(ctx, enrollGen, subj.ID, sessionID, false)
 	})
