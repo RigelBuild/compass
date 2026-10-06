@@ -336,3 +336,27 @@ provider chain. Seed the registry once after first boot, and update it later
 with the same operator RPC write. No release is needed. The day-1 defaults,
 the recommended model per role, and the commands are in
 [the model registry guide](model-registry/README.md).
+
+## Spawning an agent
+
+The `compass` operator CLI (`github:RigelBuild/compass#compass`) brings an agent
+online with one command:
+
+```console
+compass agent spawn --handle lead --parent ops
+```
+
+It creates the agent account under the caller, then provisions its container and
+starts its session. It prints the agent's `owner/handle`, the session id, and
+the container name. `--display-name` defaults to the handle, and `--parent`
+places the agent under an existing agent in the tree.
+
+If the handle already exists for the caller, `spawn` starts that agent instead,
+so you can rerun it after a failed start. A failed spawn prints a
+`--request-id`; rerun with it to rejoin that spawn rather than provision a
+second container. Check the session afterwards with `compass agent status`.
+
+Every `compass` command needs `--server-addr` (or `$COMPASS_SERVER_ADDR`) and
+the admin bearer token in `$COMPASS_ADMIN_TOKEN` or a `--token-file`. The token
+is never a flag. For the self-signed one-box door, pass its certificate with
+`--ca`.
