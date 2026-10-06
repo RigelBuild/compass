@@ -21,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -451,9 +453,9 @@ type Hub struct {
 	sessionAccounts map[string]sessionBinding
 	// lifecycleSeqs maps a session to the highest RunnerSeq of an accepted lifecycle
 	// frame. One lifetime's frames arrive in seq order, so a lower one is from a
-	// cancelled stream or a dead lifetime. Kept past unbind so the boundary outlives
-	// ERRORED; cleared on re-enroll, when RunnerSeq restarts. lifecycleMu-guarded.
-	lifecycleSeqs map[string]uint64
+	// cancelled stream or a dead lifetime. An LRU, so a boundary outlives unbind but
+	// not maxLifecycleSeqs newer sessions; purged on re-enroll. lifecycleMu-guarded.
+	lifecycleSeqs *lru.Cache[string, uint64]
 	// enrollMu fences session-frame delivery (read) against enroll (write), and
 	// guards enrollGen, which counts enrollments so a stream opened before a
 	// re-enroll cannot act on its sessions. Lock order: enrollMu, lifecycleMu, mu.
@@ -522,7 +524,8 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
-		lifecycleSeqs:     make(map[string]uint64),
+		lifecycleSeqs:     newLifecycleSeqs(),
+		enrollGen:         1,
 		missingSeqs:       make(map[uint64]struct{}),
 		reapStale:         make(map[string]uint64),
 		runnerEpoch:       make(map[string]uint64),
@@ -703,6 +706,12 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	h.enrollMu.RLock()
 	defer h.enrollMu.RUnlock()
 	stale := h.staleEnrollmentLocked(ev)
+	// A lifecycle frame is admitted under lifecycleMu from before its seq is
+	// recorded, so a higher seq the hub has already seen is never overtaken.
+	if !stale && sessionState(ev.Frame) != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+		h.lifecycleMu.Lock()
+		defer h.lifecycleMu.Unlock()
+	}
 	if !stale {
 		h.recordSeq(ev.RunnerSeq)
 	}
@@ -846,15 +855,14 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 		h.tail.RelaySessionFrame(sessionID, sf)
 		return
 	}
-	h.lifecycleMu.Lock()
-	if last, seen := h.lifecycleSeqs[sessionID]; seen && seq <= last {
-		h.lifecycleMu.Unlock()
+	// Deliver holds lifecycleMu for a lifecycle frame.
+	if last, seen := h.lifecycleSeqs.Get(sessionID); seen && seq <= last {
 		h.log.Debug("ignored lifecycle frame older than the session's latest",
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID),
 			slog.String("state", state.String()), slog.Uint64("runner_seq", seq), slog.Uint64("latest_seq", last))
 		return
 	}
-	h.lifecycleSeqs[sessionID] = seq
+	h.lifecycleSeqs.Add(sessionID, seq)
 	h.tail.RelaySessionFrame(sessionID, sf)
 	// Resolve the session's agent account and stamp it onto the published status — the
 	// DL-167 attribution join. A status published after a Runner reconnect cleared the
@@ -887,7 +895,6 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	if presence != nil && hasAccount {
 		presence.OnSessionLifecycle(account, sessionID, state)
 	}
-	h.lifecycleMu.Unlock()
 	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
 		h.dropLostSessionDetached(ctx, h.enrollGen, runnerID, sessionID, true)
@@ -992,6 +999,23 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	}
 }
 
+// maxLifecycleSeqs bounds lifecycleSeqs. A buffered stale frame lands within
+// seconds, long before this many newer sessions could evict its boundary.
+const maxLifecycleSeqs = 4096
+
+func newLifecycleSeqs() *lru.Cache[string, uint64] {
+	c, err := lru.New[string, uint64](maxLifecycleSeqs)
+	if err != nil {
+		panic(err) // only a non-positive size errors
+	}
+	return c
+}
+
+// sessionState is a session frame's lifecycle state, UNSPECIFIED for any other frame.
+func sessionState(frame *compassv1internal.AgentFrame) compassv1.AgentSessionState {
+	return frame.GetSession().GetState()
+}
+
 // staleEnrollmentLocked reports, and logs, an event whose stream predates the
 // current enrollment. Zero EnrollGen means unfenced. Caller holds enrollMu.
 func (h *Hub) staleEnrollmentLocked(ev RunnerEvent) bool {
@@ -1080,12 +1104,13 @@ type promotedPair struct {
 // so none of its pre-enroll sessions live. A failed durable reap still runs the
 // in-RAM fallback, then returns the error so the Runner retries enrollment.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
+	// Held until the runner and router are replaced, so a stream that snapshots
+	// both under it sees one enrollment's pair.
 	h.enrollMu.Lock()
 	h.lifecycleMu.Lock()
-	clear(h.lifecycleSeqs)
+	h.lifecycleSeqs.Purge()
 	h.enrollGen++
 	h.lifecycleMu.Unlock()
-	h.enrollMu.Unlock()
 	// Held from the map-clear through the reap, so no promotion lands in between.
 	h.bindingWriteMu.Lock()
 	h.mu.Lock()
@@ -1128,6 +1153,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 		h.reapStale[id] = epoch
 	}
 	h.mu.Unlock()
+	h.enrollMu.Unlock()
 
 	// Choose the reap set. With a durable store the ROWS are reaped and the edges
 	// driven from what was removed (the authoritative set); without one, the in-RAM
@@ -1202,6 +1228,15 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 // no Runner is enrolled. The id travels out with the router so a caller that must
 // attribute the call to a Runner names the one that served it, rather than re-reading
 // the registry and racing a re-enroll onto the wrong id.
+// routerForStream returns the Runner's router and the enrollment generation it
+// belongs to, read as one pair.
+func (h *Hub) routerForStream(sessionID string) (*commandRouter, uint64, error) {
+	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
+	router, _, err := h.routerFor(sessionID)
+	return router, h.enrollGen, err
+}
+
 func (h *Hub) routerFor(sessionID string) (*commandRouter, string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
