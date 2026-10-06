@@ -117,11 +117,11 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 	return err
 }
 
-// spawnError names the next step: rejoin with the key only when a retry can
-// succeed, and point at status when the agent is already live.
+// spawnError names the next step: rejoin with the key only after a cut-short
+// call; the Runner caches a failed Provision under it, so other errors replay.
 func spawnError(qualified, requestID string, err error) error {
 	switch connect.CodeOf(err) {
-	case connect.CodeDeadlineExceeded, connect.CodeUnavailable, connect.CodeCanceled, connect.CodeInternal:
+	case connect.CodeDeadlineExceeded, connect.CodeUnavailable, connect.CodeCanceled:
 		return fmt.Errorf("spawning agent %s (retry with --request-id %s to rejoin this spawn): %w",
 			qualified, requestID, err)
 	case connect.CodeAlreadyExists:
