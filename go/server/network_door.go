@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -33,8 +34,8 @@ import (
 )
 
 // adminTokenFile is the basename of the 0600 file the bootstrap-admin token is
-// written to under the state dir. The operator reads the freshly minted bearer
-// token from here; it is never logged.
+// kept under the state dir. The operator reads the bearer token from here; it
+// is never logged.
 const adminTokenFile = "admin-token"
 
 // compassServiceMaxReadBytes caps a single inbound message on the CompassService
@@ -248,7 +249,7 @@ func withBodyReadDeadline(next http.Handler, timeout time.Duration) http.Handler
 	})
 }
 
-// buildNetworkServer mints and writes the bootstrap admin token (0600 under the
+// buildNetworkServer ensures the bootstrap admin token (reused or minted, 0600 under the
 // state dir, so a socket-only start leaves none behind), then constructs the
 // authenticated network door: the compass.v1 CompassService and CommsService
 // handlers behind the bearer interceptors (outer, they authenticate and inject
@@ -288,14 +289,15 @@ func buildNetworkServer(
 			stateDir = "."
 		}
 	}
-	tokenPath, err := issueAndWriteAdminToken(ctx, st, adminID, stateDir)
+	tokenPath, minted, err := issueAndWriteAdminToken(ctx, st, adminID, stateDir)
 	if err != nil {
 		return nil, err
 	}
 	// Log the path, never the token: a logged bearer credential lets anyone who can
-	// read process output or aggregated logs impersonate the admin.
-	slog.Info("network door bootstrap admin token written",
-		"path", tokenPath, "handle", handle, "listen", networkListenAddr(cfg))
+	// read process output or aggregated logs impersonate the admin. minted tells
+	// the operator whether clients need the new file contents.
+	slog.Info("network door bootstrap admin token ready",
+		"path", tokenPath, "minted", minted, "handle", handle, "listen", networkListenAddr(cfg))
 	warnIfSharedTokenDir(slog.Default(), filepath.Dir(tokenPath))
 
 	// otelconnect (outermost) produces the RPC span and stamps traceresponse,
@@ -385,18 +387,52 @@ func buildNetworkServer(
 	}, nil
 }
 
-// issueAndWriteAdminToken mints a bearer token for the bootstrap admin and
-// writes it 0600 under the state dir. It runs only when the network door is enabled
-// by --listen or ListenListener: the token is the network-door credential, so
-// socket-only startup (whose credential is the 0600 socket) mints none. The token
-// is written to disk (never logged) for the operator to read; the returned path
-// is logged (the path, not the token). A failed write leaves no partial credential.
-func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store.AccountID, stateDir string) (string, error) {
+// issueAndWriteAdminToken ensures stateDir holds a 0600 bearer token for the
+// bootstrap admin and reports whether it minted one. A private regular file
+// whose token still resolves to adminID is reused, so restarts neither pile up
+// live tokens nor break clients; anything else (missing, revoked, unknown,
+// another subject, a symlink, group/other-readable) is replaced atomically. A
+// store error during the check reads as not-found and also re-mints. It runs
+// only with --listen or ListenListener; socket-only startup mints none. The token is never logged.
+func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store.AccountID, stateDir string) (string, bool, error) {
+	final := filepath.Join(stateDir, adminTokenFile)
+	reuse, err := reusableAdminToken(ctx, st, adminID, final)
+	if err != nil {
+		return "", false, err
+	}
+	if reuse {
+		return final, false, nil
+	}
 	token, err := auth.IssueAccountToken(ctx, st, adminID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return writeTokenFile(stateDir, token)
+	path, err := writeTokenFile(stateDir, token)
+	return path, err == nil, err
+}
+
+// reusableAdminToken reports whether path is a private regular file holding a
+// live token for adminID. Surrounding whitespace (an editor's trailing newline)
+// is ignored, as every other token reader does; tokens never contain any.
+func reusableAdminToken(ctx context.Context, st *store.Store, adminID store.AccountID, path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking existing admin token %q: %w", path, err)
+	}
+	// A symlink (Lstat mode 0777), any other non-regular file, or a group/other
+	// bit disqualifies reuse; the re-mint's rename then replaces it with 0600.
+	if info.Mode()&(os.ModeType|0o077) != 0 {
+		return false, nil
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the operator-configured state dir plus a fixed name, Lstat'd above
+	if err != nil {
+		return false, fmt.Errorf("reading existing admin token %q: %w", path, err)
+	}
+	subj, err := auth.ResolveToken(ctx, st, strings.TrimSpace(string(raw)), store.SubjectAccount)
+	return err == nil && subj.ID == string(adminID), nil
 }
 
 // warnIfSharedTokenDir logs when the admin token's dir grants any group or

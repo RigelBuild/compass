@@ -1014,12 +1014,17 @@ the caller to resolve to the admin account, rejecting a non-admin
 
 ### Requirement: The network door mints and persists a bootstrap admin token
 
-When the network door is opened, the server SHALL mint a bootstrap admin bearer
-token and write it to a file under the state directory at mode `0600`, so an
-operator can authenticate the first admin client. The token file SHALL be
-written atomically (a temp file `0600`, synced, then renamed into place; the
-temp file removed on any error), and the token itself SHALL NOT be logged — only
-its path. A socket-only start (no `--listen`) SHALL write no token file.
+When the network door is opened, the server SHALL ensure a bootstrap admin
+bearer token exists in a file under the state directory at mode `0600`, so an
+operator can authenticate the first admin client. If that file is a regular
+file with no group or other permission bits and its token (ignoring surrounding
+whitespace) still authenticates as the bootstrap admin, the server SHALL reuse
+it unchanged; otherwise (missing, revoked, unknown, another account's, a
+symlink, or readable by others) it SHALL mint a new one. A newly minted token
+file SHALL be written atomically (a temp file `0600`, synced, then renamed into
+place; the temp file removed on any error), and the token itself SHALL NOT be
+logged — only its path. A socket-only start (no `--listen`) SHALL write no
+token file.
 
 #### Scenario: Opening the network door writes the admin token 0600
 
@@ -1027,6 +1032,14 @@ its path. A socket-only start (no `--listen`) SHALL write no token file.
 - **When** the server reaches its serving state
 - **Then** the admin-token file exists at mode `0600`, authenticates as the
   admin account, and the token value never appears in the server's logs.
+
+#### Scenario: A restart reuses a still-valid admin token
+
+- **Given** a state directory whose admin-token file still authenticates as the
+  bootstrap admin
+- **When** the server restarts with `--listen`
+- **Then** the file and its token are unchanged and no new token is minted;
+  after the token is revoked, the next start mints and writes a new one.
 
 ### Requirement: The network door defaults closed to browser origins
 
