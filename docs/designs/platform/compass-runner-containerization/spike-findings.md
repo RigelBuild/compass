@@ -180,10 +180,10 @@ that set, with the node sysctl at `0`:
 - **Masked `/proc`:** virtiofsd's `--sandbox=namespace` mounts a fresh `/proc`
   in its namespace. The kernel refuses that while the container's `/proc` has
   masked or read-only submounts, and only `procMount: Unmasked` removes them.
-- **Node sysctl:** Ubuntu 24.04 ships
-  `kernel.apparmor_restrict_unprivileged_userns=1`, and the working set needs
-  `0`. That is an operator node-provisioning requirement on this image; other
-  node images may not carry the setting.
+- **Node sysctl:** with `kernel.apparmor_restrict_unprivileged_userns=1` passt
+  fails even under every pod grant; the working set needs `0`. The harness set
+  the value before each run, so the Ubuntu 24.04 image default is **not
+  verified**. If the target node image enables it, operators must set `0`.
 - **No Linux capability and no `privileged: true` was needed.** The pod stays
   `drop: ["ALL"]`, `runAsNonRoot`, `allowPrivilegeEscalation: false`. The
   container-vs-host ruling stands.
