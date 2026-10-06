@@ -3,7 +3,9 @@
 package store
 
 import (
+	"context"
 	"testing"
+	"time"
 )
 
 func appendAsParticipant(t *testing.T, s *Store, author AccountID, channel ChannelID, text string) (Message, error) {
@@ -118,8 +120,12 @@ func TestChannelParticipantExplicitChannelIgnoresTree(t *testing.T) {
 
 	_, err := appendAsParticipant(t, s, f.mid.ID, explicit.ID, "not a member")
 	sentinelIs(t, err, ErrNotFound, "post by a subtree agent into an EXPLICIT channel")
-	if _, err := appendAsParticipant(t, s, f.root.ID, explicit.ID, "member row"); err != nil {
+	posted, err := appendAsParticipant(t, s, f.root.ID, explicit.ID, "member row")
+	if err != nil {
 		t.Fatalf("post by the explicit member anchor: %v", err)
+	}
+	if got, err := s.IsTopicChannelMember(t.Context(), f.mid.ID, posted.TopicID); err != nil || got {
+		t.Fatalf("IsTopicChannelMember(subtree agent, explicit topic) = %v, %v; want false", got, err)
 	}
 }
 
@@ -140,5 +146,34 @@ func TestHasGenuineAddIgnoresDerivedParticipation(t *testing.T) {
 	}
 	if !add {
 		t.Fatal("hasGenuineAdd(derived participant without a row) = false, want true")
+	}
+}
+
+// The schema does not forbid parent cycles (the store refuses them on write), so
+// a raw-SQL cycle proves the UNION walk in both probes terminates.
+func TestChannelParticipantTerminatesOnParentCycle(t *testing.T) {
+	s := newTestStore(t)
+	f := newTreeFixture(t, s)
+	if _, err := appendAsParticipant(t, s, f.owner.ID, f.channel.ID, "seed"); err != nil {
+		t.Fatalf("seed post: %v", err)
+	}
+	topics, err := s.ListTopics(t.Context(), string(f.owner.ID), string(f.channel.ID), false)
+	if err != nil || len(topics) != 1 {
+		t.Fatalf("ListTopics = %v, %v; want one topic", topics, err)
+	}
+	a := mustAgent(t, s, f.owner.ID, "cycle-a")
+	b := mustAgentWithParent(t, s, f.owner.ID, a.ID, "cycle-b")
+	if _, err := s.pool.Exec(t.Context(),
+		`UPDATE agent_accounts SET parent_agent_id = $2 WHERE account_id = $1`, string(a.ID), string(b.ID)); err != nil {
+		t.Fatalf("close the parent cycle: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if got, err := s.IsChannelMember(ctx, b.ID, f.channel.ID); err != nil || got {
+		t.Fatalf("IsChannelMember(cyclic agent) = %v, %v; want false", got, err)
+	}
+	if got, err := s.IsTopicChannelMember(ctx, b.ID, topics[0].ID); err != nil || got {
+		t.Fatalf("IsTopicChannelMember(cyclic agent) = %v, %v; want false", got, err)
 	}
 }

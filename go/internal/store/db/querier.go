@@ -675,7 +675,7 @@ type Querier interface {
 	// their signatures and the not-found/forbidden merge, wrapping these EXISTS
 	// probes. requireChannelMember / isChannelMember wrap ChannelParticipant
 	// (channels.sql); the topic-keyed and creation probes live here.
-	// Feeds IsTopicChannelMember: membership on the channel that owns the topic.
+	// Stored-row membership on the topic's channel; IsTopicChannelMember uses TopicChannelParticipant.
 	TopicChannelMemberExists(ctx context.Context, arg TopicChannelMemberExistsParams) (bool, error)
 	TopicChannelNames(ctx context.Context, id string) (TopicChannelNamesRow, error)
 	// Feeds IsTopicChannelMember: ChannelParticipant on the channel that owns the

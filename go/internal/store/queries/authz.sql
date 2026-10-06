@@ -5,7 +5,7 @@
 -- (channels.sql); the topic-keyed and creation probes live here.
 
 -- name: TopicChannelMemberExists :one
--- Feeds IsTopicChannelMember: membership on the channel that owns the topic.
+-- Stored-row membership on the topic's channel; IsTopicChannelMember uses TopicChannelParticipant.
 SELECT EXISTS (SELECT 1 FROM topics t JOIN channel_members cm ON cm.channel_id = t.channel_id WHERE t.id = $1 AND cm.account_id = $2);
 
 -- name: TopicChannelParticipant :one

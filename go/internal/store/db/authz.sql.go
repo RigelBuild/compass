@@ -106,7 +106,7 @@ type TopicChannelMemberExistsParams struct {
 // their signatures and the not-found/forbidden merge, wrapping these EXISTS
 // probes. requireChannelMember / isChannelMember wrap ChannelParticipant
 // (channels.sql); the topic-keyed and creation probes live here.
-// Feeds IsTopicChannelMember: membership on the channel that owns the topic.
+// Stored-row membership on the topic's channel; IsTopicChannelMember uses TopicChannelParticipant.
 func (q *Queries) TopicChannelMemberExists(ctx context.Context, arg TopicChannelMemberExistsParams) (bool, error) {
 	row := q.db.QueryRow(ctx, topicChannelMemberExists, arg.ID, arg.AccountID)
 	var exists bool
