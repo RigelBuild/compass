@@ -5,7 +5,9 @@ package stack
 import (
 	"context"
 	"errors"
+	"net"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -55,7 +57,7 @@ func TestUpColdSequencing(t *testing.T) {
 // either side stops using embeddedRunnerID.
 func TestRunnerIDCouplesSpawnAndMint(t *testing.T) {
 	// (a) runnerSpec carries --runner-id with the constant's value.
-	spec := runnerSpec(Config{ListenAddr: "127.0.0.1:50052"}, CertResult{CertPath: "/c"}, "tok", GuestPaths{}, "")
+	spec := runnerSpec(Config{ListenAddr: "127.0.0.1:50052"}, CertResult{CertPath: "/c"}, "tok", GuestPaths{}, "", "127.0.0.1:50052")
 	specID, ok := flagValue(spec.Args, "--runner-id")
 	if !ok {
 		t.Fatalf("runner spec args %v carry no --runner-id", spec.Args)
@@ -140,6 +142,55 @@ func TestUpAttachVersionMismatch(t *testing.T) {
 	assertLockFree(t, cfg.StateDir)
 }
 
+func TestRestartRunnerReusesBoundNetworkAddress(t *testing.T) {
+	cfg, h := newHarness(t)
+	s, err := Up(context.Background(), cfg, h.deps)
+	if err != nil {
+		t.Fatalf("Up() = %v", err)
+	}
+	addr := s.ListenAddr()
+	t.Cleanup(func() {
+		if err := s.Down(context.Background()); err != nil {
+			t.Errorf("Down() = %v", err)
+		}
+	})
+	if err := s.RestartRunner(context.Background()); err != nil {
+		t.Fatalf("RestartRunner() = %v", err)
+	}
+	if got := s.ListenAddr(); got != addr {
+		t.Fatalf("ListenAddr after runner restart = %q, want %q", got, addr)
+	}
+	runnerSpec := h.sup.spec(t, ComponentRunner)
+	if got, ok := flagValue(runnerSpec.Args, "--server"); !ok || got != "https://"+addr {
+		t.Fatalf("restarted runner --server = %q, %v; want https://%s", got, ok, addr)
+	}
+}
+
+func TestUpFailureClosesNetworkListener(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.cert.err = errors.New("certificate failure")
+	addrCh := make(chan string, 1)
+	listenTCP := h.deps.ListenTCP
+	h.deps.ListenTCP = func(network, address string) (*net.TCPListener, error) {
+		listener, err := listenTCP(network, address)
+		if err == nil {
+			addrCh <- listener.Addr().String()
+			t.Cleanup(func() { _ = listener.Close() })
+		}
+		return listener, err
+	}
+	if _, err := Up(context.Background(), cfg, h.deps); err == nil {
+		t.Fatal("Up() = nil, want certificate failure")
+	}
+	addr := <-addrCh
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("rebind %s after failed Up: %v", addr, err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close re-bound listener: %v", err)
+	}
+}
 func TestUpCertRotation(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -322,6 +373,64 @@ func TestUpPostgresNeverReady(t *testing.T) {
 	// The one started child (postgres) was drained; the lock is released.
 	assertDrainedCleanly(t, h)
 	assertLockFree(t, cfg.StateDir)
+}
+
+// The stack binds the door, hands the server fd 3, points the runner at the
+// resolved address, and drops its own copy as soon as the server starts: with
+// the stub supervisor no child holds the port, so a rebind must succeed while
+// Up is still blocked starting the runner.
+func TestStackHandsNetworkListenerToServer(t *testing.T) {
+	cfg, h := newHarness(t)
+	var addr string
+	listenTCP := h.deps.ListenTCP
+	h.deps.ListenTCP = func(network, address string) (*net.TCPListener, error) {
+		l, err := listenTCP(network, address)
+		if err == nil {
+			addr = l.Addr().String()
+		}
+		return l, err
+	}
+	entered, gate := make(chan struct{}), make(chan struct{})
+	h.sup.entered[ComponentRunner], h.sup.gate[ComponentRunner] = entered, gate
+	type upResult struct {
+		s   *Stack
+		err error
+	}
+	done := make(chan upResult, 1)
+	go func() {
+		s, err := Up(context.Background(), cfg, h.deps)
+		done <- upResult{s, err}
+	}()
+	<-entered // server started, runner Start blocked: Up has not returned
+	listener, rebindErr := net.Listen("tcp", addr)
+	close(gate)
+	res := <-done
+	if res.err != nil {
+		t.Fatalf("Up() = %v", res.err)
+	}
+	if rebindErr != nil {
+		t.Fatalf("rebind %s after the server started: %v (the stack kept its listener)", addr, rebindErr)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close re-bound listener: %v", err)
+	}
+	if got := res.s.ListenAddr(); got != addr || got == cfg.ListenAddr {
+		t.Fatalf("ListenAddr() = %q, want the resolved %q", got, addr)
+	}
+	serverSpec := h.sup.spec(t, ComponentServer)
+	if got, ok := flagValue(serverSpec.Args, "--listen-fd"); !ok || got != "3" {
+		t.Fatalf("server --listen-fd = %q, %v; want 3", got, ok)
+	}
+	if slices.Contains(serverSpec.Args, "--listen") || len(serverSpec.ExtraFiles) != 1 {
+		t.Fatalf("server spec = %+v; want inherited fd 3 and one ExtraFile, no --listen", serverSpec)
+	}
+	runnerSpec := h.sup.spec(t, ComponentRunner)
+	if got, ok := flagValue(runnerSpec.Args, "--server"); !ok || got != "https://"+addr {
+		t.Fatalf("runner --server = %q, %v; want https://%s", got, ok, addr)
+	}
+	if err := res.s.Down(context.Background()); err != nil {
+		t.Fatalf("Down() = %v", err)
+	}
 }
 
 func TestDownDrainsReverseAndReleasesLock(t *testing.T) {

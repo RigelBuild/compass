@@ -3,24 +3,19 @@
 package stack
 
 import (
+	"net"
 	"os"
 	"slices"
 	"testing"
 )
 
-// baseRunnerArgs is the unconditional flags runnerSpec always forwards
-// (--runner-id, --server, --ca, --runtime-dir), plus --image on every backend
-// that reads one. The AgentModel and EgressAllow flags are appended AFTER
-// these, and only when set — so the base vector is the exact prefix every case
-// shares and the zero-value case's whole expected output.
-//
-// --image is omitted under microVM because the runner REFUSES a configured
-// agent image there (runner.ResolveAgentImage): the agent is pinned by the
-// guest rootfs, so forwarding one would fail every microVM runner at startup.
-func baseRunnerArgs(cfg Config, cert CertResult) []string {
+// baseRunnerArgsAt is the unconditional prefix runnerSpec always forwards
+// (--runner-id, --server at listenAddr, --ca, --runtime-dir), plus --image on
+// every backend except microVM, which refuses a configured agent image.
+func baseRunnerArgsAt(cfg Config, cert CertResult, listenAddr string) []string {
 	args := []string{
 		"--runner-id", embeddedRunnerID,
-		"--server", "https://" + cfg.ListenAddr,
+		"--server", "https://" + listenAddr,
 		"--ca", cert.CertPath,
 	}
 	if !cfg.microVM() {
@@ -112,9 +107,9 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 			cfg.CheckoutDir = tt.checkoutDir
 			cfg.Mounts = tt.mounts
 
-			spec := runnerSpec(cfg, cert, token, GuestPaths{}, "")
+			spec := runnerSpec(cfg, cert, token, GuestPaths{}, os.Getenv(microVMRunRootEnvVar), cfg.ListenAddr)
 
-			want := append(baseRunnerArgs(cfg, cert), tt.wantExtra...)
+			want := append(baseRunnerArgsAt(cfg, cert, cfg.ListenAddr), tt.wantExtra...)
 			if !slices.Equal(spec.Args, want) {
 				t.Fatalf("runnerSpec Args =\n  %q\nwant\n  %q", spec.Args, want)
 			}
@@ -129,21 +124,52 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 	}
 }
 
+// A :0 config must not reach the runner: it dials the address the stack bound.
+func TestRunnerSpecUsesResolvedListenAddress(t *testing.T) {
+	cfg := Config{ListenAddr: "127.0.0.1:0", AgentImage: "agent:latest", RuntimeDir: "/run/compass"}
+	cert := CertResult{CertPath: "/state/tls.crt"}
+	got := runnerSpec(cfg, cert, "token", GuestPaths{}, "", "127.0.0.1:43821").Args
+	if v, ok := flagValue(got, "--server"); !ok || v != "https://127.0.0.1:43821" {
+		t.Fatalf("runner --server = %q, %v; want the resolved port", v, ok)
+	}
+}
+
+func TestServerSpecPassesInheritedListener(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP: %v", err)
+	}
+	defer listener.Close()
+	file, err := listener.File()
+	if err != nil {
+		t.Fatalf("listener File: %v", err)
+	}
+	defer file.Close()
+	spec := serverSpec(Config{SocketPath: "/state/sock", DatabaseDSN: "postgres:///compass"}, CertResult{CertPath: "/cert", KeyPath: "/key"}, file)
+	if !slices.Contains(spec.Args, "--listen-fd") || slices.Contains(spec.Args, "--listen") {
+		t.Fatalf("server args = %q, want --listen-fd 3 and no --listen", spec.Args)
+	}
+	if !slices.Equal(spec.ExtraFiles, []*os.File{file}) {
+		t.Fatalf("ExtraFiles = %v, want one listener fd", spec.ExtraFiles)
+	}
+}
+
 func TestRunnerSpecGuestArgs(t *testing.T) {
 	base := Config{ListenAddr: "127.0.0.1:50052", AgentImage: "agent:latest", RuntimeDir: "/run/compass"}
 	cert := CertResult{CertPath: "/state/tls.crt"}
 	resolved := guestPathsIn("/state/guest-image/abc")
 	tests := []struct {
-		name    string
-		cfg     Config
-		guest   GuestPaths
-		wantEnd []string
+		name       string
+		cfg        Config
+		guest      GuestPaths
+		listenAddr string
+		wantEnd    []string
 	}{
-		{name: "non-microvm remains unchanged", cfg: base, wantEnd: nil},
-		{name: "backend without guest paths", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "container"}, wantEnd: []string{"--backend", "container"}},
+		{name: "non-microvm remains unchanged", cfg: base, listenAddr: base.ListenAddr, wantEnd: nil},
+		{name: "backend without guest paths", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "container"}, listenAddr: base.ListenAddr, wantEnd: []string{"--backend", "container"}},
 		// A microVM backend with no resolved paths is the baked-Runner-image
 		// default: --backend alone, no guest flags.
-		{name: "microvm without resolved paths", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "microvm"}, wantEnd: []string{"--backend", "microvm"}},
+		{name: "microvm without resolved paths", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "microvm"}, listenAddr: base.ListenAddr, wantEnd: []string{"--backend", "microvm"}},
 		{
 			name:  "microvm with resolved paths",
 			cfg:   Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "microvm"},
@@ -155,16 +181,17 @@ func TestRunnerSpecGuestArgs(t *testing.T) {
 				"--microvm-initrd", "/state/guest-image/abc/initrd",
 				"--microvm-image-manifest", "/state/guest-image/abc/manifest.sha256",
 			},
+			listenAddr: base.ListenAddr,
 		},
 		// Resolved paths without a backend forward nothing: --backend gates the
 		// whole guest arg set, so a caller that resolved paths but selected no
 		// backend still gets a byte-identical argv.
-		{name: "resolved paths without a backend forward nothing", cfg: base, guest: resolved, wantEnd: nil},
+		{name: "resolved paths without a backend forward nothing", cfg: base, listenAddr: base.ListenAddr, guest: resolved, wantEnd: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := runnerSpec(tt.cfg, cert, "token", tt.guest, "").Args
-			want := append(baseRunnerArgs(tt.cfg, cert), tt.wantEnd...)
+			got := runnerSpec(tt.cfg, cert, "token", tt.guest, "", tt.listenAddr).Args
+			want := append(baseRunnerArgsAt(tt.cfg, cert, tt.listenAddr), tt.wantEnd...)
 			if !slices.Equal(got, want) {
 				t.Fatalf("runnerSpec Args = %q, want %q", got, want)
 			}
@@ -181,13 +208,13 @@ func TestRunnerSpecOmitsAgentImageUnderMicroVM(t *testing.T) {
 	cert := CertResult{CertPath: "/state/tls.crt"}
 	cfg := Config{ListenAddr: "127.0.0.1:50052", AgentImage: "agent:latest", RuntimeDir: "/run/compass"}
 
-	container := runnerSpec(cfg, cert, "token", GuestPaths{}, "").Args
+	container := runnerSpec(cfg, cert, "token", GuestPaths{}, "", cfg.ListenAddr).Args
 	if i := slices.Index(container, "--image"); i < 0 || container[i+1] != "agent:latest" {
 		t.Fatalf("container-backend args %q must still carry --image agent:latest", container)
 	}
 
 	cfg.RuntimeBackend = "microvm"
-	micro := runnerSpec(cfg, cert, "token", GuestPaths{}, "").Args
+	micro := runnerSpec(cfg, cert, "token", GuestPaths{}, "", cfg.ListenAddr).Args
 	if slices.Contains(micro, "--image") {
 		t.Errorf("microVM args %q carry --image, which the runner refuses", micro)
 	}
@@ -218,7 +245,7 @@ func TestRunnerSpecMicroVMRunRoot(t *testing.T) {
 			t.Setenv(microVMRunRootEnvVar, tt.envRunRoot)
 			cfg := base
 			cfg.RuntimeBackend = tt.backend
-			args := runnerSpec(cfg, cert, "token", GuestPaths{}, os.Getenv(microVMRunRootEnvVar)).Args
+			args := runnerSpec(cfg, cert, "token", GuestPaths{}, os.Getenv(microVMRunRootEnvVar), cfg.ListenAddr).Args
 			index := slices.Index(args, "--microvm-runroot")
 			if tt.wantRunRoot == "" {
 				if index >= 0 {
@@ -233,9 +260,6 @@ func TestRunnerSpecMicroVMRunRoot(t *testing.T) {
 	}
 }
 
-// The empty arm is the load-bearing one: an unset SecretProvider must yield a
-// byte-identical argv, since the embedded supervisor and compass-stack's
-// resolveConfig both leave it zero.
 func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 	base := Config{
 		SocketPath:     "/state/compass.sock",
@@ -244,43 +268,43 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 		NatsClientPort: DefaultNatsClientPort,
 	}
 	cert := CertResult{CertPath: "/state/tls.crt", KeyPath: "/state/tls.key"}
-
+	listenerFile, err := os.CreateTemp(t.TempDir(), "listener")
+	if err != nil {
+		t.Fatalf("CreateTemp listener file: %v", err)
+	}
+	if err := listenerFile.Close(); err != nil {
+		t.Fatalf("Close listener file: %v", err)
+	}
 	tests := []struct {
 		name           string
 		secretProvider string
 		want           []string
 	}{
 		{
-			name: "empty provider preserves six-flag argv",
-			want: []string{
-				"--socket", base.SocketPath,
-				"--database", base.DatabaseDSN,
-				"--nats-url", "nats://127.0.0.1:4222",
-				"--listen", base.ListenAddr,
-				"--tls-cert", cert.CertPath,
-				"--tls-key", cert.KeyPath,
-			},
+			name: "empty provider passes inherited listener",
+			want: []string{"--socket", base.SocketPath, "--database", base.DatabaseDSN,
+				"--nats-url", "nats://127.0.0.1:4222", "--listen-fd", "3",
+				"--tls-cert", cert.CertPath, "--tls-key", cert.KeyPath},
 		},
 		{
 			name:           "provider set appends flag and value",
 			secretProvider: "dotenv:///state/secrets.env",
-			want: []string{
-				"--socket", base.SocketPath,
-				"--database", base.DatabaseDSN,
-				"--nats-url", "nats://127.0.0.1:4222",
-				"--listen", base.ListenAddr,
-				"--tls-cert", cert.CertPath,
-				"--tls-key", cert.KeyPath,
-				"--secret-provider", "dotenv:///state/secrets.env",
-			},
+			want: []string{"--socket", base.SocketPath, "--database", base.DatabaseDSN,
+				"--nats-url", "nats://127.0.0.1:4222", "--listen-fd", "3",
+				"--tls-cert", cert.CertPath, "--tls-key", cert.KeyPath,
+				"--secret-provider", "dotenv:///state/secrets.env"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := base
 			cfg.SecretProvider = tt.secretProvider
-			if got := serverSpec(cfg, cert).Args; !slices.Equal(got, tt.want) {
-				t.Fatalf("serverSpec Args = %q, want %q", got, tt.want)
+			spec := serverSpec(cfg, cert, listenerFile)
+			if !slices.Equal(spec.Args, tt.want) {
+				t.Fatalf("serverSpec Args = %q, want %q", spec.Args, tt.want)
+			}
+			if len(spec.ExtraFiles) != 1 || spec.ExtraFiles[0] != listenerFile {
+				t.Fatalf("serverSpec ExtraFiles = %v, want listener file", spec.ExtraFiles)
 			}
 		})
 	}
@@ -291,6 +315,11 @@ func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 // the container's loopback endpoint and --nats-external the operator's URL.
 func TestServerSpecAlwaysForwardsNatsURL(t *testing.T) {
 	cert := CertResult{CertPath: "/state/tls.crt", KeyPath: "/state/tls.key"}
+	listenerFile, err := os.CreateTemp(t.TempDir(), "listener")
+	if err != nil {
+		t.Fatalf("CreateTemp listener file: %v", err)
+	}
+	defer listenerFile.Close()
 	tests := []struct {
 		name, external, want string
 	}{
@@ -306,7 +335,7 @@ func TestServerSpecAlwaysForwardsNatsURL(t *testing.T) {
 				ExternalNatsURL: tt.external,
 				NatsClientPort:  14222,
 			}
-			args := serverSpec(cfg, cert).Args
+			args := serverSpec(cfg, cert, listenerFile).Args
 			i := slices.Index(args, "--nats-url")
 			if i < 0 || i+1 == len(args) {
 				t.Fatalf("serverSpec Args = %q, want --nats-url with a value", args)

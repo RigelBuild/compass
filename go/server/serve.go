@@ -100,6 +100,9 @@ type ServeConfig struct {
 	// (e.g. "0.0.0.0:8443"). Empty on the socket-only shipped path. When set, TLS
 	// is required — a bearer token over cleartext is credential disclosure.
 	Listen string
+	// ListenListener is an already-bound network-door listener inherited from
+	// the parent. When set, it replaces Listen as the bind source.
+	ListenListener net.Listener
 	// AdminHandle is the handle of the bootstrap-admin account created (or found)
 	// at startup — the identity the local-socket door attributes callers to and
 	// the network door's AdminGate compares against. Empty defaults to "admin".
@@ -945,7 +948,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 // serveDoors holds the three compass.v1 doors Serve drives: the shipped Unix
 // socket (always built), the optional dev loopback browser door, and the
 // optional authenticated network door. dev and net are nil when their listener
-// is off (dev unless --dev-http, network unless --listen).
+// is off (dev unless --dev-http, network unless --listen or cfg.ListenListener).
 type serveDoors struct {
 	uds *http.Server
 	dev *http.Server

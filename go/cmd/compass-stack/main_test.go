@@ -70,7 +70,7 @@ func TestResolveConfig(t *testing.T) {
 		f := baseFlags(t.TempDir())
 		f.listen = "127.0.0.1:0"
 		if _, err := resolveConfig(f); err == nil {
-			t.Fatal("expected Validate to reject an ephemeral :0 listen addr, got nil")
+			t.Fatal("expected resolveConfig to reject an ephemeral :0 listen addr, got nil")
 		}
 	})
 

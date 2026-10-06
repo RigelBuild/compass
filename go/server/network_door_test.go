@@ -232,6 +232,25 @@ func readAdminToken(t *testing.T, stateDir string) string {
 
 // ---- Group 1: TLS handshake against a self-signed pair ----
 
+func TestBindListenersClosesInheritedListenerWhenTLSFails(t *testing.T) {
+	listener, err := net.Listen("tcp", loopbackAny)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	_, err = bindListeners(ServeConfig{
+		ListenListener: listener,
+		TLS:            &TLSConfig{CertPath: filepath.Join(t.TempDir(), "missing.crt"), KeyPath: filepath.Join(t.TempDir(), "missing.key")},
+	})
+	if err == nil {
+		t.Fatal("bindListeners() error = nil, want TLS load failure")
+	}
+	conn, dialErr := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	if dialErr == nil {
+		_ = conn.Close()
+		t.Fatal("inherited listener still accepted connections after TLS failure")
+	}
+}
+
 // TestServeNetworkDoorTLSHandshakeAndRPC: with --listen and a valid keypair, a
 // client that trusts the cert completes the TLS handshake with ALPN h2 and
 // round-trips GetServerInfo over TLS. This defends the whole network-door
@@ -289,6 +308,54 @@ func TestServeNetworkDoorTLSHandshakeAndRPC(t *testing.T) {
 	}
 	if got := resp.Msg.GetVersion(); got != "tls-test" {
 		t.Fatalf("Version over TLS = %q, want tls-test", got)
+	}
+}
+
+// TestServeWithInheritedListenerServesTLSAndRPC covers the listener path used by the stack.
+func TestServeWithInheritedListenerServesTLSAndRPC(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "compass.sock")
+	stateDir := filepath.Join(dir, "state")
+	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
+	listener, err := net.Listen("tcp", loopbackAny)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	bound := serveInBackground(t, ServeConfig{
+		SocketPath:     socketPath,
+		DatabaseDSN:    pgtest.RequireDSN(t),
+		Version:        "inherited-listener-test",
+		ListenListener: listener,
+		TLS:            &TLSConfig{CertPath: certPath, KeyPath: keyPath},
+		StateDir:       stateDir,
+	})
+	if bound.network != addr {
+		t.Fatalf("inherited listener bound address = %q, want %q", bound.network, addr)
+	}
+	waitServing(t, socketPath)
+	rawConn, err := tls.DialWithDialer(&net.Dialer{Deadline: time.Now().Add(testTimeout)}, "tcp", addr,
+		&tls.Config{RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}})
+	if err != nil {
+		t.Fatalf("TLS handshake against inherited listener: %v", err)
+	}
+	if got := rawConn.ConnectionState().NegotiatedProtocol; got != "h2" {
+		t.Fatalf("negotiated ALPN = %q, want h2", got)
+	}
+	if err := rawConn.Close(); err != nil {
+		t.Fatalf("close TLS connection: %v", err)
+	}
+	client := newTLSClient(t, addr, pool)
+	req := connect.NewRequest(&compassv1.GetServerInfoRequest{})
+	req.Header().Set("Authorization", "Bearer "+readAdminToken(t, stateDir))
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	resp, err := client.GetServerInfo(ctx, req)
+	if err != nil {
+		t.Fatalf("GetServerInfo through inherited listener: %v", err)
+	}
+	if got := resp.Msg.GetVersion(); got != "inherited-listener-test" {
+		t.Fatalf("Version = %q, want inherited-listener-test", got)
 	}
 }
 

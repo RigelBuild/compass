@@ -32,10 +32,9 @@ func TestConfigValidate(t *testing.T) { //nolint:funlen // validation matrix kee
 			errSubstrs: []string{"ListenAddr"},
 		},
 		{
-			name:       "ephemeral port rejected",
-			mutate:     func(c *Config) { c.ListenAddr = "127.0.0.1:0" },
-			wantErr:    true,
-			errSubstrs: []string{":0", "discovery"},
+			name:    "ephemeral port accepted",
+			mutate:  func(c *Config) { c.ListenAddr = "127.0.0.1:0" },
+			wantErr: false,
 		},
 		{
 			name: "runtime dir over sun_path budget",

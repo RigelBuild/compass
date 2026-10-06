@@ -62,6 +62,7 @@ func (s *ProcessSupervisor) Start(_ context.Context, spec stack.ProcessSpec) (st
 
 	cmd := exec.Command(path, spec.Args...) //nolint:gosec // G204: the process-supervisor seam — path is a LookPath-resolved deployment binary and Args are Stack-built, neither user-controlled
 	cmd.Env = append(os.Environ(), spec.Env...)
+	cmd.ExtraFiles = spec.ExtraFiles
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// Own process group: Signal/escalation target the group (negative PID), so a

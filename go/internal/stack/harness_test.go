@@ -4,6 +4,7 @@ package stack
 
 import (
 	"context"
+	"net"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -91,6 +92,16 @@ func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, 
 		s.serverStarted.Store(true)
 	}
 	return &stubProcess{name: spec.Component.String(), pid: fakePid(spec.Component), rec: s.rec}, nil
+}
+func (s *stubSupervisor) spec(t *testing.T, c Component) ProcessSpec {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	spec, ok := s.specs[c]
+	if !ok {
+		t.Fatalf("%s never started", c)
+	}
+	return spec
 }
 
 // lastArgs returns the argument vector the named component was last started
@@ -761,6 +772,13 @@ func newHarness(t *testing.T) (Config, *harness) {
 		gateway: gateway, gatewayProber: gatewayProber,
 	}
 	h.deps = Deps{
+		ListenTCP: func(network, address string) (*net.TCPListener, error) {
+			addr, err := net.ResolveTCPAddr(network, address)
+			if err != nil {
+				return nil, err
+			}
+			return net.ListenTCP(network, addr)
+		},
 		Supervisor:         sup,
 		Certs:              cert,
 		Tokens:             token,
@@ -780,7 +798,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	cfg := Config{
 		StateDir:    t.TempDir(),
 		SocketPath:  filepath.Join(t.TempDir(), "server.sock"),
-		ListenAddr:  "127.0.0.1:50052",
+		ListenAddr:  "127.0.0.1:0",
 		DatabaseDSN: "postgres:///compass",
 		AgentImage:  "ghcr.io/example/compass-agent:latest",
 		RuntimeDir:  "/run/user/1000/compass",
