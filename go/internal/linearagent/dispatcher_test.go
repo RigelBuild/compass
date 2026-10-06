@@ -113,13 +113,19 @@ func (a *fakeAssoc) LinearAgentSession(_ context.Context, _ string) (store.Linea
 	return a.lookupRow, nil
 }
 
-// fakeDeliveries is the replay probe: recorded reports a stored post, err a failed read.
+// fakeDeliveries is the replay probe: recorded reports a stored post, err a
+// failed read. probes records each "author key" it was asked about.
 type fakeDeliveries struct {
+	mu       sync.Mutex
 	recorded bool
 	err      error
+	probes   []string
 }
 
-func (f *fakeDeliveries) MessageRequestRecorded(context.Context, store.AccountID, string) (bool, error) {
+func (f *fakeDeliveries) MessageRequestRecorded(_ context.Context, author store.AccountID, key string) (bool, error) {
+	f.mu.Lock()
+	f.probes = append(f.probes, string(author)+" "+key)
+	f.mu.Unlock()
 	return f.recorded, f.err
 }
 
@@ -317,16 +323,18 @@ func TestDispatcherReplayKeysOnDeliveryID(t *testing.T) {
 }
 
 // TestDispatcherRecordedDeliverySkipsEverything pins the replay skip: once a
-// delivery's post is stored, a replay emits nothing to Linear and posts nothing,
-// and a failed probe reports an error instead of emitting.
+// delivery's post is stored, a replayed created or prompted emits and posts
+// nothing, and a failed probe reports an error instead.
 func TestDispatcherRecordedDeliverySkipsEverything(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
+		action     string
 		deliveries *fakeDeliveries
 		wantErrors int
 	}{
-		{"recorded", &fakeDeliveries{recorded: true}, 0},
-		{"probe error", &fakeDeliveries{err: errors.New("db down")}, 1},
+		{"recorded created", "created", &fakeDeliveries{recorded: true}, 0},
+		{"recorded prompted", "prompted", &fakeDeliveries{recorded: true}, 0},
+		{"probe error", "created", &fakeDeliveries{err: errors.New("db down")}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			comms := &recordingComms{posted: make(chan struct{}, 1)}
@@ -335,7 +343,7 @@ func TestDispatcherRecordedDeliverySkipsEverything(t *testing.T) {
 				res:        &fakeResolver{manager: "mgr", homeChannel: "chan"},
 				comms:      comms,
 				topics:     &fakeTopics{topicID: "topic"},
-				assoc:      &fakeAssoc{},
+				assoc:      &fakeAssoc{lookupRow: store.LinearAgentSessionRow{TopicID: "topic", ManagerAccountID: "mgr"}},
 				client:     client,
 				deliveries: tc.deliveries,
 			})
@@ -343,8 +351,9 @@ func TestDispatcherRecordedDeliverySkipsEverything(t *testing.T) {
 			defer stop()
 
 			for _, ev := range []*SessionEvent{
-				{Action: "created", DeliveryID: "delivery-1", AgentSession: AgentSession{ID: "sess-1"}},
-				// Undeduped, so it always runs: once it posts, the event before it was handled.
+				{Action: tc.action, DeliveryID: "delivery-1", AgentSession: AgentSession{ID: "sess-1"}},
+				{Action: "unknown"}, // ignored before the probe
+				// Undeduped, so it always runs: once it posts, the events before it were handled.
 				{Action: "created", AgentSession: AgentSession{ID: "sess-2"}},
 			} {
 				if err := d.Enqueue(ev); err != nil {
@@ -360,6 +369,10 @@ func TestDispatcherRecordedDeliverySkipsEverything(t *testing.T) {
 			}
 			if got := client.sessionsFor("error"); len(got) != tc.wantErrors {
 				t.Errorf("error activities = %v, want %d", got, tc.wantErrors)
+			}
+			// Only the deduped event is probed, under the bridge and the delivery key.
+			if want := []string{string(testBridge) + " linear-delivery:delivery-1"}; !slices.Equal(tc.deliveries.probes, want) {
+				t.Errorf("probes = %q, want %q", tc.deliveries.probes, want)
 			}
 		})
 	}
