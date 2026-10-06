@@ -688,6 +688,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 // Returns the channel with its updated member set, plus the accounts a removal
 // actually deleted (a remove of a non-member deletes nothing and owes no event)
 // so the stream can deliver each departed member its one final ChannelChanged.
+// On a TREE channel only subscription changes are accepted (updateTreeSubscriptions).
 // D9 write-authz is enforced here in the store: the actor must be a member of
 // the channel to mutate it, so an unknown channel and a non-member both return
 // ErrNotFound (the not-found/forbidden merge).
@@ -800,8 +801,12 @@ func updateTreeSubscriptions(ctx context.Context, tx pgx.Tx, channelID ChannelID
 		}
 	}
 	for _, u := range updates {
-		if err := requireChannelMember(ctx, tx, u.AccountID, channelID); err != nil {
+		participant, err := isChannelMember(ctx, tx, u.AccountID, channelID)
+		if err != nil {
 			return err
+		}
+		if !participant {
+			return fmt.Errorf("%w: account %q is not a participant of channel %q", ErrNotFound, u.AccountID, channelID)
 		}
 		if err := db.New(tx).UpsertChannelSubscription(ctx, db.UpsertChannelSubscriptionParams{
 			ChannelID:  string(channelID),

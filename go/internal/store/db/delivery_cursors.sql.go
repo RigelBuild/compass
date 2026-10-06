@@ -75,6 +75,7 @@ WITH RECURSIVE chain AS (
 ), participants AS (
     SELECT cm.channel_id, cm.account_id, cm.subscribed
     FROM channel_members cm
+    JOIN channels c ON c.id = cm.channel_id AND c.membership_mode = 0
     WHERE cm.account_id = $1
     UNION ALL
     SELECT c.id AS channel_id, ch.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
@@ -369,6 +370,7 @@ WITH RECURSIVE chain AS (
 ), participants AS (
     SELECT cm.channel_id, cm.account_id, cm.subscribed
     FROM channel_members cm
+    JOIN channels c ON c.id = cm.channel_id AND c.membership_mode = 0
     WHERE cm.account_id = $1
     UNION ALL
     SELECT c.id AS channel_id, ch.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed

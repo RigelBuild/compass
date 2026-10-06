@@ -667,6 +667,7 @@ type Querier interface {
 	// SweepChannels here; UndeliveredMessages, InSweepSet in delivery_cursors.sql)
 	// drive from a participants CTE: stored member rows UNION the TREE-derived set.
 	// Channel-keyed sites walk the anchor's subtree; account-keyed ones the chain up.
+	// Copies of each walk MUST stay identical; the stored arm skips TREE channels.
 	// reach: the author may reach agent aa
 	SubscribedAgents(ctx context.Context, arg SubscribedAgentsParams) ([]string, error)
 	// Exact-artifact subscribers, plus (on an opened event) the container-scope

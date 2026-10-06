@@ -4,6 +4,7 @@ package store
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -95,7 +96,7 @@ func TestChannelTreeReparentOutMakesOverrideInert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChannelAgentMembers: %v", err)
 	}
-	if slices.Contains(members, f.leaf.ID) {
+	if slices.ContainsFunc(members, func(member ChannelAgentMember) bool { return member.ID == f.leaf.ID }) {
 		t.Fatalf("ChannelAgentMembers = %v; want reparented leaf absent", members)
 	}
 	var overrides int
@@ -121,8 +122,13 @@ func TestChannelTreeAgentMembersAreTheSubtree(t *testing.T) {
 	}
 	want := []AccountID{f.mid.ID, f.leaf.ID}
 	slices.Sort(want)
-	if !slices.Equal(members, want) {
-		t.Fatalf("ChannelAgentMembers(author=root) = %v; want subtree %v without author, owner, or sibling", members, want)
+	got := make([]AccountID, 0, len(members))
+	for _, member := range members {
+		got = append(got, member.ID)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("ChannelAgentMembers(author=root) = %v; want subtree %v without author, owner, or sibling", got, want)
 	}
 }
 
@@ -147,4 +153,9 @@ func TestChannelTreeMembershipWritesRefused(t *testing.T) {
 		PostPolicy: ChannelPostPolicyOwnerOnly, OwnerAccountID: f.owner.ID,
 	})
 	sentinelIs(t, err, ErrInvalidArgument, "TREE OWNER_ONLY")
+	// The owner-is-member check also refuses here, since TREE has no member
+	// rows; the message pins that the TREE guard is the one that fired.
+	if !strings.Contains(err.Error(), "TREE") {
+		t.Fatalf("TREE OWNER_ONLY refused by %v; want the TREE guard", err)
+	}
 }

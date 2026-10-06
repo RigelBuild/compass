@@ -5,6 +5,7 @@
 -- SweepChannels here; UndeliveredMessages, InSweepSet in delivery_cursors.sql)
 -- drive from a participants CTE: stored member rows UNION the TREE-derived set.
 -- Channel-keyed sites walk the anchor's subtree; account-keyed ones the chain up.
+-- Copies of each walk MUST stay identical; the stored arm skips TREE channels.
 
 -- name: SubscribedAgents :many
 WITH RECURSIVE subtree AS (
@@ -18,6 +19,7 @@ WITH RECURSIVE subtree AS (
 ), participants AS (
     SELECT cm.channel_id, cm.account_id, cm.subscribed
     FROM channel_members cm
+    JOIN channels c ON c.id = cm.channel_id AND c.membership_mode = 0
     WHERE cm.channel_id = $1
     UNION ALL
     SELECT s.channel_id, s.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
@@ -55,6 +57,7 @@ WITH RECURSIVE subtree AS (
 ), participants AS (
     SELECT cm.channel_id, cm.account_id, cm.subscribed
     FROM channel_members cm
+    JOIN channels c ON c.id = cm.channel_id AND c.membership_mode = 0
     WHERE cm.channel_id = $1
     UNION ALL
     SELECT s.channel_id, s.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
@@ -111,6 +114,7 @@ WITH RECURSIVE chain AS (
 ), participants AS (
     SELECT cm.channel_id, cm.account_id, cm.subscribed
     FROM channel_members cm
+    JOIN channels c ON c.id = cm.channel_id AND c.membership_mode = 0
     WHERE cm.account_id = $1
     UNION ALL
     SELECT c.id AS channel_id, ch.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
