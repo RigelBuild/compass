@@ -37,6 +37,17 @@ func TestRunDetachedCarriesFailureText(t *testing.T) {
 			wantErr: []string{"canned model server Close: closed"},
 		},
 		{
+			name: "fail without a message still fails",
+			fn: func(tb testing.TB) {
+				tb.Helper()
+				tb.Fail()
+				if !tb.Failed() {
+					tb.Errorf("Failed() = false after Fail()")
+				}
+			},
+			wantErr: []string{"Fail called"},
+		},
+		{
 			name: "panic is reported",
 			fn: func(testing.TB) {
 				var step func()

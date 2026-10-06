@@ -181,6 +181,8 @@ func (r *standUpRecorder) Error(args ...any)                 { r.record(fmt.Spri
 func (r *standUpRecorder) Errorf(format string, args ...any) { r.record(fmt.Sprintf(format, args...)) }
 func (r *standUpRecorder) Fatal(args ...any)                 { r.record(fmt.Sprint(args...)); runtime.Goexit() }
 func (r *standUpRecorder) FailNow()                          { r.record("FailNow called"); runtime.Goexit() }
+func (r *standUpRecorder) Fail()                             { r.record("Fail called") }
+func (r *standUpRecorder) Failed() bool                      { return len(r.failures()) > 0 }
 
 func (r *standUpRecorder) Fatalf(format string, args ...any) {
 	r.record(fmt.Sprintf(format, args...))
