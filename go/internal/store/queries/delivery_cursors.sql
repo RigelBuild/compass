@@ -95,8 +95,29 @@ UPDATE agent_delivery_cursors
 SET acked_seq = $3, above_seqs = $4, acked_at = now()
 WHERE agent_account_id = $1 AND channel_id = $2;
 -- name: UndeliveredMessages :many
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $1
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+), participants AS (
+    SELECT cm.channel_id, cm.account_id, cm.subscribed
+    FROM channel_members cm
+    WHERE cm.account_id = $1
+    UNION ALL
+    SELECT c.id AS channel_id, ch.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
+    FROM channels c
+    JOIN chain ch ON ch.account_id = $1
+    LEFT JOIN channel_subscriptions cs
+        ON cs.channel_id = c.id AND cs.account_id = ch.account_id
+    WHERE c.membership_mode = 1
+      AND c.parent_agent_id IN (SELECT account_id FROM chain)
+)
 SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
-FROM channel_members cm
+FROM participants cm
 JOIN agent_accounts aa ON aa.account_id = cm.account_id
 JOIN topics t ON t.channel_id = cm.channel_id
 JOIN messages m ON m.topic_id = t.id
@@ -124,9 +145,32 @@ WHERE cm.account_id = $1
 ORDER BY t.channel_id, m.seq ASC;
 
 -- name: InSweepSet :one
+WITH RECURSIVE chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $1
+      AND EXISTS (SELECT 1 FROM channels WHERE id = $2 AND membership_mode = 1)
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+), participants AS (
+    SELECT cm.channel_id, cm.account_id, cm.subscribed
+    FROM channel_members cm
+    WHERE cm.account_id = $1
+    UNION ALL
+    SELECT c.id AS channel_id, ch.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
+    FROM channels c
+    JOIN chain ch ON ch.account_id = $1
+    LEFT JOIN channel_subscriptions cs
+        ON cs.channel_id = c.id AND cs.account_id = ch.account_id
+    WHERE c.membership_mode = 1
+      AND c.id = $2
+      AND c.parent_agent_id IN (SELECT account_id FROM chain)
+)
 SELECT EXISTS(
 	SELECT 1
-	FROM channel_members cm
+	FROM participants cm
 	JOIN agent_accounts aa ON aa.account_id = cm.account_id
 	JOIN channels ch ON ch.id = cm.channel_id
 	WHERE cm.account_id = $1

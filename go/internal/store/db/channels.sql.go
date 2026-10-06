@@ -726,35 +726,37 @@ func (q *Queries) LockChannelForReparent(ctx context.Context, id string) (LockCh
 }
 
 const lockChannelMandatoryKind = `-- name: LockChannelMandatoryKind :one
-SELECT mandatory_subscription, kind FROM channels WHERE id = $1 FOR UPDATE
+SELECT mandatory_subscription, kind, membership_mode FROM channels WHERE id = $1 FOR UPDATE
 `
 
 type LockChannelMandatoryKindRow struct {
 	MandatorySubscription bool
 	Kind                  int16
+	MembershipMode        int16
 }
 
 func (q *Queries) LockChannelMandatoryKind(ctx context.Context, id string) (LockChannelMandatoryKindRow, error) {
 	row := q.db.QueryRow(ctx, lockChannelMandatoryKind, id)
 	var i LockChannelMandatoryKindRow
-	err := row.Scan(&i.MandatorySubscription, &i.Kind)
+	err := row.Scan(&i.MandatorySubscription, &i.Kind, &i.MembershipMode)
 	return i, err
 }
 
 const lockChannelPolicy = `-- name: LockChannelPolicy :one
-SELECT mandatory_subscription, COALESCE(owner_account_id, '') AS owner_account_id
+SELECT mandatory_subscription, COALESCE(owner_account_id, '') AS owner_account_id, membership_mode
 FROM channels WHERE id = $1 FOR UPDATE
 `
 
 type LockChannelPolicyRow struct {
 	MandatorySubscription bool
 	OwnerAccountID        string
+	MembershipMode        int16
 }
 
 func (q *Queries) LockChannelPolicy(ctx context.Context, id string) (LockChannelPolicyRow, error) {
 	row := q.db.QueryRow(ctx, lockChannelPolicy, id)
 	var i LockChannelPolicyRow
-	err := row.Scan(&i.MandatorySubscription, &i.OwnerAccountID)
+	err := row.Scan(&i.MandatorySubscription, &i.OwnerAccountID, &i.MembershipMode)
 	return i, err
 }
 
@@ -837,5 +839,23 @@ type UpsertChannelMemberParams struct {
 
 func (q *Queries) UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error {
 	_, err := q.db.Exec(ctx, upsertChannelMember, arg.ChannelID, arg.AccountID, arg.Subscribed)
+	return err
+}
+
+const upsertChannelSubscription = `-- name: UpsertChannelSubscription :exec
+INSERT INTO channel_subscriptions (channel_id, account_id, subscribed)
+VALUES ($1, $2, $3)
+ON CONFLICT (channel_id, account_id) DO UPDATE SET subscribed = EXCLUDED.subscribed
+`
+
+type UpsertChannelSubscriptionParams struct {
+	ChannelID  string
+	AccountID  string
+	Subscribed bool
+}
+
+// A TREE channel's per-account subscribe override; it has no member rows.
+func (q *Queries) UpsertChannelSubscription(ctx context.Context, arg UpsertChannelSubscriptionParams) error {
+	_, err := q.db.Exec(ctx, upsertChannelSubscription, arg.ChannelID, arg.AccountID, arg.Subscribed)
 	return err
 }

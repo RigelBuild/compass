@@ -70,7 +70,9 @@ type NewChannel struct {
 // MemberUpdate is one add/remove/subscribe mutation for UpdateChannelMembers
 // (RT-1): the single membership-mutation carrier behind the RT-1 RPC. Add and
 // Remove are mutually exclusive per call; Subscribed flips the per-member
-// subscribed flag on an existing or added row.
+// subscribed flag on an existing or added row. On a TREE channel only a
+// subscribe or explicit unsubscribe of a derived participant is accepted: it
+// writes the account's channel_subscriptions override, never a member row.
 type MemberUpdate struct {
 	AccountID AccountID
 	// Remove removes the member instead of adding/updating it.

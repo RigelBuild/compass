@@ -71,6 +71,12 @@ INSERT INTO channel_members (channel_id, account_id, subscribed)
 VALUES ($1, $2, $3)
 ON CONFLICT (channel_id, account_id) DO UPDATE SET subscribed = EXCLUDED.subscribed;
 
+-- name: UpsertChannelSubscription :exec
+-- A TREE channel's per-account subscribe override; it has no member rows.
+INSERT INTO channel_subscriptions (channel_id, account_id, subscribed)
+VALUES ($1, $2, $3)
+ON CONFLICT (channel_id, account_id) DO UPDATE SET subscribed = EXCLUDED.subscribed;
+
 -- name: DeleteChannelMember :execrows
 DELETE FROM channel_members WHERE channel_id = $1 AND account_id = $2;
 
@@ -81,7 +87,7 @@ SELECT owner_user_id FROM agent_accounts WHERE account_id = ANY($1::text[]);
 SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2);
 
 -- name: LockChannelMandatoryKind :one
-SELECT mandatory_subscription, kind FROM channels WHERE id = $1 FOR UPDATE;
+SELECT mandatory_subscription, kind, membership_mode FROM channels WHERE id = $1 FOR UPDATE;
 
 -- name: ConvertDMChannel :exec
 UPDATE channels SET kind = $1, name = $2, group_id = NULL, mandatory_subscription = FALSE WHERE id = $3;
@@ -103,7 +109,7 @@ SELECT EXISTS (
 );
 
 -- name: LockChannelPolicy :one
-SELECT mandatory_subscription, COALESCE(owner_account_id, '') AS owner_account_id
+SELECT mandatory_subscription, COALESCE(owner_account_id, '') AS owner_account_id, membership_mode
 FROM channels WHERE id = $1 FOR UPDATE;
 
 -- name: UpdateChannelPolicy :exec
