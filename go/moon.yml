@@ -78,6 +78,14 @@ tasks:
       runFromWorkspaceRoot: false
     inputs: *go_sources
 
+  tidy:
+    # Fail if `go mod tidy` would change go.mod/go.sum: a drift also breaks the
+    # nix vendorHash. `-diff` prints the change and exits 1, never writes.
+    command: 'go mod tidy -diff'
+    options:
+      runFromWorkspaceRoot: false
+    inputs: *go_sources
+
   lint:
     # golangci-lint over the module against .golangci.yml (F1 enable-all +
     # reasoned disable-list, with the load-bearing gochecksumtype/exhaustive
@@ -323,7 +331,7 @@ tasks:
     inputs: *sqlc_sources
 
   ci:
-    # module is affected: format, vet, lint (incl. exhaustiveness), -race test,
+    # module is affected: format, vet, go.mod tidiness, lint (incl. exhaustiveness), -race test,
     # build, the supply-chain fence, and the sqlc drift gate. `drift` is NOT a
     # dep here — it belongs to the schema pipeline (compass-proto) and is
     # scheduled through the gen tree, matching compass-proto/moon.yml's own
@@ -337,6 +345,6 @@ tasks:
     # The credential-denylist drift gate is deliberately NOT here: its trigger is
     # the SDK pin moving, which lives on the JS side, and this project has no
     # dependency edge to it. It belongs to compass-agent, which owns the pin.
-    deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses', 'sqlc-drift']
+    deps: ['fmt', 'vet', 'tidy', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses', 'sqlc-drift']
     options:
       cache: false
