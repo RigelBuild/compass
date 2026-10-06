@@ -21,6 +21,10 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 	if strings.Contains(g.Name, "/") {
 		return ChannelGroup{}, fmt.Errorf("%w: group name %q cannot contain '/'", ErrInvalidArgument, g.Name)
 	}
+	// A leading '~' would read as an owner qualifier in an anchored group ref.
+	if strings.HasPrefix(g.Name, "~") {
+		return ChannelGroup{}, fmt.Errorf("%w: group name %q cannot start with '~'", ErrInvalidArgument, g.Name)
+	}
 	// System groups own these names at top level; nested reuse is an ordinary group.
 	if g.ParentGroupID == "" && isReservedGroupName(g.Name) {
 		return ChannelGroup{}, fmt.Errorf("%w: group name %q is reserved", ErrInvalidArgument, g.Name)
@@ -359,7 +363,7 @@ func resolveGroupRef(groups []ChannelGroup, handles map[AccountID]string, ref st
 		case 1:
 			return matches[0], nil
 		default:
-			return ChannelGroup{}, fmt.Errorf("%w: group name %q is ambiguous — it names %d visible groups; use one of %s",
+			return ChannelGroup{}, fmt.Errorf("%w: group name %q is ambiguous — it names %d visible groups%s",
 				ErrInvalidArgument, ref, len(matches), groupRefHints(groups, handles, matches))
 		}
 	}
@@ -369,7 +373,8 @@ func resolveGroupRef(groups []ChannelGroup, handles map[AccountID]string, ref st
 	}
 	owner := ""
 	if anchored && strings.HasPrefix(segments[0], "~") {
-		owner = strings.TrimPrefix(segments[0], "~")
+		// Handles are lowercase, and callers often write them as mentions.
+		owner = strings.ToLower(strings.TrimPrefix(strings.TrimPrefix(segments[0], "~"), "@"))
 		segments = segments[1:]
 		if owner == "" || len(segments) == 0 {
 			return ChannelGroup{}, fmt.Errorf("%w: group path %q needs an owner handle and a group, e.g. /~matt/eng", ErrInvalidArgument, ref)
@@ -401,7 +406,7 @@ func resolveGroupRef(groups []ChannelGroup, handles map[AccountID]string, ref st
 		for _, group := range candidates {
 			matches = append(matches, group)
 		}
-		return ChannelGroup{}, fmt.Errorf("%w: group path %q is ambiguous; use one of %s",
+		return ChannelGroup{}, fmt.Errorf("%w: group path %q is ambiguous%s",
 			ErrInvalidArgument, ref, groupRefHints(groups, handles, matches))
 	}
 	for _, group := range candidates {
@@ -411,7 +416,8 @@ func resolveGroupRef(groups []ChannelGroup, handles map[AccountID]string, ref st
 }
 
 // groupRefHints names, for each match, the anchored path when it is unique among
-// the visible groups and otherwise the owner-qualified path, so the caller can retry.
+// the visible groups and otherwise the owner-qualified path, so the caller can
+// retry. It returns "" when no match has a ref that would resolve it.
 func groupRefHints(groups []ChannelGroup, handles map[AccountID]string, matches []ChannelGroup) string {
 	byID := make(map[ChannelGroupID]ChannelGroup, len(groups))
 	for _, group := range groups {
@@ -429,7 +435,11 @@ func groupRefHints(groups []ChannelGroup, handles map[AccountID]string, matches 
 			group = parent
 			path = group.Name + "/" + path
 		}
-		forms := refForms{anchored: "/" + path}
+		var forms refForms
+		// A legacy top-level name starting with '~' would parse as an owner qualifier.
+		if !strings.HasPrefix(group.Name, "~") {
+			forms.anchored = "/" + path
+		}
 		if handle, ok := handles[group.NamespaceOwnerID]; ok {
 			forms.qualified = "/~" + handle + "/" + path
 		}
@@ -449,13 +459,14 @@ func groupRefHints(groups []ChannelGroup, handles map[AccountID]string, matches 
 			hints = append(hints, forms.anchored)
 		case forms.qualified != "":
 			hints = append(hints, forms.qualified)
-		case forms.anchored != "":
-			hints = append(hints, forms.anchored)
 		}
+	}
+	if len(hints) == 0 {
+		return ""
 	}
 	slices.Sort(hints)
 	hints = slices.Compact(hints)
-	return strings.Join(hints, ", ") + " (a leading / anchors at the top level; /~owner/ picks the top-level group's owner)"
+	return "; use one of " + strings.Join(hints, ", ") + " (a leading / anchors at the top level; /~owner/ picks the top-level group's owner)"
 }
 
 // ChannelByNameForViewer resolves a channel NAME to its Channel within the set

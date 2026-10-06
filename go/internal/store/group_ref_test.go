@@ -60,6 +60,9 @@ func TestResolveGroupRef(t *testing.T) {
 		{name: "unanchored path picks the nested group", ref: "eng/infra", wantID: "eng-infra"},
 		{name: "anchored path through an ambiguous top level", ref: "/eng/infra", wantID: "eng-infra"},
 		{name: "anchor never matches a nested group", ref: "/leaf", wantErr: ErrNotFound},
+		{name: "qualifier ignores case", ref: "/~Viewer/eng", wantID: "viewer-eng"},
+		{name: "qualifier strips one leading @", ref: "/~@stranger/eng", wantID: "stranger-eng"},
+		{name: "qualifier strips only one @", ref: "/~@@stranger/eng", wantErr: ErrNotFound},
 	}
 
 	for _, tt := range tests {
@@ -112,5 +115,49 @@ func TestResolveGroupRefAmbiguityNamesTheFix(t *testing.T) {
 				t.Errorf("hint %q resolves to %q, %v; want %q", hint, got.ID, err, wantID)
 			}
 		}
+	}
+}
+
+// TestResolveGroupRefHintForLegacyTildeName: a pre-guard top-level name that
+// starts with '~' would parse as an owner qualifier, so its hint is qualified.
+func TestResolveGroupRefHintForLegacyTildeName(t *testing.T) {
+	groups := []ChannelGroup{
+		{ID: "top-ops", Name: "~ops", NamespaceOwnerID: "viewer-id"},
+		{ID: "eng", Name: "eng", NamespaceOwnerID: "viewer-id"},
+		{ID: "eng-ops", Name: "~ops", ParentGroupID: "eng", NamespaceOwnerID: "viewer-id"},
+	}
+	handles := map[AccountID]string{"viewer-id": "viewer"}
+	_, err := resolveGroupRef(groups, handles, "~ops")
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("resolveGroupRef(~ops) error = %v, want invalid argument", err)
+	}
+	for item := range strings.SplitSeq(err.Error(), ", ") {
+		if strings.HasSuffix(item, "use one of /~ops") || strings.HasPrefix(item, "/~ops") {
+			t.Errorf("error %q offers the unparseable anchored ref /~ops", err)
+		}
+	}
+	for hint, wantID := range map[string]ChannelGroupID{"/~viewer/~ops": "top-ops", "/eng/~ops": "eng-ops"} {
+		if !strings.Contains(err.Error(), hint) {
+			t.Errorf("error %q does not name %q", err, hint)
+		}
+		if got, err := resolveGroupRef(groups, handles, hint); err != nil || got.ID != wantID {
+			t.Errorf("hint %q resolves to %q, %v; want %q", hint, got.ID, err, wantID)
+		}
+	}
+}
+
+// TestResolveGroupRefNoHintOmitsClause: with no ref to offer, the error must not
+// promise one.
+func TestResolveGroupRefNoHintOmitsClause(t *testing.T) {
+	groups := []ChannelGroup{
+		{ID: "x-1", Name: "x", NamespaceOwnerID: "ghost-1"},
+		{ID: "x-2", Name: "x", NamespaceOwnerID: "ghost-2"},
+	}
+	_, err := resolveGroupRef(groups, nil, "x")
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("resolveGroupRef(x) error = %v, want invalid argument", err)
+	}
+	if strings.Contains(err.Error(), "use one of") {
+		t.Errorf("error %q offers an empty hint list", err)
 	}
 }

@@ -109,6 +109,95 @@ func TestChannelGroupByRefForViewerQualifiesOwner(t *testing.T) {
 	}
 }
 
+// TestOwnerGroupVisibleAcrossNamespace: an owner-only group an agent creates
+// belongs to its user's namespace, so the user and sibling agents see it too.
+func TestOwnerGroupVisibleAcrossNamespace(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	a1 := mustAgent(t, s, owner.ID, "a1")
+	a2 := mustAgent(t, s, owner.ID, "a2")
+	stranger := mustUser(t, s, "stranger")
+	strangerAgent := mustAgent(t, s, stranger.ID, "spy")
+	secret, err := s.CreateChannelGroup(ctx, a1.ID, NewChannelGroup{Name: "secret", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(secret): %v", err)
+	}
+	for _, viewer := range []AccountID{owner.ID, a1.ID, a2.ID} {
+		visible, err := s.ChannelGroupVisibleTo(ctx, viewer, secret.ID)
+		if err != nil || !visible {
+			t.Fatalf("ChannelGroupVisibleTo(%s) = %v, %v; want true", viewer, visible, err)
+		}
+		got, err := s.ChannelGroupByRefForViewer(ctx, viewer, "secret")
+		if err != nil || got.ID != secret.ID {
+			t.Fatalf("ChannelGroupByRefForViewer(%s, secret) = %q, %v; want %q", viewer, got.ID, err, secret.ID)
+		}
+	}
+	// A sibling agent may nest under it, as it may under its owner's groups.
+	if _, err := s.CreateChannelGroup(ctx, a2.ID, NewChannelGroup{Name: "child", ParentGroupID: secret.ID, Visibility: VisibilityOwner}); err != nil {
+		t.Fatalf("sibling agent nests under namespace group: %v", err)
+	}
+	for _, viewer := range []AccountID{stranger.ID, strangerAgent.ID} {
+		visible, err := s.ChannelGroupVisibleTo(ctx, viewer, secret.ID)
+		if err != nil || visible {
+			t.Fatalf("ChannelGroupVisibleTo(stranger %s) = %v, %v; want false", viewer, visible, err)
+		}
+		_, err = s.ChannelGroupByRefForViewer(ctx, viewer, "secret")
+		sentinelIs(t, err, ErrNotFound, "stranger resolves owner-only namespace group")
+		_, err = s.CreateChannelGroup(ctx, viewer, NewChannelGroup{Name: "intruder", ParentGroupID: secret.ID, Visibility: VisibilityOwner})
+		sentinelIs(t, err, ErrNotFound, "stranger nests under owner-only namespace group")
+	}
+}
+
+// TestChannelGroupInsertWithoutNamespaceIsFilled: an older binary inserts no
+// namespace, so the trigger derives it from the creator during a rolling deploy.
+func TestChannelGroupInsertWithoutNamespaceIsFilled(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "legacy")
+	for _, creator := range []AccountID{owner.ID, agent.ID} {
+		id := newID()
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1, $2, NULL, $3, $4)",
+			id, "legacy-"+id, string(creator), int16(VisibilityOwner)); err != nil {
+			t.Fatalf("insert without namespace by %s: %v", creator, err)
+		}
+		var namespace string
+		if err := s.pool.QueryRow(ctx, "SELECT namespace_owner_id FROM channel_groups WHERE id = $1", id).Scan(&namespace); err != nil {
+			t.Fatalf("read namespace: %v", err)
+		}
+		if namespace != string(owner.ID) {
+			t.Fatalf("namespace for creator %s = %q, want %q", creator, namespace, owner.ID)
+		}
+	}
+}
+
+// TestChannelGroupByRefForViewerNestedCrossNamespaceStaysAmbiguous pins today's
+// behavior: the same nested path in two namespaces is never auto-picked.
+func TestChannelGroupByRefForViewerNestedCrossNamespaceStaysAmbiguous(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	alice := mustUser(t, s, "alice")
+	bob := mustUser(t, s, "bob")
+	pub, err := s.CreateChannelGroup(ctx, alice.ID, NewChannelGroup{Name: "pub", Visibility: VisibilityShared})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(pub): %v", err)
+	}
+	for _, by := range []AccountID{alice.ID, bob.ID} {
+		if _, err := s.CreateChannelGroup(ctx, by, NewChannelGroup{Name: "infra", ParentGroupID: pub.ID, Visibility: VisibilityShared}); err != nil {
+			t.Fatalf("CreateChannelGroup(pub/infra by %s): %v", by, err)
+		}
+	}
+	for _, ref := range []string{"pub/infra", "/pub/infra", "/~alice/pub/infra"} {
+		got, err := s.ChannelGroupByRefForViewer(ctx, alice.ID, ref)
+		sentinelIs(t, err, ErrInvalidArgument, "nested cross-namespace "+ref)
+		if got.ID != "" {
+			t.Fatalf("ChannelGroupByRefForViewer(%q) picked %q", ref, got.ID)
+		}
+	}
+}
+
 func TestCreateChannelGroupCeilingRejectsWiderChild(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

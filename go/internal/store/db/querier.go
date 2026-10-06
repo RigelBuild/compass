@@ -233,7 +233,7 @@ type Querier interface {
 	// Scope grants are managed for user accounts; agents inherit their owner's rows.
 	// The SELECT runs under RLS, so a user from another tenant inserts nothing.
 	GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) (int64, error)
-	// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
+	// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)
 	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)

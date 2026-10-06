@@ -105,7 +105,8 @@ viewer AS (
 SELECT g.id, g.name, COALESCE(g.parent_group_id, '') AS parent_group_id, g.owner_user_id, g.visibility, g.namespace_owner_id
 FROM channel_groups g
 JOIN effective e ON e.id = g.id
-WHERE (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer))
+WHERE (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer)
+       OR g.namespace_owner_id IN (SELECT uid FROM viewer))
 ORDER BY g.name;
 
 -- name: ChannelGroupVisibleTo :one
@@ -130,7 +131,8 @@ viewer AS (
 SELECT EXISTS (
 	SELECT 1 FROM channel_groups g
 	JOIN effective e ON e.id = g.id
-	WHERE g.id = $2 AND (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer))
+	WHERE g.id = $2 AND (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer)
+       OR g.namespace_owner_id IN (SELECT uid FROM viewer))
 );
 
 -- name: ListChannels :many
