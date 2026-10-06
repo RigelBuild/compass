@@ -1,4 +1,7 @@
-// CommsBroker + the native comms tools. Tests defend the observable agent-to-Runner call and render contract.
+// CommsBroker + the two native comms tools (design: compass-agent-comms-tools, T3). Each test
+// defends an observable contract of the agent->Runner comms call: the exact `CommsCallRequest` a
+// tool `execute` puts on the wire (oneof case, text block, call_id / client_request_id), and how a
+// `CommsCallResult` renders back — a domain error as a thrown Error, a success as text content.
 
 // The transport is faked to the one method the broker consumes (`comms`), so there is no socket,
 // no Connect client, and no timing: a call in, a canned result out, the captured request asserted.
@@ -10,6 +13,7 @@ import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import {
 	CommsBroker,
 	type CommsTransport,
+	compassTreeParameters,
 	createChannelGroupParameters,
 	createChannelParameters,
 	createCommsTools,
@@ -369,11 +373,23 @@ describe("createCommsTools", () => {
 			"comms_create_channel_group",
 		]);
 		expect(tools.every((t) => t.label.length > 0)).toBe(true);
+		// `approval` decides which modes auto-approve the call. A silent flip of
+		// the post tool to `read` would broaden auto-approval for a write, and
+		// nothing else here would redden.
 		const byName = (n: string) => {
 			const t = tools.find((x) => x.name === n);
 			if (t === undefined) throw new Error(`no tool ${n}`);
 			return t;
 		};
+		expect(byName("comms_post_message").approval).toBe("write");
+		expect(byName("comms_list_messages").approval).toBe("read");
+		expect(byName("compass_roster").approval).toBe("read");
+		expect(byName("compass_set_status").approval).toBe("write");
+		expect(byName("comms_post_ask").approval).toBe("write");
+		// Each tool carries its own schema — a crossed wiring would otherwise
+		// only surface as a confusing validation failure at call time.
+		expect(byName("comms_post_message").parameters).toBe(postParameters);
+		expect(byName("comms_post_ask").parameters).toBe(postAskParameters);
 		expect(byName("comms_create_channel").approval).toBe("write");
 		expect(byName("comms_update_members").approval).toBe("write");
 		expect(byName("comms_create_channel_group").approval).toBe("write");
@@ -388,7 +404,10 @@ describe("createCommsTools", () => {
 		);
 		expect(byName("comms_open_dm").approval).toBe("write");
 		expect(byName("comms_dm").approval).toBe("write");
+		expect(byName("comms_open_dm").parameters).toBe(openDmParameters);
+		expect(byName("comms_dm").parameters).toBe(dmParameters);
 		expect(byName("compass_tree").approval).toBe("read");
+		expect(byName("compass_tree").parameters).toBe(compassTreeParameters);
 	});
 });
 
