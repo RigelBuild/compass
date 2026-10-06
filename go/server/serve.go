@@ -757,8 +757,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 
 	// Pin the inode we bound so shutdown cleanup can tell our socket apart from
 	// a successor server that rebound the same path.
-	boundInode, boundOK := socketInode(cfg.SocketPath)
-	defer cleanupSocket(cfg.SocketPath, boundInode, boundOK)
+	boundID, boundOK := socketIdentity(cfg.SocketPath)
+	defer cleanupSocket(cfg.SocketPath, boundID, boundOK)
 
 	// The one event bus every sequenced stream rides. Publish the initial Ready
 	// status so a snapshot subscriber sees liveness immediately.

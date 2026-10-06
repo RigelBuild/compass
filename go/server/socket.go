@@ -163,31 +163,29 @@ func clearStaleSocket(socketPath string) error {
 	return nil
 }
 
-// socketInode returns the inode backing path, or (0, false) if it is missing or
-// unstat-able. Used to detect a successor server rebinding the socket path.
-func socketInode(path string) (uint64, bool) {
+// socketIdentity stats the socket at path, or returns (nil, false) if it is
+// missing or unstat-able. Used to detect a successor server rebinding the path.
+func socketIdentity(path string) (os.FileInfo, bool) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0, false
+		return nil, false
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, false
-	}
-	return st.Ino, true
+	return info, true
 }
 
 // cleanupSocket removes the socket file on shutdown, but only if it can prove
-// the on-disk socket is still the one the server bound. If the inode bound was
-// never pinned (boundInode ok=false — socketInode failed right after bind), or a
-// successor server has already rebound the path to a different inode, it leaves
-// the file alone rather than risk deleting another server's live socket.
-func cleanupSocket(socketPath string, boundInode uint64, boundOK bool) {
+// the on-disk socket is still the one the server bound. If the identity was
+// never pinned (boundOK=false — the stat failed right after bind), or a successor
+// has rebound the path, it leaves the file alone rather than risk deleting
+// another server's live socket.
+func cleanupSocket(socketPath string, bound os.FileInfo, boundOK bool) {
 	if !boundOK {
 		return
 	}
-	current, ok := socketInode(socketPath)
-	if !ok || current != boundInode {
+	current, ok := socketIdentity(socketPath)
+	// SameFile is device+inode; a successor's socket can reuse the freed inode
+	// number, but its bind stamps a new mtime.
+	if !ok || !os.SameFile(current, bound) || !current.ModTime().Equal(bound.ModTime()) {
 		return // gone already, or a successor rebound it
 	}
 	_ = os.Remove(socketPath)

@@ -395,7 +395,7 @@ func TestCleanupSocketRemovesOwnSocket(t *testing.T) {
 	}
 	defer l.Close()
 
-	inode, ok := socketInode(path)
+	inode, ok := socketIdentity(path)
 	if !ok {
 		t.Fatal("socketInode failed right after bind")
 	}
@@ -415,7 +415,7 @@ func TestCleanupSocketLeavesSuccessorRebindIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind #1: %v", err)
 	}
-	boundInode, ok := socketInode(path)
+	boundID, ok := socketIdentity(path)
 	if !ok {
 		t.Fatal("socketInode failed after bind #1")
 	}
@@ -429,19 +429,43 @@ func TestCleanupSocketLeavesSuccessorRebindIntact(t *testing.T) {
 		t.Fatalf("bind #2 (successor): %v", err)
 	}
 	defer l2.Close()
-	successorInode, ok := socketInode(path)
+	successorID, ok := socketIdentity(path)
 	if !ok {
 		t.Fatal("socketInode failed after successor bind")
 	}
-	if successorInode == boundInode {
+	if os.SameFile(successorID, boundID) {
 		t.Skip("rebind reused the same inode; cannot distinguish successor on this fs")
 	}
 
 	// Our cleanup, pinned to the old inode, must NOT delete the successor's live
 	// socket.
-	cleanupSocket(path, boundInode, true)
+	cleanupSocket(path, boundID, true)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("successor socket was removed (%v); cleanup must guard on inode match", err)
+	}
+}
+
+// TestCleanupSocketLeavesReusedInodeNumberIntact: a successor's socket can land on
+// the inode number the predecessor's unlinked socket freed. Same number, new file:
+// modelled by changing the mtime under a pinned identity. Cleanup must not delete it.
+func TestCleanupSocketLeavesReusedInodeNumberIntact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compass.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	defer l.Close()
+	bound, ok := socketIdentity(path)
+	if !ok {
+		t.Fatal("socketInode failed right after bind")
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	cleanupSocket(path, bound, true)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("socket with a reused inode number was removed (%v); cleanup must match the whole identity", err)
 	}
 }
 
@@ -456,7 +480,7 @@ func TestCleanupSocketNoopWhenInodeNeverPinned(t *testing.T) {
 
 	// boundOK=false models socketInode having failed right after bind: cleanup
 	// must leave the file alone rather than delete on an unproven inode.
-	cleanupSocket(path, 0, false)
+	cleanupSocket(path, nil, false)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("socket removed despite unpinned inode (%v); cleanup must no-op", err)
 	}
