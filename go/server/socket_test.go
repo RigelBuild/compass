@@ -3,7 +3,7 @@
 package server
 
 // Tests for the socket-door helpers in socket.go: private-parent creation,
-// stale-socket handling, inode-checked cleanup, and parentDir. Hermetic: every
+// stale-socket handling, identity-checked cleanup, and parentDir. Hermetic: every
 // path is under t.TempDir().
 
 import (
@@ -238,9 +238,9 @@ func TestListenUnixPrivateBirthsSocket0600UnderPermissiveUmask(t *testing.T) {
 func TestListenUnixPrivateRetainsSocketOnClose(t *testing.T) {
 	// listenUnixPrivate disables Go's default unlink-on-close on the returned
 	// *net.UnixListener, so the socket file is removed ONLY through the
-	// inode-guarded cleanupSocket. If unlink-on-close were left at Go's default
+	// identity-guarded cleanupSocket. If unlink-on-close were left at Go's default
 	// true, Close() would unconditionally delete the path and clobber a successor
-	// server's rebound socket when this server drains, defeating the inode guard.
+	// server's rebound socket when this server drains, defeating the identity guard.
 	path := filepath.Join(t.TempDir(), "s.sock")
 	l, err := listenUnixPrivate(path)
 	if err != nil {
@@ -395,11 +395,11 @@ func TestCleanupSocketRemovesOwnSocket(t *testing.T) {
 	}
 	defer l.Close()
 
-	inode, ok := socketIdentity(path)
+	id, ok := socketIdentity(path)
 	if !ok {
-		t.Fatal("socketInode failed right after bind")
+		t.Fatal("socketIdentity failed right after bind")
 	}
-	cleanupSocket(path, inode, true)
+	cleanupSocket(path, id, true)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("own socket not removed by cleanup (stat err = %v)", err)
 	}
@@ -409,15 +409,15 @@ func TestCleanupSocketLeavesSuccessorRebindIntact(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "compass.sock")
 
-	// Bind, record the inode, then simulate our socket disappearing and a
-	// successor server rebinding the same path to a DIFFERENT inode.
+	// Bind, record the identity, then simulate our socket disappearing and a
+	// successor server rebinding the same path, possibly on the same inode number.
 	l1, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("bind #1: %v", err)
 	}
 	boundID, ok := socketIdentity(path)
 	if !ok {
-		t.Fatal("socketInode failed after bind #1")
+		t.Fatal("socketIdentity failed after bind #1")
 	}
 	l1.Close()
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -431,17 +431,17 @@ func TestCleanupSocketLeavesSuccessorRebindIntact(t *testing.T) {
 	defer l2.Close()
 	successorID, ok := socketIdentity(path)
 	if !ok {
-		t.Fatal("socketInode failed after successor bind")
+		t.Fatal("socketIdentity failed after successor bind")
 	}
-	if os.SameFile(successorID, boundID) {
-		t.Skip("rebind reused the same inode; cannot distinguish successor on this fs")
+	if os.SameFile(successorID, boundID) && successorID.ModTime().Equal(boundID.ModTime()) {
+		t.Skip("rebind reused the inode within one mtime granule; this fs cannot tell the files apart")
 	}
 
-	// Our cleanup, pinned to the old inode, must NOT delete the successor's live
+	// Our cleanup, pinned to the old identity, must NOT delete the successor's live
 	// socket.
 	cleanupSocket(path, boundID, true)
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("successor socket was removed (%v); cleanup must guard on inode match", err)
+		t.Fatalf("successor socket was removed (%v); cleanup must guard on the bound identity", err)
 	}
 }
 
@@ -457,7 +457,7 @@ func TestCleanupSocketLeavesReusedInodeNumberIntact(t *testing.T) {
 	defer l.Close()
 	bound, ok := socketIdentity(path)
 	if !ok {
-		t.Fatal("socketInode failed right after bind")
+		t.Fatal("socketIdentity failed right after bind")
 	}
 	later := time.Now().Add(time.Hour)
 	if err := os.Chtimes(path, later, later); err != nil {
@@ -478,11 +478,11 @@ func TestCleanupSocketNoopWhenInodeNeverPinned(t *testing.T) {
 	}
 	defer l.Close()
 
-	// boundOK=false models socketInode having failed right after bind: cleanup
-	// must leave the file alone rather than delete on an unproven inode.
+	// boundOK=false models socketIdentity having failed right after bind: cleanup
+	// must leave the file alone rather than delete on an unproven identity.
 	cleanupSocket(path, nil, false)
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("socket removed despite unpinned inode (%v); cleanup must no-op", err)
+		t.Fatalf("socket removed despite an unpinned identity (%v); cleanup must no-op", err)
 	}
 }
 

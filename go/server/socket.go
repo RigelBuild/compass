@@ -1,7 +1,7 @@
 //go:build unix
 
 // Socket-door semantics for the server's Unix listener: private parent dirs,
-// single-instance stale-socket handling, and inode-checked cleanup.
+// single-instance stale-socket handling, and identity-checked cleanup.
 package server
 
 import (
@@ -57,7 +57,7 @@ func parentDir(socketPath string) string {
 //
 // Unlink-on-close is disabled on the returned listener. Go's net.UnixListener
 // defaults to unlinking the socket path when Close runs; that is a second,
-// unconditional remover that would defeat the inode-guarded cleanupSocket and
+// unconditional remover that would defeat the identity-guarded cleanupSocket and
 // delete a successor server's rebound socket when this server drains, so removal
 // is left solely to cleanupSocket here.
 func listenUnixPrivate(path string) (net.Listener, error) {
@@ -173,18 +173,16 @@ func socketIdentity(path string) (os.FileInfo, bool) {
 	return info, true
 }
 
-// cleanupSocket removes the socket file on shutdown, but only if it can prove
-// the on-disk socket is still the one the server bound. If the identity was
-// never pinned (boundOK=false — the stat failed right after bind), or a successor
-// has rebound the path, it leaves the file alone rather than risk deleting
-// another server's live socket.
+// cleanupSocket removes the socket file on shutdown only if it is provably the
+// one the server bound. An unpinned identity or a successor's rebind leaves the
+// file alone rather than risk deleting another server's live socket.
 func cleanupSocket(socketPath string, bound os.FileInfo, boundOK bool) {
 	if !boundOK {
 		return
 	}
 	current, ok := socketIdentity(socketPath)
-	// SameFile is device+inode; a successor's socket can reuse the freed inode
-	// number, but its bind stamps a new mtime.
+	// SameFile is device+inode; a successor can reuse the freed inode number, but its
+	// bind stamps a new mtime (ctime would need per-OS Stat_t fields).
 	if !ok || !os.SameFile(current, bound) || !current.ModTime().Equal(bound.ModTime()) {
 		return // gone already, or a successor rebound it
 	}
