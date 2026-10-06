@@ -132,6 +132,10 @@ func TestStaleStateAfterErroredIsIgnored(t *testing.T) {
 	hub.SetSessionBindingStore(bindings)
 	lost := newRecordingLostSink()
 	hub.SetSessionLostSink(lost)
+	settle := &fakeSettleSink{}
+	hub.SetSettleSink(settle)
+	presence := &fakePresenceSink{}
+	hub.SetPresenceSink(presence)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(ctx, "cont-1", "sess-1")
@@ -147,6 +151,15 @@ func TestStaleStateAfterErroredIsIgnored(t *testing.T) {
 	frames := tail.snapshot()
 	if len(frames) != 2 || frames[0].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED || frames[1].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
 		t.Fatalf("relayed session frames = %+v, want ERRORED then WORKING", frames)
+	}
+	if got := settle.snapshot(); len(got) != 1 || got[0].state != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("settle edges = %+v, want only ERRORED", got)
+	}
+	// The ERRORED loss path adds its own DISCONNECTED edge; only the stale WORKING is wrong.
+	for _, rec := range presence.lifecycleSnapshot() {
+		if rec.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
+			t.Fatalf("presence edges = %+v, want no edge for the stale frame", presence.lifecycleSnapshot())
+		}
 	}
 }
 
@@ -180,6 +193,63 @@ func TestReenrollClearsErroredBoundary(t *testing.T) {
 	assertPublished(t, lifecycle,
 		compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED,
 		compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+}
+
+func TestErroredFromBeforeReenrollDoesNotSurviveIt(t *testing.T) {
+	ctx := t.Context()
+	lifecycle := &fakeLifecycleSink{}
+	tail := &pausingTailSink{entered: make(chan struct{}), release: make(chan struct{})}
+	hub := NewHub(lifecycle, tail, nil, discardLogger())
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(tail.release) }) }
+	t.Cleanup(release)
+
+	oldDone := make(chan error, 1)
+	go func() {
+		oldDone <- hub.Deliver(ctx, RunnerEvent{
+			RunnerID: "runner-1", RunnerSeq: 5, SessionID: "sess-1",
+			Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
+		})
+	}()
+	select {
+	case <-tail.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("old ERRORED did not reach the tail sink")
+	}
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	release()
+	select {
+	case err := <-oldDone:
+		if err != nil {
+			t.Fatalf("Deliver(old ERRORED) = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("old ERRORED did not complete after release")
+	}
+
+	deliverState(t, hub, 1, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	statuses := lifecycle.snapshot()
+	if n := len(statuses); n == 0 || statuses[n-1].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
+		t.Fatalf("published statuses = %+v, want the new enrollment's READY last", statuses)
+	}
+}
+
+// pausingTailSink holds the first ERRORED frame in RelaySessionFrame until released.
+type pausingTailSink struct {
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *pausingTailSink) RelaySessionFrame(_ string, frame *compassv1internal.SessionFrame) {
+	if frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		return
+	}
+	s.once.Do(func() {
+		close(s.entered)
+		<-s.release
+	})
 }
 
 func deliverState(t *testing.T, hub *Hub, seq uint64, state compassv1.AgentSessionState) {

@@ -450,6 +450,9 @@ type Hub struct {
 	// frames at or below it are from the dead lifetime; the counter resets only with
 	// re-enroll, which clears the map. lifecycleMu-guarded.
 	erroredSessions map[string]uint64
+	// lifecycleGen counts enrollments; a delivery that began under an older one must
+	// not reinstall a boundary the re-enroll cleared. Written under lifecycleMu.
+	lifecycleGen atomic.Uint64
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
 	// consumer (RIG-1569 T3) resolves a subscribed account to its live session to
@@ -798,6 +801,7 @@ func (h *Hub) fireRunnerReady() {
 // transitions, and retires an owned session when its Runner reports ERRORED.
 // UNSPECIFIED means "trace only, no transition".
 func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, seq uint64, sf *compassv1internal.SessionFrame) {
+	gen := h.lifecycleGen.Load()
 	state := sf.GetState()
 	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
 	// A frame the publishing Runner may not speak for is dropped whole: its trace,
@@ -814,7 +818,9 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, se
 	}
 	h.lifecycleMu.Lock()
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		h.erroredSessions[sessionID] = max(h.erroredSessions[sessionID], seq)
+		if gen == h.lifecycleGen.Load() {
+			h.erroredSessions[sessionID] = max(h.erroredSessions[sessionID], seq)
+		}
 	} else if erroredSeq, errored := h.erroredSessions[sessionID]; errored && seq <= erroredSeq {
 		h.lifecycleMu.Unlock()
 		h.log.Debug("ignored stale lifecycle frame from before ERRORED",
@@ -1021,6 +1027,7 @@ type promotedPair struct {
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
 	h.lifecycleMu.Lock()
 	clear(h.erroredSessions)
+	h.lifecycleGen.Add(1)
 	h.lifecycleMu.Unlock()
 	// Held from the map-clear through the reap, so no promotion lands in between.
 	h.bindingWriteMu.Lock()
