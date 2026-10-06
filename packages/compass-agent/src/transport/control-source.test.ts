@@ -769,7 +769,14 @@ test("a redelivered already-QUEUED op is deduped and NOT re-acked, never re-yiel
 	// No ack names seq 2: the queued dup is dropped un-acked (only rc(1)'s ack{1,[]}
 	// and the sentinel steer(4)'s ack{1,[4]} exist).
 	expect(
-		controlAcks.some((a) => a.ackedSeq >= 2n || a.appliedAbove.includes(2n)),
+		controlAcks.some(
+			(a) =>
+				a.ackedSeq >= 2n ||
+				a.appliedAbove.includes(2n) ||
+				a.appliedAboveRanges.some(
+					(_, i, r) => i % 2 === 0 && r[i] <= 2n && 2n <= (r[i + 1] ?? -1n),
+				),
+		),
 	).toBe(false);
 	// Counted exactly once as an already-queued redelivery.
 	expect(
@@ -850,27 +857,27 @@ test("a redelivered already-APPLIED op is deduped, RE-ACKED, never re-yielded (a
 	expect((await third).done).toBe(true);
 });
 
-test("appliedAbove: an immediate op applied ahead of an unfinished queued op carries a non-empty appliedAbove, then collapses (invariant 2)", async () => {
+test("appliedAboveRanges: an immediate op applied ahead of an unfinished queued op carries a non-empty range, then collapses (invariant 2)", async () => {
 	// The mechanism behind invariant 2: an empty-shell steer(3) is applied at decode (markApplied,
 	// :344) while prompt(2) is still queued+unapplied behind the running turn, so the cursor cannot
-	// advance past 1 and the ack names 3 in appliedAbove; pulling past prompt(2) applies 2, the run
-	// 1→2→3 prunes, and the cursor collapses to 3 with appliedAbove empty.
+	// advance past 1 and the ack names 3 in appliedAboveRanges; pulling past prompt(2) applies 2,
+	// the run 1→2→3 prunes, and the cursor collapses to 3 with no ranges.
 
 	// Held-open + manual-pull + gate on ack arrival (P1 #6 shape): we must observe the intermediate
-	// {ackedSeq:1, appliedAbove:[3]} while prompt(2) is unapplied. Acks flush on their own priority
+	// {ackedSeq:1, appliedAboveRanges:[3-3]} while prompt(2) is unapplied. Acks flush on their own priority
 	// lane as soon as enqueued, so gating on onPublish proves arrival without draining (draining
 	// ends the spine, dropping the later collapse ack).
 
 	// Trace: pull rc(1) → nothing applied. pull prompt(2) → rc(1)'s ack runs (cursor→1). steer(3)
-	// decodes → markApplied(3): #above={3}, Ack{ackedSeq:1, appliedAbove:[3]}. pull past prompt(2)
-	// → markApplied(2): prune deletes 2 then 3 → Ack{ackedSeq:3, appliedAbove:[]} — the collapse.
+	// decodes → markApplied(3): #above={3}, Ack{ackedSeq:1, appliedAboveRanges:[3-3]}. pull past prompt(2)
+	// → markApplied(2): prune deletes 2 then 3 → Ack{ackedSeq:3, appliedAboveRanges:[]} — the collapse.
 
 	// Non-vacuity (mutation-verified): break the prune loop in `AckCursor.markApplied` (`+ 1n` → `+
 	// 2n`) → the contiguous run never picks up cursor+1, so markApplied(3) yields {ackedSeq:2,
-	// appliedAbove:[]} → the intermediate appliedAbove assertion reds (and the collapse never forms).
+	// appliedAboveRanges:[]} → the intermediate range assertion reds (and the collapse never forms).
 	const rec = emptyRecorder();
 	const holdStream = deferred();
-	const gotAbove = deferred(); // seq-1 ack with 3 in appliedAbove reached the server
+	const gotAbove = deferred(); // seq-1 ack with 3 in appliedAboveRanges reached the server
 	const gotThirdAck = deferred(); // the third controlAck (the collapse) reached the server
 	let controlAckCount = 0;
 	const socketPath = await serve(rec, {
@@ -884,7 +891,7 @@ test("appliedAbove: an immediate op applied ahead of an unfinished queued op car
 			const a = ackOf(frame);
 			if (a?.kind !== "controlAck") return;
 			controlAckCount += 1;
-			// Gate on ARRIVAL by count, never on ackedSeq/appliedAbove content — a broken prune
+			// Gate on ARRIVAL by count, never on ackedSeq/appliedAboveRanges content — a broken prune
 			// produces different content and would hang a content gate forever, masking the defect.
 			// The content is asserted below, so a mutation reds the assertion. Two controlAcks exist
 			// before we pull past prompt(2): rc(1)'s ack and steer(3)'s; the third is the collapse.
@@ -901,7 +908,7 @@ test("appliedAbove: an immediate op applied ahead of an unfinished queued op car
 	expect(first.value?.kind).toBe("replayComplete");
 	expect(second.value?.kind).toBe("prompt");
 	// steer(3) is applied at decode ahead of the unfinished prompt(2). Gate on the
-	// resulting {ackedSeq:1, appliedAbove:[3]} ack, then assert that exact ack: the
+	// resulting {ackedSeq:1, appliedAboveRanges:[3-3]} ack, then assert that exact ack: the
 	// cursor is pinned at 1 (seq 2 not yet applied) with seq 3 out of order above.
 	await gotAbove.promise;
 	const aboveAck = rec.publishFrames
@@ -909,11 +916,18 @@ test("appliedAbove: an immediate op applied ahead of an unfinished queued op car
 			const a = ackOf(f);
 			return a?.kind === "controlAck" ? [a.value] : [];
 		})
-		.find((v) => v.ackedSeq === 1n && v.appliedAbove.includes(3n));
+		.find(
+			(v) =>
+				v.ackedSeq === 1n &&
+				v.appliedAboveRanges.some(
+					(_, i, r) => i % 2 === 0 && r[i] <= 3n && 3n <= (r[i + 1] ?? -1n),
+				),
+		);
 	expect(aboveAck).toBeDefined();
-	expect(aboveAck?.appliedAbove).toEqual([3n]); // seq 3 applied out of order above 1
+	expect(aboveAck?.appliedAbove).toEqual([]);
+	expect(aboveAck?.appliedAboveRanges).toEqual([3n, 3n]);
 	// Now pull past prompt(2): applying it makes 1→2→3 contiguous, so the cursor
-	// collapses to 3 and appliedAbove empties. The third controlAck (FIFO) is that
+	// collapses to 3 and appliedAboveRanges empties. The third controlAck (FIFO) is that
 	// collapse ack.
 	const third = it.next();
 	await gotThirdAck.promise;
@@ -923,7 +937,8 @@ test("appliedAbove: an immediate op applied ahead of an unfinished queued op car
 	});
 	const collapseAck = controlAcks[2];
 	expect(collapseAck?.ackedSeq).toBe(3n); // cursor collapsed to the top of the run
-	expect(collapseAck?.appliedAbove).toEqual([]); // contiguous run pruned 2 then 3
+	expect(collapseAck?.appliedAbove).toEqual([]);
+	expect(collapseAck?.appliedAboveRanges).toEqual([]); // contiguous run pruned 2 then 3
 	holdStream.resolve();
 	await third.catch(() => undefined);
 });
@@ -972,7 +987,14 @@ test("a control_seq < 1 op is fail-closed (counted 'invalid control_seq < 1', dr
 		return a?.kind === "controlAck" ? [a.value] : [];
 	});
 	expect(
-		controlAcks.some((a) => a.ackedSeq === 0n || a.appliedAbove.includes(0n)),
+		controlAcks.some(
+			(a) =>
+				a.ackedSeq === 0n ||
+				a.appliedAbove.includes(0n) ||
+				a.appliedAboveRanges.some(
+					(_, i, r) => i % 2 === 0 && r[i] <= 0n && 0n <= (r[i + 1] ?? -1n),
+				),
+		),
 	).toBe(false);
 });
 
