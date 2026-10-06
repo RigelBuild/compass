@@ -34,6 +34,8 @@ type Querier interface {
 	// Under RLS, an agent of another tenant is invisible exactly like an unknown id;
 	// the FK cannot tell them apart because FK checks ignore RLS.
 	AgentAccountVisible(ctx context.Context, accountID string) (bool, error)
+	// Feeds requireAgentAttachAuthz: the agent's owner, or an agent of that owner.
+	AgentAttachAuthorized(ctx context.Context, arg AgentAttachAuthorizedParams) (bool, error)
 	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the
@@ -85,6 +87,7 @@ type Querier interface {
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
 	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
 	ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMembersByChannelIDsRow, error)
+	ChannelParticipant(ctx context.Context, arg ChannelParticipantParams) (pgtype.Bool, error)
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	// The unique key makes concurrent first-run attempts a single-winner claim.
@@ -416,6 +419,7 @@ type Querier interface {
 	// hand-written Store methods and the in-tx FOR UPDATE lock / cap-check control
 	// flow stay exactly as they were and wrap these generated calls.
 	LockChannelForPins(ctx context.Context, id string) (LockChannelForPinsRow, error)
+	LockChannelForReparent(ctx context.Context, id string) (LockChannelForReparentRow, error)
 	LockChannelMandatoryKind(ctx context.Context, id string) (LockChannelMandatoryKindRow, error)
 	LockChannelPolicy(ctx context.Context, id string) (LockChannelPolicyRow, error)
 	// Compute-usage rollups are derived from closed start/end event pairs.
@@ -676,6 +680,7 @@ type Querier interface {
 	UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error)
 	UnroutedMentionMessages(ctx context.Context, arg UnroutedMentionMessagesParams) ([]UnroutedMentionMessagesRow, error)
 	UpdateAgentParent(ctx context.Context, arg UpdateAgentParentParams) error
+	UpdateChannelParent(ctx context.Context, arg UpdateChannelParentParams) error
 	UpdateChannelPolicy(ctx context.Context, arg UpdateChannelPolicyParams) error
 	UpdateMessageBlocks(ctx context.Context, arg UpdateMessageBlocksParams) (int64, error)
 	UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMessageBlocksAsAuthorParams) (UpdateMessageBlocksAsAuthorRow, error)

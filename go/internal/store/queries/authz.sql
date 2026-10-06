@@ -30,6 +30,18 @@ SELECT EXISTS (
            -- A group an agent created lives in its owner's namespace.
            OR g.namespace_owner_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $2), $2)));
 
+-- name: AgentAttachAuthorized :one
+-- Feeds requireAgentAttachAuthz: the agent's owner, or an agent of that owner.
+SELECT EXISTS (
+    SELECT 1 FROM agent_accounts target
+    WHERE target.account_id = $1 AND (
+        target.owner_user_id = $2
+        OR target.owner_user_id = (
+            SELECT owner_user_id FROM agent_accounts WHERE account_id = $2
+        )
+    )
+);
+
 -- name: AgentWorkspaceVisible :one
 -- Feeds isAgentWorkspaceVisible: membership on the agent's home channel.
 SELECT EXISTS (

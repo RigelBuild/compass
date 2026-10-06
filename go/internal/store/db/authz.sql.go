@@ -9,6 +9,31 @@ import (
 	"context"
 )
 
+const agentAttachAuthorized = `-- name: AgentAttachAuthorized :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_accounts target
+    WHERE target.account_id = $1 AND (
+        target.owner_user_id = $2
+        OR target.owner_user_id = (
+            SELECT owner_user_id FROM agent_accounts WHERE account_id = $2
+        )
+    )
+)
+`
+
+type AgentAttachAuthorizedParams struct {
+	AccountID   string
+	OwnerUserID string
+}
+
+// Feeds requireAgentAttachAuthz: the agent's owner, or an agent of that owner.
+func (q *Queries) AgentAttachAuthorized(ctx context.Context, arg AgentAttachAuthorizedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, agentAttachAuthorized, arg.AccountID, arg.OwnerUserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const agentWorkspaceVisible = `-- name: AgentWorkspaceVisible :one
 SELECT EXISTS (
         SELECT 1 FROM agent_accounts ag

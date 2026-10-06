@@ -142,6 +142,8 @@ type Channel struct {
 	OwnerAccountID        pgtype.Text
 	MandatorySubscription bool
 	TenantID              string
+	ParentAgentID         pgtype.Text
+	MembershipMode        int16
 }
 
 type ChannelGroup struct {
@@ -168,6 +170,13 @@ type ChannelPin struct {
 	PinnedAtUnixMs    int64
 	PinnedByAccountID string
 	TenantID          string
+}
+
+type ChannelSubscription struct {
+	ChannelID  string
+	AccountID  string
+	Subscribed bool
+	TenantID   string
 }
 
 type ComputeUsageEvent struct {

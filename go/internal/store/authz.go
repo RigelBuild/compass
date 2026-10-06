@@ -101,6 +101,21 @@ func requireGroupCreateAuthz(ctx context.Context, q db.DBTX, actor AccountID, gr
 	return nil
 }
 
+// requireAgentAttachAuthz authorizes an actor to attach a channel under agentID.
+func requireAgentAttachAuthz(ctx context.Context, q db.DBTX, actor, agentID AccountID) error {
+	authorized, err := db.New(q).AgentAttachAuthorized(ctx, db.AgentAttachAuthorizedParams{
+		AccountID:   string(agentID),
+		OwnerUserID: string(actor),
+	})
+	if err != nil {
+		return fmt.Errorf("store: check agent attach authz: %w", err)
+	}
+	if !authorized {
+		return fmt.Errorf("%w: agent %q", ErrNotFound, agentID)
+	}
+	return nil
+}
+
 // IsAgentWorkspaceVisible reports whether actor may observe the agent's
 // workspace: it is a member of the agent's home channel (fork f — workspace
 // access is a projection of home-channel membership). Used by the SubscribeComms

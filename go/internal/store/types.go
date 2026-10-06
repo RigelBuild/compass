@@ -293,6 +293,16 @@ const (
 	ChannelPostPolicyOwnerOnly ChannelPostPolicy = 1
 )
 
+// ChannelMembershipMode selects stored membership or agent-tree-derived membership.
+type ChannelMembershipMode int32
+
+const (
+	// ChannelMembershipModeExplicit preserves the stored channel member list.
+	ChannelMembershipModeExplicit ChannelMembershipMode = 0
+	// ChannelMembershipModeTree derives participants from the anchored agent subtree.
+	ChannelMembershipModeTree ChannelMembershipMode = 1
+)
+
 // AgentWorkspace is an agent's observation pane (comms.proto:213-221, narrowed
 // by superseded decision 4): it renders the live execution trace and the
 // terminal/file panes, never persisted messages. participant_user_ids and the

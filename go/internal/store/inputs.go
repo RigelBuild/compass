@@ -49,13 +49,15 @@ type NewChannelGroup struct {
 }
 
 // Channel input for CreateChannel. The store enforces transitive
-// owner-membership (an agent's DMs and any channel it starts always include its
-// owning user(s), design.md:231-234), so the caller-supplied member set is
-// augmented, never trusted as complete.
+// owner-membership on explicit channels; tree membership is derived from the anchor.
 type NewChannel struct {
 	Name    string
 	GroupID ChannelGroupID
 	Kind    ChannelKind
+	// ParentAgentID attaches the channel under an agent; empty means root.
+	ParentAgentID AccountID
+	// MembershipMode selects explicit or tree-derived channel membership.
+	MembershipMode ChannelMembershipMode
 	// MemberAccountIDs are the accounts to seed the channel with; the store adds
 	// the required owner rows.
 	MemberAccountIDs []AccountID

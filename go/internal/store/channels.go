@@ -104,17 +104,28 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 	}, nil
 }
 
-// CreateChannel inserts a channel and its membership. Transitive
-// owner-membership (design.md:231-234) is enforced here: the actor is always a
-// member, and for each agent in the requested member set that agent's owning
-// user(s) are added too, so a user can always read anything their agent is
-// party to (an agent↔agent DM carries both owners). The caller-supplied member
-// set is augmented, never trusted as complete. A channel name already taken in
-// its group is ErrConflict; an unknown group is ErrInvalidArgument. Ungrouped
-// channels (empty group) are not name-constrained.
-func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel) (Channel, error) {
+// validateNewChannel applies the input-only refusals before any tx opens, so
+// none of them can leak whether a group or agent exists.
+func validateNewChannel(c NewChannel) error {
 	if c.Name == "" {
-		return Channel{}, fmt.Errorf("%w: channel name is required", ErrInvalidArgument)
+		return fmt.Errorf("%w: channel name is required", ErrInvalidArgument)
+	}
+	if c.MembershipMode != ChannelMembershipModeExplicit && c.MembershipMode != ChannelMembershipModeTree {
+		return fmt.Errorf("%w: unknown channel membership mode %d", ErrInvalidArgument, c.MembershipMode)
+	}
+	if c.GroupID != "" && c.ParentAgentID != "" {
+		return fmt.Errorf("%w: channel cannot have both group and agent parents", ErrInvalidArgument)
+	}
+	if c.MembershipMode == ChannelMembershipModeTree && c.ParentAgentID == "" {
+		return fmt.Errorf("%w: tree membership requires an agent parent", ErrInvalidArgument)
+	}
+	// Mandatory delivery and OWNER_ONLY coherence are both defined over stored
+	// member rows, which a TREE channel never has.
+	if c.MembershipMode == ChannelMembershipModeTree && c.Policy.MandatorySubscription {
+		return fmt.Errorf("%w: tree membership cannot require subscription", ErrInvalidArgument)
+	}
+	if c.MembershipMode == ChannelMembershipModeTree && c.Policy.PostPolicy == ChannelPostPolicyOwnerOnly {
+		return fmt.Errorf("%w: tree membership cannot use OWNER_ONLY posting", ErrInvalidArgument)
 	}
 
 	// Coherence: OWNER_ONLY with no owner account bricks the channel — the post
@@ -122,7 +133,7 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	// mirroring SetChannelPolicy's guard. (0013 comment: owner-empty is the only
 	// legal state when OPEN.)
 	if c.Policy.PostPolicy == ChannelPostPolicyOwnerOnly && c.Policy.OwnerAccountID == "" {
-		return Channel{}, fmt.Errorf("%w: OWNER_ONLY requires an owner account", ErrInvalidArgument)
+		return fmt.Errorf("%w: OWNER_ONLY requires an owner account", ErrInvalidArgument)
 	}
 
 	// Coherence: OPEN admits every member as an author, so an owner is
@@ -130,7 +141,26 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	// slot (locking future policy changes to itself). owner-empty is the only
 	// legal OPEN state, so reject a non-empty owner.
 	if c.Policy.PostPolicy == ChannelPostPolicyOpen && c.Policy.OwnerAccountID != "" {
-		return Channel{}, fmt.Errorf("%w: OPEN channel must not name an owner account", ErrInvalidArgument)
+		return fmt.Errorf("%w: OPEN channel must not name an owner account", ErrInvalidArgument)
+	}
+	return nil
+}
+
+// CreateChannel inserts a channel and its membership. Transitive
+// owner-membership (design.md:231-234) is enforced here: the actor is always a
+// member, and for each agent in the requested member set that agent's owning
+// user(s) are added too, so a user can always read anything their agent is
+// party to (an agent↔agent DM carries both owners). The caller-supplied member
+// set is augmented, never trusted as complete. A channel name already taken in
+// its group or under its agent is ErrConflict; an unknown group is
+// ErrInvalidArgument. Ungrouped root channels are not name-constrained.
+//
+// A ParentAgentID attaches the channel under an agent the actor's owner set
+// owns (else ErrNotFound). A TREE channel writes no member rows: its
+// participants derive from the anchor's subtree, and it returns no members.
+func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel) (Channel, error) {
+	if err := validateNewChannel(c); err != nil {
+		return Channel{}, err
 	}
 
 	id := newID()
@@ -146,6 +176,11 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	// no parent to authorize against; the actor is a founding member.
 	if c.GroupID != "" {
 		if err := requireGroupCreateAuthz(ctx, tx, actor, c.GroupID); err != nil {
+			return Channel{}, err
+		}
+	}
+	if c.ParentAgentID != "" {
+		if err := requireAgentAttachAuthz(ctx, tx, actor, c.ParentAgentID); err != nil {
 			return Channel{}, err
 		}
 	}
@@ -170,47 +205,37 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		PostPolicy:            int16(c.Policy.PostPolicy),
 		Column6:               string(c.Policy.OwnerAccountID),
 		MandatorySubscription: c.Policy.MandatorySubscription,
+		Column8:               string(c.ParentAgentID),
+		MembershipMode:        int16(c.MembershipMode), //nolint:gosec // G115: ChannelMembershipMode is a CHECK-constrained 0/1 enum (channels.membership_mode), always within int16
 	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
+			if c.ParentAgentID != "" {
+				return Channel{}, fmt.Errorf("%w: channel %q already exists under agent %q", ErrConflict, c.Name, c.ParentAgentID)
+			}
 			return Channel{}, fmt.Errorf("%w: channel %q already exists in group %q", ErrConflict, c.Name, c.GroupID)
 		}
 		if pgErrIs(err, pgForeignKeyViolation) {
+			if pgConstraintName(err) == "channels_parent_agent_id_fkey" {
+				return Channel{}, fmt.Errorf("%w: unknown agent %q", ErrNotFound, c.ParentAgentID)
+			}
 			return Channel{}, fmt.Errorf("%w: unknown group %q", ErrInvalidArgument, c.GroupID)
 		}
 		return Channel{}, fmt.Errorf("store: insert channel: %w", err)
 	}
 
+	// TREE discards this expansion; the plan keeps it running on both modes until
+	// the create return becomes a post-commit re-read.
 	members, err := expandOwnerMembership(ctx, tx, actor, c.MemberAccountIDs)
 	if err != nil {
 		return Channel{}, err
 	}
-	// Coherence facet 1: an OWNER_ONLY channel's owner must be a member — the
-	// post gate demands author be BOTH member AND owner, so a non-member owner
-	// makes the channel unpostable from birth. `members` is the authoritative
-	// final set, so check the resolved owner against it before the insert.
-	if c.Policy.OwnerAccountID != "" && !slices.Contains(members, c.Policy.OwnerAccountID) {
-		return Channel{}, fmt.Errorf("%w: owner account %q must be a channel member", ErrInvalidArgument, c.Policy.OwnerAccountID)
-	}
-	qtx := s.q.WithTx(tx)
-	for _, m := range members {
-		if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
-			ChannelID: id,
-			AccountID: string(m),
-		}); err != nil {
-			if pgErrIs(err, pgForeignKeyViolation) {
-				return Channel{}, fmt.Errorf("%w: unknown member account %q", ErrInvalidArgument, m)
-			}
-			return Channel{}, fmt.Errorf("store: insert channel member: %w", err)
-		}
-	}
-	// Born mandatory ⇒ every member is a delivery target (D1 disjunct,
-	// regardless of subscribed), so seed each agent member's cursor in this tx
-	// — an un-seeded target is the fail-DANGEROUS D2 hazard. Self-guarding
-	// (agent-only) and idempotent; non-mandatory channels seed at subscribe.
-	if c.Policy.MandatorySubscription {
-		if err := seedChannelDeliveryCursors(ctx, tx, ChannelID(id)); err != nil {
+	if c.MembershipMode == ChannelMembershipModeExplicit {
+		if err := s.writeExplicitMembers(ctx, tx, ChannelID(id), c.Policy, members); err != nil {
 			return Channel{}, err
 		}
+	} else {
+		// No member rows exist, so report none: a later ListChannels reads the same.
+		members = nil
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Channel{}, fmt.Errorf("store: commit create channel: %w", err)
@@ -224,6 +249,119 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		MemberAccountIDs: members,
 		Policy:           c.Policy,
 	}, nil
+}
+
+// writeExplicitMembers stores an EXPLICIT channel's member rows inside the
+// create tx and seeds delivery cursors when it is born mandatory.
+func (s *Store) writeExplicitMembers(ctx context.Context, tx pgx.Tx, id ChannelID, policy ChannelPolicy, members []AccountID) error {
+	// Coherence facet 1: an OWNER_ONLY channel's owner must be a member — the
+	// post gate demands author be BOTH member AND owner, so a non-member owner
+	// makes the channel unpostable from birth. `members` is the authoritative
+	// final set, so check the resolved owner against it before the insert.
+	if policy.OwnerAccountID != "" && !slices.Contains(members, policy.OwnerAccountID) {
+		return fmt.Errorf("%w: owner account %q must be a channel member", ErrInvalidArgument, policy.OwnerAccountID)
+	}
+	qtx := s.q.WithTx(tx)
+	for _, m := range members {
+		if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+			ChannelID: string(id),
+			AccountID: string(m),
+		}); err != nil {
+			if pgErrIs(err, pgForeignKeyViolation) {
+				return fmt.Errorf("%w: unknown member account %q", ErrInvalidArgument, m)
+			}
+			return fmt.Errorf("store: insert channel member: %w", err)
+		}
+	}
+	// Born mandatory ⇒ every member is a delivery target (D1 disjunct,
+	// regardless of subscribed), so seed each agent member's cursor in this tx
+	// — an un-seeded target is the fail-DANGEROUS D2 hazard. Self-guarding
+	// (agent-only) and idempotent; non-mandatory channels seed at subscribe.
+	if policy.MandatorySubscription {
+		return seedChannelDeliveryCursors(ctx, tx, id)
+	}
+	return nil
+}
+
+// ReparentChannel moves an ungrouped CHANNEL within its participant owner set.
+// It gates participant and destination ownership before checking shape refusals.
+func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID ChannelID, newParentAgentID AccountID) (Channel, error) {
+	if actor == "" {
+		return Channel{}, fmt.Errorf("%w: actor is required", ErrInvalidArgument)
+	}
+	if channelID == "" {
+		return Channel{}, fmt.Errorf("%w: channel id is required", ErrInvalidArgument)
+	}
+
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return Channel{}, fmt.Errorf("store: begin reparent channel: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+
+	participant, err := qtx.ChannelParticipant(ctx, db.ChannelParticipantParams{
+		ChannelID: string(channelID),
+		AccountID: string(actor),
+	})
+	if err != nil {
+		return Channel{}, fmt.Errorf("store: check channel participation: %w", err)
+	}
+	if !participant.Valid || !participant.Bool {
+		return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+	}
+
+	if newParentAgentID != "" {
+		actorOwner, err := qtx.ResolveOwner(ctx, string(actor))
+		if err != nil {
+			return Channel{}, fmt.Errorf("store: resolve actor owner: %w", err)
+		}
+		destinationOwner, err := qtx.GetAgentOwner(ctx, string(newParentAgentID))
+		if err != nil {
+			if noRows(err) {
+				return Channel{}, fmt.Errorf("%w: agent %q", ErrNotFound, newParentAgentID)
+			}
+			return Channel{}, fmt.Errorf("store: resolve destination agent owner: %w", err)
+		}
+		if actorOwner != destinationOwner {
+			return Channel{}, fmt.Errorf("%w: agent %q", ErrNotFound, newParentAgentID)
+		}
+	}
+
+	row, err := qtx.LockChannelForReparent(ctx, string(channelID))
+	if err != nil {
+		if noRows(err) {
+			return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+		}
+		return Channel{}, fmt.Errorf("store: lock channel for reparent: %w", err)
+	}
+	if row.GroupID.Valid {
+		return Channel{}, fmt.Errorf("%w: grouped channel cannot be attached", ErrInvalidArgument)
+	}
+	if ChannelKind(row.Kind) != ChannelKindChannel {
+		return Channel{}, fmt.Errorf("%w: only channels can be attached", ErrInvalidArgument)
+	}
+	if row.IsHome {
+		return Channel{}, fmt.Errorf("%w: home channels cannot be attached", ErrInvalidArgument)
+	}
+	if ChannelMembershipMode(row.MembershipMode) == ChannelMembershipModeTree && newParentAgentID == "" {
+		return Channel{}, fmt.Errorf("%w: tree membership requires an agent parent", ErrInvalidArgument)
+	}
+
+	// Channels are leaves, so moving a channel cannot create a tree cycle.
+	if err := qtx.UpdateChannelParent(ctx, db.UpdateChannelParentParams{
+		ID:      string(channelID),
+		Column2: string(newParentAgentID),
+	}); err != nil {
+		if pgErrIs(err, pgUniqueViolation) && pgConstraintName(err) == "channels_agent_name_key" {
+			return Channel{}, fmt.Errorf("%w: channel already exists under agent %q", ErrConflict, newParentAgentID)
+		}
+		return Channel{}, fmt.Errorf("store: update channel parent: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Channel{}, fmt.Errorf("store: commit reparent channel: %w", err)
+	}
+	return s.getChannel(ctx, channelID)
 }
 
 // expandOwnerMembership computes the final member set for a new channel: the
