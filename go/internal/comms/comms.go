@@ -254,11 +254,21 @@ func (c *Comms) CreateChannel(
 	if err != nil {
 		return nil, edgeError(err)
 	}
+	mode, err := channelMembershipModeFromWire(req.Msg.GetMembershipMode())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	parentID, err := c.resolveSameOwnerAgent(ctx, caller, req.Msg.GetParentAgentHandle())
+	if err != nil {
+		return nil, edgeError(err)
+	}
 	ch, err := c.store.CreateChannel(ctx, caller, store.NewChannel{
 		Name:             req.Msg.GetName(),
 		GroupID:          store.ChannelGroupID(req.Msg.GetGroupId()),
 		Kind:             channelKindFromWire(req.Msg.GetKind()),
 		MemberAccountIDs: members,
+		ParentAgentID:    parentID,
+		MembershipMode:   mode,
 	})
 	if err != nil {
 		return nil, edgeError(err)
@@ -315,28 +325,11 @@ func (c *Comms) ReparentAgent(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	// new_parent_handle empty ⇒ promote to root (no parent to resolve).
-	var newParentID store.AccountID
-	if h := req.Msg.GetNewParentHandle(); h != "" {
-		newParentID, err = c.resolveAgentHandle(ctx, caller, h)
-		if err != nil {
-			return nil, edgeError(err)
-		}
-		// Oracle-safe remap (DL-269), mirroring CreateAgent's parent pre-check:
-		// resolve the caller's owner and reject a foreign parent HERE, naming the
-		// SUBMITTED new_parent_handle — otherwise the store's clause-1 error re-keys
-		// to the AGENT handle and leaks the parent's existence.
-		owner, err := c.store.ResolveOwner(ctx, caller)
-		if err != nil {
-			return nil, edgeError(err)
-		}
-		parentOwner, err := c.store.AgentOwner(ctx, newParentID)
-		if err != nil {
-			return nil, edgeError(notFoundHandle(err, h))
-		}
-		if parentOwner != owner {
-			return nil, edgeError(notFoundHandle(store.ErrNotFound, h))
-		}
+	// new_parent_handle empty ⇒ promote to root. A foreign parent is refused
+	// here, naming the SUBMITTED handle; the store's error would name the agent.
+	newParentID, err := c.resolveSameOwnerAgent(ctx, caller, req.Msg.GetNewParentHandle())
+	if err != nil {
+		return nil, edgeError(err)
 	}
 	acc, err := c.store.ReparentAgent(
 		ctx,
@@ -359,13 +352,24 @@ func (c *Comms) ReparentAgent(
 	return connect.NewResponse(&compassv1.ReparentAgentResponse{Account: accountToWire(acc)}), nil
 }
 
-// ReparentChannel lands proto-first: the store invariants and handler body
-// arrive with the channel-attach store work, so it is Unimplemented until then.
+// ReparentChannel attaches a channel under an agent, moves it, or (EXPLICIT
+// only) detaches it to the root; emits ChannelChanged post-commit. The store
+// gates participation before any shape refusal, so a refusal reveals nothing.
 func (c *Comms) ReparentChannel(
-	_ context.Context,
-	_ *connect.Request[compassv1.ReparentChannelRequest],
+	ctx context.Context,
+	req *connect.Request[compassv1.ReparentChannelRequest],
 ) (*connect.Response[compassv1.ReparentChannelResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("comms ReparentChannel: not implemented"))
+	caller := c.actorFromContext(ctx)
+	parentID, err := c.resolveSameOwnerAgent(ctx, caller, req.Msg.GetNewParentAgentHandle())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	ch, err := c.store.ReparentChannel(ctx, caller, store.ChannelID(req.Msg.GetChannelId()), parentID)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishChannelChanged(ch, nil)
+	return connect.NewResponse(&compassv1.ReparentChannelResponse{Channel: channelToWire(ch)}), nil
 }
 
 // ---- agent workspace RPC (D5) ----

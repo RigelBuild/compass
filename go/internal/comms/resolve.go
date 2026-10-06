@@ -148,3 +148,28 @@ func notFoundHandle(err error, handle string) error {
 	}
 	return err
 }
+
+// resolveSameOwnerAgent resolves an optional agent handle that must share the
+// caller's owner. A foreign agent gets the same NOT_FOUND as an unknown one,
+// naming the submitted handle, as ReparentAgent does for its parent.
+func (c *Comms) resolveSameOwnerAgent(ctx context.Context, caller store.AccountID, handle string) (store.AccountID, error) {
+	if handle == "" {
+		return "", nil
+	}
+	agentID, err := c.resolveAgentHandle(ctx, caller, handle)
+	if err != nil {
+		return "", err
+	}
+	owner, err := c.store.ResolveOwner(ctx, caller)
+	if err != nil {
+		return "", err
+	}
+	agentOwner, err := c.store.AgentOwner(ctx, agentID)
+	if err != nil {
+		return "", notFoundHandle(err, handle)
+	}
+	if agentOwner != owner {
+		return "", notFoundHandle(store.ErrNotFound, handle)
+	}
+	return agentID, nil
+}
