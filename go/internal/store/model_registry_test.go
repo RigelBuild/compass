@@ -9,9 +9,12 @@ package store
 // orphan cross-check, exercised here over in-test bundles; the DB-backed CAS +
 // orphan-rejection contracts live in the pgtest-tagged sibling.
 import (
+	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -283,6 +286,30 @@ func TestConfigBundleProfileModelRefsExtraction(t *testing.T) {
 	}
 	if !slices.Equal(escapeRefs, []string{"openrouter/anthropic/claude"}) {
 		t.Fatalf("escape-hatch refs = %v, want the provider/id selector (skipped by the orphan check)", escapeRefs)
+	}
+}
+
+// TestDoorProfilesMatchStoredBundleWalk pins that the profile bodies the Put door
+// hands the reverse lint equal what the registry-side guard reads back from the
+// stored bundle, so the two orphan guards always see the same profile set.
+func TestDoorProfilesMatchStoredBundleWalk(t *testing.T) {
+	bundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "profiles/", typeflag: tar.TypeDir},
+		tarEntry{name: "profiles/a/profile.yml", content: "models:\n  manager: opus\n"},
+		tarEntry{name: "profiles/b/profile.yml", content: "models:\n  manager: provider/x\n"},
+		tarEntry{name: "agents/impl.md", content: "---\nname: impl\n---\nx"},
+		tarEntry{name: "skills/review/SKILL.md", content: "# review"},
+	)
+	_, door, err := validateAndHashConfigBundle(bundle)
+	if err != nil {
+		t.Fatalf("validateAndHashConfigBundle: %v", err)
+	}
+	stored, err := configBundleProfileBodies(bundle)
+	if err != nil {
+		t.Fatalf("configBundleProfileBodies: %v", err)
+	}
+	if !maps.EqualFunc(door, stored, bytes.Equal) || len(door) != 2 {
+		t.Fatalf("door profiles %q != stored-walk profiles %q (want the two profile.yml bodies keyed a, b)", door, stored)
 	}
 }
 
