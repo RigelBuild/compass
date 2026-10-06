@@ -813,10 +813,10 @@ The workspaces sidebar derives its tree from `parent_agent_id` rather than a
 user-defined folder organization, and an agent reads its own parent off its
 account through `ListAccounts`. Every agent created through spawn or
 `CreateAgent` carries a role from the closed Manager taxonomy (`supervisor`,
-`owner`, `manager`). Rows created before that check may hold an empty or
-unknown role; either falls back to the default block-0. Composing
-channels or subtree-applied roles onto the tree is named for later (RIG-1622,
-RIG-1623) and is not yet built.
+`owner`, `manager`) and an optional persona, both set at creation (below). Rows
+created before the role check may hold an empty or unknown role; either falls
+back to the default block-0. Composing channels or subtree-applied roles onto
+the tree is named for later (RIG-1622, RIG-1623) and is not yet built.
 
 ### Requirement: An agent account carries a parent, forming the agent tree
 
@@ -850,6 +850,31 @@ any other value, including empty, with `INVALID_ARGUMENT` before writing.
 - **Given** a `CreateAgent` call whose `role` is empty or outside the taxonomy
 - **When** the server handles it
 - **Then** it returns `INVALID_ARGUMENT` and creates no account.
+
+### Requirement: An agent's role and persona are set at creation
+
+`CreateAgent` SHALL require a `role` and accept an optional `persona`. The
+`role` MUST be one of the closed set `supervisor`, `owner`, or `manager`; the
+server SHALL reject any other value, including empty, with `INVALID_ARGUMENT`
+before writing anything. A `persona` longer
+than 64 KiB (`MaxPersonaBytes`) SHALL be rejected with `INVALID_ARGUMENT`. The
+spawn path SHALL require a role from the same set and apply the same persona
+cap. The server SHALL store both on the account; provisioning SHALL read them
+from the stored account, never from a provision request. Re-spawning an
+existing agent SHALL keep its stored role and persona.
+
+#### Scenario: An off-taxonomy role is rejected
+
+- **Given** a `CreateAgent` call with `role` set to `director`
+- **When** the server handles it
+- **Then** it returns `INVALID_ARGUMENT` and creates no account.
+
+#### Scenario: A re-spawn keeps the stored role and persona
+
+- **Given** an agent created with role `owner` and a persona
+- **When** the operator spawns it again, passing a different `--role`
+- **Then** the agent provisions with its stored role and persona, and the CLI
+  reports that the flags were not applied.
 
 ### Requirement: Re-parenting moves an agent's subtree, validated against cycles and ownership
 
