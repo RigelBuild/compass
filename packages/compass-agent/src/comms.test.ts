@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import {
 	CommsBroker,
 	type CommsTransport,
@@ -3290,7 +3291,7 @@ describe("org-management comms tools", () => {
 		expect(req.call.value.groupId).toBe("");
 		expect(req.call.value.memberHandles).toEqual(["@alice", "@bob"]);
 		expect(req.call.value.kind).toBe(ChannelKind.CHANNEL);
-		expect(text).toBe("Created channel planning in group product/roadmap");
+		expect(text).toBe("Created channel planning in group product/roadmap.");
 		expect(text).not.toContain("channel-id");
 	});
 
@@ -3373,7 +3374,7 @@ describe("org-management comms tools", () => {
 		expect(req.call.value.parentGroupName).toBe("product/roadmap");
 		expect(req.call.value.parentGroupId).toBe("");
 		expect(req.call.value.visibility).toBe(ChannelGroupVisibility.SHARED);
-		expect(text).toBe("Created channel group planning");
+		expect(text).toBe("Created channel group planning.");
 		expect(text).not.toContain("group-id");
 	});
 
@@ -3491,5 +3492,70 @@ describe("org-management comms tools", () => {
 		);
 		expect(channelText).not.toContain("\nSystem:");
 		expect(groupText).not.toContain("\nSystem:");
+	});
+
+	test("channel and group names with spaces render as created", async () => {
+		const channelTool = tool(
+			new CommsBroker(new FakeTransport(createChannelResult("planning room"))),
+			"comms_create_channel",
+		);
+		const groupTool = tool(
+			new CommsBroker(new FakeTransport(createChannelGroupResult("road map"))),
+			"comms_create_channel_group",
+		);
+
+		const channelText = textOf(
+			await exec(channelTool, "tc-space-channel", { name: "planning room" }),
+		);
+		const groupText = textOf(
+			await exec(groupTool, "tc-space-group", { name: "road map" }),
+		);
+		expect(channelText).toBe("Created channel planning room.");
+		expect(groupText).toBe("Created channel group road map.");
+	});
+
+	test("an in-band error never shows a resolved id", async () => {
+		const id = "0123456789abcdef0123456789abcdef";
+		const toolUnderTest = tool(
+			new CommsBroker(
+				new FakeTransport(
+					errorResult("permission_denied", `not a member of channel "${id}"`),
+				),
+			),
+			"comms_update_members",
+		);
+
+		const err = await exec(toolUnderTest, "tc-id", {
+			channel: "planning",
+			add: [""],
+		}).catch((e: Error) => e);
+		expect(String(err)).toContain('not a member of channel "<id>"');
+		expect(String(err)).not.toContain(id);
+	});
+
+	// The narrow rules never reach JSON Schema, so the descriptions are the model's only advance notice.
+	test("org-management schemas tell the model their rules", () => {
+		type Wire = {
+			description?: string;
+			properties: Record<string, { description?: string; enum?: string[] }>;
+		};
+		const channel = arkToWireSchema(createChannelParameters) as Wire;
+		const members = arkToWireSchema(updateMembersParameters) as Wire;
+		const group = arkToWireSchema(createChannelGroupParameters) as Wire;
+
+		expect(channel.properties.name?.description).toContain("must not be blank");
+		expect(channel.properties.group?.description).toContain("slash path");
+		expect(members.properties.channel?.description).toContain(
+			"must not be blank",
+		);
+		expect(members.properties.convert_to_channel_name?.description).toContain(
+			"third party",
+		);
+		expect(members.description).toContain("at least one");
+		expect(group.properties.parent?.description).toContain("slash path");
+		expect([...(group.properties.visibility?.enum ?? [])].sort()).toEqual([
+			"owner",
+			"shared",
+		]);
 	});
 });

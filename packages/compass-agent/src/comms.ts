@@ -434,7 +434,10 @@ function commsFailure(
 		// The same `flat` the marker lines use, not a second copy of its regex — two
 		// guards against one threat drift apart silently. The bound runs AFTER the
 		// collapse, so slicing cannot re-expose a break the collapse removed.
-		const detail = flat(outcome.value.message).slice(0, 500);
+		// Store errors can quote a resolved 32-hex id; the model addresses by name, so drop it.
+		const detail = flat(outcome.value.message)
+			.replace(/\b[0-9a-f]{32}\b/g, "<id>")
+			.slice(0, 500);
 		return new Error(
 			`${toolName} failed: ${attr(outcome.value.code)}: ${detail}`,
 		);
@@ -1118,7 +1121,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 				content: [
 					{
 						type: "text",
-						text: `Created channel ${attr(channel.name)}${params.group ? ` in group ${attr(params.group)}` : ""}`,
+						text: `Created channel ${flat(channel.name)}${params.group ? ` in group ${flat(params.group)}` : ""}.`,
 					},
 				],
 			};
@@ -1164,7 +1167,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 				content: [
 					{
 						type: "text",
-						text: `Updated members of channel ${attr(channel.name)}.`,
+						text: `Updated members of channel ${flat(channel.name)}.`,
 					},
 				],
 			};
@@ -1210,7 +1213,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 				);
 			return {
 				content: [
-					{ type: "text", text: `Created channel group ${attr(group.name)}` },
+					{ type: "text", text: `Created channel group ${flat(group.name)}.` },
 				],
 			};
 		},
