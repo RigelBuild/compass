@@ -5,6 +5,7 @@ package runnerhub
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -135,133 +136,70 @@ func TestStaleStateAfterErroredIsIgnored(t *testing.T) {
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(ctx, "cont-1", "sess-1")
 
-	if err := hub.Deliver(ctx, RunnerEvent{
-		RunnerID: "runner-1", RunnerSeq: 1, SessionID: "sess-1",
-		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
-	}); err != nil {
-		t.Fatalf("Deliver(ERRORED) = %v, want nil", err)
-	}
+	deliverState(t, hub, 5, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
 	if account, errored := lost.waitOne(t); account != testAgentAccount || !errored {
 		t.Fatalf("lost report = (%s, %v), want (%s, true)", account, errored, testAgentAccount)
 	}
-	if err := hub.Deliver(ctx, RunnerEvent{
-		RunnerID: "runner-1", RunnerSeq: 2, SessionID: "sess-1",
-		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
-	}); err != nil {
-		t.Fatalf("Deliver(WORKING) = %v, want nil", err)
-	}
-	statuses := lifecycle.snapshot()
-	if len(statuses) != 1 || statuses[0].GetSessionId() != "sess-1" || statuses[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		t.Fatalf("published statuses = %+v, want only ERRORED for sess-1", statuses)
-	}
+	// The fallback ERRORED overtook a frame buffered on the cancelled shared stream.
+	deliverState(t, hub, 4, compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+
+	assertPublished(t, lifecycle, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
 	frames := tail.snapshot()
-	if len(frames) != 2 || frames[0].sessionID != "sess-1" || frames[0].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED || frames[1].sessionID != "sess-1" || frames[1].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
+	if len(frames) != 2 || frames[0].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED || frames[1].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
 		t.Fatalf("relayed session frames = %+v, want ERRORED then WORKING", frames)
 	}
 }
 
-func TestRecoveryCommandClearsErroredGuard(t *testing.T) {
+func TestNewLifetimeStateAfterErroredPublishes(t *testing.T) {
 	ctx := t.Context()
-	cases := []struct {
-		name   string
-		run    func(*Hub) error
-		result *compassv1internal.SessionsRequest
-	}{
-		{
-			name: "Start",
-			run: func(hub *Hub) error {
-				_, err := hub.Start(ctx, "recover-start", &compassv1.StartAgentSessionRequest{
-					ContainerName: "cont-1", ResumeSessionId: "sess-1",
-				})
-				return err
-			},
-			result: &compassv1internal.SessionsRequest{
-				Result: &compassv1internal.SessionsRequest_Start{
-					Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-recovered"},
-				},
-			},
-		},
-		{
-			name: "StartResume",
-			run: func(hub *Hub) error {
-				_, err := hub.StartResume(ctx, "recover-resume", &compassv1.StartAgentSessionRequest{
-					ContainerName: "cont-1", ResumeSessionId: "sess-1",
-				}, nil)
-				return err
-			},
-			result: &compassv1internal.SessionsRequest{
-				Result: &compassv1internal.SessionsRequest_Start{
-					Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-recovered"},
-				},
-			},
-		},
-		{
-			name: "Reload",
-			run: func(hub *Hub) error {
-				_, err := hub.Reload(ctx, "recover-reload", &compassv1.ReloadAgentSessionRequest{SessionId: "sess-1"})
-				return err
-			},
-			result: &compassv1internal.SessionsRequest{
-				Result: &compassv1internal.SessionsRequest_Reload{Reload: &compassv1.ReloadAgentSessionResponse{}},
-			},
-		},
+	hub, lifecycle, _ := newHub()
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	deliverState(t, hub, 5, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+	deliverState(t, hub, 6, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	// A dead-lifetime frame that arrives after recovery began must still not publish.
+	deliverState(t, hub, 4, compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	deliverState(t, hub, 7, compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+
+	assertPublished(t, lifecycle,
+		compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED,
+		compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
+		compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+}
+
+func TestReenrollClearsErroredBoundary(t *testing.T) {
+	ctx := t.Context()
+	hub, lifecycle, _ := newHub()
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	deliverState(t, hub, 5, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+
+	// A restarted Runner's counter starts over, so its low seqs are a new lifetime.
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	deliverState(t, hub, 1, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+
+	assertPublished(t, lifecycle,
+		compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED,
+		compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+}
+
+func deliverState(t *testing.T, hub *Hub, seq uint64, state compassv1.AgentSessionState) {
+	t.Helper()
+	if err := hub.Deliver(t.Context(), RunnerEvent{
+		RunnerID: "runner-1", RunnerSeq: seq, SessionID: "sess-1", Frame: sessionStateFrame(state),
+	}); err != nil {
+		t.Fatalf("Deliver(%s, seq %d) = %v, want nil", state, seq, err)
 	}
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			hub, lifecycle, _ := newHub()
-			bindings := newFakeBindingStore()
-			hub.SetSessionBindingStore(bindings)
-			lost := newRecordingLostSink()
-			hub.SetSessionLostSink(lost)
-			hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-			hub.bindContainer("cont-1", testAgentAccount, "runner-1")
-			hub.promoteSession(ctx, "cont-1", "sess-1")
-			if err := hub.Deliver(ctx, RunnerEvent{
-				RunnerID: "runner-1", RunnerSeq: 1, SessionID: "sess-1",
-				Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
-			}); err != nil {
-				t.Fatalf("Deliver(ERRORED) = %v, want nil", err)
-			}
-			if account, errored := lost.waitOne(t); account != testAgentAccount || !errored {
-				t.Fatalf("lost report = (%s, %v), want (%s, true)", account, errored, testAgentAccount)
-			}
-			if err := hub.Deliver(ctx, RunnerEvent{
-				RunnerID: "runner-1", RunnerSeq: 2, SessionID: "sess-1",
-				Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
-			}); err != nil {
-				t.Fatalf("Deliver(stale WORKING) = %v, want nil", err)
-			}
-			statuses := lifecycle.snapshot()
-			if len(statuses) != 1 || statuses[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-				t.Fatalf("published statuses before recovery = %+v, want only ERRORED", statuses)
-			}
-
-			router, _, err := hub.routerFor("sess-1")
-			if err != nil {
-				t.Fatalf("routerFor(sess-1) = %v, want router", err)
-			}
-			router.attach(func(cmd *compassv1internal.SessionsResponse) error {
-				if err := hub.Deliver(ctx, RunnerEvent{
-					RunnerID: "runner-1", RunnerSeq: 3, SessionID: "sess-1",
-					Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
-				}); err != nil {
-					t.Errorf("Deliver(READY) during %s = %v, want nil", tc.name, err)
-				}
-				go router.complete(&compassv1internal.SessionsRequest{
-					RequestId: cmd.GetRequestId(), Result: tc.result.GetResult(),
-				})
-				return nil
-			})
-			if err := tc.run(hub); err != nil {
-				t.Fatalf("recovery command = %v, want nil", err)
-			}
-
-			statuses = lifecycle.snapshot()
-			if len(statuses) != 2 || statuses[1].GetSessionId() != "sess-1" || statuses[1].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
-				t.Fatalf("published statuses after recovery = %+v, want ERRORED then READY for sess-1", statuses)
-			}
-		})
+func assertPublished(t *testing.T, lifecycle *fakeLifecycleSink, want ...compassv1.AgentSessionState) {
+	t.Helper()
+	statuses := lifecycle.snapshot()
+	got := make([]compassv1.AgentSessionState, 0, len(statuses))
+	for _, s := range statuses {
+		got = append(got, s.GetState())
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("published states = %v, want %v", got, want)
 	}
 }
 
@@ -332,96 +270,6 @@ func TestConcurrentErroredPublishesAfterInFlightLifecycle(t *testing.T) {
 	statuses := lifecycle.snapshot()
 	if len(statuses) != 2 || statuses[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING || statuses[1].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 		t.Fatalf("published lifecycle order = %+v, want WORKING then ERRORED", statuses)
-	}
-}
-
-func TestRecoveryPreSendFailureKeepsErroredGuard(t *testing.T) {
-	ctx := t.Context()
-	hub, lifecycle, _ := newHub()
-	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-
-	if err := hub.Deliver(ctx, RunnerEvent{
-		RunnerID: "runner-1", RunnerSeq: 1, SessionID: "sess-1",
-		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
-	}); err != nil {
-		t.Fatalf("Deliver(ERRORED) = %v, want nil", err)
-	}
-	if _, err := hub.Reload(ctx, "recover-no-sender", &compassv1.ReloadAgentSessionRequest{SessionId: "sess-1"}); err == nil {
-		t.Fatal("Reload with no attached Runner = nil, want pre-send error")
-	}
-	if err := hub.Deliver(ctx, RunnerEvent{
-		RunnerID: "runner-1", RunnerSeq: 2, SessionID: "sess-1",
-		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
-	}); err != nil {
-		t.Fatalf("Deliver(stale WORKING) = %v, want nil", err)
-	}
-	statuses := lifecycle.snapshot()
-	if len(statuses) != 1 || statuses[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		t.Fatalf("published statuses after failed recovery = %+v, want only ERRORED", statuses)
-	}
-}
-
-func TestRecoveryQueueFullFailureKeepsErroredGuard(t *testing.T) {
-	ctx := t.Context()
-	hub, lifecycle, _ := newHub()
-	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
-	if err := hub.Deliver(ctx, RunnerEvent{
-		RunnerID: "runner-1", RunnerSeq: 1, SessionID: "sess-1",
-		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
-	}); err != nil {
-		t.Fatalf("Deliver(ERRORED) = %v, want nil", err)
-	}
-	router, _, err := hub.routerFor("sess-1")
-	if err != nil {
-		t.Fatalf("routerFor(sess-1) = %v, want router", err)
-	}
-	sendEntered := make(chan struct{})
-	releaseSend := make(chan struct{})
-	var releaseOnce sync.Once
-	var enteredOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseSend) }) }
-	router.attach(func(*compassv1internal.SessionsResponse) error {
-		enteredOnce.Do(func() { close(sendEntered) })
-		<-releaseSend
-		return nil
-	})
-	if err := router.push(&compassv1internal.SessionsResponse{
-		Command: &compassv1internal.SessionsResponse_SecretsVersion{
-			SecretsVersion: &compassv1internal.SecretsVersion{SessionId: "sess-1"},
-		},
-	}); err != nil {
-		t.Fatalf("queue blocking signal = %v, want nil", err)
-	}
-	t.Cleanup(func() {
-		release()
-		router.detach(errStreamClosed)
-	})
-	select {
-	case <-sendEntered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Runner send did not block")
-	}
-	for range sendQueueCap {
-		if err := router.push(&compassv1internal.SessionsResponse{
-			Command: &compassv1internal.SessionsResponse_SecretsVersion{
-				SecretsVersion: &compassv1internal.SecretsVersion{SessionId: "sess-1"},
-			},
-		}); err != nil {
-			t.Fatalf("fill command queue = %v, want nil", err)
-		}
-	}
-	if _, err := hub.Reload(ctx, "recover-full-queue", &compassv1.ReloadAgentSessionRequest{SessionId: "sess-1"}); err == nil {
-		t.Fatal("Reload with a full Runner queue = nil, want pre-send error")
-	}
-	if err := hub.Deliver(ctx, RunnerEvent{
-		RunnerID: "runner-1", RunnerSeq: 2, SessionID: "sess-1",
-		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
-	}); err != nil {
-		t.Fatalf("Deliver(stale WORKING) = %v, want nil", err)
-	}
-	statuses := lifecycle.snapshot()
-	if len(statuses) != 1 || statuses[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		t.Fatalf("published statuses after full-queue recovery failure = %+v, want only ERRORED", statuses)
 	}
 }
 

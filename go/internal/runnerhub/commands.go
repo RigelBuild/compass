@@ -75,8 +75,7 @@ func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartA
 			return nil, fmt.Errorf("minting fresh session id: %w", err)
 		}
 	}
-	// A fresh Start has no resume id, so relayRecovery clears no guard for it.
-	result, err := h.relayRecovery(ctx, req.GetContainerName(), req.GetResumeSessionId(), &compassv1internal.SessionsResponse{
+	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
 		RequestId:      orNewRequestID(requestID),
 		FreshSessionId: freshID,
 		Command:        &compassv1internal.SessionsResponse_Start{Start: req},
@@ -134,7 +133,7 @@ func (h *Hub) Remove(ctx context.Context, requestID string, req *compassv1.Remov
 
 // Reload relays a ReloadAgentSession command to the owning Runner.
 func (h *Hub) Reload(ctx context.Context, requestID string, req *compassv1.ReloadAgentSessionRequest) (*compassv1.ReloadAgentSessionResponse, error) {
-	result, err := h.relayRecovery(ctx, req.GetSessionId(), req.GetSessionId(), &compassv1internal.SessionsResponse{
+	result, _, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{
 		RequestId: orNewRequestID(requestID),
 		Command:   &compassv1internal.SessionsResponse_Reload{Reload: req},
 	})
@@ -218,48 +217,14 @@ func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1intern
 	if err != nil {
 		return nil, "", connect.NewError(connect.CodeUnavailable, err)
 	}
-	result, err := relayResult(router.dispatch(ctx, cmd))
+	result, err := router.dispatch(ctx, cmd)
 	if err != nil {
-		return nil, "", err
-	}
-	return result, runnerID, nil
-}
-
-// relayRecovery is relay for a command that recovers sessionID. It clears the
-// ERRORED guard atomically with admission, before the new lifetime can emit a frame.
-func (h *Hub) relayRecovery(ctx context.Context, sessionKey, sessionID string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, error) {
-	if sessionID == "" {
-		result, _, err := h.relay(ctx, sessionKey, cmd)
-		return result, err
-	}
-	if err := CheckClientRequestID(cmd.GetRequestId()); err != nil {
-		return nil, err
-	}
-	router, _, err := h.routerFor(sessionKey)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
-	}
-	h.lifecycleMu.Lock()
-	call, err := router.admit(cmd)
-	if err == nil {
-		delete(h.erroredSessions, sessionID)
-	}
-	h.lifecycleMu.Unlock()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
-	}
-	return relayResult(waitCall(ctx, call))
-}
-
-// relayResult maps a dispatched command's outcome onto relay's error contract.
-func relayResult(result *compassv1internal.SessionsRequest, err error) (*compassv1internal.SessionsRequest, error) {
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, "", connect.NewError(connect.CodeUnavailable, err)
 	}
 	if runnerErr := result.GetError(); runnerErr != nil {
-		return nil, runnerErrorToConnect(runnerErr)
+		return nil, "", runnerErrorToConnect(runnerErr)
 	}
-	return result, nil
+	return result, runnerID, nil
 }
 
 // runnerErrorToConnect maps a RunnerError to the Connect status the client sees.

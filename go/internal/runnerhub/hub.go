@@ -445,9 +445,10 @@ type Hub struct {
 	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
 	// (CodeNotFound) not inheriting a stale account (OQ-2).
 	sessionAccounts map[string]sessionBinding
-	// erroredSessions is lifecycleMu-guarded; entries live until recovery or re-enroll.
-	// Its size is bounded by the sessions errored during one Runner lifetime.
-	erroredSessions map[string]struct{}
+	// erroredSessions maps a session to the RunnerSeq of its latest ERRORED. Lifecycle
+	// frames at or below it are from the dead lifetime; the counter resets only with
+	// re-enroll, which clears the map. lifecycleMu-guarded.
+	erroredSessions map[string]uint64
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
 	// consumer (RIG-1569 T3) resolves a subscribed account to its live session to
@@ -507,7 +508,7 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
-		erroredSessions:   make(map[string]struct{}),
+		erroredSessions:   make(map[string]uint64),
 		reapStale:         make(map[string]uint64),
 		runnerEpoch:       make(map[string]uint64),
 	}
@@ -693,7 +694,7 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
-		h.deliverSession(ctx, ev.RunnerID, ev.SessionID, f.Session)
+		h.deliverSession(ctx, ev.RunnerID, ev.SessionID, ev.RunnerSeq, f.Session)
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
@@ -795,7 +796,7 @@ func (h *Hub) fireRunnerReady() {
 // deliverSession routes session frames to the observation pane, publishes lifecycle
 // transitions, and retires an owned session when its Runner reports ERRORED.
 // UNSPECIFIED means "trace only, no transition".
-func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf *compassv1internal.SessionFrame) {
+func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, seq uint64, sf *compassv1internal.SessionFrame) {
 	state := sf.GetState()
 	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
 	// A frame the publishing Runner may not speak for is dropped whole: its trace,
@@ -812,11 +813,12 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	}
 	h.lifecycleMu.Lock()
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		h.erroredSessions[sessionID] = struct{}{}
-	} else if _, errored := h.erroredSessions[sessionID]; errored {
+		h.erroredSessions[sessionID] = max(h.erroredSessions[sessionID], seq)
+	} else if erroredSeq, errored := h.erroredSessions[sessionID]; errored && seq <= erroredSeq {
 		h.lifecycleMu.Unlock()
-		h.log.Debug("ignored stale lifecycle frame after ERRORED",
-			slog.String("runner_id", runnerID), slog.String("session_id", sessionID), slog.String("state", state.String()))
+		h.log.Debug("ignored stale lifecycle frame from before ERRORED",
+			slog.String("runner_id", runnerID), slog.String("session_id", sessionID),
+			slog.String("state", state.String()), slog.Uint64("runner_seq", seq), slog.Uint64("errored_seq", erroredSeq))
 		return
 	}
 	// Resolve the session's agent account and stamp it onto the published status — the
