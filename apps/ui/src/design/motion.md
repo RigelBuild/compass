@@ -201,6 +201,22 @@ honored.
   final state with no assembly, pulse, or fades. Every launch still lands in the
   same place, just without the travel.
 
+## Tour entrance
+
+The first-run tour's welcome dialog opens with a one-shot chase-light around
+its frame. It is the only chase that runs once and then holds.
+
+- **Chase.** `.cx-tour-chase` places 24 `--cx-pulse-color` cells on the
+  dialog's perimeter, clockwise: 8 top, 4 right, 8 bottom, 4 left. Each cell
+  lights with `steps(1, start)`, delayed by `--cx-pulse-period × i / 24`, so the
+  light walks the frame once in one pulse period and stays lit. It plays on the
+  welcome step only.
+- **Callouts and dialogs.** `cx-tour-in` is everyday translate + fade: up
+  `--cx-space-2` at `--cx-motion-base`, `--cx-ease-out`. The spotlight hole moves
+  between anchors by transitioning its cutout properties at the same timing.
+- **Reduced-motion.** The chase cells appear lit at once. `cx-tour-in` and the
+  spotlight move collapse with the zeroed duration tokens.
+
 ## Reduced-motion summary
 
 One place to read the substitution for every primitive (substitution, not
@@ -215,3 +231,4 @@ removal; state always also carried by glyph / color / text):
 | cursor | block caret blinks at `--cx-cursor-blink` | holds solid |
 | everyday | ease-out translate + fade | instant, or ≤80ms opacity crossfade |
 | boot-sequence | staged pixel-assembly + pulse + fades | instant final state |
+| tour entrance | chase walks the welcome frame once | frame cells lit at once |
