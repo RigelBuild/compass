@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RigelBuild/compass/go/internal/embedded"
 )
 
 // TestDistDirForExecutable pins the packaging-layout dist resolution: a macOS
@@ -61,20 +63,20 @@ func TestDistDirForExecutable(t *testing.T) {
 // literal figures: re-tuning either budget is fine, collapsing the darwin one
 // back onto the linux one is the regression.
 func TestBringUpTimeoutBudgetsDarwinColdProvisioning(t *testing.T) {
-	linux := bringUpTimeoutFor("linux")
-	darwin := bringUpTimeoutFor("darwin")
+	linux := embedded.BringUpTimeoutFor("linux")
+	darwin := embedded.BringUpTimeoutFor("darwin")
 
 	if darwin <= linux {
-		t.Errorf("bringUpTimeoutFor(darwin) = %v, not greater than linux %v; a cold "+
+		t.Errorf("BringUpTimeoutFor(darwin) = %v, not greater than linux %v; a cold "+
 			"podman machine init cannot fit a linux-sized window", darwin, linux)
 	}
 	// A cold VM-image download plus three registry pulls does not fit in five
 	// minutes on an ordinary connection.
 	if darwin < 10*time.Minute {
-		t.Errorf("bringUpTimeoutFor(darwin) = %v, too tight for a cold machine init "+
+		t.Errorf("BringUpTimeoutFor(darwin) = %v, too tight for a cold machine init "+
 			"plus three image pulls", darwin)
 	}
 	if linux <= 0 {
-		t.Errorf("bringUpTimeoutFor(linux) = %v, want a positive backstop", linux)
+		t.Errorf("BringUpTimeoutFor(linux) = %v, want a positive backstop", linux)
 	}
 }

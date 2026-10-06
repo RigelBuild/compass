@@ -1,12 +1,10 @@
-//go:build (linux && gtk4) || darwin
-
-package main
+package embedded
 
 // Embedded launch-pipeline gate. The pipeline is exercised through its Go
 // entrypoints with INJECTED effects — no real podman/compass-stack/exec — so
 // mode-select, preflight short-circuit, the exact compass-stack argv, the WhoAmI
 // hop, and the two error paths are all verified deterministically. The one seam
-// wired to a real transport is whoAmIOverUDS, driven against a REAL in-process
+// wired to a real transport is WhoAmIOverUDS, driven against a REAL in-process
 // compass.v1 WhoAmI server over h2c on a Unix socket (mirroring the
 // bridge-service gate's stubServer and internal/runner/e2e_transport_test.go's
 // UDS/connect pattern), so the h2c-UDS dial is proven on the wire it ships on.
@@ -36,160 +34,10 @@ const embeddedTestTimeout = 5 * time.Second
 // baseParams is a representative resolved launch input the argv/dial assertions
 // key off. The socket is a fixed path (the tests never dial it except in the
 // WhoAmI-server case, which overrides it).
-var baseParams = embeddedParams{
-	socket:   "/run/compass/server.sock",
-	stateDir: "/state/compass",
-	image:    "ghcr.io/rigelbuild/compass-agent:latest",
-}
-
-// stubPipeline builds an embeddedPipeline whose three seams are deterministic
-// stubs, recording what the orchestration invoked. Each seam defaults to a
-// success no-op; a test overrides the ones it drives.
-type recorder struct {
-	preflightCalled bool
-	stackUpCalled   bool
-	stackUpArgs     []string
-	whoAmICalled    bool
-	whoAmISocket    string
-}
-
-func stubPipeline(rec *recorder, preflightErr, stackUpErr, whoAmIErr error, accountID string) embeddedPipeline {
-	return embeddedPipeline{
-		preflight: func(_ context.Context) error {
-			rec.preflightCalled = true
-			return preflightErr
-		},
-		stackUp: func(_ context.Context, args []string) error {
-			rec.stackUpCalled = true
-			rec.stackUpArgs = args
-			return stackUpErr
-		},
-		whoAmI: func(_ context.Context, socket string) (string, error) {
-			rec.whoAmICalled = true
-			rec.whoAmISocket = socket
-			return accountID, whoAmIErr
-		},
-	}
-}
-
-// runEmbeddedStub runs runEmbedded with a recording stackDown seam so the quit
-// controller wiring is observable without a real exec.
-func runEmbeddedStub(
-	t *testing.T, pipeline embeddedPipeline,
-) (string, *quitController, error) {
-	t.Helper()
-	stackDown := func(_ context.Context, _ []string) error { return nil }
-	return runEmbedded(context.Background(), pipeline, baseParams, stackDown)
-}
-
-// TestRunEmbeddedHappyPath: embedded mode runs preflight → stack up → WhoAmI in
-// order, passes the SAME socket to the dial that the argv carries, returns the
-// resolved account id, and builds a quit controller wired to the params. Asserting
-// the argv (up, --socket, --state-dir, --image) is the stack-invocation contract;
-// asserting whoAmISocket == socket is the single-socket invariant (the value
-// passed to --socket IS the value dialed).
-func TestRunEmbeddedHappyPath(t *testing.T) {
-	rec := &recorder{}
-	pipeline := stubPipeline(rec, nil, nil, nil, "acc-42")
-
-	id, quitter, err := runEmbeddedStub(t, pipeline)
-	if err != nil {
-		t.Fatalf("embedded happy path err = %v, want nil", err)
-	}
-	if id != "acc-42" {
-		t.Errorf("account id = %q, want acc-42", id)
-	}
-	if quitter == nil {
-		t.Fatal("embedded mode returned a nil quit controller, want one wired to the stack teardown")
-	}
-	if quitter.params != baseParams {
-		t.Errorf("quit controller params = %+v, want %+v", quitter.params, baseParams)
-	}
-	if !rec.preflightCalled || !rec.stackUpCalled || !rec.whoAmICalled {
-		t.Fatalf("not every stage ran: %+v", rec)
-	}
-	assertArg(t, rec.stackUpArgs, "up")
-	assertArgPair(t, rec.stackUpArgs, "--socket", baseParams.socket)
-	assertArgPair(t, rec.stackUpArgs, "--state-dir", baseParams.stateDir)
-	assertArgPair(t, rec.stackUpArgs, "--image", baseParams.image)
-	if rec.whoAmISocket != baseParams.socket {
-		t.Errorf("WhoAmI dialed %q, want the SAME socket passed to --socket %q",
-			rec.whoAmISocket, baseParams.socket)
-	}
-}
-
-// TestRunEmbeddedPreflightShortCircuits: a preflight failure returns the
-// aggregated legible error VERBATIM, never proceeds to stack-up or WhoAmI, and
-// builds no quit controller. Mutation that reddens it: running the checks after a
-// failure, or reformatting Results.Err's copy.
-func TestRunEmbeddedPreflightShortCircuits(t *testing.T) {
-	rec := &recorder{}
-	preflightErr := errors.New("embedded-mode preflight failed:\n  - windows is not supported")
-	pipeline := stubPipeline(rec, preflightErr, nil, nil, "acc-x")
-
-	id, quitter, err := runEmbeddedStub(t, pipeline)
-	if !errors.Is(err, preflightErr) {
-		t.Fatalf("preflight-fail err = %v, want the preflight error verbatim", err)
-	}
-	if id != "" {
-		t.Errorf("account id = %q, want empty on preflight failure", id)
-	}
-	if quitter != nil {
-		t.Error("preflight failure returned a quit controller, want nil")
-	}
-	if !rec.preflightCalled {
-		t.Error("preflight did not run")
-	}
-	if rec.stackUpCalled || rec.whoAmICalled {
-		t.Errorf("pipeline proceeded past a failed preflight: %+v", rec)
-	}
-}
-
-// TestRunEmbeddedStackUpFails: a non-zero compass-stack up exit is surfaced and
-// the pipeline stops before WhoAmI. The stackUp seam already folds stderr into
-// its error (see TestRunStackUpNonZeroExitSurfacesStderr); here the contract is
-// that runEmbedded propagates it and does not dial.
-func TestRunEmbeddedStackUpFails(t *testing.T) {
-	rec := &recorder{}
-	stackErr := errors.New("compass-stack up failed: exit status 1: postgres refused")
-	pipeline := stubPipeline(rec, nil, stackErr, nil, "acc-x")
-
-	id, quitter, err := runEmbeddedStub(t, pipeline)
-	if !errors.Is(err, stackErr) {
-		t.Fatalf("stack-up-fail err = %v, want the stack-up error", err)
-	}
-	if id != "" {
-		t.Errorf("account id = %q, want empty on stack-up failure", id)
-	}
-	if quitter != nil {
-		t.Error("stack-up failure returned a quit controller, want nil")
-	}
-	if rec.whoAmICalled {
-		t.Error("pipeline dialed WhoAmI after a failed stack-up")
-	}
-}
-
-// TestRunEmbeddedWhoAmIFails: a WhoAmI error is surfaced (wrapped with the socket
-// for context) and no account id is returned. Mutation that reddens it:
-// swallowing the WhoAmI error and returning an empty id as success.
-func TestRunEmbeddedWhoAmIFails(t *testing.T) {
-	rec := &recorder{}
-	whoErr := errors.New("connect: connection refused")
-	pipeline := stubPipeline(rec, nil, nil, whoErr, "")
-
-	id, quitter, err := runEmbeddedStub(t, pipeline)
-	if !errors.Is(err, whoErr) {
-		t.Fatalf("whoami-fail err = %v, want the WhoAmI error wrapped", err)
-	}
-	if id != "" {
-		t.Errorf("account id = %q, want empty on WhoAmI failure", id)
-	}
-	if quitter != nil {
-		t.Error("WhoAmI failure returned a quit controller, want nil")
-	}
-	if !strings.Contains(err.Error(), baseParams.socket) {
-		t.Errorf("WhoAmI error %q does not name the socket for context", err.Error())
-	}
+var baseParams = Params{
+	Socket:   "/run/compass/server.sock",
+	StateDir: "/state/compass",
+	Image:    "ghcr.io/rigelbuild/compass-agent:latest",
 }
 
 // TestStackUpArgsOmitsCLIDefaultedFlags: the pure argv builder passes ONLY
@@ -199,7 +47,7 @@ func TestRunEmbeddedWhoAmIFails(t *testing.T) {
 // the contract and the app re-learns nothing the stack already owns (§A2
 // reconciliation 2).
 func TestStackUpArgsOmitsCLIDefaultedFlags(t *testing.T) {
-	args := stackUpArgs(baseParams)
+	args := StackUpArgs(baseParams)
 	for _, flag := range []string{
 		"--database", "--postgres-image", "--collector-image", "--listen",
 	} {
@@ -257,9 +105,9 @@ func TestWhoAmIOverUDSReturnsAccountID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	id, err := whoAmIOverUDS(ctx, socket)
+	id, err := WhoAmIOverUDS(ctx, socket)
 	if err != nil {
-		t.Fatalf("whoAmIOverUDS err = %v, want nil", err)
+		t.Fatalf("WhoAmIOverUDS err = %v, want nil", err)
 	}
 	if id != "acc-served" {
 		t.Errorf("account id = %q, want acc-served", id)
@@ -274,9 +122,9 @@ func TestWhoAmIOverUDSSurfacesError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	id, err := whoAmIOverUDS(ctx, socket)
+	id, err := WhoAmIOverUDS(ctx, socket)
 	if err == nil {
-		t.Fatal("whoAmIOverUDS err = nil, want the server's error surfaced")
+		t.Fatal("WhoAmIOverUDS err = nil, want the server's error surfaced")
 	}
 	if id != "" {
 		t.Errorf("account id = %q, want empty on a WhoAmI error", id)
@@ -292,7 +140,7 @@ func TestRunStackUpNonZeroExitSurfacesStderr(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	stackUp := runStackUp("/bin/sh")
+	stackUp := RunStackUp("/bin/sh")
 	err := stackUp(ctx, []string{"-c", "echo 'boom on stderr' >&2; exit 1"})
 	if err == nil {
 		t.Fatal("stackUp err = nil, want a non-zero-exit error")
@@ -308,7 +156,7 @@ func TestRunStackUpZeroExitSucceeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	stackUp := runStackUp("/bin/sh")
+	stackUp := RunStackUp("/bin/sh")
 	if err := stackUp(ctx, []string{"-c", "exit 0"}); err != nil {
 		t.Fatalf("stackUp on a zero exit err = %v, want nil", err)
 	}
@@ -336,10 +184,10 @@ func TestRunStackUpReturnsWhileChildrenLinger(t *testing.T) {
 
 	// A short-lived grandchild that outlives its parent and inherits stderr: the
 	// exact fire-and-return shape of `compass-stack up`. sleep 5 is far longer
-	// than any correct runStackUp (which returns at the parent's exit, ~ms) and
+	// than any correct RunStackUp (which returns at the parent's exit, ~ms) and
 	// well past the 1s assertion below, yet short enough that a regressed run's
 	// leaked grandchild self-reaps in seconds rather than a minute.
-	stackUp := runStackUp("/bin/sh")
+	stackUp := RunStackUp("/bin/sh")
 	start := time.Now()
 	err := stackUp(ctx, []string{"-c", "sleep 5 & exit 0"})
 	elapsed := time.Since(start)
@@ -356,14 +204,14 @@ func TestRunStackUpReturnsWhileChildrenLinger(t *testing.T) {
 }
 
 // TestRunStackDownNonZeroExitSurfacesStderr: the real stackDown seam surfaces a
-// non-zero exit as an error carrying the child's stderr, mirroring runStackUp.
+// non-zero exit as an error carrying the child's stderr, mirroring RunStackUp.
 // Driven with /bin/sh printing to stderr and exiting 1 — no real compass-stack
 // (the argv is not compass-stack's; only the exec+stderr contract is tested).
 func TestRunStackDownNonZeroExitSurfacesStderr(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	stackDown := runStackDown("/bin/sh")
+	stackDown := RunStackDown("/bin/sh")
 	err := stackDown(ctx, []string{"-c", "echo 'down boom on stderr' >&2; exit 1"})
 	if err == nil {
 		t.Fatal("stackDown err = nil, want a non-zero-exit error")
@@ -379,7 +227,7 @@ func TestRunStackDownZeroExitSucceeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	stackDown := runStackDown("/bin/sh")
+	stackDown := RunStackDown("/bin/sh")
 	if err := stackDown(ctx, []string{"-c", "exit 0"}); err != nil {
 		t.Fatalf("stackDown on a zero exit err = %v, want nil", err)
 	}
@@ -407,7 +255,7 @@ func TestRunStackDownCancelSendsSIGTERM(t *testing.T) {
 	}()
 
 	script := "trap 'echo ok > \"$1\"; exit 3' TERM; echo > \"$2\"; while :; do sleep 1 & wait; done"
-	err := runStackDown("/bin/sh")(ctx, []string{"-c", script, "sh", marker, ready})
+	err := RunStackDown("/bin/sh")(ctx, []string{"-c", script, "sh", marker, ready})
 	if err == nil {
 		t.Fatal("stackDown err = nil, want the cancelled child's exit error")
 	}
@@ -597,7 +445,7 @@ func TestRunStackUpDeadlineExceededNamesBringUpWindow(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	stackUp := runStackUp("/bin/sh")
+	stackUp := RunStackUp("/bin/sh")
 	err := stackUp(ctx, []string{"-c", "exit 0"})
 	if err == nil {
 		t.Fatal("stackUp err = nil, want a deadline-exceeded error")
@@ -615,9 +463,9 @@ func TestWhoAmIOverUDSRejectsEmptyAccountID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 
-	id, err := whoAmIOverUDS(ctx, socket)
+	id, err := WhoAmIOverUDS(ctx, socket)
 	if err == nil {
-		t.Fatal("whoAmIOverUDS err = nil, want an error on an empty account id")
+		t.Fatal("WhoAmIOverUDS err = nil, want an error on an empty account id")
 	}
 	if id != "" {
 		t.Errorf("account id = %q, want empty when WhoAmI returns an empty id", id)
@@ -631,7 +479,7 @@ func TestWhoAmIOverUDSRejectsEmptyAccountID(t *testing.T) {
 func TestResolveStackBin(t *testing.T) {
 	t.Run("flag wins", func(t *testing.T) {
 		t.Setenv("COMPASS_STACK_BIN", "/env/compass-stack")
-		got, err := resolveStackBin("/flag/compass-stack")
+		got, err := ResolveStackBin("/flag/compass-stack")
 		if err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
@@ -641,7 +489,7 @@ func TestResolveStackBin(t *testing.T) {
 	})
 	t.Run("env wins over PATH", func(t *testing.T) {
 		t.Setenv("COMPASS_STACK_BIN", "/env/compass-stack")
-		got, err := resolveStackBin("")
+		got, err := ResolveStackBin("")
 		if err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
@@ -652,7 +500,7 @@ func TestResolveStackBin(t *testing.T) {
 	t.Run("not found names all four locations", func(t *testing.T) {
 		t.Setenv("COMPASS_STACK_BIN", "")
 		t.Setenv("PATH", "")
-		_, err := resolveStackBin("")
+		_, err := ResolveStackBin("")
 		if err == nil {
 			t.Fatal("err = nil, want a not-found error")
 		}
@@ -664,61 +512,25 @@ func TestResolveStackBin(t *testing.T) {
 	})
 }
 
-// TestResolveSocket: flag wins, then $COMPASS_SOCKET, then an ABSOLUTE
-// $XDG_RUNTIME_DIR/compass/server.sock. A RELATIVE $XDG_RUNTIME_DIR is treated as
-// unset and falls through to $HOME/.compass/server.sock — the determinism guard.
-func TestResolveSocket(t *testing.T) {
-	t.Run("flag wins", func(t *testing.T) {
-		t.Setenv("COMPASS_SOCKET", "/env/server.sock")
-		if got := resolveSocket("/flag/server.sock"); got != "/flag/server.sock" {
-			t.Errorf("got %q, want the flag value", got)
-		}
-	})
-	t.Run("env wins", func(t *testing.T) {
-		t.Setenv("COMPASS_SOCKET", "/env/server.sock")
-		t.Setenv("XDG_RUNTIME_DIR", "/xdg/run")
-		if got := resolveSocket(""); got != "/env/server.sock" {
-			t.Errorf("got %q, want the env value", got)
-		}
-	})
-	t.Run("absolute XDG_RUNTIME_DIR", func(t *testing.T) {
-		t.Setenv("COMPASS_SOCKET", "")
-		xdg := t.TempDir()
-		t.Setenv("XDG_RUNTIME_DIR", xdg)
-		if got := resolveSocket(""); got != filepath.Join(xdg, "compass", "server.sock") {
-			t.Errorf("got %q, want %q", got, filepath.Join(xdg, "compass", "server.sock"))
-		}
-	})
-	t.Run("relative XDG_RUNTIME_DIR falls through to HOME/.compass", func(t *testing.T) {
-		t.Setenv("COMPASS_SOCKET", "")
-		t.Setenv("XDG_RUNTIME_DIR", "rel/run")
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		if got := resolveSocket(""); got != filepath.Join(home, ".compass", "server.sock") {
-			t.Errorf("got %q, want %q (relative XDG_RUNTIME_DIR must fall through)", got, filepath.Join(home, ".compass", "server.sock"))
-		}
-	})
-}
-
 // TestResolveImage: flag wins, then $COMPASS_AGENT_IMAGE, then the locked GHCR
 // default.
 func TestResolveImage(t *testing.T) {
 	t.Run("flag wins", func(t *testing.T) {
 		t.Setenv("COMPASS_AGENT_IMAGE", "env/image:tag")
-		if got := resolveImage("flag/image:tag"); got != "flag/image:tag" {
+		if got := ResolveImage("flag/image:tag"); got != "flag/image:tag" {
 			t.Errorf("got %q, want the flag value", got)
 		}
 	})
 	t.Run("env wins", func(t *testing.T) {
 		t.Setenv("COMPASS_AGENT_IMAGE", "env/image:tag")
-		if got := resolveImage(""); got != "env/image:tag" {
+		if got := ResolveImage(""); got != "env/image:tag" {
 			t.Errorf("got %q, want the env value", got)
 		}
 	})
 	t.Run("default", func(t *testing.T) {
 		t.Setenv("COMPASS_AGENT_IMAGE", "")
-		if got := resolveImage(""); got != defaultAgentImage {
-			t.Errorf("got %q, want defaultAgentImage %q", got, defaultAgentImage)
+		if got := ResolveImage(""); got != DefaultAgentImage {
+			t.Errorf("got %q, want DefaultAgentImage %q", got, DefaultAgentImage)
 		}
 	})
 	// Pin the default to the canonical live GHCR owner. This guards the value
@@ -726,53 +538,8 @@ func TestResolveImage(t *testing.T) {
 	// ghcr.io/rigelbuild/compass-agent owner 403s post org-rename, so a
 	// shipped app that fell back to it could not pull its agent image (RIG-1967).
 	t.Run("default is the canonical rigelbuild ref", func(t *testing.T) {
-		if defaultAgentImage != "ghcr.io/rigelbuild/compass-agent:latest" {
-			t.Errorf("defaultAgentImage = %q, want the canonical rigelbuild ref", defaultAgentImage)
+		if DefaultAgentImage != "ghcr.io/rigelbuild/compass-agent:latest" {
+			t.Errorf("DefaultAgentImage = %q, want the canonical rigelbuild ref", DefaultAgentImage)
 		}
 	})
-}
-
-// TestResolveMode: flag wins, then $COMPASS_APP_MODE, then "" (no override).
-func TestResolveMode(t *testing.T) {
-	t.Run("flag wins", func(t *testing.T) {
-		t.Setenv("COMPASS_APP_MODE", "client")
-		if got := resolveMode("embedded"); got != "embedded" {
-			t.Errorf("got %q, want the flag value", got)
-		}
-	})
-	t.Run("env wins", func(t *testing.T) {
-		t.Setenv("COMPASS_APP_MODE", "client")
-		if got := resolveMode(""); got != "client" {
-			t.Errorf("got %q, want the env value", got)
-		}
-	})
-	t.Run("both empty", func(t *testing.T) {
-		t.Setenv("COMPASS_APP_MODE", "")
-		if got := resolveMode(""); got != "" {
-			t.Errorf("got %q, want empty (no override)", got)
-		}
-	})
-}
-
-// assertArg fails unless want appears as a token in args.
-func assertArg(t *testing.T, args []string, want string) {
-	t.Helper()
-	if !slices.Contains(args, want) {
-		t.Errorf("argv %v missing token %q", args, want)
-	}
-}
-
-// assertArgPair fails unless flag is immediately followed by value in args.
-func assertArgPair(t *testing.T, args []string, flag, value string) {
-	t.Helper()
-	for i, a := range args {
-		if a == flag {
-			if i+1 < len(args) && args[i+1] == value {
-				return
-			}
-			t.Errorf("argv %v: flag %q not followed by %q", args, flag, value)
-			return
-		}
-	}
-	t.Errorf("argv %v missing flag %q", args, flag)
 }

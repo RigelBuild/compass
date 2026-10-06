@@ -1,5 +1,3 @@
-//go:build (linux && gtk4) || darwin
-
 // The real host-preflight adapters for embedded mode: each is one genuine
 // external effect the preflight core (go/internal/preflight) is inverted over —
 // a rootless-podman probe, a podman-version floor probe, and an agent-image
@@ -7,12 +5,12 @@
 // mirroring how go/internal/stack/adapters wires real effects behind the stack
 // core seams; the pipeline's composition root (realPreflight in embedded.go)
 // supplies them.
-package main
+package embedded
 
 import (
 	"context"
 	"fmt"
-	"os/exec" //nolint:depguard // embedded preflight adapters: podman info and podman image exists <ref>, the ref passed as one argv operand
+	"os/exec" //nolint:depguard // preflight seam: fixed-arg podman probes and LookPath
 	"strings"
 
 	"github.com/RigelBuild/compass/go/internal/runtime"

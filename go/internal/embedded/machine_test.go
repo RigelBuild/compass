@@ -1,6 +1,4 @@
-//go:build (linux && gtk4) || darwin
-
-package main
+package embedded
 
 import (
 	"context"

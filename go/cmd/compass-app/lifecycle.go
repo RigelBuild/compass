@@ -26,18 +26,9 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/RigelBuild/compass/go/internal/embedded"
 )
-
-// stackDownTimeout bounds the explicit teardown (compass-stack down: attach,
-// SIGTERM the child tree, wait the server drain, release the lock). The bring-up
-// context is already cancelled by the time the window is open, so
-// stopStackAndQuit roots a FRESH bounded context off the caller's rather than
-// reusing it.
-const stackDownTimeout = 60 * time.Second
-
-// stackDownCancelGrace is how long a timed-out down gets after SIGTERM to
-// rewrite its survivor record before os/exec escalates to SIGKILL.
-const stackDownCancelGrace = 10 * time.Second
 
 // quitController is the explicit "Quit and stop stack" orchestration over its
 // injected effects. It holds the teardown seam (stackDown), the argv inputs
@@ -47,7 +38,7 @@ const stackDownCancelGrace = 10 * time.Second
 // verified with no real exec and no display.
 type quitController struct {
 	stackDown func(ctx context.Context, args []string) error
-	params    embeddedParams
+	params    embedded.Params
 	quit      func()
 	timeout   time.Duration
 	logger    *slog.Logger
@@ -69,7 +60,7 @@ func (c quitController) stopStackAndQuit(ctx context.Context) {
 	}
 	downCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	if err := c.stackDown(downCtx, stackDownArgs(c.params)); err != nil {
+	if err := c.stackDown(downCtx, embedded.StackDownArgs(c.params)); err != nil {
 		// Quit-anyway (OQ-6): log and fall through to quit.
 		logger.Error("stopping the embedded stack failed; quitting anyway "+
 			"(the stack lingers, which is the safe plain-quit default)", "error", err)
