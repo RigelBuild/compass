@@ -32,6 +32,20 @@ export interface ShellIpc {
 	cancel(requestId: string): void;
 }
 
+// Statuses the Fetch spec forbids a body on.
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+
+/** Build the fetch Response for a head frame. Response rejects a body on
+ *  null-body statuses; later frames then drain into the unread stream. */
+function headResponse(
+	stream: ReadableStream<Uint8Array>,
+	status: number,
+	headers: [string, string][] | undefined,
+): Response {
+	const body = NULL_BODY_STATUSES.has(status) ? null : stream;
+	return new Response(body, { status, headers: new Headers(headers) });
+}
+
 /** Decode a standard-base64 body chunk to bytes for the response stream. */
 function decodeChunk(b64: string): Uint8Array {
 	const bin = atob(b64);
@@ -136,12 +150,7 @@ export function createDaemonFetch(ipc: ShellIpc): DaemonFetch {
 			switch (frame.kind) {
 				case "head": {
 					headSeen = true;
-					resolveHead(
-						new Response(stream, {
-							status: frame.status,
-							headers: new Headers(frame.headers),
-						}),
-					);
+					resolveHead(headResponse(stream, frame.status, frame.headers));
 					break;
 				}
 				case "body":

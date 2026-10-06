@@ -131,6 +131,18 @@ describe("createDaemonFetch", () => {
 		expect(await readAllBytes(response)).toEqual([9, 8, 7]);
 	});
 
+	test("a 204 head resolves a Response with a null body", async () => {
+		const fetched = createDaemonFetch(ipc)(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		const { onFrame } = await ipc.rpcMade;
+		onFrame({ kind: "head", status: 204, headers: [] });
+		onFrame({ kind: "end" });
+		const response = await fetched;
+		expect(response.status).toBe(204);
+		expect(response.body).toBeNull();
+	});
+
 	test("multi-frame stream: head + multiple body frames + end yield each decoded chunk in order", async () => {
 		const daemonFetch = createDaemonFetch(ipc);
 		const fetched = daemonFetch(

@@ -78,8 +78,11 @@ export async function bootSetup(
 	};
 	let choose: () => Promise<void>;
 	let connect: () => void;
+	// A queued decision always cancels an idle connect form; the form's own
+	// abort handling lets an in-flight call finish first.
 	const queueDecision = (message = ""): void => {
 		decisionQueued = true;
+		connectController?.abort();
 		if (message.length > 0 && !queuedStateMessages.includes(message))
 			queuedStateMessages.push(message);
 	};
@@ -144,13 +147,11 @@ export async function bootSetup(
 			queueDecision(errorMessage(reason));
 			return;
 		}
-		decisionQueued = false;
-		renderChoices(
-			root,
-			choose,
-			connect,
-			takeQueuedStateMessage(errorMessage(reason)),
-		);
+		const message = takeQueuedStateMessage(errorMessage(reason));
+		renderChoices(root, choose, connect, message);
+		// A decision that arrived during the failed read still needs a read;
+		// keep the error visible by carrying it into the retry.
+		if (decisionQueued) queueDecision(message);
 	};
 	const finishShellStateRead = (): void => {
 		stateReadInFlight = false;

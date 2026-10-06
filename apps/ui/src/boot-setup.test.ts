@@ -225,6 +225,46 @@ describe("bootSetup", () => {
 		await flush();
 		expect(nativeCalls.map((call) => call.entry)).toEqual(["setup"]);
 	});
+	test("a decision during a state read that then fails is retried, keeping the error", async () => {
+		const first = Promise.withResolvers<ShellState>();
+		let calls = 0;
+		deps.shellState = () => {
+			calls++;
+			if (calls === 1) return Promise.resolve({ mode: "setup", serverUrl: "" });
+			if (calls === 2) return first.promise;
+			return Promise.resolve({ mode: "reopen", serverUrl: "" });
+		};
+		const booted = bootSetup(root, deps);
+		await flush();
+		emitDecision();
+		await flush();
+		emitDecision();
+		first.reject(new Error("state unavailable"));
+		await flush();
+		expect(calls).toBe(3);
+		expect(await booted).toBeUndefined();
+		expect(root.textContent).toContain("already set up");
+	});
+	test("a decision queued by a stale state read aborts the idle connect form", async () => {
+		const read = Promise.withResolvers<ShellState>();
+		let calls = 0;
+		deps.shellState = () => {
+			calls++;
+			if (calls === 2) return read.promise;
+			return Promise.resolve({ mode: "setup", serverUrl: "" });
+		};
+		void bootSetup(root, deps);
+		await flush();
+		emitDecision();
+		await flush();
+		button("Connect to a server").click();
+		await flush();
+		const signal = nativeCalls[0]?.signal;
+		expect(signal?.aborted).toBe(false);
+		read.resolve({ mode: "setup", serverUrl: "" });
+		await flush();
+		expect(signal?.aborted).toBe(true);
+	});
 	test("a rejected embedded choice restores both choices", async () => {
 		deps.chooseEmbedded = async () => {
 			throw new Error("preflight unavailable");
