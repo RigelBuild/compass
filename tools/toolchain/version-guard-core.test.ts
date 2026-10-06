@@ -8,13 +8,16 @@
 // disagreement, a same-verdict-different-stamp split, and a harness error.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
 	CANDIDATES,
 	compareVerdicts,
+	DEVENV_VERSION_SEED,
 	extractDevenvGuard,
 	extractFlakeGuard,
 	type ParityRow,
@@ -73,7 +76,7 @@ describe("extractFlakeGuard", () => {
 });
 
 describe("extractDevenvGuard", () => {
-	test("lifts the trim loop and validating case out of the real devenv.nix", () => {
+	test("lifts the version_file seed through the validating case out of the real devenv.nix", () => {
 		const guard = extractDevenvGuard(realDevenv);
 		expect(guard).not.toBeNull();
 		expect(guard).toContain("while :; do");
@@ -106,21 +109,100 @@ describe("extractDevenvGuard", () => {
 		expect(guard.trimEnd().endsWith("esac")).toBe(true);
 	});
 
+	// The seed is lifted too, with the version file as `$1`, so the gate runs the
+	// shipped read (and its NUL check) rather than a harness-side copy of it.
+	test("lifts the version_file seed, parameterized as $1", () => {
+		const guard = extractDevenvGuard(realDevenv) as string;
+		expect(guard.startsWith('        version_file="$1"\n')).toBe(true);
+		expect(guard).not.toContain("config.devenv.root");
+	});
+
+	const seed = DEVENV_VERSION_SEED;
 	test.each([
 		[
 			"the trim loop is absent",
-			'case "$version_base" in\n  "") exit 1 ;;\nesac\n',
+			`${seed}case "$version_base" in\n  "") exit 1 ;;\nesac\n`,
 		],
 		[
 			"the validating case is absent",
-			'        while :; do\n          case "$v" in\n            *) break ;;\n          esac\n        done\n',
+			`${seed}        while :; do\n          case "$v" in\n            *) break ;;\n          esac\n        done\n`,
 		],
 		[
 			"the character class moved",
-			'        while :; do\n          case "$v" in\n            *) break ;;\n          esac\n        done\n        case "$v" in\n          "") exit 1 ;;\n        esac\n',
+			`${seed}        while :; do\n          case "$v" in\n            *) break ;;\n          esac\n        done\n        case "$v" in\n          "") exit 1 ;;\n        esac\n`,
+		],
+		[
+			"the version_file seed is absent",
+			'        while :; do\n          case "$v" in\n            *) break ;;\n          esac\n        done\n        case "$version_base" in\n          "" | *[!0-9]*) exit 1 ;;\n        esac\n',
 		],
 	])("yields null when %s", (_label, source) => {
 		expect(extractDevenvGuard(source)).toBeNull();
+	});
+});
+
+// Content nix cannot represent as a string is outside the gate's batched
+// comparison (the flake lane hard-errors on readFile), so the devenv lane's
+// refusal is pinned here: bash's $(cat) would drop the NUL and stamp a spliced
+// value. Runs the REAL lifted guard under bash, as the gate does.
+describe("devenv guard on a version.txt nix cannot represent", () => {
+	const guard = extractDevenvGuard(realDevenv) as string;
+	const runGuardOn = (file: string) => {
+		const script = `set -u\nshopt -s globasciiranges\nexport LC_ALL=C\n${guard}\nprintf '%s' "$version_base"\n`;
+		return spawnSync("bash", ["-c", script, "guard", file], {
+			encoding: "utf8",
+		});
+	};
+	const runGuard = (content: string | Uint8Array) => {
+		const dir = mkdtempSync(join(tmpdir(), "version-guard-test-"));
+		try {
+			const file = join(dir, "version.txt");
+			writeFileSync(file, content);
+			return runGuardOn(file);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	};
+	const utf16le = (text: string, bom: boolean) =>
+		Buffer.concat([
+			Buffer.from(bom ? [0xff, 0xfe] : []),
+			Buffer.from(text, "utf16le"),
+		]);
+
+	test("a clean version.txt still stamps (the harness can pass)", () => {
+		const run = runGuard("0.1.0\n");
+		expect(run.status).toBe(0);
+		expect(run.stdout).toBe("0.1.0");
+	});
+
+	// The NUL probe must not turn a missing file into a pass. Under devenv's set -e
+	// the failing $(cat) exits first; here (no set -e) the class reject catches it.
+	test("a missing version.txt still fails closed", () => {
+		const dir = mkdtempSync(join(tmpdir(), "version-guard-test-"));
+		try {
+			const run = runGuardOn(join(dir, "version.txt"));
+			expect(run.status).not.toBe(0);
+			expect(run.stdout).toBe("");
+			expect(run.stderr).toContain(
+				"version.txt missing or not a version string",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test.each([
+		["NUL splicing two class-legal halves", "1.2.3\u0000999\n"],
+		["NUL before a prerelease tag", "0.1.0\u0000-rc1\n"],
+		["trailing NUL", "0.1.0\u0000"],
+		["leading NUL", "\u00000.1.0\n"],
+		["UTF-16LE with BOM", utf16le("0.1.0\n", true)],
+		["UTF-16LE without BOM", utf16le("0.1.0\n", false)],
+		["UTF-16BE", utf16le("0.1.0\n", false).swap16()],
+	])("refuses %s, naming the NUL byte", (_label, content) => {
+		const run = runGuard(content);
+		expect(run.status).not.toBe(0);
+		expect(run.stdout).toBe("");
+		expect(run.stderr).toContain("version.txt contains a NUL byte");
 	});
 });
 

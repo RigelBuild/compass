@@ -51,7 +51,9 @@ console.log("version.txt guard parity — flake.nix vs devenv.nix\n");
 if (flakeGuard === null || devenvGuard === null) {
 	const which = [
 		flakeGuard === null ? "flake.nix `versionBase`" : null,
-		devenvGuard === null ? "devenv.nix trim+case guard" : null,
+		devenvGuard === null
+			? "devenv.nix version_file seed + trim+case guard"
+			: null,
 	]
 		.filter((v) => v !== null)
 		.join(" and ");
@@ -88,14 +90,10 @@ CANDIDATES.forEach(({ content }, index) => {
 // errors, so content nix cannot represent as a string (a NUL byte, UTF-16) is
 // OUTSIDE the comparable domain and aborts the batch into a harness error.
 
-// That is a real skew the gate cannot see (bash drops NUL from $(cat) and
-// stamps, the flake lane dies), so it is deliberately not in CANDIDATES: a row
-// would red the gate with an opaque "could not run". The blast radius is bounded
-// by the flake lane failing closed — the two lanes never both ship.
-
-// Example: 1.2.3\0999 becomes -X main.version=1.2.3999+dev in bash, a wrong
-// stamp, while the flake lane hard-errors on the same input. Deferred, not
-// dismissed — see RIG-3439, whose option to reject NUL explicitly is the fix.
+// The devenv lane refuses the same input up front (its NUL check, pinned by
+// version-guard-core.test.ts), so both lanes fail closed on it; it stays out of
+// CANDIDATES only because a row would red the gate with an opaque "could not
+// run" from the flake half's batch.
 const flakeVerdicts = (): Verdict[] | Error => {
 	// JSON.stringify, not bare interpolation: a path holding a " would break out
 	// of the nix string literal. Nothing can execute either way (nix has no
@@ -142,9 +140,9 @@ const flakeVerdicts = (): Verdict[] | Error => {
 	);
 };
 
-// The devenv half. The lifted snippet runs verbatim under bash with version_base
-// seeded as the process script seeds it, then echoes the surviving value — so
-// the stamp compared is the one the ldflag would carry. Loop, cheap per candidate.
+// The devenv half. The lifted snippet runs verbatim under bash — seed, NUL
+// refusal and all — with the candidate path as $1, then echoes the surviving
+// value, so the stamp compared is the one the ldflag would carry.
 
 // shopt -s globasciiranges and export LC_ALL=C both make the comparison
 // locale-invariant. With NEITHER, [!0-9A-Za-z.+-] under a UTF-8 locale accepts
@@ -158,20 +156,23 @@ const flakeVerdicts = (): Verdict[] | Error => {
 const devenvVerdict = (index: number): Verdict | Error => {
 	const script =
 		"set -u\nshopt -s globasciiranges\nexport LC_ALL=C\n" +
-		// Single-quoted so a scratch path containing ", $, or a backtick is inert;
-		// ' cannot occur in an mkdtemp path. The one place the harness diverges
-		// textually from the shipped seed (devenv.nix uses double quotes); content
-		// reaches bash only as file BYTES through $(cat), so it cannot move a verdict.
-		`version_base="$(cat '${candidatePath(index)}')"\n` +
 		`${devenvGuard}\nprintf '%s' "$version_base"\n`;
-	const run = spawnSync("bash", ["-c", script], { encoding: "utf8" });
+	// argv-form: the path is $1, never spliced into the script text.
+	const run = spawnSync(
+		"bash",
+		["-c", script, "version-guard", candidatePath(index)],
+		{ encoding: "utf8" },
+	);
 	if (run.error !== undefined) {
 		return run.error;
 	}
 	if (run.status === 0) {
 		return { kind: "accept", stamp: run.stdout };
 	}
-	return run.stderr.includes("version.txt missing or not a version string")
+	// The NUL message is reached only by version-guard-core.test.ts, not CANDIDATES.
+	return /version\.txt (missing or not a version string|contains a NUL byte)/.test(
+		run.stderr,
+	)
 		? { kind: "reject" }
 		: new Error(`bash guard failed without rejecting:\n${run.stderr}`);
 };

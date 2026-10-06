@@ -132,23 +132,27 @@ export function extractFlakeGuard(flakeNix: string): string | null {
 	);
 }
 
+/** devenv.nix's version.txt seed line; nix interpolation text, so no `${` literal. */
+export const DEVENV_VERSION_SEED = `        version_file="$${"{"}config.devenv.root}/version.txt"\n`;
+
 /**
- * Extract devenv.nix's guard — the trim loop through the closing `esac` of the
- * validating `case`, starting at the `while :; do` that opens the trim. Nix
- * `''`-string escapes (`''${`) are unescaped to the bash the process script
- * actually receives, so the snippet runs as the rendered script runs it.
- *
- * Returns null when either delimiter is absent.
+ * Lift devenv.nix's guard from the version_file seed (NUL refusal, `$(cat)`)
+ * through the validating case's `esac`, with the seed path rewritten to `"$1"`
+ * and `''${` unescaped. Null when any landmark is absent.
  */
 export function extractDevenvGuard(devenvNix: string): string | null {
-	const start = devenvNix.indexOf("        while :; do");
+	const start = devenvNix.indexOf(DEVENV_VERSION_SEED);
 	if (start === -1) {
 		return null;
 	}
 	const rest = devenvNix.slice(start);
+	const loop = rest.indexOf("        while :; do");
+	if (loop === -1) {
+		return null;
+	}
 	// The trim loop's own `esac` comes first; the validating `case` closes at
 	// the second one, which is where the guard ends.
-	const firstEsac = rest.indexOf("esac");
+	const firstEsac = rest.indexOf("esac", loop);
 	if (firstEsac === -1) {
 		return null;
 	}
@@ -167,7 +171,9 @@ export function extractDevenvGuard(devenvNix: string): string | null {
 	if (!/\*\[!.+\]\*/.test(snippet)) {
 		return null;
 	}
-	return snippet.replaceAll("''${", "${");
+	return snippet
+		.replace(DEVENV_VERSION_SEED, '        version_file="$1"\n')
+		.replaceAll("''${", "${");
 }
 
 /**
