@@ -10,10 +10,9 @@
 #
 # Compass CI runs a per-concern matrix: tools/ci-matrix computes the targets
 # and .github/workflows/ci.yml runs `moon run <targets>`, so this project's `ci`
-# aggregate is swept only when the matrix selects it. The
-# task-level half of the affected union selects this gate when a file in another
-# project's tree matches the whole-repo `check` scan.
-# No separate meta.ts wiring (unlike the prior art's Woodpecker pipeline).
+# aggregate is swept only when the matrix selects it. tools/ci-matrix adds this
+# gate to every PR (`ALWAYS_RUN_ON_PR`), since its `check` reads the whole
+# docs/designs corpus.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']

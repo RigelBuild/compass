@@ -9,8 +9,7 @@
 # Compass CI runs a per-concern matrix: tools/ci-matrix computes the targets
 # and .github/workflows/ci.yml runs `moon run <targets>`, so this project's `ci`
 # aggregate is swept only when the matrix selects it.
-# No separate meta.ts wiring (unlike the prior art's CI/CD pipeline). install/lint/format
-# inherited via the `bun` tag (.moon/tasks/tag-bun.yml).
+# install/lint/format are inherited via the `bun` tag (.moon/tasks/tag-bun.yml).
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
