@@ -1,9 +1,59 @@
 // A hand-written CompassClient double for driving the store's agent-lifecycle and
 // boot-probe paths without a server — StopAgentSession (recorded verbatim) and
 // GetServerInfo (the boot probe). Models the ONE behaviour a permissive double hides:
-// a Runner-backed RPC answers `Unavailable` with no RunnerHub. Sibling of comms-fake.ts. Dev/test-only.
+// a Runner-backed RPC answers `Unavailable` with no RunnerHub. Also scripts the
+// session-status and SubscribeAgentSession streams. Sibling of comms-fake.ts. Dev/test-only.
 
-import type { CompassClient } from "@compass/client";
+import {
+	type AgentSessionFrame,
+	AgentSessionFrameSchema,
+	AgentSessionState,
+	AgentSessionStatusSchema,
+	type CompassClient,
+	create,
+	type SubscribeEventsResponse,
+	SubscribeEventsResponseSchema,
+	type SessionEvent as WireSessionEvent,
+} from "@compass/client";
+
+/** A push queue one stream at a time drains: items pushed with no reader wait
+ *  for the next one. */
+interface FrameQueue<T> {
+	push: (item: T) => void;
+	/** Yield queued and future items until `signal` aborts. */
+	drain: (signal?: AbortSignal) => AsyncGenerator<T>;
+}
+
+function createFrameQueue<T>(): FrameQueue<T> {
+	const items: T[] = [];
+	let wake: (() => void) | undefined;
+	return {
+		push: (item) => {
+			items.push(item);
+			wake?.();
+		},
+		drain: async function* (signal) {
+			while (!signal?.aborted) {
+				const next = items.shift();
+				if (next !== undefined) {
+					yield next;
+					continue;
+				}
+				const { promise, resolve } = Promise.withResolvers<void>();
+				wake = resolve;
+				signal?.addEventListener("abort", () => resolve(), { once: true });
+				await promise;
+				wake = undefined;
+			}
+		},
+	};
+}
+
+/** One SubscribeAgentSession the UI opened; `aborted` flips when it cancels. */
+export interface RecordedSessionSubscribe {
+	readonly sessionId: string;
+	aborted: boolean;
+}
 
 /** One recorded StopAgentSession — the whole request is a session id, the
  *  cursor StartAgentSession minted (compass_pb.ts:831-836). */
@@ -34,6 +84,23 @@ export interface FakeCompass {
 	/** Reject the next WhoAmI with `error` (one-shot) — the server-answered-but-
 	 *  identity-unlearnable path a boot guard must surface. */
 	failNextWhoAmI: (error: Error) => void;
+	/** Emit an agentSessionStatus on the SubscribeEvents stream — the source of
+	 *  the session ids the store tails. */
+	pushSessionStatus: (
+		accountId: string,
+		sessionId: string,
+		state: AgentSessionState,
+	) => void;
+	/** Queue one SubscribeAgentSession frame for `sessionId`. Delivered to the
+	 *  open subscription, else held for the next one. */
+	pushSessionFrame: (
+		sessionId: string,
+		frame: { event?: WireSessionEvent; state?: AgentSessionState },
+	) => void;
+	/** Every SubscribeAgentSession the UI opened, in order. */
+	readonly sessionSubscribes: RecordedSessionSubscribe[];
+	/** The session ids with a currently open SubscribeAgentSession. */
+	openSessionTails: () => string[];
 }
 
 /** Build the fake. Pure and synchronous apart from the RPC's promise. */
@@ -46,6 +113,18 @@ export function createFakeCompass(): FakeCompass {
 	// Defaults to the fixture caller (store.ts CALLER_ID) so boot/store tests
 	// resolve a caller with no per-test setup.
 	const whoAmIAccountId = { accountId: "acc-matt" };
+	const events = createFrameQueue<SubscribeEventsResponse>();
+	let eventSeq = 0n;
+	const sessionQueues = new Map<string, FrameQueue<AgentSessionFrame>>();
+	const sessionQueue = (sessionId: string): FrameQueue<AgentSessionFrame> => {
+		let queue = sessionQueues.get(sessionId);
+		if (!queue) {
+			queue = createFrameQueue();
+			sessionQueues.set(sessionId, queue);
+		}
+		return queue;
+	};
+	const sessionSubscribes: RecordedSessionSubscribe[] = [];
 
 	const client = {
 		stopAgentSession: async (req: { sessionId: string }) => {
@@ -76,19 +155,28 @@ export function createFakeCompass(): FakeCompass {
 			}
 			return { accountId: whoAmIAccountId.accountId };
 		},
-		// The board read stream (RIG-1729). This double drives only the agent-lifecycle +
-		// probe paths, so the event stream yields NOTHING and holds open until the caller
-		// aborts — mirroring the real transport. A test needing scripted board events uses
-		// events.test.ts's createRouterTransport fake instead.
-		subscribeEvents: async function* (
+		// The board read stream (RIG-1729). Yields only what a test pushes via
+		// pushSessionStatus and holds open until the caller aborts, mirroring the
+		// real transport. Board events are scripted in events.test.ts instead.
+		subscribeEvents: (
 			_req: unknown,
 			opts?: { signal?: AbortSignal },
-		): AsyncGenerator<unknown> {
-			const signal = opts?.signal;
-			if (signal?.aborted) return;
-			const { promise, resolve } = Promise.withResolvers<void>();
-			signal?.addEventListener("abort", () => resolve(), { once: true });
-			await promise;
+		): AsyncGenerator<SubscribeEventsResponse> => events.drain(opts?.signal),
+		// The cold-start re-snapshot the events driver reads at its first frame.
+		listBoardIssues: async () => ({ issues: [] }),
+		// Sends the server's registration ack first, then the session's queue.
+		subscribeAgentSession: async function* (
+			req: { sessionId: string },
+			opts?: { signal?: AbortSignal },
+		): AsyncGenerator<AgentSessionFrame> {
+			const record = { sessionId: req.sessionId, aborted: false };
+			sessionSubscribes.push(record);
+			try {
+				yield create(AgentSessionFrameSchema, { sessionId: req.sessionId });
+				yield* sessionQueue(req.sessionId).drain(opts?.signal);
+			} finally {
+				record.aborted = true;
+			}
 		},
 	};
 
@@ -109,5 +197,34 @@ export function createFakeCompass(): FakeCompass {
 		failNextWhoAmI: (error) => {
 			whoAmIFailure = error;
 		},
+		pushSessionStatus: (accountId, sessionId, state) => {
+			eventSeq++;
+			events.push(
+				create(SubscribeEventsResponseSchema, {
+					seq: eventSeq,
+					instanceEpoch: 1n,
+					payload: {
+						case: "agentSessionStatus",
+						value: create(AgentSessionStatusSchema, {
+							sessionId,
+							agentAccountId: accountId,
+							state,
+						}),
+					},
+				}),
+			);
+		},
+		pushSessionFrame: (sessionId, frame) => {
+			sessionQueue(sessionId).push(
+				create(AgentSessionFrameSchema, {
+					sessionId,
+					event: frame.event,
+					state: frame.state ?? AgentSessionState.UNSPECIFIED,
+				}),
+			);
+		},
+		sessionSubscribes,
+		openSessionTails: () =>
+			sessionSubscribes.filter((s) => !s.aborted).map((s) => s.sessionId),
 	};
 }

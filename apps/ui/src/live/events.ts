@@ -3,9 +3,20 @@
 // ListBoardIssues re-snapshot with the live tail in one id-keyed map (re-sent id REPLACES);
 // `resync_required`/fresh instance_epoch cold-starts. I/O here, wire→domain in ./adapt.
 
-import type { CompassClient, SubscribeEventsResponse } from "@compass/client";
+import type {
+	AgentSessionState,
+	CompassClient,
+	SubscribeEventsResponse,
+} from "@compass/client";
 import type { Issue as DomainIssue, RuntimeMarker } from "../stub-data";
 import { adaptIssue, adaptRuntimeMarker } from "./adapt";
+import { createReconnectBackoff } from "./backoff";
+
+/** An agent account's current session, as last reported on the status stream. */
+export interface AccountSession {
+	readonly sessionId: string;
+	readonly state: AgentSessionState;
+}
 
 /** What the driver needs to run: the compass client, the sink for each new
  *  board snapshot, and the abort signal that cancels the whole run (component
@@ -20,6 +31,10 @@ export interface EventStreamOptions {
 	 *  id. A status whose account binding is no longer resolvable carries no
 	 *  account and is skipped rather than keyed under an empty id. */
 	onRuntime?: (runtime: ReadonlyMap<string, RuntimeMarker>) => void;
+	/** Called with each agent account's latest session id + lifecycle state,
+	 *  keyed by account id, with the same skip-unbound and resync-clear
+	 *  discipline as `onRuntime`. */
+	onSessions?: (sessions: ReadonlyMap<string, AccountSession>) => void;
 	signal?: AbortSignal;
 	onError?: (error: unknown) => void;
 }
@@ -28,35 +43,6 @@ export interface EventStreamOptions {
  *  named wire type so the switch stays exhaustive against the wire cases without
  *  importing every inner event message. */
 type SubscribeEventsPayload = SubscribeEventsResponse["payload"];
-
-/** Reconnect backoff bounds: the first retry waits up to RECONNECT_BASE_MS, each
- *  subsequent one doubles the ceiling up to RECONNECT_CAP_MS. Full jitter (a
- *  uniform draw in [0, ceiling]) spreads a fleet's reconnects so a server
- *  restart doesn't trigger a synchronized thundering herd. Same policy as
- *  runCommsStream. */
-const RECONNECT_BASE_MS = 500;
-const RECONNECT_CAP_MS = 30_000;
-
-/** Await `ms`, resolving early if `signal` aborts — a teardown during backoff
- *  returns promptly instead of blocking out the full delay. */
-function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	if (signal?.aborted) {
-		resolve();
-		return promise;
-	}
-	// biome-ignore lint/style/noRestrictedGlobals: production abort-aware backoff delay (resolves early on signal), cleared on abort; not a test wait
-	const timer = setTimeout(() => {
-		signal?.removeEventListener("abort", onAbort);
-		resolve();
-	}, ms);
-	const onAbort = () => {
-		clearTimeout(timer);
-		resolve();
-	};
-	signal?.addEventListener("abort", onAbort, { once: true });
-	return promise;
-}
 
 /** Run the SubscribeEvents stream until `signal` aborts. Maintains the board as
  *  a driver-local `Map<id, Issue>` plus the single stream cursor + instance
@@ -67,7 +53,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
  *  start (re-read + re-tail). Each applied issue pushes the full board to
  *  `onIssues`. Resolves only when aborted. */
 export async function runEventStream(opts: EventStreamOptions): Promise<void> {
-	const { client, onIssues, onRuntime, signal, onError } = opts;
+	const { client, onIssues, onRuntime, onSessions, signal, onError } = opts;
 	// The board, deduped by issue id: the durable ListBoardIssues re-snapshot
 	// plus live tail upserts both land here, so a re-sent id REPLACES rather
 	// than appends — this map IS the union.
@@ -76,22 +62,14 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 	// upsert-by-key discipline as the board: a new status for an account
 	// replaces its marker.
 	const runtime = new Map<string, RuntimeMarker>();
+	const sessions = new Map<string, AccountSession>();
 	// The single stream cursor (echoed as since_seq) and the server's instance
 	// epoch. Both 0 means a cold start → re-read + re-tail. Never persisted.
 	let sinceSeq = 0n;
 	let instanceEpoch = 0n;
-	// Consecutive reconnect failures, driving the backoff ceiling. Reset to 0 the
-	// moment a subscribe yields forward progress (the connection is live again).
-	let failures = 0;
-
-	const backoffBeforeReconnect = (): Promise<void> => {
-		const ceiling = Math.min(
-			RECONNECT_CAP_MS,
-			RECONNECT_BASE_MS * 2 ** failures,
-		);
-		failures++;
-		return abortableDelay(Math.random() * ceiling, signal);
-	};
+	// Reset the moment a subscribe yields forward progress (the connection is live again).
+	const backoff = createReconnectBackoff(signal);
+	const backoffBeforeReconnect = backoff.wait;
 
 	const applyPayload = (payload: SubscribeEventsPayload): void => {
 		if (payload.case === "agentSessionStatus") {
@@ -102,6 +80,11 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 			if (account === "") return;
 			runtime.set(account, adaptRuntimeMarker(payload.value));
 			onRuntime?.(new Map(runtime));
+			sessions.set(account, {
+				sessionId: payload.value.sessionId,
+				state: payload.value.state,
+			});
+			onSessions?.(new Map(sessions));
 			return;
 		}
 		if (payload.case !== "issue") return;
@@ -150,6 +133,8 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 					onIssues([]);
 					runtime.clear();
 					onRuntime?.(new Map());
+					sessions.clear();
+					onSessions?.(new Map());
 					sinceSeq = 0n;
 					instanceEpoch = 0n;
 					madeProgress = true;
@@ -174,7 +159,7 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 					sinceSeq = resp.seq;
 					if (!isBoundary) {
 						madeProgress = true;
-						failures = 0;
+						backoff.reset();
 					}
 				}
 				if (resp.instanceEpoch) instanceEpoch = resp.instanceEpoch;
