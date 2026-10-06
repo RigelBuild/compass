@@ -32,3 +32,8 @@ export function shellServerUrl(): string | undefined {
 	}
 	return window.__COMPASS_SERVER_URL__;
 }
+
+/** Store the server URL returned with a sibling window's client decision. */
+export function setShellServerUrl(serverUrl: string): void {
+	if (typeof window !== "undefined") window.__COMPASS_SERVER_URL__ = serverUrl;
+}

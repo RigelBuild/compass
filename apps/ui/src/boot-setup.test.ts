@@ -2,7 +2,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { bootNativeClient, type NativeBootDeps } from "./boot-native";
 import { bootSetup, type SetupBootDeps } from "./boot-setup";
-import type { ConnectResult, SetupResult } from "./daemon-transport";
+import type {
+	ConnectResult,
+	SetupResult,
+	ShellState,
+} from "./daemon-transport";
 import type { ResolvedConnection } from "./live/provider";
 
 const CONNECTION: ResolvedConnection = {
@@ -184,6 +188,166 @@ describe("bootSetup", () => {
 		nativeResolvers[0]?.(CONNECTION);
 		await flush();
 		expect(unsubscribeCalls).toBe(1);
+	});
+
+	test("a sibling client decision passes its server URL to configured boot", async () => {
+		const nativeDeps: NativeBootDeps = {
+			...connectDeps([]),
+			shellConnect: async () => connectResult({ ok: true, kind: "" }),
+		};
+		const setupDeps: SetupBootDeps = {
+			...deps,
+			bootNativeClient: (receivedRoot, entry, signal) =>
+				bootNativeClient(receivedRoot, nativeDeps, entry, signal),
+		};
+		const booted = bootSetup(root, setupDeps);
+		await flush();
+		state = { mode: "client", serverUrl: "https://sibling.example" };
+		emitDecision();
+		expect((await booted)?.baseUrl).toBe("https://sibling.example");
+	});
+
+	test("a rejected shell-state call renders recoverable setup choices", async () => {
+		let calls = 0;
+		deps.shellState = async () => {
+			calls++;
+			if (calls === 1) throw new Error("state unavailable");
+			return { mode: "setup", serverUrl: "" };
+		};
+		void bootSetup(root, deps);
+		await flush();
+		expect(root.textContent).toContain("state unavailable");
+		button("Connect to a server").click();
+		await flush();
+		expect(nativeCalls.map((call) => call.entry)).toEqual(["setup"]);
+	});
+	test("a rejected embedded choice restores both choices", async () => {
+		deps.chooseEmbedded = async () => {
+			throw new Error("preflight unavailable");
+		};
+		void bootSetup(root, deps);
+		await flush();
+		button("Run Compass on this computer").click();
+		await flush();
+		expect(root.textContent).toContain("preflight unavailable");
+		button("Connect to a server").click();
+		await flush();
+		expect(nativeCalls.map((call) => call.entry)).toEqual(["setup"]);
+	});
+	test("a rejected embedded choice rereads a queued sibling decision", async () => {
+		const choose = Promise.withResolvers<SetupResult>();
+		deps.chooseEmbedded = () => choose.promise;
+		const booted = bootSetup(root, deps);
+		await flush();
+		button("Run Compass on this computer").click();
+		state = { mode: "reopen", serverUrl: "" };
+		emitDecision();
+		choose.reject(new Error("preflight unavailable"));
+		await flush();
+
+		expect(stateCalls).toBe(2);
+		expect(root.textContent).toContain(
+			"Compass is already set up. Quit and reopen it to change this.",
+		);
+		expect(root.textContent).not.toContain("preflight unavailable");
+		expect(unsubscribeCalls).toBe(1);
+		expect(await booted).toBeUndefined();
+	});
+
+	test("a queued sibling event does not overwrite an embedded failure", async () => {
+		const read = Promise.withResolvers<ShellState>();
+		let calls = 0;
+		deps.shellState = async () => {
+			calls++;
+			return calls === 2 ? read.promise : state;
+		};
+		const choose = Promise.withResolvers<SetupResult>();
+		deps.chooseEmbedded = () => choose.promise;
+		void bootSetup(root, deps);
+		await flush();
+		emitDecision();
+		await flush();
+		button("Run Compass on this computer").click();
+		read.resolve({ mode: "setup", serverUrl: "" });
+		await flush();
+		choose.reject(new Error("preflight failed after sibling event"));
+		await flush();
+		expect(calls).toBe(3);
+		expect(root.textContent).toContain("preflight failed after sibling event");
+		expect(root.textContent).toContain("Run Compass on this computer");
+		expect(root.textContent).toContain("Connect to a server");
+	});
+	test("a non-terminal embedded failure rereads a queued sibling decision", async () => {
+		const choose = Promise.withResolvers<SetupResult>();
+		chooseResult = choose.promise;
+		const booted = bootSetup(root, deps);
+		await flush();
+		button("Run Compass on this computer").click();
+		emitDecision();
+		state = { mode: "reopen", serverUrl: "" };
+		choose.resolve({ ok: false, message: "preflight failed" });
+		await flush();
+
+		expect(stateCalls).toBe(2);
+		expect(root.textContent).toContain(
+			"Compass is already set up. Quit and reopen it to change this.",
+		);
+		expect(root.textContent).not.toContain("preflight failed");
+		expect(await booted).toBeUndefined();
+		expect(unsubscribeCalls).toBe(1);
+	});
+
+	test("a state read completing during an embedded attempt defers until failure", async () => {
+		const read = Promise.withResolvers<ShellState>();
+		let calls = 0;
+		deps.shellState = async () => {
+			calls++;
+			return calls === 2 ? read.promise : state;
+		};
+		const choose = Promise.withResolvers<SetupResult>();
+		deps.chooseEmbedded = () => choose.promise;
+		void bootSetup(root, deps);
+		await flush();
+		emitDecision();
+		await flush();
+		button("Run Compass on this computer").click();
+		read.resolve({ mode: "setup", serverUrl: "" });
+		await flush();
+
+		expect(root.textContent).toContain("Checking this computer");
+		expect(calls).toBe(2);
+		choose.resolve({ ok: false, message: "preflight failed" });
+		await flush();
+		expect(calls).toBe(3);
+		expect(root.textContent).toContain("preflight failed");
+		expect(root.textContent).toContain("Connect to a server");
+	});
+
+	test("a state read completing during connect aborts and rereads terminal state", async () => {
+		const read = Promise.withResolvers<ShellState>();
+		let calls = 0;
+		deps.shellState = async () => {
+			calls++;
+			return calls === 2 ? read.promise : state;
+		};
+		const booted = bootSetup(root, deps);
+		await flush();
+		emitDecision();
+		await flush();
+		button("Connect to a server").click();
+		state = { mode: "reopen", serverUrl: "" };
+		read.resolve(state);
+		await flush();
+
+		const signal = nativeCalls[0]?.signal;
+		expect(signal?.aborted).toBe(true);
+		nativeResolvers[0]?.(undefined);
+		await flush();
+		expect(calls).toBe(3);
+		expect(await booted).toBeUndefined();
+		expect(root.textContent).toContain(
+			"Compass is already set up. Quit and reopen it to change this.",
+		);
 	});
 
 	test("a decision made before subscription is found by the first shellState", async () => {

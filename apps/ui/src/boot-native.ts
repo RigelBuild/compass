@@ -43,7 +43,7 @@ function failureCopy(result: ConnectResult): { heading: string; hint: string } {
 		case "bad-cert":
 			return {
 				heading: "Can't verify the server's certificate",
-				hint: "The server's TLS certificate could not be verified — check its ca_cert, then try again.",
+				hint: "Check the server certificate or choose its CA certificate, then try again.",
 			};
 		case "bad-token":
 			return {
@@ -76,10 +76,10 @@ export async function bootNativeClient(
 	signal?: AbortSignal,
 ): Promise<ResolvedConnection | undefined> {
 	if (entry === "setup") return awaitUserSetupConnect(root, deps, signal);
-
 	renderConnecting(root);
 	const probe = await deps.shellConnect("");
 	if (probe.ok) {
+		root.replaceChildren();
 		return deps.nativeConnectionProvider(shellServerUrl() ?? "").resolve();
 	}
 	return awaitUserConnect(root, probe, deps);
@@ -103,7 +103,7 @@ function awaitUserConnect(
 	initial: ConnectResult,
 	deps: NativeBootDeps,
 ): Promise<ResolvedConnection> {
-	return new Promise<ResolvedConnection>((resolve) => {
+	return new Promise<ResolvedConnection>((resolve, reject) => {
 		const screen = document.createElement("div");
 		screen.setAttribute("style", SCREEN_STYLE);
 		const heading = document.createElement("h1");
@@ -140,17 +140,22 @@ function awaitUserConnect(
 			if (token.length === 0) return;
 			button.disabled = true;
 			input.value = "";
-			void deps.shellConnect(token).then((result) => {
-				if (result.ok) {
-					void deps
-						.nativeConnectionProvider(shellServerUrl() ?? "")
-						.resolve()
-						.then(resolve);
-					return;
-				}
-				paint(result);
-				syncDisabled();
-			});
+			void deps
+				.shellConnect(token)
+				.then(async (result) => {
+					if (result.ok) {
+						root.replaceChildren();
+						resolve(
+							await deps
+								.nativeConnectionProvider(shellServerUrl() ?? "")
+								.resolve(),
+						);
+						return;
+					}
+					paint(result);
+					syncDisabled();
+				})
+				.catch(reject);
 		});
 		root.replaceChildren(screen);
 	});
@@ -165,7 +170,7 @@ function awaitUserSetupConnect(
 		root.replaceChildren();
 		return Promise.resolve(undefined);
 	}
-	return new Promise<ResolvedConnection | undefined>((resolve) => {
+	return new Promise<ResolvedConnection | undefined>((resolve, reject) => {
 		const screen = document.createElement("div");
 		screen.setAttribute("style", SCREEN_STYLE);
 		const heading = document.createElement("h1");
@@ -218,6 +223,12 @@ function awaitUserSetupConnect(
 			signal?.removeEventListener("abort", onAbort);
 			resolve(connection);
 		};
+		const fail = (reason: unknown): void => {
+			if (finished) return;
+			finished = true;
+			signal?.removeEventListener("abort", onAbort);
+			reject(reason);
+		};
 		const onAbort = (): void => {
 			if (signal?.aborted && !shellCallInFlight) {
 				root.replaceChildren();
@@ -230,18 +241,29 @@ function awaitUserSetupConnect(
 		};
 		const paintResult = (result: ConnectResult): void => {
 			const copy = failureCopy(result);
-			detail.textContent = copy.hint;
+			heading.textContent = copy.heading;
+			detail.textContent =
+				result.kind === "bad-cert"
+					? "Use Choose CA certificate… above to select the server's CA, then try again."
+					: copy.hint;
 		};
 		url.addEventListener("input", syncDisabled);
 		token.addEventListener("input", syncDisabled);
 		signal?.addEventListener("abort", onAbort, { once: true });
 		chooseCA.addEventListener("click", () => {
-			void deps.pickCACert().then((picked) => {
-				if (finished || signal?.aborted) return;
-				caRef = picked.ref;
-				caRow.textContent =
-					picked.ref.length === 0 ? "System trust" : picked.name;
-			});
+			void deps.pickCACert().then(
+				(picked) => {
+					if (finished || signal?.aborted) return;
+					if (picked.ref.length === 0) return;
+					caRef = picked.ref;
+					caRow.textContent = picked.name;
+				},
+				(reason: unknown) => {
+					if (finished || signal?.aborted) return;
+					detail.textContent =
+						reason instanceof Error ? reason.message : String(reason);
+				},
+			);
 		});
 		systemTrust.addEventListener("click", () => {
 			caRef = "";
@@ -260,24 +282,44 @@ function awaitUserSetupConnect(
 			token.value = "";
 			shellCallInFlight = true;
 			syncDisabled();
-			void deps.shellConnect(secret, server).then((result) => {
-				shellCallInFlight = false;
-				if (result.ok) {
-					signal?.removeEventListener("abort", onAbort);
-					void deps
-						.nativeConnectionProvider(result.serverUrl)
-						.resolve()
-						.then(finish);
-					return;
-				}
-				if (signal?.aborted) {
-					root.replaceChildren();
-					finish(undefined);
-					return;
-				}
-				paintResult(result);
-				syncDisabled();
-			});
+			void deps.shellConnect(secret, server).then(
+				async (result) => {
+					shellCallInFlight = false;
+					if (result.ok) {
+						signal?.removeEventListener("abort", onAbort);
+						root.replaceChildren();
+						try {
+							const connection = await deps
+								.nativeConnectionProvider(result.serverUrl ?? server.url)
+								.resolve();
+							finish(connection);
+						} catch (reason) {
+							fail(reason);
+						}
+						return;
+					}
+					if (signal?.aborted) {
+						root.replaceChildren();
+						finish(undefined);
+						return;
+					}
+					paintResult(result);
+					syncDisabled();
+				},
+				(reason: unknown) => {
+					shellCallInFlight = false;
+					if (signal?.aborted) {
+						root.replaceChildren();
+						finish(undefined);
+						return;
+					}
+					const message =
+						reason instanceof Error ? reason.message : String(reason);
+					heading.textContent = "Could not connect";
+					detail.textContent = `Try again. ${message}`;
+					syncDisabled();
+				},
+			);
 		});
 		root.replaceChildren(screen);
 		syncDisabled();

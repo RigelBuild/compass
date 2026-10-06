@@ -24,8 +24,8 @@ describe("bootForMode", () => {
 	let embeddedFactoryCalls: number;
 	let browserCalls: number;
 	let connectionBootCalls: number;
+	let quitCalls: number;
 	let deps: BootModeDeps;
-
 	beforeEach(() => {
 		root = document.createElement("div");
 		setupCalls = 0;
@@ -33,6 +33,7 @@ describe("bootForMode", () => {
 		embeddedFactoryCalls = 0;
 		browserCalls = 0;
 		connectionBootCalls = 0;
+		quitCalls = 0;
 		deps = {
 			bootNativeClient: async (receivedRoot) => {
 				expect(receivedRoot).toBe(root);
@@ -57,6 +58,9 @@ describe("bootForMode", () => {
 				expect(receivedRoot).toBe(root);
 				connectionBootCalls++;
 				return resolve();
+			},
+			quitApp: async () => {
+				quitCalls++;
 			},
 		};
 	});
@@ -100,12 +104,17 @@ describe("bootForMode", () => {
 		expect(clientCalls).toBe(0);
 	});
 
-	test("reopen renders the neutral screen and never boots a connection", async () => {
+	test("reopen renders the shared neutral screen and never boots a connection", async () => {
 		await bootForMode("reopen", root, deps)();
 
 		expect(root.textContent).toContain(
 			"Compass is already set up. Quit and reopen it to change this.",
 		);
+		const button = root.querySelector("button");
+		if (!(button instanceof HTMLButtonElement))
+			throw new Error("Quit button is missing");
+		button.click();
+		expect(quitCalls).toBe(1);
 		expect(clientCalls).toBe(0);
 		expect(browserCalls).toBe(0);
 		expect(connectionBootCalls).toBe(0);

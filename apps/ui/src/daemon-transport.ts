@@ -39,12 +39,10 @@ function decodeChunk(b64: string): Uint8Array {
 	return out;
 }
 
-/** The fetch this module produces: only the inputs the gRPC-Web transport sets. */
 type DaemonFetch = (
 	input: RequestInfo | URL,
 	init?: RequestInit,
 ) => Promise<Response>;
-
 /**
  * Build a `fetch` that proxies gRPC-Web calls to the daemon over the given
  * `ShellIpc`. Only the inputs the gRPC-Web transport actually sets cross the
@@ -208,7 +206,8 @@ export function wailsShellIpc(): ShellIpc {
 				off = undefined;
 			};
 			off = Events.On(eventName, (event: Events.WailsEvent) => {
-				const frame = event.data as ResponseFrame;
+				const frame: unknown = event.data;
+				if (!isResponseFrame(frame)) return;
 				onFrame(frame);
 				if (frame.kind === "end" || frame.kind === "error") unsubscribe();
 			});
@@ -226,7 +225,7 @@ export function wailsShellIpc(): ShellIpc {
 		},
 		cancel(requestId) {
 			// Best-effort: swallow a cancel that races the proxy finishing (an
-			// unknown/already-finished id is a no-op on the Go side).
+			// unknown/already-finished id is a no-op on the Rust side).
 			Call.ByName(RPC_CANCEL_METHOD, { requestId }).catch(() => {});
 		},
 	};
@@ -251,7 +250,7 @@ export type ConnectResult = {
 	accountId: string;
 	serverVersion: string;
 	apiVersion: string;
-	serverUrl: string;
+	serverUrl?: string;
 };
 
 export type ServerChoice = { url: string; caRef: string };
@@ -269,8 +268,7 @@ function isConnectResult(value: unknown): value is ConnectResult {
 		!("message" in value) ||
 		!("accountId" in value) ||
 		!("serverVersion" in value) ||
-		!("apiVersion" in value) ||
-		!("serverUrl" in value)
+		!("apiVersion" in value)
 	)
 		return false;
 	const kinds: ConnectResult["kind"][] = [
@@ -291,7 +289,7 @@ function isConnectResult(value: unknown): value is ConnectResult {
 		typeof value.accountId === "string" &&
 		typeof value.serverVersion === "string" &&
 		typeof value.apiVersion === "string" &&
-		typeof value.serverUrl === "string"
+		(!("serverUrl" in value) || typeof value.serverUrl === "string")
 	);
 }
 
@@ -334,7 +332,38 @@ function isShellState(value: unknown): value is ShellState {
 	);
 }
 
-/** Call the shell's configured or first-run connect method. */
+function isHeaderPair(value: unknown): value is [string, string] {
+	return (
+		Array.isArray(value) &&
+		value.length === 2 &&
+		typeof value[0] === "string" &&
+		typeof value[1] === "string"
+	);
+}
+
+function isResponseFrame(value: unknown): value is ResponseFrame {
+	if (value === null || typeof value !== "object" || !("kind" in value))
+		return false;
+	switch (value.kind) {
+		case "head":
+			return (
+				"status" in value &&
+				typeof value.status === "number" &&
+				"headers" in value &&
+				Array.isArray(value.headers) &&
+				value.headers.every((header) => isHeaderPair(header))
+			);
+		case "body":
+			return "chunk" in value && typeof value.chunk === "string";
+		case "end":
+			return true;
+		case "error":
+			return "message" in value && typeof value.message === "string";
+		default:
+			return false;
+	}
+}
+
 export async function shellConnect(
 	token: string,
 	server?: ServerChoice,
@@ -384,10 +413,11 @@ export async function quitApp(): Promise<void> {
 export function nativeConnectionProvider(baseUrl: string): ConnectionProvider {
 	return {
 		async resolve(): Promise<ResolvedConnection> {
-			// The transport only ever invokes the call signature of `fetch`; the
-			// daemon fetch deliberately omits `fetch.preconnect` (a no-op over the
-			// IPC tunnel), so widen it to the `typeof fetch` the seam declares.
-			const fetchImpl = createDaemonFetch(wailsShellIpc()) as typeof fetch;
+			// The native transport tunnels requests over IPC, so preconnect has no
+			// socket to warm and is intentionally a no-op.
+			const fetchImpl = Object.assign(createDaemonFetch(wailsShellIpc()), {
+				preconnect: (_url: string | URL): void => {},
+			});
 			return { baseUrl, token: undefined, fetchImpl };
 		},
 	};

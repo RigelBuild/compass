@@ -1,7 +1,7 @@
 import { bootConnection } from "./boot";
 import { bootBrowser } from "./boot-browser";
 import { bootNativeClient } from "./boot-native";
-import { bootSetup } from "./boot-setup";
+import { bootSetup, renderReopenScreen } from "./boot-setup";
 import { nativeConnectionProvider, quitApp } from "./daemon-transport";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 import { type ShellMode, shellServerUrl } from "./shell-globals";
@@ -19,33 +19,18 @@ export type BootModeDeps = {
 		root: HTMLElement,
 		resolve: () => Promise<ResolvedConnection>,
 	) => Promise<ResolvedConnection | undefined>;
+	quitApp: () => Promise<void>;
 };
-
 export const defaultDeps: BootModeDeps = {
 	bootNativeClient,
 	bootSetup,
+	// The daemon fetch constructs Requests from this base, so it must be absolute.
 	embeddedConnectionProvider: () =>
 		nativeConnectionProvider(shellServerUrl() ?? "http://compass.localhost"),
 	bootBrowser,
 	bootConnection,
+	quitApp,
 };
-
-function showReopen(root: HTMLElement): void {
-	const screen = document.createElement("div");
-	screen.setAttribute(
-		"style",
-		"margin:0;padding:2rem;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6;background:#1a1a1a;min-height:100vh",
-	);
-	const message = document.createElement("p");
-	message.textContent =
-		"Compass is already set up. Quit and reopen it to change this.";
-	const button = document.createElement("button");
-	button.type = "button";
-	button.textContent = "Quit";
-	button.addEventListener("click", () => void quitApp());
-	screen.append(message, button);
-	root.replaceChildren(screen);
-}
 
 export function bootForMode(
 	mode: BootMode,
@@ -64,7 +49,7 @@ export function bootForMode(
 			return () => deps.bootSetup(root);
 		case "reopen":
 			return async () => {
-				showReopen(root);
+				renderReopenScreen(root, deps.quitApp);
 				return undefined;
 			};
 		case undefined:

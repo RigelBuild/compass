@@ -11,8 +11,8 @@
 //  - nativeConnectionProvider().resolve() yields token === undefined (DL-109:
 //    the UI-side Connection never carries a bearer in client mode) and a defined
 //    fetchImpl.
-//    the server choice and returns the expanded ConnectResult.
-//  - setup bindings call their bound Go methods with the specified JSON shapes.
+//  - shellConnect sends the optional server choice and maps the Go ConnectResult,
+//    which may omit serverUrl until the shell support for it lands.
 //
 // The Wails runtime is a hand-installed fake via mock.module: Events.On records
 // each subscription and hands back an unsubscribe that flips a flag, and
@@ -142,6 +142,15 @@ describe("wailsShellIpc", () => {
 		expect(seen).toEqual(["head", "body", "end"]);
 	});
 
+	test("does not deliver a malformed runtime frame to the transport", () => {
+		const ipc = wailsShellIpc();
+		const seen: string[] = [];
+		void ipc.rpc(rpcArgs, (frame) => seen.push(frame.kind));
+
+		emit("compass_rpc:req-1", { kind: "body", chunk: 42 });
+		expect(seen).toEqual([]);
+	});
+
 	test("unsubscribes on the terminal end frame — a later frame never reaches onFrame", async () => {
 		const ipc = wailsShellIpc();
 		const seen: string[] = [];
@@ -218,6 +227,21 @@ describe("shellConnect", () => {
 		expect(result.accountId).toBe("acc-1");
 		expect(result.serverVersion).toBe("1.2.3");
 		expect(result.apiVersion).toBe("compass.v1");
+	});
+
+	test("accepts the current Go ConnectResult without serverUrl", async () => {
+		const promise = shellConnect("");
+		calls[0]?.resolve({
+			ok: true,
+			kind: "",
+			message: "",
+			accountId: "acc-1",
+			serverVersion: "1.2.3",
+			apiVersion: "compass.v1",
+		});
+		const result = await promise;
+		expect(result.ok).toBe(true);
+		expect(result.serverUrl).toBeUndefined();
 	});
 
 	test("maps a failure-kind result through faithfully", async () => {

@@ -10,12 +10,13 @@ import {
 	onSetupDecided,
 	quitApp,
 	type SetupResult,
+	type ShellState,
 	shellState,
 } from "./daemon-transport";
 import type { ResolvedConnection } from "./live/provider";
-import type { ShellMode } from "./shell-globals";
+import { type ShellMode, setShellServerUrl } from "./shell-globals";
 
-const ALREADY_SET_UP =
+export const REOPEN_MESSAGE =
 	"Compass is already set up. Quit and reopen it to change this.";
 
 export type SetupBootDeps = {
@@ -52,85 +53,118 @@ export async function bootSetup(
 	let resolveBoot:
 		| ((value: ResolvedConnection | undefined) => void)
 		| undefined;
+	let rejectBoot: ((reason: unknown) => void) | undefined;
 	let unsubscribe: () => void = () => {};
-
-	const booted = new Promise<ResolvedConnection | undefined>((resolve) => {
-		resolveBoot = resolve;
-	});
-
-	const closeListener = (): void => {
-		unsubscribe();
-	};
-
-	const renderReopen = (): void => {
+	const booted = new Promise<ResolvedConnection | undefined>(
+		(resolve, reject) => {
+			resolveBoot = resolve;
+			rejectBoot = reject;
+		},
+	);
+	const closeListener = (): void => unsubscribe();
+	const showReopen = (): void => {
 		terminal = true;
+		connectController?.abort();
 		closeListener();
-		renderTerminal(root, ALREADY_SET_UP, deps.quitApp);
+		renderReopenScreen(root, deps.quitApp);
 		resolveBoot?.(undefined);
 	};
-
 	const renderEmbeddedReady = (message: string): void => {
 		terminal = true;
 		closeListener();
 		renderTerminal(root, message, deps.quitApp);
 		resolveBoot?.(undefined);
 	};
-
 	let choose: () => Promise<void>;
 	let connect: () => void;
-
-	const readShellState = async (): Promise<void> => {
-		if (terminal || stateReadInFlight || chooseInFlight) {
+	const deferStateRead = (): boolean => {
+		if (!stateReadInFlight && !chooseInFlight) return false;
+		decisionQueued = true;
+		return true;
+	};
+	const applyShellState = async (
+		current: ShellState,
+		message: string,
+	): Promise<void> => {
+		if (terminal) return;
+		if (chooseInFlight || connectController) {
 			decisionQueued = true;
+			if (
+				connectController &&
+				(current.mode === "client" || current.mode === "reopen")
+			)
+				connectController.abort();
 			return;
 		}
-		stateReadInFlight = true;
-		try {
-			const current = await deps.shellState();
-			if (terminal) return;
-			switch (current.mode) {
-				case "client": {
-					terminal = true;
-					closeListener();
-					connectController?.abort();
+		switch (current.mode) {
+			case "client": {
+				terminal = true;
+				closeListener();
+				setShellServerUrl(current.serverUrl);
+				try {
 					const connection = await deps.bootNativeClient(root, "configured");
 					resolveBoot?.(connection);
-					return;
+				} catch (reason) {
+					rejectBoot?.(reason);
 				}
-				case "reopen":
-					renderReopen();
-					return;
-				case "setup":
-				case "embedded":
-					renderChoices(root, choose, connect);
-					return;
-				default: {
-					const exhaustive: never = current.mode;
-					throw new Error(`Unhandled shell mode: ${exhaustive}`);
-				}
+				return;
 			}
-		} finally {
-			stateReadInFlight = false;
-			if (decisionQueued && !terminal && !chooseInFlight) {
-				decisionQueued = false;
-				void readShellState();
+			case "reopen":
+				showReopen();
+				return;
+			case "setup":
+			case "embedded":
+				renderChoices(root, choose, connect, message);
+				return;
+			default: {
+				const exhaustive: never = current.mode;
+				throw new Error(`Unhandled shell mode: ${exhaustive}`);
 			}
 		}
 	};
-
+	const handleShellStateError = (reason: unknown): void => {
+		if (terminal) rejectBoot?.(reason);
+		else if (!chooseInFlight && !connectController)
+			renderChoices(root, choose, connect, errorMessage(reason));
+	};
+	const finishShellStateRead = (): void => {
+		stateReadInFlight = false;
+		if (!decisionQueued || terminal || chooseInFlight || connectController)
+			return;
+		decisionQueued = false;
+		void readShellState();
+	};
+	const readShellState = async (message = ""): Promise<void> => {
+		if (terminal || deferStateRead()) return;
+		stateReadInFlight = true;
+		try {
+			const current = await deps.shellState();
+			if (chooseInFlight || connectController) {
+				decisionQueued = true;
+				if (
+					connectController &&
+					(current.mode === "client" || current.mode === "reopen")
+				)
+					connectController.abort();
+			} else {
+				await applyShellState(current, message);
+			}
+		} catch (reason) {
+			handleShellStateError(reason);
+		} finally {
+			finishShellStateRead();
+		}
+	};
 	const onDecision = (): void => {
 		if (terminal) return;
-		if (chooseInFlight || stateReadInFlight) {
-			decisionQueued = true;
-			return;
-		}
+		if (deferStateRead()) return;
 		if (connectController) {
+			decisionQueued = true;
 			connectController.abort();
 			return;
 		}
 		void readShellState();
 	};
-
 	connect = (): void => {
 		if (terminal || connectController) return;
 		connectController = new AbortController();
@@ -139,30 +173,57 @@ export async function bootSetup(
 			"setup",
 			connectController.signal,
 		);
-		void setupConnection.then(async (connection) => {
-			if (terminal) return;
-			if (connection) {
-				terminal = true;
-				closeListener();
-				resolveBoot?.(connection);
-				return;
-			}
-			connectController = undefined;
-			await readShellState();
-		});
+		void setupConnection.then(
+			(connection) => {
+				if (terminal) return;
+				if (connection) {
+					connectController = undefined;
+					terminal = true;
+					closeListener();
+					resolveBoot?.(connection);
+				} else {
+					connectController = undefined;
+					if (decisionQueued) {
+						decisionQueued = false;
+						void readShellState();
+					}
+				}
+			},
+			(reason: unknown) => {
+				if (terminal) return;
+				connectController = undefined;
+				renderChoices(root, choose, connect, errorMessage(reason));
+				if (decisionQueued) {
+					decisionQueued = false;
+					void readShellState();
+				}
+			},
+		);
 	};
-
-	choose = async (): Promise<void> => {
+	const handleEmbeddedChoice = async (): Promise<void> => {
 		if (terminal || chooseInFlight) return;
 		chooseInFlight = true;
-		decisionQueued = false;
 		renderChecking(root);
 		let result: SetupResult;
 		try {
 			result = await deps.chooseEmbedded();
+		} catch (reason) {
+			chooseInFlight = false;
+			if (terminal) return;
+			if (decisionQueued) {
+				decisionQueued = false;
+				await readShellState(errorMessage(reason));
+				return;
+			}
+			renderChoices(root, choose, connect, errorMessage(reason));
+			return;
 		} finally {
 			chooseInFlight = false;
 		}
+		await applyEmbeddedResult(result);
+	};
+	choose = handleEmbeddedChoice;
+	const applyEmbeddedResult = async (result: SetupResult): Promise<void> => {
 		if (terminal) return;
 		if (result.ok) {
 			renderEmbeddedReady(result.message);
@@ -170,21 +231,30 @@ export async function bootSetup(
 		}
 		if (decisionQueued) {
 			decisionQueued = false;
-			await readShellState();
+			await readShellState(result.message);
 			return;
 		}
-		if (result.message === ALREADY_SET_UP) {
-			renderReopen();
+		if (result.message === REOPEN_MESSAGE) {
+			showReopen();
 			return;
 		}
 		renderChoices(root, choose, connect, result.message);
 	};
-
 	unsubscribe = deps.onSetupDecided(onDecision);
 	await readShellState();
 	return await booted;
 }
 
+function errorMessage(reason: unknown): string {
+	return reason instanceof Error ? reason.message : String(reason);
+}
+
+export function renderReopenScreen(
+	root: HTMLElement,
+	quit: () => Promise<void>,
+): void {
+	renderTerminal(root, REOPEN_MESSAGE, quit);
+}
 function renderChoices(
 	root: HTMLElement,
 	choose: () => Promise<void>,
