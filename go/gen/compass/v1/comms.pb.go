@@ -2205,6 +2205,7 @@ type ChannelChanged struct {
 	Channel *Channel               `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
 	// Accounts removed by this change (empty otherwise). Present so a departing
 	// member receives this one last event before the channel goes silent to them.
+	// The server trims it per subscriber: only the recipient's own id, or empty.
 	RemovedAccountIds []string `protobuf:"bytes,2,rep,name=removed_account_ids,json=removedAccountIds,proto3" json:"removed_account_ids,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache

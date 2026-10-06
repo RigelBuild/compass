@@ -1025,6 +1025,7 @@ export type ChannelChanged = Message$1<"compass.v1.ChannelChanged"> & {
   /**
    * Accounts removed by this change (empty otherwise). Present so a departing
    * member receives this one last event before the channel goes silent to them.
+   * The server trims it per subscriber: only the recipient's own id, or empty.
    *
    * @generated from field: repeated string removed_account_ids = 2;
    */

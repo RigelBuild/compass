@@ -798,28 +798,31 @@ effective AS (
 	GROUP BY id
 ),
 candidates AS (
-	SELECT $1::text AS account_id, $1::text AS uid
+	SELECT $1::text AS account_id
 	UNION ALL
-	SELECT aa.account_id, aa.owner_user_id AS uid
-	FROM agent_accounts aa WHERE aa.owner_user_id = $1
+	SELECT account_id FROM agent_accounts WHERE owner_user_id = $1
 )
 SELECT cand.account_id
-FROM candidates cand, channels c
-WHERE c.id = $2
-  AND NOT EXISTS (
-	SELECT 1 FROM channel_members cm
-	WHERE cm.channel_id = c.id AND cm.account_id = cand.account_id
-  )
-  AND NOT (
-	c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
-	    SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
+FROM candidates cand
+WHERE NOT EXISTS (
+	SELECT 1 FROM channels c
+	WHERE c.id = $2 AND (
+		EXISTS (
+		    SELECT 1 FROM channel_members cm
+		    WHERE cm.channel_id = c.id AND cm.account_id = cand.account_id
+		)
+		OR (
+		    c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
+		        SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
+		    )
+		)
+		OR (
+		    c.parent_agent_id IS NOT NULL
+		    AND (SELECT aa.owner_user_id FROM agent_accounts aa WHERE aa.account_id = c.parent_agent_id)
+		        IN (SELECT owner_user_id AS uid FROM agent_accounts WHERE account_id = cand.account_id UNION ALL SELECT cand.account_id AS uid)
+		)
 	)
-  )
-  AND NOT (
-	c.parent_agent_id IS NOT NULL
-	AND (SELECT aa.owner_user_id FROM agent_accounts aa WHERE aa.account_id = c.parent_agent_id)
-	    IN (cand.account_id, cand.uid)
-  )
+)
 ORDER BY cand.account_id
 `
 
@@ -828,8 +831,9 @@ type OwnerSetLostChannelVisibilityParams struct {
 	ID      string
 }
 
-// The owner user $1 and its agents that fail ChannelVisibleTo for channel $2.
-// The per-viewer arms must stay equal to ChannelVisibleTo's.
+// The owner user $1 and its agents for which ChannelVisibleTo($2) is false.
+// The NOT (...) body is ChannelVisibleTo's predicate with the viewer $1
+// spelled cand.account_id, so it is diffable against the other copies.
 func (q *Queries) OwnerSetLostChannelVisibility(ctx context.Context, arg OwnerSetLostChannelVisibilityParams) ([]string, error) {
 	rows, err := q.db.Query(ctx, ownerSetLostChannelVisibility, arg.Column1, arg.ID)
 	if err != nil {
