@@ -1231,6 +1231,7 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 		},
 	}
 
+	stubBootID(t, testBootID)
 	survivors := survivorRecord(rec, []Component{ComponentServer, ComponentRunner})
 	if err := writePgidFile(dir, survivors); err != nil {
 		t.Fatalf("writePgidFile survivor = %v", err)
@@ -1243,6 +1244,7 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 	want := pgidRecord{
 		WriterPid: 7,
 		Version:   pgidFileVersion,
+		BootID:    testBootID,
 		Entries: []pgidEntry{
 			{Kind: entryProc, Component: ComponentServer, Pgid: 201, StartTime: 1000},
 			{Kind: entryProc, Component: ComponentRunner, Pgid: 202, StartTime: 1001},
@@ -1251,4 +1253,66 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reread record = %+v; want %+v", got, want)
 	}
+}
+
+// TestDownDetachedRebootedRecordSignalsNothing proves a record from an earlier
+// boot signals no group (its pgids cannot be ours) and is removed.
+func TestDownDetachedRebootedRecordSignalsNothing(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := downTestDeps(t, h)
+	// The live groups now belong to whoever holds those pids this boot.
+	stubBootID(t, "99999999-8888-7777-6666-555555555555")
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached on a prior-boot record = %v, want nil", err)
+	}
+	if got := signalEvents(h.rec.snapshot()); len(got) != 0 {
+		t.Fatalf("prior-boot record signalled groups: %v", got)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedRebootedRecordStillChecksContainers proves a reboot drops only
+// process entries: a container keeps its name identity and is confirmed by absence.
+func TestDownDetachedRebootedRecordStillChecksContainers(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	stubBootID(t, "99999999-8888-7777-6666-555555555555")
+	h.containers.onStop[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached on a prior-boot record = %v, want nil", err)
+	}
+	events := h.rec.snapshot()
+	if got := signalEvents(events); len(got) != 0 {
+		t.Fatalf("prior-boot record signalled groups: %v", got)
+	}
+	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm " + gatewayContainerNameTest}
+	if got := ctrEvents(events); !reflect.DeepEqual(got, want) {
+		t.Fatalf("prior-boot container teardown = %v, want %v", got, want)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedLegacyHeaderKeepsIdentityTeardown proves a record with no boot
+// id (an older build) is an unknown boot and tears down exactly as before.
+func TestDownDetachedLegacyHeaderKeepsIdentityTeardown(t *testing.T) {
+	cfg, h := newHarness(t)
+	legacy := "2 4242\nproc postgres " + strconv.Itoa(pgPgid) + " " + strconv.FormatUint(pgToken(pgPgid), 10) + "\n"
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, pgidFileName), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("seed legacy record = %v", err)
+	}
+	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	deps := downTestDeps(t, h)
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached(legacy) = %v, want nil", err)
+	}
+	if got, want := signalEvents(h.rec.snapshot()), []string{"group-term " + strconv.Itoa(pgPgid)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy teardown:\n got  %v\n want %v", got, want)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
 }

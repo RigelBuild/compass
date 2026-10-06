@@ -731,6 +731,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	prev := readStartTime
 	readStartTime = func(pid int) (uint64, error) { return uint64(pid) * 10, nil }
 	t.Cleanup(func() { readStartTime = prev })
+	stubBootID(t, testBootID)
 	h := &harness{
 		rec: rec, serverStarted: started,
 		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers, collector: collector, collectorProber: collectorProber, nats: nats, natsProber: natsProber,

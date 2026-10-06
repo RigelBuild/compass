@@ -419,6 +419,14 @@ Mechanics, grounded in the current seams:
     `readPgidFile` dispatches on the tag; the hard-error-on-malformed
     discipline is unchanged ("signaling off a half-understood record is
     exactly the blast radius the design forbids", `pgidfile.go:100-103`).
+  + **Boot identity (RIG-4570 option A).** The v2 header is
+    `<version> <writerPid> [<bootid>]`: the writer stamps the current boot
+    (Linux `/proc/sys/kernel/random/boot_id`, darwin `kern.boottime`). A
+    `down` that reads a boot id differing from the current boot signals no
+    process entry and drops the record; container entries keep their name
+    teardown. A missing boot id (older builds, or an unreadable id) is
+    *unknown* and falls back to the per-entry identity check, so the
+    extension stays compatible. A v1 header never carries the column.
   + **Cross-version rule.** A v1-only binary never half-parses a v2 record —
     but by the *entry-line grammar*, not a header-version check: shipped v1
     `readPgidFile` stores `header[0]` as `Version` and never compares it to

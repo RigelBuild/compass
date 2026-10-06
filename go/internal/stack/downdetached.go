@@ -100,7 +100,9 @@ func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 
 	// 3. Build the live teardown targets in reverse start order, identity-checking
 	// each recorded group. A gone (ESRCH) or recycled (start-time mismatch) group
-	// is skipped — never signaled, never an error.
+	// is skipped — never signaled, never an error. A record from an earlier boot
+	// has no live group at all, so its process entries are dropped unsignalled.
+	rec = dropPriorBootGroups(rec)
 	targets := liveTargets(ctx, cfg, deps, rec)
 
 	// 4/5/6. SIGTERM every live target up front (reverse order), then per-target
@@ -156,6 +158,28 @@ func consumeRecord(ctx context.Context, cfg Config, deps Deps) (rec pgidRecord, 
 		return pgidRecord{}, false, fmt.Errorf("consume pgid record: %w", rerr)
 	}
 	return rec, true, nil
+}
+
+// dropPriorBootGroups removes every process entry when rec was written in an
+// earlier boot: a reboot frees every pgid, so a match now would be a stranger.
+// An unknown boot on either side (older record, unreadable id) keeps rec as is.
+// Container entries stay, since a name is not recycled by a reboot.
+func dropPriorBootGroups(rec pgidRecord) pgidRecord {
+	if rec.BootID == "" {
+		return rec
+	}
+	current, err := readBootID()
+	if err != nil || current == "" || current == rec.BootID {
+		return rec
+	}
+	slog.Info("pgid record is from an earlier boot; its process groups are gone", "record_boot", rec.BootID, "current_boot", current)
+	out := pgidRecord{WriterPid: rec.WriterPid, Version: rec.Version, BootID: rec.BootID}
+	for _, e := range rec.Entries {
+		if e.Kind == entryContainer {
+			out.Entries = append(out.Entries, e)
+		}
+	}
+	return out
 }
 
 // target is one live child to tear down: its recorded identity, confirmation
