@@ -501,6 +501,12 @@
 	color: var(--cx-text-dim);
 }
 
+/* The tab seg sits by the heading. Sharing the auto margin with the grouping
+   seg would slide it right whenever the PRs tab hides that seg. */
+.bridge-toolbar .bridge-tabs {
+	margin-left: 0;
+}
+
 .seg {
 	display: flex;
 	margin-left: auto;
