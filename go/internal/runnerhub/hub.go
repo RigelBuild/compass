@@ -429,7 +429,9 @@ type Hub struct {
 	// bindingWriteMu serializes whole enrolls (map-clear through reap) with promotion
 	// writes and cache updates. Lock it before mu; never hold mu across a store call.
 	bindingWriteMu sync.Mutex
-	mu             sync.Mutex
+	// lifecycleMu serializes lifecycle guards and their sink publication order.
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
 
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
@@ -444,6 +446,9 @@ type Hub struct {
 	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
 	// (CodeNotFound) not inheriting a stale account (OQ-2).
 	sessionAccounts map[string]sessionBinding
+	// erroredSessions is lifecycleMu-guarded; entries live until recovery or re-enroll.
+	// Its size is bounded by the sessions errored during one Runner lifetime.
+	erroredSessions map[string]struct{}
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
 	// consumer (RIG-1569 T3) resolves a subscribed account to its live session to
@@ -503,6 +508,7 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
+		erroredSessions:   make(map[string]struct{}),
 		reapStale:         make(map[string]uint64),
 		runnerEpoch:       make(map[string]uint64),
 	}
@@ -805,6 +811,15 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	if !lifecycle {
 		return
 	}
+	h.lifecycleMu.Lock()
+	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		h.erroredSessions[sessionID] = struct{}{}
+	} else if _, errored := h.erroredSessions[sessionID]; errored {
+		h.lifecycleMu.Unlock()
+		h.log.Debug("ignored stale lifecycle frame after ERRORED",
+			slog.String("runner_id", runnerID), slog.String("session_id", sessionID), slog.String("state", state.String()))
+		return
+	}
 	// Resolve the session's agent account and stamp it onto the published status — the
 	// DL-167 attribution join. A status published after a Runner reconnect cleared the
 	// maps carries none (the residual gap). runnerRuntimeIdentity reads tier/posture in
@@ -836,6 +851,7 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, sf
 	if presence != nil && hasAccount {
 		presence.OnSessionLifecycle(account, sessionID, state)
 	}
+	h.lifecycleMu.Unlock()
 	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
 		h.dropLostSessionDetached(ctx, runnerID, sessionID, true)
@@ -1001,6 +1017,9 @@ type promotedPair struct {
 // so none of its pre-enroll sessions live. A failed durable reap still runs the
 // in-RAM fallback, then returns the error so the Runner retries enrollment.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
+	h.lifecycleMu.Lock()
+	clear(h.erroredSessions)
+	h.lifecycleMu.Unlock()
 	// Held from the map-clear through the reap, so no promotion lands in between.
 	h.bindingWriteMu.Lock()
 	h.mu.Lock()
