@@ -626,15 +626,19 @@ function analyticsStub(): {
 }
 
 describe("tour analytics", () => {
-	test("a replay emits started, then one step_viewed per step, then completed", async () => {
+	test("a replay emits started, one step_viewed per shown step, then completed", async () => {
 		const stub = analyticsStub();
 		await withStore({ analytics: stub.analytics }, async (store) => {
 			store.tour.start("replay");
 			flush();
-			for (let i = 0; i <= LAST; i++) {
+			store.tour.stepShown();
+			for (let i = 0; i < LAST; i++) {
 				store.tour.next();
 				flush();
+				store.tour.stepShown();
 			}
+			store.tour.next();
+			flush();
 			expect(store.tour.open()).toBe(false);
 			expect(stub.events).toEqual([
 				{ event: "tour_started", props: { trigger: "replay" } },
@@ -647,15 +651,55 @@ describe("tour analytics", () => {
 		});
 	});
 
-	test("Back re-views the earlier step and dismiss reports the current step", async () => {
+	test("a step change alone reports no view; a step skipped unshown is never counted", async () => {
 		const stub = analyticsStub();
 		await withStore({ analytics: stub.analytics }, async (store) => {
 			store.tour.start("replay");
 			flush();
 			store.tour.next();
 			flush();
+			store.tour.next();
+			flush();
+			store.tour.stepShown();
+			expect(stub.events).toEqual([
+				{ event: "tour_started", props: { trigger: "replay" } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(2), index: 2 } },
+			]);
+		});
+	});
+
+	test("a repeated stepShown reports the step once", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			store.tour.stepShown();
+			flush();
+			store.tour.stepShown();
+			expect(stub.events.filter((e) => e.event === "tour_step_viewed")).toEqual(
+				[
+					{
+						event: "tour_step_viewed",
+						props: { step_id: stepId(0), index: 0 },
+					},
+				],
+			);
+		});
+	});
+
+	test("Back re-reports the earlier step and dismiss reports the current step", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			store.tour.next();
+			flush();
+			store.tour.stepShown();
 			store.tour.back();
 			flush();
+			store.tour.stepShown();
 			store.tour.dismiss();
 			flush();
 			expect(stub.events).toEqual([
@@ -668,6 +712,23 @@ describe("tour analytics", () => {
 		});
 	});
 
+	test("a restart re-reports the welcome step", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			store.tour.close();
+			flush();
+			store.tour.start("replay");
+			flush();
+			store.tour.stepShown();
+			expect(
+				stub.events.filter((e) => e.event === "tour_step_viewed").length,
+			).toBe(2);
+		});
+	});
+
 	test("a won first-run claim reports the first-run trigger", async () => {
 		const stub = analyticsStub();
 		const fake = tourFake({ claim: true });
@@ -677,6 +738,7 @@ describe("tour analytics", () => {
 				await settle();
 				store.tour.start("first-run");
 				flush();
+				store.tour.stepShown();
 				expect(stub.events.slice(0, 2)).toEqual([
 					{ event: "tour_started", props: { trigger: "first-run" } },
 					{
@@ -704,6 +766,7 @@ describe("tour analytics", () => {
 				expect(stub.events).toEqual([]);
 				read.open();
 				await settle();
+				store.tour.stepShown();
 				expect(stub.events).toEqual([
 					{ event: "tour_started", props: { trigger: "resume" } },
 					{
@@ -736,6 +799,8 @@ describe("tour analytics", () => {
 				store.tour.back();
 				store.tour.close();
 				flush();
+				// A closed tour has nothing on screen to report.
+				store.tour.stepShown();
 				expect(stub.events.length).toBe(opened);
 			},
 		);

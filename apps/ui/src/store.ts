@@ -281,6 +281,9 @@ export interface AppStore {
 		start: (trigger: "first-run" | "replay" | "resume") => void;
 		next: () => void;
 		back: () => void;
+		/** The overlay reports the current step on screen. Sends one
+		 *  `tour_step_viewed` per step entry, so a step skipped unseen never counts. */
+		stepShown: () => void;
 		/** Escape: hides, clears demo rows and leaves a `demo:` route, with no
 		 *  permanent write; resume stays available. */
 		close: () => void;
@@ -2010,16 +2013,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			.then(() => client.setTourState({ outcome, stepId }))
 			.catch((error: unknown) => options.onCommsError?.(error));
 	};
+	// The step index last reported viewed; showStep clears it so Back re-reports.
+	let viewedIndex: number | undefined;
 	const showStep = (index: number, persist: boolean) => {
 		const step: TourStep | undefined = TOUR_STEPS[index];
 		if (!step) return;
 		setTourStepIndex(index);
 		resumeStepId = step.id;
-		captureTourEvent(options.analytics, {
-			name: "tour_step_viewed",
-			step_id: step.id,
-			index,
-		});
+		viewedIndex = undefined;
 		if (step.route === "/") showBridge();
 		else if (step.route === "/backlog") showBacklog();
 		else if (step.route === "/done") showDone();
@@ -2066,6 +2067,17 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			if (tourOpen() && tourStepIndex() > 0) {
 				showStep(tourStepIndex() - 1, true);
 			}
+		},
+		stepShown: () => {
+			const index = tourStepIndex();
+			const step = TOUR_STEPS[index];
+			if (!tourOpen() || !step || viewedIndex === index) return;
+			viewedIndex = index;
+			captureTourEvent(options.analytics, {
+				name: "tour_step_viewed",
+				step_id: step.id,
+				index,
+			});
 		},
 		close: () => {
 			if (tourOpen()) endTour();

@@ -254,6 +254,38 @@ describe("TourOverlay", () => {
 		}
 	});
 
+	test("a step skipped for a missing anchor is not reported viewed", async () => {
+		const viewed: unknown[] = [];
+		const { client } = tourClient(TourOutcome.STARTED, "sidebar-tree");
+		const { store } = mountApp("/", {
+			tour: client,
+			analytics: {
+				capture: (event, props) => {
+					if (event === "tour_step_viewed") viewed.push(props);
+				},
+				identify: () => {},
+				sessionId: () => undefined,
+				shutdown: () => {},
+			},
+		});
+		await flush();
+		// Both left-sidebar anchors go missing, so two steps skip in a row.
+		store.toggleLeft();
+		jest.useFakeTimers();
+		try {
+			store.tour.start("resume");
+			await flush();
+			jest.advanceTimersByTime(ANCHOR_WAIT_MS);
+			await flush();
+			jest.advanceTimersByTime(ANCHOR_WAIT_MS);
+			await flush();
+			expect(store.tour.stepIndex()).toBe(4);
+			expect(viewed).toEqual([{ step_id: "keyboard", index: 4 }]);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("Skip tour dismisses and persists DISMISSED", async () => {
 		const fake = tourClient();
 		const { store, container } = mountApp("/", { tour: fake.client });

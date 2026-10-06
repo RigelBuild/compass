@@ -65,6 +65,7 @@ const TourDialog: Component<{ step: TourStep; index: number }> = (props) => {
 				: null;
 		const first = dialogRef?.querySelector<HTMLElement>("button");
 		first?.focus();
+		store.tour.stepShown();
 		return () => {
 			if (restoreTo?.isConnected) restoreTo.focus();
 		};
@@ -177,6 +178,7 @@ export const TourOverlay: Component = () => {
 					// Anchors can sit below the fold (the demo agent ends the tree).
 					resolved.scrollIntoView({ block: "nearest" });
 					setAnchor(resolved);
+					store.tour.stepShown();
 				} else store.tour.next();
 			};
 			const resolveAnchor = () => {
