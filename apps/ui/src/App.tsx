@@ -127,20 +127,23 @@ const App: Component<
 		},
 	);
 	const focusInto = (viewId: string, panel: HTMLElement): void => {
+		const usable = (el: HTMLElement): boolean =>
+			el.isConnected &&
+			panel.contains(el) &&
+			!el.matches(":disabled") &&
+			el.closest("[hidden], [inert]") === null;
 		const remembered = lastFocus.get(viewId);
-		if (remembered && !remembered.isConnected) lastFocus.delete(viewId);
-		const visible = (el: HTMLElement): boolean =>
-			panel.contains(el) && el.closest("[hidden]") === null;
-		const candidate = [
-			...panel.querySelectorAll<HTMLElement>(
-				'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-			),
-		].find(visible);
-		const target =
-			remembered?.isConnected && visible(remembered)
-				? remembered
-				: (candidate ?? panel);
-		target.focus();
+		if (remembered && !usable(remembered)) lastFocus.delete(viewId);
+		const candidates = panel.querySelectorAll<HTMLElement>(
+			'a[href], button, input, textarea, select, [tabindex]:not([tabindex="-1"])',
+		);
+		// focus() can still be refused, so each step checks where focus landed.
+		for (const target of [remembered, ...candidates]) {
+			if (!target || !usable(target)) continue;
+			target.focus();
+			if (document.activeElement === target) return;
+		}
+		panel.focus();
 	};
 	createEffect(
 		() => routeTitle(store.focusedView().route(), store),
@@ -238,13 +241,32 @@ const App: Component<
 						</div>
 					)}
 				</For>
-				<Show when={store.layoutNotice()}>
-					{(notice) => (
-						<div class="cx-toast layout-notice" data-kind="warn" role="status">
-							{notice()}
-						</div>
-					)}
-				</Show>
+				{/* Mounted empty up front so a screen reader registers the live region
+				    before its first announcement. */}
+				<div class="layout-notice-region" role="status">
+					<Show when={store.layoutNotice()}>
+						{(notice) => (
+							<div class="cx-toast layout-notice" data-kind="warn">
+								<span>{notice().text}</span>
+								<Show when={notice().count > 1}>
+									<span class="layout-notice-count">
+										{` (repeated ${notice().count} times)`}
+									</span>
+								</Show>
+								<button
+									type="button"
+									class="cx-btn"
+									data-size="sm"
+									data-variant="ghost"
+									aria-label="Dismiss"
+									onClick={() => store.dismissLayoutNotice()}
+								>
+									×
+								</button>
+							</div>
+						)}
+					</Show>
+				</div>
 			</main>
 
 			<Show when={store.rightOpen()}>

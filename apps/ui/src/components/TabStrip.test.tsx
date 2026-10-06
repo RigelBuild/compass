@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
+import { type AppStore, NOTICE_TIMEOUT_MS } from "../store";
 import { STUB_AGENTS } from "../stub-data";
 import { flush, mountApp } from "../test-router";
 import { MAX_TABS } from "../window-layout";
@@ -139,11 +140,17 @@ describe("TabStrip", () => {
 		expect(store.view()).toBe("done");
 	});
 
-	test("at the tab cap a further open is refused and the strip is unchanged", async () => {
-		const { store, container } = mountApp("/");
+	const fillToCap = (store: AppStore): void => {
 		for (let i = 1; i < MAX_TABS; i++) {
 			store.dispatchLayout({ kind: "open", path: `/agent/agent-${i}` });
 		}
+	};
+	const region = (c: HTMLElement): HTMLElement | null =>
+		c.querySelector('[role="status"].layout-notice-region');
+
+	test("at the tab cap a further open is refused and the strip is unchanged", async () => {
+		const { store, container } = mountApp("/");
+		fillToCap(store);
 		await flush();
 		expect(tabs(container).length).toBe(MAX_TABS);
 		const before = store.layout();
@@ -153,8 +160,70 @@ describe("TabStrip", () => {
 		expect(store.layout()).toBe(before);
 		expect(tabs(container).length).toBe(MAX_TABS);
 		expect(selected(container)?.textContent).toContain("agent-9");
-		const notice = container.querySelector('[role="status"].cx-toast');
-		expect(notice?.textContent).toContain(`${MAX_TABS} tabs`);
+		expect(region(container)?.textContent).toContain(`${MAX_TABS} tabs`);
+	});
+
+	test("the notice region is mounted and empty before any refusal", () => {
+		const { container } = mountApp("/");
+		expect(region(container)).not.toBeNull();
+		expect(region(container)?.textContent).toBe("");
+	});
+
+	test("a repeated refusal changes the announced text again", async () => {
+		const { store, container } = mountApp("/");
+		fillToCap(store);
+		store.dispatchLayout({ kind: "open", path: "/settings" });
+		await flush();
+		const first = region(container)?.textContent;
+		store.dispatchLayout({ kind: "open", path: "/done" });
+		await flush();
+		const second = region(container)?.textContent;
+		expect(first).toContain(`${MAX_TABS} tabs`);
+		expect(second).toContain(`${MAX_TABS} tabs`);
+		expect(second).not.toBe(first);
+	});
+
+	test("an unrelated layout action keeps the notice", async () => {
+		const { store, container } = mountApp("/");
+		fillToCap(store);
+		store.dispatchLayout({ kind: "open", path: "/settings" });
+		await flush();
+		store.dispatchLayout({
+			kind: "focusTab",
+			tabId: store.layout().tabs[0]?.id ?? "",
+		});
+		await flush();
+		expect(region(container)?.textContent).toContain(`${MAX_TABS} tabs`);
+	});
+
+	test("the dismiss button clears the notice", async () => {
+		const { store, container } = mountApp("/");
+		fillToCap(store);
+		store.dispatchLayout({ kind: "open", path: "/settings" });
+		await flush();
+		const dismiss = region(container)?.querySelector<HTMLElement>(
+			'button[aria-label="Dismiss"]',
+		);
+		if (!dismiss) throw new Error("no dismiss button");
+		fireEvent.click(dismiss);
+		await flush();
+		expect(region(container)?.textContent).toBe("");
+	});
+
+	test("the notice clears itself after its timeout", async () => {
+		jest.useFakeTimers();
+		try {
+			const { store, container } = mountApp("/");
+			fillToCap(store);
+			store.dispatchLayout({ kind: "open", path: "/settings" });
+			await flush();
+			expect(region(container)?.textContent).toContain(`${MAX_TABS} tabs`);
+			jest.advanceTimersByTime(NOTICE_TIMEOUT_MS + 1);
+			await flush();
+			expect(region(container)?.textContent).toBe("");
+		} finally {
+			jest.useRealTimers();
+		}
 	});
 
 	test("closing the active tab by its button leaves focus on the new active tab", async () => {

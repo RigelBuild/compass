@@ -251,6 +251,22 @@ describe("MessageStream scroll contract", () => {
 		expect(Math.max(...indices())).toBe(199);
 	});
 
+	// Only the first reveal re-anchors; returning to a tab keeps where the user
+	// had scrolled to.
+	test("a later return to a shown stream keeps the user's scroll position", () => {
+		const { setShown, scroller, indices } = mountStream(makeMessages(200));
+		scrollToTop(scroller());
+		flush();
+		const before = Math.max(...indices());
+		expect(before).toBeLessThan(199);
+		setShown(false);
+		flush();
+		setShown(true);
+		flush();
+		expect(scroller().scrollTop).toBe(0);
+		expect(Math.max(...indices())).toBe(before);
+	});
+
 	// Case (2): append while at bottom follows to the new latest.
 	test("(2) append while at bottom follows to the new latest", () => {
 		const { setMessages, indices } = mountStream(makeMessages(200));

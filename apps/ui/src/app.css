@@ -422,10 +422,20 @@
 }
 
 /* The tab-cap refusal floats over the view rather than taking layout space. */
-.layout-notice {
+.layout-notice-region {
 	position: absolute;
 	right: var(--cx-space-4);
 	bottom: var(--cx-space-4);
+}
+
+/* Read out so a repeated refusal is a new announcement; not shown. */
+.layout-notice-count {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
 }
 
 /* A view panel stands in for .main as its view's box, so views size as before. */

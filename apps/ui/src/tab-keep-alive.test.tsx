@@ -97,6 +97,27 @@ describe("inactive tabs stay mounted", () => {
 		expect(document.activeElement).toBe(input);
 	});
 
+	test("a remembered target that became disabled is skipped on return", async () => {
+		const { store, container } = mountApp(TOPIC_PATH);
+		store.dispatchLayout({
+			kind: "open",
+			path: `/agent/${AGENT_ID}`,
+			background: true,
+		});
+		await flush();
+		const input = composer(container);
+		input.focus();
+		store.dispatchLayout({ kind: "focusTab", tabId: tabIdAt(store, 1) });
+		await flush();
+		input.disabled = true;
+		store.dispatchLayout({ kind: "focusTab", tabId: tabIdAt(store, 0) });
+		await flush();
+		const focused = document.activeElement;
+		if (!(focused instanceof HTMLElement)) throw new Error("focus was dropped");
+		expect(focused).not.toBe(input);
+		expect(panelOf(focused)).toBe(panelOf(input));
+	});
+
 	test("a switch leaves focus alone when it is outside the hidden view", async () => {
 		const { store, container } = mountApp("/");
 		store.dispatchLayout({ kind: "open", path: "/settings", background: true });

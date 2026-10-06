@@ -22,7 +22,7 @@ export const MessageStream: Component<{
 	 *  for a DM, a topic id for a topic view). */
 	scopeId: string;
 	/** Whether the stream's view is on screen. A hidden mount has no viewport,
-	 *  so it re-anchors to the latest message when it is first shown. */
+	 *  so it anchors to the latest message on its first reveal. */
 	shown: boolean;
 	byId: Map<string, Account>;
 	byHandle: Map<string, Account>;
@@ -51,10 +51,15 @@ export const MessageStream: Component<{
 			virtualizer.scrollToEnd();
 		},
 	);
+	// A stream mounted hidden could not measure, so it anchors once on its first
+	// reveal; later returns keep the user's scroll position.
+	let revealed = false;
 	createEffect(
 		() => props.shown,
 		(shown, wasShown) => {
-			if (shown && wasShown === false) virtualizer.scrollToEnd();
+			if (!shown || revealed) return;
+			revealed = true;
+			if (wasShown === false) virtualizer.scrollToEnd();
 		},
 	);
 

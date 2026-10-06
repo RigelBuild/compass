@@ -95,6 +95,15 @@ import {
  *  the fixture pins it to the human owner. */
 export const CALLER_ID = "acc-matt";
 
+/** How long the tab-cap notice stays up before it dismisses itself. */
+export const NOTICE_TIMEOUT_MS = 5000;
+
+/** A transient layout notice; `count` makes a repeated refusal a new value. */
+export interface LayoutNotice {
+	text: string;
+	count: number;
+}
+
 /** The top-level surface the shell routes between. `bridge`/`backlog`/`done`/
  *  `settings` are the board-family surfaces (the default is `bridge`), still
  *  primary, reachable from the top bar; they swap the whole UI. `channel` is the
@@ -197,9 +206,10 @@ export interface AppStore {
 	layout: Accessor<WindowLayout>;
 	/** Apply a layout action; an eleventh tab is refused with a notice. */
 	dispatchLayout: (action: LayoutAction) => void;
-	/** Why the last layout action was refused (the tab cap); cleared by the next
-	 *  accepted one. */
-	layoutNotice: Accessor<string | undefined>;
+	/** The tab-cap refusal notice; `count` grows on each repeat so a screen reader
+	 *  re-announces it. Cleared by dismissal or after `NOTICE_TIMEOUT_MS`. */
+	layoutNotice: Accessor<LayoutNotice | undefined>;
+	dismissLayoutNotice: () => void;
 	/** One scope per view instance in the layout, in tab order; a view keeps its
 	 *  scope object for its whole life, so a keyed render keeps it mounted. */
 	viewScopes: Accessor<ViewScope[]>;
@@ -672,12 +682,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [layout, setLayout] = createSignal<WindowLayout>(singleTabLayout("/"), {
 		ownedWrite: true,
 	});
-	// A refusal is shown to the user rather than silently dropped; the next
-	// accepted action clears it.
-	const [layoutNotice, setLayoutNotice] = createSignal<string | undefined>(
-		undefined,
-		{ ownedWrite: true },
-	);
+	// A refusal is shown to the user rather than silently dropped.
+	const [layoutNotice, setLayoutNotice] = createSignal<
+		LayoutNotice | undefined
+	>(undefined, { ownedWrite: true });
+	let cancelNoticeTimer = (): void => {};
+	const dismissLayoutNotice = (): void => {
+		cancelNoticeTimer();
+		setLayoutNotice(undefined);
+	};
 	const dispatchLayout = (action: LayoutAction): void => {
 		let refused = false;
 		setLayout((prev) => {
@@ -685,11 +698,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			refused = "refused" in next;
 			return "refused" in next ? prev : next;
 		});
-		setLayoutNotice(
-			refused
-				? `Tab limit reached: close a tab to open another (${MAX_TABS} tabs max).`
-				: undefined,
-		);
+		if (!refused) return;
+		setLayoutNotice((prev) => ({
+			text: `Tab limit reached: close a tab to open another (${MAX_TABS} tabs max).`,
+			count: (prev?.count ?? 0) + 1,
+		}));
+		cancelNoticeTimer();
+		// biome-ignore lint/style/noRestrictedGlobals: a real UI dismiss delay, not a test wait.
+		const timer = setTimeout(dismissLayoutNotice, NOTICE_TIMEOUT_MS);
+		cancelNoticeTimer = () => clearTimeout(timer);
 	};
 	let routerBound = false;
 	const navigateTo = (path: string): void => {
@@ -1766,6 +1783,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		layout,
 		dispatchLayout,
 		layoutNotice,
+		dismissLayoutNotice,
 		viewScopes: scopes,
 		joinChannel,
 		toggleSubscribe,
