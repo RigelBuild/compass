@@ -449,10 +449,11 @@ type Hub struct {
 	// Stop removes, a Runner reconnect drops ALL, so a re-minted id fails closed
 	// (CodeNotFound) not inheriting a stale account (OQ-2).
 	sessionAccounts map[string]sessionBinding
-	// erroredSessions maps a session to the RunnerSeq of its latest ERRORED. Lifecycle
-	// frames at or below it are from the dead lifetime; the counter resets only with
-	// re-enroll, which clears the map. lifecycleMu-guarded.
-	erroredSessions map[string]uint64
+	// lifecycleSeqs maps a session to the highest RunnerSeq of an accepted lifecycle
+	// frame. One lifetime's frames arrive in seq order, so a lower one is from a
+	// cancelled stream or a dead lifetime. Kept past unbind so the boundary outlives
+	// ERRORED; cleared on re-enroll, when RunnerSeq restarts. lifecycleMu-guarded.
+	lifecycleSeqs map[string]uint64
 	// enrollMu fences session-frame delivery (read) against enroll (write), and
 	// guards enrollGen, which counts enrollments so a stream opened before a
 	// re-enroll cannot act on its sessions. Lock order: enrollMu, lifecycleMu, mu.
@@ -521,7 +522,7 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		containerAccounts: make(map[string]sessionBinding),
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
-		erroredSessions:   make(map[string]uint64),
+		lifecycleSeqs:     make(map[string]uint64),
 		missingSeqs:       make(map[uint64]struct{}),
 		reapStale:         make(map[string]uint64),
 		runnerEpoch:       make(map[string]uint64),
@@ -696,9 +697,12 @@ func (h *Hub) SetBoardCaller(c BoardCaller) {
 // whose variant is unset or unrecognized is logged and counted, never silently
 // dropped (design.md:1427-1434, agent.proto:38-39).
 func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
+	// Held for the whole delivery so enroll cannot reset sequence or lifecycle state
+	// between the generation check and their use. Never re-acquired below: a nested
+	// RLock deadlocks behind a pending enroll.
 	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
 	stale := h.staleEnrollmentLocked(ev)
-	h.enrollMu.RUnlock()
 	if !stale {
 		h.recordSeq(ev.RunnerSeq)
 	}
@@ -713,7 +717,10 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
-		h.deliverSession(ctx, ev, f.Session)
+		// Acks stay unfenced: they are idempotent and record work already done.
+		if !stale {
+			h.deliverSession(ctx, ev, f.Session)
+		}
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
@@ -825,13 +832,6 @@ func (h *Hub) fireRunnerReady() {
 // UNSPECIFIED means "trace only, no transition".
 func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1internal.SessionFrame) {
 	runnerID, sessionID, seq := ev.RunnerID, ev.SessionID, ev.RunnerSeq
-	// Held through the tail relay and lifecycle edges so enroll cannot slip between
-	// the generation check and them.
-	h.enrollMu.RLock()
-	defer h.enrollMu.RUnlock()
-	if h.staleEnrollmentLocked(ev) {
-		return
-	}
 	state := sf.GetState()
 	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
 	// A frame the publishing Runner may not speak for is dropped whole: its trace,
@@ -842,20 +842,20 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
 		return
 	}
-	h.tail.RelaySessionFrame(sessionID, sf)
 	if !lifecycle {
+		h.tail.RelaySessionFrame(sessionID, sf)
 		return
 	}
 	h.lifecycleMu.Lock()
-	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		h.erroredSessions[sessionID] = max(h.erroredSessions[sessionID], seq)
-	} else if erroredSeq, errored := h.erroredSessions[sessionID]; errored && seq <= erroredSeq {
+	if last, seen := h.lifecycleSeqs[sessionID]; seen && seq <= last {
 		h.lifecycleMu.Unlock()
-		h.log.Debug("ignored stale lifecycle frame from before ERRORED",
+		h.log.Debug("ignored lifecycle frame older than the session's latest",
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID),
-			slog.String("state", state.String()), slog.Uint64("runner_seq", seq), slog.Uint64("errored_seq", erroredSeq))
+			slog.String("state", state.String()), slog.Uint64("runner_seq", seq), slog.Uint64("latest_seq", last))
 		return
 	}
+	h.lifecycleSeqs[sessionID] = seq
+	h.tail.RelaySessionFrame(sessionID, sf)
 	// Resolve the session's agent account and stamp it onto the published status — the
 	// DL-167 attribution join. A status published after a Runner reconnect cleared the
 	// maps carries none (the residual gap). runnerRuntimeIdentity reads tier/posture in
@@ -1082,7 +1082,7 @@ type promotedPair struct {
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
 	h.enrollMu.Lock()
 	h.lifecycleMu.Lock()
-	clear(h.erroredSessions)
+	clear(h.lifecycleSeqs)
 	h.enrollGen++
 	h.lifecycleMu.Unlock()
 	h.enrollMu.Unlock()
