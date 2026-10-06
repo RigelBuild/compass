@@ -180,7 +180,8 @@ func TestAppleExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 		"--workdir", "/work",
 		"--env", "COMPASS_MODEL=test-model",
 		"--env", "HOME=/home/agent",
-		"ctr123", "compass-agent",
+		"ctr123",
+		"sh", "-c", stopWithClientScript, "sh", "compass-agent",
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("appleExecStreamingArgs = %q, want %q", args, want)

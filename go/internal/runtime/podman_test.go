@@ -164,7 +164,8 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 		"-e", "COMPASS_MODEL=test-model",
 		"-e", "COMPASS_WORKDIR=/work",
 		"-e", "HOME=/home/agent",
-		"ctr123", "compass-agent",
+		"ctr123",
+		"sh", "-c", stopWithClientScript, "sh", "compass-agent",
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
@@ -237,7 +238,7 @@ func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
 
 	args := execStreamingArgs(WorkloadID("c"), spec)
 
-	want := []string{"exec", "--interactive", "c", "compass-agent"}
+	want := []string{"exec", "--interactive", "c", "sh", "-c", stopWithClientScript, "sh", "compass-agent"}
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
 	}
@@ -296,7 +297,8 @@ func TestExecStreamingArgsCarriesInlineEnvNotEnvFile(t *testing.T) {
 		"--user", "1000",
 		"--workdir", "/work",
 		"-e", "HOME=/home/agent",
-		"ctr123", "compass-agent",
+		"ctr123",
+		"sh", "-c", stopWithClientScript, "sh", "compass-agent",
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
