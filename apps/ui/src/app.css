@@ -73,11 +73,13 @@
 }
 .topbar-search {
 	position: relative;
+	flex: 0 1 240px;
 	min-width: 180px;
 }
 
 .topbar-search-input {
-	width: 240px;
+	box-sizing: border-box;
+	width: 100%;
 	padding: 5px 8px;
 	border: 1px solid var(--cx-border);
 	border-radius: var(--cx-radius-sm);
