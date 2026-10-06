@@ -313,6 +313,63 @@ func TestDoorProfilesMatchStoredBundleWalk(t *testing.T) {
 	}
 }
 
+// TestDoorProfilesKeepTrailingSlashMember pins the door/re-walk equality where the
+// raw name differs from its parsed form: a regular profile.yml member spelled with
+// a trailing slash must still reach the profile lints, as the stored-bundle walk sees it.
+func TestDoorProfilesKeepTrailingSlashMember(t *testing.T) {
+	body := "models:\n  manager: ghost\n"
+	bundle := rawUstarBundle(t, "profiles/x/profile.yml/", body)
+	_, door, err := validateAndHashConfigBundle(bundle)
+	if err != nil {
+		t.Fatalf("validateAndHashConfigBundle: %v", err)
+	}
+	stored, err := configBundleProfileBodies(bundle)
+	if err != nil {
+		t.Fatalf("configBundleProfileBodies: %v", err)
+	}
+	if string(stored["x"]) != body || !maps.EqualFunc(door, stored, bytes.Equal) {
+		t.Fatalf("door profiles %q, stored-walk profiles %q: want both {x: %q}", door, stored, body)
+	}
+}
+
+// rawUstarBundle gzips a one-member ustar archive written byte by byte, for member
+// names tar.Writer refuses (a regular file whose name ends in "/").
+func rawUstarBundle(t *testing.T, name, content string) []byte {
+	t.Helper()
+	hdr := make([]byte, 512)
+	copy(hdr[0:100], name)
+	copy(hdr[100:108], "0000644\x00")
+	copy(hdr[108:116], "0001750\x00")
+	copy(hdr[116:124], "0001750\x00")
+	copy(hdr[124:136], fmt.Sprintf("%011o\x00", len(content)))
+	copy(hdr[136:148], "00000001750\x00")
+	hdr[156] = '0'
+	copy(hdr[257:263], "ustar\x00")
+	copy(hdr[263:265], "00")
+	copy(hdr[148:156], "        ")
+	sum := 0
+	for _, b := range hdr {
+		sum += int(b)
+	}
+	copy(hdr[148:156], fmt.Sprintf("%06o\x00 ", sum))
+
+	var raw bytes.Buffer
+	raw.Write(hdr)
+	raw.WriteString(content)
+	raw.Write(make([]byte, (512-len(content)%512)%512))
+	raw.Write(make([]byte, 1024))
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(raw.Bytes()); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // selectorHasSlash mirrors the orphan check's escape-hatch discriminator, kept
 // local to the test so a change to the production predicate is caught here.
 func selectorHasSlash(sel string) bool {

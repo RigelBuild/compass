@@ -398,6 +398,7 @@ func validateAndHashConfigBundle(bundle []byte) (version string, profiles map[st
 
 	type member struct {
 		name    string
+		parts   []string // configMemberParts(name): the cross-member lints read this, never the raw name
 		content []byte
 	}
 	var members []member
@@ -468,7 +469,7 @@ func validateAndHashConfigBundle(bundle []byte) (version string, profiles map[st
 			}
 			return "", nil, err
 		}
-		members = append(members, member{name: hdr.Name, content: content})
+		members = append(members, member{name: hdr.Name, parts: parts, content: content})
 	}
 
 	// Cross-member profile lint (RIG-2968 T1). The models.agents key lint is CROSS-MEMBER
@@ -478,7 +479,7 @@ func validateAndHashConfigBundle(bundle []byte) (version string, profiles map[st
 	agentDefNames := make(map[string]bool)
 	profiles = make(map[string][]byte)
 	for _, m := range members {
-		parts := strings.Split(m.name, "/")
+		parts := m.parts
 		switch {
 		case len(parts) == 2 && parts[0] == topDirAgents:
 			if name := agentDefFrontmatterName(m.content); name != "" {
