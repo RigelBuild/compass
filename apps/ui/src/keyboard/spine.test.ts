@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { CommandId } from "./commands";
-import { reduceLayout, singleTabLayout } from "../window-layout";
 import type { LayoutAction, WindowLayout } from "../window-layout";
-import { createKeyboardSpine } from "./spine";
+import { reduceLayout, singleTabLayout } from "../window-layout";
+import type { CommandId } from "./commands";
 import type { RovingGroupHandle } from "./roving";
+import { createKeyboardSpine } from "./spine";
 import type { FocusZone } from "./zones";
+
 // The keyboard spine (RIG-2456): the shared registry + the published roving-group
 // set, plus the tier-1/tier-2 accessors the root installKeymap reads. These units
 // defend the group-publication model (RD-2): register/unregister round-trip,
@@ -294,6 +295,4 @@ describe("createKeyboardSpine", () => {
 		}
 		expect(layout).toBe(before);
 	});
-
-
 });

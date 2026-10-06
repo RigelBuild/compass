@@ -34,7 +34,9 @@ test("channel and agent tabs keep a draft across a switch and survive reload", a
 	await expect(tabs.nth(0)).toContainText("ACP seam review");
 	await expect(tabs.nth(1)).toContainText("compass-ui");
 });
-test("composer keeps W text; W N opens a tab and W X closes it", async ({ page }) => {
+test("composer keeps W text; W N opens a tab and W X closes it", async ({
+	page,
+}) => {
 	await page.goto(`/#${TOPIC_PATH}`);
 	const tabs = page.locator('.cx-tab-strip [role="tab"]');
 	const composer = page.locator(".conv-composer input.field");

@@ -36,8 +36,8 @@
  * (record T1 §343-345), so it is a plain `Set`, read fresh on each call.
  */
 
-import type { Command, CommandId, CommandRegistry } from "./commands";
 import type { LayoutAction, WindowLayout } from "../window-layout";
+import type { Command, CommandId, CommandRegistry } from "./commands";
 import { createCommandRegistry } from "./registry";
 import type { RovingGroupHandle } from "./roving";
 import type { FocusZone } from "./zones";
@@ -179,7 +179,8 @@ export function createKeyboardSpine(deps: {
 	registerLayoutCommand("tab.prev", "Previous tab", ["focus", "switch"], () => {
 		const { tabs, activeTabId } = deps.layout();
 		const at = tabs.findIndex((tab) => tab.id === activeTabId);
-		const tab = at >= 0 ? tabs[(at - 1 + tabs.length) % tabs.length] : undefined;
+		const tab =
+			at >= 0 ? tabs[(at - 1 + tabs.length) % tabs.length] : undefined;
 		return tab ? { kind: "focusTab", tabId: tab.id } : undefined;
 	});
 	for (let index = 0; index < 9; index++) {
@@ -218,14 +219,24 @@ export function createKeyboardSpine(deps: {
 				: undefined;
 		},
 	);
-	registerLayoutCommand("pane.splitRight", "Split right", ["pane", "split"], () => ({
-		kind: "split",
-		direction: "row",
-	}));
-	registerLayoutCommand("pane.splitDown", "Split down", ["pane", "split"], () => ({
-		kind: "split",
-		direction: "column",
-	}));
+	registerLayoutCommand(
+		"pane.splitRight",
+		"Split right",
+		["pane", "split"],
+		() => ({
+			kind: "split",
+			direction: "row",
+		}),
+	);
+	registerLayoutCommand(
+		"pane.splitDown",
+		"Split down",
+		["pane", "split"],
+		() => ({
+			kind: "split",
+			direction: "column",
+		}),
+	);
 	registerLayoutCommand(
 		"pane.closeOther",
 		"Close other pane",

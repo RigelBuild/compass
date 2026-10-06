@@ -175,7 +175,10 @@ describe("DEFAULT_KEYMAP sequence authoring invariants", () => {
 			["W X", id("tab.close")],
 			["W ]", id("tab.next")],
 			["W [", id("tab.prev")],
-			...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`W ${n}`, id(`tab.goto.${n}`)]),
+			...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [
+				`W ${n}`,
+				id(`tab.goto.${n}`),
+			]),
 			["W V", id("pane.splitRight")],
 			["W S", id("pane.splitDown")],
 			["W O", id("pane.closeOther")],
