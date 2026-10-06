@@ -65,3 +65,38 @@ func TestCheckAgentImageFresh(t *testing.T) {
 		}
 	}
 }
+
+// lib.fileset hashes a symlink by its target's content, so the Go walk must too.
+func TestAgentSourceFingerprintFollowsSymlinks(t *testing.T) {
+	plain := writeTree(t, map[string]string{"src/a.ts": "body\n", "src/b.ts": "body\n"})
+	linked := writeTree(t, map[string]string{"src/a.ts": "body\n"})
+	if err := os.Symlink("a.ts", filepath.Join(linked, "src", "b.ts")); err != nil {
+		t.Fatal(err)
+	}
+	fp, errP := agentSourceFingerprint(plain)
+	fl, errL := agentSourceFingerprint(linked)
+	if errP != nil || errL != nil || fp != fl {
+		t.Fatalf("plain %s (%v) vs symlinked %s (%v); want equal", fp, errP, fl, errL)
+	}
+
+	dangling := writeTree(t, map[string]string{"src/a.ts": "body\n"})
+	if err := os.Symlink("missing.ts", filepath.Join(dangling, "src", "b.ts")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agentSourceFingerprint(dangling); err == nil {
+		t.Fatal("dangling symlink: err = nil, want an error")
+	}
+}
+
+func TestAgentSourceFingerprintExcludesTopLevelNodeModulesSymlink(t *testing.T) {
+	base := writeTree(t, map[string]string{"src/a.ts": "body\n"})
+	withLink := writeTree(t, map[string]string{"src/a.ts": "body\n"})
+	if err := os.Symlink("src", filepath.Join(withLink, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	fb, errB := agentSourceFingerprint(base)
+	fw, errW := agentSourceFingerprint(withLink)
+	if errB != nil || errW != nil || fb != fw {
+		t.Fatalf("base %s (%v) vs node_modules symlink %s (%v); want equal", fb, errB, fw, errW)
+	}
+}

@@ -87,12 +87,12 @@ func buildStackBinaries() (string, error) {
 	return binDir, nil
 }
 
-// requireFreshAgentImage fails the run when the local compass-agent:latest was
-// built from different agent source than this tree: a stale image fails every
-// tool-call leg with symptoms that point at the code instead. CI is exempt
-// because its seed step picks the image on purpose (published :latest may lag).
+// requireFreshAgentImage fails the run when compass-agent:latest was built from
+// different agent source than this tree: a stale image fails every tool-call leg
+// with symptoms that point at the code. CI's pull branch opts out, because it
+// tests published :latest on purpose and that may lag the tree.
 func requireFreshAgentImage() error {
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
+	if os.Getenv("COMPASS_E2E_ALLOW_PUBLISHED_AGENT_IMAGE") == "1" {
 		return nil
 	}
 	tree, err := agentSourceFingerprint(filepath.Join("..", "..", "packages", "compass-agent"))

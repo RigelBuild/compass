@@ -22,8 +22,9 @@ const agentRebuildHint = `rebuild it from this tree:
   podman tag docker.io/library/compass-agent:latest localhost/compass-agent:latest`
 
 // agentSourceFingerprint recomputes agent-image/source-fingerprint.nix over
-// pkgDir: sha256 of the sorted `<sha256>  <relpath>\n` lines of every regular
-// file, minus the top-level node_modules and moon.yml (agent-source-files.nix).
+// pkgDir: sha256 of the sorted `<sha256>  <relpath>\n` lines of every file,
+// minus the top-level node_modules and moon.yml. Like lib.fileset, a symlink is
+// hashed by its target's content and any other special file is an error.
 func agentSourceFingerprint(pkgDir string) (string, error) {
 	type entry struct{ rel, sum string }
 	var entries []entry
@@ -36,11 +37,21 @@ func agentSourceFingerprint(pkgDir string) (string, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == "node_modules" && d.IsDir() {
+		switch {
+		case rel == "node_modules" && d.IsDir():
 			return filepath.SkipDir
-		}
-		if !d.Type().IsRegular() || rel == "moon.yml" {
+		case rel == "node_modules", rel == "moon.yml", d.IsDir():
 			return nil
+		case d.Type()&fs.ModeSymlink != 0:
+			info, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("resolve symlink %s: %w", rel, err)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("symlink %s does not resolve to a regular file", rel)
+			}
+		case !d.Type().IsRegular():
+			return fmt.Errorf("unsupported file type at %s", rel)
 		}
 		sum, err := fileSHA256(path)
 		if err != nil {

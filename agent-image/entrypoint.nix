@@ -134,15 +134,9 @@ let
     outputHash = native.outputHash;
   };
 
-  # The package's own source, filtered as a DENYLIST. A bare path would copy the
-  # directory wholesale, taking a developer's checked-out `node_modules` (no
-  # `.gitignore` filtering), which would shadow the pinned FOD tree. It is a
-  # denylist, not an allowlist, for the same reason the `nodeModules` src reads
-  # its member list from the manifest: `bun build` only errors on a
-  # statically-resolvable missing import, so an allowlist would silently drop a
-  # new JSON fixture or proto dir. The fileset lives in agent-source-files.nix so
-  # the image's stale-source fingerprint (source-fingerprint.nix) hashes exactly
-  # the files bundled here.
+  # A denylist (`bun build` only errors on a statically-resolvable missing
+  # import, so an allowlist would silently drop a new fixture). Shared with
+  # source-fingerprint.nix so the stale-image check hashes exactly these files.
   pkgSrc = lib.fileset.toSource {
     root = ../packages/compass-agent;
     fileset = import ./agent-source-files.nix { inherit lib; };

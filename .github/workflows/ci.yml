@@ -2416,6 +2416,9 @@ jobs:
           else
             podman pull ghcr.io/rigelbuild/compass-agent:latest
             podman tag ghcr.io/rigelbuild/compass-agent:latest compass-agent:latest
+            # Published :latest may lag this tree, so the e2e TestMain's source
+            # fingerprint check is skipped; a tree-built seed above is checked.
+            echo "COMPASS_E2E_ALLOW_PUBLISHED_AGENT_IMAGE=1" >>"$GITHUB_ENV"
           fi
 
       - name: e2e and compass-stack (deterministic full-stack tier)
