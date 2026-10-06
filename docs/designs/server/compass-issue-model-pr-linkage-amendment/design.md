@@ -10,7 +10,7 @@ Tracker: RIG-4034
 > reads its "first"/"last" against the new order. All other rules stand:
 > ingestion still never moves canonical `state`, `priority` or `assignee`.
 
-Ledger: this PR appends DL-409, DL-410 and DL-411 to `docs/designs/DECISIONS.md`. It supersedes no row.
+Ledger: this PR appends DL-410, DL-411 and DL-412 to `docs/designs/DECISIONS.md`. It supersedes no row.
 
 ## Problem / Intent
 
