@@ -64,6 +64,25 @@ describe("reduceLayout", () => {
 		expect(next.activeTabId).toBe(backlog?.id ?? "");
 	});
 
+	test("a fresh open skips the dedupe and opens a second tab on the same path", () => {
+		const layout = openAll(["/", "/backlog"]);
+		const onBridge = reduce(layout, {
+			kind: "focusTab",
+			tabId: layout.tabs[0]?.id ?? "",
+		});
+		const next = reduce(onBridge, { kind: "open", path: "/", fresh: true });
+		expect(tabPaths(next)).toEqual(["/", "/", "/backlog"]);
+		expect(next.activeTabId).toBe(next.tabs[1]?.id ?? "");
+	});
+
+	test("a fresh open at the tab cap is refused even when the path is open", () => {
+		const paths = Array.from({ length: MAX_TABS }, (_, i) => `/agent/a-${i}`);
+		const full = openAll(paths);
+		expect(
+			reduceLayout(full, { kind: "open", path: "/agent/a-0", fresh: true }),
+		).toEqual({ refused: "tab-cap" });
+	});
+
 	test("a new tab opens after the active one", () => {
 		const layout = openAll(["/", "/backlog"]);
 		const focused = reduce(layout, {

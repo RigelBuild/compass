@@ -175,6 +175,7 @@ export function createKeyboardSpine(deps: {
 	registerLayoutCommand("tab.new", "New tab", ["open", "bridge"], () => ({
 		kind: "open",
 		path: "/",
+		fresh: true,
 	}));
 	registerGlobal("tab.close", "Close tab", ["close", "current"], () => {
 		deps.closeTab(deps.layout().activeTabId);
