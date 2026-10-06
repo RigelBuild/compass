@@ -434,9 +434,14 @@ type Hub struct {
 	// bindingWriteMu serializes whole enrolls (map-clear through reap) with promotion
 	// writes and cache updates. Lock it before mu; never hold mu across a store call.
 	bindingWriteMu sync.Mutex
-	// lifecycleMu serializes lifecycle guards and their sink publication order.
+	// lifecycleMu guards lifecycleSeqs and sessionLocks. Held only for map access;
+	// a session's ordering is held by its own sessionLocks entry.
 	lifecycleMu sync.Mutex
-	mu          sync.Mutex
+	// sessionLocks serialize one session's lifecycle frames from seq record through
+	// publication, so a slow binding lookup stalls only that session. Refcounted and
+	// removed when idle. lifecycleMu-guarded.
+	sessionLocks map[string]*sessionLock
+	mu           sync.Mutex
 
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
@@ -458,7 +463,8 @@ type Hub struct {
 	lifecycleSeqs *lru.Cache[string, uint64]
 	// enrollMu fences session-frame delivery (read) against enroll (write), and
 	// guards enrollGen, which counts enrollments so a stream opened before a
-	// re-enroll cannot act on its sessions. Lock order: enrollMu, lifecycleMu, mu.
+	// re-enroll cannot act on its sessions. Lock order: enrollMu, bindingWriteMu, a
+	// session lock, lifecycleMu, mu.
 	enrollMu  sync.RWMutex
 	enrollGen uint64
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
@@ -525,6 +531,7 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
 		lifecycleSeqs:     newLifecycleSeqs(),
+		sessionLocks:      make(map[string]*sessionLock),
 		enrollGen:         1,
 		missingSeqs:       make(map[uint64]struct{}),
 		reapStale:         make(map[string]uint64),
@@ -706,11 +713,10 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	h.enrollMu.RLock()
 	defer h.enrollMu.RUnlock()
 	stale := h.staleEnrollmentLocked(ev)
-	// A lifecycle frame is admitted under lifecycleMu from before its seq is
-	// recorded, so a higher seq the hub has already seen is never overtaken.
+	// A lifecycle frame holds its session's lock from before its seq is recorded,
+	// so a higher seq the hub has already seen is never overtaken.
 	if !stale && sessionState(ev.Frame) != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
-		h.lifecycleMu.Lock()
-		defer h.lifecycleMu.Unlock()
+		defer h.lockSession(ev.SessionID)()
 	}
 	if !stale {
 		h.recordSeq(ev.RunnerSeq)
@@ -855,14 +861,19 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 		h.tail.RelaySessionFrame(sessionID, sf)
 		return
 	}
-	// Deliver holds lifecycleMu for a lifecycle frame.
-	if last, seen := h.lifecycleSeqs.Get(sessionID); seen && seq <= last {
+	// Deliver holds the session's lock for a lifecycle frame.
+	h.lifecycleMu.Lock()
+	last, seen := h.lifecycleSeqs.Get(sessionID)
+	if !seen || seq > last {
+		h.lifecycleSeqs.Add(sessionID, seq)
+	}
+	h.lifecycleMu.Unlock()
+	if seen && seq <= last {
 		h.log.Debug("ignored lifecycle frame older than the session's latest",
 			slog.String("runner_id", runnerID), slog.String("session_id", sessionID),
 			slog.String("state", state.String()), slog.Uint64("runner_seq", seq), slog.Uint64("latest_seq", last))
 		return
 	}
-	h.lifecycleSeqs.Add(sessionID, seq)
 	h.tail.RelaySessionFrame(sessionID, sf)
 	// Resolve the session's agent account and stamp it onto the published status — the
 	// DL-167 attribution join. A status published after a Runner reconnect cleared the
@@ -1009,6 +1020,33 @@ func newLifecycleSeqs() *lru.Cache[string, uint64] {
 		panic(err) // only a non-positive size errors
 	}
 	return c
+}
+
+// sessionLock is one session's lifecycle mutex; refs counts holders and waiters.
+type sessionLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockSession locks sessionID's lifecycle mutex and returns its unlock.
+func (h *Hub) lockSession(sessionID string) func() {
+	h.lifecycleMu.Lock()
+	l := h.sessionLocks[sessionID]
+	if l == nil {
+		l = &sessionLock{}
+		h.sessionLocks[sessionID] = l
+	}
+	l.refs++
+	h.lifecycleMu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		h.lifecycleMu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(h.sessionLocks, sessionID)
+		}
+		h.lifecycleMu.Unlock()
+	}
 }
 
 // sessionState is a session frame's lifecycle state, UNSPECIFIED for any other frame.

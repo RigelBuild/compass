@@ -244,8 +244,7 @@ func TestLowerSeqCannotOvertakeHigherSeqMidDelivery(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("READY did not reach the binding lookup")
 	}
-	if hub.lifecycleMu.TryLock() {
-		hub.lifecycleMu.Unlock()
+	if !sessionLockHeld(hub, "sess-1") {
 		t.Fatal("lifecycle lock free while READY seq 6 is mid-delivery; seq 5 could overtake it")
 	}
 	erroredDone := make(chan error, 1)
@@ -283,6 +282,72 @@ func (b *pausingResolveBindingStore) ResolveSessionBinding(ctx context.Context, 
 		<-b.release
 	})
 	return b.fakeBindingStore.ResolveSessionBinding(ctx, sessionID)
+}
+
+// sessionLockHeld reports whether sessionID's lifecycle lock is held right now.
+func sessionLockHeld(hub *Hub, sessionID string) bool {
+	hub.lifecycleMu.Lock()
+	l := hub.sessionLocks[sessionID]
+	hub.lifecycleMu.Unlock()
+	if l == nil {
+		return false
+	}
+	if l.mu.TryLock() {
+		l.mu.Unlock()
+		return false
+	}
+	return true
+}
+
+func TestSlowBindingLookupStallsOnlyItsSession(t *testing.T) {
+	ctx := t.Context()
+	hub, lifecycle, _ := newHub()
+	store := &pausingResolveBindingStore{fakeBindingStore: newFakeBindingStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(store)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(store.release) }) }
+	t.Cleanup(release)
+	hub.bindContainer("cont-2", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-2", "sess-2")
+
+	slowDone := make(chan error, 1)
+	go func() {
+		slowDone <- hub.Deliver(ctx, RunnerEvent{
+			RunnerID: "runner-1", RunnerSeq: 1, SessionID: "sess-1",
+			Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
+		})
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("sess-1 did not reach the binding lookup")
+	}
+	fastDone := make(chan error, 1)
+	go func() {
+		fastDone <- hub.Deliver(ctx, RunnerEvent{
+			RunnerID: "runner-1", RunnerSeq: 2, SessionID: "sess-2",
+			Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
+		})
+	}()
+	select {
+	case err := <-fastDone:
+		if err != nil {
+			t.Fatalf("Deliver(sess-2) = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("sess-2 lifecycle delivery stalled behind sess-1's binding lookup")
+	}
+	assertPublished(t, lifecycle, compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	release()
+	select {
+	case err := <-slowDone:
+		if err != nil {
+			t.Fatalf("Deliver(sess-1) = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("sess-1 did not complete")
+	}
 }
 
 func TestReenrollClearsErroredBoundary(t *testing.T) {
@@ -467,8 +532,7 @@ func TestConcurrentErroredPublishesAfterInFlightLifecycle(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("WORKING lifecycle publish did not block")
 	}
-	if hub.lifecycleMu.TryLock() {
-		hub.lifecycleMu.Unlock()
+	if !sessionLockHeld(hub, "sess-1") {
 		t.Fatal("lifecycle lock released while WORKING is still being published")
 	}
 
