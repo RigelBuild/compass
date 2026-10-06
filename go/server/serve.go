@@ -1127,17 +1127,17 @@ func drainDoors(d drainSet) error {
 			drainErr = err
 		}
 	}
-	if drainErr != nil {
+	if errors.Is(drainErr, context.DeadlineExceeded) {
 		// Shutdown leaves overrunning handlers running; Close cancels their request
 		// contexts so they release pool connections before the store close waits on them.
 		for _, srv := range doors {
 			_ = srv.Close() // best-effort: the overrun is already the reported error
 		}
 	}
-	// Every door is drained, so no further frame can arrive: the hub's counters
-	// are final. Report them — this is the only non-test reader of the frame-loss
-	// accounting, and without it a run that committed none of the agent's
-	// conversation would end indistinguishably from one that committed all of it.
+	// After a clean drain no further frame can arrive, so the hub's counters are
+	// final; after an overrun they are a best-effort snapshot. This is the only
+	// non-test reader of the frame-loss accounting, so a run that committed none
+	// of the agent's conversation stays distinguishable from one that committed all.
 	logFrameDiagnostics(shutdownCtx, d.log, d.hub)
 	if drainErr != nil {
 		return fmt.Errorf("draining compass.v1 servers on shutdown: %w", drainErr)
