@@ -532,6 +532,12 @@ func (h *agentHost) Stop(ctx context.Context, sessionID string) error {
 	}
 	unlock := h.lockContainer(s.containerName)
 	defer unlock()
+	h.mu.Lock()
+	current, ok := h.sessions[sessionID]
+	h.mu.Unlock()
+	if !ok || current != s {
+		return errSessionUnknown
+	}
 
 	h.mu.Lock()
 	s, ok = h.sessions[sessionID]
