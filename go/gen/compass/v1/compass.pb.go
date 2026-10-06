@@ -3605,8 +3605,8 @@ type ProvisionAgentWorkspaceRequest struct {
 	// (supervisor/owner/manager) and server-validated, selecting the container's
 	// block-0 system prompt at provision so it survives compaction (a
 	// system-prompt config block is not part of the message history a snapcompact
-	// archives). The label's ORIGIN is spawner-selected: the spawn request
-	// carries a required label from the closed taxonomy, validated with the
+	// archives). The label's ORIGIN is the creator: SpawnPeer requires one and
+	// CreateAgent accepts one (empty there means none); both validate it with the
 	// server's IsSpawnableRole predicate (INVALID_ARGUMENT on an unknown label) before
 	// it is stored. This provision field stays SERVER-AUTHORITATIVE: the Server
 	// populates it by reading the stored AgentAccount.role (the provision source

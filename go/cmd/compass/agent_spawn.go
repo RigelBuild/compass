@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
@@ -154,7 +156,11 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 	return err
 }
 
+// personaReadSlack bounds the whitespace read past the persona cap.
+const personaReadSlack = 4096
+
 // readPersonaFile reads, caps, and trims --persona-file; an empty file is an error.
+
 func readPersonaFile(path string) (persona string, err error) {
 	file, err := os.Open(path) // #nosec G304 -- operator explicitly selects the persona file path.
 	if err != nil {
@@ -166,14 +172,22 @@ func readPersonaFile(path string) (persona string, err error) {
 		}
 	}()
 
-	contents, err := io.ReadAll(io.LimitReader(file, store.MaxPersonaBytes+1))
+	// The slack lets an at-cap persona carry editor whitespace; the cap applies after trimming.
+	contents, err := io.ReadAll(io.LimitReader(file, store.MaxPersonaBytes+personaReadSlack+1))
 	if err != nil {
 		return "", fmt.Errorf("reading persona file %q: %w", path, err)
 	}
-	if len(contents) > store.MaxPersonaBytes {
+	if !utf8.Valid(contents) {
+		return "", fmt.Errorf("persona file %q is not valid UTF-8", path)
+	}
+	// Postgres text cannot hold NUL, so reject it here rather than as a server error.
+	if bytes.IndexByte(contents, 0) >= 0 {
+		return "", fmt.Errorf("persona file %q contains a NUL byte", path)
+	}
+	persona = strings.TrimSpace(strings.TrimPrefix(string(contents), "\ufeff"))
+	if len(persona) > store.MaxPersonaBytes {
 		return "", fmt.Errorf("persona file %q exceeds the 64 KiB limit", path)
 	}
-	persona = strings.TrimSpace(string(contents))
 	if persona == "" {
 		return "", fmt.Errorf("persona file %q is empty", path)
 	}
