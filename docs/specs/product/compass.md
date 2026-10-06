@@ -599,9 +599,11 @@ group SHALL return invalid-argument, never pick one, and the error SHALL name
 the anchored or owner-qualified ref for each match. The human RPC SHALL take ids
 and reject the name fields.
 
-A group name SHALL be unique among its siblings within one user's namespace. An
-agent's groups belong to its owning user's namespace, so a user and that user's
-agents cannot create same-named siblings.
+A top-level group name SHALL be unique within one user's namespace. An agent's
+groups belong to its owning user's namespace, so a user and that user's agents
+cannot create same-named top-level groups. A nested group name SHALL be unique
+under its parent, whoever creates it: a shared group has no per-user
+namespaces, so a second child of the same name is a conflict.
 
 #### Scenario: An ambiguous leaf name is rejected
 
@@ -628,6 +630,13 @@ agents cannot create same-named siblings.
 - **When** an agent tool names `/infra`
 - **Then** the call resolves to the top-level group, and `eng/infra` resolves to
   the nested one
+
+#### Scenario: A shared group holds one child of each name
+
+- **Given** a shared group `pub` with a child `infra` made by one user
+- **When** another user creates `infra` under `pub`
+- **Then** the call returns a conflict, and `pub/infra` resolves to the one
+  child for both users
 
 ### Requirement: The `SubscribeComms` fan-out is visibility-scoped
 

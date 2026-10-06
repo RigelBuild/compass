@@ -173,9 +173,9 @@ func TestChannelGroupInsertWithoutNamespaceIsFilled(t *testing.T) {
 	}
 }
 
-// TestChannelGroupByRefForViewerNestedCrossNamespaceStaysAmbiguous pins today's
-// behavior: the same nested path in two namespaces is never auto-picked.
-func TestChannelGroupByRefForViewerNestedCrossNamespaceStaysAmbiguous(t *testing.T) {
+// TestCreateChannelGroupNestedNameUniquePerParent: a group shared by a whole
+// tenant has no per-user namespaces, so a child name exists once under it.
+func TestCreateChannelGroupNestedNameUniquePerParent(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 	alice := mustUser(t, s, "alice")
@@ -184,16 +184,16 @@ func TestChannelGroupByRefForViewerNestedCrossNamespaceStaysAmbiguous(t *testing
 	if err != nil {
 		t.Fatalf("CreateChannelGroup(pub): %v", err)
 	}
-	for _, by := range []AccountID{alice.ID, bob.ID} {
-		if _, err := s.CreateChannelGroup(ctx, by, NewChannelGroup{Name: "infra", ParentGroupID: pub.ID, Visibility: VisibilityShared}); err != nil {
-			t.Fatalf("CreateChannelGroup(pub/infra by %s): %v", by, err)
-		}
+	infra, err := s.CreateChannelGroup(ctx, alice.ID, NewChannelGroup{Name: "infra", ParentGroupID: pub.ID, Visibility: VisibilityShared})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(pub/infra by alice): %v", err)
 	}
-	for _, ref := range []string{"pub/infra", "/pub/infra", "/~alice/pub/infra"} {
-		got, err := s.ChannelGroupByRefForViewer(ctx, alice.ID, ref)
-		sentinelIs(t, err, ErrInvalidArgument, "nested cross-namespace "+ref)
-		if got.ID != "" {
-			t.Fatalf("ChannelGroupByRefForViewer(%q) picked %q", ref, got.ID)
+	_, err = s.CreateChannelGroup(ctx, bob.ID, NewChannelGroup{Name: "infra", ParentGroupID: pub.ID, Visibility: VisibilityShared})
+	sentinelIs(t, err, ErrConflict, "second pub/infra from another namespace")
+	for _, viewer := range []AccountID{alice.ID, bob.ID} {
+		got, err := s.ChannelGroupByRefForViewer(ctx, viewer, "pub/infra")
+		if err != nil || got.ID != infra.ID {
+			t.Fatalf("ChannelGroupByRefForViewer(%s, pub/infra) = %q, %v; want %q", viewer, got.ID, err, infra.ID)
 		}
 	}
 }

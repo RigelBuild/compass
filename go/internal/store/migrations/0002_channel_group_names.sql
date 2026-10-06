@@ -1,7 +1,7 @@
 -- Agent tools read '/' as a path separator and address a group by sibling name,
--- so a name holds no '/' and is unique among one namespace's siblings. An
--- agent's groups live in its owner's namespace. Owner ids are global, so the key
--- is namespace/parent/name; tenant_id is not part of it.
+-- so a name holds no '/'. A top-level name is unique per namespace (an agent's
+-- groups live in its owner's); a nested name is unique per parent, whoever made
+-- it. Owner ids are global, so tenant_id is not part of the key.
 
 -- Fail fast rather than queue every channel read behind a long transaction.
 SET LOCAL lock_timeout = '5s';
@@ -37,17 +37,19 @@ BEGIN
     SELECT coalesce(array_agg(id), '{}') INTO rewritten_ids FROM rewritten;
 
     FOR duplicate IN
-        SELECT id, namespace_owner_id, parent_group_id, name, duplicate_number
+        SELECT id, name_scope, parent_group_id, name, duplicate_number
         FROM (
-            SELECT id, namespace_owner_id, parent_group_id, name,
+            SELECT id, parent_group_id, name,
+                   CASE WHEN parent_group_id IS NULL THEN namespace_owner_id ELSE '' END AS name_scope,
                    row_number() OVER (
-                       PARTITION BY namespace_owner_id, coalesce(parent_group_id, ''), name
+                       PARTITION BY CASE WHEN parent_group_id IS NULL THEN namespace_owner_id ELSE '' END,
+                                    coalesce(parent_group_id, ''), name
                        ORDER BY id = ANY (rewritten_ids), id
                    ) AS duplicate_number
             FROM channel_groups
         ) AS ranked
         WHERE duplicate_number > 1
-        ORDER BY namespace_owner_id, coalesce(parent_group_id, ''), name, duplicate_number
+        ORDER BY name_scope, coalesce(parent_group_id, ''), name, duplicate_number
     LOOP
         IF duplicate.parent_group_id IS NULL
            AND duplicate.name IN ('__dm__', '__linear__', '__coordination__') THEN
@@ -59,8 +61,9 @@ BEGIN
             EXIT WHEN NOT EXISTS (
                 SELECT 1
                 FROM channel_groups AS sibling
-                WHERE sibling.namespace_owner_id = duplicate.namespace_owner_id
-                  AND coalesce(sibling.parent_group_id, '') = coalesce(duplicate.parent_group_id, '')
+                WHERE coalesce(sibling.parent_group_id, '') = coalesce(duplicate.parent_group_id, '')
+                  AND (duplicate.parent_group_id IS NOT NULL
+                       OR sibling.namespace_owner_id = duplicate.name_scope)
                   AND sibling.name = candidate
                   AND sibling.id <> duplicate.id
             );
@@ -78,7 +81,8 @@ ALTER TABLE channel_groups ALTER COLUMN namespace_owner_id DROP DEFAULT;
 -- Top-level reserved names stay exempt: a planted wider look-alike must not
 -- block the system's own owner-visible group.
 CREATE UNIQUE INDEX channel_groups_owner_parent_name_key
-    ON channel_groups (namespace_owner_id, coalesce(parent_group_id, ''), name)
+    ON channel_groups ((CASE WHEN parent_group_id IS NULL THEN namespace_owner_id ELSE '' END),
+                       coalesce(parent_group_id, ''), name)
     WHERE NOT (parent_group_id IS NULL AND name IN ('__dm__', '__linear__', '__coordination__'));
 
 -- The repair above leaves no '/' behind. This takes ACCESS EXCLUSIVE until the

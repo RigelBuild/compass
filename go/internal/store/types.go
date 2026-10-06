@@ -220,7 +220,7 @@ type ChannelGroup struct {
 	// group. Server-set to the creating caller.
 	OwnerUserID AccountID
 	// NamespaceOwnerID is the user whose namespace holds the group: the creator,
-	// or an agent creator's owner. Sibling names are unique within it.
+	// or an agent creator's owner. Top-level names are unique within it.
 	NamespaceOwnerID AccountID
 	Visibility       ChannelGroupVisibility
 }

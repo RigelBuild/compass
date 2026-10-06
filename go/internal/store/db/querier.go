@@ -278,7 +278,7 @@ type Querier interface {
 	// groupVisiblePredicate). The copies MUST stay textually identical so the stream
 	// edge's single-id visibility check cannot drift from the list read (the
 	// anti-drift guarantee the design record requires).
-	// An agent's group lives in its owner's namespace, so sibling names are unique per user.
+	// An agent's group lives in its owner's namespace, which keys top-level names.
 	InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) (string, error)
 	InsertChannelPin(ctx context.Context, arg InsertChannelPinParams) error
 	InsertCoordinationChannel(ctx context.Context, arg InsertCoordinationChannelParams) (string, error)

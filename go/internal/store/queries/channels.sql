@@ -12,7 +12,7 @@
 -- anti-drift guarantee the design record requires).
 
 -- name: InsertChannelGroup :one
--- An agent's group lives in its owner's namespace, so sibling names are unique per user.
+-- An agent's group lives in its owner's namespace, which keys top-level names.
 INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, namespace_owner_id)
 VALUES ($1, $2, NULLIF($3, ''), $4, $5,
         COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $4), $4))

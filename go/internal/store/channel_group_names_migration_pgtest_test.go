@@ -85,7 +85,10 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 			('group-p', 'team', 'owner-k', 'boot', NULL),
 			('group-q', 'team', 'agent-k1', 'boot', NULL),
 			('group-r', 'svc', 'agent-k1', 'boot', 'group-p'),
-			('group-s', 'svc', 'agent-k2', 'boot', 'group-p')`); err != nil {
+			('group-s', 'svc', 'agent-k2', 'boot', 'group-p'),
+			('group-t', 'pub', 'owner-g', 'boot', NULL),
+			('group-u', 'infra', 'owner-g', 'boot', 'group-t'),
+			('group-v', 'infra', 'owner-h', 'boot', 'group-t')`); err != nil {
 		t.Fatalf("seed pre-migration groups: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -117,6 +120,8 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 		"group-q": "team-2",        // an agent's group shares its owner's namespace
 		"group-r": "svc",           // two agents of one owner share a namespace
 		"group-s": "svc-2",         // two agents of one owner share a namespace
+		"group-u": "infra",         // nested names are unique per parent
+		"group-v": "infra-2",       // nested names are unique per parent, across namespaces
 	}
 	for id, name := range want {
 		if got[id] != name {
