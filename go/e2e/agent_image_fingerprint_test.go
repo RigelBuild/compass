@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -125,5 +126,25 @@ func TestAgentImageGateHonorsOnlyThePublishedOptOut(t *testing.T) {
 	optOut := env(map[string]string{"COMPASS_E2E_ALLOW_PUBLISHED_AGENT_IMAGE": "1"})
 	if err := agentImageGate(optOut, dir, func() string { read = true; return "0000" }); err != nil || read {
 		t.Fatalf("published opt-out: err = %v, stamp read = %v; want nil and no read", err, read)
+	}
+}
+
+// No real package has these, and lib.fileset would hash them oddly (a directory
+// symlink as empty content); the Go walk errors so a mismatch is loud, not silent.
+func TestAgentSourceFingerprintRejectsNonFileEntries(t *testing.T) {
+	dirLink := writeTree(t, map[string]string{"src/a.ts": "body\n"})
+	if err := os.Symlink("src", filepath.Join(dirLink, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agentSourceFingerprint(dirLink); err == nil {
+		t.Fatal("symlink to a directory: err = nil, want an error")
+	}
+
+	fifo := writeTree(t, map[string]string{"src/a.ts": "body\n"})
+	if err := syscall.Mkfifo(filepath.Join(fifo, "src", "pipe"), 0o600); err != nil {
+		t.Skipf("mkfifo unsupported here: %v", err)
+	}
+	if _, err := agentSourceFingerprint(fifo); err == nil {
+		t.Fatal("FIFO: err = nil, want an error")
 	}
 }
