@@ -1096,6 +1096,10 @@ type drainSet struct {
 	log      *slog.Logger
 }
 
+// drainTimeout bounds the graceful drain of every door. A package var rather
+// than a const only so a test can shorten it; never reassigned in production.
+var drainTimeout = 5 * time.Second
+
 // drainDoors ends the live streams, drains every configured door under one
 // bounded deadline, and reports the hub's final frame accounting. It is split
 // out of Serve so the shutdown sequence reads as one unit: the ordering here is
@@ -1109,15 +1113,25 @@ func drainDoors(d drainSet) error {
 	d.commsBus.Close()
 	// Fresh ctx is deliberate: the parent is already cancelled (that woke this
 	// drain), so the bounded drain needs a live ctx, not the dead inherited one.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
-	drainErr := d.uds.Shutdown(shutdownCtx)
+	doors := []*http.Server{d.uds}
 	for _, srv := range []*http.Server{d.dev, d.net} {
-		if srv == nil {
-			continue
+		if srv != nil {
+			doors = append(doors, srv)
 		}
+	}
+	var drainErr error
+	for _, srv := range doors {
 		if err := srv.Shutdown(shutdownCtx); err != nil && drainErr == nil {
 			drainErr = err
+		}
+	}
+	if drainErr != nil {
+		// Shutdown leaves overrunning handlers running; Close cancels their request
+		// contexts so they release pool connections before the store close waits on them.
+		for _, srv := range doors {
+			_ = srv.Close() // best-effort: the overrun is already the reported error
 		}
 	}
 	// Every door is drained, so no further frame can arrive: the hub's counters
