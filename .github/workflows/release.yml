@@ -657,8 +657,12 @@ jobs:
           fi
 
           # Runs reach this job in arch-build finish order, not commit order. If a
-          # newer main commit already has its :git index, a newer run has moved
-          # :latest, so this older run must leave it alone.
+          # newer main commit already has its :git index, that run owns :latest,
+          # so this older run only checks it. A sha no longer on main never moves it.
+          if ! git merge-base --is-ancestor "$GH_SHA" origin/main; then
+            echo "::error::$GH_SHA is not on origin/main (rewritten?); refusing to move :latest" >&2
+            exit 1
+          fi
           newer_index=""
           newer_commits="$(git rev-list --first-parent "$GH_SHA..origin/main")"
           while IFS= read -r commit; do
@@ -679,7 +683,7 @@ jobs:
             podman manifest push --format oci --authfile "$REGISTRY_AUTH_FILE" \
               "$local_list" "$ref:latest"
           else
-            echo "::warning::newer :git-$newer_index is published; leaving :latest unmoved"
+            echo "::warning::newer :git-$newer_index is published; leaving :latest to it"
           fi
           git_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12")"
           git_digest="$(printf '%s' "$git_raw" | sha256sum | cut -d' ' -f1)"
@@ -724,17 +728,22 @@ jobs:
           done < <(jq -r '.manifests[] | [.digest, .platform.os, .platform.architecture] | @tsv' \
             "$RUNNER_TEMP/published-index.json")
 
+          # :latest must name the newest published index: ours, or the newer one
+          # found above. A newer run that failed before :latest reds this run.
+          expected_tag="git-$sha12"
+          expected_digest="$git_digest"
           if [ -n "$newer_index" ]; then
-            echo "verified OCI index $git_digest: linux/amd64,linux/arm64; :latest left to newer :git-$newer_index"
-            exit 0
+            expected_tag="git-$newer_index"
+            expected_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" \
+              "$ref:$expected_tag" | sha256sum | cut -d' ' -f1)"
           fi
           latest_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:latest")"
           latest_digest="sha256:$(printf '%s' "$latest_raw" | sha256sum | cut -d' ' -f1)"
-          if [ "$latest_digest" != "$git_digest" ]; then
-            echo "::error::latest index differs from immutable tag: :git-$sha12=$git_digest :latest=$latest_digest" >&2
+          if [ "$latest_digest" != "$expected_digest" ]; then
+            echo "::error::latest index differs from newest immutable tag: :$expected_tag=$expected_digest :latest=$latest_digest" >&2
             exit 1
           fi
-          echo "verified OCI index $git_digest: linux/amd64,linux/arm64; :latest coherent"
+          echo "verified OCI index $git_digest: linux/amd64,linux/arm64; :latest matches :$expected_tag"
 
   release-assets-macos:
     name: release-assets-macos
