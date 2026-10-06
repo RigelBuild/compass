@@ -2193,8 +2193,8 @@ func (x *TopicUpserted) GetTopic() *Topic {
 	return nil
 }
 
-// A channel was created, or its membership, policy, or tree placement
-// changed. A subscriber the change cut off from the channel still receives this
+// A channel was created, or its membership, policy, pinned board, or tree
+// placement changed. A subscriber the change cut off still receives this
 // one final event, with its own id in removed_account_ids. A departed account's
 // copy carries only channel.id, never the post-change roster.
 type ChannelChanged struct {
