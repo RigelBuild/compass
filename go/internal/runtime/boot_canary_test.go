@@ -710,3 +710,25 @@ func TestCanaryNameReserved(t *testing.T) {
 		t.Errorf("two canary names collided: %q", name)
 	}
 }
+
+// TestBootCanaryParentCancelStillTearsDown: a caller cancel mid-boot (the
+// runner's interrupt) must still run the teardown, so the VM is shut down and
+// neither the throwaway workspace nor the session entry survives.
+func TestBootCanaryParentCancelStillTearsDown(t *testing.T) {
+	m, rec, _ := seamCanary(t, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	rec.onLaunch = cancel
+
+	_, _ = m.BootCanary(ctx) // the cancel may or may not surface; teardown is the contract
+	if ctx.Err() == nil {
+		t.Fatal("onLaunch never cancelled the parent, so this proves nothing")
+	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down after the parent was cancelled")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after a cancelled BootCanary, want 0", n)
+	}
+	assertWorkspaceRemoved(t, rec)
+}

@@ -5,8 +5,12 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -311,4 +315,63 @@ func TestVerifyBackendPreflightAppleContainer(t *testing.T) {
 			t.Errorf("apple-container backend %T does not satisfy appleContainerPreflighter", engine)
 		}
 	})
+}
+
+// blockingCanaryEngine is a microVM engine whose canary parks until its ctx
+// ends, standing in for a hung canary boot.
+type blockingCanaryEngine struct {
+	runtime.WorkloadRuntime
+	entered chan struct{}
+	ended   chan error
+	report  runtime.CanaryReport
+}
+
+func (blockingCanaryEngine) VerifyMicroVMSupport(context.Context) error { return nil }
+
+func (e blockingCanaryEngine) BootCanary(ctx context.Context) (runtime.CanaryReport, error) {
+	close(e.entered)
+	select {
+	case <-ctx.Done():
+		e.ended <- ctx.Err()
+		return e.report, ctx.Err()
+	case <-time.After(preflightSignalTimeout):
+		e.ended <- nil
+		return e.report, errors.New("canary ctx never cancelled")
+	}
+}
+
+// preflightSignalTimeout bounds each wait in the interrupt test; never reached
+// when the signal ctx reaches the canary.
+const preflightSignalTimeout = 15 * time.Second
+
+// An interrupt during the boot canary must cancel the canary's ctx, not kill
+// the process by default disposition.
+func TestPreflightUnderSignalsInterruptCancelsCanary(t *testing.T) {
+	// Keep SIGINT caught even if the ctx regresses, so the test fails on its
+	// assertion instead of the runtime killing the test binary.
+	caught := make(chan os.Signal, 1)
+	signal.Notify(caught, syscall.SIGINT)
+	t.Cleanup(func() { signal.Stop(caught) })
+
+	engine := blockingCanaryEngine{entered: make(chan struct{}), ended: make(chan error, 1)}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := preflightUnderSignals(t.Context(), engine)
+		done <- err
+	}()
+
+	select {
+	case <-engine.entered:
+	case <-time.After(preflightSignalTimeout):
+		t.Fatal("boot canary never started")
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("sending SIGINT: %v", err)
+	}
+	if err := <-engine.ended; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canary ctx ended with %v, want context.Canceled from the interrupt", err)
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("preflightUnderSignals = %v, want the canary's context.Canceled", err)
+	}
 }

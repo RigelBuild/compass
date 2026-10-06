@@ -90,17 +90,19 @@ func run() error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	log := slog.Default()
 
-	// The SELECTED engine's static host-capability preflight runs ahead of every
-	// operator-input check: a refusal about a host fact must precede telling an
-	// operator to fix a token, or they fix it, re-run, and only then learn the
-	// engine can never launch. Select the engine first, then gate on its preflight.
+	// The SELECTED engine's host-capability preflight (static check + boot canary)
+	// runs ahead of every operator-input check: a refusal about a host fact must
+	// precede telling an operator to fix a token, or they fix it, re-run, and only
+	// then learn the engine can never launch. Select the engine, then gate on it.
 	engine, err := backends.selectEngine()
 	if err != nil {
 		return err
 	}
-	if err := verifyBackendPreflight(context.Background(), engine); err != nil {
+	ctx, stop, err := preflightUnderSignals(context.Background(), engine)
+	if err != nil {
 		return err
 	}
+	defer stop()
 
 	id := orEnv(*runnerID, "COMPASS_RUNNER_ID")
 	if id == "" {
@@ -142,9 +144,6 @@ func run() error {
 
 	slog.Info("compass-runner starting",
 		"version", version, "runner_id", id, "server", addr)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// OTel emission (env-only, bounded flush on drain); see setupOtel.
 	otelShutdown, err := setupOtel(ctx)
@@ -240,6 +239,19 @@ func verifyBackendPreflight(ctx context.Context, engine runtime.WorkloadRuntime)
 	default:
 		return fmt.Errorf("backend %T exposes no startup preflight probe", engine)
 	}
+}
+
+// preflightUnderSignals installs the interrupt/SIGTERM ctx and runs the engine
+// preflight under it, so an interrupt mid-canary cancels the boot and its deferred
+// teardown removes the canary dirs. That interrupt exits non-zero with the
+// cancel; a second signal during teardown is swallowed (SIGKILL aborts it).
+func preflightUnderSignals(parent context.Context, engine runtime.WorkloadRuntime) (context.Context, context.CancelFunc, error) {
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	if err := verifyBackendPreflight(ctx, engine); err != nil {
+		stop()
+		return nil, nil, err
+	}
+	return ctx, stop, nil
 }
 
 // runMicroVMPreflight runs the microVM backend's two-stage startup gate: the
