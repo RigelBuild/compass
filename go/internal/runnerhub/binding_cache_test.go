@@ -127,10 +127,18 @@ func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.
 	return "", "", store.ErrNotFound
 }
 
-func (f *fakeBindingStore) DeleteSessionBinding(_ context.Context, sessionID, version string) (bool, error) {
+func (f *fakeBindingStore) DeleteSessionBinding(_ context.Context, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.bindings[sessionID]; !ok || (version != "" && f.versions[sessionID] != version) {
+	delete(f.bindings, sessionID)
+	delete(f.versions, sessionID)
+	return nil
+}
+
+func (f *fakeBindingStore) DeleteSessionBindingVersion(_ context.Context, sessionID, version string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.bindings[sessionID]; !ok || f.versions[sessionID] != version {
 		return false, nil
 	}
 	delete(f.bindings, sessionID)

@@ -225,8 +225,10 @@ type SessionBindingStore interface {
 	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID string, err error)
 	// DeleteSessionBinding releases one session's binding — the unbind write.
 	// Idempotent: releasing an already-released session is a no-op success.
-	// A non-empty version releases only that row; removed reports a deletion.
-	DeleteSessionBinding(ctx context.Context, sessionID, version string) (removed bool, err error)
+	DeleteSessionBinding(ctx context.Context, sessionID string) error
+	// DeleteSessionBindingVersion releases sessionID only while its row is still
+	// the write that returned version; removed reports whether it was.
+	DeleteSessionBindingVersion(ctx context.Context, sessionID, version string) (removed bool, err error)
 	// DeleteSessionBindingsForRunner is the enroll sweep: it releases every
 	// binding attached to runnerID and RETURNS the rows it removed, driving the
 	// enroll reap (offline edges + held-deliver reap) from durable truth
@@ -510,8 +512,8 @@ type attachedRunner struct {
 
 // sessionBinding is one live session's principal and the Runner that owns it.
 // version and lifetime name one binding of the session id, so a release from an
-// older lifetime can skip a re-bind: version is the durable row ("" when none was
-// written), lifetime is the cache entry, unique per insert and never zero.
+// older lifetime can skip a re-bind: version is the durable write ("" when none
+// was made), lifetime is the cache entry, unique per insert and never zero.
 type sessionBinding struct {
 	account  store.AccountID
 	runnerID string

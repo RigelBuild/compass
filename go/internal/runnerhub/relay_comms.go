@@ -204,11 +204,15 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 
 	tenant := ""
 	if bindings != nil {
-		version := ""
+		// A limited release deletes only its own write, matching even "": a
+		// version-less cache entry must not remove a row someone else wrote.
+		removed := true
+		var err error
 		if only != nil {
-			version = only.version
+			removed, err = bindings.DeleteSessionBindingVersion(ctx, sessionID, only.version)
+		} else {
+			err = bindings.DeleteSessionBinding(ctx, sessionID)
 		}
-		removed, err := bindings.DeleteSessionBinding(ctx, sessionID, version)
 		switch {
 		case err != nil:
 			// A durable-delete fault must not fail the Stop that already
@@ -216,7 +220,7 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 			// next re-enroll sweep retires any surviving row.
 			h.log.Error("delete session binding failed; evicting cache anyway",
 				"session_id", sessionID, "error", err)
-		case only != nil && version != "" && !removed:
+		case !removed && only.version != "":
 			// The row was re-bound since only was read: it is not ours to release.
 			return false
 		default:

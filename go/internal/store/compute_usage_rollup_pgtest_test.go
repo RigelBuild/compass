@@ -92,11 +92,11 @@ func TestComputeUsageRollupsFromDeleteSessionBinding(t *testing.T) {
 	mustBind(t, ctx, s, "rollup-delete", agent.ID, "rollup-runner")
 	advanceComputeHorizonPastOpenIntervals(t, s)
 
-	if _, err := s.DeleteSessionBinding(ctx, "rollup-delete", ""); err != nil {
+	if err := s.DeleteSessionBinding(ctx, "rollup-delete"); err != nil {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
 	wantRollupsMatchEvents(t, s, tenant, agent.ID, 1)
-	if _, err := s.DeleteSessionBinding(ctx, "rollup-delete", ""); err != nil {
+	if err := s.DeleteSessionBinding(ctx, "rollup-delete"); err != nil {
 		t.Fatalf("second DeleteSessionBinding: %v", err)
 	}
 	wantRollupsMatchEvents(t, s, tenant, agent.ID, 1)

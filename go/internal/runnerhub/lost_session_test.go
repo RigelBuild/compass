@@ -356,7 +356,40 @@ func TestErroredCleanupKeepsPeerRebind(t *testing.T) {
 	}
 }
 
-// pausingDeleteBindingStore holds the first DeleteSessionBinding until released.
+func TestErroredCleanupWithoutDurableWriteKeepsPeerRow(t *testing.T) {
+	ctx := t.Context()
+	hub, _, _ := newHub()
+	bindings := newFakeBindingStore()
+	bindings.recordErr = errors.New("store down")
+	hub.SetSessionBindingStore(bindings)
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	// The durable write fails, so this hub caches a binding with no version.
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	gen := hub.EnrollGeneration()
+	hub.mu.Lock()
+	old := hub.sessionAccounts["sess-1"]
+	hub.mu.Unlock()
+	if old.version != "" {
+		t.Fatalf("cached version after failed write = %q, want empty", old.version)
+	}
+	// A peer Server then writes the session's row.
+	bindings.mu.Lock()
+	bindings.recordErr = nil
+	bindings.mu.Unlock()
+	if _, _, err := bindings.RecordSessionBinding(ctx, "sess-1", testAgentAccount, "runner-1"); err != nil {
+		t.Fatalf("peer RecordSessionBinding: %v", err)
+	}
+
+	hub.dropLostSessionIfCurrent(ctx, gen, "runner-1", "sess-1", &old, true)
+	if _, _, _, err := bindings.ResolveSessionBinding(ctx, "sess-1"); err != nil {
+		t.Fatalf("peer's durable binding after old cleanup: %v, want it kept", err)
+	}
+}
+
+// pausingDeleteBindingStore holds the first DeleteSessionBindingVersion until released.
 type pausingDeleteBindingStore struct {
 	*fakeBindingStore
 	once    sync.Once
@@ -364,12 +397,12 @@ type pausingDeleteBindingStore struct {
 	release chan struct{}
 }
 
-func (b *pausingDeleteBindingStore) DeleteSessionBinding(ctx context.Context, sessionID, version string) (bool, error) {
+func (b *pausingDeleteBindingStore) DeleteSessionBindingVersion(ctx context.Context, sessionID, version string) (bool, error) {
 	b.once.Do(func() {
 		close(b.entered)
 		<-b.release
 	})
-	return b.fakeBindingStore.DeleteSessionBinding(ctx, sessionID, version)
+	return b.fakeBindingStore.DeleteSessionBindingVersion(ctx, sessionID, version)
 }
 
 func TestLostSessionCleanupFromOldEnrollmentKeepsRebinding(t *testing.T) {

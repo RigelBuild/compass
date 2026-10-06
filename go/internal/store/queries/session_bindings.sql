@@ -114,33 +114,59 @@ ON CONFLICT (tenant_id, interval_id, kind) DO NOTHING;
 
 -- What it DISPLACED comes from SessionBindingForUpdate above, not from a
 -- RETURNING here. The binding update and event writes share the Store tx.
--- xmin is the row version: every upsert writes a new tuple, so a re-bind of the
--- same session id still gets a new version a stale release can be fenced by.
--- name: RecordSessionBinding :one
-INSERT INTO session_bindings (agent_account_id, session_id, runner_id, usage_interval_id)
-VALUES ($1, $2, $3, $4)
+-- name: RecordSessionBinding :exec
+INSERT INTO session_bindings (agent_account_id, session_id, runner_id, usage_interval_id, binding_version)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
     SET session_id = EXCLUDED.session_id,
         runner_id = EXCLUDED.runner_id,
-        usage_interval_id = EXCLUDED.usage_interval_id
-RETURNING xmin::text AS version;
+        usage_interval_id = EXCLUDED.usage_interval_id,
+        binding_version = EXCLUDED.binding_version;
 
 -- name: SessionBinding :one
-SELECT agent_account_id, runner_id, xmin::text AS version FROM session_bindings WHERE session_id = $1;
+SELECT agent_account_id, runner_id, binding_version FROM session_bindings WHERE session_id = $1;
 
 -- name: SessionBindingForAccount :one
 SELECT session_id, runner_id FROM session_bindings WHERE agent_account_id = $1;
 
 -- Both deletes also write an estimated start for a binding an older server made
 -- without one; ON CONFLICT keeps any real start.
--- An empty version releases whatever row binds the session; a non-empty one
--- releases only that version, so a stale release cannot remove a re-bind.
--- Returns the rows removed. Postgres runs every data-modifying CTE to completion.
--- name: DeleteSessionBinding :one
+-- name: DeleteSessionBinding :exec
 WITH d AS (
     DELETE FROM session_bindings AS b
-     WHERE b.session_id = sqlc.arg(session_id)
-       AND (sqlc.arg(version)::text = '' OR b.xmin::text = sqlc.arg(version)::text)
+     WHERE b.session_id = $1
+    RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
+              b.session_id, b.runner_id, b.created_at
+), starts AS (
+    INSERT INTO compute_usage_events (
+        tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+        owner_user_id, session_id, runner_id, estimated
+    )
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'start', d.created_at,
+           d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id, TRUE
+      FROM d
+      JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+    ON CONFLICT DO NOTHING
+    RETURNING 1
+)
+INSERT INTO compute_usage_events (
+    tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+    owner_user_id, session_id, runner_id
+)
+SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', clock_timestamp(),
+       d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
+  FROM d
+  JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+ ORDER BY d.tenant_id, d.usage_interval_id
+ON CONFLICT DO NOTHING;
+
+-- DeleteSessionBinding limited to one write of the row: a re-bind since that
+-- write set a new binding_version, so it is left alone. Returns rows removed;
+-- Postgres runs every data-modifying CTE to completion.
+-- name: DeleteSessionBindingVersion :one
+WITH d AS (
+    DELETE FROM session_bindings AS b
+     WHERE b.session_id = $1 AND b.binding_version = $2
     RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
               b.session_id, b.runner_id, b.created_at
 ), starts AS (

@@ -170,13 +170,14 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 		}
 	}
 
-	version, err = qtx.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
+	version = uuid.NewString()
+	if err := qtx.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
 		SessionID:       sessionID,
 		AgentAccountID:  string(accountID),
 		RunnerID:        runnerID,
 		UsageIntervalID: intervalID,
-	})
-	if err != nil {
+		BindingVersion:  version,
+	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return "", "", fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, accountID)
 		}
@@ -209,7 +210,7 @@ func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (ac
 		}
 		return "", "", "", fmt.Errorf("store: resolve session binding: %w", err)
 	}
-	return AccountID(row.AgentAccountID), row.RunnerID, row.Version, nil
+	return AccountID(row.AgentAccountID), row.RunnerID, row.BindingVersion, nil
 }
 
 // SessionForAccount resolves the live session bound to an agent account — the
@@ -254,17 +255,26 @@ func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (str
 // call on a session RecordSessionBinding has already displaced: the row now
 // names the newer session, so the stale release matches nothing and leaves the
 // live binding alone.
-//
-// A non-empty version releases only that row version, as returned by Record or
-// Resolve: a stale release cannot remove a re-bind of the same session id.
-// removed reports whether a row was deleted.
-func (s *Store) DeleteSessionBinding(ctx context.Context, sessionID, version string) (removed bool, err error) {
+func (s *Store) DeleteSessionBinding(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	if err := s.q.DeleteSessionBinding(ctx, sessionID); err != nil {
+		return fmt.Errorf("store: delete session binding: %w", err)
+	}
+	return nil
+}
+
+// DeleteSessionBindingVersion is DeleteSessionBinding limited to the write that
+// returned version (from Record or Resolve): a re-bind of the same session id
+// since then has a new version and stays. removed reports whether a row went.
+func (s *Store) DeleteSessionBindingVersion(ctx context.Context, sessionID, version string) (removed bool, err error) {
 	if sessionID == "" {
 		return false, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	n, err := s.q.DeleteSessionBinding(ctx, db.DeleteSessionBindingParams{SessionID: sessionID, Version: version})
+	n, err := s.q.DeleteSessionBindingVersion(ctx, db.DeleteSessionBindingVersionParams{SessionID: sessionID, BindingVersion: version})
 	if err != nil {
-		return false, fmt.Errorf("store: delete session binding: %w", err)
+		return false, fmt.Errorf("store: delete session binding version: %w", err)
 	}
 	return n > 0, nil
 }
