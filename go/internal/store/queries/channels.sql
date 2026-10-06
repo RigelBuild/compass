@@ -30,6 +30,9 @@ INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, m
 VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9);
 
 -- name: ChannelParticipant :one
+-- Explicit member row, or (TREE only) the actor is in the anchor's subtree or
+-- owns the anchor. UNION, not UNION ALL: agent parent rows are not guaranteed
+-- acyclic, and deduplication is what stops the walk on a cycle.
 WITH RECURSIVE chain AS (
     SELECT aa.account_id, aa.parent_agent_id
     FROM agent_accounts aa

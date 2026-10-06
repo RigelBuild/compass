@@ -116,6 +116,10 @@ func validateNewChannel(c NewChannel) error {
 	if c.GroupID != "" && c.ParentAgentID != "" {
 		return fmt.Errorf("%w: channel cannot have both group and agent parents", ErrInvalidArgument)
 	}
+	// DM code assumes a DM never hangs under an agent; ReparentChannel refuses the same.
+	if c.ParentAgentID != "" && c.Kind != ChannelKindChannel {
+		return fmt.Errorf("%w: only channels can be attached to an agent", ErrInvalidArgument)
+	}
 	if c.MembershipMode == ChannelMembershipModeTree && c.ParentAgentID == "" {
 		return fmt.Errorf("%w: tree membership requires an agent parent", ErrInvalidArgument)
 	}
@@ -146,18 +150,19 @@ func validateNewChannel(c NewChannel) error {
 	return nil
 }
 
-// CreateChannel inserts a channel and its membership. Transitive
-// owner-membership (design.md:231-234) is enforced here: the actor is always a
-// member, and for each agent in the requested member set that agent's owning
-// user(s) are added too, so a user can always read anything their agent is
-// party to (an agent↔agent DM carries both owners). The caller-supplied member
-// set is augmented, never trusted as complete. A channel name already taken in
-// its group or under its agent is ErrConflict; an unknown group is
+// CreateChannel inserts a channel and its membership. For an EXPLICIT channel,
+// transitive owner-membership (design.md:231-234) is enforced here: the actor is
+// always a member, and for each agent in the requested member set that agent's
+// owning user(s) are added too, so a user can always read anything their agent
+// is party to (an agent↔agent DM carries both owners). The caller-supplied
+// member set is augmented, never trusted as complete. A channel name already
+// taken in its group or under its agent is ErrConflict; an unknown group is
 // ErrInvalidArgument. Ungrouped root channels are not name-constrained.
 //
 // A ParentAgentID attaches the channel under an agent the actor's owner set
 // owns (else ErrNotFound). A TREE channel writes no member rows: its
-// participants derive from the anchor's subtree, and it returns no members.
+// participants derive from the anchor's subtree, which need not include the
+// actor, and it returns no members until reads derive them.
 func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel) (Channel, error) {
 	if err := validateNewChannel(c); err != nil {
 		return Channel{}, err
@@ -215,16 +220,20 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 			return Channel{}, fmt.Errorf("%w: channel %q already exists in group %q", ErrConflict, c.Name, c.GroupID)
 		}
 		if pgErrIs(err, pgForeignKeyViolation) {
-			if pgConstraintName(err) == "channels_parent_agent_id_fkey" {
+			switch pgConstraintName(err) {
+			case "channels_parent_agent_id_fkey":
 				return Channel{}, fmt.Errorf("%w: unknown agent %q", ErrNotFound, c.ParentAgentID)
+			case "channels_owner_account_id_fkey":
+				return Channel{}, fmt.Errorf("%w: unknown owner account %q", ErrInvalidArgument, c.Policy.OwnerAccountID)
+			case "channels_group_id_fkey":
+				return Channel{}, fmt.Errorf("%w: unknown group %q", ErrInvalidArgument, c.GroupID)
 			}
-			return Channel{}, fmt.Errorf("%w: unknown group %q", ErrInvalidArgument, c.GroupID)
 		}
 		return Channel{}, fmt.Errorf("store: insert channel: %w", err)
 	}
 
-	// TREE discards this expansion; the plan keeps it running on both modes until
-	// the create return becomes a post-commit re-read.
+	// TREE discards this expansion; it still runs so both modes resolve the
+	// requested accounts the same way.
 	members, err := expandOwnerMembership(ctx, tx, actor, c.MemberAccountIDs)
 	if err != nil {
 		return Channel{}, err
@@ -284,7 +293,9 @@ func (s *Store) writeExplicitMembers(ctx context.Context, tx pgx.Tx, id ChannelI
 }
 
 // ReparentChannel moves an ungrouped CHANNEL within its participant owner set.
-// It gates participant and destination ownership before checking shape refusals.
+// The row lock comes first so the authz reads see committed membership and
+// anchor; both gates then run before any shape refusal, so an InvalidArgument
+// never tells a non-participant that the channel exists.
 func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID ChannelID, newParentAgentID AccountID) (Channel, error) {
 	if actor == "" {
 		return Channel{}, fmt.Errorf("%w: actor is required", ErrInvalidArgument)
@@ -299,6 +310,14 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
+
+	row, err := qtx.LockChannelForReparent(ctx, string(channelID))
+	if err != nil {
+		if noRows(err) {
+			return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+		}
+		return Channel{}, fmt.Errorf("store: lock channel for reparent: %w", err)
+	}
 
 	participant, err := qtx.ChannelParticipant(ctx, db.ChannelParticipantParams{
 		ChannelID: string(channelID),
@@ -328,13 +347,6 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 		}
 	}
 
-	row, err := qtx.LockChannelForReparent(ctx, string(channelID))
-	if err != nil {
-		if noRows(err) {
-			return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
-		}
-		return Channel{}, fmt.Errorf("store: lock channel for reparent: %w", err)
-	}
 	if row.GroupID.Valid {
 		return Channel{}, fmt.Errorf("%w: grouped channel cannot be attached", ErrInvalidArgument)
 	}

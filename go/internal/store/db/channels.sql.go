@@ -155,6 +155,9 @@ type ChannelParticipantParams struct {
 	AccountID string
 }
 
+// Explicit member row, or (TREE only) the actor is in the anchor's subtree or
+// owns the anchor. UNION, not UNION ALL: agent parent rows are not guaranteed
+// acyclic, and deduplication is what stops the walk on a cycle.
 func (q *Queries) ChannelParticipant(ctx context.Context, arg ChannelParticipantParams) (pgtype.Bool, error) {
 	row := q.db.QueryRow(ctx, channelParticipant, arg.ChannelID, arg.AccountID)
 	var column_1 pgtype.Bool

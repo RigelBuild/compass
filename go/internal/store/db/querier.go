@@ -87,6 +87,9 @@ type Querier interface {
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
 	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
 	ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMembersByChannelIDsRow, error)
+	// Explicit member row, or (TREE only) the actor is in the anchor's subtree or
+	// owns the anchor. UNION, not UNION ALL: agent parent rows are not guaranteed
+	// acyclic, and deduplication is what stops the walk on a cycle.
 	ChannelParticipant(ctx context.Context, arg ChannelParticipantParams) (pgtype.Bool, error)
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)

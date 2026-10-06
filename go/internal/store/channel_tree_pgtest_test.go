@@ -4,7 +4,10 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 func mustAttachedChannel(t *testing.T, s *Store, actor, parent AccountID, name string, mode ChannelMembershipMode, members ...AccountID) Channel {
@@ -74,6 +77,14 @@ func TestChannelTreeCreateAuthorizationAndInputRefusals(t *testing.T) {
 	sentinelIs(t, err, ErrNotFound, "cross-owner channel attach")
 	_, err = s.CreateChannel(t.Context(), owner.ID, NewChannel{Name: "unknown-agent", ParentAgentID: AccountID("missing-agent")})
 	sentinelIs(t, err, ErrNotFound, "unknown agent attach")
+	_, err = s.CreateChannel(t.Context(), agent.ID, NewChannel{Name: "agent-cross-owner", ParentAgentID: foreign.ID})
+	sentinelIs(t, err, ErrNotFound, "cross-owner attach by an agent")
+	_, err = s.CreateChannel(t.Context(), owner.ID, NewChannel{
+		Name: "unknown-owner", Policy: ChannelPolicy{PostPolicy: ChannelPostPolicyOwnerOnly, OwnerAccountID: AccountID("missing-owner")},
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "unknown owner account") {
+		t.Fatalf("unknown owner account create = %v, want InvalidArgument naming the owner", err)
+	}
 
 	ownerOnly := ChannelPolicy{PostPolicy: ChannelPostPolicyOwnerOnly, OwnerAccountID: owner.ID}
 	cases := []struct {
@@ -85,6 +96,8 @@ func TestChannelTreeCreateAuthorizationAndInputRefusals(t *testing.T) {
 		{name: "tree mandatory", input: NewChannel{Name: "mandatory", ParentAgentID: agent.ID, MembershipMode: ChannelMembershipModeTree, Policy: ChannelPolicy{MandatorySubscription: true}}},
 		{name: "tree owner only", input: NewChannel{Name: "owner-only", ParentAgentID: agent.ID, MembershipMode: ChannelMembershipModeTree, Policy: ownerOnly}},
 		{name: "unknown membership mode", input: NewChannel{Name: "bad-mode", ParentAgentID: agent.ID, MembershipMode: ChannelMembershipMode(7)}},
+		{name: "explicit DM under agent", input: NewChannel{Name: "dm-explicit", Kind: ChannelKindDM, ParentAgentID: agent.ID}},
+		{name: "tree DM under agent", input: NewChannel{Name: "dm-tree", Kind: ChannelKindDM, ParentAgentID: agent.ID, MembershipMode: ChannelMembershipModeTree}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,6 +125,7 @@ func TestReparentChannelShapeRefusals(t *testing.T) {
 	owner := mustUser(t, s, "shape-owner")
 	outsider := mustUser(t, s, "shape-outsider")
 	anchor := mustAgent(t, s, owner.ID, "shape-anchor")
+	foreign := mustAgent(t, s, outsider.ID, "shape-foreign")
 	group, err := s.CreateChannelGroup(t.Context(), owner.ID, NewChannelGroup{Name: "shape-group"})
 	if err != nil {
 		t.Fatalf("CreateChannelGroup: %v", err)
@@ -141,6 +155,8 @@ func TestReparentChannelShapeRefusals(t *testing.T) {
 		{name: "non-participant DM", actor: outsider.ID, channelID: dm.ID, want: ErrNotFound},
 		{name: "non-participant home channel", actor: outsider.ID, channelID: anchor.Agent.HomeChannelID, want: ErrNotFound},
 		{name: "non-participant tree channel", actor: outsider.ID, channelID: tree.ID, want: ErrNotFound},
+		{name: "foreign destination on grouped channel", actor: owner.ID, channelID: grouped.ID, parent: foreign.ID, want: ErrNotFound},
+		{name: "unknown destination on home channel", actor: owner.ID, channelID: anchor.Agent.HomeChannelID, parent: AccountID("missing-agent"), want: ErrNotFound},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -346,5 +362,71 @@ func TestChannelTreeSubscriptionsTenantIsolation(t *testing.T) {
 	}
 	if got := count(ctxA); got != 1 {
 		t.Fatalf("tenant A read %d subscriptions, want 1", got)
+	}
+}
+
+// A member removed by a concurrent writer that holds the channel row lock must
+// not reparent the channel once that writer commits: the participant probe has
+// to run after the lock, against committed membership.
+func TestReparentChannelWaitsForConcurrentMemberRemoval(t *testing.T) {
+	ctx := context.Background() // test root
+	s := newTestStore(t)
+	owner := mustUser(t, s, "race-owner")
+	leaver := mustUser(t, s, "race-leaver")
+	anchor := mustAgent(t, s, leaver.ID, "race-anchor")
+	ch, err := s.CreateChannel(ctx, owner.ID, NewChannel{Name: "race-room", MemberAccountIDs: []AccountID{leaver.ID}})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	txB, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx B: %v", err)
+	}
+	defer func() { _ = txB.Rollback(ctx) }()
+	var bpid int
+	if err := txB.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&bpid); err != nil {
+		t.Fatalf("read tx B backend pid: %v", err)
+	}
+	if _, err := txB.Exec(ctx, "SELECT 1 FROM channels WHERE id = $1 FOR UPDATE", string(ch.ID)); err != nil {
+		t.Fatalf("tx B lock channel: %v", err)
+	}
+	if _, err := txB.Exec(ctx, "DELETE FROM channel_members WHERE channel_id = $1 AND account_id = $2", string(ch.ID), string(leaver.ID)); err != nil {
+		t.Fatalf("tx B remove member: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.ReparentChannel(ctx, leaver.ID, ch.ID, anchor.ID)
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	var reparentErr error
+	finished := false
+gate:
+	for {
+		if backendsBlockedBy(t, s, bpid) >= 1 {
+			break gate
+		}
+		select {
+		case reparentErr = <-done:
+			finished = true
+			break gate
+		case <-deadline:
+			t.Fatalf("ReparentChannel neither blocked on tx B nor returned")
+		case <-tick.C:
+		}
+	}
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatalf("commit tx B: %v", err)
+	}
+	if !finished {
+		reparentErr = <-done
+	}
+	sentinelIs(t, reparentErr, ErrNotFound, "reparent by a member removed concurrently")
+	if parent, _, _ := channelTreeState(t, s, ch.ID); parent != "" {
+		t.Fatalf("channel parent = %q after a refused reparent, want root", parent)
 	}
 }
