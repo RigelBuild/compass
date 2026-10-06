@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -106,12 +108,36 @@ func startSpawnServer(t *testing.T, f *spawnFakes) agentSpawnClients {
 
 // TestRunAgentSpawn asserts spawn creates the account, then spawns it under the
 // owner-qualified handle with the request id, and prints the session.
+func TestAgentSpawnCommandRejectsRoleBeforeResolvingConnection(t *testing.T) {
+	tests := []struct {
+		name string
+		role string
+		want string
+	}{
+		{name: "missing", want: "--role is required"},
+		{name: "invalid", role: "director", want: "invalid --role"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newAgentSpawnCmd()
+			addConnFlags(cmd.Flags())
+			cmd.SilenceErrors = true
+			args := []string{"--handle", "lead", "--server-addr", "not-a-url", "--token-file", "missing", "--role", tt.role}
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Execute error = %v, want message containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunAgentSpawn(t *testing.T) {
 	f := newSpawnFakes()
 	clients := startSpawnServer(t, f)
 
 	var out strings.Builder
-	args := agentSpawnArgs{handle: "lead", displayName: "Lead", parent: "ops", requestID: "boot-1"}
+	args := agentSpawnArgs{handle: "lead", displayName: "Lead", parent: "ops", requestID: "boot-1", role: "owner"}
 	if err := runAgentSpawn(context.Background(), clients, args, &out); err != nil {
 		t.Fatalf("runAgentSpawn: %v", err)
 	}
@@ -140,6 +166,81 @@ func TestRunAgentSpawn(t *testing.T) {
 		}
 	}
 }
+func TestRunAgentSpawnPassesRoleAndPersonaFile(t *testing.T) {
+	f := newSpawnFakes()
+	clients := startSpawnServer(t, f)
+	path := filepath.Join(t.TempDir(), "persona.txt")
+	if err := os.WriteFile(path, []byte(" \nYou are the lead.\n "), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	args := agentSpawnArgs{handle: "lead", role: "owner", personaFile: path}
+	if err := runAgentSpawn(context.Background(), clients, args, &strings.Builder{}); err != nil {
+		t.Fatalf("runAgentSpawn: %v", err)
+	}
+	if got := f.gotCreate.GetRole(); got != "owner" {
+		t.Errorf("CreateAgent role = %q, want owner", got)
+	}
+	if got := f.gotCreate.GetPersona(); got != "You are the lead." {
+		t.Errorf("CreateAgent persona = %q, want trimmed persona", got)
+	}
+}
+
+func TestRunAgentSpawnRejectsMissingOrInvalidRoleBeforeRPC(t *testing.T) {
+	tests := []struct {
+		name string
+		role string
+		want string
+	}{
+		{name: "missing", want: "--role is required"},
+		{name: "invalid", role: "director", want: "invalid --role"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newSpawnFakes()
+			clients := startSpawnServer(t, f)
+			err := runAgentSpawn(context.Background(), clients, agentSpawnArgs{handle: "lead", role: tt.role}, &strings.Builder{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("runAgentSpawn error = %v, want message containing %q", err, tt.want)
+			}
+			if len(f.calls) != 0 {
+				t.Errorf("RPC calls = %v, want none", f.calls)
+			}
+		})
+	}
+}
+
+func TestRunAgentSpawnPersonaFileValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		missing   bool
+		wantError string
+	}{
+		{name: "empty", content: " \n\t", wantError: "empty"},
+		{name: "oversize", content: strings.Repeat("x", 64*1024+1), wantError: "64 KiB"},
+		{name: "missing file", missing: true, wantError: "persona"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "persona.txt")
+			if !tt.missing {
+				if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+			}
+			f := newSpawnFakes()
+			clients := startSpawnServer(t, f)
+			err := runAgentSpawn(context.Background(), clients, agentSpawnArgs{handle: "lead", role: "owner", personaFile: path}, &strings.Builder{})
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("runAgentSpawn error = %v, want message containing %q", err, tt.wantError)
+			}
+			if len(f.calls) != 0 {
+				t.Errorf("RPC calls = %v, want none", f.calls)
+			}
+		})
+	}
+}
 
 // TestRunAgentSpawnDefaults asserts the display name falls back to the handle and
 // an empty --request-id mints a fresh key per run: a stable derived key would
@@ -150,7 +251,7 @@ func TestRunAgentSpawnDefaults(t *testing.T) {
 	f.compass.spawnErr = connect.NewError(connect.CodeDeadlineExceeded, errors.New("slow runner"))
 	clients := startSpawnServer(t, f)
 
-	args := agentSpawnArgs{handle: "lead"}
+	args := agentSpawnArgs{handle: "lead", role: "owner"}
 	errs := make([]error, 0, 2)
 	for range 2 {
 		errs = append(errs, runAgentSpawn(context.Background(), clients, args, &strings.Builder{}))
@@ -180,14 +281,16 @@ func TestRunAgentSpawnExistingAccount(t *testing.T) {
 	clients := startSpawnServer(t, f)
 
 	var out strings.Builder
-	if err := runAgentSpawn(context.Background(), clients, agentSpawnArgs{handle: "lead"}, &out); err != nil {
+	if err := runAgentSpawn(context.Background(), clients, agentSpawnArgs{handle: "lead", role: "owner"}, &out); err != nil {
 		t.Fatalf("runAgentSpawn: %v", err)
 	}
 	if len(f.compass.gotSpawn) != 1 || f.compass.gotSpawn[0].GetAgentHandle() != "matt/lead" {
 		t.Fatalf("SpawnAgent = %v, want one spawn of matt/lead", f.compass.gotSpawn)
 	}
-	if !strings.Contains(out.String(), "already exists") || !strings.Contains(out.String(), "not applied") {
-		t.Errorf("output %q should say the account existed and the flags were not applied", out.String())
+	for _, want := range []string{"already exists", "--display-name", "--parent", "--role", "--persona-file", "not applied"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output %q missing %q", out.String(), want)
+		}
 	}
 }
 
@@ -215,7 +318,7 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 			setup: func(f *spawnFakes) {
 				f.createErr = connect.NewError(connect.CodePermissionDenied, errors.New("admin only"))
 			},
-			args:    agentSpawnArgs{handle: "lead"},
+			args:    agentSpawnArgs{handle: "lead", role: "owner"},
 			wantErr: []string{"creating agent", "admin only"},
 		},
 		{
@@ -227,13 +330,13 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 					Kind: &compassv1.Account_Agent{Agent: &compassv1.AgentAccount{OwnerUserId: "other-owner"}},
 				})
 			},
-			args:    agentSpawnArgs{handle: "lead"},
+			args:    agentSpawnArgs{handle: "lead", role: "owner"},
 			wantErr: []string{`no agent "lead" owned by the caller is visible`, "handle taken"},
 		},
 		{
 			name:      "spawn unavailable is retryable",
 			setup:     spawnFails(connect.CodeUnavailable),
-			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			args:      agentSpawnArgs{handle: "lead", role: "owner", requestID: "k1"},
 			wantErr:   []string{"spawning agent matt/lead"},
 			wantHint:  true,
 			wantSpawn: true,
@@ -241,21 +344,21 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 		{
 			name:      "already live points at status",
 			setup:     spawnFails(connect.CodeAlreadyExists),
-			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			args:      agentSpawnArgs{handle: "lead", role: "owner", requestID: "k1"},
 			wantErr:   []string{"spawning agent matt/lead", "compass agent status"},
 			wantSpawn: true,
 		},
 		{
 			name:      "internal failure is not rejoinable",
 			setup:     spawnFails(connect.CodeInternal),
-			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			args:      agentSpawnArgs{handle: "lead", role: "owner", requestID: "k1"},
 			wantErr:   []string{"spawning agent matt/lead"},
 			wantSpawn: true,
 		},
 		{
 			name:      "errored agent is not retryable",
 			setup:     spawnFails(connect.CodeFailedPrecondition),
-			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			args:      agentSpawnArgs{handle: "lead", role: "owner", requestID: "k1"},
 			wantErr:   []string{"spawning agent matt/lead"},
 			wantSpawn: true,
 		},
