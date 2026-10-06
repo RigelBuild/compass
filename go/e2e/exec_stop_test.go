@@ -40,24 +40,25 @@ func TestExecStreamingStopKillsInContainerProcess(t *testing.T) {
 }
 
 // TestExecStreamingStopSweepsDetachedSession verifies that Stop kills work in
-// a new session without killing the container's PID 1 keep-alive.
+// a new session without killing the container's PID 1 keep-alive. The detached
+// target holds 300 MiB so it is still dying when the sweep rescans.
 func TestExecStreamingStopSweepsDetachedSession(t *testing.T) {
 	cli, id, name := startKeepAlive(t)
 
-	script := `bun -e 'require("child_process").spawn("sleep", ["3002"], {detached: true, stdio: "ignore"}).unref()'; exec sleep 3000`
+	script := `bun -e 'require("child_process").spawn("bun", ["-e", "globalThis.b = Buffer.alloc(300 << 20, 1); setInterval(() => {}, 1e6)", "hold-3002"], {detached: true, stdio: "ignore"}).unref()'; exec sleep 3000`
 	stream, err := cli.ExecStreaming(t.Context(), id, agentExecSpec("sh", "-c", script))
 	if err != nil {
 		t.Fatalf("ExecStreaming: %v", err)
 	}
 	waitForTop(t, name, func(procs []string) bool {
-		return hasProcess(procs, "sleep 3000") && hasProcess(procs, "sleep 3002")
+		return hasProcess(procs, "sleep 3000") && hasProcess(procs, "hold-3002")
 	})
 
 	if err := stream.Process.Terminate(); err != nil && !isClientKill(err) {
 		t.Fatalf("Terminate: unexpected error %v", err)
 	}
 	waitForTop(t, name, func(procs []string) bool {
-		return !hasProcess(procs, "sleep 3000") && hasProcess(procs, "sleep 3002")
+		return !hasProcess(procs, "sleep 3000") && hasProcess(procs, "hold-3002")
 	})
 
 	sweeper, ok := any(cli).(runtime.SessionSweeper)
@@ -68,7 +69,7 @@ func TestExecStreamingStopSweepsDetachedSession(t *testing.T) {
 		t.Fatalf("SweepExecSessions: %v", err)
 	}
 	waitForTop(t, name, func(procs []string) bool {
-		return !hasProcess(procs, "sleep 3000") && !hasProcess(procs, "sleep 3002") && hasProcess(procs, "sleep infinity")
+		return !hasProcess(procs, "sleep 3000") && !hasProcess(procs, "hold-3002") && hasProcess(procs, "sleep infinity")
 	})
 	running, err := cli.Running(t.Context(), name)
 	if err != nil {

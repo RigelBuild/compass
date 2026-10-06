@@ -100,35 +100,38 @@ const stopWithClientScript = `exec 3>&2; { { sh -c 'echo "$$"; exec cat' && kill
 
 // sessionSweepScript kills detached exec sessions while preserving PID 1's
 // session, which carries the container keep-alive needed for in-place reloads.
+// It waits between rounds: a killed process stays visible until the kernel reaps it.
 const sessionSweepScript = `IFS=' '
-read -r stat < /proc/1/stat || { echo "cannot read PID 1 stat" >&2; exit 1; }
-rest=${stat##*) }
-set -- $rest
-pid1=$4
-if [ -z "$pid1" ]; then
-	echo "cannot determine PID 1 session" >&2
-	exit 1
-fi
+sid_of() {
+	stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+	# Fields after the last ") " are kernel-written; comm before it may hold anything.
+	set -- ${stat##*) }
+	state=$1
+	sid=$4
+	[ -n "$sid" ]
+}
+sid_of 1 || { echo "cannot read PID 1 session" >&2; exit 1; }
+keep=$sid
+sid_of $$ || { echo "cannot read sweep session" >&2; exit 1; }
+own=$sid
 round=0
-while [ "$round" -lt 50 ]; do
+while [ "$round" -lt 100 ]; do
 	round=$((round + 1))
-	survivors=0
+	live=0
 	for d in /proc/[0-9]*; do
-		read -r stat < "$d/stat" || continue
-		rest=${stat##*) }
-		set -- $rest
-		state=$1
-		sid=$4
 		pid=${d#/proc/}
-		[ "$sid" = "$pid1" ] || [ "$pid" = "$$" ] || [ "$state" = Z ] && continue
-		# Count only landed kills: another uid's process (EPERM) is outside this sweep.
+		sid_of "$pid" || continue
+		[ "$sid" = "$keep" ] || [ "$sid" = "$own" ] || [ "$state" = Z ] && continue
+		# A landed kill on a not-yet-reaped process counts until it is gone or a zombie;
+		# another uid's process (EPERM) is outside this sweep.
 		if kill -s KILL "$pid" 2>/dev/null; then
-			survivors=$((survivors + 1))
+			live=$((live + 1))
 		fi
 	done
-	[ "$survivors" -eq 0 ] && exit 0
+	[ "$live" -eq 0 ] && exit 0
+	sleep 0.1
 done
-echo "processes remain outside PID 1 session after 50 sweeps" >&2
+echo "processes remain outside PID 1 session after 10s" >&2
 exit 1`
 
 // stopWithClient wraps command so killing the engine client also kills its

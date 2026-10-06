@@ -1260,12 +1260,13 @@ type recordedSweep struct {
 
 type sessionSweeperRuntime struct {
 	*stubStreamingRuntime
-	sweeps []recordedSweep
+	sweeps   []recordedSweep
+	sweepErr error
 }
 
 func (r *sessionSweeperRuntime) SweepExecSessions(_ context.Context, id runtime.WorkloadID, user string) error {
 	r.sweeps = append(r.sweeps, recordedSweep{id: id, user: user})
-	return nil
+	return r.sweepErr
 }
 
 func TestStopAndReloadSweepExecSessions(t *testing.T) {
@@ -1311,6 +1312,43 @@ func TestStopAndReloadSweepExecSessions(t *testing.T) {
 	}
 	if err := host.Stop(ctx, sessionID); err != nil {
 		t.Fatalf("Stop after Reload = %v", err)
+	}
+}
+
+// TestReloadSweepFailureMarksErrored pins that a failed sweep after the agent
+// was stopped leaves the session ERRORED, never READY with no agent behind it.
+func TestReloadSweepFailureMarksErrored(t *testing.T) {
+	engine := &sessionSweeperRuntime{stubStreamingRuntime: newStubStreamingRuntime(t)}
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	ctx := t.Context()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "sweep-fail")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := host.Stop(ctx, sessionID); err != nil {
+			t.Errorf("Stop after test = %v", err)
+		}
+	})
+
+	sweepErr := errors.New("processes remain")
+	engine.sweepErr = sweepErr
+	if err := host.Reload(ctx, sessionID); !errors.Is(err, sweepErr) {
+		t.Fatalf("Reload = %v, want the sweep error", err)
+	}
+	st, err := host.Status(ctx, sessionID)
+	if err != nil || len(st) != 1 {
+		t.Fatalf("Status = %+v, %v", st, err)
+	}
+	if got := st[0].GetState(); got != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("state after failed sweep = %v, want ERRORED", got)
 	}
 }
 

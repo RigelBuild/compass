@@ -696,6 +696,9 @@ func (h *agentHost) RefreshSecrets(ctx context.Context, sessionID string) error 
 	if err != nil {
 		return fmt.Errorf("fetching secrets for session %q: %w", sessionID, err)
 	}
+	// The container lock keeps a Stop/Reload session sweep from killing these execs.
+	unlock := h.lockContainer(s.containerName)
+	defer unlock()
 	if err := h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved); err != nil {
 		return fmt.Errorf("materializing secrets for session %q: %w", sessionID, err)
 	}
@@ -1106,6 +1109,7 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 		}
 	}
 	if err := h.sweepExecSessions(ctx, s); err != nil {
+		h.markErrored(ctx, sessionID, s.containerName, nil)
 		return fmt.Errorf("sweeping detached agent exec sessions before reload for container %q: %w", s.containerName, err)
 	}
 	// Hand the control state to the new process before it launches: replay_complete
