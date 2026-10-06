@@ -1277,9 +1277,9 @@ export const ListAccountsResponseSchema: GenMessage<ListAccountsResponse> = /*@_
  */
 export type CreateChannelGroupRequest = Message$1<"compass.v1.CreateChannelGroupRequest"> & {
   /**
-   * Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name already
-   * used under the same parent in the same user's namespace (a user and that
-   * user's agents share one) is ALREADY_EXISTS.
+   * Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT. ALREADY_EXISTS
+   * for a nested name already used under the parent by anyone, or a top-level
+   * name already in the user's namespace (a user and their agents share one).
    *
    * @generated from field: string name = 1;
    */

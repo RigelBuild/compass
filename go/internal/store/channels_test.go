@@ -12,8 +12,8 @@ import (
 	"testing"
 )
 
-// TestCreateChannelGroupSiblingNamesUnique: a name is unique among one owner's
-// siblings, so agent tools can address it; other parents and owners may reuse it.
+// TestCreateChannelGroupSiblingNamesUnique: a name is unique among its siblings,
+// so agent tools can address it; another parent, or another owner at top level, may reuse it.
 func TestCreateChannelGroupSiblingNamesUnique(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
