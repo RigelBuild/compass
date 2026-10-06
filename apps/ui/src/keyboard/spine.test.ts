@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { CommandId } from "./commands";
-import type { RovingGroupHandle } from "./roving";
+import { reduceLayout, singleTabLayout } from "../window-layout";
+import type { LayoutAction, WindowLayout } from "../window-layout";
 import { createKeyboardSpine } from "./spine";
+import type { RovingGroupHandle } from "./roving";
 import type { FocusZone } from "./zones";
-
 // The keyboard spine (RIG-2456): the shared registry + the published roving-group
 // set, plus the tier-1/tier-2 accessors the root installKeymap reads. These units
 // defend the group-publication model (RD-2): register/unregister round-trip,
@@ -25,6 +26,8 @@ function stubDeps(
 		togglePalette: () => void;
 		toggleLeft: () => void;
 		toggleRight: () => void;
+		layout: () => WindowLayout;
+		dispatchLayout: (action: LayoutAction) => void;
 	}> = {},
 ) {
 	return {
@@ -35,6 +38,17 @@ function stubDeps(
 		showSettings: () => {},
 		togglePalette: () => {},
 		toggleLeft: () => {},
+		layout: () => ({
+			tabs: Array.from({ length: 9 }, (_, index) => ({
+				id: `tab-${index + 1}`,
+				layout: {
+					kind: "single" as const,
+					view: { id: `view-${index + 1}`, path: `/path-${index + 1}` },
+				},
+			})),
+			activeTabId: "tab-5",
+		}),
+		dispatchLayout: () => {},
 		toggleRight: () => {},
 		...overrides,
 	};
@@ -199,4 +213,87 @@ describe("createKeyboardSpine", () => {
 		expect(left).toBe(1);
 		expect(right).toBe(1);
 	});
+	test("T5 commands dispatch the expected layout actions", () => {
+		const actions: LayoutAction[] = [];
+		const spine = createKeyboardSpine(
+			stubDeps({ dispatchLayout: (action) => actions.push(action) }),
+		);
+		const cases: readonly (readonly [string, LayoutAction])[] = [
+			["tab.new", { kind: "open", path: "/" }],
+			["tab.close", { kind: "close", tabId: "tab-5" }],
+			["tab.next", { kind: "focusTab", tabId: "tab-6" }],
+			["tab.prev", { kind: "focusTab", tabId: "tab-4" }],
+			...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(
+				(n) =>
+					[`tab.goto.${n}`, { kind: "focusTab", tabId: `tab-${n}` }] as const,
+			),
+			["tab.moveLeft", { kind: "move", tabId: "tab-5", toIndex: 3 }],
+			["tab.moveRight", { kind: "move", tabId: "tab-5", toIndex: 5 }],
+			["pane.splitRight", { kind: "split", direction: "row" }],
+			["pane.splitDown", { kind: "split", direction: "column" }],
+			["pane.closeOther", { kind: "closeOtherPane" }],
+			["pane.focusFirst", { kind: "focusPane", pane: "first" }],
+			["pane.focusSecond", { kind: "focusPane", pane: "second" }],
+		];
+
+		for (const [commandId, expected] of cases) {
+			actions.length = 0;
+			const command = spine.registry.get(id(commandId));
+			expect(command).toBeDefined();
+			command?.run();
+			expect(actions).toEqual([expected]);
+		}
+	});
+
+	test("tab stepping wraps and move or goto commands ignore missing targets", () => {
+		let layout = stubDeps().layout();
+		const actions: LayoutAction[] = [];
+		const spine = createKeyboardSpine(
+			stubDeps({
+				layout: () => layout,
+				dispatchLayout: (action) => actions.push(action),
+			}),
+		);
+		const run = (commandId: string): void => {
+			spine.registry.get(id(commandId))?.run();
+		};
+
+		layout = { ...layout, activeTabId: "tab-9" };
+		run("tab.next");
+		expect(actions).toEqual([{ kind: "focusTab", tabId: "tab-1" }]);
+		actions.length = 0;
+		layout = { ...layout, activeTabId: "tab-1" };
+		run("tab.prev");
+		expect(actions).toEqual([{ kind: "focusTab", tabId: "tab-9" }]);
+
+		actions.length = 0;
+		layout = { ...layout, activeTabId: "tab-1", tabs: layout.tabs.slice(0, 8) };
+		run("tab.moveLeft");
+		expect(actions).toEqual([]);
+		run("tab.goto.9");
+		expect(actions).toEqual([]);
+	});
+	test("pane focus and close-other actions are reducer no-ops on a single pane", () => {
+		let layout = singleTabLayout("/");
+		const spine = createKeyboardSpine(
+			stubDeps({
+				layout: () => layout,
+				dispatchLayout: (action) => {
+					const next = reduceLayout(layout, action);
+					if (!("refused" in next)) layout = next;
+				},
+			}),
+		);
+		const before = layout;
+		for (const commandId of [
+			"pane.closeOther",
+			"pane.focusFirst",
+			"pane.focusSecond",
+		]) {
+			spine.registry.get(id(commandId))?.run();
+		}
+		expect(layout).toBe(before);
+	});
+
+
 });

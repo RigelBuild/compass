@@ -1638,6 +1638,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		togglePalette,
 		toggleLeft,
 		toggleRight,
+		layout,
+		dispatchLayout,
 	});
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {

@@ -665,4 +665,21 @@ describe("installKeymap — leader sequences", () => {
 		keydown({ key: "b" });
 		expect(ran).toBe(0); // listener gone; nothing runs
 	});
+	test("W N in a focused composer remains text and runs no command", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("tab.new", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		const composer = document.createElement("input");
+		document.body.appendChild(composer);
+		composer.focus();
+		const leader = keydown({ key: "w" }, composer);
+		const completion = keydown({ key: "n" }, composer);
+
+		expect(leader.defaultPrevented).toBe(false);
+		expect(completion.defaultPrevented).toBe(false);
+		expect(ran).toBe(0);
+		composer.remove();
+	});
 });
