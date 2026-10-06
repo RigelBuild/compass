@@ -454,7 +454,7 @@ export function agentTree(
 	return roots;
 }
 
-// ── Daemon / usage / supervisor ──────────────────────────────────────────
+// ── Daemon / supervisor ──────────────────────────────────────────────────
 
 /** Liveness/version the daemon-status header shows (mirrors GetDaemonInfo). */
 export interface DaemonInfo {
@@ -462,17 +462,6 @@ export interface DaemonInfo {
 	apiVersion: string;
 	/** true when a real daemon answered; false when this is stub data. */
 	live: boolean;
-}
-
-/** A provider account's usage, for the bottom usage bar. */
-export interface UsageAccount {
-	provider: string;
-	plan: string;
-	tokensUsed: number;
-	tokensLimit: number;
-	/** Human string until the rate-limit window resets. */
-	resetIn: string;
-	costToday: number;
 }
 
 /** A file/dir in an agent worktree, for the right-sidebar file explorer. */
@@ -1363,25 +1352,6 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 			status: "Backlog",
 			url: "https://linear.app/rigelbuild/issue/RIG-1180",
 		},
-	},
-];
-
-export const STUB_USAGE: UsageAccount[] = [
-	{
-		provider: "Claude",
-		plan: "Max 20×",
-		tokensUsed: 118_400_000,
-		tokensLimit: 220_000_000,
-		resetIn: "2h 14m",
-		costToday: 0,
-	},
-	{
-		provider: "Codex",
-		plan: "Pro",
-		tokensUsed: 4_120_000,
-		tokensLimit: 30_000_000,
-		resetIn: "5h 02m",
-		costToday: 0,
 	},
 ];
 

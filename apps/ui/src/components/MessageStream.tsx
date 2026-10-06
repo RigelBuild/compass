@@ -90,6 +90,15 @@ export const MessageStream: Component<{
 							// undefined item or an index past the new message list. Guard both
 							// so a mid-change tick renders nothing rather than throwing.
 							const message = () => (item ? messages()[item.index] : undefined);
+							// Rows are reconciled by index, so a scope switch hands this
+							// node a different message; measure again or it keeps the estimate.
+							let rowEl: HTMLDivElement | undefined;
+							createEffect(
+								() => item?.key,
+								() => {
+									if (rowEl) virtualizer.measureElement(rowEl);
+								},
+							);
 							return (
 								<Show when={item && message()}>
 									<div
@@ -102,6 +111,7 @@ export const MessageStream: Component<{
 										data-index={item.index}
 										data-key={item.key}
 										ref={(el) => {
+											rowEl = el;
 											// The measure observer reads data-index off the node, so
 											// set it before measuring (the ref fires before Solid
 											// flushes the attribute binding).

@@ -367,6 +367,33 @@ describe("MessageStream scroll contract", () => {
 		).toBe(199); // B's final message is in view
 	});
 
+	// A topic switch reuses the rendered rows by index; a reused row now shows a
+	// different message, so it must be measured again or it keeps the estimate.
+	test("switching scope re-measures reused rows so message spacing stays uniform", () => {
+		const proto = Object.getPrototypeOf(document.createElement("div"));
+		const geometry = Object.getOwnPropertyDescriptor(proto, "offsetHeight");
+		Object.defineProperty(proto, "offsetHeight", {
+			configurable: true,
+			get(this: HTMLElement) {
+				if (!this.hasAttribute?.("data-index"))
+					return geometry?.get?.call(this);
+				return this.textContent?.includes("tall") ? 160 : 40;
+			},
+		});
+		const { setMessages, setScopeId, rows } = mountStream([
+			msg("a-0", 1_000, "short a"),
+			msg("a-1", 2_000, "short b"),
+		]);
+		setMessages([
+			msg("b-0", 3_000, "short c"),
+			msg("b-1", 4_000, "tall d"),
+			msg("b-2", 5_000, "short e"),
+		]);
+		setScopeId("top-b");
+		flush();
+		expect(rows().map(translateY)).toEqual([0, 40, 200]);
+	});
+
 	// Case (8): shrinking a large WINDOWED topic to empty ([]) renders the empty
 	// state instead of throwing. REGRESSION for the HIGH crash finding: the
 	// virtualizer core invokes getItemKey/estimateSize INTERNALLY with indices
