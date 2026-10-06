@@ -70,9 +70,8 @@ elif [[ "${1:-}" == -* ]]; then
   exit 1
 fi
 
-# Default tag set: immutable pin FIRST, then the moving tag, so :git-<sha>
-# exists before :latest moves onto it. A GA add is one more positional arg
-# (./publish.sh git-<sha> v<semver> latest).
+# The multi-arch index (and :latest) is composed in CI from the per-arch tags,
+# so there is no bare default tag set; explicit tags serve manual retags.
 if [[ -n "$ARCH_SUFFIX" ]]; then
   # Reject --arch-suffix plus positional tags: a caller passing both has a bug.
   if [[ $# -gt 0 ]]; then
@@ -84,8 +83,8 @@ if [[ -n "$ARCH_SUFFIX" ]]; then
 elif [[ $# -gt 0 ]]; then
   TAGS=("$@")
 else
-  SHA="$(git rev-parse --short=12 HEAD)"
-  TAGS=("git-${SHA}" "latest")
+  err "pass --arch-suffix <amd64|arm64> or explicit tags"
+  exit 1
 fi
 
 # Build the image spec exactly as dogfood:agent-image does — the fork rev is
