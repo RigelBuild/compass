@@ -167,8 +167,11 @@ and `updated_at`, so both the create response and a hydrate carry them.
 where `IssueRef` is a new forge-layer `{ Repo string; Number uint64 }`. The cap of
 25 is logged when reached.
 
-**Webhook.** `boardRelevant` admits `PULL_REQUEST` events for `OPENED`, `STATE`
-and `UPDATE`. `boardCoord` gains a kind, and the PR arm does three things:
+**Webhook.** `boardRelevant` admits every `PULL_REQUEST` event: `OPENED`,
+`STATE`, `UPDATE`, `REVIEW`, `COMMENT` and `CHECKS`, so reviews and CI stay
+fresh. A `CHECKS` event names only a head SHA; the arm maps it to a PR number
+with the existing `PullNumberResolver`. Per-coordinate coalescing turns a burst
+into one hydrate. `boardCoord` gains a kind, and the PR arm does three things:
 
 1. Gate the repo on `forge_repo_subscriptions`, the same gate issues use.
 2. Call `GetPullRequest`.
@@ -206,9 +209,10 @@ then sets `prs_backfilled_at`. Recent merged PRs reach Done issues. The
 `ingest` package reaches this state only through `BoardStore` (T5).
 
 **Rate cost.** A hydrate costs four paginated REST reads (detail, reviews,
-check-runs, status) plus GraphQL pages. The `updated_at` gate stops the sweep
-re-hydrating what the webhook handled. PR hydrates share the drain queue and the
-`ErrBudgetExhausted` pause with issues.
+check-runs, status) plus GraphQL pages. Admitting review, comment and check
+events costs about one hydrate per coalesced burst on a PR. The `updated_at`
+gate stops the sweep re-hydrating what the webhook handled. PR hydrates share
+the drain queue and the `ErrBudgetExhausted` pause with issues.
 
 ### 5. Projection
 
@@ -323,10 +327,11 @@ Scoping forge relay calls per tenant must move all three writers together.
 
 ### T5 — Ingest admission
 
-- `boardRelevant` admits PR events. `boardCoord` gains a kind. Add a PR arm to `hydrateAndSink`. The reconciler hydrates PR rows behind the `updated_at` gate, runs the backfill pass, and stops on `ErrBudgetExhausted`.
+- `boardRelevant` admits every `PULL_REQUEST` event the parser emits: `OPENED`, `STATE`, `UPDATE`, `REVIEW`, `COMMENT` and `CHECKS`. `boardCoord` gains a kind. A `CHECKS` event carries only a head SHA, so the PR arm resolves it through the existing `PullNumberResolver` and skips it on `ErrNoPullRequestForSHA`. The parser is unchanged, since the notify router shares it: a push reaches the board through the `CHECKS` event it triggers, and a draft flip through the sweep. Add a PR arm to `hydrateAndSink`. The reconciler hydrates PR rows behind the `updated_at` gate, runs the backfill pass, and stops on `ErrBudgetExhausted`.
 - `BoardStore` gains `PullRequestUpdatedAt(ctx, repo string, number uint64) (time.Time, bool, error)`, `PRsBackfilledAt(ctx, repo string) (time.Time, bool, error)` and `MarkPRsBackfilled(ctx, repo string, at time.Time) error`. The server adapter (`boardReconcileStore`) builds the `store.ForgeCoord` from its bound provider and host. The `newBoardStore` fake implements them too.
 - Tests:
-  - a PR webhook reaches the projection;
+  - a PR webhook of each kind reaches the projection, and a `CHECKS` event resolves its PR by head SHA;
+  - a burst of review, comment and check events on one PR costs one hydrate;
   - an unchanged PR row is not re-hydrated;
   - a budget error on a PR row aborts the sweep, keeps the watermark at `since`, clears the ETag, and the next sweep re-lists an older issue row instead of getting a 304;
   - a repo with a watermark but NULL `prs_backfilled_at` hydrates its open PRs once;
@@ -342,14 +347,3 @@ Order: T1, then T2. Then T3. Then T4 and T5 in parallel.
 - [ ] T3 — Projection attach, fan-out, rehydrate and every wire build
 - [ ] T4 — Create-path link and agent tool
 - [ ] T5 — Webhook PR arm, reconciler PR hydrate and backfill
-
-## Open Questions
-
-- **Load-bearing (RIG-4604): how fresh must PR review and CI state be on the board?**
-  `boardRelevant` drops `REVIEW`, `COMMENT` and `CHECKS` events, and
-  `gitHubStateOrUpdateKind` drops `synchronize` and `ready_for_review`. So a PR's
-  reviews, checks and draft flag refresh only on a title or state edit, or when a
-  sweep sees a newer `updated_at`.
-  - **A.** Admit `REVIEW` and `CHECKS` PR events, using the existing per-coordinate coalescing. The board stays fresh at about one hydrate per review or check suite.
-  - **B.** Keep `OPENED`, `STATE` and `UPDATE` only, and accept the staleness.
-  - Recommendation: **A**, as T6 after T5. Otherwise the stored reviews and checks go stale.
