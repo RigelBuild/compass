@@ -46,7 +46,15 @@ export const SplitPane: Component<{ tabId: string }> = (props) => {
 		store.dispatchLayout({ kind: "resize", ratio });
 	};
 	const onPointerMove = (event: PointerEvent, current: Split): void => {
-		if (dragging !== event.pointerId || !root) return;
+		// A release that never reached us leaves `dragging` set; `buttons` and
+		// the active tab say whether this is still a live drag of this tab.
+		if (
+			dragging !== event.pointerId ||
+			(event.buttons & 1) === 0 ||
+			store.layout().activeTabId !== props.tabId ||
+			!root
+		)
+			return;
 		const box = root.getBoundingClientRect();
 		const ratio =
 			current.direction === "row"
@@ -107,6 +115,9 @@ export const SplitPane: Component<{ tabId: string }> = (props) => {
 											dragging = undefined;
 										}}
 										onPointerCancel={() => {
+											dragging = undefined;
+										}}
+										onLostPointerCapture={() => {
 											dragging = undefined;
 										}}
 									/>

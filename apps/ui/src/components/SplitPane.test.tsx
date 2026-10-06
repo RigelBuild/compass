@@ -155,22 +155,62 @@ describe("SplitPane", () => {
 		root.getBoundingClientRect = () => new DOMRect(100, 0, 1000, 600);
 
 		fireEvent.pointerDown(sep, { pointerId: 1, button: 0, clientX: 600 });
-		fireEvent.pointerMove(sep, { pointerId: 1, clientX: 400 });
+		fireEvent.pointerMove(sep, { pointerId: 1, buttons: 1, clientX: 400 });
 		await flush();
 		expect(activeSplit(store.layout()).ratio).toBe(0.3);
 		const split = activeSplit(store.layout());
 		expect(panel(container, split.first.id).style.flexGrow).toBe("0.3");
 		expect(panel(container, split.second.id).style.flexGrow).toBe("0.7");
 
-		fireEvent.pointerMove(sep, { pointerId: 1, clientX: 120 });
+		fireEvent.pointerMove(sep, { pointerId: 1, buttons: 1, clientX: 120 });
 		await flush();
 		expect(activeSplit(store.layout()).ratio).toBe(0.2);
 
 		fireEvent.pointerUp(sep, { pointerId: 1, clientX: 120 });
-		fireEvent.pointerMove(sep, { pointerId: 1, clientX: 900 });
+		fireEvent.pointerMove(sep, { pointerId: 1, buttons: 1, clientX: 900 });
 		await flush();
 		expect(activeSplit(store.layout()).ratio).toBe(0.2);
 		expect(activeSplit(loadLayout(storage, TOPIC_PATH)).ratio).toBe(0.2);
+	});
+
+	test("a drag ends when capture is lost or the button is no longer held", async () => {
+		const { store, container } = await mountSplit("row");
+		const sep = splitter(container);
+		const root = sep.parentElement;
+		if (!root) throw new Error("splitter has no root");
+		root.getBoundingClientRect = () => new DOMRect(100, 0, 1000, 600);
+
+		fireEvent.pointerDown(sep, { pointerId: 1, button: 0, clientX: 600 });
+		fireEvent.pointerMove(sep, { pointerId: 1, buttons: 0, clientX: 400 });
+		await flush();
+		expect(activeSplit(store.layout()).ratio).toBe(0.5);
+
+		// Capture lost with no pointerup reaching the splitter.
+		fireEvent.lostPointerCapture(sep, { pointerId: 1 });
+		fireEvent.pointerMove(sep, { pointerId: 1, buttons: 1, clientX: 400 });
+		await flush();
+		expect(activeSplit(store.layout()).ratio).toBe(0.5);
+	});
+
+	test("removing a focused splitter keeps focus in a pane", async () => {
+		for (const command of ["pane.closeOther", "tab.close", "tab.next"]) {
+			const { store, container } = await mountSplit("row");
+			if (command !== "pane.closeOther") {
+				store.dispatchLayout({
+					kind: "open",
+					path: "/settings",
+					background: true,
+				});
+				await flush();
+			}
+			splitter(container).focus();
+			runCommand(store, command);
+			await flush();
+			const active = document.activeElement;
+			expect(active === document.body || active === null).toBe(false);
+			expect(active?.closest(".view-panel:not([hidden])")).not.toBeNull();
+			cleanup();
+		}
 	});
 
 	test("the focused pane carries the focus marker, and only in a split", async () => {

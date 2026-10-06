@@ -38,7 +38,7 @@ import { shortcutForAria } from "./keyboard/keymap";
 import type { LiveClients } from "./live/client";
 import { routeTitle } from "./route-title";
 import { focusViewPanel } from "./view-panel";
-import { focusedViewOf, shownViewIds } from "./window-layout";
+import { focusedPane, focusedViewOf, shownViewIds } from "./window-layout";
 
 // Compass shell: routed center view with persistent navigation and usage chrome.
 
@@ -80,36 +80,54 @@ const App: Component<
 	const lastFocus = new Map<string, HTMLElement>();
 	// The view focus was last in, kept even after a close removes its panel.
 	let focusedPanelView: string | undefined;
+	// The splitter focus sat on: removing it drops focus to the body even
+	// though its tab's panes survive.
+	let focusedSplitter: HTMLElement | undefined;
+	// The splitter sits outside both panels; focus on it counts as its tab's
+	// focused view, so removing or hiding it still lands focus in a pane.
+	const viewIdOf = (target: HTMLElement): string | undefined => {
+		const panelView = target.closest<HTMLElement>(".view-panel[data-view-id]")
+			?.dataset.viewId;
+		if (panelView !== undefined) return panelView;
+		const tabId = target.closest<HTMLElement>(".cx-split-pane[data-tab-id]")
+			?.dataset.tabId;
+		const tab = store.layout().tabs.find((item) => item.id === tabId);
+		return tab ? focusedPane(tab.layout).id : undefined;
+	};
 	const rememberFocus = (event: FocusEvent): void => {
 		const target = event.target;
 		if (!(target instanceof HTMLElement)) return;
-		const viewId = target.closest<HTMLElement>(".view-panel[data-view-id]")
-			?.dataset.viewId;
+		const viewId = viewIdOf(target);
 		if (viewId === undefined) return;
-		lastFocus.set(viewId, target);
 		focusedPanelView = viewId;
+		focusedSplitter = target.closest(".view-panel") ? undefined : target;
+		if (focusedSplitter) return;
+		lastFocus.set(viewId, target);
 		store.focusViewId(viewId);
 	};
-	// Focus moving to another real target outside every panel ends the claim;
-	// a null target is a removal, which the close path below still handles.
+	// Focus moving to another real target outside main ends the claim; a null
+	// target is a removal, which the close path below handles.
 	const forgetFocus = (event: FocusEvent): void => {
 		const next = event.relatedTarget;
 		if (!(next instanceof Node)) return;
-		if (![...panels().values()].some((el) => el.contains(next)))
+		if (!main?.contains(next)) {
 			focusedPanelView = undefined;
+			focusedSplitter = undefined;
+		}
 	};
-	// Focus is leaving if it sits in a panel about to hide, or it was in a panel
-	// a close just removed (the browser has already dropped it to the body).
+	// Focus is leaving if it sits in a box or panel about to hide, or it was in
+	// a panel a close just removed (the browser has already dropped it to body).
 	const focusLeaving = (
 		shown: Map<string, HTMLElement>,
-		shownIds: readonly string[],
+		toggles: readonly [HTMLElement, boolean][],
 	): boolean => {
 		const active = document.activeElement;
 		if (active === null || active === document.body)
-			return focusedPanelView !== undefined && !shown.has(focusedPanelView);
-		return [...shown].some(
-			([id, el]) => !shownIds.includes(id) && el.contains(active),
-		);
+			return (
+				focusedPanelView !== undefined &&
+				(focusedSplitter?.isConnected === false || !shown.has(focusedPanelView))
+			);
+		return toggles.some(([el, show]) => !show && el.contains(active));
 	};
 	const pruneFocus = (ids: readonly string[]): void => {
 		for (const id of [...lastFocus.keys()]) {
@@ -148,7 +166,7 @@ const App: Component<
 				panel.contains(document.activeElement),
 			)?.[0];
 			if (
-				focusLeaving(current, shownIds) ||
+				focusLeaving(current, toggles) ||
 				(activePanelId !== undefined && activePanelId !== focusedId)
 			) {
 				focusInto(focusedId, focused);
