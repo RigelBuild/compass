@@ -226,6 +226,53 @@ describe("TabStrip", () => {
 		}
 	});
 
+	test("the notice holds while focus is inside it, and dismissing returns focus to the active tab", async () => {
+		jest.useFakeTimers();
+		try {
+			const { store, container } = mountApp("/");
+			fillToCap(store);
+			store.dispatchLayout({ kind: "open", path: "/settings" });
+			await flush();
+			const dismiss = region(container)?.querySelector<HTMLElement>(
+				'button[aria-label="Dismiss"]',
+			);
+			if (!dismiss) throw new Error("no dismiss button");
+			dismiss.focus();
+			jest.advanceTimersByTime(NOTICE_TIMEOUT_MS + 1);
+			await flush();
+			expect(region(container)?.textContent).toContain(`${MAX_TABS} tabs`);
+
+			fireEvent.click(dismiss);
+			await flush();
+			expect(region(container)?.textContent).toBe("");
+			expect(document.activeElement).toBe(selected(container) ?? null);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("the notice resumes its timeout once hover leaves it", async () => {
+		jest.useFakeTimers();
+		try {
+			const { store, container } = mountApp("/");
+			fillToCap(store);
+			store.dispatchLayout({ kind: "open", path: "/settings" });
+			await flush();
+			const toast = region(container)?.querySelector<HTMLElement>(".cx-toast");
+			if (!toast) throw new Error("no toast");
+			fireEvent.mouseEnter(toast);
+			jest.advanceTimersByTime(NOTICE_TIMEOUT_MS + 1);
+			await flush();
+			expect(region(container)?.textContent).toContain(`${MAX_TABS} tabs`);
+			fireEvent.mouseLeave(toast);
+			jest.advanceTimersByTime(NOTICE_TIMEOUT_MS + 1);
+			await flush();
+			expect(region(container)?.textContent).toBe("");
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("closing the active tab by its button leaves focus on the new active tab", async () => {
 		const { store, container } = mountApp("/");
 		store.dispatchLayout({ kind: "open", path: "/done" });

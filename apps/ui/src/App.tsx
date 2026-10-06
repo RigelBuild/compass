@@ -245,26 +245,52 @@ const App: Component<
 				    before its first announcement. */}
 				<div class="layout-notice-region" role="status">
 					<Show when={store.layoutNotice()}>
-						{(notice) => (
-							<div class="cx-toast layout-notice" data-kind="warn">
-								<span>{notice().text}</span>
-								<Show when={notice().count > 1}>
-									<span class="layout-notice-count">
-										{` (repeated ${notice().count} times)`}
-									</span>
-								</Show>
-								<button
-									type="button"
-									class="cx-btn"
-									data-size="sm"
-									data-variant="ghost"
-									aria-label="Dismiss"
-									onClick={() => store.dismissLayoutNotice()}
+						{(notice) => {
+							// Focus or hover inside the notice pauses its timeout.
+							const held = { focused: false, hovered: false };
+							const holdNotice = (change: Partial<typeof held>): void => {
+								Object.assign(held, change);
+								store.holdLayoutNotice(held.focused || held.hovered);
+							};
+							return (
+								// biome-ignore lint/a11y/noStaticElementInteractions: focus/hover only pause the timeout; the Dismiss button carries the interaction.
+								<div
+									class="cx-toast layout-notice"
+									data-kind="warn"
+									onFocusIn={() => holdNotice({ focused: true })}
+									onFocusOut={(e) => {
+										const next = e.relatedTarget;
+										if (next instanceof Node && e.currentTarget.contains(next))
+											return;
+										holdNotice({ focused: false });
+									}}
+									onMouseEnter={() => holdNotice({ hovered: true })}
+									onMouseLeave={() => holdNotice({ hovered: false })}
 								>
-									×
-								</button>
-							</div>
-						)}
+									<span>{notice().text}</span>
+									<Show when={notice().count > 1}>
+										<span class="layout-notice-count">
+											{` (repeated ${notice().count} times)`}
+										</span>
+									</Show>
+									<button
+										type="button"
+										class="cx-btn"
+										data-size="sm"
+										data-variant="ghost"
+										aria-label="Dismiss"
+										onClick={() => {
+											// The button is about to unmount; hand focus back to the strip.
+											const tabId = store.layout().activeTabId;
+											document.getElementById(viewTabId(tabId))?.focus();
+											store.dismissLayoutNotice();
+										}}
+									>
+										×
+									</button>
+								</div>
+							);
+						}}
 					</Show>
 				</div>
 			</main>

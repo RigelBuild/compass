@@ -210,6 +210,9 @@ export interface AppStore {
 	 *  re-announces it. Cleared by dismissal or after `NOTICE_TIMEOUT_MS`. */
 	layoutNotice: Accessor<LayoutNotice | undefined>;
 	dismissLayoutNotice: () => void;
+	/** Pause the notice's timeout while the user is focused on or hovering it;
+	 *  releasing restarts the full timeout. */
+	holdLayoutNotice: (held: boolean) => void;
 	/** One scope per view instance in the layout, in tab order; a view keeps its
 	 *  scope object for its whole life, so a keyed render keeps it mounted. */
 	viewScopes: Accessor<ViewScope[]>;
@@ -687,10 +690,26 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		LayoutNotice | undefined
 	>(undefined, { ownedWrite: true });
 	let cancelNoticeTimer = (): void => {};
+	let noticeHeld = false;
+	let noticeUp = false;
 	const dismissLayoutNotice = (): void => {
 		cancelNoticeTimer();
+		noticeUp = false;
+		noticeHeld = false;
 		setLayoutNotice(undefined);
 	};
+	const startNoticeTimer = (): void => {
+		cancelNoticeTimer();
+		if (noticeHeld || !noticeUp) return;
+		// biome-ignore lint/style/noRestrictedGlobals: a real UI dismiss delay, not a test wait.
+		const timer = setTimeout(dismissLayoutNotice, NOTICE_TIMEOUT_MS);
+		cancelNoticeTimer = () => clearTimeout(timer);
+	};
+	const holdLayoutNotice = (held: boolean): void => {
+		noticeHeld = held;
+		startNoticeTimer();
+	};
+	if (getOwner()) onCleanup(() => cancelNoticeTimer());
 	const dispatchLayout = (action: LayoutAction): void => {
 		let refused = false;
 		setLayout((prev) => {
@@ -703,10 +722,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			text: `Tab limit reached: close a tab to open another (${MAX_TABS} tabs max).`,
 			count: (prev?.count ?? 0) + 1,
 		}));
-		cancelNoticeTimer();
-		// biome-ignore lint/style/noRestrictedGlobals: a real UI dismiss delay, not a test wait.
-		const timer = setTimeout(dismissLayoutNotice, NOTICE_TIMEOUT_MS);
-		cancelNoticeTimer = () => clearTimeout(timer);
+		noticeUp = true;
+		startNoticeTimer();
 	};
 	let routerBound = false;
 	const navigateTo = (path: string): void => {
@@ -1784,6 +1801,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		dispatchLayout,
 		layoutNotice,
 		dismissLayoutNotice,
+		holdLayoutNotice,
 		viewScopes: scopes,
 		joinChannel,
 		toggleSubscribe,

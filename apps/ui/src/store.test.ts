@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { createRoot, flush } from "solid-js";
 import {
 	type AgentTab,
@@ -14,6 +14,7 @@ import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
 import { type AppStore, CALLER_ID, createAppStore, type View } from "./store";
 import { STUB_AGENTS, STUB_ASSIGNED_ISSUES } from "./stub-data";
 import { testQueryClient } from "./test-support";
+import { MAX_TABS } from "./window-layout";
 
 // The store exposes SolidJS `createMemo` accessors (selectedAgent,
 // selectedIssue, agentRepos, agentSession) that only
@@ -2081,5 +2082,29 @@ describe("keyboard-shortcuts overlay (RIG-2482)", () => {
 			flush();
 			expect(s.shortcutsOpen()).toBe(true);
 		});
+	});
+});
+
+describe("tab-cap notice", () => {
+	test("disposing the store's root cancels the pending notice timer", () => {
+		jest.useFakeTimers();
+		try {
+			let store!: AppStore;
+			createRoot((dispose) => {
+				store = createAppStore({
+					initialComms: STUB_COMMS_STATE,
+					queryClient: testQueryClient(),
+				});
+				for (let i = 0; i < MAX_TABS; i++) {
+					store.dispatchLayout({ kind: "open", path: `/agent/agent-${i}` });
+				}
+				flush();
+				expect(store.layoutNotice()).toBeDefined();
+				dispose();
+			});
+			expect(jest.getTimerCount()).toBe(0);
+		} finally {
+			jest.useRealTimers();
+		}
 	});
 });

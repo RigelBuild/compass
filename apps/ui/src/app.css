@@ -421,11 +421,15 @@
 	overflow: hidden;
 }
 
-/* The tab-cap refusal floats over the view rather than taking layout space. */
+/* The tab-cap refusal floats top-right over the view, clear of the
+   bottom-pinned composer, rather than taking layout space. */
 .layout-notice-region {
 	position: absolute;
+	top: var(--cx-space-4);
 	right: var(--cx-space-4);
-	bottom: var(--cx-space-4);
+	z-index: var(--cx-z-toast);
+	max-width: min(28rem, calc(100% - 2 * var(--cx-space-4)));
+	overflow-wrap: anywhere;
 }
 
 /* Read out so a repeated refusal is a new announcement; not shown. */
