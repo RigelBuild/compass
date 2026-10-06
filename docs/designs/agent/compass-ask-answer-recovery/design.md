@@ -101,7 +101,7 @@ A third variant on the wire block oneof — today `message MessageBlock { oneof
 block { string text = 1; Ask ask = 2; } }` (`proto/compass/v1/comms.proto:343-350`)
 — and a matching third pointer on the store model, whose doc already states
 the invariant to extend: "Exactly one of Text / Ask is non-nil, mirroring the
-wire `block` oneof" (`go/internal/store/types.go:308-316`).
+wire `block` oneof" (`go/internal/store/types.go` `MessageBlock`).
 
 ```proto
 // comms.proto — new field on the existing oneof (additive, buf-safe)
@@ -467,7 +467,7 @@ ledger; the draft did not merge). Rows start at DL-241:
 - The answer-once guard (`store/messages.go:632-634`) is untouched by every
   task; the answer-message insert is strictly downstream of it in the same tx.
 - The store block invariant extends, never forks: exactly ONE of
-  Text / Ask / AskAnswer is non-nil per block (`types.go:310`), enforced in
+  Text / Ask / AskAnswer is non-nil per block (`types.go` `MessageBlock` doc), enforced in
   `marshalBlocks` and `unmarshalBlocks`' totality switch (a missing arm never
   passes silently, `blocks.go:178-181`).
 - The delivery layer stays block-kind-agnostic on the deliver/ack/sweep path;
@@ -509,7 +509,7 @@ Tests: buf lint + generate clean; the leak gate passes with the token removed.
 
 ### T2 — Store: `AskAnswer` block model + JSONB marshal
 
-Add the third pointer to `store.MessageBlock` (`types.go:311-316`), an
+Add the third pointer to `store.MessageBlock` (`types.go` `MessageBlock`), an
 `AskAnswerBlock` store type, a `blockKindAskAnswer` discriminant + `storedBlock`
 arm (`blocks.go:22-33`), marshal/unmarshal arms (`blocks.go:71-91, 178-217`),
 and fold the answered snapshot's text into `textContent` (`blocks.go:219-236`)

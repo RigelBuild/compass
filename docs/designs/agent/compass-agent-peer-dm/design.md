@@ -205,8 +205,8 @@ the flag), never mints and never loses the message. Mechanics:
   RETIRED by this record** (see §Kinds). `proto/compass/v1/comms.proto:274-280`
   documents "a DM … widens into a GROUP_DM as members are added" with
   `CHANNEL_KIND_CHANNEL = 0`, `CHANNEL_KIND_DM = 1`, `CHANNEL_KIND_GROUP_DM
-  = 2`; the store mirrors it (`go/internal/store/types.go:71-78`,
-  `ChannelKindGroupDM ChannelKind = 2` at `types.go:77`). No code performs
+  = 2`; the store mirrors it (`go/internal/store/types.go` `ChannelKind`,
+  `ChannelKindGroupDM ChannelKind = 2`). No code performs
   the widening — `UpdateChannelMembers` "only ever touches membership rows"
   (`channels.go:439-440`). Matt ruled the widening OUT (R4): the doc-comment
   contract is rewritten, not implemented.
@@ -261,7 +261,7 @@ taxonomy —
   is a **conversion to a named CHANNEL** (§R4 below).
 - **GROUP_DM (kind=2): RETIRED, reserve-not-delete.** The enum number is
   live in proto + both gen trees + the store
-  (`comms.proto:279` `CHANNEL_KIND_GROUP_DM = 2`; `types.go:77`;
+  (`comms.proto:279` `CHANNEL_KIND_GROUP_DM = 2`; `types.go` `ChannelKindGroupDM`;
   `go/gen/compass/v1/comms.pb.go:197`; wire mapping arms
   `go/internal/comms/mapping.go:83-84` and `:256-258`), so deleting the
   number is buf-breaking (ENUM_VALUE_NO_DELETE) and violates this record's
@@ -270,7 +270,7 @@ taxonomy —
   do not reuse"), and nothing produces it**: the `mapping.go` translation
   arms for GroupDM (`mapping.go:83-84`, `:256-258`) are removed (both
   switches already default unknown → CHANNEL, `mapping.go:85-86,259-260`;
-  pre-dogfood no stored kind=2 rows exist), `types.go:77`'s constant is
+  pre-dogfood no stored kind=2 rows exist), `types.go`'s `ChannelKindGroupDM` constant is
   deprecated in place, and the test usages migrate. A `reserved 2;` marker is
   deliberately NOT used — DL-186 stripped all reserved markers pre-dogfood,
   and keeping the deprecated value claims the number just as safely.

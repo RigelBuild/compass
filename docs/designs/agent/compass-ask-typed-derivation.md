@@ -587,7 +587,7 @@ Interfaces:
 
 ### T4 — Go store mirror types + JSONB shape
 
-Update `go/internal/store/types.go:225-248`: `Ask` becomes
+Update `Ask` in `go/internal/store/types.go`: it becomes
 `{ AskID string; Questions []AskQuestion }`; new
 `AskQuestion { QuestionID, Question, Header string; Options []AskOption;
 AllowMultiple bool; Recommended *int32; ChosenOptionIDs []string; CustomText
@@ -613,7 +613,7 @@ the ask helpers (`askBlockID`) update to the new struct shape only.
 Interfaces:
 
 - Consumes: T3's regenerated Go types (the store mirrors the proto shape;
-  types.go:225-228 cites comms.proto:277-296 — update the citation to this
+  the `Ask` doc in types.go cites comms.proto:277-296 — update the citation to this
   record).
 - Produces: `store.Ask`, `store.AskQuestion`, `store.AskOption` (shapes
   above); `marshalBlocks([]MessageBlock) ([]byte, error)` /
