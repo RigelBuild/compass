@@ -150,8 +150,8 @@ func TestStaleStateAfterErroredIsIgnored(t *testing.T) {
 
 	assertPublished(t, lifecycle, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
 	frames := tail.snapshot()
-	if len(frames) != 2 || frames[0].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED || frames[1].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
-		t.Fatalf("relayed session frames = %+v, want ERRORED then WORKING", frames)
+	if len(frames) != 1 || frames[0].frame.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("relayed session frames = %+v, want only ERRORED; a stale state must not reach the tail", frames)
 	}
 	if got := settle.snapshot(); len(got) != 1 || got[0].state != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 		t.Fatalf("settle edges = %+v, want only ERRORED", got)
@@ -179,6 +179,23 @@ func TestNewLifetimeStateAfterErroredPublishes(t *testing.T) {
 		compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED,
 		compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
 		compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+}
+
+func TestErroredOlderThanNewLifetimeIsIgnored(t *testing.T) {
+	ctx := t.Context()
+	hub, lifecycle, _ := newHub()
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+
+	// Separate streams can deliver out of seq order: the resumed READY overtakes ERRORED.
+	deliverState(t, hub, 6, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	deliverState(t, hub, 5, compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED)
+
+	assertPublished(t, lifecycle, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	lost.none(t, "an older ERRORED must not retire the resumed lifetime")
 }
 
 func TestReenrollClearsErroredBoundary(t *testing.T) {
@@ -379,15 +396,6 @@ func TestConcurrentErroredPublishesAfterInFlightLifecycle(t *testing.T) {
 			Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
 		})
 	}()
-	select {
-	case <-tail.errored:
-	case <-time.After(10 * time.Second):
-		t.Fatal("ERRORED frame did not reach the tail sink")
-	}
-	if hub.lifecycleMu.TryLock() {
-		hub.lifecycleMu.Unlock()
-		t.Fatal("lifecycle lock released before ERRORED delivery completed")
-	}
 	releaseWorking()
 	select {
 	case err := <-workingDone:
@@ -404,6 +412,11 @@ func TestConcurrentErroredPublishesAfterInFlightLifecycle(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Deliver(ERRORED) did not complete after WORKING release")
+	}
+	select {
+	case <-tail.errored:
+	default:
+		t.Fatal("ERRORED never reached the tail sink")
 	}
 
 	statuses := lifecycle.snapshot()
