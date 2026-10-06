@@ -303,7 +303,7 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 	agent := mustAgent(t, s, owner.ID, "agent")
 
 	mustBind(t, ctx, s, "sess-1", agent.ID, "runner-1")
-	if _, err := s.DeleteSessionBinding(ctx, "sess-1", ""); err != nil {
+	if err := s.DeleteSessionBinding(ctx, "sess-1"); err != nil {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
 
@@ -322,10 +322,10 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 
 	// A second delete of an already-released session is a no-op, and so is
 	// deleting one that never existed.
-	if _, err := s.DeleteSessionBinding(ctx, "sess-1", ""); err != nil {
+	if err := s.DeleteSessionBinding(ctx, "sess-1"); err != nil {
 		t.Fatalf("second DeleteSessionBinding(sess-1) = %v, want nil (idempotent)", err)
 	}
-	if _, err := s.DeleteSessionBinding(ctx, "never-bound", ""); err != nil {
+	if err := s.DeleteSessionBinding(ctx, "never-bound"); err != nil {
 		t.Fatalf("DeleteSessionBinding(never-bound) = %v, want nil (idempotent)", err)
 	}
 }
@@ -349,18 +349,18 @@ func TestDeleteSessionBindingByVersionSkipsRebind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-bind RecordSessionBinding: %v", err)
 	}
-	if newVersion == oldVersion {
+	if newVersion == oldVersion || oldVersion == "" {
 		t.Fatalf("re-bind kept version %q, want a new one", oldVersion)
 	}
 
-	removed, err := s.DeleteSessionBinding(ctx, "sess-1", oldVersion)
+	removed, err := s.DeleteSessionBindingVersion(ctx, "sess-1", oldVersion)
 	if err != nil || removed {
 		t.Fatalf("stale DeleteSessionBinding = (%v, %v), want (false, nil)", removed, err)
 	}
 	if got, _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); err != nil || got != agent.ID {
 		t.Fatalf("binding after stale delete = (%q, %v), want (%q, nil)", got, err, agent.ID)
 	}
-	removed, err = s.DeleteSessionBinding(ctx, "sess-1", newVersion)
+	removed, err = s.DeleteSessionBindingVersion(ctx, "sess-1", newVersion)
 	if err != nil || !removed {
 		t.Fatalf("current DeleteSessionBinding = (%v, %v), want (true, nil)", removed, err)
 	}

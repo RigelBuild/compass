@@ -11,11 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteSessionBinding = `-- name: DeleteSessionBinding :one
+const deleteSessionBinding = `-- name: DeleteSessionBinding :exec
 WITH d AS (
     DELETE FROM session_bindings AS b
      WHERE b.session_id = $1
-       AND ($2::text = '' OR b.xmin::text = $2::text)
+    RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
+              b.session_id, b.runner_id, b.created_at
+), starts AS (
+    INSERT INTO compute_usage_events (
+        tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+        owner_user_id, session_id, runner_id, estimated
+    )
+    SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'start', d.created_at,
+           d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id, TRUE
+      FROM d
+      JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+    ON CONFLICT DO NOTHING
+    RETURNING 1
+)
+INSERT INTO compute_usage_events (
+    tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+    owner_user_id, session_id, runner_id
+)
+SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', clock_timestamp(),
+       d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
+  FROM d
+  JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+ON CONFLICT DO NOTHING
+`
+
+// Both deletes also write an estimated start for a binding an older server made
+// without one; ON CONFLICT keeps any real start.
+func (q *Queries) DeleteSessionBinding(ctx context.Context, sessionID string) error {
+	_, err := q.db.Exec(ctx, deleteSessionBinding, sessionID)
+	return err
+}
+
+const deleteSessionBindingVersion = `-- name: DeleteSessionBindingVersion :one
+WITH d AS (
+    DELETE FROM session_bindings AS b
+     WHERE b.session_id = $1 AND b.binding_version = $2
     RETURNING b.tenant_id, b.usage_interval_id, b.agent_account_id,
               b.session_id, b.runner_id, b.created_at
 ), starts AS (
@@ -44,18 +79,16 @@ WITH d AS (
 SELECT count(*) FROM d
 `
 
-type DeleteSessionBindingParams struct {
-	SessionID string
-	Version   string
+type DeleteSessionBindingVersionParams struct {
+	SessionID      string
+	BindingVersion string
 }
 
-// Both deletes also write an estimated start for a binding an older server made
-// without one; ON CONFLICT keeps any real start.
-// An empty version releases whatever row binds the session; a non-empty one
-// releases only that version, so a stale release cannot remove a re-bind.
-// Returns the rows removed. Postgres runs every data-modifying CTE to completion.
-func (q *Queries) DeleteSessionBinding(ctx context.Context, arg DeleteSessionBindingParams) (int64, error) {
-	row := q.db.QueryRow(ctx, deleteSessionBinding, arg.SessionID, arg.Version)
+// DeleteSessionBinding limited to one write of the row: a re-bind since that
+// write set a new binding_version, so it is left alone. Returns rows removed;
+// Postgres runs every data-modifying CTE to completion.
+func (q *Queries) DeleteSessionBindingVersion(ctx context.Context, arg DeleteSessionBindingVersionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, deleteSessionBindingVersion, arg.SessionID, arg.BindingVersion)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -237,14 +270,14 @@ func (q *Queries) LockSessionBindingAccount(ctx context.Context, arg LockSession
 	return err
 }
 
-const recordSessionBinding = `-- name: RecordSessionBinding :one
-INSERT INTO session_bindings (agent_account_id, session_id, runner_id, usage_interval_id)
-VALUES ($1, $2, $3, $4)
+const recordSessionBinding = `-- name: RecordSessionBinding :exec
+INSERT INTO session_bindings (agent_account_id, session_id, runner_id, usage_interval_id, binding_version)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
     SET session_id = EXCLUDED.session_id,
         runner_id = EXCLUDED.runner_id,
-        usage_interval_id = EXCLUDED.usage_interval_id
-RETURNING xmin::text AS version
+        usage_interval_id = EXCLUDED.usage_interval_id,
+        binding_version = EXCLUDED.binding_version
 `
 
 type RecordSessionBindingParams struct {
@@ -252,38 +285,36 @@ type RecordSessionBindingParams struct {
 	SessionID       string
 	RunnerID        string
 	UsageIntervalID string
+	BindingVersion  string
 }
 
 // What it DISPLACED comes from SessionBindingForUpdate above, not from a
 // RETURNING here. The binding update and event writes share the Store tx.
-// xmin is the row version: every upsert writes a new tuple, so a re-bind of the
-// same session id still gets a new version a stale release can be fenced by.
-func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) (string, error) {
-	row := q.db.QueryRow(ctx, recordSessionBinding,
+func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error {
+	_, err := q.db.Exec(ctx, recordSessionBinding,
 		arg.AgentAccountID,
 		arg.SessionID,
 		arg.RunnerID,
 		arg.UsageIntervalID,
+		arg.BindingVersion,
 	)
-	var version string
-	err := row.Scan(&version)
-	return version, err
+	return err
 }
 
 const sessionBinding = `-- name: SessionBinding :one
-SELECT agent_account_id, runner_id, xmin::text AS version FROM session_bindings WHERE session_id = $1
+SELECT agent_account_id, runner_id, binding_version FROM session_bindings WHERE session_id = $1
 `
 
 type SessionBindingRow struct {
 	AgentAccountID string
 	RunnerID       string
-	Version        string
+	BindingVersion string
 }
 
 func (q *Queries) SessionBinding(ctx context.Context, sessionID string) (SessionBindingRow, error) {
 	row := q.db.QueryRow(ctx, sessionBinding, sessionID)
 	var i SessionBindingRow
-	err := row.Scan(&i.AgentAccountID, &i.RunnerID, &i.Version)
+	err := row.Scan(&i.AgentAccountID, &i.RunnerID, &i.BindingVersion)
 	return i, err
 }
 
