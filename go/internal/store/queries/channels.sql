@@ -138,7 +138,7 @@ WITH RECURSIVE stored AS (
     WHERE c.id = ANY($1::text[]) AND c.membership_mode = 1
 )
 SELECT channel_id, account_id, subscribed FROM stored
-UNION
+UNION ALL
 SELECT p.channel_id, p.account_id, COALESCE(cs.subscribed, FALSE) AS subscribed
 FROM participants p
 LEFT JOIN channel_subscriptions cs

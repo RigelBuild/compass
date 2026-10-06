@@ -137,7 +137,7 @@ func TestChannelVisibilityOwnerSetParity(t *testing.T) {
 	}
 }
 
-func TestChannelTreeReadPathsUseDerivedParticipants(t *testing.T) {
+func TestChannelTreeParticipantReadsAndWrites(t *testing.T) {
 	s := newTestStore(t)
 	f := newTreeFixture(t, s)
 
@@ -155,6 +155,10 @@ func TestChannelTreeReadPathsUseDerivedParticipants(t *testing.T) {
 	if err != nil || len(searched) != 1 || searched[0].ID != message.ID {
 		t.Fatalf("SearchMessages for subtree agent = %v, %v; want message %q", searched, err, message.ID)
 	}
+	ownerSearch, err := s.SearchMessages(t.Context(), f.owner.ID, SearchScope{ChannelID: f.channel.ID}, "subtree searchable", Page{})
+	if err != nil || len(ownerSearch) != 1 || ownerSearch[0].ID != message.ID {
+		t.Fatalf("SearchMessages for anchor owner = %v, %v; want message %q", ownerSearch, err, message.ID)
+	}
 
 	cursorSeq, err := s.q.GetPageCursorSeq(t.Context(), db.GetPageCursorSeqParams{
 		AccountID: string(f.leaf.ID), ID: string(message.ID), ChannelID: string(f.channel.ID),
@@ -167,16 +171,61 @@ func TestChannelTreeReadPathsUseDerivedParticipants(t *testing.T) {
 		t.Fatalf("ListMessages cursor for subtree agent = %v, %v; want empty page", page, err)
 	}
 
-	ownerOnly, err := s.ListMessages(t.Context(), ListMessagesQuery{Actor: f.sibling.ID, ChannelID: f.channel.ID})
-	if err != nil || len(ownerOnly) != 0 {
-		t.Fatalf("owner-set sibling history = %v, %v; want no messages", ownerOnly, err)
-	}
 	if _, err := s.UpdateMessageBlocksAsAuthor(t.Context(), f.leaf.ID, message.ID, []MessageBlock{textBlock("edited by subtree author")}); err != nil {
 		t.Fatalf("UpdateMessageBlocksAsAuthor by subtree author: %v", err)
 	}
 	if _, err := s.UpdateTopic(t.Context(), string(f.leaf.ID), listed[0].TopicID, nil, nil); err != nil {
 		t.Fatalf("UpdateTopic by subtree agent: %v", err)
 	}
+
+	if _, err := s.ReparentAgent(t.Context(), f.owner.ID, f.leaf.ID, ""); err != nil {
+		t.Fatalf("ReparentAgent(leaf out of channel subtree): %v", err)
+	}
+	if _, err := s.UpdateMessageBlocksAsAuthor(t.Context(), f.leaf.ID, message.ID, []MessageBlock{textBlock("reparented author edit")}); err == nil {
+		t.Fatal("UpdateMessageBlocksAsAuthor by reparented author succeeded")
+	} else {
+		sentinelIs(t, err, ErrNotFound, "reparented author UpdateMessageBlocksAsAuthor")
+	}
+}
+
+func TestChannelTreeOwnerSetSiblingReadWriteDenials(t *testing.T) {
+	s := newTestStore(t)
+	f := newTreeFixture(t, s)
+	message, err := appendAsParticipant(t, s, f.leaf.ID, f.channel.ID, "subtree searchable history")
+	if err != nil {
+		t.Fatalf("AppendMessage by subtree agent: %v", err)
+	}
+
+	ownerOnly, err := s.ListMessages(t.Context(), ListMessagesQuery{Actor: f.sibling.ID, ChannelID: f.channel.ID})
+	if err != nil || len(ownerOnly) != 0 {
+		t.Fatalf("owner-set sibling history = %v, %v; want no messages", ownerOnly, err)
+	}
+	ownerSearch, err := s.SearchMessages(t.Context(), f.sibling.ID, SearchScope{ChannelID: f.channel.ID}, "subtree searchable", Page{})
+	if err != nil || len(ownerSearch) != 0 {
+		t.Fatalf("owner-set sibling search = %v, %v; want no messages", ownerSearch, err)
+	}
+	ownerCursorSeq, err := s.q.GetPageCursorSeq(t.Context(), db.GetPageCursorSeqParams{
+		AccountID: string(f.sibling.ID), ID: string(message.ID), ChannelID: string(f.channel.ID),
+	})
+	if !noRows(err) {
+		t.Fatalf("GetPageCursorSeq for owner-set sibling = %d, %v; want no rows", ownerCursorSeq, err)
+	}
+	_, err = s.UpdateTopic(t.Context(), string(f.sibling.ID), message.TopicID, nil, nil)
+	sentinelIs(t, err, ErrNotFound, "owner-set sibling UpdateTopic")
+
+	outsiderMessageID := newID()
+	if _, err := s.scopedPool().Exec(t.Context(), `
+		INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content)
+		VALUES ($1, $2, $3, 1, '[{"kind":"text","text":"outsider authored"}]'::jsonb, 'outsider authored')`,
+		outsiderMessageID, message.TopicID, string(f.sibling.ID)); err != nil {
+		t.Fatalf("insert outsider-authored message: %v", err)
+	}
+	if _, err := s.UpdateMessageBlocksAsAuthor(t.Context(), f.sibling.ID, MessageID(outsiderMessageID), []MessageBlock{textBlock("unauthorized edit")}); err == nil {
+		t.Fatal("owner-set sibling edited a message without channel participation")
+	} else {
+		sentinelIs(t, err, ErrNotFound, "owner-set sibling UpdateMessageBlocksAsAuthor")
+	}
+
 	_, _, err = s.AppendMessage(t.Context(), Message{AuthorAccountID: f.leaf.ID, Blocks: []MessageBlock{pendingAsk("tree-ask", false)}}, string(f.channel.ID), TopicRef{Name: "asks", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(ask): %v", err)
@@ -185,16 +234,11 @@ func TestChannelTreeReadPathsUseDerivedParticipants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("askIDContainmentFilter: %v", err)
 	}
-	asks, err := s.q.FindAskMessage(t.Context(), db.FindAskMessageParams{AccountID: string(f.leaf.ID), Column2: askFilter})
-	if err != nil || len(asks) != 1 {
-		t.Fatalf("FindAskMessage for subtree agent = %d rows, %v; want one ask", len(asks), err)
+	if rows, err := s.q.FindAskMessage(t.Context(), db.FindAskMessageParams{AccountID: string(f.sibling.ID), Column2: askFilter}); err != nil || len(rows) != 0 {
+		t.Fatalf("FindAskMessage for owner-set sibling = %d rows, %v; want none", len(rows), err)
 	}
-	if _, _, err := s.AnswerAsk(t.Context(), f.sibling.ID, "tree-ask", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}}); err == nil {
-		t.Fatal("owner-set sibling answered TREE history, want membership refusal")
-	}
-	if _, _, err := s.AnswerAsk(t.Context(), f.leaf.ID, "tree-ask", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}}); err != nil {
-		t.Fatalf("AnswerAsk by subtree agent: %v", err)
-	}
+	_, _, err = s.AnswerAsk(t.Context(), f.sibling.ID, "tree-ask", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
+	sentinelIs(t, err, ErrNotFound, "owner-set sibling AnswerAsk")
 }
 
 func TestChannelTreeMembersAreAttributedAndSubscriptionsIntersect(t *testing.T) {

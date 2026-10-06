@@ -56,11 +56,11 @@ func TestChannelTreeCreateUnderAgent(t *testing.T) {
 	if parent != string(anchor.ID) || mode != int16(ChannelMembershipModeTree) || members != 0 {
 		t.Fatalf("tree channel state = (%q, %d, %d), want (%q, 1, 0)", parent, mode, members, anchor.ID)
 	}
-	if got, want := memberSet(tree), map[AccountID]bool{owner.ID: true, anchor.ID: true}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("tree returned members = %v, want owner and anchor %v", got, want)
-	}
 	if tree.ParentAgentID != anchor.ID || tree.MembershipMode != ChannelMembershipModeTree {
 		t.Fatalf("tree create returned parent=%q mode=%d, want parent=%q mode=%d", tree.ParentAgentID, tree.MembershipMode, anchor.ID, ChannelMembershipModeTree)
+	}
+	if got, want := memberSet(tree), map[AccountID]bool{owner.ID: true, anchor.ID: true}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("tree returned members = %v, want owner and anchor %v", got, want)
 	}
 	if len(tree.SubscriberAccountIDs) != 0 {
 		t.Fatalf("tree returned subscribers = %v, want none", tree.SubscriberAccountIDs)

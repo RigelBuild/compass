@@ -650,13 +650,26 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return Channel{}, err
 	}
+	if len(channels) > 1 {
+		participants := channels[:0]
+		for _, channel := range channels {
+			member, err := isChannelMember(ctx, s.scopedPool(), viewer, channel.ID)
+			if err != nil {
+				return Channel{}, fmt.Errorf("store: check channel-name participant: %w", err)
+			}
+			if member {
+				participants = append(participants, channel)
+			}
+		}
+		channels = participants
+	}
 	switch len(channels) {
 	case 0:
 		return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, name)
 	case 1:
 		return channels[0], nil
 	default:
-		return Channel{}, fmt.Errorf("%w: channel name %q is ambiguous — it names %d visible channels; address it by id", ErrInvalidArgument, name, len(channels))
+		return Channel{}, fmt.Errorf("%w: channel name %q is ambiguous — it names %d channels the viewer participates in; address it by id", ErrInvalidArgument, name, len(channels))
 	}
 }
 
@@ -1119,10 +1132,10 @@ func channelFromRow(id, name, groupID string, kind, postPolicy int16, ownerAccou
 	}
 }
 
-// loadChannelMembers populates each channel's member and subscriber sets with
-// one follow-up query over the whole id set, so member loading is O(1)
-// round-trips rather than one per channel. Runs against the pool or a tx (any
-// db.DBTX), mirroring the former scanChannels member follow-up.
+// loadChannelMembers uses one batch query to load EXPLICIT member rows and
+// derived TREE participants for the whole channel id set. Subscription overrides
+// apply only to derived participants, keeping subscribers a subset of members.
+// The shared read works with the pool or a tx (any db.DBTX).
 func loadChannelMembers(ctx context.Context, q db.DBTX, channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
