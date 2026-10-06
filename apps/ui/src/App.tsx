@@ -27,7 +27,7 @@ import { LeftSidebar } from "./components/LeftSidebar";
 import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
-import { TabStrip, viewPanelId, viewTabId } from "./components/TabStrip";
+import { TabStrip } from "./components/TabStrip";
 import { TopBarSearch } from "./components/TopBarSearch";
 import { UsageBar } from "./components/UsageBar";
 import { ViewHost } from "./components/ViewHost";
@@ -37,6 +37,7 @@ import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
 import type { LiveClients } from "./live/client";
 import { routeTitle } from "./route-title";
+import { focusViewPanel, viewPanelId, viewTabId } from "./view-panel";
 import { focusedViewOf, shownViewIds, tabViews } from "./window-layout";
 
 // Compass shell: routed center view with persistent navigation and usage chrome.
@@ -79,6 +80,7 @@ const App: Component<
 		if (viewId === undefined) return;
 		lastFocus.set(viewId, target);
 		focusedPanelView = viewId;
+		store.focusViewId(viewId);
 	};
 	// Focus moving to another real target outside every panel ends the claim;
 	// a null target is a removal, which the close path below still handles.
@@ -122,28 +124,23 @@ const App: Component<
 			const focused = panels.get(focusedId);
 			if (!focused) return;
 			for (const id of shownIds) panels.get(id)?.removeAttribute("hidden");
-			if (focusLeaving(shownIds)) focusInto(focusedId, focused);
+			const activePanelId = [...panels].find(([, panel]) =>
+				panel.contains(document.activeElement),
+			)?.[0];
+			if (
+				focusLeaving(shownIds) ||
+				(activePanelId !== undefined && activePanelId !== focusedId)
+			) {
+				focusInto(focusedId, focused);
+			}
 			for (const [id, el] of panels) el.hidden = !shownIds.includes(id);
 		},
 	);
 	const focusInto = (viewId: string, panel: HTMLElement): void => {
-		const usable = (el: HTMLElement): boolean =>
-			el.isConnected &&
-			panel.contains(el) &&
-			!el.matches(":disabled") &&
-			el.closest("[hidden], [inert]") === null;
 		const remembered = lastFocus.get(viewId);
-		if (remembered && !usable(remembered)) lastFocus.delete(viewId);
-		const candidates = panel.querySelectorAll<HTMLElement>(
-			'a[href], button, input, textarea, select, [tabindex]:not([tabindex="-1"])',
-		);
-		// focus() can still be refused, so each step checks where focus landed.
-		for (const target of [remembered, ...candidates]) {
-			if (!target || !usable(target)) continue;
-			target.focus();
-			if (document.activeElement === target) return;
-		}
-		panel.focus();
+		if (remembered && !panel.contains(remembered)) lastFocus.delete(viewId);
+		const target = focusViewPanel(viewId, lastFocus.get(viewId));
+		if (target) lastFocus.set(viewId, target);
 	};
 	createEffect(
 		() => routeTitle(store.focusedView().route(), store),

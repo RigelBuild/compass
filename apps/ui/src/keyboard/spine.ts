@@ -79,6 +79,8 @@ export function createKeyboardSpine(deps: {
 	toggleRight: () => void;
 	layout: () => WindowLayout;
 	dispatchLayout: (action: LayoutAction) => void;
+	closeTab: (tabId: string) => void;
+	focusPane: (pane: "first" | "second") => void;
 }): KeyboardSpine {
 	const registry = createCommandRegistry();
 	const viewBridge: Command = {
@@ -145,30 +147,37 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.toggleRight(),
 	};
 	registry.register(sidebarToggleRight);
-	const registerLayoutCommand = (
+	const registerGlobal = (
 		id: string,
 		title: string,
 		keywords: string[],
-		action: () => LayoutAction | undefined,
+		run: () => void,
 	): void => {
 		registry.register({
 			id: id as CommandId,
 			title,
 			keywords,
 			scope: "global",
-			run: () => {
-				const next = action();
-				if (next) deps.dispatchLayout(next);
-			},
+			run,
+		});
+	};
+	const registerLayoutCommand = (
+		id: string,
+		title: string,
+		keywords: string[],
+		action: () => LayoutAction | undefined,
+	): void => {
+		registerGlobal(id, title, keywords, () => {
+			const next = action();
+			if (next) deps.dispatchLayout(next);
 		});
 	};
 	registerLayoutCommand("tab.new", "New tab", ["open", "bridge"], () => ({
 		kind: "open",
 		path: "/",
 	}));
-	registerLayoutCommand("tab.close", "Close tab", ["close", "current"], () => {
-		const { activeTabId } = deps.layout();
-		return activeTabId ? { kind: "close", tabId: activeTabId } : undefined;
+	registerGlobal("tab.close", "Close tab", ["close", "current"], () => {
+		deps.closeTab(deps.layout().activeTabId);
 	});
 	registerLayoutCommand("tab.next", "Next tab", ["focus", "switch"], () => {
 		const { tabs, activeTabId } = deps.layout();
@@ -243,17 +252,17 @@ export function createKeyboardSpine(deps: {
 		["pane", "close", "split"],
 		() => ({ kind: "closeOtherPane" }),
 	);
-	registerLayoutCommand(
+	registerGlobal(
 		"pane.focusFirst",
 		"Focus first pane",
 		["pane", "focus", "left", "top"],
-		() => ({ kind: "focusPane", pane: "first" }),
+		() => deps.focusPane("first"),
 	);
-	registerLayoutCommand(
+	registerGlobal(
 		"pane.focusSecond",
 		"Focus second pane",
 		["pane", "focus", "right", "bottom"],
-		() => ({ kind: "focusPane", pane: "second" }),
+		() => deps.focusPane("second"),
 	);
 
 	const groups = new Set<RovingGroupHandle>();

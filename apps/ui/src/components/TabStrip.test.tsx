@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, jest, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
+import type { CommandId } from "../keyboard/commands";
 import { type AppStore, NOTICE_TIMEOUT_MS } from "../store";
 import { STUB_AGENTS } from "../stub-data";
 import { flush, mountApp } from "../test-router";
@@ -320,6 +321,30 @@ describe("TabStrip", () => {
 		} finally {
 			jest.useRealTimers();
 		}
+	});
+	test("Close tab from a focused tab button leaves focus on the new active tab", async () => {
+		const { store, container } = mountApp("/");
+		store.dispatchLayout({ kind: "open", path: "/backlog" });
+		await flush();
+		selected(container)?.focus();
+		store.keyboard.registry.get("tab.close" as CommandId)?.run();
+		await flush();
+		expect(labels(container)).toEqual(["Bridge"]);
+		expect(document.activeElement).toBe(selected(container) ?? null);
+	});
+
+	test("Close tab run from the palette opened on a tab button focuses the new active tab", async () => {
+		const { store, container } = mountApp("/");
+		store.dispatchLayout({ kind: "open", path: "/backlog" });
+		await flush();
+		selected(container)?.focus();
+		store.openPalette();
+		await flush();
+		store.closePalette();
+		store.keyboard.registry.get("tab.close" as CommandId)?.run();
+		await flush();
+		expect(labels(container)).toEqual(["Bridge"]);
+		expect(document.activeElement).toBe(selected(container) ?? null);
 	});
 
 	test("closing the active tab by its button leaves focus on the new active tab", async () => {
