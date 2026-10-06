@@ -5,6 +5,7 @@ package runnerhub
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -195,12 +196,16 @@ func TestReenrollClearsErroredBoundary(t *testing.T) {
 		compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 }
 
-func TestErroredFromBeforeReenrollDoesNotSurviveIt(t *testing.T) {
+func TestReenrollWaitsForInFlightErroredAndFencesItsCleanup(t *testing.T) {
 	ctx := t.Context()
 	lifecycle := &fakeLifecycleSink{}
 	tail := &pausingTailSink{entered: make(chan struct{}), release: make(chan struct{})}
 	hub := NewHub(lifecycle, tail, nil, discardLogger())
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(tail.release) }) }
 	t.Cleanup(release)
@@ -217,7 +222,25 @@ func TestErroredFromBeforeReenrollDoesNotSurviveIt(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("old ERRORED did not reach the tail sink")
 	}
-	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	if hub.enrollMu.TryLock() {
+		hub.enrollMu.Unlock()
+		t.Fatal("enroll lock free while a session frame is mid-delivery")
+	}
+	enrolled := make(chan struct{})
+	go func() {
+		hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+		hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+		hub.promoteSession(ctx, "cont-1", "sess-1")
+		close(enrolled)
+	}()
+	// A pending writer refuses new readers, so the ERRORED's cleanup queues behind enroll.
+	for deadline := time.Now().Add(10 * time.Second); hub.enrollMu.TryRLock(); {
+		hub.enrollMu.RUnlock()
+		if time.Now().After(deadline) {
+			t.Fatal("re-enroll never queued behind the in-flight delivery")
+		}
+		runtime.Gosched()
+	}
 	release()
 	select {
 	case err := <-oldDone:
@@ -227,7 +250,18 @@ func TestErroredFromBeforeReenrollDoesNotSurviveIt(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("old ERRORED did not complete after release")
 	}
-
+	select {
+	case <-enrolled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("re-enroll did not complete")
+	}
+	// Readers queued behind enroll, the cleanup among them, finish before this Lock.
+	hub.enrollMu.Lock()
+	lost.none(t, "the old ERRORED's cleanup must not unbind the re-bound session")
+	hub.enrollMu.Unlock()
+	if _, _, err := hub.routerFor("sess-1"); err != nil {
+		t.Fatalf("routerFor(sess-1) after re-bind = %v, want the binding kept", err)
+	}
 	deliverState(t, hub, 1, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
 	statuses := lifecycle.snapshot()
 	if n := len(statuses); n == 0 || statuses[n-1].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {

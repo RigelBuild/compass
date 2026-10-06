@@ -452,9 +452,11 @@ type Hub struct {
 	// frames at or below it are from the dead lifetime; the counter resets only with
 	// re-enroll, which clears the map. lifecycleMu-guarded.
 	erroredSessions map[string]uint64
-	// lifecycleGen counts enrollments, so frames from a stream opened before a
-	// re-enroll cannot act on its sessions. Written under lifecycleMu.
-	lifecycleGen atomic.Uint64
+	// enrollMu fences session-frame delivery (read) against enroll (write), and
+	// guards enrollGen, which counts enrollments so a stream opened before a
+	// re-enroll cannot act on its sessions. Lock order: enrollMu, lifecycleMu, mu.
+	enrollMu  sync.RWMutex
+	enrollGen uint64
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
 	// consumer (RIG-1569 T3) resolves a subscribed account to its live session to
@@ -466,7 +468,8 @@ type Hub struct {
 	// one counter but send on separate streams, so a skipped seq may arrive late;
 	// a gap is loss only while it stays open. Capped at maxMissingSeqs.
 	missingSeqs map[uint64]struct{}
-	// gapOverflow is set once more seqs went missing than the cap can track.
+	// gapOverflow is set once more seqs went missing than the cap can track; it
+	// stays set for the enrollment, since untracked seqs can never be proven seen.
 	gapOverflow bool
 	// unknownFrames counts frames whose oneof variant was unset or unrecognized
 	// — logged and counted, never silently dropped (agent.proto:38-39).
@@ -692,7 +695,12 @@ func (h *Hub) SetBoardCaller(c BoardCaller) {
 // whose variant is unset or unrecognized is logged and counted, never silently
 // dropped (design.md:1427-1434, agent.proto:38-39).
 func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
-	h.recordSeq(ev.RunnerSeq)
+	h.enrollMu.RLock()
+	stale := h.staleEnrollmentLocked(ev)
+	h.enrollMu.RUnlock()
+	if !stale {
+		h.recordSeq(ev.RunnerSeq)
+	}
 
 	frame := ev.Frame
 	oneof := frame.GetFrame()
@@ -724,7 +732,9 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 // EnrollGeneration returns the current enrollment generation, for a stream to
 // stamp on its RunnerEvents.
 func (h *Hub) EnrollGeneration() uint64 {
-	return h.lifecycleGen.Load()
+	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
+	return h.enrollGen
 }
 
 // SeenGap reports whether a skipped Runner sequence is still unseen. For the
@@ -814,11 +824,11 @@ func (h *Hub) fireRunnerReady() {
 // UNSPECIFIED means "trace only, no transition".
 func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1internal.SessionFrame) {
 	runnerID, sessionID, seq := ev.RunnerID, ev.SessionID, ev.RunnerSeq
-	gen := ev.EnrollGen
-	if gen == 0 {
-		gen = h.lifecycleGen.Load()
-	}
-	if h.staleEnrollment(runnerID, sessionID, gen) {
+	// Held through the tail relay and lifecycle edges so enroll cannot slip between
+	// the generation check and them.
+	h.enrollMu.RLock()
+	defer h.enrollMu.RUnlock()
+	if h.staleEnrollmentLocked(ev) {
 		return
 	}
 	state := sf.GetState()
@@ -836,11 +846,6 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 		return
 	}
 	h.lifecycleMu.Lock()
-	// Re-checked under the lock: enroll may have run since the first check.
-	if h.staleEnrollment(runnerID, sessionID, gen) {
-		h.lifecycleMu.Unlock()
-		return
-	}
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
 		h.erroredSessions[sessionID] = max(h.erroredSessions[sessionID], seq)
 	} else if erroredSeq, errored := h.erroredSessions[sessionID]; errored && seq <= erroredSeq {
@@ -884,7 +889,7 @@ func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1i
 	h.lifecycleMu.Unlock()
 	// The Runner can see the exit before any deliver is refused, so ERRORED is a loss too.
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED && hasAccount {
-		h.dropLostSessionDetached(ctx, runnerID, sessionID, true)
+		h.dropLostSessionDetached(ctx, h.enrollGen, runnerID, sessionID, true)
 	}
 }
 
@@ -986,14 +991,14 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	}
 }
 
-// staleEnrollment reports, and logs, a session frame whose stream predates the
-// current enrollment.
-func (h *Hub) staleEnrollment(runnerID, sessionID string, gen uint64) bool {
-	if gen == h.lifecycleGen.Load() {
+// staleEnrollmentLocked reports, and logs, an event whose stream predates the
+// current enrollment. Zero EnrollGen means unfenced. Caller holds enrollMu.
+func (h *Hub) staleEnrollmentLocked(ev RunnerEvent) bool {
+	if ev.EnrollGen == 0 || ev.EnrollGen == h.enrollGen {
 		return false
 	}
-	h.log.Debug("dropped session frame from a stream opened before re-enroll",
-		slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
+	h.log.Debug("dropped event from a stream opened before re-enroll",
+		slog.String("runner_id", ev.RunnerID), slog.String("session_id", ev.SessionID))
 	return true
 }
 
@@ -1074,10 +1079,12 @@ type promotedPair struct {
 // so none of its pre-enroll sessions live. A failed durable reap still runs the
 // in-RAM fallback, then returns the error so the Runner retries enrollment.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
+	h.enrollMu.Lock()
 	h.lifecycleMu.Lock()
 	clear(h.erroredSessions)
-	h.lifecycleGen.Add(1)
+	h.enrollGen++
 	h.lifecycleMu.Unlock()
+	h.enrollMu.Unlock()
 	// Held from the map-clear through the reap, so no promotion lands in between.
 	h.bindingWriteMu.Lock()
 	h.mu.Lock()
@@ -1107,6 +1114,10 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	clear(h.accountSessions)
+	// A new Runner process restarts RunnerSeq, so gap tracking restarts with it.
+	h.lastSeq = 0
+	clear(h.missingSeqs)
+	h.gapOverflow = false
 	// Refuse read-through for this Runner from the instant the maps are cleared:
 	// a concurrent lookup could otherwise resurrect rows while the reap is in flight.
 	h.bindingEpoch++

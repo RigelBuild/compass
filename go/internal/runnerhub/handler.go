@@ -128,8 +128,9 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
+	enrollGen := h.hub.EnrollGeneration()
 	router.setSessionUnknown(func(sessionID string) {
-		h.hub.dropLostSessionDetached(ctx, subj.ID, sessionID, false)
+		h.hub.dropLostSessionDetached(ctx, enrollGen, subj.ID, sessionID, false)
 	})
 	router.attach(stream.Send)
 	defer router.detach(errStreamClosed)

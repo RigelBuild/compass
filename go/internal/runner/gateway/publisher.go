@@ -41,9 +41,8 @@ type EventRelay interface {
 // a replacement and then closes the stale publisher outside pubMu, so a
 // CloseAndReceive round-trip against an unresponsive-but-connected Server would
 // block every forward on the live replacement's separate upstream stream. Two
-// distinct streams need no mutual ordering — the hub keeps one global high-water
-// mark and cannot observe an interleaving between them — so the coupling would
-// buy nothing and cost unbounded liveness.
+// distinct streams may therefore deliver out of seq order; the hub tolerates a
+// late lower seq, so the coupling would buy nothing and cost unbounded liveness.
 type SeqCounter struct {
 	mu sync.Mutex
 	n  uint64
@@ -63,8 +62,8 @@ func (c *SeqCounter) next() uint64 {
 // permanent hole, and the hub flags a skipped number as in-transit loss
 // (runnerhub/hub.go:230). A durable frame erring back to the agent is correct,
 // expected behaviour — it must not make the Server report a loss that did not
-// happen. Safe because the caller holds its stream lock across allocate-and-send,
-// so no other goroutine can have sent past this value.
+// happen. Only the latest seq is reclaimed: if another Gateway allocated since,
+// the number stays burned and the hub's gap diagnostic reports it.
 func (c *SeqCounter) rollback(seq uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
