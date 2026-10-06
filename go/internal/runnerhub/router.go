@@ -260,16 +260,6 @@ func (r *commandRouter) logger() *slog.Logger {
 // result (OQ6 idempotency). The command variant is set by the caller; dispatch
 // only stamps correlation + waits.
 func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, error) {
-	call, err := r.admit(cmd)
-	if err != nil {
-		return nil, err
-	}
-	return waitCall(ctx, call)
-}
-
-// admit registers and enqueues cmd without waiting, so a caller can act atomically
-// with the point the command becomes deliverable.
-func (r *commandRouter) admit(cmd *compassv1internal.SessionsResponse) (*pendingCall, error) {
 	id := cmd.GetRequestId()
 	if id == "" {
 		return nil, errors.New("session command requires a request id")
@@ -280,7 +270,7 @@ func (r *commandRouter) admit(cmd *compassv1internal.SessionsResponse) (*pending
 	// than issuing a second command to the Runner.
 	if existing, ok := r.inflight[id]; ok {
 		r.mu.Unlock()
-		return existing, nil
+		return waitCall(ctx, existing)
 	}
 	if r.sender == nil {
 		r.mu.Unlock()
@@ -298,7 +288,7 @@ func (r *commandRouter) admit(cmd *compassv1internal.SessionsResponse) (*pending
 		return nil, fmt.Errorf("runner send queue full for command %q", id)
 	}
 	r.mu.Unlock()
-	return call, nil
+	return waitCall(ctx, call)
 }
 
 // push enqueues cmd onto the outbound queue WITHOUT registering a pendingCall or

@@ -27,7 +27,7 @@ import (
 // session id exactly as Start does, so a resumed session's comms calls resolve
 // the same way a fresh one's do.
 func (h *Hub) StartResume(ctx context.Context, requestID string, req *compassv1.StartAgentSessionRequest, resumeBody []byte) (*compassv1.StartAgentSessionResponse, error) {
-	result, err := h.relayRecovery(ctx, req.GetContainerName(), req.GetResumeSessionId(), &compassv1internal.SessionsResponse{
+	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
 		RequestId:  orNewRequestID(requestID),
 		Command:    &compassv1internal.SessionsResponse_Start{Start: req},
 		ResumeBody: &compassv1internal.ResumeBody{SessionBody: string(resumeBody)},
