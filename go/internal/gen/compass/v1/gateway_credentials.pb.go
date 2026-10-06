@@ -230,12 +230,13 @@ func (x *GatewayOAuthToken) GetActiveOrganizationId() string {
 
 type GatewayCredential struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Opaque and globally unique; writes use it without naming a tenant.
+	// Opaque and globally unique; a write must also name the agent whose pool holds it.
 	Id       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Provider string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
 	Scope    GatewayCredentialScope `protobuf:"varint,3,opt,name=scope,proto3,enum=compass.v1.GatewayCredentialScope" json:"scope,omitempty"`
 	// Versions start at 1 and increase on each write; expected_version 0 is INVALID_ARGUMENT.
-	// Missing or disabled rows are NOT_FOUND before version comparison; a lost race is ABORTED.
+	// Missing, disabled, or out-of-pool rows are NOT_FOUND before version comparison;
+	// a lost race is ABORTED.
 	Version int64 `protobuf:"varint,4,opt,name=version,proto3" json:"version,omitempty"`
 	// Types that are valid to be assigned to Value:
 	//
@@ -446,14 +447,18 @@ func (x *ListCredentialPoolResponse) GetCredentials() []*GatewayCredential {
 
 type UpdateCredentialOAuthRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// INVALID_ARGUMENT: empty id, expected_version 0, or a token without access.
-	// Then NOT_FOUND (missing or disabled), FAILED_PRECONDITION (not OAuth), ABORTED (lost race).
+	// INVALID_ARGUMENT: empty id or agent_account_id, expected_version 0, or a token without
+	// access. Then NOT_FOUND (missing, disabled, or not in the agent's pool), FAILED_PRECONDITION
+	// (not OAuth), ABORTED (lost race).
 	Id    string             `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Token *GatewayOAuthToken `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
 	// Must be nonzero; zero is INVALID_ARGUMENT.
 	ExpectedVersion int64 `protobuf:"varint,3,opt,name=expected_version,json=expectedVersion,proto3" json:"expected_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The agent the gateway is serving. The Server checks id against this agent's pool
+	// before the CAS; a miss is the same NOT_FOUND as a missing row, so ids cannot be probed.
+	AgentAccountId string `protobuf:"bytes,4,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *UpdateCredentialOAuthRequest) Reset() {
@@ -507,6 +512,13 @@ func (x *UpdateCredentialOAuthRequest) GetExpectedVersion() int64 {
 	return 0
 }
 
+func (x *UpdateCredentialOAuthRequest) GetAgentAccountId() string {
+	if x != nil {
+		return x.AgentAccountId
+	}
+	return ""
+}
+
 type UpdateCredentialOAuthResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       int64                  `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
@@ -553,15 +565,18 @@ func (x *UpdateCredentialOAuthResponse) GetVersion() int64 {
 
 type DisableCredentialRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// INVALID_ARGUMENT: empty id or expected_version 0. Then NOT_FOUND (missing or
-	// disabled), then ABORTED (lost version race).
+	// INVALID_ARGUMENT: empty id or agent_account_id, or expected_version 0. Then NOT_FOUND
+	// (missing, disabled, or not in the agent's pool), then ABORTED (lost version race).
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Why the gateway gave up on the credential, shown to its owner.
 	Cause string `protobuf:"bytes,2,opt,name=cause,proto3" json:"cause,omitempty"`
 	// Must be nonzero; zero is INVALID_ARGUMENT.
 	ExpectedVersion int64 `protobuf:"varint,3,opt,name=expected_version,json=expectedVersion,proto3" json:"expected_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The agent the gateway is serving. The Server checks id against this agent's pool
+	// before the CAS; a miss is the same NOT_FOUND as a missing row, so ids cannot be probed.
+	AgentAccountId string `protobuf:"bytes,4,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DisableCredentialRequest) Reset() {
@@ -613,6 +628,13 @@ func (x *DisableCredentialRequest) GetExpectedVersion() int64 {
 		return x.ExpectedVersion
 	}
 	return 0
+}
+
+func (x *DisableCredentialRequest) GetAgentAccountId() string {
+	if x != nil {
+		return x.AgentAccountId
+	}
+	return ""
 }
 
 type DisableCredentialResponse struct {
@@ -687,17 +709,19 @@ const file_compass_v1_gateway_credentials_proto_rawDesc = "" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\"]\n" +
 	"\x1aListCredentialPoolResponse\x12?\n" +
-	"\vcredentials\x18\x01 \x03(\v2\x1d.compass.v1.GatewayCredentialR\vcredentials\"\x8e\x01\n" +
+	"\vcredentials\x18\x01 \x03(\v2\x1d.compass.v1.GatewayCredentialR\vcredentials\"\xb8\x01\n" +
 	"\x1cUpdateCredentialOAuthRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x123\n" +
 	"\x05token\x18\x02 \x01(\v2\x1d.compass.v1.GatewayOAuthTokenR\x05token\x12)\n" +
-	"\x10expected_version\x18\x03 \x01(\x03R\x0fexpectedVersion\"9\n" +
+	"\x10expected_version\x18\x03 \x01(\x03R\x0fexpectedVersion\x12(\n" +
+	"\x10agent_account_id\x18\x04 \x01(\tR\x0eagentAccountId\"9\n" +
 	"\x1dUpdateCredentialOAuthResponse\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\x03R\aversion\"k\n" +
+	"\aversion\x18\x01 \x01(\x03R\aversion\"\x95\x01\n" +
 	"\x18DisableCredentialRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05cause\x18\x02 \x01(\tR\x05cause\x12)\n" +
-	"\x10expected_version\x18\x03 \x01(\x03R\x0fexpectedVersion\"\x1b\n" +
+	"\x10expected_version\x18\x03 \x01(\x03R\x0fexpectedVersion\x12(\n" +
+	"\x10agent_account_id\x18\x04 \x01(\tR\x0eagentAccountId\"\x1b\n" +
 	"\x19DisableCredentialResponse*\x89\x01\n" +
 	"\x16GatewayCredentialScope\x12(\n" +
 	"$GATEWAY_CREDENTIAL_SCOPE_UNSPECIFIED\x10\x00\x12 \n" +

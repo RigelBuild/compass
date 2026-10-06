@@ -795,10 +795,13 @@ Interfaces:
   `agent_accounts.owner_user_id` (`0001_init.sql:74-80`); the
   `AuthCredentialStore` contract (`auth-storage.ts:1287-1290`).
 - Produces: the TS `CompassAuthCredentialStore` (RPC client) in the fork's
-  compass wrapper; Go-side `type CredentialStore interface { List(ctx, userID, provider string) ([]Credential, error); UpdateOAuth(ctx, id string, tok OAuthToken, expectedVersion int64) error; Disable(ctx, id, cause string, expectedVersion int64) error }`
+  compass wrapper; Go-side `type CredentialStore interface { List(ctx, userID, provider string) ([]Credential, error); UpdateOAuth(ctx, agentAccountID, id string, tok OAuthToken, expectedVersion int64) error; Disable(ctx, agentAccountID, id, cause string, expectedVersion int64) error }`
   and `type PoolResolver interface { Pool(ctx, agentAccountID string) ([]Credential, error) }`
   (the managed-plane org-scoping swap seam) behind the RPC surface;
-  proto + regen when the OAuth payload extension needs it.
+  proto + regen when the OAuth payload extension needs it. `UpdateOAuth` and
+  `Disable` check that `id` is in `Pool(agentAccountID)` before the CAS; a miss
+  returns NOT_FOUND, byte-identical to a missing row, so one agent cannot write
+  or probe another agent's credential by id.
 - Test cycle: TS contract tests against a fake Server; Go in-memory ref +
   `pgtest` (DL-174); CAS race tests.
 
