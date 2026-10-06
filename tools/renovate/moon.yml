@@ -7,8 +7,9 @@
 # tasks on the root project (/moon.yml), so this leaf has no own bun.lock and
 # never runs its own install.
 #
-# Compass CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
-# `moon run :ci`), so the `ci` aggregate below is swept automatically. The
+# Compass CI runs a per-concern matrix: tools/ci-matrix computes the targets
+# and .github/workflows/ci.yml runs `moon run <targets>`, so this project's `ci`
+# aggregate is swept only when the matrix selects it. The
 # config.test.ts guard suite runs under `test`; it is what fails closed if the
 # repo config and bot config drift (allowedCommands ↔ postUpgradeTasks), if a
 # fence/cap rule goes missing, or if the catalog regex silently truncates.

@@ -12,8 +12,9 @@
 # are whole-repo tasks on the root project (/moon.yml), so this leaf has no own
 # bun.lock and never runs its own install.
 #
-# Compass CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
-# `moon run :ci`), so the `ci` aggregate below is swept automatically. There is
+# Compass CI runs a per-concern matrix: tools/ci-matrix computes the targets
+# and .github/workflows/ci.yml runs `moon run <targets>`, so this project's `ci`
+# aggregate is swept only when the matrix selects it. There is
 # no `check` task: the mint is an operational step keyed on live credentials the
 # gate has no business realizing, exactly like the live-oracle suite it feeds; it
 # is exercised directly in the ci.yml mint step, and its pure core is unit-tested
