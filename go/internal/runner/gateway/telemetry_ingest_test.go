@@ -1169,7 +1169,7 @@ func (s *seqSink) seqs() []uint64 {
 // a variant defect that restarts at a value which happens not to collide would
 // pass a duplicates-only check. [1 2] pins the contract.
 //
-// RED: give newSessionPublisher its own &seqCounter{} instead of the Gateway's
+// RED: give newSessionPublisher its own &SeqCounter{} instead of the Gateway's
 // -> seqs = [1 1], and this fails every run.
 func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
 	sink := &seqSink{}
@@ -1201,6 +1201,28 @@ func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
 	want := []uint64{1, 2}
 	if !slices.Equal(got, want) {
 		t.Fatalf("RunnerSeq sequence = %v, want %v: the counter must survive a publisher replacement", got, want)
+	}
+}
+
+// A resumed session gets a new container socket, so a per-Gateway counter would
+// restart at 1 and fall under the hub's stale-ERRORED boundary.
+//
+// RED: ignore deps.Seq in NewGateway -> seqs = [1 1].
+func TestSequenceSharedAcrossGateways(t *testing.T) {
+	sink := &seqSink{}
+	events := newRunnerServiceServer(t, sink)
+	shared := &SeqCounter{}
+	for _, name := range []string{"cont-1", "cont-2"} {
+		g := NewGateway(context.Background(), name, Deps{Sessions: boundSessions(), Events: events, Seq: shared})
+		if err := g.acquirePublisher("sess-1").forward(traceFrame(name)); err != nil {
+			t.Fatalf("forward on %s = %v, want success", name, err)
+		}
+		if err := releaseCurrentPublisher(g); err != nil {
+			t.Fatalf("release on %s = %v", name, err)
+		}
+	}
+	if got, want := sink.seqs(), []uint64{1, 2}; !slices.Equal(got, want) {
+		t.Fatalf("RunnerSeq sequence = %v, want %v across Gateways sharing one counter", got, want)
 	}
 }
 
