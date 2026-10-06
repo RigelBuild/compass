@@ -104,3 +104,18 @@ func checkAgentImageFresh(stamped, tree string) error {
 	return fmt.Errorf("%w: image source fingerprint %s, tree %s; every tool-call leg would fail against it, so %s",
 		errStaleAgentImage, stamped, tree, agentRebuildHint)
 }
+
+// agentImageGate fails when the image was built from different agent source
+// than pkgDir: a stale image fails every tool-call leg with symptoms that point
+// at the code. CI's pull branch sets the opt-out, because it tests published
+// :latest on purpose and that may lag the tree; stamp is not read then.
+func agentImageGate(getenv func(string) string, pkgDir string, stamp func() string) error {
+	if getenv("COMPASS_E2E_ALLOW_PUBLISHED_AGENT_IMAGE") == "1" {
+		return nil
+	}
+	tree, err := agentSourceFingerprint(pkgDir)
+	if err != nil {
+		return fmt.Errorf("fingerprint agent source: %w", err)
+	}
+	return checkAgentImageFresh(stamp(), tree)
+}

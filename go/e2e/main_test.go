@@ -87,20 +87,13 @@ func buildStackBinaries() (string, error) {
 	return binDir, nil
 }
 
-// requireFreshAgentImage fails the run when compass-agent:latest was built from
-// different agent source than this tree: a stale image fails every tool-call leg
-// with symptoms that point at the code. CI's pull branch opts out, because it
-// tests published :latest on purpose and that may lag the tree.
+// requireFreshAgentImage gates the run on agentImageGate with the real tree,
+// environment and image stamp.
 func requireFreshAgentImage() error {
-	if os.Getenv("COMPASS_E2E_ALLOW_PUBLISHED_AGENT_IMAGE") == "1" {
-		return nil
-	}
-	tree, err := agentSourceFingerprint(filepath.Join("..", "..", "packages", "compass-agent"))
-	if err != nil {
-		return fmt.Errorf("fingerprint agent source: %w", err)
-	}
-	// A missing stamp file exits non-zero; that image predates stamping, so stale.
-	out, _ := exec.Command("podman", "run", "--rm", "--entrypoint", "cat", agentImage,
-		"/etc/compass-agent/source-fingerprint").Output()
-	return checkAgentImageFresh(string(out), tree)
+	return agentImageGate(os.Getenv, filepath.Join("..", "..", "packages", "compass-agent"), func() string {
+		// A missing stamp file exits non-zero; that image predates stamping, so stale.
+		out, _ := exec.Command("podman", "run", "--rm", "--entrypoint", "cat", agentImage,
+			"/etc/compass-agent/source-fingerprint").Output()
+		return string(out)
+	})
 }

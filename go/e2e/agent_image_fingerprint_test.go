@@ -29,6 +29,7 @@ func TestAgentSourceFingerprintMatchesNixContract(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"package.json":            "{}\n",
 		"src/cli.ts":              "export {};\n",
+		"src/empty.ts":            "",
 		"moon.yml":                "ignored\n",
 		"node_modules/x/index.js": "ignored\n",
 		"src/node_modules/y.ts":   "kept\n",
@@ -37,8 +38,8 @@ func TestAgentSourceFingerprintMatchesNixContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// (cd dir && sha256sum package.json src/cli.ts src/node_modules/y.ts | sha256sum)
-	const want = "6bab76d3452b67556d18aecfdb78afc9a867a45933f09cc9109d6a688f3a7e20"
+	// (cd dir && sha256sum package.json src/cli.ts src/empty.ts src/node_modules/y.ts | sha256sum)
+	const want = "fb720ef4d881b8725f4194510d6274dfd3279047ca921cd0bdc9574c1df40751"
 	if got != want {
 		t.Fatalf("fingerprint = %s, want %s", got, want)
 	}
@@ -98,5 +99,31 @@ func TestAgentSourceFingerprintExcludesTopLevelNodeModulesSymlink(t *testing.T) 
 	fw, errW := agentSourceFingerprint(withLink)
 	if errB != nil || errW != nil || fb != fw {
 		t.Fatalf("base %s (%v) vs node_modules symlink %s (%v); want equal", fb, errB, fw, errW)
+	}
+}
+
+func TestAgentImageGateHonorsOnlyThePublishedOptOut(t *testing.T) {
+	dir := writeTree(t, map[string]string{"src/cli.ts": "body\n"})
+	tree, err := agentSourceFingerprint(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := func(vals map[string]string) func(string) string {
+		return func(k string) string { return vals[k] }
+	}
+	stale := func() string { return "0000" }
+
+	// A CI run on a tree-built seed sets GITHUB_ACTIONS but not the opt-out.
+	err = agentImageGate(env(map[string]string{"GITHUB_ACTIONS": "true"}), dir, stale)
+	if !errors.Is(err, errStaleAgentImage) {
+		t.Fatalf("tree-built seed with a stale stamp: err = %v, want errStaleAgentImage", err)
+	}
+	if err := agentImageGate(env(nil), dir, func() string { return tree + "\n" }); err != nil {
+		t.Fatalf("matching stamp: %v", err)
+	}
+	read := false
+	optOut := env(map[string]string{"COMPASS_E2E_ALLOW_PUBLISHED_AGENT_IMAGE": "1"})
+	if err := agentImageGate(optOut, dir, func() string { read = true; return "0000" }); err != nil || read {
+		t.Fatalf("published opt-out: err = %v, stamp read = %v; want nil and no read", err, read)
 	}
 }
