@@ -200,7 +200,7 @@ func (r *standUpRecorder) Failed() bool                      { return len(r.fail
 // TempDir replaces the promoted one, whose failure path calls Fatal on the
 // embedded T and so would bypass the recorder.
 func (r *standUpRecorder) TempDir() string {
-	dir, err := os.MkdirTemp("", "compass-e2e-shared-")
+	dir, err := os.MkdirTemp(os.Getenv("GOTMPDIR"), "compass-e2e-shared-")
 	if err != nil {
 		r.Fatalf("TempDir: %v", err)
 	}

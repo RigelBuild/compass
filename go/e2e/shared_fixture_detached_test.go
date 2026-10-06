@@ -106,12 +106,12 @@ func TestRunDetachedReturnsTempDirs(t *testing.T) {
 		}
 	}
 
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
+	t.Setenv("GOTMPDIR", filepath.Join(t.TempDir(), "absent"))
 	_, err = runDetached(func(tb testing.TB) {
 		tb.Helper()
 		tb.TempDir()
 	})
 	if err == nil || !strings.Contains(err.Error(), "TempDir:") {
-		t.Fatalf("runDetached with an unusable TMPDIR = %v, want the TempDir error", err)
+		t.Fatalf("runDetached with an unusable GOTMPDIR = %v, want the TempDir error", err)
 	}
 }
