@@ -150,6 +150,26 @@ func TestDeliverSequenceGapDetection(t *testing.T) {
 		}
 	})
 
+	// A restarted Runner's counter starts over, so the tracker must start over too.
+	t.Run("re-enroll restarts tracking", func(t *testing.T) {
+		hub := newHubOnly()
+		enroll := func() {
+			hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+		}
+		enroll()
+		deliverSeq(t, hub, 10)
+		deliverSeq(t, hub, 12)
+		enroll()
+		deliverSeq(t, hub, 1)
+		if hub.SeenGap() {
+			t.Fatal("SeenGap true after re-enroll; the old process's missing 11 must not carry over")
+		}
+		deliverSeq(t, hub, 3)
+		if !hub.SeenGap() {
+			t.Fatal("SeenGap false after the new process's 1 then 3")
+		}
+	})
+
 	// Container Gateways share one counter on separate streams, so 2 can trail 3.
 	t.Run("late arrival closes the gap", func(t *testing.T) {
 		hub := newHubOnly()
