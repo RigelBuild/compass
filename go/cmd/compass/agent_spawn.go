@@ -18,8 +18,8 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
-// spawnTimeout bounds SpawnAgent, which has no server-side deadline and may pull
-// the agent image before it starts the container.
+// spawnTimeout bounds SpawnAgent, which may pull the agent image first. The
+// deadline reaches the server too, so it cuts a stuck Provision or Start short.
 const spawnTimeout = 5 * time.Minute
 
 // agentSpawnArgs is the parsed `agent spawn` flag set.
@@ -45,9 +45,9 @@ func newAgentSpawnCmd() *cobra.Command {
 		Use:   "spawn --handle <handle>",
 		Short: "Create an agent account and bring it online (CreateAgent, then SpawnAgent)",
 		Long: "Create an agent owned by the caller and start its session. If the handle " +
-			"already exists for the caller, the existing agent is spawned instead, so a " +
-			"failed spawn can be rerun. Pass the --request-id a failed run printed to " +
-			"rejoin it instead of provisioning a second container.",
+			"already exists for the caller, that agent is spawned as it is: --display-name " +
+			"and --parent are not applied to it. If a spawn fails partway, rerun with the " +
+			"--request-id it printed; a rerun without it fails once the container exists.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := resolveConn(cmd)
 			if err != nil {
@@ -69,8 +69,8 @@ func newAgentSpawnCmd() *cobra.Command {
 	f.StringVar(&args.displayName, "display-name", "", "Display name (default: the handle).")
 	f.StringVar(&args.parent, "parent", "", "Parent agent handle in the agent tree (default: a root agent).")
 	f.StringVar(&args.requestID, "request-id", "",
-		"Idempotency key for the spawn. A retry with the same key rejoins the first spawn "+
-			"(default: a fresh random key, printed on failure).")
+		"Idempotency key for the spawn. A retry with the same key rejoins the failed spawn "+
+			"(default: a fresh random key, printed when a retry can help).")
 	return cmd
 }
 
@@ -87,13 +87,14 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 		args.requestID = newSpawnRequestID()
 	}
 
-	existed, err := createAgent(ctx, c.comms, args)
-	if err != nil {
-		return err
+	existed, createErr := createAgent(ctx, c.comms, args)
+	if createErr != nil && !existed {
+		return createErr
 	}
 	qualified, err := qualifiedAgentHandle(ctx, c, args.handle)
 	if err != nil {
-		return err
+		// An AlreadyExists that is not this caller's agent: report the create error too.
+		return errors.Join(err, createErr)
 	}
 
 	sctx, cancel := context.WithTimeout(ctx, spawnTimeout)
@@ -103,11 +104,11 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 		ClientRequestId: args.requestID,
 	}))
 	if err != nil {
-		return fmt.Errorf("spawning agent %s (retry with --request-id %s to rejoin this spawn): %w",
-			qualified, args.requestID, err)
+		return spawnError(qualified, args.requestID, err)
 	}
 	if existed {
-		if _, err := fmt.Fprintf(out, "agent %s already exists; spawned it\n", qualified); err != nil {
+		if _, err := fmt.Fprintf(out,
+			"agent %s already exists; spawned it (--display-name and --parent not applied)\n", qualified); err != nil {
 			return err
 		}
 	}
@@ -116,20 +117,33 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 	return err
 }
 
-// createAgent creates the account and reports whether the handle already existed.
-func createAgent(ctx context.Context, comms compassv1connect.CommsServiceClient, args agentSpawnArgs) (bool, error) {
+// spawnError names the next step: rejoin with the key only when a retry can
+// succeed, and point at status when the agent is already live.
+func spawnError(qualified, requestID string, err error) error {
+	switch connect.CodeOf(err) {
+	case connect.CodeDeadlineExceeded, connect.CodeUnavailable, connect.CodeCanceled, connect.CodeInternal:
+		return fmt.Errorf("spawning agent %s (retry with --request-id %s to rejoin this spawn): %w",
+			qualified, requestID, err)
+	case connect.CodeAlreadyExists:
+		return fmt.Errorf("spawning agent %s: it already has a session or container; check `compass agent status`: %w",
+			qualified, err)
+	default:
+		return fmt.Errorf("spawning agent %s: %w", qualified, err)
+	}
+}
+
+// createAgent creates the account. existed is true on AlreadyExists, which also
+// returns the wrapped error so a caller that cannot find the agent can report it.
+func createAgent(ctx context.Context, comms compassv1connect.CommsServiceClient, args agentSpawnArgs) (existed bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	_, err := comms.CreateAgent(ctx, connect.NewRequest(&compassv1.CreateAgentRequest{
+	_, err = comms.CreateAgent(ctx, connect.NewRequest(&compassv1.CreateAgentRequest{
 		Handle:       args.handle,
 		DisplayName:  args.displayName,
 		ParentHandle: args.parent,
 	}))
-	if connect.CodeOf(err) == connect.CodeAlreadyExists {
-		return true, nil
-	}
 	if err != nil {
-		return false, fmt.Errorf("creating agent %q: %w", args.handle, err)
+		return connect.CodeOf(err) == connect.CodeAlreadyExists, fmt.Errorf("creating agent %q: %w", args.handle, err)
 	}
 	return false, nil
 }
@@ -160,7 +174,10 @@ func qualifiedAgentHandle(ctx context.Context, c agentSpawnClients, handle strin
 			found = true
 		}
 	}
-	if !found || ownerHandle == "" {
+	if ownerHandle == "" {
+		return "", fmt.Errorf("the caller's own account %q is not visible", owner)
+	}
+	if !found {
 		return "", fmt.Errorf("no agent %q owned by the caller is visible", handle)
 	}
 	return ownerHandle + "/" + handle, nil

@@ -186,24 +186,29 @@ func TestRunAgentSpawnExistingAccount(t *testing.T) {
 	if len(f.compass.gotSpawn) != 1 || f.compass.gotSpawn[0].GetAgentHandle() != "matt/lead" {
 		t.Fatalf("SpawnAgent = %v, want one spawn of matt/lead", f.compass.gotSpawn)
 	}
-	if !strings.Contains(out.String(), "already exists") {
-		t.Errorf("output %q should say the account already existed", out.String())
+	if !strings.Contains(out.String(), "already exists") || !strings.Contains(out.String(), "not applied") {
+		t.Errorf("output %q should say the account existed and the flags were not applied", out.String())
 	}
 }
 
-// TestRunAgentSpawnErrors asserts each failure stops the chain and names its step.
+// TestRunAgentSpawnErrors asserts each failure stops the chain, names its step,
+// and offers --request-id only when a retry with it can succeed.
 func TestRunAgentSpawnErrors(t *testing.T) {
+	spawnFails := func(code connect.Code) func(*spawnFakes) {
+		return func(f *spawnFakes) { f.compass.spawnErr = connect.NewError(code, errors.New("spawn failed")) }
+	}
 	cases := []struct {
 		name      string
 		setup     func(*spawnFakes)
 		args      agentSpawnArgs
-		wantErr   string
+		wantErr   []string
+		wantHint  bool
 		wantSpawn bool
 	}{
 		{
 			name:    "missing handle",
 			args:    agentSpawnArgs{},
-			wantErr: "--handle is required",
+			wantErr: []string{"--handle is required"},
 		},
 		{
 			name: "create fails",
@@ -211,7 +216,7 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 				f.createErr = connect.NewError(connect.CodePermissionDenied, errors.New("admin only"))
 			},
 			args:    agentSpawnArgs{handle: "lead"},
-			wantErr: "creating agent",
+			wantErr: []string{"creating agent", "admin only"},
 		},
 		{
 			name: "existing account under another owner is not visible",
@@ -223,15 +228,28 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 				})
 			},
 			args:    agentSpawnArgs{handle: "lead"},
-			wantErr: "lead",
+			wantErr: []string{`no agent "lead" owned by the caller is visible`, "handle taken"},
 		},
 		{
-			name: "spawn fails",
-			setup: func(f *spawnFakes) {
-				f.compass.spawnErr = connect.NewError(connect.CodeUnavailable, errors.New("no runner"))
-			},
-			args:      agentSpawnArgs{handle: "lead"},
-			wantErr:   "spawning agent matt/lead",
+			name:      "spawn unavailable is retryable",
+			setup:     spawnFails(connect.CodeUnavailable),
+			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			wantErr:   []string{"spawning agent matt/lead"},
+			wantHint:  true,
+			wantSpawn: true,
+		},
+		{
+			name:      "already live points at status",
+			setup:     spawnFails(connect.CodeAlreadyExists),
+			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			wantErr:   []string{"spawning agent matt/lead", "compass agent status"},
+			wantSpawn: true,
+		},
+		{
+			name:      "errored agent is not retryable",
+			setup:     spawnFails(connect.CodeFailedPrecondition),
+			args:      agentSpawnArgs{handle: "lead", requestID: "k1"},
+			wantErr:   []string{"spawning agent matt/lead"},
 			wantSpawn: true,
 		},
 	}
@@ -243,8 +261,16 @@ func TestRunAgentSpawnErrors(t *testing.T) {
 			}
 			clients := startSpawnServer(t, f)
 			err := runAgentSpawn(context.Background(), clients, tc.args, &strings.Builder{})
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("runAgentSpawn error = %v, want one containing %q", err, tc.wantErr)
+			if err == nil {
+				t.Fatal("runAgentSpawn error = nil, want a failure")
+			}
+			for _, want := range tc.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("runAgentSpawn error = %v, want it to contain %q", err, want)
+				}
+			}
+			if hint := strings.Contains(err.Error(), "--request-id k1"); hint != tc.wantHint {
+				t.Errorf("error %v offers the --request-id hint = %v, want %v", err, hint, tc.wantHint)
 			}
 			if spawned := len(f.compass.gotSpawn) > 0; spawned != tc.wantSpawn {
 				t.Errorf("SpawnAgent called = %v, want %v", spawned, tc.wantSpawn)
