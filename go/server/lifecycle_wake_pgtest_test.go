@@ -134,7 +134,7 @@ func TestWakeAgentStaleBindingRowStillResumes(t *testing.T) {
 	if err := f.store.AppendTranscriptEntry(ctx, logical, 1, true, `{"header":true}`, "k1"); err != nil {
 		t.Fatalf("append checkpoint: %v", err)
 	}
-	if _, err := f.store.RecordSessionBinding(ctx, "sess-dead", f.agentID, fakeRunnerID); err != nil {
+	if _, _, err := f.store.RecordSessionBinding(ctx, "sess-dead", f.agentID, fakeRunnerID); err != nil {
 		t.Fatalf("RecordSessionBinding: %v", err)
 	}
 	// Checked on the store, not the hub: a hub read-through would warm the cache.

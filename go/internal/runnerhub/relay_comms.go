@@ -84,10 +84,10 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	// Write the durable binding first (h.mu released). The store upsert is keyed
 	// on the account, so it lands whether or not the account held a prior
 	// session, and it returns the displaced session id.
-	var displaced string
+	var displaced, version string
 	tenant := ""
 	if bindings != nil && runnerID != "" {
-		d, err := bindings.RecordSessionBinding(ctx, sessionID, account, runnerID)
+		d, v, err := bindings.RecordSessionBinding(ctx, sessionID, account, runnerID)
 		if err != nil {
 			// A durable-write fault must not fail the Start that already succeeded
 			// on the Runner: log it and fall back to the in-RAM cache so the session
@@ -96,7 +96,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 			h.log.Error("record session binding failed; falling back to in-RAM cache",
 				"session_id", sessionID, "account", string(account), "error", err)
 		} else {
-			displaced = d
+			displaced, version = d, v
 			tenant = string(bindings.EffectiveTenant(ctx))
 		}
 	}
@@ -105,7 +105,7 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	h.mu.Lock()
 	// Keep the container->account entry: a resume Start on this container fetches
 	// secrets by container_name before exec. Remove and re-enroll clear it.
-	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: runnerID}
+	h.sessionAccounts[sessionID] = h.newBindingLocked(account, runnerID, version)
 	h.accountSessions[account] = sessionID
 	// Evict the displaced session from the forward map: the account moved off it,
 	// so it now resolves nowhere. Guard displaced != sessionID for the rebind
@@ -180,6 +180,13 @@ func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, t
 // lock-then-release-then-fire discipline promoteSession uses, so the sink (which
 // enqueues into the presence loop) never runs under h.mu.
 func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
+	h.releaseSession(ctx, sessionID, nil)
+}
+
+// releaseSession is unbindSession limited, when only is non-nil, to that one
+// binding of sessionID, so a release from an older lifetime leaves a re-bind
+// alone. It reports whether the binding was released.
+func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessionBinding) bool {
 	// The maps are a cache, so the durable row is deleted FIRST (on the request ctx
 	// so it stays tenant-scoped), then the maps are evicted under h.mu. Delete is
 	// by session id and idempotent — a session already displaced has no row, so a
@@ -187,17 +194,32 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 	h.mu.Lock()
 	bindings := h.bindings
 	routing := h.routing
+	if only != nil {
+		if live, ok := h.sessionAccounts[sessionID]; ok && !sameBinding(live, *only) {
+			h.mu.Unlock()
+			return false
+		}
+	}
 	h.mu.Unlock()
 
 	tenant := ""
 	if bindings != nil {
-		if err := bindings.DeleteSessionBinding(ctx, sessionID); err != nil {
+		version := ""
+		if only != nil {
+			version = only.version
+		}
+		removed, err := bindings.DeleteSessionBinding(ctx, sessionID, version)
+		switch {
+		case err != nil:
 			// A durable-delete fault must not fail the Stop that already
 			// succeeded on the Runner: log and continue to evict the cache. The
 			// next re-enroll sweep retires any surviving row.
 			h.log.Error("delete session binding failed; evicting cache anyway",
 				"session_id", sessionID, "error", err)
-		} else {
+		case only != nil && version != "" && !removed:
+			// The row was re-bound since only was read: it is not ours to release.
+			return false
+		default:
 			tenant = string(bindings.EffectiveTenant(ctx))
 		}
 	}
@@ -207,7 +229,13 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 		account     store.AccountID
 		wentOffline bool
 	)
-	if binding, ok := h.sessionAccounts[sessionID]; ok {
+	binding, ok := h.sessionAccounts[sessionID]
+	if ok && only != nil && !sameBinding(binding, *only) {
+		// Re-bound in the cache while the durable delete ran.
+		h.mu.Unlock()
+		return false
+	}
+	if ok {
 		// Drop the reverse entry only if it still points at THIS session — a
 		// promoteSession for the account onto a newer session would have already
 		// repointed it, and a stale delete would then unbind the live one.
@@ -238,6 +266,13 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 	if wentOffline && presence != nil {
 		presence.OnSessionLifecycle(account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
 	}
+	return true
+}
+
+// newBindingLocked builds a sessionAccounts entry with a fresh lifetime. Caller holds mu.
+func (h *Hub) newBindingLocked(account store.AccountID, runnerID, version string) sessionBinding {
+	h.lastLifetime++
+	return sessionBinding{account: account, runnerID: runnerID, version: version, lifetime: h.lastLifetime}
 }
 
 // unbindContainer drops a container's provisioned account binding. Remove is the
@@ -357,7 +392,7 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 	if !h.readThroughAllowed(ctx, bindings, enrolled) {
 		return sessionBinding{}, bindingUnverifiable
 	}
-	account, runnerID, err := bindings.ResolveSessionBinding(ctx, sessionID)
+	account, runnerID, version, err := bindings.ResolveSessionBinding(ctx, sessionID)
 	if errors.Is(err, store.ErrNotFound) {
 		return sessionBinding{}, bindingNotFound
 	}
@@ -368,7 +403,6 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 	// session hits without a table round-trip. Re-check under the lock: a
 	// concurrent promote/unbind may have run, so a live map entry wins over the
 	// row just read (avoids clobbering a fresher binding with a staler one).
-	resolved := sessionBinding{account: account, runnerID: runnerID}
 	h.mu.Lock()
 	if live, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
@@ -380,6 +414,7 @@ func (h *Hub) lookupSessionBinding(ctx context.Context, sessionID string) (sessi
 		h.mu.Unlock()
 		return sessionBinding{}, bindingUnverifiable
 	}
+	resolved := h.newBindingLocked(account, runnerID, version)
 	h.sessionAccounts[sessionID] = resolved
 	h.mu.Unlock()
 	return resolved, bindingFound
@@ -890,48 +925,60 @@ func commsCallError(err error) *compassv1internal.CommsCallError {
 }
 
 // dropLostSession unbinds, archives and reports a session its Runner lost. Only
-// the owning Runner may unbind it.
-func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string, errored bool) {
+// the owning Runner may unbind it. A non-nil seen limits it to that binding: a
+// resume may have re-bound the session id since the loss was observed.
+func (h *Hub) dropLostSession(ctx context.Context, runnerID, sessionID string, seen *sessionBinding, errored bool) {
 	ctx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
 	if !scoped {
 		return
 	}
-	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
-	if !ok {
+	binding, ok := h.resolveSessionBinding(ctx, sessionID)
+	if !ok || runnerID == "" || binding.runnerID != runnerID || (seen != nil && !sameBinding(binding, *seen)) {
 		return
 	}
-	h.unbindSession(ctx, sessionID)
+	if !h.releaseSession(ctx, sessionID, &binding) {
+		return
+	}
 	h.mu.Lock()
 	lost := h.lost
 	h.mu.Unlock()
 	h.archiveEnded(ctx, sessionID)
 	h.log.Warn("runner reports bound session lost; released binding",
-		"session_id", sessionID, "agent_account_id", account, "errored", errored)
+		"session_id", sessionID, "agent_account_id", binding.account, "errored", errored)
 	if lost != nil {
-		lost.OnSessionLost(sessionID, account, errored)
+		lost.OnSessionLost(sessionID, binding.account, errored)
 	}
 }
 
 // dropLostSessionDetached runs dropLostSession off the caller's receive loop: it
 // does store work, and the stream ctx dies with the stream.
 // gen is the enrollment the loss was observed under.
-func (h *Hub) dropLostSessionDetached(ctx context.Context, gen uint64, runnerID, sessionID string, errored bool) {
+func (h *Hub) dropLostSessionDetached(ctx context.Context, gen uint64, runnerID, sessionID string, seen *sessionBinding, errored bool) {
 	go func() {
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lostSessionTimeout)
 		defer cancel()
-		h.dropLostSessionIfCurrent(dctx, gen, runnerID, sessionID, errored)
+		h.dropLostSessionIfCurrent(dctx, gen, runnerID, sessionID, seen, errored)
 	}()
 }
 
 // dropLostSessionIfCurrent runs dropLostSession only while enrollment gen is
 // current: a re-enroll since the loss may have re-bound sessionID.
-func (h *Hub) dropLostSessionIfCurrent(ctx context.Context, gen uint64, runnerID, sessionID string, errored bool) {
+func (h *Hub) dropLostSessionIfCurrent(ctx context.Context, gen uint64, runnerID, sessionID string, seen *sessionBinding, errored bool) {
 	h.enrollMu.RLock()
 	defer h.enrollMu.RUnlock()
 	if h.enrollGen != gen {
 		return
 	}
-	h.dropLostSession(ctx, runnerID, sessionID, errored)
+	h.dropLostSession(ctx, runnerID, sessionID, seen, errored)
+}
+
+// sameBinding reports whether a and b are one binding of a session id: the same
+// durable row when either has one, else the same cache entry.
+func sameBinding(a, b sessionBinding) bool {
+	if a.version != "" || b.version != "" {
+		return a.version == b.version
+	}
+	return a.lifetime == b.lifetime
 }
 
 // runnerSessionCtx scopes a Runner-originated ctx to the tenant that binds
