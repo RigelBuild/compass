@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -10,6 +13,7 @@ import (
 // A detached stand-up's failure text is unreadable on its T, so runDetached
 // must surface it in the error every leg reports.
 func TestRunDetachedCarriesFailureText(t *testing.T) {
+	var failedAfterFail bool
 	cases := []struct {
 		name    string
 		fn      func(testing.TB)
@@ -41,9 +45,7 @@ func TestRunDetachedCarriesFailureText(t *testing.T) {
 			fn: func(tb testing.TB) {
 				tb.Helper()
 				tb.Fail()
-				if !tb.Failed() {
-					tb.Errorf("Failed() = false after Fail()")
-				}
+				failedAfterFail = tb.Failed()
 			},
 			wantErr: []string{"Fail called"},
 		},
@@ -58,7 +60,7 @@ func TestRunDetachedCarriesFailureText(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := runDetached(tc.fn)
+			_, err := runDetached(tc.fn)
 			if len(tc.wantErr) == 0 {
 				if err != nil {
 					t.Fatalf("runDetached = %v, want nil", err)
@@ -77,5 +79,39 @@ func TestRunDetachedCarriesFailureText(t *testing.T) {
 				t.Errorf("runDetached error %q includes text logged after Fatalf", err)
 			}
 		})
+	}
+	if !failedAfterFail {
+		t.Errorf("Failed() = false after Fail(); a bare Fail must read as failed")
+	}
+}
+
+// The detached T's cleanups never run, so the stand-up's TempDirs must come
+// back to the caller, and a TempDir failure must reach the recorder.
+func TestRunDetachedReturnsTempDirs(t *testing.T) {
+	var made []string
+	dirs, err := runDetached(func(tb testing.TB) {
+		tb.Helper()
+		made = append(made, tb.TempDir(), tb.TempDir())
+	})
+	if err != nil {
+		t.Fatalf("runDetached = %v, want nil", err)
+	}
+	defer removeAll(dirs)
+	if !slices.Equal(dirs, made) {
+		t.Fatalf("runDetached dirs = %v, want %v", dirs, made)
+	}
+	for _, d := range dirs {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("TempDir %q missing before cleanup: %v", d, err)
+		}
+	}
+
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
+	_, err = runDetached(func(tb testing.TB) {
+		tb.Helper()
+		tb.TempDir()
+	})
+	if err == nil || !strings.Contains(err.Error(), "TempDir:") {
+		t.Fatalf("runDetached with an unusable TMPDIR = %v, want the TempDir error", err)
 	}
 }

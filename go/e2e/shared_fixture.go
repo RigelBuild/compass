@@ -32,6 +32,8 @@ type sharedState struct {
 	// env is the process environment before stand-up. The detached owner's
 	// t.Setenv cleanups never run, so shutdownShared restores it by hand.
 	env []string
+	// tempDirs are the stand-up's TempDirs; shutdownShared removes them.
+	tempDirs []string
 }
 
 var shared sharedState
@@ -120,7 +122,7 @@ func standUpShared(opts ...fixtureOption) (*Fixture, error) {
 	observe := WithStackObserver(func(st *stack.Stack) { live = st })
 
 	var f *Fixture
-	err = runDetached(func(tb testing.TB) {
+	tempDirs, err := runDetached(func(tb testing.TB) {
 		tb.Helper()
 		f = NewFixture(ctx, tb, append([]fixtureOption{WithSite(site), observe}, opts...)...)
 	})
@@ -133,15 +135,24 @@ func standUpShared(opts ...fixtureOption) (*Fixture, error) {
 		// The site's dirs are ours alone and no cleanup is registered for them.
 		_ = os.RemoveAll(site.root)
 		_ = os.RemoveAll(site.stateDir)
+		removeAll(tempDirs)
 		return nil, err
 	}
+	shared.tempDirs = tempDirs
 	return f, nil
+}
+
+func removeAll(dirs []string) {
+	for _, d := range dirs {
+		_ = os.RemoveAll(d)
+	}
 }
 
 // runDetached runs fn against a detached testing.TB on its own goroutine, since
 // a Fatalf calls runtime.Goexit. A detached T's log is unreadable, so failure
-// text is captured and returned as the error every leg reports.
-func runDetached(fn func(testing.TB)) (err error) {
+// text is captured and returned as the error every leg reports. It also returns
+// the temp dirs fn made, which no cleanup will remove.
+func runDetached(fn func(testing.TB)) (tempDirs []string, err error) {
 	rec := &standUpRecorder{TB: &testing.T{}}
 	completed := false
 	done := make(chan struct{})
@@ -157,24 +168,26 @@ func runDetached(fn func(testing.TB)) (err error) {
 	}()
 	<-done
 
+	tempDirs = rec.dirs()
 	if err != nil {
-		return err
+		return tempDirs, err
 	}
 	if msgs := rec.failures(); !completed || len(msgs) > 0 {
 		if len(msgs) == 0 {
 			msgs = []string{"goroutine exited with no recorded failure"}
 		}
-		return fmt.Errorf("NewFixture aborted during shared stand-up: %s", strings.Join(msgs, "; "))
+		return tempDirs, fmt.Errorf("NewFixture aborted during shared stand-up: %s", strings.Join(msgs, "; "))
 	}
-	return nil
+	return tempDirs, nil
 }
 
 // standUpRecorder keeps the detached T's failure messages; every other TB
 // method falls through to the embedded T.
 type standUpRecorder struct {
 	testing.TB
-	mu   sync.Mutex
-	msgs []string
+	mu       sync.Mutex
+	msgs     []string
+	tempDirs []string
 }
 
 func (r *standUpRecorder) Error(args ...any)                 { r.record(fmt.Sprint(args...)) }
@@ -183,6 +196,19 @@ func (r *standUpRecorder) Fatal(args ...any)                 { r.record(fmt.Spri
 func (r *standUpRecorder) FailNow()                          { r.record("FailNow called"); runtime.Goexit() }
 func (r *standUpRecorder) Fail()                             { r.record("Fail called") }
 func (r *standUpRecorder) Failed() bool                      { return len(r.failures()) > 0 }
+
+// TempDir replaces the promoted one, whose failure path calls Fatal on the
+// embedded T and so would bypass the recorder.
+func (r *standUpRecorder) TempDir() string {
+	dir, err := os.MkdirTemp("", "compass-e2e-shared-")
+	if err != nil {
+		r.Fatalf("TempDir: %v", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tempDirs = append(r.tempDirs, dir)
+	return dir
+}
 
 func (r *standUpRecorder) Fatalf(format string, args ...any) {
 	r.record(fmt.Sprintf(format, args...))
@@ -199,6 +225,12 @@ func (r *standUpRecorder) failures() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.msgs)
+}
+
+func (r *standUpRecorder) dirs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.tempDirs)
 }
 
 // newSharedSite mints the shared stack's own root, state dir, and port pair.
@@ -277,6 +309,8 @@ func shutdownShared() {
 	// Down has drained the children, so these are this run's alone.
 	_ = os.RemoveAll(filepath.Dir(f.runtimeDir))
 	_ = os.RemoveAll(filepath.Dir(f.caPath))
+	removeAll(shared.tempDirs)
+	shared.tempDirs = nil
 }
 
 // restoreEnv resets the process environment to a snapshot from os.Environ.
