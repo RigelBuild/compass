@@ -1,5 +1,5 @@
 /// <reference types="bun" />
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { bootNativeClient, type NativeBootDeps } from "./boot-native";
 import { bootSetup, type SetupBootDeps } from "./boot-setup";
 import type {
@@ -64,6 +64,10 @@ beforeEach(() => {
 			return promise;
 		},
 	};
+});
+
+afterEach(() => {
+	window.__COMPASS_SERVER_URL__ = undefined;
 });
 
 async function flush(): Promise<void> {
@@ -296,6 +300,28 @@ describe("bootSetup", () => {
 		expect(await booted).toBeUndefined();
 		expect(unsubscribeCalls).toBe(1);
 	});
+	test("a deferred embedded failure stays visible after shellState returns setup", async () => {
+		const pendingRead = Promise.withResolvers<ShellState>();
+		let calls = 0;
+		deps.shellState = async () => {
+			calls++;
+			return calls === 2 ? pendingRead.promise : state;
+		};
+		const pendingChoice = Promise.withResolvers<SetupResult>();
+		deps.chooseEmbedded = () => pendingChoice.promise;
+		void bootSetup(root, deps);
+		await flush();
+		button("Run Compass on this computer").click();
+		emitDecision();
+		await flush();
+		pendingChoice.resolve({ ok: false, message: "embedded retry message" });
+		await flush();
+		pendingRead.resolve({ mode: "setup", serverUrl: "" });
+		await flush();
+
+		expect(root.textContent).toContain("embedded retry message");
+		expect(root.textContent).toContain("Connect to a server");
+	});
 
 	test("a state read completing during an embedded attempt defers until failure", async () => {
 		const read = Promise.withResolvers<ShellState>();
@@ -442,6 +468,59 @@ describe("bootSetup", () => {
 		expect(root.textContent).toContain(
 			"Compass is already set up. Quit and reopen it to change this.",
 		);
+	});
+	test("a failed state read during an active connect preserves feedback and queued decisions", async () => {
+		const { promise: read, reject: rejectRead } =
+			Promise.withResolvers<ShellState>();
+		let calls = 0;
+		deps.shellState = async () => {
+			calls++;
+			if (calls === 1) return { mode: "setup", serverUrl: "" };
+			if (calls === 2) return read;
+			return { mode: "reopen", serverUrl: "" };
+		};
+		const pending: Array<(result: ConnectResult) => void> = [];
+		const nativeDeps = connectDeps(pending);
+		const setupDeps: SetupBootDeps = {
+			...deps,
+			bootNativeClient: (receivedRoot, entry, signal) =>
+				bootNativeClient(receivedRoot, nativeDeps, entry, signal),
+		};
+		const booted = bootSetup(root, setupDeps);
+		await flush();
+		expect(root.textContent).toContain("Connect to a server");
+		button("Connect to a server").click();
+		await flush();
+		const fields = root.querySelectorAll("input");
+		const url = fields.item(0);
+		const token = fields.item(1);
+		if (
+			!(url instanceof HTMLInputElement) ||
+			!(token instanceof HTMLInputElement)
+		)
+			throw new Error("missing setup fields");
+		url.value = "https://sibling.example";
+		token.value = "token";
+		token.dispatchEvent(new Event("input"));
+		button("Connect").click();
+		await flush();
+		emitDecision();
+		const settle = pending[0];
+		if (!settle) throw new Error("no in-flight shellConnect");
+		rejectRead(new Error("state read failed during connect"));
+		await flush();
+		emitDecision();
+		settle(connectResult({ kind: "invalid-url", message: "bad URL" }));
+		await flush();
+
+		expect(root.textContent).toContain("state read failed during connect");
+		emitDecision();
+		await flush();
+		expect(calls).toBe(3);
+		expect(root.textContent).toContain(
+			"Compass is already set up. Quit and reopen it to change this.",
+		);
+		expect(await booted).toBeUndefined();
 	});
 
 	test("a non-ok in-flight connect returns undefined before the state reread", async () => {

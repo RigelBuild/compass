@@ -49,6 +49,7 @@ export async function bootSetup(
 	let chooseInFlight = false;
 	let stateReadInFlight = false;
 	let decisionQueued = false;
+	let queuedStateMessages: string[] = [];
 	let connectController: AbortController | undefined;
 	let resolveBoot:
 		| ((value: ResolvedConnection | undefined) => void)
@@ -77,9 +78,21 @@ export async function bootSetup(
 	};
 	let choose: () => Promise<void>;
 	let connect: () => void;
+	const queueDecision = (message = ""): void => {
+		decisionQueued = true;
+		if (message.length > 0 && !queuedStateMessages.includes(message))
+			queuedStateMessages.push(message);
+	};
+	const takeQueuedStateMessage = (fallback = ""): string => {
+		if (fallback.length > 0 && !queuedStateMessages.includes(fallback))
+			queuedStateMessages.push(fallback);
+		const message = queuedStateMessages.join("\n");
+		queuedStateMessages = [];
+		return message;
+	};
 	const deferStateRead = (): boolean => {
 		if (!stateReadInFlight && !chooseInFlight) return false;
-		decisionQueued = true;
+		queueDecision();
 		return true;
 	};
 	const applyShellState = async (
@@ -88,7 +101,7 @@ export async function bootSetup(
 	): Promise<void> => {
 		if (terminal) return;
 		if (chooseInFlight || connectController) {
-			decisionQueued = true;
+			queueDecision(message);
 			if (
 				connectController &&
 				(current.mode === "client" || current.mode === "reopen")
@@ -123,33 +136,62 @@ export async function bootSetup(
 		}
 	};
 	const handleShellStateError = (reason: unknown): void => {
-		if (terminal) rejectBoot?.(reason);
-		else if (!chooseInFlight && !connectController)
-			renderChoices(root, choose, connect, errorMessage(reason));
+		if (terminal) {
+			rejectBoot?.(reason);
+			return;
+		}
+		if (chooseInFlight || connectController) {
+			queueDecision(errorMessage(reason));
+			return;
+		}
+		decisionQueued = false;
+		renderChoices(
+			root,
+			choose,
+			connect,
+			takeQueuedStateMessage(errorMessage(reason)),
+		);
 	};
 	const finishShellStateRead = (): void => {
 		stateReadInFlight = false;
 		if (!decisionQueued || terminal || chooseInFlight || connectController)
 			return;
 		decisionQueued = false;
-		void readShellState();
+		const message = takeQueuedStateMessage();
+		void readShellState(message);
+	};
+	const deferActiveShellState = (
+		current: ShellState,
+		message: string,
+	): boolean => {
+		if (!chooseInFlight && !connectController) return false;
+		queueDecision(message);
+		if (
+			connectController &&
+			(current.mode === "client" || current.mode === "reopen")
+		)
+			connectController.abort();
+		return true;
 	};
 	const readShellState = async (message = ""): Promise<void> => {
-		if (terminal || deferStateRead()) return;
+		if (terminal) return;
+		if (deferStateRead()) {
+			queueDecision(message);
+			return;
+		}
 		stateReadInFlight = true;
 		try {
 			const current = await deps.shellState();
-			if (chooseInFlight || connectController) {
-				decisionQueued = true;
-				if (
-					connectController &&
-					(current.mode === "client" || current.mode === "reopen")
-				)
-					connectController.abort();
-			} else {
-				await applyShellState(current, message);
+			stateReadInFlight = false;
+			if (deferActiveShellState(current, message)) return;
+			const displayMessage = takeQueuedStateMessage(message);
+			if (current.mode === "reopen") {
+				showReopen();
+				return;
 			}
+			await applyShellState(current, displayMessage);
 		} catch (reason) {
+			stateReadInFlight = false;
 			handleShellStateError(reason);
 		} finally {
 			finishShellStateRead();
@@ -185,7 +227,8 @@ export async function bootSetup(
 					connectController = undefined;
 					if (decisionQueued) {
 						decisionQueued = false;
-						void readShellState();
+						const message = takeQueuedStateMessage();
+						void readShellState(message);
 					}
 				}
 			},
@@ -195,7 +238,8 @@ export async function bootSetup(
 				renderChoices(root, choose, connect, errorMessage(reason));
 				if (decisionQueued) {
 					decisionQueued = false;
-					void readShellState();
+					const message = takeQueuedStateMessage(errorMessage(reason));
+					void readShellState(message);
 				}
 			},
 		);
@@ -212,7 +256,8 @@ export async function bootSetup(
 			if (terminal) return;
 			if (decisionQueued) {
 				decisionQueued = false;
-				await readShellState(errorMessage(reason));
+				const message = takeQueuedStateMessage(errorMessage(reason));
+				await readShellState(message);
 				return;
 			}
 			renderChoices(root, choose, connect, errorMessage(reason));
@@ -231,7 +276,8 @@ export async function bootSetup(
 		}
 		if (decisionQueued) {
 			decisionQueued = false;
-			await readShellState(result.message);
+			const message = takeQueuedStateMessage(result.message);
+			await readShellState(message);
 			return;
 		}
 		if (result.message === REOPEN_MESSAGE) {

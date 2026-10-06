@@ -77,7 +77,7 @@ afterEach(() => {
 	window.__COMPASS_SERVER_URL__ = undefined;
 });
 
-test("setup success clears the form and falls back when the result omits serverUrl", async () => {
+test("setup rejects success without serverUrl and retries with the returned URL", async () => {
 	const root = document.createElement("div");
 	const booted = bootNativeClient(root, deps, "setup");
 	await flush();
@@ -89,7 +89,7 @@ test("setup success clears the form and falls back when the result omits serverU
 		!(token instanceof HTMLInputElement)
 	)
 		throw new Error("setup form inputs are missing");
-	url.value = "https://submitted.example";
+	url.value = "https://submitted.example/path";
 	token.value = "token";
 	token.dispatchEvent(new Event("input"));
 	const connect = [...root.querySelectorAll("button")].find(
@@ -99,16 +99,32 @@ test("setup success clears the form and falls back when the result omits serverU
 		throw new Error("connect button is missing");
 	connect.click();
 	await flush();
-	const legacyResult: ConnectResult = {
+	settle(0, {
 		ok: true,
 		kind: "",
 		message: "",
 		accountId: "",
 		serverVersion: "",
 		apiVersion: "",
-	};
-	settle(0, legacyResult);
-	expect((await booted)?.baseUrl).toBe("https://submitted.example");
+	});
+	await flush();
+
+	expect(root.textContent).toContain("Could not connect");
+	expect(root.querySelectorAll("input")).toHaveLength(2);
+	token.value = "retry-token";
+	token.dispatchEvent(new Event("input"));
+	connect.click();
+	await flush();
+	settle(
+		1,
+		connectResult({
+			ok: true,
+			kind: "",
+			serverUrl: "https://normalized.example",
+		}),
+	);
+
+	expect((await booted)?.baseUrl).toBe("https://normalized.example");
 	expect(root.childElementCount).toBe(0);
 });
 
@@ -329,6 +345,64 @@ test("configured provider rejection reaches its caller", async () => {
 		shellConnect: async () => connectResult({ ok: true, kind: "" }),
 	});
 	await expect(booted).rejects.toThrow("configured provider unavailable");
+});
+test("configured retry propagates native provider rejection", async () => {
+	deps.nativeConnectionProvider = () => ({
+		resolve: async () => {
+			throw new Error("retry provider unavailable");
+		},
+	});
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps);
+	await flush();
+	settle(0, connectResult({ kind: "bad-token" }));
+	await flush();
+	const input = root.querySelector("input");
+	const button = root.querySelector("button");
+	if (
+		!(input instanceof HTMLInputElement) ||
+		!(button instanceof HTMLButtonElement)
+	)
+		throw new Error("configured form is missing");
+	input.value = "retry-token";
+	input.dispatchEvent(new Event("input"));
+	button.click();
+	await flush();
+	settle(1, connectResult({ ok: true, kind: "" }));
+
+	await expect(booted).rejects.toThrow("retry provider unavailable");
+});
+test("a rejected configured retry keeps the form available", async () => {
+	let retries = 0;
+	deps.shellConnect = async (token) => {
+		if (token.length === 0) return connectResult({ kind: "bad-token" });
+		retries++;
+		if (retries === 1) throw new Error("temporary IPC failure");
+		return connectResult({ ok: true, kind: "" });
+	};
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps);
+	await flush();
+	const input = root.querySelector("input");
+	const connect = root.querySelector("button");
+	if (
+		!(input instanceof HTMLInputElement) ||
+		!(connect instanceof HTMLButtonElement)
+	)
+		throw new Error("configured retry form is missing");
+	input.value = "first-token";
+	input.dispatchEvent(new Event("input"));
+	connect.click();
+	await flush();
+
+	expect(root.textContent).toContain("temporary IPC failure");
+	expect(root.querySelector("input")).toBe(input);
+	expect(connect.disabled).toBe(false);
+	input.value = "second-token";
+	input.dispatchEvent(new Event("input"));
+	connect.click();
+
+	expect((await booted)?.baseUrl).toBe("https://compass.example:8443");
 });
 
 describe("bootNativeClient — the boot gate", () => {

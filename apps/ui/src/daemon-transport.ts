@@ -5,11 +5,12 @@
 
 // Mirrors the Rust `ResponseFrame` (bridge.rs): a tagged head/body/end/error
 // stream. Body chunks are base64 so they ride the JSON channel as strings.
+// Optional wire fields are omitted by Go when empty.
 export type ResponseFrame =
-	| { kind: "head"; status: number; headers: [string, string][] }
-	| { kind: "body"; chunk: string }
+	| { kind: "head"; status: number; headers?: [string, string][] }
+	| { kind: "body"; chunk?: string }
 	| { kind: "end" }
-	| { kind: "error"; message: string };
+	| { kind: "error"; message?: string };
 
 /**
  * The shell↔UI frame seam (design §A2). A `ShellIpc` proxies a single gRPC-Web
@@ -144,13 +145,13 @@ export function createDaemonFetch(ipc: ShellIpc): DaemonFetch {
 					break;
 				}
 				case "body":
-					controller?.enqueue(decodeChunk(frame.chunk));
+					controller?.enqueue(decodeChunk(frame.chunk ?? ""));
 					break;
 				case "end":
 					controller?.close();
 					break;
 				case "error": {
-					const err = new Error(frame.message);
+					const err = new Error(frame.message ?? "Shell RPC failed");
 					// Before the head arrives the failure rejects `fetch`; after, it
 					// surfaces as a stream error the transport maps to a call failure.
 					if (headSeen) controller?.error(err);
@@ -207,7 +208,14 @@ export function wailsShellIpc(): ShellIpc {
 			};
 			off = Events.On(eventName, (event: Events.WailsEvent) => {
 				const frame: unknown = event.data;
-				if (!isResponseFrame(frame)) return;
+				if (!isResponseFrame(frame)) {
+					onFrame({
+						kind: "error",
+						message: "Invalid response frame from shell",
+					});
+					unsubscribe();
+					return;
+				}
 				onFrame(frame);
 				if (frame.kind === "end" || frame.kind === "error") unsubscribe();
 			});
@@ -345,20 +353,36 @@ function isResponseFrame(value: unknown): value is ResponseFrame {
 	if (value === null || typeof value !== "object" || !("kind" in value))
 		return false;
 	switch (value.kind) {
-		case "head":
+		case "head": {
+			if (
+				!("status" in value) ||
+				typeof value.status !== "number" ||
+				!Number.isInteger(value.status) ||
+				value.status < 200 ||
+				value.status > 599
+			)
+				return false;
 			return (
-				"status" in value &&
-				typeof value.status === "number" &&
-				"headers" in value &&
-				Array.isArray(value.headers) &&
-				value.headers.every((header) => isHeaderPair(header))
+				!("headers" in value) ||
+				value.headers === undefined ||
+				(Array.isArray(value.headers) &&
+					value.headers.every((header) => isHeaderPair(header)))
 			);
+		}
 		case "body":
-			return "chunk" in value && typeof value.chunk === "string";
+			return (
+				!("chunk" in value) ||
+				value.chunk === undefined ||
+				typeof value.chunk === "string"
+			);
 		case "end":
 			return true;
 		case "error":
-			return "message" in value && typeof value.message === "string";
+			return (
+				!("message" in value) ||
+				value.message === undefined ||
+				typeof value.message === "string"
+			);
 		default:
 			return false;
 	}

@@ -145,17 +145,27 @@ function awaitUserConnect(
 				.then(async (result) => {
 					if (result.ok) {
 						root.replaceChildren();
-						resolve(
-							await deps
-								.nativeConnectionProvider(shellServerUrl() ?? "")
-								.resolve(),
-						);
+						try {
+							resolve(
+								await deps
+									.nativeConnectionProvider(shellServerUrl() ?? "")
+									.resolve(),
+							);
+						} catch (reason) {
+							reject(reason);
+						}
 						return;
 					}
 					paint(result);
 					syncDisabled();
 				})
-				.catch(reject);
+				.catch((reason: unknown) => {
+					const message =
+						reason instanceof Error ? reason.message : String(reason);
+					heading.textContent = "Could not connect";
+					detail.textContent = `Try again. ${message}`;
+					button.disabled = false;
+				});
 		});
 		root.replaceChildren(screen);
 	});
@@ -247,6 +257,49 @@ function awaitUserSetupConnect(
 					? "Use Choose CA certificate… above to select the server's CA, then try again."
 					: copy.hint;
 		};
+		const finishWithConnection = async (serverUrl: string): Promise<void> => {
+			signal?.removeEventListener("abort", onAbort);
+			root.replaceChildren();
+			try {
+				finish(await deps.nativeConnectionProvider(serverUrl).resolve());
+			} catch (reason) {
+				fail(reason);
+			}
+		};
+		const handleConnectResult = async (
+			result: ConnectResult,
+		): Promise<void> => {
+			shellCallInFlight = false;
+			if (result.ok && result.serverUrl) {
+				await finishWithConnection(result.serverUrl);
+				return;
+			}
+			if (signal?.aborted) {
+				root.replaceChildren();
+				finish(undefined);
+				return;
+			}
+			if (result.ok) {
+				heading.textContent = "Could not connect";
+				detail.textContent =
+					"The server did not return its normalized server URL. Try again.";
+			} else {
+				paintResult(result);
+			}
+			syncDisabled();
+		};
+		const handleConnectRejection = (reason: unknown): void => {
+			shellCallInFlight = false;
+			if (signal?.aborted) {
+				root.replaceChildren();
+				finish(undefined);
+				return;
+			}
+			const message = reason instanceof Error ? reason.message : String(reason);
+			heading.textContent = "Could not connect";
+			detail.textContent = `Try again. ${message}`;
+			syncDisabled();
+		};
 		url.addEventListener("input", syncDisabled);
 		token.addEventListener("input", syncDisabled);
 		signal?.addEventListener("abort", onAbort, { once: true });
@@ -283,42 +336,8 @@ function awaitUserSetupConnect(
 			shellCallInFlight = true;
 			syncDisabled();
 			void deps.shellConnect(secret, server).then(
-				async (result) => {
-					shellCallInFlight = false;
-					if (result.ok) {
-						signal?.removeEventListener("abort", onAbort);
-						root.replaceChildren();
-						try {
-							const connection = await deps
-								.nativeConnectionProvider(result.serverUrl ?? server.url)
-								.resolve();
-							finish(connection);
-						} catch (reason) {
-							fail(reason);
-						}
-						return;
-					}
-					if (signal?.aborted) {
-						root.replaceChildren();
-						finish(undefined);
-						return;
-					}
-					paintResult(result);
-					syncDisabled();
-				},
-				(reason: unknown) => {
-					shellCallInFlight = false;
-					if (signal?.aborted) {
-						root.replaceChildren();
-						finish(undefined);
-						return;
-					}
-					const message =
-						reason instanceof Error ? reason.message : String(reason);
-					heading.textContent = "Could not connect";
-					detail.textContent = `Try again. ${message}`;
-					syncDisabled();
-				},
+				(result) => handleConnectResult(result),
+				(reason: unknown) => handleConnectRejection(reason),
 			);
 		});
 		root.replaceChildren(screen);
