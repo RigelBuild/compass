@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const agentAttachAuthorized = `-- name: AgentAttachAuthorized :one
@@ -102,13 +104,52 @@ type TopicChannelMemberExistsParams struct {
 // Authorization-probe queries (sqlc adoption T6, RIG-3034). These replace the
 // inline SQL literals in internal/store/authz.go; the hand-written helpers keep
 // their signatures and the not-found/forbidden merge, wrapping these EXISTS
-// probes (each returns a bare bool). requireChannelMember / isChannelMember reuse
-// ChannelMemberExists (channels.sql) — the statement is textually identical — so
-// only the three probes without an existing query live here.
+// probes. requireChannelMember / isChannelMember wrap ChannelParticipant
+// (channels.sql); the topic-keyed and creation probes live here.
 // Feeds IsTopicChannelMember: membership on the channel that owns the topic.
 func (q *Queries) TopicChannelMemberExists(ctx context.Context, arg TopicChannelMemberExistsParams) (bool, error) {
 	row := q.db.QueryRow(ctx, topicChannelMemberExists, arg.ID, arg.AccountID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const topicChannelParticipant = `-- name: TopicChannelParticipant :one
+WITH RECURSIVE tc AS (
+    SELECT t.channel_id FROM topics t WHERE t.id = $1
+), chain AS (
+    SELECT aa.account_id, aa.parent_agent_id
+    FROM agent_accounts aa
+    WHERE aa.account_id = $2
+      AND EXISTS (SELECT 1 FROM channels c JOIN tc ON c.id = tc.channel_id WHERE c.membership_mode = 1)
+    UNION
+    SELECT a.account_id, a.parent_agent_id
+    FROM agent_accounts a
+    JOIN chain ch ON a.account_id = ch.parent_agent_id
+)
+SELECT EXISTS (
+    SELECT 1 FROM tc JOIN channel_members cm ON cm.channel_id = tc.channel_id
+    WHERE cm.account_id = $2
+) OR EXISTS (
+    SELECT 1 FROM channels c JOIN tc ON c.id = tc.channel_id
+    WHERE c.membership_mode = 1 AND (
+        c.parent_agent_id IN (SELECT ch.account_id FROM chain ch)
+        OR $2 = (SELECT aa.owner_user_id FROM agent_accounts aa
+                 WHERE aa.account_id = c.parent_agent_id)
+    )
+)
+`
+
+type TopicChannelParticipantParams struct {
+	ID        string
+	AccountID string
+}
+
+// Feeds IsTopicChannelMember: ChannelParticipant on the channel that owns the
+// topic. UNION stops the agent-parent walk on a cycle, as there.
+func (q *Queries) TopicChannelParticipant(ctx context.Context, arg TopicChannelParticipantParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, topicChannelParticipant, arg.ID, arg.AccountID)
+	var column_1 pgtype.Bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }

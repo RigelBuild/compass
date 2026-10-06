@@ -311,7 +311,7 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	if err := requireChannelParticipant(ctx, qtx, actor, channelID); err != nil {
+	if err := requireChannelMember(ctx, tx, actor, channelID); err != nil {
 		return Channel{}, err
 	}
 	row, err := qtx.LockChannelForReparent(ctx, string(channelID))
@@ -321,7 +321,7 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 		}
 		return Channel{}, fmt.Errorf("store: lock channel for reparent: %w", err)
 	}
-	if err := requireChannelParticipant(ctx, qtx, actor, channelID); err != nil {
+	if err := requireChannelMember(ctx, tx, actor, channelID); err != nil {
 		return Channel{}, err
 	}
 
@@ -369,22 +369,6 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 		return Channel{}, fmt.Errorf("store: commit reparent channel: %w", err)
 	}
 	return s.getChannel(ctx, channelID)
-}
-
-// requireChannelParticipant is the ReparentChannel gate: non-participant and
-// unknown channel both merge to ErrNotFound.
-func requireChannelParticipant(ctx context.Context, q *db.Queries, actor AccountID, channelID ChannelID) error {
-	participant, err := q.ChannelParticipant(ctx, db.ChannelParticipantParams{
-		ChannelID: string(channelID),
-		AccountID: string(actor),
-	})
-	if err != nil {
-		return fmt.Errorf("store: check channel participation: %w", err)
-	}
-	if !participant.Valid || !participant.Bool {
-		return fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
-	}
-	return nil
 }
 
 // expandOwnerMembership computes the final member set for a new channel: the

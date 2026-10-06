@@ -8,7 +8,7 @@ import (
 )
 
 // requireChannelMember is the D9 write-authorization primitive: it verifies the
-// actor is a member of channelID and returns ErrNotFound if not. This mirrors
+// actor participates in channelID (isChannelMember) and returns ErrNotFound if not. This mirrors
 // the read paths' membership gate (ListMessages/SearchMessages/AnswerAsk JOIN
 // channel_members) so a write authorizes against the same visible set a read
 // does — a caller who cannot see a channel cannot mutate it either, and the
@@ -21,12 +21,9 @@ import (
 // the design record requires on every write RPC ("authorized server-side
 // against the authenticated account's visible set", design.md:1101-1102).
 func requireChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID ChannelID) error {
-	member, err := db.New(q).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
-		ChannelID: string(channelID),
-		AccountID: string(actor),
-	})
+	member, err := isChannelMember(ctx, q, actor, channelID)
 	if err != nil {
-		return fmt.Errorf("store: check channel membership: %w", err)
+		return err
 	}
 	if !member {
 		// The not-found/forbidden merge: a non-member is told the channel does
@@ -46,17 +43,19 @@ func (s *Store) IsChannelMember(ctx context.Context, actor AccountID, channelID 
 	return isChannelMember(ctx, s.scopedPool(), actor, channelID)
 }
 
-// isChannelMember reports whether actor is a member of channelID (the
-// package-internal form IsChannelMember exports and requireChannelMember wraps).
+// isChannelMember reports whether actor participates in channelID: a member
+// row, or for a TREE channel the anchor's subtree or owner (ChannelParticipant).
+// It is the package-internal form IsChannelMember exports and
+// requireChannelMember wraps.
 func isChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID ChannelID) (bool, error) {
-	member, err := db.New(q).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
+	participant, err := db.New(q).ChannelParticipant(ctx, db.ChannelParticipantParams{
 		ChannelID: string(channelID),
 		AccountID: string(actor),
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: check channel membership: %w", err)
 	}
-	return member, nil
+	return participant.Valid && participant.Bool, nil
 }
 
 // IsTopicChannelMember reports whether actor is a member of the channel that
@@ -68,14 +67,14 @@ func isChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID 
 // (which JOINs channel_members on the topic's channel). An unknown topic yields
 // false (not visible) — the not-found/forbidden merge extended to the stream.
 func (s *Store) IsTopicChannelMember(ctx context.Context, actor AccountID, topicID string) (bool, error) {
-	member, err := s.q.TopicChannelMemberExists(ctx, db.TopicChannelMemberExistsParams{
+	participant, err := s.q.TopicChannelParticipant(ctx, db.TopicChannelParticipantParams{
 		ID:        topicID,
 		AccountID: string(actor),
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: check topic channel membership: %w", err)
 	}
-	return member, nil
+	return participant.Valid && participant.Bool, nil
 }
 
 // requireGroupCreateAuthz authorizes creating a channel inside groupID. The
