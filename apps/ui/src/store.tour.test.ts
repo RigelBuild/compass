@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { TourOutcome } from "@compass/client";
+import type { PostHog } from "posthog-js";
 import { createRoot, createSignal, flush } from "solid-js";
+import { type Analytics, createAnalytics } from "./analytics/analytics";
 import { STUB_COMMS_STATE } from "./comms-stub";
 import type { CommandId } from "./keyboard/commands";
 import {
@@ -601,6 +603,174 @@ describe("tour transitions", () => {
 				stepId: stepId(1),
 			});
 		});
+	});
+});
+
+// A recording Analytics stub: the embed as the tour sees it with the flag on.
+function analyticsStub(): {
+	analytics: Analytics;
+	events: { event: string; props?: Record<string, unknown> }[];
+} {
+	const events: { event: string; props?: Record<string, unknown> }[] = [];
+	return {
+		events,
+		analytics: {
+			capture: (event, props) => {
+				events.push(props === undefined ? { event } : { event, props });
+			},
+			identify: () => {},
+			sessionId: () => undefined,
+			shutdown: () => {},
+		},
+	};
+}
+
+describe("tour analytics", () => {
+	test("a replay emits started, then one step_viewed per step, then completed", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			for (let i = 0; i <= LAST; i++) {
+				store.tour.next();
+				flush();
+			}
+			expect(store.tour.open()).toBe(false);
+			expect(stub.events).toEqual([
+				{ event: "tour_started", props: { trigger: "replay" } },
+				...TOUR_STEPS.map((step, index) => ({
+					event: "tour_step_viewed",
+					props: { step_id: step.id, index },
+				})),
+				{ event: "tour_completed", props: {} },
+			]);
+		});
+	});
+
+	test("Back re-views the earlier step and dismiss reports the current step", async () => {
+		const stub = analyticsStub();
+		await withStore({ analytics: stub.analytics }, async (store) => {
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.back();
+			flush();
+			store.tour.dismiss();
+			flush();
+			expect(stub.events).toEqual([
+				{ event: "tour_started", props: { trigger: "replay" } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(0), index: 0 } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(1), index: 1 } },
+				{ event: "tour_step_viewed", props: { step_id: stepId(0), index: 0 } },
+				{ event: "tour_dismissed", props: { step_id: stepId(0) } },
+			]);
+		});
+	});
+
+	test("a won first-run claim reports the first-run trigger", async () => {
+		const stub = analyticsStub();
+		const fake = tourFake({ claim: true });
+		await withStore(
+			{ analytics: stub.analytics, tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				store.tour.start("first-run");
+				flush();
+				expect(stub.events.slice(0, 2)).toEqual([
+					{ event: "tour_started", props: { trigger: "first-run" } },
+					{
+						event: "tour_step_viewed",
+						props: { step_id: stepId(0), index: 0 },
+					},
+				]);
+			},
+		);
+	});
+
+	test("a held resume reports one start at the saved step once the read lands", async () => {
+		const stub = analyticsStub();
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore(
+			{ analytics: stub.analytics, tour: fake.client },
+			async (store) => {
+				store.tour.start("resume");
+				flush();
+				expect(stub.events).toEqual([]);
+				read.open();
+				await settle();
+				expect(stub.events).toEqual([
+					{ event: "tour_started", props: { trigger: "resume" } },
+					{
+						event: "tour_step_viewed",
+						props: { step_id: stepId(3), index: 3 },
+					},
+				]);
+			},
+		);
+	});
+
+	test("refused transitions and close emit nothing", async () => {
+		const stub = analyticsStub();
+		const fake = tourFake({ claim: false });
+		await withStore(
+			{ analytics: stub.analytics, tour: fake.client, claimFirstRun: true },
+			async (store) => {
+				await settle();
+				// A lost claim, and every transition while closed, is a no-op.
+				store.tour.start("first-run");
+				store.tour.next();
+				store.tour.back();
+				store.tour.dismiss();
+				store.tour.complete();
+				flush();
+				expect(stub.events).toEqual([]);
+				store.tour.start("replay");
+				flush();
+				const opened = stub.events.length;
+				store.tour.back();
+				store.tour.close();
+				flush();
+				expect(stub.events.length).toBe(opened);
+			},
+		);
+	});
+
+	test("with the flag off the tour runs end to end and posthog is never called", async () => {
+		const calls: string[] = [];
+		const record = (method: string) => () => {
+			calls.push(method);
+		};
+		const fakePosthog = {
+			init: record("init"),
+			capture: record("capture"),
+			identify: record("identify"),
+			reset: record("reset"),
+			get_session_id: () => "",
+		};
+		// SAFETY: the disabled embed never dereferences the client; the fake only records.
+		const posthog = fakePosthog as unknown as PostHog;
+		const fake = tourFake({ claim: false });
+		await withStore(
+			{ analytics: createAnalytics(undefined, { posthog }), tour: fake.client },
+			async (store) => {
+				await settle();
+				store.tour.start("replay");
+				flush();
+				store.tour.next();
+				flush();
+				store.tour.dismiss();
+				await settle();
+				expect(store.tour.open()).toBe(false);
+				expect(fake.writes.at(-1)?.outcome).toBe(TourOutcome.DISMISSED);
+				expect(calls).toEqual([]);
+			},
+		);
 	});
 });
 

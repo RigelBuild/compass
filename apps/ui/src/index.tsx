@@ -87,6 +87,7 @@ async function main(
 			// opens the tour when the claim is won.
 			tour: clients.compass,
 			claimFirstRun: true,
+			analytics,
 			queryClient,
 			callerId,
 			// Namespace persisted UI prefs (the pinned-agent set) to this

@@ -29,6 +29,7 @@ import {
 	untrack,
 } from "solid-js";
 import type { Pane } from "./agent-tabs";
+import type { Analytics } from "./analytics/analytics";
 import { type PrRow, prRows } from "./board";
 import { agentDmAccountId, firstChannelId } from "./comms";
 import {
@@ -76,6 +77,7 @@ import {
 	STUB_ISSUES,
 	type TrackerConfig,
 } from "./stub-data";
+import { captureTourEvent } from "./tour/analytics";
 import {
 	DEMO_ACCOUNTS,
 	DEMO_AGENTS,
@@ -647,6 +649,9 @@ export interface AppStoreOptions {
 	/** Claim the first run at boot (needs `tour`). Only a boot whose app reacts
 	 *  to `shouldAutoStart` may set it: the claim writes STARTED server-side. */
 	readonly claimFirstRun?: boolean;
+	/** The product-analytics embed the tour reports through. Absent → no events,
+	 *  the same as the embed's own flag-off no-op. */
+	readonly analytics?: Analytics;
 }
 
 /** One live session's tailed trace and the last lifecycle state the tail saw.
@@ -2010,6 +2015,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		if (!step) return;
 		setTourStepIndex(index);
 		resumeStepId = step.id;
+		captureTourEvent(options.analytics, {
+			name: "tour_step_viewed",
+			step_id: step.id,
+			index,
+		});
 		if (step.route === "/") showBridge();
 		else if (step.route === "/backlog") showBacklog();
 		else if (step.route === "/done") showDone();
@@ -2041,6 +2051,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			);
 			setTourOpen(true);
 			setDemoActive(true);
+			captureTourEvent(options.analytics, { name: "tour_started", trigger });
 			showStep(
 				trigger === "resume" ? Math.max(resumed, 0) : 0,
 				trigger !== "first-run",
@@ -2062,11 +2073,16 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		dismiss: () => {
 			if (!tourOpen()) return;
 			writeTourState(TourOutcome.DISMISSED, resumeStepId);
+			captureTourEvent(options.analytics, {
+				name: "tour_dismissed",
+				step_id: resumeStepId,
+			});
 			endTour();
 		},
 		complete: () => {
 			if (!tourOpen()) return;
 			writeTourState(TourOutcome.COMPLETED, resumeStepId);
+			captureTourEvent(options.analytics, { name: "tour_completed" });
 			endTour();
 		},
 	};
