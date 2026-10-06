@@ -160,7 +160,6 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 const personaReadSlack = 4096
 
 // readPersonaFile reads, caps, and trims --persona-file; an empty file is an error.
-
 func readPersonaFile(path string) (persona string, err error) {
 	file, err := os.Open(path) // #nosec G304 -- operator explicitly selects the persona file path.
 	if err != nil {
@@ -176,6 +175,9 @@ func readPersonaFile(path string) (persona string, err error) {
 	contents, err := io.ReadAll(io.LimitReader(file, store.MaxPersonaBytes+personaReadSlack+1))
 	if err != nil {
 		return "", fmt.Errorf("reading persona file %q: %w", path, err)
+	}
+	if len(contents) > store.MaxPersonaBytes+personaReadSlack {
+		return "", fmt.Errorf("persona file %q exceeds the 64 KiB limit", path)
 	}
 	if !utf8.Valid(contents) {
 		return "", fmt.Errorf("persona file %q is not valid UTF-8", path)
