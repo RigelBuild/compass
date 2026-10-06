@@ -98,6 +98,39 @@ func (e cliEngine) run(ctx context.Context, summary string, args []string) ([]by
 // The shell notices for those kills go to /dev/null; "$@" keeps the real stderr.
 const stopWithClientScript = `exec 3>&2; { { sh -c 'echo "$$"; exec cat' && kill -s KILL 0; } | { read -r w; "$@" 2>&3 3>&-; s=$?; kill -s KILL "$w"; exit "$s"; }; } 2>/dev/null` //nolint:gosec // G101: a shell script, not a credential
 
+// sessionSweepScript kills detached exec sessions while preserving PID 1's
+// session, which carries the container keep-alive needed for in-place reloads.
+const sessionSweepScript = `IFS=' '
+read -r stat < /proc/1/stat || { echo "cannot read PID 1 stat" >&2; exit 1; }
+rest=${stat##*) }
+set -- $rest
+pid1=$4
+if [ -z "$pid1" ]; then
+	echo "cannot determine PID 1 session" >&2
+	exit 1
+fi
+round=0
+while [ "$round" -lt 50 ]; do
+	round=$((round + 1))
+	survivors=0
+	for d in /proc/[0-9]*; do
+		read -r stat < "$d/stat" || continue
+		rest=${stat##*) }
+		set -- $rest
+		state=$1
+		sid=$4
+		pid=${d#/proc/}
+		[ "$sid" = "$pid1" ] || [ "$pid" = "$$" ] || [ "$state" = Z ] && continue
+		# Count only landed kills: another uid's process (EPERM) is outside this sweep.
+		if kill -s KILL "$pid" 2>/dev/null; then
+			survivors=$((survivors + 1))
+		fi
+	done
+	[ "$survivors" -eq 0 ] && exit 0
+done
+echo "processes remain outside PID 1 session after 50 sweeps" >&2
+exit 1`
+
 // stopWithClient wraps command so killing the engine client also kills its
 // in-container process group, which the engine leaves running on its own.
 // A descendant that called setsid escapes the group kill.

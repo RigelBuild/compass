@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"maps"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -128,6 +129,7 @@ type liveSession struct {
 	sessionID     string
 	containerName string
 	containerID   runtime.WorkloadID
+	agentUID      uint32
 	stream        *AgentStream
 	state         compassv1.AgentSessionState
 	// agentAccountID is the owned agent account this session belongs to, copied
@@ -481,6 +483,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		sessionID:      sessionID,
 		containerName:  name,
 		containerID:    handle.ID(),
+		agentUID:       handle.WorkspaceUID(),
 		stream:         stream,
 		state:          compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
 		agentAccountID: handle.AgentAccountID(),
@@ -516,7 +519,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 
 // Stop tears a session down. An unknown/already-stopped session succeeds
 // (idempotent, matching the established StopAgentSession semantics).
-func (h *agentHost) Stop(_ context.Context, sessionID string) error {
+func (h *agentHost) Stop(ctx context.Context, sessionID string) error {
 	// Resolve session→container under h.mu first, release, then take the
 	// container lock and re-check — the resolve-then-lock protocol (the lock key
 	// is the container, but the caller names a session). A session that vanished
@@ -546,10 +549,16 @@ func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 	if !ok {
 		return nil
 	}
-	if s.stream == nil {
-		return nil
+	if s.stream != nil {
+		if err := s.stream.Stop(); err != nil {
+			return err
+		}
 	}
-	return s.stream.Stop()
+	if err := h.sweepExecSessions(ctx, s); err != nil {
+		h.log.Warn("sweeping detached agent exec sessions after stop",
+			slog.String("container", s.containerName), slog.String("session_id", sessionID), slog.Any("error", err))
+	}
+	return nil
 }
 
 // Remove tears a container down and everything bound to it: it retires the live
@@ -1096,6 +1105,9 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 			return err
 		}
 	}
+	if err := h.sweepExecSessions(ctx, s); err != nil {
+		return fmt.Errorf("sweeping detached agent exec sessions before reload for container %q: %w", s.containerName, err)
+	}
 	// Hand the control state to the new process before it launches: replay_complete
 	// becomes seq 1 and unacked ops follow, so no concurrent Deliver lands ahead of
 	// the barrier. An ERRORED session was retired at exit, so Bind recreates it.
@@ -1257,4 +1269,13 @@ func (h *agentHost) closeSocket(ctx context.Context, containerName string) {
 	if err := listener.Close(ctx); err != nil {
 		h.log.Warn("closing agent socket", slog.String("container", containerName), slog.Any("error", err))
 	}
+}
+
+// sweepExecSessions runs the optional container-backend sweep for this agent.
+func (h *agentHost) sweepExecSessions(ctx context.Context, s *liveSession) error {
+	sweeper, ok := h.engine.(runtime.SessionSweeper)
+	if !ok {
+		return nil
+	}
+	return sweeper.SweepExecSessions(ctx, s.containerID, strconv.FormatUint(uint64(s.agentUID), 10))
 }

@@ -39,6 +39,46 @@ func TestExecStreamingStopKillsInContainerProcess(t *testing.T) {
 	})
 }
 
+// TestExecStreamingStopSweepsDetachedSession verifies that Stop kills work in
+// a new session without killing the container's PID 1 keep-alive.
+func TestExecStreamingStopSweepsDetachedSession(t *testing.T) {
+	cli, id, name := startKeepAlive(t)
+
+	script := `bun -e 'require("child_process").spawn("sleep", ["3002"], {detached: true, stdio: "ignore"}).unref()'; exec sleep 3000`
+	stream, err := cli.ExecStreaming(t.Context(), id, agentExecSpec("sh", "-c", script))
+	if err != nil {
+		t.Fatalf("ExecStreaming: %v", err)
+	}
+	waitForTop(t, name, func(procs []string) bool {
+		return hasProcess(procs, "sleep 3000") && hasProcess(procs, "sleep 3002")
+	})
+
+	if err := stream.Process.Terminate(); err != nil && !isClientKill(err) {
+		t.Fatalf("Terminate: unexpected error %v", err)
+	}
+	waitForTop(t, name, func(procs []string) bool {
+		return !hasProcess(procs, "sleep 3000") && hasProcess(procs, "sleep 3002")
+	})
+
+	sweeper, ok := any(cli).(runtime.SessionSweeper)
+	if !ok {
+		t.Fatal("PodmanCLI does not implement runtime.SessionSweeper")
+	}
+	if err := sweeper.SweepExecSessions(t.Context(), id, strconv.FormatUint(uint64(agentuid.AgentUID), 10)); err != nil {
+		t.Fatalf("SweepExecSessions: %v", err)
+	}
+	waitForTop(t, name, func(procs []string) bool {
+		return !hasProcess(procs, "sleep 3000") && !hasProcess(procs, "sleep 3002") && hasProcess(procs, "sleep infinity")
+	})
+	running, err := cli.Running(t.Context(), name)
+	if err != nil {
+		t.Fatalf("Running: %v", err)
+	}
+	if !running {
+		t.Fatal("container stopped during exec-session sweep")
+	}
+}
+
 // TestExecStreamingNaturalExitKeepsStatus pins that an exec which exits on its
 // own, with stdin still open, returns promptly with its own exit code.
 func TestExecStreamingNaturalExitKeepsStatus(t *testing.T) {
