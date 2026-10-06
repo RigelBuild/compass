@@ -43,19 +43,19 @@ type forgeStub struct {
 	tokens   map[int64]string
 }
 
-func newForgeStub(t *testing.T) *forgeStub {
-	t.Helper()
+func newForgeStub(tb testing.TB) *forgeStub {
+	tb.Helper()
 	kp, err := certgen.Generate([]string{"127.0.0.1", "localhost"}, 0)
 	if err != nil {
-		t.Fatalf("certgen.Generate: %v", err)
+		tb.Fatalf("certgen.Generate: %v", err)
 	}
 	cert, err := tls.X509KeyPair(kp.CertPEM, kp.KeyPEM)
 	if err != nil {
-		t.Fatalf("tls.X509KeyPair: %v", err)
+		tb.Fatalf("tls.X509KeyPair: %v", err)
 	}
-	caPath := filepath.Join(t.TempDir(), "forge-ca.pem")
+	caPath := filepath.Join(tb.TempDir(), "forge-ca.pem")
 	if err := os.WriteFile(caPath, kp.CertPEM, 0o600); err != nil {
-		t.Fatalf("write CA: %v", err)
+		tb.Fatalf("write CA: %v", err)
 	}
 
 	s := &forgeStub{
@@ -66,7 +66,7 @@ func newForgeStub(t *testing.T) *forgeStub {
 	s.srv = httptest.NewUnstartedServer(http.HandlerFunc(s.handle))
 	s.srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}
 	s.srv.StartTLS()
-	t.Cleanup(s.srv.Close)
+	tb.Cleanup(s.srv.Close)
 	return s
 }
 
