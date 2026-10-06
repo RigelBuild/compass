@@ -5,6 +5,10 @@ package store
 // are assigned by the store or an explicit actor arg, never client input, so a
 // caller cannot forge ownership or identity (comms.proto:31-37).
 
+// MaxPersonaBytes caps a stored persona. It is prompt text baked into every
+// container, and both create doors are open to any authenticated caller.
+const MaxPersonaBytes = 64 * 1024
+
 // UserAccount input for CreateUser. The new account is always a regular member;
 // role elevation is a separate admin path (comms.proto:39-42), not a field a
 // signup can set, so no role appears here.

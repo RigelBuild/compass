@@ -25,9 +25,6 @@ import (
 // deadline reaches the server too, so it cuts a stuck Provision or Start short.
 const spawnTimeout = 5 * time.Minute
 
-// maxPersonaFileSize caps --persona-file; a persona is prompt text, not a document.
-const maxPersonaFileSize = 64 * 1024
-
 // agentSpawnArgs is the parsed `agent spawn` flag set.
 type agentSpawnArgs struct {
 	handle      string
@@ -169,11 +166,11 @@ func readPersonaFile(path string) (persona string, err error) {
 		}
 	}()
 
-	contents, err := io.ReadAll(io.LimitReader(file, maxPersonaFileSize+1))
+	contents, err := io.ReadAll(io.LimitReader(file, store.MaxPersonaBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("reading persona file %q: %w", path, err)
 	}
-	if len(contents) > maxPersonaFileSize {
+	if len(contents) > store.MaxPersonaBytes {
 		return "", fmt.Errorf("persona file %q exceeds the 64 KiB limit", path)
 	}
 	persona = strings.TrimSpace(string(contents))
