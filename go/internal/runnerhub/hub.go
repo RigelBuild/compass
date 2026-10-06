@@ -43,6 +43,9 @@ type RunnerEvent struct {
 	RunnerID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
+	// EnrollGen is the hub's enrollment generation when the frame's stream opened;
+	// a session frame from an older one is dropped. Zero means no enrollment fence.
+	EnrollGen uint64
 }
 
 // LifecycleSink publishes an extracted agent-session lifecycle transition onto
@@ -450,8 +453,8 @@ type Hub struct {
 	// frames at or below it are from the dead lifetime; the counter resets only with
 	// re-enroll, which clears the map. lifecycleMu-guarded.
 	erroredSessions map[string]uint64
-	// lifecycleGen counts enrollments; a delivery that began under an older one must
-	// not reinstall a boundary the re-enroll cleared. Written under lifecycleMu.
+	// lifecycleGen counts enrollments, so frames from a stream opened before a
+	// re-enroll cannot act on its sessions. Written under lifecycleMu.
 	lifecycleGen atomic.Uint64
 	// accountSessions is the REVERSE of sessionAccounts (account -> live session_id),
 	// maintained wherever sessionAccounts is so the two never drift. The delivery
@@ -460,9 +463,12 @@ type Hub struct {
 	accountSessions map[store.AccountID]string
 	// lastSeq is the highest RunnerSeq Deliver has accepted, for gap detection.
 	lastSeq uint64
-	// seenGap records whether a sequence gap was ever observed (in-transit
-	// loss), surfaced for the board/diagnostics.
-	seenGap bool
+	// missingSeqs holds skipped RunnerSeqs not yet seen. Container Gateways share
+	// one counter but send on separate streams, so a skipped seq may arrive late;
+	// a gap is loss only while it stays open. Capped at maxMissingSeqs.
+	missingSeqs map[uint64]struct{}
+	// gapOverflow is set once more seqs went missing than the cap can track.
+	gapOverflow bool
 	// unknownFrames counts frames whose oneof variant was unset or unrecognized
 	// — logged and counted, never silently dropped (agent.proto:38-39).
 	unknownFrames uint64
@@ -513,6 +519,7 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 		sessionAccounts:   make(map[string]sessionBinding),
 		accountSessions:   make(map[store.AccountID]string),
 		erroredSessions:   make(map[string]uint64),
+		missingSeqs:       make(map[uint64]struct{}),
 		reapStale:         make(map[string]uint64),
 		runnerEpoch:       make(map[string]uint64),
 	}
@@ -698,7 +705,7 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
-		h.deliverSession(ctx, ev.RunnerID, ev.SessionID, ev.RunnerSeq, f.Session)
+		h.deliverSession(ctx, ev, f.Session)
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
@@ -715,12 +722,18 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 }
 
-// SeenGap reports whether Deliver ever observed a Runner-sequence gap. For the
+// EnrollGeneration returns the current enrollment generation, for a stream to
+// stamp on its RunnerEvents.
+func (h *Hub) EnrollGeneration() uint64 {
+	return h.lifecycleGen.Load()
+}
+
+// SeenGap reports whether a skipped Runner sequence is still unseen. For the
 // board/diagnostics; a gap means in-transit loss the Client bus resync recovers.
 func (h *Hub) SeenGap() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.seenGap
+	return h.seenGapLocked()
 }
 
 // UnknownFrames reports the count of unset/unrecognized frames Deliver has seen.
@@ -746,7 +759,7 @@ func (h *Hub) DroppedAcks() uint64 {
 // one would interleave with Deliver and could report a gap without the drop that
 // accompanied it.
 type FrameDiagnostics struct {
-	// SeenGap is true once a Runner-sequence gap was observed (in-transit loss
+	// SeenGap is true while a skipped Runner sequence is unseen (in-transit loss
 	// the Client bus resync recovers).
 	SeenGap bool
 	// UnknownFrames counts frames whose oneof variant was unset or unrecognized.
@@ -765,7 +778,7 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return FrameDiagnostics{
-		SeenGap:       h.seenGap,
+		SeenGap:       h.seenGapLocked(),
 		UnknownFrames: h.unknownFrames,
 		DroppedAcks:   h.droppedAcks,
 	}
@@ -800,8 +813,15 @@ func (h *Hub) fireRunnerReady() {
 // deliverSession routes session frames to the observation pane, publishes lifecycle
 // transitions, and retires an owned session when its Runner reports ERRORED.
 // UNSPECIFIED means "trace only, no transition".
-func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, seq uint64, sf *compassv1internal.SessionFrame) {
-	gen := h.lifecycleGen.Load()
+func (h *Hub) deliverSession(ctx context.Context, ev RunnerEvent, sf *compassv1internal.SessionFrame) {
+	runnerID, sessionID, seq := ev.RunnerID, ev.SessionID, ev.RunnerSeq
+	gen := ev.EnrollGen
+	if gen == 0 {
+		gen = h.lifecycleGen.Load()
+	}
+	if h.staleEnrollment(runnerID, sessionID, gen) {
+		return
+	}
 	state := sf.GetState()
 	lifecycle := state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
 	// A frame the publishing Runner may not speak for is dropped whole: its trace,
@@ -817,10 +837,13 @@ func (h *Hub) deliverSession(ctx context.Context, runnerID, sessionID string, se
 		return
 	}
 	h.lifecycleMu.Lock()
+	// Re-checked under the lock: enroll may have run since the first check.
+	if h.staleEnrollment(runnerID, sessionID, gen) {
+		h.lifecycleMu.Unlock()
+		return
+	}
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
-		if gen == h.lifecycleGen.Load() {
-			h.erroredSessions[sessionID] = max(h.erroredSessions[sessionID], seq)
-		}
+		h.erroredSessions[sessionID] = max(h.erroredSessions[sessionID], seq)
 	} else if erroredSeq, errored := h.erroredSessions[sessionID]; errored && seq <= erroredSeq {
 		h.lifecycleMu.Unlock()
 		h.log.Debug("ignored stale lifecycle frame from before ERRORED",
@@ -964,20 +987,47 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 	}
 }
 
-// recordSeq advances the accepted-sequence high-water mark and flags a gap when
-// the observed seq is not exactly one past the last (in-transit loss). The first
-// event (lastSeq == 0) establishes the baseline without flagging.
+// staleEnrollment reports, and logs, a session frame whose stream predates the
+// current enrollment.
+func (h *Hub) staleEnrollment(runnerID, sessionID string, gen uint64) bool {
+	if gen == h.lifecycleGen.Load() {
+		return false
+	}
+	h.log.Debug("dropped session frame from a stream opened before re-enroll",
+		slog.String("runner_id", runnerID), slog.String("session_id", sessionID))
+	return true
+}
+
+// maxMissingSeqs bounds missingSeqs against a corrupt or hostile seq jump.
+const maxMissingSeqs = 4096
+
+// recordSeq advances the accepted-sequence high-water mark and records the seqs
+// a jump skipped; a late arrival fills its gap. The first event (lastSeq == 0)
+// establishes the baseline without flagging.
 func (h *Hub) recordSeq(seq uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if seq <= h.lastSeq {
+		delete(h.missingSeqs, seq)
+		return
+	}
 	if h.lastSeq != 0 && seq > h.lastSeq+1 {
-		h.seenGap = true
 		h.log.Warn("runner event sequence gap",
 			slog.Uint64("expected", h.lastSeq+1), slog.Uint64("got", seq))
+		for missing := h.lastSeq + 1; missing < seq; missing++ {
+			if len(h.missingSeqs) >= maxMissingSeqs {
+				h.gapOverflow = true
+				break
+			}
+			h.missingSeqs[missing] = struct{}{}
+		}
 	}
-	if seq > h.lastSeq {
-		h.lastSeq = seq
-	}
+	h.lastSeq = seq
+}
+
+// seenGapLocked reports whether any skipped seq is still unseen. Caller holds mu.
+func (h *Hub) seenGapLocked() bool {
+	return h.gapOverflow || len(h.missingSeqs) > 0
 }
 
 // countUnknown records and logs an unknown frame.

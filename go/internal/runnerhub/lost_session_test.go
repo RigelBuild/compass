@@ -252,6 +252,41 @@ func (s *pausingTailSink) RelaySessionFrame(_ string, frame *compassv1internal.S
 	})
 }
 
+func TestFramesFromStreamBeforeReenrollAreDropped(t *testing.T) {
+	ctx := t.Context()
+	hub, lifecycle, tail := newHub()
+	settle := &fakeSettleSink{}
+	hub.SetSettleSink(settle)
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	oldGen := hub.EnrollGeneration()
+
+	// The Runner restarts and resumes the same session id before the old stream drains.
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	if err := hub.Deliver(ctx, RunnerEvent{
+		RunnerID: "runner-1", RunnerSeq: 9, SessionID: "sess-1", EnrollGen: oldGen,
+		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED),
+	}); err != nil {
+		t.Fatalf("Deliver(old-stream ERRORED) = %v, want nil", err)
+	}
+
+	if got := lifecycle.snapshot(); len(got) != 0 {
+		t.Fatalf("published statuses = %+v, want none from the old stream", got)
+	}
+	if got := tail.snapshot(); len(got) != 0 {
+		t.Fatalf("relayed frames = %+v, want none from the old stream", got)
+	}
+	if got := settle.snapshot(); len(got) != 0 {
+		t.Fatalf("settle edges = %+v, want none from the old stream", got)
+	}
+	lost.none(t, "an old-stream ERRORED must not unbind the resumed session")
+	deliverState(t, hub, 1, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	assertPublished(t, lifecycle, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+}
+
 func deliverState(t *testing.T, hub *Hub, seq uint64, state compassv1.AgentSessionState) {
 	t.Helper()
 	if err := hub.Deliver(t.Context(), RunnerEvent{

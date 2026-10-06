@@ -169,6 +169,7 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 	if !ok {
 		return nil, errUnauthenticated
 	}
+	enrollGen := h.hub.EnrollGeneration()
 	for stream.Receive() {
 		msg := stream.Msg()
 		if err := h.hub.Deliver(ctx, RunnerEvent{
@@ -176,6 +177,7 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 			SessionID: msg.GetSessionId(),
 			RunnerID:  subj.ID,
 			Frame:     msg.GetFrame(),
+			EnrollGen: enrollGen,
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
