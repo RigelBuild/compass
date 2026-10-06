@@ -1467,7 +1467,7 @@ func TestDownDetachedRebootedRecordStillChecksContainers(t *testing.T) {
 	deps := sidecarContainerDownDeps(t, h)
 	deps.Prober = fixedServerProber(false)
 	stubBootID(t, "99999999-8888-7777-6666-555555555555")
-	h.containers.onStop[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
+	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExited(gatewayContainerNameTest) }
 
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatalf("DownDetached on a prior-boot record = %v, want nil", err)
@@ -1476,7 +1476,7 @@ func TestDownDetachedRebootedRecordStillChecksContainers(t *testing.T) {
 	if got := signalEvents(events); len(got) != 0 {
 		t.Fatalf("prior-boot record signalled groups: %v", got)
 	}
-	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm " + gatewayContainerNameTest}
+	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm-exited " + gatewayContainerNameTest}
 	if got := ctrEvents(events); !reflect.DeepEqual(got, want) {
 		t.Fatalf("prior-boot container teardown = %v, want %v", got, want)
 	}
