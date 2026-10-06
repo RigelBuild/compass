@@ -259,7 +259,7 @@ async function guardImmutableTag(
 		return output;
 	}
 	throw new Error(
-		`::error::ambiguous inspect failure probing :git-${sha12}; refusing to push`,
+		`::error::ambiguous inspect failure probing :git-${sha12}; refusing to push: ${result.stderr.trimEnd()}`,
 	);
 }
 

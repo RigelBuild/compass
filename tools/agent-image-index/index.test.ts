@@ -82,7 +82,7 @@ function fakeImmutableInspection(
 	if (tag !== `${REF}:git-${SHA12}`) return undefined;
 	if (options.immutable === "error") return fakeResult("", 1, "unauthorized");
 	if (options.immutable === "different") return fakeResult(DIFFERENT_RAW);
-	if (options.immutable === "unknown" && !state.immutableRaw) {
+	if ((options.immutable ?? "unknown") === "unknown" && !state.immutableRaw) {
 		return fakeResult("", 1, "manifest unknown");
 	}
 	return fakeResult(state.immutableRaw || LOCAL_RAW);
@@ -195,16 +195,17 @@ const NEWER_RAW = JSON.stringify({
 });
 
 describe("publishImageIndex latest ownership", () => {
-	test("no newer index pushes :latest", async () => {
+	test("no newer index pushes :git before :latest", async () => {
 		const fake = makeRunner();
 		await publishImageIndex(
 			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 			fake.run,
 		);
 		expect(fake.latestPushes).toBe(1);
-		expect(
-			fake.commands.some((command) => command.at(-1) === `${REF}:latest`),
-		).toBe(true);
+		const pushes = fake.commands
+			.filter((command) => command[0] === "podman" && command[2] === "push")
+			.map((command) => command.at(-1));
+		expect(pushes.slice(-2)).toEqual([`${REF}:git-${SHA12}`, `${REF}:latest`]);
 	});
 
 	test("published newer index leaves :latest untouched and verifies its digest", async () => {
@@ -284,6 +285,22 @@ describe("immutable tag guard", () => {
 		expect(fake.immutablePushes).toBe(0);
 	});
 
+	test("trailing newlines on raw inspect output do not change the digest", async () => {
+		const fake = makeRunner({ immutable: "equal" });
+		const run = fake.run;
+		fake.run = async (command) => {
+			const result = await run(command);
+			return command[0] === "skopeo" && command.includes("--raw")
+				? { ...result, stdout: `${result.stdout}\n\n` }
+				: result;
+		};
+		await publishImageIndex(
+			{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
+			fake.run,
+		);
+		expect(fake.immutablePushes).toBe(0);
+	});
+
 	test("different immutable raw digest fails", async () => {
 		const fake = makeRunner({ immutable: "different" });
 		await expect(
@@ -311,7 +328,7 @@ describe("immutable tag guard", () => {
 				{ sha: SHA, authFile: AUTH, runnerTemp: TEMP },
 				fake.run,
 			),
-		).rejects.toThrow("ambiguous inspect failure probing :git-abcdef012345");
+		).rejects.toThrow("refusing to push: unauthorized");
 		expect(fake.immutablePushes).toBe(0);
 	});
 });
