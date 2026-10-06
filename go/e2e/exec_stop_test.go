@@ -104,33 +104,37 @@ func hasProcess(procs []string, args string) bool {
 	return slices.ContainsFunc(procs, func(p string) bool { return strings.Contains(p, args) })
 }
 
-// waitForTop polls `podman top` until done accepts the live processes. Zombies
-// are excluded: the keep-alive never reaps an orphan.
+// listProcs prints "pid state args" per container process from /proc. The
+// agent image has no ps, and `podman top` exits 125 in the CI e2e container.
+const listProcs = `for d in /proc/[0-9]*; do read -r s < "$d/stat" || continue; set -f -- $s; echo "${d#/proc/} $3 $(tr '\0' ' ' < "$d/cmdline")"; done 2>/dev/null`
+
+// waitForTop polls the container's process list until done accepts the live
+// processes. Zombies are excluded: the keep-alive never reaps an orphan.
 func waitForTop(t *testing.T, name string, done func([]string) bool) {
 	t.Helper()
 	var procs []string
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-		out, err := exec.Command("podman", "top", name, "pid", "state", "args").Output()
+		out, err := exec.Command("podman", "exec", name, "sh", "-c", listProcs).CombinedOutput()
 		if err != nil {
-			t.Fatalf("podman top %s: %v", name, err)
+			t.Fatalf("list processes in %s: %v: %s", name, err, out)
 		}
 		procs = liveProcesses(string(out))
 		if done(procs) {
 			return
 		}
-		time.Sleep(50 * time.Millisecond) //nolint:forbidigo // bounded poll tick on podman top output with a deadline (rule://go-no-sleep-in-test poll-until exemption)
+		time.Sleep(50 * time.Millisecond) //nolint:forbidigo // bounded poll tick on the process list with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
-	t.Fatalf("podman top %s: live processes %q never reached the expected state", name, procs)
+	t.Fatalf("container %s: live processes %q never reached the expected state", name, procs)
 }
 
-func liveProcesses(top string) []string {
+func liveProcesses(list string) []string {
 	var procs []string
-	for i, line := range strings.Split(top, "\n") {
+	for line := range strings.Lines(list) {
 		fields := strings.Fields(line)
-		if i == 0 || len(fields) < 3 || fields[1] == "Z" {
+		if len(fields) < 3 || fields[1] == "Z" {
 			continue
 		}
-		procs = append(procs, line)
+		procs = append(procs, strings.TrimSpace(line))
 	}
 	return procs
 }
