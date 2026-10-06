@@ -14,8 +14,8 @@ export type ViewTab = { id: string; layout: TabLayout };
 export type WindowLayout = { tabs: ViewTab[]; activeTabId: string };
 
 export const MAX_TABS = 10;
-const MIN_RATIO = 0.2;
-const MAX_RATIO = 0.8;
+export const MIN_RATIO = 0.2;
+export const MAX_RATIO = 0.8;
 const STORAGE_KEY = "compass.windowLayout";
 // Far above any real session's id count, far below where +1 stops working.
 const MAX_SEED = 1e9;

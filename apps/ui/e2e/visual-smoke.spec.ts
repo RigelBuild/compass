@@ -242,4 +242,23 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			scale: "css",
 		});
 	});
+
+	test("split view — channel and agent side by side", async ({ page }) => {
+		await page.goto("/#/channel/ch-svc-compass/topic/top-compass-acp");
+		await page.locator(".conv-composer").waitFor({ state: "visible" });
+		await page.locator('.cx-tab-strip [role="tab"]').first().click();
+		await page.keyboard.press("w");
+		await page.keyboard.press("v");
+		await page
+			.locator("aside.left .tree-agent", { hasText: "compass-ui" })
+			.first()
+			.click();
+		await page.locator(".cx-split-pane .agent-view").waitFor();
+		await page.evaluate(() => document.fonts.ready);
+		await expect(page).toHaveScreenshot("split-view.png", {
+			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
 });
