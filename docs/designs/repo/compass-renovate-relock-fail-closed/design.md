@@ -66,7 +66,7 @@ The gate appends `access-tokens =` to `NIX_CONFIG` for its own nix calls. Fetche
 
 **Retry posture.** There is one bounded retry, and only for a transient signature in nix's stderr: `HTTP error 429`, `HTTP error 5xx`, or `rate limit`. The gate waits 60 s and retries once. A hash mismatch, a 401/404, or any other error is never retried. That keeps the gate failing closed on integrity, without failing closed on a GitHub blip. Nix also retries transient downloads itself (`download-attempts`, 5 locally); [INFERENCE] which statuses it treats as transient is not verified.
 
-**Which nodes on which run** (OQ3; this design follows its recommendation):
+**Which nodes on which run** (OQ3, ruled diff-only on PRs):
 
 - **PR run** (`GITHUB_EVENT_NAME=pull_request` and `GITHUB_BASE_REF` set): find the merge-base with `git merge-base origin/$GITHUB_BASE_REF HEAD`. Check nodes whose whole `locked` object differs from the same-named node there, plus nodes that are new. The diff is not keyed on `rev`, so a `narHash`-only edit is still checked. A lock that is absent at the merge-base counts as all-new. An unresolvable base is a failure. A PR that leaves both locks byte-identical makes no network call. The moon job checks out with `fetch-depth: 0` (`ci.yml:341`).
 - **Every other run** (push to `main`, nightly, `workflow_dispatch`, local): full sweep. A full sweep took about 1 minute locally; CI time is not measured. It also catches drift on `main`, such as a fork rev that became unfetchable.
@@ -214,9 +214,11 @@ Test cycle: `bun test tools/renovate/refresh-devenv-lock.test.ts tools/renovate/
 - [ ] T2: Shell, `renovate:lock-integrity` task wired into `renovate:ci`, `moon.yml` header fix, and smoke steps 1-5.
 - [ ] T3: Relock-family comments and messages name the gate; the three relock tests stay green.
 
-## Open Questions
+## Resolved decisions (Matt, 2026-10-06)
 
-**OQ1. Which blocking mechanism?** (Matt)
+Ruled on RIG-4591: OQ1 (b), OQ2 keep, OQ3 diff-only on PRs. The record follows each recommendation below.
+
+**OQ1. Which blocking mechanism?** Ruled: **(b) only**.
 
 - (a) A ruleset context only.
 - (b) The general gate only.
@@ -225,7 +227,7 @@ Test cycle: `bun test tools/renovate/refresh-devenv-lock.test.ts tools/renovate/
 
 Recommendation: **(b) only**. (a) cannot be required without blocking every PR Renovate did not open, and it needs a manual ruleset edit. (d) leaves the other shapes dependent on store state, and costs the same code. Under OQ3's recommendation, (b) costs nothing on PRs that leave both locks unchanged, and about 1 minute on a full sweep.
 
-**OQ2. Should the fork keep tracking HEAD?** (Matt) Both fork rules track `RigelBuild/devenv` `main` HEAD every day, with `minimumReleaseAge: null`. A git-refs digest has no timestamp to age.
+**OQ2. Should the fork keep tracking HEAD?** Ruled: **keep as is**. Both fork rules track `RigelBuild/devenv` `main` HEAD every day, with `minimumReleaseAge: null`. A git-refs digest has no timestamp to age.
 
 - **Keep as is.** Human review of the compass PR is the control. The fork is first-party, and its ruleset `21184706` requires a PR with 1 approval and last-push approval, the `CI` check, and no bypass actors. Code-owner review is also set, but the fork has no CODEOWNERS file, so it adds nothing. Cost: none.
 - **Track a tag.** Switch to `github-tags`, which has `releaseTimestamp`, so the global 5-day `minimumReleaseAge` applies. Cost: the fork has 0 tags, so someone must cut releases, and each fork fix waits 5 days.
@@ -233,7 +235,7 @@ Recommendation: **(b) only**. (a) cannot be required without blocking every PR R
 
 Recommendation: **keep as is**. Lock integrity was the gap, and (b) closes it. The rest is trust in first-party commits, which the fork's ruleset guards. A delay or an extra click does not strengthen that.
 
-**OQ3. On PRs, which nodes does the gate check?** (Matt)
+**OQ3. On PRs, which nodes does the gate check?** Ruled: **diff-only on PRs**.
 
 - **Diff-only on PRs, full sweep otherwise.** On a PR, check nodes whose whole `locked` object differs from the merge-base, plus new nodes. Push, nightly, `workflow_dispatch` and local runs do the full sweep. Cost: drift already on `main` is caught by the next push or nightly run, not by PRs, and the gate depends on resolving the base ref (failing if it can't).
 - **Every node, every run.** Simpler, with no git dependency. Cost: every `renovate:ci` PR (most `bun.lock` / `package.json` PRs) pays about 1 minute and about 26 network fetches on the required check.
