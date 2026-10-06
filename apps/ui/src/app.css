@@ -421,15 +421,29 @@
 	overflow: hidden;
 }
 
-/* The tab-cap refusal floats top-right over the view, clear of the
-   bottom-pinned composer, rather than taking layout space. */
+/* The tab-cap notice: a compact toast chip in topbar flow beside the strip.
+   It shrinks with the strip and truncates; the title carries the full text. */
 .layout-notice-region {
-	position: absolute;
-	top: var(--cx-space-4);
-	right: var(--cx-space-4);
-	z-index: var(--cx-z-toast);
-	max-width: min(28rem, calc(100% - 2 * var(--cx-space-4)));
-	overflow-wrap: anywhere;
+	display: flex;
+	flex: 0 1 auto;
+	min-width: 0;
+}
+
+/* Doubled class: toast.css loads after this file, so its padding would win. */
+.cx-toast.layout-notice {
+	align-items: center;
+	min-width: 0;
+	padding: 0 0 0 var(--cx-space-2);
+	line-height: 1;
+	box-shadow: none;
+	white-space: nowrap;
+	z-index: auto;
+}
+
+.layout-notice-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* Read out so a repeated refusal is a new announcement; not shown. */

@@ -15,7 +15,6 @@ import "./design/components/card.css";
 import "./design/components/menu.css";
 import "./design/components/shortcuts.css";
 import "./design/components/state-dot.css";
-import "./design/components/toast.css";
 import "./app.css";
 import {
 	CoachTip,
@@ -23,6 +22,7 @@ import {
 	CoachTipTrigger,
 } from "./components/CoachTip";
 import { Glyph } from "./components/Glyph";
+import { LayoutNotice } from "./components/LayoutNotice";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
@@ -165,6 +165,7 @@ const App: Component<
 				<div class="topbar-sep" />
 
 				<TabStrip />
+				<LayoutNotice />
 
 				<TopBarSearch clients={props.clients} />
 				<span class="topbar-spacer" />
@@ -241,58 +242,6 @@ const App: Component<
 						</div>
 					)}
 				</For>
-				{/* Mounted empty up front so a screen reader registers the live region
-				    before its first announcement. */}
-				<div class="layout-notice-region" role="status">
-					<Show when={store.layoutNotice()}>
-						{(notice) => {
-							// Focus or hover inside the notice pauses its timeout.
-							const held = { focused: false, hovered: false };
-							const holdNotice = (change: Partial<typeof held>): void => {
-								Object.assign(held, change);
-								store.holdLayoutNotice(held.focused || held.hovered);
-							};
-							return (
-								// biome-ignore lint/a11y/noStaticElementInteractions: focus/hover only pause the timeout; the Dismiss button carries the interaction.
-								<div
-									class="cx-toast layout-notice"
-									data-kind="warn"
-									onFocusIn={() => holdNotice({ focused: true })}
-									onFocusOut={(e) => {
-										const next = e.relatedTarget;
-										if (next instanceof Node && e.currentTarget.contains(next))
-											return;
-										holdNotice({ focused: false });
-									}}
-									onMouseEnter={() => holdNotice({ hovered: true })}
-									onMouseLeave={() => holdNotice({ hovered: false })}
-								>
-									<span>{notice().text}</span>
-									<Show when={notice().count > 1}>
-										<span class="layout-notice-count">
-											{` (repeated ${notice().count} times)`}
-										</span>
-									</Show>
-									<button
-										type="button"
-										class="cx-btn"
-										data-size="sm"
-										data-variant="ghost"
-										aria-label="Dismiss"
-										onClick={() => {
-											// The button is about to unmount; hand focus back to the strip.
-											const tabId = store.layout().activeTabId;
-											document.getElementById(viewTabId(tabId))?.focus();
-											store.dismissLayoutNotice();
-										}}
-									>
-										×
-									</button>
-								</div>
-							);
-						}}
-					</Show>
-				</div>
 			</main>
 
 			<Show when={store.rightOpen()}>

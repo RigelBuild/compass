@@ -226,6 +226,55 @@ describe("TabStrip", () => {
 		}
 	});
 
+	const raiseNotice = async (): Promise<{
+		store: AppStore;
+		container: HTMLElement;
+		dismiss: HTMLElement;
+	}> => {
+		const { store, container } = mountApp("/");
+		fillToCap(store);
+		store.dispatchLayout({ kind: "open", path: "/settings" });
+		await flush();
+		const dismiss = region(container)?.querySelector<HTMLElement>(
+			'button[aria-label="Dismiss"]',
+		);
+		if (!dismiss) throw new Error("no dismiss button");
+		return { store, container, dismiss };
+	};
+
+	test("the window losing focus keeps the hold of a focused notice", async () => {
+		jest.useFakeTimers();
+		const hasFocus = jest.spyOn(document, "hasFocus");
+		try {
+			const { container, dismiss } = await raiseNotice();
+			dismiss.focus();
+			hasFocus.mockReturnValue(false);
+			fireEvent.focusOut(dismiss, { relatedTarget: null });
+			jest.advanceTimersByTime(NOTICE_TIMEOUT_MS + 1);
+			await flush();
+			expect(region(container)?.textContent).toContain(`${MAX_TABS} tabs`);
+		} finally {
+			hasFocus.mockRestore();
+			jest.useRealTimers();
+		}
+	});
+
+	test("a notice that expires with focus inside hands focus to the active tab", async () => {
+		jest.useFakeTimers();
+		try {
+			const { store, container, dismiss } = await raiseNotice();
+			dismiss.focus();
+			// Release the hold without moving focus, so expiry finds focus inside.
+			store.holdLayoutNotice(false);
+			jest.advanceTimersByTime(NOTICE_TIMEOUT_MS + 1);
+			await flush();
+			expect(region(container)?.textContent).toBe("");
+			expect(document.activeElement).toBe(selected(container) ?? null);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("the notice holds while focus is inside it, and dismissing returns focus to the active tab", async () => {
 		jest.useFakeTimers();
 		try {
