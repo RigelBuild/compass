@@ -140,17 +140,12 @@ let
   # denylist, not an allowlist, for the same reason the `nodeModules` src reads
   # its member list from the manifest: `bun build` only errors on a
   # statically-resolvable missing import, so an allowlist would silently drop a
-  # new JSON fixture or proto dir. `moon.yml` is excluded (it drives moon tasks,
-  # not this bundle); `node_modules` (the defect) is wrapped in `maybeMissing`
-  # because `lib.fileset` errors on a path a clean checkout lacks.
+  # new JSON fixture or proto dir. The fileset lives in agent-source-files.nix so
+  # the image's stale-source fingerprint (source-fingerprint.nix) hashes exactly
+  # the files bundled here.
   pkgSrc = lib.fileset.toSource {
     root = ../packages/compass-agent;
-    fileset = lib.fileset.difference ../packages/compass-agent (
-      lib.fileset.unions [
-        (lib.fileset.maybeMissing ../packages/compass-agent/node_modules)
-        ../packages/compass-agent/moon.yml
-      ]
-    );
+    fileset = import ./agent-source-files.nix { inherit lib; };
   };
 
   # Bundle inside a RECONSTRUCTED workspace: the package source at the same depth

@@ -25,6 +25,7 @@
   lib,
   compassAgent,
   jjVineSrc,
+  sourceFingerprint,
 }:
 let
   # The repo's pinned bun — the exact vendored derivation the dev shell and CI
@@ -125,6 +126,8 @@ pkgs.buildEnv {
     nixConf
     caCertificates
     direnvConfig
+    # /etc/compass-agent/source-fingerprint: the e2e fixture's stale-image check.
+    sourceFingerprint
   ];
   pathsToLink = [
     "/bin"

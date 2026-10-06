@@ -30,6 +30,10 @@ func TestMain(m *testing.M) {
 	if !podmanUsable() {
 		os.Exit(m.Run())
 	}
+	if err := requireFreshAgentImage(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e TestMain: %v\n", err)
+		os.Exit(1)
+	}
 
 	binDir, err := buildStackBinaries()
 	if err != nil {
@@ -81,4 +85,22 @@ func buildStackBinaries() (string, error) {
 		}
 	}
 	return binDir, nil
+}
+
+// requireFreshAgentImage fails the run when the local compass-agent:latest was
+// built from different agent source than this tree: a stale image fails every
+// tool-call leg with symptoms that point at the code instead. CI is exempt
+// because its seed step picks the image on purpose (published :latest may lag).
+func requireFreshAgentImage() error {
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		return nil
+	}
+	tree, err := agentSourceFingerprint(filepath.Join("..", "..", "packages", "compass-agent"))
+	if err != nil {
+		return fmt.Errorf("fingerprint agent source: %w", err)
+	}
+	// A missing stamp file exits non-zero; that image predates stamping, so stale.
+	out, _ := exec.Command("podman", "run", "--rm", "--entrypoint", "cat", agentImage,
+		"/etc/compass-agent/source-fingerprint").Output()
+	return checkAgentImageFresh(string(out), tree)
 }
