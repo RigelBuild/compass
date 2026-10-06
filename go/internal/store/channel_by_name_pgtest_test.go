@@ -138,4 +138,9 @@ func TestChannelByNameForViewerNarrowsOwnerSetDuplicatesToParticipants(t *testin
 	}
 	_, err = s.ChannelByNameForViewer(t.Context(), owner.ID, "standup")
 	sentinelIs(t, err, ErrInvalidArgument, "owner resolves both standup channels")
+	// A sibling that sees both but participates in neither keeps the visible-set
+	// ambiguity rather than a not-found for a name its list shows.
+	sibling := mustAgent(t, s, owner.ID, "standup-c")
+	_, err = s.ChannelByNameForViewer(t.Context(), sibling.ID, "standup")
+	sentinelIs(t, err, ErrInvalidArgument, "non-participant sibling resolves both standup channels")
 }

@@ -629,7 +629,9 @@ func groupRefHints(groups []ChannelGroup, handles map[AccountID]string, matches 
 //     ErrNotFound, the two indistinguishable so a probe cannot enumerate names it
 //     lacks visibility for (the D9 not-found/forbidden merge);
 //   - exactly one → that channel;
-//   - two or more visible channels sharing the name → ErrInvalidArgument naming
+//   - two or more → narrowed to the ones the viewer participates in, when it
+//     participates in any, so an owner-set sibling's same-named channel does
+//     not shadow the viewer's own; still two or more → ErrInvalidArgument naming
 //     the collision, so the caller disambiguates rather than the server guessing
 //     (there is no ErrAmbiguous sentinel — invalid_argument is the R1 rule).
 //
@@ -651,7 +653,8 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 		return Channel{}, err
 	}
 	if len(channels) > 1 {
-		participants := channels[:0]
+		// The ascent probe is the participation authority, not the materialized list.
+		var participants []Channel
 		for _, channel := range channels {
 			member, err := isChannelMember(ctx, s.scopedPool(), viewer, channel.ID)
 			if err != nil {
@@ -661,7 +664,9 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 				participants = append(participants, channel)
 			}
 		}
-		channels = participants
+		if len(participants) > 0 {
+			channels = participants
+		}
 	}
 	switch len(channels) {
 	case 0:
@@ -669,7 +674,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 	case 1:
 		return channels[0], nil
 	default:
-		return Channel{}, fmt.Errorf("%w: channel name %q is ambiguous — it names %d channels the viewer participates in; address it by id", ErrInvalidArgument, name, len(channels))
+		return Channel{}, fmt.Errorf("%w: channel name %q is ambiguous — it names %d channels; address it by id", ErrInvalidArgument, name, len(channels))
 	}
 }
 

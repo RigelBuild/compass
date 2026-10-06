@@ -10,10 +10,13 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// ListTopics returns a channel's topics newest-activity-first. It checks caller
-// participation through a member row or TREE derivation. Archived topics are
-// omitted unless requested. Unauthorized and unknown channels map to ErrNotFound
-// so existence cannot leak through this read.
+// ListTopics returns the topics in channelID, newest-activity-first (last_seq
+// descending, then birth time), scoped to the caller's visible set. Archived
+// topics are omitted unless includeArchived is set. Visibility is the same D9
+// gate the message reads apply: a caller who does not participate in the channel —
+// or names a channel it cannot see — gets ErrNotFound (the not-found/forbidden
+// merge), never a hint the channel exists or an empty list it could mistake for
+// "no topics".
 func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID string, includeArchived bool) ([]Topic, error) {
 	if channelID == "" {
 		return nil, fmt.Errorf("%w: list topics channel is required", ErrInvalidArgument)
@@ -23,7 +26,7 @@ func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID strin
 		return nil, err
 	}
 	if !member {
-		// D9 merge: a non-member cannot tell an unauthorized channel from a
+		// D9 merge: a non-participant cannot tell an unauthorized channel from a
 		// nonexistent one, so the refusal enumerates nothing.
 		return nil, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 	}
@@ -35,14 +38,21 @@ func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID strin
 	return topicsFromRows(rows), nil
 }
 
-// UpdateTopic renames and/or archives a topic under the caller's participation
-// gate. A name collision moves source messages into the target and deletes the
-// source in one transaction; the surviving topic is returned.
+// UpdateTopic renames and/or archives a topic under an acting account, or —
+// when a rename collides with an existing topic name in the same channel —
+// MERGES the two: the source topic's messages are re-pointed at the target
+// (message rows carry the target's topic_id), the target's last_seq absorbs the
+// source's, and the emptied source row is deleted, all in one transaction. The
+// surviving topic is returned.
 //
-// The caller must participate in the channel through a member row or TREE
-// derivation. A non-participant or unknown topic maps to ErrNotFound. Name and
-// archived are optional. Renaming to the current case-folded name updates the
-// source in place.
+// The caller must participate in the topic's channel; a topic it cannot see —
+// or an unknown topicID — is ErrNotFound (the D9 not-found/forbidden merge, so
+// topic existence cannot leak across a participation boundary). name and archived
+// are each optional (nil = leave unchanged); the archived flag is applied to
+// the SURVIVING topic (the target on a merge, the source otherwise).
+//
+// A rename whose lowercased name matches the topic's own current name is a
+// harmless in-place rename (no merge — the collision check excludes self).
 func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string, name *string, archived *bool) (Topic, error) {
 	if topicID == "" {
 		return Topic{}, fmt.Errorf("%w: topic id is required", ErrInvalidArgument)
@@ -54,9 +64,10 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
-	// Resolve the topic and channel-participant gate in one statement. An explicit
-	// member row or TREE derivation grants participation; no row (unknown topic or
-	// non-participant) maps to ErrNotFound. FOR UPDATE locks the topic for this tx.
+	// Resolve the topic + gate visibility in one statement: the caller must
+	// participate in the topic's channel. Zero rows (unknown topic OR non-participant) ->
+	// ErrNotFound. FOR UPDATE OF t locks the source topic row for the tx so a
+	// concurrent rename/merge serializes.
 	q := db.New(tx)
 	channelID, err := q.ResolveTopicForUpdate(ctx, db.ResolveTopicForUpdateParams{
 		AccountID: callerAccountID,
