@@ -651,16 +651,19 @@ message ListAccountsResponse {
 }
 
 message CreateChannelGroupRequest {
-  // Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name an
-  // owner already uses under the same parent is ALREADY_EXISTS.
+  // Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name already
+  // used under the same parent in the same user's namespace (a user and that
+  // user's agents share one) is ALREADY_EXISTS.
   string name = 1;
   // Parent group; empty for a top-level group.
   string parent_group_id = 2;
   ChannelGroupVisibility visibility = 3;
-  // Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
-  // when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
-  // or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
-  // use parent_group_id.
+  // Agent tool path only. Names the parent as a leaf (`eng`), a slash path from
+  // the root (`eng/infra`), a top-level-anchored path (`/infra`), or a path
+  // qualified by the top-level group's owner handle (`/~matt/eng`). Unknown or
+  // invisible is NOT_FOUND; an ambiguous ref is INVALID_ARGUMENT and names the
+  // anchored or qualified ref to use. CommsService rejects this field; human
+  // callers use parent_group_id.
   string parent_group_name = 4;
 }
 
@@ -704,10 +707,12 @@ message CreateChannelRequest {
   string parent_agent_handle = 5;
   // TREE requires parent_agent_handle.
   ChannelMembershipMode membership_mode = 6;
-  // Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
-  // when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
-  // or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
-  // use group_id.
+  // Agent tool path only. Names the parent as a leaf (`eng`), a slash path from
+  // the root (`eng/infra`), a top-level-anchored path (`/infra`), or a path
+  // qualified by the top-level group's owner handle (`/~matt/eng`). Unknown or
+  // invisible is NOT_FOUND; an ambiguous ref is INVALID_ARGUMENT and names the
+  // anchored or qualified ref to use. CommsService rejects this field; human
+  // callers use group_id.
   string group_name = 7;
 }
 

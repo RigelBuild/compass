@@ -2732,16 +2732,19 @@ func (x *ListAccountsResponse) GetAccounts() []*Account {
 
 type CreateChannelGroupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name an
-	// owner already uses under the same parent is ALREADY_EXISTS.
+	// Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name already
+	// used under the same parent in the same user's namespace (a user and that
+	// user's agents share one) is ALREADY_EXISTS.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Parent group; empty for a top-level group.
 	ParentGroupId string                 `protobuf:"bytes,2,opt,name=parent_group_id,json=parentGroupId,proto3" json:"parent_group_id,omitempty"`
 	Visibility    ChannelGroupVisibility `protobuf:"varint,3,opt,name=visibility,proto3,enum=compass.v1.ChannelGroupVisibility" json:"visibility,omitempty"`
-	// Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
-	// when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
-	// or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
-	// use parent_group_id.
+	// Agent tool path only. Names the parent as a leaf (`eng`), a slash path from
+	// the root (`eng/infra`), a top-level-anchored path (`/infra`), or a path
+	// qualified by the top-level group's owner handle (`/~matt/eng`). Unknown or
+	// invisible is NOT_FOUND; an ambiguous ref is INVALID_ARGUMENT and names the
+	// anchored or qualified ref to use. CommsService rejects this field; human
+	// callers use parent_group_id.
 	ParentGroupName string `protobuf:"bytes,4,opt,name=parent_group_name,json=parentGroupName,proto3" json:"parent_group_name,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -3046,10 +3049,12 @@ type CreateChannelRequest struct {
 	ParentAgentHandle string `protobuf:"bytes,5,opt,name=parent_agent_handle,json=parentAgentHandle,proto3" json:"parent_agent_handle,omitempty"`
 	// TREE requires parent_agent_handle.
 	MembershipMode ChannelMembershipMode `protobuf:"varint,6,opt,name=membership_mode,json=membershipMode,proto3,enum=compass.v1.ChannelMembershipMode" json:"membership_mode,omitempty"`
-	// Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
-	// when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
-	// or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
-	// use group_id.
+	// Agent tool path only. Names the parent as a leaf (`eng`), a slash path from
+	// the root (`eng/infra`), a top-level-anchored path (`/infra`), or a path
+	// qualified by the top-level group's owner handle (`/~matt/eng`). Unknown or
+	// invisible is NOT_FOUND; an ambiguous ref is INVALID_ARGUMENT and names the
+	// anchored or qualified ref to use. CommsService rejects this field; human
+	// callers use group_id.
 	GroupName     string `protobuf:"bytes,7,opt,name=group_name,json=groupName,proto3" json:"group_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

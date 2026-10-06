@@ -59,6 +59,13 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO tenants (id, slug, display_name, created_at_unix_ms)
 		VALUES ('boot', 'default', 'Default', 1), ('boot-2', 'second', 'Second', 2);
+		INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES
+			('owner-k', 'owner-k', 'Owner K', 'boot'),
+			('agent-k1', 'agent-k1', 'Agent K1', 'boot'),
+			('agent-k2', 'agent-k2', 'Agent K2', 'boot');
+		INSERT INTO user_accounts (account_id, tenant_id) VALUES ('owner-k', 'boot');
+		INSERT INTO agent_accounts (account_id, owner_user_id, tenant_id) VALUES
+			('agent-k1', 'owner-k', 'boot'), ('agent-k2', 'owner-k', 'boot');
 		INSERT INTO channel_groups (id, name, owner_user_id, tenant_id, parent_group_id) VALUES
 			('group-a', 'duplicate', 'owner-a', 'boot', NULL),
 			('group-b', 'duplicate', 'owner-a', 'boot', NULL),
@@ -74,7 +81,11 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 			('group-l', 'tenant-name', 'owner-f', 'boot', NULL),
 			('group-m', 'tenant-name', 'owner-f', 'boot-2', NULL),
 			('group-n', '__dm__', 'owner-e', 'boot', 'group-i'),
-			('group-o', '__dm__', 'owner-e', 'boot', 'group-i')`); err != nil {
+			('group-o', '__dm__', 'owner-e', 'boot', 'group-i'),
+			('group-p', 'team', 'owner-k', 'boot', NULL),
+			('group-q', 'team', 'agent-k1', 'boot', NULL),
+			('group-r', 'svc', 'agent-k1', 'boot', 'group-p'),
+			('group-s', 'svc', 'agent-k2', 'boot', 'group-p')`); err != nil {
 		t.Fatalf("seed pre-migration groups: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -102,10 +113,21 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 		"group-m": "tenant-name-2", // owner ids are global, so tenants share a namespace
 		"group-n": "__dm__",        // the reserved exemption is top-level only
 		"group-o": "__dm__-2",      // the reserved exemption is top-level only
+		"group-p": "team",          // an agent's group shares its owner's namespace
+		"group-q": "team-2",        // an agent's group shares its owner's namespace
+		"group-r": "svc",           // two agents of one owner share a namespace
+		"group-s": "svc-2",         // two agents of one owner share a namespace
 	}
 	for id, name := range want {
 		if got[id] != name {
 			t.Errorf("group %s name = %q, want %q", id, got[id], name)
+		}
+	}
+
+	namespaces := readGroupNamespacesAsSystem(t, pool)
+	for id, owner := range map[string]string{"group-a": "owner-a", "group-p": "owner-k", "group-q": "owner-k", "group-s": "owner-k"} {
+		if namespaces[id] != owner {
+			t.Errorf("group %s namespace = %q, want %q", id, namespaces[id], owner)
 		}
 	}
 
@@ -127,6 +149,18 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 
 func readGroupNamesAsSystem(t *testing.T, pool *pgxpool.Pool) map[string]string {
 	t.Helper()
+	return readGroupColumnAsSystem(t, pool, "name")
+}
+
+func readGroupNamespacesAsSystem(t *testing.T, pool *pgxpool.Pool) map[string]string {
+	t.Helper()
+	return readGroupColumnAsSystem(t, pool, "namespace_owner_id")
+}
+
+// readGroupColumnAsSystem maps each group id to one text column; column is a
+// test constant, never input.
+func readGroupColumnAsSystem(t *testing.T, pool *pgxpool.Pool, column string) map[string]string {
+	t.Helper()
 	ctx := t.Context()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -136,18 +170,18 @@ func readGroupNamesAsSystem(t *testing.T, pool *pgxpool.Pool) map[string]string 
 	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+systemRole); err != nil {
 		t.Fatalf("set read role: %v", err)
 	}
-	rows, err := tx.Query(ctx, `SELECT id, name FROM channel_groups`)
+	rows, err := tx.Query(ctx, "SELECT id, "+column+" FROM channel_groups")
 	if err != nil {
 		t.Fatalf("read repaired groups: %v", err)
 	}
 	defer rows.Close()
 	got := make(map[string]string)
 	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
+		var id, value string
+		if err := rows.Scan(&id, &value); err != nil {
 			t.Fatalf("scan repaired group: %v", err)
 		}
-		got[id] = name
+		got[id] = value
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate repaired groups: %v", err)

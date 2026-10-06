@@ -1277,8 +1277,9 @@ export const ListAccountsResponseSchema: GenMessage<ListAccountsResponse> = /*@_
  */
 export type CreateChannelGroupRequest = Message$1<"compass.v1.CreateChannelGroupRequest"> & {
   /**
-   * Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name an
-   * owner already uses under the same parent is ALREADY_EXISTS.
+   * Leaf name of the group, e.g. "matt". '/' is INVALID_ARGUMENT; a name already
+   * used under the same parent in the same user's namespace (a user and that
+   * user's agents share one) is ALREADY_EXISTS.
    *
    * @generated from field: string name = 1;
    */
@@ -1297,10 +1298,12 @@ export type CreateChannelGroupRequest = Message$1<"compass.v1.CreateChannelGroup
   visibility: ChannelGroupVisibility;
 
   /**
-   * Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
-   * when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
-   * or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
-   * use parent_group_id.
+   * Agent tool path only. Names the parent as a leaf (`eng`), a slash path from
+   * the root (`eng/infra`), a top-level-anchored path (`/infra`), or a path
+   * qualified by the top-level group's owner handle (`/~matt/eng`). Unknown or
+   * invisible is NOT_FOUND; an ambiguous ref is INVALID_ARGUMENT and names the
+   * anchored or qualified ref to use. CommsService rejects this field; human
+   * callers use parent_group_id.
    *
    * @generated from field: string parent_group_name = 4;
    */
@@ -1454,10 +1457,12 @@ export type CreateChannelRequest = Message$1<"compass.v1.CreateChannelRequest"> 
   membershipMode: ChannelMembershipMode;
 
   /**
-   * Agent tool path only. Names the parent as a leaf or root slash path (`a/b/c`)
-   * when it contains `/`. Unknown or invisible is NOT_FOUND; an ambiguous leaf
-   * or path is INVALID_ARGUMENT. CommsService rejects this field; human callers
-   * use group_id.
+   * Agent tool path only. Names the parent as a leaf (`eng`), a slash path from
+   * the root (`eng/infra`), a top-level-anchored path (`/infra`), or a path
+   * qualified by the top-level group's owner handle (`/~matt/eng`). Unknown or
+   * invisible is NOT_FOUND; an ambiguous ref is INVALID_ARGUMENT and names the
+   * anchored or qualified ref to use. CommsService rejects this field; human
+   * callers use group_id.
    *
    * @generated from field: string group_name = 7;
    */

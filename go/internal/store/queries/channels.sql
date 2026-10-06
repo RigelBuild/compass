@@ -11,9 +11,16 @@
 -- edge's single-id visibility check cannot drift from the list read (the
 -- anti-drift guarantee the design record requires).
 
--- name: InsertChannelGroup :exec
-INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility)
-VALUES ($1, $2, NULLIF($3, ''), $4, $5);
+-- name: InsertChannelGroup :one
+-- An agent's group lives in its owner's namespace, so sibling names are unique per user.
+INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, namespace_owner_id)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5,
+        COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $4), $4))
+RETURNING namespace_owner_id;
+
+-- name: GlobalHandlesByAccountIDs :many
+SELECT account_id, handle FROM account_handles
+WHERE owner_user_id IS NULL AND account_id = ANY($1::text[]);
 
 -- name: GetChannelGroupVisibility :one
 SELECT visibility FROM channel_groups WHERE id = $1;
@@ -95,7 +102,7 @@ viewer AS (
 	UNION ALL
 	SELECT $1 AS uid
 )
-SELECT g.id, g.name, COALESCE(g.parent_group_id, '') AS parent_group_id, g.owner_user_id, g.visibility
+SELECT g.id, g.name, COALESCE(g.parent_group_id, '') AS parent_group_id, g.owner_user_id, g.visibility, g.namespace_owner_id
 FROM channel_groups g
 JOIN effective e ON e.id = g.id
 WHERE (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer))

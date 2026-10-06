@@ -61,13 +61,14 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 	}
 
 	id := newID()
-	if err := s.q.WithTx(tx).InsertChannelGroup(ctx, db.InsertChannelGroupParams{
+	namespaceOwner, err := s.q.WithTx(tx).InsertChannelGroup(ctx, db.InsertChannelGroupParams{
 		ID:          id,
 		Name:        g.Name,
 		Column3:     string(g.ParentGroupID),
 		OwnerUserID: string(ownerUserID),
 		Visibility:  int16(g.Visibility), //nolint:gosec // G115: ChannelGroupVisibility is a CHECK-constrained 0/1 enum (channel_groups.visibility), always within int16
-	}); err != nil {
+	})
+	if err != nil {
 		if pgErrIs(err, pgUniqueViolation) && pgConstraintName(err) == "channel_groups_owner_parent_name_key" {
 			return ChannelGroup{}, fmt.Errorf("%w: sibling group %q already exists", ErrConflict, g.Name)
 		}
@@ -77,11 +78,12 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 		return ChannelGroup{}, fmt.Errorf("store: commit create group: %w", err)
 	}
 	return ChannelGroup{
-		ID:            ChannelGroupID(id),
-		Name:          g.Name,
-		ParentGroupID: g.ParentGroupID,
-		OwnerUserID:   ownerUserID,
-		Visibility:    g.Visibility,
+		ID:               ChannelGroupID(id),
+		Name:             g.Name,
+		ParentGroupID:    g.ParentGroupID,
+		OwnerUserID:      ownerUserID,
+		NamespaceOwnerID: AccountID(namespaceOwner),
+		Visibility:       g.Visibility,
 	}, nil
 }
 
@@ -251,11 +253,12 @@ func (s *Store) ListChannelGroups(ctx context.Context, visibleTo AccountID) ([]C
 	var groups []ChannelGroup
 	for _, row := range rows {
 		groups = append(groups, ChannelGroup{
-			ID:            ChannelGroupID(row.ID),
-			Name:          row.Name,
-			ParentGroupID: ChannelGroupID(row.ParentGroupID),
-			OwnerUserID:   AccountID(row.OwnerUserID),
-			Visibility:    ChannelGroupVisibility(row.Visibility),
+			ID:               ChannelGroupID(row.ID),
+			Name:             row.Name,
+			ParentGroupID:    ChannelGroupID(row.ParentGroupID),
+			OwnerUserID:      AccountID(row.OwnerUserID),
+			NamespaceOwnerID: AccountID(row.NamespaceOwnerID),
+			Visibility:       ChannelGroupVisibility(row.Visibility),
 		})
 	}
 	return groups, nil
@@ -309,25 +312,41 @@ func (s *Store) ChannelVisibleTo(ctx context.Context, actor AccountID, channelID
 	return visible, nil
 }
 
-// ChannelGroupByRefForViewer resolves an agent's group reference (a leaf name, or
-// a slash path from the root) within the groups visible to viewer.
+// ChannelGroupByRefForViewer resolves an agent's group reference (a leaf name, a
+// slash path from the root, or an anchored `/path` or `/~owner/path`) within the
+// groups visible to viewer.
 func (s *Store) ChannelGroupByRefForViewer(ctx context.Context, viewer AccountID, ref string) (ChannelGroup, error) {
 	groups, err := s.ListChannelGroups(ctx, viewer)
 	if err != nil {
 		return ChannelGroup{}, err
 	}
-	return resolveGroupRef(groups, ref)
+	owners := make([]string, 0, len(groups))
+	for _, group := range groups {
+		owners = append(owners, string(group.NamespaceOwnerID))
+	}
+	rows, err := s.q.GlobalHandlesByAccountIDs(ctx, owners)
+	if err != nil {
+		return ChannelGroup{}, fmt.Errorf("store: read group owner handles: %w", err)
+	}
+	handles := make(map[AccountID]string, len(rows))
+	for _, row := range rows {
+		handles[AccountID(row.AccountID)] = row.Handle
+	}
+	return resolveGroupRef(groups, handles, ref)
 }
 
 // resolveGroupRef picks one group from the viewer's visible set. Unknown and
-// invisible both give ErrNotFound; a leaf matches at any depth, a path walks from
-// the root and may pass through same-named groups if it ends on exactly one.
-func resolveGroupRef(groups []ChannelGroup, ref string) (ChannelGroup, error) {
+// invisible both give ErrNotFound; a bare leaf matches at any depth, a path walks
+// from the root and may pass through same-named groups if it ends on exactly one.
+// A leading '/' anchors at the top level, and `/~handle/` keeps only top-level
+// groups in that user's namespace. handles maps namespace owner ids to handles.
+func resolveGroupRef(groups []ChannelGroup, handles map[AccountID]string, ref string) (ChannelGroup, error) {
 	if ref == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
 	}
 
-	if !strings.Contains(ref, "/") {
+	anchored := strings.HasPrefix(ref, "/")
+	if !anchored && !strings.Contains(ref, "/") {
 		var matches []ChannelGroup
 		for _, group := range groups {
 			if group.Name == ref {
@@ -340,23 +359,32 @@ func resolveGroupRef(groups []ChannelGroup, ref string) (ChannelGroup, error) {
 		case 1:
 			return matches[0], nil
 		default:
-			return ChannelGroup{}, fmt.Errorf("%w: group name %q is ambiguous — it names %d visible groups; use a slash path from the root", ErrInvalidArgument, ref, len(matches))
+			return ChannelGroup{}, fmt.Errorf("%w: group name %q is ambiguous — it names %d visible groups; use one of %s",
+				ErrInvalidArgument, ref, len(matches), groupRefHints(groups, handles, matches))
 		}
 	}
-	segments := strings.Split(ref, "/")
+	segments := strings.Split(strings.TrimPrefix(ref, "/"), "/")
 	if slices.Contains(segments, "") {
 		return ChannelGroup{}, fmt.Errorf("%w: group path %q has an empty segment", ErrInvalidArgument, ref)
 	}
+	owner := ""
+	if anchored && strings.HasPrefix(segments[0], "~") {
+		owner = strings.TrimPrefix(segments[0], "~")
+		segments = segments[1:]
+		if owner == "" || len(segments) == 0 {
+			return ChannelGroup{}, fmt.Errorf("%w: group path %q needs an owner handle and a group, e.g. /~matt/eng", ErrInvalidArgument, ref)
+		}
+	}
 
 	candidates := make(map[ChannelGroupID]ChannelGroup)
-	for _, segment := range segments {
+	for i, segment := range segments {
 		next := make(map[ChannelGroupID]ChannelGroup)
 		for _, group := range groups {
 			if group.Name != segment {
 				continue
 			}
-			if len(candidates) == 0 {
-				if group.ParentGroupID == "" {
+			if i == 0 {
+				if group.ParentGroupID == "" && (owner == "" || handles[group.NamespaceOwnerID] == owner) {
 					next[group.ID] = group
 				}
 			} else if _, ok := candidates[group.ParentGroupID]; ok {
@@ -369,12 +397,65 @@ func resolveGroupRef(groups []ChannelGroup, ref string) (ChannelGroup, error) {
 		candidates = next
 	}
 	if len(candidates) > 1 {
-		return ChannelGroup{}, fmt.Errorf("%w: group path %q is ambiguous", ErrInvalidArgument, ref)
+		matches := make([]ChannelGroup, 0, len(candidates))
+		for _, group := range candidates {
+			matches = append(matches, group)
+		}
+		return ChannelGroup{}, fmt.Errorf("%w: group path %q is ambiguous; use one of %s",
+			ErrInvalidArgument, ref, groupRefHints(groups, handles, matches))
 	}
 	for _, group := range candidates {
 		return group, nil
 	}
 	return ChannelGroup{}, fmt.Errorf("%w: group %q", ErrNotFound, ref)
+}
+
+// groupRefHints names, for each match, the anchored path when it is unique among
+// the visible groups and otherwise the owner-qualified path, so the caller can retry.
+func groupRefHints(groups []ChannelGroup, handles map[AccountID]string, matches []ChannelGroup) string {
+	byID := make(map[ChannelGroupID]ChannelGroup, len(groups))
+	for _, group := range groups {
+		byID[group.ID] = group
+	}
+	type refForms struct{ anchored, qualified string }
+	formsOf := func(group ChannelGroup) refForms {
+		path := group.Name
+		// The depth cap stops a malformed parent cycle from looping.
+		for depth := 0; group.ParentGroupID != "" && depth < len(groups); depth++ {
+			parent, ok := byID[group.ParentGroupID]
+			if !ok {
+				return refForms{}
+			}
+			group = parent
+			path = group.Name + "/" + path
+		}
+		forms := refForms{anchored: "/" + path}
+		if handle, ok := handles[group.NamespaceOwnerID]; ok {
+			forms.qualified = "/~" + handle + "/" + path
+		}
+		return forms
+	}
+	anchoredCount := make(map[string]int, len(groups))
+	for _, group := range groups {
+		if forms := formsOf(group); forms.anchored != "" {
+			anchoredCount[forms.anchored]++
+		}
+	}
+	hints := make([]string, 0, len(matches))
+	for _, match := range matches {
+		forms := formsOf(match)
+		switch {
+		case forms.anchored != "" && anchoredCount[forms.anchored] == 1:
+			hints = append(hints, forms.anchored)
+		case forms.qualified != "":
+			hints = append(hints, forms.qualified)
+		case forms.anchored != "":
+			hints = append(hints, forms.anchored)
+		}
+	}
+	slices.Sort(hints)
+	hints = slices.Compact(hints)
+	return strings.Join(hints, ", ") + " (a leading / anchors at the top level; /~owner/ picks the top-level group's owner)"
 }
 
 // ChannelByNameForViewer resolves a channel NAME to its Channel within the set

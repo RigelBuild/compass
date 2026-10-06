@@ -591,23 +591,43 @@ caller is a founding member by construction.
 Agent tools SHALL never pass group ids. `create_channel` and
 `create_channel_group` SHALL name the parent group as a leaf name, or as a slash
 path from the root when the name contains `/`; a group name SHALL NOT contain
-`/`. Resolution SHALL use the caller's visible groups; unknown or invisible
-groups SHALL return not-found. A leaf that
-names more than one visible group, or a path whose last step matches more than
-one visible group, SHALL return invalid-argument. The human RPC SHALL take ids
+`/`. A leading `/` SHALL anchor the path at the top level (`/infra`), and a
+leading `/~<handle>/` SHALL keep only top-level groups in that user's namespace
+(`/~matt/eng`). Resolution SHALL use the caller's visible groups; unknown or
+invisible groups SHALL return not-found. A ref that names more than one visible
+group SHALL return invalid-argument, never pick one, and the error SHALL name
+the anchored or owner-qualified ref for each match. The human RPC SHALL take ids
 and reject the name fields.
+
+A group name SHALL be unique among its siblings within one user's namespace. An
+agent's groups belong to its owning user's namespace, so a user and that user's
+agents cannot create same-named siblings.
 
 #### Scenario: An ambiguous leaf name is rejected
 
 - **Given** two visible groups with the same leaf name
 - **When** an agent tool names that group by its leaf name
-- **Then** the call returns invalid-argument
+- **Then** the call returns invalid-argument naming a ref for each group
 
 #### Scenario: A slash path selects one of two same-named groups
 
 - **Given** two visible groups named `svc` under different parent groups
 - **When** an agent tool names one with its root slash path
 - **Then** the call resolves to the group at that path
+
+#### Scenario: An owner qualifier selects between two users' top-level groups
+
+- **Given** the caller's own top-level group `eng` and another user's shared
+  top-level group `eng`
+- **When** an agent tool names `/~<other-handle>/eng`
+- **Then** the call resolves to the other user's group
+
+#### Scenario: An anchor selects the top-level group over a nested one
+
+- **Given** a top-level group `infra` and a group `infra` nested under `eng`
+- **When** an agent tool names `/infra`
+- **Then** the call resolves to the top-level group, and `eng/infra` resolves to
+  the nested one
 
 ### Requirement: The `SubscribeComms` fan-out is visibility-scoped
 
