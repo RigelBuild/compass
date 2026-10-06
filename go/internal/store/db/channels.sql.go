@@ -702,6 +702,7 @@ func (q *Queries) ListChannels(ctx context.Context, accountID string) ([]ListCha
 
 const lockChannelForReparent = `-- name: LockChannelForReparent :one
 SELECT channels.group_id, channels.kind, channels.membership_mode,
+       COALESCE(channels.parent_agent_id, '') AS parent_agent_id,
        EXISTS (SELECT 1 FROM agent_accounts WHERE home_channel_id = channels.id) AS is_home
 FROM channels WHERE channels.id = $1 FOR UPDATE OF channels
 `
@@ -710,6 +711,7 @@ type LockChannelForReparentRow struct {
 	GroupID        pgtype.Text
 	Kind           int16
 	MembershipMode int16
+	ParentAgentID  string
 	IsHome         bool
 }
 
@@ -720,6 +722,7 @@ func (q *Queries) LockChannelForReparent(ctx context.Context, id string) (LockCh
 		&i.GroupID,
 		&i.Kind,
 		&i.MembershipMode,
+		&i.ParentAgentID,
 		&i.IsHome,
 	)
 	return i, err
@@ -778,6 +781,73 @@ func (q *Queries) OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentA
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const ownerSetLostChannelVisibility = `-- name: OwnerSetLostChannelVisibility :many
+WITH RECURSIVE ancestry AS (
+	SELECT id, parent_group_id, visibility AS min_vis
+	FROM channel_groups
+	UNION ALL
+	SELECT a.id, g.parent_group_id, LEAST(a.min_vis, g.visibility)
+	FROM ancestry a
+	JOIN channel_groups g ON g.id = a.parent_group_id
+),
+effective AS (
+	SELECT id, MIN(min_vis) AS eff_vis
+	FROM ancestry
+	GROUP BY id
+),
+candidates AS (
+	SELECT $1::text AS account_id, $1::text AS uid
+	UNION ALL
+	SELECT aa.account_id, aa.owner_user_id AS uid
+	FROM agent_accounts aa WHERE aa.owner_user_id = $1
+)
+SELECT cand.account_id
+FROM candidates cand, channels c
+WHERE c.id = $2
+  AND NOT EXISTS (
+	SELECT 1 FROM channel_members cm
+	WHERE cm.channel_id = c.id AND cm.account_id = cand.account_id
+  )
+  AND NOT (
+	c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
+	    SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
+	)
+  )
+  AND NOT (
+	c.parent_agent_id IS NOT NULL
+	AND (SELECT aa.owner_user_id FROM agent_accounts aa WHERE aa.account_id = c.parent_agent_id)
+	    IN (cand.account_id, cand.uid)
+  )
+ORDER BY cand.account_id
+`
+
+type OwnerSetLostChannelVisibilityParams struct {
+	Column1 string
+	ID      string
+}
+
+// The owner user $1 and its agents that fail ChannelVisibleTo for channel $2.
+// The per-viewer arms must stay equal to ChannelVisibleTo's.
+func (q *Queries) OwnerSetLostChannelVisibility(ctx context.Context, arg OwnerSetLostChannelVisibilityParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, ownerSetLostChannelVisibility, arg.Column1, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var account_id string
+		if err := rows.Scan(&account_id); err != nil {
+			return nil, err
+		}
+		items = append(items, account_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const subscribeConvertedDMParties = `-- name: SubscribeConvertedDMParties :exec

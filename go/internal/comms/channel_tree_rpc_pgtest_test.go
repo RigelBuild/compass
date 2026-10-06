@@ -227,3 +227,40 @@ func TestReparentChannelDetachNotifiesViewersWhoLoseVisibility(t *testing.T) {
 		t.Fatalf("removed = %v; the anchor is still a member and must not be named", changed.GetRemovedAccountIds())
 	}
 }
+
+// Moving a shared EXPLICIT channel from X's agent to Y's agent drops X's
+// non-member agents from visibility. They still get the final event, and a
+// Y-side member does not learn X's agent ids from removed_account_ids.
+func TestReparentChannelCrossOwnerMoveNotifiesOnlyLostViewers(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+	ownerX := mustUser(t, h.store, "xowner")
+	ownerY := mustUser(t, h.store, "yowner")
+	anchorX := mustAgent(t, h.store, ownerX.ID, "anchorx")
+	bystanderX := mustAgent(t, h.store, ownerX.ID, "bystanderx")
+	memberY := mustAgent(t, h.store, ownerY.ID, "membery")
+	channel, err := h.store.CreateChannel(ctx, anchorX.ID, store.NewChannel{
+		Name: "shared", Kind: store.ChannelKindChannel, ParentAgentID: anchorX.ID,
+		MemberAccountIDs: []store.AccountID{memberY.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel(shared under X): %v", err)
+	}
+
+	bystanderEvents := firstEventAfterBoundary(t, h, bystanderX.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	memberEvents := firstEventAfterBoundary(t, h, memberY.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	if _, err := h.svc.ReparentChannel(WithActor(ctx, memberY.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+		ChannelId: string(channel.ID), NewParentAgentHandle: "membery",
+	})); err != nil {
+		t.Fatalf("ReparentChannel(to Y's agent): %v", err)
+	}
+
+	lost := awaitFirst(t, bystanderEvents).GetChannelChanged()
+	if lost.GetChannel().GetId() != string(channel.ID) || !slices.Equal(lost.GetRemovedAccountIds(), []string{string(bystanderX.ID)}) {
+		t.Fatalf("X bystander ChannelChanged = %v; want the moved channel naming only itself as removed", lost)
+	}
+	kept := awaitFirst(t, memberEvents).GetChannelChanged()
+	if kept.GetChannel().GetId() != string(channel.ID) || len(kept.GetRemovedAccountIds()) != 0 {
+		t.Fatalf("Y member ChannelChanged = %v; want the moved channel with no removed ids", kept)
+	}
+}

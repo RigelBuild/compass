@@ -514,6 +514,9 @@ type Querier interface {
 	// reach: the author may reach agent aa
 	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
+	// The owner user $1 and its agents that fail ChannelVisibleTo for channel $2.
+	// The per-viewer arms must stay equal to ChannelVisibleTo's.
+	OwnerSetLostChannelVisibility(ctx context.Context, arg OwnerSetLostChannelVisibilityParams) ([]string, error)
 	OwnersPeered(ctx context.Context, arg OwnersPeeredParams) (bool, error)
 	OwnersPeeredRowsForShare(ctx context.Context, arg OwnersPeeredRowsForShareParams) ([]OwnersPeeredRowsForShareRow, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)

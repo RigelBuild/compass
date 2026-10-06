@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -206,11 +207,11 @@ func TestReparentChannelShapeRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.ReparentChannel(t.Context(), tc.actor, tc.channelID, tc.parent)
+			_, _, err := s.ReparentChannel(t.Context(), tc.actor, tc.channelID, tc.parent)
 			sentinelIs(t, err, tc.want, tc.name)
 		})
 	}
-	_, err = s.ReparentChannel(t.Context(), owner.ID, ChannelID("unknown-channel"), anchor.ID)
+	_, _, err = s.ReparentChannel(t.Context(), owner.ID, ChannelID("unknown-channel"), anchor.ID)
 	sentinelIs(t, err, ErrNotFound, "unknown channel")
 }
 
@@ -222,9 +223,9 @@ func TestReparentChannelOwnerBoundaryAndDestination(t *testing.T) {
 	foreign := mustAgent(t, s, other.ID, "move-foreign")
 	ch := mustAttachedChannel(t, s, owner.ID, anchor.ID, "explicit", ChannelMembershipModeExplicit)
 
-	_, err := s.ReparentChannel(t.Context(), owner.ID, ch.ID, foreign.ID)
+	_, _, err := s.ReparentChannel(t.Context(), owner.ID, ch.ID, foreign.ID)
 	sentinelIs(t, err, ErrNotFound, "cross-owner destination")
-	_, err = s.ReparentChannel(t.Context(), owner.ID, ch.ID, AccountID("missing-agent"))
+	_, _, err = s.ReparentChannel(t.Context(), owner.ID, ch.ID, AccountID("missing-agent"))
 	sentinelIs(t, err, ErrNotFound, "unknown destination agent")
 }
 
@@ -236,7 +237,7 @@ func TestReparentChannelLeafAllowsDescendantAgent(t *testing.T) {
 	ch := mustAttachedChannel(t, s, owner.ID, anchor.ID, "tree", ChannelMembershipModeTree)
 
 	// A channel is a leaf, so anchoring it below an agent descendant cannot cycle.
-	moved, err := s.ReparentChannel(t.Context(), descendant.ID, ch.ID, descendant.ID)
+	moved, _, err := s.ReparentChannel(t.Context(), descendant.ID, ch.ID, descendant.ID)
 	if err != nil {
 		t.Fatalf("descendant re-anchors ancestor channel: %v", err)
 	}
@@ -255,7 +256,7 @@ func TestReparentExplicitChannelToRoot(t *testing.T) {
 	anchor := mustAgent(t, s, owner.ID, "detach-anchor")
 	ch := mustAttachedChannel(t, s, owner.ID, anchor.ID, "explicit", ChannelMembershipModeExplicit)
 
-	if _, err := s.ReparentChannel(t.Context(), owner.ID, ch.ID, ""); err != nil {
+	if _, _, err := s.ReparentChannel(t.Context(), owner.ID, ch.ID, ""); err != nil {
 		t.Fatalf("detach explicit channel: %v", err)
 	}
 	parent, mode, _ := channelTreeState(t, s, ch.ID)
@@ -272,7 +273,7 @@ func TestReparentChannelDuplicateNameAtDestination(t *testing.T) {
 	ch := mustAttachedChannel(t, s, owner.ID, first.ID, "duplicate", ChannelMembershipModeExplicit)
 	mustAttachedChannel(t, s, owner.ID, second.ID, "duplicate", ChannelMembershipModeExplicit)
 
-	_, err := s.ReparentChannel(t.Context(), owner.ID, ch.ID, second.ID)
+	_, _, err := s.ReparentChannel(t.Context(), owner.ID, ch.ID, second.ID)
 	sentinelIs(t, err, ErrConflict, "duplicate channel name at destination")
 	parent, _, _ := channelTreeState(t, s, ch.ID)
 	if parent != string(first.ID) {
@@ -303,7 +304,7 @@ func TestConvertedDMOwnersCanAttachToOwnAgents(t *testing.T) {
 		{name: "owner B", actor: ownerB.ID, parent: agentB.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := s.ReparentChannel(t.Context(), tc.actor, channelID, tc.parent); err != nil {
+			if _, _, err := s.ReparentChannel(t.Context(), tc.actor, channelID, tc.parent); err != nil {
 				t.Fatalf("attach converted DM by %s: %v", tc.name, err)
 			}
 			parent, _, _ := channelTreeState(t, s, channelID)
@@ -339,7 +340,7 @@ func TestChannelTreeMembershipModeDoesNotChangeAfterCreate(t *testing.T) {
 	if _, err := s.PinMessage(t.Context(), explicit.ID, message.ID, "", owner.ID); err != nil {
 		t.Fatalf("PinMessage(explicit): %v", err)
 	}
-	if _, err := s.ReparentChannel(t.Context(), owner.ID, explicit.ID, second.ID); err != nil {
+	if _, _, err := s.ReparentChannel(t.Context(), owner.ID, explicit.ID, second.ID); err != nil {
 		t.Fatalf("ReparentChannel(explicit): %v", err)
 	}
 
@@ -350,7 +351,7 @@ func TestChannelTreeMembershipModeDoesNotChangeAfterCreate(t *testing.T) {
 	t.Logf("UpdateChannelMembers(tree): %v", err)
 	_, err = s.SetChannelPolicy(t.Context(), owner.ID, tree.ID, ChannelPolicy{})
 	t.Logf("SetChannelPolicy(tree): %v", err)
-	if _, err := s.ReparentChannel(t.Context(), owner.ID, tree.ID, second.ID); err != nil {
+	if _, _, err := s.ReparentChannel(t.Context(), owner.ID, tree.ID, second.ID); err != nil {
 		t.Fatalf("ReparentChannel(tree): %v", err)
 	}
 
@@ -443,7 +444,7 @@ func TestReparentChannelWaitsForConcurrentMemberRemoval(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.ReparentChannel(ctx, leaver.ID, ch.ID, anchor.ID)
+		_, _, err := s.ReparentChannel(ctx, leaver.ID, ch.ID, anchor.ID)
 		done <- err
 	}()
 	deadline := time.After(10 * time.Second)
@@ -474,5 +475,28 @@ gate:
 	sentinelIs(t, reparentErr, ErrNotFound, "reparent by a member removed concurrently")
 	if parent, _, _ := channelTreeState(t, s, ch.ID); parent != "" {
 		t.Fatalf("channel parent = %q after a refused reparent, want root", parent)
+	}
+}
+
+// Only owner-set accounts with no remaining path to the channel are returned:
+// a member keeps its row, and while the anchor stays in the set, everyone
+// keeps the owner-set arm.
+func TestOwnerSetLostChannelVisibilityExcludesRemainingPaths(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "lost-owner")
+	anchor := mustAgent(t, s, owner.ID, "lost-anchor")
+	bystander := mustAgent(t, s, owner.ID, "lost-bystander")
+	ch := mustAttachedChannel(t, s, anchor.ID, anchor.ID, "lost", ChannelMembershipModeExplicit)
+
+	lost, err := s.OwnerSetLostChannelVisibility(t.Context(), owner.ID, ch.ID)
+	if err != nil || len(lost) != 0 {
+		t.Fatalf("anchored in the owner set: lost = %v, %v; want none", lost, err)
+	}
+	if _, _, err := s.ReparentChannel(t.Context(), anchor.ID, ch.ID, ""); err != nil {
+		t.Fatalf("ReparentChannel(detach): %v", err)
+	}
+	lost, err = s.OwnerSetLostChannelVisibility(t.Context(), owner.ID, ch.ID)
+	if err != nil || !slices.Equal(lost, []AccountID{bystander.ID}) {
+		t.Fatalf("after detach: lost = %v, %v; want only the non-member bystander %s", lost, err, bystander.ID)
 	}
 }

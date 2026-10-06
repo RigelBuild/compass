@@ -286,63 +286,64 @@ func (s *Store) writeExplicitMembers(ctx context.Context, tx pgx.Tx, id ChannelI
 // Participation is checked before the row lock, so a non-participant never
 // holds it, and again after, against committed membership. Both gates run
 // before any shape refusal, so an InvalidArgument never reveals the channel.
-func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID ChannelID, newParentAgentID AccountID) (Channel, error) {
+// It also returns the parent it replaced, read under the row lock.
+func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID ChannelID, newParentAgentID AccountID) (Channel, AccountID, error) {
 	if actor == "" {
-		return Channel{}, fmt.Errorf("%w: actor is required", ErrInvalidArgument)
+		return Channel{}, "", fmt.Errorf("%w: actor is required", ErrInvalidArgument)
 	}
 	if channelID == "" {
-		return Channel{}, fmt.Errorf("%w: channel id is required", ErrInvalidArgument)
+		return Channel{}, "", fmt.Errorf("%w: channel id is required", ErrInvalidArgument)
 	}
 
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
-		return Channel{}, fmt.Errorf("store: begin reparent channel: %w", err)
+		return Channel{}, "", fmt.Errorf("store: begin reparent channel: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
 	if err := requireChannelMember(ctx, tx, actor, channelID); err != nil {
-		return Channel{}, err
+		return Channel{}, "", err
 	}
 	row, err := qtx.LockChannelForReparent(ctx, string(channelID))
 	if err != nil {
 		if noRows(err) {
-			return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+			return Channel{}, "", fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 		}
-		return Channel{}, fmt.Errorf("store: lock channel for reparent: %w", err)
+		return Channel{}, "", fmt.Errorf("store: lock channel for reparent: %w", err)
 	}
 	if err := requireChannelMember(ctx, tx, actor, channelID); err != nil {
-		return Channel{}, err
+		return Channel{}, "", err
 	}
 
 	if newParentAgentID != "" {
 		actorOwner, err := qtx.ResolveOwner(ctx, string(actor))
 		if err != nil {
-			return Channel{}, fmt.Errorf("store: resolve actor owner: %w", err)
+			return Channel{}, "", fmt.Errorf("store: resolve actor owner: %w", err)
 		}
 		destinationOwner, err := qtx.GetAgentOwner(ctx, string(newParentAgentID))
 		if err != nil {
 			if noRows(err) {
-				return Channel{}, fmt.Errorf("%w: agent %q", ErrNotFound, newParentAgentID)
+				return Channel{}, "", fmt.Errorf("%w: agent %q", ErrNotFound, newParentAgentID)
 			}
-			return Channel{}, fmt.Errorf("store: resolve destination agent owner: %w", err)
+			return Channel{}, "", fmt.Errorf("store: resolve destination agent owner: %w", err)
 		}
 		if actorOwner != destinationOwner {
-			return Channel{}, fmt.Errorf("%w: agent %q", ErrNotFound, newParentAgentID)
+			return Channel{}, "", fmt.Errorf("%w: agent %q", ErrNotFound, newParentAgentID)
 		}
 	}
 
 	if row.GroupID.Valid {
-		return Channel{}, fmt.Errorf("%w: grouped channel cannot be attached", ErrInvalidArgument)
+		return Channel{}, "", fmt.Errorf("%w: grouped channel cannot be attached", ErrInvalidArgument)
 	}
 	if ChannelKind(row.Kind) != ChannelKindChannel {
-		return Channel{}, fmt.Errorf("%w: only channels can be attached", ErrInvalidArgument)
+		return Channel{}, "", fmt.Errorf("%w: only channels can be attached", ErrInvalidArgument)
 	}
 	if row.IsHome {
-		return Channel{}, fmt.Errorf("%w: home channels cannot be attached", ErrInvalidArgument)
+		return Channel{}, "", fmt.Errorf("%w: home channels cannot be attached", ErrInvalidArgument)
 	}
 	if ChannelMembershipMode(row.MembershipMode) == ChannelMembershipModeTree && newParentAgentID == "" {
-		return Channel{}, fmt.Errorf("%w: tree membership requires an agent parent", ErrInvalidArgument)
+		return Channel{}, "", fmt.Errorf("%w: tree membership requires an agent parent", ErrInvalidArgument)
 	}
 
 	// Channels are leaves, so moving a channel cannot create a tree cycle.
@@ -351,14 +352,15 @@ func (s *Store) ReparentChannel(ctx context.Context, actor AccountID, channelID 
 		Column2: string(newParentAgentID),
 	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) && pgConstraintName(err) == "channels_agent_name_key" {
-			return Channel{}, fmt.Errorf("%w: channel already exists under agent %q", ErrConflict, newParentAgentID)
+			return Channel{}, "", fmt.Errorf("%w: channel already exists under agent %q", ErrConflict, newParentAgentID)
 		}
-		return Channel{}, fmt.Errorf("store: update channel parent: %w", err)
+		return Channel{}, "", fmt.Errorf("store: update channel parent: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return Channel{}, fmt.Errorf("store: commit reparent channel: %w", err)
+		return Channel{}, "", fmt.Errorf("store: commit reparent channel: %w", err)
 	}
-	return s.getChannel(ctx, channelID)
+	ch, err := s.getChannel(ctx, channelID)
+	return ch, AccountID(row.ParentAgentID), err
 }
 
 // expandOwnerMembership computes the final member set for a new channel: the
@@ -462,6 +464,24 @@ func (s *Store) ChannelVisibleTo(ctx context.Context, actor AccountID, channelID
 		return false, fmt.Errorf("store: check channel visibility: %w", err)
 	}
 	return visible, nil
+}
+
+// OwnerSetLostChannelVisibility returns owner and its agents that cannot see
+// channelID: after a reparent away from owner's agent, the accounts that need a
+// final ChannelChanged. One query, so the cost does not grow per agent.
+func (s *Store) OwnerSetLostChannelVisibility(ctx context.Context, owner AccountID, channelID ChannelID) ([]AccountID, error) {
+	rows, err := s.q.OwnerSetLostChannelVisibility(ctx, db.OwnerSetLostChannelVisibilityParams{
+		Column1: string(owner),
+		ID:      string(channelID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: owner set lost channel visibility: %w", err)
+	}
+	out := make([]AccountID, len(rows))
+	for i, id := range rows {
+		out[i] = AccountID(id)
+	}
+	return out, nil
 }
 
 // ChannelGroupByRefForViewer resolves an agent's group reference (a leaf name, a
