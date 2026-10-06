@@ -124,6 +124,7 @@ func channelMembershipModeFromWire(m compassv1.ChannelMembershipMode) (store.Cha
 		return 0, fmt.Errorf("%w: unknown membership mode %d", store.ErrInvalidArgument, m)
 	}
 }
+
 func channelKindToWire(k store.ChannelKind) compassv1.ChannelKind {
 	switch k {
 	case store.ChannelKindDM:

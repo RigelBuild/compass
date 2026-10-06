@@ -240,8 +240,9 @@ func (c *Comms) ListChannels(
 	return connect.NewResponse(&compassv1.ListChannelsResponse{Channels: out}), nil
 }
 
-// CreateChannel creates a channel within a group, caller-authorized against the
-// parent group; emits ChannelChanged (additive RPC, this task).
+// CreateChannel creates a channel in a group or under an agent of the caller's
+// owner, explicit or tree-membered. A foreign anchor reads as unknown, and the
+// ChannelChanged is emitted after commit.
 func (c *Comms) CreateChannel(
 	ctx context.Context,
 	req *connect.Request[compassv1.CreateChannelRequest],
@@ -364,11 +365,18 @@ func (c *Comms) ReparentChannel(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	ch, err := c.store.ReparentChannel(ctx, caller, store.ChannelID(req.Msg.GetChannelId()), parentID)
+	channelID := store.ChannelID(req.Msg.GetChannelId())
+	// Unscoped pre-read, used only once the participant-gated move succeeds.
+	prior, priorErr := c.store.GetChannel(ctx, channelID)
+	ch, err := c.store.ReparentChannel(ctx, caller, channelID, parentID)
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishChannelChanged(ch, nil)
+	var removed []store.AccountID
+	if priorErr == nil && prior.ParentAgentID != "" && ch.ParentAgentID == "" {
+		removed = c.lostAnchorViewers(ctx, prior.ParentAgentID, channelID)
+	}
+	c.publishChannelChanged(ch, removed)
 	return connect.NewResponse(&compassv1.ReparentChannelResponse{Channel: channelToWire(ch)}), nil
 }
 
@@ -771,4 +779,37 @@ func (c *Comms) actorFromContext(ctx context.Context) store.AccountID {
 		return actor
 	}
 	return c.adminID
+}
+
+// lostAnchorViewers lists the old anchor's owner set that can no longer see the
+// channel after a detach. Naming them in removed_account_ids lets the stream
+// deliver their final ChannelChanged; a read failure only costs that event.
+func (c *Comms) lostAnchorViewers(ctx context.Context, oldAnchor store.AccountID, channelID store.ChannelID) []store.AccountID {
+	owner, err := c.store.AgentOwner(ctx, oldAnchor)
+	if err != nil {
+		slog.WarnContext(ctx, "comms: resolve detached anchor owner", "channel", channelID, "err", err)
+		return nil
+	}
+	agents, err := c.store.AgentsByOwner(ctx, owner)
+	if err != nil {
+		slog.WarnContext(ctx, "comms: list detached anchor owner agents", "channel", channelID, "err", err)
+		return nil
+	}
+	candidates := make([]store.AccountID, 0, len(agents)+1)
+	candidates = append(candidates, owner)
+	for _, a := range agents {
+		candidates = append(candidates, a.ID)
+	}
+	var lost []store.AccountID
+	for _, id := range candidates {
+		visible, err := c.store.ChannelVisibleTo(ctx, id, channelID)
+		if err != nil {
+			slog.WarnContext(ctx, "comms: check detached channel visibility", "channel", channelID, "err", err)
+			return nil
+		}
+		if !visible {
+			lost = append(lost, id)
+		}
+	}
+	return lost
 }

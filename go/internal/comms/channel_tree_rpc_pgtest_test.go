@@ -4,10 +4,13 @@ package comms
 
 import (
 	"context"
+	"slices"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
+	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -21,6 +24,27 @@ func textPost(channelID, text string) *compassv1.PostMessageRequest {
 	}
 }
 
+// channelEventsBefore counts ChannelChanged events for channelID on the bus
+// until the marker channel's event arrives, so the count is bounded by order.
+func channelEventsBefore(t *testing.T, live <-chan events.Stamped[*compassv1.SubscribeCommsResponse], channelID, markerID string) int {
+	t.Helper()
+	n := 0
+	for {
+		select {
+		case event := <-live:
+			switch event.Payload.GetChannelChanged().GetChannel().GetId() {
+			case channelID:
+				n++
+			case markerID:
+				return n
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the marker event")
+			return n
+		}
+	}
+}
+
 func TestCreateChannelUnderAgentEmitsAttachedChannel(t *testing.T) {
 	h := newStreamHarness(t)
 	ctx := context.Background()
@@ -30,6 +54,11 @@ func TestCreateChannelUnderAgentEmitsAttachedChannel(t *testing.T) {
 	outsider := mustUser(t, h.store, "tree-outsider")
 
 	events := firstEventAfterBoundary(t, h, owner.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	sub, err := h.bus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("subscribe event bus: %v", err)
+	}
+	defer sub.Cancel()
 	created, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "tree-room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
 		ParentAgentHandle: "anchor", MembershipMode: compassv1.ChannelMembershipMode_CHANNEL_MEMBERSHIP_MODE_TREE,
@@ -44,6 +73,15 @@ func TestCreateChannelUnderAgentEmitsAttachedChannel(t *testing.T) {
 	changed := awaitFirst(t, events).GetChannelChanged()
 	if changed.GetChannel().GetId() != wire.GetId() || changed.GetChannel().GetParentAgentId() != string(anchor.ID) {
 		t.Fatalf("ChannelChanged = %v; want the attached channel %q under %q", changed, wire.GetId(), anchor.ID)
+	}
+	marker, err := h.svc.CreateChannel(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "create-marker", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel(marker): %v", err)
+	}
+	if n := channelEventsBefore(t, sub.Live, wire.GetId(), marker.Msg.GetChannel().GetId()); n != 1 {
+		t.Fatalf("ChannelChanged events for the created channel = %d; want exactly one", n)
 	}
 
 	if _, err := h.svc.PostMessage(WithActor(ctx, leaf.ID), connect.NewRequest(textPost(wire.GetId(), "from the subtree"))); err != nil {
@@ -123,14 +161,7 @@ func TestReparentChannelEmitsOneChannelChangedToAdmittedAccounts(t *testing.T) {
 		t.Fatalf("outsider first event channel = %q; want its marker %q, not the moved channel", got, marker.Msg.GetChannel().GetId())
 	}
 
-	var moves int
-	for range 2 {
-		event := <-sub.Live
-		if event.Payload.GetChannelChanged().GetChannel().GetId() == string(channel.ID) {
-			moves++
-		}
-	}
-	if moves != 1 {
+	if moves := channelEventsBefore(t, sub.Live, string(channel.ID), marker.Msg.GetChannel().GetId()); moves != 1 {
 		t.Fatalf("ChannelChanged events for the moved channel = %d; want exactly one", moves)
 	}
 }
@@ -153,4 +184,46 @@ func TestReparentChannelNonParticipantIsNotFound(t *testing.T) {
 		ChannelId: string(channel.ID),
 	}))
 	connectCodeIs(t, err, connect.CodeNotFound, "non-participant ReparentChannel")
+
+	other := mustUser(t, st, "np-other")
+	mustAgent(t, st, other.ID, "theirs")
+	for _, handle := range []string{"np-other/theirs", "ghost"} {
+		_, err := svc.ReparentChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+			ChannelId: string(channel.ID), NewParentAgentHandle: handle,
+		}))
+		connectNotFoundFor(t, err, handle, "ReparentChannel destination "+handle)
+	}
+}
+
+// Detaching an EXPLICIT channel removes the anchor owner set's visibility; the
+// final ChannelChanged must still reach a same-owner viewer with no member row.
+func TestReparentChannelDetachNotifiesViewersWhoLoseVisibility(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+	owner := mustUser(t, h.store, "detach-owner")
+	anchor := mustAgent(t, h.store, owner.ID, "anchor")
+	viewer := mustAgent(t, h.store, owner.ID, "viewer")
+	channel, err := h.store.CreateChannel(ctx, anchor.ID, store.NewChannel{
+		Name: "detaching", Kind: store.ChannelKindChannel, ParentAgentID: anchor.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel(EXPLICIT under anchor): %v", err)
+	}
+	if visible, err := h.store.ChannelVisibleTo(ctx, viewer.ID, channel.ID); err != nil || !visible {
+		t.Fatalf("pre-detach ChannelVisibleTo(viewer) = %v, %v; want visible via the owner set", visible, err)
+	}
+
+	events := firstEventAfterBoundary(t, h, viewer.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	if _, err := h.svc.ReparentChannel(WithActor(ctx, anchor.ID), connect.NewRequest(&compassv1.ReparentChannelRequest{
+		ChannelId: string(channel.ID),
+	})); err != nil {
+		t.Fatalf("ReparentChannel(detach): %v", err)
+	}
+	changed := awaitFirst(t, events).GetChannelChanged()
+	if changed.GetChannel().GetId() != string(channel.ID) || !slices.Contains(changed.GetRemovedAccountIds(), string(viewer.ID)) {
+		t.Fatalf("viewer ChannelChanged = %v; want the detached channel naming the viewer as removed", changed)
+	}
+	if slices.Contains(changed.GetRemovedAccountIds(), string(anchor.ID)) {
+		t.Fatalf("removed = %v; the anchor is still a member and must not be named", changed.GetRemovedAccountIds())
+	}
 }
