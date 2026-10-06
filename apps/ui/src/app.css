@@ -412,12 +412,20 @@
 
 .main {
 	grid-area: main;
+	position: relative;
 	min-width: 0;
 	min-height: 0;
 	background: var(--cx-bg);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+}
+
+/* The tab-cap refusal floats over the view rather than taking layout space. */
+.layout-notice {
+	position: absolute;
+	right: var(--cx-space-4);
+	bottom: var(--cx-space-4);
 }
 
 /* A view panel stands in for .main as its view's box, so views size as before. */

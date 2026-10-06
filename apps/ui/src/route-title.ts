@@ -2,7 +2,7 @@ import { dmLabel, isDm } from "./comms";
 import type { AppStore } from "./store";
 import type { RouteMatch } from "./view-route";
 
-/** A view's title (record A3): the channel, topic or agent name, or the fixed
+/** A view's title: the channel, topic or agent name, or the fixed
  *  view name. An id the store cannot resolve yet titles as the raw id. */
 export function routeTitle(
 	match: RouteMatch,

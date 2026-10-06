@@ -1,5 +1,5 @@
-// Open modes for a navigation link (record A3): a plain click navigates the
-// focused view in place; Mod+click and middle-click open the path in a new tab.
+// Open modes for a navigation link: a plain click navigates the focused view
+// in place; Mod+click and middle-click open the path in a new tab.
 
 import { detectPlatform } from "./keyboard/dispatch";
 import type { AppStore } from "./store";
@@ -7,6 +7,7 @@ import type { AppStore } from "./store";
 export interface OpenLinkHandlers {
 	onClick: (event: MouseEvent) => void;
 	onAuxClick: (event: MouseEvent) => void;
+	onMouseDown: (event: MouseEvent) => void;
 }
 
 /** Click handlers for a link to `path`. `inPlace` keeps the link's own
@@ -31,6 +32,10 @@ export function openLink(
 			if (event.button !== 1) return;
 			event.preventDefault();
 			openInTab();
+		},
+		// Cancelled on mousedown: by auxclick the browser may already autoscroll.
+		onMouseDown: (event) => {
+			if (event.button === 1) event.preventDefault();
 		},
 	};
 }

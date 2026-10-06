@@ -15,6 +15,7 @@ import "./design/components/card.css";
 import "./design/components/menu.css";
 import "./design/components/shortcuts.css";
 import "./design/components/state-dot.css";
+import "./design/components/toast.css";
 import "./app.css";
 import {
 	CoachTip,
@@ -36,7 +37,7 @@ import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
 import type { LiveClients } from "./live/client";
 import { routeTitle } from "./route-title";
-import { focusedViewOf, tabViews } from "./window-layout";
+import { focusedViewOf, shownViewIds, tabViews } from "./window-layout";
 
 // Compass shell: routed center view with persistent navigation and usage chrome.
 
@@ -65,15 +66,27 @@ const App: Component<
 		),
 	);
 	// Panels toggle `hidden` imperatively so a switch can move focus into the
-	// shown view before hiding the old one (record A4); a hidden element drops focus.
+	// shown view before hiding the old one; a hidden element drops focus.
 	const panels = new Map<string, HTMLElement>();
 	const lastFocus = new Map<string, HTMLElement>();
+	// The view focus was last in, kept even after a close removes its panel.
+	let focusedPanelView: string | undefined;
 	const rememberFocus = (event: FocusEvent): void => {
 		const target = event.target;
 		if (!(target instanceof HTMLElement)) return;
 		const panel = target.closest<HTMLElement>('[role="tabpanel"]');
 		const viewId = [...panels].find(([, el]) => el === panel)?.[0];
-		if (viewId !== undefined) lastFocus.set(viewId, target);
+		if (viewId === undefined) return;
+		lastFocus.set(viewId, target);
+		focusedPanelView = viewId;
+	};
+	// Focus moving to another real target outside every panel ends the claim;
+	// a null target is a removal, which the close path below still handles.
+	const forgetFocus = (event: FocusEvent): void => {
+		const next = event.relatedTarget;
+		if (!(next instanceof Node)) return;
+		if (![...panels.values()].some((el) => el.contains(next)))
+			focusedPanelView = undefined;
 	};
 	const tabIdOf = (viewId: string): string | undefined => {
 		const tab = store
@@ -81,38 +94,52 @@ const App: Component<
 			.tabs.find((t) => tabViews(t.layout).some((v) => v.id === viewId));
 		return tab ? viewTabId(tab.id) : undefined;
 	};
+	// Focus is leaving if it sits in a panel about to hide, or it was in a panel
+	// a close just removed (the browser has already dropped it to the body).
+	const focusLeaving = (shownIds: readonly string[]): boolean => {
+		const active = document.activeElement;
+		if (active === null || active === document.body)
+			return focusedPanelView !== undefined && !panels.has(focusedPanelView);
+		return [...panels].some(
+			([id, el]) => !shownIds.includes(id) && el.contains(active),
+		);
+	};
+	const prunePanels = (ids: readonly string[]): void => {
+		for (const id of [...panels.keys()]) {
+			if (ids.includes(id)) continue;
+			panels.delete(id);
+			lastFocus.delete(id);
+		}
+	};
 	createEffect(
 		() => ({
-			shownId: focusedViewOf(store.layout()).id,
+			shownIds: shownViewIds(store.layout()),
+			focusedId: focusedViewOf(store.layout()).id,
 			ids: store.viewScopes().map((scope) => scope.id),
 		}),
-		({ shownId, ids }) => {
-			for (const id of [...panels.keys()]) {
-				if (ids.includes(id)) continue;
-				panels.delete(id);
-				lastFocus.delete(id);
-			}
-			const shown = panels.get(shownId);
-			if (!shown) return;
-			shown.hidden = false;
-			const active = document.activeElement;
-			const leaving = [...panels].some(
-				([id, el]) => id !== shownId && active !== null && el.contains(active),
-			);
-			if (leaving) focusInto(shownId, shown);
-			for (const [id, el] of panels) {
-				if (id !== shownId) el.hidden = true;
-			}
+		({ shownIds, focusedId, ids }) => {
+			prunePanels(ids);
+			const focused = panels.get(focusedId);
+			if (!focused) return;
+			for (const id of shownIds) panels.get(id)?.removeAttribute("hidden");
+			if (focusLeaving(shownIds)) focusInto(focusedId, focused);
+			for (const [id, el] of panels) el.hidden = !shownIds.includes(id);
 		},
 	);
 	const focusInto = (viewId: string, panel: HTMLElement): void => {
 		const remembered = lastFocus.get(viewId);
+		if (remembered && !remembered.isConnected) lastFocus.delete(viewId);
+		const visible = (el: HTMLElement): boolean =>
+			panel.contains(el) && el.closest("[hidden]") === null;
+		const candidate = [
+			...panel.querySelectorAll<HTMLElement>(
+				'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+			),
+		].find(visible);
 		const target =
-			remembered?.isConnected && panel.contains(remembered)
+			remembered?.isConnected && visible(remembered)
 				? remembered
-				: (panel.querySelector<HTMLElement>(
-						'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-					) ?? panel);
+				: (candidate ?? panel);
 		target.focus();
 	};
 	createEffect(
@@ -195,7 +222,7 @@ const App: Component<
 				<LeftSidebar />
 			</Show>
 
-			<main class="main" onFocusIn={rememberFocus}>
+			<main class="main" onFocusIn={rememberFocus} onFocusOut={forgetFocus}>
 				<For each={store.viewScopes()} keyed={(scope) => scope.id}>
 					{(scope) => (
 						<div
@@ -203,6 +230,7 @@ const App: Component<
 							role="tabpanel"
 							id={viewPanelId(untrack(scope).id)}
 							aria-labelledby={tabIdOf(scope().id)}
+							tabindex={-1}
 							hidden
 							ref={(el) => panels.set(untrack(scope).id, el)}
 						>
@@ -210,6 +238,13 @@ const App: Component<
 						</div>
 					)}
 				</For>
+				<Show when={store.layoutNotice()}>
+					{(notice) => (
+						<div class="cx-toast layout-notice" data-kind="warn" role="status">
+							{notice()}
+						</div>
+					)}
+				</Show>
 			</main>
 
 			<Show when={store.rightOpen()}>

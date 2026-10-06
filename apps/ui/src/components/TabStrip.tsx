@@ -1,8 +1,16 @@
-import { type Component, createSignal, For, onCleanup, Show } from "solid-js";
+import {
+	type Component,
+	createSignal,
+	For,
+	onCleanup,
+	onSettled,
+	Show,
+} from "solid-js";
 import "../design/components/tabs.css";
 import "../design/components/tab-strip.css";
 import { useStore } from "../context";
 import type { CommandId } from "../keyboard/commands";
+import { detectPlatform } from "../keyboard/dispatch";
 import { createRovingGroup, type Stop } from "../keyboard/roving";
 import { routeTitle } from "../route-title";
 import { parseRoute } from "../view-route";
@@ -46,8 +54,8 @@ function rovingTarget(
 	}
 }
 
-/** The topbar view-tab strip (record A7): one tab per layout tab. Click focuses
- *  a tab, its close button (or Delete) closes it, and a drag reorders it. */
+/** The topbar view-tab strip: one tab per layout tab. Click focuses a tab, its
+ *  close button (or Delete) closes it, and a drag reorders it. */
 export const TabStrip: Component = () => {
 	const store = useStore();
 	const tabs = (): ViewTab[] => store.layout().tabs;
@@ -121,7 +129,18 @@ export const TabStrip: Component = () => {
 			return m.view === "agent" ? m.agentId : undefined;
 		};
 		const isActive = () => store.layout().activeTabId === id;
-		const close = () => store.dispatchLayout({ kind: "close", tabId: id });
+		// A close from the strip leaves focus on the tab that is now active, and
+		// the single tab stop returns to it.
+		const close = () => {
+			store.dispatchLayout({ kind: "close", tabId: id });
+			onSettled(() => {
+				const active = store.layout().activeTabId;
+				setCursor(active);
+				els.get(active)?.focus();
+			});
+		};
+		const closeKey = (key: string): boolean =>
+			key === "Delete" || (key === "Backspace" && detectPlatform() === "mac");
 		return (
 			// biome-ignore lint/a11y/noStaticElementInteractions: pointer drag-reorder only; the tab and close buttons inside carry the keyboard semantics.
 			<div
@@ -154,7 +173,7 @@ export const TabStrip: Component = () => {
 					ref={setStopEl(id)}
 					onClick={() => store.dispatchLayout({ kind: "focusTab", tabId: id })}
 					onKeyDown={(event) => {
-						if (event.key === "Delete") {
+						if (closeKey(event.key)) {
 							event.preventDefault();
 							close();
 						}

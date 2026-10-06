@@ -80,9 +80,11 @@ import {
 	type LayoutAction,
 	layoutViews,
 	loadLayout,
+	MAX_TABS,
 	reduceLayout,
 	saveLayout,
 	setViewPath,
+	shownViewIds,
 	singleTabLayout,
 	type WindowLayout,
 } from "./window-layout";
@@ -193,8 +195,11 @@ export interface AppStore {
 	focusedView: Accessor<ViewScope>;
 	/** The window's tabs and splits; restored from `sessionStorage` at boot. */
 	layout: Accessor<WindowLayout>;
-	/** Apply a layout action; an eleventh tab is refused and leaves it as is. */
+	/** Apply a layout action; an eleventh tab is refused with a notice. */
 	dispatchLayout: (action: LayoutAction) => void;
+	/** Why the last layout action was refused (the tab cap); cleared by the next
+	 *  accepted one. */
+	layoutNotice: Accessor<string | undefined>;
 	/** One scope per view instance in the layout, in tab order; a view keeps its
 	 *  scope object for its whole life, so a keyed render keeps it mounted. */
 	viewScopes: Accessor<ViewScope[]>;
@@ -667,11 +672,24 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [layout, setLayout] = createSignal<WindowLayout>(singleTabLayout("/"), {
 		ownedWrite: true,
 	});
+	// A refusal is shown to the user rather than silently dropped; the next
+	// accepted action clears it.
+	const [layoutNotice, setLayoutNotice] = createSignal<string | undefined>(
+		undefined,
+		{ ownedWrite: true },
+	);
 	const dispatchLayout = (action: LayoutAction): void => {
+		let refused = false;
 		setLayout((prev) => {
 			const next = reduceLayout(prev, action);
+			refused = "refused" in next;
 			return "refused" in next ? prev : next;
 		});
+		setLayoutNotice(
+			refused
+				? `Tab limit reached: close a tab to open another (${MAX_TABS} tabs max).`
+				: undefined,
+		);
 	};
 	let routerBound = false;
 	const navigateTo = (path: string): void => {
@@ -971,6 +989,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 
 	// ── View scopes (record A1): one per view instance in the layout, keyed by
 	// view id, so a view keeps its workspace state while its path moves. ──
+	const shownIds = createMemo(() => shownViewIds(layout()));
 	const scopes = mapArray(
 		() => layoutViews(layout()),
 		(instance) => {
@@ -982,6 +1001,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				{
 					path: () => instance().path,
 					navigate: (path) => setLayout((prev) => setViewPath(prev, id, path)),
+					shown: () => shownIds().includes(id),
 				},
 			);
 		},
@@ -1745,6 +1765,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		focusedView,
 		layout,
 		dispatchLayout,
+		layoutNotice,
 		viewScopes: scopes,
 		joinChannel,
 		toggleSubscribe,

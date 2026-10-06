@@ -523,7 +523,12 @@ export const Bridge: Component = () => {
 		() => store.focusedView().id === view.id,
 		(focused) => {
 			if (!focused) return;
-			for (const cmd of commands) registry.register(cmd);
+			// Take the ids over from the previous owner, whose cleanup may run
+			// after this; its identity check then leaves these entries alone.
+			for (const cmd of commands) {
+				registry.unregister(cmd.id);
+				registry.register(cmd);
+			}
 			return () => {
 				for (const cmd of commands) {
 					if (registry.get(cmd.id) === cmd) registry.unregister(cmd.id);

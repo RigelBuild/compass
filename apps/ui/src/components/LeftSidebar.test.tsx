@@ -411,7 +411,7 @@ describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
 	});
 });
 
-// Open modes (in-window tabs, OQ-2): a plain click navigates the focused view
+// Open modes: a plain click navigates the focused view
 // in place; Mod+click and middle-click open the destination in a new tab.
 describe("LeftSidebar open modes", () => {
 	const setPlatform = (platform: "mac" | "other"): void => {
@@ -502,6 +502,21 @@ describe("LeftSidebar open modes", () => {
 		middleClick(agentRow(container));
 		await flush();
 		expect(paths(store)).toEqual(["/", "/agent/acc-compass-ui"]);
+	});
+
+	test("a middle mousedown is cancelled so it cannot start autoscroll", () => {
+		const { container } = mountApp("/");
+		const down = (button: number): MouseEvent => {
+			const event = new MouseEvent("mousedown", {
+				button,
+				bubbles: true,
+				cancelable: true,
+			});
+			agentRow(container).dispatchEvent(event);
+			return event;
+		};
+		expect(down(1).defaultPrevented).toBe(true);
+		expect(down(0).defaultPrevented).toBe(false);
 	});
 
 	test("a view link opens its view in a new tab, and an open path refocuses its tab", async () => {

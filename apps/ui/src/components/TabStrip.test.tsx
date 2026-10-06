@@ -4,7 +4,7 @@ import { STUB_AGENTS } from "../stub-data";
 import { flush, mountApp } from "../test-router";
 import { MAX_TABS } from "../window-layout";
 
-// The topbar view-tab strip (record A7): one tab per layout tab, labelled from
+// The topbar view-tab strip: one tab per layout tab, labelled from
 // the tab's route, dispatching focus / close / move into the window layout.
 
 const AGENT_ID = "acc-compass-ui";
@@ -33,7 +33,7 @@ const press = (init: KeyboardEventInit): KeyboardEvent => {
 
 afterEach(() => cleanup());
 
-describe("TabStrip (record A7)", () => {
+describe("TabStrip", () => {
 	test("renders one tablist tab per layout tab, labelled from its route", async () => {
 		const { store, container } = mountApp("/");
 		const strip = container.querySelector(".cx-tab-strip");
@@ -153,5 +153,75 @@ describe("TabStrip (record A7)", () => {
 		expect(store.layout()).toBe(before);
 		expect(tabs(container).length).toBe(MAX_TABS);
 		expect(selected(container)?.textContent).toContain("agent-9");
+		const notice = container.querySelector('[role="status"].cx-toast');
+		expect(notice?.textContent).toContain(`${MAX_TABS} tabs`);
+	});
+
+	test("closing the active tab by its button leaves focus on the new active tab", async () => {
+		const { store, container } = mountApp("/");
+		store.dispatchLayout({ kind: "open", path: "/done" });
+		await flush();
+		const close = container.querySelector<HTMLElement>(
+			'.cx-tab-strip button[aria-label="Close Done"]',
+		);
+		if (!close) throw new Error("no close button for Done");
+		close.focus();
+		fireEvent.click(close);
+		await flush();
+		expect(store.view()).toBe("bridge");
+		expect(document.activeElement).toBe(selected(container) ?? null);
+	});
+
+	test("Delete on the active tab closes it and focuses the new active tab", async () => {
+		const { store, container } = mountApp("/");
+		store.dispatchLayout({ kind: "open", path: "/done" });
+		await flush();
+		const done = selected(container);
+		if (!done) throw new Error("no selected tab");
+		done.focus();
+		fireEvent.keyDown(done, { key: "Delete" });
+		await flush();
+		expect(labels(container)).toEqual(["Bridge"]);
+		expect(document.activeElement).toBe(selected(container) ?? null);
+	});
+
+	test("closing an unselected tab returns the tab stop to the selected tab", async () => {
+		const { store, container } = mountApp("/");
+		store.dispatchLayout({ kind: "open", path: "/backlog" });
+		store.dispatchLayout({ kind: "open", path: "/done" });
+		await flush();
+		const [, backlog, done] = tabs(container);
+		if (!backlog || !done) throw new Error("expected three tabs");
+		done.focus();
+		press({ key: "ArrowLeft" });
+		await flush();
+		expect(document.activeElement).toBe(backlog);
+		fireEvent.keyDown(backlog, { key: "Delete" });
+		await flush();
+		expect(labels(container)).toEqual(["Bridge", "Done"]);
+		expect(tabs(container).map((t) => t.tabIndex)).toEqual([-1, 0]);
+	});
+
+	test("on mac, Backspace closes the focused tab", async () => {
+		const platform = navigator.platform;
+		Object.defineProperty(navigator, "platform", {
+			value: "MacIntel",
+			configurable: true,
+		});
+		try {
+			const { store, container } = mountApp("/");
+			store.dispatchLayout({ kind: "open", path: "/done" });
+			await flush();
+			const done = selected(container);
+			if (!done) throw new Error("no selected tab");
+			fireEvent.keyDown(done, { key: "Backspace" });
+			await flush();
+			expect(labels(container)).toEqual(["Bridge"]);
+		} finally {
+			Object.defineProperty(navigator, "platform", {
+				value: platform,
+				configurable: true,
+			});
+		}
 	});
 });

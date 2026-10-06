@@ -73,6 +73,11 @@ export function tabViews(tab: TabLayout): ViewInstance[] {
 	return tab.kind === "single" ? [tab.view] : [tab.first, tab.second];
 }
 
+/** The ids of the views on screen: every pane of the active tab. */
+export function shownViewIds(layout: WindowLayout): string[] {
+	return tabViews(activeTab(layout).layout).map((view) => view.id);
+}
+
 /** The active tab's focused view: the one the URL mirrors. */
 export function focusedViewOf(layout: WindowLayout): ViewInstance {
 	return focusedPane(activeTab(layout).layout);
