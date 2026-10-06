@@ -108,6 +108,18 @@ func TestT0ServerSecretsShape(t *testing.T) {
 	}
 }
 
+func TestGatewayCredentialsRevokeSystemRolePrivilege(t *testing.T) {
+	s := newTestStore(t)
+	if !hasTablePrivilege(t, s, "compass_app", "gateway_credentials", "SELECT") {
+		t.Fatal("compass_app cannot read gateway_credentials")
+	}
+	for _, privilege := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
+		if hasTablePrivilege(t, s, "compass_system", "gateway_credentials", privilege) {
+			t.Errorf("compass_system retains %s on gateway_credentials", privilege)
+		}
+	}
+}
+
 // TestT0KeyspacePartition is the F1 structural guard (design record D6): the two
 // secret doors partition the keyspace by NAME, so a reserved-prefix name can
 // only ever live in server_secrets and an unprefixed name only in secrets.

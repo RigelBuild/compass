@@ -39,6 +39,32 @@ func seedTenant(t *testing.T, s *Store, slug string) TenantID {
 	return TenantID(id)
 }
 
+// TestGatewayAgentTenantCrossTenantLookup verifies the authorized BYPASSRLS lookup.
+func TestGatewayAgentTenantCrossTenantLookup(t *testing.T) {
+	s := newTestStore(t)
+	ctxA := WithTenant(t.Context(), s.EffectiveTenant(t.Context()))
+	tenantB := seedTenant(t, s, "gateway-agent-tenant-b")
+	ctxB := WithTenant(t.Context(), tenantB)
+	owner, err := s.CreateUser(ctxB, NewUser{Handle: "gateway-tenant-owner", DisplayName: "Owner"})
+	if err != nil {
+		t.Fatalf("CreateUser tenant B: %v", err)
+	}
+	agent, err := s.CreateAgent(ctxB, owner.ID, NewAgent{Handle: "gateway-tenant-agent", DisplayName: "Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent tenant B: %v", err)
+	}
+	got, err := s.GatewayAgentTenant(ctxA, agent.ID)
+	if err != nil {
+		t.Fatalf("GatewayAgentTenant from tenant A: %v", err)
+	}
+	if got != tenantB {
+		t.Fatalf("GatewayAgentTenant = %q, want tenant B %q", got, tenantB)
+	}
+	if _, err := s.GatewayAgentTenant(ctxA, "unknown-agent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GatewayAgentTenant unknown agent: %v", err)
+	}
+}
+
 // seedChannelWithMessage creates a user, a channel, and one posted message, all
 // under tenant tenantCtx. It returns the channel and the message id — the two
 // handles a cross-tenant read test asserts against. Every store call routes
@@ -598,7 +624,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 		"accounts",
 		"user_accounts", "agent_accounts", "system_accounts", "account_handles", "user_peers",
 		"channel_groups", "channels", "channel_members", "channel_subscriptions", "agent_workspaces",
-		"topics", "messages", "channel_pins", "secrets",
+		"topics", "messages", "channel_pins", "secrets", "gateway_credentials",
 		"agent_sessions", "agent_placements", "session_bindings",
 		"agent_session_transcript_entries", "agent_session_archive_segments",
 		"agent_delivery_cursors", "owed_mentions", "agent_activity",

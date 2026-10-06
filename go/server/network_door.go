@@ -257,7 +257,9 @@ func withBodyReadDeadline(next http.Handler, timeout time.Duration) http.Handler
 // enrolls over — behind its own Runner-subject bearer interceptor, sharing the
 // same auth.ResolveToken resolver but Kind-gated to a Runner token (an account
 // token is Unauthenticated there, and a Runner token is Unauthenticated on the
-// account/comms doors: the OQ7 cross-door rule). Optionally wrapped in the
+// account/comms doors: the OQ7 cross-door rule). The GatewayCredentials door is
+// mounted when its service is non-nil, behind a SubjectService bearer allowlisted
+// to the LLM gateway. Optionally wrapped in the
 // single-origin network CORS policy. It does not bind or serve — the listener is
 // already bound (boundListeners) — so on a token error the caller owns listener
 // cleanup.
@@ -279,6 +281,7 @@ func buildNetworkServer(
 	linearWebhookHandler http.Handler,
 	linearSessionLinkHandler http.Handler,
 	runnerVerifier *auth.RunnerVerifier,
+	gatewayCredentials *gatewayCredentialsService,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -348,6 +351,14 @@ func buildNetworkServer(
 	// is the outermost interceptor (it creates the RelayCommsCall origin span).
 	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st, otelIC)
 	netMux.Handle(runnerPath, runnerHandler)
+	if gatewayCredentials != nil {
+		// The gateway uses a service subject, not the account/admin chain; kind-gating
+		// and the service-ID allowlist are the authorization boundary.
+		gatewayPath, gatewayHandler := compassv1internalconnect.NewGatewayCredentialsHandler(gatewayCredentials,
+			connect.WithInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID)),
+			connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
+		netMux.Handle(gatewayPath, gatewayHandler)
+	}
 
 	// The internet-facing GitHub App webhook ingress (RIG-2883 T5), mounted only
 	// when the board lane is on. It sits on the TLS door and OUTSIDE the bearer +

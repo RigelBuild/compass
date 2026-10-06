@@ -46,6 +46,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/envelope"
 	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/forge"
+	"github.com/RigelBuild/compass/go/internal/gatewaycred"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/linearagent"
@@ -545,18 +546,18 @@ func buildServerSecretResolver(st *store.Store, cfg ServeConfig) secrets.Resolve
 // generates one — nothing decrypts a stored value until this succeeds.
 func buildUserSecretResolver(
 	ctx context.Context, st *store.Store, cfg ServeConfig, serverResolver secrets.Resolver,
-) (*secrets.StoreResolver, error) {
+) (*secrets.StoreResolver, envelope.Key, int16, error) {
 	if err := declareServerSecretNames(ctx, st, cfg); err != nil {
-		return nil, err
+		return nil, envelope.Key{}, 0, err
 	}
 	if err := st.DeclareServerSecret(ctx, "", store.MasterKeyName); err != nil && !errors.Is(err, store.ErrConflict) {
-		return nil, fmt.Errorf("declaring master key name: %w", err)
+		return nil, envelope.Key{}, 0, fmt.Errorf("declaring master key name: %w", err)
 	}
 	masterKey, keyVersion, err := resolveMasterKey(ctx, st, serverResolver)
 	if err != nil {
-		return nil, err
+		return nil, envelope.Key{}, 0, err
 	}
-	return secrets.NewStoreResolver(st, masterKey, keyVersion), nil
+	return secrets.NewStoreResolver(st, masterKey, keyVersion), masterKey, keyVersion, nil
 }
 
 // declareServerSecretNames declares the six forge secret NAMEs into
@@ -835,7 +836,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	commsSvc.RegisterCoordinationHook(st)
 
 	serverResolver := buildServerSecretResolver(st, cfg)
-	resolver, err := buildUserSecretResolver(ctx, st, cfg, serverResolver)
+	resolver, masterKey, keyVersion, err := buildUserSecretResolver(ctx, st, cfg, serverResolver)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
@@ -884,7 +885,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// still ours to close.
 	// buildDoors takes BOTH instances — see its parameter docs for why.
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, linearBridge.ID, resolver, serverResolver,
-		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens)
+		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens, masterKey, keyVersion)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
@@ -1001,6 +1002,8 @@ func buildDoors(
 	webhookSink ForgeEventSink,
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearTokens *linearagent.TokenSource,
+	masterKey envelope.Key,
+	keyVersion int16,
 ) (serveDoors, error) {
 	// Built even without a network door, so a bad cluster file or a reserved-ID
 	// clash refuses start the same way on every topology.
@@ -1009,6 +1012,8 @@ func buildDoors(
 		return serveDoors{}, err
 	}
 	usageSvc := newUsageService(usage.NewPostgres(st), st)
+	gatewayCredStore := gatewaycred.NewPostgres(st, masterKey, keyVersion)
+	gatewayCredSvc := newGatewayCredentialsService(st, gatewayCredStore, gatewayCredStore, slog.Default())
 	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
 	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
 	// empty, so mounted unconditionally. otelconnect goes FIRST so the span
@@ -1090,7 +1095,7 @@ func buildDoors(
 	}
 	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink, runnerVerifier, gatewayCredSvc)
 		if err != nil {
 			return serveDoors{}, err
 		}

@@ -24,6 +24,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/comms"
+	"github.com/RigelBuild/compass/go/internal/envelope"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
@@ -532,7 +533,7 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 	svc := newService("test", bus, st, hub, brd, issueBrd, tail)
 	secretsSvc := newSecretsService(st, container, server, nil)
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, "",
-		container, server, nil, netListener, nil, nil, nil, nil)
+		container, server, nil, netListener, nil, nil, nil, nil, envelope.Key{}, 0)
 	if err != nil {
 		t.Fatalf("buildDoors: %v", err)
 	}

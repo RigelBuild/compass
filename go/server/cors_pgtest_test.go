@@ -60,7 +60,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
 	usageSvc := newUsageService(usage.NewPostgres(st), st)
-	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil, nil)
+	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestNetworkDoorMountsLinearSessionLinkOutsideBearerGate(t *testing.T) {
 		w.WriteHeader(http.StatusFound)
 	})
 	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()}, svc, commsSvc, secretsSvc,
-		newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, linkHandler, nil)
+		newUsageService(usage.NewPostgres(st), st), nil, st, admin, nil, nil, otelIC, nil, nil, nil, linkHandler, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}

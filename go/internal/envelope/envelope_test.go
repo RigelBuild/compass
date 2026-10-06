@@ -347,3 +347,49 @@ func TestUserSecretAADRejectsNUL(t *testing.T) {
 		t.Fatal("distinct NUL-free tuples must not collide")
 	}
 }
+
+func TestGatewayCredentialAADBindsStableIDAndKeyVersion(t *testing.T) {
+	a, err := GatewayCredentialAAD("tenant", "credential", 3)
+	if err != nil {
+		t.Fatalf("GatewayCredentialAAD: %v", err)
+	}
+	if want := []byte("compass/gateway-credential/v1\x00tenant\x00credential\x003"); !bytes.Equal(a, want) {
+		t.Fatalf("AAD = %q, want %q", a, want)
+	}
+	for _, tc := range []struct {
+		name       string
+		tenant, id string
+		version    int16
+	}{
+		{name: "tenant", tenant: "other", id: "credential", version: 3},
+		{name: "id", tenant: "tenant", id: "other", version: 3},
+		{name: "key version", tenant: "tenant", id: "credential", version: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := GatewayCredentialAAD(tc.tenant, tc.id, tc.version)
+			if err != nil {
+				t.Fatalf("GatewayCredentialAAD: %v", err)
+			}
+			if bytes.Equal(a, got) {
+				t.Fatalf("AAD did not bind %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestGatewayCredentialAADRejectsNUL(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tenant, id string
+	}{
+		{name: "tenantID", tenant: "tenant\x00other", id: "credential"},
+		{name: "id", tenant: "tenant", id: "credential\x00other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			aad, err := GatewayCredentialAAD(tc.tenant, tc.id, 1)
+			if aad != nil || !errors.Is(err, ErrAADField) || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("GatewayCredentialAAD NUL: aad=%q err=%v", aad, err)
+			}
+		})
+	}
+}
