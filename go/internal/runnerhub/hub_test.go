@@ -149,6 +149,21 @@ func TestDeliverSequenceGapDetection(t *testing.T) {
 			t.Fatal("SeenGap true on a contiguous 1,2,3; a gap-free stream must not flag")
 		}
 	})
+
+	// Container Gateways share one counter on separate streams, so 2 can trail 3.
+	t.Run("late arrival closes the gap", func(t *testing.T) {
+		hub := newHubOnly()
+		deliverSeq(t, hub, 1)
+		deliverSeq(t, hub, 3)
+		deliverSeq(t, hub, 4)
+		if !hub.SeenGap() {
+			t.Fatal("SeenGap false while seq 2 is still missing")
+		}
+		deliverSeq(t, hub, 2)
+		if hub.SeenGap() {
+			t.Fatal("SeenGap true after the late seq 2 arrived; nothing was lost")
+		}
+	})
 }
 
 // deliverSeq delivers one trace frame at seq n (a frame that touches no sink of
