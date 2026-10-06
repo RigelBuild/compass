@@ -69,6 +69,12 @@ type Associations interface {
 	LinearAgentSession(ctx context.Context, linearSessionID string) (store.LinearAgentSessionRow, error)
 }
 
+// Deliveries reports whether a delivery's post is already stored, so a replay
+// skips the Linear emits a first delivery already made. *store.Store satisfies it.
+type Deliveries interface {
+	MessageRequestRecorded(ctx context.Context, author store.AccountID, clientRequestID string) (bool, error)
+}
+
 // DispatcherParams carries every dependency the Dispatcher needs, all narrow
 // seams (never concrete server types) so the drain loop depends on behavior, not
 // packages. The driver wires the concrete implementations at assembly.
@@ -86,6 +92,8 @@ type DispatcherParams struct {
 	Topics Topics
 	// Associations is the T3 store association seam (*store.Store).
 	Associations Associations
+	// Deliveries is the replay probe (*store.Store).
+	Deliveries Deliveries
 	// Client is the T2 Linear API client (CreateActivity + UpdateSession).
 	Client Client
 	// SessionLinkFor builds the stable return link from the Linear session id.
@@ -107,6 +115,7 @@ type Dispatcher struct {
 	members        Memberships
 	topics         Topics
 	assoc          Associations
+	deliveries     Deliveries
 	client         Client
 	sessionLinkFor func(linearSessionID string) string
 	bridge         store.AccountID
@@ -137,6 +146,7 @@ func NewDispatcher(p DispatcherParams) *Dispatcher {
 		members:        p.Members,
 		topics:         p.Topics,
 		assoc:          p.Associations,
+		deliveries:     p.Deliveries,
 		client:         p.Client,
 		sessionLinkFor: p.SessionLinkFor,
 		bridge:         p.Bridge,
@@ -220,6 +230,20 @@ func (d *Dispatcher) handle(ctx context.Context, ev *SessionEvent) {
 // process routes one event by action. Unknown actions are ignored (no error) —
 // only created/prompted drive the responder.
 func (d *Dispatcher) process(ctx context.Context, ev *SessionEvent) error {
+	if ev.Action != "created" && ev.Action != "prompted" {
+		return nil
+	}
+	// A replay whose post is stored already finished every step; re-running would
+	// repeat the ack thought and session update, and re-arm a spent reply.
+	if key := clientRequestID(ctx, ev); key != "" {
+		done, err := d.deliveries.MessageRequestRecorded(ctx, d.bridge, key)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+	}
 	switch ev.Action {
 	case "created":
 		return d.handleCreated(ctx, ev)

@@ -164,6 +164,7 @@ func buildLinearResponder(cfg ServeConfig, st *store.Store, cm *comms.Comms, bri
 		Members:      st,
 		Topics:       st,
 		Associations: st,
+		Deliveries:   st,
 		Client:       linearagent.NewClient(tokens, &http.Client{Timeout: linearAPITimeout}, graphQLURL),
 		SessionLinkFor: func(id string) string {
 			return sessionLinkFor(cfg.PublicURL, id)

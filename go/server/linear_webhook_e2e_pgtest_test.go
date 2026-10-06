@@ -570,6 +570,13 @@ func (w *linE2EWire) scenarioReplay(t *testing.T) {
 	if msgs := w.messagesWithText(t, w.routingCh, text); len(msgs) != 1 {
 		t.Errorf("stored messages for the replayed delivery = %d, want 1", len(msgs))
 	}
+	ops := map[string]int{}
+	for _, c := range w.linear.callsFor(sessionID) {
+		ops[c.Op]++
+	}
+	if ops[linE2EOpThought] != 1 || ops[linE2EOpSession] != 1 || len(ops) != 2 {
+		t.Errorf("GraphQL calls for the replayed delivery = %v, want one thought and one session update", ops)
+	}
 }
 
 func (w *linE2EWire) scenarioPrompted(t *testing.T) {
