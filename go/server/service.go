@@ -72,6 +72,7 @@ type busPayload = *compassv1.SubscribeEventsResponse
 type service struct {
 	compassv1connect.UnimplementedCompassServiceHandler
 	version string
+	rev     string
 	bus     *events.Bus[busPayload]
 	store   *store.Store
 	hub     *runnerhub.Hub
@@ -326,6 +327,7 @@ func (s *service) GetServerInfo(
 	return connect.NewResponse(&compassv1.GetServerInfoResponse{
 		Version:    s.version,
 		ApiVersion: apiVersion,
+		Rev:        s.rev,
 	}), nil
 }
 
@@ -518,6 +520,12 @@ func (s *service) SubscribeAgentSession(
 			}
 		}
 	}
+}
+
+// withRev sets the build git rev GetServerInfo reports; only Serve stamps it.
+func (s *service) withRev(rev string) *service {
+	s.rev = rev
+	return s
 }
 
 // provisionAgent relays a Provision for the resolved agent acc and records its

@@ -49,6 +49,8 @@
           "${versionBase}+g${self.dirtyShortRev}"
         else
           versionBase;
+      # The full commit GetServerInfo reports as `rev`; dirtyRev is "<sha>-dirty".
+      rev = self.rev or self.dirtyRev or "";
 
       # The backend module rooted at go/. Renamed off `go` because buildGoModule
       # unpacks src into $GOPATH=/build/go and a root named `go` collides.
@@ -79,7 +81,10 @@
               proxyVendor = true;
               inherit vendorHash;
               env.CGO_ENABLED = 0;
-              ldflags = [ "-X main.version=${version}" ];
+              ldflags = [
+                "-X main.version=${version}"
+                "-X main.rev=${rev}"
+              ];
               # Package-level logic is gated under compass-go:ci; re-running the
               # suite in the nix build would only re-pay it.
               doCheck = false;

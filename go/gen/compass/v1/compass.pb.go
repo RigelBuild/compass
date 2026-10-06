@@ -1379,7 +1379,11 @@ type GetServerInfoResponse struct {
 	// Server semantic version, e.g. "0.1.0".
 	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
 	// The contract version this server serves, e.g. "compass.v1".
-	ApiVersion    string `protobuf:"bytes,2,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	ApiVersion string `protobuf:"bytes,2,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	// The git commit the server binary was built from: the full commit hash,
+	// suffixed "-dirty" for an uncommitted tree. Empty when the build was not
+	// stamped (e.g. a build outside a git checkout).
+	Rev           string `protobuf:"bytes,3,opt,name=rev,proto3" json:"rev,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1424,6 +1428,13 @@ func (x *GetServerInfoResponse) GetVersion() string {
 func (x *GetServerInfoResponse) GetApiVersion() string {
 	if x != nil {
 		return x.ApiVersion
+	}
+	return ""
+}
+
+func (x *GetServerInfoResponse) GetRev() string {
+	if x != nil {
+		return x.Rev
 	}
 	return ""
 }
@@ -6292,11 +6303,12 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x12ServerSecretStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x15\n" +
 	"\x06is_set\x18\x02 \x01(\bR\x05isSet\"\x16\n" +
-	"\x14GetServerInfoRequest\"R\n" +
+	"\x14GetServerInfoRequest\"d\n" +
 	"\x15GetServerInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1f\n" +
 	"\vapi_version\x18\x02 \x01(\tR\n" +
-	"apiVersion\"\x0f\n" +
+	"apiVersion\x12\x10\n" +
+	"\x03rev\x18\x03 \x01(\tR\x03rev\"\x0f\n" +
 	"\rWhoAmIRequest\"/\n" +
 	"\x0eWhoAmIResponse\x12\x1d\n" +
 	"\n" +

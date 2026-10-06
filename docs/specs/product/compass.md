@@ -68,9 +68,10 @@ compatible additions behind the breaking-change gate.
 
 The server SHALL implement the `compass.v1` `CompassService` with exactly the
 RPCs the schema declares. `GetServerInfo` SHALL return the server's semantic
-`version` and the `api_version` string identifying the contract it serves
-(`compass.v1`). `SubscribeEvents` SHALL be the only server-streaming RPC and the
-only path by which the server pushes state to a UI.
+`version`, the `api_version` string identifying the contract it serves
+(`compass.v1`), and the `rev` (full git commit) the binary was built from, empty
+when the build was not stamped. `SubscribeEvents` SHALL be the only
+server-streaming RPC and the only path by which the server pushes state to a UI.
 
 #### Scenario: A UI probes a freshly connected server
 

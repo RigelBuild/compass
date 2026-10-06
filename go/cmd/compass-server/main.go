@@ -30,6 +30,10 @@ import (
 // "-X main.version=<v>".
 var version = "0.1.0"
 
+// rev is the git commit the binary was built from, reported by GetServerInfo so
+// a deploy can confirm the running binary; stamped with -ldflags "-X main.rev=<sha>".
+var rev = ""
+
 // apiVersion is the compass.v1 contract version, logged at startup alongside the
 // build version (the authoritative wire value is reported by the GetServerInfo
 // RPC).
@@ -77,6 +81,7 @@ func run() error {
 
 	slog.Info("compass-server starting",
 		"version", version,
+		"rev", rev,
 		"api", apiVersion,
 		"socket", cfg.SocketPath,
 	)
@@ -230,6 +235,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 	return server.ServeConfig{
 		SocketPath:        socketPath,
 		Version:           version,
+		Rev:               rev,
 		DevHTTP:           devHTTP,
 		Listen:            listen,
 		TLS:               tlsConfig,
