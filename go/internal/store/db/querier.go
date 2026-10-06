@@ -127,7 +127,10 @@ type Querier interface {
 	DeleteServerSecret(ctx context.Context, name string) (int64, error)
 	// Both deletes also write an estimated start for a binding an older server made
 	// without one; ON CONFLICT keeps any real start.
-	DeleteSessionBinding(ctx context.Context, sessionID string) error
+	// An empty version releases whatever row binds the session; a non-empty one
+	// releases only that version, so a stale release cannot remove a re-bind.
+	// Returns the rows removed. Postgres runs every data-modifying CTE to completion.
+	DeleteSessionBinding(ctx context.Context, arg DeleteSessionBindingParams) (int64, error)
 	// The reconnect sweep, run by Hub.enroll under the system role because a Runner
 	// is shared across tenants. :many with RETURNING: each removed row drives a
 	// presence DISCONNECTED edge, a held-deliver reap, and a tenant-scoped archive.
@@ -492,7 +495,9 @@ type Querier interface {
 	RecordOwedMention(ctx context.Context, arg RecordOwedMentionParams) error
 	// What it DISPLACED comes from SessionBindingForUpdate above, not from a
 	// RETURNING here. The binding update and event writes share the Store tx.
-	RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error
+	// xmin is the row version: every upsert writes a new tuple, so a re-bind of the
+	// same session id still gets a new version a stale release can be fenced by.
+	RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) (string, error)
 	// Forge state-transition memo queries (compass-forge-state-transition §Actor
 	// attribution). The write chokepoint upserts one memo per forge coordinate
 	// AFTER a successful agent-driven transition; the notify lane consumes it on

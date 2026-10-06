@@ -67,13 +67,13 @@ func TestDropLostSessionOnlyForOwningRunner(t *testing.T) {
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(ctx, "cont-1", "sess-1")
 
-	hub.dropLostSession(ctx, "runner-other", "sess-1", false)
+	hub.dropLostSession(ctx, "runner-other", "sess-1", nil, false)
 	if _, ok := hub.accountForSession(ctx, "sess-1"); !ok {
 		t.Fatal("foreign refusal unbound sess-1")
 	}
 	sink.none(t, "foreign refusal")
 
-	hub.dropLostSession(ctx, "runner-1", "sess-1", false)
+	hub.dropLostSession(ctx, "runner-1", "sess-1", nil, false)
 	if _, ok := hub.accountForSession(ctx, "sess-1"); ok {
 		t.Fatal("owning refusal left sess-1 bound")
 	}
@@ -198,6 +198,180 @@ func TestErroredOlderThanNewLifetimeIsIgnored(t *testing.T) {
 	lost.none(t, "an older ERRORED must not retire the resumed lifetime")
 }
 
+func TestErroredCleanupKeepsSameEnrollmentRebind(t *testing.T) {
+	ctx := t.Context()
+	hub, _, _ := newHub()
+	bindings := &pausingTenantBindingStore{fakeBindingStore: newFakeBindingStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(bindings)
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(bindings.release) }) }
+	t.Cleanup(release)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	gen := hub.EnrollGeneration()
+	hub.mu.Lock()
+	old, ok := hub.sessionAccounts["sess-1"]
+	hub.mu.Unlock()
+	if !ok {
+		t.Fatal("sess-1 not bound after promote")
+	}
+
+	// The old lifetime's cleanup pauses resolving the tenant; a resume re-binds
+	// the same session in the same enrollment before it continues.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.dropLostSessionIfCurrent(ctx, gen, "runner-1", "sess-1", &old, true)
+	}()
+	select {
+	case <-bindings.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ERRORED cleanup did not start")
+	}
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	release()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ERRORED cleanup did not finish")
+	}
+
+	lost.none(t, "the old lifetime's cleanup must not report the resumed session lost")
+	if account, ok := hub.accountForSession(ctx, "sess-1"); !ok || account != testAgentAccount {
+		t.Fatalf("binding after old cleanup = (%s, %v), want (%s, true)", account, ok, testAgentAccount)
+	}
+	if account, _, _, err := bindings.ResolveSessionBinding(ctx, "sess-1"); err != nil || account != testAgentAccount {
+		t.Fatalf("durable binding after old cleanup = (%s, %v), want (%s, nil)", account, err, testAgentAccount)
+	}
+}
+
+// pausingTenantBindingStore holds the first SessionBindingTenant until released.
+type pausingTenantBindingStore struct {
+	*fakeBindingStore
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *pausingTenantBindingStore) SessionBindingTenant(ctx context.Context, sessionID, runnerID string) (store.TenantID, error) {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.release
+	})
+	return b.fakeBindingStore.SessionBindingTenant(ctx, sessionID, runnerID)
+}
+
+func TestErroredCleanupKeepsRebindDuringDurableDelete(t *testing.T) {
+	ctx := t.Context()
+	hub, _, _ := newHub()
+	bindings := &pausingDeleteBindingStore{fakeBindingStore: newFakeBindingStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(bindings)
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(bindings.release) }) }
+	t.Cleanup(release)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	gen := hub.EnrollGeneration()
+	hub.mu.Lock()
+	old := hub.sessionAccounts["sess-1"]
+	hub.mu.Unlock()
+
+	// The cleanup has matched the old binding and pauses in its durable delete;
+	// a resume re-binds the session before the delete runs.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.dropLostSessionIfCurrent(ctx, gen, "runner-1", "sess-1", &old, true)
+	}()
+	select {
+	case <-bindings.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cleanup did not reach the durable delete")
+	}
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	release()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cleanup did not finish")
+	}
+
+	lost.none(t, "a cleanup whose row was re-bound must not report the session lost")
+	if account, ok := hub.accountForSession(ctx, "sess-1"); !ok || account != testAgentAccount {
+		t.Fatalf("binding after old cleanup = (%s, %v), want (%s, true)", account, ok, testAgentAccount)
+	}
+	if account, _, _, err := bindings.ResolveSessionBinding(ctx, "sess-1"); err != nil || account != testAgentAccount {
+		t.Fatalf("durable binding after old cleanup = (%s, %v), want (%s, nil)", account, err, testAgentAccount)
+	}
+}
+
+func TestErroredCleanupKeepsPeerRebind(t *testing.T) {
+	ctx := t.Context()
+	hub, _, _ := newHub()
+	bindings := &pausingDeleteBindingStore{fakeBindingStore: newFakeBindingStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(bindings)
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(bindings.release) }) }
+	t.Cleanup(release)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	gen := hub.EnrollGeneration()
+	hub.mu.Lock()
+	old := hub.sessionAccounts["sess-1"]
+	hub.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.dropLostSessionIfCurrent(ctx, gen, "runner-1", "sess-1", &old, true)
+	}()
+	select {
+	case <-bindings.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cleanup did not reach the durable delete")
+	}
+	// Another Server re-binds the row; this hub's cache still holds the old binding.
+	if _, _, err := bindings.fakeBindingStore.RecordSessionBinding(ctx, "sess-1", testAgentAccount, "runner-1"); err != nil {
+		t.Fatalf("peer RecordSessionBinding: %v", err)
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cleanup did not finish")
+	}
+
+	lost.none(t, "a cleanup whose row a peer re-bound must not report the session lost")
+	if account, ok := hub.accountForSession(ctx, "sess-1"); !ok || account != testAgentAccount {
+		t.Fatalf("binding after old cleanup = (%s, %v), want (%s, true)", account, ok, testAgentAccount)
+	}
+}
+
+// pausingDeleteBindingStore holds the first DeleteSessionBinding until released.
+type pausingDeleteBindingStore struct {
+	*fakeBindingStore
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *pausingDeleteBindingStore) DeleteSessionBinding(ctx context.Context, sessionID, version string) (bool, error) {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.release
+	})
+	return b.fakeBindingStore.DeleteSessionBinding(ctx, sessionID, version)
+}
+
 func TestLostSessionCleanupFromOldEnrollmentKeepsRebinding(t *testing.T) {
 	ctx := t.Context()
 	hub, _, _ := newHub()
@@ -209,13 +383,13 @@ func TestLostSessionCleanupFromOldEnrollmentKeepsRebinding(t *testing.T) {
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(ctx, "cont-1", "sess-1")
 
-	hub.dropLostSessionIfCurrent(ctx, oldGen, "runner-1", "sess-1", true)
+	hub.dropLostSessionIfCurrent(ctx, oldGen, "runner-1", "sess-1", nil, true)
 	lost.none(t, "cleanup from the old enrollment must not unbind the re-bound session")
 	if account, ok := hub.accountForSession(ctx, "sess-1"); !ok || account != testAgentAccount {
 		t.Fatalf("binding after stale cleanup = (%s, %v), want (%s, true)", account, ok, testAgentAccount)
 	}
 
-	hub.dropLostSessionIfCurrent(ctx, hub.EnrollGeneration(), "runner-1", "sess-1", true)
+	hub.dropLostSessionIfCurrent(ctx, hub.EnrollGeneration(), "runner-1", "sess-1", nil, true)
 	if account, errored := lost.waitOne(t); account != testAgentAccount || !errored {
 		t.Fatalf("current-enrollment cleanup report = (%s, %v), want (%s, true)", account, errored, testAgentAccount)
 	}
@@ -276,7 +450,7 @@ type pausingResolveBindingStore struct {
 	release chan struct{}
 }
 
-func (b *pausingResolveBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error) {
+func (b *pausingResolveBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, string, error) {
 	b.once.Do(func() {
 		close(b.entered)
 		<-b.release
@@ -706,8 +880,8 @@ func TestSessionEndedWithoutStopIsArchived(t *testing.T) {
 
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	hub.promoteSession(ctx, "cont-1", "sess-lost")
-	hub.dropLostSession(ctx, "runner-other", "sess-lost", false)
-	hub.dropLostSession(ctx, "runner-1", "sess-lost", false)
+	hub.dropLostSession(ctx, "runner-other", "sess-lost", nil, false)
+	hub.dropLostSession(ctx, "runner-1", "sess-lost", nil, false)
 	if got := recvEnded(t, ended); got != "sess-lost" {
 		t.Fatalf("archived %q after the lost drop, want sess-lost", got)
 	}

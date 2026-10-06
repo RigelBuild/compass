@@ -71,7 +71,7 @@ func TestComputeUsageBindingLifecycle(t *testing.T) {
 		t.Fatalf("start event = %+v, want the tenant, owner, agent, session, runner, and non-estimated start", start)
 	}
 
-	if err := s.DeleteSessionBinding(ctx, "compute-session"); err != nil {
+	if _, err := s.DeleteSessionBinding(ctx, "compute-session", ""); err != nil {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
 	events = computeEvents(t, s, tenant, agent.ID)
@@ -88,7 +88,7 @@ func TestComputeUsageBindingLifecycle(t *testing.T) {
 		end.OwnerUserID != string(owner.ID) || end.SessionID != start.SessionID || end.RunnerID != start.RunnerID || end.Estimated {
 		t.Fatalf("end event = %+v, want same interval metadata and a non-estimated end", end)
 	}
-	if err := s.DeleteSessionBinding(ctx, "compute-session"); err != nil {
+	if _, err := s.DeleteSessionBinding(ctx, "compute-session", ""); err != nil {
 		t.Fatalf("second DeleteSessionBinding: %v", err)
 	}
 	if got := computeEvents(t, s, tenant, agent.ID); len(got) != 2 {
@@ -159,7 +159,7 @@ func TestComputeUsageEventsStampedAfterLockWait(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.RecordSessionBinding(ctx, "wait-after", agent.ID, "runner-1")
+		_, _, err := s.RecordSessionBinding(ctx, "wait-after", agent.ID, "runner-1")
 		done <- err
 	}()
 	deadline := time.After(5 * time.Second)
@@ -223,7 +223,7 @@ func TestComputeUsageConflictRollsBackIntervalEvents(t *testing.T) {
 	mustBind(t, ctx, s, "sess-2", accountY.ID, "runner-1")
 
 	before := computeEvents(t, s, tenant, accountX.ID)
-	if _, err := s.RecordSessionBinding(ctx, "sess-2", accountX.ID, "runner-1"); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.RecordSessionBinding(ctx, "sess-2", accountX.ID, "runner-1"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RecordSessionBinding(X, sess-2) error = %v, want ErrConflict", err)
 	}
 	after := computeEvents(t, s, tenant, accountX.ID)
@@ -259,7 +259,7 @@ func TestComputeUsageSameSessionRunnerRebindKeepsInterval(t *testing.T) {
 func TestComputeUsageLegacyBindingGetsEstimatedStart(t *testing.T) {
 	for name, release := range map[string]func(*testing.T, context.Context, *Store){
 		"single release": func(t *testing.T, ctx context.Context, s *Store) {
-			if err := s.DeleteSessionBinding(ctx, "legacy-session"); err != nil {
+			if _, err := s.DeleteSessionBinding(ctx, "legacy-session", ""); err != nil {
 				t.Fatalf("DeleteSessionBinding: %v", err)
 			}
 		},
@@ -300,7 +300,7 @@ func TestComputeUsageLegacyBindingReleaseLogsInterval(t *testing.T) {
 	tenant := s.EffectiveTenant(ctx)
 	execAsSystem(t, s, "INSERT INTO session_bindings (tenant_id, agent_account_id, session_id, runner_id) VALUES ($1, $2, 'legacy-only', 'runner-old')",
 		string(tenant), string(agent.ID))
-	if err := s.DeleteSessionBinding(ctx, "legacy-only"); err != nil {
+	if _, err := s.DeleteSessionBinding(ctx, "legacy-only", ""); err != nil {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
 	events := computeEvents(t, s, tenant, agent.ID)
