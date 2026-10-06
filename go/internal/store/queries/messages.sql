@@ -8,9 +8,9 @@
 -- at_unix_ms/blocks/turn_sequence projection so Go maps each row through messageFromParts.
 
 -- Participant-channel copies: every `chain` + `participating` CTE in this
--- file and topics.sql MUST stay identical and equal to ChannelParticipant
--- (authz.sql). It is participation, not channel visibility: never widen it to
--- the owner-set visibility predicate. A future ACL conjunct goes in each copy.
+-- file and topics.sql MUST stay identical (bar the actor's parameter number) and
+-- equal to ChannelParticipant (channels.sql). It is participation, not channel
+-- visibility: never widen it to the owner-set predicate. ACL conjuncts go in each.
 
 -- name: GetChannelPostPolicy :one
 SELECT post_policy, COALESCE(owner_account_id, '') AS owner_account_id, name

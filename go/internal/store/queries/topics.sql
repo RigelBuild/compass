@@ -6,9 +6,9 @@
 -- last_seq) matches the former scanTopics order so the Go maps each row to Topic.
 
 -- Participant-channel copies: every `chain` + `participating` CTE in this
--- file and topics.sql MUST stay identical and equal to ChannelParticipant
--- (authz.sql). It is participation, not channel visibility: never widen it to
--- the owner-set visibility predicate. A future ACL conjunct goes in each copy.
+-- file and messages.sql MUST stay identical (bar the actor's parameter number) and
+-- equal to ChannelParticipant (channels.sql). It is participation, not channel
+-- visibility: never widen it to the owner-set predicate. ACL conjuncts go in each.
 
 -- name: ListTopics :many
 SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id
