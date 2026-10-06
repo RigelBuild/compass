@@ -63,7 +63,7 @@ func (c *SeqCounter) next() uint64 {
 // (runnerhub/hub.go:230). A durable frame erring back to the agent is correct,
 // expected behaviour — it must not make the Server report a loss that did not
 // happen. Only the latest seq is reclaimed: if another Gateway allocated since,
-// the number stays burned and the hub's gap diagnostic reports it.
+// the number stays burned and shows as a gap once the hub has a baseline.
 func (c *SeqCounter) rollback(seq uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
