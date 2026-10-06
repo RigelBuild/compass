@@ -23,8 +23,8 @@ const agentRebuildHint = `rebuild it from this tree:
 
 // agentSourceFingerprint recomputes agent-image/source-fingerprint.nix over
 // pkgDir: sha256 of the sorted `<sha256>  <relpath>\n` lines of every file,
-// minus the top-level node_modules and moon.yml. Like lib.fileset, a symlink is
-// hashed by its target's content and any other special file is an error.
+// minus the top-level node_modules and moon.yml. A file symlink is hashed by its
+// target content, as lib.fileset does; anything else non-regular is an error.
 func agentSourceFingerprint(pkgDir string) (string, error) {
 	type entry struct{ rel, sum string }
 	var entries []entry
