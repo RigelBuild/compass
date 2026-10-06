@@ -444,3 +444,118 @@ func execAsSystem(t *testing.T, s *Store, sql string, args ...any) {
 		t.Fatalf("commit: %v", err)
 	}
 }
+
+// Two system sweeps insert ends for the same tenants in opposite natural scan
+// orders. The held first-tenant lock makes the inversion deterministic.
+func TestComputeUsageCrossTenantSweepsLockTenantsInOrder(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	tenantA := seedTenant(t, s, "compute-lock-a")
+	tenantB := seedTenant(t, s, "compute-lock-b")
+	first, second := tenantA, tenantB
+	if string(first) > string(second) {
+		first, second = second, first
+	}
+
+	// The runner index retains heap insertion order for its duplicate key, so
+	// seed bindings in reverse tenant order; orphan starts follow tenant order.
+	for i, tenant := range []TenantID{second, first} {
+		suffix := []string{"b", "a"}[i]
+		tenantCtx := WithTenant(ctx, tenant)
+		owner, err := s.CreateUser(tenantCtx, NewUser{
+			Handle: "compute-lock-owner-" + suffix, DisplayName: "compute-lock-owner-" + suffix,
+		})
+		if err != nil {
+			t.Fatalf("CreateUser(%s): %v", tenant, err)
+		}
+		agent, err := s.CreateAgent(tenantCtx, owner.ID, NewAgent{
+			Handle: "compute-lock-agent-" + suffix, DisplayName: "compute-lock-agent-" + suffix,
+		})
+		if err != nil {
+			t.Fatalf("CreateAgent(%s): %v", tenant, err)
+		}
+		if _, err := s.RecordSessionBinding(tenantCtx, "compute-lock-session-"+suffix, agent.ID, "compute-lock-runner"); err != nil {
+			t.Fatalf("RecordSessionBinding(%s): %v", tenant, err)
+		}
+	}
+	for i, tenant := range []TenantID{first, second} {
+		suffix := []string{"a", "b"}[i]
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO compute_usage_events (
+			    tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
+			    owner_user_id, session_id, runner_id, estimated
+			) VALUES ($1, $2, $3, 'start', clock_timestamp(), $4, $5, $6, $7, TRUE)`,
+			string(tenant), "compute-lock-orphan-start-"+suffix, "compute-lock-orphan-"+suffix,
+			"compute-lock-orphan-agent-"+suffix, "compute-lock-orphan-owner-"+suffix,
+			"compute-lock-orphan-session-"+suffix, "compute-lock-orphan-runner"); err != nil {
+			t.Fatalf("seed orphan start for %s: %v", tenant, err)
+		}
+	}
+
+	gate, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin advisory-lock gate: %v", err)
+	}
+	defer func() {
+		if err := gate.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("rollback advisory-lock gate: %v", err)
+		}
+	}()
+	if _, err := gate.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('compute_usage:' || $1))`, string(first)); err != nil {
+		t.Fatalf("hold first-tenant compute lock: %v", err)
+	}
+
+	type result struct {
+		name string
+		err  error
+	}
+	done := make(chan result, 2)
+	go func() {
+		_, err := s.CloseOrphanedComputeIntervals(WithSystemRole(ctx))
+		done <- result{name: "orphan sweep", err: err}
+	}()
+	waitForWaiters := func(wantWaiters int) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			var waiters int
+			if err := gate.QueryRow(ctx, `
+				WITH key AS (SELECT hashtext('compute_usage:' || $1)::bigint AS value)
+				SELECT count(*)
+				  FROM pg_locks, key
+				 WHERE locktype = 'advisory' AND NOT granted
+				   AND classid = ((key.value >> 32) & 4294967295)::oid
+				   AND objid = (key.value & 4294967295)::oid`, string(first)).Scan(&waiters); err != nil {
+				t.Fatalf("read compute advisory lock waiters: %v", err)
+			}
+			if waiters >= wantWaiters {
+				return
+			}
+			select {
+			case result := <-done:
+				t.Fatalf("%s completed before lock gate release: %v", result.name, result.err)
+			case <-deadline:
+				t.Fatalf("%d sweeps wait on first-tenant lock; want at least %d", waiters, wantWaiters)
+			case <-tick.C:
+			}
+		}
+	}
+	waitForWaiters(1)
+	go func() {
+		_, err := s.DeleteSessionBindingsForRunner(WithSystemRole(ctx), "compute-lock-runner")
+		done <- result{name: "runner sweep", err: err}
+	}()
+	waitForWaiters(2)
+
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release first-tenant compute lock: %v", err)
+	}
+	for range 2 {
+		result := <-done
+		if result.err != nil {
+			t.Errorf("%s: %v", result.name, result.err)
+		}
+	}
+}

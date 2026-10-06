@@ -14,9 +14,10 @@ const DefaultRetention = 90 * 24 * time.Hour
 // time, so a faster sweep would only rescan the same events.
 const sweepInterval = 24 * time.Hour
 
-// pruner is the part of Store the sweeper drives.
+// pruner is the raw-event retention surface the sweeper drives.
 type pruner interface {
 	PruneTokenUsageBefore(ctx context.Context, beforeUnixMs int64) (int64, error)
+	PruneComputeUsageBefore(ctx context.Context, beforeUnixMs int64) (int64, error)
 }
 
 // RetentionConfig configures a RetentionSweeper.
@@ -28,7 +29,7 @@ type RetentionConfig struct {
 	Log *slog.Logger
 }
 
-// RetentionSweeper deletes the raw events older than the retention window.
+// RetentionSweeper deletes raw usage events older than the configured window.
 type RetentionSweeper struct {
 	store     pruner
 	retention time.Duration
@@ -48,8 +49,7 @@ func NewRetentionSweeper(s pruner, cfg RetentionConfig) *RetentionSweeper {
 // never returns a prune error: in the serve group that would stop the server.
 func (w *RetentionSweeper) Run(ctx context.Context) error {
 	if w.retention <= 0 {
-		// The serve group treats a nil return as a clean exit, not a failure.
-		w.log.InfoContext(ctx, "usage retention: raw token-usage prune disabled")
+		w.log.InfoContext(ctx, "usage retention: raw-event prune disabled")
 		return nil
 	}
 	w.sweep(ctx)
@@ -65,16 +65,23 @@ func (w *RetentionSweeper) Run(ctx context.Context) error {
 	}
 }
 
-// sweep runs one prune. A failed prune is logged, and the next tick retries it.
+// sweep runs one prune for each raw usage log.
 func (w *RetentionSweeper) sweep(ctx context.Context) {
-	deleted, err := w.store.PruneTokenUsageBefore(ctx, time.Now().Add(-w.retention).UnixMilli())
-	switch {
-	case ctx.Err() != nil:
-		// Shutdown interrupted the prune; the next start sweeps again.
-	case err != nil:
-		w.log.ErrorContext(ctx, "usage retention: prune raw token-usage events", "error", err)
-	case deleted > 0:
+	cutoff := time.Now().Add(-w.retention).UnixMilli()
+	if deleted, err := w.store.PruneTokenUsageBefore(ctx, cutoff); err != nil {
+		if ctx.Err() == nil {
+			w.log.ErrorContext(ctx, "usage retention: prune raw token-usage events", "error", err)
+		}
+	} else if deleted > 0 {
 		w.log.InfoContext(ctx, "usage retention: pruned raw token-usage events",
+			"deleted", deleted, "retention", w.retention)
+	}
+	if deleted, err := w.store.PruneComputeUsageBefore(ctx, cutoff); err != nil {
+		if ctx.Err() == nil {
+			w.log.ErrorContext(ctx, "usage retention: prune raw compute-usage events", "error", err)
+		}
+	} else if deleted > 0 {
+		w.log.InfoContext(ctx, "usage retention: pruned raw compute-usage events",
 			"deleted", deleted, "retention", w.retention)
 	}
 }

@@ -186,8 +186,8 @@ func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *board
 	}
 }
 
-// startUsageSweepers starts the usage retention prune and the orphaned compute
-// interval close on the serve group; binding changes close intervals inline.
+// startUsageSweepers starts the token- and compute-usage retention prune and the
+// orphaned compute interval close; binding changes close intervals inline.
 func startUsageSweepers(gctx context.Context, g *errgroup.Group, st *store.Store, retention time.Duration, log *slog.Logger) {
 	retain := usage.NewRetentionSweeper(usage.NewPostgres(st), usage.RetentionConfig{Retention: retention, Log: log})
 	closer := usage.NewComputeUsageSweeper(computeUsageCloser{st: st}, log)

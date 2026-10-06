@@ -131,7 +131,7 @@ func (p *Postgres) PruneTokenUsageBefore(ctx context.Context, beforeUnixMs int64
 	}
 	var deleted int64
 	for _, id := range tenants {
-		n, err := p.pruneTenant(store.WithTenant(ctx, store.TenantID(id)), cutoff)
+		n, err := p.pruneTenant(store.WithTenant(store.WithoutSystemRole(ctx), store.TenantID(id)), cutoff)
 		if err != nil {
 			// The earlier tenants' deletes have committed, so the count keeps them.
 			return deleted, fmt.Errorf("usage: prune token usage of tenant %s: %w", id, err)
