@@ -1983,10 +1983,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// fetched; the session's wins on resume.
 	let resumeStepId = "";
 	let savedStepId = "";
+	// The stored outcome as last read or written; replay never resumes a
+	// completed tour.
+	let storedOutcome = TourOutcome.UNSPECIFIED;
 	// A resume asked for before the boot read lands waits for it, so it opens
 	// at the saved step instead of writing welcome over it.
 	let bootReadPending = options.tour !== undefined;
 	let pendingResume = false;
+	let pendingReplay = false;
 	// Set by any start, so a claim that lands after a manual start arms nothing.
 	let tourStarted = false;
 	// One chain: the server upserts in arrival order, so a slow STARTED must
@@ -1994,6 +1998,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// reported once and never retried.
 	let tourWrites: Promise<unknown> = Promise.resolve();
 	const writeTourState = (outcome: TourOutcome, stepId: string) => {
+		storedOutcome = outcome;
 		const client = options.tour;
 		if (!client) return;
 		tourWrites = tourWrites
@@ -2065,6 +2070,16 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			endTour();
 		},
 	};
+	// The `tour.start` command: resume where a closed or skipped tour stopped,
+	// else replay from the welcome. It decides only once the boot read lands.
+	const replayTour = () => {
+		if (tourOpen()) return;
+		pendingReplay = bootReadPending;
+		if (pendingReplay) return;
+		const cursor = resumeStepId || savedStepId;
+		const resumable = cursor !== "" && storedOutcome !== TourOutcome.COMPLETED;
+		tour.start(resumable ? "resume" : "replay");
+	};
 	// Boot: the stored state feeds resume; a first run arms solely on a won
 	// claim, so a failed read, a failed claim, or a lost race arms nothing.
 	if (options.tour) {
@@ -2075,12 +2090,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		const readSettled = () => {
 			bootReadPending = false;
 			if (pendingResume) tour.start("resume");
+			if (pendingReplay) replayTour();
 		};
 		void client
 			.getTourState({})
 			.then(async (state) => {
 				if (disposed) return;
 				savedStepId = state.stepId;
+				if (!tourStarted) storedOutcome = state.outcome;
 				readSettled();
 				if (!claimFirstRun || state.outcome !== TourOutcome.UNSPECIFIED) return;
 				const { claimed } = await client.claimTourStart({
@@ -2143,6 +2160,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		dispatchLayout,
 		closeTab,
 		focusPane,
+		startTour: replayTour,
 	});
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {
