@@ -204,14 +204,15 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 
 	tenant := ""
 	if bindings != nil {
-		// A limited release deletes only its own write, matching even "": a
-		// version-less cache entry must not remove a row someone else wrote.
+		// A limited release deletes only its own write. A version-less entry
+		// wrote no row, so it deletes none: a legacy or peer row is not its own.
 		removed := true
 		var err error
-		if only != nil {
-			removed, err = bindings.DeleteSessionBindingVersion(ctx, sessionID, only.version)
-		} else {
+		switch {
+		case only == nil:
 			err = bindings.DeleteSessionBinding(ctx, sessionID)
+		case only.version != "":
+			removed, err = bindings.DeleteSessionBindingVersion(ctx, sessionID, only.version)
 		}
 		switch {
 		case err != nil:
@@ -220,8 +221,9 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 			// next re-enroll sweep retires any surviving row.
 			h.log.Error("delete session binding failed; evicting cache anyway",
 				"session_id", sessionID, "error", err)
-		case !removed && only.version != "":
-			// The row was re-bound since only was read: it is not ours to release.
+		case !removed:
+			// Only a versioned release reports false: the row was re-bound since
+			// only was read, so it is not ours to release.
 			return false
 		default:
 			tenant = string(bindings.EffectiveTenant(ctx))

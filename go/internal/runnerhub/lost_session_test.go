@@ -389,6 +389,31 @@ func TestErroredCleanupWithoutDurableWriteKeepsPeerRow(t *testing.T) {
 	}
 }
 
+func TestErroredCleanupWithoutDurableWriteKeepsLegacyRow(t *testing.T) {
+	ctx := t.Context()
+	hub, _, _ := newHub()
+	bindings := newFakeBindingStore()
+	bindings.recordErr = errors.New("store down")
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	gen := hub.EnrollGeneration()
+	hub.mu.Lock()
+	old := hub.sessionAccounts["sess-1"]
+	hub.mu.Unlock()
+	// A row written before binding_version existed carries the column default "".
+	bindings.mu.Lock()
+	bindings.bindings["sess-1"] = store.SessionBinding{TenantID: bindings.tenant, SessionID: "sess-1", AccountID: testAgentAccount, RunnerID: "runner-1"}
+	bindings.versions["sess-1"] = ""
+	bindings.mu.Unlock()
+
+	hub.dropLostSessionIfCurrent(ctx, gen, "runner-1", "sess-1", &old, true)
+	if _, _, _, err := bindings.ResolveSessionBinding(ctx, "sess-1"); err != nil {
+		t.Fatalf("legacy durable binding after version-less cleanup: %v, want it kept", err)
+	}
+}
+
 // pausingDeleteBindingStore holds the first DeleteSessionBindingVersion until released.
 type pausingDeleteBindingStore struct {
 	*fakeBindingStore
