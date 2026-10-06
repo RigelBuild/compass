@@ -15,9 +15,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
-	"github.com/jackc/pgx/v5"
 )
 
 // TestOpenDMSameOwnerCreatesDMChannel: an agent opens a DM with a same-owner
@@ -62,77 +63,158 @@ func TestOpenDMSameOwnerCreatesDMChannel(t *testing.T) {
 	}
 }
 
-// TestOpenDMRevokeWaitsForLockedPeering requires revoke to wait until the opener commits.
+// TestOpenDMRevokeWaitsForLockedPeering keeps a stale authorization from creating a DM.
 func TestOpenDMRevokeWaitsForLockedPeering(t *testing.T) {
-	_, st := newHandler(t)
-	ctx := context.Background()
-	ownerA := mustUser(t, st, "dm-lock-owner-a")
-	ownerB := mustUser(t, st, "dm-lock-owner-b")
+	svc, st := newHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ownerA := mustUser(t, st, "a")
+	ownerB := mustUser(t, st, "b")
+	agentA := mustAgent(t, st, ownerA.ID, "a")
+	mustAgent(t, st, ownerA.ID, "x")
+	mustAgent(t, st, ownerB.ID, "b")
+	agentBY := mustAgent(t, st, ownerB.ID, "y")
 	for _, edge := range [][2]store.AccountID{{ownerA.ID, ownerB.ID}, {ownerB.ID, ownerA.ID}} {
 		if _, err := st.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
 			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
 		}
 	}
 
-	revokeDone := make(chan error, 1)
-	observedWait := false
-	err := st.WithTx(ctx, func(tx pgx.Tx) error {
-		peered, err := st.OwnersPeeredTx(ctx, tx, ownerA.ID, ownerB.ID)
-		if err != nil {
-			return err
-		}
-		if !peered {
-			return errors.New("OwnersPeeredTx did not find both approvals")
-		}
-		go func() {
-			_, err := st.RevokePeer(ctx, ownerA.ID, ownerB.ID)
-			revokeDone <- err
-		}()
+	peerHandle := "b/y"
+	_, unknownErr := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "ghost"}))
+	connectNotFoundFor(t, unknownErr, "ghost", "OpenDM(unknown handle)")
 
-		poll := time.NewTicker(10 * time.Millisecond)
-		defer poll.Stop()
-		guard := time.NewTimer(10 * time.Second)
-		defer guard.Stop()
-		for {
-			var blocked bool
-			if err := tx.QueryRow(ctx, `
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM pg_locks waiting
-                    JOIN pg_locks deleting ON deleting.pid = waiting.pid
-                    WHERE NOT waiting.granted
-                      AND waiting.locktype = 'transactionid'
-                      AND deleting.granted
-                      AND deleting.mode = 'RowExclusiveLock'
-                      AND deleting.relation = 'user_peers'::regclass
-                )
-            `).Scan(&blocked); err != nil {
-				return fmt.Errorf("observe revoke lock wait: %w", err)
-			}
-			if blocked {
-				observedWait = true
-				return nil
-			}
+	openDone := make(chan error, 1)
+	lockWaitObserved := make(chan struct{})
+	finishTx := make(chan bool, 1)
+	finished := false
+	defer func() {
+		if !finished {
 			select {
-			case revokeErr := <-revokeDone:
-				if revokeErr == nil {
-					return errors.New("RevokePeer finished before the opener transaction committed")
-				}
-				return fmt.Errorf("RevokePeer returned before commit: %w", revokeErr)
-			case <-poll.C:
-			case <-guard.C:
-				return errors.New("timed out waiting for RevokePeer to block on the peering row lock")
+			case finishTx <- false:
+			default:
 			}
 		}
-	})
-	if !observedWait {
-		t.Fatalf("revoke did not wait on OwnersPeeredTx row locks: %v", err)
+	}()
+	txReady := make(chan struct{})
+	txDone := make(chan error, 1)
+	observedWait := false
+	go func() {
+		txDone <- st.WithTx(ctx, func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `DELETE FROM user_peers WHERE user_id = $1 AND peer_user_id = $2`, string(ownerA.ID), string(ownerB.ID))
+			if err != nil {
+				return fmt.Errorf("delete directed approval in test transaction: %w", err)
+			}
+			if tag.RowsAffected() != 1 {
+				return fmt.Errorf("deleted %d directed approvals, want 1", tag.RowsAffected())
+			}
+			close(txReady)
+
+			poll := time.NewTicker(10 * time.Millisecond)
+			defer poll.Stop()
+			for {
+				var blocked bool
+				if err := tx.QueryRow(ctx, `
+					SELECT EXISTS (
+						SELECT 1
+						FROM pg_locks waiting
+						JOIN pg_locks deleting
+						  ON deleting.pid = pg_backend_pid()
+						WHERE NOT waiting.granted
+						  AND waiting.locktype IN ('transactionid', 'tuple')
+						  AND (waiting.locktype = 'transactionid' OR waiting.relation = 'user_peers'::regclass)
+						  AND deleting.locktype = 'relation'
+						  AND deleting.mode = 'RowExclusiveLock'
+						  AND deleting.relation = 'user_peers'::regclass
+						  AND pg_blocking_pids(waiting.pid) @> ARRAY[deleting.pid]
+					)
+				`).Scan(&blocked); err != nil {
+					return fmt.Errorf("observe OpenDM peering lock wait: %w", err)
+				}
+				if blocked {
+					observedWait = true
+					close(lockWaitObserved)
+					break
+				}
+				select {
+				case openErr := <-openDone:
+					return fmt.Errorf("OpenDM returned before waiting on the directed approval lock: %v", openErr)
+				case <-poll.C:
+				case <-ctx.Done():
+					return fmt.Errorf("timed out waiting for OpenDM to block on the peering row lock: %w", ctx.Err())
+				}
+			}
+
+			select {
+			case commit := <-finishTx:
+				if !commit {
+					return errors.New("OpenDM peering lock test aborted")
+				}
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("timed out waiting to finish peering lock transaction: %w", ctx.Err())
+			}
+		})
+	}()
+
+	select {
+	case <-txReady:
+	case err := <-txDone:
+		t.Fatalf("begin directed-approval delete transaction: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for directed-approval delete transaction: %v", ctx.Err())
 	}
-	if err != nil {
-		t.Fatalf("opener transaction: %v", err)
+	go func() {
+		_, err := svc.OpenDM(WithActor(ctx, agentA.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peerHandle}))
+		openDone <- err
+	}()
+
+	select {
+	case <-lockWaitObserved:
+	case err := <-txDone:
+		t.Fatalf("OpenDM did not wait on the directed approval row lock: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for OpenDM to observe the peering row lock: %v", ctx.Err())
 	}
-	if err := <-revokeDone; err != nil {
-		t.Fatalf("RevokePeer after opener commit: %v", err)
+	finishTx <- true
+	finished = true
+	select {
+	case err := <-txDone:
+		if !observedWait {
+			t.Fatalf("OpenDM did not wait on the directed approval row lock: %v", err)
+		}
+		if err != nil {
+			t.Fatalf("peering lock transaction: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for the peering lock transaction to commit: %v", ctx.Err())
+	}
+
+	select {
+	case openErr := <-openDone:
+		connectNotFoundFor(t, openErr, peerHandle, "OpenDM after concurrent revoke")
+		var unknownConnectErr, revokedConnectErr *connect.Error
+		if !errors.As(unknownErr, &unknownConnectErr) || !errors.As(openErr, &revokedConnectErr) {
+			t.Fatalf("OpenDM errors = (%v, %v), want Connect errors", unknownErr, openErr)
+		}
+		unknownMessage := strings.ReplaceAll(unknownConnectErr.Message(), "ghost", "<handle>")
+		revokedMessage := strings.ReplaceAll(revokedConnectErr.Message(), peerHandle, "<handle>")
+		if revokedMessage != unknownMessage {
+			t.Fatalf("unknown error message = %q, revoked-peer message = %q; want byte-identical after handle substitution", unknownMessage, revokedMessage)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for OpenDM after peering transaction commit: %v", ctx.Err())
+	}
+
+	var dmChannels int64
+	if err := st.WithTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, "SELECT count(*) FROM channels WHERE name = $1", crossOwnerDMName(agentA.ID, agentBY.ID)).Scan(&dmChannels)
+	}); err != nil {
+		t.Fatalf("count cross-owner DM channels: %v", err)
+	}
+	if dmChannels != 0 {
+		t.Fatalf("cross-owner DM channel count after revoked peering = %d, want 0", dmChannels)
 	}
 }
 
