@@ -40,6 +40,9 @@ func TestForgeCreatePullRequestShowsOnLinkedIssue(t *testing.T) {
 	t.Cleanup(bus.Close)
 	brd := board.NewIssueProjection(bus, st)
 	svc := newForgeService(st, brd, reg)
+	if err := st.EnsureForgeRepoSubscription(ctx, store.ForgeRepoSubscription{Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "owner/prlink", Enabled: true}); err != nil {
+		t.Fatalf("EnsureForgeRepoSubscription: %v", err)
+	}
 
 	issue := &compassv1.Issue{
 		Forge: &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com"},
