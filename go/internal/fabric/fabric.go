@@ -157,6 +157,10 @@ type Config struct {
 	// dropped Runner event, a parked comms event, an async consume error. A nil
 	// Log falls back to slog.Default (the house convention).
 	Log *slog.Logger
+
+	// testInactiveThreshold replaces the reap threshold. Tests only: production
+	// always gets the bounded value inactiveThreshold derives.
+	testInactiveThreshold time.Duration
 }
 
 func (c Config) streamName() string {
