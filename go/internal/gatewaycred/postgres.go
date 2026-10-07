@@ -266,7 +266,8 @@ func openPoolRows(ctx context.Context, keyVersion int16, tenant store.TenantID, 
 		credential, err := openCredentialRow(keyVersion, tenant, key, row.GatewayCredential)
 		if unreadable, ok := errors.AsType[*unreadableRowError](err); ok {
 			slog.ErrorContext(ctx, "gatewaycred: skipping unreadable credential",
-				"id", row.GatewayCredential.ID, "key_version", row.GatewayCredential.KeyVersion, "class", unreadable.class)
+				"tenant", string(tenant), "id", row.GatewayCredential.ID,
+				"key_version", row.GatewayCredential.KeyVersion, "class", unreadable.class)
 			continue
 		}
 		if err != nil {
@@ -340,7 +341,11 @@ func openCredentialRow(keyVersion int16, tenant store.TenantID, key envelope.Key
 	}
 	plaintext, err := key.Decrypt(row.ValueNonce, row.ValueCiphertext, aad)
 	if err != nil {
-		return Credential{}, unreadableRow("decrypt", fmt.Errorf("gatewaycred: decrypt credential: %w", err))
+		err = fmt.Errorf("gatewaycred: decrypt credential: %w", err)
+		if !errors.Is(err, envelope.ErrDecrypt) {
+			return Credential{}, err // an unset key is a wiring bug, never one bad row
+		}
+		return Credential{}, unreadableRow("decrypt", err)
 	}
 	var value sealedCredentialValue
 	if err := json.Unmarshal(plaintext, &value); err != nil {
