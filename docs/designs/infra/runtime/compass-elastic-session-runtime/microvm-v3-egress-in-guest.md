@@ -467,7 +467,11 @@ opening with `microvmtest.Require(t)`.
      execs (agent uid) show the allowlisted host connects and a
      non-allowlisted raw IPv4 and IPv6 destination time out — mirroring the
      podman lifecycle proof (lifecycle_test.go:137-140) inside the guest
-     netns.
+     netns. *Amended (Matt, 2026-10-07):* only the IPv4 deny is probed live. The
+     guest (passt) and the CI runners have no IPv6 route, so a live IPv6
+     connect fails `ENETUNREACH` before the firewall and would pass
+     vacuously; the dual-stack ruleset is covered hermetically
+     (`TestAllowlistedHostPopulatesBothFamilies`, `egress_test.go`).
   2. **Arm-failure ⇒ teardown ⇒ start fails:** drive guestd directly
      (`microvm.Launch` + `GuestClient`) with a Provision whose script is
      `exit 1`: the RPC errors, a follow-up Exec is gate-refused; then at the
