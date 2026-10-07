@@ -782,7 +782,7 @@ func execStreamingArgs(id WorkloadID, spec StreamingExecSpec) []string {
 		args = append(args, "-e", kv.key+"="+kv.value)
 	}
 	args = append(args, id.String())
-	args = append(args, spec.Command...)
+	args = append(args, stopWithClient(spec.Command)...)
 	return args
 }
 
