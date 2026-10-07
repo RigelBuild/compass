@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -288,6 +289,8 @@ func TestCommsTwoAgentConversation(t *testing.T) {
 	}
 	dmID := dmMsg.GetId()
 
+	assertDuoDMChannel(ctx, t, st, dmMsg.GetTopicId(), agentAID, agentBID)
+
 	// B — the live agent on the other side — RECEIVED the DM: its session
 	// dispatched a DELIVER control for the DM message id. This is the crossing
 	// asserted as delivery between two live agents, the part needing two
@@ -298,5 +301,27 @@ func TestCommsTwoAgentConversation(t *testing.T) {
 		return mid == dmID && strings.Contains(kind, "DELIVER")
 	}); err != nil {
 		t.Fatalf("AwaitControlDispatchOn(B, dm DELIVER): %v", err)
+	}
+}
+
+// assertDuoDMChannel reads persisted state because a fanned-out DM does not show
+// where it was stored: an agent-side and server-side disagreement on a pair's DM
+// channel would still deliver.
+func assertDuoDMChannel(ctx context.Context, t *testing.T, st *store.Store, topicID, agentAID, agentBID string) {
+	t.Helper()
+	wantDM := "dm:" + duoAgentAHandle + ":" + duoAgentBHandle
+	if _, gotName, err := st.TopicChannelNames(ctx, topicID); err != nil || gotName != wantDM {
+		t.Fatalf("dm message's channel = %q (err %v), want %q", gotName, err, wantDM)
+	}
+	dmChannel, err := st.ChannelByNameForViewer(ctx, store.AccountID(agentAID), wantDM)
+	if err != nil {
+		t.Fatalf("ChannelByNameForViewer(A, %q): %v", wantDM, err)
+	}
+	if dmChannel.Kind != store.ChannelKindDM {
+		t.Fatalf("dm channel kind = %v, want ChannelKindDM", dmChannel.Kind)
+	}
+	if !slices.Contains(dmChannel.MemberAccountIDs, store.AccountID(agentAID)) ||
+		!slices.Contains(dmChannel.MemberAccountIDs, store.AccountID(agentBID)) {
+		t.Fatalf("dm channel members = %v, want both agents %q and %q", dmChannel.MemberAccountIDs, agentAID, agentBID)
 	}
 }
