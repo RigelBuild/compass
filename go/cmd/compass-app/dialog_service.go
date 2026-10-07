@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -33,8 +32,7 @@ func (d *dialogService) PickCACert(_ context.Context) (pickedCA, error) {
 		return pickedCA{}, nil
 	}
 
-	// The path comes from the user's native file selection.
-	pem, err := os.ReadFile(path) //nolint:gosec // G304: explicitly selected by the user in the CA dialog
+	pem, err := readCAFile(path)
 	if err != nil {
 		return pickedCA{}, fmt.Errorf("reading CA certificate %q: %w", path, err)
 	}

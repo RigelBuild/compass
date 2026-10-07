@@ -5,9 +5,44 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"syscall"
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
 )
+
+const maxCAFileBytes = 1 << 20
+
+func readCAFile(path string) (data []byte, retErr error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // G304: selected by the user in the native CA dialog
+	if err != nil {
+		return nil, fmt.Errorf("opening CA certificate %q: %w", path, err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("closing CA certificate %q: %w", path, err))
+		}
+	}()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("checking CA certificate %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("CA certificate %q is not a regular file", path)
+	}
+
+	data, err = io.ReadAll(io.LimitReader(file, maxCAFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading CA certificate %q: %w", path, err)
+	}
+	if len(data) > maxCAFileBytes {
+		return nil, fmt.Errorf("CA certificate %q is larger than 1 MiB", path)
+	}
+	return data, nil
+}
 
 type setupResult struct {
 	OK      bool   `json:"ok"`

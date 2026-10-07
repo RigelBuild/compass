@@ -251,6 +251,27 @@ func TestShellStartupJS(t *testing.T) {
 	})
 }
 
+func TestWindowStartupJSReadsLiveState(t *testing.T) {
+	svc := newSetupBridgeService(nil, nil, &setupWiring{gate: &firstRunGate{}, picks: &caPicks{}})
+	js, err := windowStartupJS(svc)
+	if err != nil {
+		t.Fatalf("windowStartupJS in setup: %v", err)
+	}
+	if !strings.Contains(js, `window.__COMPASS_MODE__="setup";`) || strings.Contains(js, "__COMPASS_SERVER_URL__") {
+		t.Fatalf("setup startup JS = %q, want setup mode and no URL global", js)
+	}
+
+	const serverURL = "https://live.example:8443"
+	svc.conn.Store(&connection{mode: appconfig.ModeClient.String(), serverURL: serverURL})
+	js, err = windowStartupJS(svc)
+	if err != nil {
+		t.Fatalf("windowStartupJS after client connection install: %v", err)
+	}
+	if !strings.Contains(js, `window.__COMPASS_SERVER_URL__="`+serverURL+`";`) {
+		t.Errorf("client startup JS = %q, want current server URL %q", js, serverURL)
+	}
+}
+
 // TestResolveStateDir: flag wins, then $COMPASS_STATE_DIR, then an ABSOLUTE
 // $XDG_STATE_HOME/compass. A RELATIVE $XDG_STATE_HOME is treated as unset and
 // falls through to $HOME/.compass — the load-bearing determinism guard.

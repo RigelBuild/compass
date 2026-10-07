@@ -217,11 +217,18 @@ func windowOptions(name, title, startupJS string) application.WebviewWindowOptio
 	}
 }
 
+// windowStartupJS reads live shell state so windows opened after setup see the
+// installed connection. This seam keeps that per-window behavior testable
+// without creating a native webview.
+func windowStartupJS(svc *bridgeService) (string, error) {
+	mode, serverURL := svc.shellState()
+	return shellStartupJS(mode, serverURL)
+}
+
 // newAppWindow creates a Bridge window and attaches its close-time cancellation
 // handler so every window tears down its own in-flight bridge calls.
 func newAppWindow(app *application.App, svc *bridgeService, name, title string) {
-	mode, serverURL := svc.shellState()
-	startupJS, err := shellStartupJS(mode, serverURL)
+	startupJS, err := windowStartupJS(svc)
 	if err != nil {
 		slog.Error("compass-app building window startup script", "error", err)
 		return
