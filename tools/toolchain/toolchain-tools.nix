@@ -1,5 +1,5 @@
 # Exact bun/node/moon toolchains vendored as Nix derivations. Both the dev shell
-# and the CI toolchain gate import this one module, so the two cannot drift.
+# and the CI toolchain import this one module, so the two cannot drift.
 # Versions come from tools/toolchain/versions/<lang>.nix (the single source of
 # truth); the fetch fails loudly on a hash mismatch, so nothing silently drifts.
 { pkgs }:
@@ -27,8 +27,8 @@ in
     nativeBuildInputs = [
       pkgs.unzip
     ]
-    ++ lib.optionals stdenv.isLinux [ pkgs.autoPatchelfHook ];
-    buildInputs = lib.optionals stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
+    ++ lib.optionals stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+    buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ pkgs.stdenv.cc.cc.lib ];
     dontConfigure = true;
     dontBuild = true;
     installPhase = ''
@@ -47,8 +47,8 @@ in
     src = pkgs.fetchurl nodePin.srcs.${pkgs.stdenv.hostPlatform.system};
     # autoPatchelf + the C++ runtime are linux-ELF mechanics; the darwin build is
     # a self-contained Mach-O that needs neither.
-    nativeBuildInputs = lib.optionals stdenv.isLinux [ pkgs.autoPatchelfHook ];
-    buildInputs = lib.optionals stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
+    nativeBuildInputs = lib.optionals stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+    buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ pkgs.stdenv.cc.cc.lib ];
     dontConfigure = true;
     dontBuild = true;
     installPhase = ''
