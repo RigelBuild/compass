@@ -5,6 +5,8 @@ import { IDLE_FALLBACK_MS } from "../idle";
 import type { AppStoreOptions, TourClient } from "../store";
 import { flush, mountApp } from "../test-router";
 import { TOUR_STEPS } from "../tour/state";
+import { viewPanelId } from "../view-panel";
+import { focusedViewOf } from "../window-layout";
 import { ANCHOR_WAIT_MS } from "./TourOverlay";
 
 afterEach(cleanup);
@@ -232,6 +234,56 @@ describe("TourOverlay", () => {
 		expect(store.view()).toBe("bridge");
 		expect(container.querySelector('[data-tour="board-grid"]')).not.toBeNull();
 		expect(callout(container)).not.toBeNull();
+	});
+
+	test("a callout anchors in the shown view, not a hidden background tab", async () => {
+		const { store, container } = mountApp("/");
+		await flush();
+		// A second Bridge tab leaves the first tab's board mounted but hidden,
+		// and first in document order.
+		store.dispatchLayout({ kind: "open", path: "/", fresh: true });
+		await flush();
+		const grids = [
+			...container.querySelectorAll<HTMLElement>('[data-tour="board-grid"]'),
+		];
+		const shown = grids.filter((el) => el.closest("[hidden]") === null);
+		expect(grids.length).toBe(2);
+		expect(shown.length).toBe(1);
+		for (const el of grids) {
+			el.getBoundingClientRect = () =>
+				el === shown[0]
+					? new DOMRect(20, 30, 400, 200)
+					: new DOMRect(500, 30, 400, 200);
+		}
+		store.tour.start("replay");
+		await flush();
+		store.tour.next();
+		await flush();
+		await nextFrame();
+		const layer = document.querySelector<HTMLElement>(".cx-tour-spotlight");
+		expect(callout(container)).not.toBeNull();
+		expect(layer?.style.getPropertyValue("--cx-tour-cutout-x")).toBe("12px");
+	});
+
+	test("a callout entered while its panel is hidden anchors once it shows", async () => {
+		const { store, container } = mountApp("/");
+		await flush();
+		const panel = document.getElementById(
+			viewPanelId(focusedViewOf(store.layout()).id),
+		);
+		if (!panel) throw new Error("no view panel");
+		panel.hidden = true;
+		store.tour.start("replay");
+		await flush();
+		store.tour.next();
+		await flush();
+		expect(store.tour.stepIndex()).toBe(1);
+		expect(callout(container)).toBeNull();
+		// Only the attribute flips: no node is added or removed.
+		panel.hidden = false;
+		await flush();
+		expect(callout(container)).not.toBeNull();
+		expect(store.tour.stepIndex()).toBe(1);
 	});
 
 	test("a missing anchor skips only after the bounded wait", async () => {

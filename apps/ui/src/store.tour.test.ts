@@ -28,8 +28,12 @@ import {
 	DEMO_ISSUES,
 	DEMO_MESSAGES,
 	DEMO_TOPICS,
+	isDemoId,
 } from "./tour/demo";
 import { TOUR_STEPS } from "./tour/state";
+import { focusedViewOf, layoutViews } from "./window-layout";
+
+const isDemoPath = (path: string): boolean => path.split("/").some(isDemoId);
 
 // A fake TourClient scripts the boot read and claim and records every write.
 
@@ -1021,6 +1025,38 @@ describe("tour teardown leaves a demo route", () => {
 				{ path: "/", replace: true },
 			]);
 			expect(store.view()).toBe("bridge");
+		});
+	});
+
+	test("teardown clears demo paths from every view and pushes for none", async () => {
+		await withRouter("/", async (store, navs) => {
+			store.tour.start("replay");
+			flush();
+			store.openAgent(DEMO_AGENT);
+			await settle();
+			// Both panes of the split and a background tab now sit on demo paths.
+			store.dispatchLayout({ kind: "split", direction: "row" });
+			store.dispatchLayout({
+				kind: "open",
+				path: `/channel/${DEMO_CHANNELS[0]?.id ?? ""}`,
+				background: true,
+			});
+			await settle();
+			const focusedId = focusedViewOf(store.layout()).id;
+			expect(
+				layoutViews(store.layout()).map((v) => isDemoPath(v.path)),
+			).toEqual([true, true, true]);
+			navs.length = 0;
+			store.tour.close();
+			await settle();
+			expect(layoutViews(store.layout()).map((v) => v.path)).toEqual([
+				"/",
+				"/",
+				"/",
+			]);
+			// Focus stays put, and only it reaches the hash, as a replace.
+			expect(focusedViewOf(store.layout()).id).toBe(focusedId);
+			expect(navs).toEqual([{ path: "/", replace: true }]);
 		});
 	});
 
