@@ -1754,8 +1754,8 @@ acceptance; the assertions on both sides are.
 
 None open. The forks the draft carried are decided by Matt and folded into
 the Approach legs: derived-versus-stored membership and the owner-set read
-grant (2026-09-07), and the five residual questions (2026-10-02) recorded
-below.
+grant (2026-09-07), the five residual questions (2026-10-02), and TREE
+re-entry replay (2026-10-06), recorded below.
 
 1. **Owner-grouped channels are not a separate concept.** Every agent has
    an owning user, so a channel attached to an agent is owned by that
@@ -1772,3 +1772,9 @@ below.
    controls may come later, in their own record.
 5. **No migration.** Existing channels and groups on the dev instance are
    cleaned up by hand after merge (leg 4).
+6. **TREE re-entry replays.** A move writes no TREE membership, override,
+   or cursor row (leg 3), so a subscribed agent reparented out keeps both its
+   override row and its D2 cursor. On move-back, `UndeliveredMessages`
+   replays everything since that cursor, including messages posted while it
+   was away. This matches EXPLICIT remove/re-add. A future lazy GC that
+   prunes the override row makes re-entry unsubscribed instead (no replay).
