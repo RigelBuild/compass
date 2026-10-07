@@ -51,7 +51,7 @@ func TestAskAnswerOfflineOutOfSweepAskerRecordsOwed(t *testing.T) {
 
 	// asker is a channel member but NOT subscribed (out of the sweep set) and
 	// offline (never bound). answerer authors the answer.
-	reads.members[ch] = []store.AccountID{asker}
+	reads.members[ch] = memberRows(asker)
 	startConsumer(t, c)
 
 	postMessage(t, c, reads, storeAskAnswer())
@@ -73,7 +73,7 @@ func TestAskAnswerLiveOutOfSweepAskerDispatchesDirectly(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 
-	reads.members[ch] = []store.AccountID{asker}
+	reads.members[ch] = memberRows(asker)
 	// asker out of the sweep set but LIVE.
 	res.bind(asker, "sess-asker")
 	startConsumer(t, c)
@@ -101,7 +101,7 @@ func TestAskAnswerSubscribedAskerNoOwedNoDirect(t *testing.T) {
 
 	// asker subscribed AND in the sweep set, but OFFLINE — so the normal deliver
 	// loop wakes it (no direct steer) and records no owed row.
-	reads.members[ch] = []store.AccountID{asker}
+	reads.members[ch] = memberRows(asker)
 	reads.subscribers[ch] = []store.AccountID{asker}
 	reads.sweepSet[asker] = map[store.ChannelID]bool{ch: true}
 	w := withWaker(c)
@@ -130,7 +130,7 @@ func TestAskAnswerRecoveryScanReDerivesOwed(t *testing.T) {
 	c, disp, _, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 
-	reads.members[ch] = []store.AccountID{asker}
+	reads.members[ch] = memberRows(asker)
 	// asker offline + out of the sweep set. The answer message is committed but
 	// unmarked (the fanOut never ran — restart in the commit→fanOut window).
 	reads.seedUnrouted(storeAskAnswer(), ch, 1)
