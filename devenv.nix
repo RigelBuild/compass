@@ -155,12 +155,11 @@ in
     pkgs.virtiofsd
     pkgs.passt
   ]
-  # secretspec: the CLI the Go secrets write path spawns BY NAME, so the write
-  # path is unreachable unless this shell puts one on PATH. From the
+  # secretspec: the CLI the Go secrets read path spawns BY NAME, so the server
+  # cannot resolve secrets unless this shell puts one on PATH. From the
   # `secretspec-nixpkgs` input, not this shell's nixpkgs, whose rev carries
-  # 0.14.0 with no `age` provider (the encrypted-at-rest default). Matches the Go
-  # SDK pin in go/go.mod, so read and write paths advance together. Dotted ref,
-  # appended outside the parsed literal.
+  # 0.14.0 with no `age` provider (the encrypted-at-rest default). Matches
+  # hostcheck.SecretSpecFloor. Dotted ref, appended outside the parsed literal.
   ++ [
     inputs.secretspec-nixpkgs.legacyPackages.${pkgs.stdenv.system}.secretspec
   ];
@@ -171,17 +170,9 @@ in
     # and otherwise kill every `compass-go:*` moon task with a shim exec error.
     # Platform-independent, so in the base set, not the Linux merge below.
     MOON_TOOLCHAIN_FORCE_GLOBALS = "true";
-
-    # The FFI cdylib the secrets READ path dlopens (a different seam from the
-    # write-path CLI); without it a local `go test` skips the armed forge-secret
-    # pgtest and the shell stops matching CI. An absolute path, so in `env`.
-    SECRETSPEC_FFI_LIB =
-      "${(import ./tools/toolchain/secretspec-env.nix).libsecretspec}/lib/libsecretspec${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
-
     # Same per-clone cache as `compass-go:lint` (go/moon.yml), so a bare shell
     # `golangci-lint` never shares ~/.cache/golangci-lint across clones.
     GOLANGCI_LINT_CACHE = "${config.devenv.root}/go/.golangci-cache";
-
   }
   # The Compass native app (Wails v3) links the Linux GTK4/WebKitGTK stack
   # through cgo. pkg-config finds each `.pc` file along PKG_CONFIG_PATH, built
