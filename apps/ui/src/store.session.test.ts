@@ -85,7 +85,9 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			fake.pushSessionFrame("sess-1", { event: text("e1", "hello ") });
 			fake.pushSessionFrame("sess-1", { event: text("e2", "world") });
 			fake.pushSessionFrame("sess-1", { event: toolCall("e3") });
-			await settle(() => (store.focusedView().agentSession()?.events.length ?? 0) >= 3);
+			await settle(
+				() => (store.focusedView().agentSession()?.events.length ?? 0) >= 3,
+			);
 
 			const session = store.focusedView().agentSession();
 			expect(session?.sessionId).toBe("sess-1");
@@ -133,7 +135,9 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			store.openAgent(AGENT);
 			await settle(() => fake.openSessionTails().includes("sess-1"));
 			fake.pushSessionFrame("sess-1", { event: text("e1", "seen") });
-			await settle(() => (store.focusedView().agentSession()?.events.length ?? 0) >= 1);
+			await settle(
+				() => (store.focusedView().agentSession()?.events.length ?? 0) >= 1,
+			);
 
 			store.showBacklog();
 			await settle(() => fake.openSessionTails().length === 0);
@@ -141,7 +145,12 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 
 			store.openAgent(AGENT);
 			await settle(() => fake.openSessionTails().includes("sess-1"));
-			expect(store.focusedView().agentSession()?.events.map((e) => e.id)).toEqual(["e1"]);
+			expect(
+				store
+					.focusedView()
+					.agentSession()
+					?.events.map((e) => e.id),
+			).toEqual(["e1"]);
 			expect(fake.sessionSubscribes.length).toBe(2);
 		} finally {
 			dispose();
@@ -220,7 +229,12 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			await settle(() => fake.openSessionTails().includes("sess-1"));
 			expect(fake.sessionSubscribes.length).toBe(2);
 			expect(store.focusedView().agentSession()?.running).toBe(true);
-			expect(store.focusedView().agentSession()?.events.map((e) => e.id)).toEqual(["e1"]);
+			expect(
+				store
+					.focusedView()
+					.agentSession()
+					?.events.map((e) => e.id),
+			).toEqual(["e1"]);
 		} finally {
 			dispose();
 		}
