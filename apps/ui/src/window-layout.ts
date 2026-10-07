@@ -62,13 +62,20 @@ function activeTab(layout: WindowLayout): ViewTab {
 	return tab;
 }
 
-function focusedPane(tab: TabLayout): ViewInstance {
+/** The view a tab shows focused: its single view, or its focused pane. */
+export function focusedPane(tab: TabLayout): ViewInstance {
 	if (tab.kind === "single") return tab.view;
 	return tab.focused === "first" ? tab.first : tab.second;
 }
 
-function tabViews(tab: TabLayout): ViewInstance[] {
+/** Every view a tab shows: one, or both panes of a split. */
+export function tabViews(tab: TabLayout): ViewInstance[] {
 	return tab.kind === "single" ? [tab.view] : [tab.first, tab.second];
+}
+
+/** The ids of the views on screen: every pane of the active tab. */
+export function shownViewIds(layout: WindowLayout): string[] {
+	return tabViews(activeTab(layout).layout).map((view) => view.id);
 }
 
 /** The active tab's focused view: the one the URL mirrors. */

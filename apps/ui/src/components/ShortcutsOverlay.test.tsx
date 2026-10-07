@@ -85,7 +85,9 @@ describe("ShortcutsOverlay (RIG-2482)", () => {
 
 	test("focus-restore: focus returns to the pre-open element on close", async () => {
 		const { store, container } = mountApp("/backlog");
-		const button = container.querySelector<HTMLButtonElement>(".view-tab");
+		const button = container.querySelector<HTMLButtonElement>(
+			'.cx-tab-strip [role="tab"]',
+		);
 		if (!button) throw new Error("no topbar button");
 		button.focus();
 		expect(document.activeElement).toBe(button);

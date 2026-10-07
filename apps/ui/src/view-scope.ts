@@ -31,6 +31,8 @@ export interface ViewScope {
 	topic: Accessor<Topic | undefined>;
 	agent: Accessor<Agent | undefined>;
 	navigate: (path: string) => void;
+	/** Whether the view is on screen; a hidden tab's view stays mounted. */
+	shown: Accessor<boolean>;
 	/** The view agent's home DM: the agent workspace's chat pane. */
 	workspaceChannel: Accessor<Channel | undefined>;
 	/** The view agent's session trace, or undefined off an agent route. */
@@ -82,6 +84,7 @@ export type ViewScopeStore = Pick<
 export type ViewPathSource = {
 	path: Accessor<string>;
 	navigate: (path: string) => void;
+	shown: Accessor<boolean>;
 };
 
 export function createViewScope(
@@ -271,6 +274,7 @@ export function createViewScope(
 		topic,
 		agent,
 		navigate,
+		shown: source ? source.shown : () => true,
 		workspaceChannel,
 		agentSession,
 		agentTabs,

@@ -1,6 +1,13 @@
 import type { RouteSectionProps } from "@solidjs/router";
 import { useLocation, useNavigate } from "@solidjs/router";
-import { type Component, onCleanup, Show } from "solid-js";
+import {
+	type Component,
+	createEffect,
+	For,
+	onCleanup,
+	Show,
+	untrack,
+} from "solid-js";
 import "./design/tokens.css";
 import "./design/base.css";
 import "./design/components/badge-glyph.css";
@@ -15,12 +22,12 @@ import {
 	CoachTipTrigger,
 } from "./components/CoachTip";
 import { Glyph } from "./components/Glyph";
+import { LayoutNotice } from "./components/LayoutNotice";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
-import { RuntimeMarker } from "./components/RuntimeMarker";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
-import { StateDot } from "./components/StateDot";
+import { TabStrip, viewPanelId, viewTabId } from "./components/TabStrip";
 import { TopBarSearch } from "./components/TopBarSearch";
 import { UsageBar } from "./components/UsageBar";
 import { ViewHost } from "./components/ViewHost";
@@ -29,6 +36,8 @@ import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
 import type { LiveClients } from "./live/client";
+import { routeTitle } from "./route-title";
+import { focusedViewOf, shownViewIds, tabViews } from "./window-layout";
 
 // Compass shell: routed center view with persistent navigation and usage chrome.
 
@@ -56,12 +65,91 @@ const App: Component<
 			store.keyboard.activeZone,
 		),
 	);
-	// Point-of-use coaching (RIG-2530): the topbar Bridge tab announces its chord
-	// via aria-keyshortcuts + a CoachTip tooltip, resolved from the keymap through
-	// shortcutFor (D4) — matching the LeftSidebar view buttons.
-	const bridgeAria = shortcutForAria(
-		"view.bridge" as CommandId,
-		detectPlatform(),
+	// Panels toggle `hidden` imperatively so a switch can move focus into the
+	// shown view before hiding the old one; a hidden element drops focus.
+	const panels = new Map<string, HTMLElement>();
+	const lastFocus = new Map<string, HTMLElement>();
+	// The view focus was last in, kept even after a close removes its panel.
+	let focusedPanelView: string | undefined;
+	const rememberFocus = (event: FocusEvent): void => {
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) return;
+		const panel = target.closest<HTMLElement>('[role="tabpanel"]');
+		const viewId = [...panels].find(([, el]) => el === panel)?.[0];
+		if (viewId === undefined) return;
+		lastFocus.set(viewId, target);
+		focusedPanelView = viewId;
+	};
+	// Focus moving to another real target outside every panel ends the claim;
+	// a null target is a removal, which the close path below still handles.
+	const forgetFocus = (event: FocusEvent): void => {
+		const next = event.relatedTarget;
+		if (!(next instanceof Node)) return;
+		if (![...panels.values()].some((el) => el.contains(next)))
+			focusedPanelView = undefined;
+	};
+	const tabIdOf = (viewId: string): string | undefined => {
+		const tab = store
+			.layout()
+			.tabs.find((t) => tabViews(t.layout).some((v) => v.id === viewId));
+		return tab ? viewTabId(tab.id) : undefined;
+	};
+	// Focus is leaving if it sits in a panel about to hide, or it was in a panel
+	// a close just removed (the browser has already dropped it to the body).
+	const focusLeaving = (shownIds: readonly string[]): boolean => {
+		const active = document.activeElement;
+		if (active === null || active === document.body)
+			return focusedPanelView !== undefined && !panels.has(focusedPanelView);
+		return [...panels].some(
+			([id, el]) => !shownIds.includes(id) && el.contains(active),
+		);
+	};
+	const prunePanels = (ids: readonly string[]): void => {
+		for (const id of [...panels.keys()]) {
+			if (ids.includes(id)) continue;
+			panels.delete(id);
+			lastFocus.delete(id);
+		}
+	};
+	createEffect(
+		() => ({
+			shownIds: shownViewIds(store.layout()),
+			focusedId: focusedViewOf(store.layout()).id,
+			ids: store.viewScopes().map((scope) => scope.id),
+		}),
+		({ shownIds, focusedId, ids }) => {
+			prunePanels(ids);
+			const focused = panels.get(focusedId);
+			if (!focused) return;
+			for (const id of shownIds) panels.get(id)?.removeAttribute("hidden");
+			if (focusLeaving(shownIds)) focusInto(focusedId, focused);
+			for (const [id, el] of panels) el.hidden = !shownIds.includes(id);
+		},
+	);
+	const focusInto = (viewId: string, panel: HTMLElement): void => {
+		const usable = (el: HTMLElement): boolean =>
+			el.isConnected &&
+			panel.contains(el) &&
+			!el.matches(":disabled") &&
+			el.closest("[hidden], [inert]") === null;
+		const remembered = lastFocus.get(viewId);
+		if (remembered && !usable(remembered)) lastFocus.delete(viewId);
+		const candidates = panel.querySelectorAll<HTMLElement>(
+			'a[href], button, input, textarea, select, [tabindex]:not([tabindex="-1"])',
+		);
+		// focus() can still be refused, so each step checks where focus landed.
+		for (const target of [remembered, ...candidates]) {
+			if (!target || !usable(target)) continue;
+			target.focus();
+			if (document.activeElement === target) return;
+		}
+		panel.focus();
+	};
+	createEffect(
+		() => routeTitle(store.focusedView().route(), store),
+		(title) => {
+			document.title = title;
+		},
 	);
 	return (
 		<div class="app">
@@ -76,41 +164,8 @@ const App: Component<
 
 				<div class="topbar-sep" />
 
-				<nav class="view-tabs" aria-label="View">
-					<CoachTip>
-						<CoachTipTrigger
-							as="button"
-							type="button"
-							class={["view-tab", { active: store.view() === "bridge" }]}
-							onClick={() => store.showBridge()}
-							aria-keyshortcuts={bridgeAria}
-						>
-							<span class="tab-glyph" aria-hidden="true">
-								<Glyph name="status" />
-							</span>
-							Bridge
-						</CoachTipTrigger>
-						<CoachTipContent
-							label="Bridge"
-							command={"view.bridge" as CommandId}
-						/>
-					</CoachTip>
-					<Show when={store.selectedAgent()}>
-						{(agent) => (
-							<button
-								type="button"
-								class={["view-tab", { active: store.view() === "agent" }]}
-								onClick={() => store.openAgent(agent().account.id)}
-							>
-								<StateDot state={agent().lifecycle ?? "idle"} />
-								<Show when={agent().runtime}>
-									{(m) => <RuntimeMarker marker={m()} />}
-								</Show>
-								{agent().account.displayName}
-							</button>
-						)}
-					</Show>
-				</nav>
+				<TabStrip />
+				<LayoutNotice />
 
 				<TopBarSearch clients={props.clients} />
 				<span class="topbar-spacer" />
@@ -171,12 +226,22 @@ const App: Component<
 				<LeftSidebar />
 			</Show>
 
-			<main class="main">
-				{/* Keyed: a context provider's value is read once, so a new focused
-				    view needs a fresh ViewHost. */}
-				<Show when={store.focusedView()} keyed>
-					{(scope) => <ViewHost scope={scope} />}
-				</Show>
+			<main class="main" onFocusIn={rememberFocus} onFocusOut={forgetFocus}>
+				<For each={store.viewScopes()} keyed={(scope) => scope.id}>
+					{(scope) => (
+						<div
+							class="view-panel"
+							role="tabpanel"
+							id={viewPanelId(untrack(scope).id)}
+							aria-labelledby={tabIdOf(scope().id)}
+							tabindex={-1}
+							hidden
+							ref={(el) => panels.set(untrack(scope).id, el)}
+						>
+							<ViewHost scope={scope()} />
+						</div>
+					)}
+				</For>
 			</main>
 
 			<Show when={store.rightOpen()}>

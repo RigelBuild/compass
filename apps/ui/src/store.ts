@@ -80,9 +80,11 @@ import {
 	type LayoutAction,
 	layoutViews,
 	loadLayout,
+	MAX_TABS,
 	reduceLayout,
 	saveLayout,
 	setViewPath,
+	shownViewIds,
 	singleTabLayout,
 	type WindowLayout,
 } from "./window-layout";
@@ -92,6 +94,15 @@ import {
  *  (comms.proto: "the caller is the account authenticated on the connection");
  *  the fixture pins it to the human owner. */
 export const CALLER_ID = "acc-matt";
+
+/** How long the tab-cap notice stays up before it dismisses itself. */
+export const NOTICE_TIMEOUT_MS = 5000;
+
+/** A transient layout notice; `count` makes a repeated refusal a new value. */
+export interface LayoutNotice {
+	text: string;
+	count: number;
+}
 
 /** The top-level surface the shell routes between. `bridge`/`backlog`/`done`/
  *  `settings` are the board-family surfaces (the default is `bridge`), still
@@ -193,8 +204,18 @@ export interface AppStore {
 	focusedView: Accessor<ViewScope>;
 	/** The window's tabs and splits; restored from `sessionStorage` at boot. */
 	layout: Accessor<WindowLayout>;
-	/** Apply a layout action; an eleventh tab is refused and leaves it as is. */
+	/** Apply a layout action; an eleventh tab is refused with a notice. */
 	dispatchLayout: (action: LayoutAction) => void;
+	/** The tab-cap refusal notice; `count` grows on each repeat so a screen reader
+	 *  re-announces it. Cleared by dismissal or after `NOTICE_TIMEOUT_MS`. */
+	layoutNotice: Accessor<LayoutNotice | undefined>;
+	dismissLayoutNotice: () => void;
+	/** Pause the notice's timeout while the user is focused on or hovering it;
+	 *  releasing restarts the full timeout. */
+	holdLayoutNotice: (held: boolean) => void;
+	/** One scope per view instance in the layout, in tab order; a view keeps its
+	 *  scope object for its whole life, so a keyed render keeps it mounted. */
+	viewScopes: Accessor<ViewScope[]>;
 	/** The focused view's top-level surface. */
 	view: Accessor<View>;
 	/** Jump to the Bridge board. */
@@ -264,6 +285,8 @@ export interface AppStore {
 	/** Select a channel and route to its view — UNLESS it's a 1:1 agent DM, in
 	 *  which case delegate to openAgent (the workspace is the DM's surface). */
 	openChannel: (channelId: string) => void;
+	/** The path `openChannel` navigates to; undefined for an unknown channel. */
+	channelPath: (channelId: string) => string | undefined;
 	/** Select an issue (card / swimlane cell) and sync the roster to it. */
 	selectIssue: (issueId: string) => void;
 
@@ -375,6 +398,8 @@ export interface AppStore {
 	 *  `/channel/<channelId>/topic/<topicId>`. Resolves the topic's channel
 	 *  off the topic set; a no-op on an unknown topic id. */
 	openTopic: (topicId: string) => void;
+	/** The path `openTopic` navigates to; undefined for an unknown topic. */
+	topicPath: (topicId: string) => string | undefined;
 	/** NOT WIRED YET — inert. The wire has no join RPC; the rail's join control
 	 *  renders disabled. Kept as the seam the control binds to (and where the
 	 *  RPC lands), but it fakes NO membership: a local-only join silently
@@ -660,11 +685,45 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [layout, setLayout] = createSignal<WindowLayout>(singleTabLayout("/"), {
 		ownedWrite: true,
 	});
+	// A refusal is shown to the user rather than silently dropped.
+	const [layoutNotice, setLayoutNotice] = createSignal<
+		LayoutNotice | undefined
+	>(undefined, { ownedWrite: true });
+	let cancelNoticeTimer = (): void => {};
+	let noticeHeld = false;
+	let noticeUp = false;
+	const dismissLayoutNotice = (): void => {
+		cancelNoticeTimer();
+		noticeUp = false;
+		noticeHeld = false;
+		setLayoutNotice(undefined);
+	};
+	const startNoticeTimer = (): void => {
+		cancelNoticeTimer();
+		if (noticeHeld || !noticeUp) return;
+		// biome-ignore lint/style/noRestrictedGlobals: a real UI dismiss delay, not a test wait.
+		const timer = setTimeout(dismissLayoutNotice, NOTICE_TIMEOUT_MS);
+		cancelNoticeTimer = () => clearTimeout(timer);
+	};
+	const holdLayoutNotice = (held: boolean): void => {
+		noticeHeld = held;
+		startNoticeTimer();
+	};
+	if (getOwner()) onCleanup(() => cancelNoticeTimer());
 	const dispatchLayout = (action: LayoutAction): void => {
+		let refused = false;
 		setLayout((prev) => {
 			const next = reduceLayout(prev, action);
+			refused = "refused" in next;
 			return "refused" in next ? prev : next;
 		});
+		if (!refused) return;
+		setLayoutNotice((prev) => ({
+			text: `Tab limit reached: close a tab to open another (${MAX_TABS} tabs max).`,
+			count: (prev?.count ?? 0) + 1,
+		}));
+		noticeUp = true;
+		startNoticeTimer();
 	};
 	let routerBound = false;
 	const navigateTo = (path: string): void => {
@@ -964,6 +1023,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 
 	// ── View scopes (record A1): one per view instance in the layout, keyed by
 	// view id, so a view keeps its workspace state while its path moves. ──
+	const shownIds = createMemo(() => shownViewIds(layout()));
 	const scopes = mapArray(
 		() => layoutViews(layout()),
 		(instance) => {
@@ -975,6 +1035,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				{
 					path: () => instance().path,
 					navigate: (path) => setLayout((prev) => setViewPath(prev, id, path)),
+					shown: () => shownIds().includes(id),
 				},
 			);
 		},
@@ -1097,27 +1158,30 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	};
 
 	// Open a channel: route to its topic index with it selected — unless it's a 1:1 agent
-	// DM, whose surface is the agent workspace, so delegate to openAgent (one entry point,
+	// DM, whose surface is the agent workspace, so route to the agent (one entry point,
 	// no dead-end DM view). Unknown id is a no-op.
-	const openChannel = (channelId: string) => {
+	const channelPath = (channelId: string): string | undefined => {
 		const chan = channels().find((c) => c.id === channelId);
-		if (!chan) return;
+		if (!chan) return undefined;
 		const byId = new Map(accounts().map((a) => [a.id, a]));
 		const agentId = agentDmAccountId(chan, callerId, byId);
-		if (agentId) {
-			openAgent(agentId);
-			return;
-		}
-		navigateTo(`/channel/${channelId}`);
+		return agentId ? `/agent/${agentId}` : `/channel/${channelId}`;
+	};
+	const openChannel = (channelId: string) => {
+		const path = channelPath(channelId);
+		if (path) navigateTo(path);
 	};
 
 	// Drill into a topic's message view by navigating to `/channel/<id>/topic/<id>`,
 	// so click and deep-link share one home. Resolves the channel off the topic set;
 	// a no-op on an unknown topic id.
-	const openTopic = (topicId: string) => {
+	const topicPath = (topicId: string): string | undefined => {
 		const topic = topics().find((t) => t.id === topicId);
-		if (!topic) return;
-		navigateTo(`/channel/${topic.channelId}/topic/${topicId}`);
+		return topic ? `/channel/${topic.channelId}/topic/${topicId}` : undefined;
+	};
+	const openTopic = (topicId: string) => {
+		const path = topicPath(topicId);
+		if (path) navigateTo(path);
 	};
 
 	// Selecting an issue (a board card or a swimlane cell) syncs the roster
@@ -1695,6 +1759,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		selectedIssue,
 		openAgent,
 		openChannel,
+		channelPath,
 		selectIssue,
 		leftOpen,
 		toggleLeft,
@@ -1730,9 +1795,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		selectedTopicId,
 		selectedTopic,
 		openTopic,
+		topicPath,
 		focusedView,
 		layout,
 		dispatchLayout,
+		layoutNotice,
+		dismissLayoutNotice,
+		holdLayoutNotice,
+		viewScopes: scopes,
 		joinChannel,
 		toggleSubscribe,
 		answerAsk,

@@ -222,4 +222,24 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			maxDiffPixelRatio: 25 / 21357,
 		});
 	});
+
+	test("tab strip — three view tabs", async ({ page }) => {
+		await page.goto("/#/");
+		await page.locator(".bridge").waitFor({ state: "visible" });
+		const sidebar = page.locator("aside.left");
+		await sidebar
+			.locator("button.bridge-link", { hasText: "Settings" })
+			.click({ button: "middle" });
+		await sidebar
+			.locator(".tree-agent", { hasText: "compass-ui" })
+			.first()
+			.click({ button: "middle" });
+		const strip = page.locator(".cx-tab-strip");
+		await page.locator('.cx-tab-strip [role="tab"]').nth(2).waitFor();
+		await page.evaluate(() => document.fonts.ready);
+		await expect(strip).toHaveScreenshot("tab-strip.png", {
+			animations: "disabled",
+			scale: "css",
+		});
+	});
 });

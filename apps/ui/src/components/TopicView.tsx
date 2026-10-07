@@ -62,6 +62,7 @@ export const TopicView: Component = () => {
 								<MessageStream
 									messages={messages()}
 									scopeId={t().id}
+									shown={view.shown()}
 									byId={byId()}
 									byHandle={byHandle()}
 									emptyMessage="No messages yet."

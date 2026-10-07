@@ -13,7 +13,7 @@
 // `root=` prop. `defineRoutes` preserves the literal path types the typed
 // `paths`/hooks read.
 
-import { defineRoutes, useNavigate } from "@solidjs/router";
+import { defineRoutes } from "@solidjs/router";
 import type { Component } from "solid-js";
 import { onSettled } from "solid-js";
 import { AgentView } from "./components/AgentView";
@@ -23,12 +23,15 @@ import { ChannelView } from "./components/ChannelView";
 import { DoneView } from "./components/DoneView";
 import { SettingsView } from "./components/SettingsView";
 import { TopicView } from "./components/TopicView";
+import { useView } from "./view-scope";
 
-/** Redirect a catch-all match to the board. Router 2 has no `<Navigate>`
- *  component; a matched component navigates imperatively once mounted. */
+/** Redirect a catch-all match to the board. It moves its own view, so a stale
+ *  path in a hidden tab never redirects the tab the user is looking at. */
 const RedirectHome: Component = () => {
-	const navigate = useNavigate();
-	onSettled(() => navigate("/"));
+	const view = useView();
+	onSettled(() => {
+		view.navigate("/");
+	});
 	return null;
 };
 
