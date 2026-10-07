@@ -69,6 +69,12 @@ type Associations interface {
 	LinearAgentSession(ctx context.Context, linearSessionID string) (store.LinearAgentSessionRow, error)
 }
 
+// Deliveries reports whether a delivery's post is already stored, so a replay
+// repeats no step the first delivery finished. *store.Store satisfies it.
+type Deliveries interface {
+	MessageRequestRecorded(ctx context.Context, author store.AccountID, clientRequestID string) (bool, error)
+}
+
 // DispatcherParams carries every dependency the Dispatcher needs, all narrow
 // seams (never concrete server types) so the drain loop depends on behavior, not
 // packages. The driver wires the concrete implementations at assembly.
@@ -86,6 +92,8 @@ type DispatcherParams struct {
 	Topics Topics
 	// Associations is the T3 store association seam (*store.Store).
 	Associations Associations
+	// Deliveries is the replay probe (*store.Store).
+	Deliveries Deliveries
 	// Client is the T2 Linear API client (CreateActivity + UpdateSession).
 	Client Client
 	// SessionLinkFor builds the stable return link from the Linear session id.
@@ -107,6 +115,7 @@ type Dispatcher struct {
 	members        Memberships
 	topics         Topics
 	assoc          Associations
+	deliveries     Deliveries
 	client         Client
 	sessionLinkFor func(linearSessionID string) string
 	bridge         store.AccountID
@@ -137,6 +146,7 @@ func NewDispatcher(p DispatcherParams) *Dispatcher {
 		members:        p.Members,
 		topics:         p.Topics,
 		assoc:          p.Associations,
+		deliveries:     p.Deliveries,
 		client:         p.Client,
 		sessionLinkFor: p.SessionLinkFor,
 		bridge:         p.Bridge,
@@ -218,23 +228,34 @@ func (d *Dispatcher) handle(ctx context.Context, ev *SessionEvent) {
 }
 
 // process routes one event by action. Unknown actions are ignored (no error) —
-// only created/prompted drive the responder.
+// only created/prompted drive the responder, and only they cost the replay probe.
 func (d *Dispatcher) process(ctx context.Context, ev *SessionEvent) error {
-	switch ev.Action {
-	case "created":
-		return d.handleCreated(ctx, ev)
-	case "prompted":
-		return d.handlePrompted(ctx, ev)
-	default:
+	if ev.Action != "created" && ev.Action != "prompted" {
 		return nil
 	}
+	// A replay whose post is stored already finished every step; re-running would
+	// repeat the ack thought and session update, and re-arm a spent reply.
+	key := clientRequestID(ctx, ev)
+	if key != "" {
+		done, err := d.deliveries.MessageRequestRecorded(ctx, d.bridge, key)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+	}
+	if ev.Action == "created" {
+		return d.handleCreated(ctx, ev, key)
+	}
+	return d.handlePrompted(ctx, ev, key)
 }
 
 // handleCreated runs the `created` chain: resolve -> ensure @linear membership
 // -> get-or-create the topic -> upsert the association -> emit the ack thought
 // AND the session external URL (the 10s SLA leg, BEFORE the post) -> post the
 // prompt context into the topic with the dedup client_request_id.
-func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error {
+func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent, key string) error {
 	manager, homeChannel, err := d.resolve(ctx, ev)
 	if err != nil {
 		return err
@@ -267,19 +288,19 @@ func (d *Dispatcher) handleCreated(ctx context.Context, ev *SessionEvent) error 
 		return err
 	}
 	d.armReply(topicID, ev.AgentSession.ID, manager)
-	return d.post(ctx, homeChannel, topicID, ev.PromptContext, clientRequestID(ctx, ev))
+	return d.post(ctx, homeChannel, topicID, ev.PromptContext, key)
 }
 
 // handlePrompted routes a follow-up to the recorded conversation: look up the
 // association and post into its channel/topic. On a miss (a prompted event with
 // no `created` on record) it synthesizes the association via the resolver from
 // the payload's agentSession, then posts.
-func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error {
+func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent, key string) error {
 	row, err := d.assoc.LinearAgentSession(ctx, ev.AgentSession.ID)
 	switch {
 	case err == nil:
 		d.armReply(row.TopicID, ev.AgentSession.ID, row.ManagerAccountID)
-		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Content.Body, clientRequestID(ctx, ev))
+		return d.post(ctx, string(row.ChannelID), row.TopicID, ev.AgentActivity.Content.Body, key)
 	case errors.Is(err, store.ErrNotFound):
 		manager, homeChannel, resErr := d.resolve(ctx, ev)
 		if resErr != nil {
@@ -303,7 +324,7 @@ func (d *Dispatcher) handlePrompted(ctx context.Context, ev *SessionEvent) error
 			return upErr
 		}
 		d.armReply(topicID, ev.AgentSession.ID, manager)
-		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Content.Body, clientRequestID(ctx, ev))
+		return d.post(ctx, homeChannel, topicID, ev.AgentActivity.Content.Body, key)
 	default:
 		return err
 	}
