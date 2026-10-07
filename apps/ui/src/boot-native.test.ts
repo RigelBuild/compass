@@ -1,36 +1,16 @@
 /// <reference types="bun" />
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { bootNativeClient, type NativeBootDeps } from "./boot-native";
-import type { ConnectResult } from "./daemon-transport";
+import type { ConnectResult, PickedCA, ServerChoice } from "./daemon-transport";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 
-// The client-mode boot gate (boot-native.ts) drives the shell `Connect` probe
-// and, on failure, the connect screen. The seam it consumes — `shellConnect`
-// (the probe) and `nativeConnectionProvider` (the resolved connection) — is a
-// `NativeBootDeps` injected as bootNativeClient's second argument, so no
-// @wailsio/runtime, no IPC, and no network is needed. Injection over a
-// `mock.module("./daemon-transport", …)` is deliberate: Bun's mock.module is
-// process-global and its restore does not reliably rebind a sibling suite's
-// named imports, so a whole-module mock of `./daemon-transport` leaked into
-// daemon-transport.wails.test.ts and made both suites' outcomes depend on file
-// order. The DI seam is self-contained to this suite.
-// What is defended:
-//   - the in-flight `connecting` state renders before the probe settles;
-//   - each failure kind renders its distinct heading/copy;
-//   - an ok probe resolves the native provider with the injected baseUrl and
-//     token === undefined (DL-109);
-//   - submit is disabled on empty input, so the empty-token sentinel is never a
-//     user action;
-//   - after a connect-button submit the token input is cleared and no binding
-//     retains it (the stub records every token it was handed).
-
-// The token(s) the stub was handed, in call order — the spy the retention
-// assertion reads. A local capture array, never the production module's state.
+// Native boot tests drive shell calls through injected dependencies.
+// The fake records choices and lets pending calls settle or reject.
 let connectTokens: string[];
-// A programmable queue of resolvers, one per shellConnect call; a test settles a
-// probe by resolving the matching entry (holding it lets a probe stay in flight).
+let serverChoices: Array<ServerChoice | undefined>;
 let pending: Array<(result: ConnectResult) => void>;
-// The stub transport injected into bootNativeClient, rebuilt fresh per test.
+let pendingReject: Array<(reason: unknown) => void>;
+let pickedCA: PickedCA;
 let deps: NativeBootDeps;
 
 function connectResult(over: Partial<ConnectResult>): ConnectResult {
@@ -41,6 +21,7 @@ function connectResult(over: Partial<ConnectResult>): ConnectResult {
 		accountId: "",
 		serverVersion: "",
 		apiVersion: "",
+		serverUrl: "https://compass.example:8443",
 		...over,
 	};
 }
@@ -53,14 +34,24 @@ const NATIVE_CONNECTION: ResolvedConnection = {
 
 beforeEach(() => {
 	connectTokens = [];
+	serverChoices = [];
 	pending = [];
+	pendingReject = [];
+	pickedCA = { ref: "", name: "" };
 	deps = {
-		shellConnect: (token: string): Promise<ConnectResult> => {
+		shellConnect: (
+			token: string,
+			server?: ServerChoice,
+		): Promise<ConnectResult> => {
 			connectTokens.push(token);
-			const { promise, resolve } = Promise.withResolvers<ConnectResult>();
+			serverChoices.push(server);
+			const { promise, resolve, reject } =
+				Promise.withResolvers<ConnectResult>();
 			pending.push(resolve);
+			pendingReject.push(reject);
 			return promise;
 		},
+		pickCACert: async (): Promise<PickedCA> => pickedCA,
 		nativeConnectionProvider: (baseUrl: string): ConnectionProvider => ({
 			async resolve(): Promise<ResolvedConnection> {
 				return { ...NATIVE_CONNECTION, baseUrl };
@@ -69,11 +60,6 @@ beforeEach(() => {
 	};
 	window.__COMPASS_SERVER_URL__ = "https://compass.example:8443";
 });
-
-afterEach(() => {
-	window.__COMPASS_SERVER_URL__ = undefined;
-});
-
 /** Settle the Nth (0-based) outstanding shellConnect call. */
 function settle(index: number, result: ConnectResult): void {
 	const resolve = pending[index];
@@ -82,14 +68,342 @@ function settle(index: number, result: ConnectResult): void {
 	resolve(result);
 }
 
-/** Drain the microtask queue so the gate's resolved-promise `.then` callbacks
- *  (and the render they perform) run — deterministic, no wall-clock timer. A few
- *  ticks cover the short then-chain (settle → resolve provider → paint). */
+/** Flush the short promise chain after driving a fake shell call. */
 async function flush(): Promise<void> {
-	for (let i = 0; i < 5; i++) {
-		await Promise.resolve();
-	}
+	for (let i = 0; i < 5; i++) await Promise.resolve();
 }
+
+afterEach(() => {
+	window.__COMPASS_SERVER_URL__ = undefined;
+});
+
+test("setup rejects success without serverUrl and retries with the returned URL", async () => {
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps, "setup");
+	await flush();
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	)
+		throw new Error("setup form inputs are missing");
+	url.value = "https://submitted.example/path";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	await flush();
+	settle(0, {
+		ok: true,
+		kind: "",
+		message: "",
+		accountId: "",
+		serverVersion: "",
+		apiVersion: "",
+	});
+	await flush();
+
+	expect(root.textContent).toContain("Could not connect");
+	expect(root.querySelectorAll("input")).toHaveLength(2);
+	token.value = "retry-token";
+	token.dispatchEvent(new Event("input"));
+	connect.click();
+	await flush();
+	settle(
+		1,
+		connectResult({
+			ok: true,
+			kind: "",
+			serverUrl: "https://normalized.example",
+		}),
+	);
+
+	expect((await booted)?.baseUrl).toBe("https://normalized.example");
+	expect(root.childElementCount).toBe(0);
+});
+
+test("rejected setup connect clears the in-flight state and allows retry", async () => {
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps, "setup");
+	await flush();
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	)
+		throw new Error("setup form inputs are missing");
+	url.value = "https://submitted.example";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	const rejectCall = pendingReject[0];
+	if (!rejectCall) throw new Error("no pending shellConnect rejection");
+	rejectCall(new Error("temporary IPC failure"));
+	await flush();
+	expect(root.textContent).toContain("Could not connect");
+	expect(root.textContent).toContain("Try again.");
+	token.value = "retry-token";
+	token.dispatchEvent(new Event("input"));
+	expect(connect.disabled).toBe(false);
+	connect.click();
+	await flush();
+	expect(connectTokens).toEqual(["token", "retry-token"]);
+	settle(1, connectResult({ ok: true, kind: "" }));
+	expect((await booted)?.baseUrl).toBe("https://compass.example:8443");
+	expect(root.childElementCount).toBe(0);
+});
+
+test("a rejected setup connect after abort resolves undefined", async () => {
+	const root = document.createElement("div");
+	const controller = new AbortController();
+	const booted = bootNativeClient(root, deps, "setup", controller.signal);
+	await flush();
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	)
+		throw new Error("setup form inputs are missing");
+	url.value = "https://submitted.example";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	await flush();
+	controller.abort();
+	const rejectCall = pendingReject[0];
+	if (!rejectCall) throw new Error("no pending shellConnect rejection");
+	rejectCall(new Error("late IPC failure"));
+
+	expect(await booted).toBeUndefined();
+	expect(root.childElementCount).toBe(0);
+});
+
+test("a rejected or cancelled CA dialog preserves the current certificate", async () => {
+	let picks = 0;
+	deps.pickCACert = async () => {
+		picks++;
+		if (picks === 1) return { ref: "saved-ref", name: "saved.pem" };
+		if (picks === 2) return { ref: "", name: "cancelled" };
+		throw new Error("dialog unavailable");
+	};
+	const root = document.createElement("div");
+	const controller = new AbortController();
+	const booted = bootNativeClient(root, deps, "setup", controller.signal);
+	await flush();
+	const choose = root.querySelectorAll("button").item(0);
+	if (!(choose instanceof HTMLButtonElement))
+		throw new Error("CA button is missing");
+	choose.click();
+	await flush();
+	expect(root.textContent).toContain("saved.pem");
+	choose.click();
+	await flush();
+	expect(root.textContent).toContain("saved.pem");
+	choose.click();
+	await flush();
+	expect(root.textContent).toContain("saved.pem");
+	expect(root.textContent).toContain("dialog unavailable");
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	)
+		throw new Error("setup form inputs are missing");
+	url.value = "https://submitted.example";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	await flush();
+	expect(serverChoices).toEqual([
+		{ url: "https://submitted.example", caRef: "saved-ref" },
+	]);
+	settle(0, connectResult({ kind: "bad-token" }));
+	await flush();
+	controller.abort();
+	expect(await booted).toBeUndefined();
+});
+
+test("setup failures retain useful headings and point to the CA picker", async () => {
+	const root = document.createElement("div");
+	const controller = new AbortController();
+	const booted = bootNativeClient(root, deps, "setup", controller.signal);
+	await flush();
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	)
+		throw new Error("setup form inputs are missing");
+	url.value = "https://submitted.example";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	await flush();
+	settle(0, connectResult({ kind: "bad-cert" }));
+	await flush();
+
+	expect(root.textContent).toContain("Can't verify the server's certificate");
+	expect(root.textContent).toContain("Use Choose CA certificate… above");
+	expect(root.textContent).not.toContain("ca_cert");
+	token.value = "retry-token";
+	token.dispatchEvent(new Event("input"));
+	connect.click();
+	await flush();
+	settle(
+		1,
+		connectResult({ kind: "version-mismatch", apiVersion: "compass.v2" }),
+	);
+	await flush();
+	expect(root.textContent).toContain(
+		"App speaks compass.v1; server speaks compass.v2",
+	);
+	controller.abort();
+	await expect(booted).resolves.toBeUndefined();
+});
+
+test("setup provider rejection reaches its caller", async () => {
+	deps.nativeConnectionProvider = () => ({
+		resolve: async () => {
+			throw new Error("provider unavailable");
+		},
+	});
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps, "setup");
+	await flush();
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	)
+		throw new Error("setup form inputs are missing");
+	url.value = "https://submitted.example";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	await flush();
+	settle(
+		0,
+		connectResult({
+			ok: true,
+			kind: "",
+			serverUrl: "https://submitted.example",
+		}),
+	);
+	await expect(booted).rejects.toThrow("provider unavailable");
+});
+
+test("configured provider rejection reaches its caller", async () => {
+	deps.nativeConnectionProvider = () => ({
+		resolve: async () => {
+			throw new Error("configured provider unavailable");
+		},
+	});
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, {
+		...deps,
+		shellConnect: async () => connectResult({ ok: true, kind: "" }),
+	});
+	await expect(booted).rejects.toThrow("configured provider unavailable");
+});
+test("configured retry propagates native provider rejection", async () => {
+	deps.nativeConnectionProvider = () => ({
+		resolve: async () => {
+			throw new Error("retry provider unavailable");
+		},
+	});
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps);
+	await flush();
+	settle(0, connectResult({ kind: "bad-token" }));
+	await flush();
+	const input = root.querySelector("input");
+	const button = root.querySelector("button");
+	if (
+		!(input instanceof HTMLInputElement) ||
+		!(button instanceof HTMLButtonElement)
+	)
+		throw new Error("configured form is missing");
+	input.value = "retry-token";
+	input.dispatchEvent(new Event("input"));
+	button.click();
+	await flush();
+	settle(1, connectResult({ ok: true, kind: "" }));
+
+	await expect(booted).rejects.toThrow("retry provider unavailable");
+});
+test("a rejected configured retry keeps the form available", async () => {
+	let retries = 0;
+	deps.shellConnect = async (token) => {
+		if (token.length === 0) return connectResult({ kind: "bad-token" });
+		retries++;
+		if (retries === 1) throw new Error("temporary IPC failure");
+		return connectResult({ ok: true, kind: "" });
+	};
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps);
+	await flush();
+	const input = root.querySelector("input");
+	const connect = root.querySelector("button");
+	if (
+		!(input instanceof HTMLInputElement) ||
+		!(connect instanceof HTMLButtonElement)
+	)
+		throw new Error("configured retry form is missing");
+	input.value = "first-token";
+	input.dispatchEvent(new Event("input"));
+	connect.click();
+	await flush();
+
+	expect(root.textContent).toContain("temporary IPC failure");
+	expect(root.querySelector("input")).toBe(input);
+	expect(connect.disabled).toBe(false);
+	input.value = "second-token";
+	input.dispatchEvent(new Event("input"));
+	connect.click();
+
+	expect((await booted)?.baseUrl).toBe("https://compass.example:8443");
+});
 
 describe("bootNativeClient — the boot gate", () => {
 	test("renders the connecting state before the probe settles", async () => {
@@ -169,7 +483,9 @@ describe("bootNativeClient — the boot gate", () => {
 		settle(0, connectResult({ kind: "bad-token" }));
 		await flush();
 
-		const button = root.querySelector("button") as HTMLButtonElement;
+		const button = root.querySelector("button");
+		if (!(button instanceof HTMLButtonElement))
+			throw new Error("connect button is missing");
 		expect(button.disabled).toBe(true);
 
 		// A click on the disabled/empty form must not fire a second shellConnect —
@@ -187,8 +503,12 @@ describe("bootNativeClient — the boot gate", () => {
 		settle(0, connectResult({ kind: "bad-token" }));
 		await flush();
 
-		const input = root.querySelector("input") as HTMLInputElement;
-		const button = root.querySelector("button") as HTMLButtonElement;
+		const input = root.querySelector("input");
+		const button = root.querySelector("button");
+		if (!(input instanceof HTMLInputElement))
+			throw new Error("token input is missing");
+		if (!(button instanceof HTMLButtonElement))
+			throw new Error("connect button is missing");
 
 		input.value = "secret-token";
 		input.dispatchEvent(new Event("input"));
@@ -211,8 +531,12 @@ describe("bootNativeClient — the boot gate", () => {
 		settle(0, connectResult({ kind: "bad-token" }));
 		await flush();
 
-		const input = root.querySelector("input") as HTMLInputElement;
-		const button = root.querySelector("button") as HTMLButtonElement;
+		const input = root.querySelector("input");
+		const button = root.querySelector("button");
+		if (!(input instanceof HTMLInputElement))
+			throw new Error("token input is missing");
+		if (!(button instanceof HTMLButtonElement))
+			throw new Error("connect button is missing");
 		input.value = "nope";
 		input.dispatchEvent(new Event("input"));
 		button.click();
@@ -234,8 +558,12 @@ describe("bootNativeClient — the boot gate", () => {
 		settle(0, connectResult({ kind: "bad-token" }));
 		await flush();
 
-		const input = root.querySelector("input") as HTMLInputElement;
-		const button = root.querySelector("button") as HTMLButtonElement;
+		const input = root.querySelector("input");
+		const button = root.querySelector("button");
+		if (!(input instanceof HTMLInputElement))
+			throw new Error("token input is missing");
+		if (!(button instanceof HTMLButtonElement))
+			throw new Error("connect button is missing");
 		input.value = "good-token";
 		input.dispatchEvent(new Event("input"));
 		button.click();
@@ -246,4 +574,157 @@ describe("bootNativeClient — the boot gate", () => {
 		expect(connection?.baseUrl).toBe("https://compass.example:8443");
 		expect(connection?.token).toBeUndefined();
 	});
+});
+test("setup entry shows an editable URL without probing and sends an empty CA ref", async () => {
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps, "setup");
+	await flush();
+
+	expect(connectTokens).toEqual([]);
+	expect(root.textContent).toContain("Connect to a server");
+	const fields = root.querySelectorAll("input");
+	expect(fields.length).toBe(2);
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	) {
+		throw new Error("setup form inputs are missing");
+	}
+	url.value = "https://new.example:9443";
+	url.dispatchEvent(new Event("input"));
+	token.value = "first-token";
+	token.dispatchEvent(new Event("input"));
+	const button = [...root.querySelectorAll("button")].find(
+		(candidate) => candidate.textContent === "Connect",
+	);
+	if (!(button instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	button.click();
+	await flush();
+
+	expect(connectTokens).toEqual(["first-token"]);
+	expect(serverChoices).toEqual([
+		{ url: "https://new.example:9443", caRef: "" },
+	]);
+	settle(
+		0,
+		connectResult({
+			ok: true,
+			kind: "",
+			serverUrl: "https://new.example:9443",
+		}),
+	);
+	expect((await booted)?.baseUrl).toBe("https://new.example:9443");
+});
+
+test("a picked CA name is shown and Use system trust clears its ref", async () => {
+	pickedCA = { ref: "opaque-ca-ref", name: "private-root.pem" };
+	const root = document.createElement("div");
+	void bootNativeClient(root, deps, "setup");
+	await flush();
+	const buttons = root.querySelectorAll("button");
+	const choose = buttons.item(0);
+	if (!(choose instanceof HTMLButtonElement))
+		throw new Error("CA button is missing");
+	choose.click();
+	await flush();
+	expect(root.textContent).toContain("private-root.pem");
+
+	const trustButton = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Use system trust",
+	);
+	if (!(trustButton instanceof HTMLButtonElement))
+		throw new Error("trust button is missing");
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	)
+		throw new Error("setup form inputs are missing");
+	url.value = "https://new.example";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	await flush();
+	expect(serverChoices).toEqual([
+		{ url: "https://new.example", caRef: "opaque-ca-ref" },
+	]);
+	settle(0, connectResult({ kind: "bad-token" }));
+	await flush();
+	trustButton.click();
+	expect(root.textContent).toContain("System trust");
+	url.value = "https://new.example";
+	url.dispatchEvent(new Event("input"));
+	token.value = "token-again";
+	token.dispatchEvent(new Event("input"));
+	connect.click();
+	await flush();
+	expect(serverChoices).toEqual([
+		{ url: "https://new.example", caRef: "opaque-ca-ref" },
+		{ url: "https://new.example", caRef: "" },
+	]);
+	settle(1, connectResult({ kind: "bad-token" }));
+	await flush();
+});
+test("invalid URL messages are rendered literally and a success uses serverUrl", async () => {
+	const root = document.createElement("div");
+	const booted = bootNativeClient(root, deps, "setup");
+	await flush();
+	const fields = root.querySelectorAll("input");
+	const url = fields.item(0);
+	const token = fields.item(1);
+	if (
+		!(url instanceof HTMLInputElement) ||
+		!(token instanceof HTMLInputElement)
+	) {
+		throw new Error("setup form inputs are missing");
+	}
+	url.value = "not-validated-in-ui";
+	token.value = "token";
+	token.dispatchEvent(new Event("input"));
+	const connect = [...root.querySelectorAll("button")].find(
+		(button) => button.textContent === "Connect",
+	);
+	if (!(connect instanceof HTMLButtonElement))
+		throw new Error("connect button is missing");
+	connect.click();
+	await flush();
+	settle(0, connectResult({ kind: "invalid-url", message: "<b>bad URL</b>" }));
+	await flush();
+	expect(root.querySelector("b")).toBeNull();
+	expect(root.textContent).toContain("<b>bad URL</b>");
+
+	token.value = "good-token";
+	token.dispatchEvent(new Event("input"));
+	connect.click();
+	await flush();
+	settle(
+		1,
+		connectResult({
+			ok: true,
+			kind: "",
+			serverUrl: "https://server-returned.example",
+		}),
+	);
+	expect((await booted)?.baseUrl).toBe("https://server-returned.example");
+});
+
+test("an idle setup form resolves undefined and clears when its signal aborts", async () => {
+	const root = document.createElement("div");
+	const controller = new AbortController();
+	const booted = bootNativeClient(root, deps, "setup", controller.signal);
+	await flush();
+	expect(root.textContent).toContain("Connect to a server");
+	controller.abort();
+	expect(await booted).toBeUndefined();
+	expect(root.childElementCount).toBe(0);
 });
