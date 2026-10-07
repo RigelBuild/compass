@@ -19,7 +19,10 @@
 // never a client-supplied filter.
 package store
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // AccountID, ChannelID, ChannelGroupID, WorkspaceID, and MessageID are the
 // server-assigned stable ids for their rows. Distinct named types (not bare
@@ -163,6 +166,25 @@ type UserAccount struct {
 	Role UserRole
 }
 
+// managerRoles is the closed agent-role taxonomy, validated at every creation
+// door. It is a product contract, not derived from the mutable config bundle's
+// prompts/ members; unexported so no importer can widen it.
+var managerRoles = map[string]struct{}{
+	"supervisor": {},
+	"owner":      {},
+	"manager":    {},
+}
+
+// IsManagerRole reports whether role is in the closed agent-role taxonomy.
+func IsManagerRole(role string) bool {
+	_, ok := managerRoles[role]
+	return ok
+}
+
+// ErrUnknownRole is the CodeInvalidArgument cause for a role outside the
+// taxonomy, including empty: the label is validated, never prompt text.
+var ErrUnknownRole = errors.New("unknown agent role")
+
 // AgentAccount is the owned-agent payload (comms.proto:136-142) plus the
 // additive home_channel_id (RT-2): the agent's named channel, minted at
 // CreateAgent, that fixes "the agent's own channel" for the always-subscribed
@@ -175,10 +197,10 @@ type AgentAccount struct {
 	// Persona is the agent's system-prompt text, baked at creation (RIG-1571);
 	// empty means no persona override.
 	Persona string
-	// Role is the agent's operator-set block-0 selector (RIG-1732 T10); empty
-	// means no role (default OMP block-0). Unlike Persona (an append overlay),
-	// the label selects config/prompts/<role>/SYSTEM.md, delivered as the
-	// container's customSystemPrompt.
+	// Role selects block-0 (config/prompts/<role>/SYSTEM.md), replacing it where
+	// Persona appends. Request paths validate it with IsManagerRole; rows from
+	// before that guard may hold an empty or unknown label, which falls back to
+	// the default OMP block-0.
 	Role string
 	// ParentAgentID is the agent's parent in the agent tree; empty = root. Set
 	// at creation and editable via ReparentAgent (comms.proto).
