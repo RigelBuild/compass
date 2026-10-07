@@ -164,9 +164,12 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// The server reaps the durable (InactiveThreshold) when this client could
 	// not pull, e.g. a long partition. reapDetector reports it and the
 	// supervisor below recreates the durable rather than go silent.
-	reaped := make(chan struct{}, 1)
+	// Each signal carries its consume generation, so a probe that outlives a
+	// recreate cannot trigger another one.
+	reaped := make(chan uint64, 1)
+	var gen atomic.Uint64
 	consume := func(cons jetstream.Consumer) (jetstream.ConsumeContext, error) {
-		detect := reapDetector(ctx, cons, reaped)
+		detect := reapDetector(ctx, cons, gen.Add(1), reaped)
 		return cons.Consume(func(msg jetstream.Msg) {
 			callbackMu.Lock()
 			defer callbackMu.Unlock()
@@ -245,16 +248,8 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 		// A probe-detected reap leaves the old Consume running against the
 		// recreated durable; drain it so only cc pulls and stop() reaches all.
 		cc.Drain()
-		drained = slices.DeleteFunc(drained, func(old jetstream.ConsumeContext) bool {
-			select {
-			case <-old.Closed():
-				return true
-			default:
-				return false
-			}
-		})
-		drained = append(drained, cc)
-		// A probe that raced this recreate may have queued a stale signal.
+		drained = append(pruneClosed(drained), cc)
+		// Discard a queued signal; only the new generation's detector can reap now.
 		select {
 		case <-reaped:
 		default:
@@ -270,7 +265,10 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	go func() {
 		for {
 			select {
-			case <-reaped:
+			case g := <-reaped:
+				if g != gen.Load() {
+					continue // from a consume a recreate already replaced
+				}
 				if recreate() {
 					continue
 				}
@@ -322,10 +320,10 @@ func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject s
 // gone. The server's 409 reaches only a pull waiting at the delete; a pull to
 // an already-deleted durable sees no-responders or a missed heartbeat instead,
 // so those trigger one bounded Info probe off the handler goroutine.
-func reapDetector(ctx context.Context, cons jetstream.Consumer, reaped chan<- struct{}) func(error) {
+func reapDetector(ctx context.Context, cons jetstream.Consumer, gen uint64, reaped chan<- uint64) func(error) {
 	signal := func() {
 		select {
-		case reaped <- struct{}{}:
+		case reaped <- gen:
 		default:
 		}
 	}
@@ -348,6 +346,18 @@ func reapDetector(ctx context.Context, cons jetstream.Consumer, reaped chan<- st
 			}()
 		}
 	}
+}
+
+// pruneClosed drops consume contexts that have fully closed.
+func pruneClosed(ccs []jetstream.ConsumeContext) []jetstream.ConsumeContext {
+	return slices.DeleteFunc(ccs, func(c jetstream.ConsumeContext) bool {
+		select {
+		case <-c.Closed():
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // handleEvent runs one delivery: decode, invoke fn under a panic guard, then ack
