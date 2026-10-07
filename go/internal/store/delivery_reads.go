@@ -38,14 +38,8 @@ func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author 
 }
 
 // ChannelAgentMembers resolves every AGENT member of a channel, author excluded,
-// regardless of subscribe state — the mention→steer routing set (design.md:526-527:
-// membership, not subscription). Distinct from SubscribedAgents, which is the plain
-// deliver set (subscribed-or-home): this query is the same JOIN shape MINUS the
-// `(cm.subscribed OR home_channel)` disjunct, so an unsubscribed non-home agent
-// member is STILL returned. The JOIN to agent_accounts scopes the result to agent
-// members (a human member has no agent_accounts row); $1 is the channel, $2 the
-// author excluded (an agent's own `@agents` / self-mention never steers itself).
-func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, author AccountID) ([]AccountID, error) {
+// regardless of subscribe state — the mention routing set.
+func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, author AccountID) ([]ChannelAgentMember, error) {
 	rows, err := s.q.ChannelAgentMembers(ctx, db.ChannelAgentMembersParams{
 		ChannelID: string(channel),
 		AccountID: string(author),
@@ -53,7 +47,16 @@ func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, auth
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve channel agent members: %w", err)
 	}
-	return accountIDs(rows), nil
+	members := make([]ChannelAgentMember, 0, len(rows))
+	for _, row := range rows {
+		members = append(members, ChannelAgentMember{
+			ID:          AccountID(row.AccountID),
+			OwnerUserID: AccountID(row.OwnerUserID),
+			OwnerHandle: row.OwnerHandle,
+			Handle:      row.Handle,
+		})
+	}
+	return members, nil
 }
 
 // IsAgentAccount reports whether account is an owned agent (has an agent_accounts
