@@ -26,13 +26,6 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mdlayher/vsock v1.3.0
 	github.com/minio/minio-go/v7 v7.2.1
-	// The two nats-io modules below are pre-declared here for the RIG-3107 NATS
-	// fabric slice (go/internal/fabric, PR #877) that stacks on this PR. No code
-	// in THIS PR imports them yet, so `go mod tidy` before that slice lands will
-	// drop both (plus their indirects) AND invalidate the shared Go vendorHash in
-	// flake.nix and guest-image/default.nix — breaking every nix build. Do not
-	// tidy this module until #877 has landed; the two PRs are meant to merge as a
-	// stack.
 	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1
 	github.com/rs/cors v1.11.1
