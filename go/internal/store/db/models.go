@@ -16,6 +16,15 @@ type Account struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type AccountForgeScope struct {
+	TenantID      string
+	AccountID     string
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+	CreatedAt     pgtype.Timestamptz
+}
+
 type AccountHandle struct {
 	AccountID   string
 	Handle      string
