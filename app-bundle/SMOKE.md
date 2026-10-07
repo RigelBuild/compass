@@ -310,21 +310,23 @@ the form shows a validation message, then check that no config was written:
 test ! -e "$APP_CONFIG" || echo "FAIL: invalid URL wrote app.toml" >&2
 ```
 
-Repeat with `https://h/p`. Confirm its validation message, then check again:
+Enter a temporary non-secret token value again, since the form clears the token
+after each attempt. Repeat with `https://h/p`. Confirm its validation message,
+then check again:
 
 ```bash
 test ! -e "$APP_CONFIG" || echo "FAIL: invalid URL wrote app.toml" >&2
 ```
 
-Replace the temporary token value. In the first window, enter
-`https://127.0.0.1:50052`, choose `$CSTATE/tls.crt`, paste the token from
-`$CRT/admin-token`, then connect. The shell probes `GetServerInfo`, calls
-`WhoAmI`, writes the config and CA copy, stores the token, arms the bearer
-injector, and boots into the board (`connectServerChoice` in
-`go/cmd/compass-app/bridge_service.go`). Confirm the board renders live over
-the TLS door. In the still-open second window, choose **Run Compass on this
-computer** and confirm it is refused with “Compass is already set up. Quit and
-reopen it to change this.”
+In the first window, enter `https://127.0.0.1:50052`, choose
+`$CSTATE/tls.crt`, paste the token from `$CRT/admin-token`, then connect. The
+shell probes `GetServerInfo`, calls `WhoAmI`, writes the config and CA copy,
+stores the token, arms the bearer injector, and boots into the board
+(`connectServerChoice` in `go/cmd/compass-app/bridge_service.go`). Confirm the
+board renders live over the TLS door. The still-open second window receives
+the setup decision and boots as the configured client: confirm it leaves the
+chooser and reaches the board without another connect. The refusal of a late
+embedded choice is covered by `TestSetupServiceChooseEmbeddedGateRefusals`.
 
 Inspect the saved config in this same shell while the app is running. Confirm
 that it contains the origin and that `ca_cert` names the copied
@@ -473,9 +475,8 @@ rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 - [ ] with no `app.toml`, `--mode`, or `COMPASS_APP_MODE` override, the app opens
       the first-run chooser (§Part (b), 3)
 - [ ] open **Window → New Window** while both windows show the chooser; complete
-      the invalid-URL checks, connect in the first window, then confirm the
-      second window's embedded choice is refused with “Compass is already set up…”
-      (§Part (b), 3)
+      the invalid-URL checks and connect in the first window, then confirm the
+      second window leaves the chooser and reaches the board (§Part (b), 3)
 - [ ] before the successful connection, `http://x` and `https://h/p` each show a
       validation message and leave `app.toml` absent (§Part (b), 3)
 - [ ] a valid connection writes client `app.toml` with the normalized origin and
