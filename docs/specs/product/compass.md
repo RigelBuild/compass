@@ -772,8 +772,9 @@ rather than tearing it down and re-spawning.
 
 The workspaces sidebar derives its tree from `parent_agent_id` rather than a
 user-defined folder organization, and an agent reads its own parent off its
-account through `ListAccounts`. Composing channels or roles onto the tree is
-named for later (RIG-1622, RIG-1623) and is not yet built.
+account through `ListAccounts`. Each agent also carries a role and a persona,
+set at creation (below). Composing channels or role-scoped policy onto the tree
+is named for later (RIG-1622, RIG-1623) and is not yet built.
 
 ### Requirement: An agent account carries a parent, forming the agent tree
 
@@ -797,6 +798,31 @@ and SHALL reject a supplied parent that fails either check.
 - **Given** a `CreateAgent` call with an empty `parent_agent_id`
 - **When** the account is created
 - **Then** it carries an empty `parent_agent_id` and is a root of the agent tree.
+
+### Requirement: An agent's role and persona are set at creation
+
+`CreateAgent` SHALL accept an optional `role` and an optional `persona`. A
+non-empty `role` MUST be one of the closed set `supervisor`, `owner`, or
+`manager`; the server SHALL reject any other value with `INVALID_ARGUMENT`
+before writing anything. An empty `role` SHALL mean none. A `persona` longer
+than 64 KiB (`MaxPersonaBytes`) SHALL be rejected with `INVALID_ARGUMENT`. The
+spawn path SHALL require a role from the same set and apply the same persona
+cap. The server SHALL store both on the account; provisioning SHALL read them
+from the stored account, never from a provision request. Re-spawning an
+existing agent SHALL keep its stored role and persona.
+
+#### Scenario: An off-taxonomy role is rejected
+
+- **Given** a `CreateAgent` call with `role` set to `director`
+- **When** the server handles it
+- **Then** it returns `INVALID_ARGUMENT` and creates no account.
+
+#### Scenario: A re-spawn keeps the stored role and persona
+
+- **Given** an agent created with role `owner` and a persona
+- **When** the operator spawns it again, passing a different `--role`
+- **Then** the agent provisions with its stored role and persona, and the CLI
+  reports that the flags were not applied.
 
 ### Requirement: Re-parenting moves an agent's subtree, validated against cycles and ownership
 
