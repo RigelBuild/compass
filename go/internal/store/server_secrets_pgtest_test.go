@@ -59,18 +59,20 @@ func TestT0ServerSecretsShape(t *testing.T) {
 	// server_key_state's withheld DELETE is asserted ABSENT — that omission is a
 	// deliberate least-privilege choice (the tripwire digest must not be
 	// droppable), so it is pinned, not left to chance. The usage prune horizon and
-	// the compute log withhold the writes 0001_init.sql revokes for them.
+	// the compute log withhold writes; only the system role may prune the log.
 	for _, tc := range []struct {
 		tbl     string
+		roles   []string
 		granted []string
 		denied  []string
 	}{
-		{"server_secrets", []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, nil},
-		{"server_key_state", []string{"SELECT", "INSERT", "UPDATE"}, []string{"DELETE"}},
-		{"token_usage_prune_horizon", []string{"SELECT", "UPDATE"}, []string{"INSERT", "DELETE"}},
-		{"compute_usage_events", []string{"SELECT", "INSERT"}, []string{"UPDATE", "DELETE"}},
+		{"server_secrets", []string{"compass_app", "compass_system"}, []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, nil},
+		{"server_key_state", []string{"compass_app", "compass_system"}, []string{"SELECT", "INSERT", "UPDATE"}, []string{"DELETE"}},
+		{"token_usage_prune_horizon", []string{"compass_app", "compass_system"}, []string{"SELECT", "UPDATE"}, []string{"INSERT", "DELETE"}},
+		{"compute_usage_events", []string{"compass_app"}, []string{"SELECT", "INSERT"}, []string{"UPDATE", "DELETE"}},
+		{"compute_usage_events", []string{"compass_system"}, []string{"SELECT", "INSERT", "DELETE"}, []string{"UPDATE"}},
 	} {
-		for _, role := range []string{"compass_app", "compass_system"} {
+		for _, role := range tc.roles {
 			for _, priv := range tc.granted {
 				if !hasTablePrivilege(t, s, role, tc.tbl, priv) {
 					t.Fatalf("%s: %s lacks %s", tc.tbl, role, priv)
