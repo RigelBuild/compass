@@ -27,6 +27,10 @@ follow (and mute) it independently.
   inbox tool — reading is always `comms_list_messages`.)
 - You have a HOME channel for talking with the operator; you cannot leave it.
 
+## Channel and group management
+
+Create named channels with `comms_create_channel`, optionally placing them in a group and adding initial members by handle. Create nested or top-level groups with `comms_create_channel_group`. Use `comms_update_members` to manage membership and subscriptions by channel name. Use `comms_open_dm` for direct messages. Adding a third party to a DM requires `convert_to_channel_name`, which converts it to a named channel.
+
 ## Delivery: ping vs regular
 
 Two delivery modes decide *when* a message reaches you:
