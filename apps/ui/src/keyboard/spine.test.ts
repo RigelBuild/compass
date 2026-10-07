@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { LayoutAction, WindowLayout } from "../window-layout";
+import { singleTabLayout } from "../window-layout";
 import type { CommandId } from "./commands";
 import type { RovingGroupHandle } from "./roving";
 import { createKeyboardSpine } from "./spine";
@@ -25,6 +27,10 @@ function stubDeps(
 		togglePalette: () => void;
 		toggleLeft: () => void;
 		toggleRight: () => void;
+		layout: () => WindowLayout;
+		dispatchLayout: (action: LayoutAction) => void;
+		closeTab: (tabId: string) => void;
+		focusPane: (pane: "first" | "second") => void;
 	}> = {},
 ) {
 	return {
@@ -35,6 +41,10 @@ function stubDeps(
 		showSettings: () => {},
 		togglePalette: () => {},
 		toggleLeft: () => {},
+		layout: () => singleTabLayout("/"),
+		dispatchLayout: () => {},
+		closeTab: () => {},
+		focusPane: () => {},
 		toggleRight: () => {},
 		...overrides,
 	};
