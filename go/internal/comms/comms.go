@@ -124,6 +124,9 @@ func (c *Comms) CreateAgent(
 	req *connect.Request[compassv1.CreateAgentRequest],
 ) (*connect.Response[compassv1.CreateAgentResponse], error) {
 	caller := c.actorFromContext(ctx)
+	if !store.IsManagerRole(req.Msg.GetRole()) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrUnknownRole)
+	}
 	owner, err := c.store.ResolveOwner(ctx, caller)
 	if err != nil {
 		return nil, edgeError(err)
@@ -154,6 +157,7 @@ func (c *Comms) CreateAgent(
 		Handle:        req.Msg.GetHandle(),
 		DisplayName:   req.Msg.GetDisplayName(),
 		ParentAgentID: parentID,
+		Role:          req.Msg.GetRole(),
 	})
 	if err != nil {
 		return nil, edgeError(err)

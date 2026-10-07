@@ -359,7 +359,9 @@ func TestSubscribeCommsAccountChangedDirectoryScoping(t *testing.T) {
 
 	// A new agent owned by agentOwner: owner-scoped, so only the owner may see
 	// its AccountChanged.
-	agent, err := h.svc.CreateAgent(WithActor(ctx, agentOwner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{Handle: "secret-agent", DisplayName: "Secret"}))
+	agent, err := h.svc.CreateAgent(WithActor(ctx, agentOwner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle: "secret-agent", DisplayName: "Secret", Role: "manager",
+	}))
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
