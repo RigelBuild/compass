@@ -2601,8 +2601,9 @@ func TestCallbackRetriesAfterAdvisoryFetchFailure(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("advisory did not claim the park before fetching the message")
 	}
-	if budget := <-fetchBudget; budget <= ackWait {
-		t.Fatalf("advisory fetch budget = %s, want greater than AckWait %s", budget, ackWait)
+	// Near the floor, not merely above AckWait; the slack absorbs scheduling delay.
+	if budget := <-fetchBudget; budget <= minAdvisoryGetTimeout-time.Second {
+		t.Fatalf("advisory fetch budget = %s, want about the %s floor", budget, minAdvisoryGetTimeout)
 	}
 	releaseCallbackOnce()
 	select {
