@@ -13,15 +13,11 @@ import type { CommandId } from "../keyboard/commands";
 import { detectPlatform } from "../keyboard/dispatch";
 import { createRovingGroup, type Stop } from "../keyboard/roving";
 import { routeTitle } from "../route-title";
+import { viewPanelId, viewTabId } from "../view-panel";
 import { parseRoute } from "../view-route";
 import { focusedPane, type ViewTab } from "../window-layout";
 import { Glyph } from "./Glyph";
 import { StateDot } from "./StateDot";
-
-/** The DOM id of a view's panel, shared with App's panels for aria-controls. */
-export const viewPanelId = (viewId: string): string => `view-panel-${viewId}`;
-/** The DOM id of a tab's button, so a panel can name itself by its tab. */
-export const viewTabId = (tabId: string): string => `view-tab-${tabId}`;
 
 /** An agent tab leads with the agent's state, as the sidebar tree does. */
 const AgentMark: Component<{ agentId: string }> = (props) => {
@@ -129,14 +125,11 @@ export const TabStrip: Component = () => {
 			return m.view === "agent" ? m.agentId : undefined;
 		};
 		const isActive = () => store.layout().activeTabId === id;
-		// A close from the strip leaves focus on the tab that is now active, and
-		// the single tab stop returns to it.
+		// Keep the strip's roving cursor aligned after shared close handling.
 		const close = () => {
-			store.dispatchLayout({ kind: "close", tabId: id });
+			store.closeTab(id);
 			onSettled(() => {
-				const active = store.layout().activeTabId;
-				setCursor(active);
-				els.get(active)?.focus();
+				setCursor(store.layout().activeTabId);
 			});
 		};
 		const closeKey = (key: string): boolean =>

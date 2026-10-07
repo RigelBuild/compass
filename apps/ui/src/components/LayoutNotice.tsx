@@ -2,7 +2,7 @@ import { type Component, onCleanup, Show } from "solid-js";
 import { useStore } from "../context";
 import "../design/components/button.css";
 import "../design/components/toast.css";
-import { viewTabId } from "./TabStrip";
+import { viewTabId } from "../view-panel";
 
 /** The tab-cap refusal, inline in the topbar beside the strip so it never
  *  covers view chrome. The status region stays mounted while empty so a screen

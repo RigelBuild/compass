@@ -23,6 +23,7 @@ import {
 	getOwner,
 	mapArray,
 	onCleanup,
+	onSettled,
 	untrack,
 } from "solid-js";
 import type { Pane } from "./agent-tabs";
@@ -72,6 +73,7 @@ import {
 	DEFAULT_TRACKER_CONFIG,
 	type TrackerSeam,
 } from "./tracker";
+import { focusViewPanel, viewPanelId, viewTabId } from "./view-panel";
 import { parseRoute } from "./view-route";
 import { createViewScope, type ViewScope } from "./view-scope";
 import {
@@ -206,6 +208,10 @@ export interface AppStore {
 	layout: Accessor<WindowLayout>;
 	/** Apply a layout action; an eleventh tab is refused with a notice. */
 	dispatchLayout: (action: LayoutAction) => void;
+	/** Close a tab; focus on its tab button moves to the new active tab's. */
+	closeTab: (tabId: string) => void;
+	/** Focus the tab and pane holding `viewId`, as pointer focus in a pane does. */
+	focusViewId: (viewId: string) => void;
 	/** The tab-cap refusal notice; `count` grows on each repeat so a screen reader
 	 *  re-announces it. Cleared by dismissal or after `NOTICE_TIMEOUT_MS`. */
 	layoutNotice: Accessor<LayoutNotice | undefined>;
@@ -710,6 +716,33 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		startNoticeTimer();
 	};
 	if (getOwner()) onCleanup(() => cancelNoticeTimer());
+	// Closing removes the focused tab button, so focus follows to the new active one.
+	const closeTab = (tabId: string): void => {
+		const item = document.getElementById(viewTabId(tabId))?.parentElement;
+		const focusWasInTab = item?.contains(document.activeElement) ?? false;
+		dispatchLayout({ kind: "close", tabId });
+		if (!focusWasInTab) return;
+		onSettled(() => {
+			document.getElementById(viewTabId(layout().activeTabId))?.focus();
+		});
+	};
+	// Focus in the other pane follows through App's effect, which keeps each
+	// pane's last target; focus outside both panes moves here.
+	const focusPane = (pane: "first" | "second"): void => {
+		const { tabs, activeTabId } = layout();
+		const split = tabs.find((tab) => tab.id === activeTabId)?.layout;
+		dispatchLayout({ kind: "focusPane", pane });
+		if (split?.kind !== "split") return;
+		const inPanel = (viewId: string): boolean =>
+			document
+				.getElementById(viewPanelId(viewId))
+				?.contains(document.activeElement) ?? false;
+		const target = pane === "first" ? split.first : split.second;
+		const other = pane === "first" ? split.second : split.first;
+		if (inPanel(target.id)) return;
+		if (inPanel(other.id) && split.focused !== pane) return;
+		focusViewPanel(target.id);
+	};
 	const dispatchLayout = (action: LayoutAction): void => {
 		let refused = false;
 		setLayout((prev) => {
@@ -1638,6 +1671,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		togglePalette,
 		toggleLeft,
 		toggleRight,
+		layout,
+		dispatchLayout,
+		closeTab,
+		focusPane,
 	});
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {
@@ -1799,6 +1836,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		focusedView,
 		layout,
 		dispatchLayout,
+		closeTab,
+		focusViewId: (viewId) => {
+			setLayout((prev) => focusView(prev, viewId));
+		},
 		layoutNotice,
 		dismissLayoutNotice,
 		holdLayoutNotice,
