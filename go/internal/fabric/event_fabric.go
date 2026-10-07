@@ -249,11 +249,6 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 		// recreated durable; drain it so only cc pulls and stop() reaches all.
 		cc.Drain()
 		drained = append(pruneClosed(drained), cc)
-		// Discard a queued signal; only the new generation's detector can reap now.
-		select {
-		case <-reaped:
-		default:
-		}
 		cc = nextCC
 		f.untrackConsumer(durable)
 		f.trackConsumer(durable, next)
