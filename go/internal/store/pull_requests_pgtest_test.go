@@ -335,3 +335,24 @@ func TestPRsBackfilledMark(t *testing.T) {
 		t.Fatalf("unknown repo err = %v, want ErrNotFound", err)
 	}
 }
+
+// Board issues keep their ingested repo casing; a mixed-case board row still
+// counts as a resolvable explicit target.
+func TestPullRequestMixedCaseBoardIssueResolvesExplicitLink(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, owner := seedAgent(t, s, "prl11")
+	seedBoardIssue(t, ctx, s, ghCoord("Owner/Repo", 1))
+	closing := ghCoord("owner/repo", 2)
+	seedBoardIssue(t, ctx, s, closing)
+
+	target := ghCoord("owner/repo", 1)
+	pr := prRow("owner/repo", 10, "open", prBase, time.Unix(0, 0))
+	if err := s.CreatePullRequestWithLink(ctx, authoredPR(agent, owner, pr), pr, &target); err != nil {
+		t.Fatalf("CreatePullRequestWithLink: %v", err)
+	}
+	mustUpsertPR(t, ctx, s, prRow("owner/repo", 10, "open", prBase, prBase.Add(time.Hour)), closing)
+	if got := prsFor(t, ctx, s, closing); len(got) != 0 {
+		t.Fatalf("closing ref attached although the explicit target is on the board: %v", got)
+	}
+}
