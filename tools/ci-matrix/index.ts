@@ -143,6 +143,8 @@ const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
  * cross-compile the same #847 way.
  */
 const DARWIN_SIDECAR_PREFIXES = [
+	// The .app stages the secretspec release binary this file pins.
+	"tools/toolchain/secretspec-env.nix",
 	"go/cmd/compass-stack/",
 	"go/cmd/compass-server/",
 	"go/cmd/compass-runner/",

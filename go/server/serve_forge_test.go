@@ -412,7 +412,7 @@ func TestNormalizeGitHubRepo(t *testing.T) {
 // TestCachedWebhookSecretCachesUntilTTL pins the medium-severity fix: the
 // webhook-secret resolver runs on every request to the public, unauthenticated
 // /webhooks/github BEFORE the HMAC check, so it MUST NOT re-resolve (a full
-// secretspec provider Load) per request. Within the TTL a garbage flood costs at
+// secretspec export) per request. Within the TTL a garbage flood costs at
 // most one resolve; a rotated secret still takes over after the TTL.
 func TestCachedWebhookSecretCachesUntilTTL(t *testing.T) {
 	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("WEBHOOK_SECRET"), Value: "sec-1"}}}

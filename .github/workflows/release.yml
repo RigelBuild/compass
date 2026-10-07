@@ -597,6 +597,8 @@ jobs:
               -ldflags "-X main.version=$version" \
               -o "/tmp/$b" "./cmd/$b"
           done
+          cp "$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/secretspec-env.nix secretspecRelease)/bin/secretspec" /tmp/secretspec
 
           moon run compass-ui:build
 
@@ -608,6 +610,7 @@ jobs:
             --sidecar /tmp/compass-server \
             --sidecar /tmp/compass-runner \
             --sidecar /tmp/compass-clear-token \
+            --sidecar /tmp/secretspec \
             --out "compass-app_${tag}_darwin-arm64.dmg"
 
       - name: Upload the macOS dmg for release-assets to fold in
