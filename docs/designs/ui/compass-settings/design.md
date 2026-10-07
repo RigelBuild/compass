@@ -5,7 +5,8 @@ square corners, weights, surfaces, `--cx-border-field`, text-entry
 primitives), [UX foundation](../compass-ux-foundation/design.md)
 Refs: RIG-4775 (this record); RIG-3121 (Providers, task E5 of the
 [gateway OAuth enrollment record](../../server/compass-gateway-oauth-enrollment/design.md));
-ledger DL-431, DL-433, DL-434 (DL-432 is held for Open Questions 1 and 2)
+ledger DL-431, DL-433, DL-434; DL-432 and DL-435 are held for Open
+Questions 1 and 2
 Depends on: brand-parity T9 (S1); enrollment E3 (S7)
 
 ## Problem / Intent
@@ -27,11 +28,11 @@ Today Settings is one page that edits the tracker config. Defects (from
    long names; the `flex-wrap` fields row breaks into ragged lines.
 5. **One page, no sections.** Editor and model registry share one scroll
    and one route.
-6. **The one edit does little.** The store always uses
-   `createFixtureTrackerSeam(DEFAULT_TRACKER_CONFIG)`, which ignores its
-   `_config`; only the handle reaches the fixture queue. The kind and the
-   status map change nothing, and the server maps tracker status itself
-   (DL-129). Nothing shows the server, account, motion, or providers.
+6. **The one edit does little.** The store always uses the fixture seam,
+   which ignores its `_config`; `setTrackerConfig` rebuilds it, but only
+   the handle reaches the fixture queue. The kind and the status map
+   change nothing, and the server maps tracker status itself (DL-129).
+   Nothing shows the server, account, motion, or providers.
 
 Brand-parity T2a and T9 fix defects 2 and 3 (they sweep every radius and
 `font-weight: 600` in `app.css`). This record fixes the rest: one view
@@ -42,91 +43,88 @@ primitives, and a save model per section.
 
 ### A1 — Sections and settings
 
-Sections in nav order, with the recommended Open Question answers:
+Sections in nav order. Tracker is OQ1; Usage data's place is OQ2.
 
-- **General** (`general`)
-  - Server URL: read-only `connection.baseUrl`, the URL the transport uses
-    in both hosts. New.
-  - Mode: read-only `shellMode()`: none → Browser, `"embedded"` → Embedded
-    server, `"client"`/`"setup"`/`"reopen"` → Remote server (setup reaches
-    the app only by connecting; reopen never mounts it). New.
-  - Server version: read-only `version`, `api_version`, and `rev` from
-    `GetServerInfo` (the UI reads the first two today). "Not connected"
-    when `store.daemon().live` is false. New.
-  - Signed in as: read-only handle and display name, `store.caller()`. New.
-  - Keyboard shortcuts: a button that opens the shortcuts overlay. New.
-  - Usage data: Open Question 2. New.
+- **General** (`general`): Server URL (`connection.baseUrl`, the
+  transport's URL in both hosts); Mode (`shellMode()`: none → Browser,
+  `"embedded"` → Embedded server, `"client"`/`"setup"`/`"reopen"` →
+  Remote server, since setup reaches the app only by connecting and
+  reopen never mounts it); Server version (`version`, `api_version`, and
+  `rev` from `GetServerInfo`; "Not connected" when `store.daemon().live`
+  is false); Signed in as (`store.caller()` handle and display name); a
+  Keyboard shortcuts button that opens the overlay; Usage data (OQ2). New.
 - **Appearance** (`appearance`): Reduce motion, Follow system or Always,
   per device in localStorage `compass.settings.reduceMotion`. Always sets
-  `:root[data-reduce="on"]`, which the CSS already honors and nothing sets
-  today. New.
-- **Tracker** (`tracker`): exists; its future is Open Question 1.
+  `:root[data-reduce="on"]`, which the CSS honors and nothing sets. New.
+- **Tracker** (`tracker`): exists; Open Question 1.
 - **Models** (`models`): the model registry, read-only. Exists.
 - **Providers** (`providers`): enrollment E5 (A5). Needs E3
   (`ProviderEnrollmentService`), not yet in the proto, Go, or the UI.
 
-Not in this record: editing the server URL (deferred, native server URL
-record OQ-5); browser sign-out (no signed-out boot path); a day theme
-(ux-foundation D2, "later"); key remap (deferred; a Keyboard section comes
-with it); notifications (none exist); Secrets (`SecretsService` overlaps
-the Providers API-key entry, so it gets its own design after E5); Replay
-tour (a General row once the tour UI merges); the fleet config bundle
-(`GetAgentConfigInfo`, read-only member names: fleet information, not a
-preference; a later Fleet section can show it beside Models); pinned
-agents and window layout (set in place, they stay there).
+Not in this record: server URL edits (deferred, native server URL record
+OQ-5); browser sign-out (no signed-out boot path); a day theme (D2,
+"later"); key remap (deferred; a Keyboard section comes with it);
+notifications (none exist); Secrets (`SecretsService` overlaps the
+Providers key entry; its own design after E5); Replay tour (a General row
+once the tour UI merges); `GetAgentConfigInfo` (fleet member names, not a
+preference; a later Fleet section); pins and window layout (set in place).
 
 ### A2 — Layout
 
 `.settings-view` is a grid of two columns: the section nav and the body.
 
-- **Nav.** `<nav aria-label="Settings sections">` of links in the
-  vertical `.cx-tabs` look; the current one has `aria-current="page"`.
-  Links, because each section is a route that opens, copies, and goes back.
-- **Narrow pane.** Under `@container view-panel (inline-size < 560px)` the
-  nav is a horizontal `.cx-tabs` strip above the body, and rows stack.
-- **Body.** One section. A head (`--cx-text-sm`, `--cx-text-bright`,
+- **Nav.** `<nav aria-label="Settings sections"
+  class="cx-tabs settings-nav" data-orientation="v">` of `a.cx-tab` links;
+  the current link has `data-selected` (the `.cx-tabs` selection rule)
+  and `aria-current="page"`. Links, because each section is a route.
+- **Narrow pane.** Under `@container view-panel (width < 560px)` (as in
+  `app.css`), `settings.css` lays `.settings-nav` out as a row above the
+  body and restates the `data-orientation="h"` border and bottom accent,
+  since CSS cannot change the attribute; rows stack.
+- **Body.** One section: a head (`--cx-text-sm`, `--cx-text-bright`,
   uppercase, letter-spaced, no weight, per brand-parity A9) and one line
-  of help in `--cx-text-dim`. Capped at `72ch`.
+  of help in `--cx-text-dim`; capped at `72ch`.
 - **Row.** A grid, `minmax(16ch, 1fr) minmax(0, 2fr)`: the label (help
   under it in `--cx-text-dim`, `--cx-text-xs`, via `aria-describedby`),
-  then the control. A `1px solid var(--cx-border)` line between rows; no
+  then the control; a `1px solid var(--cx-border)` line between rows; no
   card, radius, or fill.
-- **Controls**, all primitives, no box styles: `input.cx-input`,
-  `select.cx-select`, plain text for read-only values, `.cx-btn` actions
-  (`primary` commits, `danger` destroys). One of two or three is `.cx-btn`
-  buttons with `aria-pressed` (the pressed one also `data-selected`) in a
-  `role="group"` named by the row label; each is a tab stop.
-- **Row status.** Pending, done, or error text in a `role="status"` under
-  the row; errors in `--cx-error`.
+- **Controls**, all primitives: `input.cx-input`, `select.cx-select`,
+  plain text when read-only, `.cx-btn` actions (`primary` commits,
+  `danger` destroys). Two or three choices are `.cx-btn` buttons with
+  `aria-pressed` (the pressed one also `data-selected`) in a
+  `role="group"` named by the row label. Row status (pending, done,
+  error) sits under the row in a `role="status"`, errors in `--cx-error`.
 
 ### A3 — Route
 
 `/settings/:section`. `parseRoute` maps bare `/settings` to the first
-section and an unknown section id to the Bridge (as `/agent` with no id
-does). `routePath` always prints `/settings/<section>`, so bare
-`/settings` is not canonical.
+section and an unknown id to the Bridge. `routePath` always prints
+`/settings/<section>`, so bare `/settings` is not canonical.
 
-A non-canonical path renders the catch-all, `RedirectHome`, which sends
-its own view to `/`. It becomes `RedirectCanonical`, which sends its view
-to `routePath(view.route())`: `/` for every path that goes home today,
-`/settings/<first>` for `/settings`, so old links and restored layouts
-land on a section.
+The catch-all `RedirectHome` (sends its view to `/`) becomes
+`RedirectCanonical` (sends it to `routePath(view.route())`), so
+`/settings`, old links, and restored layouts land on a section. A
+behavior change: a path with extra segments now lands on the view it
+parses to, not `/` (`/backlog/foo` → `/backlog`, `/agent/x/extra` →
+`/agent/x`, `/channel/x/topic` → `/channel/x`). Unknown heads still land
+on `/`.
 
-Every opener (`showSettings`, behind `Mod+,`, `G S`, the palette, and the
-destinations list; and the sidebar link) targets `store.settingsPath()`,
-the last section shown in this window or the first. The layout's `open`
-dedupe matches exact paths, so an open Settings tab on that section is
-focused, not duplicated. A detached window (DL-160) opens on its section.
-The palette gets "Go to Settings: Label" per section; the window title is
-"Settings · Label".
+Every opener (`showSettings` behind `Mod+,`, `G S`, the palette, and the
+destinations list; and the sidebar link) dispatches the layout's `open`
+action for `store.settingsPath()`, the last section shown in this window
+or the first. `open` matches exact paths, so an open single-view Settings
+tab on that section is focused. A second behavior change: today
+`showSettings` navigates the focused view in place (`navigateFocused`);
+after S1, with no such tab, Settings opens in a new tab, and the tab cap
+applies. A detached window (DL-160) opens on its section. The palette gets
+"Go to Settings: Label" per section; the title is "Settings · Label".
 
 ### A4 — Save model, per section
 
-- **Immediate** for a device preference (Reduce motion, Usage data): the
-  change applies and is stored on click.
+- **Immediate** for a device preference (Reduce motion, Usage data):
+  applied and stored on click.
 - **Per action** for Providers: each Connect, code, key, and Disconnect is
-  one RPC with its own pending and error state on its row. Fields keep
-  their text until submitted.
+  one RPC with its own pending and error state on its row.
 - **None** for read-only rows. No page-level Save; Tracker follows Open
   Question 1.
 
@@ -144,18 +142,16 @@ is its own RPC and the tracker editor may go (Open Question 1).
 ## Alternatives considered
 
 - **One long page with anchored headings.** The hash router owns `#`, so
-  a heading cannot be linked, and every section shares one scroll.
+  a heading cannot be linked; every section shares one scroll.
 - **A modal dialog.** DL-160 makes Settings a window-scoped view.
-- **Horizontal tabs only.** Four or five sections fit a strip today, but
-  the out-of-scope list names more (Keyboard, Secrets, Fleet, a
-  server-backed Tracker), and a strip under the window's tab strip
-  (DL-390) reads as nested tabs. It stays as the narrow fallback.
-- **A switch primitive, or a roving radiogroup.** A switch is a new
-  primitive for two rows. A radiogroup needs one tab stop and arrow keys;
-  `createRovingGroup` is built around dispatcher command ids.
-  `aria-pressed` buttons need neither.
-- **One Save bar for the whole page.** Device preferences and RPC actions
-  cannot wait for a page-level Save.
+- **Horizontal tabs only.** Four or five sections fit today, but more are
+  named (Keyboard, Secrets, Fleet, a server-backed Tracker), and a strip
+  under the window's tab strip (DL-390) reads as nested tabs. It stays as
+  the narrow fallback.
+- **A switch, or a roving radiogroup.** A switch is a new primitive for
+  two rows; a radiogroup needs arrow keys, and `createRovingGroup` is
+  built around dispatcher command ids. `aria-pressed` needs neither.
+- **One Save bar.** Device preferences and RPCs cannot wait for it.
 
 ## Global Constraints
 
@@ -163,10 +159,13 @@ is its own RPC and the tracker editor may go (Open Question 1).
   and weights and recapture every shot; S1 starts after T9 merges, so it
   does not rebase on the same lines or recapture twice. T7 only changes
   the `.cx-input` border; tasks use `.cx-input` before or after it.
-- **Route conflicts.** Brand-parity T5 (`/agents`) and T10 (`/backlog`
-  and `/done` render the Bridge) edit `RouteMatch`, `parseRoute`,
-  `ROUTE_PATTERN`, and `appRoutes`. The cases do not overlap; whichever
-  lands second rebases.
+- **Overlap with brand parity.** T5 (`/agents`) edits `RouteMatch`,
+  `parseRoute`, `routePath`, `appRoutes`, `route-title.ts`, `spine.ts`,
+  `store.ts`, and `LeftSidebar.tsx`, as S1 does. T10 leaves
+  `view-route.ts` and `ViewHost.tsx` alone but edits the `/backlog` and
+  `/done` entries in `routes.tsx`, `LeftSidebar.tsx` and its test (S1),
+  and `surfaces.md` § Backlog / Done / Settings (S4). The edits do not
+  overlap in meaning; whichever lands second rebases.
 - **Tokens only**, the D7 stylelint guard, and the T2a and T9 rules.
 - **Each component imports the primitive CSS it renders** (brand-parity
   A7). No new primitive and no `.settings-*` box style; layout classes in
@@ -175,7 +174,7 @@ is its own RPC and the tracker editor may go (Open Question 1).
   the sidebar link, and `/#/settings`.
 - **Device preferences** use localStorage keys `compass.settings.<name>`
   through `safeLocalStorage()`; an invalid value reads as the default.
-- **Copy.** Sentence-case labels; one-sentence help.
+  Copy is sentence-case; help is one sentence.
 - **Baselines and stacking.** Recapture under the pinned dev shell and
   commit per DL-399; one linear line, red-first tests, lane `implement-ts`.
 - **Public repo.** Cite only this repo and `docs/specs/brand/`.
@@ -203,9 +202,10 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
     `view.navigate(routePath(view.route()))`.
   - Store: `settingsSection(): SettingsSection`,
     `setSettingsSection(section: SettingsSection): void`, and
-    `settingsPath(): string`; `showSettings` navigates to
-    `settingsPath()`; the `LeftSidebar` link uses
-    `() => store.settingsPath()`.
+    `settingsPath(): string`. `showSettings` runs `hideShortcuts()` then
+    `dispatchLayout({ kind: "open", path: settingsPath() })`, not
+    `navigateTo`. The `LeftSidebar` link passes `() => store.settingsPath()`
+    to `openLink`; its plain click still calls `showSettings`.
   - `components/SettingsView.tsx` moves to `components/settings/`:
     `SettingsView.tsx` (the shell: reads the section from its view scope,
     calls `setSettingsSection`, renders nav and body, imports `tabs.css`,
@@ -220,18 +220,26 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
     Label".
   - `app.css`: take `.settings-view` out of the shared list rule; delete
     `.settings-head` and `.settings-section*`.
-  - Tests that expect bare `/settings` move to `/settings/<id>`
-    (`view-route.test.ts`, `window-history.test.tsx`,
-    `tab-keep-alive.test.tsx`); `settings-mapping.test.ts` changes its
-    import; `SettingsView.model-registry.test.tsx` →
+  - Tests that expect bare `/settings` move to `/settings/<id>`:
+    `view-route.test.ts`, `window-history.test.tsx`,
+    `tab-keep-alive.test.tsx`, and `components/LeftSidebar.test.tsx` ("a
+    view link opens its view in a new tab…" expects `["/",
+    "/settings/tracker"]`). `settings-mapping.test.ts` changes its import;
+    `SettingsView.model-registry.test.tsx` →
     `settings/ModelsSection.test.tsx`.
-- **Test (red first):** `view-route.test.ts`: `/settings/models`
-  round-trips; `/settings` parses to the first section; `/settings/nope`
-  parses to the Bridge. `settings/SettingsView.test.tsx` with `mountApp`:
-  `/settings` ends on `/settings/tracker` with that link
-  `aria-current="page"`; clicking Models moves to `/settings/models` and
-  shows the registry, not the editor; after that, `store.showSettings()`
-  returns to `/settings/models`; `/nope` still ends on `/`.
+- **Test (red first):**
+  - `view-route.test.ts`: `/settings/models` round-trips; `/settings`
+    parses to the first section; `/settings/nope` parses to the Bridge.
+  - `routing.test.tsx` (`RedirectCanonical`): `mountApp("/backlog/foo")`
+    ends on `/backlog`; `mountApp("/no-such-surface")` still ends on `/`.
+  - `settings/SettingsView.test.tsx` with `mountApp`: `/settings` ends on
+    `/settings/tracker`, its link has `data-selected` and
+    `aria-current="page"`; clicking Models moves to `/settings/models` and
+    shows the registry, not the editor.
+  - `store.test.ts` (`showSettings` uses `open`): from `/` it gives tabs
+    `["/", "/settings/tracker"]`, the new one active; from `/` again it
+    focuses that tab (still two); after that tab moves to
+    `/settings/models`, it focuses it again.
 - **Baselines:** recapture `settings.png`; add `settings-narrow.png` (480px).
 
 ### S2 — General section
@@ -251,8 +259,7 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
   `createRouterTransport` serving `getServerInfo` (`1.2.3`, an API
   version, `abc123`): the three show; offline shows "Not connected"; the
   caller's handle shows; the shortcuts button opens the overlay;
-  `modeLabel` maps all five inputs.
-- **Baselines:** recapture `settings.png` (now General).
+  `modeLabel` maps all five inputs. **Baselines:** recapture `settings.png`.
 
 ### S3 — Appearance section
 
@@ -278,34 +285,29 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
 
 ### S4 — Tracker, per Open Question 1
 
-- **Gate:** Open Question 1. Interfaces are for the recommended (e).
-- **Interfaces (e):**
+- **Gate:** Open Question 1. Interfaces are for the recommended (c).
+- **Interfaces (c):**
   - Delete `settings/TrackerSection.tsx`, `mergeFromTracker`,
-    `settings-mapping.test.ts`, `"tracker"` from `SETTINGS_SECTIONS`, the
-    `"tracker"` keyword of `view.settings`, and every remaining
-    `.settings-*` selector in `app.css`.
+    `settings-mapping.test.ts`, `"tracker"` from `SETTINGS_SECTIONS` and
+    the `view.settings` keywords, and every remaining `.settings-*` rule.
   - `AppStore` drops `setTrackerConfig` and its two `store.test.ts` cases;
-    `trackerConfig` stays at `DEFAULT_TRACKER_CONFIG` for the fixture
-    queue.
-  - `apps/ui/src/design/surfaces.md` § Backlog / Done / Settings: replace
-    the status-mapping editor sentences (composition, empty state, flip
-    item 2) with the A2 row anatomy.
-  - File a follow-up: a server-backed Tracker section once the tracker
-    contract lands.
-- **Interfaces (a):** the editor on A2 rows; the status map is a `<table>`
-  with one free-text `input.cx-input` per state, as today (no source lists
-  a tracker's statuses); Reset and Save in a sticky section foot.
-  `settings/tracker-draft.ts` exports `createTrackerDraft(store: AppStore):
+    `trackerConfig` stays at `DEFAULT_TRACKER_CONFIG` for the fixture queue.
+  - `surfaces.md` § Backlog / Done / Settings: replace the status-mapping
+    sentences (composition, empty state, flip item 2) with the A2 rows.
+  - File a follow-up: a server-backed Tracker section with the tracker
+    contract.
+- **Interfaces (a):** the editor on A2 rows; the status map a `<table>` of
+  free-text `input.cx-input` per state, as today (no source lists a
+  tracker's statuses); Reset and Save in a sticky foot.
+  `settings/tracker-draft.ts`: `createTrackerDraft(store: AppStore):
   TrackerDraft` (`draft()`, `dirty()`, `set(next)`, `reset()`, `save()`),
   held by the shell so a draft survives a section switch, with a nav dot
-  when dirty. `surfaces.md`'s "two-column `.cx-tree-row` table" becomes
-  that table. **(d):** the same rows, read-only, under "Preview, not
-  connected".
-- **Test (red first):** (e): no Tracker link, and `/settings/tracker` ends
-  on `/`. (a): `tracker-draft.test.ts` (clean at start; `set` dirties;
-  `reset` restores; `save` commits and cleans), and an edit survives a
-  switch to Models and back.
-- **Baselines:** recapture `settings.png`; (a) and (d) add
+  when dirty; `surfaces.md`'s `.cx-tree-row` table becomes that table.
+  **(b):** the same rows, read-only, under "Preview, not connected".
+- **Test (red first):** (c): no Tracker link; `/settings/tracker` ends on
+  `/`. (a): `tracker-draft.test.ts` (clean at start; `set` dirties;
+  `reset` restores; `save` commits and cleans); an edit survives a switch
+  to Models and back. **Baselines:** `settings.png`; (a) and (b) add
   `settings-tracker.png`.
 
 ### S5 — Tracker persistence
@@ -324,16 +326,15 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
 ### S6 — Usage data
 
 - **Gate:** Open Question 2. Interfaces are for the recommended (b).
-- **Interfaces:**
-  - `Analytics` gains `readonly enabled: boolean`, `optOut()`, `optIn()`,
-    and `optedOut(): boolean` (posthog-js `opt_out_capturing()`,
-    `opt_in_capturing()`, `has_opted_out_capturing()`); `NoopAnalytics`
-    has `enabled` false and `optedOut()` true.
-  - `AppStoreOptions` gains `analytics?: Analytics`; the store exposes
-    `analytics(): Analytics | undefined` (reused if the tour analytics
-    branch lands it first).
-  - A Usage data row in `GeneralSection.tsx`: On and Off `aria-pressed`
-    buttons, or "Off. This build sends no usage data." when disabled.
+- **Interfaces:** `Analytics` gains `readonly enabled: boolean`,
+  `optOut()`, `optIn()`, and `optedOut(): boolean` (posthog-js
+  `opt_out_capturing()`, `opt_in_capturing()`,
+  `has_opted_out_capturing()`); `NoopAnalytics` has `enabled` false and
+  `optedOut()` true. `AppStoreOptions` gains `analytics?: Analytics` and
+  the store exposes `analytics(): Analytics | undefined` (reused if the
+  tour analytics branch lands it first). A Usage data row in
+  `GeneralSection.tsx`: On and Off `aria-pressed` buttons, or "Off. This
+  build sends no usage data." when disabled.
 - **Test (red first):** `analytics.test.ts`: `optOut` calls
   `opt_out_capturing`. `GeneralSection.test.tsx` with a fake `Analytics`:
   Off calls `optOut`, On calls `optIn`, the pressed button follows
@@ -371,14 +372,14 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
    - (a) Keep the editor, rebuild it on A2 (S4), and persist it in
      localStorage keyed by `workspaceKey` (S5). Small, but it saves a
      value nothing uses: `rule://no-inert-gating` argues against it.
-   - (d) Show the config read-only as "Preview, not connected", and drop
+   - (b) Show the config read-only as "Preview, not connected", and drop
      S5. Honest about the state, but it shows a status map the server
      does not use, which can mislead.
-   - (e) Delete the client-side editor and `setTrackerConfig`; the
+   - (c) Delete the client-side editor and `setTrackerConfig`; the
      mapping stays on the server. A Tracker section returns, server-backed,
      when the tracker contract lands. Loses the one editable setting
      today, and its tests.
-   - **Recommendation:** (e). Nothing the editor writes reaches the
+   - **Recommendation:** (c). Nothing the editor writes reaches the
      server, and a read-only preview of a value the server does not use
      misleads more than it shows.
 2. **A usage-data control, and where it goes.** No record decides
