@@ -39,13 +39,14 @@ func gatedFileDescriptors() []protoreflect.FileDescriptor {
 }
 
 // ungatedFileDescriptors are compass.v1 service files never mounted behind
-// AdminGate: Runner, agent-socket and guest-vsock surfaces with their own authz.
+// AdminGate: Runner, agent-socket, guest-vsock and gateway surfaces with their own authz.
 // Importing them keeps the registry guard below independent of the link set.
 func ungatedFileDescriptors() []protoreflect.FileDescriptor {
 	return []protoreflect.FileDescriptor{
 		compassv1internal.File_compass_v1_runner_proto,
 		compassv1internal.File_compass_v1_agent_gateway_proto,
 		compassv1internal.File_compass_v1_guest_control_proto,
+		compassv1internal.File_compass_v1_gateway_credentials_proto,
 	}
 }
 
