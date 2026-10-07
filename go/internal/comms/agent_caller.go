@@ -462,7 +462,7 @@ func (c *Comms) CommitAgentUpdate(
 	if err != nil {
 		return nil, err
 	}
-	if err := c.reconcileUpdateAskIDs(ctx, store.MessageID(msg.GetId()), blocks); err != nil {
+	if err := c.reconcileUpdateAskIDs(ctx, account, store.MessageID(msg.GetId()), blocks); err != nil {
 		return nil, err
 	}
 	stored, err := c.store.UpdateMessageBlocksAsAuthor(ctx, account, store.MessageID(msg.GetId()), blocks)
@@ -478,9 +478,8 @@ func (c *Comms) CommitAgentUpdate(
 
 // reconcileUpdateAskIDs makes the ask blocks of a relayed UPDATE frame carry the
 // stored, server-owned ask_id — the safe alternative to trusting the wire value.
-// It reads the stored row's ask_ids (an immutable field, so a separate read from
-// the authz UPDATE that follows is race-free — see store.MessageAskIDs) and, for
-// the k-th ask block of the frame, reconciles it against the k-th stored ask:
+// It reads the stored row's ask_ids (authz-scoped: see store.MessageAskIDs) and,
+// for the k-th ask block of the frame, reconciles it against the k-th stored ask:
 //
 //   - an id-LESS update ask is filled from the stored ask_id (the common case —
 //     the id the append minted, which the store then requires);
@@ -500,8 +499,8 @@ func (c *Comms) CommitAgentUpdate(
 // POST path strips to keep RespondToAsk's containment SELECT unambiguous). The
 // store guards only the empty-id case, so rejecting here is what closes the
 // non-empty forged-id surplus.
-func (c *Comms) reconcileUpdateAskIDs(ctx context.Context, id store.MessageID, blocks []store.MessageBlock) error {
-	storedAskIDs, err := c.store.MessageAskIDs(ctx, id)
+func (c *Comms) reconcileUpdateAskIDs(ctx context.Context, actor store.AccountID, id store.MessageID, blocks []store.MessageBlock) error {
+	storedAskIDs, err := c.store.MessageAskIDs(ctx, actor, id)
 	if err != nil {
 		return edgeError(err)
 	}
