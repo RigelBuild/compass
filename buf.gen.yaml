@@ -15,7 +15,8 @@ clean: true
 # agent_gateway.proto — the agent->Runner AgentGateway call transport; compass/v1/
 # forge.proto — the forge notification + shared carrier leaf; compass/v1/
 # guest_control.proto — the host<->guest microVM control plane, RIG-2588 T3,
-# internal Go lane only) are fenced OFF the
+# internal Go lane only; compass/v1/gateway_credentials.proto — the LLM gateway's
+# credential source, internal Go lane only) are fenced OFF the
 # public client surfaces here: buf v2 scopes path filters at the input
 # level, so excluding them from this template keeps protoc-gen-es (→ compass-client)
 # and protoc-gen-go/connect-go (→ go/gen) from ever emitting them. Their gen lives
@@ -33,6 +34,7 @@ inputs:
       - proto/compass/v1/agent_gateway.proto
       - proto/compass/v1/forge.proto
       - proto/compass/v1/guest_control.proto
+      - proto/compass/v1/gateway_credentials.proto
 plugins:
   # TypeScript (connect-es v2: protoc-gen-es emits the service defs createClient
   # consumes — no separate connect plugin needed).

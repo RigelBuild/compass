@@ -144,21 +144,14 @@ tasks:
     # microVM control plane, generated only into the internal Go lane. GuestControl
     # (matching GuestControlService/Handler/Client) is the distinctive family stem;
     # Health* is deliberately NOT anchored here (too generic to fence on).
+    # gateway_credentials.proto is fenced by its distinctive GatewayCredential
+    # and GatewayOAuthToken stems, plus its RPC request/response message names.
     #
-    # Each of the whole-type symbols is word-bounded (\b…\b) so the fence matches
-    # a WHOLE internal identifier, never a substring of a larger public one. This
-    # is load-bearing for the public AgentSessionFrame (compass.proto, a public
-    # contract): it contains "SessionFrame" as a substring, so an unanchored
-    # grep false-fires the moment it generates into a public tree
-    # (RIG-1267/OQ-2.4). Word boundaries also future-proof the others (a public
-    # "AgentControlFoo" would not trip "AgentControl"). AgentGateway and CommsCall
-    # stay UNANCHORED (prefix-matched) on purpose: the generated identifiers are
-    # families — AgentGatewayService and CommsCallRequest/CommsCallResult/
-    # CommsCallError — so anchoring their tails would match none of the real
-    # symbols. Internal symbols only ever leak as whole identifiers (a generated
-    # type name or a `compassv1internal.` package ref), never as a substring, so
-    # this mix still catches every real leak.
-    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bConfigVersion\b|\bRunnerService\b|\bRunnerError\b|GuestControl|AgentGateway|CommsCall|LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall|FetchAgentConfig|PublishFrame|PostConversationFrame|ControlSubscribe|BoardCall|SetIssueState|ForgeCall|ForgeNotification|\bForgeArtifactKind\b|SubscribeForge|UnsubscribeForge|\bCommentRef\b|\bCreateIssueRequest\b|\bCommentOnIssueRequest\b|\bGetIssueRequest\b|\bListIssuesRequest\b|\bListIssuesResponse\b|\bCreatePullRequestRequest\b|\bCommentOnPullRequestRequest\b|\bGetPullRequestRequest\b|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "RIG-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
+    # Each whole-type symbol is word-bounded (\b…\b) so the fence matches a
+    # whole internal identifier, never a substring of a larger public one. This
+    # is load-bearing for public AgentSessionFrame, which contains SessionFrame.
+    # AgentGateway and CommsCall stay prefix-matched because they are families.
+    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bConfigVersion\b|\bRunnerService\b|\bRunnerError\b|GuestControl|GatewayCredential|\bGatewayOAuthToken\b|ListCredentialPool|UpdateCredentialOAuth|DisableCredential|GATEWAY_CREDENTIAL_SCOPE|AgentGateway|CommsCall|LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall|FetchAgentConfig|PublishFrame|PostConversationFrame|ControlSubscribe|BoardCall|SetIssueState|ForgeCall|ForgeNotification|\bForgeArtifactKind\b|SubscribeForge|UnsubscribeForge|\bCommentRef\b|\bCreateIssueRequest\b|\bCommentOnIssueRequest\b|\bGetIssueRequest\b|\bListIssuesRequest\b|\bListIssuesResponse\b|\bCreatePullRequestRequest\b|\bCommentOnPullRequestRequest\b|\bGetPullRequestRequest\b|\bListCredentialPool(Request|Response)\b|\bUpdateCredentialOAuth(Request|Response)\b|\bDisableCredential(Request|Response)\b|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "RIG-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
     options:
       runFromWorkspaceRoot: true
       cache: false
