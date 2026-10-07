@@ -41,16 +41,28 @@ func (s *Store) GrantForgeScope(ctx context.Context, scope ForgeScope) error {
 	if err != nil {
 		return err
 	}
-	if err := s.q.GrantForgeScope(ctx, db.GrantForgeScopeParams{
+	n, err := s.q.GrantForgeScope(ctx, db.GrantForgeScopeParams{
 		AccountID:     string(scope.AccountID),
 		ForgeProvider: int16(scope.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16.
 		ForgeHost:     scope.Host,
 		Repo:          scope.Repo,
-	}); err != nil {
+	})
+	if err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
-			return fmt.Errorf("%w: scope account %q is not a user", ErrInvalidArgument, scope.AccountID)
+			return fmt.Errorf("%w: scope account %q is not a user in this tenant", ErrInvalidArgument, scope.AccountID)
 		}
 		return fmt.Errorf("store: grant forge scope: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	// Zero rows is either an existing grant or no user visible in this tenant.
+	exists, err := s.q.ForgeScopeUserExists(ctx, string(scope.AccountID))
+	if err != nil {
+		return fmt.Errorf("store: grant forge scope: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: scope account %q is not a user in this tenant", ErrInvalidArgument, scope.AccountID)
 	}
 	return nil
 }

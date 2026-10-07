@@ -1,8 +1,14 @@
 -- Scope grants are managed for user accounts; agents inherit their owner's rows.
--- name: GrantForgeScope :exec
+-- name: GrantForgeScope :execrows
+-- The SELECT runs under RLS, so a user from another tenant inserts nothing.
 INSERT INTO account_forge_scopes (account_id, forge_provider, forge_host, repo)
-VALUES ($1, $2, $3, $4)
+SELECT u.account_id, sqlc.arg(forge_provider), sqlc.arg(forge_host), sqlc.arg(repo)
+FROM user_accounts AS u
+WHERE u.account_id = sqlc.arg(account_id)
 ON CONFLICT DO NOTHING;
+
+-- name: ForgeScopeUserExists :one
+SELECT EXISTS (SELECT 1 FROM user_accounts WHERE account_id = $1);
 
 -- name: RevokeForgeScope :exec
 DELETE FROM account_forge_scopes

@@ -9,28 +9,45 @@ import (
 	"context"
 )
 
-const grantForgeScope = `-- name: GrantForgeScope :exec
+const forgeScopeUserExists = `-- name: ForgeScopeUserExists :one
+SELECT EXISTS (SELECT 1 FROM user_accounts WHERE account_id = $1)
+`
+
+func (q *Queries) ForgeScopeUserExists(ctx context.Context, accountID string) (bool, error) {
+	row := q.db.QueryRow(ctx, forgeScopeUserExists, accountID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const grantForgeScope = `-- name: GrantForgeScope :execrows
 INSERT INTO account_forge_scopes (account_id, forge_provider, forge_host, repo)
-VALUES ($1, $2, $3, $4)
+SELECT u.account_id, $1, $2, $3
+FROM user_accounts AS u
+WHERE u.account_id = $4
 ON CONFLICT DO NOTHING
 `
 
 type GrantForgeScopeParams struct {
-	AccountID     string
 	ForgeProvider int16
 	ForgeHost     string
 	Repo          string
+	AccountID     string
 }
 
 // Scope grants are managed for user accounts; agents inherit their owner's rows.
-func (q *Queries) GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) error {
-	_, err := q.db.Exec(ctx, grantForgeScope,
-		arg.AccountID,
+// The SELECT runs under RLS, so a user from another tenant inserts nothing.
+func (q *Queries) GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, grantForgeScope,
 		arg.ForgeProvider,
 		arg.ForgeHost,
 		arg.Repo,
+		arg.AccountID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const hasForgeScope = `-- name: HasForgeScope :one
