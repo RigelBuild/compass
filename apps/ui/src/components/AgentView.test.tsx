@@ -1,16 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { flush } from "solid-js";
+import { CHAT_TAB_ID, type Pane } from "../agent-tabs";
 import { STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
-import {
-	type AppStore,
-	CHAT_TAB_ID,
-	createAppStore,
-	type Pane,
-} from "../store";
+import { type AppStore, createAppStore } from "../store";
 import { STUB_AGENTS } from "../stub-data";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { AgentView, nextFreeTerminalPane } from "./AgentView";
 
 // RED acceptance spec for T3 (design.md §504-545): the rebuilt AgentView — a
@@ -34,7 +31,7 @@ const AGENT_ID = "acc-compass-ui";
 // topic index must show. A DM is topics too (Matt's ruling): one home topic.
 const HOME_DM_TOPIC = "general";
 
-// compass-ui's two terminals, as the terminal panes `openTab`/`splitActivePane` place.
+// compass-ui's two terminals, as the terminal panes `openTab`/`splitFocused` place.
 // `t-ui1`'s scrollback carries this line — proof the right terminal rendered.
 const TERM_C1_LINE = "VITE v8.1.0  ready in 247 ms";
 const termPaneC1: Pane = {
@@ -67,7 +64,9 @@ function mountAgentView(): {
 		});
 		return (
 			<StoreContext value={store}>
-				<AgentView />
+				<ViewContext value={store.focusedView()}>
+					<AgentView />
+				</ViewContext>
 			</StoreContext>
 		);
 	});
@@ -98,7 +97,7 @@ describe("AgentView (T3)", () => {
 		// The chat tab carries no close button (tab.id === CHAT_TAB_ID guard).
 		expect(tabs[0]?.querySelector(".av-tab-close")).toBeNull();
 
-		store.closeTab(CHAT_TAB_ID);
+		store.focusedView().closeTab(CHAT_TAB_ID);
 		flush();
 
 		// Still exactly one tab — the chat tab can't be closed.
@@ -157,7 +156,7 @@ describe("AgentView (T3)", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
 		flush();
-		store.openTab(termPaneC1);
+		store.focusedView().openTab(termPaneC1);
 		flush();
 
 		// Chat tab + the new terminal tab.
@@ -177,9 +176,9 @@ describe("AgentView (T3)", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
 		flush();
-		store.openTab(termPaneC1);
+		store.focusedView().openTab(termPaneC1);
 		flush();
-		store.splitActivePane(termPaneC2, "row");
+		store.focusedView().splitFocused(termPaneC2, "row");
 		flush();
 
 		const split = container.querySelector(".av-tree .av-split.row");
@@ -269,15 +268,17 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		flush();
 
 		// Exhaust both fixture terminals through the real store action.
-		store.openTab(termPaneC1);
+		store.focusedView().openTab(termPaneC1);
 		flush();
-		store.openTab(termPaneC2);
+		store.focusedView().openTab(termPaneC2);
 		flush();
 		expect(container.querySelectorAll(".av-tab").length).toBe(3);
 		// No unplaced fixture terminal remains — the fallback path is now live.
 		const selected = store.selectedAgent();
 		if (!selected) throw new Error("compass-ui not selected");
-		expect(nextFreeTerminalPane(selected, store.agentTabs())).toBe(undefined);
+		expect(
+			nextFreeTerminalPane(selected, store.focusedView().agentTabs()),
+		).toBe(undefined);
 
 		const newBtn = (): HTMLButtonElement => {
 			const btn = container.querySelector<HTMLButtonElement>(".av-tab-new");
@@ -297,7 +298,10 @@ describe("AgentView always-open '+'/split (regression)", () => {
 
 		// The two minted tabs carry distinct ids (the store's monotonic counter),
 		// distinct from the fixture tabs — no collision, no dedupe-swallow.
-		const ids = store.agentTabs().map((t) => t.id);
+		const ids = store
+			.focusedView()
+			.agentTabs()
+			.map((t) => t.id);
 		expect(new Set(ids).size).toBe(ids.length);
 		const minted = ids.filter((id) => id.startsWith("term-acc-compass-ui-"));
 		expect(minted.length).toBe(2);

@@ -152,10 +152,14 @@ function makeMessages(n: number, startMs = 1_000): Message[] {
 	);
 }
 
-function mountStream(initial: Message[]): {
+function mountStream(
+	initial: Message[],
+	initialShown = true,
+): {
 	messages: () => Message[];
 	setMessages: (m: Message[]) => void;
 	setScopeId: (id: string) => void;
+	setShown: (shown: boolean) => void;
 	container: HTMLElement;
 	scroller: () => HTMLElement;
 	rows: () => HTMLElement[];
@@ -164,11 +168,13 @@ function mountStream(initial: Message[]): {
 } {
 	const [messages, setMessages] = createSignal<Message[]>(initial);
 	const [scopeId, setScopeId] = createSignal("top-x");
+	const [shown, setShown] = createSignal(initialShown);
 	const { container } = render(() => (
 		<StoreContext value={createAppStore({ queryClient: testQueryClient() })}>
 			<MessageStream
 				messages={messages()}
 				scopeId={scopeId()}
+				shown={shown()}
 				byId={byId}
 				byHandle={byHandle}
 				emptyMessage="No messages yet."
@@ -185,6 +191,7 @@ function mountStream(initial: Message[]): {
 		messages,
 		setMessages,
 		setScopeId,
+		setShown,
 		container,
 		scroller,
 		rows,
@@ -227,6 +234,37 @@ describe("MessageStream scroll contract", () => {
 	test("(1) opening lands at the latest message (end-anchored)", () => {
 		const { indices } = mountStream(makeMessages(200));
 		expect(Math.max(...indices())).toBe(199);
+	});
+
+	// A stream mounted in a hidden view has no viewport, so its mount-time
+	// scroll lands nowhere; becoming shown must re-anchor it to the latest.
+	test("a stream that becomes shown re-anchors to the latest message", () => {
+		const { setShown, scroller, indices } = mountStream(
+			makeMessages(200),
+			false,
+		);
+		scrollToTop(scroller());
+		flush();
+		expect(Math.max(...indices())).toBeLessThan(199);
+		setShown(true);
+		flush();
+		expect(Math.max(...indices())).toBe(199);
+	});
+
+	// Only the first reveal re-anchors; returning to a tab keeps where the user
+	// had scrolled to.
+	test("a later return to a shown stream keeps the user's scroll position", () => {
+		const { setShown, scroller, indices } = mountStream(makeMessages(200));
+		scrollToTop(scroller());
+		flush();
+		const before = Math.max(...indices());
+		expect(before).toBeLessThan(199);
+		setShown(false);
+		flush();
+		setShown(true);
+		flush();
+		expect(scroller().scrollTop).toBe(0);
+		expect(Math.max(...indices())).toBe(before);
 	});
 
 	// Case (2): append while at bottom follows to the new latest.
@@ -308,6 +346,7 @@ describe("MessageStream scroll contract", () => {
 				<MessageStream
 					messages={messages()}
 					scopeId={scopeId()}
+					shown
 					byId={byId}
 					byHandle={byHandle}
 					emptyMessage="No messages yet."
