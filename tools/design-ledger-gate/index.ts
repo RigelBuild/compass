@@ -82,10 +82,12 @@ const LEDGER_IMPACT_RE = /^\s*>?\s*ledger-impact:\s*(\S.*)$/im;
  * that cannot author a `Ledger-impact:` declaration (mirrors
  * tools/spec-impact-gate's EXEMPT_BRANCH_PREFIXES):
  *   - `renovate/`  — Renovate dependency bumps.
+ *   - `trunk-merge/` — Trunk merge-queue test PRs; the body is Trunk's banner,
+ *     and each source PR already passed this leg on its own PR event.
  * The SNAPSHOT leg still runs on these events; only touch-coupling is skipped.
  * Everything else — human and agent feature branches alike — must comply.
  */
-export const EXEMPT_BRANCH_PREFIXES = ["renovate/"];
+export const EXEMPT_BRANCH_PREFIXES = ["renovate/", "trunk-merge/"];
 
 /** The record-level Status grammar is reject-by-default. */
 const STATUS_RE = /^Status:\s*(Historical|Superseded\s+by\s+(\S+))$/i;

@@ -938,6 +938,22 @@ describe("evaluate — touch-coupling (DL-Q1)", () => {
 			),
 		).toEqual([]);
 	});
+	// The queue's test PR body is Trunk's banner, never the source PR's body;
+	// the source PR already passed this leg on its own pull_request event.
+	test("trunk-merge/ queue PR touching a record, no ledger, no decl → no violation", () => {
+		expect(
+			evaluate(
+				[],
+				[],
+				changed(
+					[rec],
+					"This pull request was created and is being managed by Trunk Merge.",
+					"trunk-merge/pr-1750/78abf0eb-bisection",
+				),
+				smallRecord,
+			),
+		).toEqual([]);
+	});
 	test("an exempt prefix mid-branch does NOT exempt (startsWith, not includes)", () => {
 		const vs = evaluate(
 			[],
