@@ -112,7 +112,7 @@ barrier lifts. Both orderings (post-then-start via the owed sweep,
 start-then-post via live dispatch) converge on the same turn.
 
 **Which channel carries the case-2 "DM":** a **per-pair manager↔peer DM
-channel** — a `ChannelKindDM` channel (`go/internal/store/types.go:74-75`:
+channel** — a `ChannelKindDM` channel (`go/internal/store/types.go` `ChannelKindDM`:
 `ChannelKindDM ChannelKind = 1`, "a direct conversation between two accounts")
 whose two members are the spawning manager and the new peer, auto-provisioned on
 the spawn edge (Matt's OQ-B ruling). This is a point-to-point carrier, NOT the
@@ -411,7 +411,7 @@ callback the store invokes INSIDE the `CreateAgent`/`ReparentAgent` tx right
 after writing `parent_agent_id`, so the channel reconcile commits atomically
 with the parent-edge write without the store importing comms types. This task
 adds an analogous pairwise reconcile that get-or-creates a `ChannelKindDM`
-channel (`go/internal/store/types.go:74-75`) for the `{manager, peer}` pair via
+channel (`go/internal/store/types.go` `ChannelKindDM`) for the `{manager, peer}` pair via
 `CreateChannel` + `expandOwnerMembership` (`go/internal/store/channels.go:72-140`)
 — a 2-member channel that carries both members' owning users, so the operator
 keeps visibility (`channels.go:76-79`). It must be idempotent/get-or-create,
@@ -637,7 +637,7 @@ harness re-model (T1–T7), lands SECOND, greens leg-2.
 
 PR-A (Runner deliver-lane + DM auto-provision — additive, independently landable):
 
-- [ ] T-R0 — spawn-edge manager↔peer DM auto-provision: get-or-create a per-pair `ChannelKindDM` channel (`store/types.go:74-75`) for the `{manager, peer}` pair via `CreateChannel` + `expandOwnerMembership` (`store/channels.go:72-140`), modeled on the `CoordinationHook` reconcile (`store/coordination.go:10-23`, fired in the CreateAgent tx) but pairwise + idempotent, so the manager can post the brief point-to-point (implement-hard, Go store + comms)
+- [ ] T-R0 — spawn-edge manager↔peer DM auto-provision: get-or-create a per-pair `ChannelKindDM` channel (`store/types.go` `ChannelKindDM`) for the `{manager, peer}` pair via `CreateChannel` + `expandOwnerMembership` (`store/channels.go:72-140`), modeled on the `CoordinationHook` reconcile (`store/coordination.go:10-23`, fired in the CreateAgent tx) but pairwise + idempotent, so the manager can post the brief point-to-point (implement-hard, Go store + comms)
 - [ ] T-R1 — runner dispatch: add a `SessionsResponse_DeliverControl` arm in `dispatch.go` (`:359` switch) routing the wrapped op to the container's control producer, so a server-pushed deliver is no longer met by the `:449` "unrecognized session command variant" default (implement-hard, Go runner)
 - [ ] T-R2 — gateway control: fix `representable()` (`gateway/control.go:192-203`) to admit payload-carrying `Deliver`/`Steer` (they carry a comms `Message`), so the send is no longer dropped as an empty shell (implement, Go runner)
 - [ ] T-R3 — fresh-start barrier-lift: on a fresh (non-resume) start the Runner sends `AgentControl{replay_complete}` as the first control op after Bind (OQ-A ruling), so the first deliver is not refused-and-stranded by the agent barrier (`control-source.ts:278,373-390`) (implement-hard, Go runner + TS agent)
