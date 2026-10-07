@@ -170,6 +170,11 @@ func TestReparentInEmitsMembershipMove(t *testing.T) {
 	if !hasRemoval(evts, string(aCh.ID), string(report.ID)) {
 		t.Fatalf("no ChannelChanged carrying report %s in removed_account_ids for A's channel %s", report.ID, aCh.ID)
 	}
+	for _, e := range evts {
+		if cc := e.GetChannelChanged(); cc != nil && cc.GetChannel().GetId() == string(aCh.ID) {
+			assertDepartingView(t, cc, string(aCh.ID), report.ID)
+		}
+	}
 }
 
 // TestEnsureCoordinationChannelManualBackfill pins the manual entrypoint: it runs

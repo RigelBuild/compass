@@ -635,7 +635,17 @@ A member removed from a channel is the one exception: it SHALL receive the singl
 `ChannelChanged` that records its own removal (that event names the removed
 accounts), after which the channel goes silent to it as a non-member. This is the
 one event a departing member could not otherwise observe, since it no longer
-matches the channel's post-change membership.
+matches the channel's post-change membership. The departing member's copy SHALL
+carry only the channel id and the removed accounts, never the post-change roster,
+name, or policy, so an account added in the same change is not revealed to it.
+
+#### Scenario: A departing member does not see a same-change addition
+
+- **Given** a channel with members Owner and Y
+- **When** Owner adds X and removes Y in one membership change
+- **Then** Y's stream receives one final `ChannelChanged` naming Y as removed,
+  whose channel carries no members, and Owner's stream receives the change with
+  X in the roster.
 
 #### Scenario: A non-member does not receive a private channel's events
 
