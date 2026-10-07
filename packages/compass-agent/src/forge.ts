@@ -46,6 +46,7 @@ import {
 	type Issue,
 	ListIssuesRequestSchema,
 	type PullRequest,
+	PullRequestIssueLinkSchema,
 	ReviewCommentInputSchema,
 	type ReviewRef,
 	SubmitReviewRequestSchema,
@@ -229,6 +230,13 @@ export const createPullRequestParameters = type({
 		"Base branch; omitted = the repo default branch",
 	),
 	"draft?": type("boolean").describe("Open the PR as a draft"),
+	"issue?": type({
+		...forgeSelector,
+		"repo?": type("string").describe(
+			"The issue's repo or Linear team key; omitted = this PR's repo (same forge only)",
+		),
+		number: type("number.integer >= 1"),
+	}).describe("The issue this PR works on, so the PR shows on that issue"),
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
@@ -815,6 +823,13 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 							headRef: params.head_ref,
 							baseRef: params.base_ref ?? "",
 							draft: params.draft ?? false,
+							issue: params.issue
+								? create(PullRequestIssueLinkSchema, {
+										forge: forgeRef(params.issue),
+										repo: params.issue.repo ?? "",
+										number: BigInt(params.issue.number),
+									})
+								: undefined,
 						}),
 					},
 					forge: forgeRef(params),

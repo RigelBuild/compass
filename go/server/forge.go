@@ -10,7 +10,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -20,6 +22,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // forgeCoordinate is the registry key: the wire forge enum + host. A repo does
@@ -126,6 +129,7 @@ type forgeStore interface {
 	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
 	AuthoredArtifactByRequestID(ctx context.Context, agent store.AccountID, clientRequestID string) (store.AuthoredArtifact, bool, error)
 	RecordAuthoredArtifact(ctx context.Context, a store.AuthoredArtifact) error
+	CreatePullRequestWithLink(ctx context.Context, a store.AuthoredArtifact, pr store.PullRequestRow, issue *store.ForgeCoord) error
 	EnsureAgentForgeSubscription(ctx context.Context, sub store.AgentForgeSubscription) (string, error)
 	DeleteAgentForgeSubscription(ctx context.Context, agent store.AccountID, subscriptionID string) error
 	RecordStateTransition(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64, state string, agent store.AccountID, at time.Time) error
@@ -357,7 +361,15 @@ func (s *forgeService) dedup(ctx context.Context, caller store.AccountID, client
 // no coordinate to record, so they never reach here (F3 is create-only per the
 // ruling, design.md:149-155/971-982).
 func (s *forgeService) record(ctx context.Context, rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, kind store.ForgeArtifactKind, number uint64) *compassv1internal.ForgeCallError {
-	err := s.store.RecordAuthoredArtifact(ctx, store.AuthoredArtifact{
+	if err := s.store.RecordAuthoredArtifact(ctx, s.authoredArtifact(rf, id, caller, sessionID, clientRequestID, repo, kind, number)); err != nil {
+		return storeForgeError(err)
+	}
+	return nil
+}
+
+// authoredArtifact builds the DL-055 ownership row for one write.
+func (s *forgeService) authoredArtifact(rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, kind store.ForgeArtifactKind, number uint64) store.AuthoredArtifact {
+	return store.AuthoredArtifact{
 		Provider:        store.ForgeProvider(rf.provider),
 		Host:            rf.host,
 		Repo:            repo,
@@ -368,11 +380,7 @@ func (s *forgeService) record(ctx context.Context, rf resolvedForge, id callerId
 		SessionID:       sessionID,
 		ClientRequestID: clientRequestID,
 		CreatedAtUnixMS: s.now().UnixMilli(),
-	})
-	if err != nil {
-		return storeForgeError(err)
 	}
-	return nil
 }
 
 // createIssue is a create arm: resolve target, F3 dedup (a hit returns the
@@ -427,6 +435,10 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 	if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
 		return forgeErrorResult(fe)
 	}
+	link, fe := s.resolveIssueLink(rf, req.GetRepo(), req.GetIssue())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
 
 	id, fe := s.resolveIdentity(ctx, caller, sessionID)
 	if fe != nil {
@@ -446,12 +458,67 @@ func (s *forgeService) createPullRequest(ctx context.Context, caller store.Accou
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "create_pull_request"}))
 	}
-	if fe := s.record(ctx, rf, id, caller, sessionID, call.GetClientRequestId(), req.GetRepo(), store.ForgeArtifactKindPullRequest, pr.Number); fe != nil {
+	wire := translatePR(pr, rf, req.GetRepo())
+	if fe := s.recordPullRequest(ctx, rf, id, caller, sessionID, call.GetClientRequestId(), req.GetRepo(), pr, wire, link); fe != nil {
 		return forgeErrorResult(fe)
 	}
 	return &compassv1internal.ForgeCallResult{
-		Result: &compassv1internal.ForgeCallResult_PullRequest{PullRequest: translatePR(pr, rf, req.GetRepo())},
+		Result: &compassv1internal.ForgeCallResult_PullRequest{PullRequest: wire},
 	}
+}
+
+// resolveIssueLink checks the shape of a create's explicit issue link without
+// reading the issue, so a tracker outage never fails a PR create. An empty repo
+// on the PR's own forge means the PR's repo. A nil link returns nil.
+func (s *forgeService) resolveIssueLink(rf resolvedForge, prRepo string, in *compassv1internal.PullRequestIssueLink) (*store.ForgeCoord, *compassv1internal.ForgeCallError) {
+	if in == nil {
+		return nil, nil
+	}
+	if in.GetNumber() == 0 {
+		return nil, forgeErr(connect.CodeInvalidArgument, "forge: issue number is required")
+	}
+	target := rf
+	if in.GetForge().GetProvider() != compassv1.ForgeProvider_FORGE_PROVIDER_UNSPECIFIED {
+		var ok bool
+		if target, ok = s.providers.resolve(in.GetForge()); !ok {
+			return nil, forgeErr(connect.CodeNotFound, "forge: no provider configured for the issue's coordinate")
+		}
+	}
+	// The store trims the repo, so a blank one must fail here, before the forge write.
+	repo := strings.TrimSpace(in.GetRepo())
+	if repo == "" {
+		if target.provider != rf.provider || target.host != rf.host {
+			return nil, forgeErr(connect.CodeInvalidArgument, "forge: issue repo is required on another forge")
+		}
+		repo = prRepo
+	}
+	return &store.ForgeCoord{Provider: store.ForgeProvider(target.provider), Host: target.host, Repo: repo, Number: in.GetNumber()}, nil
+}
+
+// recordPullRequest writes the DL-055 row, the PR row and the explicit link in
+// one transaction, then republishes the linked issue so the PR shows at once.
+// The PR row's forge_updated_at is the epoch, so the next hydrate always wins.
+func (s *forgeService) recordPullRequest(ctx context.Context, rf resolvedForge, id callerIdentity, caller store.AccountID, sessionID, clientRequestID, repo string, raw forge.PullRequest, wire *compassv1.PullRequest, link *store.ForgeCoord) *compassv1internal.ForgeCallError {
+	body, err := protojson.Marshal(wire)
+	if err != nil {
+		return forgeErr(connect.CodeInternal, "forge: encode pull request")
+	}
+	coord := store.ForgeCoord{Provider: store.ForgeProvider(rf.provider), Host: rf.host, Repo: repo, Number: raw.Number}
+	row := store.PullRequestRow{Coord: coord, State: raw.State, CreatedAt: raw.CreatedAt, UpdatedAt: time.Unix(0, 0).UTC(), PR: body}
+	if row.CreatedAt.IsZero() {
+		row.CreatedAt = s.now()
+	}
+	a := s.authoredArtifact(rf, id, caller, sessionID, clientRequestID, repo, store.ForgeArtifactKindPullRequest, raw.Number)
+	if err := s.store.CreatePullRequestWithLink(ctx, a, row, link); err != nil {
+		return storeForgeError(err)
+	}
+	// The rows are committed; a failed publish heals on the next issue hydrate.
+	if link != nil {
+		if err := s.issueBrd.PublishExplicitLink(ctx, *link); err != nil {
+			slog.WarnContext(ctx, "forge: publish linked issue failed", "error", err)
+		}
+	}
+	return nil
 }
 
 // commentOnIssue stamps the comment body (author client) and returns the write
