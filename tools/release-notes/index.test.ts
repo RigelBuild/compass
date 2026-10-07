@@ -10,6 +10,7 @@
 // import.meta.main-guarded, so importing index.ts never runs it. No network.
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	type AssembleInput,
 	assemble,
@@ -163,7 +164,13 @@ describe("parseArgs — the edge's argv contract", () => {
 });
 
 describe("classifyImageResult — the skopeo-result contract (crux of the skopeo fix)", () => {
-	const digestJson = JSON.stringify({ config: { digest: "sha256:beef" } });
+	const manifestJson = JSON.stringify({ config: { digest: "sha256:beef" } });
+	const indexJson = JSON.stringify({
+		mediaType: "application/vnd.oci.image.index.v1+json",
+		manifests: [{ digest: "sha256:aaaa" }, { digest: "sha256:bbbb" }],
+	});
+	const digestOf = (raw: string) =>
+		`sha256:${createHash("sha256").update(raw).digest("hex")}`;
 
 	test("exit 127 THROWS — a missing skopeo can never masquerade as an absent image", () => {
 		expect(() =>
@@ -185,13 +192,18 @@ describe("classifyImageResult — the skopeo-result contract (crux of the skopeo
 		).toBeNull();
 	});
 
-	test("exit 0 with a config digest yields the @digest ref and the digest", () => {
+	test("an image manifest yields the digest of its raw bytes, not its config digest", () => {
+		const digest = digestOf(manifestJson);
 		expect(
-			classifyImageResult({ exitCode: 0, stdout: digestJson, stderr: "" }),
-		).toEqual({
-			ref: "ghcr.io/rigelbuild/compass-agent@sha256:beef",
-			digest: "sha256:beef",
-		});
+			classifyImageResult({ exitCode: 0, stdout: manifestJson, stderr: "" }),
+		).toEqual({ ref: `ghcr.io/rigelbuild/compass-agent@${digest}`, digest });
+	});
+
+	test("a multi-arch index yields the list digest of its raw bytes", () => {
+		const digest = digestOf(indexJson);
+		expect(
+			classifyImageResult({ exitCode: 0, stdout: indexJson, stderr: "" }),
+		).toEqual({ ref: `ghcr.io/rigelbuild/compass-agent@${digest}`, digest });
 	});
 
 	test("exit 0 with unparseable output degrades to null", () => {
@@ -200,7 +212,7 @@ describe("classifyImageResult — the skopeo-result contract (crux of the skopeo
 		).toBeNull();
 	});
 
-	test("exit 0 with no config.digest degrades to null", () => {
+	test("exit 0 with neither manifests nor config degrades to null", () => {
 		expect(
 			classifyImageResult({ exitCode: 0, stdout: "{}", stderr: "" }),
 		).toBeNull();
