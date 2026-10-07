@@ -16,9 +16,10 @@
 #   - release-pr    — runs release-please on every main push, authenticated by a
 #                     scoped GitHub App token (NOT GITHUB_TOKEN) so the standing
 #                     Release PR receives CI and the merge gate is real (§A5).
-#   - publish-image — the RELOCATED per-push duty: publishes :git-<sha12> +
-#                     :latest via agent-image/publish.sh, self-gated by an in-job
-#                     changed-path check over the image closure set.
+#   - publish-image-amd64 / publish-image-arm64 — parallel native builds with
+#                     the shared image-closure gate and immutable per-arch tags.
+#   - publish-image-manifest — serializes the digest-pinned index and verifies
+#                     the immutable and moving consumer-facing tags.
 #
 # The release-assets + release-image jobs (gated on
 # needs.release-pr.outputs.releases_created) are T3 (RIG-2915) and are NOT here.
@@ -30,8 +31,8 @@ name: release
 
 on:
   # NO paths filter: release-pr MUST see every main commit (a paths filter would
-  # drop commits from the changelog and stall the Release PR). publish-image
-  # self-gates in-job instead (see its first step).
+  # drop commits from the changelog and stall the Release PR). The image build
+  # jobs self-gate in-job instead (see their first step).
   push:
     branches: [main]
   workflow_dispatch:
@@ -42,9 +43,8 @@ permissions: {}
 
 # The image closure path set, defined ONCE. A change to any of these globs can
 # change the published image artifact, so it must trigger a republish. This is
-# the SAME set publish-agent-image.yml:49-64 names — with that file's self-ref
-# retargeted to release.yml — consumed by publish-image's in-job gate now and by
-# T3's release-image resolver cross-check later, so it lives in one place.
+# consumed by the two publish-image architecture gates and by T3's release-image
+# resolver cross-check later, so it lives in one place.
 env:
   IMAGE_CLOSURE_PATHS: |
     agent-image/**
@@ -54,16 +54,12 @@ env:
     .github/workflows/release.yml
     tools/toolchain/versions/bun.nix
   # The runner image's own closure path set, SEPARATE from IMAGE_CLOSURE_PATHS
-  # (that one is the agent image's, and publish-image plus T3's resolver
-  # cross-check consume it — widening it would republish the agent image on a
-  # runner-only change). Derived from runner-image/moon.yml's build.inputs and
-  # the flake attributes tools/runner-image/build.ts realises: the image's
-  # source tree, the TypeScript build/publish lane, the Go runner binary and its
-  # internal packages, the guest asset closure, the two flake files the nix
-  # realise reads, version.txt (stamped into the runner binary, so a release
-  # push publishes an image that reports its own version), the VMM env, and
-  # this workflow. Every glob is verified to
-  # match a real path — one that never matches would silently narrow the gate.
+  # (that one is the two publish-image architecture gates plus T3's resolver
+  # cross-check — widening it would republish the agent image on runner-only changes).
+  # Derived from runner-image/moon.yml's build.inputs and the flake attributes
+  # tools/runner-image/build.ts realises: source tree, build tools, Go packages,
+  # assets, version.txt, the VMM env, and this workflow. Every glob is verified
+  # to match a real path — one that never matches would silently narrow the gate.
   RUNNER_IMAGE_CLOSURE_PATHS: |
     runner-image/**
     tools/runner-image/**
@@ -144,42 +140,26 @@ jobs:
           # branch it releases from is stated rather than inferred.
           target-branch: main
 
-  publish-image:
-    name: publish-image
+  publish-image-amd64:
+    name: publish-image-amd64
     runs-on: ubuntu-latest
     # Least privilege: read the tree, write the GHCR package, nothing else.
     permissions:
       contents: read
       packages: write
-    # Publishes SERIALIZE — an in-flight :latest move must never be
-    # half-superseded by a newer run. `cancel-in-progress: false` is the OPPOSITE
-    # of ci.yml's cancelling group. `queue: max` (the bare literal token — there
-    # is no numeric form; up to 100 pending) rather than the default single
-    # pending slot: a per-push burst must be able to queue up to 100 deep WITHOUT
-    # a later entrant evicting a pending run, because T3's non-superseding
-    # :vX.Y.Z release mint shares this exact group and a bare
-    # `cancel-in-progress: false` alone would let a per-push entrant drop it
-    # (§A4 no-drop invariant).
-    concurrency:
-      group: publish-agent-image
-      cancel-in-progress: false
-      queue: max
-    # workflow_dispatch runs on any branch; guard so a dispatch from a feature
-    # branch can never mint a `:git-<sha>` for unmerged code nor move `:latest`
-    # off main. Main pushes satisfy this trivially.
+    # workflow_dispatch accepts any ref; keep both per-arch writes main-only.
     if: github.ref == 'refs/heads/main'
     # The image closure is the heavy nix build that sizes this timeout, the same
     # cost that motivates ci.yml's 90m.
     timeout-minutes: 90
-    # `run: ./publish.sh` resolves relative to this default, and publish.sh's
-    # `devenv container build` resolves this image's devenv.yaml/devenv.lock
-    # only from agent-image/. The other steps do NOT depend on this cwd — the
-    # two bootstraps override to the repo root for their repo-root-relative nix
-    # paths, and login/verify invoke skopeo by name off PATH (bootstrapped
-    # below as an absolute store path).
+    # The publish script runs from agent-image/ so devenv resolves this image's
+    # lockfile. Bootstrap steps override to the repo root; login and publish use
+    # the patched skopeo on PATH.
     defaults:
       run:
         working-directory: agent-image
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
     steps:
       # Default depth — the publish script needs only HEAD (git rev-parse HEAD
       # for the :git-<sha> tag).
@@ -357,80 +337,136 @@ jobs:
             login ghcr.io -u "$ACTOR" --password-stdin \
             --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
-      - name: Build and publish the two-tag set
+      - name: Build and publish the per-arch tag
         if: steps.gate.outputs.should_publish == 'true'
-        # No args = the default two-tag set (:git-<sha> then :latest). The script
-        # honors $REGISTRY_AUTH_FILE, builds the spec once, and enforces
-        # :git-<sha> immutability, exiting non-zero on violation.
-        run: ./publish.sh
+        # The script publishes only the immutable per-arch tag and keeps its
+        # single-image digest guard unchanged.
+        run: ./publish.sh --arch-suffix amd64
 
-      - name: Verify the published tags resolve from GHCR
-        if: steps.gate.outputs.should_publish == 'true'
-        # Proves the artifact is resolvable from GHCR (not merely that copy
-        # exited 0), that the platform contract holds, and that the two-copy pair
-        # landed coherently. Every skopeo call pins --authfile.
-        run: |
-          set -euo pipefail
-          sha12="$(git rev-parse --short=12 HEAD)"
-          ref="docker://ghcr.io/rigelbuild/compass-agent"
-          inspect_json="$RUNNER_TEMP/git-inspect.json"
-
-          # Resolvable from GHCR at the immutable tag. skopeo is the root dev
-          # shell's patched skopeo on PATH (bootstrapped above), understanding
-          # the `nix:` transport.
-          skopeo inspect --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12" > "$inspect_json"
-
-          # Cheapest platform-contract-regression tripwire.
-          arch="$(jq -r .Architecture "$inspect_json")"
-          os="$(jq -r .Os "$inspect_json")"
-          if [ "$arch" != "amd64" ] || [ "$os" != "linux" ]; then
-            echo "platform contract violated: got $os/$arch, want linux/amd64" >&2
-            exit 1
-          fi
-
-          # :latest and :git-<sha> must share a config digest — proves the
-          # two-copy pair landed coherently.
-          git_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12" | jq -r .config.digest)"
-          latest_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:latest" | jq -r .config.digest)"
-          if [ "$git_digest" != "$latest_digest" ]; then
-            echo "tag pair incoherent: :git-$sha12=$git_digest != :latest=$latest_digest" >&2
-            exit 1
-          fi
-          echo "verified: $ref:git-$sha12 resolves, linux/amd64, coherent with :latest"
-
-  agent-image-arm64-spike:
-    name: agent-image-arm64-spike
-    # GitHub-hosted arm64 runner (GA for public repos); the build is native, so
-    # nix2container emits an aarch64-linux spec with no cross machinery.
+  publish-image-arm64:
+    name: publish-image-arm64
     runs-on: ubuntu-24.04-arm
-    # Dispatch-only spike: it proves the arm64 build and reports values later
-    # tasks consume. NOT ref-guarded like publish-image — the point is to run it
-    # from a feature branch. Inert on push because a push cannot set this event.
-    if: github.event_name == 'workflow_dispatch'
-    # Reads the tree only. It writes NO tags, so no packages: write.
+    # Least privilege: read the tree, write the GHCR package, nothing else.
     permissions:
       contents: read
-    # Same ceiling the image closure sizes elsewhere in this file.
+      packages: write
+    # workflow_dispatch accepts any ref; keep both per-arch writes main-only.
+    if: github.ref == 'refs/heads/main'
+    # The image closure is the heavy nix build that sizes this timeout, the same
+    # cost that motivates ci.yml's 90m.
     timeout-minutes: 90
+    # The publish script runs from agent-image/ so devenv resolves the image's
+    # lockfile. Bootstrap and GHCR steps use repo-root overrides or PATH.
     defaults:
       run:
         working-directory: agent-image
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
     steps:
+      # Default depth — the publish script needs only HEAD (git rev-parse HEAD
+      # for the :git-<sha> tag).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Decide whether this push touches the image closure
+        id: gate
+        # The workflow trigger carries NO `paths:` filter (release-pr needs every
+        # commit), so this job decides for itself whether the push touched the
+        # closure set. This is a push-event before/after tree diff, NOT ci.yml's
+        # moon-affected query — a distinct technique. Run at the repo root; the
+        # closure globs are repo-root-relative.
+        working-directory: .
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # workflow_dispatch has no before/after range to diff, and §A4's
+          # remediation (dispatch the per-push publish, then re-run the release)
+          # depends on a dispatch ALWAYS publishing. Force-publish.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "workflow_dispatch: force-publish (no push range to diff)"
+            exit 0
+          fi
+
+          # First push to the branch has an all-zero before-sha with no diff
+          # base. Publish rather than risk silently dropping a closure change
+          # (the no-drop invariant errs toward publishing).
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "no diff base (first push to branch): force-publish"
+            exit 0
+          fi
+
+          # A two-dot tree diff needs only the two endpoint commits; checkout has
+          # HEAD at depth 1, so fetch the before endpoint the same way.
+          git fetch --no-tags --depth=1 origin "$BEFORE_SHA" >/dev/null 2>&1 || true
+
+          # If the before-sha is unreachable (a force-push overwrote the prior
+          # tip, a GC'd object, or a fetch transient) the diff base is missing.
+          # Publish rather than fail the job — the no-drop invariant errs toward
+          # publishing, matching the workflow_dispatch and first-push fallbacks.
+          if ! changed="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null)"; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
+            exit 0
+          fi
+
+          should_publish=false
+          while IFS= read -r pattern; do
+            [ -n "$pattern" ] || continue
+            case "$pattern" in
+              *'/**')
+                # Directory glob: match any changed file under the prefix.
+                prefix="${pattern%'/**'}/"
+                while IFS= read -r f; do
+                  [ -n "$f" ] || continue
+                  case "$f" in
+                    "$prefix"*) should_publish=true ;;
+                  esac
+                done <<< "$changed"
+                ;;
+              *)
+                # Exact file path.
+                while IFS= read -r f; do
+                  [ "$f" = "$pattern" ] && should_publish=true
+                done <<< "$changed"
+                ;;
+            esac
+            [ "$should_publish" = true ] && break
+          done <<< "$IMAGE_CLOSURE_PATHS"
+
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+          echo "changed-path gate over the image closure set: should_publish=$should_publish"
+
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        if: steps.gate.outputs.should_publish == 'true'
         with:
-          # Caches declared inline, never via accept-flake-config: that would
-          # trust the nixConfig of any evaluated flake and let a branch inject
-          # its own substituter + key. Naming them here keeps that trust reviewed.
+          # nix-command + flakes for the RigelBuild forks' flakes. The two caches
+          # are declared HERE, not delegated via `accept-flake-config` — that
+          # setting makes nix trust the `nixConfig` of ANY flake it evaluates
+          # (the RigelBuild/devenv flake carries such a block), so a PR could add its
+          # own substituter AND trusted key and have CI run attacker-signed
+          # binaries. Naming the caches in this reviewed file keeps that trust
+          # reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the pinned bun toolchain on PATH
-        # bun resolves the devenv-CLI that reads the fork rev from devenv.lock.
-        # `jq -r` renders a missing `.store` as the literal `null`, so guard it.
+        if: steps.gate.outputs.should_publish == 'true'
+        # bun comes from the nix-pinned toolchain, never setup-bun. Resolve it
+        # from gate-tools.nix's langs so it is byte-identical to the dev shell's
+        # bun — the same derivation, not merely the same version. Only bun is
+        # bootstrapped here: publish needs the devenv-CLI resolver, not the
+        # whole language set. `langs.bun` must carry a real store path, and
+        # `jq -r` renders a missing `.store` as the literal string `null` — a
+        # value, not an absence — so the guard tests for `null` explicitly
+        # rather than emptiness alone, the same shape the digest check in
+        # publish.sh uses.
         working-directory: .
         run: |
           set -euo pipefail
@@ -443,11 +479,25 @@ jobs:
           echo "$store/bin" >>"$GITHUB_PATH"
 
       - name: Put the fork's patched skopeo on PATH
-        # The fork's skopeo understands the `nix:` transport stock skopeo lacks.
-        # `--print-out-paths` prints every output; take the one carrying bin/skopeo.
+        if: steps.gate.outputs.should_publish == 'true'
+        # The publish lane invokes a plain `skopeo` (the RigelBuild/nix2container
+        # fork's patched build, understanding the `nix:` transport). Resolve it
+        # from the shared pinned helper, tools/toolchain/skopeo-nix2container-env.nix
+        # — which builds the exact derivation the root dev shell installs, from
+        # the nix2container + nixpkgs revisions ../devenv.lock pins (one source of
+        # truth for both revs, no raw nix2container flake ref) — and prepend its
+        # bin/ to PATH, so the login / publish / verify steps below invoke skopeo
+        # by name. This is the same out-of-band `nix build` pattern ci.yml uses
+        # for chromium-e2e-env.nix, and it avoids entering the root dev shell
+        # (whose enterShell banner would pollute a captured store path). skopeo is
+        # deliberately NOT in agent-image/devenv.nix: a package there would bake
+        # its ~168 MB closure into every published image via the container
+        # entrypoint's sourced shell env.
         working-directory: .
         run: |
           set -euo pipefail
+          # `--print-out-paths` prints every output (skopeo ships a `-man` output
+          # too); take the one carrying bin/skopeo, not a fixed line.
           skopeo_bin=""
           for store in $(nix build --no-link --print-out-paths \
             -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
@@ -462,50 +512,102 @@ jobs:
           fi
           echo "$skopeo_bin" >> "$GITHUB_PATH"
 
-      - name: Build the arm64 image spec and record wall-clock
-        # Mirrors publish.sh's spec build (resolve the devenv fork rev from
-        # devenv.lock, then `container build agent`); pushes nothing.
+      - name: Pin the registry auth file
+        if: steps.gate.outputs.should_publish == 'true'
+        # LOAD-BEARING. `skopeo login` and the publish script's `skopeo copy`
+        # run as SEPARATE `nix run` processes and must resolve the SAME creds
+        # file. The default location ($XDG_RUNTIME_DIR/containers/auth.json) is
+        # environment-dependent on GitHub-hosted runners — a mismatch greens the
+        # login step and then 401s the copy. Export an explicit path both honor.
+        run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the actor through env rather than interpolating ${{ }} into the
+          # shell — behavior-identical here (GitHub usernames carry no shell
+          # metacharacters), but keeps context values off the run: command line.
+          ACTOR: ${{ github.actor }}
+        # The root compass dev shell's patched skopeo (bootstrapped onto PATH
+        # above) understands the `nix:` transport the publish uses. It is a plain
+        # command here — one skopeo backs the whole lane, resolved from the
+        # lockfile-pinned nix2container input, and no raw nix2container flake ref
+        # lives in this workflow.
+        run: |
+          skopeo \
+            login ghcr.io -u "$ACTOR" --password-stdin \
+            --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
+
+      - name: Build and publish the per-arch tag
+        if: steps.gate.outputs.should_publish == 'true'
+        # The script publishes only the immutable per-arch tag and keeps its
+        # single-image digest guard unchanged.
+        run: ./publish.sh --arch-suffix arm64
+
+  publish-image-manifest:
+    name: publish-image-manifest
+    runs-on: ubuntu-latest
+    needs: [publish-image-amd64, publish-image-arm64]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.publish-image-amd64.outputs.should_publish == 'true' &&
+      needs.publish-image-arm64.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    # The only writer of :git-<sha12> and :latest, so it alone serializes, with
+    # release-image. `queue: max` keeps up to 100 pending runs so a per-push
+    # burst never evicts a pending release mint (§A4 no-drop invariant).
+    concurrency:
+      group: publish-agent-image
+      cancel-in-progress: false
+      queue: max
+    steps:
+      # Full history: the :latest guard walks main's first-parent commits newer
+      # than this run's sha.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          # Caches are named here rather than via accept-flake-config, which
+          # would trust any evaluated flake's own substituters and keys.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned bun toolchain on PATH
+        # The publisher has no runtime dependencies; resolve the same pinned bun
+        # derivation used by the other image jobs without running bun install.
+        working-directory: .
         run: |
           set -euo pipefail
-          started=$(date +%s)
-          src="$(bun ../tools/toolchain/devenv-cli/index.ts --lock devenv.lock --mode flakeref)"
-          build_out="$(nix run "$src" -- container build agent)"
-          spec="$(printf '%s\n' "$build_out" | tail -n 1)"
-          if [[ "$spec" != /nix/store/* ]]; then
-            echo "::error::container build produced no spec store path: $spec" >&2
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
             exit 1
           fi
-          echo "SPEC=$spec" >> "$GITHUB_ENV"
-          echo "BUILD_SECONDS=$(( $(date +%s) - started ))" >> "$GITHUB_ENV"
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
 
-      - name: Assert arm64, report the native addon, and summarize
+      - name: Pin the registry auth file
+        run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
         run: |
-          set -euo pipefail
-          arch="$(skopeo inspect "nix:$SPEC" | jq -r .Architecture)"
-          if [ "$arch" != "arm64" ]; then
-            echo "::error::built spec architecture is $arch, want arm64" >&2
-            exit 1
-          fi
+          skopeo login ghcr.io -u "$ACTOR" --password-stdin \
+            --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
-          # A later task needs the REAL @oh-my-pi native-addon filenames;
-          # discover them from the built closure rather than assuming x64's
-          # two-variant (modern/baseline) scheme, which has no arm64 analogue.
-          mapfile -t node_files < <(nix-store --query --requisites "$SPEC" \
-            | xargs -r -I{} find {} -name 'pi_natives*.node' -printf '%f\n' | sort -u)
-          if [ "${#node_files[@]}" -eq 0 ]; then
-            echo "::error::no @oh-my-pi pi_natives*.node addon found in the built bundle" >&2
-            exit 1
-          fi
-
-          {
-            echo "### compass-agent arm64 build spike"
-            echo "- architecture: \`$arch\`"
-            echo "- build wall-clock: ${BUILD_SECONDS}s (ceiling 90m)"
-            echo "- native addon files:"
-            for f in "${node_files[@]}"; do echo "  - \`$f\`"; done
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          printf 'native addon files found:\n%s\n' "${node_files[*]}"
+      - name: Compose, guard, push, and verify the image index
+        env:
+          GH_SHA: ${{ github.sha }}
+        run: bun tools/agent-image-index/index.ts
 
   release-assets-macos:
     name: release-assets-macos
@@ -639,8 +741,8 @@ jobs:
     # the generator below. Both jobs share the same `if:` (main ref + a real
     # release cut), so this edge never skips release-assets on a release run. It
     # DOES serialize release-assets behind release-image, which itself queues in
-    # the publish-agent-image concurrency group behind an in-flight publish-image
-    # — accepted added latency for a single authoritative digest.
+    # the publish-agent-image concurrency group behind an in-flight
+    # publish-image-manifest — accepted added latency for a single authoritative digest.
     needs: [release-pr, release-assets-macos, release-image]
     if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
     # Least privilege: write the Release, nothing else. NOT packages:write — the
@@ -649,7 +751,7 @@ jobs:
     permissions:
       contents: write
     # The nix toolchain resolve is the cost that sizes this timeout — the same
-    # ceiling ci.yml and publish-image use.
+    # ceiling ci.yml and both agent-image arch builds use.
     timeout-minutes: 90
     steps:
       # Check out the release sha — the Release PR's merge commit release-please
@@ -695,7 +797,7 @@ jobs:
           done
 
       - name: Put the fork's patched skopeo on PATH
-        # The release-notes generator queries GHCR for the image config digest
+        # The release-notes generator queries GHCR for the image index digest
         # with a plain `skopeo` (the RigelBuild/nix2container fork's patched
         # build). The langs bootstrap above carries only go/bun/node/moon, so
         # skopeo must be provisioned here or the digest query — a core T2
@@ -900,7 +1002,7 @@ jobs:
     # Digest-re-tag the already-published per-push `:git-<sha12>` image to the
     # semver `:vX.Y.Z`. NEVER a second build (the release sha's image content is
     # byte-identical to the last closure-affecting sha's — §A4), NEVER touches
-    # `:latest` (owned exclusively by publish-image). Runs ONLY when the merged
+    # `:latest` (owned exclusively by publish-image-manifest). Runs ONLY when the merged
     # Release PR actually cut a release.
     needs: release-pr
     # Least privilege: read the tree, write the GHCR package, nothing else
@@ -908,33 +1010,23 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # The SAME group as publish-image: a non-superseding `:vX.Y.Z` release mint
+    # The SAME group as publish-image-manifest: a non-superseding `:vX.Y.Z` release mint
     # must serialize behind an in-flight `:latest` move WITHOUT being cancelled
     # by a later per-push entrant claiming the single default pending slot.
     # `queue: max` (the bare literal token — no numeric form; up to 100 pending)
     # rather than the default single pending slot preserves the §A4 no-drop
     # invariant; bare `cancel-in-progress: false` alone would drop it.
-    # Within a single release run this also queues behind that run's own
-    # publish-image job (same group) — intended serialization latency, not a
-    # hang; neither job `needs` the other.
+    # Within a single release run this also queues behind its own
+    # publish-image-manifest job (same group), with no needs edge.
     concurrency:
       group: publish-agent-image
       cancel-in-progress: false
       queue: max
     # workflow_dispatch runs on any branch; guard so a dispatch from a feature
     # branch can never mint a `:vX.Y.Z` for unmerged code. Main pushes satisfy
-    # this trivially (§A5(2), mirrors publish-image).
+    # this trivially (§A5(2), mirrors publish-image-manifest).
     if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
     timeout-minutes: 90
-    # Publish the resolved ancestor identity for release-assets to consume. The
-    # agent-image lane is paths-filtered (publish-image runs only when the image
-    # closure changes), so a release commit that touches nothing in that closure
-    # has NO `:git-<release-sha>` image — the release sha's tag was never built.
-    # This resolver already walks first-parent ancestors and proves the correct
-    # source digest (§A4 byte-identity). Rather than have release-assets re-probe
-    # `:git-<release-sha>` — a tag that does not exist, which hard-fails the notes
-    # generator — export the digest it already verified here as the single source
-    # of truth. release-assets reads `image_digest` and skips its own probe.
     outputs:
       image_digest: ${{ steps.retag.outputs.image_digest }}
       resolved_sha12: ${{ steps.retag.outputs.resolved_sha12 }}
@@ -1075,25 +1167,23 @@ jobs:
           done < <(git rev-list --first-parent "$release_sha")
 
           if [ -z "$resolved_sha12" ]; then
-            echo "::error::no ancestor image :git-<sha12> resolved on GHCR within $max_walk first-parent ancestors of $release_sha. Remediation: workflow_dispatch the release workflow (publish-image) on the release sha to publish the per-push image, then re-run this release. NEVER rebuild here." >&2
+            echo "::error::no ancestor image :git-<sha12> resolved on GHCR within $max_walk first-parent ancestors of $release_sha. Remediation: workflow_dispatch the release workflow on the release sha to publish its image, then re-run this release. NEVER rebuild here." >&2
             exit 1
           fi
 
-          # Registry-side manifest write: copy the resolved source tag's
-          # digest-resolved manifest to :vX.Y.Z. No nix build at all.
-          skopeo copy --authfile "$REGISTRY_AUTH_FILE" \
+          # Registry-side write: copy the resolved index and every member to
+          # :vX.Y.Z byte-for-byte, so the release tag names the same list digest.
+          skopeo copy --multi-arch all --preserve-digests --authfile "$REGISTRY_AUTH_FILE" \
             "$ref:git-$resolved_sha12" "$ref:$tag"
 
-          # Verify :vX.Y.Z resolves AND shares the source tag's config digest —
-          # the same coherence shape as publish-image's two-copy check
-          # (release.yml:311-318). Hard-fail on mismatch.
-          src_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$resolved_sha12" | jq -r .config.digest)"
-          tag_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:$tag" | jq -r .config.digest)"
+          # Verify :vX.Y.Z is the same index: equal list digests over the raw bytes.
+          src_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$resolved_sha12" | sha256sum | cut -d' ' -f1)"
+          tag_digest="sha256:$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:$tag" | sha256sum | cut -d' ' -f1)"
           if [ "$src_digest" != "$tag_digest" ]; then
             echo "re-tag incoherent: :git-$resolved_sha12=$src_digest != :$tag=$tag_digest" >&2
             exit 1
           fi
-          echo "verified: $ref:$tag re-tagged from :git-$resolved_sha12, config digests coherent"
+          echo "verified: $ref:$tag re-tagged from :git-$resolved_sha12, list digests coherent"
 
           # Publish the resolved identity for release-assets (see the job-level
           # outputs: block). Reuse the digest the coherence check above already
@@ -1128,12 +1218,8 @@ jobs:
 
       - name: Decide whether this push touches the runner-image closure
         id: gate
-        # Same push-event before/after tree diff publish-image uses (release.yml
-        # gate above), over RUNNER_IMAGE_CLOSURE_PATHS instead of the agent set.
-        # The trigger carries no `paths:` filter, so this job decides for itself.
-        # Every fallback ERRS TOWARD PUBLISHING (the no-drop invariant): a
-        # dispatch, a first push with no diff base, or an unreachable before-sha
-        # all force-publish rather than risk silently dropping a closure change.
+        # This gate uses the runner closure set because the trigger has no paths filter.
+        working-directory: .
         env:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
