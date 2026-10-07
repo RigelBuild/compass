@@ -1,39 +1,37 @@
 import { bootConnection } from "./boot";
 import { bootBrowser } from "./boot-browser";
 import { bootNativeClient } from "./boot-native";
-import { nativeConnectionProvider } from "./daemon-transport";
+import { bootSetup, renderReopenScreen } from "./boot-setup";
+import { nativeConnectionProvider, quitApp } from "./daemon-transport";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 import { type ShellMode, shellServerUrl } from "./shell-globals";
 
-/** The launch mode `bootForMode` dispatches on: the shell-injected `ShellMode`,
- *  or undefined in a browser dev build where no shell sets it. */
 export type BootMode = ShellMode | undefined;
 
 export type BootModeDeps = {
 	bootNativeClient: (
 		root: HTMLElement,
 	) => Promise<ResolvedConnection | undefined>;
+	bootSetup: (root: HTMLElement) => Promise<ResolvedConnection | undefined>;
 	embeddedConnectionProvider: () => ConnectionProvider;
 	bootBrowser: (root: HTMLElement) => Promise<ResolvedConnection | undefined>;
 	bootConnection: (
 		root: HTMLElement,
 		resolve: () => Promise<ResolvedConnection>,
 	) => Promise<ResolvedConnection | undefined>;
+	quitApp: () => Promise<void>;
 };
-
 export const defaultDeps: BootModeDeps = {
 	bootNativeClient,
-	// Embedded never receives __COMPASS_SERVER_URL__ (injected in client mode only), and the
-	// bridge fetch routes over Wails IPC by path — so this is a syntactic same-origin
-	// placeholder, never dialed. Must be ABSOLUTE: createDaemonFetch does `new Request(url)`,
-	// which rejects a relative URL. Matches the packages/compass-client convention.
+	bootSetup,
+	// The daemon fetch constructs Requests from this base, so it must be absolute.
 	embeddedConnectionProvider: () =>
 		nativeConnectionProvider(shellServerUrl() ?? "http://compass.localhost"),
 	bootBrowser,
 	bootConnection,
+	quitApp,
 };
 
-/** Select the runtime boot thunk for the shell-injected launch mode. */
 export function bootForMode(
 	mode: BootMode,
 	root: HTMLElement,
@@ -47,7 +45,18 @@ export function bootForMode(
 				deps.bootConnection(root, () =>
 					deps.embeddedConnectionProvider().resolve(),
 				);
-		default:
+		case "setup":
+			return () => deps.bootSetup(root);
+		case "reopen":
+			return async () => {
+				renderReopenScreen(root, deps.quitApp);
+				return undefined;
+			};
+		case undefined:
 			return () => deps.bootBrowser(root);
+		default: {
+			const exhaustive: never = mode;
+			throw new Error(`Unhandled boot mode: ${exhaustive}`);
+		}
 	}
 }
