@@ -15,15 +15,16 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
-// newAgentCmd builds the agent noun: the agent-session inspection operator
-// surface. It carries no logic of its own; each verb is a child that dials the
-// Server and drives one CompassService RPC. It is distinct from the agent-config
-// noun (fleet config bundles) — a separate Cobra command, no name clash.
+// newAgentCmd builds the agent noun: the agent-session operator surface. It
+// carries no logic of its own; each verb is a child that dials the Server and
+// drives its RPCs. It is distinct from the agent-config noun (fleet config
+// bundles) — a separate Cobra command, no name clash.
 func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Inspect agent sessions (status)",
+		Short: "Spawn and inspect agent sessions (spawn, status)",
 	}
+	cmd.AddCommand(newAgentSpawnCmd())
 	cmd.AddCommand(newAgentStatusCmd())
 	return cmd
 }
