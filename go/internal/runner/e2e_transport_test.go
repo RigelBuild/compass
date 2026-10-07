@@ -163,8 +163,9 @@ func newTransportFixtureWithEngine(t *testing.T, relay compassv1internalconnect.
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, relay))
 	specs := &fakeSpecBuilder{spec: liveSpec()}
-	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
-	return host.(*agentHost)
+	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner()).(*agentHost)
+	closeHostAtCleanup(t, host)
+	return host
 }
 
 // listenerPath reads the host path of the live socket Provision served for a
