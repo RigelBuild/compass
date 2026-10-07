@@ -61,7 +61,8 @@ type fakeBindingStore struct {
 	resolveErr           error
 	reverseErr           error
 	deleteForRunnerErr   error
-	tenantErr            error
+	tenantErr            error          // if set, SessionBindingTenant returns it
+	effective            store.TenantID // if set, EffectiveTenant returns it instead of tenant
 }
 
 func newFakeBindingStore() *fakeBindingStore {
@@ -150,6 +151,9 @@ func (f *fakeBindingStore) DeleteSessionBindingsForRunner(_ context.Context, run
 func (f *fakeBindingStore) EffectiveTenant(context.Context) store.TenantID {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.effective != "" {
+		return f.effective
+	}
 	return f.tenant
 }
 

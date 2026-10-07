@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RigelBuild/compass/go/internal/store"
 	"github.com/RigelBuild/compass/go/server"
 )
 
@@ -131,5 +132,34 @@ func TestResolveForgeRejectsBadAppID(t *testing.T) {
 				t.Fatalf("error %q should name %s", err.Error(), tc.wantFlag)
 			}
 		})
+	}
+}
+
+func TestResolveForgeScopeSettings(t *testing.T) {
+	fc, err := resolveForge(forgeInputs{
+		enforceScopes: "true",
+		scopeGrants:   " acct-u:github:github.com:Owner/Repo , acct-u:linear:linear.app:* ",
+	})
+	if err != nil {
+		t.Fatalf("resolveForge: %v", err)
+	}
+	want := []store.ForgeScope{
+		{AccountID: "acct-u", Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "Owner/Repo"},
+		{AccountID: "acct-u", Provider: store.ForgeProviderLinear, Host: "linear.app", Repo: "*"},
+	}
+	if !fc.EnforceScopes || !reflect.DeepEqual(fc.ScopeGrants, want) {
+		t.Fatalf("enforce=%v grants=%+v, want true %+v", fc.EnforceScopes, fc.ScopeGrants, want)
+	}
+
+	for _, in := range []forgeInputs{
+		{enforceScopes: "yes"},
+		{scopeGrants: "acct-u:github:github.com"},
+		{scopeGrants: "acct-u:gitlab:gitlab.com:a/b"},
+		{scopeGrants: "acct-u:github::a/b"},
+		{scopeGrants: "acct-u:github:github.com:norepo"},
+	} {
+		if _, err := resolveForge(in); err == nil {
+			t.Errorf("resolveForge(%+v) = nil error, want rejection", in)
+		}
 	}
 }
