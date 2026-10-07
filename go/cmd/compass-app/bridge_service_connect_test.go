@@ -966,81 +966,169 @@ func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
 		t.Fatal("Connect did not reach save seam")
 	}
 
-	const (
-		rpcWorkers    = 4
-		rpcsPerWorker = 16
-		totalRPCs     = rpcWorkers * rpcsPerWorker
-	)
-	start := make(chan struct{})
-	started := make(chan struct{}, rpcWorkers)
-	var rpcWG sync.WaitGroup
-	for worker := range rpcWorkers {
-		rpcWG.Go(func() {
-			started <- struct{}{}
-			<-start
-			for request := range rpcsPerWorker {
-				requestID := fmt.Sprintf("setup-race-%d-%d", worker, request)
-				svc.CompassRPC(context.Background(), rpcRequest{RequestID: requestID, Path: compassv1connect.CompassServiceWhoAmIProcedure})
-			}
-		})
-	}
-	for range rpcWorkers {
-		<-started
-	}
-	close(start)
+	callCompassRPC(svc, "setup-race-before")
+	assertDisconnectedRPC(t, frames, "setup-race-before")
+
+	issue, stopWorkers, workersDone := startConcurrentRPCWorkers(svc, 4)
 	close(releaseSave)
-	result := <-connectDone
+	result := collectConcurrentRPCResults(t, frames, issue, connectDone, stopWorkers, workersDone)
 	if !result.OK || result.ServerURL != srv.URL {
 		t.Fatalf("concurrent setup Connect = %+v, want success", result)
 	}
-	rpcWG.Wait()
 
-	states := make(map[string]uint8, totalRPCs)
-	completed := 0
-	for completed < totalRPCs {
-		event := recv(t, frames)
-		requestID := strings.TrimPrefix(event.name, "compass_rpc:")
-		if !strings.HasPrefix(requestID, "setup-race-") {
-			t.Fatalf("unexpected RPC event %q", event.name)
-		}
-		if _, ok := states[requestID]; ok {
-			t.Fatalf("duplicate RPC frame for %q", requestID)
-		}
-		state := states[requestID]
-		switch event.frame.Kind {
-		case frameKindError:
-			if state != 0 || event.frame.Message != "Not connected to a server" {
-				t.Errorf("RPC %q error frame = %+v, want first no-connection error", requestID, event.frame)
-				continue
-			}
-			states[requestID] = 2
-			completed++
-		case frameKindHead:
-			if state != 0 {
-				t.Errorf("RPC %q received duplicate or late head frame", requestID)
-				continue
-			}
-			states[requestID] = 1
-		case frameKindEnd:
-			if state != 1 {
-				t.Errorf("RPC %q received terminal frame without response head", requestID)
-				continue
-			}
-			states[requestID] = 2
-			completed++
-		default:
-			t.Errorf("RPC %q unexpected frame kind %q", requestID, event.frame.Kind)
-		}
-	}
-	for worker := range rpcWorkers {
-		for request := range rpcsPerWorker {
-			requestID := fmt.Sprintf("setup-race-%d-%d", worker, request)
-			if states[requestID] != 2 {
-				t.Errorf("RPC %q did not reach a terminal outcome", requestID)
-			}
-		}
-	}
+	callCompassRPC(svc, "setup-race-after")
+	assertSuccessfulRPC(t, frames, "setup-race-after")
 	if got := svc.ShellState(); got != (shellStateResult{Mode: "client", ServerURL: srv.URL}) {
 		t.Fatalf("post-race ShellState() = %+v, want configured client", got)
+	}
+}
+
+type concurrentRPCTask struct {
+	requestID string
+	ready     chan struct{}
+	done      chan struct{}
+}
+
+func startConcurrentRPCWorkers(svc *bridgeService, count int) (<-chan concurrentRPCTask, chan<- struct{}, <-chan struct{}) {
+	issue := make(chan concurrentRPCTask)
+	stop := make(chan struct{})
+	started := make(chan struct{}, count)
+	var workers sync.WaitGroup
+	for worker := range count {
+		workers.Go(func() {
+			started <- struct{}{}
+			for sequence := 0; ; sequence++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				task := concurrentRPCTask{
+					requestID: fmt.Sprintf("setup-race-%d-%d", worker, sequence),
+					ready:     make(chan struct{}),
+					done:      make(chan struct{}),
+				}
+				select {
+				case issue <- task:
+				case <-stop:
+					return
+				}
+				<-task.ready
+				callCompassRPC(svc, task.requestID)
+				select {
+				case <-task.done:
+				case <-stop:
+					return
+				}
+			}
+		})
+	}
+	for range count {
+		<-started
+	}
+	workersDone := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(workersDone)
+	}()
+	return issue, stop, workersDone
+}
+
+func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan concurrentRPCTask, connectDone <-chan connectResult, stop chan<- struct{}, workersDone <-chan struct{}) connectResult {
+	t.Helper()
+	const (
+		initial = iota
+		headSeen
+		terminated
+	)
+	states := make(map[string]int)
+	pending := make(map[string]concurrentRPCTask)
+	connectC := connectDone
+	issueC := issue
+	var result connectResult
+	for connectC != nil || len(pending) > 0 {
+		select {
+		case task := <-issueC:
+			if _, exists := states[task.requestID]; exists {
+				t.Fatalf("duplicate RPC request ID %q", task.requestID)
+			}
+			pending[task.requestID] = task
+			states[task.requestID] = initial
+			close(task.ready)
+		case event := <-frames.ch:
+			requestID := strings.TrimPrefix(event.name, "compass_rpc:")
+			state, exists := states[requestID]
+			if !exists {
+				t.Fatalf("unexpected RPC event %q", event.name)
+			}
+			if state == terminated {
+				t.Fatalf("RPC %q emitted a frame after termination", requestID)
+			}
+			switch event.frame.Kind {
+			case frameKindError:
+				if state != initial || event.frame.Message != "Not connected to a server" {
+					t.Errorf("RPC %q error frame = %+v, want one no-connection error", requestID, event.frame)
+					continue
+				}
+				states[requestID] = terminated
+				close(pending[requestID].done)
+				delete(pending, requestID)
+			case frameKindHead:
+				if state != initial {
+					t.Errorf("RPC %q received head in state %d", requestID, state)
+					continue
+				}
+				states[requestID] = headSeen
+			case frameKindEnd:
+				if state != headSeen {
+					t.Errorf("RPC %q received end in state %d", requestID, state)
+					continue
+				}
+				states[requestID] = terminated
+				close(pending[requestID].done)
+				delete(pending, requestID)
+			default:
+				t.Errorf("RPC %q unexpected frame kind %q", requestID, event.frame.Kind)
+			}
+		case result = <-connectC:
+			connectC = nil
+			issueC = nil
+			close(stop)
+			<-workersDone
+		case <-time.After(testTimeout):
+			t.Fatal("timed out waiting for concurrent RPC outcomes")
+		}
+	}
+	for requestID, state := range states {
+		if state != terminated {
+			t.Errorf("RPC %q did not reach a terminal outcome", requestID)
+		}
+	}
+	return result
+}
+
+func callCompassRPC(svc *bridgeService, requestID string) {
+	svc.CompassRPC(context.Background(), rpcRequest{
+		RequestID: requestID,
+		Path:      compassv1connect.CompassServiceWhoAmIProcedure,
+		Headers:   []headerPair{{Name: "Content-Type", Value: "application/grpc-web+proto"}},
+	})
+}
+
+func assertDisconnectedRPC(t *testing.T, frames *fakeEmitter, requestID string) {
+	t.Helper()
+	event := recv(t, frames)
+	if event.name != "compass_rpc:"+requestID || event.frame.Kind != frameKindError || event.frame.Message != "Not connected to a server" {
+		t.Fatalf("RPC event = %+v, want disconnected error for %q", event, requestID)
+	}
+}
+
+func assertSuccessfulRPC(t *testing.T, frames *fakeEmitter, requestID string) {
+	t.Helper()
+	if event := recv(t, frames); event.name != "compass_rpc:"+requestID || event.frame.Kind != frameKindHead {
+		t.Fatalf("RPC first frame = %+v, want head for %q", event, requestID)
+	}
+	if event := recv(t, frames); event.name != "compass_rpc:"+requestID || event.frame.Kind != frameKindEnd {
+		t.Fatalf("RPC terminal frame = %+v, want end for %q", event, requestID)
 	}
 }
