@@ -261,4 +261,25 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			scale: "css",
 		});
 	});
+
+	test("narrow pane — agent view stacks its log panel", async ({ page }) => {
+		await page.goto("/#/channel/ch-svc-compass/topic/top-compass-acp");
+		await page.locator(".conv-composer").waitFor({ state: "visible" });
+		await page.locator('.cx-tab-strip [role="tab"]').first().click();
+		await page.keyboard.press("w");
+		await page.keyboard.press("v");
+		await page
+			.locator("aside.left .tree-agent", { hasText: "compass-ui" })
+			.first()
+			.click();
+		const pane = page.locator(".cx-split-pane .view-panel", {
+			has: page.locator(".agent-view"),
+		});
+		await pane.locator(".log-panel .obs-body").waitFor();
+		await page.evaluate(() => document.fonts.ready);
+		await expect(pane).toHaveScreenshot("narrow-pane.png", {
+			animations: "disabled",
+			scale: "css",
+		});
+	});
 });

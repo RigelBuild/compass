@@ -458,8 +458,10 @@
 	white-space: nowrap;
 }
 
-/* A view panel stands in for .main as its view's box, so views size as before. */
+/* A view panel stands in for .main as its view's box, so views size as before.
+ * It is the width container a view adapts to, since a split pane can be narrow. */
 .view-panel {
+	container: view-panel / inline-size;
 	flex: 1;
 	min-height: 0;
 	display: flex;
@@ -3613,6 +3615,57 @@
 
 .obs-min-glyph > svg {
 	display: block;
+}
+
+/* A narrow pane stacks the log panel under the body: beside it, a 340px panel
+ * leaves the body no room. Open and minimized both keep their controls. */
+@container view-panel (width < 560px) {
+	.agent-view {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: auto minmax(0, 1fr) fit-content(40%);
+		grid-template-areas:
+			"header"
+			"body"
+			"log";
+	}
+
+	/* The handle stays whole; model and cwd truncate so Share stays in view. */
+	.av-header .av-name {
+		flex: none;
+		white-space: nowrap;
+	}
+
+	.av-header .av-model,
+	.av-header .av-cwd {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.log-panel,
+	.log-panel.minimized {
+		width: auto;
+		border-left: none;
+		border-top: 1px solid var(--cx-border);
+	}
+
+	.log-panel.minimized .obs-head {
+		flex-direction: row;
+	}
+
+	.log-panel.minimized .obs-spacer {
+		flex: 1;
+	}
+
+	/* The toggle points down to minimize and up to expand. */
+	.obs-min-glyph {
+		transform: rotate(-90deg);
+	}
+
+	.obs-min-glyph.open {
+		transform: rotate(90deg);
+	}
 }
 
 .log-panel .obs-body {
