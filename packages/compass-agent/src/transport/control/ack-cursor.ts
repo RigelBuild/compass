@@ -13,14 +13,13 @@ import {
 import type { PublishSpine } from "./../publish-spine";
 
 // The selective apply-ack cursor: the highest CONTIGUOUS applied `control_seq` plus the set
-// of seqs applied out of order above it (`applied_above`, invariant 2). That set is
+// of seqs applied out of order above it (`applied_above_ranges`, invariant 2). That set is
 // UNBOUNDED: a queued-but-unapplied iterator op pins the cursor while immediate ops above
-// accumulate, draining only once the held op lands.
+// accumulate, draining only once the held op lands. The set stays unbounded in memory, while
+// range-encoding makes its wire cost O(runs).
 
-// `applied_above` serializes in full into EVERY ack, so wire cost over a long turn is
-// quadratic and never dropped; range-encoding is the fix (RIG-1466). `markApplied` is
-// idempotent — a redelivered applied op re-acks without corrupting the cursor. Every apply
-// emits a `ControlAck` on the priority lane.
+// `markApplied` is idempotent — a redelivered applied op re-acks without corrupting the cursor.
+// Every apply emits a `ControlAck` on the priority lane.
 export class AckCursor {
 	readonly #spine: PublishSpine;
 	#cursor = 0n;
@@ -32,7 +31,7 @@ export class AckCursor {
 	}
 
 	// Current size of the out-of-order applied set — the observability seam for
-	// the unbounded growth documented above; range-encoding lands in RIG-1466.
+	// the unbounded growth documented above.
 	get pendingAbove(): number {
 		return this.#above.size;
 	}
@@ -64,6 +63,17 @@ export class AckCursor {
 			while (this.#above.delete(this.#cursor + 1n)) this.#cursor += 1n;
 			this.#applied += 1;
 		}
+		// Flattened inclusive [start, end] pairs, one per maximal applied run.
+		const appliedAboveRanges: bigint[] = [];
+		const above = [...this.#above].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+		for (const applied of above) {
+			const last = appliedAboveRanges.length - 1;
+			if (last > 0 && appliedAboveRanges[last] === applied - 1n) {
+				appliedAboveRanges[last] = applied;
+			} else {
+				appliedAboveRanges.push(applied, applied);
+			}
+		}
 		this.#spine.enqueuePriority(
 			create(PublishFrameRequestSchema, {
 				frame: create(AgentFrameSchema, {
@@ -71,7 +81,7 @@ export class AckCursor {
 						case: "controlAck",
 						value: create(ControlAckSchema, {
 							ackedSeq: this.#cursor,
-							appliedAbove: [...this.#above],
+							appliedAboveRanges,
 						}),
 					},
 				}),

@@ -477,6 +477,13 @@ message ReplayCompleteAck {}
 message ControlAck { uint64 acked_seq = 1; repeated uint64 applied_above = 2; }
 ```
 
+Amendment (2026-10-06, RIG-1466) adds **DL-417**: `ControlAck` carries the
+out-of-order applied seqs as inclusive runs flattened into packed
+`[start, end, ...]` pairs (`repeated uint64 applied_above_ranges = 3`), so an
+ack costs O(runs), not O(seqs), and decode stays linear in wire bytes. The set is
+not bounded; this text's "bounded" wording is superseded. The Runner still reads
+the per-seq `applied_above` from older agents and never expands a range.
+
 Generated surfaces (internal lanes): `compassv1internalconnect.AgentGatewayHandler`
 gains `Publish` (client-stream), `PostConversationFrame` (unary), and `Control`
 (server-stream) methods (Go, Runner side); the TS `AgentGateway` client gains the

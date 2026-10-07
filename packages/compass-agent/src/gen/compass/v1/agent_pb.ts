@@ -35,7 +35,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent.proto.
  */
 export const file_compass_v1_agent: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIt0CCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SAASQgoWZm9yZ2Vfbm90aWZpY2F0aW9uX2FjaxgIIAEoCzIgLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25BY2tIAEIHCgVmcmFtZSJMCg9UcmFuc2NyaXB0RW50cnkSEgoKZW50cnlfanNvbhgBIAEoCRISCgpjaGVja3BvaW50GAIgASgIEhEKCWVudHJ5X3NlcRgDIAEoBCJrCgxTZXNzaW9uRnJhbWUSLAoFc3RhdGUYASABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlEi0KC3R5cGVkX2V2ZW50GAIgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRXZlbnQihgMKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIrCgZjb25maWcYBSABKAsyGS5jb21wYXNzLnYxLkNvbmZpZ0NvbnRyb2xIABIuCgZyZXBsYXkYBiABKAsyHC5jb21wYXNzLnYxLlRyYW5zY3JpcHRSZXBsYXlIABI1Cg9yZXBsYXlfY29tcGxldGUYByABKAsyGi5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlSAASOwoSZm9yZ2Vfbm90aWZpY2F0aW9uGAkgASgLMh0uY29tcGFzcy52MS5Gb3JnZU5vdGlmaWNhdGlvbkgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSIQCg5SZXBsYXlDb21wbGV0ZSKIAQoMU3RlZXJDb250cm9sEiQKB21lc3NhZ2UYASABKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2USEwoLZnJvbV9oYW5kbGUYAiABKAkSEwoLdHJhY2VwYXJlbnQYAyABKAkSEgoKdG9waWNfbmFtZRgEIAEoCRIUCgxjaGFubmVsX25hbWUYBSABKAkiEgoQVHJhbnNjcmlwdFJlcGxheSIPCg1Db25maWdDb250cm9sIooBCg5EZWxpdmVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlEhIKCnRvcGljX25hbWUYAiABKAkSEwoLZnJvbV9oYW5kbGUYAyABKAkSEwoLdHJhY2VwYXJlbnQYBCABKAkSFAoMY2hhbm5lbF9uYW1lGAUgASgJIiEKC0RlbGl2ZXJ5QWNrEhIKCm1lc3NhZ2VfaWQYASABKAkiQQoURm9yZ2VOb3RpZmljYXRpb25BY2sSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEhAKCHJldmlzaW9uGAIgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIjYKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
+  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIt0CCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SAASQgoWZm9yZ2Vfbm90aWZpY2F0aW9uX2FjaxgIIAEoCzIgLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25BY2tIAEIHCgVmcmFtZSJMCg9UcmFuc2NyaXB0RW50cnkSEgoKZW50cnlfanNvbhgBIAEoCRISCgpjaGVja3BvaW50GAIgASgIEhEKCWVudHJ5X3NlcRgDIAEoBCJrCgxTZXNzaW9uRnJhbWUSLAoFc3RhdGUYASABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlEi0KC3R5cGVkX2V2ZW50GAIgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRXZlbnQihgMKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIrCgZjb25maWcYBSABKAsyGS5jb21wYXNzLnYxLkNvbmZpZ0NvbnRyb2xIABIuCgZyZXBsYXkYBiABKAsyHC5jb21wYXNzLnYxLlRyYW5zY3JpcHRSZXBsYXlIABI1Cg9yZXBsYXlfY29tcGxldGUYByABKAsyGi5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlSAASOwoSZm9yZ2Vfbm90aWZpY2F0aW9uGAkgASgLMh0uY29tcGFzcy52MS5Gb3JnZU5vdGlmaWNhdGlvbkgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSIQCg5SZXBsYXlDb21wbGV0ZSKIAQoMU3RlZXJDb250cm9sEiQKB21lc3NhZ2UYASABKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2USEwoLZnJvbV9oYW5kbGUYAiABKAkSEwoLdHJhY2VwYXJlbnQYAyABKAkSEgoKdG9waWNfbmFtZRgEIAEoCRIUCgxjaGFubmVsX25hbWUYBSABKAkiEgoQVHJhbnNjcmlwdFJlcGxheSIPCg1Db25maWdDb250cm9sIooBCg5EZWxpdmVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlEhIKCnRvcGljX25hbWUYAiABKAkSEwoLZnJvbV9oYW5kbGUYAyABKAkSEwoLdHJhY2VwYXJlbnQYBCABKAkSFAoMY2hhbm5lbF9uYW1lGAUgASgJIiEKC0RlbGl2ZXJ5QWNrEhIKCm1lc3NhZ2VfaWQYASABKAkiQQoURm9yZ2VOb3RpZmljYXRpb25BY2sSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEhAKCHJldmlzaW9uGAIgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIlQKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKAQSHAoUYXBwbGllZF9hYm92ZV9yYW5nZXMYAyADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
 
 /**
  * The agent's stdout envelope: one discriminated frame per newline-delimited
@@ -94,9 +94,9 @@ export type AgentFrame = Message<"compass.v1.AgentFrame"> & {
   } | {
     /**
      *   control_ack — the agent's selective apply-ack: a contiguous cursor
-     *     (highest contiguously-APPLIED control_seq) plus a bounded set of seqs
-     *     applied out of order above it. The Runner retires retained ops up to
-     *     the cursor and drops the individually-acked ones.
+     *     plus inclusive runs of seqs applied out of order above it. The
+     *     Runner retires retained ops up to the cursor and drops the applied
+     *     ops named by the ranges.
      *
      * @generated from field: compass.v1.ControlAck control_ack = 5;
      */
@@ -623,12 +623,22 @@ export type ControlAck = Message<"compass.v1.ControlAck"> & {
   ackedSeq: bigint;
 
   /**
-   * Seqs applied out of order ABOVE the contiguous cursor: the Runner drops
-   * these individually-acked ops from retention. Bounded (a small window).
+   * Legacy per-seq form. Still read by the Runner for agents that predate
+   * applied_above_ranges; new agents leave it empty.
    *
    * @generated from field: repeated uint64 applied_above = 2;
    */
   appliedAbove: bigint[];
+
+  /**
+   * Out-of-order applied seqs above the cursor as flattened inclusive runs:
+   * [start0, end0, start1, end1, ...]. Packed scalars keep decode cost linear
+   * in wire bytes; a trailing unpaired value is ignored. The Runner reads at
+   * most its retention limit of pairs; more cannot name distinct retained ops.
+   *
+   * @generated from field: repeated uint64 applied_above_ranges = 3;
+   */
+  appliedAboveRanges: bigint[];
 };
 
 /**

@@ -71,7 +71,7 @@ func (g *Gateway) Publish(
 				// skew; skip it like an empty frame rather than tear the stream.
 				continue
 			}
-			g.control.AckControl(sessionID, epoch, ack.GetAckedSeq(), ack.GetAppliedAbove())
+			g.control.AckControl(sessionID, epoch, ack.GetAckedSeq(), ack.GetAppliedAbove(), ack.GetAppliedAboveRanges())
 			continue
 		}
 		// Trace/session telemetry: forward Runner-sequenced. A durable conversation

@@ -12,11 +12,10 @@ package gateway
 // lands, the Gateway uses a no-op default so a stray ack on the Publish stream
 // is handled (dropped, never relayed upstream), not mishandled.
 type ControlRouter interface {
-	// AckControl retires the session's retained control ops with control_seq <=
-	// ackedSeq, and drops any op whose seq is named in appliedAbove even though it
-	// sits past the cursor (an out-of-order apply the agent has confirmed). Routed
-	// from a ControlAck AgentFrame on Publish.
-	AckControl(sessionID string, epoch, ackedSeq uint64, appliedAbove []uint64)
+	// AckControl retires retained ops through ackedSeq and drops out-of-order
+	// applied ops named by legacy per-seq values or flattened inclusive
+	// [start, end] pairs. Ranges are matched against retained seqs, never expanded.
+	AckControl(sessionID string, epoch, ackedSeq uint64, appliedAbove []uint64, appliedRanges []uint64)
 	// ReleaseReplayBarrier releases the live control ops held behind the session's
 	// restart replay barrier. Routed from a ReplayCompleteAck AgentFrame on
 	// Publish.
@@ -34,6 +33,6 @@ type ControlRouter interface {
 // lane replaces it with the real sender.
 type noopControlRouter struct{}
 
-func (noopControlRouter) AckControl(string, uint64, uint64, []uint64) {}
-func (noopControlRouter) ReleaseReplayBarrier(string, uint64)         {}
-func (noopControlRouter) Epoch(string) uint64                         { return 0 }
+func (noopControlRouter) AckControl(string, uint64, uint64, []uint64, []uint64) {}
+func (noopControlRouter) ReleaseReplayBarrier(string, uint64)                   {}
+func (noopControlRouter) Epoch(string) uint64                                   { return 0 }
