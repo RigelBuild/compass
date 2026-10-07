@@ -88,12 +88,24 @@ func (q *Queries) GetChannelPostPolicy(ctx context.Context, id string) (GetChann
 	return i, err
 }
 
-const getMessageBlocks = `-- name: GetMessageBlocks :one
-SELECT blocks FROM messages WHERE id = $1
+const getMessageBlocksAsAuthor = `-- name: GetMessageBlocksAsAuthor :one
+SELECT m.blocks FROM messages m
+JOIN topics t ON t.id = m.topic_id
+WHERE m.id = $1
+  AND m.author_account_id = $2
+  AND EXISTS (
+    SELECT 1 FROM channel_members cm
+    WHERE cm.channel_id = t.channel_id AND cm.account_id = $2
+  )
 `
 
-func (q *Queries) GetMessageBlocks(ctx context.Context, id string) ([]byte, error) {
-	row := q.db.QueryRow(ctx, getMessageBlocks, id)
+type GetMessageBlocksAsAuthorParams struct {
+	ID              string
+	AuthorAccountID string
+}
+
+func (q *Queries) GetMessageBlocksAsAuthor(ctx context.Context, arg GetMessageBlocksAsAuthorParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getMessageBlocksAsAuthor, arg.ID, arg.AuthorAccountID)
 	var blocks []byte
 	err := row.Scan(&blocks)
 	return blocks, err
