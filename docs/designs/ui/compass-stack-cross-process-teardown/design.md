@@ -214,6 +214,8 @@ supervised children** (containers scoped out — Open Question 0).
   because `up` always exits after a successful spawn (`main.go:235-238`), the
   writer pid is dead in every linger teardown, so it discriminates nothing about
   whether the *children* are alive. Plain text, trailing newline, 0600.
+  (Since DL-262 v2 the header also carries an optional boot id; a record from
+  an earlier boot has no live group to signal — see the DL-262 record.)
 - **Write timing**: rewritten **atomically (temp + rename in the state dir)
   after each successful child spawn** in `spawnChain`
   (`go/internal/stack/stack.go:171-228`), i.e. the file always reflects the set

@@ -43,9 +43,9 @@ func readProcessStartTime(pid int) (uint64, error) {
 // teardown side uses, for the same reason the /proc field-22 parse is
 // duplicated there: the two are read-only leaf helpers and the packages cannot
 // reach into each other. The duplication is load-bearing rather than incidental
-// — GroupSignaller.Alive compares a spawn-side token against a down-side read
+// — GroupSignaller.Liveness compares a spawn-side token against a down-side read
 // for uint64 equality, so a drift between the two packings would report every
-// live child as not-alive and silently skip it at teardown. Mirrored tests in
+// live child as recycled and silently skip it at teardown. Mirrored tests in
 // both packages feed one synthetic timeval through both and assert the same
 // uint64, so a change to one packing without the other reds.
 //
