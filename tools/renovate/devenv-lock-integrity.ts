@@ -24,7 +24,8 @@ import { DEVENV_LOCK_PATHS } from "./refresh-devenv-lock.core.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // Overridable so the harness can exercise the retry without a real wait.
-const delayOverride = Number(process.env.LOCK_INTEGRITY_RETRY_DELAY_MS);
+const delayEnv = process.env.LOCK_INTEGRITY_RETRY_DELAY_MS?.trim() ?? "";
+const delayOverride = delayEnv === "" ? Number.NaN : Number(delayEnv);
 const RETRY_DELAY_MS =
 	Number.isInteger(delayOverride) && delayOverride >= 0
 		? delayOverride
