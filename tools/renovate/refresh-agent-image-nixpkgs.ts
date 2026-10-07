@@ -18,8 +18,8 @@
 // or the fork closure cold-compiles from source.
 
 // Non-zero exit does NOT abort the branch — Renovate commits the regex-bumped
-// lock regardless; it buys a red renovate/artifacts status + mandatory human
-// review. Full argument in refresh-devenv-lock.ts's header.
+// lock regardless; it reds the advisory renovate/artifacts status, and
+// renovate:lock-integrity in the required rollup blocks the merge.
 
 import { readFileSync } from "node:fs";
 import { $ } from "bun";
@@ -156,8 +156,8 @@ async function main(): Promise<number> {
 			`refresh-agent-image-nixpkgs: \`devenv update ${NIXPKGS_INPUT}\` left ${AGENT_IMAGE_LOCK} ` +
 				"byte-identical — the regex-bumped rev still sits beside the base lock's narHash. " +
 				"Exiting non-zero to red the `renovate/artifacts` status; note that Renovate still " +
-				"commits the regex bump (a postUpgradeTask exit does not abort the branch), so the " +
-				"human review gate is what keeps this half-relock from merging.",
+				"commits the regex bump (a postUpgradeTask exit does not abort the branch), so " +
+				"renovate:lock-integrity in the required rollup is what keeps this half-relock from merging.",
 		);
 	}
 	// Shape guard: the relocked file must still pin a 40-hex channel rev (throws

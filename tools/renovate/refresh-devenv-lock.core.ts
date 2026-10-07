@@ -53,8 +53,8 @@ export const DEVENV_LOCK_PATHS: readonly string[] = Object.values(
  *   silently discard the other — a PR that bumped a rev without relocking it.
  *   Exit non-zero instead. That exit does NOT abort the branch (Renovate
  *   commits the regex bump regardless); it reds the `renovate/artifacts`
- *   status, and the human review gate is what stops the merge. See the
- *   entry point's "what a non-zero exit actually buys" note.
+ *   status (advisory); renovate:lock-integrity in the required rollup is what
+ *   stops a half-relock from merging.
  *
  * Paths are compared exactly (repo-root-relative, as `git diff --name-only`
  * emits them), so an unrelated `foo/devenv.lock` can never be mistaken for
@@ -73,8 +73,8 @@ export function changedDevenvLock(
 				"fileFilters names exactly ONE lock, so a two-lock branch would commit one relock and " +
 				"silently drop the other. The two rules carry distinct groupNames so they never share a " +
 				"branch; this shape means that invariant broke. Exiting non-zero reds the " +
-				"`renovate/artifacts` status — it does not abort the branch — so the mandatory human " +
-				"review of the PR is what keeps this shape from merging.",
+				"`renovate/artifacts` status — it does not abort the branch — so human review, and " +
+				"renovate:lock-integrity for any half-relock, keep this shape from merging.",
 		);
 	}
 	return changed[0] ?? null;
