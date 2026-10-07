@@ -24,6 +24,7 @@ import {
 	parseLedger,
 	parseRecordHeader,
 	parseStatusValue,
+	prContextFrom,
 	type RecordContent,
 	type RecordHeader,
 	recordContentFromText,
@@ -1114,5 +1115,83 @@ describe("conflictMarkerViolations", () => {
 			"\n",
 		);
 		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
+	});
+});
+
+// The touch-coupling leg is PR-event-only. On a pull_request event it must get
+// its PR coordinates, so a workflow that stops passing them reds instead of
+// silently muting the leg.
+describe("prContextFrom", () => {
+	test("pull_request with REPO and PR_NUMBER → run the leg", () => {
+		expect(
+			prContextFrom({
+				GITHUB_EVENT_NAME: "pull_request",
+				REPO: "RigelBuild/compass",
+				PR_NUMBER: "1315",
+			}),
+		).toEqual({ kind: "pr", repo: "RigelBuild/compass", prNumber: "1315" });
+	});
+
+	test.each([
+		["REPO unset", { PR_NUMBER: "1315" }],
+		["PR_NUMBER unset", { REPO: "RigelBuild/compass" }],
+		["both unset", {}],
+		["PR_NUMBER empty", { REPO: "RigelBuild/compass", PR_NUMBER: "" }],
+		["REPO empty", { REPO: "", PR_NUMBER: "1315" }],
+	])("pull_request with %s → error naming both vars", (_label, env) => {
+		const ctx = prContextFrom({ GITHUB_EVENT_NAME: "pull_request", ...env });
+		expect(ctx.kind).toBe("error");
+		if (ctx.kind === "error") {
+			expect(ctx.message).toContain("REPO");
+			expect(ctx.message).toContain("PR_NUMBER");
+		}
+	});
+
+	test("pull_request with a non-numeric PR_NUMBER → error", () => {
+		expect(
+			prContextFrom({
+				GITHUB_EVENT_NAME: "pull_request",
+				REPO: "RigelBuild/compass",
+				PR_NUMBER: "abc",
+			}).kind,
+		).toBe("error");
+	});
+
+	// ci.yml sets REPO on every event and PR_NUMBER empty off a PR, so that
+	// shape is a push/schedule run, not a muted PR.
+	test.each([
+		["push", { GITHUB_EVENT_NAME: "push" }],
+		["schedule", { GITHUB_EVENT_NAME: "schedule" }],
+		["workflow_dispatch", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
+		["local run (no event)", {}],
+		[
+			"push with REPO set and PR_NUMBER empty",
+			{ GITHUB_EVENT_NAME: "push", REPO: "RigelBuild/compass", PR_NUMBER: "" },
+		],
+	])("%s without PR coordinates → skip the leg", (_label, env) => {
+		expect(prContextFrom(env)).toEqual({ kind: "skip" });
+	});
+
+	// A PR_NUMBER that is present but unusable means a PR was intended (the
+	// base-re-point dispatch), so it must red rather than skip.
+	test.each([
+		["non-numeric", { REPO: "RigelBuild/compass", PR_NUMBER: "abc" }],
+		["zero", { REPO: "RigelBuild/compass", PR_NUMBER: "0" }],
+		["leading zero", { REPO: "RigelBuild/compass", PR_NUMBER: "01" }],
+		["REPO missing", { PR_NUMBER: "1315" }],
+	])("workflow_dispatch with a %s PR_NUMBER pair → error", (_label, env) => {
+		expect(
+			prContextFrom({ GITHUB_EVENT_NAME: "workflow_dispatch", ...env }).kind,
+		).toBe("error");
+	});
+
+	test("non-PR event that still carries PR coordinates → run the leg", () => {
+		expect(
+			prContextFrom({
+				GITHUB_EVENT_NAME: "workflow_dispatch",
+				REPO: "RigelBuild/compass",
+				PR_NUMBER: "1315",
+			}),
+		).toEqual({ kind: "pr", repo: "RigelBuild/compass", prNumber: "1315" });
 	});
 });
