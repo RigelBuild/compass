@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -111,7 +112,12 @@ func run() error {
 	socket := resolveSocket(*socketFlag)
 	assetsDir := resolveAssetsDir(*assetsFlag)
 
+	// Keep the prior embedded startup default until the first-run chooser lands.
 	cfg, err := appconfig.Load(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"), resolveMode(*modeFlag))
+	if errors.Is(err, appconfig.ErrNoConfig) {
+		cfg = appconfig.Config{Mode: appconfig.ModeEmbedded}
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
@@ -340,9 +346,9 @@ func resolveAssetsDir(flagValue string) string {
 	return "dist"
 }
 
-// resolveMode resolves the --mode/$COMPASS_APP_MODE override to feed
-// appconfig.Load. An empty flag falls back to the env; both empty is "no
-// override" (Load then uses app.toml, else the embedded default).
+// resolveMode resolves the --mode/$COMPASS_APP_MODE override for appconfig.Load.
+// An empty flag falls back to the environment; an empty result leaves the file
+// authoritative, with the caller mapping ErrNoConfig to the embedded default.
 func resolveMode(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
