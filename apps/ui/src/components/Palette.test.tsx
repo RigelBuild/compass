@@ -288,6 +288,29 @@ describe("Palette (RIG-2483)", () => {
 		querySpy.mockRestore();
 	});
 
+	test("action palette lists the T5 tab and pane commands", async () => {
+		const { store, container } = mountApp("/");
+		store.openPalette();
+		await flush();
+
+		const titles = rowTitles(container);
+		for (const title of [
+			"New tab",
+			"Close tab",
+			"Next tab",
+			"Previous tab",
+			...Array.from({ length: 9 }, (_, index) => `Go to tab ${index + 1}`),
+			"Move tab left",
+			"Move tab right",
+			"Split right",
+			"Split down",
+			"Close other pane",
+			"Focus first pane",
+			"Focus second pane",
+		]) {
+			expect(titles).toContain(title);
+		}
+	});
 	test("the LeftSidebar view buttons carry aria-keyshortcuts in WAI-ARIA tokens; the display chord moved to a CoachTip (RIG-2530), so no native title", () => {
 		setPlatform("other");
 		const { container } = mountApp("/");
