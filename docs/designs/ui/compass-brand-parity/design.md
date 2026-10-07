@@ -47,14 +47,14 @@ drops most states.
 | Square corners everywhere: cards, inputs, `.seg`, and square status pips (`.dot` 10×10, `.ci-badge` 7×7) | `--cx-radius-sm/md/lg` are 3/6/10px, used by 57 declarations; 26 more literal radii (`.tree-agent` 4px, `.bridge-link .count` 10px, round pips at 50%, 999px pills) | Rounded corners and round pips are off-brand | T2a |
 | Night-2 hairlines drawn on the night page (`html,body{background:var(--rigel-night)}`, `.topbar{border-bottom:1px solid var(--rigel-night-2)}`); raised is kept for cards, menus, the root card, and the human message | Topbar, `.left`, `.right`, and `.log-panel` sit on `--cx-bg-raised`; `--cx-border` is `color-mix(in srgb, var(--rigel-panel) 70%, transparent)`; night-2 and raised are the same hex (`#0b2942`) | Pane edges barely show; the site's own line color would vanish on raised chrome | T2b (Open Question 1) |
 | Form input: raised ground, mute border, 11×14 padding, blue border on focus (site `input` rule) | Text boxes have no visible edge | No field border token | T7 |
-| CI success badge in green (`.ci-badge[data-status=success]{background:var(--rigel-green)}`), approved review in cyan (`.review-badge[data-verdict=approved]{background:var(--rigel-cyan)}`) | `--cx-ci-pass` and `--cx-review-approved` both resolve to `--cx-ok`, the syntax-tier `--rigel-success` (`#22da6e`) | Wrong greens on every board card | T9 |
+| CI success badge in green, approved review in cyan (selectors in A9) | `--cx-ci-pass` and `--cx-review-approved` both resolve to `--cx-ok`, the syntax-tier `--rigel-success` (`#22da6e`) | Wrong greens on every board card | T9 |
 | Hierarchy by color, case, and letter-spacing; no `font-weight` outside `@font-face` | 48 `font-weight: 600/700/bold` rules in `app.css`; Space Mono ships 400 and 700 only and `base.css` sets `font-synthesis: none`, so every 600 renders bold | Chrome reads heavy and loud | T9 |
 | Agent state glyph: 9×9 cells drawn at 16px (`.ac-glyph svg{width:16px;height:16px}`), state-colored, state label beside it; alive glyphs pulse 0.7→1 (`ac-pulse`) | `StateDot` draws 9×9 CSS px; live data reaches only 4 of 8 states; most rows show a grey hollow square; `cx-state-dot-pulse` dips to 0.4 | Icons "do not show" (root cause below) | T3, T4 |
 | Manager tree: depth-indented agent cards with spine elbows, glyph, name, colored state label, issue chip; root card raised with a 2px blue left rule; a blue pip runs down live spines (`spine-flow 1.4s` on `.tree-spine[data-flow="1"]`) | Left-sidebar text rows (`.tree-agent`, 12px name, 9px dot); `.tree-children` is a static 1px rule; no overview | No agent overview, no tree motion | T5 (Open Question 2) |
 | Thread message: author in fog 12px, kind tag (`MANAGER`, `HUMAN`), `ASK` flag in blue and `STEER` flag in cyan (`.msg-flag.ask`, `.msg-flag.steer`), time right-aligned in mute, body in haze 13px; human messages on raised with a 2px blue left rule | `.msg-role` colors authors blue (`--cx-accent`), bright green (`--cx-ok`), or magenta (`--cx-author-system`), weight 600; `.msg-at` sits beside the name; no tag or flag | Messages read as plain text with loud names | T6 |
 | (no composer on the site; the site `input` rule is the reference) | `Composer` is a one-line `<input class="field">`; its border is `--cx-border` on `--cx-bg-raised` | Composer does not read as a composer | T7 |
 | Text inputs | `.new-topic-name`/`.new-topic-message` carry only flex sizing (browser-default box); `.topbar-search-input` has no `font: inherit` and a faint border | Fields look unstyled | T7 |
-| (site CSS is all loaded) | Nine primitives are never imported: `ask`, `badge`, `button`, `input`, `loader`, `panel`, `tabs`, `toast`, `tree`. Two have users today: `ShortcutsOverlay` renders `cx-search`, and `Palette` renders `.cx-loader[data-topology="bar"]`; both are unstyled | The primitive library is mostly unwired, so users of it fail silently | T7 |
+| (site CSS is all loaded) | Six primitives are never imported: `ask`, `badge`, `input`, `loader`, `panel`, `tree`. Two have users today: `ShortcutsOverlay` renders `cx-search`, and `Palette` renders `.cx-loader[data-topology="bar"]`; both are unstyled | Users of an unimported primitive fail silently | T7 |
 | Compass needle mark (`/compass-c-needle.svg`, purple north half on the navy tile) | Top bar shows the 11×11 `logo` `Glyph` in `--cx-accent` blue | Product mark missing | T8 (Open Question 4) |
 
 ### Why the status icons do not show
@@ -94,10 +94,7 @@ upstream and in sizing:
    (`docs/specs/brand/state-icons.md`), and the site draws the tree glyph at
    16px.
 5. **Geometry drifted.** The site's cells for `working`, `waiting`, and
-   `done` differ from `STATE_CELLS`. Site `working` is two 5-cell chevrons
-   (`1,2 4,2 2,3 5,3 3,4 6,4 2,5 5,5 1,6 4,6`); Compass draws two 7-cell
-   chevrons over rows 1-7. Site `done` is a 7-cell tick
-   (`1,4 2,5 3,6 4,5 5,4 6,3 7,2`); Compass draws 9 cells. `idle` matches.
+   `done` differ from `STATE_CELLS` (A4 lists them). `idle` matches.
 
 ### A1 — Ship the brand faces
 
@@ -120,14 +117,17 @@ from a system face; T1 treats any diff as expected and recaptures.
 The site draws no rounded corner except one footer tile, and its status pips
 are square (`.dot` 10×10, `.ci-badge` 7×7). `docs/specs/brand/surfaces.md`
 asks for "flat square cards". Compass has 57 `var(--cx-radius-*)`
-declarations and 26 literal radii, including `.tree-agent` 4px, the round
-pips (`border-radius: 50%`), and 999px pills.
+declarations and 26 literal radii in CSS, including `.tree-agent` 4px, the
+round pips (`border-radius: 50%`), and 999px pills. `boot-styles.ts` sets one
+more, `border-radius:4px`, in a TypeScript style string.
 
 Delete `--cx-radius-sm`, `--cx-radius-md`, and `--cx-radius-lg` from
 `tokens.css`, and delete every `border-radius` declaration under
-`apps/ui/src`. A stylelint rule keeps it that way. Three tokens all set to 0
-would be dead weight. This supersedes the radius line of ux-foundation D1
-("Radius: `--cx-radius-sm|md|lg` (3/6/10)").
+`apps/ui/src`. A stylelint rule keeps the CSS that way; it does not read
+`boot-styles.ts`, so T2a edits that file by hand. Three tokens all set to 0
+would be dead weight, and would still leave the 26 literal radii. This
+supersedes the radius line of ux-foundation D1 ("Radius:
+`--cx-radius-sm|md|lg` (3/6/10)").
 
 ### A2b — Surfaces and lines (Open Question 1)
 
@@ -173,10 +173,15 @@ through `agentDotState` in `joinAgents`:
     READY. Other events for the same `sessionId` carry the previous value.
   - `lastOpenedAt` is a per-agent time persisted in `localStorage` under
     `compass.lastOpened.${workspace}`, the same shape as the pin store
-    (`loadPinnedAgents`/`savePinnedAgents`). `openAgent(id)` writes
-    `max(Date.now(), turnEndedAtUnixMs)`, so a client clock behind the
-    server cannot leave the tick on. While an agent's view is open, a new
-    turn end also updates its `lastOpenedAt`.
+    (`loadPinnedAgents`/`savePinnedAgents`). One store effect writes it:
+    while the focused view's route is `view === "agent"`, it records
+    `max(Date.now(), turnEndedAtUnixMs)` for that agent, and again on each
+    new turn end. The `max` stops a client clock behind the server from
+    leaving the tick on. The effect keys on the route, not on `openAgent`,
+    so every way in counts: `openAgent`, a Mod-click or middle-click
+    (`dispatchLayout` open), a deep link, a tab focus, back/forward, and an
+    agent DM. A background tab open does not focus the view, so it does not
+    count.
   - Because both sides are times, a cold-start ring replay and a page reload
     give the same answer as the live stream. A resync clears the map; the
     replay re-observes the edge with its original time. The residual: an
@@ -190,8 +195,11 @@ assumes no seed.
 ### A4 — Site glyph cells and an integer 2× scale
 
 Replace the `working`, `waiting`, and `done` entries of `STATE_CELLS` with
-the site's cells (listed in the root-cause section; site `waiting` is
-`3,1 4,1 5,1 2,2 6,2 6,3 4,4 5,4 4,5 4,7`). The other five glyphs have no
+the site's cells. Site `working` is two 5-cell chevrons
+(`1,2 4,2 2,3 5,3 3,4 6,4 2,5 5,5 1,6 4,6`); Compass draws two 7-cell
+chevrons over rows 1-7. Site `done` is a 7-cell tick
+(`1,4 2,5 3,6 4,5 5,4 6,3 7,2`); Compass draws 9 cells. Site `waiting` is
+`3,1 4,1 5,1 2,2 6,2 6,3 4,4 5,4 4,5 4,7`. The other five glyphs have no
 site render and stay. `StateDot` gains `scale?: 1 | 2`; `2` sets
 `data-scale="2"` and an 18px box. Integer scale keeps every cell a whole
 2×2 block; the site's 16px is a non-integer 1.78×. The sidebar tree and the
@@ -252,11 +260,12 @@ uses them.
 ### A7 — Text entry uses the primitives
 
 Each component imports the primitive CSS it uses, as `RuntimeMarker.tsx`
-imports `runtime-marker.css` and `Palette.tsx` imports `palette.css`. Nine
-primitives are never imported today. This wires the three that have or gain
-a user (`input`, `button`, `loader`). The six with no user (`ask`, `badge`,
-`panel`, `tabs`, `toast`, `tree`) stay unimported until a component first
-renders them; importing unused CSS adds bytes and no fix.
+imports `runtime-marker.css` and `LayoutNotice.tsx` imports `button.css` and
+`toast.css`. Six primitives are never imported today. This wires the two
+that have or gain a user (`input`, `loader`) and adds a `button.css` import
+where `ChannelView` starts to render `cx-btn`. The four with no user (`ask`,
+`badge`, `panel`, `tree`) stay unimported until a component first renders
+them; importing unused CSS adds bytes and no fix.
 
 - `TopBarSearch` imports `input.css`; its input → `cx-search`.
 - `ShortcutsOverlay` imports `input.css`; its `cx-search` field starts
@@ -285,6 +294,15 @@ only in that static asset; no `--cx-*` token aliases purple (the rule in
 `tokens.css`). Remove the `logo` entry from `GlyphName` and its cells, since
 `App.tsx` is its only user.
 
+Draw it at 24px. The SVG is a 12×12 grid of 8-unit cells in a 96 viewBox,
+so 24px gives each cell exactly 2px, and 24px is the topbar mark floor in
+`apps/ui/src/design/surfaces.md` § Mark placement. That paragraph also says
+the topbar mark is the sigil wordmark, standing alone, with "no
+icon-beside-wordmark lockup". The needle beside the "Compass" title breaks
+that rule, as today's `logo` glyph beside the title already does. Open
+Question 4 carries this; under the recommended option T8 rewrites the
+paragraph to name the needle at 24px beside the plain-text product name.
+
 ### A9 — Site greens and hierarchy by color
 
 The site paints a passing CI badge green
@@ -293,8 +311,9 @@ approved review cyan
 (`.review-badge[data-verdict=approved]{background:var(--rigel-cyan)}`).
 Compass maps both `--cx-ci-pass` and `--cx-review-approved` to `--cx-ok`,
 the syntax-tier `--rigel-success` (`#22da6e`). Point `--cx-ci-pass` at
-`--rigel-green` and `--cx-review-approved` at `--rigel-cyan`; `--cx-ok` and
-its other users stay.
+`--rigel-green` (`#addb67`) and `--cx-review-approved` at `--rigel-cyan`;
+`--cx-ok` and its other users stay. `docs/specs/brand/` is not edited; it
+mirrors the company brand system.
 
 The site CSS sets `font-weight` only inside `@font-face`. Its hierarchy is
 color (fog, haze, mute), uppercase, and letter-spacing. `app.css` has 48
@@ -319,15 +338,11 @@ refinements (design D9).
 ### Edge-detect done-unopened in memory
 
 Set `turnDoneUnopened` on a WORKING → READY edge seen by the store and clear
-it in `openAgent`. Rejected: `runEventStream` hands consumers whole-map
-snapshots, not transitions; a resync clears the map and loses the edge; a
-cold-start replay re-fires old edges; a reload clears every tick. Comparing
-two persisted times (A3) gives one answer on every path.
-
-### Keep three radius tokens at 0
-
-Rejected: three tokens with one value are dead weight, and setting them to
-0 still leaves 26 literal radii rounded (A2a).
+it when the agent's view gains focus. Rejected: `runEventStream` hands
+consumers whole-map snapshots, not transitions; a resync clears the map and
+loses the edge; a cold-start replay re-fires old edges; a reload clears
+every tick. Comparing two persisted times (A3) gives one answer on every
+path.
 
 ### Draw the glyph at 16px like the site
 
@@ -345,11 +360,6 @@ rendering rules).
 - **Departure Mono only at even 11px multiples** (22, 44): use
   `--cx-display-sm` or `--cx-display-lg`, never another size
   (`docs/specs/brand/type.md`).
-- **Greens follow the site.** `--cx-ci-pass` uses `--rigel-green`
-  (`#addb67`) and `--cx-review-approved` uses `--rigel-cyan`, as the site's
-  `.ci-badge` and `.review-badge` do. `--cx-ok` and its other users are
-  unchanged. `docs/specs/brand/` is not edited; it mirrors the company brand
-  system.
 - **Glyphs are 1-bit and integer-scaled.** `crispEdges`, 9×9 grid, scale 1×
   or 2× only.
 - **Motion.** Of the eight state glyphs only `working` animates
@@ -404,7 +414,8 @@ Every task that changes baselines also waits for #1644 (DL-399).
   `--cx-radius-md`, `--cx-radius-lg`); every `border-radius` declaration in
   `apps/ui/src/app.css`, `apps/ui/src/design/base.css`, and
   `apps/ui/src/design/components/{ask,badge,button,card,input,loader,menu,
-  palette,panel,toast,tooltip}.css`; the radius lines in
+  palette,panel,tab-strip,toast,tooltip}.css`; the `border-radius:4px` entry
+  in `apps/ui/src/boot-styles.ts`; the radius lines in
   `apps/ui/src/design/components.md`; `apps/ui/.stylelintrc.cjs` adds
   `"property-disallowed-list": ["/radius/"]`.
 - **Test (red first):** add the stylelint rule; `moon run compass-ui:stylelint`
@@ -495,8 +506,9 @@ Every task that changes baselines also waits for #1644 (DL-399).
 - **Interfaces:** new `apps/ui/src/assets/compass-needle.svg`; the
   `.brand` block in `App.tsx` as #1811 leaves it (`span.logo` holding
   `<Glyph name="logo" />`) becomes `<img class="logo" src={needle} alt=""
-  width="22" height="22">`; `.brand .logo` in `app.css`; `GlyphName` and the
-  `logo` cells in `Glyph.tsx`; the `logo` grid in `components.md`.
+  width="24" height="24">`; `.brand .logo` in `app.css`; `GlyphName` and the
+  `logo` cells in `Glyph.tsx`; the `logo` grid in `components.md`; the topbar
+  Mark placement paragraph in `apps/ui/src/design/surfaces.md` (A8).
 - **Test:** `tsc` proves no `logo` user is left; `App.test.tsx` asserts the
   brand `img` source.
 - **Baselines:** recapture all.
@@ -529,12 +541,15 @@ Every task that changes baselines also waits for #1644 (DL-399).
     ReadonlyMap<string, number>): Agent[]`.
   - `apps/ui/src/store.ts`: `loadLastOpened(workspace)` and
     `saveLastOpened(workspace, map)` beside `loadPinnedAgents`, key
-    `compass.lastOpened.${workspace}`; a `lastOpened` signal; `openAgent`
-    records the time; an effect records a new turn end for the open agent;
-    the `agents` memo passes `accountSessions()` and `lastOpened()`.
+    `compass.lastOpened.${workspace}`; a `lastOpened` signal; one effect
+    that, while `focusedView().route().view === "agent"`, records the time
+    for that `agentId` and again on each new `turnEndedAtUnixMs`; the
+    `agents` memo passes `accountSessions()` and `lastOpened()`.
 - **Test (red first):**
   - `agent-state.test.ts`: READY + `awaitingInput` → `"waiting"`, also with
-    `turnDoneUnopened`; READY + `turnDoneUnopened` → `"done"`.
+    `turnDoneUnopened`; READY + `turnDoneUnopened` → `"done"`. This replaces
+    the existing test "does NOT change READY (stays idle)", which pins the
+    old READY arm; its red is the intended change, not a regression.
   - `roster.test.ts`: ERRORED → `"error"`; DISCONNECTED →
     `"disconnected"`; READY + presence waiting → `"waiting"`; READY with
     turn end after last-opened → `"done"`, at or before → `"idle"`; no
@@ -542,9 +557,11 @@ Every task that changes baselines also waits for #1644 (DL-399).
   - `live/events.test.ts`: WORKING then READY sets `turnEndedAtUnixMs` to
     the READY event's time; READY then READY keeps it; a resync clears the
     map and a replay restores the original time.
-  - Store test: `openAgent` writes the storage key; a new store over the
-    same storage keeps the agent idle; a turn end after opening shows
-    `"done"`.
+  - Store tests: `openAgent` writes the storage key;
+    `dispatchLayout({ kind: "open", path: "/agent/<id>" })` writes it too;
+    the same open with `background: true` does not; a new store over the
+    same storage keeps the agent idle; a turn end while the agent's view is
+    focused keeps it idle; a turn end after focus leaves shows `"done"`.
 
 ### T5 — The agent tree view
 
@@ -606,7 +623,8 @@ State line, on #1814:
    - (a) Site-literal: chrome (`.topbar`, `.left`, `.right`, `.log-panel`)
      moves to `--cx-bg`, heads to panel, and every line is night-2. Edge
      contrast 1.23:1, as faint as the site. Sidebars and main become one
-     color split only by that line. Matches `surfaces.md`.
+     color split only by that line. Matches `surfaces.md` for the topbar
+     only; that spec keeps the sidebars raised.
    - (b) Keep raised chrome. `--cx-border` becomes selection (1.28:1 on
      raised) and `--cx-border-strong` becomes mute (3.49:1). Smallest
      change; visible edges; not the site's look.
@@ -642,7 +660,18 @@ State line, on #1814:
      or ERRORED kept in the snapshot. A proto and server change outside
      this record.
    - Recommendation: (a). File (c) only if dogfood shows a missing `error`.
-4. **Placeholder mark.** `docs/specs/brand/compass-mark.md` marks the needle
-   "Placeholder", not locked. The site already ships it.
-   - (a) Ship it now (T8). (b) Hold T8 until the mark locks.
-   - Recommendation: (a). Swapping one SVG asset later is cheap.
+4. **Placeholder mark in the topbar.** `docs/specs/brand/compass-mark.md`
+   marks the needle "Placeholder", not locked; the site ships it in the
+   Compass hero and footer. `apps/ui/src/design/surfaces.md` § Mark
+   placement wants the sigil wordmark alone in the topbar, at 24px or more,
+   with no icon beside a wordmark. Today's 11×11 `logo` glyph beside the
+   "Compass" title already breaks that rule.
+   - (a) Ship the needle now at 24px beside the plain-text name (T8). T8
+     rewrites the Mark placement paragraph to match. The needle is the
+     product mark the site pairs with Compass, and swapping one SVG later is
+     cheap.
+   - (b) Follow `surfaces.md` as written: the sigil wordmark alone, no
+     needle. This needs a wordmark asset Compass does not have, and the R
+     wordmark names the company, not the product.
+   - (c) Hold T8 until the mark locks; the `logo` glyph stays.
+   - Recommendation: (a).
