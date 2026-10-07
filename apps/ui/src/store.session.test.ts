@@ -360,4 +360,47 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			dispose();
 		}
 	});
+
+	test("a split tails both shown agents; closing one pane aborts only its tail", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		// Each pane's own scope, found by the agent its route shows.
+		const paneSession = (agentId: string) =>
+			store
+				.viewScopes()
+				.find((scope) => scope.agent()?.account.id === agentId)
+				?.agentSession();
+		try {
+			fake.pushSessionStatus(AGENT, "sess-a", AgentSessionState.WORKING);
+			fake.pushSessionStatus(OTHER, "sess-b", AgentSessionState.WORKING);
+			await settle();
+			store.openAgent(AGENT);
+			store.dispatchLayout({ kind: "split", direction: "row" });
+			// The split focuses the new second pane, so this routes only that pane.
+			store.openAgent(OTHER);
+			await settle(() => fake.openSessionTails().length === 2);
+			expect([...fake.openSessionTails()].sort()).toEqual(["sess-a", "sess-b"]);
+
+			fake.pushSessionFrame("sess-a", { event: text("a1", "from a") });
+			fake.pushSessionFrame("sess-b", { event: text("b1", "from b") });
+			await settle(
+				() =>
+					(paneSession(AGENT)?.events.length ?? 0) >= 1 &&
+					(paneSession(OTHER)?.events.length ?? 0) >= 1,
+			);
+			expect(paneSession(AGENT)?.events.map((e) => e.id)).toEqual(["a1"]);
+			expect(paneSession(OTHER)?.events.map((e) => e.id)).toEqual(["b1"]);
+
+			// closeOtherPane keeps the focused pane, so focus A's to close B's.
+			store.dispatchLayout({ kind: "focusPane", pane: "first" });
+			store.dispatchLayout({ kind: "closeOtherPane" });
+			await settle(() => fake.openSessionTails().length === 1);
+			expect(fake.openSessionTails()).toEqual(["sess-a"]);
+			expect(
+				fake.sessionSubscribes.filter((s) => s.sessionId === "sess-a").length,
+			).toBe(1);
+		} finally {
+			dispose();
+		}
+	});
 });
