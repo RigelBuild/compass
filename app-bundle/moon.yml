@@ -57,6 +57,7 @@ tasks:
       - '/go/go.sum'
       - '/tools/toolchain/gtk-closure.nix'
       - '/tools/toolchain/gtk-e2e-env.nix'
+      - '/tools/toolchain/secretspec-env.nix'
       - '/tools/toolchain/versions/go.nix'
       - '/devenv.lock'
       - '/LICENSE'

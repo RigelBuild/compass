@@ -59,11 +59,11 @@
         name = "compass-go-src";
       };
 
-      # proxyVendor: the backend pulls wails/secretspec, whose //go:embed patterns
+      # proxyVendor: the backend pulls wails, whose //go:embed patterns
       # reference darwin/windows-only files a vendor-tree build fails on;
       # proxyVendor touches only compiled packages. vendorHash pins the whole
       # module graph (matches guestd's); recompute with lib.fakeHash on a go.sum move.
-      vendorHash = "sha256-hxjuJ8jRbNNnk4ZhXDIaFpSwno1hb6P7aeH0G9OWd8o=";
+      vendorHash = "sha256-qAbWUMkWM4s0u2IJUJ4coutW0h+y97m1UNSMi6rI3WE=";
     in
     {
       packages = forAllSystems (
@@ -97,10 +97,21 @@
             inherit pkgs version;
             inherit (pkgs) lib;
           };
+
+          inherit (import ./tools/toolchain/secretspec-env.nix { inherit (pkgs.stdenv.hostPlatform) system; })
+            secretspec
+            ;
         in
         {
           compass = goBin "compass";
-          compass-server = goBin "compass-server";
+          # Boot spawns secretspec by name for the master key. The pin comes from
+          # devenv.lock (this nixpkgs has 0.14.0), and it wins over a host copy.
+          compass-server = (goBin "compass-server").overrideAttrs (old: {
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.makeWrapper ];
+            postFixup = ''
+              wrapProgram $out/bin/compass-server --prefix PATH : ${secretspec}/bin
+            '';
+          });
           compass-runner = goBin "compass-runner";
           compass-stack = goBin "compass-stack";
 
@@ -145,13 +156,15 @@
 
           # The microVM stack runtime trio (cloud-hypervisor + virtiofsd + passt)
           # at the pinned rev, joined so `nix profile install .#compass-stack-env`
-          # puts all three on PATH for the stack's LookPath spawns.
+          # puts all three on PATH for the stack's LookPath spawns. secretspec
+          # rides along so `compass-stack preflight` finds the server's pin.
           compass-stack-env = pkgs.symlinkJoin {
             name = "compass-stack-env-${version}";
             paths = [
               pkgs.cloud-hypervisor
               pkgs.virtiofsd
               pkgs.passt
+              secretspec
             ];
           };
         }
@@ -161,6 +174,18 @@
       # to a .drv, so a build-time break (go compile error, vendorHash drift) would
       # pass green. Aliasing every package as a check forces each to be realized,
       # which makes the §T6 promise — "every package BUILDS from a bare checkout" — true.
-      checks = self.packages;
+      checks = forAllSystems (
+        pkgs:
+        let
+          packages = self.packages.${pkgs.stdenv.hostPlatform.system};
+        in
+        packages
+        // {
+          compass-server-secretspec = import ./tools/flake-gate/compass-server-secretspec.nix {
+            inherit pkgs;
+            inherit (packages) compass-server;
+          };
+        }
+      );
     };
 }

@@ -367,6 +367,17 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(true);
 	});
 
+	test("darwinAffected on the secretspec pin (the .app stages that CLI)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["tools/toolchain/secretspec-env.nix"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
+
 	test("darwinAffected on a sidecar cmd path (the mac lane now compiles the sidecars)", () => {
 		expect(
 			generate(

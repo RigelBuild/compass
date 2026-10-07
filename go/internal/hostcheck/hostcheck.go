@@ -45,10 +45,9 @@ var MicroVMFloors = []VersionFloor{
 	{Binary: "passt", Fields: []int{2025, 9, 19}, Display: "2025_09_19"},
 }
 
-// SecretSpecFloor pins the minimum secretspec CLI version — the operator's
-// secret-rotation path (no Go code spawns it). It tracks the secretspec-go SDK
-// pin in go/go.mod so the SDK read half and the CLI rotation half stay on one
-// release. A single VersionFloor, not a []VersionFloor: never iterated below.
+// SecretSpecFloor pins the minimum secretspec CLI version. The server's secret
+// read path spawns this CLI (export, check); compass-stack preflight checks the
+// floor. A single VersionFloor: never iterated below.
 var SecretSpecFloor = VersionFloor{Binary: "secretspec", Fields: []int{0, 20, 0}, Display: "0.20.0"}
 
 // digitRun matches one run of decimal digits; VersionGroups splits on it.
