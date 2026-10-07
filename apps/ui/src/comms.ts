@@ -51,6 +51,16 @@ export function browsableChannels(channels: readonly Channel[]): Channel[] {
 	return channels.filter((c) => c.membership === "none");
 }
 
+/** The boot channel: the first subscribed one, else the first visible, else
+ *  null before the first snapshot (components render an empty state). */
+export function firstChannelId(channels: readonly Channel[]): string | null {
+	return (
+		channels.find((c) => c.membership === "subscribed")?.id ??
+		channels[0]?.id ??
+		null
+	);
+}
+
 // ── Channel post policy + pinned board (comms substrate §A2/§A3) ─────────────
 
 /** Whether `callerId` may post to `channel` under its post policy (comms

@@ -1,6 +1,7 @@
 import { type Component, Show } from "solid-js";
 import { channelGlyph, topicMessages } from "../comms";
 import { useStore } from "../context";
+import { useView } from "../view-scope";
 import { Composer } from "./ChannelView";
 import { MessageStream } from "./MessageStream";
 
@@ -11,13 +12,13 @@ import { MessageStream } from "./MessageStream";
  *  reply/threading — a topic IS the thread, so a post is just a message into this
  *  topic (PostMessage topic:topicId).
  *
- *  Reads the selection off the store (the route-sync's single-writer
- *  selectedTopic/selectedChannel), so the deep-link mount and the click path
- *  share one source of truth. */
+ *  Reads the selection off its view's route, so the deep-link mount and the
+ *  click path share one source of truth. */
 export const TopicView: Component = () => {
 	const store = useStore();
-	const topic = () => store.selectedTopic();
-	const channel = () => store.selectedChannel();
+	const view = useView();
+	const topic = () => view.topic();
+	const channel = () => view.channel();
 	const byId = () => new Map(store.accounts().map((a) => [a.id, a]));
 	const byHandle = () => {
 		const accounts = store.accounts();
@@ -77,6 +78,7 @@ export const TopicView: Component = () => {
 								<MessageStream
 									messages={messages()}
 									scopeId={t().id}
+									shown={view.shown()}
 									byId={byId()}
 									byHandle={byHandle()}
 									emptyMessage="No messages yet."
