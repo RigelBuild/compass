@@ -79,6 +79,7 @@ func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (Ses
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir(), AgentModel: model, RunnerID: "runner-1"}
 	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 	return host, engine, registry
 }
 
@@ -94,7 +95,15 @@ func newHostFixtureWithPublish(t *testing.T, specs SpecBuilder) (SessionHost, *s
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 	return host, engine, pub
+}
+
+// closeHostAtCleanup runs before the server's Cleanup (registered earlier), so
+// no exit report from this host can reach a later test's server.
+func closeHostAtCleanup(t *testing.T, host *agentHost) {
+	t.Helper()
+	t.Cleanup(func() { host.Close(context.Background()) })
 }
 
 // Provision derives the AgentSpec from the request via the SpecBuilder and
@@ -391,6 +400,7 @@ func TestStartupSweepRemovesStaleAgentsBeforeProvision(t *testing.T) {
 		Workspace: runtime.Workspace{CheckoutDir: "/work/repo", HomeDir: "/home/agent", UID: 1000},
 		Egress:    runtime.MustAllowEgress("github.com"),
 	}}, AgentHostConfig{RuntimeDir: shortRuntimeDir(t), RunnerID: "runner-1"}, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "acct-1"); err != nil {
 		t.Fatalf("Provision after startup sweep = %v", err)
 	}
@@ -472,6 +482,7 @@ func TestProvisionConfigMaterializeErrorAborts(t *testing.T) {
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 
 	_, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, "")
 	if err == nil {
@@ -503,6 +514,7 @@ func TestProvisionToleratesNoConfigSurface(t *testing.T) {
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 
 	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}, "")
 	if err != nil {
@@ -1159,6 +1171,7 @@ func TestStatusStampsTheTierAndEgressPosture(t *testing.T) {
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
 	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
@@ -1791,6 +1804,7 @@ func newHostFixtureWithRecordingExec(t *testing.T, specs SpecBuilder) (SessionHo
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 	return host, engine
 }
 
