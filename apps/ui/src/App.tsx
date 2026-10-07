@@ -27,18 +27,18 @@ import { LeftSidebar } from "./components/LeftSidebar";
 import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
+import { SplitPane } from "./components/SplitPane";
 import { TabStrip } from "./components/TabStrip";
 import { TopBarSearch } from "./components/TopBarSearch";
 import { UsageBar } from "./components/UsageBar";
-import { ViewHost } from "./components/ViewHost";
 import { useStore } from "./context";
 import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
 import type { LiveClients } from "./live/client";
 import { routeTitle } from "./route-title";
-import { focusViewPanel, viewPanelId, viewTabId } from "./view-panel";
-import { focusedViewOf, shownViewIds, tabViews } from "./window-layout";
+import { focusViewPanel } from "./view-panel";
+import { focusedPane, focusedViewOf, shownViewIds } from "./window-layout";
 
 // Compass shell: routed center view with persistent navigation and usage chrome.
 
@@ -68,72 +68,110 @@ const App: Component<
 	);
 	// Panels toggle `hidden` imperatively so a switch can move focus into the
 	// shown view before hiding the old one; a hidden element drops focus.
-	const panels = new Map<string, HTMLElement>();
+	// SplitPane renders them, so they are found under main by view id.
+	let main: HTMLElement | undefined;
+	const panels = (): Map<string, HTMLElement> =>
+		new Map(
+			[
+				...(main?.querySelectorAll<HTMLElement>(".view-panel[data-view-id]") ??
+					[]),
+			].map((el) => [el.dataset.viewId ?? "", el]),
+		);
 	const lastFocus = new Map<string, HTMLElement>();
 	// The view focus was last in, kept even after a close removes its panel.
 	let focusedPanelView: string | undefined;
+	// The splitter focus sat on: removing it drops focus to the body even
+	// though its tab's panes survive.
+	let focusedSplitter: HTMLElement | undefined;
+	// The splitter sits outside both panels; focus on it counts as its tab's
+	// focused view, so removing or hiding it still lands focus in a pane.
+	const viewIdOf = (target: HTMLElement): string | undefined => {
+		const panelView = target.closest<HTMLElement>(".view-panel[data-view-id]")
+			?.dataset.viewId;
+		if (panelView !== undefined) return panelView;
+		const tabId = target.closest<HTMLElement>(".cx-split-pane[data-tab-id]")
+			?.dataset.tabId;
+		const tab = store.layout().tabs.find((item) => item.id === tabId);
+		return tab ? focusedPane(tab.layout).id : undefined;
+	};
 	const rememberFocus = (event: FocusEvent): void => {
 		const target = event.target;
 		if (!(target instanceof HTMLElement)) return;
-		const panel = target.closest<HTMLElement>('[role="tabpanel"]');
-		const viewId = [...panels].find(([, el]) => el === panel)?.[0];
+		const viewId = viewIdOf(target);
 		if (viewId === undefined) return;
-		lastFocus.set(viewId, target);
 		focusedPanelView = viewId;
+		focusedSplitter = target.closest(".view-panel") ? undefined : target;
+		if (focusedSplitter) return;
+		lastFocus.set(viewId, target);
 		store.focusViewId(viewId);
 	};
-	// Focus moving to another real target outside every panel ends the claim;
-	// a null target is a removal, which the close path below still handles.
+	// Focus moving to another real target outside main ends the claim; a null
+	// target is a removal, which the close path below handles.
 	const forgetFocus = (event: FocusEvent): void => {
 		const next = event.relatedTarget;
 		if (!(next instanceof Node)) return;
-		if (![...panels.values()].some((el) => el.contains(next)))
+		if (!main?.contains(next)) {
 			focusedPanelView = undefined;
-	};
-	const tabIdOf = (viewId: string): string | undefined => {
-		const tab = store
-			.layout()
-			.tabs.find((t) => tabViews(t.layout).some((v) => v.id === viewId));
-		return tab ? viewTabId(tab.id) : undefined;
-	};
-	// Focus is leaving if it sits in a panel about to hide, or it was in a panel
-	// a close just removed (the browser has already dropped it to the body).
-	const focusLeaving = (shownIds: readonly string[]): boolean => {
-		const active = document.activeElement;
-		if (active === null || active === document.body)
-			return focusedPanelView !== undefined && !panels.has(focusedPanelView);
-		return [...panels].some(
-			([id, el]) => !shownIds.includes(id) && el.contains(active),
-		);
-	};
-	const prunePanels = (ids: readonly string[]): void => {
-		for (const id of [...panels.keys()]) {
-			if (ids.includes(id)) continue;
-			panels.delete(id);
-			lastFocus.delete(id);
+			focusedSplitter = undefined;
 		}
 	};
+	// Focus is leaving if it sits in a box or panel about to hide, or it was in
+	// a panel a close just removed (the browser has already dropped it to body).
+	const focusLeaving = (
+		shown: Map<string, HTMLElement>,
+		toggles: readonly [HTMLElement, boolean][],
+	): boolean => {
+		const active = document.activeElement;
+		if (active === null || active === document.body)
+			return (
+				focusedPanelView !== undefined &&
+				(focusedSplitter?.isConnected === false || !shown.has(focusedPanelView))
+			);
+		return toggles.some(([el, show]) => !show && el.contains(active));
+	};
+	const pruneFocus = (ids: readonly string[]): void => {
+		for (const id of [...lastFocus.keys()]) {
+			if (!ids.includes(id)) lastFocus.delete(id);
+		}
+	};
+	// Each tab's box and every panel, paired with whether it should show.
+	const visibility = (
+		current: Map<string, HTMLElement>,
+		shownIds: readonly string[],
+		activeTabId: string,
+	): [HTMLElement, boolean][] => [
+		...[...(main?.querySelectorAll<HTMLElement>(".cx-split-pane") ?? [])].map(
+			(box): [HTMLElement, boolean] => [box, box.dataset.tabId === activeTabId],
+		),
+		...[...current].map(([id, el]): [HTMLElement, boolean] => [
+			el,
+			shownIds.includes(id),
+		]),
+	];
 	createEffect(
 		() => ({
 			shownIds: shownViewIds(store.layout()),
 			focusedId: focusedViewOf(store.layout()).id,
+			activeTabId: store.layout().activeTabId,
 			ids: store.viewScopes().map((scope) => scope.id),
 		}),
-		({ shownIds, focusedId, ids }) => {
-			prunePanels(ids);
-			const focused = panels.get(focusedId);
+		({ shownIds, focusedId, activeTabId, ids }) => {
+			pruneFocus(ids);
+			const current = panels();
+			const focused = current.get(focusedId);
 			if (!focused) return;
-			for (const id of shownIds) panels.get(id)?.removeAttribute("hidden");
-			const activePanelId = [...panels].find(([, panel]) =>
+			const toggles = visibility(current, shownIds, activeTabId);
+			for (const [el, show] of toggles) if (show) el.hidden = false;
+			const activePanelId = [...current].find(([, panel]) =>
 				panel.contains(document.activeElement),
 			)?.[0];
 			if (
-				focusLeaving(shownIds) ||
+				focusLeaving(current, toggles) ||
 				(activePanelId !== undefined && activePanelId !== focusedId)
 			) {
 				focusInto(focusedId, focused);
 			}
-			for (const [id, el] of panels) el.hidden = !shownIds.includes(id);
+			for (const [el, show] of toggles) el.hidden = !show;
 		},
 	);
 	const focusInto = (viewId: string, panel: HTMLElement): void => {
@@ -223,21 +261,16 @@ const App: Component<
 				<LeftSidebar />
 			</Show>
 
-			<main class="main" onFocusIn={rememberFocus} onFocusOut={forgetFocus}>
-				<For each={store.viewScopes()} keyed={(scope) => scope.id}>
-					{(scope) => (
-						<div
-							class="view-panel"
-							role="tabpanel"
-							id={viewPanelId(untrack(scope).id)}
-							aria-labelledby={tabIdOf(scope().id)}
-							tabindex={-1}
-							hidden
-							ref={(el) => panels.set(untrack(scope).id, el)}
-						>
-							<ViewHost scope={scope()} />
-						</div>
-					)}
+			<main
+				class="main"
+				ref={(el) => {
+					main = el;
+				}}
+				onFocusIn={rememberFocus}
+				onFocusOut={forgetFocus}
+			>
+				<For each={store.layout().tabs} keyed={(tab) => tab.id}>
+					{(tab) => <SplitPane tabId={untrack(tab).id} />}
 				</For>
 			</main>
 
