@@ -451,7 +451,7 @@ Every task that changes baselines also waits for #1644 (DL-399).
   passes `scale={2}`.
 - **Test (red first):** `StateDot.test.tsx`: `scale={2}` sets
   `data-scale="2"`; the `rect` cells for working, waiting, and done equal
-  the site cells listed in A4 and the root-cause section.
+  the site cells listed in A4.
 - **Baselines:** `state-dot.png` and the shots with the left sidebar.
 
 ### T6 — Message anatomy
