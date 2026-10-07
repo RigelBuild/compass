@@ -289,6 +289,9 @@ func (h *Hub) evictStaleBinding(sessionID string, stale *sessionBinding) {
 	defer h.mu.Unlock()
 	if live, ok := h.sessionAccounts[sessionID]; ok && sameBinding(live, *stale) {
 		delete(h.sessionAccounts, sessionID)
+		if h.accountSessions[stale.account] == sessionID {
+			delete(h.accountSessions, stale.account)
+		}
 	}
 }
 

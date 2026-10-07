@@ -356,6 +356,56 @@ func TestErroredCleanupKeepsPeerRebind(t *testing.T) {
 	}
 }
 
+func TestErroredCleanupDropsStaleAccountForPeerRebind(t *testing.T) {
+	const otherAccount store.AccountID = "acct-other"
+	ctx := t.Context()
+	hub, _, _ := newHub()
+	bindings := &pausingDeleteBindingStore{fakeBindingStore: newFakeBindingStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(bindings)
+	hub.SetSessionLostSink(newRecordingLostSink())
+	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(bindings.release) }) }
+	t.Cleanup(release)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+	gen := hub.EnrollGeneration()
+	hub.mu.Lock()
+	old := hub.sessionAccounts["sess-1"]
+	hub.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.dropLostSessionIfCurrent(ctx, gen, "runner-1", "sess-1", &old, true)
+	}()
+	select {
+	case <-bindings.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cleanup did not reach the durable delete")
+	}
+	// A peer re-binds the session id to another account.
+	if err := bindings.fakeBindingStore.DeleteSessionBinding(ctx, "sess-1"); err != nil {
+		t.Fatalf("peer DeleteSessionBinding: %v", err)
+	}
+	if _, _, err := bindings.fakeBindingStore.RecordSessionBinding(ctx, "sess-1", otherAccount, "runner-1"); err != nil {
+		t.Fatalf("peer RecordSessionBinding: %v", err)
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cleanup did not finish")
+	}
+
+	if sess, ok := hub.SessionForAccount(ctx, testAgentAccount); ok {
+		t.Fatalf("old account resolves to %q after the peer took the session, want a miss", sess)
+	}
+	if account, ok := hub.accountForSession(ctx, "sess-1"); !ok || account != otherAccount {
+		t.Fatalf("binding after old cleanup = (%s, %v), want (%s, true)", account, ok, otherAccount)
+	}
+}
+
 func TestErroredCleanupWithoutDurableWriteKeepsPeerRow(t *testing.T) {
 	ctx := t.Context()
 	hub, _, _ := newHub()
