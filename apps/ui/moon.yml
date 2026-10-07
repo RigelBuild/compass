@@ -103,10 +103,9 @@ tasks:
     # PLAYWRIGHT_CHROMIUM_PATH first, then a stale baseline: the shots live in
     # the tree, so committed shots older than the last recapture red until
     # they are refreshed. Check those before regenerating.
-    # Regenerate ONLY via `regen-visual-baselines` (dispatch `ci` on the
-    # branch with `regen: visual`, not the `forge` default). A devenv
-    # recapture under the pins is byte-identical to CI's, so local bytes are
-    # not WRONG — they are simply unattested, and no later reader can tell.
+    # A branch regenerates by capturing under the pinned dev shell (`direnv
+    # exec`) and naming each shot in the PR body (DL-399); the
+    # `regen-visual-baselines` dispatch is the main-only operator path.
     #
     # `cache: false` for the same reason `dev-smoke` sets it: a cached green
     # would survive a real rendering change whose inputs moon cannot hash
@@ -126,8 +125,8 @@ tasks:
     # `/tools/toolchain/chromium-e2e-env.nix` (on both tasks): it defines the
     # pinned Chromium and font set, so a change to either must schedule the gate.
     #
-    # `e2e/__screens__/**/*`: a baseline-only PR (the regen bot's, exactly)
-    # must re-schedule this gate, and PNGs live outside `src/**/*`.
+    # `e2e/__screens__/**/*`: a baseline-only change (a regen bot PR or a local
+    # capture) must re-schedule this gate, and PNGs live outside `src/**/*`.
     #
     # `/devenv.lock`: it pins the nixpkgs that builds the Chromium this gate
     # rasterizes against (tools/toolchain/chromium-e2e-env.nix reads it, and
