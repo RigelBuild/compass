@@ -42,3 +42,11 @@ ORDER BY repo ASC;
 UPDATE forge_repo_subscriptions
    SET enabled = $4
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3;
+
+-- name: LoadPRsBackfilledAt :one
+SELECT prs_backfilled_at FROM forge_repo_subscriptions
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3;
+
+-- name: MarkPRsBackfilled :execrows
+UPDATE forge_repo_subscriptions SET prs_backfilled_at = $4
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3;

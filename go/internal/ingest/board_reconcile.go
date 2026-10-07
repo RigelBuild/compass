@@ -43,7 +43,7 @@ type BoardStore interface {
 // forge.GitHub.ListUpdatedIssues at T5. LOCAL + structural: this package never
 // imports the concrete provider.
 type updatedLister interface {
-	ListUpdatedIssues(ctx context.Context, repo string, since time.Time, etag string) (forge.ConditionalResult[[]forge.Issue], error)
+	ListUpdatedIssues(ctx context.Context, repo string, since time.Time, etag string) (forge.ConditionalResult[forge.UpdatedRows], error)
 }
 
 // BoardReconcileConfig configures the board reconciliation sweep.
@@ -181,7 +181,7 @@ func (rc *BoardReconciler) reconcileRepo(ctx context.Context, repo string) error
 
 	var maxMark time.Time
 	poison := 0
-	for _, row := range res.V {
+	for _, row := range res.V.Issues {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

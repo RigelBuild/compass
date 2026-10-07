@@ -29,19 +29,24 @@ type fakeUpdatedLister struct {
 	calls atomic.Int64
 }
 
-func (l *fakeUpdatedLister) ListUpdatedIssues(_ context.Context, _ string, _ time.Time, _ string) (forge.ConditionalResult[[]forge.Issue], error) {
+func (l *fakeUpdatedLister) ListUpdatedIssues(_ context.Context, _ string, _ time.Time, _ string) (forge.ConditionalResult[forge.UpdatedRows], error) {
 	n := l.calls.Add(1)
 	if l.err != nil {
-		return forge.ConditionalResult[[]forge.Issue]{}, l.err
+		return forge.ConditionalResult[forge.UpdatedRows]{}, l.err
 	}
 	if len(l.results) == 0 {
-		return forge.ConditionalResult[[]forge.Issue]{NotModified: true}, nil
+		return forge.ConditionalResult[forge.UpdatedRows]{NotModified: true}, nil
 	}
 	i := int(n) - 1
 	if i >= len(l.results) {
 		i = len(l.results) - 1
 	}
-	return l.results[i], nil
+	return asUpdatedRows(l.results[i]), nil
+}
+
+// asUpdatedRows wraps a scripted issue-only result as an updated-order walk.
+func asUpdatedRows(r forge.ConditionalResult[[]forge.Issue]) forge.ConditionalResult[forge.UpdatedRows] {
+	return forge.ConditionalResult[forge.UpdatedRows]{V: forge.UpdatedRows{Issues: r.V}, ETag: r.ETag, NotModified: r.NotModified}
 }
 
 // storedMark is one repo's persisted watermark row.
@@ -250,7 +255,7 @@ type sinceAwareLister struct {
 	lastWindow atomic.Int64
 }
 
-func (l *sinceAwareLister) ListUpdatedIssues(_ context.Context, _ string, since time.Time, _ string) (forge.ConditionalResult[[]forge.Issue], error) {
+func (l *sinceAwareLister) ListUpdatedIssues(_ context.Context, _ string, since time.Time, _ string) (forge.ConditionalResult[forge.UpdatedRows], error) {
 	l.calls.Add(1)
 	var out []forge.Issue
 	for _, iss := range l.all {
@@ -260,7 +265,7 @@ func (l *sinceAwareLister) ListUpdatedIssues(_ context.Context, _ string, since 
 		out = append(out, iss)
 	}
 	l.lastWindow.Store(int64(len(out)))
-	return forge.ConditionalResult[[]forge.Issue]{V: out, ETag: l.etag}, nil
+	return forge.ConditionalResult[forge.UpdatedRows]{V: forge.UpdatedRows{Issues: out}, ETag: l.etag}, nil
 }
 
 // TestBoardSweepPoisonNewestBoundedAcrossSweeps: a persistently-failing row that
@@ -375,14 +380,14 @@ type perRepoLister struct {
 	results  map[string]forge.ConditionalResult[[]forge.Issue]
 }
 
-func (l *perRepoLister) ListUpdatedIssues(_ context.Context, repo string, _ time.Time, _ string) (forge.ConditionalResult[[]forge.Issue], error) {
+func (l *perRepoLister) ListUpdatedIssues(_ context.Context, repo string, _ time.Time, _ string) (forge.ConditionalResult[forge.UpdatedRows], error) {
 	if err, ok := l.errRepos[repo]; ok {
-		return forge.ConditionalResult[[]forge.Issue]{}, err
+		return forge.ConditionalResult[forge.UpdatedRows]{}, err
 	}
 	if res, ok := l.results[repo]; ok {
-		return res, nil
+		return asUpdatedRows(res), nil
 	}
-	return forge.ConditionalResult[[]forge.Issue]{NotModified: true}, nil
+	return forge.ConditionalResult[forge.UpdatedRows]{NotModified: true}, nil
 }
 
 // TestBoardRunStartupSweepFiresImmediately: Run performs one immediate sweep at

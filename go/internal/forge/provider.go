@@ -110,6 +110,17 @@ type PullRequest struct {
 	Reviews []Review
 	// Threads are the inline (and PR-level) review comment threads.
 	Threads []ReviewThread
+	// CreatedAt and UpdatedAt are the forge's timestamps; zero when unparseable.
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	// ClosingRefs are the issues the forge says this PR closes; only a full read fills them.
+	ClosingRefs []IssueRef
+}
+
+// IssueRef names an issue by repo ("owner/name") and number on the PR's forge.
+type IssueRef struct {
+	Repo   string
+	Number uint64
 }
 
 // ChangedStats is the diff-size roll-up of a pull request.

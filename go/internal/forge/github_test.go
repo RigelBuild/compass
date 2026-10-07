@@ -1425,7 +1425,7 @@ func TestGetIssueBudgetGateFailFast(t *testing.T) {
 // with a human and a bot comment, an unresolved PR-level thread, and one
 // required check run beside a non-required legacy status.
 const happyPullGraphQL = `{"data":{"repository":{
-	"pullRequest":{"reviewThreads":{
+	"pullRequest":{"closingIssuesReferences":{"nodes":[]},"reviewThreads":{
 		"pageInfo":{"hasNextPage":false,"endCursor":"t1"},
 		"nodes":[
 			{"id":"T1","isResolved":true,"path":"main.go","comments":{

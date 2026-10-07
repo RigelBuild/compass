@@ -91,3 +91,7 @@ SELECT DISTINCT c.issue_forge_provider, c.issue_forge_host, c.issue_repo, c.issu
    AND e.issue_forge_provider = $1 AND e.issue_forge_host = $2
    AND e.issue_repo = $3 AND e.issue_number = $4
  ORDER BY c.issue_forge_provider, c.issue_forge_host, c.issue_repo, c.issue_number;
+
+-- name: PullRequestForgeUpdatedAt :one
+SELECT forge_updated_at FROM pull_requests
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4;

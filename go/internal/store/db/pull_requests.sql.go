@@ -221,6 +221,30 @@ func (q *Queries) ListPullRequestLinks(ctx context.Context, arg ListPullRequestL
 	return items, nil
 }
 
+const pullRequestForgeUpdatedAt = `-- name: PullRequestForgeUpdatedAt :one
+SELECT forge_updated_at FROM pull_requests
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND number = $4
+`
+
+type PullRequestForgeUpdatedAtParams struct {
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+	Number        int64
+}
+
+func (q *Queries) PullRequestForgeUpdatedAt(ctx context.Context, arg PullRequestForgeUpdatedAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, pullRequestForgeUpdatedAt,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+		arg.Number,
+	)
+	var forge_updated_at pgtype.Timestamptz
+	err := row.Scan(&forge_updated_at)
+	return forge_updated_at, err
+}
+
 const pullRequestsForIssues = `-- name: PullRequestsForIssues :many
 WITH want AS (
     SELECT unnest($1::smallint[]) AS provider,

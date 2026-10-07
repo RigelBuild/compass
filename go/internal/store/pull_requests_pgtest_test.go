@@ -301,3 +301,37 @@ func sameCoords(got, want []ForgeCoord) bool {
 		return !slices.Contains(got, c)
 	})
 }
+
+func TestPullRequestUpdatedAtGate(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if _, ok, err := s.PullRequestUpdatedAt(ctx, ghCoord("a/b", 10)); err != nil || ok {
+		t.Fatalf("unknown PR = ok %v, err %v; want not found", ok, err)
+	}
+	mustUpsertPR(t, ctx, s, prRow("A/b", 10, "open", prBase, prBase.Add(time.Hour)))
+	at, ok, err := s.PullRequestUpdatedAt(ctx, ghCoord("a/B", 10))
+	if err != nil || !ok || !at.Equal(prBase.Add(time.Hour)) {
+		t.Fatalf("PullRequestUpdatedAt = %v, %v, %v; want the stored forge time", at, ok, err)
+	}
+}
+
+func TestPRsBackfilledMark(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b"}); err != nil {
+		t.Fatalf("EnsureForgeRepoSubscription: %v", err)
+	}
+	if _, ok, err := s.PRsBackfilledAt(ctx, ForgeProviderGitHub, "github.com", "a/b"); err != nil || ok {
+		t.Fatalf("fresh repo backfilled = %v, %v; want NULL", ok, err)
+	}
+	if err := s.MarkPRsBackfilled(ctx, ForgeProviderGitHub, "github.com", "a/b", prBase); err != nil {
+		t.Fatalf("MarkPRsBackfilled: %v", err)
+	}
+	at, ok, err := s.PRsBackfilledAt(ctx, ForgeProviderGitHub, "github.com", "a/b")
+	if err != nil || !ok || !at.Equal(prBase) {
+		t.Fatalf("PRsBackfilledAt = %v, %v, %v; want %v", at, ok, err, prBase)
+	}
+	if err := s.MarkPRsBackfilled(ctx, ForgeProviderGitHub, "github.com", "x/y", prBase); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown repo err = %v, want ErrNotFound", err)
+	}
+}

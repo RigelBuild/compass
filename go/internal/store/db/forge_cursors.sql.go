@@ -150,6 +150,49 @@ func (q *Queries) LoadForgeRepoWatermark(ctx context.Context, arg LoadForgeRepoW
 	return i, err
 }
 
+const loadPRsBackfilledAt = `-- name: LoadPRsBackfilledAt :one
+SELECT prs_backfilled_at FROM forge_repo_subscriptions
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3
+`
+
+type LoadPRsBackfilledAtParams struct {
+	ForgeProvider int16
+	ForgeHost     string
+	Repo          string
+}
+
+func (q *Queries) LoadPRsBackfilledAt(ctx context.Context, arg LoadPRsBackfilledAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, loadPRsBackfilledAt, arg.ForgeProvider, arg.ForgeHost, arg.Repo)
+	var prs_backfilled_at pgtype.Timestamptz
+	err := row.Scan(&prs_backfilled_at)
+	return prs_backfilled_at, err
+}
+
+const markPRsBackfilled = `-- name: MarkPRsBackfilled :execrows
+UPDATE forge_repo_subscriptions SET prs_backfilled_at = $4
+ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3
+`
+
+type MarkPRsBackfilledParams struct {
+	ForgeProvider   int16
+	ForgeHost       string
+	Repo            string
+	PrsBackfilledAt pgtype.Timestamptz
+}
+
+func (q *Queries) MarkPRsBackfilled(ctx context.Context, arg MarkPRsBackfilledParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markPRsBackfilled,
+		arg.ForgeProvider,
+		arg.ForgeHost,
+		arg.Repo,
+		arg.PrsBackfilledAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setForgeRepoSubscriptionEnabled = `-- name: SetForgeRepoSubscriptionEnabled :execrows
 UPDATE forge_repo_subscriptions
    SET enabled = $4
