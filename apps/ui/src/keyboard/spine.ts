@@ -36,6 +36,7 @@
  * (record T1 §343-345), so it is a plain `Set`, read fresh on each call.
  */
 
+import type { LayoutAction, WindowLayout } from "../window-layout";
 import type { Command, CommandId, CommandRegistry } from "./commands";
 import { createCommandRegistry } from "./registry";
 import type { RovingGroupHandle } from "./roving";
@@ -76,6 +77,10 @@ export function createKeyboardSpine(deps: {
 	togglePalette: () => void;
 	toggleLeft: () => void;
 	toggleRight: () => void;
+	layout: () => WindowLayout;
+	dispatchLayout: (action: LayoutAction) => void;
+	closeTab: (tabId: string) => void;
+	focusPane: (pane: "first" | "second") => void;
 }): KeyboardSpine {
 	const registry = createCommandRegistry();
 	const viewBridge: Command = {
@@ -142,6 +147,124 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.toggleRight(),
 	};
 	registry.register(sidebarToggleRight);
+	const registerGlobal = (
+		id: string,
+		title: string,
+		keywords: string[],
+		run: () => void,
+	): void => {
+		registry.register({
+			id: id as CommandId,
+			title,
+			keywords,
+			scope: "global",
+			run,
+		});
+	};
+	const registerLayoutCommand = (
+		id: string,
+		title: string,
+		keywords: string[],
+		action: () => LayoutAction | undefined,
+	): void => {
+		registerGlobal(id, title, keywords, () => {
+			const next = action();
+			if (next) deps.dispatchLayout(next);
+		});
+	};
+	registerLayoutCommand("tab.new", "New tab", ["open", "bridge"], () => ({
+		kind: "open",
+		path: "/",
+		fresh: true,
+	}));
+	registerGlobal("tab.close", "Close tab", ["close", "current"], () => {
+		deps.closeTab(deps.layout().activeTabId);
+	});
+	registerLayoutCommand("tab.next", "Next tab", ["focus", "switch"], () => {
+		const { tabs, activeTabId } = deps.layout();
+		const at = tabs.findIndex((tab) => tab.id === activeTabId);
+		const tab = at >= 0 ? tabs[(at + 1) % tabs.length] : undefined;
+		return tab ? { kind: "focusTab", tabId: tab.id } : undefined;
+	});
+	registerLayoutCommand("tab.prev", "Previous tab", ["focus", "switch"], () => {
+		const { tabs, activeTabId } = deps.layout();
+		const at = tabs.findIndex((tab) => tab.id === activeTabId);
+		const tab =
+			at >= 0 ? tabs[(at - 1 + tabs.length) % tabs.length] : undefined;
+		return tab ? { kind: "focusTab", tabId: tab.id } : undefined;
+	});
+	for (let index = 0; index < 9; index++) {
+		const tabNumber = index + 1;
+		registerLayoutCommand(
+			`tab.goto.${tabNumber}`,
+			`Go to tab ${tabNumber}`,
+			["focus", "switch", String(tabNumber)],
+			() => {
+				const tab = deps.layout().tabs[index];
+				return tab ? { kind: "focusTab", tabId: tab.id } : undefined;
+			},
+		);
+	}
+	registerLayoutCommand(
+		"tab.moveLeft",
+		"Move tab left",
+		["tab", "reorder", "left"],
+		() => {
+			const { tabs, activeTabId } = deps.layout();
+			const at = tabs.findIndex((tab) => tab.id === activeTabId);
+			return at > 0
+				? { kind: "move", tabId: activeTabId, toIndex: at - 1 }
+				: undefined;
+		},
+	);
+	registerLayoutCommand(
+		"tab.moveRight",
+		"Move tab right",
+		["tab", "reorder", "right"],
+		() => {
+			const { tabs, activeTabId } = deps.layout();
+			const at = tabs.findIndex((tab) => tab.id === activeTabId);
+			return at >= 0 && at < tabs.length - 1
+				? { kind: "move", tabId: activeTabId, toIndex: at + 1 }
+				: undefined;
+		},
+	);
+	registerLayoutCommand(
+		"pane.splitRight",
+		"Split right",
+		["pane", "split"],
+		() => ({
+			kind: "split",
+			direction: "row",
+		}),
+	);
+	registerLayoutCommand(
+		"pane.splitDown",
+		"Split down",
+		["pane", "split"],
+		() => ({
+			kind: "split",
+			direction: "column",
+		}),
+	);
+	registerLayoutCommand(
+		"pane.closeOther",
+		"Close other pane",
+		["pane", "close", "split"],
+		() => ({ kind: "closeOtherPane" }),
+	);
+	registerGlobal(
+		"pane.focusFirst",
+		"Focus first pane",
+		["pane", "focus", "left", "top"],
+		() => deps.focusPane("first"),
+	);
+	registerGlobal(
+		"pane.focusSecond",
+		"Focus second pane",
+		["pane", "focus", "right", "bottom"],
+		() => deps.focusPane("second"),
+	);
 
 	const groups = new Set<RovingGroupHandle>();
 
