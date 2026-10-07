@@ -14,13 +14,23 @@ import (
 // chanPruner hands each prune cutoff to the test. Blocking on the receive is
 // what lets the synctest clock run forward to the next tick.
 type chanPruner struct {
-	cutoffs chan int64
-	err     error
+	cutoffs        chan int64
+	computeCutoffs chan int64
+	err            error
 }
 
 func (p *chanPruner) PruneTokenUsageBefore(ctx context.Context, beforeUnixMs int64) (int64, error) {
 	select {
 	case p.cutoffs <- beforeUnixMs:
+		return 0, p.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+func (p *chanPruner) PruneComputeUsageBefore(ctx context.Context, beforeUnixMs int64) (int64, error) {
+	select {
+	case p.computeCutoffs <- beforeUnixMs:
 		return 0, p.err
 	case <-ctx.Done():
 		return 0, ctx.Err()
@@ -41,7 +51,7 @@ func TestRetentionSweeperPrunesAtStartAndDaily(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				p := &chanPruner{cutoffs: make(chan int64), err: tt.err}
+				p := &chanPruner{cutoffs: make(chan int64), computeCutoffs: make(chan int64), err: tt.err}
 				w := usage.NewRetentionSweeper(p, usage.RetentionConfig{
 					Retention: tt.retention,
 					Log:       slog.New(slog.DiscardHandler),
@@ -52,12 +62,15 @@ func TestRetentionSweeperPrunesAtStartAndDaily(t *testing.T) {
 				go func() { errc <- w.Run(ctx) }()
 
 				for _, at := range []time.Time{start, start.Add(day)} {
-					got := <-p.cutoffs
+					want := at.Add(-tt.window).UnixMilli()
+					if got := <-p.cutoffs; got != want {
+						t.Fatalf("token prune cutoff = %d, want %d", got, want)
+					}
+					if got := <-p.computeCutoffs; got != want {
+						t.Fatalf("compute prune cutoff = %d, want %d", got, want)
+					}
 					if now := time.Now(); !now.Equal(at) {
 						t.Fatalf("prune ran at %v, want %v", now, at)
-					}
-					if want := at.Add(-tt.window).UnixMilli(); got != want {
-						t.Fatalf("prune cutoff = %d, want %d (%v before %v)", got, want, tt.window, at)
 					}
 				}
 				cancel()
