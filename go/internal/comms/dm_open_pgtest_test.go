@@ -91,13 +91,13 @@ func TestOpenDMUnknownHandleIsNotFound(t *testing.T) {
 	alice := mustAgent(t, st, owner.ID, "alice")
 
 	_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "ghost"}))
-	connectCodeIs(t, err, connect.CodeNotFound, "OpenDM(unknown handle)")
+	connectNotFoundFor(t, err, "ghost", "OpenDM(unknown handle)")
 }
 
 // TestOpenDMCrossOwnerIsIndistinguishableNotFound: an owner-qualified handle
-// naming ANOTHER owner's agent collapses to the SAME CodeNotFound an unknown
-// handle gets — the cross-owner authz is byte-identical to unknown, so a foreign
-// peer's existence is never leaked (design.md T3:746-748).
+// naming ANOTHER owner's agent must refuse with the exact message an unknown
+// handle of the same shape gets. The message is the oracle: a leaked owner id
+// or "different owner" phrase would keep the code NOT_FOUND.
 func TestOpenDMCrossOwnerIsIndistinguishableNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -106,10 +106,10 @@ func TestOpenDMCrossOwnerIsIndistinguishableNotFound(t *testing.T) {
 	other := mustUser(t, st, "other")
 	mustAgent(t, st, other.ID, "foreign")
 
-	// alice names other's agent by an owner-qualified handle: it resolves, but
-	// the same-owner check remaps it to NOT_FOUND naming the submitted handle.
-	_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "other/foreign"}))
-	connectCodeIs(t, err, connect.CodeNotFound, "OpenDM(cross-owner owner-qualified handle)")
+	for _, peer := range []string{"other/foreign", "other/ghost"} {
+		_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peer}))
+		connectNotFoundFor(t, err, peer, "OpenDM("+peer+")")
+	}
 }
 
 // TestOpenDMMalformedQualifierIsNotFound (OQ-7 grammar): a leading '/' or a
