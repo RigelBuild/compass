@@ -926,14 +926,28 @@ describe("evaluate — touch-coupling (DL-Q1)", () => {
 			evaluate([], [], changed([rec], "LEDGER-IMPACT: none"), smallRecord),
 		).toEqual([]);
 	});
-	// Automation-exempt head branches (renovate/) skip touch-coupling. Mirrors
-	// spec-impact-gate's branch exemption.
+	// Automation-exempt head branches (renovate/, trunk-merge/) skip
+	// touch-coupling. Mirrors spec-impact-gate's branch exemption.
 	test("renovate/ branch touching a record, no ledger, no decl → no violation", () => {
 		expect(
 			evaluate(
 				[],
 				[],
 				changed([rec], null, "renovate/npm-lodash-4.x"),
+				smallRecord,
+			),
+		).toEqual([]);
+	});
+	test("trunk-merge/ queue PR touching a record, no ledger, no decl → no violation", () => {
+		expect(
+			evaluate(
+				[],
+				[],
+				changed(
+					[rec],
+					"This pull request was created and is being managed by Trunk Merge.",
+					"trunk-merge/pr-1750/78abf0eb-bisection",
+				),
 				smallRecord,
 			),
 		).toEqual([]);

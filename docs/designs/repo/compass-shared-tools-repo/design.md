@@ -4,10 +4,9 @@
 
 Compass and one private consumer repo each keep their own copy of the same repo
 tools, and the copies drift. A fix lands in one copy and not the other. Example:
-the private consumer's design-ledger gate exempts Trunk merge-queue branches
-(`trunk-merge/`), but compass's copy does not, though compass also lands through
-the Trunk queue. That gap has no effect in compass today: the gate's
-touch-coupling leg needs `REPO` and `PR_NUMBER`, and no compass CI job sets them.
+the private consumer's design-ledger gate exempted Trunk merge-queue branches
+(`trunk-merge/`) long before compass's copy did. Compass only found the gap when
+its CI began running the touch-coupling leg and queued PRs started failing.
 
 Intent: move every tool both repos run into one new public repo, and have each
 consumer pin it, so each tool has one copy. This record folds in RIG-4184
@@ -351,8 +350,8 @@ Acceptance:
   needs PR context. Seed a record touched with no ledger edit and no
   `Ledger-impact:` line. Drive both ledger gates through `runOnce` with that
   injected changed set and a `headBranch`. A normal branch exits 1 on both.
-  `renovate/` exits 0 on both. `trunk-merge/` exits 0 on the new gate only;
-  that, and the tool name in output, are the stated intended changes.
+  `renovate/` and `trunk-merge/` exit 0 on both. The tool name in output is
+  the stated intended change.
 - On a docs-only PR, the ci-matrix output still contains the ledger gate target.
 
 Record each result in the PR body.
