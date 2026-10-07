@@ -341,6 +341,7 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 	resp, err := comms.CreateAgent(rctx, connect.NewRequest(&compassv1.CreateAgentRequest{
 		Handle:      handle,
 		DisplayName: displayName,
+		Role:        "manager",
 	}))
 	if err != nil {
 		t.Fatalf("CreateAgent(%s) as the owning tenant: %v", handle, err)

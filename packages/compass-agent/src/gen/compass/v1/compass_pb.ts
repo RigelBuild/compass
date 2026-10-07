@@ -1401,22 +1401,23 @@ export type ProvisionAgentWorkspaceRequest = Message<"compass.v1.ProvisionAgentW
   persona: string;
 
   /**
-   * The agent's role, selected at spawn from the closed taxonomy
+   * The agent's role, selected at creation from the closed taxonomy
    * (supervisor/owner/manager) and server-validated, selecting the container's
    * block-0 system prompt at provision so it survives compaction (a
    * system-prompt config block is not part of the message history a snapcompact
-   * archives). The label's ORIGIN is spawner-selected: the spawn request
-   * carries a required label from the closed taxonomy, validated against the
-   * server's spawnableRoles set (INVALID_ARGUMENT on an unknown label) before
-   * it is stored. This provision field stays SERVER-AUTHORITATIVE: the Server
-   * populates it by reading the stored AgentAccount.role (the provision source
-   * of record) and overwrites any client-supplied value, so a caller cannot
+   * archives). The label's ORIGIN is creator-selected: both the spawn request
+   * and CommsService.CreateAgent carry a required label from the closed
+   * taxonomy, validated against the server's shared set (INVALID_ARGUMENT on
+   * an unknown label) before it is stored. This provision field stays
+   * SERVER-AUTHORITATIVE: the Server populates it by reading the stored
+   * AgentAccount.role (the provision source of record) and overwrites any
+   * client-supplied value, so a caller cannot
    * inject a role prompt via provision — prompt TEXT ships only in the
    * operator-published config bundle. Where persona (field 3) is an APPEND
    * overlay, role REPLACES block-0: the label selects
    * config/prompts/<role>/SYSTEM.md, materialized by the Runner into the
    * container's customSystemPrompt (compass-runner consumer). A role is
-   * required at spawn; this provision field is optional and an empty stored
+   * required at creation; this provision field is optional and an empty stored
    * role yields the default OMP block-0.
    *
    * @generated from field: string role = 4;
