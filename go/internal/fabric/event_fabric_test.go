@@ -1260,6 +1260,156 @@ func TestParkReasonIsSanitizedAndBounded(t *testing.T) {
 	}
 }
 
+// TestUnsubscribedConsumerIsReaped proves an abandoned durable consumer is
+// deleted server-side. Without InactiveThreshold the server keeps a durable
+// forever and the deleted advisory never arrives.
+func TestUnsubscribedConsumerIsReaped(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	// A 2s threshold fits inside the gate with the server's reap jitter.
+	f := newFabric(t, Config{URL: url, testInactiveThreshold: 2 * time.Second, Log: quietLogger(t)})
+
+	subject, err := CommsSubject("t1", KindChannelChanged)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	deleted, err := raw.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.DELETED." + DefaultStreamName + "." + durableName(subject))
+	if err != nil {
+		t.Fatalf("subscribing to the deleted advisory: %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the advisory subscription: %v", err)
+	}
+
+	unsub, err := f.Subscribe(ctx, subject, func(context.Context, EventRef) error { return nil })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	unsub()
+
+	if _, err := deleted.NextMsgWithContext(ctx); err != nil {
+		t.Fatalf("no consumer-deleted advisory after unsubscribe: %v", err)
+	}
+	js, err := jetstream.New(raw)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if _, err := js.Consumer(ctx, DefaultStreamName, durableName(subject)); !errors.Is(err, jetstream.ErrConsumerNotFound) {
+		t.Fatalf("consumer lookup after reap = %v, want ErrConsumerNotFound", err)
+	}
+}
+
+// TestLiveConsumerSurvivesInactiveThreshold proves the threshold only reaps an
+// abandoned consumer: an idle subscription has no pending acks, so its own pull
+// requests alone must keep the durable alive past the threshold.
+func TestLiveConsumerSurvivesInactiveThreshold(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	threshold := time.Second
+	f := newFabric(t, Config{URL: url, testInactiveThreshold: threshold, Log: quietLogger(t)})
+
+	subject, err := CommsSubject("t1", KindChannelChanged)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	deleted, err := raw.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.DELETED." + DefaultStreamName + "." + durableName(subject))
+	if err != nil {
+		t.Fatalf("subscribing to the deleted advisory: %v", err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the advisory subscription: %v", err)
+	}
+
+	got := make(chan EventRef, 1)
+	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer unsub()
+
+	// Idle past threshold plus the server's 1s jitter. A reap shows up as the
+	// deleted advisory; the timeout here is the passing outcome.
+	waitCtx, cancel := context.WithTimeout(ctx, 3*threshold)
+	_, advErr := deleted.NextMsgWithContext(waitCtx)
+	cancel()
+	if advErr == nil {
+		t.Fatal("the server reaped a consumer whose subscription was live")
+	}
+
+	want := EventRef{Tenant: "t1", Kind: KindChannelChanged, RowID: "ch-after-idle"}
+	if err := f.Publish(ctx, subject, want); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if r := recvRef(t, got); r != want {
+		t.Fatalf("delivery after idling %+v, want %+v", r, want)
+	}
+}
+
+// TestReapedLiveConsumerIsRecreated covers a reap while a subscription is still
+// open, e.g. after a partition longer than the threshold. The server-side delete
+// is terminal for nats.go's Consume, so the fabric must recreate the durable.
+func TestReapedLiveConsumerIsRecreated(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, Log: quietLogger(t)})
+
+	subject, err := CommsSubject("t1", KindChannelChanged)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	got := make(chan EventRef, 1)
+	unsub, err := f.Subscribe(ctx, subject, func(_ context.Context, r EventRef) error {
+		got <- r
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer unsub()
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	js, err := jetstream.New(raw)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	// The same server-side delete an InactiveThreshold reap performs.
+	if err := js.DeleteConsumer(ctx, DefaultStreamName, durableName(subject)); err != nil {
+		t.Fatalf("DeleteConsumer: %v", err)
+	}
+	pollUntil(t, "the reaped consumer to be recreated", func() bool {
+		_, err := js.Consumer(ctx, DefaultStreamName, durableName(subject))
+		return err == nil
+	})
+
+	want := EventRef{Tenant: "t1", Kind: KindChannelChanged, RowID: "ch-after-reap"}
+	if err := f.Publish(ctx, subject, want); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if r := recvRef(t, got); r != want {
+		t.Fatalf("delivery after the reap %+v, want %+v", r, want)
+	}
+}
+
 // TestUnsubscribeDrainsBufferedEvents defends the durability contract across
 // teardown: the pull consumer prefetches, so at Unsubscribe there are events
 // this instance has already CLAIMED but not yet run. Stopping discards them, and
