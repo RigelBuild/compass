@@ -15,11 +15,11 @@ VMs found at restart are **killed and rebooted on next request, not adopted**"
 (microvm-runner.md:258-259) — plus a metric-naming translation (§(d)) that is
 an implementation-convention fact, not a new cross-cutting decision. There is
 no `DECISIONS.md` under `docs/designs/infra/` (V5's precedent), and
-`docs/designs/DECISIONS.md` is untouched. Two rulings DO land on the parent's
+`docs/designs/DECISIONS.md` is untouched. Two forks DO land on the parent's
 supervised-set sentence rather than merely detailing it — the guest (OQ-10)
 and the net backend (OQ-6) both leave V7's session-fatal handling — and both
-are graded load-bearing and carried to the human for an explicit ruling
-rather than absorbed here.
+are graded load-bearing and carried to the human for an explicit ruling.
+OQ-8 is ruled: any RunRoot lock failure fails startup.
 
 ## Problem / Intent
 
@@ -79,10 +79,9 @@ mechanism that produces the numbers and invents no threshold.
 ## Approach
 
 Each subsection resolves one concern the parent's V7 plan leaves to detailing.
-Every fork is also listed in `## Open Questions` for the pre-freeze batch, and
-the body designs against the recommended option. Line numbers into the V6
-supervision core cite PR #912's branch (the shape V7 lands on); everything
-else cites main.
+Every fork is listed in `## Open Questions`. OQ-8 is ruled; for the rest the
+body designs against the recommended option. Line numbers into the V6 supervision core cite
+PR #912's branch (the shape V7 lands on); everything else cites main.
 
 ### (a) Per-session pidfiles for all three children, with PID-reuse defense
 
@@ -239,17 +238,14 @@ func (m *MicroVMRuntime) ReapOrphans(ctx context.Context, held RunRootLock) erro
 
 **Step 0 — the RunRoot lock, a DELIVERED mechanism, not an assumption,
 owned by the STARTUP unit.** `run()` (`go/cmd/compass-runner/main.go:43`)
-calls `LockRunRoot` ONCE before preflight and reap. On success, startup
-passes the returned token and defers the release until process shutdown, so
-the lock is held for the Runner's life and the kernel drops it on any holder
-death, SIGKILL included. On refusal, startup warns, still runs preflight,
-and skips only the reap (OQ-5); no scan runs without the lock. The reaper
-rejects a zero token before scanning and never acquires the lock itself.
-This is a W2 deliverable, not a property inherited from OQ-8's recommendation:
-the lock protects a second live Runner's sessions from the reaper. A safety
-property that exists only as an Open Question's preference is not implemented.
-OQ-8 still rules on WHICH mechanism; the body ships one so W1-W5 implemented
-verbatim cannot produce a reaper with no cross-process exclusion at all.
+calls `LockRunRoot` ONCE before sampler startup, preflight, and reap. On
+success, startup passes the returned token and defers the release until process
+shutdown, so the lock is held for the Runner's life and the kernel drops it
+on any holder death, SIGKILL included. On any lock failure, startup returns an
+ERROR (naming the other owner on `EWOULDBLOCK`) and does not start the sampler,
+run preflight or reap, or serve. The reaper rejects a zero token before
+scanning and never acquires the lock itself. This is a W2 deliverable; the
+OQ-8 ruling requires the lock to protect a second live Runner's sessions.
 
 **Why the startup unit and not `ReapOrphans`.** Two reasons, both
 structural rather than stylistic. First, a lock the reaper acquires cannot
@@ -268,14 +264,14 @@ precondition; startup passes the token returned by `LockRunRoot`.
 // LockRunRoot creates <RunRoot>/microvm with os.MkdirAll before opening
 // .runner.lock, then takes LOCK_EX|LOCK_NB and returns the held-lock token
 // plus the release func. Refuse-not-wait: EWOULDBLOCK means another Runner
-// owns this RunRoot; startup WARNs, still runs preflight in its per-process
-// probe dir, and skips reap so a Runner that loses the lock never scans.
-// ITS SOLE CALLER IS run()/startup, which acquires once and defers the
-// release, so the lock is held for the Runner's life and the kernel drops
-// it on ANY holder death, SIGKILL included: a crashed Runner never wedges
-// its successor. That release-on-death property is why OQ-8 recommends
-// flock over a recorded (pid, starttime, bootid) owner file: the lock IS
-// liveness, with no stale record to reason about.
+// owns this RunRoot; startup returns an ERROR naming `another Runner owns
+// <RunRoot>`. Other lock errors also fail startup. A failed lock attempt
+// starts no sampler, preflight, or reap, and the Runner does not serve.
+// On success, run()/startup defers release until shutdown, so the lock is
+// held for the Runner's life and the kernel drops it on ANY holder death,
+// SIGKILL included: a crashed Runner never wedges its successor. That
+// release-on-death property is why OQ-8 rules for flock over a recorded
+// (pid, starttime, bootid) owner file: the lock IS liveness.
 //
 // The release CLOSES the fd and NEVER unlinks the file. The lockfile is
 // created once and lives forever, because two Runners flocking two
@@ -284,16 +280,12 @@ precondition; startup passes the token returned by `LockRunRoot`.
 func (m *MicroVMRuntime) LockRunRoot() (held RunRootLock, release func(), err error)
 ```
 
-**Refused-lock behavior.** A lock refusal surfaces at the `LockRunRoot` hook,
-before the reap hook. Startup WARNs, still runs preflight, skips ONLY reap,
-and continues serving without scanning the RunRoot tree. Locking first ensures
-a Runner that loses the lock never scans orphan session dirs. Preflight is
-safe because W5 changes `verifyRunRoot`'s probe dir from the shared
-`<RunRoot>/microvm/.preflight` to a per-process `.preflight-<pid>`. Startup also starts the context-owned
-PSS sampler immediately after the lock attempt, whether acquired or refused;
-sampling touches no RunRoot state (§(d), W4/W5). This preserves OQ-5's
-warn-and-continue posture; OQ-8 recommends refusing the lock, not refusing
-startup.
+**Lock refusal.** Startup returns an ERROR naming the other owner
+(`another Runner owns <RunRoot>` on `EWOULDBLOCK`). Other lock errors also
+fail startup. No sampler, preflight, reap, or serving follows a failed lock
+attempt. After successful acquisition, startup starts the PSS sampler and
+runs preflight while holding the lock, then runs reap. A reap failure remains
+a WARNING, not an abort (OQ-5).
 
 **Per-directory procedure**, for each `<RunRoot>/microvm/<id>/`:
 
@@ -310,7 +302,7 @@ startup.
    the token is passed to the reaper. A zero token is rejected before
    scanning. The reaper takes the token rather than acquiring it, so it
    avoids a second in-process `flock`. OQ-8 (load-bearing) rules on the
-   mechanism; if the human rules another way, this clause changes with it.
+   mechanism and requires a failed lock attempt to fail startup.
 2. **Kill recorded processes, VMM first.** For each pidfile present: parse
    the line. An INTENT record (`intent <bootid>`, §(a)) names a child whose
    spawn may or may not have happened and carries no pid — from the current
@@ -384,11 +376,11 @@ startup.
      this is a reaper-local constant in package `runtime`, declared
      beside it.
 **Call site.** `run()` (`go/cmd/compass-runner/main.go:43`), through W5's
-`startup` unit, takes the RunRoot lock (step 0) before backend-gated
-preflight and runs the reap once after it, via two unexported single-method
-probe interfaces
-`package main` — the V3/V4-ratified discipline the existing three probes
-follow (`microVMPreflighter`/`podmanPreflighter`/`canaryBooter`,
+`startup` unit, takes the RunRoot lock (step 0) before sampler startup, runs
+backend-gated preflight under the lock, then runs reap once, via two unexported
+single-method probe interfaces in `package main` — the V3/V4-ratified
+discipline the existing three probes follow
+(`microVMPreflighter`/`podmanPreflighter`/`canaryBooter`,
 `go/cmd/compass-runner/main.go:185-203`):
 
 ```go
@@ -401,24 +393,20 @@ type orphanReaper interface {
 ```
 
 The lock and reaper remain separate single-method probes under that same
-discipline. `startup` acquires the lock first, then calls
-`StartPSSSampler(ctx)` through the separate sampler probe immediately after
-the lock attempt, whether the lock was acquired or refused; sampling touches
-no RunRoot state. It then always runs preflight and runs reap only when the
-lock was acquired. The lock's release goes into the shutdown closure `run()`
-`defer`s, so it outlives the reap and covers the process's life. An engine
-implementing neither lock nor reaper (podman) skips both; the sampler is
-probed separately.
+discipline. After successful lock acquisition, `startup` starts the PSS sampler
+via the separate sampler probe, then runs preflight while holding the lock,
+and runs reap afterward. The lock's release goes into the shutdown closure
+`run()` `defer`s, so it outlives preflight and reap and covers the process's
+life. An engine implementing neither lock nor reaper (podman) skips both; the
+sampler is probed separately.
 
-A refused lock is a WARNING that skips ONLY the reap (OQ-5), then startup
-continues serving. The per-process probe dir keeps concurrent preflights
-separate. When lock acquisition succeeds, startup passes the returned token
-to the reaper. A reap failure after lock acquisition is likewise a WARNING,
+On lock refusal, startup returns an ERROR naming the other owner and does not
+start the sampler, run preflight or reap, or serve. Other lock errors also fail
+startup. A reap failure after successful lock acquisition remains a WARNING,
 not an abort (OQ-5): the un-reaped processes hold stale resources but cannot
 corrupt new sessions — every new session gets a fresh random id and dir
-(`mintSessionID`, `microvm_lifecycle.go:332-341`), so nothing collides;
-refusing startup would turn one wedged orphan into a fleet outage. The error
-is logged with the per-dir detail and the reap re-runs at next startup.
+(`mintSessionID`, `microvm_lifecycle.go:332-341`), so nothing collides. The
+error is logged with the per-dir detail and the reap re-runs at next startup.
 
 ### (c) Mid-session death: detect via the reaper channels, fail distinguishably, tear down peers
 
@@ -861,9 +849,9 @@ One line is NOT a transition, and it is the OQ-9(ii) deliverable: a
 periodic `microvm session memory` (`session_id`, `vmm_pss_kb`,
 `virtiofsd_pss_kb`, `passt_pss_kb`) emitted per live session on a
 `pssSampleInterval = 60 * time.Second` tick from one context-owned goroutine
-that startup starts via `StartPSSSampler(ctx)` immediately after its lock step,
-whether the lock is acquired or refused. It is the per-session counterpart of
-the aggregate PSS gauge, and it is what makes a runaway VM identifiable at all
+that starts via `StartPSSSampler(ctx)` immediately after successful lock
+acquisition and runs while the RunRoot lock is held. It is the per-session
+counterpart of the aggregate PSS gauge and makes a runaway VM identifiable
 (§(d)'s gauge is fleet-summed by construction). It reads the same
 `VM.PSS()` — a `map[string]int64` keyed by child name, in kB (PR #912
 `launch.go:663-669`) — under the same discipline as the gauge callback:
@@ -1039,13 +1027,13 @@ Every task below inherits these.
   operates on non-child processes via proc-probe + signal only.
 - **The reaper requires the startup-held RunRoot lock token.** `run()`
   (`go/cmd/compass-runner/main.go:43`), through W5's `startup` unit,
-  calls `LockRunRoot` ONCE before preflight and reap, then `defer`s the
-  release for the process's life. `ReapOrphans` rejects a zero token before
-  scanning. Startup always runs preflight and starts the context-owned PSS
-  sampler immediately after the lock attempt, but skips reap if the lock is
-  refused (§(b), W5). The runtime caller contract is named at §(b) step 0,
-  the `ReapOrphans` doc comment, W2's Interfaces, W5's Interfaces, the
-  `## Tasks` bullets and OQ-8. No code path, test seam, or fake may bypass
+  calls `LockRunRoot` ONCE before sampler startup, preflight, and reap, then
+  `defer`s the release for the process's life. `ReapOrphans` rejects a zero
+  token before scanning. A failed lock attempt returns an error before the
+  sampler, preflight, reap, or serving; preflight runs under the lock when
+  acquisition succeeds (§(b), W5). The runtime caller contract is named at
+  §(b) step 0, the `ReapOrphans` doc comment, W2's Interfaces, W5's Interfaces,
+  the `## Tasks` bullets and OQ-8. No code path, test seam, or fake may bypass
   startup's lock acquisition. The reaper may not acquire the lock itself: a
   second `flock` from the same process refuses itself, which would break the
   re-invocability §(b) step 1 designs for. This is the intended defense
@@ -1055,8 +1043,8 @@ Every task below inherits these.
   `<RunRoot>/microvm/.runner.lock`. Two Runners holding flocks on two
   different inodes is indistinguishable from no lock at all, and the run
   root is not inviolate in this tree — `verifyRunRoot` creates and removes
-  a probe dir under `<RunRoot>/microvm/`. W5 makes it per-process
-  (`.preflight-<pid>`), so concurrent preflights are safe without the lock.
+  a probe dir under `<RunRoot>/microvm/`. The startup lock serializes
+  preflight and reaping; no per-process probe directory is required.
 - **The on-disk record never UNDER-names a live child.** `launch` writes
   each child's intent record before its spawn and settles it after, so a
   crash at any instant leaves a dir naming every process it may have
@@ -1174,17 +1162,18 @@ The §(b) reaper. Depends on W1's file format.
     `LOCK_EX|LOCK_NB` on `<RunRoot>/microvm/.runner.lock` (created 0600;
     its parent is created with `os.MkdirAll` before the file is opened),
     returning the held-lock token plus the fd-closing release. On
-    `EWOULDBLOCK` it returns a named "another Runner owns this RunRoot"
-    error. **Its sole caller is `run()`/`startup`** (W5,
-    `go/cmd/compass-runner/main.go:43`), which acquires it ONCE before
-    preflight and reap and `defer`s the release for the process's life, so
-    the kernel drops it on any holder death including SIGKILL (§(b) step 0,
-    OQ-8). `ReapOrphans` never calls it — it takes the token. The release
-    CLOSES the fd and never unlinks the file: the lockfile is created
-    once and lives forever, because two Runners flocking two different
-    inodes is indistinguishable from no lock at all (§(b) step 0). This
-    is a NAMED W2 deliverable, not an OQ-8 assumption: zero-token rejection
-    prevents scanning for an invalid call;
+    `EWOULDBLOCK` it returns a named "another Runner owns <RunRoot>"
+    error. Other lock errors also fail startup. **Its sole caller is
+    `run()`/`startup`** (W5, `go/cmd/compass-runner/main.go:43`), which
+    acquires it ONCE, then starts the sampler and runs preflight under the
+    lock before reap, and `defer`s release for the process's life. The kernel
+    drops it on any holder death including SIGKILL (§(b) step 0, OQ-8). A
+    failed lock attempt does not start the sampler, run preflight or reap, or
+    serve. `ReapOrphans` never calls `LockRunRoot`; it takes the token. The
+    release closes the fd and never unlinks the file: it lives forever because
+    two Runners flocking different inodes is indistinguishable from no lock
+    (§(b) step 0). A non-zero token cannot prove live lock ownership;
+    `ReapOrphans` rejects zero tokens before scanning;
   - `type RunRootLock` — the token returned by `LockRunRoot` and required as
     a `ReapOrphans` parameter; callers must pass it, and `ReapOrphans` rejects
     its zero value;
@@ -1224,8 +1213,8 @@ The §(b) reaper. Depends on W1's file format.
     `LockRunRoot` is exported to satisfy this `package main` interface, following
     `microVMPreflighter.VerifyMicroVMSupport` (`main.go:185-203`). The locker is
     probed before preflight, the reaper after, and W5 wires `lockRunRoot` and
-    `reap` hooks. Reap errors WARN without aborting (OQ-5); lock refusal
-    WARNs but still runs preflight and skips only reap;
+    `reap` hooks. Reap errors WARN without aborting (OQ-5). A failed lock
+    returns an error before sampler startup, preflight, reap, or serving;
 - **Test cycle:**
   - *Hermetic (fake probes, temp RunRoot):* a SECOND `LockRunRoot` over the
     same RunRoot is REFUSED while the first release is outstanding
@@ -1238,8 +1227,10 @@ The §(b) reaper. Depends on W1's file format.
     planting a live-match pidfile that must survive untouched and by the
     fake signal probe recording zero calls. This proves zero-value rejection
     only; a non-zero token alone cannot prove lock ownership. The lock
-    acquisition test separately proves contention behavior, and startup
-    passes the token returned by `LockRunRoot`. Then the reap behaviors, all
+    acquisition test separately proves contention behavior. The W5 startup
+    test proves lock failure returns before sampler, preflight, reap, and
+    serving, while successful startup follows lock → sampler → preflight →
+    reap and passes the returned token. Then the reap behaviors, all
     with the lock held: planted live-match pidfiles
     ⇒ signalled in VMM-first order and dir removed; starttime-mismatch
     pidfile ⇒ NO signal issued, dir removed; stale-boot-id pidfile ⇒ no
@@ -1406,12 +1397,11 @@ The §(d) instrument set inside the microVM backend.
     `Active()`'s independent inode arm is true with `LimitBytes == 0`
     (PR #912 `microvm_quota.go:117-125`). The zero-value snapshot is
     still silent under this gate, with no extra flag (§(d));
-  - `pssSampleInterval = 60 * time.Second` and the per-session PSS
-    sampler OQ-9(ii)'s recommendation assumes: after the lock step, W5's
-    startup unit calls `StartPSSSampler(ctx context.Context)` on
-    `*MicroVMRuntime`, whether the lock is acquired or refused. The sampler
-    goroutine is bound to the run context and exits when it is cancelled.
-    On each tick it snapshots the live session/VM pairs under `m.mu`,
+  - `pssSampleInterval = 60 * time.Second` and the per-session PSS sampler
+    OQ-9(ii)'s recommendation assumes: after successful lock acquisition,
+    W5's startup unit calls `StartPSSSampler(ctx context.Context)` on
+    `*MicroVMRuntime`. The sampler goroutine is bound to the run context and
+    exits when it is cancelled. On each tick it snapshots the live session/VM
     RELEASES the lock, then emits one INFO `microvm session memory` line per
     session — `session_id` plus `vmm_pss_kb`/`virtiofsd_pss_kb`/
     `passt_pss_kb` from `vm.PSS()`, which returns `map[string]int64`
@@ -1480,16 +1470,15 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
     which calls them in the order `setupOtel` → `selectEngine` →
     `lockRunRoot` → `startPSSSampler` → `preflight` → `reap` and returns the
     engine plus a combined shutdown closure (the OTel flush AND the lock
-    release). Locking before preflight means a Runner that loses the lock
-    never scans orphan session dirs. W5 also changes `verifyRunRoot`
-    (`microvm_preflight.go`) to probe a per-process
-    `<RunRoot>/microvm/.preflight-<pid>` dir instead of the shared
-    `.preflight`, so concurrent preflights are safe.
+    release). After successful lock acquisition, startup starts the sampler,
+    runs preflight while holding the lock, then reaps. W5 leaves
+    `verifyRunRoot`'s shared `.preflight` probe unchanged; preflight is
+    serialized by the RunRoot lock.
 
-    After the lock attempt, `startup` calls `StartPSSSampler(ctx)` through
-    `pssSamplerStarter` before preflight, whether the lock was acquired or
-    refused; sampling touches no RunRoot state. An engine without that probe
-    skips the sampler.
+    After successful lock acquisition, `startup` calls
+    `StartPSSSampler(ctx)` through `pssSamplerStarter` before preflight. An
+    engine without that probe skips the sampler. A lock error returns before
+    sampler startup, preflight, reap, or serving.
 
     `run()` (`go/cmd/compass-runner/main.go:43`) builds the real hooks
     and calls it, replacing the inline sequence at `main.go:106-112` and
@@ -1500,8 +1489,8 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
     `microvm.go:117-122`); §(d) has the argument.
 
     **`startup` is the RunRoot lock's sole OWNER (OQ-8, §(b) step 0).**
-    The `lockRunRoot` hook runs ONCE before preflight and reap, through a
-    fifth unexported single-method probe
+    The `lockRunRoot` hook runs ONCE before sampler startup, preflight, and
+    reap, through a fifth unexported single-method probe
     (`type runRootLocker interface { LockRunRoot() (RunRootLock, func(), error) }`,
     the same discipline as `microVMPreflighter.VerifyMicroVMSupport` at
     `main.go:185-203`); its release goes into the returned shutdown closure
@@ -1512,10 +1501,10 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
     at `main.go:185-203`. The token is passed to the `reap` hook. A second
     `flock` from the same process refuses itself, which is why `ReapOrphans`
     receives the token instead of acquiring the lock (§(b) step 0).
-    A `LockRunRoot` error warns but still runs preflight and skips only reap;
-    startup continues (OQ-5). On success, the token is passed to the `reap`
-    hook. The `orphanReaper` probe (W2) is the `reap` hook. An engine without
-    the lock or reaper probes (podman) skips both lock and reap;
+    A `LockRunRoot` error fails startup before the sampler, preflight, reap,
+    or serving. On success, the token is passed to the `reap` hook. The
+    `orphanReaper` probe (W2) is the `reap` hook. An engine without the
+    lock or reaper probes (podman) skips lock, sampler, and reap;
   - `go/internal/runtime`: `func (m *MicroVMRuntime) BackendName() string { return "microvm" }`
     and `func (p *PodmanCLI) BackendName() string { return "podman" }` —
     NOT on the `WorkloadRuntime` interface;
@@ -1536,11 +1525,11 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
   shared slice and the fake engine records the sampler call. The success path
   is exactly
   `["setupOtel", "selectEngine", "lockRunRoot", "startPSSSampler", "preflight", "reap"]`;
-  on lock refusal, the sequence is exactly
-  `["setupOtel", "selectEngine", "lockRunRoot", "startPSSSampler", "preflight"]`;
-  `startup` still returns the engine without error and never calls `reap`
-  (assert the hook-call slice rather than a log line). The returned shutdown
-  closure invokes the lock release exactly once.
+  on lock failure, the sequence is exactly
+  `["setupOtel", "selectEngine", "lockRunRoot"]`. `startup` returns an
+  error without starting the sampler, running preflight or reap, or serving.
+  On success, the returned shutdown closure invokes the lock release exactly
+  once.
 
   This replaces an earlier claim that the ordering could be pinned "via
   the existing startup-dispatch test seam, `main.go` fake engines". It
@@ -1566,10 +1555,11 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
       (`errPidUnknown`)
 - [ ] W2 — `(*MicroVMRuntime) LockRunRoot()`: `LOCK_EX|LOCK_NB` flock on
       `<RunRoot>/microvm/.runner.lock`, whose parent is created with
-      `os.MkdirAll`; refuse-not-wait on contention. A second acquisition
-      over the same RunRoot is refused. Acquired ONCE by `run()`/`startup`
-      before preflight and reap, then held for the Runner's life, NEVER by
-      `ReapOrphans`; the lockfile is created once and never unlinked
+      `os.MkdirAll`; refuse-not-wait on contention. Any failed lock attempt
+      fails startup. After acquisition, start the sampler, run preflight
+      under the lock, then reap. The lock is acquired ONCE by `run()`/`startup`
+      and held for the Runner's life, NEVER by `ReapOrphans`; the lockfile is
+      created once and never unlinked
 - [ ] W2 — `(*MicroVMRuntime) ReapOrphans(ctx, held RunRootLock) error`:
       REQUIRES the startup-held token; a zero token ⇒ named error, no scan,
       no signal. Then scan runtime dirs, boot-id short-circuit and
@@ -1606,33 +1596,30 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
       `lastQuota.LimitBytes > 0` — the condition under which
       `UsedRatio()` is meaningful, NOT `Active()` (an inode-only active
       quota emits no byte-ratio point, §(d))
-- [ ] W4 — the per-session PSS sampler OQ-9(ii) assumes: immediately after
-      the lock attempt, W5 startup calls `StartPSSSampler(ctx context.Context)`
-      on `*MicroVMRuntime` whether the lock is acquired or refused. The goroutine
-      is bound to the run context; its `pssSampleInterval = 60 * time.Second`
+- [ ] W4 — the per-session PSS sampler OQ-9(ii) assumes: after successful
+      lock acquisition, W5 startup calls `StartPSSSampler(ctx context.Context)`
+      on `*MicroVMRuntime`. The goroutine runs while the RunRoot lock is held
+      and is bound to the run context; its `pssSampleInterval = 60 * time.Second`
       ticker emits one INFO `microvm session memory` line per live session
       (`session_id` plus per-process-kind kB values from `VM.PSS()`), using the
       gauge callback's snapshot-`m.mu`-then-read-outside-the-lock discipline.
       Context cancellation stops the sampler (§(d))
-- [ ] W5 — `startup(ctx, hooks)` extracted from `run()` so the order
-      `setupOtel` → `selectEngine` → `lockRunRoot` → `startPSSSampler` →
+- [ ] W5 — `startup(ctx, hooks)` extracted from `run()` so the successful
+      order `setupOtel` → `selectEngine` → `lockRunRoot` → `startPSSSampler` →
       `preflight` → `reap` is pinned by a call-order test; `setupOtel` must
       precede `selectEngine` (not merely the preflight), because instruments
       are built inside `NewMicroVMRuntime`; `run()` acquires the RunRoot lock
       ONCE via the `runRootLocker` probe and `defer`s the release for the
-      process's life; a refused lock WARNs but still runs preflight and skips
-      only reap (OQ-8/OQ-5). The sampler starts after the lock attempt even on
-      refusal, because it touches no RunRoot state.
-- [ ] W5 — `verifyRunRoot` probes `<RunRoot>/microvm/.preflight-<pid>`
-      instead of the shared `.preflight`, so two Runners' preflights never
-      remove each other's probe dir
+      process's life; any lock failure returns an error before sampler startup,
+      preflight, reap, or serving (OQ-8). Preflight runs under the lock; reap
+      errors WARN without aborting (OQ-5)
 - [ ] W5 — `BackendName()` probes;
       `compass.runner.session.starts{backend,outcome}` in the Runner host
 
 ## Open Questions
 
 Batched for the pre-freeze ruling; the body designs against each
-recommendation.
+recommendation, except OQ-8, which is ruled.
 
 - **OQ-1 (non-load-bearing) — the runtime-dir file set diverges from the
   parent's Interfaces sketch.** The parent sketches
@@ -1699,10 +1686,10 @@ recommendation.
   with D3 but over-broad); (iii) warn but refuse only microVM-backend
   session creation until a clean reap (complexity without a demonstrated
   need). **Recommendation:** (i), with the per-dir error detail in the WARN
-  and the `orphans.reaped` counter making silent rot visible. If the RunRoot
-  lock is refused, startup still runs preflight in its per-process probe dir
-  and skips only the reap; this path does not call `ReapOrphans`. On successful
-  lock acquisition, startup passes the returned token to the reap hook.
+  and the `orphans.reaped` counter making silent rot visible. A failed RunRoot
+  lock attempt is distinct from a reap failure and fails startup (OQ-8).
+  After successful lock acquisition, startup passes the returned token to the
+  reap hook; a reap failure remains a WARN and does not abort.
 - **OQ-6 (LOAD-BEARING) — the net backend leaves the parent's supervised
   set; this rules on the parent's text.** State the divergence plainly, because
   it is larger than a fatality question: the parent's §(f) preamble
@@ -1788,33 +1775,32 @@ recommendation.
   The defense built to stop kill-an-innocent makes this wrong kill MORE
   certain, one layer up. D8's one-Runner-per-box is a deployment intention,
   not an enforced invariant. Options: (i) an `flock`ed lockfile at the RunRoot
-  root, taken exclusively at startup before any reap and held for the
-  Runner's life — a second Runner receives lock refusal, WARNs, still runs
-  preflight in its per-process probe dir, skips only reap, and continues
-  serving; the kernel drops the lock on ANY holder death, SIGKILL included,
-  so a crashed Runner never wedges its successor; (ii) declare D8 plus
+  root, taken exclusively at startup before any preflight or reap and held for
+  the Runner's life — a second Runner's failed lock acquisition fails startup
+  before sampler startup, preflight, reap, or serving; (ii) declare D8 plus
   deployment tooling the guarantee and document `ReapOrphans` as unsafe
   under concurrent Runners; (iii) record the owning Runner's own
   (pid, starttime, bootid) in RunRoot and have `ReapOrphans` skip dirs
-  while that recorded owner is alive. **Recommendation:** (i),
-  refuse-not-wait: the standard single-owner mechanism, one file and one
-  syscall, turning the race into a WARN and skipped reap while allowing
-  startup to serve. Unlike (iii), it has no stale-record arm to reason about
-  (the lock IS liveness). (ii) leaves the kill reachable; (iii) rebuilds
-  half of `flock` by hand.
+  while that recorded owner is alive. **Ruling (Matt, 2026-10-07, RIG-4840): (i), refuse-not-wait, and a refused lock fails startup.** The
+  standard single-owner mechanism uses one file and one syscall; lock refusal
+  fails startup rather than allowing a second Runner to continue without
+  ownership. Unlike (iii), it has no stale-record arm to reason about (the
+  lock IS liveness). (ii) leaves the kill reachable; (iii) rebuilds half of
+  `flock` by hand.
 
-  **This question rules on WHICH mechanism; it does not supply the
-  mechanism.** The body SHIPS (i) as a named W2 deliverable —
-  `LockRunRoot` in W2's Interfaces, its own `## Tasks` bullet, and a
-  hermetic case asserting a second acquisition over the same RunRoot is
-  refused and that a zero-token `ReapOrphans` call scans nothing (§(b) step
-  0). This verifies zero-value rejection. An earlier draft left the defense as
-  this question's recommendation only, which meant an executor implementing
-  W1-W5 verbatim would have shipped `ReapOrphans` with zero
-  cross-process exclusion — precisely the live-session-killing reaper this
-  question exists to prevent. A safety property that lives only in an Open
-  Question is not a delivered defense. If the human rules (ii) or (iii),
-  W2's lock deliverable and §(b) step 1's clause change with the ruling.
+  **The ruling selects the mechanism and the failure behavior.** The body
+  SHIPS (i) as a named W2 deliverable — `LockRunRoot` in W2's Interfaces and
+  its own `## Tasks` bullet. A second acquisition over the same RunRoot is
+  refused, and any failed lock attempt returns an error before sampler
+  startup, preflight, reap, or serving. After successful acquisition, the
+  startup unit starts the sampler, runs preflight under the lock, and reaps.
+  W2 also tests that a zero-token `ReapOrphans` call scans nothing (§(b) step
+  0); this verifies zero-value rejection. An earlier draft left the defense
+  as this question's recommendation only, which meant an executor implementing
+  W1-W5 verbatim would have shipped `ReapOrphans` with zero cross-process
+  exclusion — precisely the live-session-killing reaper this question exists
+  to prevent. A safety property that lives only in an Open Question is not a
+  delivered defense.
 
   **The lock's OWNER is the startup unit, not the reaper**, and that
   follows from (i)'s own "held for the Runner's life" wording rather than
@@ -1834,10 +1820,10 @@ recommendation.
   the Global Constraint, W2's Interfaces and the `## Tasks` bullets all
   name this one owner.
 
-  A refused lock does not refuse startup: the second Runner WARNs, still
-  runs preflight in its per-process probe dir, skips only the reap hook, and
-  continues serving. This is OQ-5's warn-and-continue posture and §(b)'s
-  call-site contract.
+  The OQ-8 ruling means a refused lock fails startup; it does not WARN and
+  continue. The successful path holds the lock through preflight and reap,
+  with the sampler started immediately after acquisition. Reap failures
+  remain WARNs under OQ-5.
 - **OQ-9 (load-bearing) — "per-VM RSS" vs the fleet-summed PSS gauge: a
   ruling on a frozen sentence.** The parent freezes "per-VM RSS"
   (microvm-runner.md:266); §(d) delivers `compass.microvm.guest.memory.pss`
