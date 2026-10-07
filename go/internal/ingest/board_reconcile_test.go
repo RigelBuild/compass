@@ -63,10 +63,27 @@ type fakeBoardStore struct {
 	loadErr    error
 	storeErr   error
 	storeCalls []storedMark
+	prUpdated  map[uint64]time.Time
+	backfilled map[string]time.Time
+}
+
+func (s *fakeBoardStore) PullRequestUpdatedAt(_ context.Context, _ string, number uint64) (time.Time, bool, error) {
+	at, ok := s.prUpdated[number]
+	return at, ok, nil
+}
+
+func (s *fakeBoardStore) PRsBackfilledAt(_ context.Context, repo string) (time.Time, bool, error) {
+	at, ok := s.backfilled[repo]
+	return at, ok, nil
+}
+
+func (s *fakeBoardStore) MarkPRsBackfilled(_ context.Context, repo string, at time.Time) error {
+	s.backfilled[repo] = at
+	return nil
 }
 
 func newBoardStore(repos ...string) *fakeBoardStore {
-	return &fakeBoardStore{repos: repos, marks: map[string]storedMark{}}
+	return &fakeBoardStore{repos: repos, marks: map[string]storedMark{}, prUpdated: map[uint64]time.Time{}, backfilled: map[string]time.Time{}}
 }
 
 func (s *fakeBoardStore) ListEnabledRepos(_ context.Context) ([]string, error) {

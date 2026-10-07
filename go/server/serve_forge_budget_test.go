@@ -95,7 +95,7 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 
 	// Both lanes are built over the SAME client (nil store is safe: an empty seed
 	// means reconcileForgeSeed never touches it, and this test never sweeps).
-	boardLane, err := buildBoardIngestLane(ctx, cfg, nil, nil, client, slog.Default())
+	boardLane, err := buildBoardIngestLane(ctx, cfg, nil, nil, client, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("buildBoardIngestLane: %v", err)
 	}
