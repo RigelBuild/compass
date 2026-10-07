@@ -23,7 +23,12 @@ import {
 import { DEVENV_LOCK_PATHS } from "./refresh-devenv-lock.core.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const RETRY_DELAY_MS = 60_000;
+// Overridable so the harness can exercise the retry without a real wait.
+const RETRY_DELAY_MS = Number(
+	process.env.LOCK_INTEGRITY_RETRY_DELAY_MS ?? 60_000,
+);
+
+type Fetched = Prefetched | { error: string; stderr: string };
 
 function git(args: string[]): { ok: boolean; stdout: string; stderr: string } {
 	const r = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
@@ -40,10 +45,7 @@ function baseLockText(mergeBase: string, path: string): string | null {
 	return shown.stdout;
 }
 
-function prefetchOnce(
-	ref: string,
-	env: NodeJS.ProcessEnv,
-): Prefetched | { error: string } {
+function prefetchOnce(ref: string, env: NodeJS.ProcessEnv): Fetched {
 	const r = spawnSync(
 		"nix",
 		[
@@ -57,25 +59,21 @@ function prefetchOnce(
 		{ env, encoding: "utf8" },
 	);
 	if (r.status !== 0) {
-		const tail = (r.stderr || r.error?.message || `exit ${r.status}`)
-			.trim()
-			.split("\n")
-			.slice(-3);
-		return { error: tail.join(" | ") };
+		const stderr = r.stderr || r.error?.message || `exit ${r.status}`;
+		return { error: stderr.trim().split("\n").slice(-3).join(" | "), stderr };
 	}
 	try {
 		return parsePrefetch(r.stdout);
 	} catch (e) {
-		return { error: (e as Error).message };
+		return { error: (e as Error).message, stderr: "" };
 	}
 }
 
-function prefetch(
-	ref: string,
-	env: NodeJS.ProcessEnv,
-): Prefetched | { error: string } {
+function prefetch(ref: string, env: NodeJS.ProcessEnv): Fetched {
 	const first = prefetchOnce(ref, env);
-	if (!("error" in first) || !isTransientFetchError(first.error)) return first;
+	// Classify on the full stderr: the transient line may precede the shown tail.
+	if (!("stderr" in first) || !isTransientFetchError(first.stderr))
+		return first;
 	console.log(
 		`transient fetch error for ${ref}; retrying once in ${RETRY_DELAY_MS / 1000}s`,
 	);
@@ -90,7 +88,12 @@ type Target = { lock: string; node: LockedGithubNode };
 function selectTargets(mergeBase: string | null): Target[] {
 	return DEVENV_LOCK_PATHS.flatMap((lock) => {
 		const head = readFileSync(join(repoRoot, lock), "utf8");
-		const nodes = lockedGithubNodes(head);
+		let nodes: readonly LockedGithubNode[];
+		try {
+			nodes = lockedGithubNodes(head);
+		} catch (e) {
+			throw new Error(`${lock}: ${(e as Error).message}`);
+		}
 		if (mergeBase === null) return nodes.map((node) => ({ lock, node }));
 		const wanted = changedNodeNames(baseLockText(mergeBase, lock), head);
 		return nodes
@@ -110,7 +113,7 @@ function verify(targets: readonly Target[]): boolean {
 		NIX_CONFIG: `${process.env.NIX_CONFIG ?? ""}\naccess-tokens =`,
 	};
 	try {
-		const byRef = new Map<string, Prefetched | { error: string }>();
+		const byRef = new Map<string, Fetched>();
 		const checks: IntegrityCheck[] = targets.map(({ lock, node }) => {
 			const ref = prefetchRef(node);
 			let observed = byRef.get(ref);
@@ -143,7 +146,13 @@ function main(): number {
 		}
 		mergeBase = mb.stdout.trim();
 	}
-	const targets = selectTargets(mergeBase);
+	let targets: Target[];
+	try {
+		targets = selectTargets(mergeBase);
+	} catch (e) {
+		console.error(`lock-integrity: unverifiable lock: ${(e as Error).message}`);
+		return 1;
+	}
 	const mode = prMode
 		? `PR mode (base origin/${baseRef} @ ${mergeBase})`
 		: "full sweep";

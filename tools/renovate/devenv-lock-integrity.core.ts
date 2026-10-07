@@ -26,7 +26,7 @@ export interface IntegrityCheck {
 	readonly observed: Prefetched | { readonly error: string };
 }
 
-type LockedMap = Record<string, Record<string, unknown>>;
+type LockedMap = Map<string, Record<string, unknown>>;
 
 function lockedObjects(lockText: string): LockedMap {
 	let parsed: unknown;
@@ -39,14 +39,15 @@ function lockedObjects(lockText: string): LockedMap {
 	if (typeof nodes !== "object" || nodes === null) {
 		throw new Error("devenv lock has no `nodes` object");
 	}
-	const out: LockedMap = {};
+	// A Map, so a node named `__proto__` is kept rather than swallowed.
+	const out: LockedMap = new Map();
 	for (const [name, value] of Object.entries(nodes)) {
 		const locked = (value as { locked?: unknown }).locked;
 		if (locked === undefined) continue;
 		if (typeof locked !== "object" || locked === null) {
 			throw new Error(`node "${name}": \`locked\` is not an object`);
 		}
-		out[name] = locked as Record<string, unknown>;
+		out.set(name, locked as Record<string, unknown>);
 	}
 	return out;
 }
@@ -72,7 +73,7 @@ function stringField(
 export function lockedGithubNodes(
 	lockText: string,
 ): readonly LockedGithubNode[] {
-	return Object.entries(lockedObjects(lockText)).map(([name, locked]) => {
+	return [...lockedObjects(lockText)].map(([name, locked]) => {
 		if (locked.type !== "github") {
 			throw new Error(
 				`node "${name}": locked.type ${JSON.stringify(locked.type)} is not "github"; extend lock-integrity to verify it`,
@@ -118,12 +119,15 @@ export function changedNodeNames(
 	headText: string,
 ): ReadonlySet<string> {
 	const head = lockedObjects(headText);
-	if (baseText === null) return new Set(Object.keys(head));
+	if (baseText === null) return new Set(head.keys());
 	const base = lockedObjects(baseText);
 	return new Set(
-		Object.keys(head).filter(
-			(n) => base[n] === undefined || canonical(base[n]) !== canonical(head[n]),
-		),
+		[...head]
+			.filter(([n, locked]) => {
+				const was = base.get(n);
+				return was === undefined || canonical(was) !== canonical(locked);
+			})
+			.map(([n]) => n),
 	);
 }
 

@@ -81,6 +81,13 @@ describe("lockedGithubNodes", () => {
 	test("throws on invalid JSON", () => {
 		expect(() => lockedGithubNodes("{nope")).toThrow(/not valid JSON/);
 	});
+
+	// Raw JSON: an object literal would itself swallow the `__proto__` key.
+	test("keeps a node named __proto__", () => {
+		const text = `{"nodes":{"__proto__":${JSON.stringify(githubLocked())}},"version":7}`;
+		expect(lockedGithubNodes(text).map((n) => n.node)).toEqual(["__proto__"]);
+		expect([...changedNodeNames(null, text)]).toEqual(["__proto__"]);
+	});
 });
 
 describe("changedNodeNames", () => {
