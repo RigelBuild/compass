@@ -31,10 +31,10 @@ export type NixOutput = {
 
 /** The GHCR image identity for the sha, or null when not yet published. */
 export type ImageIdentity = {
-	/** the pullable ref by digest, e.g. "ghcr.io/rigelbuild/compass-agent@sha256:…" */
+	/** the pullable ref, pinned to the MANIFEST digest: "ghcr.io/rigelbuild/compass-agent@sha256:…" */
 	ref: string;
-	/** the config digest, e.g. "sha256:…" */
-	digest: string;
+	/** the config blob digest; not pullable, kept for the re-tag coherence trail */
+	configDigest: string;
 };
 
 /** The input the pure core receives. */
@@ -95,7 +95,7 @@ export function assemble(input: AssembleInput): AssembleOutput {
 		lines.push(IMAGE_ABSENT_LINE);
 	} else {
 		lines.push(`image: \`${input.image.ref}\``);
-		lines.push(`digest: \`${input.image.digest}\``);
+		lines.push(`config digest: \`${input.image.configDigest}\``);
 	}
 	lines.push("");
 
@@ -148,7 +148,8 @@ type Args = {
 	bodyOut: string;
 	manifestOut: string;
 	dryRun: boolean;
-	imageDigest: string;
+	imageManifestDigest: string;
+	imageConfigDigest: string;
 };
 
 /** Parse argv into the edge's inputs. Repeated `--asset` accumulates. */
@@ -161,7 +162,8 @@ export function parseArgs(argv: string[]): Args {
 		bodyOut: "RELEASE_BODY.md",
 		manifestOut: "nix-outputs.json",
 		dryRun: false,
-		imageDigest: "",
+		imageManifestDigest: "",
+		imageConfigDigest: "",
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const flag = argv[i];
@@ -196,8 +198,11 @@ export function parseArgs(argv: string[]): Args {
 			case "--manifest-out":
 				args.manifestOut = value;
 				break;
-			case "--image-digest":
-				args.imageDigest = value;
+			case "--image-manifest-digest":
+				args.imageManifestDigest = value;
+				break;
+			case "--image-config-digest":
+				args.imageConfigDigest = value;
 				break;
 			default:
 				throw new Error(`release-notes: unknown flag ${flag}`);
@@ -220,7 +225,8 @@ export function parseArgs(argv: string[]): Args {
  *    transport error DEGRADES (the image lane is paths-filtered independently,
  *    and a re-run converges the pointer once the image publishes).
  *  - exit 0 but unparseable output or no `.config.digest` => null.
- *  - exit 0 with a digest => the pullable @digest ref + the digest.
+ *  - exit 0 with a digest => a ref pinned to the sha256 of the raw manifest
+ *    bytes (pullable), plus the config digest carried on its own.
  */
 export function classifyImageResult(result: {
 	exitCode: number;
@@ -235,38 +241,49 @@ export function classifyImageResult(result: {
 	if (result.exitCode !== 0) {
 		return null;
 	}
-	let digest: string;
+	let configDigest: string;
 	try {
 		const raw = JSON.parse(result.stdout) as {
 			config?: { digest?: string };
 		};
-		digest = raw.config?.digest ?? "";
+		configDigest = raw.config?.digest ?? "";
 	} catch {
 		return null;
 	}
-	if (digest === "") {
+	if (configDigest === "") {
 		return null;
 	}
-	return { ref: `${IMAGE_REPO}@${digest}`, digest };
+	// A registry addresses a manifest by the sha256 of its exact raw bytes.
+	const manifest = new Bun.CryptoHasher("sha256")
+		.update(result.stdout)
+		.digest("hex");
+	return { ref: `${IMAGE_REPO}@sha256:${manifest}`, configDigest };
 }
 
 /**
- * Build the image identity from a digest the caller already resolved, skipping
- * the skopeo probe. WHY the digest is passed in: the image lane is
- * paths-filtered, so a release commit that does not touch the image closure has
- * no `:git-<release-sha>` image — probing the release sha asks for a tag that
- * was never published. The release-image job walks first-parent ancestors,
- * resolves the correct ancestor `:git-<sha>` digest, and re-tags it to
- * `:vX.Y.Z`; passing that already-verified config digest here is the single
- * source of truth and avoids a re-probe race. Pure + exported so it is
- * unit-tested. Returns null for an empty/whitespace-only digest (no flag given).
+ * Build the image identity from digests the caller already resolved, skipping
+ * the skopeo probe. WHY they are passed in: the image lane is paths-filtered,
+ * so a release commit that does not touch the image closure has no
+ * `:git-<release-sha>` image. The release-image job walks first-parent
+ * ancestors, re-tags the right `:git-<sha>` to `:vX.Y.Z`, and verifies it, so
+ * its digests are the source of truth. The ref pins the manifest digest; a
+ * config digest is not pullable. Returns null when neither flag was given.
  */
-export function imageFromDigest(digest: string): ImageIdentity | null {
-	const trimmed = digest.trim();
-	if (trimmed === "") {
+export function imageFromDigests(
+	manifestDigest: string,
+	configDigest: string,
+): ImageIdentity | null {
+	const manifest = manifestDigest.trim();
+	const config = configDigest.trim();
+	if (manifest === "" && config === "") {
 		return null;
 	}
-	return { ref: `${IMAGE_REPO}@${trimmed}`, digest: trimmed };
+	if (manifest === "" || config === "") {
+		throw new Error(
+			"release-notes: --image-manifest-digest and --image-config-digest must be given together (both or neither)",
+		);
+	}
+	return { ref: `${IMAGE_REPO}@${manifest}`, configDigest: config };
 }
 
 /**
@@ -289,7 +306,7 @@ export function requireImageAtRelease(
 }
 
 /**
- * Query GHCR for the image config digest at :git-<sha12>, exactly as
+ * Query GHCR for the image manifest at :git-<sha12>, exactly as
  * release.yml's publish-image verify does (`skopeo inspect --raw … | jq -r
  * .config.digest`). Returns null when the tag is not published — the image lane
  * is paths-filtered independently, so a go-only push has no image for its sha.
@@ -363,13 +380,11 @@ async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 
 	// The image lane is paths-filtered, so a release commit often has no
-	// `:git-<release-sha>` image. When release-image passes its already-resolved
-	// ancestor digest via --image-digest, that is the authoritative identity;
-	// otherwise (local/dry-run) fall back to probing the sha's own tag.
+	// `:git-<release-sha>` image. When release-image passes its resolved digests,
+	// they are authoritative; otherwise (local/dry-run) probe the sha's own tag.
 	const image =
-		args.imageDigest.trim() !== ""
-			? imageFromDigest(args.imageDigest)
-			: await gatherImage(args.sha);
+		imageFromDigests(args.imageManifestDigest, args.imageConfigDigest) ??
+		(await gatherImage(args.sha));
 	const releaseError = requireImageAtRelease(image, args.dryRun);
 	if (releaseError !== null) {
 		throw new Error(releaseError);
