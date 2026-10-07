@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
@@ -18,6 +19,10 @@ import (
 // traceparentHeader is the W3C key, lowercase because nats-server 2.11/2.12
 // lowercase it in place and NATS headers are case-sensitive.
 const traceparentHeader = "traceparent"
+
+// reapProbeBudget caps the consumer-existence check a pull error triggers; a
+// probe that times out is retried on the next missed heartbeat.
+const reapProbeBudget = 2 * time.Second
 
 // Publish sends ref to subject on JetStream, returning only once the server has
 // acked it into the stream — so a Publish that returns nil means the event is
@@ -155,22 +160,18 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// Consume dispatches serially today; the lock makes the promised serial
 	// callback a fabric guarantee rather than a nats.go internal.
 	var callbackMu sync.Mutex
-	// ErrConsumerDeleted is terminal for a Consume: the server reaped the
-	// durable (InactiveThreshold) while this client could not pull, e.g. a
-	// long partition. The supervisor below recreates it rather than go silent.
+	// The server reaps the durable (InactiveThreshold) when this client could
+	// not pull, e.g. a long partition. reapDetector reports it and the
+	// supervisor below recreates the durable rather than go silent.
 	reaped := make(chan struct{}, 1)
 	consume := func(cons jetstream.Consumer) (jetstream.ConsumeContext, error) {
+		detect := reapDetector(ctx, cons, reaped)
 		return cons.Consume(func(msg jetstream.Msg) {
 			callbackMu.Lock()
 			defer callbackMu.Unlock()
 			f.handleEvent(ctx, msg, fn)
 		}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			if errors.Is(err, jetstream.ErrConsumerDeleted) {
-				select {
-				case reaped <- struct{}{}:
-				default:
-				}
-			}
+			detect(err)
 			// Transient pull errors are the library's to retry; surfacing them is
 			// the only thing this side can do, and swallowing them would hide a
 			// consumer wedged for good.
@@ -235,6 +236,9 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 			nextCC.Stop()
 			return false, nil
 		}
+		// A probe-detected reap leaves the old Consume running against the
+		// recreated durable; drain it so only cc pulls and stop() reaches all.
+		cc.Drain()
 		cc = nextCC
 		f.untrackConsumer(durable)
 		f.trackConsumer(durable, next)
@@ -290,6 +294,38 @@ func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject s
 			return false
 		case <-done:
 			return false
+		}
+	}
+}
+
+// reapDetector returns a consume-error hook that signals reaped once cons is
+// gone. The server's 409 reaches only a pull waiting at the delete; a pull to
+// an already-deleted durable sees no-responders or a missed heartbeat instead,
+// so those trigger one bounded Info probe off the handler goroutine.
+func reapDetector(ctx context.Context, cons jetstream.Consumer, reaped chan<- struct{}) func(error) {
+	signal := func() {
+		select {
+		case reaped <- struct{}{}:
+		default:
+		}
+	}
+	var probing atomic.Bool
+	return func(err error) {
+		switch {
+		case errors.Is(err, jetstream.ErrConsumerDeleted):
+			signal()
+		case errors.Is(err, nats.ErrNoResponders), errors.Is(err, jetstream.ErrNoHeartbeat):
+			if !probing.CompareAndSwap(false, true) {
+				return
+			}
+			go func() {
+				defer probing.Store(false)
+				probeCtx, cancel := context.WithTimeout(ctx, reapProbeBudget)
+				defer cancel()
+				if _, err := cons.Info(probeCtx); errors.Is(err, jetstream.ErrConsumerNotFound) {
+					signal()
+				}
+			}()
 		}
 	}
 }

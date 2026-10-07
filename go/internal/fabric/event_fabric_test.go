@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"runtime"
 	"strings"
 	"sync"
@@ -1360,14 +1361,36 @@ func TestLiveConsumerSurvivesInactiveThreshold(t *testing.T) {
 	}
 }
 
+// partitionDialer refuses every dial while partitioned, reporting each refusal,
+// so a test can hold the fabric's connection down for as long as it needs.
+type partitionDialer struct {
+	partitioned atomic.Bool
+	refused     chan struct{}
+}
+
+func (d *partitionDialer) Dial(network, address string) (net.Conn, error) {
+	if d.partitioned.Load() {
+		select {
+		case d.refused <- struct{}{}:
+		default:
+		}
+		return nil, errors.New("partitioned")
+	}
+	return net.Dial(network, address)
+}
+
 // TestReapedLiveConsumerIsRecreated covers a reap while a subscription is still
-// open, e.g. after a partition longer than the threshold. The server-side delete
-// is terminal for nats.go's Consume, so the fabric must recreate the durable.
+// open but partitioned. No pull is waiting at the delete, so the server's 409
+// never reaches the client; the fabric must still notice and recreate.
 func TestReapedLiveConsumerIsRecreated(t *testing.T) {
 	t.Parallel()
 	ctx := testCtx(t)
 	url := testServer(t)
-	f := newFabric(t, Config{URL: url, Log: quietLogger(t)})
+	dialer := &partitionDialer{refused: make(chan struct{}, 1)}
+	f := newFabric(t, Config{URL: url, Log: quietLogger(t), Options: []nats.Option{
+		nats.SetCustomDialer(dialer),
+		nats.ReconnectWait(time.Millisecond),
+	}})
 
 	subject, err := CommsSubject("t1", KindChannelChanged)
 	if err != nil {
@@ -1392,10 +1415,24 @@ func TestReapedLiveConsumerIsRecreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
+
+	// Partition: a refused redial proves the old socket is gone, so the 409 a
+	// delete sends to waiting pulls has nowhere to land.
+	dialer.partitioned.Store(true)
+	if err := f.nc.ForceReconnect(); err != nil {
+		t.Fatalf("ForceReconnect: %v", err)
+	}
+	select {
+	case <-dialer.refused:
+	case <-ctx.Done():
+		t.Fatal("the fabric never tried to redial")
+	}
 	// The same server-side delete an InactiveThreshold reap performs.
 	if err := js.DeleteConsumer(ctx, DefaultStreamName, durableName(subject)); err != nil {
 		t.Fatalf("DeleteConsumer: %v", err)
 	}
+	dialer.partitioned.Store(false)
+
 	pollUntil(t, "the reaped consumer to be recreated", func() bool {
 		_, err := js.Consumer(ctx, DefaultStreamName, durableName(subject))
 		return err == nil
