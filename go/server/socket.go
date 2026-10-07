@@ -1,7 +1,7 @@
 //go:build unix
 
 // Socket-door semantics for the server's Unix listener: private parent dirs,
-// single-instance stale-socket handling, and inode-checked cleanup.
+// single-instance stale-socket handling, and identity-checked cleanup.
 package server
 
 import (
@@ -57,7 +57,7 @@ func parentDir(socketPath string) string {
 //
 // Unlink-on-close is disabled on the returned listener. Go's net.UnixListener
 // defaults to unlinking the socket path when Close runs; that is a second,
-// unconditional remover that would defeat the inode-guarded cleanupSocket and
+// unconditional remover that would defeat the identity-guarded cleanupSocket and
 // delete a successor server's rebound socket when this server drains, so removal
 // is left solely to cleanupSocket here.
 func listenUnixPrivate(path string) (net.Listener, error) {
@@ -163,31 +163,27 @@ func clearStaleSocket(socketPath string) error {
 	return nil
 }
 
-// socketInode returns the inode backing path, or (0, false) if it is missing or
-// unstat-able. Used to detect a successor server rebinding the socket path.
-func socketInode(path string) (uint64, bool) {
+// socketIdentity stats the socket at path, or returns (nil, false) if it is
+// missing or unstat-able. Used to detect a successor server rebinding the path.
+func socketIdentity(path string) (os.FileInfo, bool) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0, false
+		return nil, false
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, false
-	}
-	return st.Ino, true
+	return info, true
 }
 
-// cleanupSocket removes the socket file on shutdown, but only if it can prove
-// the on-disk socket is still the one the server bound. If the inode bound was
-// never pinned (boundInode ok=false — socketInode failed right after bind), or a
-// successor server has already rebound the path to a different inode, it leaves
-// the file alone rather than risk deleting another server's live socket.
-func cleanupSocket(socketPath string, boundInode uint64, boundOK bool) {
+// cleanupSocket removes the socket file on shutdown only if it is provably the
+// one the server bound. An unpinned identity or a successor's rebind leaves the
+// file alone rather than risk deleting another server's live socket.
+func cleanupSocket(socketPath string, bound os.FileInfo, boundOK bool) {
 	if !boundOK {
 		return
 	}
-	current, ok := socketInode(socketPath)
-	if !ok || current != boundInode {
+	current, ok := socketIdentity(socketPath)
+	// SameFile is device+inode; a successor can reuse the freed inode number, but its
+	// bind stamps a new mtime (ctime would need per-OS Stat_t fields).
+	if !ok || !os.SameFile(current, bound) || !current.ModTime().Equal(bound.ModTime()) {
 		return // gone already, or a successor rebound it
 	}
 	_ = os.Remove(socketPath)
