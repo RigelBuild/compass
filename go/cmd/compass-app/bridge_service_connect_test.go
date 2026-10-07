@@ -1049,8 +1049,9 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 	issueC := issue
 	var result connectResult
 	released, connected, stopped := false, false, false
+	deadline := time.After(testTimeout)
 	stopIfDone := func() {
-		if connectC == nil && connected && !stopped {
+		if connectC == nil && (connected || !result.OK) && !stopped {
 			stopped = true
 			issueC = nil
 			close(stop)
@@ -1109,7 +1110,7 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 		case result = <-connectC:
 			connectC = nil
 			stopIfDone()
-		case <-time.After(testTimeout):
+		case <-deadline:
 			t.Fatal("timed out waiting for concurrent RPC outcomes")
 		}
 	}
