@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +32,8 @@ type sharedState struct {
 	// env is the process environment before stand-up. The detached owner's
 	// t.Setenv cleanups never run, so shutdownShared restores it by hand.
 	env []string
+	// tempDirs are the stand-up's TempDirs; shutdownShared removes them.
+	tempDirs []string
 }
 
 var shared sharedState
@@ -87,23 +91,21 @@ func sharedFixture(t *testing.T) *Fixture {
 	return shared.f
 }
 
-// standUpShared builds the shared fixture against a DETACHED *testing.T instead
-// of a leg's own t. NewFixture is *testing.T-bound throughout — TempDir, four
-// Cleanup registrations, and 13 Fatalf sites — so hanging it off whichever leg
+// standUpShared builds the shared fixture against a DETACHED testing.TB instead
+// of a leg's own t. NewFixture is testing.TB-bound throughout — TempDir, four
+// Cleanup registrations, and many Fatalf sites — so hanging it off whichever leg
 // asked first would let that leg's cleanup Down the stack while the other legs
 // are still using it, and would blame that leg for a shared setup failure.
 //
 // Nothing can drain a detached T's cleanups (they are unexported, and it never
 // completes), so teardown is explicit and split: shutdownShared handles a
 // fully-constructed fixture, and this function reaps a stand-up that aborted
-// after Up. A Fatalf on that T calls runtime.Goexit, so the stand-up runs on
-// its own goroutine and the goroutine ending without a fixture reads as failure.
+// after Up.
 //
 // The site is supplied rather than defaulted because shortRoot keys its root on
 // the PID alone: the default root used by a plain NewFixture call is the same
 // path. A distinct suffix keeps them disjoint, as the H6 site does.
-func standUpShared(opts ...fixtureOption) (f *Fixture, err error) {
-	owner := &testing.T{}
+func standUpShared(opts ...fixtureOption) (*Fixture, error) {
 	ctx := context.Background() // run-root: the shared stack outlives every leg, so no leg's ctx can own it
 
 	site, err := newSharedSite()
@@ -119,22 +121,11 @@ func standUpShared(opts ...fixtureOption) (f *Fixture, err error) {
 	var live *stack.Stack
 	observe := WithStackObserver(func(st *stack.Stack) { live = st })
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("panic during shared stand-up: %v", r)
-			}
-		}()
-		f = NewFixture(ctx, owner, append([]fixtureOption{WithSite(site), observe}, opts...)...)
-	}()
-	<-done
-
-	if err == nil && f == nil {
-		err = errors.New("NewFixture aborted during shared stand-up (a t.Fatalf inside it); " +
-			"re-run a single leg to see the underlying stack error")
-	}
+	var f *Fixture
+	tempDirs, err := runDetached(func(tb testing.TB) {
+		tb.Helper()
+		f = NewFixture(ctx, tb, append([]fixtureOption{WithSite(site), observe}, opts...)...)
+	})
 	if err != nil {
 		if live != nil {
 			if derr := live.Down(ctx); derr != nil {
@@ -144,9 +135,102 @@ func standUpShared(opts ...fixtureOption) (f *Fixture, err error) {
 		// The site's dirs are ours alone and no cleanup is registered for them.
 		_ = os.RemoveAll(site.root)
 		_ = os.RemoveAll(site.stateDir)
+		removeAll(tempDirs)
 		return nil, err
 	}
+	shared.tempDirs = tempDirs
 	return f, nil
+}
+
+func removeAll(dirs []string) {
+	for _, d := range dirs {
+		_ = os.RemoveAll(d)
+	}
+}
+
+// runDetached runs fn against a detached testing.TB on its own goroutine, since
+// a Fatalf calls runtime.Goexit. A detached T's log is unreadable, so failure
+// text is captured and returned as the error every leg reports. It also returns
+// the temp dirs fn made, which no cleanup will remove.
+func runDetached(fn func(testing.TB)) (tempDirs []string, err error) {
+	rec := &standUpRecorder{TB: &testing.T{}}
+	completed := false
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic during shared stand-up: %v", r)
+			}
+		}()
+		fn(rec)
+		completed = true
+	}()
+	<-done
+
+	tempDirs = rec.dirs()
+	if err != nil {
+		return tempDirs, err
+	}
+	if msgs := rec.failures(); !completed || len(msgs) > 0 {
+		if len(msgs) == 0 {
+			msgs = []string{"goroutine exited with no recorded failure"}
+		}
+		return tempDirs, fmt.Errorf("NewFixture aborted during shared stand-up: %s", strings.Join(msgs, "; "))
+	}
+	return tempDirs, nil
+}
+
+// standUpRecorder keeps the detached T's failure messages; every other TB
+// method falls through to the embedded T.
+type standUpRecorder struct {
+	testing.TB
+	mu       sync.Mutex
+	msgs     []string
+	tempDirs []string
+}
+
+func (r *standUpRecorder) Error(args ...any)                 { r.record(fmt.Sprint(args...)) }
+func (r *standUpRecorder) Errorf(format string, args ...any) { r.record(fmt.Sprintf(format, args...)) }
+func (r *standUpRecorder) Fatal(args ...any)                 { r.record(fmt.Sprint(args...)); runtime.Goexit() }
+func (r *standUpRecorder) FailNow()                          { r.record("FailNow called"); runtime.Goexit() }
+func (r *standUpRecorder) Fail()                             { r.record("Fail called") }
+func (r *standUpRecorder) Failed() bool                      { return len(r.failures()) > 0 }
+
+// TempDir replaces the promoted one, whose failure path calls Fatal on the
+// embedded T and so would bypass the recorder.
+func (r *standUpRecorder) TempDir() string {
+	dir, err := os.MkdirTemp(os.Getenv("GOTMPDIR"), "compass-e2e-shared-")
+	if err != nil {
+		r.Fatalf("TempDir: %v", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tempDirs = append(r.tempDirs, dir)
+	return dir
+}
+
+func (r *standUpRecorder) Fatalf(format string, args ...any) {
+	r.record(fmt.Sprintf(format, args...))
+	runtime.Goexit()
+}
+
+func (r *standUpRecorder) record(msg string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *standUpRecorder) failures() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.msgs)
+}
+
+func (r *standUpRecorder) dirs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.tempDirs)
 }
 
 // newSharedSite mints the shared stack's own root, state dir, and port pair.
@@ -225,6 +309,8 @@ func shutdownShared() {
 	// Down has drained the children, so these are this run's alone.
 	_ = os.RemoveAll(filepath.Dir(f.runtimeDir))
 	_ = os.RemoveAll(filepath.Dir(f.caPath))
+	removeAll(shared.tempDirs)
+	shared.tempDirs = nil
 }
 
 // restoreEnv resets the process environment to a snapshot from os.Environ.
