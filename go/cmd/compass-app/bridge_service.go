@@ -26,6 +26,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"connectrpc.com/connect"
 
@@ -67,41 +68,38 @@ type windowDispatcher interface {
 	dispatch(name string, resp responseFrame)
 }
 
-// bridgeService binds the compass_rpc / compass_rpc_cancel IPC methods and
-// forwards each call through the pump. In-flight calls are tracked by requestId
-// so compass_rpc_cancel can tear one down; the map is mutex-guarded because the
-// bound methods are invoked from the webview's goroutines concurrently with the
-// per-call forwarding goroutines that delete their own entry on terminal frame.
+// bridgeService owns the shell's live connection and its IPC request state.
 type bridgeService struct {
-	pump   *bridge.Pump
+	conn   atomic.Pointer[connection]
 	events eventEmitter
-
-	// target is the TLS-anchored remote bridge target. The Connect probe arms
-	// it via SetBearer and forwards through its bearer-injecting transport. Nil
-	// only in a service constructed without a target (test wiring); production
-	// runClient always wires one.
-	target *bridge.Target
-	// tokens persists the remote bearer keyed by server URL (T5.2). Nil only in
-	// that same test wiring.
 	tokens tokenstore.Store
 
-	// connectMu serializes the whole Connect probe transaction (arm → probe →
-	// classify → disarm/persist). The target's bearer is a single shared slot,
-	// so without this two overlapping Connect calls — a boot auto-connect racing
-	// a user submit, or a double submit — could interleave: one probe carrying
-	// the other's token, or a failing call disarming a target the other just
-	// armed. Held for the whole method so each Connect is single-flight.
+	// connectMu makes each Connect single-flight: the target bearer is one shared
+	// slot, so overlapping probes could carry each other's token or disarm it.
 	connectMu sync.Mutex
+	// phase is "setup" or "reopen" while no connection is installed. It is never
+	// a connection, so CompassRPC stays on the no-connection error.
+	phase atomic.Pointer[string]
 
-	// accountID is the caller account id, exposed to the JS/UI through the bound
-	// AccountID method so it can build the native ConnectionProvider. It is set
-	// once immediately after construction and before app.Run, and only read
-	// thereafter, so it needs no lock. Empty in client mode, or when identity
-	// was not resolved.
+	// accountID is set once before app.Run and only read after, so it takes no
+	// lock. Connect returns its id in the result rather than writing here.
 	accountID string
 
 	mu       sync.Mutex
 	inflight map[string]*inflightCall
+}
+
+// connection is an immutable pump-and-target snapshot, installed as one value.
+type connection struct {
+	mode      string
+	serverURL string
+	target    *bridge.Target
+	pump      *bridge.Pump
+}
+
+type shellStateResult struct {
+	Mode      string `json:"mode"`
+	ServerURL string `json:"serverUrl"`
 }
 
 // inflightCall is one live compass_rpc call's teardown handle. It is stored in
@@ -123,18 +121,23 @@ type inflightCall struct {
 	window windowDispatcher
 }
 
-// newBridgeService builds a bridge service that forwards against pump and emits
-// response frames through events. target and tokens back the Connect probe;
-// production always wires both, and a service built without them (test wiring)
-// fails Connect closed rather than nil-derefing.
-func newBridgeService(pump *bridge.Pump, events eventEmitter, target *bridge.Target, tokens tokenstore.Store) *bridgeService {
-	return &bridgeService{
-		pump:     pump,
+// newBridgeService installs one immutable pump-and-target connection snapshot.
+func newBridgeService(conn *connection, events eventEmitter, tokens tokenstore.Store) *bridgeService {
+	s := &bridgeService{
 		events:   events,
-		target:   target,
 		tokens:   tokens,
 		inflight: make(map[string]*inflightCall),
 	}
+	if conn != nil {
+		s.conn.Store(conn)
+	}
+	return s
+}
+
+// ShellState lets a new window re-read startup state after subscribing to setup.
+func (s *bridgeService) ShellState() shellStateResult {
+	mode, serverURL := s.shellState()
+	return shellStateResult{Mode: mode, ServerURL: serverURL}
 }
 
 // AccountID is the bound IPC getter the webview calls to learn the caller
@@ -229,21 +232,15 @@ func (s *bridgeService) CompassRPCCancel(_ context.Context, req cancelRequest) {
 // (T5 starts unarmed and only a successful Connect arms it). The token never
 // appears in Message or any log/error.
 func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connectResult {
-	// Connect is reflect-bound on the service, but a service built without a
-	// target + tokenstore (test wiring) has nothing to probe. A webview IPC
-	// call to Connect there must fail closed, not nil-deref
-	// (rule://go-no-panic-in-lib — this service never panics).
-	if s.target == nil || s.tokens == nil {
+	conn := s.conn.Load()
+	if conn == nil || conn.target == nil || s.tokens == nil {
 		return connectResult{Kind: connectKindOther, Message: "Connect is not available: no remote target is configured"}
 	}
 
-	// Serialize the arm → probe → disarm/persist transaction against the single
-	// shared target bearer so overlapping Connect calls cannot interleave.
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
 
-	client, serverURL := s.target.Client()
-
+	_, serverURL := conn.target.Client()
 	candidate := req.Token
 	if candidate == "" {
 		stored, err := s.tokens.Read(serverURL)
@@ -256,23 +253,41 @@ func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connect
 		candidate = stored
 	}
 
-	// Arm the target so the probe carries the candidate: the RoundTripper strips
-	// any request-level Authorization (DL-107), so SetBearer is the only path.
-	s.target.SetBearer(candidate)
+	result := s.probe(ctx, conn.target, candidate)
+	if !result.OK {
+		return result
+	}
+	if err := s.tokens.Write(serverURL, candidate); err != nil {
+		conn.target.SetBearer("")
+		return connectResult{Kind: connectKindOther, Message: "Connected, but could not save the token"}
+	}
+	return result
+}
 
+// probe arms target with token and runs GetServerInfo, the API-version check, and
+// WhoAmI. It disarms on any failure, leaves the target armed on success, and
+// stores nothing.
+func (s *bridgeService) probe(ctx context.Context, target *bridge.Target, token string) connectResult {
+	// SetBearer is the only way to send the token: the RoundTripper strips any
+	// request-level Authorization header (DL-107).
+	target.SetBearer(token)
+	ok := false
+	defer func() {
+		if !ok {
+			target.SetBearer("")
+		}
+	}()
+
+	client, serverURL := target.Client()
 	cc := compassv1connect.NewCompassServiceClient(client, serverURL)
-
 	infoResp, err := cc.GetServerInfo(ctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
 	if err != nil {
-		s.target.SetBearer("")
 		kind, message := classifyConnectErr(err)
 		return connectResult{Kind: kind, Message: message}
 	}
 	serverVersion := infoResp.Msg.GetVersion()
 	serverAPIVersion := infoResp.Msg.GetApiVersion()
-
 	if serverAPIVersion != clientAPIVersion {
-		s.target.SetBearer("")
 		return connectResult{
 			Kind:          connectKindVersionMismatch,
 			Message:       "The app speaks " + clientAPIVersion + "; the server speaks " + serverAPIVersion,
@@ -283,26 +298,15 @@ func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connect
 
 	whoResp, err := cc.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{}))
 	if err != nil {
-		s.target.SetBearer("")
 		kind, message := classifyConnectErr(err)
 		return connectResult{Kind: kind, Message: message}
 	}
 	accountID := whoResp.Msg.GetAccountId()
 	if accountID == "" {
-		// An empty id is never a valid identity, even on an
-		// otherwise-successful WhoAmI.
-		s.target.SetBearer("")
 		return connectResult{Kind: connectKindOther, Message: "The server returned an empty account id"}
 	}
 
-	if err := s.tokens.Write(serverURL, candidate); err != nil {
-		s.target.SetBearer("")
-		return connectResult{Kind: connectKindOther, Message: "Connected, but could not save the token"}
-	}
-
-	// Success: leave the target armed with the candidate. AccountID rides in the
-	// result only — writing s.accountID here would race its lock-free set-once
-	// read (see the accountID field doc).
+	ok = true
 	return connectResult{
 		OK:            true,
 		AccountID:     accountID,
@@ -338,6 +342,21 @@ func (s *bridgeService) cancelWindow(win windowDispatcher) {
 	}
 }
 
+// setPhase publishes the setup phase without coupling window startup to Connect.
+func (s *bridgeService) setPhase(phase string) {
+	s.phase.Store(&phase)
+}
+
+func (s *bridgeService) shellState() (mode, serverURL string) {
+	if conn := s.conn.Load(); conn != nil {
+		return conn.mode, conn.serverURL
+	}
+	if phase := s.phase.Load(); phase != nil {
+		return *phase, ""
+	}
+	return "", ""
+}
+
 // register derives the forwarding context for a call and records the call's
 // teardown handle under requestID, cancelling any prior call already under that
 // id first (so a stale forwarder can never keep emitting onto the same event).
@@ -371,21 +390,24 @@ func (s *bridgeService) register(ctx context.Context, requestID string) (context
 	return callCtx, call
 }
 
-// run forwards the call through the pump synchronously, emitting each ordered
-// frame as "compass_rpc:"+requestId, and drops the in-flight entry when the pump
-// returns (terminal frame emitted, or silent stop on cancel). CompassRPC runs it
-// on its own goroutine; it is called directly (synchronously) only by
-// deterministic single-shot tests, where its return means every frame is emitted
-// and the entry is cleared.
+// run loads once so a request cannot switch transports midway through setup.
 func (s *bridgeService) run(callCtx context.Context, call *inflightCall, req rpcRequest) {
 	defer s.finish(req.RequestID, call)
 	eventName := "compass_rpc:" + req.RequestID
+	conn := s.conn.Load()
+	if conn == nil {
+		// A canceled call stays silent, as a canceled pump does.
+		if callCtx.Err() == nil {
+			s.emitFrame(call, eventName, responseFrame{Kind: frameKindError, Message: "Not connected to a server"})
+		}
+		return
+	}
 	rpc := bridge.Call{
 		Path:    req.Path,
 		Headers: headerSlice(req.Headers),
 		Body:    req.Body,
 	}
-	s.pump.Do(callCtx, rpc, func(f bridge.Frame) {
+	conn.pump.Do(callCtx, rpc, func(f bridge.Frame) {
 		s.emitFrame(call, eventName, frameToResponse(f))
 	})
 }
