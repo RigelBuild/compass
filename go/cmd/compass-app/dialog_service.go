@@ -34,7 +34,7 @@ func (d *dialogService) PickCACert(_ context.Context) (pickedCA, error) {
 
 	pem, err := readCAFile(path)
 	if err != nil {
-		return pickedCA{}, fmt.Errorf("reading CA certificate %q: %w", path, err)
+		return pickedCA{}, err
 	}
 	return pickedCA{Ref: d.picks.add(pem), Name: filepath.Base(path)}, nil
 }

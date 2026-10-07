@@ -204,8 +204,14 @@ func run() error {
 
 // windowOptions builds the Wails options for a Compass window. Every window is a
 // Bridge window (URL "/") at the fixed 1280x800 size. Name keys the persisted set
-// and later per-frame routing, so it is always set.
-func windowOptions(name, title, startupJS string) application.WebviewWindowOptions {
+// and later per-frame routing, so it is always set. The startup globals come from
+// live shell state, so a window opened after setup boots in the decided mode.
+func windowOptions(svc *bridgeService, name, title string) (application.WebviewWindowOptions, error) {
+	mode, serverURL := svc.shellState()
+	startupJS, err := shellStartupJS(mode, serverURL)
+	if err != nil {
+		return application.WebviewWindowOptions{}, err
+	}
 	return application.WebviewWindowOptions{
 		Name:   name,
 		Title:  title,
@@ -214,26 +220,18 @@ func windowOptions(name, title, startupJS string) application.WebviewWindowOptio
 		URL:    "/",
 		// Startup globals run before the app bundle reads its boot mode.
 		JS: startupJS,
-	}
-}
-
-// windowStartupJS reads live shell state so windows opened after setup see the
-// installed connection. This seam keeps that per-window behavior testable
-// without creating a native webview.
-func windowStartupJS(svc *bridgeService) (string, error) {
-	mode, serverURL := svc.shellState()
-	return shellStartupJS(mode, serverURL)
+	}, nil
 }
 
 // newAppWindow creates a Bridge window and attaches its close-time cancellation
 // handler so every window tears down its own in-flight bridge calls.
 func newAppWindow(app *application.App, svc *bridgeService, name, title string) {
-	startupJS, err := windowStartupJS(svc)
+	opts, err := windowOptions(svc, name, title)
 	if err != nil {
 		slog.Error("compass-app building window startup script", "error", err)
 		return
 	}
-	win := app.Window.NewWithOptions(windowOptions(name, title, startupJS))
+	win := app.Window.NewWithOptions(opts)
 	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) {
 		svc.cancelWindow(wailsWindowDispatcher{win: win})
 	})

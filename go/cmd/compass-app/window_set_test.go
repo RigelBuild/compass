@@ -13,7 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/appconfig"
 )
 
 func TestWindowSetRoundTrip(t *testing.T) {
@@ -59,12 +62,14 @@ func TestSaveWindowSetEmpty(t *testing.T) {
 	}
 }
 
+// TestWindowOptions pins the Bridge window shape and that each window's startup
+// globals come from live shell state, not a script captured at launch.
 func TestWindowOptions(t *testing.T) {
-	startupJS, err := shellStartupJS("setup", "")
+	svc := newSetupBridgeService(nil, nil, &setupWiring{gate: &firstRunGate{}, picks: &caPicks{}})
+	opts, err := windowOptions(svc, "bridge", "Compass")
 	if err != nil {
-		t.Fatalf("shellStartupJS: %v", err)
+		t.Fatalf("windowOptions in setup: %v", err)
 	}
-	opts := windowOptions("bridge", "Compass", startupJS)
 	if opts.Name != "bridge" {
 		t.Errorf("Name = %q, want %q", opts.Name, "bridge")
 	}
@@ -74,8 +79,18 @@ func TestWindowOptions(t *testing.T) {
 	if opts.URL != "/" {
 		t.Errorf("URL = %q, want %q (every window is a Bridge window)", opts.URL, "/")
 	}
-	if opts.JS != startupJS {
-		t.Errorf("JS = %q, want the injected startup script unchanged", opts.JS)
+	if !strings.Contains(opts.JS, `window.__COMPASS_MODE__="setup";`) || strings.Contains(opts.JS, "__COMPASS_SERVER_URL__") {
+		t.Fatalf("setup JS = %q, want setup mode and no URL global", opts.JS)
+	}
+
+	const serverURL = "https://live.example:8443"
+	svc.conn.Store(&connection{mode: appconfig.ModeClient.String(), serverURL: serverURL})
+	opts, err = windowOptions(svc, "bridge-2", "Compass")
+	if err != nil {
+		t.Fatalf("windowOptions after client install: %v", err)
+	}
+	if !strings.Contains(opts.JS, `window.__COMPASS_SERVER_URL__="`+serverURL+`";`) {
+		t.Errorf("client JS = %q, want current server URL %q", opts.JS, serverURL)
 	}
 }
 
