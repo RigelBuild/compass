@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import * as solidVirtual from "@rigelbuild/solid-virtual";
 import { render } from "@solidjs/testing-library";
 import { createSignal, flush } from "solid-js";
 import type { Account, Message } from "../comms-stub";
@@ -12,6 +13,25 @@ import {
 	messageVirtualizerOptions,
 } from "./conv-virtual";
 import { MessageStream } from "./MessageStream";
+
+// MessageStream keeps its virtualizer private; wrap the real factory (behavior
+// unchanged) so the measurement cache can be inspected.
+const realCreateVirtualizer = solidVirtual.createVirtualizer;
+let lastVirtualizer:
+	| solidVirtual.Virtualizer<HTMLDivElement, Element>
+	| undefined;
+mock.module("@rigelbuild/solid-virtual", () => ({
+	...solidVirtual,
+	createVirtualizer: (
+		options: solidVirtual.PartialKeys<
+			solidVirtual.VirtualizerOptions<HTMLDivElement, Element>,
+			"observeElementRect" | "observeElementOffset" | "scrollToFn"
+		>,
+	) => {
+		lastVirtualizer = realCreateVirtualizer(options);
+		return lastVirtualizer;
+	},
+}));
 
 // The conversation stream's scroll contract, designed fresh
 // (ChannelView had NO scroll management before this lane). The behavior is
@@ -392,6 +412,28 @@ describe("MessageStream scroll contract", () => {
 		setScopeId("top-b");
 		flush();
 		expect(rows().map(translateY)).toEqual([0, 40, 200]);
+	});
+
+	// A reused row must leave its previous key's cache entry; otherwise one node
+	// piles up under every key it has shown and is pinned after it detaches.
+	test("a reused row is cached only under the key it currently shows", () => {
+		const { setMessages, setScopeId, rows } = mountStream([
+			msg("a-0", 1_000),
+			msg("a-1", 2_000),
+		]);
+		for (const scope of ["b", "c", "d"]) {
+			setMessages([msg(`${scope}-0`, 3_000), msg(`${scope}-1`, 4_000)]);
+			setScopeId(`top-${scope}`);
+			flush();
+		}
+		const cache = lastVirtualizer?.elementsCache;
+		expect(cache).toBeDefined();
+		const live = rows();
+		expect(live.map((r) => r.getAttribute("data-key"))).toEqual(["d-0", "d-1"]);
+		for (const [key, el] of cache ?? []) {
+			const shown = live.find((row) => row === el);
+			if (shown) expect(key).toBe(shown.getAttribute("data-key") ?? "");
+		}
 	});
 
 	// Case (8): shrinking a large WINDOWED topic to empty ([]) renders the empty

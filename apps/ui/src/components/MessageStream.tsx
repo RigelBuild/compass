@@ -90,13 +90,18 @@ export const MessageStream: Component<{
 							// undefined item or an index past the new message list. Guard both
 							// so a mid-change tick renders nothing rather than throwing.
 							const message = () => (item ? messages()[item.index] : undefined);
-							// Rows are reconciled by index, so a scope switch hands this
-							// node a different message; measure again or it keeps the estimate.
+							// Index-reconciled rows get a new message on a scope switch: drop
+							// the old key's cache entry so one node never sits under two keys.
 							let rowEl: HTMLDivElement | undefined;
 							createEffect(
 								() => item?.key,
-								() => {
-									if (rowEl) virtualizer.measureElement(rowEl);
+								(key, prevKey) => {
+									if (prevKey === undefined || key === prevKey || !rowEl)
+										return;
+									if (virtualizer.elementsCache.get(prevKey) === rowEl) {
+										virtualizer.elementsCache.delete(prevKey);
+									}
+									virtualizer.measureElement(rowEl);
 								},
 							);
 							return (
