@@ -926,8 +926,8 @@ describe("evaluate — touch-coupling (DL-Q1)", () => {
 			evaluate([], [], changed([rec], "LEDGER-IMPACT: none"), smallRecord),
 		).toEqual([]);
 	});
-	// Automation-exempt head branches (renovate/) skip touch-coupling. Mirrors
-	// spec-impact-gate's branch exemption.
+	// Automation-exempt head branches (renovate/, trunk-merge/) skip
+	// touch-coupling. Mirrors spec-impact-gate's branch exemption.
 	test("renovate/ branch touching a record, no ledger, no decl → no violation", () => {
 		expect(
 			evaluate(
@@ -938,8 +938,6 @@ describe("evaluate — touch-coupling (DL-Q1)", () => {
 			),
 		).toEqual([]);
 	});
-	// The queue's test PR body is Trunk's banner, never the source PR's body;
-	// the source PR already passed this leg on its own pull_request event.
 	test("trunk-merge/ queue PR touching a record, no ledger, no decl → no violation", () => {
 		expect(
 			evaluate(

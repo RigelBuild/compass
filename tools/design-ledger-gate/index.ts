@@ -81,7 +81,7 @@ const LEDGER_IMPACT_RE = /^\s*>?\s*ledger-impact:\s*(\S.*)$/im;
  * Head-branch prefixes exempt from the touch-coupling leg — automation branches
  * that cannot author a `Ledger-impact:` declaration (mirrors
  * tools/spec-impact-gate's EXEMPT_BRANCH_PREFIXES):
- *   - `renovate/`  — Renovate dependency bumps.
+ *   - `renovate/` — Renovate dependency bumps.
  *   - `trunk-merge/` — Trunk merge-queue test PRs; the body is Trunk's banner,
  *     and each source PR already passed this leg on its own PR event.
  * The SNAPSHOT leg still runs on these events; only touch-coupling is skipped.
