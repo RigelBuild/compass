@@ -426,7 +426,11 @@ type Hub struct {
 	// would race it. Idempotent. Nil until SetRunnerReadyHook; read under mu.
 	runnerReadyHook func()
 
-	mu sync.Mutex
+	// bindingWriteMu serializes whole enrolls (map-clear through reap) with promotion
+	// writes and cache updates. Lock it before mu; never hold mu across a store call.
+	bindingWriteMu sync.Mutex
+	mu             sync.Mutex
+
 	// runner is the single attached Runner (single-Runner MVP, OQ6). A second
 	// enrollment re-attaches rather than registering a second entry.
 	runner *attachedRunner
@@ -997,6 +1001,8 @@ type promotedPair struct {
 // so none of its pre-enroll sessions live. A failed durable reap still runs the
 // in-RAM fallback, then returns the error so the Runner retries enrollment.
 func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool, err error) {
+	// Held from the map-clear through the reap, so no promotion lands in between.
+	h.bindingWriteMu.Lock()
 	h.mu.Lock()
 	reattached = h.runner != nil
 	router := newCommandRouter()
@@ -1071,6 +1077,7 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier
 		delete(h.reapStale, id)
 	}
 	h.mu.Unlock()
+	h.bindingWriteMu.Unlock()
 
 	// Fire the terminal edges AFTER releasing the lock (the sink enqueues into the
 	// presence loop and returns promptly) — the discipline promoteSession uses. Order
