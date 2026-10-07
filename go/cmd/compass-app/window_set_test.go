@@ -60,7 +60,11 @@ func TestSaveWindowSetEmpty(t *testing.T) {
 }
 
 func TestWindowOptions(t *testing.T) {
-	opts := windowOptions("bridge", "Compass", "globalThis.x=1")
+	startupJS, err := shellStartupJS("setup", "")
+	if err != nil {
+		t.Fatalf("shellStartupJS: %v", err)
+	}
+	opts := windowOptions("bridge", "Compass", startupJS)
 	if opts.Name != "bridge" {
 		t.Errorf("Name = %q, want %q", opts.Name, "bridge")
 	}
@@ -70,7 +74,7 @@ func TestWindowOptions(t *testing.T) {
 	if opts.URL != "/" {
 		t.Errorf("URL = %q, want %q (every window is a Bridge window)", opts.URL, "/")
 	}
-	if opts.JS != "globalThis.x=1" {
+	if opts.JS != startupJS {
 		t.Errorf("JS = %q, want the injected startup script unchanged", opts.JS)
 	}
 }
