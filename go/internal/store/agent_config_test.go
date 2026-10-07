@@ -84,7 +84,7 @@ func validBundle(t *testing.T) []byte {
 }
 
 func TestValidateConfigBundleAccepts(t *testing.T) {
-	version, err := validateAndHashConfigBundle(validBundle(t))
+	version, _, err := validateAndHashConfigBundle(validBundle(t))
 	if err != nil {
 		t.Fatalf("valid bundle rejected: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestValidateConfigBundleRejects(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.entries...)
-			_, err := validateAndHashConfigBundle(b)
+			_, _, err := validateAndHashConfigBundle(b)
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("want ErrInvalidArgument, got %v", err)
 			}
@@ -159,7 +159,7 @@ func TestValidateConfigBundleRejects(t *testing.T) {
 }
 
 func TestValidateConfigBundleRejectsNonGzip(t *testing.T) {
-	_, err := validateAndHashConfigBundle([]byte("this is not gzip"))
+	_, _, err := validateAndHashConfigBundle([]byte("this is not gzip"))
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("want ErrInvalidArgument for non-gzip input, got %v", err)
 	}
@@ -172,13 +172,13 @@ func TestValidateConfigBundleFileCountCap(t *testing.T) {
 	for i := range maxFileCount {
 		atCap = append(atCap, tarEntry{name: "skills/s" + itoa(i) + "/f", content: "x"})
 	}
-	if _, err := validateAndHashConfigBundle(buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), atCap...)); err != nil {
+	if _, _, err := validateAndHashConfigBundle(buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), atCap...)); err != nil {
 		t.Fatalf("bundle at file-count cap rejected: %v", err)
 	}
 	overCap := make([]tarEntry, len(atCap), len(atCap)+1)
 	copy(overCap, atCap)
 	overCap = append(overCap, tarEntry{name: "skills/over/f", content: "x"})
-	_, err := validateAndHashConfigBundle(buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), overCap...))
+	_, _, err := validateAndHashConfigBundle(buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), overCap...))
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("want ErrInvalidArgument over file-count cap, got %v", err)
 	}
@@ -199,7 +199,7 @@ func TestValidateConfigBundleGzipBomb(t *testing.T) {
 	if len(b) > 1<<20 {
 		t.Fatalf("bomb fixture compressed to %d bytes; expected < 1 MiB (not exercising the streamed cap)", len(b))
 	}
-	_, err := validateAndHashConfigBundle(b)
+	_, _, err := validateAndHashConfigBundle(b)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("want ErrInvalidArgument for gzip bomb, got %v", err)
 	}
@@ -218,11 +218,11 @@ func TestCanonicalVersionStableAcrossRepacking(t *testing.T) {
 		tarEntry{name: "mcp/linear.json", content: `{"a":1}`},
 		tarEntry{name: "skills/review/SKILL.md", content: "# review"},
 	)
-	va, err := validateAndHashConfigBundle(a)
+	va, _, err := validateAndHashConfigBundle(a)
 	if err != nil {
 		t.Fatalf("bundle a: %v", err)
 	}
-	vb, err := validateAndHashConfigBundle(b)
+	vb, _, err := validateAndHashConfigBundle(b)
 	if err != nil {
 		t.Fatalf("bundle b: %v", err)
 	}
@@ -237,11 +237,11 @@ func TestCanonicalVersionDiffersOnContent(t *testing.T) {
 		tarEntry{name: "skills/review/SKILL.md", content: "# review v1"})
 	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
 		tarEntry{name: "skills/review/SKILL.md", content: "# review v2"})
-	va, err := validateAndHashConfigBundle(a)
+	va, _, err := validateAndHashConfigBundle(a)
 	if err != nil {
 		t.Fatalf("bundle a: %v", err)
 	}
-	vb, err := validateAndHashConfigBundle(b)
+	vb, _, err := validateAndHashConfigBundle(b)
 	if err != nil {
 		t.Fatalf("bundle b: %v", err)
 	}
@@ -257,11 +257,11 @@ func TestCanonicalVersionDiffersOnName(t *testing.T) {
 		tarEntry{name: "skills/ab/f", content: "c"})
 	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
 		tarEntry{name: "skills/a/f", content: "bc"})
-	va, err := validateAndHashConfigBundle(a)
+	va, _, err := validateAndHashConfigBundle(a)
 	if err != nil {
 		t.Fatalf("bundle a: %v", err)
 	}
-	vb, err := validateAndHashConfigBundle(b)
+	vb, _, err := validateAndHashConfigBundle(b)
 	if err != nil {
 		t.Fatalf("bundle b: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestValidateConfigBundleRejectsDuplicateMember(t *testing.T) {
 		tarEntry{name: "skills/a/f", content: "one"},
 		tarEntry{name: "skills/a/f", content: "two"},
 	)
-	_, err := validateAndHashConfigBundle(b)
+	_, _, err := validateAndHashConfigBundle(b)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("want ErrInvalidArgument for duplicate member, got %v", err)
 	}
@@ -297,7 +297,7 @@ func TestValidateConfigBundleRejectsDeviceTypeflag(t *testing.T) {
 	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
 		tarEntry{name: "skills/a/dev", typeflag: tar.TypeChar},
 	)
-	_, err := validateAndHashConfigBundle(b)
+	_, _, err := validateAndHashConfigBundle(b)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("want ErrInvalidArgument for device typeflag, got %v", err)
 	}
@@ -308,7 +308,7 @@ func TestValidateConfigBundleRejectsDeviceTypeflag(t *testing.T) {
 // empty bundles hash identically.
 func TestValidateConfigBundleEmpty(t *testing.T) {
 	a := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0))
-	va, err := validateAndHashConfigBundle(a)
+	va, _, err := validateAndHashConfigBundle(a)
 	if err != nil {
 		t.Fatalf("empty bundle rejected: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestValidateConfigBundleEmpty(t *testing.T) {
 		t.Fatal("empty bundle produced empty version")
 	}
 	b := buildBundle(t, gzip.BestCompression, time.Unix(9999, 0))
-	vb, err := validateAndHashConfigBundle(b)
+	vb, _, err := validateAndHashConfigBundle(b)
 	if err != nil {
 		t.Fatalf("empty bundle (repack): %v", err)
 	}
@@ -423,7 +423,7 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.entries...)
-			if _, err := validateAndHashConfigBundle(b); err != nil {
+			if _, _, err := validateAndHashConfigBundle(b); err != nil {
 				t.Fatalf("valid new member rejected: %v", err)
 			}
 		})
@@ -480,7 +480,7 @@ func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.entries...)
-			if _, err := validateAndHashConfigBundle(b); !errors.Is(err, ErrInvalidArgument) {
+			if _, _, err := validateAndHashConfigBundle(b); !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("want ErrInvalidArgument, got %v", err)
 			}
 		})
@@ -573,7 +573,7 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.member)
-			_, err := validateAndHashConfigBundle(b)
+			_, _, err := validateAndHashConfigBundle(b)
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("want ErrInvalidArgument, got %v", err)
 			}
@@ -669,7 +669,7 @@ func TestValidateConfigBundleProfileAgentKeyLint(t *testing.T) {
 			divergentDef,
 			tarEntry{name: "profiles/candidate/profile.yml", content: "models:\n  agents:\n    implementer: litellm/claude-sonnet:medium\n"},
 		)
-		if _, err := validateAndHashConfigBundle(b); err != nil {
+		if _, _, err := validateAndHashConfigBundle(b); err != nil {
 			t.Fatalf("profile keying the frontmatter name rejected: %v", err)
 		}
 	})
@@ -679,7 +679,7 @@ func TestValidateConfigBundleProfileAgentKeyLint(t *testing.T) {
 			divergentDef,
 			tarEntry{name: "profiles/candidate/profile.yml", content: "models:\n  agents:\n    impl: litellm/claude-sonnet:medium\n"},
 		)
-		_, err := validateAndHashConfigBundle(b)
+		_, _, err := validateAndHashConfigBundle(b)
 		if !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("want ErrInvalidArgument for a stem-only key, got %v", err)
 		}
@@ -693,7 +693,7 @@ func TestValidateConfigBundleProfileAgentKeyLint(t *testing.T) {
 			divergentDef,
 			tarEntry{name: "profiles/candidate/profile.yml", content: "models:\n  agents:\n    ghost: litellm/claude-sonnet:medium\n"},
 		)
-		if _, err := validateAndHashConfigBundle(b); !errors.Is(err, ErrInvalidArgument) {
+		if _, _, err := validateAndHashConfigBundle(b); !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("want ErrInvalidArgument for a key matching no def, got %v", err)
 		}
 	})
@@ -707,7 +707,7 @@ func TestValidateConfigBundleProfileAgentKeyLint(t *testing.T) {
 			tarEntry{name: "agents/impl.md", content: "---\nname: implementer\ndescription: A thing: with a colon\n---\nROLE\n"},
 			tarEntry{name: "profiles/x/profile.yml", content: "models:\n  agents:\n    implementer: sel\n"},
 		)
-		if _, err := validateAndHashConfigBundle(b); err != nil {
+		if _, _, err := validateAndHashConfigBundle(b); err != nil {
 			t.Fatalf("profile keying a name from a def with a colon-bearing sibling field rejected: %v", err)
 		}
 	})
@@ -725,7 +725,7 @@ func TestValidateConfigBundleAdmitsDefaultProfile(t *testing.T) {
 	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
 		tarEntry{name: "profiles/default/profile.yml", content: string(content)},
 	)
-	if _, err := validateAndHashConfigBundle(b); err != nil {
+	if _, _, err := validateAndHashConfigBundle(b); err != nil {
 		t.Fatalf("shipped default profile rejected at the door: %v", err)
 	}
 }
