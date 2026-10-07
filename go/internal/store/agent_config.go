@@ -138,14 +138,14 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	if actor == "" {
 		return "", fmt.Errorf("%w: config-bundle writer account id is required", ErrInvalidArgument)
 	}
-	version, err = validateAndHashConfigBundle(bundle)
+	version, profiles, err := validateAndHashConfigBundle(bundle)
 	if err != nil {
 		return "", err
 	}
 	// Reverse orphan guard (design.md §P2): a profile pinning a model stable name absent
 	// from the current registry (and not an escape-hatch selector) fails closed here
 	// rather than publishing a stranded reference. See checkBundleProfileRefsAgainstRegistry.
-	if err := s.checkBundleProfileRefsAgainstRegistry(ctx, bundle); err != nil {
+	if err := s.checkBundleProfileRefsAgainstRegistry(ctx, profiles); err != nil {
 		return "", err
 	}
 	if err := s.q.PutAgentConfig(ctx, db.PutAgentConfigParams{
@@ -162,7 +162,8 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 // bundle producer (the operator CLI builder) can prove its output against the real door
 // in tests, closing the builder/door drift gap.
 func ValidateConfigBundle(bundle []byte) (version string, err error) {
-	return validateAndHashConfigBundle(bundle)
+	version, _, err = validateAndHashConfigBundle(bundle)
+	return version, err
 }
 
 // CurrentAgentConfig returns the single current config bundle and its canonical
@@ -316,10 +317,9 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	return info, nil
 }
 
-// configBundleProfileBodies walks a stored, already-validated config bundle and returns
-// each published profile's raw profile.yml body, keyed by profile <name>, reusing the
-// door's tar-walk + grammar. It RE-WALKS the bundle Put already walked, accepted to keep
-// the door signature unchanged (RIG-3220); if either walk's grammar changes, both must.
+// configBundleProfileBodies walks the STORED config bundle and returns each profile's
+// raw profile.yml body keyed by profile <name>, for the registry-side orphan guard.
+// PutAgentConfig takes the same map from the door's single walk instead.
 func configBundleProfileBodies(bundle []byte) (map[string][]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(bundle))
 	if err != nil {
@@ -385,11 +385,12 @@ func sortedKeys(set map[string]bool) []string {
 // validateAndHashConfigBundle is the security-critical store door: a SINGLE streamed
 // pass over the gzip tarball that validates every member and accumulates the canonical
 // content hash (length-prefixed over (name, content) pairs in name order, metadata
-// excluded), returning %w-wrapped ErrInvalidArgument on the first violation.
-func validateAndHashConfigBundle(bundle []byte) (string, error) {
+// excluded), returning %w-wrapped ErrInvalidArgument on the first violation. It also
+// returns each profile's profile.yml body keyed by profile <name>.
+func validateAndHashConfigBundle(bundle []byte) (version string, profiles map[string][]byte, err error) {
 	gz, err := gzip.NewReader(bytes.NewReader(bundle))
 	if err != nil {
-		return "", fmt.Errorf("%w: bundle is not a valid gzip stream: %w", ErrInvalidArgument, err)
+		return "", nil, fmt.Errorf("%w: bundle is not a valid gzip stream: %w", ErrInvalidArgument, err)
 	}
 	// Read-only gunzip: Close only releases the decompressor, so its error is
 	// not actionable here (nothing was written to flush).
@@ -397,6 +398,7 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 
 	type member struct {
 		name    string
+		parts   []string // configMemberParts(name): the cross-member lints read this, never the raw name
 		content []byte
 	}
 	var members []member
@@ -413,9 +415,9 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		}
 		if err != nil {
 			if errors.Is(err, errBundleTooLarge) {
-				return "", errBundleTooLarge
+				return "", nil, errBundleTooLarge
 			}
-			return "", fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
+			return "", nil, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
 		}
 
 		// Reject the escape-vector typeflags outright. A symlink and a hardlink are
@@ -423,14 +425,14 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		// are refused before any path analysis.
 		switch hdr.Typeflag {
 		case tar.TypeSymlink:
-			return "", fmt.Errorf("%w: bundle member %q is a symlink (not allowed)", ErrInvalidArgument, hdr.Name)
+			return "", nil, fmt.Errorf("%w: bundle member %q is a symlink (not allowed)", ErrInvalidArgument, hdr.Name)
 		case tar.TypeLink:
-			return "", fmt.Errorf("%w: bundle member %q is a hardlink (not allowed)", ErrInvalidArgument, hdr.Name)
+			return "", nil, fmt.Errorf("%w: bundle member %q is a hardlink (not allowed)", ErrInvalidArgument, hdr.Name)
 		}
 
 		parts, err := configMemberParts(hdr.Name)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 
 		// The member typeflag must resolve to a regular file or a directory — an explicit
@@ -441,7 +443,7 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 			continue
 		}
 		if !hdr.FileInfo().Mode().IsRegular() {
-			return "", fmt.Errorf("%w: bundle member %q has unsupported typeflag %d (only regular files and directories are allowed)", ErrInvalidArgument, hdr.Name, hdr.Typeflag)
+			return "", nil, fmt.Errorf("%w: bundle member %q has unsupported typeflag %d (only regular files and directories are allowed)", ErrInvalidArgument, hdr.Name, hdr.Typeflag)
 		}
 
 		// Reject duplicate regular-member names at the door (M1). Tar permits duplicates,
@@ -449,7 +451,7 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		// cannot normalize — the same bundle re-packed could hash differently. Only
 		// regular files are tracked; a duplicate dir feeds no content and is harmless.
 		if seen[hdr.Name] {
-			return "", fmt.Errorf("%w: bundle contains duplicate member %q", ErrInvalidArgument, hdr.Name)
+			return "", nil, fmt.Errorf("%w: bundle contains duplicate member %q", ErrInvalidArgument, hdr.Name)
 		}
 		seen[hdr.Name] = true
 
@@ -457,17 +459,17 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		// the (maxFileCount+1)th body is never read into memory.
 		fileCount++
 		if fileCount > maxFileCount {
-			return "", fmt.Errorf("%w: bundle exceeds file-count cap of %d files", ErrInvalidArgument, maxFileCount)
+			return "", nil, fmt.Errorf("%w: bundle exceeds file-count cap of %d files", ErrInvalidArgument, maxFileCount)
 		}
 
 		content, err := validateRegularMember(parts, tr)
 		if err != nil {
 			if errors.Is(err, errBundleTooLarge) {
-				return "", errBundleTooLarge
+				return "", nil, errBundleTooLarge
 			}
-			return "", err
+			return "", nil, err
 		}
-		members = append(members, member{name: hdr.Name, content: content})
+		members = append(members, member{name: hdr.Name, parts: parts, content: content})
 	}
 
 	// Cross-member profile lint (RIG-2968 T1). The models.agents key lint is CROSS-MEMBER
@@ -475,20 +477,20 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 	// — so it runs here over the collected set, reading only collected bytes (no
 	// re-decompress) and never feeding the hash.
 	agentDefNames := make(map[string]bool)
-	profileBodies := make(map[string][]byte)
+	profiles = make(map[string][]byte)
 	for _, m := range members {
-		parts := strings.Split(m.name, "/")
+		parts := m.parts
 		switch {
 		case len(parts) == 2 && parts[0] == topDirAgents:
 			if name := agentDefFrontmatterName(m.content); name != "" {
 				agentDefNames[name] = true
 			}
 		case len(parts) == 3 && parts[0] == topDirProfiles && parts[2] == memberProfileYML:
-			profileBodies[m.name] = m.content
+			profiles[parts[1]] = m.content
 		}
 	}
-	if err := lintProfileAgentKeys(profileBodies, agentDefNames); err != nil {
-		return "", err
+	if err := lintProfileAgentKeys(profiles, agentDefNames); err != nil {
+		return "", nil, err
 	}
 
 	// Sort by name. Duplicate regular names are rejected above, so keys are unique and
@@ -507,7 +509,7 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		h.Write(lenBuf[:])
 		h.Write(m.content)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return hex.EncodeToString(h.Sum(nil)), profiles, nil
 }
 
 // configMemberParts validates a member path for escapes and the top-dir whitelist,
@@ -775,8 +777,9 @@ func validateProfileModelSelectors(mapping map[string]any, joined string) error 
 // key under a profile's models.agents must match the FRONTMATTER name: of an agents/*.md
 // def in the SAME bundle. The SDK resolves a subagent by agent.name, so a key matching no
 // def is a SILENT no-op at spawn; the lint turns that typo into a door failure.
-func lintProfileAgentKeys(profileBodies map[string][]byte, agentDefNames map[string]bool) error {
-	for joined, body := range profileBodies {
+func lintProfileAgentKeys(profiles map[string][]byte, agentDefNames map[string]bool) error {
+	for name, body := range profiles {
+		joined := topDirProfiles + "/" + name + "/" + memberProfileYML
 		mapping, err := parseYAMLMapping(body, joined)
 		if err != nil {
 			// Already validated during the per-member pass; a re-parse failure here would
