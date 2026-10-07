@@ -1361,6 +1361,27 @@ func TestLiveConsumerSurvivesInactiveThreshold(t *testing.T) {
 	}
 }
 
+// TestRecreateRetryIsShortUnderDefaultAckWait pins the retry pace: a failed
+// recreate must not wait a full default AckWait before trying again.
+func TestRecreateRetryIsShortUnderDefaultAckWait(t *testing.T) {
+	t.Parallel()
+	f := newFabric(t, Config{Log: quietLogger(t)})
+	var calls atomic.Int32
+	start := time.Now()
+	ok := f.retryUntil(testCtx(t), make(chan struct{}), "s", func() (bool, error) {
+		if calls.Add(1) < 3 {
+			return false, errors.New("consumer does not exist")
+		}
+		return true, nil
+	})
+	if !ok || calls.Load() != 3 {
+		t.Fatalf("retryUntil = %v after %d attempts, want true after 3", ok, calls.Load())
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("3 attempts took %v; a failed recreate waits too long to retry", elapsed)
+	}
+}
+
 // partitionDialer refuses every dial while partitioned, reporting each refusal,
 // so a test can hold the fabric's connection down for as long as it needs.
 type partitionDialer struct {

@@ -284,11 +284,14 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	return stop, nil
 }
 
-// retryUntil runs attempt every AckWait until it succeeds or the subscription
-// ends; it reports whether the reaped consumer was replaced.
+// recreateRetryFloor is the first retry delay; it doubles up to AckWait so a
+// transient failure right after the reap does not cost a full AckWait.
+const recreateRetryFloor = 100 * time.Millisecond
+
+// retryUntil runs attempt with a doubling delay, capped at AckWait, until it
+// succeeds or the subscription ends; it reports whether the consumer was replaced.
 func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject string, attempt func() (bool, error)) bool {
-	retry := time.NewTicker(f.cfg.ackWait())
-	defer retry.Stop()
+	delay := min(recreateRetryFloor, f.cfg.ackWait())
 	for {
 		ok, err := attempt()
 		if ok {
@@ -299,8 +302,10 @@ func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject s
 			return false
 		}
 		f.log.ErrorContext(ctx, "fabric: recreating a reaped consumer failed; retrying", "subject", subject, "error", err)
+		wait := delay
+		delay = min(2*delay, f.cfg.ackWait())
 		select {
-		case <-retry.C:
+		case <-time.After(wait):
 		case <-ctx.Done():
 			return false
 		case <-f.teardown:
