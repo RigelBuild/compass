@@ -2,16 +2,17 @@ import { type Component, Show } from "solid-js";
 import { useStore } from "../context";
 import { foldSession } from "../session-events";
 import type { Agent } from "../stub-data";
+import { useView } from "../view-scope";
 import { Glyph } from "./Glyph";
 import { SessionTrace } from "./SessionTrace";
 
-/** The trace observation pane: the selected agent's typed execution trace. The
+/** The trace observation pane: the view agent's typed execution trace. The
  *  raw SessionEvent stream is folded (foldSession) into render-ready TraceItems
  *  and handed to SessionTrace. Observation-only — no composer. */
 const TracePane: Component = () => {
-	const store = useStore();
+	const view = useView();
 	const items = () => {
-		const s = store.agentSession();
+		const s = view.agentSession();
 		return s ? foldSession(s.events) : undefined;
 	};
 	return (
@@ -45,13 +46,14 @@ const TracePane: Component = () => {
  *  the running dot stays visible for liveness at a glance. */
 export const LogPanel: Component<{ agent: Agent }> = (props) => {
 	const store = useStore();
-	const running = () => store.agentSession()?.running ?? false;
+	const view = useView();
+	const running = () => view.agentSession()?.running ?? false;
 	// A fixture-sourced session's id was never minted by a server, so Stop has
 	// nothing it can honestly issue (store.ts `stopAgent` refuses it outright).
 	// Render the control disabled and say why, the same shape the channel rail
 	// uses for its not-yet-wired subscribe control (LeftSidebar.tsx:171-184) — a
 	// visibly-dead button beats one that only reports into the console.
-	const fixture = () => store.agentSession()?.fixture === true;
+	const fixture = () => view.agentSession()?.fixture === true;
 	return (
 		<aside
 			class={["log-panel", { minimized: !store.logOpen() }]}

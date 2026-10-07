@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { fireEvent, render } from "@solidjs/testing-library";
-import { flush } from "solid-js";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, fireEvent, render } from "@solidjs/testing-library";
+import { flush as flushSync } from "solid-js";
 import { STUB_CHANNELS, STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
@@ -8,6 +8,7 @@ import { detectPlatform } from "../keyboard/dispatch";
 import { shortcutFor } from "../keyboard/keymap";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_AGENTS } from "../stub-data";
+import { flush, mountApp } from "../test-router";
 import { testQueryClient } from "../test-support";
 import { LeftSidebar } from "./LeftSidebar";
 
@@ -67,14 +68,14 @@ describe("LeftSidebar (T7)", () => {
 		expect(head).toBeDefined();
 		if (!head) throw new Error("Channels section header not rendered");
 		fireEvent.click(head);
-		flush();
+		flushSync();
 		expect(store.isSectionCollapsed("channels")).toBe(true);
 		expect(container.querySelectorAll(".ch-row").length).toBe(0);
 		expect(container.querySelectorAll(".tree-agent").length).toBe(0);
 		const expanded = findToggle(container, "Channels");
 		if (!expanded) throw new Error("Channels section header vanished");
 		fireEvent.click(expanded);
-		flush();
+		flushSync();
 		expect(store.isSectionCollapsed("channels")).toBe(false);
 		expect(railRows(container).length).toBeGreaterThan(0);
 		expect(container.querySelectorAll(".tree-agent").length).toBeGreaterThan(0);
@@ -105,7 +106,7 @@ describe("LeftSidebar (T7)", () => {
 		expect(select).not.toBeNull();
 		if (!select) throw new Error("channel-row select button not rendered");
 		fireEvent.click(select);
-		flush();
+		flushSync();
 
 		expect(store.view()).toBe("channel");
 		expect(store.selectedChannelId()).toBe("ch-svc-compass");
@@ -127,7 +128,7 @@ describe("LeftSidebar (T7)", () => {
 		expect(uiLeaf).toBeDefined();
 		if (!uiLeaf) throw new Error("compass-ui agent leaf not rendered");
 		fireEvent.click(uiLeaf);
-		flush();
+		flushSync();
 
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
@@ -199,7 +200,7 @@ describe("LeftSidebar (T7)", () => {
 		const browseHead = findToggle(container, "browse channels");
 		if (!browseHead) throw new Error("browse channels header not rendered");
 		fireEvent.click(browseHead);
-		flush();
+		flushSync();
 		expect(
 			[...container.querySelectorAll(".browse-row .ch-name")].some(
 				(name) => name.textContent === "tree-none",
@@ -239,7 +240,7 @@ describe("LeftSidebar (T7)", () => {
 		expect(browseHead).toBeDefined();
 		if (!browseHead) throw new Error("browse channels header not rendered");
 		fireEvent.click(browseHead);
-		flush();
+		flushSync();
 
 		const randomRow = [
 			...container.querySelectorAll<HTMLElement>(".ch-row.browse-row"),
@@ -255,7 +256,7 @@ describe("LeftSidebar (T7)", () => {
 
 		// And nothing fakes state behind it.
 		fireEvent.click(join);
-		flush();
+		flushSync();
 		expect(membershipOf()).toBe("none");
 	});
 
@@ -407,5 +408,148 @@ describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
 		// Bridge + Settings have keymap rows → aria-keyshortcuts present.
 		const bridge = buttons.find((b) => b.textContent?.includes("Bridge"));
 		expect(bridge?.getAttribute("aria-keyshortcuts")).toBeTruthy();
+	});
+});
+
+// Open modes: a plain click navigates the focused view
+// in place; Mod+click and middle-click open the destination in a new tab.
+describe("LeftSidebar open modes", () => {
+	const setPlatform = (platform: "mac" | "other"): void => {
+		Object.defineProperty(navigator, "platform", {
+			value: platform === "mac" ? "MacIntel" : "X11; Linux x64",
+			configurable: true,
+		});
+	};
+	const paths = (store: AppStore): string[] =>
+		store
+			.layout()
+			.tabs.map((tab) =>
+				tab.layout.kind === "single" ? tab.layout.view.path : "split",
+			);
+	const agentRow = (c: HTMLElement): HTMLElement => {
+		const row = [...c.querySelectorAll<HTMLElement>("button.tree-agent")].find(
+			(b) => b.textContent?.includes("compass-ui"),
+		);
+		if (!row) throw new Error("no compass-ui tree row");
+		return row;
+	};
+	const channelRow = (c: HTMLElement): HTMLElement => {
+		const row = [...c.querySelectorAll<HTMLElement>(".ch-row-select")].find(
+			(b) => b.textContent?.includes("svc.compass"),
+		);
+		if (!row) throw new Error("no svc.compass channel row");
+		return row;
+	};
+	const middleClick = (el: HTMLElement): void => {
+		el.dispatchEvent(
+			new MouseEvent("auxclick", {
+				button: 1,
+				bubbles: true,
+				cancelable: true,
+			}),
+		);
+	};
+
+	afterEach(() => {
+		cleanup();
+		setPlatform("other");
+	});
+
+	test("a plain click navigates the focused view in place", async () => {
+		setPlatform("other");
+		const { store, container } = mountApp("/");
+		fireEvent.click(agentRow(container));
+		await flush();
+		expect(paths(store)).toEqual(["/agent/acc-compass-ui"]);
+	});
+
+	test("Mod+click opens a new focused tab after the active one", async () => {
+		setPlatform("other");
+		const { store, container } = mountApp("/");
+		fireEvent.click(channelRow(container), { ctrlKey: true });
+		await flush();
+		expect(paths(store)).toEqual(["/", "/channel/ch-svc-compass"]);
+		expect(store.view()).toBe("channel");
+	});
+
+	test("on a Mac, Meta is the tab modifier and Ctrl+click stays in place", async () => {
+		setPlatform("mac");
+		const { store, container } = mountApp("/");
+		fireEvent.click(agentRow(container), { ctrlKey: true });
+		await flush();
+		expect(paths(store)).toEqual(["/agent/acc-compass-ui"]);
+		fireEvent.click(channelRow(container), { metaKey: true });
+		await flush();
+		expect(paths(store)).toEqual([
+			"/agent/acc-compass-ui",
+			"/channel/ch-svc-compass",
+		]);
+	});
+
+	test("a middle-click opens a new tab; other aux buttons do nothing", async () => {
+		setPlatform("other");
+		const { store, container } = mountApp("/");
+		agentRow(container).dispatchEvent(
+			new MouseEvent("auxclick", {
+				button: 2,
+				bubbles: true,
+				cancelable: true,
+			}),
+		);
+		await flush();
+		expect(paths(store)).toEqual(["/"]);
+
+		middleClick(agentRow(container));
+		await flush();
+		expect(paths(store)).toEqual(["/", "/agent/acc-compass-ui"]);
+	});
+
+	test("a middle mousedown is cancelled so it cannot start autoscroll", () => {
+		const { container } = mountApp("/");
+		const down = (button: number): MouseEvent => {
+			const event = new MouseEvent("mousedown", {
+				button,
+				bubbles: true,
+				cancelable: true,
+			});
+			agentRow(container).dispatchEvent(event);
+			return event;
+		};
+		expect(down(1).defaultPrevented).toBe(true);
+		expect(down(0).defaultPrevented).toBe(false);
+	});
+
+	test("a view link opens its view in a new tab, and an open path refocuses its tab", async () => {
+		setPlatform("other");
+		const { store, container } = mountApp("/");
+		const settings = viewButtons(container).find((b) =>
+			b.textContent?.includes("Settings"),
+		);
+		if (!settings) throw new Error("no Settings view button");
+		middleClick(settings);
+		await flush();
+		expect(paths(store)).toEqual(["/", "/settings"]);
+
+		const bridge = viewButtons(container).find((b) =>
+			b.textContent?.includes("Bridge"),
+		);
+		if (!bridge) throw new Error("no Bridge view button");
+		fireEvent.click(bridge, { ctrlKey: true });
+		await flush();
+		expect(paths(store)).toEqual(["/", "/settings"]);
+		expect(store.view()).toBe("bridge");
+	});
+
+	test("a DM row opened in a tab lands on the agent workspace", async () => {
+		setPlatform("other");
+		const { store, container } = mountApp("/");
+		const dmRow = [
+			...container.querySelectorAll<HTMLElement>(".ch-row-select"),
+		].find((b) => b.querySelector(".ch-glyph")?.textContent === "@");
+		if (!dmRow) throw new Error("no DM row");
+		middleClick(dmRow);
+		await flush();
+		const opened = paths(store)[1];
+		expect(opened?.startsWith("/agent/")).toBe(true);
 	});
 });
