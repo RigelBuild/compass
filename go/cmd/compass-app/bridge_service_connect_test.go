@@ -970,8 +970,7 @@ func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
 	assertDisconnectedRPC(t, frames, "setup-race-before")
 
 	issue, stopWorkers, workersDone := startConcurrentRPCWorkers(svc, 4)
-	close(releaseSave)
-	result := collectConcurrentRPCResults(t, frames, issue, connectDone, stopWorkers, workersDone)
+	result := collectConcurrentRPCResults(t, frames, issue, releaseSave, connectDone, stopWorkers, workersDone)
 	if !result.OK || result.ServerURL != srv.URL {
 		t.Fatalf("concurrent setup Connect = %+v, want success", result)
 	}
@@ -1034,7 +1033,10 @@ func startConcurrentRPCWorkers(svc *bridgeService, count int) (<-chan concurrent
 	return issue, stop, workersDone
 }
 
-func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan concurrentRPCTask, connectDone <-chan connectResult, stop chan<- struct{}, workersDone <-chan struct{}) connectResult {
+// collectConcurrentRPCResults releases the save only after a worker RPC has
+// failed as disconnected, and stops the workers only after one has been served
+// by the installed connection, so worker RPCs span the install.
+func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan concurrentRPCTask, releaseSave chan<- struct{}, connectDone <-chan connectResult, stop chan<- struct{}, workersDone <-chan struct{}) connectResult {
 	t.Helper()
 	const (
 		initial = iota
@@ -1046,7 +1048,15 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 	connectC := connectDone
 	issueC := issue
 	var result connectResult
-	for connectC != nil || len(pending) > 0 {
+	released, connected, stopped := false, false, false
+	stopIfDone := func() {
+		if connectC == nil && connected && !stopped {
+			stopped = true
+			issueC = nil
+			close(stop)
+		}
+	}
+	for !stopped || len(pending) > 0 {
 		select {
 		case task := <-issueC:
 			if _, exists := states[task.requestID]; exists {
@@ -1073,6 +1083,10 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 				states[requestID] = terminated
 				close(pending[requestID].done)
 				delete(pending, requestID)
+				if !released {
+					released = true
+					close(releaseSave)
+				}
 			case frameKindHead:
 				if state != initial {
 					t.Errorf("RPC %q received head in state %d", requestID, state)
@@ -1087,18 +1101,19 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 				states[requestID] = terminated
 				close(pending[requestID].done)
 				delete(pending, requestID)
+				connected = true
+				stopIfDone()
 			default:
 				t.Errorf("RPC %q unexpected frame kind %q", requestID, event.frame.Kind)
 			}
 		case result = <-connectC:
 			connectC = nil
-			issueC = nil
-			close(stop)
-			<-workersDone
+			stopIfDone()
 		case <-time.After(testTimeout):
 			t.Fatal("timed out waiting for concurrent RPC outcomes")
 		}
 	}
+	<-workersDone
 	for requestID, state := range states {
 		if state != terminated {
 			t.Errorf("RPC %q did not reach a terminal outcome", requestID)
