@@ -17,6 +17,7 @@ import {
 } from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { TopicView } from "./TopicView";
 
 const OWNER = "acc-bob";
@@ -77,7 +78,9 @@ async function mountTopic(text: string): Promise<{
 		});
 		return (
 			<StoreContext value={store}>
-				<TopicView />
+				<ViewContext value={store.focusedView()}>
+					<TopicView />
+				</ViewContext>
 			</StoreContext>
 		);
 	});
