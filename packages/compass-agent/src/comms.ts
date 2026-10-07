@@ -29,8 +29,8 @@
 // oneof cannot express RespondToAsk. The operator's answer arrives later as a
 // delivered message carrying an ask_answer block.
 
-// Eight tools ship: post, post_ask, list, roster, set_status, open_dm, dm,
-// compass_tree; search is deferred (OQ-3). See the package AGENTS.md.
+// Eleven tools ship: post, post_ask, list, roster, set_status, open_dm, dm,
+// compass_tree, create_channel, update_members, create_channel_group; search deferred.
 
 // The tool-parameter schema builder comes from the SDK's OWN schema stack
 // (@oh-my-pi/omptype, pinned to the SDK release) via its /ark facade — keeping the
@@ -51,9 +51,13 @@ import {
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
+	ChannelGroupVisibility,
+	ChannelKind,
 	type CommsCallRequest,
 	CommsCallRequestSchema,
 	type CommsCallResult,
+	CreateChannelGroupRequestSchema,
+	CreateChannelRequestSchema,
 	create,
 	GetRosterRequestSchema,
 	ListMessagesRequestSchema,
@@ -64,6 +68,7 @@ import {
 	type RosterEntry,
 	RosterScope,
 	SetAgentStatusRequestSchema,
+	UpdateChannelMembersRequestSchema,
 } from "./compassv1";
 import { attr, flat } from "./render-guard";
 
@@ -318,6 +323,93 @@ export const dmParameters = type({
 	),
 });
 
+/** Exported so tests can validate the wire contract the agent loop enforces. */
+export const createChannelParameters = type({
+	name: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe("Channel name; must not be blank"),
+	"group?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"Optional group name (a leaf or slash path); must not be blank; omit for an ungrouped owner-scoped channel",
+		),
+	"members?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.array()
+		.describe("Initial member handles; each handle must not be blank"),
+});
+
+function hasMemberChanges(params: {
+	add?: string[];
+	remove?: string[];
+	subscribe?: string[];
+	unsubscribe?: string[];
+	convert_to_channel_name?: string;
+}): boolean {
+	return Boolean(
+		params.add?.length ||
+			params.remove?.length ||
+			params.subscribe?.length ||
+			params.unsubscribe?.length ||
+			params.convert_to_channel_name,
+	);
+}
+
+/** Exported so tests can validate the wire contract the agent loop enforces. */
+export const updateMembersParameters = type({
+	channel: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe("Channel name; must not be blank"),
+	"add?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.array()
+		.describe(
+			"Handles to add as channel members; each handle must not be blank",
+		),
+	"remove?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.array()
+		.describe(
+			"Handles to remove from channel membership; each handle must not be blank",
+		),
+	"subscribe?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.array()
+		.describe("Member handles to subscribe; each handle must not be blank"),
+	"unsubscribe?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.array()
+		.describe("Member handles to unsubscribe; each handle must not be blank"),
+	"convert_to_channel_name?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"Name for converting a DM to a channel; must not be blank and is required when adding a third party to a DM",
+		),
+})
+	.narrow(
+		(params, ctx) =>
+			hasMemberChanges(params) ||
+			ctx.mustBe("at least one member change or DM conversion"),
+	)
+	.describe(
+		"Channel membership change; provide at least one non-empty handle list or a conversion name. Converting to a named channel is required when adding a third party to a DM.",
+	);
+
+/** Exported so tests can validate the wire contract the agent loop enforces. */
+export const createChannelGroupParameters = type({
+	name: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe("Channel group name; must not be blank"),
+	"parent?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"Optional parent group name (a leaf or slash path); must not be blank; omit for a top-level group",
+		),
+	"visibility?": type("'owner'|'shared'").describe(
+		"Group visibility: owner (default) or shared",
+	),
+});
+
 /**
  * The `Error` a non-matching `CommsCallResult` deserves — both shapes are tool
  * failures under the OMP contract ("throw an error when a tool fails"):
@@ -342,7 +434,10 @@ function commsFailure(
 		// The same `flat` the marker lines use, not a second copy of its regex — two
 		// guards against one threat drift apart silently. The bound runs AFTER the
 		// collapse, so slicing cannot re-expose a break the collapse removed.
-		const detail = flat(outcome.value.message).slice(0, 500);
+		// Store errors can quote a resolved 32-hex id; the model addresses by name, so drop it.
+		const detail = flat(outcome.value.message)
+			.replace(/\b[0-9a-f]{32}\b/g, "<id>")
+			.slice(0, 500);
 		return new Error(
 			`${toolName} failed: ${attr(outcome.value.code)}: ${detail}`,
 		);
@@ -427,7 +522,7 @@ function renderAgentTree(entries: RosterEntry[]): string {
 }
 
 /**
- * The native comms tool set. Eight tools; never an ask-answering one.
+ * The native comms tool set. Eleven tools; never an ask-answering one.
  *
  * Wired into the container entrypoint by `cli.ts main()` (RIG-1741): the tools
  * are merged into the session's `customTools` and so register as `#withNatives`
@@ -993,6 +1088,137 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		},
 	};
 
+	const commsCreateChannel: AgentTool<typeof createChannelParameters> = {
+		name: "comms_create_channel",
+		label: "Create channel",
+		approval: "write",
+		description:
+			"Create a named Compass channel, optionally in a visible group and with initial members. DMs must be opened with comms_open_dm.",
+		parameters: createChannelParameters,
+		execute: async (toolCallId, params) => {
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "createChannel",
+						value: create(CreateChannelRequestSchema, {
+							name: params.name,
+							groupName: params.group ?? "",
+							memberHandles: params.members ?? [],
+							kind: ChannelKind.CHANNEL,
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "createChannel")
+				throw commsFailure(result, "comms_create_channel", "create_channel");
+			const channel = result.result.value.channel;
+			if (!channel)
+				throw new Error(
+					"comms_create_channel: protocol violation — create_channel result carried no channel",
+				);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Created channel ${flat(channel.name)}${params.group ? ` in group ${flat(params.group)}` : ""}.`,
+					},
+				],
+			};
+		},
+	};
+
+	const commsUpdateMembers: AgentTool<typeof updateMembersParameters> = {
+		name: "comms_update_members",
+		label: "Update channel members",
+		approval: "write",
+		description:
+			"Add, remove, subscribe, or unsubscribe channel members by handle. Adding a third party to a DM requires convert_to_channel_name, which converts the DM to a named channel.",
+		parameters: updateMembersParameters,
+		execute: async (toolCallId, params) => {
+			if (!hasMemberChanges(params))
+				throw new Error(
+					"comms_update_members: nothing to do; provide a member change or DM conversion",
+				);
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "updateMembers",
+						value: create(UpdateChannelMembersRequestSchema, {
+							channelId: params.channel,
+							addMemberHandles: params.add ?? [],
+							removeMemberHandles: params.remove ?? [],
+							subscribeHandles: params.subscribe ?? [],
+							unsubscribeHandles: params.unsubscribe ?? [],
+							convertChannelName: params.convert_to_channel_name ?? "",
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "updateMembers")
+				throw commsFailure(result, "comms_update_members", "update_members");
+			const channel = result.result.value.channel;
+			if (!channel)
+				throw new Error(
+					"comms_update_members: protocol violation — update_members result carried no channel",
+				);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Updated members of channel ${flat(channel.name)}.`,
+					},
+				],
+			};
+		},
+	};
+
+	const commsCreateChannelGroup: AgentTool<
+		typeof createChannelGroupParameters
+	> = {
+		name: "comms_create_channel_group",
+		label: "Create channel group",
+		approval: "write",
+		description:
+			"Create a channel group, optionally under a visible parent group; visibility is owner-scoped by default or may be shared.",
+		parameters: createChannelGroupParameters,
+		execute: async (toolCallId, params) => {
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "createChannelGroup",
+						value: create(CreateChannelGroupRequestSchema, {
+							name: params.name,
+							parentGroupName: params.parent ?? "",
+							visibility:
+								params.visibility === "shared"
+									? ChannelGroupVisibility.SHARED
+									: ChannelGroupVisibility.OWNER,
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "createChannelGroup")
+				throw commsFailure(
+					result,
+					"comms_create_channel_group",
+					"create_channel_group",
+				);
+			const group = result.result.value.group;
+			if (!group)
+				throw new Error(
+					"comms_create_channel_group: protocol violation — create_channel_group result carried no group",
+				);
+			return {
+				content: [
+					{ type: "text", text: `Created channel group ${flat(group.name)}.` },
+				],
+			};
+		},
+	};
+
 	return [
 		postMessage,
 		postAsk,
@@ -1002,5 +1228,8 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		commsOpenDm,
 		commsDm,
 		compassTree,
+		commsCreateChannel,
+		commsUpdateMembers,
+		commsCreateChannelGroup,
 	];
 }
