@@ -600,3 +600,51 @@ func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
 		t.Fatalf("stored ask_id = %q, want the untouched %q", msgs[0].Blocks[0].Ask.AskID, storedAskID)
 	}
 }
+
+// A forged ask update must refuse exactly as a nonexistent id does (NotFound),
+// without echoing the stored ask_id, for a co-member non-author and for the
+// author once revoked. The author while a member is the positive control.
+func TestCommitAgentUpdateForeignAskMessageIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, st, "owner")
+	agentA := mustAgent(t, st, owner.ID, "agent-a")
+	agentB := mustAgent(t, st, owner.ID, "agent-b")
+	// B can read A's ask message, so only authorship separates its refusal.
+	ch, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "shared", Kind: store.ChannelKindChannel,
+		MemberAccountIDs: []store.AccountID{agentA.ID, agentB.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	posted, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{askBlockWire()}})
+	if err != nil {
+		t.Fatalf("PostAsAccount(A ask): %v", err)
+	}
+	id := posted.GetMessage().GetId()
+	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
+
+	frames := map[string][]*compassv1.MessageBlock{
+		"mismatched ask_id": {askBlockWireID("forged-ask")},
+		"surplus ask":       {askBlockWireID(storedAskID), askBlockWireID("forged-surplus")},
+	}
+	refuse := func(actor store.AccountID, who string, want connect.Code) {
+		t.Helper()
+		for name, blocks := range frames {
+			_, err := svc.CommitAgentUpdate(ctx, actor, updatedFrame(id, blocks))
+			connectCodeIs(t, err, want, "CommitAgentUpdate("+who+", "+name+")")
+			if want == connect.CodeNotFound && strings.Contains(err.Error(), storedAskID) {
+				t.Fatalf("%s %s: refusal %q leaks the stored ask_id", who, name, err)
+			}
+		}
+	}
+	refuse(agentA.ID, "author", connect.CodeInvalidArgument)
+	refuse(agentB.ID, "co-member non-author", connect.CodeNotFound)
+
+	if _, _, err := st.UpdateChannelMembers(ctx, owner.ID, ch.ID, []store.MemberUpdate{{AccountID: agentA.ID, Remove: true}}, store.MemberUpdatesOptions{}); err != nil {
+		t.Fatalf("UpdateChannelMembers(remove A): %v", err)
+	}
+	refuse(agentA.ID, "revoked author", connect.CodeNotFound)
+}

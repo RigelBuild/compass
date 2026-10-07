@@ -203,7 +203,7 @@ type Querier interface {
 	// routing channel inside it, keyed by (group, name) so a planted look-alike is never adopted.
 	// Visibility-discriminated like GetOwnerDMGroup: a planted wider __linear__ group is never adopted.
 	GetLinearRoutingGroup(ctx context.Context, arg GetLinearRoutingGroupParams) (string, error)
-	GetMessageBlocks(ctx context.Context, id string) ([]byte, error)
+	GetMessageBlocksAsAuthor(ctx context.Context, arg GetMessageBlocksAsAuthorParams) ([]byte, error)
 	GetMessageByRequestID(ctx context.Context, arg GetMessageByRequestIDParams) ([]GetMessageByRequestIDRow, error)
 	// Peer-DM channel queries (sqlc adoption T6, RIG-3034; dm.go was added to the
 	// store after the design record froze — the record's "plus any residue"). These
