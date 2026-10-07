@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const agentAccountVisible = `-- name: AgentAccountVisible :one
+SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE account_id = $1)
+`
+
+// Under RLS, an agent of another tenant is invisible exactly like an unknown id;
+// the FK cannot tell them apart because FK checks ignore RLS.
+func (q *Queries) AgentAccountVisible(ctx context.Context, accountID string) (bool, error) {
+	row := q.db.QueryRow(ctx, agentAccountVisible, accountID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const deleteSessionBinding = `-- name: DeleteSessionBinding :exec
 WITH d AS (
     DELETE FROM session_bindings AS b
@@ -352,7 +365,7 @@ func (q *Queries) SessionBindingTenants(ctx context.Context, arg SessionBindingT
 	return items, nil
 }
 
-const startComputeUsageInterval = `-- name: StartComputeUsageInterval :exec
+const startComputeUsageInterval = `-- name: StartComputeUsageInterval :execrows
 INSERT INTO compute_usage_events (
     id, interval_id, kind, occurred_at, agent_account_id, owner_user_id,
     session_id, runner_id
@@ -374,12 +387,17 @@ type StartComputeUsageIntervalParams struct {
 // Event writes share RecordSessionBinding's transaction, so neither half of an
 // interval can commit without its binding transition.
 // clock_timestamp records after lock waits, unlike now() which uses tx start time.
-func (q *Queries) StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) error {
-	_, err := q.db.Exec(ctx, startComputeUsageInterval,
+// :execrows: the interval id is fresh, so zero rows means no visible agent row,
+// and the Store fails the bind rather than commit it unbilled.
+func (q *Queries) StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, startComputeUsageInterval,
 		arg.IntervalID,
 		arg.SessionID,
 		arg.RunnerID,
 		arg.AgentAccountID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
