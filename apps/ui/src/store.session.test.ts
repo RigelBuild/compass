@@ -248,6 +248,32 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 		}
 	});
 
+	test("a reused id re-tails even when a resync falls between ERRORED and READY", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.WORKING);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-1"));
+			fake.pushSessionFrame("sess-1", { state: AgentSessionState.ERRORED });
+			await settle(() => fake.openSessionTails().length === 0);
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.ERRORED);
+			await settle();
+
+			// The resync empties the account map before the reuse lands.
+			fake.pushResync();
+			await settle(() => store.focusedView().agentSession() === undefined);
+			expect(store.focusedView().agentSession()).toBeUndefined();
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.READY);
+			await settle(() => fake.sessionSubscribes.length >= 2);
+			expect(fake.sessionSubscribes.length).toBe(2);
+			expect(store.focusedView().agentSession()?.running).toBe(true);
+		} finally {
+			dispose();
+		}
+	});
+
 	test("a late live status does not re-arm a session the tail saw end", async () => {
 		const fake = createFakeCompass();
 		const { store, dispose } = liveStore(fake);

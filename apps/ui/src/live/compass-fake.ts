@@ -91,6 +91,9 @@ export interface FakeCompass {
 		sessionId: string,
 		state: AgentSessionState,
 	) => void;
+	/** Emit a resyncRequired on the SubscribeEvents stream: the store clears its
+	 *  session map and the events driver cold-starts. */
+	pushResync: () => void;
 	/** Queue one SubscribeAgentSession frame for `sessionId`. Delivered to the
 	 *  open subscription, else held for the next one. */
 	pushSessionFrame: (
@@ -222,6 +225,15 @@ export function createFakeCompass(): FakeCompass {
 							state,
 						}),
 					},
+				}),
+			);
+		},
+		pushResync: () => {
+			events.push(
+				create(SubscribeEventsResponseSchema, {
+					seq: 0n,
+					instanceEpoch: 1n,
+					payload: { case: "resyncRequired", value: {} },
 				}),
 			);
 		},

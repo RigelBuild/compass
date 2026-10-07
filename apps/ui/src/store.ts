@@ -659,24 +659,26 @@ function createLiveSessions(
 	// Bumped on every changed status per session; a NotFound only parks the tail
 	// if no status arrived while it was in flight. Not reactive: only read on settle.
 	const statusCounts = new Map<string, number>();
+	// The last status per session id. Unlike the account map, a resync never
+	// clears it, so a reuse straddling a resync still sees the terminal state.
+	const lastStates = new Map<string, AgentSessionState>();
 	// A changed status lifts a NotFound park. Only a terminal-then-live status pair
 	// re-arms an ended trace: that is a reused id (reload, wake, resume), not a late one.
 	const adoptAccountSessions = (
 		next: ReadonlyMap<string, AccountSession>,
 	): void => {
-		const prev = untrack(accountSessions);
-		for (const [account, status] of next) {
-			const old = prev.get(account);
-			if (old?.sessionId === status.sessionId && old.state === status.state)
-				continue;
+		for (const status of next.values()) {
+			const old = lastStates.get(status.sessionId);
+			if (old === status.state) continue;
+			lastStates.set(status.sessionId, status.state);
 			statusCounts.set(
 				status.sessionId,
 				(statusCounts.get(status.sessionId) ?? 0) + 1,
 			);
 			if (!untrack(traces).has(status.sessionId)) continue;
 			const reused =
-				old?.sessionId === status.sessionId &&
-				isTerminalSessionState(old.state) &&
+				old !== undefined &&
+				isTerminalSessionState(old) &&
 				!isTerminalSessionState(status.state);
 			updateTrace(status.sessionId, (trace) => ({
 				events: trace.events,
