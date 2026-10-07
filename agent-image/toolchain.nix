@@ -14,19 +14,34 @@
 #     points DIRENV_CONFIG at it (`direnvConfig` below).
 #   * bun — runs `compass-agent`, a TypeScript entrypoint.
 #   * git + gh — the agent clones its own repos and drives forge work.
+#   * jj + jj-vine — the version-control and stacked-PR tools Rigel lanes use;
+#     jj-vine is the RigelBuild fork, built from the devenv.lock-pinned source.
 #   * nftables/getent/gawk — required in-image by the egress arm. getent is its
 #     own nixpkgs package, NOT part of glibc/glibc.bin (neither ships bin/getent).
 #   * coreutils/bash/cacert — a usable shell and the CA bundle every HTTPS clone +
 #     nix substitution needs (without it the first substitution fails on TLS).
 {
   pkgs,
+  lib,
   compassAgent,
+  jjVineSrc,
 }:
 let
   # The repo's pinned bun — the exact vendored derivation the dev shell and CI
   # gate import, so the image IS the pin byte for byte, not a nixpkgs bun that
   # merely matches.
   bun = (import ../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
+
+  # The fork ships no flake, so build it here. The version comes from the fork's
+  # own Cargo.toml, so a lock bump can never mislabel the binary.
+  jjVine = pkgs.rustPlatform.buildRustPackage {
+    pname = "jj-vine";
+    version = (lib.importTOML (jjVineSrc + "/Cargo.toml")).package.version;
+    src = jjVineSrc;
+    cargoLock.lockFile = jjVineSrc + "/Cargo.lock";
+    # Upstream tests need a live forge (forgejo compose); the image check runs the binary.
+    doCheck = false;
+  };
 
   # Single-user Nix, set up for the agent uid with `/nix` owned by the agent.
   # Each setting is load-bearing:
@@ -94,6 +109,8 @@ pkgs.buildEnv {
     pkgs.git
     pkgs.gh
     pkgs.openssh
+    pkgs.jujutsu
+    jjVine
 
     # Egress arm step's in-image requirements (egress.go:76-77).
     pkgs.nftables
