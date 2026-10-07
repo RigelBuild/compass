@@ -9,9 +9,12 @@ package store
 // orphan cross-check, exercised here over in-test bundles; the DB-backed CAS +
 // orphan-rejection contracts live in the pgtest-tagged sibling.
 import (
+	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -284,6 +287,87 @@ func TestConfigBundleProfileModelRefsExtraction(t *testing.T) {
 	if !slices.Equal(escapeRefs, []string{"openrouter/anthropic/claude"}) {
 		t.Fatalf("escape-hatch refs = %v, want the provider/id selector (skipped by the orphan check)", escapeRefs)
 	}
+}
+
+// TestDoorProfilesMatchStoredBundleWalk pins that the profile bodies the Put door
+// hands the reverse lint equal what the registry-side guard reads back from the
+// stored bundle, so the two orphan guards always see the same profile set.
+func TestDoorProfilesMatchStoredBundleWalk(t *testing.T) {
+	bundle := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "profiles/", typeflag: tar.TypeDir},
+		tarEntry{name: "profiles/a/profile.yml", content: "models:\n  manager: opus\n"},
+		tarEntry{name: "profiles/b/profile.yml", content: "models:\n  manager: provider/x\n"},
+		tarEntry{name: "agents/impl.md", content: "---\nname: impl\n---\nx"},
+		tarEntry{name: "skills/review/SKILL.md", content: "# review"},
+	)
+	_, door, err := validateAndHashConfigBundle(bundle)
+	if err != nil {
+		t.Fatalf("validateAndHashConfigBundle: %v", err)
+	}
+	stored, err := configBundleProfileBodies(bundle)
+	if err != nil {
+		t.Fatalf("configBundleProfileBodies: %v", err)
+	}
+	if !maps.EqualFunc(door, stored, bytes.Equal) || len(door) != 2 {
+		t.Fatalf("door profiles %q != stored-walk profiles %q (want the two profile.yml bodies keyed a, b)", door, stored)
+	}
+}
+
+// TestDoorProfilesKeepTrailingSlashMember pins the door/re-walk equality where the
+// raw name differs from its parsed form: a regular profile.yml member spelled with
+// a trailing slash must still reach the profile lints, as the stored-bundle walk sees it.
+func TestDoorProfilesKeepTrailingSlashMember(t *testing.T) {
+	body := "models:\n  manager: ghost\n"
+	bundle := rawUstarBundle(t, "profiles/x/profile.yml/", body)
+	_, door, err := validateAndHashConfigBundle(bundle)
+	if err != nil {
+		t.Fatalf("validateAndHashConfigBundle: %v", err)
+	}
+	stored, err := configBundleProfileBodies(bundle)
+	if err != nil {
+		t.Fatalf("configBundleProfileBodies: %v", err)
+	}
+	if string(stored["x"]) != body || !maps.EqualFunc(door, stored, bytes.Equal) {
+		t.Fatalf("door profiles %q, stored-walk profiles %q: want both {x: %q}", door, stored, body)
+	}
+}
+
+// rawUstarBundle gzips a one-member ustar archive written byte by byte, for member
+// names tar.Writer refuses (a regular file whose name ends in "/").
+func rawUstarBundle(t *testing.T, name, content string) []byte {
+	t.Helper()
+	hdr := make([]byte, 512)
+	copy(hdr[0:100], name)
+	copy(hdr[100:108], "0000644\x00")
+	copy(hdr[108:116], "0001750\x00")
+	copy(hdr[116:124], "0001750\x00")
+	copy(hdr[124:136], fmt.Sprintf("%011o\x00", len(content)))
+	copy(hdr[136:148], "00000001750\x00")
+	hdr[156] = '0'
+	copy(hdr[257:263], "ustar\x00")
+	copy(hdr[263:265], "00")
+	copy(hdr[148:156], "        ")
+	sum := 0
+	for _, b := range hdr {
+		sum += int(b)
+	}
+	copy(hdr[148:156], fmt.Sprintf("%06o\x00 ", sum))
+
+	var raw bytes.Buffer
+	raw.Write(hdr)
+	raw.WriteString(content)
+	raw.Write(make([]byte, (512-len(content)%512)%512))
+	raw.Write(make([]byte, 1024))
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(raw.Bytes()); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
 }
 
 // selectorHasSlash mirrors the orphan check's escape-hatch discriminator, kept
