@@ -52,7 +52,7 @@ func TestCreateAgentWithParentProvisionsCoordinationChannel(t *testing.T) {
 	// A subscriber (the owner) draining the stream will see the coordination
 	// ChannelChanged emitted after the report's create commits.
 	_, err := h.svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
-		Handle: "report1", DisplayName: "r1", ParentHandle: manager.Handle,
+		Handle: "report1", DisplayName: "r1", ParentHandle: manager.Handle, Role: "manager",
 	}))
 	if err != nil {
 		t.Fatalf("CreateAgent(report1): %v", err)
@@ -93,7 +93,7 @@ func TestCreateAgentByAgentCallerProvisionsCoordinationChannel(t *testing.T) {
 
 	// The agent caller (not the owning user) spawns the report under the manager.
 	if _, err := h.svc.CreateAgent(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
-		Handle: "report1", DisplayName: "r1", ParentHandle: manager.Handle,
+		Handle: "report1", DisplayName: "r1", ParentHandle: manager.Handle, Role: "manager",
 	})); err != nil {
 		t.Fatalf("CreateAgent by agent caller: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestCreateAgentSuffixesAroundUserChannelWithoutWedge(t *testing.T) {
 
 	// The real RPC that fires the hook: a first report under the manager.
 	if _, err := h.svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
-		Handle: "report", DisplayName: "r", ParentHandle: manager.Handle,
+		Handle: "report", DisplayName: "r", ParentHandle: manager.Handle, Role: "manager",
 	})); err != nil {
 		// (b) The parent-edge write must NOT be wedged by the name collision.
 		t.Fatalf("CreateAgent(report) wedged by coordination collision: %v", err)

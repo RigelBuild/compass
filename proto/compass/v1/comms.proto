@@ -38,7 +38,8 @@ service CommsService {
   rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
 
   // Create an agent account owned by the authenticated caller (D9). The owner
-  // is the caller, not a request field — a user creates agents they own.
+  // is the caller, not a request field — a user creates agents they own. The
+  // request must name a role from the closed Manager taxonomy.
   rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
 
   // List the accounts visible to the caller.
@@ -631,6 +632,8 @@ message CreateAgentRequest {
   // resolves it to an account id; unknown → NOT_FOUND. Resolves owner-qualified
   // (a bare handle defaults to the caller's own owner namespace).
   string parent_handle = 3;
+  // Required: supervisor, owner, or manager. Other values → INVALID_ARGUMENT.
+  string role = 4;
 }
 
 message CreateAgentResponse {

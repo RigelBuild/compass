@@ -655,3 +655,7 @@ assumption, none blocks the tasks above.
   code change. *Recommendation:* doc-only now; the one seam worth a later
   audit is tool inheritance if subagent tool-surfaces ever widen (a subagent
   must never inherit its Manager's comms/lifecycle tools).
+
+## Errata
+
+- DL-new-B widened: `CommsService.CreateAgent` is a second creation door and now also requires a taxonomy `role` on `CreateAgentRequest` (`CodeInvalidArgument` on unknown or empty). Both doors call `store.IsManagerRole`, backed by a private set in `go/internal/store`, which replaces the `spawnableRoles` server constant T1 names. No agent-facing `create_agent` tool is added.
