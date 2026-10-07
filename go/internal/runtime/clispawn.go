@@ -98,6 +98,42 @@ func (e cliEngine) run(ctx context.Context, summary string, args []string) ([]by
 // The shell notices for those kills go to /dev/null; "$@" keeps the real stderr.
 const stopWithClientScript = `exec 3>&2; { { sh -c 'echo "$$"; exec cat' && kill -s KILL 0; } | { read -r w; "$@" 2>&3 3>&-; s=$?; kill -s KILL "$w"; exit "$s"; }; } 2>/dev/null` //nolint:gosec // G101: a shell script, not a credential
 
+// sessionSweepScript kills detached exec sessions while preserving PID 1's
+// session, which carries the container keep-alive needed for in-place reloads.
+// It waits between rounds: a killed process stays visible until the kernel reaps it.
+const sessionSweepScript = `IFS=' '
+sid_of() {
+	stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+	# Fields after the last ") " are kernel-written; comm before it may hold anything.
+	set -- ${stat##*) }
+	state=$1
+	sid=$4
+	[ -n "$sid" ]
+}
+sid_of 1 || { echo "cannot read PID 1 session" >&2; exit 1; }
+keep=$sid
+sid_of $$ || { echo "cannot read sweep session" >&2; exit 1; }
+own=$sid
+round=0
+while [ "$round" -lt 100 ]; do
+	round=$((round + 1))
+	live=0
+	for d in /proc/[0-9]*; do
+		pid=${d#/proc/}
+		sid_of "$pid" || continue
+		[ "$sid" = "$keep" ] || [ "$sid" = "$own" ] || [ "$state" = Z ] && continue
+		# A landed kill on a not-yet-reaped process counts until it is gone or a zombie;
+		# another uid's process (EPERM) is outside this sweep.
+		if kill -s KILL "$pid" 2>/dev/null; then
+			live=$((live + 1))
+		fi
+	done
+	[ "$live" -eq 0 ] && exit 0
+	sleep 0.1
+done
+echo "processes remain outside PID 1 session after 10s" >&2
+exit 1`
+
 // stopWithClient wraps command so killing the engine client also kills its
 // in-container process group, which the engine leaves running on its own.
 // A descendant that called setsid escapes the group kill.

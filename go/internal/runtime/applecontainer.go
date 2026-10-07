@@ -230,6 +230,19 @@ func (a *AppleContainerCLI) Exec(ctx context.Context, id WorkloadID, spec ExecSp
 	}, nil
 }
 
+// SweepExecSessions removes detached exec processes while preserving the
+// container's PID 1 session and keep-alive.
+func (a *AppleContainerCLI) SweepExecSessions(ctx context.Context, id WorkloadID, user string) error {
+	out, err := a.Exec(ctx, id, NewExecSpec("sh", "-s").AsUser(user).WithStdin(sessionSweepScript))
+	if err != nil {
+		return err
+	}
+	if out.ExitCode != 0 {
+		return &CommandError{Summary: "container exec session sweep", ExitCode: out.ExitCode, Stderr: strings.TrimSpace(out.Stderr)}
+	}
+	return nil
+}
+
 // appleExecArgs assembles the argv for a one-shot `container exec`. Split out so
 // the argv assembly is unit-testable without spawning the CLI.
 func appleExecArgs(id WorkloadID, spec ExecSpec) []string {
