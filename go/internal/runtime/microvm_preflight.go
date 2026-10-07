@@ -45,6 +45,9 @@ type preflightProbes struct {
 	// provisioned rootless, so a fake reading is the only way this decision is
 	// covered on a dev box.
 	readQuota quotaReadFn
+	// geteuid returns the Runner's effective uid, behind the seam so the root
+	// refusal is testable without running the suite as root.
+	geteuid func() int
 }
 
 // defaultPreflightProbes wires the real host-facing implementations behind the
@@ -74,6 +77,7 @@ func defaultPreflightProbes() preflightProbes {
 		},
 		hashImage: hashFileSHA256,
 		readQuota: readVolumeQuota,
+		geteuid:   os.Geteuid,
 	}
 }
 
@@ -119,7 +123,15 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 		return err
 	}
 
-	// 5. Session-volume quota (D7): under the multi-tenant profile an
+	// 5. Non-root Runner: at euid 0 virtiofsd skips its user namespace and
+	// passes untranslated guest ids through, so guest root could chown to any
+	// host id. Refuse rather than run with that authority.
+	if probes.geteuid() == 0 {
+		return errors.New("microvm preflight: the Runner is running as root (euid 0), where virtiofsd " +
+			"passes untranslated guest ids through to the host — run the Runner as a non-root user")
+	}
+
+	// 6. Session-volume quota (D7): under the multi-tenant profile an
 	// operator-provisioned project quota MUST be active on the session-volume
 	// filesystem, or startup fails naming the fix. Otherwise the observed
 	// utilization is logged and nothing gates.

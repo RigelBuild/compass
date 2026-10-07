@@ -428,8 +428,8 @@ func startChild(c *child) error {
 // the sandbox setup that can fail, so a sandbox failure leaves a mode-srwx socket
 // on disk with the daemon already exited 1 (verified by execution). A
 // path-existence-only poll returns nil there and the boot proceeds to start
-// cloud-hypervisor against a dead daemon, where the real cause ("couldn't setup
-// id mappings", in virtiofsd's own log) is replaced by an inscrutable vhost-user
+// cloud-hypervisor against a dead daemon, where the real cause (a sandbox
+// setup error in virtiofsd's own log) is replaced by an inscrutable vhost-user
 // negotiation error much later. So an exited child short-circuits the poll with
 // an error NAMING the daemon and carrying its log tail.
 //

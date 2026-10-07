@@ -228,12 +228,12 @@ func TestWaitVMMExitZeroTimeoutSeesExitedVMM(t *testing.T) {
 // readiness wait must be LIVENESS-aware, not path-existence-only.
 //
 // The fake reproduces virtiofsd's real, verified ordering — it BINDS its socket
-// and only then hits the id-map step that can fail, exiting non-zero with its
-// diagnostic on stderr. (Measured on virtiofsd 1.14.0: a bad gid base left
-// `srwx------ .../sb.sock` on disk with the daemon exited 1.) A path-only poll
-// therefore Stats a socket that exists, returns nil, and launch starts
+// and only then hits the sandbox setup that can fail, exiting non-zero with its
+// diagnostic on stderr. (Measured on virtiofsd 1.14.0: a failed sandbox setup
+// left `srwx------ .../sb.sock` on disk with the daemon exited 1.) A path-only
+// poll therefore Stats a socket that exists, returns nil, and launch starts
 // cloud-hypervisor against a corpse; the operator then sees a vhost-user
-// negotiation error instead of "couldn't setup id mappings".
+// negotiation error instead of virtiofsd's own sandbox error.
 //
 // Three properties, each of which the pre-fix implementation fails:
 //  1. an ERROR rather than nil, even though the socket path exists;
@@ -248,7 +248,7 @@ func TestWaitForSocketsFailsFastOnADeadDaemon(t *testing.T) {
 	// inline in the -c script: embedded in single quotes the apostrophe would
 	// terminate the quoting and the fake would die before binding its socket,
 	// silently defeating the whole reproduction.
-	const diagnostic = "Couldn't setup id mappings: newgidmap failed"
+	const diagnostic = "Couldn't set up the sandbox: Operation not permitted"
 
 	c := &child{
 		name:    "virtiofsd",
@@ -373,7 +373,7 @@ func TestDeathErrorReportsTheCauseForEveryStartupPhase(t *testing.T) {
 	for _, phase := range allStartupPhases() {
 		t.Run(string(phase), func(t *testing.T) {
 			dir := t.TempDir()
-			const diagnostic = "Couldn't setup id mappings: newgidmap failed"
+			const diagnostic = "Couldn't set up the sandbox: Operation not permitted"
 			c := &child{
 				name:    "virtiofsd",
 				logPath: filepath.Join(dir, "virtiofsd.log"),

@@ -45,6 +45,8 @@ func okProbes() preflightProbes {
 				FilesystemBytes: 1 << 40, FilesystemInodes: 1 << 26,
 			}, nil
 		},
+		// A non-root Runner by default, so only the root row trips that axis.
+		geteuid: func() int { return 1000 },
 	}
 }
 
@@ -222,6 +224,15 @@ func TestVerifyMicroVMSupport(t *testing.T) {
 				cfg.RunRoot = filepath.Join(file, "under-a-file")
 			},
 			wantParts: []string{"not creatable/writable"},
+		},
+		{
+			// At euid 0 virtiofsd skips its user namespace, so untranslated guest
+			// ids reach the host as themselves; the Runner must refuse to start.
+			name: "runner running as root",
+			mutate: func(_ *MicroVMConfig, p *preflightProbes) {
+				p.geteuid = func() int { return 0 }
+			},
+			wantParts: []string{"root", "euid 0", "non-root user"},
 		},
 	})
 }

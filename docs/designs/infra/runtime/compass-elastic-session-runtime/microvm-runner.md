@@ -186,22 +186,20 @@ uid/capability gate on every exec.
   by a hostile guest
   ([virtiofsd README, sandbox modes](https://gitlab.com/virtio-fs/virtiofsd#examples)).
   Rootless operation composes a **user namespace** with it
-  (`--sandbox=namespace` under an unprivileged userns): virtiofsd does its own
-  uid/gid translation via that userns (subuid/subgid + `newuidmap`), not the
-  podman `--userns=keep-id` argv (`podman.go:412-417`) — but the target is the
-  same host-side ownership on the session volume, so files stay identical
-  between backends. Host-ownership parity is asserted by V6's test cycle. A
-  guest can therefore reach exactly one directory subtree and nothing else;
-  another tenant's volume is not merely unreadable but *unnameable*.
-  Post-freeze amendment (Matt, RIG-3330 ruling A): virtiofsd does **not**
-  translate ids through a subuid/subgid + `newuidmap` userns. It translates
-  them itself with `--translate-uid`/`--translate-gid` (`map:<agent id>:<host
-  uid|gid>:1`), and no id is mapped to namespace-root. A namespace-root
-  mapping would give the daemon namespace-scoped `CAP_CHOWN`,
-  `CAP_DAC_OVERRIDE` and similar capabilities. The host-ownership parity
-  target and V6's assertion are unchanged. Cost: virtiofsd refuses
-  `--posix-acl=always|auto` with id translation, so POSIX ACLs on the session
-  volume are not supported.
+  (`--sandbox=namespace` under an unprivileged userns that maps only the
+  invoking user). virtiofsd translates uid/gid itself with
+  `--translate-uid`/`--translate-gid` (`map:<agent id>:<host uid|gid>:1`),
+  not the podman `--userns=keep-id` argv (`podman.go:412-417`), and maps no
+  id to namespace-root. The target is the same host-side ownership on the
+  session volume, so files stay identical between backends. Host-ownership
+  parity is asserted by V6's test cycle. Id translation is incompatible with
+  `--posix-acl=always|auto`, so POSIX ACLs on the session volume are not
+  supported. At euid 0 virtiofsd skips the userns and passes untranslated ids
+  through, so preflight refuses a root-run Runner. *Amended (Matt, 10-04):
+  translation replaced a subuid/subgid + `newuidmap` mapping that made the
+  daemon namespace-root.* A guest can therefore reach exactly one directory
+  subtree and nothing else; another tenant's volume is not merely unreadable
+  but *unnameable*.
 - **Resource-exhaustion control (quota) — verify, never assign (D7).**
   virtio-fs itself imposes no space or inode bound, so a hostile guest can
   exhaust the shared filesystem. But the obvious mechanisms collide with
@@ -387,7 +385,7 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   (`podman.go:22-24`). The VMM, virtiofsd, and every backend process run as
   the invoking user; host-side file ownership on the session volume matches
   the podman path (`--userns=keep-id`, `podman.go:412-417`) via virtiofsd's
-  own userns uid/gid translation (Approach (d)). No backend step requires a
+  own `--translate-uid`/`--translate-gid` (Approach (d)). No backend step requires a
   capability the rootless Runner lacks; anything that would (quota assignment)
   is pushed to operator provisioning + preflight verification (D7).
 - **KVM-absent ⇒ hard-fail (D3).** When the microVM backend is selected (and
