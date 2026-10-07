@@ -393,7 +393,7 @@
         "narHash": "sha256-VLSslwCjlsICjyaUfrS7lGMypmO03fzmDAqhD85Ae84=",
         "owner": "cachix",
         "repo": "devenv-nixpkgs",
-        "rev": "c946ff36bf193309589932c371bd5ae6653c912e",
+        "rev": "6004ea8c229fe9d41b21c6f4c76bf6c2e10771dd",
         "type": "github"
       },
       "original": {
