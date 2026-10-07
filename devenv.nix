@@ -283,7 +283,16 @@ in
         # jj workspaces, where `.git` may be a file or absent, so shelling out
         # to `git rev-parse` inside the process script would be a build that
         # fails depending on which working copy it runs in.
-        version_base="$(cat "${config.devenv.root}/version.txt")"
+        version_file="${config.devenv.root}/version.txt"
+        # $(cat) drops NUL bytes with only a warning, splicing 1.2.3\0999 into a
+        # stamped 1.2.3999 the flake lane (readFile hard-errors) refuses. UTF-16
+        # ASCII text is every other byte NUL, so this refuses it too.
+        if IFS= read -r -d "" _ <"$version_file"; then
+          printf 'version.txt contains a NUL byte (UTF-16 or corrupt): %s\n' \
+            "$version_file" >&2
+          exit 1
+        fi
+        version_base="$(cat "$version_file")"
         # Trim the same four bytes nixpkgs `lib.strings.trim` strips on the
         # flake side (space, tab, CR, LF — both ends), THEN apply the same
         # character class the flake applies to its trimmed value. Both steps
