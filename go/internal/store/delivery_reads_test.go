@@ -201,18 +201,21 @@ func TestChannelAgentMembersResolvesAllAgentMembersAuthorExcluded(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ChannelAgentMembers: %v", err)
 	}
-	// Expect exactly {a1, a2}: author excluded, human owner excluded (no
-	// agent_accounts row), both agents present regardless of subscribed flag.
-	want := map[AccountID]bool{a1.ID: true, a2.ID: true}
-	if len(members) != len(want) {
-		t.Fatalf("ChannelAgentMembers = %v, want the 2 non-author agent members %v", members, want)
+	// Expect exactly {a1, a2}: author excluded, human owner excluded, and both
+	// agent rows carry the qualified handle components.
+	want := map[AccountID]ChannelAgentMember{
+		a1.ID: {ID: a1.ID, OwnerUserID: owner.ID, OwnerHandle: owner.Handle, Handle: a1.Handle},
+		a2.ID: {ID: a2.ID, OwnerUserID: owner.ID, OwnerHandle: owner.Handle, Handle: a2.Handle},
 	}
-	for _, m := range members {
-		if !want[m] {
-			t.Fatalf("ChannelAgentMembers returned unexpected member %s (want only %v: author + human excluded)", m, want)
+	if len(members) != len(want) {
+		t.Fatalf("ChannelAgentMembers = %v, want %d non-author agent members", members, len(want))
+	}
+	for _, member := range members {
+		if member.ID == author.ID || member.ID == owner.ID {
+			t.Fatalf("ChannelAgentMembers included an excluded account %s", member.ID)
 		}
-		if m == author.ID || m == owner.ID {
-			t.Fatalf("ChannelAgentMembers included an excluded account %s", m)
+		if member != want[member.ID] {
+			t.Fatalf("ChannelAgentMembers row = %+v, want %+v", member, want[member.ID])
 		}
 	}
 }
@@ -249,17 +252,82 @@ func TestChannelAgentMembersIncludesUnsubscribed(t *testing.T) {
 		t.Fatalf("ChannelAgentMembers: %v", err)
 	}
 	found := false
-	for _, m := range members {
-		if m == unsub.ID {
+	for _, member := range members {
+		if member.ID == unsub.ID {
 			found = true
+			if member.OwnerUserID != owner.ID || member.OwnerHandle != owner.Handle || member.Handle != unsub.Handle {
+				t.Fatalf("unsubscribed member row = %+v, want owner=%s/%s agent=%s", member, owner.ID, owner.Handle, unsub.Handle)
+			}
 		}
 	}
 	if !found {
 		t.Fatalf("ChannelAgentMembers(%s) = %v, want it to include the unsubscribed member %s (membership, not subscription)", ch, members, unsub.ID)
 	}
+
 }
 
-// TestSweepChannelsResolvesDisjunctSet pins the pin sweep's channel enumeration
+// Missing handle rows must not hide a member; each optional join degrades only its own field.
+func TestChannelAgentMembersIncludesMissingHandles(t *testing.T) {
+	tests := []struct {
+		name        string
+		deleteOwner bool
+		ownerHandle string
+		agentHandle string
+	}{
+		{
+			name:        "missing agent handle",
+			ownerHandle: "owner",
+		},
+		{
+			name:        "missing owner handle",
+			deleteOwner: true,
+			agentHandle: "agent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newTestStore(t)
+			owner := mustUser(t, s, "owner")
+			author := mustAgent(t, s, owner.ID, "author")
+			agent := mustAgent(t, s, owner.ID, "agent")
+			ch := mustNamedChannelWith(t, s, owner.ID, "shared", author.ID, agent.ID)
+
+			deleteID := agent.ID
+			deleteSQL := "DELETE FROM account_handles WHERE account_id = $1"
+			if tt.deleteOwner {
+				deleteID = owner.ID
+				deleteSQL += " AND owner_user_id IS NULL"
+			}
+			tag, err := s.pool.Exec(ctx, deleteSQL, string(deleteID))
+			if err != nil {
+				t.Fatalf("delete handle row: %v", err)
+			}
+			if tag.RowsAffected() != 1 {
+				t.Fatalf("deleted %d handle rows, want 1", tag.RowsAffected())
+			}
+
+			members, err := s.ChannelAgentMembers(ctx, ch, author.ID)
+			if err != nil {
+				t.Fatalf("ChannelAgentMembers: %v", err)
+			}
+			if len(members) != 1 {
+				t.Fatalf("ChannelAgentMembers = %v, want only agent member %s", members, agent.ID)
+			}
+			want := ChannelAgentMember{
+				ID:          agent.ID,
+				OwnerUserID: owner.ID,
+				OwnerHandle: tt.ownerHandle,
+				Handle:      tt.agentHandle,
+			}
+			if members[0] != want {
+				t.Fatalf("ChannelAgentMembers row = %+v, want %+v", members[0], want)
+			}
+		})
+	}
+}
+
 // (design.md T7): SweepChannels returns exactly the D1 disjunct set — every
 // channel the agent is subscribed to, PLUS its home channel, PLUS any
 // mandatory_subscription channel it is a member of — mirroring the

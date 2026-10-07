@@ -25,8 +25,7 @@ func TestScanRecoversOfflineOutOfSweepSetMention(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	// agentA offline (never bound) and out of the sweep set (sweepSet unseeded).
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
 
@@ -56,8 +55,7 @@ func TestScanSkipsHeldMessage(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
 	c.hold(context.Background(), "author-sess", "m1", 0) // registered in c.held under its author session
 
@@ -90,10 +88,8 @@ func TestScanSteersLiveMention(t *testing.T) {
 	// Two channels with disjoint member sets: the scan must route each message
 	// against its OWN row.Channel, not a single hardcoded channel — a scan that
 	// ignored row.Channel would resolve the wrong member set.
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.members[ch2] = []store.AccountID{agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
-	reads.handles["bb"] = agentAccount(agentB, "bb")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
+	reads.members[ch2] = memberRowsWithHandles(map[store.AccountID]string{agentB: "bb"}, agentB)
 	res.bind(agentA, "sess-a") // live
 	res.bind(agentB, "sess-b") // live
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
@@ -138,8 +134,7 @@ func TestScanPerMessageFaultContinues(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	// m1 is in the unrouted set but its message row is NOT seeded, so
 	// storeMessageToWire's MessageByID returns ErrNotFound — a per-message fault.
 	reads.mu.Lock()
@@ -176,8 +171,7 @@ func TestScanWalksMultipleBatches(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA store.AccountID = "agent-a"
 
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 
 	const total = scanBatchLimit + 5
 	for i := 1; i <= total; i++ {
@@ -244,9 +238,8 @@ func TestScanSkipsMarkWhenHeldAtMarkTime(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.agents[author] = true
-	reads.members[ch] = []store.AccountID{agentA, agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
-	reads.handles["bb"] = agentAccount(agentB, "bb")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa", agentB: "bb"}, agentA, agentB)
+	reads.owners[author] = "human-1"
 	reads.seedUnrouted(textMessage("m1", author, "@aa first"), ch, 1)
 	// The hold lands while the scan re-reads m1, so it is held at mark time.
 	injected := false
