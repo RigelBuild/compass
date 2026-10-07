@@ -37,6 +37,7 @@ type forgeCall struct {
 	account   store.AccountID
 	sessionID string
 	call      *compassv1internal.ForgeCallRequest
+	tenant    store.TenantID
 }
 
 // fakeForgeCaller is a hand-written ForgeCaller mirroring fakeBoardCaller: it
@@ -53,10 +54,11 @@ type fakeForgeCaller struct {
 	err    error
 }
 
-func (f *fakeForgeCaller) ExecuteForgeCallAsAccount(_ context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest) (*compassv1internal.ForgeCallResult, error) {
+func (f *fakeForgeCaller) ExecuteForgeCallAsAccount(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest) (*compassv1internal.ForgeCallResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, forgeCall{account: caller, sessionID: sessionID, call: call})
+	tenant, _ := store.TenantFromContext(ctx)
+	f.calls = append(f.calls, forgeCall{account: caller, sessionID: sessionID, call: call, tenant: tenant})
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -261,5 +263,55 @@ func TestRelayForgeCallNilResultIsInternalErrorInBand(t *testing.T) {
 	}
 	if got := resp.GetResult().GetCallId(); got != "fc-6" {
 		t.Fatalf("in-band error call_id = %q, want fc-6", got)
+	}
+}
+
+// The forge caller runs under the bound session's tenant, not the store's
+// default: grants and memos are tenant rows, and the Runner token has no tenant.
+func TestRelayForgeCallRunsUnderSessionTenant(t *testing.T) {
+	hub, fake := newHubWithForge()
+	fake.result = &compassv1internal.ForgeCallResult{
+		Result: &compassv1internal.ForgeCallResult_IssueComment{IssueComment: &compassv1internal.CommentRef{}},
+	}
+	bindings := newFakeBindingStore()
+	bindings.tenant = "tenant-session"
+	bindings.effective = "tenant-default"
+	bindings.seed("sess-1")
+	hub.SetSessionBindingStore(bindings)
+	bindLiveSession(hub)
+
+	if _, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-t", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"})); err != nil {
+		t.Fatalf("RelayForgeCall = %v", err)
+	}
+	calls := fake.snapshot()
+	if len(calls) != 1 || calls[0].tenant != "tenant-session" {
+		t.Fatalf("calls = %+v, want one call under tenant-session", calls)
+	}
+}
+
+// A cached binding whose tenant cannot be resolved must not reach the forge
+// caller: running it would fall back to the bootstrap tenant.
+func TestRelayForgeCallFailsClosedWithoutSessionTenant(t *testing.T) {
+	for name, tenantErr := range map[string]error{
+		"not found":   store.ErrNotFound,
+		"store fault": errors.New("db down"),
+		"ambiguous":   store.ErrConflict,
+	} {
+		t.Run(name, func(t *testing.T) {
+			hub, fake := newHubWithForge()
+			bindings := newFakeBindingStore()
+			bindings.seed("sess-1")
+			bindings.tenantErr = tenantErr
+			hub.SetSessionBindingStore(bindings)
+			bindLiveSession(hub)
+
+			_, err := hub.RelayForgeCall(context.Background(), testRunnerID, relayCreateIssue("sess-1", "fc-x", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+			if connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatalf("RelayForgeCall error = %v, want CodeNotFound", err)
+			}
+			if calls := fake.snapshot(); len(calls) != 0 {
+				t.Fatalf("forge caller invoked %d times, want 0", len(calls))
+			}
+		})
 	}
 }

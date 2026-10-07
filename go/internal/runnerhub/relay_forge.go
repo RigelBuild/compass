@@ -82,7 +82,14 @@ func (h *Hub) RelayForgeCall(
 		return nil, connect.NewError(connect.CodeUnavailable, errForgeUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	account, ok := h.accountForRunnerSession(ctx, runnerID, sessionID)
+	// Scope grants and memos are tenant rows; the Runner token carries no tenant.
+	scopedCtx, scoped := h.runnerSessionCtx(ctx, runnerID, sessionID)
+	var account store.AccountID
+	ok := false
+	if scoped && h.forgeTenantResolved(scopedCtx) {
+		ctx = scopedCtx
+		account, ok = h.accountForRunnerSession(ctx, runnerID, sessionID)
+	}
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
@@ -133,4 +140,18 @@ func forgeCallError(err error) *compassv1internal.ForgeCallError {
 		Code:    connect.CodeOf(err).String(),
 		Message: err.Error(),
 	}
+}
+
+// forgeTenantResolved reports whether a forge call may run on ctx. With a durable
+// binding store wired, a missing tenant (lookup miss or fault) would fall back to
+// the bootstrap tenant, so it fails closed.
+func (h *Hub) forgeTenantResolved(ctx context.Context) bool {
+	h.mu.Lock()
+	bindings := h.bindings
+	h.mu.Unlock()
+	if bindings == nil {
+		return true
+	}
+	_, ok := store.TenantFromContext(ctx)
+	return ok
 }

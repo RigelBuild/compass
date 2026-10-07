@@ -271,6 +271,19 @@ posts, and the server fails to boot without it. Register the Linear webhook at
 `<public-url>/webhooks/linear`. A deployment already running the Linear lane
 must set it before upgrading.
 
+### Forge write scopes
+
+By default an agent can write to any repo the forge credential reaches. Two flags limit agent writes to granted repos:
+
+| Flag | Environment variable | Meaning |
+| --- | --- | --- |
+| `--forge-enforce-scopes` | `$COMPASS_FORGE_ENFORCE_SCOPES` | `true` rejects agent forge writes outside the agent owner's grants. Default off. |
+| `--forge-scope-grants` | `$COMPASS_FORGE_SCOPE_GRANTS` | Comma-separated `account:provider:host:repo` grants seeded at boot. `provider` is `github` or `linear`; `repo` is `owner/name`, a Linear team key, or `*` for every repo on the host. |
+
+Grants name a user account. That user's agents inherit them. A rejected write looks the same as a write to a missing repo. Reads are not gated.
+
+Seeding only inserts. Removing a grant from the flag does not revoke it. Boot seeding runs in the bootstrap tenant, so every account in the flag must be a user there; any other account fails startup.
+
 ### Choosing a provider
 
 The right `secretspec` provider depends on your deployment shape. On a box an
