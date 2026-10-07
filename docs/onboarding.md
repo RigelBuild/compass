@@ -21,6 +21,17 @@ Linux VM, so you need a podman machine running before first launch
 (`podman machine init`, then `podman machine start`); provisioning it from the
 app is not yet implemented.
 
+On first launch, when `app.toml` is absent and no `--mode` or
+`COMPASS_APP_MODE` override is set, the app opens a chooser. Choose **Run
+Compass on this computer** to use the local stack, or **Connect to a server**
+to enter an HTTPS server origin (scheme, host, and optional port, with no path,
+query, or fragment), an optional CA file, and a bearer token. The app writes
+`app.toml` once, after the first choice, and never rewrites an existing file.
+The embedded choice runs preflight, saves embedded mode, then asks you to quit
+and reopen Compass to start the stack. The server choice saves the origin and an
+optional CA copy; tokenstore keeps the bearer in the OS keychain or its 0600-file
+fallback.
+
 The app is published as a per-platform release build: a `.dmg` for
 Apple-silicon macOS, which you open and drag to Applications, and a `.tar.gz`
 for Linux. Extract the Linux tarball and run `bin/compass-app` from inside the
@@ -43,9 +54,9 @@ nix profile install github:RigelBuild/compass#compass-app
 > today — see the entry tier below — but running a session in it needs the app,
 > so that waits on the same fix.
 
-Once the app installs, you launch it, sign in with your own model subscription,
-and it is ready. Your subscription is the only credential involved; there is no
-Compass-hosted service in this path.
+In local mode, once the app installs, launch it, sign in with your own model
+subscription, and start working. Your subscription is the only credential in
+that path; there is no Compass-hosted service.
 
 Graduate to a self-hosted stack when you want any of:
 

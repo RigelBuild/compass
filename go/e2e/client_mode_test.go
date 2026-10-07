@@ -37,6 +37,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
@@ -169,20 +170,18 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	// the door as a bearer, never on a command line.
 	assertTokenNotInCmdlines(t, f.RuntimeDir(), f.AdminToken())
 
-	// A client-mode app.toml carries mode/server_url/ca_cert but NEVER the token
-	// (the token lives in the tokenstore, DL-109). NOTE: this is a
-	// design-conformance placeholder, not regression coverage — compass-app has
-	// no app.toml WRITER yet (embedded.go/main.go only Load it), so this
-	// constructs the TOML the client setup would write and asserts the shape.
-	// The real hygiene coverage is the /proc scan + tokenstore legs above; when a
-	// production client-mode config writer lands, point this at it instead of a
-	// test-authored literal so it catches a real leak.
-	appToml := "mode = \"client\"\n" +
-		"server_url = " + strconv.Quote(f.ServerURL()) + "\n" +
-		"ca_cert = " + strconv.Quote(f.CAPath()) + "\n"
+	// SaveClient is the production first-run writer. It normalizes the server
+	// origin and copies the optional CA beside app.toml.
+	caPEMForConfig, err := os.ReadFile(f.CAPath())
+	if err != nil {
+		t.Fatalf("read fixture CA for app.toml: %v", err)
+	}
 	appTomlPath := filepath.Join(t.TempDir(), "app.toml")
-	if err := os.WriteFile(appTomlPath, []byte(appToml), 0o600); err != nil {
-		t.Fatalf("write client-mode app.toml: %v", err)
+	if _, err := appconfig.SaveClient(appTomlPath, appconfig.Config{
+		Mode:      appconfig.ModeClient,
+		ServerURL: f.ServerURL(),
+	}, caPEMForConfig); err != nil {
+		t.Fatalf("save client-mode app.toml: %v", err)
 	}
 	raw, err := os.ReadFile(appTomlPath)
 	if err != nil {

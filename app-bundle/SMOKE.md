@@ -66,15 +66,20 @@ directory (the sidecar build loop in `app-bundle/build.sh`).
 
 ### 3. Launch with no `app.toml`
 
-The resolved `app.toml` path is `${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. Do not create that file
-for this part, and remove one left by an earlier client smoke. An absent file
-resolves to embedded mode, the zero-config default
-(`Load` in `go/internal/appconfig/appconfig.go`: "zero-config default"), so a leftover client config
-silently makes this part launch in the wrong mode:
+The resolved `app.toml` path is
+`${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. Remove any file left by an
+earlier client smoke. With no file and no `--mode` or `COMPASS_APP_MODE`
+override, launch opens the first-run chooser. Choose **Run Compass on this
+computer**; the app runs preflight in the window before writing
+`mode = "embedded"` once, then asks you to quit and reopen Compass to start
+the stack. It never rewrites an existing config file.
+
+Deleting `app.toml` brings the chooser back, but it does not stop a lingering
+embedded stack. Use **Quit and stop stack** before deleting the file or starting
+another embedded run.
 
 ```bash
 APP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml"
-# no app.toml: this part is the zero-config path
 rm -f "$APP_CONFIG"
 ```
 
@@ -237,19 +242,24 @@ tar -xzf app-bundle/compass-app-<version>-linux-amd64.tar.gz -C "$PREFIX"
 BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 ```
 
-The resolved client `app.toml` path is `${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. Create that file
-with `mode = "client"`, the HTTPS `server_url`, and `ca_cert` set to
-`$CSTATE/tls.crt` (`Parse` in `go/internal/appconfig/appconfig.go`: "mode" and "ca_cert").
-Put the bearer in the connect screen, never in `app.toml` (DL-109).
+The resolved client `app.toml` path is
+`${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. For this smoke, first
+launch with no file and no `--mode` or `COMPASS_APP_MODE` override. Choose
+**Connect to a server**, enter `https://127.0.0.1:50052`, choose `$CSTATE/tls.crt`,
+and paste the token from `$CRT/admin-token`. On a successful connection, the
+app writes client mode, the origin URL, and a copied CA file named
+`server-ca-*.pem` beside `app.toml`. It never rewrites an existing file. The
+bearer is stored by tokenstore, using the OS keychain or its 0600-file fallback,
+never in `app.toml` (DL-109).
+The tokenstore key is the URL, so a token saved by an older version under a URL
+with a trailing slash is not found under the normalized origin. Paste the token
+once more to save it under the origin (`NormalizeServerURL` in
+`go/internal/appconfig/appconfig.go`; URL-keyed `Store.Read` in
+`go/internal/tokenstore/tokenstore.go`).
 
 ```bash
 APP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml"
-mkdir -p "$(dirname "$APP_CONFIG")"
-cat >"$APP_CONFIG" <<EOF
-mode = "client"
-server_url = "https://127.0.0.1:50052"
-ca_cert = "$CSTATE/tls.crt"
-EOF
+rm -f "$APP_CONFIG"
 ```
 
 ### 3. Launch, connect, and render the board
@@ -262,11 +272,11 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
     --state-dir "$CAPPSTATE" --socket "$CRT/server.sock" 2>"$CRT/app.log"
 ```
 
-With no stored token, the app paints the connect screen. The server URL is
-read-only and comes from `app.toml`; the bearer is the `$CRT/admin-token` value.
-Paste it and connect. The shell probes `GetServerInfo`, calls `WhoAmI`, writes
-the token to the OS keychain, arms the bearer injector, and boots into the
-board (`bridgeService.Connect` in `go/cmd/compass-app/bridge_service.go`: "tokenstore"). Confirm
+After the chooser opens, the server URL field is editable and the bearer is the
+`$CRT/admin-token` value. Paste it and connect. The shell probes
+`GetServerInfo`, calls `WhoAmI`, writes the config and token, arms the bearer
+injector, and boots into the board (`bridgeService.Connect` in
+`go/cmd/compass-app/bridge_service.go`: "saveClient" then "tokenstore"). Confirm
 the board renders live over the TLS door.
 
 ### 4. Drive one agent session to a running container
@@ -369,11 +379,14 @@ rm -rf "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 
 ### Embedded mode
 
-- [ ] no `app.toml` is present, so launch selects embedded mode (§Part (a), 3)
-- [ ] rootless podman and podman 4.3 or newer are available, and the agent image
-      is pulled so bring-up does not cold-pull (§Part (a), 1)
-- [ ] the bundle contains the shell and four sidecars (§Part (a), 2)
-- [ ] **Quit and stop stack** (not plain close) closes the app; `podman ps -a
+- [ ] with no `app.toml`, `--mode`, or `COMPASS_APP_MODE` override, launch opens
+      the first-run chooser rather than starting embedded mode (§Part (a), 3)
+- [ ] choosing **Run Compass on this computer** runs preflight and writes
+      `mode = "embedded"` once; quitting and reopening starts the stack
+      (§Part (a), 3)
+- [ ] deleting `app.toml` does not stop a lingering embedded stack; use **Quit
+      and stop stack** before resetting the config or retrying (§Part (a), 5)
+- [ ] **Quit and stop stack** closes the app; `podman ps -a
       --filter name='^compass-(postgres|otel-collector|nats|gateway|agent)-'` is empty
       and `$ERT/app.log` reports no teardown failure (§Part (a), 5)
 - [ ] the pinned `--state-dir`/`--socket` paths are removed and `$HOME/.compass`
@@ -381,10 +394,12 @@ rm -rf "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 
 ### Client mode
 
-- [ ] the resolved client `app.toml` has `mode = "client"`, an HTTPS
-      `server_url`, and `ca_cert`; it has no bearer (§Part (b), 2)
-- [ ] the app launches with a read-only server URL and one bearer input (§Part
-      (b), 3)
+- [ ] with no `app.toml`, `--mode`, or `COMPASS_APP_MODE` override, the app opens
+      chooser; choosing **Connect to a server** accepts an editable HTTPS
+      origin, optional CA file, and bearer, then writes client `app.toml` with
+      the origin URL and copied `server-ca-*.pem`; it never writes the bearer
+- [ ] the configured client relaunch shows a read-only server URL and one bearer
+      input (§Part (b), 3)
 - [ ] pasting the bearer connects and the board renders over the TLS door (§Part
       (b), 3)
 - [ ] one agent session reaches a running container (§Part (b), 4)

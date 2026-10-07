@@ -24,13 +24,21 @@ The dev loop is: `git pull` → `moon run compass-app-dev:run`.
 
 ## Pointing the app at a server
 
-The **server connection** (URL, CA, token) is not a flag or env var — the shell
-reads it from **one config file**:
+The server URL and optional CA path are stored in one config file:
 
 - `$XDG_CONFIG_HOME/compass/app.toml`, else
 - `~/.config/compass/app.toml`
 
-Copy the template and edit it once:
+On first launch with no `app.toml` and no `--mode` or `COMPASS_APP_MODE`
+override, the app opens a chooser. Choose **Run Compass on this computer** for
+an embedded local stack, or **Connect to a server** to enter an HTTPS origin,
+an optional CA file, and the bearer token. The origin has a scheme, host, and
+optional port, with no path, query, or fragment. The app writes `app.toml` once,
+after the first choice. It never rewrites an existing file. The embedded choice
+preflights the host, saves the choice, and asks you to quit and reopen Compass
+to start the stack.
+
+For manual client configuration, copy the template and edit `app.toml`:
 
 ```sh
 mkdir -p ~/.config/compass
@@ -38,14 +46,16 @@ cp tools/compass-app-dev/app.toml.example ~/.config/compass/app.toml
 $EDITOR ~/.config/compass/app.toml
 ```
 
-`server_url` is required and must be an absolute `https` URL. `ca_cert` is an
-optional PEM trust anchor for a server whose cert chains to a private CA (omit to
-trust system roots). Unknown keys are rejected.
+`server_url` must be an absolute `https` origin: scheme, host, and optional
+port, with no path, query, or fragment. `ca_cert` is an optional PEM trust
+anchor for a server whose cert chains to a private CA (omit to trust system
+roots). Unknown keys are rejected.
 
-The **bearer token is not in the config** — you paste it once on the connect
-screen and it persists in the OS keychain.
+The bearer token is not in `app.toml`. After a successful first-run
+connection, it is stored by tokenstore in the OS keychain or its 0600-file
+fallback. For a configured client, paste it on the connect screen when needed.
 
-(The binary does take unrelated flags — `-assets` / `-state-dir`, and their
+(The binary takes unrelated flags — `-assets` / `-state-dir`, and their
 `$COMPASS_ASSETS_DIR` / `$COMPASS_STATE_DIR` env forms — for the UI dist and
 state directory; the `run` task sets `COMPASS_ASSETS_DIR` for you. Those govern
 asset/state paths, never the server connection.)

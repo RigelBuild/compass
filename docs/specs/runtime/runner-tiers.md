@@ -137,13 +137,11 @@ Each stage is a graduation, never a gate — a user may stay at any stage.
    The counterfactual is not "that user on a container tier"; it is that user
    staying on their existing agent with the same exposure and none of
    Compass.
-2. **Embedded-local (podman)** — the low-friction onboarding front door
-   ([DL-319](../../designs/decisions/ui/DL-319.md): "`mode="embedded"`
-   returns as the low-friction onboarding / local-dev front door — the app
-   spawns/supervises a LOCAL stack via rootless podman on the user's own
-   machine"), with zero-config mode selection (DL-320: "absent → embedded
-   (the zero-config onboarding default returns)"). Real isolation, still on
-   your own box.
+2. **Embedded-local (podman)** — the local-stack option in the native app's
+   first-run chooser. When `app.toml` is absent and neither `--mode` nor
+   `COMPASS_APP_MODE` is set, the app offers embedded-local or a server
+   connection. It saves the chosen config to `app.toml` once and never rewrites
+   an existing file. Real isolation, still on your own box.
 3. **Self-host graduation** — always-on operation on a dedicated box: the
    podman entry tier on any VPS (no `/dev/kvm` needed), or the microVM tier
    on a KVM-capable machine. Client mode is the recommended steady state
