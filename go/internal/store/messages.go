@@ -711,6 +711,19 @@ func validateQuestionAnswer(q *AskQuestion, a AskAnswer, askID string) error {
 	return nil
 }
 
+// MessageRequestRecorded reports whether author already stored a message under
+// clientRequestID, so a caller can skip side effects of a replayed request.
+func (s *Store) MessageRequestRecorded(ctx context.Context, author AccountID, clientRequestID string) (bool, error) {
+	rows, err := s.q.GetMessageByRequestID(ctx, db.GetMessageByRequestIDParams{
+		AuthorAccountID: string(author),
+		ClientRequestID: clientRequestID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: probe message request id: %w", err)
+	}
+	return len(rows) > 0, nil
+}
+
 // getMessageByRequestID returns the message stored under an author's idempotency
 // key — the dedup path for a retried AppendMessage.
 func (s *Store) getMessageByRequestID(ctx context.Context, author AccountID, clientRequestID string) (Message, error) {
