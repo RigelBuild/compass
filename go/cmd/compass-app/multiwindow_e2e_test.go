@@ -167,7 +167,8 @@ func TestMultiWindowCloseCancelsOnlyClosingWindowE2E(t *testing.T) {
 	})
 	t.Cleanup(func() { close(release) })
 
-	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), e2eApp.Event, nil, nil)
+	conn := &connection{pump: bridge.NewPump(bridge.NewUnixTarget(socket))}
+	svc := newBridgeService(conn, e2eApp.Event, nil)
 
 	// Create two REAL Bridge windows through the production factory, which
 	// attaches the real WindowClosing → cancelWindow handler to each.
