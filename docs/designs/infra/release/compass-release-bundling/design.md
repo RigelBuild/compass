@@ -165,8 +165,9 @@ and the publish enforces tag immutability + digest coherence
 copy dir:` tarball would duplicate a multi-GB closure GitHub caps and GHCR
 already serves, and would create a *second* image identity to keep coherent.
 Instead the Release **body** records `ghcr.io/rigelbuild/compass-agent@sha256:…`
-(the config digest the publish verify step already computes,
-`publish-agent-image.yml:173`) — a durable pointer to an immutable artifact.
+(the manifest digest of the `:vX.Y.Z` tag, listed next to the config digest
+the publish verify step already computes) — a durable pointer to an immutable
+artifact.
 *Tradeoff:* if GHCR retention ever deletes the package, the Release's image
 pointer dangles; accepted because the package is public + repo-linked and
 nothing in the fleet deletes it, and a tarball's cost is paid on every release
