@@ -772,8 +772,12 @@ rather than tearing it down and re-spawning.
 
 The workspaces sidebar derives its tree from `parent_agent_id` rather than a
 user-defined folder organization, and an agent reads its own parent off its
-account through `ListAccounts`. Composing channels or roles onto the tree is
-named for later (RIG-1622, RIG-1623) and is not yet built.
+account through `ListAccounts`. Every agent created through spawn or
+`CreateAgent` carries a role from the closed Manager taxonomy (`supervisor`,
+`owner`, `manager`). Rows created before that check may hold an empty or
+unknown role; either falls back to the default block-0. Composing
+channels or subtree-applied roles onto the tree is named for later (RIG-1622,
+RIG-1623) and is not yet built.
 
 ### Requirement: An agent account carries a parent, forming the agent tree
 
@@ -783,7 +787,9 @@ spawn path it SHALL be the spawning agent's account id, and on `CreateAgent` it
 SHALL be the optional user-supplied `parent_agent_id` (empty creating a root).
 When a non-empty parent is supplied at creation the server SHALL validate it —
 the parent MUST exist and MUST have the same owner as the agent being created —
-and SHALL reject a supplied parent that fails either check.
+and SHALL reject a supplied parent that fails either check. Every creation SHALL
+carry a `role` of `supervisor`, `owner`, or `manager`; the server SHALL reject
+any other value, including empty, with `INVALID_ARGUMENT` before writing.
 
 #### Scenario: A spawned agent's parent is the spawning agent
 
@@ -794,9 +800,17 @@ and SHALL reject a supplied parent that fails either check.
 
 #### Scenario: An agent is created as a root
 
-- **Given** a `CreateAgent` call with an empty `parent_agent_id`
+- **Given** a `CreateAgent` call with an empty `parent_agent_id` and a valid
+  `role`
 - **When** the account is created
-- **Then** it carries an empty `parent_agent_id` and is a root of the agent tree.
+- **Then** it carries an empty `parent_agent_id` and that `role`, and is a root
+  of the agent tree.
+
+#### Scenario: A creation without a taxonomy role is rejected
+
+- **Given** a `CreateAgent` call whose `role` is empty or outside the taxonomy
+- **When** the server handles it
+- **Then** it returns `INVALID_ARGUMENT` and creates no account.
 
 ### Requirement: Re-parenting moves an agent's subtree, validated against cycles and ownership
 
