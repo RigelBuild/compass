@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -438,6 +439,62 @@ func TestSubscribeCommsRemovedMemberGetsFinalChannelChanged(t *testing.T) {
 	neverEvts := drainReplayAsActor(t, h, neverMember.ID, canary)
 	if n := len(channelChanges(neverEvts, chID)); n != 0 {
 		t.Fatalf("LEAK: a never-member received %d ChannelChanged for a private channel", n)
+	}
+}
+
+// TestSubscribeCommsDepartingMemberFinalEventOmitsSameBatchAdd pins that one
+// UpdateChannelMembers batch adding X and removing Y never shows X to Y: Y's
+// final event drops the roster, while a remaining member sees the new roster.
+func TestSubscribeCommsDepartingMemberFinalEventOmitsSameBatchAdd(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, h.store, "owner")
+	departing := mustUser(t, h.store, "departing")
+	added := mustUser(t, h.store, "added")
+
+	ch, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberHandles: []string{departing.Handle},
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := ch.Msg.GetChannel().GetId()
+
+	if _, err := h.svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		ChannelId:           chID,
+		AddMemberHandles:    []string{added.Handle},
+		RemoveMemberHandles: []string{departing.Handle},
+	})); err != nil {
+		t.Fatalf("UpdateChannelMembers(add+remove): %v", err)
+	}
+
+	canary := mkCanary(t, h, "canary")
+
+	rccs := channelChanges(drainReplayAsActor(t, h, departing.ID, canary), chID)
+	if len(rccs) != 1 {
+		t.Fatalf("departing member received %d ChannelChanged, want exactly 1", len(rccs))
+	}
+	assertDepartingView(t, rccs[0], chID, departing.ID)
+
+	// A remaining member still gets the post-mutation roster, including the add.
+	ownerCCs := channelChanges(drainReplayAsActor(t, h, owner.ID, canary), chID)
+	if len(ownerCCs) == 0 || !containsString(ownerCCs[len(ownerCCs)-1].GetChannel().GetMemberAccountIds(), string(added.ID)) {
+		t.Fatalf("remaining member's last ChannelChanged lacks the added member %s", added.ID)
+	}
+}
+
+// assertDepartingView fails unless cc is exactly the trimmed final event a
+// departed account may see: the channel id and its own removal, nothing else.
+func assertDepartingView(t *testing.T, cc *compassv1.ChannelChanged, chID string, departed store.AccountID) {
+	t.Helper()
+	want := &compassv1.ChannelChanged{
+		Channel:           &compassv1.Channel{Id: chID},
+		RemovedAccountIds: []string{string(departed)},
+	}
+	if !proto.Equal(cc, want) {
+		t.Fatalf("LEAK: departing member's final ChannelChanged = %v, want only %v", cc, want)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 
 	"connectrpc.com/connect"
 
@@ -125,7 +126,7 @@ func forwardComms(
 		// never a fault. Expressed as ok = (send succeeded) so the client-side
 		// end is not a `return nil` on a non-nil error (which is a real hang-up,
 		// deliberately swallowed, not a fault to surface).
-		return nil, stream.Send(commsToResponse(event)) == nil
+		return nil, stream.Send(commsToResponse(actor, event)) == nil
 	}
 
 	for _, event := range sub.Replay {
@@ -170,14 +171,23 @@ func forwardComms(
 // commsToResponse maps the bus's Stamped envelope onto the concrete
 // SubscribeComms response at the stream edge: seq/at_unix_ms/instance_epoch
 // transfer from the envelope and the payload oneof comes from the stamped
-// message (mirrors server/service.go:135-142).
-func commsToResponse(event events.Stamped[*compassv1.SubscribeCommsResponse]) *compassv1.SubscribeCommsResponse {
-	return &compassv1.SubscribeCommsResponse{
+// message, trimmed for an account the event removed.
+func commsToResponse(actor store.AccountID, event events.Stamped[*compassv1.SubscribeCommsResponse]) *compassv1.SubscribeCommsResponse {
+	resp := &compassv1.SubscribeCommsResponse{
 		Seq:           event.Seq,
 		AtUnixMs:      event.AtUnixMS,
 		InstanceEpoch: event.InstanceEpoch,
 		Payload:       event.Payload.GetPayload(),
 	}
+	// A departed account gets only the channel id: the roster, name, and policy
+	// are post-change state it was never a member alongside (a same-batch add).
+	if cc := event.Payload.GetChannelChanged(); cc.GetChannel() != nil && slices.Contains(cc.GetRemovedAccountIds(), string(actor)) {
+		resp.Payload = &compassv1.SubscribeCommsResponse_ChannelChanged{ChannelChanged: &compassv1.ChannelChanged{
+			Channel:           &compassv1.Channel{Id: cc.GetChannel().GetId()},
+			RemovedAccountIds: cc.GetRemovedAccountIds(),
+		}}
+	}
+	return resp
 }
 
 // commsResyncRequired is the typed resync signal: the last event the server
@@ -273,9 +283,8 @@ func visibleToActor(
 		return vis.IsTopicChannelMember(ctx, actor, p.MessageUpdated.GetMessage().GetTopicId())
 	case *compassv1.SubscribeCommsResponse_ChannelChanged:
 		// A member this change removed would never see its own removal — deliver this
-		// one final event to a departed account too (Matt's ruling). The event carries
-		// the post-mutation roster (a batch adding X and removing Y reveals X to Y,
-		// accepted for T2). Otherwise gate on full channel visibility.
+		// one final event to a departed account too (Matt's ruling); commsToResponse
+		// trims it to the channel id. Otherwise gate on full channel visibility.
 		cc := p.ChannelChanged
 		for _, id := range cc.GetRemovedAccountIds() {
 			if store.AccountID(id) == actor {
