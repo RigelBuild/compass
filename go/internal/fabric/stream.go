@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -51,6 +52,11 @@ const (
 	// truth either way, so this is a durability optimization, not a correctness
 	// requirement.
 	DefaultReplicas = 1
+
+	// MinInactiveThreshold floors the consumer reap threshold. A live Consume
+	// re-pulls at least every 30s and a callback is bounded by AckWait, so an
+	// hour can only elapse without a pull when no Server holds the consumer.
+	MinInactiveThreshold = time.Hour
 )
 
 // streamConfig is the COMPASS_COMMS stream configuration.
@@ -100,7 +106,25 @@ func (c Config) consumerConfig(subject string) jetstream.ConsumerConfig {
 		AckWait:       c.ackWait(),
 		MaxDeliver:    c.maxDeliver(),
 		Replicas:      c.replicas(),
+		// Reaps a durable no Server has pulled from; see inactiveThreshold.
+		InactiveThreshold: c.inactiveThreshold(),
 	}
+}
+
+// inactiveThreshold defaults to max(2 × MaxAge, MinInactiveThreshold). A reaped
+// consumer is recreated with DeliverAll, so its acked events must age out first;
+// the floor keeps a short MaxAge from reaping a live subscription mid-callback.
+func (c Config) inactiveThreshold() time.Duration {
+	if c.testInactiveThreshold > 0 {
+		return c.testInactiveThreshold
+	}
+	// Saturate below MaxInt64: the server adds up to ~1s of jitter, which must not overflow.
+	const ceiling = time.Duration(math.MaxInt64) - 2*time.Second
+	age := c.maxAge()
+	if age > ceiling/2 {
+		return ceiling
+	}
+	return max(2*age, MinInactiveThreshold)
 }
 
 // durableName derives a JetStream durable consumer name for a subject.
