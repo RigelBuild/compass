@@ -5,8 +5,8 @@ square corners, weights, surfaces, `--cx-border-field`, text-entry
 primitives), [UX foundation](../compass-ux-foundation/design.md)
 Refs: RIG-4775 (this record); RIG-3121 (Providers, task E5 of the
 [gateway OAuth enrollment record](../../server/compass-gateway-oauth-enrollment/design.md));
-ledger DL-431, DL-433, DL-434; DL-432 and DL-435 are held for Open
-Questions 1 and 2
+ledger DL-431, DL-433, DL-434; DL-432, DL-435, and DL-436 are held for
+Open Questions 1, 2, and 3
 Depends on: brand-parity T9 (S1); enrollment E3 (S7)
 
 ## Problem / Intent
@@ -110,14 +110,11 @@ parses to, not `/` (`/backlog/foo` → `/backlog`, `/agent/x/extra` →
 on `/`.
 
 Every opener (`showSettings` behind `Mod+,`, `G S`, the palette, and the
-destinations list; and the sidebar link) dispatches the layout's `open`
-action for `store.settingsPath()`, the last section shown in this window
-or the first. `open` matches exact paths, so an open single-view Settings
-tab on that section is focused. A second behavior change: today
-`showSettings` navigates the focused view in place (`navigateFocused`);
-after S1, with no such tab, Settings opens in a new tab, and the tab cap
-applies. A detached window (DL-160) opens on its section. The palette gets
-"Go to Settings: Label" per section; the title is "Settings · Label".
+destinations list; and the sidebar link) targets `store.settingsPath()`,
+the last section shown in this window or the first. Whether it navigates
+the focused view or opens a tab is Open Question 3. A detached window
+(DL-160) opens on its section. The palette gets "Go to Settings: Label"
+per section; the title is "Settings · Label".
 
 ### A4 — Save model, per section
 
@@ -130,14 +127,12 @@ applies. A detached window (DL-160) opens on its section. The palette gets
 
 ### A5 — Providers (E5)
 
-S7 implements E5 as written: the `ListProviders` policy filter, connected
-state, Connect then the paste-code dialog with `instructions`, the
-attempt-expiry countdown and re-begin, API-key entry, Disconnect with a
-confirm, E5's store accessors, and no token value rendered or stored. It
-changes E5 in two points only: E5's "beside the tracker-config editor"
-becomes the Providers section, one A2 row per provider; and E5's
-"draft/commit pattern" becomes A4's per-action model, because each action
-is its own RPC and the tracker editor may go (Open Question 1).
+S7 implements E5 as written (policy filter, connected state, Connect and
+the paste-code dialog with `instructions`, expiry countdown and re-begin,
+API-key entry, confirmed Disconnect, E5's store accessors, no token
+rendered or stored), with two changes: "beside the tracker-config editor"
+becomes one A2 row per provider in Providers, and the "draft/commit
+pattern" becomes A4's per-action model (each action is one RPC).
 
 ## Alternatives considered
 
@@ -145,20 +140,17 @@ is its own RPC and the tracker editor may go (Open Question 1).
   a heading cannot be linked; every section shares one scroll.
 - **A modal dialog.** DL-160 makes Settings a window-scoped view.
 - **Horizontal tabs only.** Four or five sections fit today, but more are
-  named (Keyboard, Secrets, Fleet, a server-backed Tracker), and a strip
-  under the window's tab strip (DL-390) reads as nested tabs. It stays as
-  the narrow fallback.
-- **A switch, or a roving radiogroup.** A switch is a new primitive for
-  two rows; a radiogroup needs arrow keys, and `createRovingGroup` is
-  built around dispatcher command ids. `aria-pressed` needs neither.
+  named (Keyboard, Secrets, Fleet), and a strip under the window's tab
+  strip (DL-390) reads as nested tabs. It is the narrow fallback.
+- **A switch, or a roving radiogroup.** A new primitive for two rows, or
+  arrow-key code built for dispatcher ids; `aria-pressed` needs neither.
 - **One Save bar.** Device preferences and RPCs cannot wait for it.
 
 ## Global Constraints
 
 - **After brand-parity T9.** T2a and T9 rewrite the `.settings-*` radii
-  and weights and recapture every shot; S1 starts after T9 merges, so it
-  does not rebase on the same lines or recapture twice. T7 only changes
-  the `.cx-input` border; tasks use `.cx-input` before or after it.
+  and weights and recapture every shot, so S1 starts after T9 merges. T7
+  only changes the `.cx-input` border; tasks use `.cx-input` either way.
 - **Overlap with brand parity.** T5 (`/agents`) edits `RouteMatch`,
   `parseRoute`, `routePath`, `appRoutes`, `route-title.ts`, `spine.ts`,
   `store.ts`, and `LeftSidebar.tsx`, as S1 does. T10 leaves
@@ -166,15 +158,14 @@ is its own RPC and the tracker editor may go (Open Question 1).
   `/done` entries in `routes.tsx`, `LeftSidebar.tsx` and its test (S1),
   and `surfaces.md` § Backlog / Done / Settings (S4). The edits do not
   overlap in meaning; whichever lands second rebases.
-- **Tokens only**, the D7 stylelint guard, and the T2a and T9 rules.
-- **Each component imports the primitive CSS it renders** (brand-parity
-  A7). No new primitive and no `.settings-*` box style; layout classes in
-  `settings.css` only.
+- **Tokens only**, the D7 stylelint guard, and the T2a and T9 rules. Each
+  component imports the primitive CSS it renders (brand-parity A7); no
+  new primitive and no `.settings-*` box style (layout in `settings.css`).
 - **Every entry keeps working:** `Mod+,`, `G S`, palette `view.settings`,
   the sidebar link, and `/#/settings`.
 - **Device preferences** use localStorage keys `compass.settings.<name>`
   through `safeLocalStorage()`; an invalid value reads as the default.
-  Copy is sentence-case; help is one sentence.
+- **Copy.** Sentence-case labels; help is one sentence.
 - **Baselines and stacking.** Recapture under the pinned dev shell and
   commit per DL-399; one linear line, red-first tests, lane `implement-ts`.
 - **Public repo.** Cite only this repo and `docs/specs/brand/`.
@@ -202,10 +193,11 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
     `view.navigate(routePath(view.route()))`.
   - Store: `settingsSection(): SettingsSection`,
     `setSettingsSection(section: SettingsSection): void`, and
-    `settingsPath(): string`. `showSettings` runs `hideShortcuts()` then
-    `dispatchLayout({ kind: "open", path: settingsPath() })`, not
-    `navigateTo`. The `LeftSidebar` link passes `() => store.settingsPath()`
-    to `openLink`; its plain click still calls `showSettings`.
+    `settingsPath(): string`. The `LeftSidebar` link passes
+    `() => store.settingsPath()` to `openLink`; its plain click calls
+    `showSettings`. `showSettings` runs `hideShortcuts()`, then per Open
+    Question 3: (a) `navigateTo(settingsPath())`; (b)
+    `dispatchLayout({ kind: "open", path: settingsPath() })`.
   - `components/SettingsView.tsx` moves to `components/settings/`:
     `SettingsView.tsx` (the shell: reads the section from its view scope,
     calls `setSettingsSection`, renders nav and body, imports `tabs.css`,
@@ -236,25 +228,23 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
     `/settings/tracker`, its link has `data-selected` and
     `aria-current="page"`; clicking Models moves to `/settings/models` and
     shows the registry, not the editor.
-  - `store.test.ts` (`showSettings` uses `open`): from `/` it gives tabs
-    `["/", "/settings/tracker"]`, the new one active; from `/` again it
-    focuses that tab (still two); after that tab moves to
-    `/settings/models`, it focuses it again.
+  - `store.test.ts` (`showSettings`, per Open Question 3), after the
+    view moves to `/settings/models` and then to `/`: (a) one tab, its
+    view on `/settings/models`; (b) from `/` it opens
+    `/settings/models` in a second, active tab, and a repeat call from
+    `/` focuses that tab (still two).
 - **Baselines:** recapture `settings.png`; add `settings-narrow.png` (480px).
 
 ### S2 — General section
 
-- **Do:** A1 General, without Usage data (S6).
-- **Interfaces:**
-  - `SETTINGS_SECTIONS` gains `"general"` first;
-    `settings/GeneralSection.tsx` in `SECTION_VIEW`.
-  - `DaemonInfo` gains `rev: string`; `probeServer` reads `rev`;
-    `STUB_DAEMON.rev` is `""`.
-  - `AppStoreOptions` gains `serverUrl?: string`, which `main` in
-    `index.tsx` sets to `connection.baseUrl`; the store exposes
-    `serverUrl(): string | undefined`.
-  - `GeneralSection.tsx` exports `modeLabel(mode: ShellMode | undefined):
-    "Browser" | "Embedded server" | "Remote server"`, an exhaustive switch.
+- **Interfaces:** `SETTINGS_SECTIONS` gains `"general"` first, with
+  `settings/GeneralSection.tsx` (rows except Usage data, S6). `DaemonInfo`
+  gains `rev: string` (`probeServer` reads it; `STUB_DAEMON.rev` is
+  `""`). `AppStoreOptions` gains `serverUrl?: string`, set by `main` in
+  `index.tsx` to `connection.baseUrl`; the store exposes `serverUrl():
+  string | undefined`. `GeneralSection.tsx` exports `modeLabel(mode:
+  ShellMode | undefined): "Browser" | "Embedded server" | "Remote
+  server"`, an exhaustive switch.
 - **Test (red first):** `settings/GeneralSection.test.tsx` with
   `createRouterTransport` serving `getServerInfo` (`1.2.3`, an API
   version, `abc123`): the three show; offline shows "Not connected"; the
@@ -317,11 +307,10 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
   Storage | undefined, workspace: string): TrackerConfig | undefined` and
   `saveTrackerConfig(storage: Storage | undefined, workspace: string,
   config: TrackerConfig): void`, key `compass.settings.tracker.${workspace}`
-  with the pins' `workspaceKey`. The store loads it with the pins;
-  `setTrackerConfig` saves it.
-- **Test (red first):** `store.test.ts`: a new store on the same storage
-  and workspace reads the saved config; another workspace and malformed
-  JSON give the default.
+  with the pins' `workspaceKey`, loaded with the pins and saved by
+  `setTrackerConfig`. **Test (red first):** a new store on the same
+  storage and workspace reads it; another workspace or bad JSON gives the
+  default.
 
 ### S6 — Usage data
 
@@ -343,19 +332,16 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
 ### S7 — Providers section (E5)
 
 - **Gate:** enrollment E3 merged. **Do:** A5; E5's Interfaces and test
-  cycle are the contract.
-- **Interfaces:** E5's, plus: `SETTINGS_SECTIONS` gains `"providers"`
-  after `"models"`; `settings/ProvidersSection.tsx`; `openExternal` moves
-  from `MarkdownText.tsx` to `apps/ui/src/open-external.ts` (`export
-  function openExternal(url: string): void`) so Connect opens `auth_url`
-  in both hosts.
-- **Test (red first):** E5's cycle, plus: only the providers
-  `ListProviders` returns are rendered. **Baselines:** add
-  `settings-providers.png`.
+  cycle are the contract, plus: `SETTINGS_SECTIONS` gains `"providers"`
+  after `"models"` (`settings/ProvidersSection.tsx`); `openExternal`
+  moves from `MarkdownText.tsx` to `apps/ui/src/open-external.ts`
+  (`export function openExternal(url: string): void`) for `auth_url` in
+  both hosts; a test that only `ListProviders`' providers render.
+  **Baselines:** add `settings-providers.png`.
 
 ## Tasks
 
-- [ ] S1 — Shell and section route (after brand-parity T9)
+- [ ] S1 — Shell and route (after brand-parity T9; opener per OQ3)
 - [ ] S2 — General section (after S1)
 - [ ] S3 — Appearance section (after S2)
 - [ ] S4 — Tracker per Open Question 1 (after S3 and Open Question 1)
@@ -365,36 +351,50 @@ S1 → S2 → S3 → S4 → S5; S6 and S7 stack on the top when their gate opens
 
 ## Open Questions
 
-1. **The tracker editor.** It edits a config that only the fixture seam
-   reads, and only its handle; the kind and the status map change nothing.
-   DL-129 puts the mapping on the server, which ingests tracker status
-   through the reverse `TrackerStatusMapping`.
-   - (a) Keep the editor, rebuild it on A2 (S4), and persist it in
-     localStorage keyed by `workspaceKey` (S5). Small, but it saves a
-     value nothing uses: `rule://no-inert-gating` argues against it.
-   - (b) Show the config read-only as "Preview, not connected", and drop
-     S5. Honest about the state, but it shows a status map the server
-     does not use, which can mislead.
-   - (c) Delete the client-side editor and `setTrackerConfig`; the
-     mapping stays on the server. A Tracker section returns, server-backed,
-     when the tracker contract lands. Loses the one editable setting
-     today, and its tests.
-   - **Recommendation:** (c). Nothing the editor writes reaches the
-     server, and a read-only preview of a value the server does not use
-     misleads more than it shows.
+1. **The tracker editor.** It edits a config only the fixture seam reads,
+   and only its handle; the kind and the status map change nothing.
+   DL-129 puts the mapping on the server (the reverse
+   `TrackerStatusMapping`).
+   - (a) Keep it, rebuild it on A2 (S4), persist it per `workspaceKey`
+     (S5). Small, but it saves a value nothing uses
+     (`rule://no-inert-gating`).
+   - (b) Show it read-only as "Preview, not connected"; drop S5. Honest,
+     but it shows a status map the server does not use.
+   - (c) Delete the editor and `setTrackerConfig`; a server-backed Tracker
+     section returns with the tracker contract. Loses the one editable
+     setting and its tests.
+   - **Recommendation:** (c). Nothing it writes reaches the server, and a
+     preview of an unused value misleads more than it shows.
 2. **A usage-data control, and where it goes.** No record decides
    analytics consent. The observability record sends managed builds to
-   Rigel's PostHog and keeps self-hosted builds off by default or on the
-   deployer's own key; most self-hosted builds have no key.
+   Rigel's PostHog; self-hosted builds are off or use the deployer's key,
+   and most have no key.
    - (a) A per-device On or Off in its own Privacy section, stored by
-     posthog-js (`opt_out_capturing()`). In a build with no key, the
-     section is one sentence.
-   - (b) The same control as a Usage data row in General, giving four
-     sections, or five if Open Question 1 keeps Tracker. A build with no
-     key shows one read-only line.
-   - (c) No user control; the deployer decides at build time. No work, but
-     a user of a managed build cannot opt out in the app.
-   - (d) A per-account consent stored on the server and read at boot.
-     Follows the account, but needs a proto field and a server task.
-   - **Recommendation:** (b). It gives a user control now with no server
-     work and no near-empty section; (d) can replace its storage later.
+     posthog-js (`opt_out_capturing()`). With no key, the section is one
+     sentence.
+   - (b) The same control as a row in General: four sections, or five if
+     Open Question 1 keeps Tracker. With no key, one read-only line.
+   - (c) No control; the deployer decides at build time. A managed-build
+     user cannot opt out in the app.
+   - (d) Per-account consent stored on the server. Follows the account;
+     needs a proto field and a server task.
+   - **Recommendation:** (b): user control now, no server work, no
+     near-empty section; (d) can replace its storage later.
+3. **How a Settings opener behaves.** DL-390: "links navigate the focused
+   view in place and `Mod`+click or middle-click opens a tab"; only that
+   tab path dedupes an open path. Today `showSettings` follows it
+   (`navigateFocused`), like `showBacklog` and `showDone`.
+   - (a) Keep DL-390. `Mod+,`, `G S`, the palette, and the sidebar link
+     navigate the focused view to the last section; bare `/settings`
+     still redirects to the first. Dedupe stays with Mod-click and
+     middle-click. One rule for every view, no ledger change; but `Mod+,`
+     replaces the focused view (Back returns), and with Settings in a
+     background tab it makes a second Settings view.
+   - (b) Settings openers open or focus a Settings tab, amending DL-390
+     for Settings only, as DL-409 did for New tab. Keeps the user's place
+     and never duplicates Settings, like an editor's settings tab. Costs a
+     second DL-390 exception, Settings unlike the other `show*` openers,
+     and the 10-tab cap can refuse `Mod+,`.
+   - **Recommendation:** (a). DL-390 is uniform, and Mod-click and
+     middle-click already open a deduped tab. Revisit as (b) if dogfood
+     shows duplicate Settings views.
