@@ -8,7 +8,8 @@ Depends on: #1811 (RIG-4771 chrome cleanup), #1814 (RIG-4772 session
 stream), #1644 (DL-399 local baselines)
 Siblings: RIG-4771 (chrome cleanup, pane edges), RIG-4772 (Session Log
 stream), RIG-4773 (Bridge toggle), RIG-4775 (Settings), RIG-4776
-(Backlog/Done). This record does not redo their work.
+(Backlog/Done; Matt's answer lands here as A10). This record does not redo
+their work.
 
 ## Problem / Intent
 
@@ -17,11 +18,12 @@ Matt's dogfood review: the Compass UI does not look like
 icons do not show, messages are plain text, the composer does not read as a
 composer, and the top search, new-topic name, and first-message fields look
 unstyled. This record finds the concrete causes in `apps/ui/src/` and plans
-ten small PRs that bring Compass to the marketing site's look, with the
-agent tree as the highlight.
+eleven small PRs that bring Compass to the marketing site's look, with the
+agent tree as the highlight. Matt's RIG-4776 answer on the Backlog and Done
+views is folded in as A10.
 
-Out of scope: Settings (RIG-4775), the Backlog/Done views (RIG-4776), usage
-display (RIG-4771 deletes `UsageBar`), and the pane-edge rules themselves.
+Out of scope: Settings (RIG-4775), usage display (RIG-4771 deletes
+`UsageBar`), and the pane-edge rules themselves.
 PR #1811 (RIG-4771) puts the `.right` and `.log-panel` edges on
 `--cx-border-strong` and hands the token values back to this record; T2b
 sets them.
@@ -36,7 +38,8 @@ the same `--rigel-*` primitive values as `apps/ui/src/design/tokens.css`
 The gaps are in five places: fonts that never load, a surface and line model
 that hides edges, semantic aliases and weights that differ from the site,
 component CSS that is never imported, and an agent-state data path that
-drops most states.
+drops most states. A10 is not a site gap: the site has no Backlog or Done
+view. It carries Matt's RIG-4776 answer.
 
 ### Gap audit
 
@@ -326,6 +329,67 @@ labels. Markdown headings keep their weight and `strong` keeps the browser
 default: that is author emphasis, not chrome. A stylelint rule stops new
 weights; `tokens.css` is exempt for its `@font-face` descriptors.
 
+### A10 — Backlog and Done inside the Bridge (Open Question 5)
+
+Matt's RIG-4776 answer leans to folding both views into the Bridge (B). He
+was unsure because the layouts differ. The fallback is (1): keep both views
+but take them out of the left-sidebar list. Removing them is rejected. The
+layouts today:
+
+| Surface | Layout | What it holds |
+| --- | --- | --- |
+| Bridge, Issues (`Bridge.tsx`) | A grid: one row per agent (`boardAgents`) × the five `BOARD_LANES` columns (Queued, Blocked, In progress, In review, Done). `Status` mode drops the agent rows | Active issues (`isActiveState` in `board.ts`). An agent with only pre-active work gets no row |
+| Bridge, PRs | The same grid on `PR_LANES` | Open and merged PRs |
+| Backlog (`BacklogView.tsx`) | A vertical list in three collapsible sections: Todo, Backlog, Assigned to me. Grouped by tier, not sorted by priority | Pre-active issues (`isBacklogState`), which the fixtures leave unassigned, plus the tracker queue `store.assignedIssues()`, a separate query. Row: key, title, priority, state, tracker id |
+| Done (`DoneView.tsx`) | A list in two sections: Done, Archived | `done` issues, which the Bridge Done column already shows, and `archived` issues, which no other surface shows (DL-091). Wide row: key, priority, PR badges, branch, merge state, resolved threads, diff |
+
+So Backlog has no place in the grid. Its issues have no board column and
+usually no agent row, and "Assigned to me" is not board data. Done is half
+on the board already (the Done column); Archived is not.
+
+Today each view has its own route (`/backlog`, `/done` in `RouteMatch`,
+`appRoutes`, and `ROUTE_PATTERN` in `ViewHost.tsx`), a `View` kind with
+`showBacklog`/`showDone` in `store.ts`, a palette destination
+(`keyboard/destinations.ts`), a command (`view.backlog`/`view.done` in
+`keyboard/spine.ts`) bound to `G L`/`G D` (`keymap.ts`, DL-252), a
+left-sidebar link (Backlog carries a count), and a shot (`backlog.png`,
+`done.png`). The Bridge's Issues/PRs choice is a component-local signal
+(`tab` in `Bridge.tsx`, DL-097), not a route.
+
+Two ways to fold them in:
+
+- **Segments that keep the list layouts (recommended).** The Bridge control
+  becomes `Issues | PRs | Backlog · N | Done`. Backlog and Done render their
+  current lists under the Bridge toolbar. Both segments are routed: `/backlog`
+  and `/done` stay, their `appRoutes` entries render `Bridge`, and the Bridge
+  picks the segment from `useView().route().view`. `ViewHost` resolves the
+  three paths to the same component, so a segment change does not remount the
+  Bridge. Deep links, palette entries, `G L`/`G D`, and tab titles keep
+  working with no change to `view-route.ts`, `store.ts`, or `keyboard/`. The
+  sidebar drops its two links; the Backlog count moves to the segment label.
+  Costs: one control with two routed and two local buttons; the board roving
+  group and `board.*` commands must run only on the grid segments; the
+  Backlog, Done, Bridge, and sidebar shots change.
+- **Board-native.** Backlog and Todo become columns ahead of Queued, with an
+  "Unassigned" lane; Archived becomes a filter on the Done column. Rejected:
+  it changes the D1 partition (`ACTIVE_STATES` derives from `BOARD_LANES`),
+  adds two columns that are empty in every agent row, has no place for
+  "Assigned to me", drops the Done rows' merge and thread detail, and changes
+  every board shot and the column counts in `board-nav.ts`.
+
+Fallback (1): keep both views and routes, and delete the two sidebar links.
+They stay reachable by palette, `G L`/`G D`, and deep link. Cost: the
+smallest diff (`LeftSidebar.tsx`, its test, the sidebar shots), but the
+Backlog count leaves the screen and a new user finds Backlog only through
+the palette. A "secondary menu" would be a new surface; no menu exists to
+reuse there.
+
+Overlap with Open Question 2 (c): both add segments to the same Bridge
+control, the one RIG-4773 is fixing. Under OQ2 (c) the control would carry
+five segments (`Tree | Issues | PRs | Backlog | Done`). Under the
+recommended OQ2 (a) there is no overlap, and the sidebar's view links become
+Agents, Bridge, and Settings.
+
 ## Alternatives considered
 
 ### Server-side: widen `AgentPresence` to eight states
@@ -379,14 +443,14 @@ rendering rules).
 
 ## Plan
 
-Ten tasks in two linear lines. Lines keep logic rebases away from baseline
-churn, and the tasks that change every shot (T1, T2a, T9) go first so later
-tasks recapture a stable base.
+Eleven tasks in two linear lines. Lines keep logic rebases away from
+baseline churn, and the tasks that change every shot (T1, T2a, T9) go first
+so later tasks recapture a stable base.
 
 - **Look line.** Base: the current top of the in-window tabs line, which is
   #1811 (RIG-4771) today. T2b and T8 need #1811's chrome; T5 needs that
   line's `RouteMatch` shape. Order: T1 → T2a → T9 → T4 → T6 → T7 → T8, then
-  T2b and T5 in the order their open questions are answered.
+  T2b and T5 in the order their open questions are answered, then T10.
 - **State line.** Base: #1814 (RIG-4772). T3 only. It changes no baseline:
   `visual-smoke.spec.ts` renders stub data with no daemon.
 
@@ -596,6 +660,47 @@ Every task that changes baselines also waits for #1644 (DL-399).
   `data-flow="1"` and one to an idle child does not.
 - **Baselines:** new `agents.png`; the shots with the left sidebar.
 
+### T10 — Backlog and Done inside the Bridge
+
+- **Do:** A10, after Open Question 5, after T5, and after the RIG-4773 fix
+  merges (it edits the same segment control). Interfaces are for the
+  recommended option (a).
+- **Interfaces:**
+  - `apps/ui/src/routes.tsx`: the `/backlog` and `/done` entries render
+    `Bridge`.
+  - `apps/ui/src/components/BacklogView.tsx`: `BacklogView` becomes
+    `BacklogList: Component`, the three sections without the `<h2>`.
+    `apps/ui/src/components/DoneView.tsx`: `DoneView` becomes
+    `DoneList: Component`. Both keep their `.backlog-view`/`.done-view`
+    root class, so the visual-smoke waits hold.
+  - `apps/ui/src/components/Bridge.tsx`: `segment(): "issues" | "prs" |
+    "backlog" | "done"` is `view.route().view` for `backlog` and `done`,
+    else `tab()`. The control adds `Backlog · N` (N =
+    `backlogIssues(store.issues()).length + store.assignedIssues().length`)
+    and `Done`, which call `view.navigate("/backlog")` and
+    `view.navigate("/done")`. Issues and PRs call `view.navigate("/")`
+    before `setTab`. The grouping control, the roving group, and the
+    `board.*` commands run only on Issues and PRs.
+  - `apps/ui/src/components/LeftSidebar.tsx`: delete the Backlog and Done
+    links and `backlogCount`. The Bridge link is active for `bridge`,
+    `backlog`, and `done`.
+  - `apps/ui/src/design/surfaces.md` § Backlog / Done / Settings: Backlog
+    and Done render inside the Bridge.
+  - Unchanged: `view-route.ts`, `ViewHost.tsx`, `route-title.ts`,
+    `store.ts`, `keyboard/`.
+- **Test (red first):** `Bridge.test.tsx`: at `/backlog` the Backlog
+  segment is active and the three sections render; Done navigates to
+  `/done`; Issues from Backlog returns to `/` with the grid; Status grouping
+  survives Issues → Backlog → Issues, which proves the Bridge did not
+  remount; the Backlog label count is pre-active plus assigned issues.
+  `routing.test.tsx`: `/backlog` and `/done` mount the Bridge; `G L` and
+  `G D` land on their segments. `LeftSidebar.test.tsx`: no Backlog or Done
+  link, and the CoachTip tests cover Bridge and Settings only.
+  `keyboard-e2e.test.tsx`: drop `view.backlog` and `view.done` from
+  `COACHED_COMMANDS`; they stay registered but are no longer coached.
+- **Baselines:** `backlog.png`, `done.png`, the `bridge*` shots, and the
+  shots with the left sidebar.
+
 ## Tasks
 
 Look line, on the in-window tabs line top (#1811):
@@ -609,6 +714,8 @@ Look line, on the in-window tabs line top (#1811):
 - [ ] T8 — Compass mark (after Open Question 4)
 - [ ] T2b — Surfaces and lines (after Open Question 1)
 - [ ] T5 — The agent tree view (after Open Question 2)
+- [ ] T10 — Backlog and Done inside the Bridge (after Open Question 5 and
+  T5)
 
 State line, on #1814:
 
@@ -675,3 +782,25 @@ State line, on #1814:
      wordmark names the company, not the product.
    - (c) Hold T8 until the mark locks; the `logo` glyph stays.
    - Recommendation: (a).
+5. **Backlog and Done (RIG-4776).** Matt leaned to folding both into the
+   Bridge (B) but was unsure because the layouts differ; his fallback is (1),
+   keeping both out of the sidebar list. A10 compares the layouts: the Bridge
+   is agent rows × lifecycle columns, Backlog is a three-tier list with a
+   tracker queue, and Done is a wide-row list whose Archived half is on no
+   other surface.
+   - (a) Bridge segments that keep the list layouts: `Issues | PRs |
+     Backlog · N | Done`, with `/backlog` and `/done` rendering the Bridge.
+     Every path, chord, and palette entry keeps working; the sidebar loses
+     two links. Costs: a control with routed and local buttons, the board
+     keyboard group scoped to the grid segments, and the Backlog, Done,
+     Bridge, and sidebar shots.
+   - (b) Board-native: Backlog and Todo columns plus an Unassigned lane, and
+     Archived as a Done-column filter. The most "inside the board", but it
+     changes the D1 lane partition and the board keyboard model, adds empty
+     columns, and has no place for "Assigned to me" or the Done row detail.
+   - (c) Fallback (1): keep both views, delete the sidebar links, and reach
+     them by palette, `G L`/`G D`, and deep link. The smallest change; the
+     Backlog count leaves the screen.
+   - **Recommendation:** (a). It is B without forcing a list into the grid,
+     which answers the layout doubt, and it keeps every way in. If Matt picks
+     OQ2 (c), the same control carries five segments; decide both together.
