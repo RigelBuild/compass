@@ -13,7 +13,10 @@
 // would have to fake anyway, and the counter is the thing being pinned.
 
 import { expect, test } from "bun:test";
+import { toBinary } from "@bufbuild/protobuf";
 import type { PublishFrameRequest } from "./../../gen/compass/v1/agent_gateway_pb";
+import { PublishFrameRequestSchema } from "./../../gen/compass/v1/agent_gateway_pb";
+import type { ControlAck } from "./../../gen/compass/v1/agent_pb";
 import type { PublishSpine } from "./../publish-spine";
 import { AckCursor } from "./ack-cursor";
 
@@ -35,6 +38,53 @@ function recordingSpine(): {
 		},
 	};
 }
+
+function controlAcks(frames: PublishFrameRequest[]): ControlAck[] {
+	return frames.flatMap((frame) => {
+		const value = frame.frame?.frame;
+		return value?.case === "controlAck" ? [value.value] : [];
+	});
+}
+
+test("range-encodes a long applied run in a small ControlAck", () => {
+	const { spine, frames } = recordingSpine();
+	const acks = new AckCursor(spine);
+	for (let seq = 2n; seq <= 2000n; seq += 1n) acks.markApplied(seq);
+
+	const emitted = controlAcks(frames);
+	expect(emitted).toHaveLength(1999);
+	const lastFrame = frames.at(-1);
+	if (!lastFrame) throw new Error("expected final ControlAck frame");
+	expect(toBinary(PublishFrameRequestSchema, lastFrame).length).toBeLessThan(
+		64,
+	);
+	for (const ack of emitted) {
+		expect(ack.appliedAbove).toEqual([]);
+		expect(ack.appliedAboveRanges.length).toBeLessThanOrEqual(2);
+	}
+});
+
+test("encodes each maximal contiguous applied run once", () => {
+	const { spine, frames } = recordingSpine();
+	const acks = new AckCursor(spine);
+	for (const seq of [3n, 4n, 5n, 8n, 10n, 11n]) acks.markApplied(seq);
+
+	const lastAck = controlAcks(frames).at(-1);
+	expect(lastAck?.ackedSeq).toBe(0n);
+	expect(lastAck?.appliedAboveRanges).toEqual([3n, 5n, 8n, 8n, 10n, 11n]);
+});
+
+test("applying the cursor gap collapses the applied run and clears ranges", () => {
+	const { spine, frames } = recordingSpine();
+	const acks = new AckCursor(spine);
+	for (let seq = 2n; seq <= 2000n; seq += 1n) acks.markApplied(seq);
+	acks.markApplied(1n);
+
+	const lastAck = controlAcks(frames).at(-1);
+	expect(lastAck?.ackedSeq).toBe(2000n);
+	expect(lastAck?.appliedAbove).toEqual([]);
+	expect(lastAck?.appliedAboveRanges).toEqual([]);
+});
 
 test("each genuinely new application increments appliedCount exactly once", () => {
 	// Non-vacuity: drop the increment → the count stays 0 → red. Move it outside

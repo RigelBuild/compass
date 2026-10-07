@@ -496,7 +496,7 @@ func TestControlRedeliversPastAckCursor(t *testing.T) {
 	}
 
 	// Contiguously applied through op2; op4 applied out of order above it.
-	p.AckControl(testSession, p.Epoch(testSession), seqs[1], []uint64{seqs[3]})
+	p.AckControl(testSession, p.Epoch(testSession), seqs[1], []uint64{seqs[3]}, nil)
 	stopFirst()
 
 	second := newControlStream()
@@ -510,6 +510,66 @@ func TestControlRedeliversPastAckCursor(t *testing.T) {
 		t.Errorf("redelivered seq = %d, want only the unapplied %d", got.GetControlSeq(), seqs[2])
 	}
 	second.none(t, "acked ops must not be redelivered")
+}
+
+// TestControlAckRangesRetireOnlyCoveredRetainedOps checks inclusive endpoints
+// and leaves gaps available for redelivery.
+func TestControlAckRangesRetireOnlyCoveredRetainedOps(t *testing.T) {
+	p := newTestProducer()
+	for i := range 6 {
+		if err := p.Send(testSession, promptOp(fmt.Sprintf("op-%d", i+1))); err != nil {
+			t.Fatalf("Send op %d: %v", i+1, err)
+		}
+	}
+
+	p.AckControl(testSession, p.Epoch(testSession), 0, nil, []uint64{2, 3, 5, 5})
+
+	stream := newControlStream()
+	stop := p.subscribe(t, stream)
+	defer stop()
+	for _, want := range []uint64{1, 4, 6} {
+		if got := stream.recv(t).GetControlSeq(); got != want {
+			t.Errorf("redelivered seq = %d, want %d", got, want)
+		}
+	}
+	stream.none(t, "only seqs inside the inclusive ranges should be retired")
+}
+
+func TestControlAckIgnoresInvertedRange(t *testing.T) {
+	p := newTestProducer()
+	if err := p.Send(testSession, promptOp("retained")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	p.AckControl(testSession, p.Epoch(testSession), 0, nil, []uint64{2, 1})
+
+	stream := newControlStream()
+	stop := p.subscribe(t, stream)
+	defer stop()
+	if got := stream.recv(t).GetControlSeq(); got != 1 {
+		t.Fatalf("redelivered seq = %d, want the retained seq 1", got)
+	}
+}
+
+func TestControlAckUnionsLegacyValuesAndRanges(t *testing.T) {
+	p := newTestProducer()
+	for i := range 4 {
+		if err := p.Send(testSession, promptOp(fmt.Sprintf("op-%d", i+1))); err != nil {
+			t.Fatalf("Send op %d: %v", i+1, err)
+		}
+	}
+
+	p.AckControl(testSession, p.Epoch(testSession), 0, []uint64{2}, []uint64{4, 4})
+
+	stream := newControlStream()
+	stop := p.subscribe(t, stream)
+	defer stop()
+	for _, want := range []uint64{1, 3} {
+		if got := stream.recv(t).GetControlSeq(); got != want {
+			t.Errorf("redelivered seq = %d, want %d", got, want)
+		}
+	}
+	stream.none(t, "legacy and range acknowledgements should both retire their seqs")
 }
 
 // TestControlReplayBarrierHoldsLiveOps pins the barrier. Live ops queued
@@ -556,7 +616,7 @@ func TestControlAckBeyondSentDoesNotWedgeSession(t *testing.T) {
 	stream.recv(t) // seq 1, the only op ever issued
 
 	// The agent acks a seq that was never assigned.
-	p.AckControl(testSession, p.Epoch(testSession), 100, nil)
+	p.AckControl(testSession, p.Epoch(testSession), 100, nil, nil)
 
 	if err := p.Send(testSession, prompt("after-bogus-ack")); err != nil {
 		t.Fatalf("Send after out-of-range ack: %v", err)
@@ -1009,7 +1069,7 @@ func TestControlRetentionCapRejectsSend(t *testing.T) {
 	}
 
 	// Acking frees room, so the cap is backpressure and not a permanent wedge.
-	p.AckControl(testSession, p.Epoch(testSession), uint64(maxRetainedOps), nil)
+	p.AckControl(testSession, p.Epoch(testSession), uint64(maxRetainedOps), nil, nil)
 	if err := p.Send(testSession, promptOp("after-ack")); err != nil {
 		t.Fatalf("Send after the ack freed room: %v", err)
 	}
@@ -1472,7 +1532,7 @@ func TestControlAckJumpDropsStrandedSeqs(t *testing.T) {
 	// received — the untrusted case AckControl documents. That prunes them, so
 	// the gap at 1 can never be filled by a delivery and the watermark can
 	// only advance by the jump, stranding the recorded 4 beneath it.
-	p.AckControl(testSession, p.Epoch(testSession), 4, nil)
+	p.AckControl(testSession, p.Epoch(testSession), 4, nil, nil)
 	p.ReleaseReplayBarrier(testSession, p.Epoch(testSession))
 
 	// Drive one more op through. Its delivery gates the drain: the loop ran
@@ -1559,7 +1619,7 @@ func TestControlRestartQueuesReplayCompleteThenUnackedOps(t *testing.T) {
 	}
 	old.recv(t)
 	old.recv(t)
-	p.AckControl(testSession, p.Epoch(testSession), 1, nil)
+	p.AckControl(testSession, p.Epoch(testSession), 1, nil, nil)
 	stopOld()
 
 	barrier := &compassv1internal.AgentControl{Control: &compassv1internal.AgentControl_ReplayComplete{ReplayComplete: &compassv1internal.ReplayComplete{}}}
@@ -1600,7 +1660,7 @@ func TestControlRestartFencesReplacedProcessAcks(t *testing.T) {
 	if err := p.Restart(testSession, barrier); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
-	p.AckControl(testSession, oldEpoch, 3, nil)
+	p.AckControl(testSession, oldEpoch, 3, nil, nil)
 
 	fresh := newControlStream()
 	stop := p.subscribe(t, fresh)
