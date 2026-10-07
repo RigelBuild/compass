@@ -266,7 +266,7 @@ func TestGatewayCredentialsUnreadableOwnRowStillShadowsShared(t *testing.T) {
 	own := mustCreate(t, ctx, creds, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{
 		Provider: "anthropic", Scope: gatewaycred.ScopeOwn, OwnerUserID: owner,
 	}, "own-secret"))
-	mustCreate(t, ctx, creds, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{
+	shared := mustCreate(t, ctx, creds, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{
 		Provider: "anthropic", Scope: gatewaycred.ScopeShared,
 	}, "shared-secret"))
 	corruptCredential(t, ctx, pool, own.ID)
@@ -280,6 +280,14 @@ func TestGatewayCredentialsUnreadableOwnRowStillShadowsShared(t *testing.T) {
 		t.Fatalf("Pool = %v, want empty: a bad own key must not fall back to shared", got)
 	}
 	assertSkipLogged(t, logs.String(), own.ID, "decrypt")
+
+	if err := creds.Disable(ctx, agent, own.ID, "unreadable", own.Version); err != nil {
+		t.Fatalf("Disable unreadable own row = %v, want it cleared", err)
+	}
+	got, err = creds.(gatewaycred.PoolResolver).Pool(ctx, agent)
+	if err != nil || len(got) != 1 || got[0].ID != shared.ID {
+		t.Fatalf("Pool after Disable = %v, %v; want only %s", got, err, shared.ID)
+	}
 }
 
 func TestGatewayCredentialsPoolUnsetKeyFailsClosed(t *testing.T) {
