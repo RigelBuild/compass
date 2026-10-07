@@ -714,7 +714,7 @@ func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig
 //
 // On shutdown it closes the bus (waking every open SubscribeEvents stream so
 // graceful drain completes), then removes the socket file iff it is still the
-// one it bound (inode-checked, so a racing successor server's socket is intact).
+// one it bound (identity-checked, so a racing successor server's socket is intact).
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Eager-bind the optional dev and network-door TCP listeners before any
 	// on-disk state, so a bad address, an in-use port, or a bad TLS keypair
@@ -757,10 +757,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return failStartup(udsListener, listeners, fmt.Errorf("chmod 0600 %s: %w", cfg.SocketPath, err))
 	}
 
-	// Pin the inode we bound so shutdown cleanup can tell our socket apart from
+	// Pin the socket identity so shutdown cleanup can tell our socket apart from
 	// a successor server that rebound the same path.
-	boundInode, boundOK := socketInode(cfg.SocketPath)
-	defer cleanupSocket(cfg.SocketPath, boundInode, boundOK)
+	boundID, boundOK := socketIdentity(cfg.SocketPath)
+	defer cleanupSocket(cfg.SocketPath, boundID, boundOK)
 
 	// The one event bus every sequenced stream rides. Publish the initial Ready
 	// status so a snapshot subscriber sees liveness immediately.
