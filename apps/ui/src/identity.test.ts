@@ -208,7 +208,7 @@ describe("honest lifecycle vs session optionality", () => {
 			store.openAgent(candidate.account.id);
 			flush();
 			expect(store.selectedAgentId()).toBe(candidate.account.id);
-			expect(store.agentSession()).toBeUndefined();
+			expect(store.focusedView().agentSession()).toBeUndefined();
 		});
 	});
 });

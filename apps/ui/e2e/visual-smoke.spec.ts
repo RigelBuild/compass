@@ -222,4 +222,64 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			maxDiffPixelRatio: 25 / 21357,
 		});
 	});
+
+	test("tab strip — three view tabs", async ({ page }) => {
+		await page.goto("/#/");
+		await page.locator(".bridge").waitFor({ state: "visible" });
+		const sidebar = page.locator("aside.left");
+		await sidebar
+			.locator("button.bridge-link", { hasText: "Settings" })
+			.click({ button: "middle" });
+		await sidebar
+			.locator(".tree-agent", { hasText: "compass-ui" })
+			.first()
+			.click({ button: "middle" });
+		const strip = page.locator(".cx-tab-strip");
+		await page.locator('.cx-tab-strip [role="tab"]').nth(2).waitFor();
+		await page.evaluate(() => document.fonts.ready);
+		await expect(strip).toHaveScreenshot("tab-strip.png", {
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
+	test("split view — channel and agent side by side", async ({ page }) => {
+		await page.goto("/#/channel/ch-svc-compass/topic/top-compass-acp");
+		await page.locator(".conv-composer").waitFor({ state: "visible" });
+		await page.locator('.cx-tab-strip [role="tab"]').first().click();
+		await page.keyboard.press("w");
+		await page.keyboard.press("v");
+		await page
+			.locator("aside.left .tree-agent", { hasText: "compass-ui" })
+			.first()
+			.click();
+		await page.locator(".cx-split-pane .agent-view").waitFor();
+		await page.evaluate(() => document.fonts.ready);
+		await expect(page).toHaveScreenshot("split-view.png", {
+			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
+	test("narrow pane — agent view stacks its log panel", async ({ page }) => {
+		await page.goto("/#/channel/ch-svc-compass/topic/top-compass-acp");
+		await page.locator(".conv-composer").waitFor({ state: "visible" });
+		await page.locator('.cx-tab-strip [role="tab"]').first().click();
+		await page.keyboard.press("w");
+		await page.keyboard.press("v");
+		await page
+			.locator("aside.left .tree-agent", { hasText: "compass-ui" })
+			.first()
+			.click();
+		const pane = page.locator(".cx-split-pane .view-panel", {
+			has: page.locator(".agent-view"),
+		});
+		await pane.locator(".log-panel .obs-body").waitFor();
+		await page.evaluate(() => document.fonts.ready);
+		await expect(pane).toHaveScreenshot("narrow-pane.png", {
+			animations: "disabled",
+			scale: "css",
+		});
+	});
 });

@@ -167,4 +167,23 @@ describe("DEFAULT_KEYMAP sequence authoring invariants", () => {
 			expect(singleChords.has(chordSegments(entry.chord)[0])).toBe(false);
 		}
 	});
+
+	test("W leader rows match the tab and pane chords in A6", () => {
+		const rows = DEFAULT_KEYMAP.filter((entry) => entry.chord.startsWith("W "));
+		expect(rows.map(({ chord, commandId }) => [chord, commandId])).toEqual([
+			["W N", id("tab.new")],
+			["W X", id("tab.close")],
+			["W ]", id("tab.next")],
+			["W [", id("tab.prev")],
+			...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [
+				`W ${n}`,
+				id(`tab.goto.${n}`),
+			]),
+			["W V", id("pane.splitRight")],
+			["W S", id("pane.splitDown")],
+			["W O", id("pane.closeOther")],
+			["W H", id("pane.focusFirst")],
+			["W L", id("pane.focusSecond")],
+		]);
+	});
 });

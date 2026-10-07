@@ -68,49 +68,18 @@
 	background: var(--cx-border);
 }
 
-.view-tabs {
-	display: flex;
-	gap: 2px;
-}
-
-.view-tab {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	background: transparent;
-	border: 1px solid transparent;
-	border-radius: var(--cx-radius-sm);
-	padding: 5px 11px;
-	color: var(--cx-text-dim);
-	font-size: 12px;
-	font-weight: 500;
-}
-
-.view-tab:hover {
-	background: var(--cx-bg-hover);
-	color: var(--cx-text);
-}
-
-.view-tab.active {
-	background: var(--cx-bg-active);
-	color: var(--cx-text);
-	border-color: var(--cx-border-strong);
-}
-
-.view-tab .tab-glyph {
-	font-size: 13px;
-}
-
 .topbar-spacer {
 	flex: 1;
 }
 .topbar-search {
 	position: relative;
+	flex: 0 1 240px;
 	min-width: 180px;
 }
 
 .topbar-search-input {
-	width: 240px;
+	box-sizing: border-box;
+	width: 100%;
 	padding: 5px 8px;
 	border: 1px solid var(--cx-border);
 	border-radius: var(--cx-radius-sm);
@@ -445,12 +414,63 @@
 
 .main {
 	grid-area: main;
+	position: relative;
 	min-width: 0;
 	min-height: 0;
 	background: var(--cx-bg);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+}
+
+/* The tab-cap notice: a compact toast chip in topbar flow beside the strip.
+   It shrinks with the strip and truncates; the title carries the full text. */
+.layout-notice-region {
+	display: flex;
+	flex: 0 1 auto;
+	min-width: 0;
+}
+
+/* Doubled class: toast.css loads after this file, so its padding would win. */
+.cx-toast.layout-notice {
+	align-items: center;
+	min-width: 0;
+	padding: 0 0 0 var(--cx-space-2);
+	line-height: 1;
+	box-shadow: none;
+	white-space: nowrap;
+	z-index: auto;
+}
+
+.layout-notice-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Read out so a repeated refusal is a new announcement; not shown. */
+.layout-notice-count {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+/* A view panel stands in for .main as its view's box, so views size as before.
+ * It is the width container a view adapts to, since a split pane can be narrow. */
+.view-panel {
+	container: view-panel / inline-size;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.view-panel[hidden] {
+	display: none;
 }
 
 /* ── Bridge: swimlane board ─────────────────────────────────────────────── */
@@ -3595,6 +3615,57 @@
 
 .obs-min-glyph > svg {
 	display: block;
+}
+
+/* A narrow pane stacks the log panel under the body: beside it, a 340px panel
+ * leaves the body no room. Open and minimized both keep their controls. */
+@container view-panel (width < 560px) {
+	.agent-view {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: auto minmax(0, 1fr) fit-content(40%);
+		grid-template-areas:
+			"header"
+			"body"
+			"log";
+	}
+
+	/* The handle stays whole; model and cwd truncate so Share stays in view. */
+	.av-header .av-name {
+		flex: none;
+		white-space: nowrap;
+	}
+
+	.av-header .av-model,
+	.av-header .av-cwd {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.log-panel,
+	.log-panel.minimized {
+		width: auto;
+		border-left: none;
+		border-top: 1px solid var(--cx-border);
+	}
+
+	.log-panel.minimized .obs-head {
+		flex-direction: row;
+	}
+
+	.log-panel.minimized .obs-spacer {
+		flex: 1;
+	}
+
+	/* The toggle points down to minimize and up to expand. */
+	.obs-min-glyph {
+		transform: rotate(-90deg);
+	}
+
+	.obs-min-glyph.open {
+		transform: rotate(90deg);
+	}
 }
 
 .log-panel .obs-body {
