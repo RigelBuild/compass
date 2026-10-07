@@ -170,14 +170,13 @@ This spec mixes current behavior with ruled strategy. The line:
 
 - **Current:** the podman and microVM backends behind `SelectBackend`
   (`go/internal/runtime/microvm.go:117-125`), podman as the default, egress
-  enforcement on both, and the trust-model split itself (DL-325, Active).
+  enforcement on both, the trust-model split itself (DL-325, Active), and the
+  native app's first-run chooser with one-time `app.toml` persistence (DL-406,
+  Active; DL-319 retains the embedded-local product direction).
 - **Not yet built:** the **host tier** in its entirety — there is today no
   host/process backend and no `"host"` value in `SelectBackend`. Its design
   lives in the
   [host runtime tier record](../../designs/infra/runtime/compass-host-runtime-tier/design.md).
-- **Not yet built:** the embedded-local front door's app architecture
-  (DL-319/DL-320's dual-mode revival) is designed in the compass-native
-  lane's embedded-revival record and lands there.
 - **Future work, not designed:** an OS-sandbox egress mode for the host tier
   (bubblewrap / sandbox-exec) is a possible later addition; nothing in this
   spec depends on it.

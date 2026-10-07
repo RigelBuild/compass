@@ -33,12 +33,14 @@ On first launch with no `app.toml` and no `--mode` or `COMPASS_APP_MODE`
 override, the app opens a chooser. Choose **Run Compass on this computer** for
 an embedded local stack, or **Connect to a server** to enter an HTTPS origin,
 an optional CA file, and the bearer token. The origin has a scheme, host, and
-optional port, with no path, query, or fragment. The app writes `app.toml` once,
-after the first choice. It never rewrites an existing file. The embedded choice
-preflights the host, saves the choice, and asks you to quit and reopen Compass
-to start the stack.
+optional port. A root trailing slash is accepted and removed; non-root paths,
+queries, and fragments are rejected. The app writes `app.toml` once, after
+preflight or the connection succeeds. It never rewrites an existing file.
+The embedded choice runs preflight, saves only after it succeeds, and asks you
+to quit and reopen Compass to start the stack.
 
-For manual client configuration, copy the template and edit `app.toml`:
+For manual client configuration, copy the template and edit `app.toml`. This
+is only needed when you are not using first-run setup:
 
 ```sh
 mkdir -p ~/.config/compass
@@ -47,9 +49,10 @@ $EDITOR ~/.config/compass/app.toml
 ```
 
 `server_url` must be an absolute `https` origin: scheme, host, and optional
-port, with no path, query, or fragment. `ca_cert` is an optional PEM trust
-anchor for a server whose cert chains to a private CA (omit to trust system
-roots). Unknown keys are rejected.
+port. A root trailing slash is accepted and removed; non-root paths, queries,
+and fragments are rejected. `ca_cert` is an optional PEM trust anchor for a
+server whose cert chains to a private CA (omit to trust system roots). Unknown
+keys are rejected.
 
 The bearer token is not in `app.toml`. After a successful first-run
 connection, it is stored by tokenstore in the OS keychain or its 0600-file

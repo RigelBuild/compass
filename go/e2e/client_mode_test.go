@@ -26,6 +26,7 @@ package e2e
 // time.Sleep, no polling, no retries.
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -170,22 +171,45 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	// the door as a bearer, never on a command line.
 	assertTokenNotInCmdlines(t, f.RuntimeDir(), f.AdminToken())
 
-	// SaveClient is the production first-run writer. It normalizes the server
-	// origin and copies the optional CA beside app.toml.
-	caPEMForConfig, err := os.ReadFile(f.CAPath())
-	if err != nil {
-		t.Fatalf("read fixture CA for app.toml: %v", err)
-	}
+	// Exercise the production SaveClient writer.
 	appTomlPath := filepath.Join(t.TempDir(), "app.toml")
 	if _, err := appconfig.SaveClient(appTomlPath, appconfig.Config{
 		Mode:      appconfig.ModeClient,
 		ServerURL: f.ServerURL(),
-	}, caPEMForConfig); err != nil {
+	}, caPEM); err != nil {
 		t.Fatalf("save client-mode app.toml: %v", err)
 	}
 	raw, err := os.ReadFile(appTomlPath)
 	if err != nil {
 		t.Fatalf("read client-mode app.toml: %v", err)
+	}
+	saved, err := appconfig.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse client-mode app.toml: %v", err)
+	}
+	if saved.Mode != appconfig.ModeClient {
+		t.Fatalf("saved mode = %s, want client", saved.Mode)
+	}
+	wantURL, err := appconfig.NormalizeServerURL(f.ServerURL())
+	if err != nil {
+		t.Fatalf("normalize fixture server URL: %v", err)
+	}
+	if saved.ServerURL != wantURL {
+		t.Fatalf("saved server URL = %q, want %q", saved.ServerURL, wantURL)
+	}
+	if filepath.Dir(saved.CACert) != filepath.Dir(appTomlPath) {
+		t.Fatalf("saved CA path = %q, want a file beside app.toml", saved.CACert)
+	}
+	caName := filepath.Base(saved.CACert)
+	if match, err := filepath.Match("server-ca-*.pem", caName); err != nil || !match {
+		t.Fatalf("saved CA filename = %q, want server-ca-*.pem", caName)
+	}
+	savedCA, err := os.ReadFile(saved.CACert)
+	if err != nil {
+		t.Fatalf("read saved CA copy: %v", err)
+	}
+	if !bytes.Equal(savedCA, caPEM) {
+		t.Fatal("saved CA copy does not match fixture CA")
 	}
 	if strings.Contains(string(raw), f.AdminToken()) {
 		t.Fatal("client-mode app.toml contains the admin token substring; the token must never be persisted in config")

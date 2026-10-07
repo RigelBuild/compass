@@ -15,21 +15,22 @@ systemd, database options — see
 ## The app
 
 The desktop app is the front door. It carries its own local agent runtime, so a
-single machine needs no server. Agent sessions still run in containers, so the
-app requires **rootless podman** on the host. On macOS podman runs inside a
-Linux VM, so you need a podman machine running before first launch
-(`podman machine init`, then `podman machine start`); provisioning it from the
-app is not yet implemented.
+single machine needs no server. In embedded mode agent sessions still run in
+containers, so the app requires **rootless podman** on the host. On macOS podman
+runs inside a Linux VM; the app creates and starts the podman machine during
+embedded preflight, and the first run downloads a VM image. Client mode needs
+no local podman.
 
 On first launch, when `app.toml` is absent and no `--mode` or
 `COMPASS_APP_MODE` override is set, the app opens a chooser. Choose **Run
 Compass on this computer** to use the local stack, or **Connect to a server**
-to enter an HTTPS server origin (scheme, host, and optional port, with no path,
-query, or fragment), an optional CA file, and a bearer token. The app writes
-`app.toml` once, after the first choice, and never rewrites an existing file.
-The embedded choice runs preflight, saves embedded mode, then asks you to quit
-and reopen Compass to start the stack. The server choice saves the origin and an
-optional CA copy; tokenstore keeps the bearer in the OS keychain or its 0600-file
+to enter an HTTPS server origin, an optional CA file, and a bearer token. The
+origin is a scheme, host, and optional port; a trailing `/` is removed, and any
+other path, query, or fragment is rejected. The app writes `app.toml` once,
+after the choice succeeds, and never rewrites an existing file. The embedded
+choice runs preflight, saves embedded mode, then asks you to quit and reopen
+Compass to start the stack. The server choice saves the origin and an optional
+CA copy; tokenstore keeps the bearer in the OS keychain or its 0600-file
 fallback.
 
 The app is published as a per-platform release build: a `.dmg` for
@@ -225,9 +226,9 @@ use an existing PostgreSQL instead of the bundled one, see
 The stack itself is Linux-only, because agent sessions need KVM or rootless
 podman and neither exists natively on macOS. Two supported paths:
 
-- **Use the app** (the front door above) and let it run sessions locally. You
-  set up a podman machine once, as described above, and the app runs sessions in
-  it. This is the answer for most Mac users.
+- **Use the app** (the front door above) and let it run sessions locally. The
+  app sets up the podman machine on the first embedded launch and runs sessions
+  in it. This is the answer for most Mac users.
 - **Point the client at a remote Linux stack.** The Mac runs the client only and
   connects over the same TLS door as any other client.
 

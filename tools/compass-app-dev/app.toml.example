@@ -1,13 +1,14 @@
-# Compass native-app config. The app writes app.toml once, when you make the
-# first-run choice. It never rewrites an existing file. Copy this template only
-# when you want to configure client mode by hand. Unknown keys are rejected.
+# Compass native-app config. The app writes app.toml once, after first-run setup
+# succeeds. It never rewrites an existing file. Copy this template only when
+# you want to configure client mode by hand. Unknown keys are rejected.
 
-# The app supports embedded and client modes. For client mode, set the server
-# connection below; first run can also collect it in the app.
+# For client mode, set the server connection below. The first-run chooser can
+# also collect these settings in the app.
 mode = "client"
 
-# Required for a hand-written client config. Use an absolute https origin only:
-# scheme, host, and optional port; no path, query, or fragment.
+# Required for a hand-written client config. Use an absolute https origin:
+# scheme, host, and optional port. A root trailing slash is accepted and
+# removed; non-root paths, queries, and fragments are rejected.
 server_url = "https://your-server.example.ts.net:50061"
 
 # Optional PEM trust anchor for a server whose cert chains to a private CA
