@@ -18,6 +18,7 @@ package comms
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"connectrpc.com/connect"
@@ -123,6 +124,10 @@ func (c *Comms) CreateAgent(
 	ctx context.Context,
 	req *connect.Request[compassv1.CreateAgentRequest],
 ) (*connect.Response[compassv1.CreateAgentResponse], error) {
+	role := req.Msg.GetRole()
+	if role != "" && !store.IsSpawnableRole(role) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown agent role %q; want supervisor, owner, or manager", role))
+	}
 	caller := c.actorFromContext(ctx)
 	owner, err := c.store.ResolveOwner(ctx, caller)
 	if err != nil {
@@ -153,6 +158,8 @@ func (c *Comms) CreateAgent(
 	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
 		Handle:        req.Msg.GetHandle(),
 		DisplayName:   req.Msg.GetDisplayName(),
+		Persona:       req.Msg.GetPersona(),
+		Role:          role,
 		ParentAgentID: parentID,
 	})
 	if err != nil {
