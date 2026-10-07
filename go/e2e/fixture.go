@@ -37,44 +37,44 @@ func dotenvForgeValue(v string) string {
 
 // startFixtureNats runs one in-process JetStream NATS server on loopback and
 // returns its client URL. The server and its store dir are released with t.
-func startFixtureNats(t *testing.T) string {
-	t.Helper()
+func startFixtureNats(tb testing.TB) string {
+	tb.Helper()
 	srv := natsserver.RunServer(&natsd.Options{
 		Host:      "127.0.0.1",
 		Port:      natsd.RANDOM_PORT,
 		JetStream: true,
-		StoreDir:  t.TempDir(),
+		StoreDir:  tb.TempDir(),
 		NoLog:     true,
 		NoSigs:    true,
 	})
-	t.Cleanup(srv.Shutdown)
+	tb.Cleanup(srv.Shutdown)
 	return srv.ClientURL()
 }
 
-func forgePEM(t *testing.T) []byte {
-	t.Helper()
+func forgePEM(tb testing.TB) []byte {
+	tb.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatalf("generate forge key: %v", err)
+		tb.Fatalf("generate forge key: %v", err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 }
 
-func configureForgeStub(t *testing.T, secretsPath string) *forgeStub {
-	t.Helper()
-	stub := newForgeStub(t)
-	primary, reviewer := forgePEM(t), forgePEM(t)
+func configureForgeStub(tb testing.TB, secretsPath string) *forgeStub {
+	tb.Helper()
+	stub := newForgeStub(tb)
+	primary, reviewer := forgePEM(tb), forgePEM(tb)
 	file, err := os.OpenFile(secretsPath, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		t.Fatalf("open forge secrets: %v", err)
+		tb.Fatalf("open forge secrets: %v", err)
 	}
 	_, writeErr := fmt.Fprintf(file, "SERVER_FORGE_APP_PRIVATE_KEY=%s\nSERVER_FORGE_APP_WEBHOOK_SECRET=forge-stub-webhook\nSERVER_FORGE_REVIEWER_APP_PRIVATE_KEY=%s\n", dotenvForgeValue(string(primary)), dotenvForgeValue(string(reviewer)))
 	closeErr := file.Close()
 	if writeErr != nil {
-		t.Fatalf("append forge secrets: %v", writeErr)
+		tb.Fatalf("append forge secrets: %v", writeErr)
 	}
 	if closeErr != nil {
-		t.Fatalf("close forge secrets: %v", closeErr)
+		tb.Fatalf("close forge secrets: %v", closeErr)
 	}
 	// Scrub every ambient knob that could redirect the leg off the loopback
 	// stub. The S3 and OTLP names are env-only fallbacks the server reads
@@ -88,10 +88,10 @@ func configureForgeStub(t *testing.T, secretsPath string) *forgeStub {
 		"COMPASS_S3_ENDPOINT", "COMPASS_S3_BUCKET", "COMPASS_S3_ACCESS_KEY", "COMPASS_S3_SECRET_KEY",
 		"COMPASS_S3_REGION", "COMPASS_S3_USE_TLS", "OTEL_EXPORTER_OTLP_ENDPOINT",
 	} {
-		t.Setenv(name, "")
+		tb.Setenv(name, "")
 	}
 	for k, v := range map[string]string{"COMPASS_FORGE_HOST": stub.Host(), "COMPASS_FORGE_APP_ID": "1001", "COMPASS_FORGE_INSTALLATION_ID": "1", "COMPASS_FORGE_APP_KEY_SECRET": "FORGE_APP_PRIVATE_KEY", "COMPASS_FORGE_APP_WEBHOOK_SECRET": "FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID": "1002", "COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID": "2", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET": "FORGE_REVIEWER_APP_PRIVATE_KEY", "COMPASS_FORGE_CA": stub.CAPath()} {
-		t.Setenv(k, v)
+		tb.Setenv(k, v)
 	}
 	return stub
 }
@@ -525,8 +525,8 @@ func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID s
 // opts default to none — NewFixture(ctx, t) is the plain fixture. Pass
 // WithCannedModel to stand up a deterministic model backend so an agent turn can
 // settle without live-model egress.
-func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixture {
-	t.Helper()
+func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixture {
+	tb.Helper()
 
 	var fc fixtureConfig
 	for _, opt := range opts {
@@ -549,22 +549,22 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		stateDir = fc.site.stateDir
 		listenPort, pgPort = fc.site.listenPort, fc.site.pgPort
 	} else {
-		// shortRoot registers its own RemoveAll on t.Cleanup; the site path must
+		// shortRoot registers its own RemoveAll on tb.Cleanup; the site path must
 		// NOT (else run1's cleanup would delete the persisted DB before run2), so
 		// newPersistentSite owns the site's single end-of-test RemoveAll instead.
-		root = shortRoot(t, "h1")
-		stateDir = t.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
-		ports := freePorts(t, 2)
+		root = shortRoot(tb, "h1")
+		stateDir = tb.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
+		ports := freePorts(tb, 2)
 		listenPort, pgPort = ports[0], ports[1]
 	}
 	pgSockDir := filepath.Join(root, "pg")
 	runtimeDir := filepath.Join(root, "rt")
 	serverSock := filepath.Join(root, "s.sock")
 	if err := os.MkdirAll(pgSockDir, 0o700); err != nil {
-		t.Fatalf("mkdir pg sock dir: %v", err)
+		tb.Fatalf("mkdir pg sock dir: %v", err)
 	}
 	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
-		t.Fatalf("mkdir runtime dir: %v", err)
+		tb.Fatalf("mkdir runtime dir: %v", err)
 	}
 
 	// The DSN host is the socket DIRECTORY postgres -k listens on (libpq unix
@@ -578,15 +578,15 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// the forge names declareServerSecretNames declares — configureForgeStub
 	// appends those three below when WithForgeStub is set, and a declared name
 	// with no line here fails the Load wholesale.
-	// t.TempDir, not root: root is shared per-PID across ephemeral legs.
-	secretsPath := filepath.Join(t.TempDir(), "secrets.env")
+	// tb.TempDir, not root: root is shared per-PID across ephemeral legs.
+	secretsPath := filepath.Join(tb.TempDir(), "secrets.env")
 	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+fixtureMasterKey+"\n"), 0o600); err != nil {
-		t.Fatalf("write secrets file: %v", err)
+		tb.Fatalf("write secrets file: %v", err)
 	}
 
 	var forgeStub *forgeStub
 	if fc.forge {
-		forgeStub = configureForgeStub(t, secretsPath)
+		forgeStub = configureForgeStub(tb, secretsPath)
 	}
 
 	var garage *garageFixture
@@ -616,7 +616,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// One in-process JetStream NATS per stack: compass-server refuses to boot
 		// without an event fabric, and a bundled container would be pure CI cost.
 		// Its cleanup is registered before Up's Down, so it outlives the server.
-		ExternalNatsURL: startFixtureNats(t),
+		ExternalNatsURL: startFixtureNats(tb),
 		// No agent here calls a model through the gateway, so skip the bundled child.
 		ExternalGatewayURL: "http://127.0.0.1:4100",
 	}
@@ -639,7 +639,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// stub means plain mode and every canned field stays as set above.
 	var stub *cannedModelServer
 	if fc.canned {
-		stub = configureCannedModel(t, &cfg, root, fc.cannedScript, fc.cannedMarkers)
+		stub = configureCannedModel(tb, &cfg, root, fc.cannedScript, fc.cannedMarkers)
 	}
 
 	deps := stack.Deps{
@@ -655,12 +655,12 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 
 	st, err := stack.Up(ctx, cfg, deps)
 	if err != nil {
-		t.Fatalf("stack.Up: %v", err)
+		tb.Fatalf("stack.Up: %v", err)
 	}
-	// Register teardown immediately after a successful Up so a later t.Fatal still
+	// Register teardown immediately after a successful Up so a later tb.Fatal still
 	// drains the children. Down is safe to call twice; the happy-path test asserts
 	// Down's outcome explicitly, so this guard only covers a failed/panicked test.
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		_ = st.Down(ctx) // best-effort teardown guard; a Down error here is not actionable during cleanup
 	})
 	// A detached-t caller's cleanup above is unreachable, so hand it the live
@@ -678,17 +678,17 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	adminTokenPath := filepath.Join(filepath.Dir(serverSock), "admin-token")
 	raw, err := os.ReadFile(adminTokenPath)
 	if err != nil {
-		t.Fatalf("read admin-token file %q: %v", adminTokenPath, err)
+		tb.Fatalf("read admin-token file %q: %v", adminTokenPath, err)
 	}
 	adminToken := strings.TrimSpace(string(raw))
 	if adminToken == "" {
-		t.Fatalf("admin-token file %q is empty", adminTokenPath)
+		tb.Fatalf("admin-token file %q is empty", adminTokenPath)
 	}
 
 	serverURL := "https://" + cfg.ListenAddr
 	compass, comms, err := newAuthedClients(caPath, serverURL, adminToken)
 	if err != nil {
-		t.Fatalf("build authed clients: %v", err)
+		tb.Fatalf("build authed clients: %v", err)
 	}
 
 	f := &Fixture{
@@ -718,7 +718,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// signal (an enrollment-gated probe), never a sleep. On the WithSite re-attach
 	// path the runner is already enrolled, so the first probe passes immediately.
 	if err := f.waitRunnerEnrolled(ctx); err != nil {
-		t.Fatalf("wait for runner enrollment: %v", err)
+		tb.Fatalf("wait for runner enrollment: %v", err)
 	}
 
 	// The first-launch root-supervisor seed fires on the SAME Sessions-stream attach
@@ -727,12 +727,12 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// rpcTimeout (RIG-2403). Gate on the seed's placement row so the two run serially.
 	seedStore, err := store.Open(ctx, dsn)
 	if err != nil {
-		t.Fatalf("open store for seed-settle gate: %v", err)
+		tb.Fatalf("open store for seed-settle gate: %v", err)
 	}
 	seedErr := f.waitSeedSettled(ctx, seedStore)
 	seedStore.Close()
 	if seedErr != nil {
-		t.Fatalf("wait for root-supervisor seed to settle: %v", seedErr)
+		tb.Fatalf("wait for root-supervisor seed to settle: %v", seedErr)
 	}
 
 	return f
@@ -781,20 +781,20 @@ const pastaHostGateway = "169.254.1.2"
 // It returns the running stub; its Close rides a t.Cleanup so teardown never
 // leaks it. cfgRoot is the fixture's short root (the models.yml host dir lives
 // under it, short enough to stay clear of any path budget).
-func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker) *cannedModelServer {
-	t.Helper()
+func configureCannedModel(tb testing.TB, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker) *cannedModelServer {
+	tb.Helper()
 
 	hostAddr, err := hostRoutableAddr()
 	if err != nil {
-		t.Fatalf("resolve host routable address for canned model: %v", err)
+		tb.Fatalf("resolve host routable address for canned model: %v", err)
 	}
 	stub, err := startCannedModelServer(hostAddr+":0", script, markers...)
 	if err != nil {
-		t.Fatalf("start canned model server: %v", err)
+		tb.Fatalf("start canned model server: %v", err)
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		if err := stub.Close(); err != nil {
-			t.Errorf("canned model server Close: %v", err)
+			tb.Errorf("canned model server Close: %v", err)
 		}
 	})
 
@@ -812,10 +812,10 @@ func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot string, scrip
 
 	agentCfgDir := filepath.Join(cfgRoot, "agentcfg")
 	if err := os.MkdirAll(agentCfgDir, 0o700); err != nil {
-		t.Fatalf("mkdir canned agent-config dir: %v", err)
+		tb.Fatalf("mkdir canned agent-config dir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(agentCfgDir, "models.yml"), []byte(modelsYML), 0o600); err != nil {
-		t.Fatalf("write canned models.yml: %v", err)
+		tb.Fatalf("write canned models.yml: %v", err)
 	}
 
 	cfg.AgentModel = cannedSelector
@@ -829,21 +829,21 @@ func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot string, scrip
 // Config.Validate accepts (it rejects :0; there is no bound-address discovery
 // API). All listeners are held open until every port is read so the kernel
 // cannot hand the same port twice.
-func freePorts(t *testing.T, n int) []int {
-	t.Helper()
+func freePorts(tb testing.TB, n int) []int {
+	tb.Helper()
 	lns := make([]net.Listener, 0, n)
 	ports := make([]int, 0, n)
 	for range n {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatalf("reserve port: %v", err)
+			tb.Fatalf("reserve port: %v", err)
 		}
 		lns = append(lns, ln)
 		ports = append(ports, ln.Addr().(*net.TCPAddr).Port)
 	}
 	for _, ln := range lns {
 		if err := ln.Close(); err != nil {
-			t.Fatalf("release reserved port: %v", err)
+			tb.Fatalf("release reserved port: %v", err)
 		}
 	}
 	return ports
@@ -853,13 +853,13 @@ func freePorts(t *testing.T, n int) []int {
 // registers its RemoveAll. Short because everything sun_path-budgeted lives
 // under it (pg socket dir, runtime dir, server socket); unique off os.Getpid()
 // plus suffix so nothing collides with a concurrent or crashed run.
-func shortRoot(t *testing.T, suffix string) string {
-	t.Helper()
+func shortRoot(tb testing.TB, suffix string) string {
+	tb.Helper()
 	root := filepath.Join("/tmp", "ce"+strconv.Itoa(os.Getpid())+suffix)
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatalf("mkdir short root: %v", err)
+		tb.Fatalf("mkdir short root: %v", err)
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		_ = os.RemoveAll(root) // best-effort: the state here is this test's alone and its Down has drained the children
 	})
 	return root
