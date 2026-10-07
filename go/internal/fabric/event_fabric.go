@@ -146,7 +146,8 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// The consumer is shared and durable, so consumerConfig's values come from
 	// a Config every instance on this subject must agree on (see
 	// Config.MaxDeliver).
-	cons, err := stream.CreateOrUpdateConsumer(ctx, f.cfg.consumerConfig(subject))
+	cfg := f.cfg.consumerConfig(subject)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("fabric: creating consumer for %q on %s: %w", subject, f.cfg.streamName(), err)
 	}
@@ -154,16 +155,29 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// Consume dispatches serially today; the lock makes the promised serial
 	// callback a fabric guarantee rather than a nats.go internal.
 	var callbackMu sync.Mutex
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		callbackMu.Lock()
-		defer callbackMu.Unlock()
-		f.handleEvent(ctx, msg, fn)
-	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-		// Transient pull errors are the library's to retry; surfacing them is
-		// the only thing this side can do, and swallowing them would hide a
-		// consumer wedged for good.
-		f.log.WarnContext(ctx, "fabric: consume error", "subject", subject, "error", err)
-	}))
+	// ErrConsumerDeleted is terminal for a Consume: the server reaped the
+	// durable (InactiveThreshold) while this client could not pull, e.g. a
+	// long partition. The supervisor below recreates it rather than go silent.
+	reaped := make(chan struct{}, 1)
+	consume := func(cons jetstream.Consumer) (jetstream.ConsumeContext, error) {
+		return cons.Consume(func(msg jetstream.Msg) {
+			callbackMu.Lock()
+			defer callbackMu.Unlock()
+			f.handleEvent(ctx, msg, fn)
+		}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+			if errors.Is(err, jetstream.ErrConsumerDeleted) {
+				select {
+				case reaped <- struct{}{}:
+				default:
+				}
+			}
+			// Transient pull errors are the library's to retry; surfacing them is
+			// the only thing this side can do, and swallowing them would hide a
+			// consumer wedged for good.
+			f.log.WarnContext(ctx, "fabric: consume error", "subject", subject, "error", err)
+		}))
+	}
+	cc, err := consume(cons)
 	if err != nil {
 		return nil, fmt.Errorf("fabric: consuming %q: %w", subject, err)
 	}
@@ -180,11 +194,23 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// not Stop: Stop DISCARDS the buffer, and on a durable shared consumer those
 	// claimed-not-acked events only return after AckWait (a silent stall). Drain runs
 	// them through fn and acks first, as the durability contract requires.
+	var ccMu sync.Mutex
+	var stopped bool // under ccMu; a recreate racing stop must not install a new cc
 	var once sync.Once
 	done := make(chan struct{})
 	stop := func() {
 		once.Do(func() {
-			cc.Drain()
+			ccMu.Lock()
+			stopped = true
+			cur := cc
+			ccMu.Unlock()
+			cur.Drain()
+			if hook := f.consumerClosed; hook != nil {
+				go func() {
+					<-cur.Closed()
+					hook()
+				}()
+			}
 			f.untrackConsumer(durable)
 			if err := advisory.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrConnectionDraining) && !errors.Is(err, nats.ErrBadSubscription) {
 				f.log.WarnContext(ctx, "fabric: unsubscribing the max-deliveries advisory failed", "subject", subject, "error", err)
@@ -192,26 +218,80 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 			close(done)
 		})
 	}
-	if hook := f.consumerClosed; hook != nil {
-		go func() {
-			<-cc.Closed()
-			hook()
-		}()
+	// tryRecreate makes one attempt to replace a reaped consumer. ok=false with
+	// a nil err means stop won the race and the subscription is over.
+	tryRecreate := func() (ok bool, err error) {
+		next, err := stream.CreateOrUpdateConsumer(ctx, cfg)
+		if err != nil {
+			return false, err
+		}
+		nextCC, err := consume(next)
+		if err != nil {
+			return false, err
+		}
+		ccMu.Lock()
+		defer ccMu.Unlock()
+		if stopped {
+			nextCC.Stop()
+			return false, nil
+		}
+		cc = nextCC
+		f.untrackConsumer(durable)
+		f.trackConsumer(durable, next)
+		return true, nil
+	}
+	recreate := func() bool {
+		return f.retryUntil(ctx, done, subject, tryRecreate)
 	}
 	go func() {
-		select {
-		case <-ctx.Done():
-			stop()
-		case <-f.teardown:
-			// Close alone must tear this down: nats.go does not close a
-			// ConsumeContext's buffer when the connection closes, so without
-			// this case a Close with an uncancelled ctx leaks this goroutine
-			// and the consumer with it.
-			stop()
-		case <-done:
+		for {
+			select {
+			case <-reaped:
+				if recreate() {
+					continue
+				}
+				stop()
+			case <-ctx.Done():
+				stop()
+			case <-f.teardown:
+				// Close alone must tear this down: nats.go does not close a
+				// ConsumeContext's buffer when the connection closes, so without
+				// this case a Close with an uncancelled ctx leaks this goroutine
+				// and the consumer with it.
+				stop()
+			case <-done:
+			}
+			return
 		}
 	}()
 	return stop, nil
+}
+
+// retryUntil runs attempt every AckWait until it succeeds or the subscription
+// ends; it reports whether the reaped consumer was replaced.
+func (f *Fabric) retryUntil(ctx context.Context, done <-chan struct{}, subject string, attempt func() (bool, error)) bool {
+	retry := time.NewTicker(f.cfg.ackWait())
+	defer retry.Stop()
+	for {
+		ok, err := attempt()
+		if ok {
+			f.log.WarnContext(ctx, "fabric: recreated a consumer the server reaped", "subject", subject)
+			return true
+		}
+		if err == nil {
+			return false
+		}
+		f.log.ErrorContext(ctx, "fabric: recreating a reaped consumer failed; retrying", "subject", subject, "error", err)
+		select {
+		case <-retry.C:
+		case <-ctx.Done():
+			return false
+		case <-f.teardown:
+			return false
+		case <-done:
+			return false
+		}
+	}
 }
 
 // handleEvent runs one delivery: decode, invoke fn under a panic guard, then ack
