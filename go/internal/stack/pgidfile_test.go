@@ -13,10 +13,12 @@ import (
 // TestPgidFileRoundTrip proves the format survives a write→read cycle including
 // the start-time identity column, in start order.
 func TestPgidFileRoundTrip(t *testing.T) {
+	stubBootID(t, testBootID)
 	dir := t.TempDir()
 	rec := pgidRecord{
 		WriterPid: 4242,
 		Version:   pgidFileVersion,
+		BootID:    testBootID,
 		Entries: []pgidEntry{
 			{Component: ComponentPostgres, Pgid: 1001, StartTime: 10010},
 			{Component: ComponentServer, Pgid: 1002, StartTime: 10020},
@@ -40,10 +42,12 @@ func TestPgidFileRoundTrip(t *testing.T) {
 // both entry kinds: a container entry (ctr) interleaved with process entries
 // (proc) survives a write→read cycle intact, in order.
 func TestPgidFileRoundTripBothKinds(t *testing.T) {
+	stubBootID(t, testBootID)
 	dir := t.TempDir()
 	rec := pgidRecord{
 		WriterPid: 4242,
 		Version:   pgidFileVersion,
+		BootID:    testBootID,
 		Entries: []pgidEntry{
 			{Kind: entryContainer, Component: ComponentPostgres, ContainerName: "compass-postgres-abc123"},
 			{Kind: entryProc, Component: ComponentServer, Pgid: 1002, StartTime: 10020},
@@ -65,6 +69,7 @@ func TestPgidFileRoundTripBothKinds(t *testing.T) {
 // TestPgidFileV2ContainerLineGrammar pins the exact on-disk ctr line grammar so a
 // format drift is caught: "ctr <component> <name>", no pgid/starttime columns.
 func TestPgidFileV2ContainerLineGrammar(t *testing.T) {
+	stubBootID(t, testBootID)
 	dir := t.TempDir()
 	rec := pgidRecord{
 		WriterPid: 7,
@@ -80,7 +85,7 @@ func TestPgidFileV2ContainerLineGrammar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile = %v", err)
 	}
-	want := "2 7\nctr postgres compass-postgres-deadbeef\n"
+	want := "2 7 " + testBootID + "\nctr postgres compass-postgres-deadbeef\n"
 	if string(data) != want {
 		t.Fatalf("file content = %q, want %q", string(data), want)
 	}
@@ -175,6 +180,7 @@ func TestPgidFileMode0600(t *testing.T) {
 // TestPgidFileTrailingNewline pins the plain-text format: a header line plus one
 // entry line per child, each newline-terminated.
 func TestPgidFileTrailingNewline(t *testing.T) {
+	stubBootID(t, testBootID)
 	dir := t.TempDir()
 	rec := pgidRecord{
 		WriterPid: 7,
@@ -190,7 +196,7 @@ func TestPgidFileTrailingNewline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile = %v", err)
 	}
-	want := "2 7\nproc postgres 200 999\n"
+	want := "2 7 " + testBootID + "\nproc postgres 200 999\n"
 	if string(data) != want {
 		t.Fatalf("file content = %q, want %q", string(data), want)
 	}
@@ -261,6 +267,11 @@ func TestReadPgidFileMalformed(t *testing.T) {
 	cases := map[string]string{
 		"empty":                "",
 		"header only one col":  "1\n",
+		"header four cols":     "2 7 boot extra\n",
+		"v1 header with boot":  "1 7 boot\npostgres 200 999\n",
+		"boot id not a uuid":   "2 7 1700000000.000123\nproc postgres 200 999\n",
+		"boot id short group":  "2 7 1111111-2222-3333-4444-555555555555\n",
+		"boot id non-hex":      "2 7 1111111g-2222-3333-4444-555555555555\n",
 		"bad writer pid":       "1 notanumber\n",
 		"entry too few fields": "1 7\npostgres 200\n",
 		"unknown component":    "1 7\nnot-a-component 200 999\n",
@@ -318,5 +329,94 @@ func TestReadStartTimeProcParsesParenthesizedComm(t *testing.T) {
 	}
 	if got != 987654 {
 		t.Fatalf("starttime = %d, want 987654", got)
+	}
+}
+
+// testBootID is the boot identity the stubbed seam reports in these tests.
+const testBootID = "11111111-2222-3333-4444-555555555555"
+
+// stubBootID pins the boot-identity seam for one test.
+func stubBootID(t *testing.T, id string) {
+	t.Helper()
+	prev := readBootID
+	readBootID = func() (string, error) { return id, nil }
+	t.Cleanup(func() { readBootID = prev })
+}
+
+// TestPgidFileStampsCurrentBootID proves the writer stamps the current boot,
+// not whatever the caller's record carried, so a survivor rewrite stays current.
+func TestPgidFileStampsCurrentBootID(t *testing.T) {
+	stubBootID(t, testBootID)
+	dir := t.TempDir()
+	if err := writePgidFile(dir, pgidRecord{WriterPid: 7, Version: pgidFileVersion, BootID: "stale-boot"}); err != nil {
+		t.Fatalf("writePgidFile = %v", err)
+	}
+	got, err := readPgidFile(dir)
+	if err != nil {
+		t.Fatalf("readPgidFile = %v", err)
+	}
+	if got.BootID != testBootID {
+		t.Fatalf("BootID = %q, want the current boot %q", got.BootID, testBootID)
+	}
+}
+
+// TestPgidFileUnreadableBootIDWritesLegacyHeader proves an unreadable boot id
+// never blocks up: the record falls back to the two-column header (unknown boot).
+func TestPgidFileUnreadableBootIDWritesLegacyHeader(t *testing.T) {
+	prev := readBootID
+	readBootID = func() (string, error) { return "", errors.New("no boot id here") }
+	t.Cleanup(func() { readBootID = prev })
+	dir := t.TempDir()
+	if err := writePgidFile(dir, pgidRecord{WriterPid: 7, Version: pgidFileVersion}); err != nil {
+		t.Fatalf("writePgidFile = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, pgidFileName))
+	if err != nil {
+		t.Fatalf("ReadFile = %v", err)
+	}
+	if want := "2 7\n"; string(data) != want {
+		t.Fatalf("file content = %q, want %q", string(data), want)
+	}
+}
+
+// TestReadPgidFileLegacyHeaderNoBootID proves a record from a build that wrote
+// no boot id still parses, with the boot reported unknown (empty).
+func TestReadPgidFileLegacyHeaderNoBootID(t *testing.T) {
+	dir := t.TempDir()
+	legacy := "2 7\nproc postgres 200 999\nctr llm-gateway gw-1\n"
+	if err := os.WriteFile(filepath.Join(dir, pgidFileName), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("seed legacy file = %v", err)
+	}
+	got, err := readPgidFile(dir)
+	if err != nil {
+		t.Fatalf("readPgidFile(legacy) = %v, want a parsed record", err)
+	}
+	want := pgidRecord{
+		WriterPid: 7,
+		Version:   pgidFileVersion,
+		Entries: []pgidEntry{
+			{Kind: entryProc, Component: ComponentPostgres, Pgid: 200, StartTime: 999},
+			{Kind: entryContainer, Component: ComponentGateway, ContainerName: "gw-1"},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy parse:\n got  %+v\n want %+v", got, want)
+	}
+}
+
+// TestReadPgidFileUppercaseBootID proves the boot id shape check accepts either
+// hex case, so a darwin bootsessionuuid (uppercase) parses.
+func TestReadPgidFileUppercaseBootID(t *testing.T) {
+	dir := t.TempDir()
+	const boot = "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D"
+	if err := os.WriteFile(filepath.Join(dir, pgidFileName), []byte("2 7 "+boot+"\n"), 0o600); err != nil {
+		t.Fatalf("seed file = %v", err)
+	}
+	got, err := readPgidFile(dir)
+	if err != nil {
+		t.Fatalf("readPgidFile = %v, want a parsed record", err)
+	}
+	if got.BootID != boot {
+		t.Fatalf("BootID = %q, want %q", got.BootID, boot)
 	}
 }

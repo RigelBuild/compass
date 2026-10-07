@@ -17,8 +17,8 @@ import (
 //
 // A pgid that names no process yields an error rather than a zero token: the
 // kernel returns a short result for an unknown pid, which SysctlKinfoProc
-// rejects, and the explicit zero-timeval guard closes the remaining case. Alive
-// then reports not-alive, so the identity check fails closed.
+// rejects, and the explicit zero-timeval guard closes the remaining case, so a
+// zero token can never match a recorded identity.
 func readGroupLeaderStartTime(pgid int) (uint64, error) {
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pgid)
 	if err != nil {
@@ -43,9 +43,9 @@ func readGroupLeaderStartTime(pgid int) (uint64, error) {
 // spawn side uses to write the token this reads back. The two packages cannot
 // import each other's internals, so the expression is duplicated for the same
 // reason parseGroupLeaderStat duplicates stack.parseStatStartTime — and here the
-// duplication is the load-bearing one: Alive compares this against a token the
+// duplication is the load-bearing one: Liveness compares this against a token the
 // spawn side produced, for uint64 equality, so any drift would report every live
-// child as not-alive and silently skip it at teardown. The mirror test
+// child as recycled and silently skip it at teardown. The mirror test
 // (groupsignal_darwin_test.go) feeds one synthetic timeval through both packings
 // and asserts the same uint64, so a one-sided change reds.
 func packGroupLeaderTimeval(tv unix.Timeval) uint64 {
