@@ -55,6 +55,7 @@ type RenovateConfig = {
 	extends: string[];
 	timezone?: string;
 	rebaseWhen?: string;
+	minimumReleaseAge?: string;
 	packageRules: PackageRule[];
 	osvVulnerabilityAlerts?: boolean;
 	vulnerabilityAlerts?: { enabled?: boolean };
@@ -72,7 +73,7 @@ const bot = botConfig as {
 // tools/renovate/ → repo root is two levels up.
 const repoRoot = join(import.meta.dir, "..", "..");
 
-// The FOD-hash refresh command, declared once. It rides FIVE task sites in
+// The FOD-hash refresh command, declared once. It rides SIX task sites in
 // config.json5 and is asserted from several describes below; a rename must be a
 // single edit here, not one per assertion (a missed copy degrades quietly).
 const FOD_COMMAND = "bun tools/renovate/refresh-fod-hashes.ts";
@@ -158,25 +159,30 @@ const ruleMatches = (
 			))) &&
 	!(dep.depName && rule.excludeDepNames?.includes(dep.depName));
 
-// A later rule can override groupName set by an earlier one; replay that over
-// the real rule array to get a synthetic dep's effective groupName.
-const resolveGroupName = (dep: SyntheticDep): string | null | undefined => {
-	let group: string | null | undefined;
+// Renovate applies packageRules top-to-bottom, last-match-wins. Replaying one
+// arbitrary key lets guards cover both grouping and rule-level cooldown overrides.
+const resolveRuleValue = <K extends keyof PackageRule>(
+	dep: SyntheticDep,
+	key: K,
+): PackageRule[K] | undefined => {
+	let value: PackageRule[K] | undefined;
 	for (const rule of cfg.packageRules) {
 		if (!ruleMatches(rule, dep)) continue;
-		// A rule with no groupName key (e.g. the TS <7 cap) does not touch grouping.
-		if ("groupName" in rule) group = rule.groupName;
+		if (key in rule) value = rule[key];
 	}
-	return group;
+	return value;
 };
+
+const resolveGroupName = (dep: SyntheticDep) =>
+	resolveRuleValue(dep, "groupName");
 
 describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () => {
 	// postUpgradeTasks.commands are gated by the BOT config's global
 	// `allowedCommands` allowlist (a repo config cannot self-authorize a command),
 	// which Renovate matches UNANCHORED via regEx(pattern).test(cmd). So each
-	// entry's `^…$` IS the security property. Compass declares eight DISTINCT
-	// commands across the task sites (the FOD-hash refresh rides FIVE sites — see
-	// the per-site enumeration on the count test below — so it appears five times
+	// entry's `^…$` IS the security property. Compass declares nine DISTINCT
+	// commands across the task sites (the FOD-hash refresh rides SIX sites — see
+	// the per-site enumeration on the count test below — so it appears six times
 	// in the declared list but needs only one allowlist entry; the devenv-fork
 	// relock likewise rides BOTH devenv-fork rules under one command string, since
 	// the script self-gates on which lock changed); every
@@ -188,14 +194,15 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// own solo branch, with its own script because the root channel script's
 	// biome/catalog/bun.lock/flake tail has no counterpart in that scope. The
 	// eighth is the guest-rootfs agent-image relock, which rewrites the pinned
-	// tag, digest, and per-layer fetch keys together.
+	// tag, digest, and per-layer fetch keys together. The ninth refreshes the
+	// coupled source and vendor hashes for Go analysis pins.
 	const commands = allDeclaredCommands();
 	const distinctCommands = [...new Set(commands)];
 	const allowed = bot.allowedCommands ?? [];
 
-	test("declares eight DISTINCT postUpgrade commands and eight allowlist entries", () => {
-		expect(distinctCommands).toHaveLength(8);
-		expect(allowed).toHaveLength(8);
+	test("declares nine DISTINCT postUpgrade commands and nine allowlist entries", () => {
+		expect(distinctCommands).toHaveLength(9);
+		expect(allowed).toHaveLength(9);
 	});
 
 	test("the fod-hash refresh is declared at all six task sites", () => {
@@ -259,7 +266,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		).toBe(false);
 	});
 
-	test("permits exactly the eight declared commands", () => {
+	test("permits exactly the nine declared commands", () => {
 		expect(distinctCommands.sort()).toEqual(
 			[
 				"bun install --lockfile-only",
@@ -268,6 +275,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 				"bun tools/renovate/refresh-devenv-lock.ts",
 				"bun tools/renovate/refresh-devenv-nixpkgs.ts",
 				"bun tools/renovate/refresh-fod-hashes.ts",
+				"bun tools/renovate/refresh-go-analysis-hashes.ts",
 				"bun tools/renovate/refresh-go-overlay.ts",
 				"bun tools/renovate/refresh-toolchain-hashes.ts",
 			].sort(),
@@ -1095,6 +1103,138 @@ describe("tools/renovate go ↔ go-overlay lockstep (RIG-3100)", () => {
 			expect(group).not.toBe("TypeScript dependencies");
 		},
 	);
+});
+
+describe("tools/renovate go-analysis pins (RIG-3306)", () => {
+	const pinText = readFileSync(
+		join(repoRoot, "tools/toolchain/versions/go-analysis.nix"),
+		"utf8",
+	);
+	const golangci = cfg.customManagers?.find(
+		(m) => m.depNameTemplate === "golangci/golangci-lint",
+	);
+	const nilaway = cfg.customManagers?.find(
+		(m) => m.depNameTemplate === "uber-go/nilaway",
+	);
+	const goAnalysisFile = "tools/toolchain/versions/go-analysis.nix";
+
+	test("both managers extract exactly their real pin", () => {
+		expect(golangci).toBeDefined();
+		expect(nilaway).toBeDefined();
+		const golangciMatches = [
+			...pinText.matchAll(new RegExp(golangci?.matchStrings?.[0] ?? "", "g")),
+		];
+		expect(golangciMatches).toHaveLength(1);
+		expect(golangciMatches[0]?.groups?.currentValue).toBe("2.13.2");
+		const nilawayMatches = [
+			...pinText.matchAll(new RegExp(nilaway?.matchStrings?.[0] ?? "", "g")),
+		];
+		expect(nilawayMatches).toHaveLength(1);
+		const nilawayBlock = pinText.match(
+			/^ {2}nilaway = \{[\s\S]*?^ {2}\};/m,
+		)?.[0];
+		expect(nilawayBlock).toBeDefined();
+		expect(nilawayMatches[0]?.groups?.currentDigest).toBe(
+			nilawayBlock?.match(/^\s*rev = "([a-f0-9]{40})"/m)?.[1],
+		);
+	});
+
+	test("manager metadata preserves the pin-specific update sources", () => {
+		expect(golangci).toMatchObject({
+			customType: "regex",
+			managerFilePatterns: ["/^tools/toolchain/versions/go-analysis\\.nix$/"],
+			depNameTemplate: "golangci/golangci-lint",
+			datasourceTemplate: "github-releases",
+			extractVersionTemplate: "^v(?<version>.+)$",
+			depTypeTemplate: "go-analysis",
+		});
+		expect(golangci?.matchStrings?.[0]).toBe(
+			'golangci-lint = \\{\\s*version = "(?<currentValue>[^"]+)"',
+		);
+		expect(nilaway).toMatchObject({
+			customType: "regex",
+			managerFilePatterns: ["/^tools/toolchain/versions/go-analysis\\.nix$/"],
+			depNameTemplate: "uber-go/nilaway",
+			packageNameTemplate: "https://github.com/uber-go/nilaway",
+			currentValueTemplate: "main",
+			datasourceTemplate: "git-refs",
+			depTypeTemplate: "go-analysis",
+		});
+		expect(nilaway?.matchStrings?.[0]).toBe(
+			'rev = "(?<currentDigest>[a-f0-9]{40})"',
+		);
+	});
+
+	test("both pins resolve to solo branches outside the TypeScript rollup", () => {
+		for (const dep of [
+			{
+				manager: "custom.regex",
+				fileName: goAnalysisFile,
+				depName: "golangci/golangci-lint",
+				depType: "go-analysis",
+				updateType: "minor",
+			},
+			{
+				manager: "custom.regex",
+				fileName: goAnalysisFile,
+				depName: "uber-go/nilaway",
+				depType: "go-analysis",
+				updateType: "digest",
+			},
+		]) {
+			expect(resolveGroupName(dep)).toBeNull();
+			expect(resolveGroupName(dep)).not.toBe("TypeScript dependencies");
+		}
+	});
+
+	test("cooldown resolves only for the git-refs digest exception", () => {
+		const golangciDep = {
+			manager: "custom.regex",
+			fileName: goAnalysisFile,
+			depName: "golangci/golangci-lint",
+			depType: "go-analysis",
+			updateType: "minor",
+		};
+		const nilawayDep = {
+			manager: "custom.regex",
+			fileName: goAnalysisFile,
+			depName: "uber-go/nilaway",
+			depType: "go-analysis",
+			updateType: "digest",
+		};
+		expect(cfg.minimumReleaseAge).toBe("5 days");
+		expect(resolveRuleValue(golangciDep, "minimumReleaseAge")).toBeUndefined();
+		expect(resolveRuleValue(nilawayDep, "minimumReleaseAge")).toBeNull();
+	});
+
+	test("no matching rule-level task can evict the top-level refresher", () => {
+		for (const [depName, updateTypes] of [
+			["golangci/golangci-lint", ["patch", "minor", "major"]],
+			["uber-go/nilaway", ["digest"]],
+		] as const) {
+			for (const updateType of updateTypes) {
+				const dep = {
+					manager: "custom.regex",
+					fileName: goAnalysisFile,
+					depName,
+					depType: "go-analysis",
+					updateType,
+				};
+				for (const rule of cfg.packageRules.filter((r) => r.postUpgradeTasks)) {
+					expect(ruleMatches(rule, dep)).toBe(false);
+				}
+			}
+		}
+	});
+
+	test("the top-level task commits the pin file and has the bot allowlist entry", () => {
+		const command = "bun tools/renovate/refresh-go-analysis-hashes.ts";
+		expect(cfg.postUpgradeTasks?.commands).toContain(command);
+		expect(cfg.postUpgradeTasks?.fileFilters).toContain(goAnalysisFile);
+		expect(
+			bot.allowedCommands?.some((entry) => new RegExp(entry).test(command)),
+		).toBe(true);
+	});
 });
 
 describe("tools/renovate solo-branch grouping outcomes", () => {
