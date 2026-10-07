@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -196,7 +197,8 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 	// claimed-not-acked events only return after AckWait (a silent stall). Drain runs
 	// them through fn and acks first, as the durability contract requires.
 	var ccMu sync.Mutex
-	var stopped bool // under ccMu; a recreate racing stop must not install a new cc
+	var stopped bool                       // under ccMu; a recreate racing stop must not install a new cc
+	var drained []jetstream.ConsumeContext // under ccMu; replaced ccs stop must also await
 	var once sync.Once
 	done := make(chan struct{})
 	stop := func() {
@@ -204,10 +206,14 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 			ccMu.Lock()
 			stopped = true
 			cur := cc
+			prev := drained
 			ccMu.Unlock()
 			cur.Drain()
 			if hook := f.consumerClosed; hook != nil {
 				go func() {
+					for _, old := range prev {
+						<-old.Closed()
+					}
 					<-cur.Closed()
 					hook()
 				}()
@@ -239,6 +245,20 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(c
 		// A probe-detected reap leaves the old Consume running against the
 		// recreated durable; drain it so only cc pulls and stop() reaches all.
 		cc.Drain()
+		drained = slices.DeleteFunc(drained, func(old jetstream.ConsumeContext) bool {
+			select {
+			case <-old.Closed():
+				return true
+			default:
+				return false
+			}
+		})
+		drained = append(drained, cc)
+		// A probe that raced this recreate may have queued a stale signal.
+		select {
+		case <-reaped:
+		default:
+		}
 		cc = nextCC
 		f.untrackConsumer(durable)
 		f.trackConsumer(durable, next)
