@@ -24,9 +24,13 @@ import { DEVENV_LOCK_PATHS } from "./refresh-devenv-lock.core.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // Overridable so the harness can exercise the retry without a real wait.
-const RETRY_DELAY_MS = Number(
-	process.env.LOCK_INTEGRITY_RETRY_DELAY_MS ?? 60_000,
-);
+const delayOverride = Number(process.env.LOCK_INTEGRITY_RETRY_DELAY_MS);
+const RETRY_DELAY_MS =
+	Number.isInteger(delayOverride) && delayOverride >= 0
+		? delayOverride
+		: 60_000;
+// A stalled fetch fails as unverified instead of holding the CI job.
+const FETCH_TIMEOUT_MS = 10 * 60_000;
 
 type Fetched = Prefetched | { error: string; stderr: string };
 
@@ -56,7 +60,7 @@ function prefetchOnce(ref: string, env: NodeJS.ProcessEnv): Fetched {
 			"nix-command flakes",
 			ref,
 		],
-		{ env, encoding: "utf8" },
+		{ env, encoding: "utf8", timeout: FETCH_TIMEOUT_MS },
 	);
 	if (r.status !== 0) {
 		const stderr = r.stderr || r.error?.message || `exit ${r.status}`;

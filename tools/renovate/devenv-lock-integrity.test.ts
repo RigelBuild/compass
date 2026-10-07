@@ -193,7 +193,7 @@ describe("full sweep", () => {
 		]);
 	});
 
-	test("fetches with a fresh shared cache dir, a cleared token, and removes the dir", async () => {
+	test("uses and cleans a fresh shared cache with tokens cleared", async () => {
 		const r = await run();
 		const call = r.calls[0];
 		expect(call?.NIX_CACHE_HOME).toBe(call?.XDG_CACHE_HOME);

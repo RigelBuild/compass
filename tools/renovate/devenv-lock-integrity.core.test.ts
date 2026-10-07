@@ -82,6 +82,12 @@ describe("lockedGithubNodes", () => {
 		expect(() => lockedGithubNodes("{nope")).toThrow(/not valid JSON/);
 	});
 
+	test("a nodes array fails instead of checking nothing", () => {
+		expect(() => lockedGithubNodes('{"nodes":[],"version":7}')).toThrow(
+			/no `nodes` object/,
+		);
+	});
+
 	// Raw JSON: an object literal would itself swallow the `__proto__` key.
 	test("keeps a node named __proto__", () => {
 		const text = `{"nodes":{"__proto__":${JSON.stringify(githubLocked())}},"version":7}`;
@@ -114,6 +120,14 @@ describe("changedNodeNames", () => {
 			nixpkgs: githubLocked({ repo: "nixpkgs", narHash: "sha256-BBBB" }),
 		});
 		expect([...changedNodeNames(base, head)]).toEqual(["nixpkgs"]);
+	});
+
+	test("a lastModified-only change is included", () => {
+		const head = lock({
+			devenv: githubLocked({ lastModified: 1700000001 }),
+			nixpkgs: githubLocked({ repo: "nixpkgs" }),
+		});
+		expect([...changedNodeNames(base, head)]).toEqual(["devenv"]);
 	});
 
 	test("key order alone is not a change", () => {

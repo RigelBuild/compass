@@ -73,8 +73,8 @@ export function changedDevenvLock(
 				"fileFilters names exactly ONE lock, so a two-lock branch would commit one relock and " +
 				"silently drop the other. The two rules carry distinct groupNames so they never share a " +
 				"branch; this shape means that invariant broke. Exiting non-zero reds the " +
-				"`renovate/artifacts` status — it does not abort the branch — so human review, and " +
-				"renovate:lock-integrity for any half-relock, keep this shape from merging.",
+				"`renovate/artifacts` status, which is advisory and does not abort the branch; " +
+				"renovate:lock-integrity in the required rollup fails any half-relock either lock carries.",
 		);
 	}
 	return changed[0] ?? null;

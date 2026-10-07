@@ -36,7 +36,7 @@ function lockedObjects(lockText: string): LockedMap {
 		throw new Error(`devenv lock is not valid JSON: ${(e as Error).message}`);
 	}
 	const nodes = (parsed as { nodes?: unknown }).nodes;
-	if (typeof nodes !== "object" || nodes === null) {
+	if (typeof nodes !== "object" || nodes === null || Array.isArray(nodes)) {
 		throw new Error("devenv lock has no `nodes` object");
 	}
 	// A Map, so a node named `__proto__` is kept rather than swallowed.
