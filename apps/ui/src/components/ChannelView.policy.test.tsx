@@ -14,6 +14,7 @@ import {
 } from "../live/comms-fake";
 import { type AppStore, CALLER_ID, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { ChannelView } from "./ChannelView";
 import { TopicView } from "./TopicView";
 
@@ -82,7 +83,9 @@ async function mountComposer(fake: FakeComms): Promise<{
 		});
 		return (
 			<StoreContext value={store}>
-				<TopicView />
+				<ViewContext value={store.focusedView()}>
+					<TopicView />
+				</ViewContext>
 			</StoreContext>
 		);
 	});

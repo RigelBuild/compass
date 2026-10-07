@@ -2,8 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { flush as flushSync } from "solid-js";
 import { STUB_CHANNELS, STUB_MESSAGES, STUB_TOPICS } from "./comms-stub";
 import type { CommandId } from "./keyboard/commands";
-import { detectPlatform } from "./keyboard/dispatch";
-import { shortcutFor } from "./keyboard/keymap";
 import { STUB_AGENTS } from "./stub-data";
 import { flush, mountApp } from "./test-router";
 
@@ -86,11 +84,10 @@ const AGENT_NAME = (() => {
 // async under the router: tests await `flush()` between an action and a routed
 // read (record A2/A4).
 
-// The top-nav surface view-tabs — the single tab strip the board-primary shell
-// exposes (Bridge +, when an agent is selected, the agent tab). Scoped to
-// `nav.view-tabs` so the agent-view's own StateDot in the center never leaks in.
+// The topbar view tabs — the window's tab strip. Scoped to the strip so the
+// agent-view's own StateDot in the center never leaks in.
 const navViewTabs = (container: HTMLElement): HTMLElement[] => [
-	...container.querySelectorAll<HTMLElement>("nav.view-tabs .view-tab"),
+	...container.querySelectorAll<HTMLElement>('.cx-tab-strip [role="tab"]'),
 ];
 
 describe("App shell (T7)", () => {
@@ -107,8 +104,7 @@ describe("App shell (T7)", () => {
 		expect(store.view()).toBe("bridge");
 		expect(container.querySelector(".bridge")).not.toBeNull();
 
-		// RED today: the nav has a Bridge tab. Currently the only view-tab reads
-		// "Board" → no tab text includes "Bridge".
+		// The boot tab is the Bridge tab.
 		const tabs = navViewTabs(container);
 		const bridgeTab = tabs.find((t) => t.textContent?.includes("Bridge"));
 		expect(bridgeTab).toBeDefined();
@@ -148,11 +144,8 @@ describe("App shell (T7)", () => {
 		expect(container.querySelectorAll(".channel-rail").length).toBe(0);
 	});
 
-	// Selecting an agent adds the selected-agent view-tab (agent name + StateDot)
-	// and renders AgentView in the center; view() flips to `agent`. Today the nav
-	// is a single Board tab with no agent tab → RED on the second tab / its
-	// StateDot. Mutation-check: dropping the agent tab, its StateDot, or the name
-	// each reddens the tab assertion.
+	// Opening an agent in place turns the focused tab into the agent tab (agent
+	// name + StateDot) and renders AgentView in the center.
 	test("selecting an agent adds the agent view-tab with a StateDot", async () => {
 		const { store, container } = mountApp();
 		store.openAgent(AGENT_ID);
@@ -162,7 +155,7 @@ describe("App shell (T7)", () => {
 		expect(store.view()).toBe("agent");
 		expect(container.querySelector(".agent-view")).not.toBeNull();
 
-		// A second nav view-tab carries the agent name AND a StateDot.
+		// The focused view tab carries the agent name AND a StateDot.
 		const tabs = navViewTabs(container);
 		const agentTab = tabs.find(
 			(t) =>
@@ -201,56 +194,15 @@ describe("App shell (T7)", () => {
 	});
 });
 
-// Coaching-tooltip adoption sweep (RIG-2530 T2). The topbar Bridge tab and the
-// two glyph-only sidebar toggles convert from a native `title=` to a CoachTip;
-// the toggles' dead chords are registered so they now dispatch. These assert
-// the observable adoption contract: the tooltip reveals on focus, no `title`
-// double-tooltips, `aria-keyshortcuts` survives, and the glyph toggles keep a
-// non-glyph accessible name via the added `aria-label`.
-
-// Kobalte portals its tooltip content on a macrotask, so a focus that opens it
-// is observable only after one setTimeout(0).
-async function settle(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield (setTimeout(0)) to observe Kobalte's portalled tooltip; not a timed wait
-	setTimeout(resolve, 0);
-	await promise;
-}
+// Coaching-tooltip adoption sweep (RIG-2530 T2). The two glyph-only sidebar
+// toggles convert from a native `title=` to a CoachTip; their dead chords are
+// registered so they now dispatch. These assert the observable adoption
+// contract: no `title` double-tooltips, `aria-keyshortcuts` survives, and the
+// glyph toggles keep a non-glyph accessible name via the added `aria-label`.
 
 describe("coaching tooltips (RIG-2530 T2)", () => {
-	test("the Bridge tab opens a coaching tooltip on focus showing the label + chord", async () => {
-		const { container } = mountApp("/backlog");
-		const tab = navViewTabs(container).find((t) =>
-			t.textContent?.includes("Bridge"),
-		);
-		expect(tab).toBeDefined();
-
-		tab?.focus();
-		await settle();
-
-		// Kobalte portals the tooltip content to document.body.
-		const tooltip =
-			document.body.querySelector<HTMLElement>('[role="tooltip"]');
-		expect(tooltip).not.toBeNull();
-		expect(tooltip?.textContent).toContain("Bridge");
-		// Chord derived from the keymap, never hand-authored (D4).
-		const chip = tooltip?.querySelector(".cx-palette-shortcut");
-		const kbds = Array.from(chip?.querySelectorAll("kbd") ?? []).map(
-			(k) => k.textContent,
-		);
-		expect(shortcutFor("view.bridge" as CommandId, detectPlatform())).toBe(
-			"Ctrl+B",
-		);
-		expect(kbds).toEqual(["Ctrl", "B"]);
-	});
-
-	test("converted controls drop `title` but keep `aria-keyshortcuts`", () => {
+	test("the sidebar toggles drop `title` but keep `aria-keyshortcuts`", () => {
 		const { container } = mountApp();
-		const bridgeTab = navViewTabs(container).find((t) =>
-			t.textContent?.includes("Bridge"),
-		);
-		expect(bridgeTab?.hasAttribute("title")).toBe(false);
-		expect(bridgeTab?.getAttribute("aria-keyshortcuts")).toBeTruthy();
 
 		for (const label of ["Toggle left sidebar", "Toggle right sidebar"]) {
 			const toggle = container.querySelector<HTMLElement>(

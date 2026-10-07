@@ -665,4 +665,31 @@ describe("installKeymap — leader sequences", () => {
 		keydown({ key: "b" });
 		expect(ran).toBe(0); // listener gone; nothing runs
 	});
+	test("W N runs tab.new outside an editor and remains text inside a composer", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("tab.new", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		const leader = keydown({ key: "w" }, document.body);
+		const completion = keydown({ key: "n" }, document.body);
+		expect(leader.defaultPrevented).toBe(true);
+		expect(completion.defaultPrevented).toBe(true);
+		expect(ran).toBe(1);
+
+		ran = 0;
+		const composer = document.createElement("input");
+		document.body.appendChild(composer);
+		composer.focus();
+		try {
+			const editableLeader = keydown({ key: "w" }, composer);
+			const editableCompletion = keydown({ key: "n" }, composer);
+
+			expect(editableLeader.defaultPrevented).toBe(false);
+			expect(editableCompletion.defaultPrevented).toBe(false);
+			expect(ran).toBe(0);
+		} finally {
+			composer.remove();
+		}
+	});
 });

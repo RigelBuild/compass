@@ -21,6 +21,9 @@ export const MessageStream: Component<{
 	/** The scope id — drives the reset-to-latest effect on switch (a channel id
 	 *  for a DM, a topic id for a topic view). */
 	scopeId: string;
+	/** Whether the stream's view is on screen. A hidden mount has no viewport,
+	 *  so it anchors to the latest message on its first reveal. */
+	shown: boolean;
 	byId: Map<string, Account>;
 	byHandle: Map<string, Account>;
 	/** Shown when the scope has no messages (join prompt vs. empty state). */
@@ -46,6 +49,17 @@ export const MessageStream: Component<{
 		() => props.scopeId,
 		() => {
 			virtualizer.scrollToEnd();
+		},
+	);
+	// A stream mounted hidden could not measure, so it anchors once on its first
+	// reveal; later returns keep the user's scroll position.
+	let revealed = false;
+	createEffect(
+		() => props.shown,
+		(shown, wasShown) => {
+			if (!shown || revealed) return;
+			revealed = true;
+			if (wasShown === false) virtualizer.scrollToEnd();
 		},
 	);
 
