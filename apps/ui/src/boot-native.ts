@@ -1,7 +1,4 @@
-// The client-mode boot gate: the sibling of `bootConnection` for the native desktop
-// shell. Client mode cannot dial until the shell ARMS a connection (bearer is shell-side
-// only, DL-109), so boot fires one auto-connect probe, shows `connecting`, and branches:
-// ok → resolve the native provider and hand off; any failure → connect screen, retry in place.
+// Native client boot connects through the shell, which keeps the bearer on its side.
 
 import {
 	BUTTON_STYLE,
@@ -14,28 +11,28 @@ import {
 import {
 	type ConnectResult,
 	nativeConnectionProvider,
+	pickCACert,
+	type ServerChoice,
 	shellConnect,
 } from "./daemon-transport";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 import { shellServerUrl } from "./shell-globals";
 
-// The transport seam `bootNativeClient` consumes, injectable so a test drives stubs
-// directly rather than replacing the whole `./daemon-transport` module (Bun's
-// `mock.module` is process-global and leaks across files, making outcomes
-// order-dependent). Production callers omit it and get the real transport.
 export type NativeBootDeps = {
-	shellConnect: (token: string) => Promise<ConnectResult>;
+	shellConnect: (
+		token: string,
+		server?: ServerChoice,
+	) => Promise<ConnectResult>;
+	pickCACert: () => Promise<{ ref: string; name: string }>;
 	nativeConnectionProvider: (baseUrl: string) => ConnectionProvider;
 };
 
 const defaultNativeBootDeps: NativeBootDeps = {
 	shellConnect,
+	pickCACert,
 	nativeConnectionProvider,
 };
 
-/** The per-failure-kind screen copy (design failure-state table). `heading` is
- *  the one-line theme; `hint` is the actionable follow-up. `other` shows the
- *  server's own safe message — never a silent fallthrough. */
 function failureCopy(result: ConnectResult): { heading: string; hint: string } {
 	switch (result.kind) {
 		case "bad-url":
@@ -46,7 +43,7 @@ function failureCopy(result: ConnectResult): { heading: string; hint: string } {
 		case "bad-cert":
 			return {
 				heading: "Can't verify the server's certificate",
-				hint: "The server's TLS certificate could not be verified — check its ca_cert, then try again.",
+				hint: "Check the server certificate or choose its CA certificate, then try again.",
 			};
 		case "bad-token":
 			return {
@@ -58,131 +55,293 @@ function failureCopy(result: ConnectResult): { heading: string; hint: string } {
 				heading: `App speaks compass.v1; server speaks ${result.apiVersion}`,
 				hint: "The app and the server disagree on the API version — upgrade whichever is behind.",
 			};
-		default:
-			return {
-				heading: "Could not connect",
-				hint: result.message,
-			};
+		case "invalid-url":
+		case "invalid-ca":
+		case "other":
+			return { heading: "Could not connect", hint: result.message };
+		case "":
+			throw new Error("Successful connect results have no failure copy");
+		default: {
+			const exhaustive: never = result.kind;
+			throw new Error(`Unhandled connect result kind: ${exhaustive}`);
+		}
 	}
 }
 
-/** Fire the auto-connect probe, then either resolve the native connection or
- *  keep the connect screen up until a user-driven `shellConnect(token)` wins.
- *  Returns undefined only if the user genuinely cannot proceed; in practice it
- *  resolves once a probe succeeds (the screen retries in place). */
+/** Start the configured probe or open the first-run connection form. */
 export async function bootNativeClient(
 	root: HTMLElement,
 	deps: NativeBootDeps = defaultNativeBootDeps,
+	entry: "configured" | "setup" = "configured",
+	signal?: AbortSignal,
 ): Promise<ResolvedConnection | undefined> {
+	if (entry === "setup") return awaitUserSetupConnect(root, deps, signal);
 	renderConnecting(root);
-
-	// The single boot-internal auto-connect probe (the empty-token sentinel).
-	// A user can never fire this: the connect button is disabled on empty input.
 	const probe = await deps.shellConnect("");
 	if (probe.ok) {
+		root.replaceChildren();
 		return deps.nativeConnectionProvider(shellServerUrl() ?? "").resolve();
 	}
-
-	// The probe failed: hand off to the connect screen, which owns #root and
-	// resolves only when a user-driven connect succeeds.
 	return awaitUserConnect(root, probe, deps);
 }
 
-/** Paint the in-flight `connecting` state into `root`. */
 function renderConnecting(root: HTMLElement): void {
 	const screen = document.createElement("div");
 	screen.setAttribute("style", SCREEN_STYLE);
-	const headingEl = document.createElement("h1");
-	headingEl.setAttribute("style", HEADING_STYLE);
-	headingEl.textContent = "Connecting…";
-	const urlEl = document.createElement("p");
-	urlEl.setAttribute("style", URL_STYLE);
-	urlEl.textContent = shellServerUrl() ?? "";
-	screen.append(headingEl, urlEl);
+	const heading = document.createElement("h1");
+	heading.setAttribute("style", HEADING_STYLE);
+	heading.textContent = "Connecting…";
+	const url = document.createElement("p");
+	url.setAttribute("style", URL_STYLE);
+	url.textContent = shellServerUrl() ?? "";
+	screen.append(heading, url);
 	root.replaceChildren(screen);
 }
 
-/** Render the connect screen for a failed probe and keep it up, driving
- *  `shellConnect(token)` from the token input on each submit, until a probe
- *  succeeds — then resolve the native connection. The token lives only in the
- *  input's live value for the duration of one call and is cleared after (no
- *  module-scope binding, DL-109). */
 function awaitUserConnect(
 	root: HTMLElement,
 	initial: ConnectResult,
 	deps: NativeBootDeps,
 ): Promise<ResolvedConnection> {
-	return new Promise<ResolvedConnection>((resolve) => {
+	return new Promise<ResolvedConnection>((resolve, reject) => {
 		const screen = document.createElement("div");
 		screen.setAttribute("style", SCREEN_STYLE);
-
-		const headingEl = document.createElement("h1");
-		headingEl.setAttribute("style", HEADING_STYLE);
-		screen.append(headingEl);
-
-		const detailEl = document.createElement("p");
-		detailEl.setAttribute("style", DETAIL_STYLE);
-		screen.append(detailEl);
-
-		const urlEl = document.createElement("p");
-		urlEl.setAttribute("style", URL_STYLE);
-		// Read-only: the server URL is fixed by the shell, not editable here.
-		urlEl.textContent = `Server: ${shellServerUrl() ?? ""}`;
-		screen.append(urlEl);
-
+		const heading = document.createElement("h1");
+		heading.setAttribute("style", HEADING_STYLE);
+		const detail = document.createElement("p");
+		detail.setAttribute("style", DETAIL_STYLE);
+		const url = document.createElement("p");
+		url.setAttribute("style", URL_STYLE);
+		url.textContent = `Server: ${shellServerUrl() ?? ""}`;
 		const input = document.createElement("input");
 		input.setAttribute("style", INPUT_STYLE);
 		input.type = "password";
 		input.placeholder = "Paste your token";
 		input.autocomplete = "off";
-		screen.append(input);
-
 		const button = document.createElement("button");
 		button.setAttribute("style", BUTTON_STYLE);
 		button.type = "button";
 		button.textContent = "Connect";
-		screen.append(button);
+		screen.append(heading, detail, url, input, button);
 
-		// Submit is disabled on empty input, so the empty-token "use-the-stored-one"
-		// sentinel is only ever the boot-internal probe, never a user action.
 		const syncDisabled = (): void => {
 			button.disabled = input.value.length === 0;
 		};
-		input.addEventListener("input", syncDisabled);
-
-		// Paint the failure kind the probe returned.
 		const paint = (result: ConnectResult): void => {
-			const { heading, hint } = failureCopy(result);
-			headingEl.textContent = heading;
-			detailEl.textContent = hint;
+			const copy = failureCopy(result);
+			heading.textContent = copy.heading;
+			detail.textContent = copy.hint;
 		};
+		input.addEventListener("input", syncDisabled);
 		paint(initial);
 		syncDisabled();
-
-		const submit = (): void => {
+		button.addEventListener("click", () => {
 			const token = input.value;
-			if (token.length === 0) {
+			if (token.length === 0) return;
+			button.disabled = true;
+			input.value = "";
+			void deps
+				.shellConnect(token)
+				.then(async (result) => {
+					if (result.ok) {
+						root.replaceChildren();
+						try {
+							resolve(
+								await deps
+									.nativeConnectionProvider(shellServerUrl() ?? "")
+									.resolve(),
+							);
+						} catch (reason) {
+							reject(reason);
+						}
+						return;
+					}
+					paint(result);
+					syncDisabled();
+				})
+				.catch((reason: unknown) => {
+					const message =
+						reason instanceof Error ? reason.message : String(reason);
+					heading.textContent = "Could not connect";
+					detail.textContent = `Try again. ${message}`;
+					button.disabled = false;
+				});
+		});
+		root.replaceChildren(screen);
+	});
+}
+
+function awaitUserSetupConnect(
+	root: HTMLElement,
+	deps: NativeBootDeps,
+	signal?: AbortSignal,
+): Promise<ResolvedConnection | undefined> {
+	if (signal?.aborted) {
+		root.replaceChildren();
+		return Promise.resolve(undefined);
+	}
+	return new Promise<ResolvedConnection | undefined>((resolve, reject) => {
+		const screen = document.createElement("div");
+		screen.setAttribute("style", SCREEN_STYLE);
+		const heading = document.createElement("h1");
+		heading.setAttribute("style", HEADING_STYLE);
+		heading.textContent = "Connect to a server";
+		const detail = document.createElement("p");
+		detail.setAttribute("style", DETAIL_STYLE);
+		const url = document.createElement("input");
+		url.setAttribute("style", INPUT_STYLE);
+		url.type = "url";
+		url.placeholder = "https://your-server.example";
+		url.autocomplete = "off";
+		const chooseCA = document.createElement("button");
+		chooseCA.setAttribute("style", BUTTON_STYLE);
+		chooseCA.type = "button";
+		chooseCA.textContent = "Choose CA certificate…";
+		const caRow = document.createElement("p");
+		caRow.setAttribute("style", URL_STYLE);
+		caRow.textContent = "System trust";
+		const systemTrust = document.createElement("button");
+		systemTrust.setAttribute("style", BUTTON_STYLE);
+		systemTrust.type = "button";
+		systemTrust.textContent = "Use system trust";
+		const token = document.createElement("input");
+		token.setAttribute("style", INPUT_STYLE);
+		token.type = "password";
+		token.placeholder = "Paste your token";
+		token.autocomplete = "off";
+		const submit = document.createElement("button");
+		submit.setAttribute("style", BUTTON_STYLE);
+		submit.type = "button";
+		submit.textContent = "Connect";
+		screen.append(
+			heading,
+			detail,
+			url,
+			chooseCA,
+			caRow,
+			systemTrust,
+			token,
+			submit,
+		);
+
+		let caRef = "";
+		let shellCallInFlight = false;
+		let finished = false;
+		const finish = (connection: ResolvedConnection | undefined): void => {
+			if (finished) return;
+			finished = true;
+			signal?.removeEventListener("abort", onAbort);
+			resolve(connection);
+		};
+		const fail = (reason: unknown): void => {
+			if (finished) return;
+			finished = true;
+			signal?.removeEventListener("abort", onAbort);
+			reject(reason);
+		};
+		const onAbort = (): void => {
+			if (signal?.aborted && !shellCallInFlight) {
+				root.replaceChildren();
+				finish(undefined);
+			}
+		};
+		const syncDisabled = (): void => {
+			submit.disabled =
+				url.value.length === 0 || token.value.length === 0 || shellCallInFlight;
+		};
+		const paintResult = (result: ConnectResult): void => {
+			const copy = failureCopy(result);
+			heading.textContent = copy.heading;
+			detail.textContent =
+				result.kind === "bad-cert"
+					? "Use Choose CA certificate… above to select the server's CA, then try again."
+					: copy.hint;
+		};
+		const finishWithConnection = async (serverUrl: string): Promise<void> => {
+			signal?.removeEventListener("abort", onAbort);
+			root.replaceChildren();
+			try {
+				finish(await deps.nativeConnectionProvider(serverUrl).resolve());
+			} catch (reason) {
+				fail(reason);
+			}
+		};
+		const handleConnectResult = async (
+			result: ConnectResult,
+		): Promise<void> => {
+			shellCallInFlight = false;
+			if (result.ok && result.serverUrl) {
+				await finishWithConnection(result.serverUrl);
 				return;
 			}
-			button.disabled = true;
-			// Clear the input immediately: the token is now in flight to the shell
-			// and must never linger UI-side (DL-109). No binding retains it.
-			input.value = "";
-			void deps.shellConnect(token).then((result) => {
-				if (result.ok) {
-					resolve(
-						deps.nativeConnectionProvider(shellServerUrl() ?? "").resolve(),
-					);
-					return;
-				}
-				// Retry in place: re-render the matching failure state, keep the
-				// screen up, and re-enable submit once the user types again.
-				paint(result);
-				syncDisabled();
-			});
+			if (signal?.aborted) {
+				root.replaceChildren();
+				finish(undefined);
+				return;
+			}
+			if (result.ok) {
+				heading.textContent = "Could not connect";
+				detail.textContent =
+					"The server did not return its normalized server URL. Try again.";
+			} else {
+				paintResult(result);
+			}
+			syncDisabled();
 		};
-		button.addEventListener("click", submit);
-
+		const handleConnectRejection = (reason: unknown): void => {
+			shellCallInFlight = false;
+			if (signal?.aborted) {
+				root.replaceChildren();
+				finish(undefined);
+				return;
+			}
+			const message = reason instanceof Error ? reason.message : String(reason);
+			heading.textContent = "Could not connect";
+			detail.textContent = `Try again. ${message}`;
+			syncDisabled();
+		};
+		url.addEventListener("input", syncDisabled);
+		token.addEventListener("input", syncDisabled);
+		signal?.addEventListener("abort", onAbort, { once: true });
+		chooseCA.addEventListener("click", () => {
+			void deps.pickCACert().then(
+				(picked) => {
+					if (finished || signal?.aborted) return;
+					if (picked.ref.length === 0) return;
+					caRef = picked.ref;
+					caRow.textContent = picked.name;
+				},
+				(reason: unknown) => {
+					if (finished || signal?.aborted) return;
+					detail.textContent =
+						reason instanceof Error ? reason.message : String(reason);
+				},
+			);
+		});
+		systemTrust.addEventListener("click", () => {
+			caRef = "";
+			caRow.textContent = "System trust";
+		});
+		submit.addEventListener("click", () => {
+			if (
+				finished ||
+				shellCallInFlight ||
+				url.value.length === 0 ||
+				token.value.length === 0
+			)
+				return;
+			const server: ServerChoice = { url: url.value, caRef };
+			const secret = token.value;
+			token.value = "";
+			shellCallInFlight = true;
+			syncDisabled();
+			void deps.shellConnect(secret, server).then(
+				(result) => handleConnectResult(result),
+				(reason: unknown) => handleConnectRejection(reason),
+			);
+		});
 		root.replaceChildren(screen);
+		syncDisabled();
+		onAbort();
 	});
 }
