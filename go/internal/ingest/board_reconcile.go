@@ -177,18 +177,20 @@ func (rc *BoardReconciler) reconcileRepo(ctx context.Context, repo string) error
 	if err != nil {
 		return err
 	}
+	pullsFailed := 0
 	if !res.NotModified {
-		if err := rc.sinkRows(ctx, repo, since, res); err != nil {
+		if pullsFailed, err = rc.sinkRows(ctx, repo, since, res); err != nil {
 			return err
 		}
 	}
-	return rc.backfillPRs(ctx, repo, since)
+	return rc.backfillPRs(ctx, repo, since, pullsFailed)
 }
 
 // sinkRows sinks one listed window, isolating each row so a poison row is
 // skipped and counted, and advances the watermark only past the rows that sank.
 // A PR hydrate that runs out of budget is not poison: the watermark stays at
-// since with no ETag, so the next sweep re-lists the whole window.
+// since with no ETag, so the next sweep re-lists the whole window. It returns
+// the count of PR rows that failed to hydrate.
 //
 // Tradeoff (deliberate, do not "fix"): the watermark advances to the max
 // timestamp over the HEALTHY rows, so a row that fails only TRANSIENTLY while
@@ -196,12 +198,12 @@ func (rc *BoardReconciler) reconcileRepo(ctx context.Context, repo string) error
 // is dropped until its next forge update re-lists it. Capping the advance below
 // the min failed-row timestamp instead would re-introduce the poison-pin
 // livelock this isolation exists to prevent.
-func (rc *BoardReconciler) sinkRows(ctx context.Context, repo string, since time.Time, res forge.ConditionalResult[forge.UpdatedRows]) error {
+func (rc *BoardReconciler) sinkRows(ctx context.Context, repo string, since time.Time, res forge.ConditionalResult[forge.UpdatedRows]) (int, error) {
 	var maxMark time.Time
-	poison := 0
+	poison, pullsFailed := 0, 0
 	for _, row := range res.V.Issues {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return 0, ctx.Err()
 		}
 		if serr := rc.ingester.IngestIssues(ctx, repo, []forge.Issue{row}); serr != nil {
 			poison++
@@ -214,14 +216,15 @@ func (rc *BoardReconciler) sinkRows(ctx context.Context, repo string, since time
 	if rc.pulls != nil {
 		for _, row := range res.V.Pulls {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return 0, ctx.Err()
 			}
 			if !since.IsZero() || inBackfillWindow(row, time.Now()) {
 				if herr := rc.hydrateIfNewer(ctx, repo, row); herr != nil {
 					if errors.Is(herr, forge.ErrBudgetExhausted) {
-						return rc.abortWindow(ctx, repo, since, herr)
+						return 0, rc.abortWindow(ctx, repo, since, herr)
 					}
 					poison++
+					pullsFailed++
 					rc.log.WarnContext(ctx, "board reconcile: pull request hydrate failed (isolated)",
 						"repo", repo, "number", row.Number, "error", herr)
 					continue
@@ -234,7 +237,7 @@ func (rc *BoardReconciler) sinkRows(ctx context.Context, repo string, since time
 	// Nothing sank (empty list, or every row poison): leave the watermark where
 	// it is so a healthy row is re-listed next sweep.
 	if maxMark.IsZero() {
-		return nil
+		return pullsFailed, nil
 	}
 	// On a clean sweep carry the fresh list ETag so the next sweep can 304; when
 	// a poison row was skipped, drop it so the next sweep re-lists.
@@ -242,7 +245,7 @@ func (rc *BoardReconciler) sinkRows(ctx context.Context, repo string, since time
 	if poison > 0 {
 		storeETag = ""
 	}
-	return rc.store.StoreRepoWatermark(ctx, repo, maxMark, storeETag)
+	return pullsFailed, rc.store.StoreRepoWatermark(ctx, repo, maxMark, storeETag)
 }
 
 // abortWindow keeps the watermark at since and clears the ETag, so the next
@@ -269,8 +272,8 @@ func (rc *BoardReconciler) hydrateIfNewer(ctx context.Context, repo string, row 
 
 // backfillPRs runs once per repo: it hydrates every open PR and every PR row
 // updated in the window before the watermark, then marks the repo. On a cold
-// start the main walk already covered that window.
-func (rc *BoardReconciler) backfillPRs(ctx context.Context, repo string, since time.Time) error {
+// start the main walk covered that window, so its PR failures hold the mark.
+func (rc *BoardReconciler) backfillPRs(ctx context.Context, repo string, since time.Time, walkFailed int) error {
 	if rc.pulls == nil {
 		return nil
 	}
@@ -289,7 +292,7 @@ func (rc *BoardReconciler) backfillPRs(ctx context.Context, repo string, since t
 		}
 		rows = append(rows, win.V.Pulls...)
 	}
-	failed := 0
+	failed := walkFailed
 	for _, row := range rows {
 		if ctx.Err() != nil {
 			return ctx.Err()

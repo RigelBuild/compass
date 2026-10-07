@@ -372,6 +372,37 @@ func TestReconcileColdStartSkipsOldClosedPR(t *testing.T) {
 	}
 }
 
+// TestReconcileColdStartRowFailureLeavesRepoUnmarked: a recent closed PR that
+// fails in the cold-start walk keeps the repo unmarked, so the next sweep's
+// backfill window re-lists and hydrates it.
+func TestReconcileColdStartRowFailureLeavesRepoUnmarked(t *testing.T) {
+	now := time.Now()
+	closed := forge.UpdatedPull{Number: 8, State: "closed", UpdatedAt: now.Add(-time.Hour)}
+	l := &rowsLister{results: []forge.ConditionalResult[forge.UpdatedRows]{
+		{V: forge.UpdatedRows{
+			Issues: []forge.Issue{{Number: 4, UpdatedAt: now.Add(-time.Minute)}},
+			Pulls:  []forge.UpdatedPull{closed},
+		}},
+		{NotModified: true},
+		{V: forge.UpdatedRows{Pulls: []forge.UpdatedPull{closed}}},
+	}}
+	st := newBoardStore("o/r")
+	pulls := &fakePulls{errFor: map[uint64]error{8: errors.New("boom")}}
+	rc, _ := newPRReconciler(l, st, pulls)
+	rc.sweep(context.Background())
+	if _, ok := st.backfilled["o/r"]; ok {
+		t.Fatal("repo marked backfilled after a cold-start row failure")
+	}
+	pulls.errFor = nil
+	rc.sweep(context.Background())
+	if got := pulls.readNumbers(); !slices.Equal(got, []uint64{8, 8}) {
+		t.Fatalf("reads = %v, want [8 8]", got)
+	}
+	if _, ok := st.backfilled["o/r"]; !ok {
+		t.Fatal("repo not marked after the clean retry")
+	}
+}
+
 // TestReconcileBackfillStopsOnBudget: a budget error during backfill leaves the
 // repo unmarked so the next sweep retries it.
 func TestReconcileBackfillStopsOnBudget(t *testing.T) {
