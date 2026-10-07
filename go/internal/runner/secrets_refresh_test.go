@@ -28,6 +28,7 @@ func newRefreshHostFixture(t *testing.T, fetch *fakeFetchServer) (SessionHost, *
 	link := newLink(newRunnerServiceServer(t, fetch))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
 	host := NewSessionHost(link, rt, registry, engine, cfg2SpecBuilder(), cfg, discardLoggerRunner())
+	closeHostAtCleanup(t, host.(*agentHost))
 	return host, engine
 }
 
