@@ -221,28 +221,28 @@ func TestUpdateMessageBlocksAsAuthorRejectsMalformedInput(t *testing.T) {
 	assertBlocksEqual(t, got[0].Blocks, []MessageBlock{textBlock("untouched")})
 }
 
-// MessageAskIDs backs the comms edge's UPDATE ask_id reconciliation: it returns
-// every ask block's stored ask_id in block order (an immutable field, so this
-// separate read is race-free against the authz UPDATE that follows). A row with
-// mixed text and ask blocks yields only the asks' ids, in order; an unknown id
-// yields an empty slice rather than an error, so the read can never be turned
-// into a not-found enumeration oracle.
-//
-// Mutation that reddens it: returning ids for text blocks too (breaks the
-// positional match the edge relies on), or erroring on an unknown id (turns the
-// benign read into a distinct not-found signal).
+// MessageAskIDs backs the comms edge's UPDATE ask_id reconciliation: for the
+// author it returns only the ask blocks' ids, in block order (the positional
+// match the edge relies on). A co-member non-author, a revoked author, and an
+// unknown id all get ErrNotFound, so the read reveals nothing about the row.
 func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	author := mustUser(t, s, "author")
-	ch := mustChannel(t, s, author.ID)
+	reader := mustUser(t, s, "reader")
+	ch, err := s.CreateChannel(ctx, author.ID, NewChannel{
+		Name: "room", Kind: ChannelKindChannel, MemberAccountIDs: []AccountID{reader.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
 
 	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{askBlockID("ask-first"), textBlock("between"), askBlockID("ask-second")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	ids, err := s.MessageAskIDs(ctx, msg.ID)
+	ids, err := s.MessageAskIDs(ctx, author.ID, msg.ID)
 	if err != nil {
 		t.Fatalf("MessageAskIDs: %v", err)
 	}
@@ -250,13 +250,25 @@ func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
 		t.Fatalf("ask ids = %v, want %v (asks only, in block order)", ids, want)
 	}
 
-	// An unknown id is a benign empty slice, never a distinct not-found.
-	unknown, err := s.MessageAskIDs(ctx, MessageID("ghost"))
+	// reader posts its own ask, then loses membership: the revoked author case.
+	readerMsg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: reader.ID, Blocks: []MessageBlock{askBlockID("ask-reader")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	if err != nil {
-		t.Fatalf("MessageAskIDs(unknown): %v", err)
+		t.Fatalf("AppendMessage(reader): %v", err)
 	}
-	if len(unknown) != 0 {
-		t.Fatalf("unknown message ask ids = %v, want empty", unknown)
+	if _, _, err := s.UpdateChannelMembers(ctx, author.ID, ch.ID, []MemberUpdate{{AccountID: reader.ID, Remove: true}}, MemberUpdatesOptions{}); err != nil {
+		t.Fatalf("UpdateChannelMembers(remove reader): %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		actor AccountID
+		id    MessageID
+	}{
+		"co-member, not the author": {author.ID, readerMsg.ID},
+		"revoked author":            {reader.ID, readerMsg.ID},
+		"unknown id":                {author.ID, MessageID("ghost")},
+	} {
+		_, err := s.MessageAskIDs(ctx, tc.actor, tc.id)
+		sentinelIs(t, err, ErrNotFound, "MessageAskIDs("+name+")")
 	}
 }
 
