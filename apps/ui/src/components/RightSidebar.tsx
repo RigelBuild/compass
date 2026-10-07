@@ -17,6 +17,7 @@ import {
 import type { Channel } from "../comms-stub";
 import type { AvatarTabItem } from "../constants";
 import { useStore } from "../context";
+import { openLink } from "../open-link";
 import {
 	type Agent,
 	type Check,
@@ -323,7 +324,11 @@ const IssueDetailHead: Component<{ issue: Issue }> = (props) => {
 						type="button"
 						class="r-open-agent"
 						title="Open the assigned agent's view"
-						onClick={() => store.openAgent(agentId())}
+						{...openLink(
+							store,
+							() => `/agent/${agentId()}`,
+							() => store.openAgent(agentId()),
+						)}
 					>
 						Open agent
 					</button>
@@ -467,7 +472,11 @@ const FleetPane: Component<{ item: AvatarTabItem }> = (props) => {
 								type="button"
 								class="r-open-agent"
 								title="Open this agent's workspace"
-								onClick={() => store.openAgent(a().account.id)}
+								{...openLink(
+									store,
+									() => `/agent/${a().account.id}`,
+									() => store.openAgent(a().account.id),
+								)}
 							>
 								Open {a().account.handle}'s workspace
 							</button>

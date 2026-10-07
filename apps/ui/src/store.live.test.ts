@@ -1011,7 +1011,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		try {
 			store.openAgent(runningAgentId());
 			flush();
-			expect(store.agentSession()?.fixture).toBe(true);
+			expect(store.focusedView().agentSession()?.fixture).toBe(true);
 
 			await store.stopAgent();
 
@@ -1040,7 +1040,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		try {
 			store.openAgent(agentId);
 			flush();
-			const session = store.agentSession();
+			const session = store.focusedView().agentSession();
 			expect(session).toBeDefined();
 			expect(session?.fixture).toBeUndefined();
 

@@ -12,6 +12,7 @@ import {
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { ChannelView } from "./ChannelView";
 import { TopicView } from "./TopicView";
 
@@ -112,7 +113,9 @@ function mountTopicView(): {
 		});
 		return (
 			<StoreContext value={store}>
-				<TopicView />
+				<ViewContext value={store.focusedView()}>
+					<TopicView />
+				</ViewContext>
 			</StoreContext>
 		);
 	});
@@ -362,7 +365,9 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 			});
 			return (
 				<StoreContext value={store}>
-					<ChannelView />
+					<ViewContext value={store.focusedView()}>
+						<ChannelView />
+					</ViewContext>
 				</StoreContext>
 			);
 		});

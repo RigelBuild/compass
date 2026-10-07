@@ -34,7 +34,10 @@ export const flush = async (): Promise<void> => {
 /** Mount the full App shell over a fixture-backed store on `initialPath`,
  *  through the shared route table on a memory-history router. Returns the live
  *  store (to drive actions) and container (to query the DOM). */
-export function mountApp(initialPath = "/"): {
+export function mountApp(
+	initialPath = "/",
+	layoutStorage?: Storage,
+): {
 	store: AppStore;
 	container: HTMLElement;
 } {
@@ -47,6 +50,7 @@ export function mountApp(initialPath = "/"): {
 		store = createAppStore({
 			initialComms: STUB_COMMS_STATE,
 			queryClient: testQueryClient(),
+			...(layoutStorage ? { layoutStorage } : {}),
 		});
 		return (
 			<StoreContext value={store}>

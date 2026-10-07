@@ -14,6 +14,7 @@ import { StoreContext } from "../context";
 import { createFakeComms, type FakeComms } from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
+import { ViewContext } from "../view-scope";
 import { AgentView } from "./AgentView";
 
 // The LIVE AgentView header (T4): a live agent has no fixture `model`/`cwd`
@@ -76,7 +77,9 @@ async function mountLive(fake: FakeComms): Promise<{
 		});
 		return (
 			<StoreContext value={store}>
-				<AgentView />
+				<ViewContext value={store.focusedView()}>
+					<AgentView />
+				</ViewContext>
 			</StoreContext>
 		);
 	});

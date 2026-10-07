@@ -36,9 +36,11 @@ import {
 } from "../board-render";
 import { BOARD_LANES, PR_LANES } from "../constants";
 import { useStore } from "../context";
-import type { CommandId } from "../keyboard/commands";
+import type { Command, CommandId } from "../keyboard/commands";
 import { createRovingGroup, type Stop } from "../keyboard/roving";
+import { openLink } from "../open-link";
 import type { IssueState } from "../stub-data";
+import { useView } from "../view-scope";
 import { BadgeGlyph } from "./BadgeGlyph";
 import { IssueCard } from "./IssueCard";
 import { RuntimeMarker } from "./RuntimeMarker";
@@ -491,36 +493,49 @@ export const Bridge: Component = () => {
 		setCursor: setCursorId,
 		onCommand,
 	});
-	registry.register({
-		id: "board.openAssignedAgent" as CommandId,
-		title: "Open assigned agent",
-		keywords: ["agent", "workspace", "open"],
-		scope: "main",
-		run: () => onCommand("board.openAssignedAgent" as CommandId),
-	});
-	registry.register({
-		id: "board.openCardCrossLink" as CommandId,
-		title: "Open card cross-link",
-		keywords: ["pr", "issue", "cross-link"],
-		scope: "main",
-		run: () => onCommand("board.openCardCrossLink" as CommandId),
-	});
-	for (const spec of LIST_COMMANDS) {
-		registry.register({
+	// Several tabs can mount a Bridge, so only the focused view's Bridge holds the
+	// shared board/list command ids; a cleanup removes only the entry it added.
+	const view = useView();
+	const commands: Command[] = [
+		{
+			id: "board.openAssignedAgent" as CommandId,
+			title: "Open assigned agent",
+			keywords: ["agent", "workspace", "open"],
+			scope: "main",
+			run: () => onCommand("board.openAssignedAgent" as CommandId),
+		},
+		{
+			id: "board.openCardCrossLink" as CommandId,
+			title: "Open card cross-link",
+			keywords: ["pr", "issue", "cross-link"],
+			scope: "main",
+			run: () => onCommand("board.openCardCrossLink" as CommandId),
+		},
+		...LIST_COMMANDS.map((spec) => ({
 			id: spec.id as CommandId,
 			title: spec.title,
 			keywords: spec.keywords,
-			scope: "main",
+			scope: "main" as const,
 			run: () => onCommand(spec.id as CommandId),
-		});
-	}
-	onCleanup(() => {
-		registry.unregister("board.openAssignedAgent" as CommandId);
-		registry.unregister("board.openCardCrossLink" as CommandId);
-		for (const spec of LIST_COMMANDS) {
-			registry.unregister(spec.id as CommandId);
-		}
-	});
+		})),
+	];
+	createEffect(
+		() => store.focusedView().id === view.id,
+		(focused) => {
+			if (!focused) return;
+			// Take the ids over from the previous owner, whose cleanup may run
+			// after this; its identity check then leaves these entries alone.
+			for (const cmd of commands) {
+				registry.unregister(cmd.id);
+				registry.register(cmd);
+			}
+			return () => {
+				for (const cmd of commands) {
+					if (registry.get(cmd.id) === cmd) registry.unregister(cmd.id);
+				}
+			};
+		},
+	);
 	store.keyboard.registerGroup(rovingGroup);
 	onCleanup(() => store.keyboard.unregisterGroup(rovingGroup));
 
@@ -663,7 +678,11 @@ export const Bridge: Component = () => {
 											type="button"
 											class="bridge-lane"
 											ref={setStopEl(gutterId(agent.account.id))}
-											onClick={() => store.openAgent(agent.account.id)}
+											{...openLink(
+												store,
+												() => `/agent/${agent.account.id}`,
+												() => store.openAgent(agent.account.id),
+											)}
 										>
 											<StateDot state={agent.lifecycle ?? "idle"} />
 											<Show when={agent.runtime}>
@@ -759,7 +778,11 @@ export const Bridge: Component = () => {
 												type="button"
 												class="bridge-lane"
 												ref={setStopEl(gutterId(agent().account.id))}
-												onClick={() => store.openAgent(agent().account.id)}
+												{...openLink(
+													store,
+													() => `/agent/${agent().account.id}`,
+													() => store.openAgent(agent().account.id),
+												)}
 											>
 												<StateDot state={agent().lifecycle ?? "idle"} />
 												<Show when={agent().runtime}>
