@@ -127,8 +127,8 @@ the real-hardware run R7 requires, so no item below closes an R3 or R4 gate.
 They do show that the opening hypothesis, that every answer costs at most a
 grant the record already names, **did not hold**: S1 needs grants and a node
 setting outside §Privilege shape, and one of them conflicts with the S3 grant.
-The record must be reconciled, and every item re-run on the target node, before
-R3 encodes the pod spec.
+The design record now adopts that wider shape. Every item must still be re-run
+on the target node before R3 encodes the pod spec.
 
 ### Environment
 
@@ -152,7 +152,7 @@ R3 encodes the pod spec.
 
 | Item | Observed on the VM | Implication for the record |
 | --- | --- | --- |
-| S1 | Boots only with AppArmor unconfined, a user-namespaced pod with unmasked `/proc`, a node sysctl, and node `/dev/kvm` at `0666` | §Privilege shape must widen; open decision |
+| S1 | Boots only with AppArmor unconfined, a user-namespaced pod with unmasked `/proc`, a node sysctl, and node `/dev/kvm` at `0666` | §Privilege shape widened to this shape |
 | S2 | hostPath `open()` fails `EPERM`; privileged control opens | Supports the inference |
 | S3 | Without the kvm gid, `open()` fails `EACCES`; with it, opens | Supports the grant, but it is inert under S1's user namespace |
 | S4 | `RuntimeDefault` fails; the custom `Localhost` profile boots | Points to OQ-2 closing: ship the profile |
@@ -194,8 +194,8 @@ is outside the pod's id mapping, so with `supplementalGroups: [993]` `open()`
 still fails `EACCES`, and the full set fails `/dev/kvm is not openable` with
 the node device at `0660`. The passing runs used the node device at `0666`.
 Measured: a user-namespaced pod booted only with a world-rw node device. A
-device plugin that sets the mode per pod is untested. This is a design
-decision, and §Privilege shape stays unchanged until it is made.
+device plugin that sets the mode per pod is untested. The design record adopts
+node mode `0666` (§Privilege shape).
 
 ### S2 — hostPath char device
 
