@@ -8,10 +8,11 @@
 # whole-repo tasks on the root project (/moon.yml), so this leaf has no own
 # bun.lock and never runs its own install.
 #
-# Compass CI is a
-# single moon-driven `CI` job (.github/workflows/ci.yml runs `moon run :ci`),
-# so the `ci` aggregate below is swept automatically — no separate meta.ts
-# wiring (unlike the prior art's Woodpecker pipeline).
+# Compass CI runs a per-concern matrix: tools/ci-matrix computes the targets
+# and .github/workflows/ci.yml runs `moon run <targets>`, so this project's `ci`
+# aggregate is swept only when the matrix selects it. tools/ci-matrix adds this
+# gate to every PR (`ALWAYS_RUN_ON_PR`), since its `check` reads the whole
+# docs/designs corpus.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
