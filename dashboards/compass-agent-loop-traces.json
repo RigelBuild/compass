@@ -1,0 +1,116 @@
+{
+	"title": "Compass Agent — Loop Traces",
+	"uid": "compass-agent-loop-traces",
+	"tags": ["compass", "observability"],
+	"schemaVersion": 39,
+	"editable": true,
+	"graphTooltip": 0,
+	"time": {
+		"from": "now-6h",
+		"to": "now"
+	},
+	"refresh": "30s",
+	"timezone": "browser",
+	"templating": {
+		"list": [
+			{
+				"name": "DS_TEMPO",
+				"label": "Tempo",
+				"type": "datasource",
+				"query": "tempo",
+				"current": {},
+				"hide": 0,
+				"refresh": 1,
+				"regex": "",
+				"includeAll": false,
+				"multi": false
+			}
+		]
+	},
+	"annotations": {
+		"list": [
+			{
+				"builtIn": 1,
+				"datasource": {
+					"type": "grafana",
+					"uid": "-- Grafana --"
+				},
+				"enable": true,
+				"hide": true,
+				"iconColor": "rgba(0, 211, 255, 1)",
+				"name": "Annotations & Alerts",
+				"type": "dashboard"
+			}
+		]
+	},
+	"panels": [
+		{
+			"id": 1,
+			"type": "table",
+			"title": "Recent invoke_agent root spans",
+			"description": "GenAI-semconv agent-loop spans (service.name=compass-agent). Root span `invoke_agent {agent.name}` opens each turn; its children are `chat {model}`, `execute_tool {tool.name}`, and `handoff`. Correlate a trace to a session via span attribute gen_ai.conversation.id (= session id) and resource attribute compass.session.id (stamped via OTEL_RESOURCE_ATTRIBUTES on both loop and transport signals). TraceQL filters the Tempo search to invoke_agent root spans.",
+			"datasource": {
+				"type": "tempo",
+				"uid": "${DS_TEMPO}"
+			},
+			"gridPos": {
+				"h": 12,
+				"w": 24,
+				"x": 0,
+				"y": 0
+			},
+			"fieldConfig": {
+				"defaults": {},
+				"overrides": []
+			},
+			"options": {},
+			"targets": [
+				{
+					"refId": "A",
+					"datasource": {
+						"type": "tempo",
+						"uid": "${DS_TEMPO}"
+					},
+					"queryType": "traceql",
+					"query": "{ resource.service.name = \"compass-agent\" && name =~ \"invoke_agent.*\" }",
+					"limit": 20,
+					"tableType": "traces"
+				}
+			]
+		},
+		{
+			"id": 2,
+			"type": "table",
+			"title": "Tool-call spans (execute_tool)",
+			"description": "Child spans `execute_tool {tool.name}` under an invoke_agent root, per the GenAI-semconv hierarchy (invoke_agent -> chat/execute_tool/handoff). Attributes follow OTel GenAI semconv: gen_ai.operation.name, gen_ai.request.model, gen_ai.usage.input_tokens/output_tokens. Correlate to a session via gen_ai.conversation.id / compass.session.id. TraceQL filters the Tempo search to execute_tool spans.",
+			"datasource": {
+				"type": "tempo",
+				"uid": "${DS_TEMPO}"
+			},
+			"gridPos": {
+				"h": 12,
+				"w": 24,
+				"x": 0,
+				"y": 12
+			},
+			"fieldConfig": {
+				"defaults": {},
+				"overrides": []
+			},
+			"options": {},
+			"targets": [
+				{
+					"refId": "A",
+					"datasource": {
+						"type": "tempo",
+						"uid": "${DS_TEMPO}"
+					},
+					"queryType": "traceql",
+					"query": "{ resource.service.name = \"compass-agent\" && name =~ \"execute_tool.*\" }",
+					"limit": 20,
+					"tableType": "traces"
+				}
+			]
+		}
+	]
+}
