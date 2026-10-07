@@ -4,7 +4,6 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"slices"
 
 	"go.opentelemetry.io/otel"
@@ -296,62 +295,39 @@ func (c *Consumer) routeAskAnswerFor(ctx context.Context, channel store.ChannelI
 	}
 }
 
-// resolveMentioned resolves parsed handles to the set of agent members of
-// channel to steer, author excluded throughout (design.md:525-535). Reserved
-// pings (@everyone/@agents) expand to the channel's agent members; @users
-// expands to human members, which have no session to steer, so they add nothing
-// (design.md:532-534). A non-reserved handle resolves via AgentByHandle: an
-// unknown or human handle is store.ErrNotFound — a no-op; a resolved agent that
-// is not a channel member is also a no-op (design.md:526-527,534-535). The
-// channel agent-member set is read once and reused both for reserved expansion
-// and the per-handle membership check. Any store error is logged and the mention
-// dropped (never fails the post).
+// resolveMentioned resolves handles against the channel's agent members, with a
+// bare handle scoped to the posting author's owner namespace.
 func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID, author store.AccountID, handles []string) map[store.AccountID]bool {
 	members, err := c.st.ChannelAgentMembers(ctx, channel, author)
 	if err != nil {
 		c.log.ErrorContext(ctx, "delivery: resolve channel agent members for mention routing", "error", err, "channel", string(channel))
-		return nil // drop all mentions; the post still delivers normally
+		return nil
 	}
-	// A bare mention resolves in the POSTING AUTHOR's owner namespace (RIG-2751:
-	// agent handles are per-owner; a mention carries no owner qualifier, so the
-	// author's own namespace is the resolution scope). Resolve it once for the
-	// per-handle lookups below.
 	authorOwner, err := c.st.ResolveOwner(ctx, author)
 	if err != nil {
 		c.log.ErrorContext(ctx, "delivery: resolve author owner for mention routing", "error", err, "author", string(author))
 		return nil // drop all mentions; the post still delivers normally
 	}
-	memberSet := make(map[store.AccountID]bool, len(members))
-	for _, m := range members {
-		memberSet[m] = true
-	}
-
 	mentioned := map[store.AccountID]bool{}
-	for _, h := range handles {
-		if reservedMentions[h] {
-			if h == "everyone" || h == "agents" {
-				for m := range memberSet {
-					mentioned[m] = true // author already excluded by ChannelAgentMembers
+	for _, handle := range handles {
+		if reservedMentions[handle] {
+			// @users expands to human members only: no agent session to steer.
+			if handle == "everyone" || handle == "agents" {
+				for _, member := range members {
+					mentioned[member.ID] = true
 				}
 			}
-			// @users expands to human members only: no agent session to steer.
 			continue
 		}
-		acc, err := c.st.AgentByHandle(ctx, authorOwner, h)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue // unknown or human handle: a no-op
+		qh := store.ParseQualifiedHandle(handle)
+		for _, member := range members {
+			if member.Handle != qh.Handle {
+				continue
 			}
-			c.log.ErrorContext(ctx, "delivery: resolve mention handle", "error", err, "handle", h)
-			continue // never fail the post
+			if qh.Qualified() && member.OwnerHandle == qh.Owner || !qh.Qualified() && member.OwnerUserID == authorOwner {
+				mentioned[member.ID] = true
+			}
 		}
-		if acc.ID == author {
-			continue // author never steers itself (self-mention)
-		}
-		if !memberSet[acc.ID] {
-			continue // resolved agent is not a channel member: a no-op
-		}
-		mentioned[acc.ID] = true
 	}
 	return mentioned
 }
