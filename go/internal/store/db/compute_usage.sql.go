@@ -7,7 +7,23 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const advanceComputeUsagePruneHorizon = `-- name: AdvanceComputeUsagePruneHorizon :execrows
+UPDATE compute_usage_prune_horizon AS state
+ SET horizon = GREATEST(state.horizon, $1::timestamptz)
+`
+
+// AdvanceComputeUsagePruneHorizon moves the single global horizon forward.
+func (q *Queries) AdvanceComputeUsagePruneHorizon(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceComputeUsagePruneHorizon, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const closeOrphanedComputeIntervals = `-- name: CloseOrphanedComputeIntervals :execrows
 WITH orphaned AS (
@@ -33,19 +49,248 @@ INSERT INTO compute_usage_events (
     tenant_id, id, interval_id, kind, occurred_at, agent_account_id,
     owner_user_id, session_id, runner_id, estimated
 )
-SELECT orphaned.tenant_id, gen_random_uuid()::text AS id, orphaned.interval_id, 'end' AS kind, now() AS occurred_at,
-       orphaned.agent_account_id, orphaned.owner_user_id, orphaned.session_id,
-       orphaned.runner_id, true AS estimated
+SELECT orphaned.tenant_id, gen_random_uuid()::text AS id, orphaned.interval_id,
+       'end' AS kind, now() AS occurred_at, orphaned.agent_account_id,
+       orphaned.owner_user_id, orphaned.session_id, orphaned.runner_id,
+       true AS estimated
   FROM orphaned
+ ORDER BY orphaned.tenant_id, orphaned.interval_id
 ON CONFLICT DO NOTHING
 `
 
-// Close intervals only after both binding deletion and its end event are absent.
-// The tenant id comes from each start because the system role has no tenant GUC.
+// Close intervals only after the binding and matching end event are absent.
+// The tenant id comes from each start because this sweep has no tenant GUC.
 func (q *Queries) CloseOrphanedComputeIntervals(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, closeOrphanedComputeIntervals)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const computeUsagePruneHorizon = `-- name: ComputeUsagePruneHorizon :one
+SELECT horizon.horizon FROM compute_usage_prune_horizon AS horizon FOR SHARE
+`
+
+// ComputeUsagePruneHorizon pins the horizon while the rebuild replaces newer rows.
+func (q *Queries) ComputeUsagePruneHorizon(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, computeUsagePruneHorizon)
+	var horizon pgtype.Timestamptz
+	err := row.Scan(&horizon)
+	return horizon, err
+}
+
+const computeUsageSeries = `-- name: ComputeUsageSeries :many
+SELECT r.bucket_start::timestamptz AS bucket_start,
+       sum(r.active_ms)::bigint AS active_ms,
+       sum(r.intervals)::bigint AS intervals
+  FROM (SELECT rollups.bucket_start, rollups.agent_account_id, rollups.active_ms, rollups.intervals
+          FROM compute_usage_rollups_hourly AS rollups
+         WHERE $1::integer = 1
+        UNION ALL
+        SELECT rollups.bucket_start, rollups.agent_account_id, rollups.active_ms, rollups.intervals
+          FROM compute_usage_rollups_daily AS rollups
+         WHERE $1::integer = 2) AS r
+ WHERE r.bucket_start >= $2::timestamptz
+   AND r.bucket_start < $3::timestamptz
+   AND (coalesce(cardinality($4::text[]), 0) = 0
+        OR r.agent_account_id = ANY ($4::text[]))
+ GROUP BY r.bucket_start
+ ORDER BY r.bucket_start
+`
+
+type ComputeUsageSeriesParams struct {
+	Granularity     int32
+	StartAt         pgtype.Timestamptz
+	EndAt           pgtype.Timestamptz
+	AgentAccountIds []string
+}
+
+type ComputeUsageSeriesRow struct {
+	BucketStart pgtype.Timestamptz
+	ActiveMs    int64
+	Intervals   int64
+}
+
+// ComputeUsageSeries sums matching rows at one pre-aggregated granularity.
+func (q *Queries) ComputeUsageSeries(ctx context.Context, arg ComputeUsageSeriesParams) ([]ComputeUsageSeriesRow, error) {
+	rows, err := q.db.Query(ctx, computeUsageSeries,
+		arg.Granularity,
+		arg.StartAt,
+		arg.EndAt,
+		arg.AgentAccountIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ComputeUsageSeriesRow
+	for rows.Next() {
+		var i ComputeUsageSeriesRow
+		if err := rows.Scan(&i.BucketStart, &i.ActiveMs, &i.Intervals); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteComputeUsageIntervalsBefore = `-- name: DeleteComputeUsageIntervalsBefore :execrows
+WITH closed AS (
+    SELECT ends.tenant_id, ends.interval_id
+      FROM compute_usage_events AS ends
+     WHERE ends.tenant_id = $1::text
+       AND ends.kind = 'end'
+       AND ends.occurred_at < $2::timestamptz
+       AND EXISTS (
+           SELECT 1
+             FROM compute_usage_events AS starts
+            WHERE starts.tenant_id = ends.tenant_id
+              AND starts.interval_id = ends.interval_id
+              AND starts.kind = 'start'
+       )
+)
+DELETE FROM compute_usage_events AS events
+ USING closed
+ WHERE events.tenant_id = $1::text
+   AND events.tenant_id = closed.tenant_id
+   AND events.interval_id = closed.interval_id
+`
+
+type DeleteComputeUsageIntervalsBeforeParams struct {
+	TenantID string
+	Cutoff   pgtype.Timestamptz
+}
+
+// DeleteComputeUsageIntervalsBefore removes both events only when the end is old.
+// It runs as the system role, so the tenant predicate is the only tenant scope.
+func (q *Queries) DeleteComputeUsageIntervalsBefore(ctx context.Context, arg DeleteComputeUsageIntervalsBeforeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteComputeUsageIntervalsBefore, arg.TenantID, arg.Cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteComputeUsageRollupsFrom = `-- name: DeleteComputeUsageRollupsFrom :exec
+WITH hourly AS (
+    DELETE FROM compute_usage_rollups_hourly AS rollups
+     WHERE rollups.bucket_start >= $1::timestamptz
+)
+DELETE FROM compute_usage_rollups_daily AS rollups
+ WHERE rollups.bucket_start >= $1::timestamptz
+`
+
+// DeleteComputeUsageRollupsFrom clears rows the rebuild can reconstruct.
+func (q *Queries) DeleteComputeUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, deleteComputeUsageRollupsFrom, horizon)
+	return err
+}
+
+const lockComputeUsage = `-- name: LockComputeUsage :exec
+
+SELECT pg_advisory_xact_lock(hashtext('compute_usage:' || current_setting('compass.tenant_id', TRUE)))
+`
+
+// Compute-usage rollups are derived from closed start/end event pairs.
+// Each query runs under the tenant role and transaction scope supplied by Store.
+// LockComputeUsage serializes a tenant rebuild with end-event rollup triggers.
+func (q *Queries) LockComputeUsage(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockComputeUsage)
+	return err
+}
+
+const lockComputeUsageTenant = `-- name: LockComputeUsageTenant :exec
+SELECT pg_advisory_xact_lock(hashtext('compute_usage:' || $1::text))
+`
+
+// LockComputeUsageTenant takes the same lock for a system-role caller.
+// The key must stay byte-identical to LockComputeUsage and the end trigger.
+func (q *Queries) LockComputeUsageTenant(ctx context.Context, tenantID string) error {
+	_, err := q.db.Exec(ctx, lockComputeUsageTenant, tenantID)
+	return err
+}
+
+const rollUpComputeUsageFrom = `-- name: RollUpComputeUsageFrom :exec
+WITH intervals AS (
+    SELECT starts.tenant_id, starts.interval_id, starts.occurred_at AS start_at,
+           ends.occurred_at AS end_at, starts.owner_user_id, starts.agent_account_id,
+           floor(extract(epoch FROM starts.occurred_at) * 1000)::bigint AS start_ms,
+           floor(extract(epoch FROM ends.occurred_at) * 1000)::bigint AS end_ms
+      FROM compute_usage_events AS starts
+      JOIN compute_usage_events AS ends
+        ON ends.tenant_id = starts.tenant_id
+       AND ends.interval_id = starts.interval_id
+       AND ends.kind = 'end'
+     WHERE starts.kind = 'start'
+       AND ends.occurred_at >= $1::timestamptz
+), bounds AS (
+    SELECT intervals.tenant_id, intervals.interval_id, intervals.start_at, intervals.end_at, intervals.owner_user_id, intervals.agent_account_id, intervals.start_ms, intervals.end_ms,
+           CASE WHEN $1::timestamptz = '-infinity'::timestamptz
+                THEN date_trunc('hour', intervals.start_at, 'UTC')
+                ELSE greatest(date_trunc('hour', intervals.start_at, 'UTC'),
+                              date_trunc('hour', $1::timestamptz, 'UTC'))
+            END AS first_hour,
+           greatest(date_trunc('hour', intervals.start_at, 'UTC'),
+                    date_trunc('hour', intervals.end_at - interval '1 millisecond', 'UTC')) AS last_hour,
+           CASE WHEN $1::timestamptz = '-infinity'::timestamptz
+                THEN date_trunc('day', intervals.start_at, 'UTC')
+                ELSE greatest(date_trunc('day', intervals.start_at, 'UTC'),
+                              date_trunc('day', $1::timestamptz, 'UTC'))
+            END AS first_day,
+           greatest(date_trunc('day', intervals.start_at, 'UTC'),
+                    date_trunc('day', intervals.end_at - interval '1 millisecond', 'UTC')) AS last_day
+      FROM intervals
+), hourly AS (
+    INSERT INTO compute_usage_rollups_hourly (
+        bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+    )
+    SELECT buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id,
+           sum(greatest(0, least(bounds.end_ms, epoch.bucket_ms + 3600000) -
+                           greatest(bounds.start_ms, epoch.bucket_ms)))::bigint,
+           sum(CASE WHEN buckets.bucket_start = date_trunc('hour', bounds.start_at, 'UTC')
+                     AND bounds.start_at >= $1::timestamptz
+                    THEN 1 ELSE 0 END)::bigint
+      FROM bounds
+      CROSS JOIN LATERAL generate_series(
+          bounds.first_hour,
+          bounds.last_hour,
+          interval '1 hour'
+      ) AS buckets(bucket_start)
+      CROSS JOIN LATERAL (
+          SELECT floor(extract(epoch FROM buckets.bucket_start) * 1000)::bigint AS bucket_ms
+      ) AS epoch
+     GROUP BY buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id
+), daily AS (
+    INSERT INTO compute_usage_rollups_daily (
+        bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+    )
+    SELECT buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id,
+           sum(greatest(0, least(bounds.end_ms, epoch.bucket_ms + 86400000) -
+                           greatest(bounds.start_ms, epoch.bucket_ms)))::bigint,
+           sum(CASE WHEN buckets.bucket_start = date_trunc('day', bounds.start_at, 'UTC')
+                     AND bounds.start_at >= $1::timestamptz
+                    THEN 1 ELSE 0 END)::bigint
+      FROM bounds
+      CROSS JOIN LATERAL generate_series(
+          bounds.first_day,
+          bounds.last_day,
+          interval '24 hours'
+      ) AS buckets(bucket_start)
+      CROSS JOIN LATERAL (
+          SELECT floor(extract(epoch FROM buckets.bucket_start) * 1000)::bigint AS bucket_ms
+      ) AS epoch
+     GROUP BY buckets.bucket_start, bounds.owner_user_id, bounds.agent_account_id
+)
+SELECT 1
+`
+
+// RollUpComputeUsageFrom rebuilds only buckets at or after the horizon, which are
+// the rows it deleted; older buckets are frozen. The sentinel skips clipping.
+func (q *Queries) RollUpComputeUsageFrom(ctx context.Context, horizon pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, rollUpComputeUsageFrom, horizon)
+	return err
 }

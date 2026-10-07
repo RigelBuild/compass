@@ -18,5 +18,14 @@ func TestMemory(t *testing.T) {
 			return store.WithTenant(t.Context(), store.TenantID(fmt.Sprint("t", tenant)))
 		},
 		CorruptRollups: func(_ *testing.T, s usage.Store) { usage.ClearMemoryRollups(s) },
+		AppendComputeInterval: func(t *testing.T, s usage.Store, ctx context.Context, intervals ...usage.ComputeInterval) {
+			t.Helper()
+			memory := s.(*usage.Memory)
+			for _, interval := range intervals {
+				if err := memory.AppendComputeInterval(ctx, interval); err != nil {
+					t.Fatalf("AppendComputeInterval: %v", err)
+				}
+			}
+		},
 	})
 }

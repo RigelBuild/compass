@@ -182,6 +182,35 @@ type ComputeUsageEvent struct {
 	Estimated      bool
 }
 
+type ComputeUsagePruneHorizon struct {
+	Singleton bool
+	Horizon   pgtype.Timestamptz
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+type ComputeUsageRollupsDaily struct {
+	TenantID       string
+	BucketStart    pgtype.Timestamptz
+	OwnerUserID    string
+	AgentAccountID string
+	ActiveMs       int64
+	Intervals      int64
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+type ComputeUsageRollupsHourly struct {
+	TenantID       string
+	BucketStart    pgtype.Timestamptz
+	OwnerUserID    string
+	AgentAccountID string
+	ActiveMs       int64
+	Intervals      int64
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type ForgeArtifactCursor struct {
 	ForgeProvider int16
 	ForgeHost     string
