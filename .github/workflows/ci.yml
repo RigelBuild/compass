@@ -2812,16 +2812,10 @@ jobs:
   regen-visual-baselines:
     name: regen-visual-baselines
     runs-on: ubuntu-latest
-    # The operator-only visual-baseline regeneration lane, the sibling of
-    # regen-forge-fixtures above. `--update-snapshots=all` re-captures every
-    # apps/ui/e2e/__screens__ PNG from the fixture-mode UI under CI's PINNED
-    # Chromium, then opens a BOT PR carrying the rewritten baselines for image
-    # review. It exists for provenance: a dev-box capture under the same pins
-    # is byte-identical, so only this run attests where a committed PNG came
-    # from. Like the forge lane it is a SEPARATE job, never a step in the moon
-    # battery, and the required `rollup` check above does not `needs:` it — a
-    # regen dispatch must not post or
-    # disturb gate contexts.
+    # Operator-only: re-captures every __screens__ PNG under CI's pinned
+    # Chromium and opens a bot PR against main (branches commit local captures,
+    # DL-399). A separate job so a regen dispatch never posts or disturbs gate
+    # contexts.
     #
     # Same workflow_dispatch + empty-`pr` gate as the forge lane, plus the
     # `regen` discriminator that keeps the two mutually exclusive (see the
@@ -2962,12 +2956,9 @@ jobs:
         # bot PR carrying them for image review, the same bot-opens-a-PR
         # credential path the forge regen lane uses, on the same SHA pin.
         #
-        # DELIBERATELY no `base:`. create-pull-request defaults it to the
-        # checked-out branch, and this lane's contract (OQ-2 (b)) is that the bot
-        # PR targets the FEATURE BRANCH the lane was dispatched on — that is how
-        # a red visual gate on a branch gets its baselines refreshed in place,
-        # without laundering an unreviewed UI change onto main. Do NOT "fix" this
-        # to `base: main`.
+        # No `base:`: create-pull-request defaults to the checked-out branch,
+        # which the `if:` above pins to main. A branch commits local captures
+        # instead (DL-399), since a branch dispatch can't run here.
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
