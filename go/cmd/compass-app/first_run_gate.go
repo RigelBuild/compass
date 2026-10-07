@@ -5,10 +5,10 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"log/slog"
 	"sync"
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
+	"github.com/RigelBuild/compass/go/internal/bridge"
 )
 
 const (
@@ -71,20 +71,9 @@ type caPicks struct {
 }
 
 func (p *caPicks) add(pem []byte) string {
-	ref, err := p.addPick(pem)
-	if err != nil {
-		slog.Error("generating CA pick reference", "error", err)
-		return ""
-	}
-	return ref
-}
-
-func (p *caPicks) addPick(pem []byte) (string, error) {
 	for {
 		var raw [16]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			return "", err
-		}
+		rand.Read(raw[:])
 		ref := hex.EncodeToString(raw[:])
 		p.mu.Lock()
 		if _, exists := p.byRef[ref]; exists {
@@ -96,7 +85,7 @@ func (p *caPicks) addPick(pem []byte) (string, error) {
 		}
 		p.byRef[ref] = append([]byte(nil), pem...)
 		p.mu.Unlock()
-		return ref, nil
+		return ref
 	}
 }
 
@@ -120,5 +109,6 @@ type setupWiring struct {
 	configPath string
 	gate       *firstRunGate
 	picks      *caPicks
+	newTarget  func(serverURL string, caPEM []byte) (*bridge.Target, error)
 	saveClient func(path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error)
 }

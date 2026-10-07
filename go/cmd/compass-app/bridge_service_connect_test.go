@@ -583,7 +583,7 @@ func setupTLSStub(t *testing.T, rpcReached chan<- struct{}) (*httptest.Server, [
 	return srv, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 }
 
-func newFirstRunService(t *testing.T, serverURL string, store tokenstore.Store, events eventEmitter, save func(string, appconfig.Config, []byte) (appconfig.Config, error)) (*bridgeService, *firstRunGate, *caPicks, string) {
+func newFirstRunService(t *testing.T, store tokenstore.Store, events eventEmitter, save func(string, appconfig.Config, []byte) (appconfig.Config, error)) (*bridgeService, *firstRunGate, *caPicks, string) {
 	t.Helper()
 	configHome := t.TempDir()
 	configPath, err := appconfig.ConfigPath(configHome, "")
@@ -594,18 +594,18 @@ func newFirstRunService(t *testing.T, serverURL string, store tokenstore.Store, 
 	picks := &caPicks{}
 	setup := &setupWiring{configPath: configPath, gate: gate, picks: picks, saveClient: save}
 	svc := newSetupBridgeService(events, store, setup)
-	if serverURL == "" {
-		t.Fatal("setup test requires a server URL")
-	}
 	return svc, gate, picks, configHome
 }
 
+// setup:decided must expose the installed client state to subscribers.
 func TestConnectServerChoiceSuccessAndRPC(t *testing.T) {
 	rpcReached := make(chan struct{}, 1)
 	srv, certPEM := setupTLSStub(t, rpcReached)
 	store := tokenstore.New(t.TempDir())
-	emitter := newFakeEmitter()
-	svc, _, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	frames := newFakeEmitter()
+	emitter := &setupDecisionEmitter{frames: frames}
+	svc, _, picks, configHome := newFirstRunService(t, store, emitter, nil)
+	emitter.svc = svc
 	ref := picks.add(certPEM)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
@@ -626,8 +626,14 @@ func TestConnectServerChoiceSuccessAndRPC(t *testing.T) {
 	if got, err := store.Read(srv.URL); err != nil || got != probeToken {
 		t.Fatalf("stored token = %q, %v; want submitted token", got, err)
 	}
-	assertSetupDecision(t, emitter)
-	if got := svc.ShellState(); got != (shellStateResult{Mode: "client", ServerURL: srv.URL}) {
+	if emitter.count != 1 {
+		t.Fatalf("setup:decided events = %d, want 1", emitter.count)
+	}
+	wantState := shellStateResult{Mode: "client", ServerURL: srv.URL}
+	if emitter.state != wantState {
+		t.Fatalf("ShellState() at setup:decided emit = %+v, want %+v", emitter.state, wantState)
+	}
+	if got := svc.ShellState(); got != wantState {
 		t.Fatalf("ShellState() = %+v, want configured client", got)
 	}
 	svc.CompassRPC(context.Background(), rpcRequest{
@@ -640,10 +646,10 @@ func TestConnectServerChoiceSuccessAndRPC(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("CompassRPC did not reach setup server")
 	}
-	if got := recv(t, emitter); got.name != "compass_rpc:setup-rpc" || got.frame.Kind != frameKindHead {
+	if got := recv(t, frames); got.name != "compass_rpc:setup-rpc" || got.frame.Kind != frameKindHead {
 		t.Fatalf("CompassRPC first frame = %+v, want head", got.frame)
 	}
-	if got := recv(t, emitter); got.name != "compass_rpc:setup-rpc" || got.frame.Kind != frameKindEnd {
+	if got := recv(t, frames); got.name != "compass_rpc:setup-rpc" || got.frame.Kind != frameKindEnd {
 		t.Fatalf("CompassRPC terminal frame = %+v, want end", got.frame)
 	}
 }
@@ -656,7 +662,7 @@ func TestConnectServerChoiceUsesStoredToken(t *testing.T) {
 	if err := store.Write(srv.URL, probeToken); err != nil {
 		t.Fatalf("pre-store token: %v", err)
 	}
-	svc, _, picks, _ := newFirstRunService(t, srv.URL, store, newFakeEmitter(), nil)
+	svc, _, picks, _ := newFirstRunService(t, store, newFakeEmitter(), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
 	res := svc.Connect(ctx, connectRequest{
@@ -680,22 +686,29 @@ func TestConnectServerChoiceValidationFailures(t *testing.T) {
 		{name: "invalid url", choice: serverChoice{URL: "http://example.test"}, token: probeToken, wantKind: connectKindInvalidURL, wantMsg: "The server URL must use https."},
 		{name: "unknown ca reference", choice: serverChoice{URL: srv.URL, CARef: "missing"}, token: probeToken, wantKind: connectKindInvalidCA, wantMsg: "Choose the certificate again."},
 		{name: "non pem ca", choice: serverChoice{URL: srv.URL, CARef: "bad-pem"}, token: probeToken, wantKind: connectKindInvalidCA, wantMsg: "The file is not a PEM certificate."},
+		{name: "empty ca pick", choice: serverChoice{URL: srv.URL, CARef: "empty"}, token: probeToken, wantKind: connectKindInvalidCA, wantMsg: "The file is not a PEM certificate."},
 		{name: "wrong token", choice: serverChoice{URL: srv.URL, CARef: "good"}, token: "wrong", wantKind: connectKindBadToken},
 		{name: "missing ca", choice: serverChoice{URL: srv.URL}, token: probeToken, wantKind: connectKindBadCert},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := tokenstore.New(t.TempDir())
-			svc, gate, picks, configHome := newFirstRunService(t, srv.URL, store, newFakeEmitter(), nil)
-			if tc.choice.CARef == "bad-pem" {
+			svc, gate, picks, configHome := newFirstRunService(t, store, newFakeEmitter(), nil)
+			switch tc.choice.CARef {
+			case "bad-pem":
 				tc.choice.CARef = picks.add(badPEM)
-			} else if tc.choice.CARef == "good" {
+			case "good":
 				tc.choice.CARef = picks.add(certPEM)
+			case "empty":
+				tc.choice.CARef = picks.add(nil)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 			defer cancel()
 			res := svc.Connect(ctx, connectRequest{Token: tc.token, Server: &tc.choice})
 			if res.Kind != tc.wantKind || (tc.wantMsg != "" && res.Message != tc.wantMsg) {
 				t.Errorf("Connect = %+v, want kind %q and message %q", res, tc.wantKind, tc.wantMsg)
+			}
+			if svc.conn.Load() != nil {
+				t.Errorf("connection installed after %s failure", tc.name)
 			}
 			if _, err := os.Stat(filepath.Join(configHome, "compass", "app.toml")); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("failed attempt app.toml stat error = %v, want absent", err)
@@ -718,7 +731,7 @@ func TestConnectServerChoiceRetriesSameCAPick(t *testing.T) {
 	}
 	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: whoAmI})
 	store := tokenstore.New(t.TempDir())
-	svc, _, picks, _ := newFirstRunService(t, srv.URL, store, newFakeEmitter(), nil)
+	svc, _, picks, _ := newFirstRunService(t, store, newFakeEmitter(), nil)
 	ref := picks.add(certPEM)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
@@ -741,7 +754,7 @@ func TestConnectServerChoiceAfterDecisionAndPlainConnect(t *testing.T) {
 	}})
 	store := tokenstore.New(t.TempDir())
 	emitter := newFakeEmitter()
-	svc, _, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	svc, _, picks, configHome := newFirstRunService(t, store, emitter, nil)
 	ref := picks.add(certPEM)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
@@ -799,7 +812,7 @@ func TestConnectServerChoiceSaveErrorCanRetry(t *testing.T) {
 		}
 		return appconfig.SaveClient(path, cfg, caPEM)
 	}
-	svc, gate, picks, configHome := newFirstRunService(t, srv.URL, store, newFakeEmitter(), save)
+	svc, gate, picks, configHome := newFirstRunService(t, store, newFakeEmitter(), save)
 	ref := picks.add(certPEM)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
@@ -827,13 +840,21 @@ func TestConnectServerChoiceSaveErrorCanRetry(t *testing.T) {
 }
 
 func TestConnectServerChoiceTokenStoreFailureDecidesReopen(t *testing.T) {
-	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+	rec := &authRecorder{}
+	srv, certPEM := connectTLSStub(t, connectStub{rec: rec, getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
 		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
 	}})
 	store := failingWriteStore{Store: tokenstore.New(t.TempDir())}
-	emitter := &setupDecisionEmitter{}
-	svc, _, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	frames := newFakeEmitter()
+	emitter := &setupDecisionEmitter{frames: frames}
+	svc, _, picks, configHome := newFirstRunService(t, store, emitter, nil)
 	emitter.svc = svc
+	var candidate *bridge.Target
+	svc.setup.newTarget = func(serverURL string, caPEM []byte) (*bridge.Target, error) {
+		var err error
+		candidate, err = bridge.NewTLSTarget(serverURL, caPEM)
+		return candidate, err
+	}
 	ref := picks.add(certPEM)
 	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
 	defer cancel()
@@ -843,6 +864,17 @@ func TestConnectServerChoiceTokenStoreFailureDecidesReopen(t *testing.T) {
 	}
 	if svc.conn.Load() != nil {
 		t.Fatal("connection installed after token store failure")
+	}
+	if candidate == nil {
+		t.Fatal("candidate target was not created")
+	}
+	client, serverURL := candidate.Client()
+	cc := compassv1connect.NewCompassServiceClient(client, serverURL)
+	if _, err := cc.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{})); err != nil {
+		t.Fatalf("WhoAmI after token-store failure: %v", err)
+	}
+	if got := rec.get(); got != "" {
+		t.Errorf("candidate retained bearer after token-store failure: %q", got)
 	}
 	if got := svc.ShellState(); got != (shellStateResult{Mode: "reopen"}) {
 		t.Fatalf("ShellState() = %+v, want reopen", got)
@@ -864,7 +896,7 @@ func TestConnectServerChoiceConfigCreatedAfterChooser(t *testing.T) {
 	}})
 	store := tokenstore.New(t.TempDir())
 	emitter := &setupDecisionEmitter{}
-	svc, gate, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	svc, gate, picks, configHome := newFirstRunService(t, store, emitter, nil)
 	emitter.svc = svc
 	ref := picks.add(certPEM)
 	configPath, err := appconfig.ConfigPath(configHome, "")
@@ -907,27 +939,10 @@ func TestConnectServerChoiceConfigCreatedAfterChooser(t *testing.T) {
 	}
 }
 
-func assertSetupDecision(t *testing.T, emitter *fakeEmitter) {
-	t.Helper()
-	if event := recv(t, emitter); event.name != "setup:decided" {
-		t.Fatalf("event = %q, want setup:decided", event.name)
-	}
-	select {
-	case event := <-emitter.ch:
-		t.Fatalf("unexpected extra setup event %q", event.name)
-	default:
-	}
-}
-
 func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
-	srv, certPEM := connectTLSStub(t, connectStub{
-		getServerInfo: okServerInfo,
-		whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
-			return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
-		},
-	})
+	srv, certPEM := setupTLSStub(t, nil)
 	store := tokenstore.New(t.TempDir())
-	frames := newFakeEmitter()
+	frames := &fakeEmitter{ch: make(chan emitted, 512)}
 	events := &setupDecisionEmitter{frames: frames}
 	saving := make(chan struct{})
 	releaseSave := make(chan struct{})
@@ -936,7 +951,7 @@ func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
 		<-releaseSave
 		return appconfig.SaveClient(path, cfg, caPEM)
 	}
-	svc, _, picks, _ := newFirstRunService(t, srv.URL, store, events, save)
+	svc, _, picks, _ := newFirstRunService(t, store, events, save)
 	events.svc = svc
 	ref := picks.add(certPEM)
 	connectDone := make(chan connectResult, 1)
@@ -950,15 +965,80 @@ func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("Connect did not reach save seam")
 	}
-	svc.CompassRPC(context.Background(), rpcRequest{RequestID: "setup-race", Path: compassv1connect.CompassServiceWhoAmIProcedure})
-	rpcEvent := recv(t, frames)
-	if rpcEvent.name != "compass_rpc:setup-race" || rpcEvent.frame.Kind != frameKindError || rpcEvent.frame.Message != "Not connected to a server" {
-		t.Fatalf("concurrent RPC event = %+v, want no-connection error", rpcEvent)
+
+	const (
+		rpcWorkers    = 4
+		rpcsPerWorker = 16
+		totalRPCs     = rpcWorkers * rpcsPerWorker
+	)
+	start := make(chan struct{})
+	started := make(chan struct{}, rpcWorkers)
+	var rpcWG sync.WaitGroup
+	for worker := range rpcWorkers {
+		rpcWG.Go(func() {
+			started <- struct{}{}
+			<-start
+			for request := range rpcsPerWorker {
+				requestID := fmt.Sprintf("setup-race-%d-%d", worker, request)
+				svc.CompassRPC(context.Background(), rpcRequest{RequestID: requestID, Path: compassv1connect.CompassServiceWhoAmIProcedure})
+			}
+		})
 	}
+	for range rpcWorkers {
+		<-started
+	}
+	close(start)
 	close(releaseSave)
 	result := <-connectDone
 	if !result.OK || result.ServerURL != srv.URL {
 		t.Fatalf("concurrent setup Connect = %+v, want success", result)
+	}
+	rpcWG.Wait()
+
+	states := make(map[string]uint8, totalRPCs)
+	completed := 0
+	for completed < totalRPCs {
+		event := recv(t, frames)
+		requestID := strings.TrimPrefix(event.name, "compass_rpc:")
+		if !strings.HasPrefix(requestID, "setup-race-") {
+			t.Fatalf("unexpected RPC event %q", event.name)
+		}
+		if _, ok := states[requestID]; ok {
+			t.Fatalf("duplicate RPC frame for %q", requestID)
+		}
+		state := states[requestID]
+		switch event.frame.Kind {
+		case frameKindError:
+			if state != 0 || event.frame.Message != "Not connected to a server" {
+				t.Errorf("RPC %q error frame = %+v, want first no-connection error", requestID, event.frame)
+				continue
+			}
+			states[requestID] = 2
+			completed++
+		case frameKindHead:
+			if state != 0 {
+				t.Errorf("RPC %q received duplicate or late head frame", requestID)
+				continue
+			}
+			states[requestID] = 1
+		case frameKindEnd:
+			if state != 1 {
+				t.Errorf("RPC %q received terminal frame without response head", requestID)
+				continue
+			}
+			states[requestID] = 2
+			completed++
+		default:
+			t.Errorf("RPC %q unexpected frame kind %q", requestID, event.frame.Kind)
+		}
+	}
+	for worker := range rpcWorkers {
+		for request := range rpcsPerWorker {
+			requestID := fmt.Sprintf("setup-race-%d-%d", worker, request)
+			if states[requestID] != 2 {
+				t.Errorf("RPC %q did not reach a terminal outcome", requestID)
+			}
+		}
 	}
 	if got := svc.ShellState(); got != (shellStateResult{Mode: "client", ServerURL: srv.URL}) {
 		t.Fatalf("post-race ShellState() = %+v, want configured client", got)

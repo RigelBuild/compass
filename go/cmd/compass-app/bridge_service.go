@@ -76,8 +76,8 @@ type bridgeService struct {
 	tokens tokenstore.Store
 	setup  *setupWiring
 
-	// connectMu makes each Connect single-flight: the target bearer is one shared
-	// slot, so overlapping probes could carry each other's token or disarm it.
+	// connectMu serializes configured-server Connect probes that share one bearer
+	// slot. Server choices are serialized by firstRunGate.
 	connectMu sync.Mutex
 	// phase is "setup" or "reopen" while no connection is installed. It is never
 	// a connection, so CompassRPC stays on the no-connection error.
@@ -145,6 +145,9 @@ func newSetupBridgeService(events eventEmitter, tokens tokenstore.Store, setup *
 	}
 	if setup.picks == nil {
 		setup.picks = &caPicks{}
+	}
+	if setup.newTarget == nil {
+		setup.newTarget = bridge.NewTLSTarget
 	}
 	if setup.saveClient == nil {
 		setup.saveClient = appconfig.SaveClient
@@ -319,11 +322,21 @@ func (s *bridgeService) connectServerChoice(ctx context.Context, req connectRequ
 		if !ok {
 			return connectResult{Kind: connectKindInvalidCA, Message: "Choose the certificate again."}
 		}
+		if len(caPEM) == 0 {
+			return connectResult{Kind: connectKindInvalidCA, Message: "The file is not a PEM certificate."}
+		}
 	}
-	candidate, err := bridge.NewTLSTarget(serverURL, caPEM)
+	candidate, err := setup.newTarget(serverURL, caPEM)
 	if err != nil {
 		return connectResult{Kind: connectKindInvalidCA, Message: "The file is not a PEM certificate."}
 	}
+	installed := false
+	defer func() {
+		if !installed {
+			client, _ := candidate.Client()
+			client.CloseIdleConnections()
+		}
+	}()
 
 	if s.tokens == nil {
 		return connectResult{Kind: connectKindOther, Message: "Connect is not available: no remote target is configured"}
@@ -372,6 +385,7 @@ func (s *bridgeService) connectServerChoice(ctx context.Context, req connectRequ
 		target:    candidate,
 		pump:      bridge.NewPump(candidate),
 	})
+	installed = true
 	setup.picks.clear()
 	decide(setup.gate, s, true)
 	finished = true
@@ -638,7 +652,7 @@ type connectRequest struct {
 // race a webview-goroutine Connect (bridge_service.go accountID doc).
 type connectResult struct {
 	OK            bool   `json:"ok"`
-	Kind          string `json:"kind"`    // "" | "bad-url" | "bad-cert" | "bad-token" | "version-mismatch" | "other"
+	Kind          string `json:"kind"`    // "" | "bad-url" | "bad-cert" | "bad-token" | "invalid-url" | "invalid-ca" | "version-mismatch" | "other"
 	Message       string `json:"message"` // safe from the token; MAY echo untrusted server text — render escaped
 	AccountID     string `json:"accountId"`
 	ServerVersion string `json:"serverVersion"` // untrusted server-reported string
