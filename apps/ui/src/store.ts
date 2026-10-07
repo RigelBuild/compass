@@ -662,11 +662,45 @@ function createLiveSessions(
 	// The last status per session id. Unlike the account map, a resync never
 	// clears it, so a reuse straddling a resync still sees the terminal state.
 	const lastStates = new Map<string, AgentSessionState>();
+	// The last `sessionFor` result per session id and the inputs it was built from.
+	const cached = new Map<
+		string,
+		{
+			trace: SessionTrace | undefined;
+			state: AgentSessionState;
+			session: AgentSession;
+		}
+	>();
+	// Drop each session whose account now maps to another id. A resync (an empty or
+	// partial map) prunes nothing: a reused id can straddle one.
+	const pruneMovedSessions = (
+		next: ReadonlyMap<string, AccountSession>,
+	): void => {
+		const prev = untrack(accountSessions);
+		const nextIds = new Set([...next.values()].map((s) => s.sessionId));
+		const dropped = new Set<string>();
+		for (const account of next.keys()) {
+			const moved = prev.get(account)?.sessionId;
+			if (moved !== undefined && !nextIds.has(moved)) dropped.add(moved);
+		}
+		for (const sessionId of dropped) {
+			statusCounts.delete(sessionId);
+			lastStates.delete(sessionId);
+			cached.delete(sessionId);
+		}
+		if (![...dropped].some((id) => untrack(traces).has(id))) return;
+		setTraces((prev) => {
+			const kept = new Map(prev);
+			for (const sessionId of dropped) kept.delete(sessionId);
+			return kept;
+		});
+	};
 	// A changed status lifts a NotFound park. Only a terminal-then-live status pair
 	// re-arms an ended trace: that is a reused id (reload, wake, resume), not a late one.
 	const adoptAccountSessions = (
 		next: ReadonlyMap<string, AccountSession>,
 	): void => {
+		pruneMovedSessions(next);
 		for (const status of next.values()) {
 			const old = lastStates.get(status.sessionId);
 			if (old === status.state) continue;
@@ -751,12 +785,24 @@ function createLiveSessions(
 			const status = accountSessions().get(agentId);
 			if (!status) return undefined;
 			const trace = traces().get(status.sessionId);
-			return {
+			// Reuse the last object while its inputs hold, so a frame on another
+			// session does not hand every view a new session object.
+			const hit = cached.get(status.sessionId);
+			if (
+				hit !== undefined &&
+				hit.trace === trace &&
+				hit.state === status.state &&
+				hit.session.agentAccountId === agentId
+			)
+				return hit.session;
+			const session: AgentSession = {
 				sessionId: status.sessionId,
 				agentAccountId: agentId,
 				running: isRunning(status.state, trace?.state),
 				events: trace?.events ?? [],
 			};
+			cached.set(status.sessionId, { trace, state: status.state, session });
+			return session;
 		},
 	};
 }

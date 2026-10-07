@@ -417,4 +417,57 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 			dispose();
 		}
 	});
+
+	test("a frame on one pane's session leaves the other pane's session unchanged", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		const paneSession = (agentId: string) =>
+			store
+				.viewScopes()
+				.find((scope) => scope.agent()?.account.id === agentId)
+				?.agentSession();
+		try {
+			fake.pushSessionStatus(AGENT, "sess-a", AgentSessionState.WORKING);
+			fake.pushSessionStatus(OTHER, "sess-b", AgentSessionState.WORKING);
+			await settle();
+			store.openAgent(AGENT);
+			store.dispatchLayout({ kind: "split", direction: "row" });
+			store.openAgent(OTHER);
+			await settle(() => fake.openSessionTails().length === 2);
+			fake.pushSessionFrame("sess-a", { event: text("a1", "from a") });
+			await settle(() => (paneSession(AGENT)?.events.length ?? 0) >= 1);
+			const before = paneSession(AGENT);
+
+			fake.pushSessionFrame("sess-b", { event: toolCall("b1") });
+			await settle(() => (paneSession(OTHER)?.events.length ?? 0) >= 1);
+			expect(paneSession(AGENT)).toBe(before);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("an account's previous session trace is dropped when it moves to a new id", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.WORKING);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-1"));
+			fake.pushSessionFrame("sess-1", { event: text("old", "old") });
+			await settle(
+				() => (store.focusedView().agentSession()?.events.length ?? 0) >= 1,
+			);
+
+			fake.pushSessionStatus(AGENT, "sess-2", AgentSessionState.WORKING);
+			await settle(() => fake.openSessionTails().join() === "sess-2");
+			// The old id coming back is the only way to read its trace again.
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.WORKING);
+			await settle(() => fake.openSessionTails().join() === "sess-1");
+			expect(store.focusedView().agentSession()?.sessionId).toBe("sess-1");
+			expect(store.focusedView().agentSession()?.events).toEqual([]);
+		} finally {
+			dispose();
+		}
+	});
 });
