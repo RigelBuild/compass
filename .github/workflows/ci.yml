@@ -1780,6 +1780,7 @@ jobs:
               tools/toolchain/gtk-closure.nix \
               tools/toolchain/gtk-e2e-env.nix \
               tools/macos-bundle/ \
+              tools/toolchain/secretspec-env.nix \
               go/cmd/compass-stack/ \
               go/cmd/compass-server/ \
               go/cmd/compass-runner/ \
@@ -1824,6 +1825,9 @@ jobs:
               -ldflags "-X main.version=$dev" \
               -o "/tmp/$b" "./cmd/$b"
           done
+          # compass-server spawns secretspec by name; the bundle carries the pin.
+          cp "$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/secretspec-env.nix secretspecRelease)/bin/secretspec" /tmp/secretspec
 
           # Run the darwin-tagged unit suite for the shell entrypoint — this is
           # the ONLY lane that executes it. The moon `compass-go:test` lane runs
@@ -1880,6 +1884,7 @@ jobs:
             --sidecar /tmp/compass-server \
             --sidecar /tmp/compass-runner \
             --sidecar /tmp/compass-clear-token \
+            --sidecar /tmp/secretspec \
             --out "$out"
 
           # Assert the dmg exists, mounts, and carries a complete .app.
@@ -1928,6 +1933,10 @@ jobs:
               rc=1
             fi
           done
+          if ! "$mnt/Compass.app/Contents/MacOS/secretspec" --version; then
+            echo "::error::darwin: mounted bundle has no runnable secretspec"
+            rc=1
+          fi
           FILES=(
             "$mnt/Compass.app/Contents/Info.plist"
             "$mnt/Compass.app/Contents/Resources/dist/index.html"
