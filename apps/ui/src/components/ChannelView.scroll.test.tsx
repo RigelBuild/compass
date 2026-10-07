@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	type Mock,
+	spyOn,
+	test,
+} from "bun:test";
 import * as solidVirtual from "@rigelbuild/solid-virtual";
 import { render } from "@solidjs/testing-library";
 import { createSignal, flush } from "solid-js";
@@ -14,24 +22,23 @@ import {
 } from "./conv-virtual";
 import { MessageStream } from "./MessageStream";
 
-// MessageStream keeps its virtualizer private; wrap the real factory (behavior
-// unchanged) so the measurement cache can be inspected.
-const realCreateVirtualizer = solidVirtual.createVirtualizer;
+// MessageStream keeps its virtualizer private; a pass-through spy on the real
+// factory (behavior unchanged) exposes the measurement cache for inspection.
 let lastVirtualizer:
-	| solidVirtual.Virtualizer<HTMLDivElement, Element>
+	| { elementsCache: Map<solidVirtual.VirtualItem["key"], Element> }
 	| undefined;
-mock.module("@rigelbuild/solid-virtual", () => ({
-	...solidVirtual,
-	createVirtualizer: (
-		options: solidVirtual.PartialKeys<
-			solidVirtual.VirtualizerOptions<HTMLDivElement, Element>,
-			"observeElementRect" | "observeElementOffset" | "scrollToFn"
-		>,
-	) => {
-		lastVirtualizer = realCreateVirtualizer(options);
-		return lastVirtualizer;
-	},
-}));
+let virtualizerSpy: Mock<typeof solidVirtual.createVirtualizer> | undefined;
+
+function captureVirtualizer(): void {
+	const real = solidVirtual.createVirtualizer;
+	virtualizerSpy = spyOn(solidVirtual, "createVirtualizer").mockImplementation(
+		(options) => {
+			const instance = real(options);
+			lastVirtualizer = instance;
+			return instance;
+		},
+	);
+}
 
 // The conversation stream's scroll contract, designed fresh
 // (ChannelView had NO scroll management before this lane). The behavior is
@@ -132,6 +139,9 @@ beforeEach(() => {
 afterEach(() => {
 	restoreGeometry?.();
 	restoreGeometry = undefined;
+	virtualizerSpy?.mockRestore();
+	virtualizerSpy = undefined;
+	lastVirtualizer = undefined;
 });
 
 function scrollToTop(el: HTMLElement): void {
@@ -417,6 +427,7 @@ describe("MessageStream scroll contract", () => {
 	// A reused row must leave its previous key's cache entry; otherwise one node
 	// piles up under every key it has shown and is pinned after it detaches.
 	test("a reused row is cached only under the key it currently shows", () => {
+		captureVirtualizer();
 		const { setMessages, setScopeId, rows } = mountStream([
 			msg("a-0", 1_000),
 			msg("a-1", 2_000),
@@ -430,6 +441,9 @@ describe("MessageStream scroll contract", () => {
 		expect(cache).toBeDefined();
 		const live = rows();
 		expect(live.map((r) => r.getAttribute("data-key"))).toEqual(["d-0", "d-1"]);
+		for (const row of live) {
+			expect(cache?.get(row.getAttribute("data-key") ?? "")).toBe(row);
+		}
 		for (const [key, el] of cache ?? []) {
 			const shown = live.find((row) => row === el);
 			if (shown) expect(key).toBe(shown.getAttribute("data-key") ?? "");
