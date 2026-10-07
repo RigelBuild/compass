@@ -43,10 +43,9 @@ func runClient(cfg appconfig.Config, stateDir string) (*bridgeService, error) {
 		return nil, fmt.Errorf("building client TLS target for %q: %w", cfg.ServerURL, err)
 	}
 
-	// The ONE-target invariant: the pump and the service MUST share this single
-	// *bridge.Target instance, or a bearer armed on the service's target never
-	// reaches the pump's forwarded requests.
-	svc := newBridgeService(bridge.NewPump(target), nil, target, tokenstore.New(stateDir))
+	// The pump and service share this target so Connect bearers reach every RPC.
+	conn := &connection{mode: cfg.Mode.String(), serverURL: cfg.ServerURL, target: target, pump: bridge.NewPump(target)}
+	svc := newBridgeService(conn, nil, tokenstore.New(stateDir))
 	return svc, nil
 }
 
