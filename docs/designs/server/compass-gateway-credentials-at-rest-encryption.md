@@ -976,7 +976,9 @@ RPC exactly as the gateway record already specifies.
     fresh nonce (nonce differs from the previous row state).
   - Wrong-key / tampered-row read → error, no partial plaintext; a
     key_version-mismatch error is distinguishable from a GCM auth failure
-    (names the versions, never key material).
+    (names the versions, never key material). The pool read skips such a
+    row and logs its id, key_version and failure class; the row still
+    shadows shared rows, and writes to it still error (Matt, RIG-4783).
 
 ## Tasks
 

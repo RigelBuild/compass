@@ -225,6 +225,57 @@ func TestGatewayCredentialsRowSwapFailsAuthentication(t *testing.T) {
 	}
 }
 
+func TestGatewayCredentialsPoolSkipsUnreadableRow(t *testing.T) {
+	_, pool, creds, agent, _, ctx := newCredentialFixture(t)
+	bad := mustCreate(t, ctx, creds, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{
+		Provider: "anthropic", Scope: gatewaycred.ScopeShared,
+	}, "bad-shared-secret"))
+	good := mustCreate(t, ctx, creds, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{
+		Provider: "openai", Scope: gatewaycred.ScopeShared,
+	}, "good-shared-secret"))
+	corruptCredential(t, ctx, pool, bad.ID)
+	logs := captureDefaultLog(t)
+
+	got, err := creds.(gatewaycred.PoolResolver).Pool(ctx, agent)
+	if err != nil {
+		t.Fatalf("Pool with one unreadable row = %v, want the readable rows", err)
+	}
+	if len(got) != 1 || got[0].ID != good.ID {
+		t.Fatalf("Pool = %v, want only %s", got, good.ID)
+	}
+	line := logs.String()
+	if !strings.Contains(line, bad.ID) || !strings.Contains(line, `"class":"decrypt"`) || !strings.Contains(line, `"level":"ERROR"`) {
+		t.Fatalf("log = %q, want an ERROR naming %s with class decrypt", line, bad.ID)
+	}
+	if strings.Contains(line, "bad-shared-secret") || strings.Contains(line, "good-shared-secret") {
+		t.Fatal("log leaked a credential value")
+	}
+	_, err = creds.UpdateOAuth(ctx, agent, bad.ID, gatewaycred.OAuthToken{Access: "new"}, bad.Version)
+	if err == nil || errors.Is(err, gatewaycred.ErrNotFound) {
+		t.Fatalf("UpdateOAuth on unreadable row = %v, want an internal error", err)
+	}
+}
+
+func TestGatewayCredentialsUnreadableOwnRowStillShadowsShared(t *testing.T) {
+	_, pool, creds, agent, owner, ctx := newCredentialFixture(t)
+	own := mustCreate(t, ctx, creds, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{
+		Provider: "anthropic", Scope: gatewaycred.ScopeOwn, OwnerUserID: owner,
+	}, "own-secret"))
+	mustCreate(t, ctx, creds, gatewaycred.NewAPIKeyCredential(gatewaycred.Credential{
+		Provider: "anthropic", Scope: gatewaycred.ScopeShared,
+	}, "shared-secret"))
+	corruptCredential(t, ctx, pool, own.ID)
+	captureDefaultLog(t)
+
+	got, err := creds.(gatewaycred.PoolResolver).Pool(ctx, agent)
+	if err != nil {
+		t.Fatalf("Pool = %v, want no error", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Pool = %v, want empty: a bad own key must not fall back to shared", got)
+	}
+}
+
 func TestGatewayCredentialsRefreshWritesFreshNonce(t *testing.T) {
 	_, pool, creds, agent, owner, ctx := newCredentialFixture(t)
 	credential := mustCreate(t, ctx, creds, gatewaycred.NewOAuthCredential(gatewaycred.Credential{
@@ -367,6 +418,22 @@ func seedSecondTenant(t *testing.T, dsn string, tenant int) context.Context {
 		t.Fatalf("insert tenant: %v", err)
 	}
 	return store.WithTenant(ctx, tenantID)
+}
+
+func corruptCredential(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, "UPDATE gateway_credentials SET value_ciphertext = $1 WHERE id = $2", []byte("not-a-ciphertext"), id); err != nil {
+		t.Fatalf("corrupt credential: %v", err)
+	}
+}
+
+func captureDefaultLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }
 
 func mustCreate(t *testing.T, ctx context.Context, s gatewaycred.CredentialStore, credential gatewaycred.Credential) gatewaycred.Credential {
