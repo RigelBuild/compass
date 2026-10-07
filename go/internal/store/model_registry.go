@@ -363,11 +363,7 @@ func (s *Store) DeleteModelRegistry(ctx context.Context) error {
 // in this window is unseen; the accepted, self-healing degradation is the same
 // (admin-gated low-frequency writers, a stranded ref surfaces at resolve, the
 // operator re-runs). No cross-store lock is taken.
-func (s *Store) checkBundleProfileRefsAgainstRegistry(ctx context.Context, bundle []byte) error {
-	profiles, err := configBundleProfileBodies(bundle)
-	if err != nil {
-		return err
-	}
+func (s *Store) checkBundleProfileRefsAgainstRegistry(ctx context.Context, profiles map[string][]byte) error {
 	if len(profiles) == 0 {
 		return nil // no profiles → no stable-name references to check
 	}
