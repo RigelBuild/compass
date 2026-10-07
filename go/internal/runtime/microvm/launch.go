@@ -191,23 +191,11 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		if lookErr != nil {
 			return nil, fmt.Errorf("microvm: resolving virtiofsd on PATH: %w", lookErr)
 		}
-		// Both subordinate bases are READ, never assumed: newuidmap validates the
-		// uid range against /etc/subuid and newgidmap the gid range against
-		// /etc/subgid — INDEPENDENT allocations. Reusing the uid base dies on a
-		// divergent box after virtiofsd bound its socket (waitForSockets is liveness-aware).
-		subUIDBase, subGIDBase := 0, 0
-		if cfg.AgentUID != 0 {
-			uidBase, gidBase, subErr := SubordinateIDBases()
-			if subErr != nil {
-				return nil, subErr
-			}
-			subUIDBase, subGIDBase = uidBase, gidBase
-		}
 		vm.virtiofsd = &child{
 			name:    "virtiofsd",
 			logPath: filepath.Join(dir, "virtiofsd.log"),
 			//nolint:gosec // G204: the microVM harness seam — virtiofsdPath is LookPath-resolved and the argv is harness-built from BootConfig, neither user-controlled
-			cmd: exec.CommandContext(ctx, virtiofsdPath, virtiofsdArgs(cfg, subUIDBase, subGIDBase)...),
+			cmd: exec.CommandContext(ctx, virtiofsdPath, virtiofsdArgs(cfg)...),
 		}
 		if startErr := vm.startRecordedChild(vm.virtiofsd, dir, "virtiofsd.pid"); startErr != nil {
 			return nil, startErr
@@ -249,7 +237,7 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 
 	// virtiofsd + passt must be serving before cloud-hypervisor connects.
 	// Bounded poll, LIVENESS-AWARE not path-existence: virtiofsd binds its socket
-	// BEFORE the id-map setup that can fail, so a mapping failure leaves the
+	// BEFORE the sandbox setup that can fail, so a sandbox failure leaves the
 	// socket behind a dead daemon and a path-only poll would launch against a corpse.
 	waiting := []*child{vm.passt}
 	ready := []string{cfg.Net.VhostUserSocket}
@@ -293,115 +281,55 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 }
 
 // virtiofsdArgs builds the whole virtiofsd argv: the socket/share/sandbox flags
-// every boot carries, the capability trim, and the id mapping (empty under the
-// V2a spike, see virtiofsdIDMapArgs). subUIDBase and subGIDBase are the host
-// subordinate ids mapped to namespace-uid 0 and namespace-gid 0, read from
-// /etc/subuid and /etc/subgid INDEPENDENTLY by the caller (subuid.go on why
-// they must not be one value); both are ignored when cfg.AgentUID is zero.
+// every boot carries, the capability trim, and the id translation (empty under
+// the V2a spike, see virtiofsdTranslateArgs).
 //
 // modcapsDropMknod drops CAP_MKNOD from the capability set virtiofsd retains
 // under --sandbox=namespace. A workspace share has no legitimate use for device
-// nodes — the agent checks out source and writes build output — so the
-// capability is pure escape surface, and dropping it is free (see
-// virtiofsdIDMapArgs on the rest of the retained set). The literal is a const
+// nodes, so the capability is pure escape surface. The literal is a const
 // shared with the test because virtiofsd silently ACCEPTS unknown capability
-// names, so the argv assertion is the only guard against a typo — see
-// modcapsDropMknod's own doc.
-func virtiofsdArgs(cfg BootConfig, subUIDBase, subGIDBase int) []string {
-	idMap := virtiofsdIDMapArgs(cfg.AgentUID, subUIDBase, subGIDBase)
-	args := make([]string, 0, 4+len(idMap))
+// names, so the argv assertion is the only guard against a typo.
+func virtiofsdArgs(cfg BootConfig) []string {
+	translate := virtiofsdTranslateArgs(cfg.AgentUID)
+	args := make([]string, 0, 4+len(translate))
 	args = append(args,
 		"--socket-path="+cfg.FSSocket,
 		"--shared-dir="+cfg.FSSharedDir,
 		"--sandbox=namespace",
 		modcapsDropMknod,
 	)
-	return append(args, idMap...)
+	return append(args, translate...)
 }
 
-// virtiofsdIDMapArgs builds the virtiofsd uid/gid mapping that gives the shared
-// volume the SAME host-side ownership podman's `--userns=keep-id:uid=N,gid=N`
-// produces (record §(d): "virtiofsd does its own uid/gid translation via that
-// userns (subuid/subgid + newuidmap) … the target is the same host-side
-// ownership on the session volume, so files stay identical between backends").
-// Empty when agentUID is zero (the V2a spike harness, which asserts nothing
-// about ownership on its throwaway share).
+// virtiofsdTranslateArgs gives the shared volume the SAME host-side ownership
+// podman's `--userns=keep-id:uid=N,gid=N` produces (record §(d)): the in-guest
+// agent id (the guest runs uid==gid==agentUID) and the invoking host user's
+// uid and gid are translated into each other by virtiofsd itself. Empty when
+// agentUID is zero (the V2a spike, which asserts nothing about ownership).
 //
-// --uid-map/--gid-map (not --translate-uid/--translate-gid): both reach the same
-// ownership, but the map flags are the record's NAMED mechanism — the mapping is
-// performed by the user namespace virtiofsd is placed into by
-// --sandbox=namespace, rather than internally by the daemon. That distinction is
-// load-bearing here for two reasons beyond fidelity to the record:
+// The `map` type is bidirectional: guest-authored files land as the invoking
+// host user, and host-authored files appear in-guest as the agent id. The gid
+// arm uses os.Getgid(), which routinely differs from the agent id (e.g. 1000:100).
 //
-//  1. Rootless, --sandbox=namespace alone leaves virtiofsd unable to become
-//     namespace-root ("Couldn't set the process uid as root: -1"), and a
-//     passthrough daemon that is not root in its own userns cannot chown a newly
-//     created inode to the requesting guest id — so EVERY guest create on the
-//     share failed EINVAL. Mapping an id to namespace-uid 0 makes the daemon
-//     root inside the namespace, which is what makes guest writes work at all.
-//  2. --translate-uid is documented as incompatible with
-//     `--posix-acl=always|auto`, so it would foreclose POSIX ACLs on the share.
-//
-// The four mapped ranges, all one id wide, TWO PER AXIS:
-//   - :0:<subuid base>:1: — an id from the invoking user's /etc/subuid range
-//     becomes namespace-root, so the daemon can chown as above. It is a
-//     subordinate id the invoking user already owns, so no capability is needed
-//     (newuidmap is setuid and honors /etc/subuid).
-//   - :<agentUID>:<host uid>:1: — the in-guest agent id maps to the invoking
-//     host user, which is the parity target itself.
-//   - :0:<SUBGID base>:1: — the gid arm's namespace-root mapping, from
-//     /etc/subgid. It is a SEPARATE allocation from the subuid base and is read
-//     separately (subuid.go): newgidmap validates the gid range against
-//     /etc/subgid, so reusing subUIDBase here boots on a shadow-utils-default
-//     host and makes virtiofsd die on a divergent one.
-//   - :<agentUID>:<host gid>:1: — the guest agent runs uid==gid==agentUID
-//     (guestd linuxCredential) while a host user's gid is routinely different
-//     (e.g. 1000:100), so the host side here is the invoking user's real gid.
-//     Collapsing gid onto uid is precisely the parity break the V6 parity test
-//     detects.
-//
-// SECURITY POSTURE — this is NOT pure ownership parity, and the difference is
-// deliberate and accepted, not incidental. Mapping a subordinate id to
-// namespace-uid 0 makes virtiofsd ROOT IN ITS OWN USER NAMESPACE, so the daemon
-// retains a namespace-scoped CAP_CHOWN / CAP_DAC_OVERRIDE / CAP_SETUID /
-// CAP_SETGID / CAP_FOWNER / CAP_FSETID / CAP_SETFCAP (virtiofsd README §Usage)
-// that a plain rootless daemon with only the invoking user's ambient authority
-// would not have. Two things bound the consequence:
-//
-//   - The authority is namespace-scoped and the namespace holds exactly two host
-//     ids — the subordinate id and the invoking user — so it confers nothing over
-//     any OTHER host user's files.
-//   - --sandbox=namespace pivot_roots the daemon into the shared dir, so even
-//     that authority reaches only the volume subtree it is serving.
-//
-// CAP_MKNOD is dropped outright by virtiofsdArgs' modcapsDropMknod: a workspace
-// share has no legitimate device nodes, so it is surface with no use.
-//
-// The alternative — --translate-uid/--translate-gid, which reaches the same
-// host-side ownership with NO namespace-uid-0 mapping and therefore none of the
-// above capabilities, at the cost of foreclosing POSIX ACLs on the share — is
-// tracked as a design fork (RIG-3330) for the record's owner to rule on. It is
-// NOT swapped in here: --uid-map/--gid-map is the design record's named
-// mechanism, and changing it is a design decision, not a review fix.
-func virtiofsdIDMapArgs(agentUID uint32, subUIDBase, subGIDBase int) []string {
+// --translate-uid/--translate-gid, not --uid-map/--gid-map: the map flags need a
+// subordinate id mapped to namespace-root, which hands the daemon namespace-scoped
+// CAP_CHOWN/CAP_DAC_OVERRIDE/etc. The cost is that --posix-acl=always|auto is
+// incompatible with translation, so POSIX ACLs on the share are not supported.
+func virtiofsdTranslateArgs(agentUID uint32) []string {
 	if agentUID == 0 {
 		return nil
 	}
-	hostUID := os.Getuid()
-	hostGID := os.Getgid()
 	agent := strconv.FormatUint(uint64(agentUID), 10)
 	return []string{
-		"--uid-map", idMapSpec("0", strconv.Itoa(subUIDBase)),
-		"--uid-map", idMapSpec(agent, strconv.Itoa(hostUID)),
-		"--gid-map", idMapSpec("0", strconv.Itoa(subGIDBase)),
-		"--gid-map", idMapSpec(agent, strconv.Itoa(hostGID)),
+		"--translate-uid", translateSpec(agent, strconv.Itoa(os.Getuid())),
+		"--translate-gid", translateSpec(agent, strconv.Itoa(os.Getgid())),
 	}
 }
 
-// idMapSpec renders one virtiofsd --uid-map/--gid-map range in its
-// `:<namespace id>:<host id>:<count>:` form, always one id wide.
-func idMapSpec(namespaceID, hostID string) string {
-	return ":" + namespaceID + ":" + hostID + ":1:"
+// translateSpec renders one bidirectional, one-id-wide virtiofsd translation in
+// its `map:<guest id>:<host id>:<count>` form.
+func translateSpec(guestID, hostID string) string {
+	return "map:" + guestID + ":" + hostID + ":1"
 }
 
 // vmmArgs builds the cloud-hypervisor argv exactly per the record (lines
@@ -497,7 +425,7 @@ func startChild(c *child) error {
 // waiting has exited, or the deadline elapses.
 //
 // LIVENESS, not just path existence: virtiofsd binds its AF_UNIX socket BEFORE
-// the id-map setup that can fail, so a mapping failure leaves a mode-srwx socket
+// the sandbox setup that can fail, so a sandbox failure leaves a mode-srwx socket
 // on disk with the daemon already exited 1 (verified by execution). A
 // path-existence-only poll returns nil there and the boot proceeds to start
 // cloud-hypervisor against a dead daemon, where the real cause ("couldn't setup

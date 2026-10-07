@@ -193,6 +193,15 @@ uid/capability gate on every exec.
   between backends. Host-ownership parity is asserted by V6's test cycle. A
   guest can therefore reach exactly one directory subtree and nothing else;
   another tenant's volume is not merely unreadable but *unnameable*.
+  Post-freeze amendment (Matt, RIG-3330 ruling A): virtiofsd does **not**
+  translate ids through a subuid/subgid + `newuidmap` userns. It translates
+  them itself with `--translate-uid`/`--translate-gid` (`map:<agent id>:<host
+  uid|gid>:1`), and no id is mapped to namespace-root. A namespace-root
+  mapping would give the daemon namespace-scoped `CAP_CHOWN`,
+  `CAP_DAC_OVERRIDE` and similar capabilities. The host-ownership parity
+  target and V6's assertion are unchanged. Cost: virtiofsd refuses
+  `--posix-acl=always|auto` with id translation, so POSIX ACLs on the session
+  volume are not supported.
 - **Resource-exhaustion control (quota) — verify, never assign (D7).**
   virtio-fs itself imposes no space or inode bound, so a hostile guest can
   exhaust the shared filesystem. But the obvious mechanisms collide with

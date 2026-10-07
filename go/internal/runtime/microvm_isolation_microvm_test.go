@@ -749,8 +749,8 @@ func TestMicroVMHostOwnershipParity(t *testing.T) {
 			entry, gotUID, gotGID, wantUID, wantGID)
 		if gotUID != wantUID || gotGID != wantGID {
 			t.Errorf("host-ownership PARITY BROKEN for %s: guest-authored file is %d:%d, "+
-				"but the podman --userns=keep-id path yields %d:%d — virtiofsd's uid/gid mapping "+
-				"(launch.go --uid-map/--gid-map) must map the in-guest agent id to the invoking host user",
+				"but the podman --userns=keep-id path yields %d:%d — virtiofsd's uid/gid translation "+
+				"(launch.go --translate-uid/--translate-gid) must map the in-guest agent id to the invoking host user",
 				entry, gotUID, gotGID, wantUID, wantGID)
 		}
 	}
