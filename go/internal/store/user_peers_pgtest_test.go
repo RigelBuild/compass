@@ -6,12 +6,8 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
@@ -213,84 +209,5 @@ func TestUserPeerCrossTenantIsolation(t *testing.T) {
 	}
 	if row, err := s.q.UserPeerPair(ctxB, pair); err != nil || row.Outgoing {
 		t.Fatalf("tenant A row under tenant B = %+v, %v; want hidden", row, err)
-	}
-}
-
-func TestOpenUpgradesPreviousMigrationToUserPeers(t *testing.T) {
-	ctx := t.Context()
-	dsn := pgtest.RequireDSN(t)
-	migs, err := loadMigrations()
-	if err != nil {
-		t.Fatalf("load migrations: %v", err)
-	}
-	// Apply only what precedes user_peers, so later migrations never pre-apply it.
-	boundary := slices.IndexFunc(migs, func(m migration) bool { return strings.HasSuffix(m.name, "_user_peers.sql") })
-	if boundary < 1 {
-		t.Fatalf("user_peers migration index = %d, want a prior migration before it", boundary)
-	}
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect before upgrade: %v", err)
-	}
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		pool.Close()
-		t.Fatalf("acquire before upgrade: %v", err)
-	}
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
-		conn.Release()
-		pool.Close()
-		t.Fatalf("acquire migration lock: %v", err)
-	}
-	locked := true
-	unlock := func() {
-		if locked {
-			_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey)
-			conn.Release()
-			pool.Close()
-			locked = false
-		}
-	}
-	t.Cleanup(unlock)
-	if err := ensureMigrationsTable(ctx, conn); err != nil {
-		t.Fatalf("ensure migrations table: %v", err)
-	}
-	for _, migration := range migs[:boundary] {
-		if err := applyMigration(ctx, conn, migration); err != nil {
-			t.Fatalf("apply prior migration %q: %v", migration.name, err)
-		}
-	}
-	// Users created before the upgrade must be peerable after it.
-	const tenant TenantID = "upgrade-peer-tenant"
-	if _, err := conn.Exec(ctx, "INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ($1, $1, $1, 0)", string(tenant)); err != nil {
-		t.Fatalf("seed tenant: %v", err)
-	}
-	for _, u := range []string{"upgrade-peer-a", "upgrade-peer-b"} {
-		for _, q := range []string{
-			"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $1, $1, $2)",
-			"INSERT INTO user_accounts (account_id, tenant_id) VALUES ($1, $2)",
-			"INSERT INTO account_handles (account_id, handle, tenant_id) VALUES ($1, $1, $2)",
-		} {
-			if _, err := conn.Exec(ctx, q, u, string(tenant)); err != nil {
-				t.Fatalf("seed user %s: %v", u, err)
-			}
-		}
-	}
-	unlock()
-
-	upgraded, err := Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("Open upgrades prior schema: %v", err)
-	}
-	defer upgraded.Close()
-	tctx := WithTenant(ctx, tenant)
-	for _, edge := range [][2]AccountID{{"upgrade-peer-a", "upgrade-peer-b"}, {"upgrade-peer-b", "upgrade-peer-a"}} {
-		if _, err := upgraded.ApprovePeer(tctx, edge[0], edge[1]); err != nil {
-			t.Fatalf("ApprovePeer(%s, %s) after upgrade: %v", edge[0], edge[1], err)
-		}
-	}
-	peers, err := upgraded.ListPeerings(tctx, "upgrade-peer-a")
-	if err != nil || len(peers) != 1 || peers[0].State != PeeringApproved {
-		t.Fatalf("peerings after upgrade = %+v, %v; want one approved", peers, err)
 	}
 }

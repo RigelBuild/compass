@@ -63,7 +63,9 @@ CREATE INDEX accounts_tenant_idx ON accounts (tenant_id);
 CREATE TABLE user_accounts (
     account_id TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT,
     role       SMALLINT NOT NULL DEFAULT 0 CHECK (role IN (0, 1)),
-    tenant_id  TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+    tenant_id  TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    -- The composite FK target user_peers needs to pin both users to one tenant.
+    CONSTRAINT user_accounts_account_tenant_key UNIQUE (account_id, tenant_id)
 );
 
 -- Agent accounts: an owned subtype gated by its owning user. home_channel_id
@@ -165,6 +167,20 @@ CREATE TABLE account_handles (
 -- owner-qualified (second index), so the two never contend on one lookup.
 CREATE UNIQUE INDEX account_handles_global_key ON account_handles (tenant_id, handle) WHERE owner_user_id IS NULL;
 CREATE UNIQUE INDEX account_handles_owner_key ON account_handles (tenant_id, owner_user_id, handle) WHERE owner_user_id IS NOT NULL;
+
+-- ── User peers ──────────────────────────────────────────────────────────────
+-- Directed user approvals form a peering only when both users have a row.
+CREATE TABLE user_peers (
+    user_id      TEXT NOT NULL,
+    peer_user_id TEXT NOT NULL,
+    tenant_id    TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, peer_user_id),
+    CHECK (user_id <> peer_user_id),
+    FOREIGN KEY (user_id, tenant_id)      REFERENCES user_accounts (account_id, tenant_id) ON DELETE RESTRICT,
+    FOREIGN KEY (peer_user_id, tenant_id) REFERENCES user_accounts (account_id, tenant_id) ON DELETE RESTRICT
+);
+CREATE INDEX user_peers_peer_idx ON user_peers (peer_user_id);
 
 -- ── Channel groups ──────────────────────────────────────────────────────────
 -- Namespace nodes. parent_group_id nests them (NULL = a top-level root);
@@ -1500,7 +1516,7 @@ DECLARE
     t text;
     tenant_tables text[] := ARRAY[
         'accounts',
-        'user_accounts', 'agent_accounts', 'system_accounts', 'account_handles',
+        'user_accounts', 'user_peers', 'agent_accounts', 'system_accounts', 'account_handles',
         'channel_groups', 'channels', 'channel_members', 'agent_workspaces',
         'topics', 'messages', 'channel_pins', 'secrets',
         'agent_sessions', 'agent_placements', 'session_bindings',
