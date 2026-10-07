@@ -2,7 +2,7 @@
 
 package store
 
-// Channel and group contracts: the child ≤ parent visibility ceiling, transitive
+// Channel and group contracts: a child group takes its parent's visibility, transitive
 // owner-membership on creation, the D9 visibility lattice (effective visibility
 // is the most-restrictive value to root; DM/ungrouped access is membership-only),
 // UpdateChannelMembers mutations, and idempotent OpenAgentWorkspace.
@@ -33,6 +33,28 @@ func TestCreateChannelGroupCeilingRejectsWiderChild(t *testing.T) {
 		Name: "ok", ParentGroupID: parent.ID, Visibility: VisibilityOwner,
 	}); err != nil {
 		t.Fatalf("CreateChannelGroup(owner child): %v", err)
+	}
+}
+
+// TestCreateChannelGroupSharedParentRejectsPrivateChild: everything in a shared
+// group is shared; a private subset is a new top-level group instead.
+func TestCreateChannelGroupSharedParentRejectsPrivateChild(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	parent, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{Name: "pub", Visibility: VisibilityShared})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(parent): %v", err)
+	}
+	_, err = s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{
+		Name: "secret", ParentGroupID: parent.ID, Visibility: VisibilityOwner,
+	})
+	sentinelIs(t, err, ErrInvalidArgument, "owner child under shared parent")
+	if _, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{
+		Name: "open", ParentGroupID: parent.ID, Visibility: VisibilityShared,
+	}); err != nil {
+		t.Fatalf("CreateChannelGroup(shared child): %v", err)
 	}
 }
 
@@ -254,15 +276,17 @@ func TestListChannelGroupsLattice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannelGroup(private): %v", err)
 	}
-	// An OWNER group nested under a SHARED parent: effective visibility is the
-	// most-restrictive on the path, so it stays hidden from a non-owner despite
-	// the open ancestor. (The mirror case — a SHARED child under an OWNER parent
-	// — is unconstructible by design: the ceiling rejects it, covered above.)
+	// An OWNER group nested under a SHARED parent: create refuses one now, but
+	// existing rows stay hidden by most-restrictive-on-path, so flip one raw.
 	nestedOwner, err := s.CreateChannelGroup(ctx, ownerA.ID, NewChannelGroup{
-		Name: "nested-private", ParentGroupID: shared.ID, Visibility: VisibilityOwner,
+		Name: "nested-private", ParentGroupID: shared.ID, Visibility: VisibilityShared,
 	})
 	if err != nil {
-		t.Fatalf("CreateChannelGroup(nested owner): %v", err)
+		t.Fatalf("CreateChannelGroup(nested): %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, "UPDATE channel_groups SET visibility = $1 WHERE id = $2",
+		int16(VisibilityOwner), string(nestedOwner.ID)); err != nil {
+		t.Fatalf("flip nested group to owner: %v", err)
 	}
 
 	outsiderView, err := s.ListChannelGroups(ctx, outsider.ID)
