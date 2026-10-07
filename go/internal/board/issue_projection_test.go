@@ -8,6 +8,7 @@ package board
 // PublishIssueUpdate/Rehydrate hit the store and live in the pgtest suite.
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -207,7 +208,9 @@ func TestRecordAndPublishFansAndRecordsCommittedState(t *testing.T) {
 		Number:        42,
 		State:         store.IssueStateInProgress,
 	}
-	p.RecordAndPublish(committed)
+	if err := p.RecordAndPublish(context.Background(), committed); err != nil {
+		t.Fatalf("RecordAndPublish: %v", err)
+	}
 
 	select {
 	case e, ok := <-sub.Live:

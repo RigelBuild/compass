@@ -102,7 +102,9 @@ func TestPublishPullRequestAttachesAndStateChangeKeepsPrs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
-	p.RecordAndPublish(committed)
+	if err := p.RecordAndPublish(context.Background(), committed); err != nil {
+		t.Fatalf("RecordAndPublish: %v", err)
+	}
 	got := recvIssue(t, live)
 	if got.GetState() != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS || !slices.Equal(prNumbers(got), []uint32{10}) {
 		t.Fatalf("state change fanned state %v prs %v, want IN_PROGRESS [10]", got.GetState(), prNumbers(got))
@@ -211,4 +213,78 @@ func mustBoardAgent(t *testing.T, st *store.Store) boardAgent {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 	return boardAgent{agent: a.ID, owner: u.ID}
+}
+
+// TestTransitionOnUncachedIssueLoadsPrs pins the cache-miss path: a transition
+// on an issue not yet in the cache fans and caches its stored prs.
+func TestTransitionOnUncachedIssueLoadsPrs(t *testing.T) {
+	ctx := context.Background()
+	p, bus, st := newIssueBoard(t)
+	mustPublishIssue(t, p, 1)
+	mustPublishPR(t, p, ingestedPR(10, 0, time.Hour, 1))
+	id := cached(t, p, 1).GetId()
+
+	cold := NewIssueProjection(bus, st)
+	if err := st.SetIssueState(ctx, id, store.IssueStateInProgress); err != nil {
+		t.Fatalf("SetIssueState: %v", err)
+	}
+	committed, err := st.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if err := cold.RecordAndPublish(ctx, committed); err != nil {
+		t.Fatalf("RecordAndPublish: %v", err)
+	}
+	wire, err := cold.CommittedIssue(ctx, committed)
+	if err != nil || !slices.Equal(prNumbers(wire), []uint32{10}) {
+		t.Fatalf("CommittedIssue prs = %v, %v; want [10]", prNumbers(wire), err)
+	}
+}
+
+// TestTransitionRecordsRowNewerThanCaller pins the re-read: a forge update that
+// commits after the transition's read is not rolled back in the cache.
+func TestTransitionRecordsRowNewerThanCaller(t *testing.T) {
+	ctx := context.Background()
+	p, _, st := newIssueBoard(t)
+	mustPublishIssue(t, p, 1)
+	id := cached(t, p, 1).GetId()
+	if err := st.SetIssueState(ctx, id, store.IssueStateInProgress); err != nil {
+		t.Fatalf("SetIssueState: %v", err)
+	}
+	stale, err := st.GetIssue(ctx, id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	newer := canonicalIssue(1)
+	newer.Title = "renamed"
+	if err := p.PublishIssueUpdate(ctx, newer); err != nil {
+		t.Fatalf("PublishIssueUpdate: %v", err)
+	}
+	if err := p.RecordAndPublish(ctx, stale); err != nil {
+		t.Fatalf("RecordAndPublish: %v", err)
+	}
+	if got := cached(t, p, 1); got.GetTitle() != "renamed" || got.GetState() != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
+		t.Fatalf("cached title %q state %v, want renamed IN_PROGRESS", got.GetTitle(), got.GetState())
+	}
+}
+
+// TestTransitionPublishesWhenReadBackFails pins that a durable transition still
+// reaches the board when the re-read fails, and the error is reported.
+func TestTransitionPublishesWhenReadBackFails(t *testing.T) {
+	p, _, st := newIssueBoard(t)
+	mustPublishIssue(t, p, 1)
+	id := cached(t, p, 1).GetId()
+	committed, err := st.GetIssue(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	committed.State = store.IssueStateInProgress
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.RecordAndPublish(ctx, committed); err == nil {
+		t.Fatal("RecordAndPublish error = nil, want the failed re-read")
+	}
+	if got := cached(t, p, 1).GetState(); got != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
+		t.Fatalf("cached state = %v, want IN_PROGRESS", got)
+	}
 }

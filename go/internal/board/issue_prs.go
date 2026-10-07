@@ -5,6 +5,7 @@ package board
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
@@ -58,6 +59,11 @@ func storeIssueCoord(si store.Issue) store.ForgeCoord {
 
 // loadPrs reads the ordered wire prs for each coordinate in one query.
 func (p *IssueProjection) loadPrs(ctx context.Context, coords []store.ForgeCoord) (map[store.ForgeCoord][]*compassv1.PullRequest, error) {
+	// A number-0 row is not a forge coordinate and can carry no links.
+	coords = slices.DeleteFunc(slices.Clone(coords), func(c store.ForgeCoord) bool { return c.Number == 0 })
+	if len(coords) == 0 {
+		return map[store.ForgeCoord][]*compassv1.PullRequest{}, nil
+	}
 	rows, err := p.store.PullRequestsForIssues(ctx, coords)
 	if err != nil {
 		return nil, fmt.Errorf("board: load pull requests: %w", err)
@@ -67,7 +73,8 @@ func (p *IssueProjection) loadPrs(ctx context.Context, coords []store.ForgeCoord
 		wire := make([]*compassv1.PullRequest, 0, len(prs))
 		for _, r := range prs {
 			pr := &compassv1.PullRequest{}
-			if err := protojson.Unmarshal(r.PR, pr); err != nil {
+			// A row written by a newer binary must not fail a rollback's startup.
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(r.PR, pr); err != nil {
 				return nil, fmt.Errorf("board: decode stored pull request %v: %w", r.Coord, err)
 			}
 			wire = append(wire, pr)
@@ -78,8 +85,17 @@ func (p *IssueProjection) loadPrs(ctx context.Context, coords []store.ForgeCoord
 }
 
 // republishPrs reloads prs for the given issues and publishes each one already
-// on the board. Issues not on the board are skipped; their links wait.
+// on the board. Issues not on the board are skipped; their links wait. Each
+// caller reloads after its own commit, so the last to take writeMu applies the
+// newest list.
 func (p *IssueProjection) republishPrs(ctx context.Context, coords []store.ForgeCoord) error {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	return p.republishPrsLocked(ctx, coords)
+}
+
+// republishPrsLocked is republishPrs for a caller holding writeMu.
+func (p *IssueProjection) republishPrsLocked(ctx context.Context, coords []store.ForgeCoord) error {
 	if len(coords) == 0 {
 		return nil
 	}
