@@ -172,7 +172,19 @@ export {
 	// The full channel message an `OpenDMResponse` wraps — the DM tools render
 	// its `name` (dm--<lo>--<hi>) and tests build fixtures from it.
 	type Channel,
+	type ChannelGroup,
+	ChannelGroupSchema,
+	ChannelGroupVisibility,
+	ChannelKind,
 	ChannelSchema,
+	type CreateChannelGroupRequest,
+	CreateChannelGroupRequestSchema,
+	type CreateChannelGroupResponse,
+	CreateChannelGroupResponseSchema,
+	type CreateChannelRequest,
+	CreateChannelRequestSchema,
+	type CreateChannelResponse,
+	CreateChannelResponseSchema,
 	// The roster read payloads the agent's `compass_roster` tool constructs: the
 	// request names a `scope` (RosterScope) and, for an agent caller, omits the
 	// session-resolved `agentAccountId`; the response carries the RosterEntry
@@ -215,6 +227,10 @@ export {
 	type RosterEntry,
 	RosterEntrySchema,
 	RosterScope,
+	type UpdateChannelMembersRequest,
+	UpdateChannelMembersRequestSchema,
+	type UpdateChannelMembersResponse,
+	UpdateChannelMembersResponseSchema,
 } from "./gen/compass/v1/comms_pb";
 export {
 	// Forge canonical result types (DL-069/DL-092: the forge domain arms retype to these) plus
