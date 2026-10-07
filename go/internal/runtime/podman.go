@@ -410,6 +410,12 @@ type WorkloadRuntime interface {
 	Resize(ctx context.Context, id WorkloadID, limits ResourceLimits) error
 }
 
+// SessionSweeper is an optional backend capability for removing detached
+// exec sessions without stopping the workload's PID 1 keep-alive.
+type SessionSweeper interface {
+	SweepExecSessions(ctx context.Context, id WorkloadID, user string) error
+}
+
 // A backend that self-arms egress does NOT grow a verb on WorkloadRuntime:
 // MicroVMRuntime carries an off-interface marker EgressArmedInGuest(),
 // and AgentRuntime.provision type-asserts inGuestEgressArmer to skip armEgress
@@ -609,6 +615,19 @@ func (p *PodmanCLI) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (Exe
 	}, nil
 }
 
+// SweepExecSessions removes detached exec processes while preserving the
+// container's PID 1 session and keep-alive.
+func (p *PodmanCLI) SweepExecSessions(ctx context.Context, id WorkloadID, user string) error {
+	out, err := p.Exec(ctx, id, NewExecSpec("sh", "-s").AsUser(user).WithStdin(sessionSweepScript))
+	if err != nil {
+		return err
+	}
+	if out.ExitCode != 0 {
+		return &CommandError{Summary: "podman exec session sweep", ExitCode: out.ExitCode, Stderr: strings.TrimSpace(out.Stderr)}
+	}
+	return nil
+}
+
 // ExecStreaming starts a streaming `podman exec -i` through the shared
 // subprocess seam, returning the live pipes plus a kill/wait handle.
 func (p *PodmanCLI) ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error) {
@@ -782,7 +801,7 @@ func execStreamingArgs(id WorkloadID, spec StreamingExecSpec) []string {
 		args = append(args, "-e", kv.key+"="+kv.value)
 	}
 	args = append(args, id.String())
-	args = append(args, spec.Command...)
+	args = append(args, stopWithClient(spec.Command)...)
 	return args
 }
 
