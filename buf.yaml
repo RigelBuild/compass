@@ -31,12 +31,15 @@ lint:
   #     precedent. Internal-only, scoped to this one file. `Health` ->
   #     `HealthRequest`/`HealthResponse` already satisfies the RPC name rules, so
   #     no RPC_REQUEST/RESPONSE carve-out is needed here.
+  # gateway_credentials.proto carves out SERVICE_SUFFIX the same way: the
+  #   `GatewayCredentials` door serves one internal tier, the LLM gateway.
   ignore_only:
     ENUM_ZERO_VALUE_SUFFIX:
       - proto/compass/v1/comms.proto
     SERVICE_SUFFIX:
       - proto/compass/v1/agent_gateway.proto
       - proto/compass/v1/guest_control.proto
+      - proto/compass/v1/gateway_credentials.proto
     RPC_REQUEST_STANDARD_NAME:
       - proto/compass/v1/agent_gateway.proto
     RPC_RESPONSE_STANDARD_NAME:
