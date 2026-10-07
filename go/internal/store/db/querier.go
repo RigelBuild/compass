@@ -163,6 +163,7 @@ type Querier interface {
 	EnsureComputeUsageIntervalStart(ctx context.Context, agentAccountID string) error
 	EnsureForgeRepoSubscription(ctx context.Context, arg EnsureForgeRepoSubscriptionParams) error
 	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
+	ForgeScopeUserExists(ctx context.Context, accountID string) (bool, error)
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
 	// EXISTS guard leaves it in place if any other agent still subscribes).
 	GCForgeArtifactCursorIfUnsubscribed(ctx context.Context, arg GCForgeArtifactCursorIfUnsubscribedParams) error
@@ -228,8 +229,12 @@ type Querier interface {
 	GetTopicChannel(ctx context.Context, id string) (string, error)
 	// The caller is bound to one tenant by the store's scoped query path.
 	GetTourState(ctx context.Context, accountID string) (GetTourStateRow, error)
+	// Scope grants are managed for user accounts; agents inherit their owner's rows.
+	// The SELECT runs under RLS, so a user from another tenant inserts nothing.
+	GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) (int64, error)
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
+	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)
 	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)
 	HotTailSizes(ctx context.Context, arg HotTailSizesParams) ([]HotTailSizesRow, error)
 	InSweepSet(ctx context.Context, arg InSweepSetParams) (bool, error)
@@ -347,6 +352,7 @@ type Querier interface {
 	// observed) and the subscriber rows, container-scope rows collapsed per
 	// (repo, kind) to coord_number 0. The Go groups the flat rows into targets.
 	ListForgeNotifyTargets(ctx context.Context, arg ListForgeNotifyTargetsParams) ([]ListForgeNotifyTargetsRow, error)
+	ListForgeScopeRepos(ctx context.Context, arg ListForgeScopeReposParams) ([]string, error)
 	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
 	// ListTenantIDs lists every tenant. tenants has no row-level security, so the
@@ -510,6 +516,7 @@ type Querier interface {
 	ResolveVisibleAgentHandles(ctx context.Context, arg ResolveVisibleAgentHandlesParams) ([]ResolveVisibleAgentHandlesRow, error)
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ReviveTopic(ctx context.Context, id string) error
+	RevokeForgeScope(ctx context.Context, arg RevokeForgeScopeParams) error
 	RevokeToken(ctx context.Context, hash []byte) (int64, error)
 	// RollUpTokenUsageFrom rebuilds both rollups from the events at or after the
 	// horizon.
