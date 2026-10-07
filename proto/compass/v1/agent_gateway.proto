@@ -354,6 +354,14 @@ message CreatePullRequestRequest {
   string head_ref = 4;           // the branch the agent already pushed with ITS OWN git creds
   string base_ref = 5;           // empty = the repo default branch
   bool draft = 6;
+  // The issue this PR works on. Unset = no explicit link; the server falls
+  // back to the forge's closing references.
+  PullRequestIssueLink issue = 7;
+}
+message PullRequestIssueLink {
+  compass.v1.ForgeRef forge = 1;  // unset = the PR's forge
+  string repo = 2;                // owner/name; the team key on Linear
+  uint64 number = 3;
 }
 message CommentOnPullRequestRequest {
   string repo = 1;
