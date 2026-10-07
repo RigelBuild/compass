@@ -468,6 +468,33 @@ func TestErroredCleanupWithoutDurableWriteKeepsLegacyRow(t *testing.T) {
 	}
 }
 
+func TestErroredCleanupReleasesReverseReadThroughBinding(t *testing.T) {
+	ctx := store.WithTenant(t.Context(), "tenant-a")
+	hub, _, _ := newHub()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	lost := newRecordingLostSink()
+	hub.SetSessionLostSink(lost)
+	hub.enroll(ctx, testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	// Another instance promoted the session; this hub learns it from a delivery's reverse read.
+	bindings.seed("sess-1")
+	if sess, ok := hub.SessionForAccount(ctx, testAgentAccount); !ok || sess != "sess-1" {
+		t.Fatalf("SessionForAccount = (%q, %v), want (sess-1, true)", sess, ok)
+	}
+	gen := hub.EnrollGeneration()
+	hub.mu.Lock()
+	seen := hub.sessionAccounts["sess-1"]
+	hub.mu.Unlock()
+
+	hub.dropLostSessionIfCurrent(ctx, gen, testRunnerID, "sess-1", &seen, true)
+	if account, errored := lost.waitOne(t); account != testAgentAccount || !errored {
+		t.Fatalf("loss report = (%s, %v), want (%s, true)", account, errored, testAgentAccount)
+	}
+	if _, _, _, err := bindings.ResolveSessionBinding(ctx, "sess-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("durable binding after ERRORED cleanup: %v, want ErrNotFound", err)
+	}
+}
+
 // pausingDeleteBindingStore holds the first DeleteSessionBindingVersion until released.
 type pausingDeleteBindingStore struct {
 	*fakeBindingStore

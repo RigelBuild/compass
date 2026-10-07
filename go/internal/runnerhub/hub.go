@@ -223,7 +223,7 @@ type SessionBindingStore interface {
 	// SessionForAccount resolves the live session bound to an account — the
 	// cache-miss read behind SessionForAccount (the reverse direction). Same
 	// fail-closed store.ErrNotFound contract. Returns the owning Runner id too.
-	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID string, err error)
+	SessionForAccount(ctx context.Context, accountID store.AccountID) (sessionID, runnerID, version string, err error)
 	// DeleteSessionBinding releases one session's binding — the unbind write.
 	// Idempotent: releasing an already-released session is a no-op success.
 	DeleteSessionBinding(ctx context.Context, sessionID string) error

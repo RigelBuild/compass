@@ -110,7 +110,7 @@ func TestRecordSessionBindingRoundTripsBothDirections(t *testing.T) {
 		t.Fatalf("ResolveSessionBinding runner = %q, want runner-1", gotRunner)
 	}
 
-	gotSession, gotRunner, err := s.SessionForAccount(ctx, agent.ID)
+	gotSession, gotRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestSessionBindingLookupsFailClosed(t *testing.T) {
 	// started a session resolves nothing to dispatch to.
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
-	session, runner, err := s.SessionForAccount(ctx, agent.ID)
+	session, runner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionForAccount(unbound agent) err = %v, want errors.Is(_, ErrNotFound)", err)
 	}
@@ -176,7 +176,7 @@ func TestRecordSessionBindingRePointsAccountAndReportsDisplaced(t *testing.T) {
 	}
 
 	// The account now resolves to the NEW session (the session_id assignment).
-	gotSession, gotRunner, err := s.SessionForAccount(ctx, agent.ID)
+	gotSession, gotRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount after the re-point: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestRecordSessionBindingRejectsASessionClaimedByAnotherAccount(t *testing.T
 	if gotAccount != agentA.ID {
 		t.Fatalf("sess-1 resolves to %q, want the original owner %q", gotAccount, agentA.ID)
 	}
-	if _, _, err := s.SessionForAccount(ctx, agentB.ID); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.SessionForAccount(ctx, agentB.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionForAccount(agent-b) err = %v, want ErrNotFound — the refused bind must not have landed", err)
 	}
 }
@@ -310,7 +310,7 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 	if _, _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveSessionAccount after delete err = %v, want ErrNotFound", err)
 	}
-	if _, _, err := s.SessionForAccount(ctx, agent.ID); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.SessionForAccount(ctx, agent.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionForAccount after delete err = %v, want ErrNotFound", err)
 	}
 
@@ -526,7 +526,7 @@ func TestSessionBindingIsTenantIsolated(t *testing.T) {
 	}
 
 	// The reverse direction leaks nothing either.
-	if gotSession, _, err := s.SessionForAccount(ctxB, agentA.ID); !errors.Is(err, ErrNotFound) {
+	if gotSession, _, _, err := s.SessionForAccount(ctxB, agentA.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("tenant B SessionForAccount(A's agent) = (%q, %v), want ErrNotFound — cross-tenant read leak", gotSession, err)
 	}
 
@@ -617,10 +617,10 @@ func TestSessionBindingSameSessionIDInTwoTenantsCoexist(t *testing.T) {
 	}
 
 	// And the reverse direction, per tenant.
-	if got, runner, err := s.SessionForAccount(ctxA, agentA.ID); err != nil || got != "sess-shared" || runner != "runner-a" {
+	if got, runner, _, err := s.SessionForAccount(ctxA, agentA.ID); err != nil || got != "sess-shared" || runner != "runner-a" {
 		t.Fatalf("tenant A SessionForAccount = (%q, %q, %v), want (sess-shared, runner-a, nil)", got, runner, err)
 	}
-	if got, runner, err := s.SessionForAccount(ctxB, agentB.ID); err != nil || got != "sess-shared" || runner != "runner-b" {
+	if got, runner, _, err := s.SessionForAccount(ctxB, agentB.ID); err != nil || got != "sess-shared" || runner != "runner-b" {
 		t.Fatalf("tenant B SessionForAccount = (%q, %q, %v), want (sess-shared, runner-b, nil)", got, runner, err)
 	}
 }
@@ -655,10 +655,10 @@ func TestSessionBindingSameAccountIDInTwoTenantsCoexist(t *testing.T) {
 	}
 
 	// Both rows survive, one per tenant, each resolving its own session.
-	if got, runner, err := s.SessionForAccount(ctxA, shared.ID); err != nil || got != "sess-a" || runner != "runner-a" {
+	if got, runner, _, err := s.SessionForAccount(ctxA, shared.ID); err != nil || got != "sess-a" || runner != "runner-a" {
 		t.Fatalf("tenant A SessionForAccount = (%q, %q, %v), want (sess-a, runner-a, nil) — B's write reached A's row", got, runner, err)
 	}
-	if got, runner, err := s.SessionForAccount(ctxB, shared.ID); err != nil || got != "sess-b" || runner != "runner-b" {
+	if got, runner, _, err := s.SessionForAccount(ctxB, shared.ID); err != nil || got != "sess-b" || runner != "runner-b" {
 		t.Fatalf("tenant B SessionForAccount = (%q, %q, %v), want (sess-b, runner-b, nil)", got, runner, err)
 	}
 
@@ -710,7 +710,7 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 	// Under the system role BOTH rows are visible, so the :one read is ambiguous.
 	// It does NOT error — that is the hazard. It returns one of the two, and
 	// which one is not something the caller can control or detect.
-	got, gotRunner, err := s.SessionForAccount(WithSystemRole(context.Background()), shared.ID)
+	got, gotRunner, _, err := s.SessionForAccount(WithSystemRole(context.Background()), shared.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount under the system role: %v — the current behaviour is a SILENT pick, not an error; if this now errors, PR3 changed the contract and this test must be updated deliberately", err)
 	}
@@ -721,10 +721,10 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 
 	// The same read on the REQUEST path is exact in both tenants: the hazard is
 	// the system role's missing scoping, NOT anything about the data.
-	if v, runner, err := s.SessionForAccount(ctxA, shared.ID); err != nil || v != "sess-a" || runner != "runner-a" {
+	if v, runner, _, err := s.SessionForAccount(ctxA, shared.ID); err != nil || v != "sess-a" || runner != "runner-a" {
 		t.Fatalf("tenant A request-path SessionForAccount = (%q, %q, %v), want (sess-a, runner-a, nil)", v, runner, err)
 	}
-	if v, runner, err := s.SessionForAccount(ctxB, shared.ID); err != nil || v != "sess-b" || runner != "runner-b" {
+	if v, runner, _, err := s.SessionForAccount(ctxB, shared.ID); err != nil || v != "sess-b" || runner != "runner-b" {
 		t.Fatalf("tenant B request-path SessionForAccount = (%q, %q, %v), want (sess-b, runner-b, nil)", v, runner, err)
 	}
 
@@ -883,7 +883,7 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 	if n := countBindings(t, ctx, s, agent.ID); n != 1 {
 		t.Fatalf("bindings after two concurrent re-points = %d, want 1", n)
 	}
-	live, liveRunner, err := s.SessionForAccount(ctx, agent.ID)
+	live, liveRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount after the race: %v", err)
 	}
@@ -1145,7 +1145,7 @@ func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *t
 		if n := countBindings(t, ctx, s, agent.ID); n != 1 {
 			t.Fatalf("iteration %d: bindings after the race = %d, want 1 — the bind must land whether or not the sweep removed the prior row", i, n)
 		}
-		live, liveRunner, err := s.SessionForAccount(ctx, agent.ID)
+		live, liveRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 		if err != nil {
 			t.Fatalf("iteration %d: SessionForAccount after the race: %v", i, err)
 		}

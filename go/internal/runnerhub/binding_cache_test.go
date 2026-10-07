@@ -113,18 +113,18 @@ func (f *fakeBindingStore) ResolveSessionBinding(ctx context.Context, sessionID 
 	return b.AccountID, b.RunnerID, f.versions[sessionID], nil
 }
 
-func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.AccountID) (string, string, error) {
+func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.AccountID) (string, string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.reverseErr != nil {
-		return "", "", f.reverseErr
+		return "", "", "", f.reverseErr
 	}
 	for sid, b := range f.bindings {
 		if b.AccountID == accountID {
-			return sid, b.RunnerID, nil
+			return sid, b.RunnerID, f.versions[sid], nil
 		}
 	}
-	return "", "", store.ErrNotFound
+	return "", "", "", store.ErrNotFound
 }
 
 func (f *fakeBindingStore) DeleteSessionBinding(_ context.Context, sessionID string) error {
@@ -874,11 +874,11 @@ func (b *reapAndReadBlockingBindingStore) ResolveSessionBinding(ctx context.Cont
 	return account, runnerID, version, err
 }
 
-func (b *reapAndReadBlockingBindingStore) SessionForAccount(ctx context.Context, accountID store.AccountID) (string, string, error) {
-	sessionID, runnerID, err := b.fakeBindingStore.SessionForAccount(ctx, accountID)
+func (b *reapAndReadBlockingBindingStore) SessionForAccount(ctx context.Context, accountID store.AccountID) (string, string, string, error) {
+	sessionID, runnerID, version, err := b.fakeBindingStore.SessionForAccount(ctx, accountID)
 	close(b.readEntered)
 	<-b.readRelease
-	return sessionID, runnerID, err
+	return sessionID, runnerID, version, err
 }
 
 // TestConcurrentResolveDuringAFaultingReapCannotResurrect fences the window
@@ -975,11 +975,53 @@ func TestOlderEnrollReapCannotDeleteNewerPromotion(t *testing.T) {
 		t.Fatal("promotion wrote its binding while the older reap's delete was in flight")
 	}
 	// Ordered after the reap, the live session's binding survives in the store and cache.
-	if sessionID, runnerID, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); err != nil || sessionID != "sess-new" || runnerID != testRunnerID {
+	if sessionID, runnerID, _, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); err != nil || sessionID != "sess-new" || runnerID != testRunnerID {
 		t.Fatalf("durable SessionForAccount = (%q, %q, %v), want (sess-new, %s, nil)", sessionID, runnerID, err, testRunnerID)
 	}
 	if sessionID, ok := hub.CachedSessionForAccount(testAgentAccount); !ok || sessionID != "sess-new" {
 		t.Fatalf("CachedSessionForAccount = (%q, %v), want sess-new", sessionID, ok)
+	}
+}
+
+// A Stop's unbind racing an in-flight reap waits for the whole enroll, so the reap
+// still finds the session and drives its OFFLINE edge.
+func TestStopUnbindWaitsForEnrollReap(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{}
+	hub.SetPresenceSink(pres)
+	plain := newFakeBindingStore()
+	hub.SetSessionBindingStore(plain)
+	ctx := store.WithTenant(context.Background(), "tenant-a")
+	hub.enroll(ctx, testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, testRunnerID)
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+
+	bindings := &blockingBindingStore{fakeBindingStore: plain, entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(bindings)
+	reapDone := make(chan struct{})
+	go func() {
+		defer close(reapDone)
+		hub.enroll(ctx, testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	}()
+	<-bindings.entered
+	unbindDone := make(chan struct{})
+	go func() {
+		defer close(unbindDone)
+		hub.unbindSession(ctx, "sess-1")
+	}()
+	waitParkedOrDone(t, "(*Hub).releaseSession", unbindDone)
+	close(bindings.release)
+	<-reapDone
+	<-unbindDone
+
+	offline := 0
+	for _, rec := range pres.lifecycleSnapshot() {
+		if rec.sessionID == "sess-1" && rec.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED {
+			offline++
+		}
+	}
+	if offline == 0 {
+		t.Fatal("neither the reap nor the Stop drove sess-1 OFFLINE")
 	}
 }
 
@@ -1093,7 +1135,7 @@ func TestEnrollDuringPromotionCannotResurrectBinding(t *testing.T) {
 	if forwardCached || reverseCached {
 		t.Fatalf("promotion repopulated cache after enroll: forward=%v reverse=%v", forwardCached, reverseCached)
 	}
-	if sessionID, _, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); !errors.Is(err, store.ErrNotFound) {
+	if sessionID, _, _, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("durable SessionForAccount = (%q, %v), want ErrNotFound after enroll", sessionID, err)
 	}
 }
