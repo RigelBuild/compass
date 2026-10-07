@@ -44,20 +44,22 @@ type fakeForgeStore struct {
 	recErr   error // if set, RecordAuthoredArtifact returns it verbatim
 
 	// The state-transition actor memo: transitions records every
-	// RecordStateTransition in call order (so the ordering against the provider
-	// log is assertable), and transErr forces a memo-write fault.
+	// RecordStateTransition in call order (so a test can prove it follows the
+	// provider call), and transErr forces a memo-write fault.
 	transitions []recordedTransition
 	transErr    error
 
 	// DL-053 subscriptions: subs is keyed by subscription id; subKey indexes the
-	// UNIQUE (agent, coordinate) to the existing id so a repeat subscribe is
-	// idempotent, exactly as the real store's ON CONFLICT does. subErr / delErr
-	// let a test force a store fault on either path.
-	subs    map[string]store.AgentForgeSubscription
-	subKey  map[string]string // agent|provider|host|repo|kind|number -> id
-	nextSub int
-	subErr  error
-	delErr  error
+	// UNIQUE (agent, coordinate) to its existing id, as the store upsert does.
+	subs       map[string]store.AgentForgeSubscription
+	subKey     map[string]string
+	nextSub    int
+	subErr     error
+	delErr     error
+	scopes     map[string]bool
+	scopeErr   error
+	scopeCalls int
+	scopeArgs  []string
 }
 
 // recordedTransition is one RecordStateTransition the fake saw: the full
@@ -120,6 +122,23 @@ func (f *fakeForgeStore) DeleteAgentForgeSubscription(_ context.Context, agent s
 	delete(f.subs, subscriptionID)
 	delete(f.subKey, subCoordKey(agent, sub))
 	return nil
+}
+
+func (f *fakeForgeStore) HasForgeScope(_ context.Context, accountID store.AccountID, provider store.ForgeProvider, host, repo string) (bool, error) {
+	f.scopeCalls++
+	f.scopeArgs = append(f.scopeArgs, fmt.Sprintf("%s|%d|%s|%s", accountID, provider, host, repo))
+	if f.scopeErr != nil {
+		return false, f.scopeErr
+	}
+	key := fmt.Sprintf("%s|%d|%s|%s", accountID, provider, host, repo)
+	owner := f.accounts[accountID].Agent
+	if owner != nil {
+		ownerKey := fmt.Sprintf("%s|%d|%s|%s", owner.OwnerUserID, provider, host, repo)
+		if f.scopes[ownerKey] || f.scopes[fmt.Sprintf("%s|%d|%s|*", owner.OwnerUserID, provider, host)] {
+			return true, nil
+		}
+	}
+	return f.scopes[key] || f.scopes[fmt.Sprintf("%s|%d|%s|*", accountID, provider, host)], nil
 }
 
 func (f *fakeForgeStore) GetAccount(_ context.Context, id store.AccountID) (store.Account, error) {
@@ -1028,6 +1047,184 @@ func TestForgeSubscribeUnsubscribeStoreFaultIsInbandInternal(t *testing.T) {
 	delRes := svc.ExecuteForgeCallAsAccountMust(t, unsubscribeCall("any-id"))
 	if fe := delRes.GetError(); fe == nil || fe.GetCode() != "internal" {
 		t.Fatalf("unsubscribe store-fault error = %v, want in-band internal", delRes.GetError())
+	}
+}
+
+// scopedWriteCalls holds one request per coordinate write arm, keyed by oneof field name.
+func scopedWriteCalls() map[string]*compassv1internal.ForgeCallRequest {
+	return map[string]*compassv1internal.ForgeCallRequest{
+		"create_issue":                  createIssueCall("body", ""),
+		"create_pull_request":           createPRCall("body", ""),
+		"comment_on_issue":              {Call: &compassv1internal.ForgeCallRequest_CommentOnIssue{CommentOnIssue: &compassv1internal.CommentOnIssueRequest{Repo: testRepo, IssueNumber: 1, Body: "body"}}},
+		"comment_on_pull_request":       {Call: &compassv1internal.ForgeCallRequest_CommentOnPullRequest{CommentOnPullRequest: &compassv1internal.CommentOnPullRequestRequest{Repo: testRepo, PrNumber: 1, Body: "body"}}},
+		"submit_review":                 {Call: &compassv1internal.ForgeCallRequest_SubmitReview{SubmitReview: &compassv1internal.SubmitReviewRequest{Repo: testRepo, PrNumber: 1, Verdict: "approve"}}},
+		"subscribe":                     subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 1),
+		"transition_issue_state":        {Call: &compassv1internal.ForgeCallRequest_TransitionIssueState{TransitionIssueState: &compassv1internal.TransitionIssueStateRequest{Repo: testRepo, IssueNumber: 1, State: "closed"}}},
+		"transition_pull_request_state": {Call: &compassv1internal.ForgeCallRequest_TransitionPullRequestState{TransitionPullRequestState: &compassv1internal.TransitionPullRequestStateRequest{Repo: testRepo, PrNumber: 1, State: "closed"}}},
+	}
+}
+
+// A new ForgeCallRequest arm must be either a gated write (so the rejection test
+// covers it) or an explicit ungated read or caller-scoped arm.
+func TestForgeCallArmsHaveScopeClassification(t *testing.T) {
+	ungated := map[string]bool{"get_issue": true, "list_issues": true, "get_pull_request": true, "unsubscribe": true}
+	writes := scopedWriteCalls()
+	fields := (&compassv1internal.ForgeCallRequest{}).ProtoReflect().Descriptor().Oneofs().ByName("call").Fields()
+	if len(writes)+len(ungated) != fields.Len() {
+		t.Fatalf("classified arms = %d, descriptor arms = %d", len(writes)+len(ungated), fields.Len())
+	}
+	for i := range fields.Len() {
+		name := string(fields.Get(i).Name())
+		call, isWrite := writes[name]
+		if isWrite == ungated[name] {
+			t.Errorf("arm %q must be exactly one of gated write or ungated", name)
+			continue
+		}
+		if isWrite && call.ProtoReflect().WhichOneof(fields.Get(i).ContainingOneof()).Name() != fields.Get(i).Name() {
+			t.Errorf("scopedWriteCalls[%q] sets a different arm", name)
+		}
+	}
+}
+
+func TestForgeScopeGateRejectsEveryCoordinateWrite(t *testing.T) {
+	for name, call := range scopedWriteCalls() {
+		t.Run(name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			reviewer := forge.NewFakeProvider("gh-reviewer")
+			svc, st := newForgeServiceForTest(t, author, reviewer)
+			svc.enforceScopes = true
+			st.scopes = make(map[string]bool)
+
+			result := svc.ExecuteForgeCallAsAccountMust(t, call)
+			fe := result.GetError()
+			if fe == nil || fe.GetCode() != "not_found" || fe.GetMessage() != "forge: artifact not found" {
+				t.Fatalf("result error = %v, want fixed in-band not_found", fe)
+			}
+			if got := len(author.Calls()) + len(reviewer.Calls()); got != 0 {
+				t.Fatalf("provider calls = %d, want 0", got)
+			}
+			want := fmt.Sprintf("%s|%d|%s|%s", testAgentID, store.ForgeProviderGitHub, testHost, testRepo)
+			if len(st.scopeArgs) != 1 || st.scopeArgs[0] != want {
+				t.Fatalf("scope checks = %v, want [%s]", st.scopeArgs, want)
+			}
+			if len(st.recorded) != 0 || len(st.transitions) != 0 || len(st.subs) != 0 {
+				t.Fatalf("rejected write persisted state: recorded=%d transitions=%d subscriptions=%d", len(st.recorded), len(st.transitions), len(st.subs))
+			}
+		})
+	}
+}
+
+// TestForgeScopeGateAllowsEveryGrantedWrite: an owner grant lets each write arm
+// reach its provider exactly as it would with enforcement off.
+func TestForgeScopeGateAllowsEveryGrantedWrite(t *testing.T) {
+	for name, call := range scopedWriteCalls() {
+		t.Run(name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			reviewer := forge.NewFakeProvider("gh-reviewer")
+			svc, st := newForgeServiceForTest(t, author, reviewer)
+			svc.enforceScopes = true
+			st.scopes = map[string]bool{fmt.Sprintf("%s|%d|%s|%s", testOwnerID, store.ForgeProviderGitHub, testHost, testRepo): true}
+
+			res := svc.ExecuteForgeCallAsAccountMust(t, call)
+			if fe := res.GetError(); fe != nil {
+				t.Fatalf("granted write error = %v", fe)
+			}
+			if name != "subscribe" && len(author.Calls())+len(reviewer.Calls()) != 1 {
+				t.Fatalf("provider calls = %d, want 1", len(author.Calls())+len(reviewer.Calls()))
+			}
+		})
+	}
+}
+
+func TestForgeScopeGateAllowsOwnerGrantAndPreservesDefaultOff(t *testing.T) {
+	t.Run("owner grant allows agent write", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		svc, st := newForgeServiceForTest(t, author, reviewer)
+		svc.enforceScopes = true
+		st.scopes = map[string]bool{fmt.Sprintf("%s|%d|%s|%s", testOwnerID, store.ForgeProviderGitHub, testHost, testRepo): true}
+
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", ""))
+		if res.GetError() != nil || len(author.Calls()) != 1 || st.scopeCalls != 1 {
+			t.Fatalf("owner grant result=%v provider calls=%d scope checks=%d", res.GetError(), len(author.Calls()), st.scopeCalls)
+		}
+	})
+	t.Run("default off does not check scope", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		svc, st := newForgeServiceForTest(t, author, reviewer)
+
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", ""))
+		if res.GetError() != nil || len(author.Calls()) != 1 || st.scopeCalls != 0 {
+			t.Fatalf("default-off result=%v provider calls=%d scope checks=%d", res.GetError(), len(author.Calls()), st.scopeCalls)
+		}
+	})
+}
+
+func TestForgeScopeGateStoreErrorAndMemoHit(t *testing.T) {
+	t.Run("scope store error prevents provider write", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		svc, st := newForgeServiceForTest(t, author, reviewer)
+		svc.enforceScopes = true
+		st.scopeErr = errors.New("scope database unavailable")
+
+		res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", ""))
+		if fe := res.GetError(); fe == nil || fe.GetCode() != "internal" {
+			t.Fatalf("scope store error = %v, want internal", fe)
+		}
+		if len(author.Calls()) != 0 {
+			t.Fatalf("provider calls = %d, want 0", len(author.Calls()))
+		}
+	})
+	t.Run("create memo hit skips scope check", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		svc, st := newForgeServiceForTest(t, author, reviewer)
+		first := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("body", "memo-key"))
+		if first.GetError() != nil {
+			t.Fatalf("first create: %v", first.GetError())
+		}
+		svc.enforceScopes = true
+		second := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("different", "memo-key"))
+		if second.GetError() != nil || second.GetIssue() == nil {
+			t.Fatalf("memo hit = %v, want original issue", second.GetError())
+		}
+		if st.scopeCalls != 0 || len(author.Calls()) != 1 {
+			t.Fatalf("memo hit scope checks=%d provider calls=%d, want 0 and 1", st.scopeCalls, len(author.Calls()))
+		}
+	})
+}
+
+func TestForgeScopeGateKeepsReadsAndCallerScopedUnsubscribeUngated(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+	svc.enforceScopes = true
+	st.scopes = make(map[string]bool)
+
+	read := &compassv1internal.ForgeCallRequest{Call: &compassv1internal.ForgeCallRequest_GetPullRequest{GetPullRequest: &compassv1internal.GetPullRequestRequest{Repo: testRepo, PrNumber: 1}}}
+	if res := svc.ExecuteForgeCallAsAccountMust(t, read); res.GetError() != nil {
+		t.Fatalf("read result = %v", res.GetError())
+	}
+	otherAgent := store.AccountID("acct-other-agent")
+	st.seedAgent(otherAgent, "other", store.AccountID("acct-other-owner"), "other-owner")
+	subID, err := st.EnsureAgentForgeSubscription(context.Background(), store.AgentForgeSubscription{
+		AgentAccountID: otherAgent, Provider: store.ForgeProviderGitHub, Host: testHost, Repo: testRepo,
+		Kind: store.ForgeArtifactKindIssue, Number: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed foreign subscription: %v", err)
+	}
+	res := svc.ExecuteForgeCallAsAccountMust(t, unsubscribeCall(subID))
+	if fe := res.GetError(); fe == nil || fe.GetCode() != "not_found" {
+		t.Fatalf("foreign unsubscribe error = %v, want caller-scoped not_found", fe)
+	}
+	if st.scopeCalls != 0 {
+		t.Fatalf("read or unsubscribe made %d scope checks, want 0", st.scopeCalls)
+	}
+	if len(author.Calls()) != 1 {
+		t.Fatalf("read provider calls=%d, want 1", len(author.Calls()))
 	}
 }
 
