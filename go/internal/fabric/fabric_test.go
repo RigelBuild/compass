@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -605,6 +606,16 @@ func TestConsumerConfigMatchesTheRecord(t *testing.T) {
 	}
 	if cfg.Durable == "" {
 		t.Error("consumer must be durable so instances share one consumer and a restart resumes")
+	}
+	// A reaped durable is recreated with DeliverAll, so the threshold must
+	// outlast the stream's MaxAge or a recreate replays events already acked.
+	// A short MaxAge must not pull it under the floor that protects a live pull.
+	for _, c := range []Config{{}, {MaxAge: 7 * 24 * time.Hour}, {MaxAge: time.Second}, {MaxAge: math.MaxInt64/2 + 1}} {
+		got := c.consumerConfig(subject).InactiveThreshold
+		// The server adds up to ~1s of jitter; the sum must not overflow.
+		if got < c.maxAge() || got < MinInactiveThreshold || got <= c.ackWait() || got > math.MaxInt64-time.Second {
+			t.Errorf("MaxAge %s: inactive threshold = %s, want >= MaxAge, >= %s, > AckWait %s, and jitter headroom", c.maxAge(), got, MinInactiveThreshold, c.ackWait())
+		}
 	}
 }
 
