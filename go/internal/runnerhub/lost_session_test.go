@@ -387,6 +387,10 @@ func TestErroredCleanupWithoutDurableWriteKeepsPeerRow(t *testing.T) {
 	if _, _, _, err := bindings.ResolveSessionBinding(ctx, "sess-1"); err != nil {
 		t.Fatalf("peer's durable binding after old cleanup: %v, want it kept", err)
 	}
+	lost.none(t, "a session the peer re-bound is not lost")
+	if account, ok := hub.accountForSession(ctx, "sess-1"); !ok || account != testAgentAccount {
+		t.Fatalf("binding after old cleanup = (%s, %v), want the peer's (%s, true)", account, ok, testAgentAccount)
+	}
 }
 
 func TestErroredCleanupWithoutDurableWriteKeepsLegacyRow(t *testing.T) {
