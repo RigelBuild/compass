@@ -29,15 +29,15 @@ var (
 	runnerDrainBudget   = 15 * time.Second
 	serverDrainBudget   = 30 * time.Second
 	postgresDrainBudget = 10 * time.Second
-	// collectorDrainBudget bounds the collector container's graceful `podman
-	// stop` before the `podman rm -f` escalation. The collector holds no on-disk
+	// collectorDrainBudget bounds the collector container's drain after its stop
+	// signal, before the `podman rm -f` escalation. The collector holds no on-disk
 	// state to drain (D3 drops rather than buffering), so it stops fast; the
 	// budget matches postgres's container-drain tier for parity.
 	collectorDrainBudget = 10 * time.Second
-	// natsDrainBudget bounds the nats container's graceful `podman stop` before the
-	// `podman rm -f` escalation. NATS flushes its JetStream store on SIGTERM, so it
-	// gets the wider budget its natsStopTimeout also reserves — a `rm -f` mid-flush
-	// is the unclean-shutdown case the store recovers from on next boot.
+	// natsDrainBudget bounds the nats container's drain after its stop signal,
+	// before the `podman rm -f` escalation. NATS flushes its JetStream store on
+	// SIGTERM, so it gets the wider budget its natsStopTimeout also reserves — a
+	// `rm -f` mid-flush is the unclean-shutdown case the store recovers from on next boot.
 	natsDrainBudget = 20 * time.Second
 	// gatewayDrainBudget matches gatewayStopTimeout: in-flight model calls drain on SIGTERM.
 	gatewayDrainBudget = 25 * time.Second
@@ -49,6 +49,9 @@ var (
 	// downPollInterval paces the confirmation polls. Real wall-time; a test
 	// shrinks it so the suite does not pay a full interval per poll.
 	downPollInterval = 100 * time.Millisecond
+	// infraStopOnCancel bounds the detached stop sent to the infra tier when the
+	// caller's ctx is cancelled before that tier is reached.
+	infraStopOnCancel = 3 * time.Second
 )
 
 // ErrStackStarting is returned by DownDetached when a live up holds the state-dir
@@ -66,11 +69,9 @@ var ErrNoTeardownRecord = errors.New("a stack is live but this build holds no te
 // cross-process teardown this process holds no in-memory child handles for. It
 // reads the persisted pgid record, identity-checks each recorded group, SIGTERMs
 // the live ones in reverse start order with bounded SIGKILL escalation, and
-// confirms teardown per component by the channel each has (server/postgres by
-// socket quiescence, the socketless runner by group-ESRCH). Only pgids read from
-// this stack's own state-dir file are ever signaled, and each group's identity
-// (pgid + leader start-time token) is re-verified immediately before every
-// signal.
+// confirms process-backed server/postgres entries by socket quiescence AND group
+// exit, containers by their own liveness probe, and the runner by group-ESRCH.
+// Only recorded pgids are signaled; each identity is re-verified before signal.
 func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -102,11 +103,12 @@ func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 
 	// 3. Build the live teardown targets in reverse start order, identity-checking
 	// each recorded group. A gone (ESRCH) or recycled (start-time mismatch) group
-	// is skipped — never signaled, never an error.
+	// is skipped — never signaled, never an error. A prior-boot record had its
+	// process entries dropped in consumeRecord.
 	targets := liveTargets(ctx, cfg, deps, rec)
 
-	// 4/5/6. SIGTERM every live target up front (reverse order), then per-target
-	// bounded wait → SIGKILL escalation → per-component confirmation.
+	// 4/5/6. Per tier (consumers, then infra): SIGTERM every live target, then
+	// per-target bounded wait → SIGKILL escalation → per-component confirmation.
 	survivors := drainTargets(ctx, deps, targets)
 
 	// 7. Removal / partial-failure policy.
@@ -151,6 +153,10 @@ func consumeRecord(ctx context.Context, cfg Config, deps Deps) (rec pgidRecord, 
 		}
 		return pgidRecord{}, false, fmt.Errorf("read pgid record: %w", err)
 	}
+	rec, err = dropPriorBootGroups(ctx, cfg, deps, rec)
+	if err != nil {
+		return pgidRecord{}, false, err
+	}
 
 	// Consume: remove the record under the guard so a concurrent down cannot also
 	// act on it. A partial teardown re-publishes the survivor set at the end.
@@ -160,18 +166,49 @@ func consumeRecord(ctx context.Context, cfg Config, deps Deps) (rec pgidRecord, 
 	return rec, true, nil
 }
 
-// target is one live child to tear down: its recorded identity plus the
-// component-specific confirmation channel and drain budget.
-type target struct {
-	entry   pgidEntry
-	budget  time.Duration
-	confirm func() bool // reports the component confirmed dead by its own channel
+// dropPriorBootGroups removes every process entry when rec was written in an
+// earlier boot: a reboot frees every pgid, so a match now would be a stranger.
+// An unknown boot on either side (older record, unreadable id) keeps rec as is.
+// Container entries stay, since a name is not recycled by a reboot.
+// A live server socket contradicts the mismatch, so down refuses and keeps rec.
+func dropPriorBootGroups(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) (pgidRecord, error) {
+	if rec.BootID == "" {
+		return rec, nil
+	}
+	current, err := readBootID()
+	if err != nil {
+		// An unreadable current boot is unknown; per-entry identity checks still guard.
+		slog.Warn("cannot read the current boot id; keeping per-entry identity checks", "err", err)
+		return rec, nil
+	}
+	if current == "" || current == rec.BootID {
+		return rec, nil
+	}
+	if _, perr := deps.Prober.Probe(ctx, cfg.SocketPath); perr == nil {
+		return pgidRecord{}, fmt.Errorf("pgid record claims boot %s but this is boot %s and the stack socket still answers; refusing to tear down", rec.BootID, current)
+	}
+	slog.Info("pgid record is from an earlier boot; its process groups are gone", "record_boot", rec.BootID, "current_boot", current)
+	out := pgidRecord{WriterPid: rec.WriterPid, Version: rec.Version, BootID: rec.BootID}
+	for _, e := range rec.Entries {
+		if e.Kind == entryContainer {
+			out.Entries = append(out.Entries, e)
+		}
+	}
+	return out, nil
 }
 
-// liveTargets returns the identity-matched live groups in reverse start order
-// (runner → server → gateway → nats → collector → postgres). Each recorded group is checked with
-// GroupSignaller.Alive (existence AND start-time identity); a gone or recycled
-// group is omitted — never signaled.
+// target is one live child to tear down: its recorded identity, confirmation
+// channels, and drain budget. socketDark separates socket state from group liveness.
+type target struct {
+	entry      pgidEntry
+	budget     time.Duration
+	confirm    func() bool // reports the component confirmed dead by its own channel
+	socketDark func() bool
+}
+
+// liveTargets returns the recorded children still ours to tear down, in reverse
+// start order (runner → server → gateway → nats → collector → postgres). A gone
+// or recycled group, or an absent container, is omitted — never signaled.
 func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []target {
 	// Index entries by component so we can emit them in reverse start order
 	// regardless of the file's line order (which is start order by construction).
@@ -181,39 +218,71 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 	}
 
 	order := []struct {
-		comp    Component
-		budget  time.Duration
-		confirm func(pgidEntry) func() bool
+		comp       Component
+		budget     time.Duration
+		confirm    func(pgidEntry) func() bool
+		socketDark func(pgidEntry) func() bool
 	}{
-		{ComponentRunner, runnerDrainBudget, func(e pgidEntry) func() bool {
-			// Socketless: confirmed only by its group going ESRCH (identity check
-			// false = gone or recycled-away).
-			return func() bool { return !deps.GroupSignaller.Alive(e.Pgid, e.StartTime) }
+		{comp: ComponentRunner, budget: runnerDrainBudget, confirm: func(e pgidEntry) func() bool {
+			if e.Kind == entryContainer {
+				return func() bool { return !deps.Containers.Exists(ctx, e.ContainerName) }
+			}
+			// Socketless process groups are confirmed only by the group leaving.
+			return func() bool { return groupReleased(deps, e) }
 		}},
-		{ComponentServer, serverDrainBudget, func(pgidEntry) func() bool {
-			// Socket quiescence: the UDS stops answering GetServerInfo.
-			return func() bool { _, err := deps.Prober.Probe(ctx, cfg.SocketPath); return err != nil }
+		{comp: ComponentServer, budget: serverDrainBudget, confirm: func(e pgidEntry) func() bool {
+			if e.Kind == entryContainer {
+				return func() bool { return !deps.Containers.Exists(ctx, e.ContainerName) }
+			}
+			// A dark UDS can precede process exit during graceful shutdown.
+			return func() bool {
+				if _, err := deps.Prober.Probe(ctx, cfg.SocketPath); err == nil {
+					return false
+				}
+				return groupReleased(deps, e)
+			}
+		}, socketDark: func(e pgidEntry) func() bool {
+			return func() bool {
+				_, err := deps.Prober.Probe(ctx, cfg.SocketPath)
+				return err != nil
+			}
 		}},
-		{ComponentGateway, gatewayDrainBudget, func(e pgidEntry) func() bool {
-			// Container existence; signalTerm also removes it, since it runs without --rm.
-			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
+		{comp: ComponentGateway, budget: gatewayDrainBudget, confirm: func(e pgidEntry) func() bool {
+			// It runs without --rm, so an exited gateway lingers; remove it once exited.
+			return func() bool {
+				if err := deps.Containers.RemoveExited(ctx, e.ContainerName); err != nil {
+					logContainerSignalMiss("rm", e, err)
+				}
+				return !deps.Containers.Exists(ctx, e.ContainerName)
+			}
 		}},
-		{ComponentNats, natsDrainBudget, func(e pgidEntry) func() bool {
+		{comp: ComponentNats, budget: natsDrainBudget, confirm: func(e pgidEntry) func() bool {
 			// Container existence: nats is a container child torn down by name,
 			// confirmed gone when `podman container exists` reports absent. Reverse
 			// start order places it after the server and runner (its consumers) so no
 			// live consumer outlives the broker it publishes to.
-			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
+			return func() bool { return !deps.Containers.Exists(ctx, e.ContainerName) }
 		}},
-		{ComponentCollector, collectorDrainBudget, func(e pgidEntry) func() bool {
+		{comp: ComponentCollector, budget: collectorDrainBudget, confirm: func(e pgidEntry) func() bool {
 			// Container existence: the collector is a container child torn down by
 			// name, confirmed gone when `podman container exists` reports absent.
 			// Reverse start order places it after the server (which emits to it) and
 			// before postgres.
-			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
+			return func() bool { return !deps.Containers.Exists(ctx, e.ContainerName) }
 		}},
-		{ComponentPostgres, postgresDrainBudget, func(pgidEntry) func() bool {
-			// Socket quiescence: postgres stops accepting on the DSN socket.
+		{comp: ComponentPostgres, budget: postgresDrainBudget, confirm: func(e pgidEntry) func() bool {
+			if e.Kind == entryContainer {
+				// The bind-mounted socket can go dark while the container lingers.
+				return func() bool { return !deps.Containers.Exists(ctx, e.ContainerName) }
+			}
+			// A dark DSN can precede process exit during postgres shutdown.
+			return func() bool {
+				if deps.DBProber.ProbeDB(ctx, cfg.DatabaseDSN) == nil {
+					return false
+				}
+				return groupReleased(deps, e)
+			}
+		}, socketDark: func(e pgidEntry) func() bool {
 			return func() bool { return deps.DBProber.ProbeDB(ctx, cfg.DatabaseDSN) != nil }
 		}},
 	}
@@ -224,64 +293,85 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		if !ok {
 			continue // never recorded (half-spawned prefix) — nothing to tear down
 		}
-		if !entryAlive(deps, e) {
+		if !entryAlive(ctx, deps, e) {
 			continue // gone or recycled — skip, never signal
 		}
-		targets = append(targets, target{entry: e, budget: o.budget, confirm: o.confirm(e)})
+		target := target{entry: e, budget: o.budget, confirm: o.confirm(e)}
+		if o.socketDark != nil {
+			target.socketDark = o.socketDark(e)
+		}
+		targets = append(targets, target)
 	}
 	return targets
 }
 
-// drainTargets SIGTERMs every live target (reverse order, already ordered by
-// liveTargets), then per target waits the drain budget, escalates to a group
-// SIGKILL, and confirms per component. It returns the components that were still
-// alive at budget expiry after the SIGKILL — the survivor set for the
-// partial-failure rewrite.
-func drainTargets(ctx context.Context, deps Deps, targets []target) []Component {
-	// Phase A: SIGTERM all live groups up front. Signaling the server also makes a
-	// surviving runner exit when its link drops, belt-and-suspenders alongside
-	// signaling the runner group. A delivery error is not the verdict — the confirm
-	// below is — so it is not fatal here (an ESRCH means the group already vanished).
-	for _, t := range targets {
-		signalTerm(deps, t.entry, t.budget)
-	}
+// consumerTier holds the components that publish to or query the infra tier;
+// they drain first so no consumer outlives the broker or database it uses.
+var consumerTier = map[Component]bool{ComponentRunner: true, ComponentServer: true, ComponentGateway: true}
 
-	// Phase B: per-target confirm with bounded SIGKILL escalation.
-	var survivors []Component
+// drainTargets tears targets down in two tiers, consumers (runner, server,
+// gateway) then infra (nats, collector, postgres), each in reverse start order.
+// It returns the components still alive after their drain budget and hard kill —
+// the survivor set for the partial-failure rewrite.
+func drainTargets(ctx context.Context, deps Deps, targets []target) []Component {
+	var consumers, infra []target
 	for _, t := range targets {
-		if drainOne(ctx, deps, t) {
-			continue
+		if consumerTier[t.entry.Component] {
+			consumers = append(consumers, t)
+		} else {
+			infra = append(infra, t)
 		}
+	}
+	survivors := drainTier(ctx, deps, consumers)
+	if ctx.Err() == nil {
+		return append(survivors, drainTier(ctx, deps, infra)...)
+	}
+	// Cancelled mid-teardown: exec refuses a done ctx, so stop infra on a short
+	// detached one and record it all as survivors rather than wait.
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), infraStopOnCancel)
+	defer cancel()
+	for _, t := range infra {
+		signalTerm(sctx, deps, t.entry)
 		survivors = append(survivors, t.entry.Component)
 	}
 	return survivors
 }
 
+// drainTier signals every target in the tier, then drains each one in turn.
+// Signalling never waits for exit, so each drain budget is measured by waitDead.
+// A delivery error is not the verdict — the confirm is — so it is not fatal here.
+func drainTier(ctx context.Context, deps Deps, tier []target) []Component {
+	for _, t := range tier {
+		signalTerm(ctx, deps, t.entry)
+	}
+	var survivors []Component
+	for _, t := range tier {
+		if !drainOne(ctx, deps, t) {
+			survivors = append(survivors, t.entry.Component)
+		}
+	}
+	return survivors
+}
+
 // drainOne waits for one target to confirm dead within its drain budget; on
-// timeout it escalates to a group SIGKILL and re-confirms. It returns true when
-// the component is torn down.
+// timeout it escalates to SIGKILL and re-confirms. It returns true when the
+// component is torn down.
 //
-// The runner is group-ESRCH confirmed and has no socket: because SIGKILL is
-// unblockable, a runner group still non-ESRCH after the group SIGKILL can only
-// be zombies awaiting init's reap (a guaranteed-terminal state), so the runner
-// is treated as torn down once SIGKILL is sent — the post-SIGKILL zombie window
-// is success, not failure. The socket-confirmed components (server, postgres) do
-// get a bounded post-SIGKILL confirm: their socket going dark is the proof, and
-// a socket still answering past postKillGrace is a genuine survivor.
+// Only a delivered group SIGKILL lets residual members count as zombies awaiting
+// reap; otherwise the post-kill confirm decides.
 func drainOne(ctx context.Context, deps Deps, t target) bool {
 	if waitDead(ctx, deps.now, t.budget, t.confirm) {
 		return true // SIGTERM sufficed (or the group was already gone)
 	}
 
-	// Escalate: hard-kill. For a process group this is a group SIGKILL; for a
-	// container it is `podman rm -f`. A delivery error is not the verdict (an
-	// ESRCH / already-gone means it died during the drain); the confirm decides.
-	signalKill(deps, t.entry)
-
-	if t.entry.Component == ComponentRunner {
-		// Socketless + SIGKILL unblockable → any residual non-ESRCH group is a
-		// zombie awaiting reap, i.e. terminal. Treat as torn down.
-		return true
+	killed := signalKill(ctx, deps, t.entry)
+	if killed && ctx.Err() == nil {
+		if t.entry.Component == ComponentRunner {
+			return true
+		}
+		if t.socketDark != nil && t.socketDark() {
+			return true
+		}
 	}
 	return waitDead(ctx, deps.now, postKillGrace, t.confirm)
 }
@@ -354,36 +444,49 @@ func logSignalMiss(sig string, e pgidEntry, err error) {
 		"signal", sig, "component", e.Component.String(), "pgid", e.Pgid, "error", err)
 }
 
-// entryAlive reports whether a recorded entry's target is still live, dispatched
-// on kind: a process group by identity-checked pgid (existence AND leader
-// start-time), a container by name via `podman container exists`. A gone target
-// reports not-alive so it is skipped, never signaled.
-func entryAlive(deps Deps, e pgidEntry) bool {
+// entryAlive reports whether a recorded entry is still ours to signal: a
+// container that exists, or a process group that is owned or orphaned.
+func entryAlive(ctx context.Context, deps Deps, e pgidEntry) bool {
 	switch e.Kind {
 	case entryContainer:
-		return deps.Containers.Exists(e.ContainerName)
+		return deps.Containers.Exists(ctx, e.ContainerName)
 	default:
-		return deps.GroupSignaller.Alive(e.Pgid, e.StartTime)
+		return groupOurs(deps, e)
 	}
 }
 
+// groupOurs reports whether a recorded group is still present and not a recycled
+// pid. An orphaned group keeps our pgid, since Linux never reuses a live pgid.
+func groupOurs(deps Deps, e pgidEntry) bool {
+	if e.Pgid <= 0 {
+		return false
+	}
+	l := deps.GroupSignaller.Liveness(e.Pgid, e.StartTime)
+	return l == GroupOwned || l == GroupOrphaned
+}
+
+// groupReleased reports whether a recorded group no longer needs teardown: it
+// is gone, or its pgid now names someone else's process.
+func groupReleased(deps Deps, e pgidEntry) bool {
+	return !groupOurs(deps, e)
+}
+
 // signalTerm delivers the graceful-stop tier, dispatched on kind: a group
-// SIGTERM for a process, `podman stop -t <budget>` for a container (the budget
-// is the container's own drain budget, deliberate parity with the process
-// model's capped drain). A delivery error is not the teardown verdict — the
-// per-component confirm channel is — so it is logged, never fatal.
-func signalTerm(deps Deps, e pgidEntry, budget time.Duration) {
+// SIGTERM for a process, the container's stop signal for a container. Neither
+// waits for exit, so waitDead in drainTier measures every drain budget. A delivery
+// error is not the teardown verdict — the per-component confirm channel is — so
+// it is logged, never fatal.
+func signalTerm(ctx context.Context, deps Deps, e pgidEntry) {
 	switch e.Kind {
 	case entryContainer:
-		if err := deps.Containers.Stop(e.ContainerName, budget); err != nil {
+		if err := deps.Containers.Stop(ctx, e.ContainerName); err != nil {
 			logContainerSignalMiss("stop", e, err)
 		}
-		if e.Component == ComponentGateway {
-			if err := deps.Containers.Remove(e.ContainerName); err != nil {
-				logContainerSignalMiss("remove", e, err)
-			}
-		}
 	default:
+		// Re-check identity: the pgid may have been recycled since selection.
+		if !groupOurs(deps, e) {
+			return
+		}
 		if err := deps.GroupSignaller.Signal(e.Pgid, SignalTerm); err != nil {
 			logSignalMiss("SIGTERM", e, err)
 		}
@@ -391,18 +494,25 @@ func signalTerm(deps Deps, e pgidEntry, budget time.Duration) {
 }
 
 // signalKill delivers the hard-kill tier, dispatched on kind: a group SIGKILL
-// for a process, `podman rm -f` for a container. A delivery error is not the
-// teardown verdict — the per-component confirm decides — so it is logged.
-func signalKill(deps Deps, e pgidEntry) {
+// for a process, `podman rm -f` for a container. It reports true only when a
+// process-group SIGKILL was delivered, the precondition for the zombie shortcut.
+func signalKill(ctx context.Context, deps Deps, e pgidEntry) bool {
 	switch e.Kind {
 	case entryContainer:
-		if err := deps.Containers.Remove(e.ContainerName); err != nil {
+		if err := deps.Containers.Remove(ctx, e.ContainerName); err != nil {
 			logContainerSignalMiss("rm -f", e, err)
 		}
+		return false
 	default:
+		// Re-check identity: the drain budget is a long window for pid reuse.
+		if !groupOurs(deps, e) {
+			return false
+		}
 		if err := deps.GroupSignaller.Signal(e.Pgid, SignalKill); err != nil {
 			logSignalMiss("SIGKILL", e, err)
+			return false
 		}
+		return true
 	}
 }
 

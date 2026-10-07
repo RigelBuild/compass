@@ -93,8 +93,8 @@ var _ stack.Process = (*process)(nil)
 
 // Signal requests a stop of the given disposition. SignalTerm sends SIGTERM to
 // the child for a graceful exit; any other ProcessSignal is an error rather than
-// a silent no-op.
-func (p *process) Signal(sig stack.ProcessSignal) error {
+// a silent no-op. A kill(2) cannot block, so ctx is not consulted.
+func (p *process) Signal(_ context.Context, sig stack.ProcessSignal) error {
 	switch sig {
 	case stack.SignalTerm:
 		if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
