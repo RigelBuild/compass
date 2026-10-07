@@ -73,6 +73,8 @@ type ServeConfig struct {
 	SocketPath string
 	// Version is the server build + contract version reported by GetServerInfo.
 	Version string
+	// Rev is the git commit the binary was built from, reported by GetServerInfo.
+	Rev string
 	// DevHTTP, when set, is a loopback address on which the server also serves
 	// the handler with permissive CORS for a browser dev server. Enforced to be
 	// loopback here, not just by the CLI.
@@ -834,7 +836,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// summary the drain logs, so both land on the same sink.
 	hubLog := slog.Default()
 	hub := newRunnerHub(st, brd, tail, commsSvc, hubLog)
-	svc := newService(cfg.Version, bus, st, hub, brd, issueBrd, tail)
+	svc := newService(cfg.Version, bus, st, hub, brd, issueBrd, tail).withRev(cfg.Rev)
 	// Break the hub<->lifecycle (RIG-1618 T5), hub<->board (agent primary
 	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (RIG-1577)
 	// construction cycles; see wireHubServiceCycles in sinks.go.
