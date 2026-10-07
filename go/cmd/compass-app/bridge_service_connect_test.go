@@ -13,12 +13,15 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +32,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
@@ -232,6 +236,38 @@ type failingWriteStore struct{ tokenstore.Store }
 
 func (failingWriteStore) Write(string, string) error { return errors.New("keyring locked") }
 
+type memoryTokenStore struct {
+	mu     sync.Mutex
+	tokens map[string]string
+}
+
+func (s *memoryTokenStore) Read(serverURL string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.tokens[serverURL]
+	if !ok {
+		return "", tokenstore.ErrNotFound
+	}
+	return token, nil
+}
+
+func (s *memoryTokenStore) Write(serverURL, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tokens == nil {
+		s.tokens = make(map[string]string)
+	}
+	s.tokens[serverURL] = token
+	return nil
+}
+
+func (s *memoryTokenStore) Delete(serverURL string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tokens, serverURL)
+	return nil
+}
+
 // assertWiringOutcome checks the miswired rows: no store means no probe, and a
 // failed save reports the save failure.
 func assertWiringOutcome(t *testing.T, wiring string, res connectResult, rec *authRecorder) {
@@ -247,74 +283,72 @@ func assertWiringOutcome(t *testing.T, wiring string, res connectResult, rec *au
 func TestConnectClassification(t *testing.T) {
 	for _, tc := range connectClassificationCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := &authRecorder{}
-			stub := connectStub{rec: rec, getServerInfo: tc.serverInfo, whoAmI: tc.whoAmI(rec)}
-			srv, certPEM := connectTLSStub(t, stub)
-
-			serverURL := srv.URL
-			caPEM := certPEM
-			if tc.untrusted {
-				caPEM = nil // system roots do not trust the self-signed cert
-			}
-			if tc.badURL {
-				serverURL = "https://127.0.0.1:1" // nothing listening
-			}
-
-			svc, store := connectService(t, serverURL, caPEM)
-			switch tc.wiring {
-			case "nilConn":
-				svc = newBridgeService(nil, nil, nil)
-			case "emptyConn":
-				svc = newBridgeService(&connection{}, nil, nil)
-			case "nilStore":
-				svc = newBridgeService(svc.conn.Load(), nil, nil)
-			case "failingStore":
-				svc = newBridgeService(svc.conn.Load(), nil, failingWriteStore{store})
-			}
-			if tc.preStore {
-				if err := store.Write(serverURL, probeToken); err != nil {
-					t.Fatalf("pre-store Write: %v", err)
-				}
-			}
-
-			// Capture log output to assert the token never leaks into a log line.
-			var logBuf syncBuffer
-			orig := log.Writer()
-			log.SetOutput(&logBuf)
-			t.Cleanup(func() { log.SetOutput(orig) })
-
-			ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
-			defer cancel()
-
-			res := svc.Connect(ctx, connectRequest{Token: tc.token})
-
-			if res.Kind != tc.wantKind {
-				t.Errorf("Kind = %q, want %q (Message=%q)", res.Kind, tc.wantKind, res.Message)
-			}
-			assertWiringOutcome(t, tc.wiring, res, rec)
-			if res.OK != tc.wantOK {
-				t.Errorf("OK = %v, want %v", res.OK, tc.wantOK)
-			}
-			if res.AccountID != tc.wantAccount {
-				t.Errorf("AccountID = %q, want %q", res.AccountID, tc.wantAccount)
-			}
-
-			// (g) the token must never appear in Message or the log output.
-			if strings.Contains(res.Message, probeToken) {
-				t.Errorf("token leaked into Message: %q", res.Message)
-			}
-			if strings.Contains(logBuf.String(), probeToken) {
-				t.Errorf("token leaked into log output: %q", logBuf.String())
-			}
-
-			if tc.wantDisarmed {
-				assertDisarmed(t, svc, rec)
-			}
-
-			if tc.wantOK {
-				assertConnectSuccess(t, svc, store, serverURL, rec)
-			}
+			runConnectClassificationCase(t, tc)
 		})
+	}
+}
+
+func runConnectClassificationCase(t *testing.T, tc connectCase) {
+	t.Helper()
+	rec := &authRecorder{}
+	stub := connectStub{rec: rec, getServerInfo: tc.serverInfo, whoAmI: tc.whoAmI(rec)}
+	srv, certPEM := connectTLSStub(t, stub)
+
+	serverURL := srv.URL
+	caPEM := certPEM
+	if tc.untrusted {
+		caPEM = nil
+	}
+	if tc.badURL {
+		serverURL = "https://127.0.0.1:1"
+	}
+
+	svc, store := connectService(t, serverURL, caPEM)
+	switch tc.wiring {
+	case "nilConn":
+		svc = newBridgeService(nil, nil, nil)
+	case "emptyConn":
+		svc = newBridgeService(&connection{}, nil, nil)
+	case "nilStore":
+		svc = newBridgeService(svc.conn.Load(), nil, nil)
+	case "failingStore":
+		svc = newBridgeService(svc.conn.Load(), nil, failingWriteStore{store})
+	}
+	if tc.preStore {
+		if err := store.Write(serverURL, probeToken); err != nil {
+			t.Fatalf("pre-store Write: %v", err)
+		}
+	}
+
+	var logBuf syncBuffer
+	orig := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	res := svc.Connect(ctx, connectRequest{Token: tc.token})
+
+	if res.Kind != tc.wantKind {
+		t.Errorf("Kind = %q, want %q (Message=%q)", res.Kind, tc.wantKind, res.Message)
+	}
+	assertWiringOutcome(t, tc.wiring, res, rec)
+	if res.OK != tc.wantOK {
+		t.Errorf("OK = %v, want %v", res.OK, tc.wantOK)
+	}
+	if res.AccountID != tc.wantAccount {
+		t.Errorf("AccountID = %q, want %q", res.AccountID, tc.wantAccount)
+	}
+	if strings.Contains(res.Message, probeToken) || strings.Contains(logBuf.String(), probeToken) {
+		t.Error("token leaked into message or log output")
+	}
+	if tc.wantDisarmed {
+		assertDisarmed(t, svc, rec)
+	}
+	if tc.wantOK && res.ServerURL != serverURL {
+		t.Errorf("ServerURL = %q, want %q", res.ServerURL, serverURL)
+	}
+	if tc.wantOK {
+		assertConnectSuccess(t, svc, store, serverURL, rec)
 	}
 }
 
@@ -437,5 +471,496 @@ func TestConnectConcurrentIsSerialized(t *testing.T) {
 	}
 	if !slices.Contains(tokens, stored) {
 		t.Errorf("stored token = %q, want one of the submitted tokens", stored)
+	}
+}
+
+func TestCAPickReferencesAreRandomHexAndRetryable(t *testing.T) {
+	picks := &caPicks{}
+	caPEM := []byte("certificate bytes")
+	first := picks.add(caPEM)
+	second := picks.add(caPEM)
+	if len(first) != 32 || first == second {
+		t.Fatalf("refs = %q and %q, want distinct 128-bit hex references", first, second)
+	}
+	if _, err := hex.DecodeString(first); err != nil {
+		t.Fatalf("ref %q is not hexadecimal: %v", first, err)
+	}
+	if decoded, err := hex.DecodeString(first); err != nil || len(decoded) != 16 {
+		t.Fatalf("ref %q decoded to %d bytes, %v; want 16-byte random reference", first, len(decoded), err)
+	}
+	got, ok := picks.get(first)
+	if !ok || string(got) != string(caPEM) {
+		t.Fatalf("get(%q) = %q, %v; want original bytes and true", first, got, ok)
+	}
+	got[0] = 'X'
+	got, ok = picks.get(first)
+	if !ok || string(got) != string(caPEM) {
+		t.Fatalf("get(%q) did not preserve the stored pick: %q, %v", first, got, ok)
+	}
+	picks.clear()
+	if _, ok := picks.get(first); ok {
+		t.Fatalf("get(%q) succeeded after clear", first)
+	}
+}
+
+func TestFirstRunGateSerializesAndDecides(t *testing.T) {
+	gate := &firstRunGate{}
+	if err := gate.begin(); err != nil {
+		t.Fatalf("first begin: %v", err)
+	}
+	if err := gate.begin(); err == nil || err.Error() != "Another window is setting up Compass." {
+		t.Fatalf("busy begin error = %v, want busy message", err)
+	}
+	gate.end(false)
+	if err := gate.begin(); err != nil {
+		t.Fatalf("begin after end(false): %v", err)
+	}
+	emitter := &setupDecisionEmitter{}
+	svc := newSetupBridgeService(emitter, tokenstore.New(t.TempDir()), &setupWiring{gate: gate, picks: &caPicks{}})
+	emitter.svc = svc
+	decide(gate, svc, false)
+	if got := emitter.state; got != (shellStateResult{Mode: "reopen"}) {
+		t.Fatalf("state observed during setup:decided = %+v, want reopen before event", got)
+	}
+	if emitter.count != 1 {
+		t.Fatalf("setup:decided events = %d, want 1", emitter.count)
+	}
+	if err := gate.begin(); err == nil || err.Error() != "Compass is already set up. Quit and reopen it to change this." {
+		t.Fatalf("decided begin error = %v, want final message", err)
+	}
+}
+
+type setupDecisionEmitter struct {
+	svc    *bridgeService
+	state  shellStateResult
+	count  int
+	frames *fakeEmitter
+}
+
+func (e *setupDecisionEmitter) Emit(name string, data ...any) bool {
+	if name != "setup:decided" {
+		if e.frames != nil {
+			return e.frames.Emit(name, data...)
+		}
+		return false
+	}
+	e.count++
+	e.state = e.svc.ShellState()
+	return true
+}
+
+func setupTLSStub(t *testing.T, rpcReached chan<- struct{}) (*httptest.Server, []byte) {
+	t.Helper()
+	stub := connectStub{
+		getServerInfo: okServerInfo,
+		whoAmI: func(_ context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+			if req.Header().Get("Authorization") != "Bearer "+probeToken {
+				return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("stub: no caller"))
+			}
+			return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "setup-account"}), nil
+		},
+	}
+	_, connectHandler := compassv1connect.NewCompassServiceHandler(stub)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc-web") {
+			if rpcReached != nil {
+				select {
+				case rpcReached <- struct{}{}:
+				default:
+				}
+			}
+			w.Header().Set("Content-Type", "application/grpc-web+proto")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		connectHandler.ServeHTTP(w, r)
+	})
+	srv := httptest.NewUnstartedServer(handler)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	leaf := srv.Certificate()
+	return srv, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
+}
+
+func newFirstRunService(t *testing.T, serverURL string, store tokenstore.Store, events eventEmitter, save func(string, appconfig.Config, []byte) (appconfig.Config, error)) (*bridgeService, *firstRunGate, *caPicks, string) {
+	t.Helper()
+	configHome := t.TempDir()
+	configPath, err := appconfig.ConfigPath(configHome, "")
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	gate := &firstRunGate{}
+	picks := &caPicks{}
+	setup := &setupWiring{configPath: configPath, gate: gate, picks: picks, saveClient: save}
+	svc := newSetupBridgeService(events, store, setup)
+	if serverURL == "" {
+		t.Fatal("setup test requires a server URL")
+	}
+	return svc, gate, picks, configHome
+}
+
+func TestConnectServerChoiceSuccessAndRPC(t *testing.T) {
+	rpcReached := make(chan struct{}, 1)
+	srv, certPEM := setupTLSStub(t, rpcReached)
+	store := tokenstore.New(t.TempDir())
+	emitter := newFakeEmitter()
+	svc, _, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	ref := picks.add(certPEM)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	res := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: " " + srv.URL + "/ ", CARef: ref}})
+	if !res.OK || res.Kind != "" || res.ServerURL != srv.URL {
+		t.Fatalf("Connect = %+v, want success with normalized server URL %q", res, srv.URL)
+	}
+	cfg, err := appconfig.Load(configHome, "", "")
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	if cfg.Mode != appconfig.ModeClient || cfg.ServerURL != srv.URL || cfg.CACert == "" {
+		t.Fatalf("saved config = %+v, want client mode, URL, and CA copy", cfg)
+	}
+	if got, err := os.ReadFile(cfg.CACert); err != nil || string(got) != string(certPEM) {
+		t.Fatalf("saved CA = %q, %v; want picked PEM", got, err)
+	}
+	if got, err := store.Read(srv.URL); err != nil || got != probeToken {
+		t.Fatalf("stored token = %q, %v; want submitted token", got, err)
+	}
+	assertSetupDecision(t, emitter)
+	if got := svc.ShellState(); got != (shellStateResult{Mode: "client", ServerURL: srv.URL}) {
+		t.Fatalf("ShellState() = %+v, want configured client", got)
+	}
+	svc.CompassRPC(context.Background(), rpcRequest{
+		RequestID: "setup-rpc",
+		Path:      compassv1connect.CompassServiceWhoAmIProcedure,
+		Headers:   []headerPair{{Name: "Content-Type", Value: "application/grpc-web+proto"}},
+	})
+	select {
+	case <-rpcReached:
+	case <-time.After(testTimeout):
+		t.Fatal("CompassRPC did not reach setup server")
+	}
+	if got := recv(t, emitter); got.name != "compass_rpc:setup-rpc" || got.frame.Kind != frameKindHead {
+		t.Fatalf("CompassRPC first frame = %+v, want head", got.frame)
+	}
+	if got := recv(t, emitter); got.name != "compass_rpc:setup-rpc" || got.frame.Kind != frameKindEnd {
+		t.Fatalf("CompassRPC terminal frame = %+v, want end", got.frame)
+	}
+}
+
+func TestConnectServerChoiceUsesStoredToken(t *testing.T) {
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "stored-account"}), nil
+	}})
+	store := tokenstore.New(t.TempDir())
+	if err := store.Write(srv.URL, probeToken); err != nil {
+		t.Fatalf("pre-store token: %v", err)
+	}
+	svc, _, picks, _ := newFirstRunService(t, srv.URL, store, newFakeEmitter(), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	res := svc.Connect(ctx, connectRequest{
+		Server: &serverChoice{URL: srv.URL, CARef: picks.add(certPEM)},
+	})
+	if !res.OK || res.ServerURL != srv.URL || res.AccountID != "stored-account" {
+		t.Fatalf("Connect with stored token = %+v, want successful normalized result", res)
+	}
+}
+
+func TestConnectServerChoiceValidationFailures(t *testing.T) {
+	srv, certPEM := setupTLSStub(t, nil)
+	badPEM := []byte("not a certificate")
+	for _, tc := range []struct {
+		name     string
+		choice   serverChoice
+		token    string
+		wantKind string
+		wantMsg  string
+	}{
+		{name: "invalid url", choice: serverChoice{URL: "http://example.test"}, token: probeToken, wantKind: connectKindInvalidURL, wantMsg: "The server URL must use https."},
+		{name: "unknown ca reference", choice: serverChoice{URL: srv.URL, CARef: "missing"}, token: probeToken, wantKind: connectKindInvalidCA, wantMsg: "Choose the certificate again."},
+		{name: "non pem ca", choice: serverChoice{URL: srv.URL, CARef: "bad-pem"}, token: probeToken, wantKind: connectKindInvalidCA, wantMsg: "The file is not a PEM certificate."},
+		{name: "wrong token", choice: serverChoice{URL: srv.URL, CARef: "good"}, token: "wrong", wantKind: connectKindBadToken},
+		{name: "missing ca", choice: serverChoice{URL: srv.URL}, token: probeToken, wantKind: connectKindBadCert},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tokenstore.New(t.TempDir())
+			svc, gate, picks, configHome := newFirstRunService(t, srv.URL, store, newFakeEmitter(), nil)
+			if tc.choice.CARef == "bad-pem" {
+				tc.choice.CARef = picks.add(badPEM)
+			} else if tc.choice.CARef == "good" {
+				tc.choice.CARef = picks.add(certPEM)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+			defer cancel()
+			res := svc.Connect(ctx, connectRequest{Token: tc.token, Server: &tc.choice})
+			if res.Kind != tc.wantKind || (tc.wantMsg != "" && res.Message != tc.wantMsg) {
+				t.Errorf("Connect = %+v, want kind %q and message %q", res, tc.wantKind, tc.wantMsg)
+			}
+			if _, err := os.Stat(filepath.Join(configHome, "compass", "app.toml")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("failed attempt app.toml stat error = %v, want absent", err)
+			}
+			if err := gate.begin(); err != nil {
+				t.Errorf("gate remains busy after failed attempt: %v", err)
+			} else {
+				gate.end(false)
+			}
+		})
+	}
+}
+
+func TestConnectServerChoiceRetriesSameCAPick(t *testing.T) {
+	whoAmI := func(_ context.Context, req *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		if req.Header().Get("Authorization") != "Bearer "+probeToken {
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("stub: no caller"))
+		}
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "retry-account"}), nil
+	}
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: whoAmI})
+	store := tokenstore.New(t.TempDir())
+	svc, _, picks, _ := newFirstRunService(t, srv.URL, store, newFakeEmitter(), nil)
+	ref := picks.add(certPEM)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	first := svc.Connect(ctx, connectRequest{Token: "wrong", Server: &serverChoice{URL: srv.URL, CARef: ref}})
+	if first.Kind != connectKindBadToken {
+		t.Fatalf("first Connect = %+v, want bad token", first)
+	}
+	if _, ok := picks.get(ref); !ok {
+		t.Fatal("failed probe discarded CA pick needed for retry")
+	}
+	second := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL, CARef: ref}})
+	if !second.OK {
+		t.Fatalf("retry Connect = %+v, want success", second)
+	}
+}
+
+func TestConnectServerChoiceAfterDecisionAndPlainConnect(t *testing.T) {
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "setup-account"}), nil
+	}})
+	store := tokenstore.New(t.TempDir())
+	emitter := newFakeEmitter()
+	svc, _, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	ref := picks.add(certPEM)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	first := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL, CARef: ref}})
+	if !first.OK {
+		t.Fatalf("initial setup Connect = %+v", first)
+	}
+	configPath, err := appconfig.ConfigPath(configHome, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, otherPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "other-account"}), nil
+	}})
+	res := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: other.URL, CARef: picks.add(otherPEM)}})
+	if res.Kind != connectKindOther || res.Message != "Compass is already set up. Quit and reopen it to change this." {
+		t.Fatalf("second server choice = %+v, want already-set-up result", res)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("second choice changed app.toml: err=%v", err)
+	}
+	plain := svc.Connect(ctx, connectRequest{Token: probeToken})
+	if !plain.OK || plain.ServerURL != srv.URL {
+		t.Fatalf("plain Connect = %+v, want configured server success", plain)
+	}
+}
+
+func TestConnectServerChoiceRejectedOnConfiguredService(t *testing.T) {
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	}})
+	service, _ := connectService(t, srv.URL, certPEM)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	res := service.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL}})
+	if res.Kind != connectKindOther || res.Message != "The server is set in app.toml." || service.conn.Load() == nil {
+		t.Fatalf("server choice on configured service = %+v, want setup-only refusal", res)
+	}
+}
+
+func TestConnectServerChoiceSaveErrorCanRetry(t *testing.T) {
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	}})
+	store := &memoryTokenStore{}
+	fail := true
+	save := func(path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error) {
+		if fail {
+			return appconfig.Config{}, errors.New("disk full")
+		}
+		return appconfig.SaveClient(path, cfg, caPEM)
+	}
+	svc, gate, picks, configHome := newFirstRunService(t, srv.URL, store, newFakeEmitter(), save)
+	ref := picks.add(certPEM)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	res := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL, CARef: ref}})
+	if res.Kind != connectKindOther || res.Message != "Connected, but the settings could not be saved: disk full" {
+		t.Fatalf("save failure = %+v, want exact settings-save message", res)
+	}
+	if svc.conn.Load() != nil {
+		t.Fatal("connection installed after SaveClient failure")
+	}
+	if _, err := store.Read(srv.URL); !errors.Is(err, tokenstore.ErrNotFound) {
+		t.Fatalf("token read after save failure = %v, want ErrNotFound", err)
+	}
+	if err := gate.begin(); err != nil {
+		t.Fatalf("gate not open after SaveClient failure: %v", err)
+	}
+	gate.end(false)
+	fail = false
+	if retry := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL, CARef: ref}}); !retry.OK {
+		t.Fatalf("valid retry = %+v, want success", retry)
+	}
+	if got, err := appconfig.Load(configHome, "", ""); err != nil || got.ServerURL != srv.URL {
+		t.Fatalf("retry config = %+v, %v", got, err)
+	}
+}
+
+func TestConnectServerChoiceTokenStoreFailureDecidesReopen(t *testing.T) {
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	}})
+	store := failingWriteStore{Store: tokenstore.New(t.TempDir())}
+	emitter := &setupDecisionEmitter{}
+	svc, _, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	emitter.svc = svc
+	ref := picks.add(certPEM)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	res := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL, CARef: ref}})
+	if res.Kind != connectKindOther || res.Message != "Saved, but could not store the token. Quit and reopen Compass, then enter it again." {
+		t.Fatalf("token-store failure = %+v, want fixed recovery message", res)
+	}
+	if svc.conn.Load() != nil {
+		t.Fatal("connection installed after token store failure")
+	}
+	if got := svc.ShellState(); got != (shellStateResult{Mode: "reopen"}) {
+		t.Fatalf("ShellState() = %+v, want reopen", got)
+	}
+	if _, ok := picks.get(ref); ok {
+		t.Fatal("CA picks remain after successful config save")
+	}
+	if emitter.count != 1 || emitter.state.Mode != "reopen" {
+		t.Fatalf("decision event count/state = %d/%+v, want one reopen event", emitter.count, emitter.state)
+	}
+	if _, err := appconfig.Load(configHome, "", ""); err != nil {
+		t.Fatalf("settings should remain saved after token-store failure: %v", err)
+	}
+}
+
+func TestConnectServerChoiceConfigCreatedAfterChooser(t *testing.T) {
+	srv, certPEM := connectTLSStub(t, connectStub{getServerInfo: okServerInfo, whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+		return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+	}})
+	store := tokenstore.New(t.TempDir())
+	emitter := &setupDecisionEmitter{}
+	svc, gate, picks, configHome := newFirstRunService(t, srv.URL, store, emitter, nil)
+	emitter.svc = svc
+	ref := picks.add(certPEM)
+	configPath, err := appconfig.ConfigPath(configHome, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appconfig.SaveClient(configPath, appconfig.Config{Mode: appconfig.ModeClient, ServerURL: srv.URL}, certPEM); err != nil {
+		t.Fatalf("racing SaveClient: %v", err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Write(srv.URL, "preexisting-token"); err != nil {
+		t.Fatal(err)
+	}
+	tokenBefore, err := store.Read(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+	defer cancel()
+	res := svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL, CARef: ref}})
+	if res.Kind != connectKindOther || res.Message != "Compass is already set up. Quit and reopen it to change this." {
+		t.Fatalf("racing config Connect = %+v, want already-set-up message", res)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("racing app.toml changed: %v", err)
+	}
+	tokenAfter, err := store.Read(srv.URL)
+	if err != nil || tokenAfter != tokenBefore {
+		t.Fatalf("racing token changed to %q (read error %v), want unchanged", tokenAfter, err)
+	}
+	if state := svc.ShellState(); state != (shellStateResult{Mode: "reopen"}) || emitter.count != 1 || emitter.state != state {
+		t.Fatalf("state/event = %+v, %d, %+v; want one reopen decision", state, emitter.count, emitter.state)
+	}
+	if err := gate.begin(); err == nil {
+		t.Fatal("gate reopened after ErrConfigExists")
+	}
+}
+
+func assertSetupDecision(t *testing.T, emitter *fakeEmitter) {
+	t.Helper()
+	if event := recv(t, emitter); event.name != "setup:decided" {
+		t.Fatalf("event = %q, want setup:decided", event.name)
+	}
+	select {
+	case event := <-emitter.ch:
+		t.Fatalf("unexpected extra setup event %q", event.name)
+	default:
+	}
+}
+
+func TestConnectServerChoiceConcurrentCompassRPC(t *testing.T) {
+	srv, certPEM := connectTLSStub(t, connectStub{
+		getServerInfo: okServerInfo,
+		whoAmI: func(_ context.Context, _ *connect.Request[compassv1.WhoAmIRequest]) (*connect.Response[compassv1.WhoAmIResponse], error) {
+			return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: "account"}), nil
+		},
+	})
+	store := tokenstore.New(t.TempDir())
+	frames := newFakeEmitter()
+	events := &setupDecisionEmitter{frames: frames}
+	saving := make(chan struct{})
+	releaseSave := make(chan struct{})
+	save := func(path string, cfg appconfig.Config, caPEM []byte) (appconfig.Config, error) {
+		close(saving)
+		<-releaseSave
+		return appconfig.SaveClient(path, cfg, caPEM)
+	}
+	svc, _, picks, _ := newFirstRunService(t, srv.URL, store, events, save)
+	events.svc = svc
+	ref := picks.add(certPEM)
+	connectDone := make(chan connectResult, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), connectTestTimeout)
+		defer cancel()
+		connectDone <- svc.Connect(ctx, connectRequest{Token: probeToken, Server: &serverChoice{URL: srv.URL, CARef: ref}})
+	}()
+	select {
+	case <-saving:
+	case <-time.After(testTimeout):
+		t.Fatal("Connect did not reach save seam")
+	}
+	svc.CompassRPC(context.Background(), rpcRequest{RequestID: "setup-race", Path: compassv1connect.CompassServiceWhoAmIProcedure})
+	rpcEvent := recv(t, frames)
+	if rpcEvent.name != "compass_rpc:setup-race" || rpcEvent.frame.Kind != frameKindError || rpcEvent.frame.Message != "Not connected to a server" {
+		t.Fatalf("concurrent RPC event = %+v, want no-connection error", rpcEvent)
+	}
+	close(releaseSave)
+	result := <-connectDone
+	if !result.OK || result.ServerURL != srv.URL {
+		t.Fatalf("concurrent setup Connect = %+v, want success", result)
+	}
+	if got := svc.ShellState(); got != (shellStateResult{Mode: "client", ServerURL: srv.URL}) {
+		t.Fatalf("post-race ShellState() = %+v, want configured client", got)
 	}
 }
