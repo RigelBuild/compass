@@ -6,8 +6,8 @@ also carry. Each tool carries its own description at the call site; this doc is
 the higher-level map: what the set covers and the general flow of using it.
 
 > **Keep this current as tools land.** The comms and lifecycle tools below have
-> shipped and are documented here. The org-management tools, the forge tools,
-> and the subscription tools are landing; as each lands,
+> shipped and are documented here. The forge tools and the subscription tools
+> are landing; as each lands,
 > add it to the right group below and note its flow. A tool that has shipped but
 > is not listed here is a documentation gap to close.
 
@@ -25,6 +25,14 @@ routing manual: the `comms-playbook` skill (`config/skills/comms-playbook`).
   later turn, it does not block.
 - **`comms_list_messages`** — read a channel's recent messages, grouped by
   topic. There is no separate inbox — reading is always this call.
+- **`comms_create_channel`** — create a named channel, optionally in a group
+  (a leaf name or slash path) with initial members by handle. DMs use
+  `comms_open_dm`, never this tool.
+- **`comms_update_members`** — add, remove, subscribe, or unsubscribe members
+  of a channel by handle. Adding a third party to a DM needs
+  `convert_to_channel_name`, which turns the DM into a named channel.
+- **`comms_create_channel_group`** — create a top-level or nested channel group,
+  owner-scoped by default or shared.
 
 Delivery has two modes: a **regular** message lands at the start of your next
 turn; an **@mention** that names you reaches you mid-turn as a steer. Post,
@@ -72,6 +80,7 @@ a subagent spawn.
 Each tool declares whether it is a **read** or a **write**. Reads
 (`comms_list_messages`, `compass_roster`, `compass_tree`) run freely; writes
 (`comms_post_message`, `comms_post_ask`, `compass_set_status`,
+`comms_create_channel`, `comms_update_members`, `comms_create_channel_group`,
 `agents_spawn_peer`, `agents_despawn_peer`) are the mutating surface. In a
 headless container the write natives auto-approve (there is no human in the
 container to approve them); the operator-approval gate on spawning a child
