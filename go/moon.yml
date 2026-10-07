@@ -90,20 +90,22 @@ tasks:
     # golangci-lint over the module against .golangci.yml (F1 enable-all +
     # reasoned disable-list, with the load-bearing gochecksumtype/exhaustive
     # exhaustiveness gate on). The gate (L1/L2). `--config` is explicit so the
-    # run can't silently fall back to a discovered or absent config.
-    command: 'golangci-lint run --config .golangci.yml ./...'
+    # run can't silently fall back to a discovered or absent config. The run
+    # lock is host-wide whatever the cache path, so concurrent runs serialize,
+    # not fail.
+    command: 'golangci-lint run --allow-serial-runners --config .golangci.yml ./...'
     env:
       # Give each workspace its own golangci-lint cache. The default shared
-      # ~/.cache/golangci-lint is a single-writer resource: when several agents
-      # lint concurrently from separate jj workspaces on one host, they either
-      # hit its lock or cross-contaminate — a peer's already-torn-down worktree
-      # path surfaces as phantom findings (e.g. nolint directives read as
-      # unsuppressed) in an unrelated clean diff, reddening this gate. A task
-      # env applies wherever moon runs the task — including the ephemeral
-      # jj push-gate worktree, which re-derives its shell env and would drop a
-      # plain shell export — so scoping the cache to $projectRoot (the go/ dir)
-      # makes the cache path unique per worktree and the contamination
-      # structurally impossible. gitignored (go/.golangci-cache).
+      # ~/.cache/golangci-lint cross-contaminates when several agents lint
+      # concurrently from separate jj workspaces on one host: a peer's
+      # already-torn-down worktree path surfaces as phantom findings (e.g.
+      # nolint directives read as unsuppressed) in an unrelated clean diff,
+      # reddening this gate. A task env applies wherever moon runs the task —
+      # including the ephemeral jj push-gate worktree, which re-derives its
+      # shell env and would drop a plain shell export — so scoping the cache to
+      # $projectRoot (the go/ dir) makes the cache path unique per worktree and
+      # the contamination structurally impossible. gitignored
+      # (go/.golangci-cache).
       GOLANGCI_LINT_CACHE: '$projectRoot/.golangci-cache'
     options:
       runFromWorkspaceRoot: false
