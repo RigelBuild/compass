@@ -656,8 +656,11 @@ function createLiveSessions(
 			state: frame.state ?? trace.state,
 		}));
 	};
-	// A changed status re-arms its session: it lifts a NotFound park, and a live
-	// state after a terminal one means the id was reused (reload, wake, resume).
+	// Bumped on every changed status per session; a NotFound only parks the tail
+	// if no status arrived while it was in flight. Not reactive: only read on settle.
+	const statusCounts = new Map<string, number>();
+	// A changed status lifts a NotFound park. Only a terminal-then-live status pair
+	// re-arms an ended trace: that is a reused id (reload, wake, resume), not a late one.
 	const adoptAccountSessions = (
 		next: ReadonlyMap<string, AccountSession>,
 	): void => {
@@ -666,19 +669,43 @@ function createLiveSessions(
 			const old = prev.get(account);
 			if (old?.sessionId === status.sessionId && old.state === status.state)
 				continue;
+			statusCounts.set(
+				status.sessionId,
+				(statusCounts.get(status.sessionId) ?? 0) + 1,
+			);
 			if (!untrack(traces).has(status.sessionId)) continue;
-			const live = !isTerminalSessionState(status.state);
+			const reused =
+				old?.sessionId === status.sessionId &&
+				isTerminalSessionState(old.state) &&
+				!isTerminalSessionState(status.state);
 			updateTrace(status.sessionId, (trace) => ({
 				events: trace.events,
-				state:
-					live &&
-					trace.state !== undefined &&
-					isTerminalSessionState(trace.state)
-						? undefined
-						: trace.state,
+				state: reused ? undefined : trace.state,
 			}));
 		}
 		setAccountSessions(next);
+	};
+	// Tail until the session ends or aborts. A NotFound is retried only when a status
+	// landed meanwhile (the start race); otherwise the session parks until the next one.
+	const tailSession = async (
+		sessionId: string,
+		signal: AbortSignal,
+	): Promise<void> => {
+		for (;;) {
+			const seen = statusCounts.get(sessionId) ?? 0;
+			const end = await runSessionTail({
+				client,
+				sessionId,
+				signal,
+				onError: deps.onError,
+				onFrame: (frame) => appendFrame(sessionId, frame),
+			});
+			if (end !== "notFound") return;
+			if ((statusCounts.get(sessionId) ?? 0) === seen) {
+				updateTrace(sessionId, (trace) => ({ ...trace, notFound: true }));
+				return;
+			}
+		}
 	};
 	// Tail only the agents on screen: each tail holds a browser connection, and an
 	// HTTP/1.1 door allows about six per host. A new session id replaces the old.
@@ -707,20 +734,9 @@ function createLiveSessions(
 			if (tails.has(sessionId)) continue;
 			const abort = new AbortController();
 			tails.set(sessionId, abort);
-			void runSessionTail({
-				client,
-				sessionId,
-				signal: abort.signal,
-				onError: deps.onError,
-				onFrame: (frame) => appendFrame(sessionId, frame),
-			})
-				.then((end) => {
-					if (end === "notFound")
-						updateTrace(sessionId, (trace) => ({ ...trace, notFound: true }));
-				})
-				.catch((error) => {
-					if (!abort.signal.aborted) deps.onError(error);
-				});
+			void tailSession(sessionId, abort.signal).catch((error) => {
+				if (!abort.signal.aborted) deps.onError(error);
+			});
 		}
 	});
 	if (getOwner())

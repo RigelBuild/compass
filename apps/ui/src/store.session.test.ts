@@ -248,6 +248,53 @@ describe("store live agent session (SubscribeAgentSession)", () => {
 		}
 	});
 
+	test("a late live status does not re-arm a session the tail saw end", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.WORKING);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.openSessionTails().includes("sess-1"));
+			fake.pushSessionFrame("sess-1", { state: AgentSessionState.ERRORED });
+			await settle(() => fake.openSessionTails().length === 0);
+
+			// Stale statuses still in flight; no terminal status came between.
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.READY);
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.WORKING);
+			await settle(() => fake.sessionSubscribes.length >= 2);
+			expect(fake.sessionSubscribes.length).toBe(1);
+			expect(store.focusedView().agentSession()?.running).toBe(false);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("a status that lands while NotFound is in flight re-arms the tail", async () => {
+		const fake = createFakeCompass();
+		const { store, dispose } = liveStore(fake);
+		try {
+			const release = Promise.withResolvers<void>();
+			fake.failNextSessionSubscribe(
+				new ConnectError("not yet", Code.NotFound),
+				release.promise,
+			);
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.STARTING);
+			await settle();
+			store.openAgent(AGENT);
+			await settle(() => fake.sessionSubscribes.length >= 1);
+
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.READY);
+			fake.pushSessionStatus(AGENT, "sess-1", AgentSessionState.WORKING);
+			await settle();
+			release.resolve();
+			await settle(() => fake.sessionSubscribes.length >= 2);
+			expect(fake.sessionSubscribes.length).toBe(2);
+		} finally {
+			dispose();
+		}
+	});
+
 	test("text deltas coalesce and the trace is capped", async () => {
 		const fake = createFakeCompass();
 		const { store, dispose } = liveStore(fake);

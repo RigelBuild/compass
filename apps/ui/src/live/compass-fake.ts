@@ -102,8 +102,8 @@ export interface FakeCompass {
 	/** The session ids with a currently open SubscribeAgentSession. */
 	openSessionTails: () => string[];
 	/** Reject the next SubscribeAgentSession with `error` (one-shot), after
-	 *  recording it. */
-	failNextSessionSubscribe: (error: Error) => void;
+	 *  recording it; with `hold`, the rejection waits until `hold` settles. */
+	failNextSessionSubscribe: (error: Error, hold?: Promise<void>) => void;
 }
 
 /** Build the fake. Pure and synchronous apart from the RPC's promise. */
@@ -128,7 +128,9 @@ export function createFakeCompass(): FakeCompass {
 		return queue;
 	};
 	const sessionSubscribes: RecordedSessionSubscribe[] = [];
-	let sessionSubscribeFailure: Error | undefined;
+	let sessionSubscribeFailure:
+		| { error: Error; hold?: Promise<void> }
+		| undefined;
 
 	const client = {
 		stopAgentSession: async (req: { sessionId: string }) => {
@@ -176,9 +178,10 @@ export function createFakeCompass(): FakeCompass {
 			sessionSubscribes.push(record);
 			try {
 				if (sessionSubscribeFailure) {
-					const err = sessionSubscribeFailure;
+					const { error, hold } = sessionSubscribeFailure;
 					sessionSubscribeFailure = undefined;
-					throw err;
+					await hold;
+					throw error;
 				}
 				yield create(AgentSessionFrameSchema, { sessionId: req.sessionId });
 				yield* sessionQueue(req.sessionId).drain(opts?.signal);
@@ -234,8 +237,8 @@ export function createFakeCompass(): FakeCompass {
 		sessionSubscribes,
 		openSessionTails: () =>
 			sessionSubscribes.filter((s) => !s.aborted).map((s) => s.sessionId),
-		failNextSessionSubscribe: (error) => {
-			sessionSubscribeFailure = error;
+		failNextSessionSubscribe: (error, hold) => {
+			sessionSubscribeFailure = { error, hold };
 		},
 	};
 }
