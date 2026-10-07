@@ -349,3 +349,10 @@ provider chain. Seed the registry once after first boot, and update it later
 with the same operator RPC write. No release is needed. The day-1 defaults,
 the recommended model per role, and the commands are in
 [the model registry guide](model-registry/README.md).
+
+## Dashboards
+
+The repo ships Grafana dashboard JSON for the agent's metrics and traces under
+[`dashboards/`](../dashboards/README.md). Import is manual and needs your own
+Prometheus and Tempo datasources; that README covers the import steps and which
+signals each dashboard binds.
