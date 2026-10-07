@@ -1,4 +1,4 @@
-{ pkgs, lib, config, ... }:
+{ pkgs, lib, config, inputs, ... }:
 # The Compass agent base image — the single self-contained OCI artifact every
 # per-agent container starts from.
 #
@@ -22,7 +22,10 @@ let
   # graph, so it is bundled rather than store-copied; entrypoint.nix carries why.
   compassAgent = import ./entrypoint.nix { inherit pkgs lib; };
 
-  toolchain = import ./toolchain.nix { inherit pkgs compassAgent; };
+  toolchain = import ./toolchain.nix {
+    inherit pkgs lib compassAgent;
+    jjVineSrc = inputs.jj-vine-src;
+  };
 
 in
 {
