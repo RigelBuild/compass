@@ -163,6 +163,7 @@ SELECT d.tenant_id, gen_random_uuid()::text, d.usage_interval_id, 'end', clock_t
        d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
   FROM d
   JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+ ORDER BY d.tenant_id, d.usage_interval_id
 ON CONFLICT DO NOTHING;
 
 -- The reconnect sweep, run by Hub.enroll under the system role because a Runner
@@ -195,6 +196,7 @@ WITH d AS (
            d.agent_account_id, a.owner_user_id, d.session_id, d.runner_id
       FROM d
       JOIN agent_accounts AS a ON a.account_id = d.agent_account_id
+     ORDER BY d.tenant_id, d.usage_interval_id
     ON CONFLICT DO NOTHING
     RETURNING 1
 )

@@ -20,6 +20,8 @@ type Harness struct {
 	Ctx func(t *testing.T, tenant int) context.Context
 	// CorruptRollups deletes every rollup of s and keeps the raw events.
 	CorruptRollups func(t *testing.T, s usage.Store)
+	// AppendComputeInterval seeds the backend's compute fixture events.
+	AppendComputeInterval func(t *testing.T, s usage.Store, ctx context.Context, intervals ...usage.ComputeInterval)
 }
 
 // Run runs the contract suite against the backend h adapts.
@@ -38,6 +40,16 @@ func Run(t *testing.T, h Harness) {
 	t.Run("tenants_are_isolated", tenantsAreIsolated(h))
 	t.Run("invalid_events_are_rejected_and_write_nothing", invalidEventsWriteNothing(h))
 	t.Run("invalid_queries_are_rejected", invalidQueriesAreRejected(h))
+	t.Run("compute_intervals_split_across_hour_and_day_boundaries", computeIntervalsSplitAcrossBoundaries(h))
+	t.Run("open_compute_interval_is_excluded", openComputeIntervalIsExcluded(h))
+	t.Run("compute_rebuild_matches_incremental_rollups", computeRebuildMatchesIncremental(h))
+	t.Run("compute_open_interval_ending_at_prune_horizon", computeOpenIntervalEndingAtPruneHorizon(h))
+	t.Run("compute_open_interval_crossing_prune_horizon_rebuilds_consistently", computeOpenIntervalCrossingPruneHorizon(h))
+	t.Run("compute_interval_open_across_two_prunes_counts_once", computeIntervalOpenAcrossTwoPrunesCountsOnce(h))
+	t.Run("compute_multiple_intervals_crossing_bucket_edges_rebuild_consistently", computeMultipleIntervalsCrossingBucketEdges(h))
+	t.Run("compute_zero_duration_at_prune_horizon_matches_sql", computeZeroDurationAtPruneHorizon(h))
+	t.Run("compute_prune_keeps_rollups_and_open_intervals", computePruneKeepsRollups(h))
+	t.Run("compute_series_is_tenant_scoped", computeSeriesIsTenantScoped(h))
 }
 
 // day0 is a UTC midnight, so the fixtures sit on known bucket boundaries.
@@ -393,5 +405,276 @@ func invalidQueriesAreRejected(h Harness) func(*testing.T) {
 				t.Fatalf("TokenUsageSeries(granularity %d) error = %v, want ErrInvalidArgument", g, err)
 			}
 		}
+	}
+}
+
+func computeIntervalsSplitAcrossBoundaries(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		h.AppendComputeInterval(t, s, ctx,
+			usage.ComputeInterval{IntervalID: "hour", StartUnixMs: at(hour - time.Minute), EndUnixMs: at(hour + 2*time.Minute), AgentAccountID: "a1", OwnerUserID: "u1"},
+			usage.ComputeInterval{IntervalID: "day", StartUnixMs: at(day - time.Minute), EndUnixMs: at(day + 2*time.Minute), AgentAccountID: "a1", OwnerUserID: "u1"},
+		)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour),
+			usage.ComputeBucket{StartUnixMs: at(0), ActiveMs: int64(time.Minute / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(hour), ActiveMs: int64(2 * time.Minute / time.Millisecond)},
+			usage.ComputeBucket{StartUnixMs: at(23 * hour), ActiveMs: int64(time.Minute / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(day), ActiveMs: int64(2 * time.Minute / time.Millisecond)},
+		)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay),
+			usage.ComputeBucket{StartUnixMs: at(0), ActiveMs: int64(4 * time.Minute / time.Millisecond), Intervals: 2},
+			usage.ComputeBucket{StartUnixMs: at(day), ActiveMs: int64(2 * time.Minute / time.Millisecond)},
+		)
+	}
+}
+
+func openComputeIntervalIsExcluded(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		h.AppendComputeInterval(t, s, ctx, usage.ComputeInterval{
+			IntervalID: "open", StartUnixMs: at(hour), AgentAccountID: "a1", OwnerUserID: "u1",
+		})
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour))
+		mustComputeRebuild(t, ctx, s)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay))
+	}
+}
+
+func computeRebuildMatchesIncremental(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		h.AppendComputeInterval(t, s, ctx,
+			usage.ComputeInterval{IntervalID: "cross", StartUnixMs: at(hour - time.Minute), EndUnixMs: at(day + time.Minute), AgentAccountID: "a1", OwnerUserID: "u1"},
+			usage.ComputeInterval{IntervalID: "same", StartUnixMs: at(hour), EndUnixMs: at(hour + 30*time.Minute), AgentAccountID: "a2", OwnerUserID: "u1"},
+		)
+		beforeHour := computeSeries(t, ctx, s, query(usage.GranularityHour))
+		beforeDay := computeSeries(t, ctx, s, query(usage.GranularityDay))
+		h.CorruptRollups(t, s)
+		mustComputeRebuild(t, ctx, s)
+		if got := computeSeries(t, ctx, s, query(usage.GranularityHour)); !slices.Equal(got, beforeHour) {
+			t.Fatalf("hourly rebuild = %+v, want incremental %+v", got, beforeHour)
+		}
+		if got := computeSeries(t, ctx, s, query(usage.GranularityDay)); !slices.Equal(got, beforeDay) {
+			t.Fatalf("daily rebuild = %+v, want incremental %+v", got, beforeDay)
+		}
+	}
+}
+
+func computeOpenIntervalEndingAtPruneHorizon(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		interval := usage.ComputeInterval{
+			IntervalID: "ends-at-prune-horizon", StartUnixMs: at(day - hour),
+			AgentAccountID: "a1", OwnerUserID: "u1",
+		}
+		h.AppendComputeInterval(t, s, ctx, interval)
+		mustComputePrune(t, ctx, s, at(day), 0)
+
+		interval.EndUnixMs = at(day)
+		h.AppendComputeInterval(t, s, ctx, interval)
+		want := []usage.ComputeBucket{{StartUnixMs: at(day - hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1}}
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour), want...)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay),
+			usage.ComputeBucket{StartUnixMs: at(0), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+		)
+		assertComputeRebuildMatchesIncremental(t, s, ctx)
+	}
+}
+
+func computeOpenIntervalCrossingPruneHorizon(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		interval := usage.ComputeInterval{
+			IntervalID: "cross-pruned-horizon", StartUnixMs: at(day - hour),
+			AgentAccountID: "a1", OwnerUserID: "u1",
+		}
+		h.AppendComputeInterval(t, s, ctx, interval)
+		mustComputePrune(t, ctx, s, at(day), 0)
+
+		interval.EndUnixMs = at(day + 2*hour)
+		h.AppendComputeInterval(t, s, ctx, interval)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour),
+			usage.ComputeBucket{StartUnixMs: at(day - hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(day), ActiveMs: int64(time.Hour / time.Millisecond)},
+			usage.ComputeBucket{StartUnixMs: at(day + hour), ActiveMs: int64(time.Hour / time.Millisecond)},
+		)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay),
+			usage.ComputeBucket{StartUnixMs: at(0), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(day), ActiveMs: int64(2 * time.Hour / time.Millisecond)},
+		)
+		assertComputeRebuildMatchesIncremental(t, s, ctx)
+	}
+}
+
+// An interval open at one prune and closed before the next must bill its full
+// time once, whatever rebuilds and prunes run around the close.
+func computeIntervalOpenAcrossTwoPrunesCountsOnce(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		h.AppendComputeInterval(t, s, ctx,
+			usage.ComputeInterval{IntervalID: "frozen", StartUnixMs: at(hour), EndUnixMs: at(2 * hour), AgentAccountID: "a1", OwnerUserID: "u1"},
+		)
+		interval := usage.ComputeInterval{
+			IntervalID: "open-across-prunes", StartUnixMs: at(day - hour),
+			AgentAccountID: "a1", OwnerUserID: "u1",
+		}
+		h.AppendComputeInterval(t, s, ctx, interval)
+		mustComputePrune(t, ctx, s, at(day), 2)
+		mustComputeRebuild(t, ctx, s)
+
+		interval.EndUnixMs = at(day + 2*hour)
+		h.AppendComputeInterval(t, s, ctx, interval)
+		hourly := []usage.ComputeBucket{
+			{StartUnixMs: at(hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			{StartUnixMs: at(day - hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			{StartUnixMs: at(day), ActiveMs: int64(time.Hour / time.Millisecond)},
+			{StartUnixMs: at(day + hour), ActiveMs: int64(time.Hour / time.Millisecond)},
+		}
+		daily := []usage.ComputeBucket{
+			{StartUnixMs: at(0), ActiveMs: int64(2 * time.Hour / time.Millisecond), Intervals: 2},
+			{StartUnixMs: at(day), ActiveMs: int64(2 * time.Hour / time.Millisecond)},
+		}
+		check := func(step string) {
+			t.Helper()
+			if got := computeSeries(t, ctx, s, query(usage.GranularityHour)); !slices.Equal(got, hourly) {
+				t.Fatalf("%s: hourly = %+v, want %+v", step, got, hourly)
+			}
+			if got := computeSeries(t, ctx, s, query(usage.GranularityDay)); !slices.Equal(got, daily) {
+				t.Fatalf("%s: daily = %+v, want %+v", step, got, daily)
+			}
+		}
+		check("after close")
+		mustComputeRebuild(t, ctx, s)
+		check("rebuild under the first horizon")
+		mustComputePrune(t, ctx, s, at(2*day), 2)
+		check("second prune")
+		mustComputeRebuild(t, ctx, s)
+		check("rebuild under the second horizon")
+	}
+}
+
+func computeZeroDurationAtPruneHorizon(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		interval := usage.ComputeInterval{
+			IntervalID: "zero-at-prune-horizon", StartUnixMs: at(day),
+			AgentAccountID: "a1", OwnerUserID: "u1",
+		}
+		h.AppendComputeInterval(t, s, ctx, interval)
+		mustComputePrune(t, ctx, s, at(day), 0)
+
+		interval.EndUnixMs = at(day)
+		h.AppendComputeInterval(t, s, ctx, interval)
+		want := []usage.ComputeBucket{{StartUnixMs: at(day), ActiveMs: 0, Intervals: 1}}
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour), want...)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay), want...)
+		mustComputeRebuild(t, ctx, s)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour), want...)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityDay), want...)
+	}
+}
+
+func computeMultipleIntervalsCrossingBucketEdges(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		h.AppendComputeInterval(t, s, ctx,
+			usage.ComputeInterval{IntervalID: "cross-midnight", StartUnixMs: at(day - 30*time.Minute), EndUnixMs: at(day + 30*time.Minute), AgentAccountID: "a1", OwnerUserID: "u1"},
+			usage.ComputeInterval{IntervalID: "cross-hours", StartUnixMs: at(day - 15*time.Minute), EndUnixMs: at(day + 2*time.Hour + 15*time.Minute), AgentAccountID: "a2", OwnerUserID: "u1"},
+			usage.ComputeInterval{IntervalID: "cross-next-midnight", StartUnixMs: at(2*day - 30*time.Minute), EndUnixMs: at(2*day + 30*time.Minute), AgentAccountID: "a1", OwnerUserID: "u1"},
+		)
+		assertComputeRebuildMatchesIncremental(t, s, ctx)
+	}
+}
+
+func assertComputeRebuildMatchesIncremental(t *testing.T, s usage.Store, ctx context.Context) {
+	t.Helper()
+	beforeHour := computeSeries(t, ctx, s, query(usage.GranularityHour))
+	beforeDay := computeSeries(t, ctx, s, query(usage.GranularityDay))
+	mustComputeRebuild(t, ctx, s)
+	if got := computeSeries(t, ctx, s, query(usage.GranularityHour)); !slices.Equal(got, beforeHour) {
+		t.Fatalf("hourly rebuild = %+v, want incremental %+v", got, beforeHour)
+	}
+	if got := computeSeries(t, ctx, s, query(usage.GranularityDay)); !slices.Equal(got, beforeDay) {
+		t.Fatalf("daily rebuild = %+v, want incremental %+v", got, beforeDay)
+	}
+}
+
+func computePruneKeepsRollups(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx := h.New(t), h.Ctx(t, 0)
+		h.AppendComputeInterval(t, s, ctx,
+			usage.ComputeInterval{IntervalID: "old", StartUnixMs: at(hour), EndUnixMs: at(2 * hour), AgentAccountID: "a1", OwnerUserID: "u1"},
+			usage.ComputeInterval{IntervalID: "cross-horizon", StartUnixMs: at(day - hour), EndUnixMs: at(day + hour), AgentAccountID: "a1", OwnerUserID: "u1"},
+			usage.ComputeInterval{IntervalID: "closed-new", StartUnixMs: at(day + hour), EndUnixMs: at(day + 2*hour), AgentAccountID: "a1", OwnerUserID: "u1"},
+			usage.ComputeInterval{IntervalID: "open", StartUnixMs: at(hour), AgentAccountID: "a1", OwnerUserID: "u1"},
+		)
+		mustComputePrune(t, ctx, s, at(day+12*hour), 2)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour),
+			usage.ComputeBucket{StartUnixMs: at(hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(day - hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(day), ActiveMs: int64(time.Hour / time.Millisecond)},
+			usage.ComputeBucket{StartUnixMs: at(day + hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+		)
+		mustComputeRebuild(t, ctx, s)
+		wantComputeSeries(t, ctx, s, query(usage.GranularityHour),
+			usage.ComputeBucket{StartUnixMs: at(hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(day - hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(day), ActiveMs: int64(time.Hour / time.Millisecond)},
+			usage.ComputeBucket{StartUnixMs: at(day + hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+		)
+	}
+}
+
+func computeSeriesIsTenantScoped(h Harness) func(*testing.T) {
+	return func(t *testing.T) {
+		s, ctx0, ctx1 := h.New(t), h.Ctx(t, 0), h.Ctx(t, 1)
+		h.AppendComputeInterval(t, s, ctx0, usage.ComputeInterval{
+			IntervalID: "t0", StartUnixMs: at(hour), EndUnixMs: at(2 * hour), AgentAccountID: "a1", OwnerUserID: "u1",
+		})
+		wantComputeSeries(t, ctx1, s, query(usage.GranularityHour))
+		h.AppendComputeInterval(t, s, ctx1, usage.ComputeInterval{
+			IntervalID: "t1", StartUnixMs: at(hour), EndUnixMs: at(3 * hour), AgentAccountID: "a1", OwnerUserID: "u1",
+		})
+		wantComputeSeries(t, ctx0, s, query(usage.GranularityHour),
+			usage.ComputeBucket{StartUnixMs: at(hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+		)
+		wantComputeSeries(t, ctx1, s, query(usage.GranularityHour),
+			usage.ComputeBucket{StartUnixMs: at(hour), ActiveMs: int64(time.Hour / time.Millisecond), Intervals: 1},
+			usage.ComputeBucket{StartUnixMs: at(2 * hour), ActiveMs: int64(time.Hour / time.Millisecond)},
+		)
+	}
+}
+
+func computeSeries(t *testing.T, ctx context.Context, s usage.Store, q usage.SeriesQuery) []usage.ComputeBucket {
+	t.Helper()
+	got, err := s.ComputeUsageSeries(ctx, q)
+	if err != nil {
+		t.Fatalf("ComputeUsageSeries(%+v): %v", q, err)
+	}
+	return got
+}
+
+func wantComputeSeries(t *testing.T, ctx context.Context, s usage.Store, q usage.SeriesQuery, want ...usage.ComputeBucket) {
+	t.Helper()
+	if got := computeSeries(t, ctx, s, q); !slices.Equal(got, want) {
+		t.Fatalf("ComputeUsageSeries(%+v)\n got  %+v\n want %+v", q, got, want)
+	}
+}
+
+func mustComputeRebuild(t *testing.T, ctx context.Context, s usage.Store) {
+	t.Helper()
+	if err := s.RebuildComputeUsageRollups(ctx); err != nil {
+		t.Fatalf("RebuildComputeUsageRollups: %v", err)
+	}
+}
+
+func mustComputePrune(t *testing.T, ctx context.Context, s usage.Store, beforeUnixMs, wantDeleted int64) {
+	t.Helper()
+	got, err := s.PruneComputeUsageBefore(ctx, beforeUnixMs)
+	if err != nil {
+		t.Fatalf("PruneComputeUsageBefore: %v", err)
+	}
+	if got != wantDeleted {
+		t.Fatalf("PruneComputeUsageBefore deleted %d events, want %d", got, wantDeleted)
 	}
 }

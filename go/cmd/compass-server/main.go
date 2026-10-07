@@ -368,7 +368,7 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 		transcriptSafetyValveCapBytes: fs.Int("transcript-safety-valve-cap-bytes", 0,
 			"Hot-tail safety-valve cap in bytes. Defaults to $COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES."),
 		usageRetention: fs.String("usage-event-retention", "",
-			"How long raw token-usage events are kept before the daily prune "+
+			"How long raw token- and compute-usage events are kept before the daily prune "+
 				"deletes them, as a Go duration (e.g. 720h). The hourly and daily "+
 				"usage totals are kept. Falls back to $COMPASS_USAGE_EVENT_RETENTION, "+
 				"then 2160h (90 days). 0 disables the prune."),
