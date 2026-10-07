@@ -1,0 +1,14 @@
+{
+	"name": "@compass/agent-image-index",
+	"private": true,
+	"type": "module",
+	"description": "Compose, publish, and verify the immutable multi-architecture agent image index.",
+	"module": "index.ts",
+	"bin": {
+		"agent-image-index": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

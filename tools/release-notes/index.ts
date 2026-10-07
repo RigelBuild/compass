@@ -15,6 +15,7 @@
 // the body + manifest files. Guarding behind `import.meta.main` lets the test
 // import the pure core without firing the edge.
 
+import { createHash } from "node:crypto";
 import { $ } from "bun";
 
 // ── Pure-core types ────────────────────────────────────────────────────────
@@ -33,7 +34,7 @@ export type NixOutput = {
 export type ImageIdentity = {
 	/** the pullable ref by digest, e.g. "ghcr.io/rigelbuild/compass-agent@sha256:…" */
 	ref: string;
-	/** the config digest, e.g. "sha256:…" */
+	/** the manifest (or index) digest, e.g. "sha256:…" */
 	digest: string;
 };
 
@@ -219,8 +220,8 @@ export function parseArgs(argv: string[]): Args {
  *  - any other non-zero => null: a 404 for an unpublished tag or a transient
  *    transport error DEGRADES (the image lane is paths-filtered independently,
  *    and a re-run converges the pointer once the image publishes).
- *  - exit 0 but unparseable output or no `.config.digest` => null.
- *  - exit 0 with a digest => the pullable @digest ref + the digest.
+ *  - exit 0 but unparseable output, or neither an index nor an image manifest => null.
+ *  - exit 0 with a manifest => the pullable @digest ref + the sha256 of its raw bytes.
  */
 export function classifyImageResult(result: {
 	exitCode: number;
@@ -235,18 +236,16 @@ export function classifyImageResult(result: {
 	if (result.exitCode !== 0) {
 		return null;
 	}
-	let digest: string;
+	let raw: { manifests?: unknown; config?: unknown };
 	try {
-		const raw = JSON.parse(result.stdout) as {
-			config?: { digest?: string };
-		};
-		digest = raw.config?.digest ?? "";
+		raw = JSON.parse(result.stdout);
 	} catch {
 		return null;
 	}
-	if (digest === "") {
+	if (raw?.manifests === undefined && raw?.config === undefined) {
 		return null;
 	}
+	const digest = `sha256:${createHash("sha256").update(result.stdout).digest("hex")}`;
 	return { ref: `${IMAGE_REPO}@${digest}`, digest };
 }
 
@@ -257,7 +256,7 @@ export function classifyImageResult(result: {
  * no `:git-<release-sha>` image — probing the release sha asks for a tag that
  * was never published. The release-image job walks first-parent ancestors,
  * resolves the correct ancestor `:git-<sha>` digest, and re-tags it to
- * `:vX.Y.Z`; passing that already-verified config digest here is the single
+ * `:vX.Y.Z`; passing that already-verified list digest here is the single
  * source of truth and avoids a re-probe race. Pure + exported so it is
  * unit-tested. Returns null for an empty/whitespace-only digest (no flag given).
  */
@@ -289,9 +288,9 @@ export function requireImageAtRelease(
 }
 
 /**
- * Query GHCR for the image config digest at :git-<sha12>, exactly as
- * release.yml's publish-image verify does (`skopeo inspect --raw … | jq -r
- * .config.digest`). Returns null when the tag is not published — the image lane
+ * Query GHCR for the image manifest digest at :git-<sha12>: the sha256 of the
+ * raw bytes, as release.yml's index verify computes it. Returns null when the
+ * tag is not published — the image lane
  * is paths-filtered independently, so a go-only push has no image for its sha.
  */
 async function gatherImage(sha: string): Promise<ImageIdentity | null> {
