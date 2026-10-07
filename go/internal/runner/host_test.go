@@ -1266,6 +1266,105 @@ func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 	}
 }
 
+type recordedSweep struct {
+	id   runtime.WorkloadID
+	user string
+}
+
+type sessionSweeperRuntime struct {
+	*stubStreamingRuntime
+	sweeps   []recordedSweep
+	sweepErr error
+}
+
+func (r *sessionSweeperRuntime) SweepExecSessions(_ context.Context, id runtime.WorkloadID, user string) error {
+	r.sweeps = append(r.sweeps, recordedSweep{id: id, user: user})
+	return r.sweepErr
+}
+
+func TestStopAndReloadSweepExecSessions(t *testing.T) {
+	engine := &sessionSweeperRuntime{stubStreamingRuntime: newStubStreamingRuntime(t)}
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	ctx := t.Context()
+	t.Cleanup(func() {
+		if err := host.Stop(ctx, "stop-session"); err != nil {
+			t.Errorf("Stop after test = %v", err)
+		}
+		if err := host.Stop(ctx, "reload-session"); err != nil {
+			t.Errorf("Stop after test = %v", err)
+		}
+	})
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "stop-session")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	if err := host.Stop(ctx, sessionID); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if len(engine.sweeps) != 1 || engine.sweeps[0] != (recordedSweep{id: "cont-1", user: "1000"}) {
+		t.Fatalf("sweeps after Stop = %+v, want one sweep for cont-1 as uid 1000", engine.sweeps)
+	}
+
+	sessionID, err = host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "reload-session")
+	if err != nil {
+		t.Fatalf("Start before Reload = %v", err)
+	}
+	if err := host.Reload(ctx, sessionID); err != nil {
+		t.Fatalf("Reload = %v", err)
+	}
+	want := []recordedSweep{{id: "cont-1", user: "1000"}, {id: "cont-1", user: "1000"}}
+	if !slices.Equal(engine.sweeps, want) {
+		t.Fatalf("sweeps after Reload = %+v, want %+v", engine.sweeps, want)
+	}
+	if err := host.Stop(ctx, sessionID); err != nil {
+		t.Fatalf("Stop after Reload = %v", err)
+	}
+}
+
+// TestReloadSweepFailureMarksErrored pins that a failed sweep after the agent
+// was stopped leaves the session ERRORED, never READY with no agent behind it.
+func TestReloadSweepFailureMarksErrored(t *testing.T) {
+	engine := &sessionSweeperRuntime{stubStreamingRuntime: newStubStreamingRuntime(t)}
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
+	ctx := t.Context()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}, "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "", "sweep-fail")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := host.Stop(ctx, sessionID); err != nil {
+			t.Errorf("Stop after test = %v", err)
+		}
+	})
+
+	sweepErr := errors.New("processes remain")
+	engine.sweepErr = sweepErr
+	if err := host.Reload(ctx, sessionID); !errors.Is(err, sweepErr) {
+		t.Fatalf("Reload = %v, want the sweep error", err)
+	}
+	st, err := host.Status(ctx, sessionID)
+	if err != nil || len(st) != 1 {
+		t.Fatalf("Status = %+v, %v", st, err)
+	}
+	if got := st[0].GetState(); got != compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED {
+		t.Fatalf("state after failed sweep = %v, want ERRORED", got)
+	}
+}
+
 // Reload restarts a session's agent in place, reusing the SAME session id (the
 // board entry stays continuous). A bug that minted a new id would break board
 // continuity.
