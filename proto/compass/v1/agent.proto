@@ -66,9 +66,9 @@ message AgentFrame {
     //     Runner releases the live ops held behind the restart replay barrier.
     ReplayCompleteAck replay_complete_ack = 4;
     //   control_ack — the agent's selective apply-ack: a contiguous cursor
-    //     (highest contiguously-APPLIED control_seq) plus a bounded set of seqs
-    //     applied out of order above it. The Runner retires retained ops up to
-    //     the cursor and drops the individually-acked ones.
+    //     plus inclusive runs of seqs applied out of order above it. The
+    //     Runner retires retained ops up to the cursor and drops the applied
+    //     ops named by the ranges.
     ControlAck control_ack = 5;
     //   delivery_ack — the agent's per-message delivery receipt for a
     //     DeliverControl relayed down the session (RIG-1569). The success
@@ -291,7 +291,12 @@ message ControlAck {
   // Highest contiguously-applied control_seq: the Runner retires retained ops
   // up to and including this cursor.
   uint64 acked_seq = 1;
-  // Seqs applied out of order ABOVE the contiguous cursor: the Runner drops
-  // these individually-acked ops from retention. Bounded (a small window).
+  // Legacy per-seq form. Still read by the Runner for agents that predate
+  // applied_above_ranges; new agents leave it empty.
   repeated uint64 applied_above = 2;
+  // Out-of-order applied seqs above the cursor as flattened inclusive runs:
+  // [start0, end0, start1, end1, ...]. Packed scalars keep decode cost linear
+  // in wire bytes; a trailing unpaired value is ignored. The Runner reads at
+  // most its retention limit of pairs; more cannot name distinct retained ops.
+  repeated uint64 applied_above_ranges = 3;
 }

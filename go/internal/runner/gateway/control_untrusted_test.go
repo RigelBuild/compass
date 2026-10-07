@@ -33,7 +33,7 @@ func TestControlAckAfterRetireDoesNotResurrectSession(t *testing.T) {
 	}
 
 	// The trailing ack, after the lifecycle's one and only Stop for this id.
-	p.AckControl(testSession, p.Epoch(testSession), 1, nil)
+	p.AckControl(testSession, p.Epoch(testSession), 1, nil, nil)
 
 	if got := p.sessionCount(); got != 0 {
 		t.Errorf("sessions after a post-Retire ack = %d, want 0: the ack resurrected the retired session, "+
@@ -69,8 +69,8 @@ func TestControlPostRetireAcksDoNotAccumulateAcrossCycles(t *testing.T) {
 		if err := p.Send(id, promptOp("op")); err != nil {
 			t.Fatalf("Send on cycle %d: %v", i, err)
 		}
-		p.Retire(id)                          // the lifecycle's Stop
-		p.AckControl(id, p.Epoch(id), 1, nil) // the agent's trailing ack, after Stop
+		p.Retire(id)                               // the lifecycle's Stop
+		p.AckControl(id, p.Epoch(id), 1, nil, nil) // the agent's trailing ack, after Stop
 	}
 
 	if got := p.sessionCount(); got != 0 {
@@ -200,7 +200,7 @@ func TestControlAckAppliesThroughTheBoundedSet(t *testing.T) {
 		ack = append(ack, uint64(maxRetainedOps*8+i))
 	}
 	ack = append(ack, 2)
-	p.AckControl(testSession, p.Epoch(testSession), 1, ack)
+	p.AckControl(testSession, p.Epoch(testSession), 1, ack, nil)
 
 	stream := newControlStream()
 	stop := p.subscribe(t, stream)
@@ -327,7 +327,7 @@ func TestEmptyAckDoesNotAllocateWithRetention(t *testing.T) {
 			}
 		}
 		return testing.AllocsPerRun(10, func() {
-			p.AckControl(testSession, p.Epoch(testSession), 0, nil)
+			p.AckControl(testSession, p.Epoch(testSession), 0, nil, nil)
 		})
 	}
 
@@ -340,5 +340,54 @@ func TestEmptyAckDoesNotAllocateWithRetention(t *testing.T) {
 		t.Errorf("an ack naming nothing allocated %.0f against %d retained ops, vs %.0f "+
 			"against none: the agent paces these, so one must not cost a walk of retention",
 			full, maxRetainedOps, empty)
+	}
+}
+
+// A range supplied by the agent can cover the full uint64 space. Matching it
+// must cost only the number of retained seqs, never the numeric span.
+func TestAppliedRangeAllocationDoesNotScaleWithSpan(t *testing.T) {
+	const maxUint64 = ^uint64(0)
+	retained := seqSet(1, 5, 10)
+	large := []uint64{1, maxUint64}
+	small := []uint64{1, 10}
+
+	if got := len(appliedRangesSet(large, retained)); got != len(retained) {
+		t.Fatalf("full-span range matched %d retained seqs, want all %d", got, len(retained))
+	}
+	largeAllocs := testing.AllocsPerRun(10, func() { appliedRangesSet(large, retained) })
+	smallAllocs := testing.AllocsPerRun(10, func() { appliedRangesSet(small, retained) })
+	if largeAllocs > smallAllocs {
+		t.Errorf("full-span range allocated %.0f times, vs %.0f for a small range", largeAllocs, smallAllocs)
+	}
+}
+
+// Pairs arrive in agent order, may overlap, and may reach past retention on
+// either side; only retained seqs inside some pair are marked. An inverted pair
+// and a trailing unpaired value name nothing.
+func TestAppliedRangesSetUnsortedOverlapping(t *testing.T) {
+	retained := seqSet(2, 4, 6, 8, 10)
+	got := appliedRangesSet([]uint64{9, 20, 0, 2, 5, 7, 6, 6, 4, 3, 8}, retained)
+	want := seqSet(2, 6, 10)
+	if len(got) != len(want) {
+		t.Fatalf("marked %v, want %v", got, want)
+	}
+	for seq := range want {
+		if _, ok := got[seq]; !ok {
+			t.Errorf("seq %d not marked; got %v", seq, got)
+		}
+	}
+}
+
+// Pair count is agent-sized, so only the first maxRetainedOps pairs are read.
+// RED without the cap: the retained seq named by the excess pair is marked.
+func TestAppliedRangesSetCapsPairCount(t *testing.T) {
+	retained := seqSet(7)
+	pairs := make([]uint64, 0, 2*(maxRetainedOps+1))
+	for range maxRetainedOps {
+		pairs = append(pairs, 100, 100)
+	}
+	pairs = append(pairs, 7, 7)
+	if got := appliedRangesSet(pairs, retained); len(got) != 0 {
+		t.Fatalf("marked %v from a pair past the cap, want none", got)
 	}
 }
