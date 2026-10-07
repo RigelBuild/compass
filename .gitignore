@@ -2,9 +2,9 @@
 .moon/cache
 .moon/docker
 
-# golangci-lint per-workspace caches (compass-go:lint sets GOLANGCI_LINT_CACHE
-# to $projectRoot/.golangci-cache; the review lane uses a -review suffix). Both
-# avoid shared-cache contention and must never be committed.
+# golangci-lint per-workspace caches (compass-go:lint and the devenv shell set
+# GOLANGCI_LINT_CACHE to go/.golangci-cache; the review lane uses a -review
+# suffix). Both avoid shared-cache contention and must never be committed.
 /go/.golangci-cache/
 /go/.golangci-cache-review/
 
