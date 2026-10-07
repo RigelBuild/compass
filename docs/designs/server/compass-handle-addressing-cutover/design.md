@@ -74,6 +74,10 @@ agent) may be re-registered — so nothing needs remembering. A user rename has
 touches exactly one `account_handles` row and every owned agent re-renders
 through the new owner handle automatically.
 
+Amendment (2026-10-05, RIG-4027): this policy governs a future rename surface.
+This record ships no rename writer. RIG-4581 tracks an admin RPC or a comms
+self-rename for when a product surface needs one.
+
 **Cross-human reclaim safety is NOT solved here.** Reclaim lets a freed user
 handle be re-registered by a *different* human, so a stale `matt/compass-ux`
 addresser could resolve into a stranger's namespace. That blast radius is closed
@@ -383,7 +387,9 @@ read `account_handles`, so T0 lands before or with T2 in the stack.
 
 - **Interfaces**: the migration file + the store's handle read/write paths
   re-pointed at `account_handles` (`CreateUser`/`CreateAgent` insert a handle
-  row in the same tx that inserts the account; a rename UPDATEs the handle row).
+  row in the same tx that inserts the account). No rename writer ships
+  (amended 2026-10-05, RIG-4027); the rename pgtests drive the index with raw
+  SQL.
 - **Test cycle**: pgtests — the two uniqueness invariants (a second global
   `matt` rejected; a second `matt/compass-ux` rejected; `matt/compass-ux` and
   `alice/compass-ux` coexist; an agent handle overlapping a user handle
@@ -667,6 +673,8 @@ Amendment (2026-09-25, ruling 9) adds **DL-375**: the adminOnly door resolves
 handles without the D9 visibility clip.
 Amendment (2026-09-27, RIG-4026) adds **DL-408**: agent message authors are
 owner-qualified (`owner/handle`); users and system remain bare.
+Amendment (2026-10-05, RIG-4027) mints no row: DL-271's rename policy stands,
+and T0 ships no rename writer (follow-up RIG-4581).
 
 ## Rulings (Open Questions — all closed)
 
