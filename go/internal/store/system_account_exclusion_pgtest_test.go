@@ -75,11 +75,8 @@ func TestSystemAccountExcludedFromDeliverSet(t *testing.T) {
 	}
 }
 
-// TestSystemAccountExcludedFromAgentRoster asserts ChannelAgentMembers (the
-// mention->steer routing set, membership not subscription) never returns the
-// system account, even when @compass is a member. Same contrastive proof: the
-// real agent member is present, the system id is absent via the INNER JOIN
-// agent_accounts. Reddens if @compass gained an agent_accounts row.
+// TestSystemAccountExcludedFromAgentRoster asserts ChannelAgentMembers never
+// returns a system account, even when it is a channel member.
 func TestSystemAccountExcludedFromAgentRoster(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -101,12 +98,15 @@ func TestSystemAccountExcludedFromAgentRoster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChannelAgentMembers: %v", err)
 	}
-	got := accountIDSet(accountsFromIDs(agents))
+	got := map[AccountID]bool{}
+	for _, member := range agents {
+		got[member.ID] = true
+	}
 	if !got[member.ID] {
-		t.Fatalf("roster %v missing the real agent member %s; the query must resolve agent members", agents, member.ID)
+		t.Fatalf("roster %v missing the real agent member %s", agents, member.ID)
 	}
 	if got[sys.ID] {
-		t.Fatalf("roster %v leaked the system account %s; @compass must never appear in the agent roster", agents, sys.ID)
+		t.Fatalf("roster %v leaked the system account %s", agents, sys.ID)
 	}
 }
 
@@ -306,12 +306,15 @@ func TestLinearBridgeAccountExcludedFromAgentRoster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChannelAgentMembers: %v", err)
 	}
-	got := accountIDSet(accountsFromIDs(agents))
+	got := map[AccountID]bool{}
+	for _, member := range agents {
+		got[member.ID] = true
+	}
 	if !got[member.ID] {
-		t.Fatalf("roster %v missing the real agent member %s; the query must resolve agent members", agents, member.ID)
+		t.Fatalf("roster %v missing the real agent member %s", agents, member.ID)
 	}
 	if got[linear.ID] {
-		t.Fatalf("roster %v leaked the @linear system account %s; it must never appear in the agent roster", agents, linear.ID)
+		t.Fatalf("roster %v leaked the @linear system account %s", agents, linear.ID)
 	}
 }
 

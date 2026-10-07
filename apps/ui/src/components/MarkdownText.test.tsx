@@ -139,6 +139,34 @@ describe("MarkdownText — mention composition", () => {
 		expect(chip?.classList.contains("reserved")).toBe(false);
 	});
 
+	test("a qualified known @mention chips when its full handle resolves", () => {
+		const handles = byHandle();
+		const bobX: Account = {
+			id: "acc-bob-x",
+			handle: "x",
+			displayName: "X",
+			kind: "agent",
+		};
+		handles.set("bob/x", bobX);
+		const { container } = render(() => (
+			<MarkdownText text={"ping @bob/x"} byHandle={handles} />
+		));
+		const chip = container.querySelector(".mention-chip");
+		expect(chip?.textContent).toBe("@bob/x");
+		expect(chip?.classList.contains("unknown")).toBe(false);
+		expect(chip?.classList.contains("reserved")).toBe(false);
+	});
+
+	test("a qualified @mention is unknown without its full handle", () => {
+		const { container } = render(() => (
+			<MarkdownText text={"ping @bob/x"} byHandle={byHandle()} />
+		));
+		const chip = container.querySelector(".mention-chip");
+		expect(chip?.textContent).toBe("@bob/x");
+		expect(chip?.classList.contains("unknown")).toBe(true);
+		expect(chip?.classList.contains("reserved")).toBe(false);
+	});
+
 	test("the @compass system sender chips as known — not reserved, not unknown", () => {
 		// RIG-1820: @compass resolves like any known account (accent chip), NOT a
 		// reserved broadcast target. The `reserved` modifier is purple (mark-only
