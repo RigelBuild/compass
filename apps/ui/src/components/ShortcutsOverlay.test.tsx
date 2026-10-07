@@ -63,11 +63,20 @@ describe("ShortcutsOverlay (RIG-2482)", () => {
 		fireEvent.input(input, { target: { value: "bridge" } });
 		await flush();
 		const rows = container.querySelectorAll(".cx-shortcuts-row");
-		// "bridge" now matches both Mod+B and the G B leader sequence (RIG-2484).
-		expect(rows.length).toBe(2);
+		// New tab opens Bridge, so its command keyword also matches this search.
+		expect(rows.length).toBe(3);
 		const text = [...rows].map((r) => r.textContent ?? "");
-		expect(text.every((t) => t.includes("Bridge"))).toBe(true);
+		expect(
+			text.every(
+				(t) =>
+					t.includes("Bridge") ||
+					(t.includes("New tab") && t.includes("W then N")),
+			),
+		).toBe(true);
 		expect(text.some((t) => t.includes("G then B"))).toBe(true);
+		expect(
+			text.some((t) => t.includes("New tab") && t.includes("W then N")),
+		).toBe(true);
 	});
 
 	test("a no-match query shows the dim empty row and no rows", async () => {
@@ -85,7 +94,9 @@ describe("ShortcutsOverlay (RIG-2482)", () => {
 
 	test("focus-restore: focus returns to the pre-open element on close", async () => {
 		const { store, container } = mountApp("/backlog");
-		const button = container.querySelector<HTMLButtonElement>(".view-tab");
+		const button = container.querySelector<HTMLButtonElement>(
+			'.cx-tab-strip [role="tab"]',
+		);
 		if (!button) throw new Error("no topbar button");
 		button.focus();
 		expect(document.activeElement).toBe(button);
