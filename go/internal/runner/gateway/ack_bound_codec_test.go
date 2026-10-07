@@ -149,8 +149,7 @@ func TestControlAckBytesDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// Both JSON content types Connect registers by default are refused for unary
-// calls; the streaming JSON name is covered by TestAgentGatewayRejectsJSON.
+// Both JSON content types Connect registers by default refuse a frame request.
 // RED without either override: protojson decodes and the handler answers instead.
 func TestAgentGatewayRejectsJSONContentTypes(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions()})
@@ -182,5 +181,38 @@ func TestAgentGatewayRejectsJSONContentTypes(t *testing.T) {
 		if !strings.Contains(string(body), errJSONUnsupported.Error()) {
 			t.Errorf("%s: status %d body %s, want the binary-only rejection", contentType, resp.StatusCode, body)
 		}
+	}
+}
+
+// Non-frame unaries keep JSON: the in-guest microVM probe calls Comms as a JSON
+// POST. RED if the JSON override refuses every request type.
+func TestAgentGatewayKeepsJSONForNonFrameCalls(t *testing.T) {
+	// Unbound: Comms answers PermissionDenied after decoding, with no relay needed.
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: staticSessions{}})
+	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions()...)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		srv.URL+compassv1internalconnect.AgentGatewayCommsProcedure, strings.NewReader(`{"callId":"c1"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if cerr := resp.Body.Close(); cerr != nil {
+		t.Fatalf("close body: %v", cerr)
+	}
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), "permission_denied") {
+		t.Fatalf("JSON Comms: status %d body %s, want the post-decode permission_denied", resp.StatusCode, body)
 	}
 }

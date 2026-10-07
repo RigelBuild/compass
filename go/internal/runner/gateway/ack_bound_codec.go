@@ -101,15 +101,16 @@ func forEachBytesField(b []byte, num protowire.Number, fn func([]byte)) {
 	}
 }
 
-// rejectJSONCodec replaces Connect's default JSON codecs. The agent speaks binary
-// gRPC only, and protojson would decode an unbounded ack array past the pre-scan.
-type rejectJSONCodec struct{ name string }
+// frameJSONCodec is Connect's protojson codec, except that it refuses the two
+// AgentFrame-carrying requests: protojson would decode an unbounded ack array past
+// the binary pre-scan, and the agent sends frames as binary gRPC only.
+type frameJSONCodec struct{ name string }
 
-var errJSONUnsupported = errors.New("AgentGateway accepts binary proto only")
+var errJSONUnsupported = errors.New("AgentGateway frame requests accept binary proto only")
 
-func (c rejectJSONCodec) Name() string { return c.name }
+func (c frameJSONCodec) Name() string { return c.name }
 
-func (rejectJSONCodec) Marshal(message any) ([]byte, error) {
+func (frameJSONCodec) Marshal(message any) ([]byte, error) {
 	m, ok := message.(proto.Message)
 	if !ok {
 		return nil, fmt.Errorf("marshal %T: not a proto message", message)
@@ -117,14 +118,30 @@ func (rejectJSONCodec) Marshal(message any) ([]byte, error) {
 	return protojson.Marshal(m)
 }
 
-func (rejectJSONCodec) Unmarshal([]byte, any) error { return errJSONUnsupported }
+func (frameJSONCodec) Unmarshal(data []byte, message any) error {
+	m, ok := message.(proto.Message)
+	if !ok {
+		return fmt.Errorf("unmarshal into %T: not a proto message", message)
+	}
+	switch m.(type) {
+	case *compassv1internal.PublishFrameRequest, *compassv1internal.PostConversationFrameRequest:
+		return errJSONUnsupported
+	}
+	if len(data) == 0 {
+		return errors.New("zero-length payload is not a valid JSON object")
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, m); err != nil {
+		return fmt.Errorf("unmarshal into %T: %w", message, err)
+	}
+	return nil
+}
 
 // agentGatewayHandlerOptions is the option set every AgentGateway mount uses.
 func agentGatewayHandlerOptions() []connect.HandlerOption {
 	return []connect.HandlerOption{
 		connect.WithReadMaxBytes(maxAgentMessageBytes),
 		connect.WithCodec(ackBoundCodec{}),
-		connect.WithCodec(rejectJSONCodec{name: "json"}),
-		connect.WithCodec(rejectJSONCodec{name: "json; charset=utf-8"}),
+		connect.WithCodec(frameJSONCodec{name: "json"}),
+		connect.WithCodec(frameJSONCodec{name: "json; charset=utf-8"}),
 	}
 }
