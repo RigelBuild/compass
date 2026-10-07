@@ -157,6 +157,22 @@
         "type": "github"
       }
     },
+    "jj-vine-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785446714,
+        "narHash": "sha256-rgTFo4mrGlIe7lfwpT0P7r5RBjD/XaX2S4AOp+oUaqY=",
+        "owner": "RigelBuild",
+        "repo": "jj-vine",
+        "rev": "0c0341846809cada2f8d2a6d30bc9a8097a3409d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "RigelBuild",
+        "repo": "jj-vine",
+        "type": "github"
+      }
+    },
     "mk-shell-bin": {
       "locked": {
         "lastModified": 1677004959,
@@ -297,6 +313,7 @@
     "root": {
       "inputs": {
         "devenv": "devenv",
+        "jj-vine-src": "jj-vine-src",
         "mk-shell-bin": "mk-shell-bin",
         "nix2container": "nix2container",
         "nixpkgs": "nixpkgs"
