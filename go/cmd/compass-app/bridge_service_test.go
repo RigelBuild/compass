@@ -83,7 +83,8 @@ func stubServer(t *testing.T, handler http.HandlerFunc) (socketPath string) {
 // emitter the test drains.
 func newService(socket string) (*bridgeService, *fakeEmitter) {
 	emitter := newFakeEmitter()
-	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), emitter, nil, nil)
+	conn := &connection{pump: bridge.NewPump(bridge.NewUnixTarget(socket))}
+	svc := newBridgeService(conn, emitter, nil)
 	return svc, emitter
 }
 
@@ -335,6 +336,84 @@ func TestCompassRPCDialErrorBeforeHead(t *testing.T) {
 	default:
 	}
 	assertNotInflight(t, svc, requestID)
+}
+
+func TestCompassRPCWithoutConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase string
+	}{
+		{name: "no phase"},
+		{name: "reopen phase", phase: "reopen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitter := newFakeEmitter()
+			svc := newBridgeService(nil, emitter, nil)
+			if tc.phase != "" {
+				svc.setPhase(tc.phase)
+			}
+			const requestID = "req-no-connection"
+
+			// Drive run synchronously so its deferred finish has run before asserting.
+			callCtx, call := svc.register(context.Background(), requestID)
+			svc.run(callCtx, call, rpcRequest{RequestID: requestID})
+
+			ev := recv(t, emitter)
+			if ev.name != "compass_rpc:"+requestID {
+				t.Errorf("event name = %q, want per-requestId key", ev.name)
+			}
+			f := ev.frame
+			if f.Kind != frameKindError || f.Message != "Not connected to a server" ||
+				f.Status != 0 || len(f.Headers) != 0 || f.Chunk != "" {
+				t.Errorf("frame = %+v, want one error frame %q", f, "Not connected to a server")
+			}
+			select {
+			case extra := <-emitter.ch:
+				t.Fatalf("frame after the no-connection error: kind=%q", extra.frame.Kind)
+			default:
+			}
+			assertNotInflight(t, svc, requestID)
+
+			if tc.phase == "reopen" {
+				mode, serverURL := svc.shellState()
+				if mode != "reopen" || serverURL != "" {
+					t.Errorf("shellState() = (%q, %q), want (%q, empty)", mode, serverURL, "reopen")
+				}
+				state := svc.ShellState()
+				if state.Mode != "reopen" || state.ServerURL != "" {
+					t.Errorf("ShellState() = %+v, want {Mode:reopen ServerURL:}", state)
+				}
+			}
+		})
+	}
+}
+
+func TestCompassRPCWithoutConnectionCanceledIsSilent(t *testing.T) {
+	emitter := newFakeEmitter()
+	svc := newBridgeService(nil, emitter, nil)
+	const requestID = "req-no-connection-canceled"
+	callCtx, call := svc.register(context.Background(), requestID)
+	svc.CompassRPCCancel(context.Background(), cancelRequest{RequestID: requestID})
+
+	svc.run(callCtx, call, rpcRequest{RequestID: requestID})
+
+	select {
+	case ev := <-emitter.ch:
+		t.Fatalf("canceled call emitted a frame: kind=%q message=%q", ev.frame.Kind, ev.frame.Message)
+	default:
+	}
+	assertNotInflight(t, svc, requestID)
+}
+
+func TestShellStatePrefersInstalledConnection(t *testing.T) {
+	conn := &connection{mode: "client", serverURL: "https://server.example"}
+	svc := newBridgeService(conn, nil, nil)
+	svc.setPhase("reopen")
+
+	want := shellStateResult{Mode: "client", ServerURL: "https://server.example"}
+	if got := svc.ShellState(); got != want {
+		t.Errorf("ShellState() = %+v, want %+v", got, want)
+	}
 }
 
 // hasHeader reports whether pairs contains a [name, value] header tuple.
