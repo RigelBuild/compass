@@ -30,6 +30,7 @@ func prRow(repo string, n uint64, state string, created, updated time.Time) Pull
 	}
 }
 
+// seedBoardIssue stores an issue and enables its repo, as board ingestion would.
 func seedBoardIssue(t *testing.T, ctx context.Context, s *Store, c ForgeCoord) {
 	t.Helper()
 	if _, err := s.UpsertIssueForgeFields(ctx, IssueForgeFields{
@@ -37,6 +38,9 @@ func seedBoardIssue(t *testing.T, ctx context.Context, s *Store, c ForgeCoord) {
 		Number: uint32(c.Number), Title: "issue",
 	}); err != nil {
 		t.Fatalf("seed board issue %v: %v", c, err)
+	}
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: c.Provider, Host: c.Host, Repo: c.Repo, Enabled: true}); err != nil {
+		t.Fatalf("seed subscription %v: %v", c, err)
 	}
 }
 
