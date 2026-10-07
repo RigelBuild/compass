@@ -123,9 +123,10 @@ describe("pending-aware channel deep-link (record A3)", () => {
 			messagesByChannel: {},
 		});
 		let store!: AppStore;
+		const history = memoryHistory(initialPath);
 		const Router = createRouter({
 			routes: appRoutes,
-			history: memoryHistory(initialPath),
+			history,
 		});
 		const { container } = render(() => {
 			store = createAppStore({
@@ -139,7 +140,7 @@ describe("pending-aware channel deep-link (record A3)", () => {
 				</StoreContext>
 			);
 		});
-		return { store, container, fake };
+		return { store, container, fake, history };
 	}
 
 	// A deep-link to a valid channel that the first snapshot DOES carry: it is
@@ -171,14 +172,16 @@ describe("pending-aware channel deep-link (record A3)", () => {
 	// selection settles onto the snapshot's first channel and the route leaves
 	// the dead id.
 	test("an absent deep-link is redirected after the first snapshot", async () => {
-		const { store, fake } = mountLive("/channel/chan-gone", [DEEP]);
+		const { store, fake, history } = mountLive("/channel/chan-gone", [DEEP]);
 
-		// Drain the snapshot round-trip: adoptComms fires, sees the current route
-		// names a vanished channel, and re-points it.
+		// Drain the snapshot round-trip: the view's pending-aware effect sees the
+		// route names a vanished channel and falls back.
 		for (let i = 0; i < 30; i++) await Promise.resolve();
 		await flush();
 
 		expect(store.selectedChannelId()).toBe(DEEP);
+		// The fallback reaches the URL, so a reload no longer names the dead id.
+		expect(history.get()).toBe(`/channel/${DEEP}`);
 
 		fake.close();
 	});
