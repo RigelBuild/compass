@@ -23,8 +23,9 @@ import {
 	getOwner,
 	onCleanup,
 } from "solid-js";
+import type { Pane } from "./agent-tabs";
 import { type PrRow, prRows } from "./board";
-import { agentDmAccountId } from "./comms";
+import { agentDmAccountId, firstChannelId } from "./comms";
 import {
 	type Account,
 	type Ask,
@@ -70,16 +71,8 @@ import {
 	type TrackerSeam,
 } from "./tracker";
 import { parseRoute } from "./view-route";
+import { createViewScope, type ViewScope } from "./view-scope";
 
-// Open on the first subscribed channel so the shell boots into a live
-// conversation; null before the first snapshot (components render empty state).
-export function firstChannelId(channels: readonly Channel[]): string | null {
-	return (
-		channels.find((c) => c.membership === "subscribed")?.id ??
-		channels[0]?.id ??
-		null
-	);
-}
 /** The caller — whose visibility scopes every listing and whose membership the
  *  rail reflects. The daemon derives this from the authenticated connection
  *  (comms.proto: "the caller is the account authenticated on the connection");
@@ -133,130 +126,6 @@ export interface RepoClone {
 	currentBranch: string;
 }
 
-/** What a single pane in the agent view shows: the chat conversation, a
- *  terminal, or a file. A pane is the actual UI leaf — the thing rendered on
- *  screen. */
-export type PaneKind = "chat" | "terminal" | "file";
-
-/** One pane in the agent view (design D6/T7): a leaf UI. `terminalId`/`filePath`
- *  are set for the matching kind; the chat pane carries neither. */
-export interface Pane {
-	id: string;
-	kind: PaneKind;
-	title: string;
-	terminalId?: string;
-	filePath?: string;
-}
-
-/** A binary split tree of panes within one tab (T7): a leaf shows one pane; a
- *  split places two children row (side by side) or column (stacked), nesting
- *  recursively. "Split right" adds a row split, "split down" a column split. */
-export type SplitNode =
-	| { kind: "leaf"; pane: Pane }
-	| {
-			kind: "split";
-			direction: "row" | "column";
-			left: SplitNode;
-			right: SplitNode;
-	  };
-
-/** A tab in the agent view: a group of panes shown together on one screen.
- *  Tabs are the top-level switcher (clicking a tab shows its panes full-screen);
- *  a tab owns its own split tree and remembers which pane is focused (the pane
- *  the split buttons act on). The first tab is always the chat (design D6). */
-export interface AgentTab {
-	id: string;
-	title: string;
-	/** The split tree of panes in this tab. */
-	layout: SplitNode;
-	/** The focused pane id — where "split right"/"split down" insert. */
-	focusedPaneId: string;
-}
-
-/** The always-present chat tab/pane id — the home-DM conversation, which every
- *  agent view opens with and can never close (design D6). The tab and its sole
- *  starting pane share this id. */
-export const CHAT_TAB_ID = "chat";
-
-/** The chat pane — the home-DM conversation leaf every agent view opens on. */
-const chatPane = (): Pane => ({
-	id: CHAT_TAB_ID,
-	kind: "chat",
-	title: "Chat",
-});
-
-/** The default tab set: one chat tab holding the chat pane full-screen. */
-const chatTab = (): AgentTab => ({
-	id: CHAT_TAB_ID,
-	title: "Chat",
-	layout: { kind: "leaf", pane: chatPane() },
-	focusedPaneId: CHAT_TAB_ID,
-});
-
-/** Every pane id in a tab's split tree, left-to-right (the pane layout order). */
-export function splitPaneIds(node: SplitNode): string[] {
-	return node.kind === "leaf"
-		? [node.pane.id]
-		: [...splitPaneIds(node.left), ...splitPaneIds(node.right)];
-}
-
-/** Every pane in a tab's split tree, left-to-right. */
-export function splitPanes(node: SplitNode): Pane[] {
-	return node.kind === "leaf"
-		? [node.pane]
-		: [...splitPanes(node.left), ...splitPanes(node.right)];
-}
-
-/** Remove a pane from a tab's split tree, collapsing any split that loses a
- *  child to its surviving sibling. Returns null if the tree would be empty. */
-function prunePane(node: SplitNode, paneId: string): SplitNode | null {
-	if (node.kind === "leaf") return node.pane.id === paneId ? null : node;
-	const left = prunePane(node.left, paneId);
-	const right = prunePane(node.right, paneId);
-	if (left && right) return { ...node, left, right };
-	return left ?? right;
-}
-
-/** Split the FIRST leaf matching `targetPaneId`, placing `newPane` beside it in
- *  `direction` (`row` = split right, `column` = split down). Recurses left-first
- *  and stops at the first match, so splitting grows the tree by exactly one pane
- *  (no pane explosion when a pane id somehow repeats). Returns the rewritten
- *  tree and whether a leaf matched. */
-export function splitPaneOnce(
-	node: SplitNode,
-	targetPaneId: string,
-	newPane: Pane,
-	direction: "row" | "column",
-): [SplitNode, boolean] {
-	if (node.kind === "leaf") {
-		return node.pane.id === targetPaneId
-			? [
-					{
-						kind: "split",
-						direction,
-						left: node,
-						right: { kind: "leaf", pane: newPane },
-					},
-					true,
-				]
-			: [node, false];
-	}
-	const [left, insertedLeft] = splitPaneOnce(
-		node.left,
-		targetPaneId,
-		newPane,
-		direction,
-	);
-	if (insertedLeft) return [{ ...node, left }, true];
-	const [right, insertedRight] = splitPaneOnce(
-		node.right,
-		targetPaneId,
-		newPane,
-		direction,
-	);
-	return [{ ...node, right }, insertedRight];
-}
-
 /** A candidate in a stable name's chain; order is its fallback order. */
 export interface ModelRegistryCandidate {
 	readonly provider: string;
@@ -305,7 +174,10 @@ export function modelRegistryRows(
  */
 export interface AppStore {
 	// ── View routing ──
-	/** The active top-level view. */
+	/** The view the window chrome reads routed selection through. One view
+	 *  per window for now; the router's path is applied to it. */
+	focusedView: Accessor<ViewScope>;
+	/** The focused view's top-level surface. */
 	view: Accessor<View>;
 	/** Jump to the Bridge board. */
 	showBridge: () => void;
@@ -350,7 +222,8 @@ export interface AppStore {
 	readonly keyboard: KeyboardSpine;
 
 	// ── Selection ──
-	/** The selected agent id, or null. Drives the agent view + roster highlight. */
+	/** The roster's selected agent: the focused agent view's agent, moved by a
+	 *  board pick (`selectIssue`) without leaving the board. */
 	selectedAgentId: Accessor<string | null>;
 	/** The selected issue id, or null. Drives the detail + right sidebar. */
 	selectedIssueId: Accessor<string | null>;
@@ -425,7 +298,7 @@ export interface AppStore {
 	/** Repo clones present in the selected agent's container, for the repo/branch
 	 *  dropdown. Empty when no agent is selected. */
 	agentRepos: Accessor<RepoClone[]>;
-	/** The active repo id within the selected agent's clones, or null. */
+	/** The repo clone picked in the focused view's workspace, or null. */
 	activeRepoId: Accessor<string | null>;
 	/** The resolved active repo, or undefined. */
 	activeRepo: Accessor<RepoClone | undefined>;
@@ -467,25 +340,19 @@ export interface AppStore {
 	messages: Accessor<readonly Message[]>;
 	/** All topics visible to the caller — the reactive topic-index source. */
 	topics: Accessor<readonly Topic[]>;
-	/** The selected channel id, or null (the empty state before a pick). */
+	/** The focused view's channel, else the last one visited, else the first
+	 *  subscribed (the boot default); null before any channel is known. */
 	selectedChannelId: Accessor<string | null>;
 	/** The resolved selected channel, or undefined. */
 	selectedChannel: Accessor<Channel | undefined>;
-	/** The selected topic id, or null (no topic drilled into). Set by the
-	 *  `/channel/:channelId/topic/:topicId` route via applyTopicRoute. */
+	/** The focused topic view's topic id, or null off a topic route. */
 	selectedTopicId: Accessor<string | null>;
 	/** The resolved selected topic, or undefined. */
 	selectedTopic: Accessor<Topic | undefined>;
 	/** Drill into a topic's message view — navigate to
-	 *  `/channel/<channelId>/topic/<topicId>`; the route-sync effect
-	 *  (applyTopicRoute) writes view + selection. Resolves the topic's channel
+	 *  `/channel/<channelId>/topic/<topicId>`. Resolves the topic's channel
 	 *  off the topic set; a no-op on an unknown topic id. */
 	openTopic: (topicId: string) => void;
-	/** The agent workspace's chat channel — the selected agent's home DM,
-	 *  derived off the account, independent of `selectedChannel` so the
-	 *  standalone surface can't re-point the workspace pane. Undefined when no
-	 *  agent is selected. */
-	workspaceChannel: Accessor<Channel | undefined>;
 	/** NOT WIRED YET — inert. The wire has no join RPC; the rail's join control
 	 *  renders disabled. Kept as the seam the control binds to (and where the
 	 *  RPC lands), but it fakes NO membership: a local-only join silently
@@ -550,51 +417,20 @@ export interface AppStore {
 		text: string,
 	) => Promise<void>;
 
-	// ── Agent view: tabs (pane groups) + per-tab split trees (T7) ──
-	/** The selected agent's live session: the typed AgentSession (its ordered
-	 *  SessionEvent stream + running flag), or undefined when no agent is selected
-	 *  / it has no session. Compass folds and renders these typed events (design:
-	 *  architecture-lineage); `running` drives the Stop control's enablement. */
-	agentSession: Accessor<AgentSession | undefined>;
-	/** The open tabs (chat first, never closable; design D6). Each tab is a
-	 *  group of panes with its own split tree. Empty when no agent is selected.
-	 *  Terminals are not auto-opened — a fresh agent shows only the chat. */
-	agentTabs: Accessor<AgentTab[]>;
-	/** The active tab id (the tab shown full-screen), or null when no agent is
-	 *  selected. */
-	activeAgentTabId: Accessor<string | null>;
-	/** The resolved active tab, or undefined. */
-	activeAgentTab: Accessor<AgentTab | undefined>;
-	/** Switch which tab is shown. No-op for an unknown id. */
-	setActiveAgentTab: (tabId: string) => void;
-	/** Open a new full-screen tab and focus it. The MVP opens a terminal tab
-	 *  (later: a context menu picks terminal / markdown / file, design D6). A tab
-	 *  starts with its one pane full-screen. Re-opening a pane already shown as a
-	 *  tab just focuses it (id-deduped). */
-	openTab: (pane: Pane) => void;
+	// ── Agent sessions + terminal panes ──
+	/** An agent's live session: the typed AgentSession (its ordered
+	 *  SessionEvent stream + running flag), or undefined when it has none.
+	 *  Window-wide data; each view looks up its own agent's session. */
+	agentSessionById: (agentId: string) => AgentSession | undefined;
 	/** Mint a fresh placeholder terminal pane for an agent — a brand-new pane
 	 *  with a globally-unique id (monotonic counter), used to keep "new tab" and
 	 *  "split" always available once the agent's fixture terminals are all placed.
 	 *  Its `terminalId` intentionally matches no fixture (the pane starts empty
 	 *  until the daemon attaches a real terminal). */
 	newTerminalPane: (agent: Agent) => Pane;
-	/** Close a tab and drop it; the chat tab can't be closed. Focus falls back
-	 *  to the chat tab. */
-	closeTab: (tabId: string) => void;
-	/** Split the active tab's focused pane, adding `pane` beside it — `row` =
-	 *  split right, `column` = split down (design D6). The new pane becomes the
-	 *  tab's focused pane. No-op when no agent/tab is active. */
-	splitActivePane: (pane: Pane, direction: "row" | "column") => void;
-	/** Focus a pane within the active tab (the pane the split buttons act on).
-	 *  No-op for a pane not in the active tab. */
-	setFocusedPane: (paneId: string) => void;
-	/** Close a pane within the active tab, collapsing its split. Closing the last
-	 *  pane in a non-chat tab closes the tab; the chat pane in the chat tab is
-	 *  permanent. */
-	closePane: (paneId: string) => void;
-	/** Stop the selected agent (the workspace's stop control). Steering happens
-	 *  in the channel, not here — this is the one non-observational control.
-	 *  Issues StopAgentSession for the OBSERVED session (`agentSession()`), a
+	/** Stop the focused view's agent (the workspace's stop control). Steering
+	 *  happens in the channel, not here — this is the one non-observational
+	 *  control. Issues StopAgentSession for the focused view's session, a
 	 *  no-op when nothing is selected. Resolves either way: the RPC is
 	 *  Runner-backed and answers `Unavailable` when the server has no RunnerHub
 	 *  attached (the socket-only path), so a refusal is routed to
@@ -783,10 +619,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		...(options.initialIssues ?? STUB_ISSUES),
 	]);
 
-	const [view, setView] = createSignal<View>("bridge");
-	const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(
-		null,
-	);
+	// A board pick's agent (`selectIssue`). On an agent route the focused view's
+	// agent wins, so the roster and chrome never disagree with the agent surface.
+	const [pickedAgentId, setPickedAgentId] = createSignal<string | null>(null);
 	// Default to the first issue so the seam survives swapping the fixture
 	// for the real @compass/client (no hardcoded stub id); an empty board
 	// starts with no selection.
@@ -795,10 +630,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	);
 
 	// ── Router seam (record A3): routes are the source of truth ──────────────
-	// The routed dimension (view + identifying param) is driven by the URL. The store
-	// lives outside the router tree, so the router is INJECTED as a seam. A default
-	// in-memory seam applies routes SYNCHRONOUSLY until App swaps in @solidjs/router.
-	const [inMemoryPath, setInMemoryPath] = createSignal("/");
+	// The store lives outside the router tree, so the router is INJECTED. Until App
+	// binds it, navigation applies straight to the focused view, synchronously.
 	let routerNavigate = (path: string): void => {
 		// Pre-bind navigation: nothing in production navigates before App binds (comms
 		// stream and assigned-issues query never navigate), so reaching here in a dev
@@ -811,32 +644,24 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 					"update until App wires the router",
 			);
 		}
-		setInMemoryPath(path);
-		applyRoute(path);
+		applyFocusedPath(path);
 	};
-	let routerCurrentPath = (): string => inMemoryPath();
 	const navigateTo = (path: string): void => routerNavigate(path);
-	const currentPath = (): string => routerCurrentPath();
-	// Wire the real router (once, from App). The route-sync effect is the SINGLE writer
-	// of the routed dimension. Its compute tracks the path AND the resolution inputs
-	// (`firstSnapshotArrived`, `channels`, `topics`), so a deep-link onto an async surface
-	// holds until the first snapshot lands, then re-fires applyRoute — routes-as-truth.
+	// Wire the real router (once, from App). The URL is applied to the focused view,
+	// and a redirect the view makes itself (an unknown id after the first snapshot)
+	// is pushed back to the URL, so the two never drift.
 	const bindRouter = (r: {
 		navigate: (path: string) => void;
 		currentPath: () => string;
 	}): void => {
 		routerNavigate = r.navigate;
-		routerCurrentPath = r.currentPath;
+		createEffect(r.currentPath, (path) => applyFocusedPath(path));
 		createEffect(
-			() => {
-				const path = r.currentPath();
-				// Tracked so a snapshot arrival re-resolves the held route.
-				firstSnapshotArrived();
-				channels();
-				topics();
-				return path;
+			() => focusedView().path(),
+			(path, prev) => {
+				// The first run is the boot path, before the URL has been applied.
+				if (prev !== undefined && path !== r.currentPath()) r.navigate(path);
 			},
-			(path) => applyRoute(path),
 		);
 	};
 
@@ -920,11 +745,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// presence/account tick flips resolution live→reachable through this one seam.
 	const agentById = (accountId: string): Agent | undefined =>
 		agents().find((a) => a.account.id === accountId);
-	// The active repo id (T6). The current branch is derived from the selected
-	// issue (see agentRepos), so there's no separate branch-pick signal to
-	// drift from the panes.
-	const [activeRepoId, setActiveRepoId] = createSignal<string | null>(null);
-
 	// ── Comms: the channel surface (design: architecture-lineage) ──
 	// ONE reduced CommsState drives all four comms accessors, starting at `initialComms`
 	// (EMPTY by default) and replaced wholesale by each push — bar the local ask picks
@@ -971,38 +791,18 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const setActiveRightTab = (tab: RightSidebarTab) => {
 		setActiveRightTabRaw(tab);
 	};
-	const [selectedChannelId, setSelectedChannelId] = createSignal<string | null>(
-		firstChannelId(comms().channels),
-	);
-	// True once the first comms snapshot has arrived from the stream. The
-	// pending-aware route fallback (applyChannelRoute) reads it: before the first
-	// snapshot an absent channel id is merely not-yet-loaded (held, not bounced);
-	// after it, an absent id is genuinely unknown (redirected).
+	// True once the first comms snapshot has arrived from the stream. A view's
+	// pending-aware route fallback reads it: before the first snapshot an absent
+	// channel id is merely not-yet-loaded (held, not bounced); after it, an absent
+	// id is genuinely unknown (redirected).
 	const [firstSnapshotArrived, setFirstSnapshotArrived] = createSignal(false);
-	// Adopt a stream-pushed state and settle the selection: the user's explicit pick
-	// wins while its channel is visible, so a later push never yanks the surface away;
-	// an absent selection falls back to the first subscribed channel. Adopted WHOLESALE
-	// except in-progress local ask picks (never sent to server) — see `preserveLocalAsks`.
+	// Adopt a stream-pushed state WHOLESALE except in-progress local ask picks
+	// (never sent to server) — see `preserveLocalAsks`. A routed channel that the
+	// push dropped is re-pointed by the view itself.
 	const adoptComms = (next: CommsState) => {
 		setComms((prev) => preserveLocalAsks(prev, next));
 		setFirstSnapshotArrived(true);
-		const current = selectedChannelId();
-		if (current && next.channels.some((c) => c.id === current)) return;
-		// The selection is absent from the pushed snapshot. Under routes-as-truth the
-		// channel surface is a route: if the current route names a channel, re-point it
-		// through navigate; then re-seed the signal as the "last visited" fallback.
-		const fallback = firstChannelId(next.channels);
-		if (currentPath().startsWith("/channel/")) {
-			navigateTo(fallback ? `/channel/${fallback}` : "/");
-		}
-		setSelectedChannelId(fallback);
 	};
-	// The selected topic id on the topic view, or null. Written solely by the
-	// route-sync (applyTopicRoute), the single writer of the routed dimension —
-	// openTopic navigates, it does not set this directly.
-	const [selectedTopicId, setSelectedTopicId] = createSignal<string | null>(
-		null,
-	);
 	// The live read path: run the SubscribeComms driver for the store's lifetime,
 	// mirroring each reduced state into the signals above. Aborted on teardown.
 	// `runCommsStream` resolves only on abort and retries internally, so nothing awaits
@@ -1069,24 +869,76 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		.slice(2, 10)}`;
 	let requestCount = 0;
 
-	// ── Agent view (T7): tabs (pane groups) + active tab ──
-	// Each tab owns its own split tree of panes and focused pane. A fresh agent shows
-	// only the chat tab (terminals hidden, D6). Empty until an agent is opened.
-	const [tabs, setTabs] = createSignal<AgentTab[]>([]);
-	const [activeAgentTabId, setActiveAgentTabId] = createSignal<string | null>(
-		null,
-	);
-	// The agent id the agent-view state (tabs/split/branch) was last initialized for —
-	// distinct from `selectedAgentId`, which the board's `selectIssue` moves without
-	// initializing. `openAgent` keys its reset on THIS, so a roster move then open still inits.
-	const [agentViewAgentId, setAgentViewAgentId] = createSignal<string | null>(
-		null,
-	);
 	// Monotonic counter for MINTED placeholder terminal panes (never reused, so ids
-	// stay globally unique across opens/closes). Not reactive: a plain counter. The
-	// daemon will assign real terminal ids at this same seam later.
+	// stay globally unique across opens/closes and across views). Not reactive: a
+	// plain counter. The daemon will assign real terminal ids at this same seam later.
 	let mintedTerminalCount = 0;
 
+	// Each agent's live session trace, or undefined when none. Sourced from the fixture
+	// unless the caller supplies sessions — fixture entries carry `fixture: true`,
+	// keeping their never-minted ids off the wire (see `stopAgent`).
+	const sessions = options.sessions ?? STUB_SESSION_EVENTS;
+	const agentSessionById = (agentId: string): AgentSession | undefined =>
+		sessions[agentId];
+
+	// ── The focused view (record A1): the one view per window. The router's path is
+	// applied to it, and the routed accessors the chrome reads derive from it. ──
+	const focused = createViewScope(
+		{ channels, topics, agentById, agentSessionById, firstSnapshotArrived },
+		"main",
+		"/",
+	);
+	const focusedView = () => focused;
+	const view = createMemo<View>(() => focused.route().view);
+	// Last-visited: an agent or board route keeps the channel the user left, and a
+	// channel the push dropped falls back to the first subscribed one.
+	const selectedChannelId = createMemo<string | null>((prev) => {
+		const match = focused.route();
+		if (match.view === "channel" || match.view === "topic") {
+			return match.channelId;
+		}
+		const known = channels();
+		return prev && known.some((c) => c.id === prev)
+			? prev
+			: firstChannelId(known);
+	});
+	const selectedTopicId = createMemo<string | null>(() => {
+		const match = focused.route();
+		return match.view === "topic" ? match.topicId : null;
+	});
+	const selectedChannel = createMemo(() =>
+		channels().find((c) => c.id === selectedChannelId()),
+	);
+	const selectedTopic = createMemo(() =>
+		topics().find((t) => t.id === selectedTopicId()),
+	);
+	// The agent the log panel was last reset open for, so re-entering the same
+	// agent keeps the user's minimize.
+	let logResetForAgentId: string | null = null;
+	// Apply a path to the focused view. Entering an agent anchors the window-wide
+	// issue selection on every entry, even onto the same path: keep the current
+	// issue when this agent owns it, else its primary.
+	const applyFocusedPath = (path: string): void => {
+		const match = parseRoute(path);
+		if (match.view === "agent") {
+			const owned = issues().filter((w) => w.assignee === match.agentId);
+			setPickedAgentId(match.agentId);
+			setSelectedIssueId(
+				owned.find((w) => w.id === selectedIssueId())?.id ??
+					owned[0]?.id ??
+					null,
+			);
+			if (match.agentId !== logResetForAgentId) {
+				setLogOpen(true);
+				logResetForAgentId = match.agentId;
+			}
+		}
+		focused.navigate(path);
+	};
+	const selectedAgentId = createMemo<string | null>(() => {
+		const match = focused.route();
+		return match.view === "agent" ? match.agentId : pickedAgentId();
+	});
 	const selectedAgent = createMemo(() =>
 		agents().find((a) => a.account.id === selectedAgentId()),
 	);
@@ -1124,7 +976,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// else the first clone (so a stale pick from a previous agent can't dangle).
 	const activeRepo = createMemo<RepoClone | undefined>(() => {
 		const repos = agentRepos();
-		const picked = repos.find((r) => r.id === activeRepoId());
+		const picked = repos.find((r) => r.id === focused.activeRepoId());
 		return picked ?? repos[0];
 	});
 
@@ -1138,131 +990,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				kind: "user",
 			},
 	);
-	const selectedChannel = createMemo(() =>
-		channels().find((c) => c.id === selectedChannelId()),
-	);
-	const selectedTopic = createMemo(() =>
-		topics().find((t) => t.id === selectedTopicId()),
-	);
-	// The agent workspace's chat channel: the selected agent's home DM, resolved O(1) off
-	// the account — NOT `selectedChannel`. Deriving it from the agent keeps the standalone
-	// channel surface and the workspace chat pane independent (D3). Undefined when no agent
-	// is selected or its home DM isn't in the channel set (real-daemon partial-join).
-	const workspaceChannel = createMemo(() => {
-		const home = selectedAgent()?.account.homeChannelId;
-		return home ? channels().find((c) => c.id === home) : undefined;
-	});
-	// The selected agent's live session trace, or undefined when none. One id space after
-	// T1 makes the observed agent ≡ the selected agent (record §478-481). Sourced from the
-	// fixture unless the caller supplies sessions — fixture entries carry `fixture: true`,
-	// keeping their never-minted ids off the wire (see `stopAgent`).
-	const sessions = options.sessions ?? STUB_SESSION_EVENTS;
-	const agentSession = createMemo<AgentSession | undefined>(() => {
-		const id = selectedAgentId();
-		return id ? sessions[id] : undefined;
-	});
 
-	// The agent view's tabs (T7): the chat tab first (always present), then the tabs the
-	// user has opened. Empty when no agent is selected; terminals are NOT auto-opened (D6).
-	const agentTabs = createMemo<AgentTab[]>(() =>
-		selectedAgentId() ? tabs() : [],
-	);
-	const activeAgentTab = createMemo<AgentTab | undefined>(() =>
-		agentTabs().find((t) => t.id === activeAgentTabId()),
-	);
-
-	// ── Route application (record A3): the single writer of the routed dimension
-	// (view + selectedChannelId/selectedAgentId). Invoked synchronously by the default
-	// seam (offline) or the bound route-sync effect. It parses currentPath itself — the
-	// store is outside the router tree and cannot call useParams. ──
-	function applyRoute(path: string): void {
-		const match = parseRoute(path);
-		switch (match.view) {
-			case "bridge":
-			case "backlog":
-			case "done":
-			case "settings":
-				setView(match.view);
-				return;
-			case "channel":
-				applyChannelRoute(match.channelId);
-				return;
-			case "topic":
-				applyTopicRoute(match.channelId, match.topicId);
-				return;
-			case "agent":
-				applyAgentRoute(match.agentId);
-				return;
-		}
-	}
-	// Apply a `/channel/:channelId` route. Pending-aware: a not-yet-loaded id is HELD
-	// (empty state), NOT bounced — a valid deep-link must survive boot. Only after the
-	// first snapshot is an absent id redirected. Does NOT clear selectedTopicId: that
-	// dimension has one writer (applyTopicRoute) and stale reads are view()-guarded.
-	function applyChannelRoute(channelId: string): void {
-		setView("channel");
-		if (channels().some((c) => c.id === channelId)) {
-			setSelectedChannelId(channelId);
-			return;
-		}
-		if (firstSnapshotArrived()) {
-			const fallback = firstChannelId(comms().channels);
-			navigateTo(fallback ? `/channel/${fallback}` : "/");
-			return;
-		}
-		setSelectedChannelId(channelId);
-	}
-	// Apply a `/channel/:id/topic/:id` route — the topic message view, SOLE writer of the
-	// topic dimension. Follows applyChannelRoute's pending-aware pattern: channel held
-	// while not-yet-loaded, bounced once the snapshot arrives and it is absent; topic id
-	// held so a deep-link survives boot, an absent topic after snapshot falls to the index.
-	function applyTopicRoute(channelId: string, topicId: string): void {
-		setView("topic");
-		const channelKnown = channels().some((c) => c.id === channelId);
-		if (!channelKnown && firstSnapshotArrived()) {
-			const fallback = firstChannelId(comms().channels);
-			navigateTo(fallback ? `/channel/${fallback}` : "/");
-			return;
-		}
-		setSelectedChannelId(channelId);
-		if (topics().some((t) => t.id === topicId)) {
-			setSelectedTopicId(topicId);
-			return;
-		}
-		if (firstSnapshotArrived()) {
-			// The topic is genuinely unknown — drop back to the channel's index.
-			setView("channel");
-			setSelectedTopicId(null);
-			navigateTo(`/channel/${channelId}`);
-			return;
-		}
-		setSelectedTopicId(topicId);
-	}
-	// Apply an `/agent/:agentId` route — the workspace anchoring lifted verbatim from the
-	// old openAgent so click and deep-link run the SAME code. Anchor issue selection: keep
-	// the current when this agent owns it, else its primary. The reset guard keys on
-	// `agentViewAgentId`, so a roster move then open still initializes the view.
-	function applyAgentRoute(agentId: string): void {
-		setView("agent");
-		const owned = issues().filter((w) => w.assignee === agentId);
-		const anchored =
-			owned.find((w) => w.id === selectedIssueId())?.id ?? owned[0]?.id ?? null;
-		if (agentId === agentViewAgentId()) {
-			setSelectedAgentId(agentId);
-			setSelectedIssueId(anchored);
-			return;
-		}
-		setSelectedAgentId(agentId);
-		setSelectedIssueId(anchored);
-		setActiveRepoId(`${agentId}-repo`);
-		setTabs([chatTab()]);
-		setActiveAgentTabId(CHAT_TAB_ID);
-		setLogOpen(true);
-		setAgentViewAgentId(agentId);
-	}
-
-	// Open an agent's workspace: navigate — the route-sync effect (applyAgentRoute) runs
-	// the anchoring, so the click path and a `/agent/:agentId` deep-link share one home.
+	// Open an agent's workspace by navigating, so the click and a `/agent/:agentId`
+	// deep-link share one home (applyFocusedPath).
 	const openAgent = (agentId: string) => {
 		navigateTo(`/agent/${agentId}`);
 	};
@@ -1282,10 +1012,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		navigateTo(`/channel/${channelId}`);
 	};
 
-	// Drill into a topic's message view: navigate to `/channel/<id>/topic/<id>` — the
-	// route-sync effect (applyTopicRoute) is the single writer of view + selection, so
-	// click and deep-link share one home. Resolves the channel off the topic set; a
-	// no-op on an unknown topic id. NEVER setView — navigation is the sole entry.
+	// Drill into a topic's message view by navigating to `/channel/<id>/topic/<id>`,
+	// so click and deep-link share one home. Resolves the channel off the topic set;
+	// a no-op on an unknown topic id.
 	const openTopic = (topicId: string) => {
 		const topic = topics().find((t) => t.id === topicId);
 		if (!topic) return;
@@ -1298,7 +1027,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const selectIssue = (issueId: string) => {
 		setSelectedIssueId(issueId);
 		const ws = issues().find((w) => w.id === issueId);
-		setSelectedAgentId(ws?.assignee ?? null);
+		setPickedAgentId(ws?.assignee ?? null);
 	};
 
 	// ── Comms mutations (design: architecture-lineage) ──
@@ -1619,103 +1348,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		});
 	};
 
-	// ── Agent view actions (T7) ──
-	const setActiveAgentTab = (tabId: string) => {
-		if (agentTabs().some((t) => t.id === tabId)) setActiveAgentTabId(tabId);
-	};
-	// Mutate the active tab in place (its split tree / focused pane), leaving the
-	// other tabs untouched. A no-op when no tab is active.
-	const updateActiveTab = (fn: (tab: AgentTab) => AgentTab) => {
-		const id = activeAgentTabId();
-		if (!id) return;
-		setTabs((prev) => prev.map((t) => (t.id === id ? fn(t) : t)));
-	};
-	// Open a new full-screen tab holding `pane` and focus it. Re-opening a pane
-	// already shown as a tab just focuses that tab (no duplicate). The MVP opens
-	// a terminal; later a context menu picks the pane kind (design D6).
-	const openTab = (pane: Pane) => {
-		if (!selectedAgentId()) return;
-		const existing = tabs().find((t) => t.id === pane.id);
-		if (!existing) {
-			const tab: AgentTab = {
-				id: pane.id,
-				title: pane.title,
-				layout: { kind: "leaf", pane },
-				focusedPaneId: pane.id,
-			};
-			setTabs((prev) => [...prev, tab]);
-		}
-		setActiveAgentTabId(pane.id);
-	};
 	// Mint a fresh placeholder terminal pane. The counter only increments, so the id
-	// (`term-<agentId>-<n>`) is unique across the session — no collision with openTab's
-	// dedupe or splitPaneOnce's guard. `terminalId` mirrors the id and matches no fixture:
+	// (`term-<agentId>-<n>`) is unique across the session — no collision with a view's
+	// openTab dedupe or splitPaneOnce's guard. `terminalId` mirrors the id and matches no fixture:
 	// the pane renders an empty "starting" state until the daemon attaches one.
 	const newTerminalPane = (agent: Agent): Pane => {
 		const n = ++mintedTerminalCount;
 		const id = `term-${agent.account.id}-${n}`;
 		return { id, kind: "terminal", title: `Terminal ${n}`, terminalId: id };
-	};
-	// Close a tab: drop it and fall focus back to the chat tab. The chat tab is
-	// permanent (D6) — closing it is a no-op.
-	const closeTab = (tabId: string) => {
-		if (tabId === CHAT_TAB_ID) return;
-		setTabs((prev) => prev.filter((t) => t.id !== tabId));
-		if (activeAgentTabId() === tabId) setActiveAgentTabId(CHAT_TAB_ID);
-	};
-	// Split the active tab's focused pane, placing `pane` beside it (`row` =
-	// split right, `column` = split down). The new pane becomes focused so a
-	// follow-up split chains off it.
-	const splitActivePane = (pane: Pane, direction: "row" | "column") => {
-		updateActiveTab((tab) => {
-			const [layout, inserted] = splitPaneOnce(
-				tab.layout,
-				tab.focusedPaneId,
-				pane,
-				direction,
-			);
-			return inserted ? { ...tab, layout, focusedPaneId: pane.id } : tab;
-		});
-	};
-	// Focus a pane within the active tab (where the split buttons act). No-op
-	// unless the pane is in that tab.
-	const setFocusedPane = (paneId: string) => {
-		updateActiveTab((tab) =>
-			splitPaneIds(tab.layout).includes(paneId)
-				? { ...tab, focusedPaneId: paneId }
-				: tab,
-		);
-	};
-	// Close a pane within the active tab, collapsing its split. Closing the last
-	// pane of a non-chat tab closes the whole tab; the chat pane is permanent
-	// (D6) — closing it is a no-op even when the chat tab is split.
-	const closePane = (paneId: string) => {
-		const tab = activeAgentTab();
-		if (!tab) return;
-		// The chat pane is permanent: it can't be pruned from the chat tab,
-		// whether that tab is a lone leaf or a split. (The UI hides its close
-		// button; this guards the public action too.)
-		if (tab.id === CHAT_TAB_ID && paneId === CHAT_TAB_ID) return;
-		const pruned = prunePane(tab.layout, paneId);
-		if (!pruned) {
-			// The tab has no panes left — close it (or no-op for the chat tab).
-			closeTab(tab.id);
-			return;
-		}
-		const focusedGone = !splitPaneIds(pruned).includes(tab.focusedPaneId);
-		setTabs((prev) =>
-			prev.map((t) =>
-				t.id === tab.id
-					? {
-							...t,
-							layout: pruned,
-							focusedPaneId: focusedGone
-								? splitPaneIds(pruned)[0]
-								: t.focusedPaneId,
-						}
-					: t,
-			),
-		);
 	};
 	// The last refused Stop, or undefined when the last attempt was not refused — the
 	// reactive hole the log panel RENDERS, the shape `askError` gives the ask block.
@@ -1737,7 +1377,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// Stop is idempotent server-side, so a retry after a refusal is safe.
 	const stopAgent = async (): Promise<void> => {
 		setStopError(undefined);
-		const session = agentSession();
+		const session = focused.agentSession();
 		if (!session) return;
 		// A fixture-sourced session's id was never minted by a server. Issuing Stop for it
 		// is worse than nothing: the server's unknown-session path is idempotent-success,
@@ -1869,7 +1509,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 
 	// ── Right sidebar actions (T6) ──
 	const setActiveRepo = (repoId: string) => {
-		if (agentRepos().some((r) => r.id === repoId)) setActiveRepoId(repoId);
+		if (agentRepos().some((r) => r.id === repoId)) {
+			focused.setActiveRepoId(repoId);
+		}
 	};
 
 	// ── Pins (Record A §T2/T3; unreachable-pin amendment RIG-1645) ──
@@ -1971,7 +1613,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		agentById,
 		rightTabGroups,
 		agentRepos,
-		activeRepoId,
+		activeRepoId: focused.activeRepoId,
 		activeRepo,
 		setActiveRepo,
 		setActiveBranch,
@@ -1989,7 +1631,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		selectedTopicId,
 		selectedTopic,
 		openTopic,
-		workspaceChannel,
+		focusedView,
 		joinChannel,
 		toggleSubscribe,
 		answerAsk,
@@ -1998,17 +1640,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		isAskSubmitted,
 		askError,
 		postMessage,
-		agentSession,
-		agentTabs,
-		activeAgentTabId,
-		activeAgentTab,
-		setActiveAgentTab,
-		openTab,
+		agentSessionById,
 		newTerminalPane,
-		closeTab,
-		splitActivePane,
-		setFocusedPane,
-		closePane,
 		stopAgent,
 		stopError,
 		logOpen,
