@@ -79,11 +79,10 @@ style = "fenced"
 "docs/designs/ui/compass-sidebar-pins/design.md" = ["MD057"]
 "docs/designs/ui/compass-sidebar-pins-unreachable-amendment/design.md" = ["MD057"]
 
-# release-please regenerates CHANGELOG.md on every release and its template
-# emits a double blank line under each version heading, tripping MD012. The
-# exemption lives here rather than in the file because any hand-fix (or
-# `rumdl fmt`) is overwritten at the next version bump.
-"CHANGELOG.md" = ["MD012"]
+# release-please regenerates CHANGELOG.md each release, overwriting any hand-fix.
+# Its template emits double blank lines (MD012) and copies commit subjects
+# verbatim, so a subject like `__name__` trips MD050.
+"CHANGELOG.md" = ["MD012", "MD050"]
 
 # False: flags a list item's own continuation line (indented prose wrapping one
 # bullet) as an unpadded list — the auto-fix inserts a blank line mid-sentence.
