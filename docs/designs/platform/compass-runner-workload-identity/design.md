@@ -42,25 +42,31 @@ clusters:
     audience: compass-runner       # default compass-runner
     namespace: compass-runner
     serviceAccount: compass-runner
-    maxTokenLifetime: 600s         # default 600s; upper bound on exp - iat
+    maxTokenLifetime: 600s         # default and minimum 600s; upper bound on exp - iat
     jwksURI: ""                    # optional; overrides OIDC discovery
     jwksFile: ""                   # optional static JWKS; no fetch
     caFile: ""                     # optional PEM CA for a private issuer
 ```
 
 The Server refuses to start unless `name` and `issuer` are each unique
-(issuers compared without a trailing `/`), `issuer` is `https://`, and
-`jwksURI` and `jwksFile` are not both set. With no flag, no cluster is trusted
-and the door works as it does today.
+(issuers compared without a trailing `/`), `issuer` is `https://`,
+`jwksURI` and `jwksFile` are not both set, and `maxTokenLifetime` is at least
+600 s. That is the Kubernetes TokenRequest minimum (`MinTokenAgeSec` in
+`pkg/apis/authentication/validation/validation.go`), so a shorter bound would
+reject every projected token. With no flag, no cluster is trusted and the door
+works as it does today.
 
 **A unique issuer is load-bearing.** The Server selects the cluster by `iss`,
 so two clusters sharing an issuer could forge each other's node names. EKS
 issuers are unique. A self-managed cluster (k3s, kubeadm) MUST set a unique
 `--service-account-issuer`. Distinct issuer strings are not enough if two
 clusters share a signing key, as happens when kubeadm templates copy
-`sa.key`. So at each JWKS load the Server rejects a key whose RFC 7638
-thumbprint is already in another cluster's set. That cluster fails closed,
-and the Server logs both names.
+`sa.key`. So after each JWKS load the Server recomputes RFC 7638 thumbprints
+across every cluster's current key set. While a key is in more than one set,
+every cluster holding it fails closed, whichever set loaded first, and the
+Server logs their names. Failing only the later cluster would leave the
+earlier one accepting tokens the other cluster signs. The cost is that a
+registered cluster can take another offline by publishing its public key.
 
 A file, not a table plus admin RPC: the trust root is rare and
 security-critical, so it belongs in reviewed infrastructure-as-code. The mint
@@ -98,10 +104,11 @@ reads `Subject.Tenant`.
 Every failure becomes `errUnauthenticated`, with one exception. If a known
 cluster has no usable key set, `Verify` returns `auth.ErrKeysUnavailable` and
 the door answers `CodeUnavailable`. That happens when the keys were never
-fetched or were discarded as stale. `retryableDialError`
-(`go/internal/runner/run.go`) retries Unavailable, so an issuer outage does
-not crash-loop the fleet. The exception reveals only that an issuer is down.
-The Server logs causes with the cluster name and never logs the token.
+fetched, were discarded as stale, or share a key with another cluster.
+`retryableDialError` (`go/internal/runner/run.go`) retries Unavailable, so an
+issuer outage does not crash-loop the fleet. The exception reveals only that a
+cluster's keys are unusable. The Server logs causes with the cluster name and
+never logs the token.
 
 The claim names follow the Kubernetes bound-token format. The token carries
 `aud`, `exp`, `iat`, `iss`, `jti` and `sub`, plus a `"kubernetes.io"` object
@@ -199,6 +206,9 @@ projected token on another door misses the hash lookup and gets
 This extends containerization task R3:
 
 ```yaml
+metadata:
+  name: compass-runner                      # the policy's owner check names it
+  namespace: compass-runner
 spec:
   updateStrategy:
     type: RollingUpdate
@@ -228,8 +238,25 @@ spec:
 ```
 
 The ServiceAccount has **no** RBAC binding. An admission policy limits who can
-obtain the identity: Runner pods come only from the DaemonSet controller, and
-tokens for the ServiceAccount go only to kubelets.
+obtain the identity:
+
+- A pod using the ServiceAccount must be created by a `controllers` identity
+  and have the DaemonSet `compass-runner` as its controller owner. One
+  controller creates every DaemonSet's pods, and with shared controller-manager
+  credentials every controller is `system:kube-controller-manager`, so the
+  username alone cannot single out the Runner's pods.
+- Only a `deployers` identity may create that DaemonSet or change its `spec`.
+  A metadata-only update, such as the garbage collector removing a finalizer,
+  passes.
+- No other built-in workload template may name the ServiceAccount, so a bad
+  workload is rejected when applied. Pods from any other controller fail the
+  pod rule.
+- Tokens for the ServiceAccount go only to kubelets.
+
+`controllers` and `deployers` are R3 render parameters written into
+`spec.variables`, not a `paramKind` object. A param object would be one more
+writable object the identity depends on; the policy is cluster-scoped and
+admin-only.
 
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -246,14 +273,59 @@ spec:
         apiVersions: [v1]
         operations: [CREATE]
         resources: [pods, serviceaccounts/token]
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [replicationcontrollers]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [daemonsets, deployments, replicasets, statefulsets]
+      - apiGroups: [batch]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [jobs, cronjobs]
+  variables:
+    - name: controllers                     # render parameter
+      expression: >-
+        ['system:serviceaccount:kube-system:daemon-set-controller',
+         'system:kube-controller-manager']
+    - name: deployers                       # render parameter
+      expression: "['system:serviceaccount:flux-system:kustomize-controller']"
+    - name: res
+      expression: request.resource.resource
+    - name: podSpec
+      expression: >-
+        variables.res == 'pods' ? object.spec
+        : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec
+        : object.spec.template.spec
+    - name: usesRunnerSA
+      expression: >-
+        has(variables.podSpec.serviceAccountName) &&
+        variables.podSpec.serviceAccountName == 'compass-runner'
+    - name: isRunnerDS
+      expression: variables.res == 'daemonsets' && object.metadata.name == 'compass-runner'
   validations:
     - expression: >-
-        request.resource.resource == 'pods'
-          ? object.spec.serviceAccountName != 'compass-runner' ||
-            request.userInfo.username == 'system:serviceaccount:kube-system:daemon-set-controller'
-          : request.name != 'compass-runner' ||
-            request.userInfo.username.startsWith('system:node:')
-      message: only the DaemonSet controller and kubelets may use the compass-runner identity
+        variables.res != 'serviceaccounts' || request.name != 'compass-runner' ||
+        request.userInfo.username.startsWith('system:node:')
+      message: only kubelets may request a compass-runner token
+    - expression: >-
+        variables.res != 'pods' || !variables.usesRunnerSA ||
+        (request.userInfo.username in variables.controllers &&
+         has(object.metadata.ownerReferences) &&
+         object.metadata.ownerReferences.exists(r,
+           has(r.controller) && r.controller && r.apiVersion == 'apps/v1' &&
+           r.kind == 'DaemonSet' && r.name == 'compass-runner'))
+      message: compass-runner pods must come from the compass-runner DaemonSet
+    - expression: >-
+        variables.res in ['pods', 'serviceaccounts'] || variables.isRunnerDS ||
+        !variables.usesRunnerSA
+      message: only the compass-runner DaemonSet may use the compass-runner ServiceAccount
+    - expression: >-
+        !variables.isRunnerDS || request.userInfo.username in variables.deployers ||
+        (request.operation == 'UPDATE' && object.spec == oldObject.spec)
+      message: only a deployer may create or change the compass-runner DaemonSet
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -287,10 +359,10 @@ callout's own record decides its user-JWT lifetime policy.
 | Replay of a stolen projected token | Verifies until `exp`: at most `maxTokenLifetime` (default 600 s) after issue, plus 60 s leeway. A Connect stream opened in that window outlives the token (§Revocation). TLS-only door; never logged. |
 | Node A claims node B's ID | `node.name` is the API server's record of the pod's node. NodeRestriction and the Node authorizer let a kubelet get tokens only for pods bound to it. |
 | A user with `edit` or `admin` in the Runner namespace | Both built-in roles grant `create` on `serviceaccounts/token` and `pods`. Such a user can mint a token for any Runner pod, or create a pod with `spec.nodeName` on any node, and so enroll as any node. Bound: no such binding (§Global Constraints) and the admission policy. |
-| Another workload uses the Runner ServiceAccount | Denied by the admission policy. |
+| Another workload uses the Runner ServiceAccount, directly or through a controller (an attacker-authored DaemonSet) | The controller manager creates a controller's pods, so a username check alone would admit them. Bound: the policy admits a Runner-ServiceAccount pod only when its controller owner is the DaemonSet `compass-runner`; only `deployers` may create that DaemonSet or change its `spec`; no other workload template may name the ServiceAccount. |
 | An agent reads the Runner token | It could enroll as the node. Bound: the `--mount` guard, and a microVM guest has no view of the pod filesystem. |
 | Token for another audience, or a legacy Secret token | `aud` mismatch; or a different `iss` and no `exp`. |
-| One cluster forges another's nodes | Exact `iss` selection, unique issuers, and the cross-cluster key-thumbprint check. |
+| One cluster forges another's nodes | Exact `iss` selection, unique issuers, and the cross-cluster key-thumbprint check, which fails every cluster sharing a key. |
 | `kid` flood | Unknown issuer: no fetch. Known issuer: one re-fetch per 5 minutes; a pinned cooldown delays a new key to the hourly refresh. |
 | Issuer outage | `CodeUnavailable`, which the Runner retries; last good keys kept 24 h. |
 
@@ -323,8 +395,14 @@ callout's own record decides its user-JWT lifetime policy.
   test asserts it.
 - **No identity-granting role in the Runner namespace.** No RoleBinding or
   ClusterRoleBinding there may grant `edit`, `admin`, or `create` on `pods` or
-  `serviceaccounts/token`. The DaemonSet controller and kubelets are the only
-  exceptions. Cluster administrators are inside the trust boundary.
+  `serviceaccounts/token`. The controller manager, kubelets and the `deployers`
+  identities are the only exceptions. Cluster administrators and the deployers
+  are inside the trust boundary.
+- **Policy render parameters.** `controllers` defaults to both controller
+  usernames: `system:serviceaccount:kube-system:daemon-set-controller`
+  (per-controller credentials) and `system:kube-controller-manager` (shared
+  credentials). `deployers` defaults to
+  `system:serviceaccount:flux-system:kustomize-controller`.
 - **`github.com/go-jose/go-jose/v4` v4.1.5.** Update every Go `vendorHash`
   (`flake.nix`, `guest-image/default.nix`).
 - **Context flows from the caller.** New functions take `ctx` first. No
@@ -348,7 +426,7 @@ New files `go/internal/auth/runner_clusters.go` and
 type RunnerCluster struct {
 	Name, Issuer, Audience, Namespace, ServiceAccount string
 	JWKSURI, JWKSFile, CAFile                          string
-	MaxTokenLifetime                                   time.Duration // default 600s
+	MaxTokenLifetime                                   time.Duration // default 600s; < 600s fails to parse
 }
 var ErrKeysUnavailable = errors.New("auth: runner cluster keys unavailable")
 func ParseRunnerClusters(data []byte) ([]RunnerCluster, error)
@@ -421,8 +499,10 @@ func (l *ServerLink) RunnerID() string // from EnrollResponse.runner_id
   - keeping the old value as a second `--service-account-issuer` while a live
     cluster changes its issuer;
   - publishing a new signing key at least an hour before signing with it;
-  - matching the policy's username to a controller manager that runs without
-    per-controller credentials (`system:kube-controller-manager`).
+  - setting `deployers` to whoever applies the Runner manifests (for Flux, the
+    kustomize-controller, or the ServiceAccount a Kustomization impersonates),
+    and optionally narrowing `controllers` to the one username the controller
+    manager uses.
 
 ### W5 — Ledger row
 
@@ -440,8 +520,11 @@ DL-440 in `docs/designs/DECISIONS.md` §Transport, in this PR.
   - A fetch error keeps the last good keys.
   - A JWKS 503 with no keys gives `ErrKeysUnavailable`; a bad signature does
     not.
-  - Duplicate names, issuers differing only by a trailing `/`, and a key
-    thumbprint shared across clusters all fail.
+  - Duplicate names, issuers differing only by a trailing `/`, and
+    `maxTokenLifetime: 599s` fail to parse; `600s` parses.
+  - Clusters A and B publish one shared key. With A's set loaded first and with
+    B's first, tokens for both get `ErrKeysUnavailable`. Once B's set drops the
+    key, A's tokens verify again.
 - **W2:**
   - A JWS-shaped token never reaches the hash lookup (resolver spy), and gets
     `ErrWrongKind` with `want = SubjectAccount`.
@@ -463,14 +546,23 @@ DL-440 in `docs/designs/DECISIONS.md` §Transport, in this PR.
   - `expirationSeconds` ≤ `maxTokenLifetime`;
   - `automountServiceAccountToken: false`;
   - no RoleBinding in the namespace;
-  - the policy's two allowed usernames.
-- **Live smoke (W4):** on one node, the Runner enrolls as `<cluster>/<node>`,
-  and the decoded claim names match §Verification.
+  - the policy's default `controllers` (both usernames) and `deployers`.
+- **Live smoke (W4):** on one node, the DaemonSet applied as a `deployers`
+  identity is admitted, its Runner enrolls as `<cluster>/<node>`, and the
+  decoded claim names match §Verification.
 - **Threat proof (W4):**
   - Without the policy, an `edit` user runs `kubectl create token
     compass-runner --audience compass-runner --bound-object-kind Pod
     --bound-object-name <runner-pod>`, and the token enrolls.
   - With the policy, the same command is denied.
+  - A user whose Role grants `create` and `update` on `daemonsets` is denied
+    when creating a DaemonSet `evil` whose template names the Runner
+    ServiceAccount, changing the `compass-runner` DaemonSet's `spec`, or
+    deleting and recreating it.
+  - A server-side dry-run create of a Runner-ServiceAccount pod, impersonating
+    each `controllers` username (`--as-group system:masters` so authorization
+    passes), is admitted with a controller owner of DaemonSet `compass-runner`
+    and denied with DaemonSet `evil` or a ReplicaSet as owner.
 
 ## Tasks
 
