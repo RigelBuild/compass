@@ -15,10 +15,10 @@ import (
 // (stack.TestPackStartTimevalMatchesDownSide) uses and asserts the same literal
 // uint64.
 //
-// The duplication it guards is load-bearing: Alive compares this packing's
+// The duplication it guards is load-bearing: Liveness compares this packing's
 // output against a token stack.packStartTimeval produced at spawn, for uint64
 // equality, so a one-sided change to either expression would report every live
-// child as not-alive and silently skip it at teardown — the worst teardown
+// child as recycled and silently skip it at teardown — the worst teardown
 // failure available, because it is silent.
 func TestPackGroupLeaderTimevalMatchesSpawnSide(t *testing.T) {
 	tv := unix.Timeval{Sec: 1_700_000_123, Usec: 456_789}
@@ -51,7 +51,7 @@ func TestReadGroupLeaderStartTimeSelfIsStable(t *testing.T) {
 }
 
 // TestReadGroupLeaderStartTimeDeadPGIDErrors proves the reader fails closed for
-// a pgid that names no process, so Alive reports not-alive rather than matching
+// a pgid that names no process rather than matching
 // on a zero token.
 func TestReadGroupLeaderStartTimeDeadPGIDErrors(t *testing.T) {
 	dead := deadPGID(t)

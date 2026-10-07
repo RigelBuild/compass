@@ -136,13 +136,13 @@ func TestGatewayProbeHealthyAndUnhealthy(t *testing.T) {
 func TestGatewaySignalStopsThenRemoves(t *testing.T) {
 	cli := &gatewayFakeCLI{}
 	p := &gatewayProcess{cli: cli, name: "gateway", stopTimeout: 25 * time.Second}
-	if err := p.Signal(stack.SignalTerm); err != nil {
+	if err := p.Signal(context.Background(), stack.SignalTerm); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(cli.ops, []string{"stop gateway", "remove gateway"}) {
 		t.Fatalf("ops = %v", cli.ops)
 	}
-	if err := p.Signal(stack.SignalKill); err == nil {
+	if err := p.Signal(context.Background(), stack.SignalKill); err == nil {
 		t.Fatal("SignalKill accepted")
 	}
 }
@@ -166,8 +166,16 @@ func (f *gatewayFakeCLI) stop(_ context.Context, name string, _ time.Duration) e
 	f.ops = append(f.ops, "stop "+name)
 	return nil
 }
+func (f *gatewayFakeCLI) term(_ context.Context, name string) error {
+	f.ops = append(f.ops, "term "+name)
+	return nil
+}
 func (f *gatewayFakeCLI) remove(_ context.Context, name string) error {
 	f.ops = append(f.ops, "remove "+name)
+	return nil
+}
+func (f *gatewayFakeCLI) removeExited(_ context.Context, name string) error {
+	f.ops = append(f.ops, "remove-exited "+name)
 	return nil
 }
 func (f *gatewayFakeCLI) exists(_ context.Context, _ string) (bool, error) { return false, nil }
@@ -176,7 +184,7 @@ var _ containerCLI = (*gatewayFakeCLI)(nil)
 
 func TestGatewayExistsAssumesPresentOnEngineError(t *testing.T) {
 	c := &GatewayContainer{cli: &gatewayExistsErrorCLI{}}
-	if !c.Exists("gateway") {
+	if !c.Exists(context.Background(), "gateway") {
 		t.Fatal("Exists reported absent when engine errored")
 	}
 }
@@ -186,20 +194,26 @@ type gatewayExistsErrorCLI struct{}
 func (*gatewayExistsErrorCLI) run(context.Context, []string) error               { return nil }
 func (*gatewayExistsErrorCLI) wait(context.Context, string) error                { return nil }
 func (*gatewayExistsErrorCLI) stop(context.Context, string, time.Duration) error { return nil }
+func (*gatewayExistsErrorCLI) term(context.Context, string) error                { return nil }
 func (*gatewayExistsErrorCLI) remove(context.Context, string) error              { return nil }
+func (*gatewayExistsErrorCLI) removeExited(context.Context, string) error        { return nil }
 func (*gatewayExistsErrorCLI) exists(context.Context, string) (bool, error) {
 	return false, errors.New("engine unavailable")
 }
 func TestGatewayControllerDispatchesStopAndRemove(t *testing.T) {
+	ctx := context.Background()
 	cli := &gatewayFakeCLI{}
 	c := &GatewayContainer{cli: cli}
-	if err := c.Stop("gateway", 25*time.Second); err != nil {
+	if err := c.Stop(ctx, "gateway"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Remove("gateway"); err != nil {
+	if err := c.RemoveExited(ctx, "gateway"); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(cli.ops, []string{"stop gateway", "remove gateway"}) {
+	if err := c.Remove(ctx, "gateway"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cli.ops, []string{"term gateway", "remove-exited gateway", "remove gateway"}) {
 		t.Fatalf("controller ops = %v", cli.ops)
 	}
 }
