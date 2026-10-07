@@ -119,6 +119,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/agent-image-index": {
+      "name": "@compass/agent-image-index",
+      "bin": {
+        "agent-image-index": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/ci-matrix": {
       "name": "@compass/ci-matrix",
       "bin": {
@@ -526,6 +536,8 @@
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
 
     "@compass/agent-image-env-gate": ["@compass/agent-image-env-gate@workspace:tools/agent-image-env-gate"],
+
+    "@compass/agent-image-index": ["@compass/agent-image-index@workspace:tools/agent-image-index"],
 
     "@compass/ci-matrix": ["@compass/ci-matrix@workspace:tools/ci-matrix"],
 
