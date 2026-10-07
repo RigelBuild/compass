@@ -9,10 +9,8 @@
 # v0.45.0) and golangci-lint (nixpkgs' bundled staticcheck panics on go1.27 IR;
 # 2.13.0 added support, pinned to 2.13.2). govulncheck/go-licenses need none.
 #
-# MANUALLY MAINTAINED — NOT yet Renovate-managed (tracked as a follow-up). Bump:
-# move a tool's rev/tag + hash + vendorHash together and re-prefetch both. The FOD
-# fails loudly on a wrong hash but not a stale-but-consistent pin, so check it on
-# every Go bump (nilaway tracks an untagged main rev, most likely to rot).
+# Renovate manages nilaway and golangci-lint. refresh-go-analysis-hashes.ts updates
+# their derived version/tag fields and both source and vendor hashes after a bump.
 {
   nilaway = {
     version = "0-unstable-2026-08-08";
