@@ -34,8 +34,8 @@ const (
 	linkSourceClosingRef int16 = 2
 )
 
-// normalized trims and, on GitHub, lowercases the repo so board joins never miss on case.
-func (c ForgeCoord) normalized() ForgeCoord {
+// Normalized trims and, on GitHub, lowercases the repo so board joins never miss on case.
+func (c ForgeCoord) Normalized() ForgeCoord {
 	c.Repo = strings.TrimSpace(c.Repo)
 	if c.Provider == ForgeProviderGitHub {
 		c.Repo = strings.ToLower(c.Repo)
@@ -80,7 +80,7 @@ func coordFromDB(provider int16, host, repo string, number int64) ForgeCoord {
 }
 
 func (pr PullRequestRow) normalized() (PullRequestRow, error) {
-	pr.Coord = pr.Coord.normalized()
+	pr.Coord = pr.Coord.Normalized()
 	if err := pr.Coord.valid(); err != nil {
 		return PullRequestRow{}, err
 	}
@@ -98,7 +98,7 @@ func normalizeCoords(in []ForgeCoord) ([]ForgeCoord, error) {
 	out := make([]ForgeCoord, 0, len(in))
 	seen := make(map[ForgeCoord]bool, len(in))
 	for _, c := range in {
-		c = c.normalized()
+		c = c.Normalized()
 		if err := c.valid(); err != nil {
 			return nil, err
 		}
@@ -125,13 +125,13 @@ func (s *Store) CreatePullRequestWithLink(ctx context.Context, a AuthoredArtifac
 	if err := a.valid(); err != nil {
 		return err
 	}
-	authored := ForgeCoord{Provider: a.Provider, Host: a.Host, Repo: a.Repo, Number: a.Number}.normalized()
+	authored := ForgeCoord{Provider: a.Provider, Host: a.Host, Repo: a.Repo, Number: a.Number}.Normalized()
 	if a.Kind != ForgeArtifactKindPullRequest || authored != pr.Coord {
 		return fmt.Errorf("%w: authored artifact does not name the pull request", ErrInvalidArgument)
 	}
 	var target ForgeCoord
 	if issue != nil {
-		target = issue.normalized()
+		target = issue.Normalized()
 		if err := target.valid(); err != nil {
 			return err
 		}
@@ -260,8 +260,8 @@ func replaceClosingRefs(ctx context.Context, qtx *db.Queries, p forgeCoordDB, re
 }
 
 // PullRequestsForIssues returns the PRs attached to each issue, oldest forge
-// creation first, keyed by the normalized issue coordinate. A closing reference attaches a PR only when none of its
-// explicit targets is a board issue.
+// creation first, keyed by the normalized issue coordinate. A closing reference
+// attaches a PR only when none of its explicit targets is a board issue.
 func (s *Store) PullRequestsForIssues(ctx context.Context, issues []ForgeCoord) (map[ForgeCoord][]PullRequestRow, error) {
 	want, err := normalizeCoords(issues)
 	if err != nil {
@@ -305,7 +305,7 @@ func (s *Store) PullRequestsForIssues(ctx context.Context, issues []ForgeCoord) 
 // explicit target is issue: the issues that gain or lose the PR when issue
 // enters or leaves the board.
 func (s *Store) FallbackIssuesForTarget(ctx context.Context, issue ForgeCoord) ([]ForgeCoord, error) {
-	issue = issue.normalized()
+	issue = issue.Normalized()
 	if err := issue.valid(); err != nil {
 		return nil, err
 	}
@@ -326,7 +326,7 @@ func (s *Store) FallbackIssuesForTarget(ctx context.Context, issue ForgeCoord) (
 // PullRequestUpdatedAt reads the stored forge_updated_at of pr; ok is false when
 // the PR was never stored. The sweep hydrates only rows newer than this.
 func (s *Store) PullRequestUpdatedAt(ctx context.Context, pr ForgeCoord) (time.Time, bool, error) {
-	pr = pr.normalized()
+	pr = pr.Normalized()
 	if err := pr.valid(); err != nil {
 		return time.Time{}, false, err
 	}

@@ -28,8 +28,9 @@ type IssueProjection struct {
 	bus   *events.Bus[busPayload]
 	store *store.Store
 
-	mu     sync.RWMutex
-	issues map[string]*compassv1.Issue // id -> latest canonical issue (in-memory cache)
+	mu      sync.RWMutex
+	issues  map[string]*compassv1.Issue // id -> latest canonical issue (in-memory cache)
+	byCoord map[store.ForgeCoord]string // normalized forge coordinate -> issue id
 }
 
 // NewIssueProjection constructs an empty board over the SubscribeEvents bus it
@@ -37,9 +38,10 @@ type IssueProjection struct {
 // through. Rehydrate seeds the map from the store before serving.
 func NewIssueProjection(bus *events.Bus[busPayload], st *store.Store) *IssueProjection {
 	return &IssueProjection{
-		bus:    bus,
-		store:  st,
-		issues: make(map[string]*compassv1.Issue),
+		bus:     bus,
+		store:   st,
+		issues:  make(map[string]*compassv1.Issue),
+		byCoord: make(map[store.ForgeCoord]string),
 	}
 }
 
@@ -48,8 +50,9 @@ func NewIssueProjection(bus *events.Bus[busPayload], st *store.Store) *IssueProj
 // commit; returns the stable id), (3) GetIssue(id) to read back the FULL row
 // (forge fields just written + the store-owned state/machinery, so the cached +
 // fanned Issue reflects committed truth incl. a prior human-set state), (4) map
-// store.Issue -> *compassv1.Issue, (5) record in the map + Publish the issue=16
-// variant, atomic under mu. Returns error on any store failure (part 3 stops on it).
+// store.Issue -> *compassv1.Issue with its prs, (5) record in the map + Publish
+// the issue=16 variant, atomic under mu, then (6) republish the closing-ref
+// issues of PRs that now attach here. Returns error on any store failure.
 //
 // Lock discipline (load-bearing, mirrors PublishSessionStatus): the DURABLE PG
 // commit (UpsertIssueForgeFields + the GetIssue read-back) happens BEFORE taking
@@ -80,17 +83,29 @@ func (p *IssueProjection) PublishIssueUpdate(ctx context.Context, issue *compass
 	if err != nil {
 		return fmt.Errorf("board: read back committed issue: %w", err)
 	}
-	// (4) map committed store.Issue -> wire Issue OUTSIDE the lock.
-	wire := issueToProto(committed)
+	// (4) map committed store.Issue -> wire Issue with its prs, OUTSIDE the lock.
+	wires, err := p.IssueToProtoWithPrs(ctx, committed)
+	if err != nil {
+		return err
+	}
+	wire := wires[0]
+	coord := storeIssueCoord(committed)
 
 	// (5) record + fan out atomically under the write lock.
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.issues[wire.GetId()] = wire
+	p.record(wire, coord)
 	p.bus.Publish(&compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_Issue{Issue: wire},
 	})
-	return nil
+	p.mu.Unlock()
+
+	// PRs that fell back to closing refs while this issue was off the board now
+	// attach here; republish those closing-ref issues without them.
+	fallback, err := p.store.FallbackIssuesForTarget(ctx, coord)
+	if err != nil {
+		return fmt.Errorf("board: fallback issues for target: %w", err)
+	}
+	return p.republishPrs(ctx, fallback)
 }
 
 // RecordAndPublish is the STATE-ONLY record+publish the write-path transition
@@ -112,10 +127,14 @@ func (p *IssueProjection) RecordAndPublish(committed store.Issue) {
 	// Map committed store.Issue -> wire Issue OUTSIDE the lock.
 	wire := issueToProto(committed)
 
-	// Record + fan out atomically under the write lock.
+	// Record + fan out atomically under the write lock. A state change never
+	// touches links, so the cached prs carry over.
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.issues[wire.GetId()] = wire
+	if prev, ok := p.issues[wire.GetId()]; ok {
+		wire.Prs = prev.GetPrs()
+	}
+	p.record(wire, storeIssueCoord(committed))
 	p.bus.Publish(&compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_Issue{Issue: wire},
 	})
@@ -146,30 +165,29 @@ func (p *IssueProjection) Rehydrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("board: rehydrate issues: %w", err)
 	}
+	wires, err := p.IssueToProtoWithPrs(ctx, rows...)
+	if err != nil {
+		return fmt.Errorf("board: rehydrate issues: %w", err)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, si := range rows {
-		proto := issueToProto(si)
-		p.issues[proto.GetId()] = proto
+	for i, si := range rows {
+		p.record(wires[i], storeIssueCoord(si))
 	}
 	return nil
-}
-
-// IssueToProto maps a store-native issue to the canonical wire Issue. It is the
-// exported form of issueToProto for the write-path transition executor
-// (server/board.go), which reads a committed row back through the store and must
-// return it on the SetIssueState response wire — the store<->wire mapping stays
-// owned by this package (the ONLY place the two types meet), so the executor
-// borrows it rather than re-implementing the edge.
-func IssueToProto(si store.Issue) *compassv1.Issue {
-	return issueToProto(si)
 }
 
 // issueToProto maps the store-native issue to the canonical wire Issue. store
 // enums -> proto enums by value (they mirror: IssueState 0..8, ForgeProvider
 // 0..3); Forge is rebuilt as &compassv1.ForgeRef{Provider, Host}; Labels copied;
-// empty->nil per the module contract; tracker/prs left nil (their producing
-// slices own them). AgentAttribution is set only for a Compass-authored issue
+// empty->nil per the module contract; tracker/prs left nil (prs are loaded by
+// record caches wire under its id and coordinate. Callers hold p.mu.
+func (p *IssueProjection) record(wire *compassv1.Issue, coord store.ForgeCoord) {
+	p.issues[wire.GetId()] = wire
+	p.byCoord[coord] = wire.GetId()
+}
+
+// IssueToProtoWithPrs). AgentAttribution is set only for a Compass-authored issue
 // (a non-empty agent_handle); a human author leaves it unset.
 func issueToProto(si store.Issue) *compassv1.Issue {
 	out := &compassv1.Issue{

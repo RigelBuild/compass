@@ -119,7 +119,11 @@ func (b *boardService) SetIssueStateAsAccount(
 	if err != nil {
 		return nil, err
 	}
-	return &compassv1internal.SetIssueStateResponse{Issue: board.IssueToProto(committed)}, nil
+	wire, err := b.issueBrd.CommittedIssue(ctx, committed)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return &compassv1internal.SetIssueStateResponse{Issue: wire}, nil
 }
 
 // errUnspecifiedTarget is the in-band cause for an ISSUE_STATE_UNSPECIFIED
