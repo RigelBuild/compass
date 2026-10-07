@@ -53,11 +53,11 @@ func TestAllowlistedHostPopulatesBothFamilies(t *testing.T) {
 
 	// Dual-stack: both A and AAAA resolution must be wired, or the container
 	// reaches a blocked host over the un-allowlisted family.
+	// Each family's lookup must feed its own set: allow6 alone also appears in
+	// the base ruleset, so pin the lookup-to-set pairing.
 	for _, want := range []string{
-		"getent ahostsv4 github.com",
-		"getent ahostsv6 github.com",
-		"allow4",
-		"allow6",
+		"getent ahostsv4 github.com | awk '{print $1}' | sort -u); do nft add element inet compass_egress allow4",
+		"getent ahostsv6 github.com | awk '{print $1}' | sort -u); do nft add element inet compass_egress allow6",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("allowlisted-host nft script missing %q\nscript:\n%s", want, script)

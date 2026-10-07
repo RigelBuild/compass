@@ -462,7 +462,7 @@ opening with `microvmtest.Require(t)`.
   (`microvm.Launch` + `GuestClient`, the boot_microvm_test.go:155-159
   pattern) — no new production code. Produces the KVM-gated test files only.
 - **Test cycle (KVM-gated):**
-  1. **Allowlisted reachable / non-allowlisted blocked, both families:** boot
+  1. **Allowlisted reachable / non-allowlisted blocked (IPv4 live):** boot
      a session whose `WorkloadSpec.Egress` allowlists one real host; in-guest
      execs (agent uid) show the allowlisted host connects and a
      non-allowlisted raw IPv4 and IPv6 destination time out — mirroring the
