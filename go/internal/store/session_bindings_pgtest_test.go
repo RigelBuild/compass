@@ -360,12 +360,20 @@ func TestDeleteSessionBindingByVersionSkipsRebind(t *testing.T) {
 	if got, _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); err != nil || got != agent.ID {
 		t.Fatalf("binding after stale delete = (%q, %v), want (%q, nil)", got, err, agent.ID)
 	}
+	tenant := s.EffectiveTenant(ctx)
+	if events := computeEvents(t, s, tenant, agent.ID); len(events) != 1 || events[0].Kind != "start" {
+		t.Fatalf("usage events after stale delete = %+v, want only the open start", events)
+	}
 	removed, err = s.DeleteSessionBindingVersion(ctx, "sess-1", newVersion)
 	if err != nil || !removed {
 		t.Fatalf("current DeleteSessionBinding = (%v, %v), want (true, nil)", removed, err)
 	}
 	if _, _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveSessionBinding after delete err = %v, want ErrNotFound", err)
+	}
+	events := computeEvents(t, s, tenant, agent.ID)
+	if len(events) != 2 || events[0].Kind != "start" || events[1].Kind != "end" || events[0].IntervalID != events[1].IntervalID {
+		t.Fatalf("usage events after current delete = %+v, want one start and its end", events)
 	}
 }
 
