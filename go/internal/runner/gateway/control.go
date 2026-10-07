@@ -335,7 +335,7 @@ func (s *controlSession) signalLocked() {
 }
 
 // AckControl retires retained ops through the contiguous cursor and drops any
-// op individually applied above it.
+// op named by the legacy per-seq field or an applied range.
 //
 // The ack comes from the agent, which is the untrusted side of this seam, so
 // the cursor is clamped to the highest seq actually issued. An unclamped cursor
@@ -343,23 +343,22 @@ func (s *controlSession) signalLocked() {
 // subscription — a silent, permanent wedge — because a subscription starts
 // draining at the cursor.
 //
-// applied_above is untrusted the same way, and in the other direction: it is a
-// repeated field the agent sizes. The proto calls it a small window but nothing
-// enforces that, and the only ceiling on the wire is the 16MiB read cap — which
-// packed varints turn into millions of entries, each amplified into a map slot.
-// So the set is bounded here; see boundedAboveSet.
-func (p *controlProducer) AckControl(sessionID string, epoch, ackedSeq uint64, appliedAbove []uint64) {
+// applied_above and applied_above_ranges are untrusted the same way, and in the
+// other direction: they are repeated fields the agent sizes, and the only ceiling
+// on the wire is the 16MiB read cap. A single range may also span all of uint64.
+// So both are intersected with retention; see boundedAboveSet and appliedRangesSet.
+func (p *controlProducer) AckControl(sessionID string, epoch, ackedSeq uint64, appliedAbove []uint64, appliedRanges []uint64) {
 	s, ok := p.existingSession(sessionID)
 	if !ok {
 		return // retired: no retention to prune, no barrier to lift
 	}
 
-	// An ack naming nothing prunes nothing, the only shape production emits today, so the
-	// snapshot is skipped. When there IS something to intersect: snapshot the retained
-	// seqs, then scan the agent-sized field OUTSIDE the lock — a stale snapshot only keeps
-	// a since-retired seq, and the prune re-checks live state, so it prunes nothing.
+	// An ack naming nothing prunes nothing, the in-order shape, so the snapshot is skipped.
+	// Otherwise snapshot the retained seqs, then scan the agent-sized fields OUTSIDE the
+	// lock — a stale snapshot only keeps a since-retired seq, and the prune re-checks live
+	// state, so it prunes nothing.
 	var above map[uint64]struct{}
-	if len(appliedAbove) > 0 {
+	if len(appliedAbove) > 0 || len(appliedRanges) > 0 {
 		s.mu.Lock()
 		retainedSeqs := make(map[uint64]struct{}, len(s.ops))
 		for _, r := range s.ops {
@@ -368,6 +367,9 @@ func (p *controlProducer) AckControl(sessionID string, epoch, ackedSeq uint64, a
 		s.mu.Unlock()
 
 		above = boundedAboveSet(appliedAbove, retainedSeqs)
+		for seq := range appliedRangesSet(appliedRanges, retainedSeqs) {
+			above[seq] = struct{}{}
+		}
 	}
 
 	s.mu.Lock()
@@ -401,6 +403,50 @@ func (p *controlProducer) AckControl(sessionID string, epoch, ackedSeq uint64, a
 		s.ops[i] = retained{}
 	}
 	s.ops = kept
+}
+
+// appliedRangesSet marks retained seqs covered by any flattened inclusive [start, end]
+// pair, never expanding a pair: allocation is bounded by retention, not span. Only the
+// first maxRetainedOps pairs are read, bounding CPU per ack; an op named past the cap is
+// just redelivered, and the agent already drops a re-applied seq.
+func appliedRangesSet(appliedRanges []uint64, retainedSeqs map[uint64]struct{}) map[uint64]struct{} {
+	above := make(map[uint64]struct{})
+	if len(appliedRanges) == 0 || len(retainedSeqs) == 0 {
+		return above
+	}
+	sorted := make([]uint64, 0, len(retainedSeqs))
+	for seq := range retainedSeqs {
+		sorted = append(sorted, seq)
+	}
+	slices.Sort(sorted)
+
+	// Difference array: +1 where a covered run starts, -1 just past its end.
+	cover := make([]int, len(sorted)+1)
+	pairs := appliedRanges[:2*min(len(appliedRanges)/2, maxRetainedOps)]
+	for len(pairs) >= 2 {
+		start, end := pairs[0], pairs[1]
+		pairs = pairs[2:]
+		if start > end {
+			continue // inverted: names nothing
+		}
+		lo, _ := slices.BinarySearch(sorted, start)
+		hi, found := slices.BinarySearch(sorted, end)
+		if found {
+			hi++
+		}
+		if lo < hi {
+			cover[lo]++
+			cover[hi]--
+		}
+	}
+	depth := 0
+	for i, seq := range sorted {
+		depth += cover[i]
+		if depth > 0 {
+			above[seq] = struct{}{}
+		}
+	}
+	return above
 }
 
 // boundedAboveSet builds the applied-above set, keeping only seqs that can prune, which

@@ -24,7 +24,7 @@
 
 // Because an immediate op counted at decode is "applied" ahead of an earlier queued
 // iterator op (invariant 2), the contiguous cursor alone cannot mark it done; the
-// source names its seq in the ack's applied_above set, and the Runner drops it from
+// source names its seq in the ack's inclusive applied_above_ranges runs, and the Runner drops it from
 // retention so a redelivered copy is never re-applied (amended OQ-6).
 
 // Close-reason contract (OQ-6): a clean Runner-initiated end ends the iterable (→
@@ -380,7 +380,7 @@ export function createSocketControlSource(
 					);
 				}
 				// Applied (counted or dispatched) at decode → ack now, ahead of any
-				// queued iterator op (invariant 2 → applied_above).
+				// queued iterator op (invariant 2 → applied_above_ranges).
 				acks.markApplied(seq);
 				return;
 			}
