@@ -4,8 +4,8 @@ package server
 
 // Store-gated SUCCESS-case proof for the armed forge-secret boot path:
 // buildBoardWebhookWiring with a configured App against the REAL secrets.SpecResolver
-// (the FFI read path), not a fake — exercising the fail-closed boot no other forge
-// pgtest reaches. Dlopens libsecretspec, so SKIPs cleanly when the library is absent.
+// (the secretspec CLI read path), not a fake — exercising the fail-closed boot no
+// other forge pgtest reaches. The server cannot boot without the CLI, so its absence FAILS.
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -115,11 +116,8 @@ func newArmedResolver(t *testing.T, st *store.Store, dotenvPath string) secrets.
 	)
 }
 
-// ffiLocateError is the substring the SecretSpec SDK returns when the
-// libsecretspec cdylib is neither embedded, on SECRETSPEC_FFI_LIB, nor in a
-// nearby Cargo target dir. Dev/CI stage only the write-path CLI, so the read
-// path's cdylib may be absent — the success case must SKIP on that, not fail.
-const ffiLocateError = "could not locate the libsecretspec library"
+// secretspecCLI is the binary the real resolver spawns; boot requires it on PATH.
+const secretspecCLI = "secretspec"
 
 // TestBuildBoardWebhookWiringArmedWithRealResolver drives the armed boot path
 // against the REAL SpecResolver. It declares the App secrets through the
@@ -161,14 +159,12 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 
 	resolver := newArmedResolver(t, st, dotenvPath)
 
-	// FFI-availability guard AFTER forgeTestStore: a container-less sandbox
-	// skips at the store gate; only past it does the missing read-path cdylib
-	// warrant its own skip. A probe resolve exercises the real dlopen; a
-	// locate-failure SKIPs, any other error fails.
+	// The server cannot read secrets without the CLI, so a
+	// missing one fails here with a clear cause rather than as a resolve error.
+	if _, err := exec.LookPath(secretspecCLI); err != nil {
+		t.Fatalf("secretspec CLI not on PATH; the server read path cannot boot without it: %v", err)
+	}
 	if _, err := resolver.Resolve(ctx, "armed boot probe"); err != nil {
-		if strings.Contains(err.Error(), ffiLocateError) {
-			t.Skipf("libsecretspec FFI read path unavailable: %v", err)
-		}
 		t.Fatalf("probe Resolve through the real resolver: %v", err)
 	}
 
@@ -219,7 +215,7 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	// string cannot point at the loopback http test server — a rewriting
 	// Transport is the only hermetic seam (matching forge's own githubapp_test).
 	// Token() -> mint -> parseRSAPrivateKey then runs on the key that flowed
-	// through the real FFI read path.
+	// through the real CLI read path.
 	const mintedToken = "ghs_armed_installtoken"
 	mint := newArmedMintServer(t, mintedToken)
 	appSrc, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
