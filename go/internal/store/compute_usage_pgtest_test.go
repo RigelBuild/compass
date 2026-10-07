@@ -231,7 +231,7 @@ func TestComputeUsageConflictRollsBackIntervalEvents(t *testing.T) {
 		after[0].IntervalID != before[0].IntervalID || !after[0].OccurredAt.Equal(before[0].OccurredAt) {
 		t.Fatalf("account X events before=%+v after=%+v, want its unchanged open start only", before, after)
 	}
-	if sessionID, runnerID, err := s.SessionForAccount(ctx, accountX.ID); err != nil || sessionID != "sess-1" || runnerID != "runner-1" {
+	if sessionID, runnerID, _, err := s.SessionForAccount(ctx, accountX.ID); err != nil || sessionID != "sess-1" || runnerID != "runner-1" {
 		t.Fatalf("account X resolves to (%q, %q, %v), want (sess-1, runner-1)", sessionID, runnerID, err)
 	}
 }

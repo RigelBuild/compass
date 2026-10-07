@@ -191,12 +191,21 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 	// so it stays tenant-scoped), then the maps are evicted under h.mu. Delete is
 	// by session id and idempotent — a session already displaced has no row, so a
 	// stale release matches nothing and leaves the live binding alone.
+	// A Stop's release takes bindingWriteMu so it orders wholly before or after an
+	// enroll's map-clear through reap. A limited release skips it: mid-reap no binding
+	// is cached (promotion waits here, read-through is refused), so it releases nothing.
+	unlockWrite := func() {}
+	if only == nil {
+		h.bindingWriteMu.Lock()
+		unlockWrite = h.bindingWriteMu.Unlock
+	}
 	h.mu.Lock()
 	bindings := h.bindings
 	routing := h.routing
 	if only != nil {
 		if live, ok := h.sessionAccounts[sessionID]; ok && !sameBinding(live, *only) {
 			h.mu.Unlock()
+			unlockWrite()
 			return false
 		}
 	}
@@ -228,6 +237,7 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 		case !removed:
 			// The row was re-bound since only was read: the session is not lost.
 			h.evictStaleBinding(sessionID, only)
+			unlockWrite()
 			return false
 		default:
 			tenant = string(bindings.EffectiveTenant(ctx))
@@ -243,6 +253,7 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 	if ok && only != nil && !sameBinding(binding, *only) {
 		// Re-bound in the cache while the durable delete ran.
 		h.mu.Unlock()
+		unlockWrite()
 		return false
 	}
 	if ok {
@@ -258,6 +269,7 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 	delete(h.sessionAccounts, sessionID)
 	presence := h.presence
 	h.mu.Unlock()
+	unlockWrite()
 
 	// Invalidate peer instances' caches (h.mu released, nil-safe, best-effort):
 	// this session has no binding any more (BindingUnbound), so a peer can drop
@@ -491,7 +503,7 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 	if !h.readThroughAllowed(ctx, bindings, enrolled) {
 		return "", false
 	}
-	sessionID, ownerID, err := bindings.SessionForAccount(ctx, account)
+	sessionID, ownerID, version, err := bindings.SessionForAccount(ctx, account)
 	if err != nil || ownerID != runnerID {
 		return "", false
 	}
@@ -509,7 +521,7 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 		return "", false
 	}
 	h.accountSessions[account] = sessionID
-	h.sessionAccounts[sessionID] = sessionBinding{account: account, runnerID: ownerID}
+	h.sessionAccounts[sessionID] = h.newBindingLocked(account, ownerID, version)
 	h.mu.Unlock()
 	return sessionID, true
 }

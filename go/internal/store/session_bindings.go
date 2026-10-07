@@ -230,19 +230,20 @@ func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (ac
 // dropped on a Runner reconnect. Fail-closed for the same reason as above: an
 // empty session id with a nil error would be dispatched to as if it were a live
 // session. The consumer's own contract turns this into "push nothing now, let
-// the cursor sweep deliver on the recipient's next start".
-func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (string, string, error) {
+// the cursor sweep deliver on the recipient's next start". version names the
+// row's write, as ResolveSessionBinding returns it.
+func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (sessionID, runnerID, version string, err error) {
 	if accountID == "" {
-		return "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+		return "", "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 	row, err := s.q.SessionBindingForAccount(ctx, string(accountID))
 	if err != nil {
 		if noRows(err) {
-			return "", "", fmt.Errorf("%w: agent %q has no live session", ErrNotFound, accountID)
+			return "", "", "", fmt.Errorf("%w: agent %q has no live session", ErrNotFound, accountID)
 		}
-		return "", "", fmt.Errorf("store: resolve session for account: %w", err)
+		return "", "", "", fmt.Errorf("store: resolve session for account: %w", err)
 	}
-	return row.SessionID, row.RunnerID, nil
+	return row.SessionID, row.RunnerID, row.BindingVersion, nil
 }
 
 // DeleteSessionBinding releases the binding for sessionID — the single-session

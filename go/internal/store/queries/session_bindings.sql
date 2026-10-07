@@ -127,7 +127,7 @@ ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
 SELECT agent_account_id, runner_id, binding_version FROM session_bindings WHERE session_id = $1;
 
 -- name: SessionBindingForAccount :one
-SELECT session_id, runner_id FROM session_bindings WHERE agent_account_id = $1;
+SELECT session_id, runner_id, binding_version FROM session_bindings WHERE agent_account_id = $1;
 
 -- Both deletes also write an estimated start for a binding an older server made
 -- without one; ON CONFLICT keeps any real start.
