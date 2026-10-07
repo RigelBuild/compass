@@ -457,7 +457,8 @@ The package skeleton mirrors `go/internal/compute`'s layering
   sentinel, the `ErrExecStreamingNotImplemented` discipline,
   `compute.go:26-29`; see OQ-2). **Close-stamp mechanism** (the leak the
   parent's 14-day policy exists to bound, design.md:619-621, made robust): a
-  marker file in the volume root's metadata dir, written by the teardown path
+  file in the volume's metadata dir (a sibling of the root, outside the
+  agent-owned tree), written by the teardown path
   and read by `Expire`, with three invariants the W1 backend holds —
   (a) **`Attach` atomically clears the stamp**, so a reopened
   closed-but-unexpired session never carries a past-deadline stamp into its

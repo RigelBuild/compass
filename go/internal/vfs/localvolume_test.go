@@ -166,8 +166,10 @@ func TestVolumeRootRejectsTraversal(t *testing.T) {
 		// HasSuffix check these resolve to a path in the lock namespace.
 		"sess-x" + lockFileSuffix,
 		"sess-x" + reapingSuffix,
+		"sess-x" + metaDirSuffix,
 		reapingSuffix,
 		lockFileSuffix,
+		metaDirSuffix,
 	}
 	for _, bad := range badIDs {
 		if _, err := m.CreateVolume(t.Context(), bad); !errors.Is(err, ErrInvalidSessionID) {
@@ -523,8 +525,8 @@ func TestReaperIgnoresNonVolumeDirs(t *testing.T) {
 	if err := m.ReconcileOrphans(t.Context()); err != nil {
 		t.Fatalf("ReconcileOrphans with a non-volume dir present: %v", err)
 	}
-	// Never stamped: the pass must not have created a metadata dir inside it.
-	if exists(t, filepath.Join(stray, metaDirName)) {
+	// Never stamped: the pass must not have created a metadata dir for it.
+	if exists(t, metaDir(stray)) {
 		t.Error("ReconcileOrphans stamped a directory with no volume marker; volume identity must be structural")
 	}
 	if _, _, ok, err := m.ReadStamp(t.Context(), orphan); err != nil || !ok {
@@ -752,6 +754,10 @@ func TestAttachReturnsCtxErrWhileLockIsHeld(t *testing.T) {
 func TestAttachWithCancelledCtxTouchesNoLock(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-cancel-before-lock")
+	// CreateVolume leaves its lock file; drop it so a recreated one is visible.
+	if err := os.Remove(v.HostRoot + lockFileSuffix); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := m.Attach(ctx, v); !errors.Is(err, context.Canceled) {
@@ -993,9 +999,9 @@ func TestVolumeLockSurvivesAReap(t *testing.T) {
 		t.Error("a second lockVolume acquired the lock while it was still held across a reap: the lock file was destroyed with the volume root, so mutual exclusion is broken across reap+recreate")
 	}
 
-	// And a recreate does not split the lock either: the recreated volume's
-	// lock is the same inode, so it is still contended.
-	if _, err := m.CreateVolume(t.Context(), v.SessionID); err != nil {
+	// And a recreate by the holder does not split the lock either: the
+	// recreated volume's lock is the same inode, so it is still contended.
+	if err := createLocked(v.HostRoot); err != nil {
 		t.Fatalf("recreating the volume: %v", err)
 	}
 	afterRecreate, err := tryLockVolume(t.Context(), v.HostRoot)
@@ -1137,9 +1143,9 @@ func TestExpireReclaimsTheLockAfterSweepingALeftover(t *testing.T) {
 }
 
 // TestVolumeLockFileIsOutsideTheVolumeRoot pins the placement structurally, and
-// pins that acquiring a lock creates NOTHING inside the volume root. A
-// lockVolume that resurrected the metadata dir inside a reaped root would make
-// Attach's under-lock existence check see a live volume with no contents.
+// pins that acquiring a lock creates nothing at the volume root. A lockVolume
+// that recreated a reaped root would make Attach's under-lock existence check
+// see a live volume with no contents.
 func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 	m := newManager(t)
 	v := mustCreate(t, m, "sess-lock-placement")
@@ -1164,13 +1170,12 @@ func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 		t.Fatalf("releasing the volume lock: %v", err)
 	}
 
-	// The stamp, by contrast, stays INSIDE the volume root (the design record
-	// places it there), and eachVolume iterates directories only, so the
+	// The stamp is also a sibling, out of the agent-owned root, and the
 	// sibling lock file is never mistaken for a volume.
 	live := mustCreate(t, m, "sess-stamped")
 	stampAged(t, live, IntentClosed, 30*24*time.Hour)
-	if !strings.HasPrefix(stampPath(live.HostRoot), live.HostRoot+string(os.PathSeparator)) {
-		t.Errorf("stamp path %q is not inside the volume root %q", stampPath(live.HostRoot), live.HostRoot)
+	if strings.HasPrefix(stampPath(live.HostRoot), live.HostRoot+string(os.PathSeparator)) {
+		t.Errorf("stamp path %q is inside the agent-owned volume root %q", stampPath(live.HostRoot), live.HostRoot)
 	}
 	// Materialize the sibling lock file, then release it: a still-held lock
 	// would make Expire SKIP the volume, which would pass this check for the
@@ -1198,5 +1203,66 @@ func TestVolumeLockFileIsOutsideTheVolumeRoot(t *testing.T) {
 	}
 	if exists(t, live.HostRoot+lockFileSuffix) {
 		t.Error("Expire left the reclaimed volume lock")
+	}
+	if exists(t, metaDir(live.HostRoot)) {
+		t.Error("Expire left the reaped volume's metadata dir")
+	}
+}
+
+// wipeRoot deletes every entry inside a volume root, as an agent's rm -rf of
+// its own tree (dotfiles included) would.
+func wipeRoot(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("listing %q: %v", root, err)
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+			t.Fatalf("wiping %q: %v", e.Name(), err)
+		}
+	}
+}
+
+// An agent owns its volume root in-container, so nothing it deletes there may
+// hide the volume from the reaper: a crash orphan it wiped must still be reaped.
+func TestAWipedVolumeRootStaysReapable(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-wiped")
+	wipeRoot(t, v.HostRoot)
+
+	if err := m.ReconcileOrphans(t.Context()); err != nil {
+		t.Fatalf("ReconcileOrphans: %v", err)
+	}
+	if _, _, ok, err := m.ReadStamp(t.Context(), v); err != nil || !ok {
+		t.Fatalf("wiped orphan unstamped after reconcile: ok=%v err=%v", ok, err)
+	}
+	if err := m.Expire(t.Context(), -time.Second); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if exists(t, v.HostRoot) {
+		t.Fatal("a volume whose root the agent wiped survived Expire past its deadline")
+	}
+}
+
+// A crash after a reap's rename leaves the slot's metadata behind. Recreating
+// the volume must not inherit the reaped volume's past-deadline closed stamp.
+func TestCreateAfterInterruptedReapDropsTheOldStamp(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-interrupted-reap")
+	stampAged(t, v, IntentClosed, 30*24*time.Hour)
+	if err := os.Rename(v.HostRoot, reapingPath(v.HostRoot)); err != nil {
+		t.Fatal(err)
+	}
+
+	mustCreate(t, m, v.SessionID)
+	if _, _, ok, err := m.ReadStamp(t.Context(), v); err != nil || ok {
+		t.Fatalf("recreated volume carries the reaped volume's stamp: ok=%v err=%v", ok, err)
+	}
+	if err := m.Expire(t.Context(), 14*24*time.Hour); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if !exists(t, v.HostRoot) || exists(t, reapingPath(v.HostRoot)) {
+		t.Fatal("Expire reaped the recreated live volume or left the interrupted reap's tree")
 	}
 }
