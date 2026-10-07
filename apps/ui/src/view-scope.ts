@@ -77,12 +77,21 @@ export type ViewScopeStore = Pick<
 	| "firstSnapshotArrived"
 >;
 
+/** Where a view's path lives when something else owns it: the window layout
+ *  holds every view's path (record A2), so the scope reads and writes through. */
+export type ViewPathSource = {
+	path: Accessor<string>;
+	navigate: (path: string) => void;
+};
+
 export function createViewScope(
 	store: ViewScopeStore,
 	id: string,
 	initialPath: string,
+	source?: ViewPathSource,
 ): ViewScope {
-	const [path, setPath] = createSignal(initialPath);
+	const [ownPath, setOwnPath] = createSignal(initialPath);
+	const path = source ? source.path : ownPath;
 	const route = createMemo(() => parseRoute(path()));
 	const channel = createMemo(() => {
 		const match = route();
@@ -109,9 +118,11 @@ export function createViewScope(
 		if (prev && (current === null || prev.agentId === current)) return prev;
 		return freshWorkspace(current);
 	});
-	const navigate = (nextPath: string): void => {
-		setPath(nextPath);
-	};
+	const navigate = source
+		? source.navigate
+		: (nextPath: string): void => {
+				setOwnPath(nextPath);
+			};
 
 	const workspaceChannel = createMemo(() => {
 		const home = agent()?.account.homeChannelId;
