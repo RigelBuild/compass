@@ -121,7 +121,7 @@ message SpawnPeerRequest {
   // agent with no role gets no SYSTEM.md, so the tool is useless without it.
   string role = 5;
   // NEW — REQUIRED. The spawned peer's stable working context, baked as a
-  // system-prompt append-overlay on top of the role prompt (store/types.go:154-157):
+  // system-prompt append-overlay on top of the role prompt (store/types.go AgentAccount.Persona):
   // the repos / projects / lanes the agent works out of — deliberately NOT the
   // specific issues it works (those churn; the persona stays stable). Matt
   // ruled persona required (comment 5f7a13b3): it is semantically load-bearing

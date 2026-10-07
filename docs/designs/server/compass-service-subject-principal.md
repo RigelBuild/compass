@@ -12,8 +12,8 @@ this NEW record, never rewritten.
 The token-subject model is sealed to exactly two principal classes. The seal
 lives in code, citing its record:
 
-- `go/internal/store/types.go:90-91` — "Sealed to exactly these two
-  (design.md: 1175-1183)." with the two consts at `types.go:94-99`:
+- `go/internal/store/types.go` `SubjectKind` doc — "Sealed to exactly these two
+  (design.md: 1175-1183)." with the two consts in its const block:
   `SubjectAccount SubjectKind = 0` / `SubjectRunner SubjectKind = 1`.
 - `go/internal/store/migrations/0001_init.sql:377` —
   `subject_kind SMALLINT NOT NULL CHECK (subject_kind IN (0, 1))`, under the
@@ -94,7 +94,7 @@ condition is version-keyed, not row-count-keyed — see Global Constraints).
 ## Global Constraints
 
 - The two existing kinds keep their numbers: `SubjectAccount = 0`,
-  `SubjectRunner = 1` (`types.go:96-98`). `SubjectService = 2` is additive;
+  `SubjectRunner = 1` (`types.go` `SubjectKind` consts). `SubjectService = 2` is additive;
   numbers are append-only, never reused.
 - The one-resolver invariant holds over DOORS: every door authenticates
   through `auth.ResolveToken` (`token.go:102`); no door grows its own resolve
@@ -142,18 +142,18 @@ ISSUANCE (the mint path, no corpus task owns it yet) is OQ-3 below.
 
 ### T1 — `SubjectService` const + seal-comment update
 
-`go/internal/store/types.go`: add the third const to the block at
-`types.go:94-99` and update the seal SENTENCE ("Sealed to exactly these two
-(design.md: 1175-1183).", spanning `types.go:90-91`) to name three kinds and
-cite THIS record. Edit it SENTENCE-scoped, not by wiping the `:90-91` line
-range: line 90 also carries the TAIL of the preceding cross-door example clause
+`go/internal/store/types.go`: add the third const to the `SubjectKind` const block
+and update the seal SENTENCE ("Sealed to exactly these two
+(design.md: 1175-1183).", in the `SubjectKind` doc) to name three kinds and
+cite THIS record. Edit it SENTENCE-scoped, not by wiping its line
+range: its first line also carries the TAIL of the preceding cross-door example clause
 ("account token on RunnerService).", the clause T4 later refreshes), so a
 wholesale line-range replace would truncate that clause. Rewrite only the seal
 sentence in place.
-Also extend the `Subject.ID` doc (`types.go:106-107`: "ID is the
+Also extend the `Subject.ID` doc (`types.go` `Subject.ID`: "ID is the
 AccountID (SubjectAccount) or the Runner id (SubjectRunner)…") to name the
 service id space (a stable service name, e.g. `llm-gateway`).
-Also refresh the `Subject` struct doc at `types.go:101-103` (the two-kind
+Also refresh the `Subject` struct doc in `types.go` `Subject` (the two-kind
 enumeration — "the id of the account or Runner it authenticates") in the same
 comment block: it is a KIND-axis enumeration that goes stale the moment the
 third kind lands (three kinds exist after T1), so it belongs in T1, not the T4
@@ -163,7 +163,7 @@ directly above an `ID` field doc T1 has just extended to a third id space.
 Interfaces:
 
 ```go
-// produces (append to the existing const block, types.go:94-99):
+// produces (append to the existing SubjectKind const block in types.go):
 // SubjectService is a first-party supervised compute tier (LLM gateway,
 // future MCP gateway) authenticating back to the Server. One class for all
 // tiers; instances are distinguished by Subject.ID, isolated per-surface.
@@ -258,13 +258,13 @@ the account door … and the Runner door … share this one resolver"),
 `token.go:79-81` (`ErrWrongKind`'s account-vs-Runner examples),
 `go/internal/auth/interceptor.go:140-141` (the cross-door failure enumeration),
 the `go/internal/runnerhub/auth.go:4-14` package doc (the cross-door-rejection
-framing), `go/internal/store/types.go:89-90` (the
+framing), `go/internal/store/types.go` `SubjectKind` doc (the
 cross-door EXAMPLE clause — "reject a cross-kind token (a Runner token on
 CompassService/CommsService, an account token on RunnerService)" — which SHARES
-line 90 with the "Sealed to exactly these two" seal sentence T1 rewrites, so
+a line with the "Sealed to exactly these two" seal sentence T1 rewrites, so
 T1 must edit that seal sentence IN PLACE, sentence-scoped not line-range-scoped,
-preserving the leading "account token on RunnerService)." on line 90),
-`types.go:86-88` (the `SubjectKind` doc opener — "a Runner subject and an
+preserving the leading "account token on RunnerService)." on that line),
+`types.go` `SubjectKind` (the doc opener — "a Runner subject and an
 account subject share the token store but never collide"),
 `go/internal/runnerhub/mint.go:5-7` ("a Runner subject and an account subject
 share one store but can never collide"),
@@ -336,7 +336,7 @@ Interfaces:
 
 ## Tasks
 
-- [ ] T1: `SubjectService SubjectKind = 2` + seal comment (`types.go:90-99`) + `Subject.ID` doc
+- [ ] T1: `SubjectService SubjectKind = 2` + seal comment (`types.go` `SubjectKind`) + `Subject.ID` doc
 - [ ] T2: `0001_init.sql:377` CHECK `IN (0, 1)` → `IN (0, 1, 2)` + header comment `:372-373`
 - [ ] T3: `tokens.go:20` nolint `0/1` → `0/1/2`
 - [ ] T4 (lands in RIG-2863 = RIG-1715 T2, NOT PR2): service-door mount via `ResolveToken(..., store.SubjectService)` + per-surface Subject-ID authz, mounted on the stack-token RPC surface that slice delivers
