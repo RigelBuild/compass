@@ -957,6 +957,11 @@ CREATE TABLE issues (
 CREATE UNIQUE INDEX issues_coordinate_key
     ON issues (tenant_id, forge_provider, forge_host, repo, number);
 
+-- The board join matches GitHub issue repos case-insensitively.
+CREATE INDEX issues_board_coordinate_idx ON issues
+    (tenant_id, forge_provider, forge_host,
+     (CASE WHEN forge_provider = 1 THEN lower(repo) ELSE repo END), number);
+
 CREATE INDEX issues_search_idx ON issues USING gin (search_tsv);
 
 -- ── Forge subscriptions & reconcile watermarks ───────────────────────────────
