@@ -465,7 +465,7 @@ opening with `microvmtest.Require(t)`.
   1. **Allowlisted reachable / non-allowlisted blocked (IPv4 live):** boot
      a session whose `WorkloadSpec.Egress` allowlists one real host; in-guest
      execs (agent uid) show the allowlisted host connects and a
-     non-allowlisted raw IPv4 and IPv6 destination time out — mirroring the
+     non-allowlisted raw IPv4 destination times out — mirroring the
      podman lifecycle proof (lifecycle_test.go:137-140) inside the guest
      netns. *Amended (Matt, 2026-10-07):* only the IPv4 deny is probed live. The
      guest (passt) and the CI runners have no IPv6 route, so a live IPv6
@@ -500,8 +500,8 @@ opening with `microvmtest.Require(t)`.
 - [ ] W2 — `WorkloadSpec.Egress` threaded Create→Start→`ProvisionRequest`;
       `AgentRuntime.provision` probe-and-skips `armEgress` on self-arming
       backends (podman path byte-identical)
-- [ ] W3 — KVM-gated in-guest egress integration suite (allow/deny both
-      families, arm-failure teardown, agent-uid `nft flush` refused,
+- [ ] W3 — KVM-gated in-guest egress integration suite (IPv4 allow/deny
+      live, dual-stack ruleset hermetic, arm-failure teardown, agent-uid `nft flush` refused,
       always-arm verification) + V8 alignment
 
 ## Open Questions
