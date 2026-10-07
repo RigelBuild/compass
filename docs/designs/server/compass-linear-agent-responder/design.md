@@ -295,7 +295,7 @@ author. With `@linear`, provenance is structural: a Linear-origin message is
 self-evidently bridged. Seeding `@linear` follows the `@compass` shape but is
 NOT a call to the existing `EnsureSystemAccount` as-is: that function is
 **hardcoded to the single reserved handle** `SystemAccountHandle = "compass"`
-(`go/internal/store/types.go:121-127`), inserted with no handle parameter
+(`go/internal/store/types.go` `SystemAccountHandle`), inserted with no handle parameter
 (`go/internal/store/accounts.go:151-153`) and re-fetched by that fixed handle on
 restart (`accounts.go:157`). So the seed path must be **generalized to admit a
 second reserved system handle** (T3a below) — a `(handle, displayName)` parameter
@@ -678,7 +678,7 @@ ownership read on `*store.Store`; consumed by T4/T6.
 Generalize the reserved-system-account seed to admit a second handle so
 `@linear` (the Part 2 bridge author) exists before T6 posts under it. Today
 `EnsureSystemAccount` is hardcoded to `SystemAccountHandle = "compass"`
-(`go/internal/store/types.go:121-127`; inserted with no handle parameter,
+(`go/internal/store/types.go` `SystemAccountHandle`; inserted with no handle parameter,
 `accounts.go:151-153`; re-fetched by that fixed handle on restart,
 `accounts.go:157`), so it cannot mint a second system handle as-is. Add either a
 `(handle, displayName)` parameter or a sibling `EnsureLinearBridgeAccount`, and

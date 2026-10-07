@@ -162,7 +162,7 @@ type** — a third first-class account shape alongside user and agent, not a
 `user_accounts` subtype and not a bare `accounts` row. The codebase already
 models account subtypes as per-kind tables joined onto `accounts`
 (`0001_init.sql:42-45` `user_accounts`, `:70-77` `agent_accounts`;
-`types.go:109-117`: `Account{ …, User *UserAccount, Agent *AgentAccount }`),
+`types.go` `Account`: `Account{ …, User *UserAccount, Agent *AgentAccount }`),
 reconstructed in one place (`accounts.go:603-606`: "scanAccount reads one
 joined account row … setting exactly the User or Agent subtype by which side
 of the join populated") and mapped to the wire by the `accountToWire` switch
@@ -179,7 +179,7 @@ system type mirrors that pattern end to end:
   or as `0002_system_accounts.sql` if a squash is not wanted (the loader
   applies contiguous `1..N`, `store.go:287-293`); implementer's choice (T2).
 - **Store**: `Account` gains `System *SystemAccount` beside `User`/`Agent`
-  (`types.go:109-117`); a third `scanAccount` arm keyed off a scanned
+  (`types.go` `Account`); a third `scanAccount` arm keyed off a scanned
   `system_accounts` join column. `scanAccount` (`accounts.go:607-645`) does
   one fixed-arity `row.Scan`, so adding a scanned column means EVERY
   projection that feeds it must add the matching `LEFT JOIN system_accounts`
@@ -476,7 +476,7 @@ Interfaces:
 // go/internal/store
 const SystemAccountHandle = "compass"
 type SystemAccount struct{} // empty payload: the row's existence is the discriminator
-// Account (types.go:109-117) gains: System *SystemAccount
+// Account (store/types.go) gains: System *SystemAccount
 func (s *Store) EnsureSystemAccount(ctx context.Context) (Account, error)
 ```
 
