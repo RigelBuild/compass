@@ -83,6 +83,8 @@ tasks:
       - '/devenv.lock'
       - '/go/**'
       - '/tools/toolchain/gtk-closure.nix'
+      - '/tools/toolchain/secretspec-env.nix'
+      - 'compass-server-secretspec.nix'
       - '/tools/toolchain/flake-parity.ts'
       - '/tools/toolchain/flake-parity-core.ts'
       # The compass-ui closure (apps/ui/dist.nix): the two members' source, the

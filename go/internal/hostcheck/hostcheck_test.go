@@ -167,12 +167,12 @@ func TestDecideVersionSecretSpecFloor(t *testing.T) {
 }
 
 // TestSecretSpecFloorNotInMicroVMFloors pins the separation the preflight loop
-// depends on: secretspec is a secrets-write-path dependency, not a microVM
+// depends on: secretspec is a server secrets dependency, not a microVM
 // userspace binary, so it must never be iterated by the microVM trio loop. The
 // non-obvious half is the SECOND consumer: internal/runtime/microvm_preflight.go
 // also walks MicroVMFloors, inside VerifyMicroVMSupport, which REFUSES Runner
 // startup on any failure — so adding secretspec here would make a missing
-// secrets CLI block boot, though boot reads through the SDK and never needs it.
+// secrets CLI block the Runner, which never spawns it (only the Server does).
 func TestSecretSpecFloorNotInMicroVMFloors(t *testing.T) {
 	for _, f := range MicroVMFloors {
 		if f.Binary == SecretSpecFloor.Binary {

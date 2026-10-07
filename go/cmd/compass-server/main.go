@@ -350,8 +350,8 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 				"Defaults to the socket's parent directory."),
 		secretProvider: fs.String("secret-provider", "",
 			"SecretSpec provider URI both secret resolvers read (e.g. "+
-				"\"keyring://\", \"dotenv:///path/.env\"). Empty = the SDK's "+
-				"default chain. Defaults to $COMPASS_SECRET_PROVIDER."),
+				"\"keyring://\", \"dotenv:///path/.env\"). Empty = the secretspec "+
+				"CLI's default chain. Defaults to $COMPASS_SECRET_PROVIDER."),
 		adminHandle: fs.String("admin-handle", "",
 			"Handle of the bootstrap-admin account created (or found) at startup. "+
 				"Defaults to \"admin\". A handle that already names a non-admin "+

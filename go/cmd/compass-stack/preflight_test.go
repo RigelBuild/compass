@@ -70,7 +70,7 @@ func TestPreflightReportsSecretSpec(t *testing.T) {
 	}
 	got := err.Error()
 	if !strings.Contains(got, "secretspec") {
-		t.Fatalf("preflight failure %q does not name the secretspec check; the install-time secrets-write-path dependency is unreported", got)
+		t.Fatalf("preflight failure %q does not name the secretspec check; the install-time server-secrets dependency is unreported", got)
 	}
 	// The trio is printed as a group; secretspec is appended after it.
 	if last := strings.LastIndex(got, "passt"); last > strings.Index(got, "secretspec") {

@@ -19,7 +19,6 @@ require (
 	connectrpc.com/cors v0.1.0
 	connectrpc.com/otelconnect v0.9.0
 	github.com/BurntSushi/toml v1.6.0
-	github.com/cachix/secretspec/secretspec-go v0.20.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/insomniacslk/dhcp v0.0.0-20260728151720-c308df0fdcef
@@ -58,7 +57,6 @@ require (
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.8.2 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

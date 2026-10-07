@@ -247,11 +247,11 @@ const (
 	// forgeTokenTTL is the TTL the cachedWebhookSecret hot-path cache holds a
 	// resolved webhook signing secret for: /webhooks/{github,linear} resolve the
 	// secret on every request before the HMAC check, and a resolve reads the whole
-	// declared-secret registry, writes a manifest temp file, and drives a full
-	// secretspec provider Load (resolver.go:146-172), so an uncached resolve would
-	// let a garbage POST force that whole Load ahead of authentication. The cache
-	// bounds the per-request cost to a memcmp; a rotated secret still takes effect
-	// within the TTL.
+	// declared-secret registry, writes a manifest temp file, and spawns a full
+	// `secretspec export` against the provider (SpecResolver.Resolve), so an
+	// uncached resolve would let a garbage POST force that whole export ahead of
+	// authentication. The cache bounds the per-request cost to a memcmp; a
+	// rotated secret still takes effect within the TTL.
 	forgeTokenTTL = 5 * time.Minute
 )
 
@@ -587,7 +587,7 @@ func declareServerSecretNames(ctx context.Context, st *store.Store, cfg ServeCon
 	}
 	// The Linear gate reads the RAW config, not resolved(): resolved() DEFAULTS
 	// the client-credential names, so gating on those would declare Linear secrets
-	// for every deployment and force a provider Load. A half-set pair declares
+	// for every deployment and force a provider resolve. A half-set pair declares
 	// nothing, matching buildLinearTokenSource's both-absent off-state.
 	raw := cfg.Forge
 	if raw.LinearClientIDSecretName != "" && raw.LinearClientSecretName != "" {
@@ -1357,7 +1357,7 @@ func buildBoardWebhookWiring(
 // that arm with a 200. The secret is TTL-cached (newCachedWebhookSecret):
 // /webhooks/linear is an internet-facing, unauthenticated endpoint whose secret
 // is resolved on EVERY request BEFORE the HMAC check, so an uncached resolve
-// would let a garbage POST force a full secretspec Load ahead of authentication.
+// would let a garbage POST force a full secretspec export ahead of authentication.
 func buildLinearWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1905,8 +1905,8 @@ func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx 
 // path: the webhook-secret resolver is invoked on EVERY request to the
 // internet-facing, unauthenticated POST /webhooks/github, BEFORE the HMAC check
 // (github_webhook.go resolves the secret, then verifies the signature). An
-// uncached resolve there lets an attacker force one full secretspec provider
-// Load (registry read + manifest temp-file write + provider Load) per cheap
+// uncached resolve there lets an attacker force one full secretspec export
+// (registry read + manifest temp-file write + CLI subprocess) per cheap
 // garbage POST — an asymmetric-cost amplification ahead of authentication. The
 // cache (forgeTokenTTL) bounds the per-request cost to a memcmp while a rotated
 // signing secret still takes effect within the TTL. A resolve fault is surfaced to the caller (a 503),
