@@ -11,6 +11,52 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// ErrNoConfig means app.toml is absent and no mode override selected a mode.
+var ErrNoConfig = errors.New("appconfig: no app.toml and no mode override")
+
+// ErrConfigExists means a config was already present when a save was attempted.
+var ErrConfigExists = errors.New("appconfig: app.toml already exists")
+
+// URLError carries the raw input and the sentence shown by the setup UI.
+type URLError struct {
+	URL    string
+	Reason string
+	msg    string // the config-file diagnostic Error returns
+}
+
+func (e *URLError) Error() string { return e.msg }
+
+// NormalizeServerURL trims and validates a server origin used by client RPCs.
+func NormalizeServerURL(raw string) (string, error) {
+	fail := func(reason, msg string) (string, error) {
+		return "", &URLError{URL: raw, Reason: reason, msg: msg}
+	}
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return fail("The server URL is not valid.",
+			fmt.Sprintf("appconfig: server_url %q is not a valid URL: %v", raw, err))
+	}
+	if u.Scheme != "https" {
+		return fail("The server URL must use https.", fmt.Sprintf(
+			"appconfig: server_url %q must use https (got scheme %q): cleartext connections are not allowed", raw, u.Scheme))
+	}
+	if u.Hostname() == "" {
+		return fail("The server URL must include a host.",
+			fmt.Sprintf("appconfig: server_url %q must be absolute with a host (e.g. https://host:8443)", raw))
+	}
+	if u.User != nil {
+		return fail("The server URL must not include credentials.", fmt.Sprintf(
+			"appconfig: server_url %q must not embed credentials; the bearer token is entered in the connect screen and stored in the OS keychain (DL-109)", raw))
+	}
+	// url.Parse drops an empty trailing "#", so the raw text is checked too.
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || strings.Contains(trimmed, "#") {
+		return fail("The server URL must not include a path, query, or fragment.",
+			fmt.Sprintf("appconfig: server_url %q must not include a path, query, or fragment (e.g. https://host:8443)", raw))
+	}
+	return "https://" + u.Host, nil
+}
+
 // Mode is the native app's operating mode, selected by app.toml and an optional
 // --mode/$COMPASS_APP_MODE override (design §A1). The app is dual-mode: it
 // either supervises a local stack (embedded) or dials a remote one (client).
@@ -21,11 +67,10 @@ const (
 	// loopback/network door; it requires a ServerURL and may carry a CACert.
 	// It KEEPS the zero value so a client Config need not be spelled out.
 	ModeClient Mode = iota
-	// ModeEmbedded is the local-supervisor onboarding mode: the app brings up
-	// and supervises a private stack in-process. It is the zero-config default
-	// an absent app.toml (and an empty/absent mode) resolves to, so a first
-	// launch of the installed app just works without any server_url. It is
-	// declared AFTER ModeClient so ModeClient retains the zero value.
+	// ModeEmbedded is the local-supervisor mode: the app brings up and
+	// supervises a private stack in-process. An app.toml with an empty or
+	// absent mode selects it. It is declared AFTER ModeClient so ModeClient
+	// retains the zero value.
 	ModeEmbedded
 )
 
@@ -77,8 +122,8 @@ type fileConfig struct {
 
 // Parse decodes and validates an app.toml byte slice into a Config. It performs
 // no I/O. The rules (design §A1):
-//   - absent/empty mode or mode="embedded" → ModeEmbedded (the zero-config
-//     onboarding default). server_url and ca_cert are client-only fields, so a
+//   - absent/empty mode or mode="embedded" → ModeEmbedded. server_url and
+//     ca_cert are client-only fields, so a
 //     non-empty value under embedded mode is a legible error;
 //   - mode="client" requires a non-empty server_url that parses as an absolute
 //     https URL (ca_cert is optional);
@@ -133,65 +178,35 @@ func parseClient(fc fileConfig) (Config, error) {
 		return Config{}, errors.New(
 			`appconfig: mode="client" requires server_url in app.toml (e.g. server_url = "https://host:8443")`)
 	}
-	if err := validateServerURL(fc.ServerURL); err != nil {
+	serverURL, err := NormalizeServerURL(fc.ServerURL)
+	if err != nil {
 		return Config{}, err
 	}
 	return Config{
 		Mode:      ModeClient,
-		ServerURL: fc.ServerURL,
+		ServerURL: serverURL,
 		CACert:    fc.CACert,
 	}, nil
 }
 
-// validateServerURL enforces that a client server_url is an absolute https URL.
-// http and relative URLs are rejected: the Global Constraint forbids a cleartext
-// network path.
-func validateServerURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("appconfig: server_url %q is not a valid URL: %w", raw, err)
-	}
-	if u.Scheme != "https" {
-		return fmt.Errorf(
-			"appconfig: server_url %q must use https (got scheme %q): cleartext connections are not allowed",
-			raw, u.Scheme)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("appconfig: server_url %q must be absolute with a host (e.g. https://host:8443)", raw)
-	}
-	if u.User != nil {
-		return fmt.Errorf(
-			"appconfig: server_url %q must not embed credentials; the bearer token is entered in the connect screen and stored in the OS keychain (DL-109)",
-			raw)
-	}
-	return nil
-}
-
-// Load resolves the app configuration from disk and applies an override.
-//
-// The config path is computed from the caller-provided paths (design §A4):
-// configHome/compass/app.toml when configHome is non-empty (the resolved
-// $XDG_CONFIG_HOME), else home/.config/compass/app.toml. The caller reads the
-// env; Load performs the resolution so it stays testable.
-//
-// An absent file is not an error — it resolves to the ModeEmbedded zero-config
-// onboarding default (first launch just works). A present file is read and
-// Parsed.
-//
-// override is the resolved --mode/$COMPASS_APP_MODE value (empty = none). It is
-// applied AFTER the file parse and wins: precedence is override (flag > env,
-// resolved by the caller) > file > embedded-default (OQ-3). An override with no
-// file present still works.
+// Load resolves app config and applies a mode override. ErrNoConfig signals an
+// absent file with no override; explicit overrides still resolve independently.
 func Load(configHome, home, override string) (Config, error) {
-	path, err := configPath(configHome, home)
+	path, err := ConfigPath(configHome, home)
 	if err != nil {
 		return Config{}, err
 	}
+	data, readErr := os.ReadFile(path) //nolint:gosec // G304: caller-resolved app config path, not user input
+	if errors.Is(readErr, os.ErrNotExist) && strings.TrimSpace(override) == "" {
+		// A dangling symlink reads as absent but blocks the exclusive save, so it
+		// must surface as a read error, not as a first run that can never finish.
+		if _, lerr := os.Lstat(path); lerr == nil {
+			return Config{}, fmt.Errorf("appconfig: reading %s: %w", path, readErr)
+		}
+		return Config{}, ErrNoConfig
+	}
 
 	cfg := Config{Mode: ModeEmbedded}
-	// The path is the app's own config file, resolved from the caller's config
-	// home — not attacker-controlled input.
-	data, readErr := os.ReadFile(path) //nolint:gosec // G304: caller-resolved app config path, not user input
 	switch {
 	case readErr == nil:
 		cfg, err = Parse(data)
@@ -199,7 +214,7 @@ func Load(configHome, home, override string) (Config, error) {
 			return Config{}, err
 		}
 	case errors.Is(readErr, os.ErrNotExist):
-		// Absent file → embedded zero-config onboarding default; not an error.
+		// A resolved override can select a mode without a config file.
 	default:
 		return Config{}, fmt.Errorf("appconfig: reading %s: %w", path, readErr)
 	}
@@ -207,11 +222,7 @@ func Load(configHome, home, override string) (Config, error) {
 	return applyOverride(cfg, override)
 }
 
-// applyOverride applies the resolved --mode/$COMPASS_APP_MODE override on top of
-// the file-derived config. An empty override is a no-op. An override to embedded
-// clears the client-only fields; an override to client keeps whatever server_url
-// and ca_cert the file supplied, then re-validates them so an override into
-// client mode without a usable server_url fails legibly.
+// applyOverride applies a resolved mode override after the file is validated.
 func applyOverride(cfg Config, override string) (Config, error) {
 	switch strings.TrimSpace(override) {
 	case "":
@@ -227,9 +238,8 @@ func applyOverride(cfg Config, override string) (Config, error) {
 	}
 }
 
-// configPath computes the app.toml path from the caller-resolved config home and
-// home directory: configHome/compass/app.toml, else home/.config/compass/app.toml.
-func configPath(configHome, home string) (string, error) {
+// ConfigPath resolves app.toml from the caller-provided config and home dirs.
+func ConfigPath(configHome, home string) (string, error) {
 	if configHome != "" {
 		return filepath.Join(configHome, "compass", "app.toml"), nil
 	}
