@@ -79,6 +79,26 @@ func countBindings(t *testing.T, ctx context.Context, s *Store, accountID Accoun
 	return n
 }
 
+// countAsSystem runs a count under the BYPASSRLS system role, so a row in any
+// tenant counts, including one another tenant's context cannot see.
+func countAsSystem(t *testing.T, s *Store, sql string) int {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+systemRole); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, sql).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	return n
+}
+
 // TestRecordSessionBindingRoundTripsBothDirections pins the base contract both
 // reads depend on: what the relay bound is what both directions read back — the
 // account resolvable from the session id (the inbound comms-call read) and the
