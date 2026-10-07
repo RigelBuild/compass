@@ -1,9 +1,8 @@
 // The reconnect backoff shared by the compass stream drivers: full-jitter
 // exponential waits that resolve early on abort.
 
-/** The first retry waits up to RECONNECT_BASE_MS; each later one doubles the
- *  ceiling up to RECONNECT_CAP_MS. Full jitter spreads a fleet's reconnects so a
- *  server restart doesn't trigger a synchronized thundering herd. */
+/** Each retry waits a uniform draw up to a ceiling that doubles from BASE to CAP;
+ *  the jitter keeps a fleet from reconnecting in lockstep after a server restart. */
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_CAP_MS = 30_000;
 

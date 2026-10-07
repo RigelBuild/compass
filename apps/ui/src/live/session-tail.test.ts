@@ -11,7 +11,13 @@ import {
 	createRouterTransport,
 	SessionEventSchema,
 } from "@compass/client";
-import { runSessionTail, type SessionFrameUpdate } from "./session-tail";
+import type { SessionEvent } from "../session-events";
+import {
+	appendSessionEvent,
+	MAX_SESSION_EVENTS,
+	runSessionTail,
+	type SessionFrameUpdate,
+} from "./session-tail";
 
 // The tail driver against an in-memory CompassService: each subscribe serves the
 // next scripted attempt, which either yields frames then ends, yields then holds
@@ -163,25 +169,85 @@ describe("runSessionTail", () => {
 		expect(ConnectError.from(errors[0]).code).toBe(Code.NotFound);
 	});
 
-	test("another error is reported and retried after backoff", async () => {
+	test("another error is reported, then the tail resubscribes", async () => {
 		const { client, requests } = scripted([
 			{ error: new ConnectError("down", Code.Unavailable) },
+			{ frames: [ack("s1"), textFrame("s1", "back")], hold: true },
 		]);
 		const abort = new AbortController();
 		const errors: unknown[] = [];
+		const texts: string[] = [];
+		const waits: number[] = [];
 		const run = runSessionTail({
 			client,
 			sessionId: "s1",
-			onFrame: () => {},
-			// Abort during the backoff wait so the test never waits it out.
-			onError: (e) => {
-				errors.push(e);
-				queueMicrotask(() => abort.abort());
+			onFrame: (u) => {
+				if (u.event?.kind === "assistant_text") texts.push(u.event.text);
 			},
+			onError: (e) => errors.push(e),
 			signal: abort.signal,
+			// An immediate backoff keeps the test off the wall clock.
+			backoff: {
+				wait: async () => {
+					waits.push(1);
+				},
+				reset: () => {},
+			},
 		});
+		await drainUntil(() => texts.length >= 1);
+		abort.abort();
 		await run;
 		expect(errors.length).toBe(1);
-		expect(requests).toEqual(["s1"]);
+		expect(waits.length).toBe(1);
+		expect(requests).toEqual(["s1", "s1"]);
+		expect(texts).toEqual(["back"]);
+	});
+});
+
+describe("appendSessionEvent", () => {
+	const text = (
+		id: string,
+		kind: "assistant_text" | "thinking",
+		messageId: string,
+		value: string,
+	): SessionEvent => ({
+		id,
+		atUnixMs: Number(id),
+		kind,
+		messageId,
+		text: value,
+	});
+
+	test("a text delta for the same kind and message coalesces into the last event", () => {
+		let events: SessionEvent[] = [];
+		events = appendSessionEvent(
+			events,
+			text("1", "assistant_text", "m", "hel"),
+		);
+		events = appendSessionEvent(events, text("2", "assistant_text", "m", "lo"));
+		expect(events).toEqual([text("1", "assistant_text", "m", "hello")]);
+	});
+
+	test("a different kind or message id starts a new event", () => {
+		let events: SessionEvent[] = [];
+		events = appendSessionEvent(events, text("1", "assistant_text", "m", "a"));
+		events = appendSessionEvent(events, text("2", "thinking", "m", "b"));
+		events = appendSessionEvent(events, text("3", "thinking", "n", "c"));
+		expect(events.map((e) => e.id)).toEqual(["1", "2", "3"]);
+	});
+
+	test("the trace is capped, dropping the oldest events", () => {
+		let events: SessionEvent[] = [];
+		for (let i = 0; i < MAX_SESSION_EVENTS + 5; i++) {
+			events = appendSessionEvent(events, {
+				id: `n${i}`,
+				atUnixMs: i,
+				kind: "notice",
+				text: String(i),
+			});
+		}
+		expect(events.length).toBe(MAX_SESSION_EVENTS);
+		expect(events[0]?.id).toBe("n5");
+		expect(events.at(-1)?.id).toBe(`n${MAX_SESSION_EVENTS + 4}`);
 	});
 });

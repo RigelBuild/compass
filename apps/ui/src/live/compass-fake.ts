@@ -101,6 +101,9 @@ export interface FakeCompass {
 	readonly sessionSubscribes: RecordedSessionSubscribe[];
 	/** The session ids with a currently open SubscribeAgentSession. */
 	openSessionTails: () => string[];
+	/** Reject the next SubscribeAgentSession with `error` (one-shot), after
+	 *  recording it. */
+	failNextSessionSubscribe: (error: Error) => void;
 }
 
 /** Build the fake. Pure and synchronous apart from the RPC's promise. */
@@ -125,6 +128,7 @@ export function createFakeCompass(): FakeCompass {
 		return queue;
 	};
 	const sessionSubscribes: RecordedSessionSubscribe[] = [];
+	let sessionSubscribeFailure: Error | undefined;
 
 	const client = {
 		stopAgentSession: async (req: { sessionId: string }) => {
@@ -155,9 +159,8 @@ export function createFakeCompass(): FakeCompass {
 			}
 			return { accountId: whoAmIAccountId.accountId };
 		},
-		// The board read stream (RIG-1729). Yields only what a test pushes via
-		// pushSessionStatus and holds open until the caller aborts, mirroring the
-		// real transport. Board events are scripted in events.test.ts instead.
+		// The board read stream. Yields only what a test pushes via pushSessionStatus
+		// and holds open until abort; board events are scripted in events.test.ts.
 		subscribeEvents: (
 			_req: unknown,
 			opts?: { signal?: AbortSignal },
@@ -172,6 +175,11 @@ export function createFakeCompass(): FakeCompass {
 			const record = { sessionId: req.sessionId, aborted: false };
 			sessionSubscribes.push(record);
 			try {
+				if (sessionSubscribeFailure) {
+					const err = sessionSubscribeFailure;
+					sessionSubscribeFailure = undefined;
+					throw err;
+				}
 				yield create(AgentSessionFrameSchema, { sessionId: req.sessionId });
 				yield* sessionQueue(req.sessionId).drain(opts?.signal);
 			} finally {
@@ -226,5 +234,8 @@ export function createFakeCompass(): FakeCompass {
 		sessionSubscribes,
 		openSessionTails: () =>
 			sessionSubscribes.filter((s) => !s.aborted).map((s) => s.sessionId),
+		failNextSessionSubscribe: (error) => {
+			sessionSubscribeFailure = error;
+		},
 	};
 }

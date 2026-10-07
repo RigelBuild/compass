@@ -56,6 +56,7 @@ import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
 import { type AccountSession, runEventStream } from "./live/events";
 import { createConnectQuery } from "./live/query";
 import {
+	appendSessionEvent,
 	isTerminalSessionState,
 	runSessionTail,
 	type SessionFrameUpdate,
@@ -584,11 +585,8 @@ export interface AppStoreOptions {
 	 *  dialing. Separate from `comms`: the two services are separate clients over
 	 *  the one Connection (live/client.ts:28-33). */
 	readonly compass?: CompassClient;
-	/** An explicit override for the observable agent sessions, keyed by agent
-	 *  account id. Absent with `compass` set, sessions are live: ids come from
-	 *  the status stream and the open agent's trace from SubscribeAgentSession.
-	 *  Absent offline, the hand-written fixture (STUB_SESSION_EVENTS), whose
-	 *  entries are marked `fixture: true` so `stopAgent` refuses to send them. */
+	/** Overrides the sessions, keyed by account id. Absent: live when `compass` is set,
+	 *  else the fixture, whose `fixture: true` entries `stopAgent` refuses to send. */
 	readonly sessions?: Record<string, AgentSession>;
 	/** Observes a comms failure — a stream error the driver retries past, a
 	 *  rejected `RespondToAsk`, a refused `StopAgentSession`, or a failed boot
@@ -601,10 +599,12 @@ export interface AppStoreOptions {
 	readonly layoutStorage?: Storage;
 }
 
-/** One live session's tailed trace and the last lifecycle state the tail saw. */
+/** One live session's tailed trace and the last lifecycle state the tail saw.
+ *  `notFound` parks the tail until the next status for the session re-arms it. */
 interface SessionTrace {
 	readonly events: SessionEvent[];
 	readonly state?: AgentSessionState;
+	readonly notFound?: true;
 }
 
 /** A session runs until either stream reports a terminal state; terminal is
@@ -638,17 +638,47 @@ function createLiveSessions(
 	const [traces, setTraces] = createSignal<ReadonlyMap<string, SessionTrace>>(
 		new Map(),
 	);
-	const appendFrame = (sessionId: string, update: SessionFrameUpdate): void => {
+	const updateTrace = (
+		sessionId: string,
+		update: (trace: SessionTrace) => SessionTrace,
+	): void => {
 		setTraces((prev) => {
-			const trace = prev.get(sessionId);
-			const events = trace?.events ?? [];
 			const next = new Map(prev);
-			next.set(sessionId, {
-				events: update.event ? [...events, update.event] : events,
-				state: update.state ?? trace?.state,
-			});
+			next.set(sessionId, update(prev.get(sessionId) ?? { events: [] }));
 			return next;
 		});
+	};
+	const appendFrame = (sessionId: string, frame: SessionFrameUpdate): void => {
+		updateTrace(sessionId, (trace) => ({
+			events: frame.event
+				? appendSessionEvent(trace.events, frame.event)
+				: trace.events,
+			state: frame.state ?? trace.state,
+		}));
+	};
+	// A changed status re-arms its session: it lifts a NotFound park, and a live
+	// state after a terminal one means the id was reused (reload, wake, resume).
+	const adoptAccountSessions = (
+		next: ReadonlyMap<string, AccountSession>,
+	): void => {
+		const prev = untrack(accountSessions);
+		for (const [account, status] of next) {
+			const old = prev.get(account);
+			if (old?.sessionId === status.sessionId && old.state === status.state)
+				continue;
+			if (!untrack(traces).has(status.sessionId)) continue;
+			const live = !isTerminalSessionState(status.state);
+			updateTrace(status.sessionId, (trace) => ({
+				events: trace.events,
+				state:
+					live &&
+					trace.state !== undefined &&
+					isTerminalSessionState(trace.state)
+						? undefined
+						: trace.state,
+			}));
+		}
+		setAccountSessions(next);
 	};
 	// Tail only the agents on screen: each tail holds a browser connection, and an
 	// HTTP/1.1 door allows about six per host. A new session id replaces the old.
@@ -657,11 +687,11 @@ function createLiveSessions(
 		for (const id of deps.shownAgentIds()) {
 			const status = accountSessions().get(id);
 			if (!status) continue;
-			const tail = traces().get(status.sessionId)?.state;
+			const trace = traces().get(status.sessionId);
 			const ended =
 				isTerminalSessionState(status.state) ||
-				(tail !== undefined && isTerminalSessionState(tail));
-			if (!ended) ids.add(status.sessionId);
+				(trace?.state !== undefined && isTerminalSessionState(trace.state));
+			if (!ended && !trace?.notFound) ids.add(status.sessionId);
 		}
 		return [...ids];
 	});
@@ -682,10 +712,15 @@ function createLiveSessions(
 				sessionId,
 				signal: abort.signal,
 				onError: deps.onError,
-				onFrame: (update) => appendFrame(sessionId, update),
-			}).catch((error) => {
-				if (!abort.signal.aborted) deps.onError(error);
-			});
+				onFrame: (frame) => appendFrame(sessionId, frame),
+			})
+				.then((end) => {
+					if (end === "notFound")
+						updateTrace(sessionId, (trace) => ({ ...trace, notFound: true }));
+				})
+				.catch((error) => {
+					if (!abort.signal.aborted) deps.onError(error);
+				});
 		}
 	});
 	if (getOwner())
@@ -693,7 +728,7 @@ function createLiveSessions(
 			for (const abort of tails.values()) abort.abort();
 		});
 	return {
-		setAccountSessions,
+		setAccountSessions: adoptAccountSessions,
 		sessionFor: (agentId) => {
 			const status = accountSessions().get(agentId);
 			if (!status) return undefined;

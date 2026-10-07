@@ -11,7 +11,7 @@ import {
 } from "@compass/client";
 import type { SessionEvent } from "../session-events";
 import { adaptSessionEvent } from "./adapt";
-import { createReconnectBackoff } from "./backoff";
+import { createReconnectBackoff, type ReconnectBackoff } from "./backoff";
 
 /** One frame's payload: the mapped trace event, the lifecycle transition, or
  *  both. A field is absent when the frame did not carry it. */
@@ -25,17 +25,45 @@ export interface SessionTailOptions {
 	sessionId: string;
 	onFrame: (update: SessionFrameUpdate) => void;
 	signal?: AbortSignal;
-	/** Observes a stream error. NotFound (unknown session, or the caller is
-	 *  not a member) is reported here and ends the tail; any other error is
-	 *  reported before the driver resubscribes. */
+	/** Observes a stream error. NotFound (unknown session or non-member) ends the
+	 *  tail; any other error is reported before the driver resubscribes. */
 	onError?: (error: unknown) => void;
+	/** Defaults to the shared jittered backoff; tests inject an immediate one. */
+	backoff?: ReconnectBackoff;
 }
+
+/** Why a tail stopped: a terminal state, a NotFound answer, or the abort signal. */
+export type SessionTailEnd = "ended" | "notFound" | "aborted";
 
 /** STOPPED and ERRORED end a session; the server closes the tail after one. */
 export function isTerminalSessionState(state: AgentSessionState): boolean {
 	return (
 		state === AgentSessionState.STOPPED || state === AgentSessionState.ERRORED
 	);
+}
+
+/** The most events kept per session; the oldest drop first, bounding a long tail. */
+export const MAX_SESSION_EVENTS = 2000;
+
+/** Append `event` to a session trace, merging a text delta into the previous event
+ *  for the same kind and message id (as foldSession would), then apply the cap. */
+export function appendSessionEvent(
+	events: readonly SessionEvent[],
+	event: SessionEvent,
+): SessionEvent[] {
+	const last = events.at(-1);
+	if (
+		last &&
+		(event.kind === "assistant_text" || event.kind === "thinking") &&
+		last.kind === event.kind &&
+		last.messageId === event.messageId
+	) {
+		return [...events.slice(0, -1), { ...last, text: last.text + event.text }];
+	}
+	const next = [...events, event];
+	return next.length > MAX_SESSION_EVENTS
+		? next.slice(next.length - MAX_SESSION_EVENTS)
+		: next;
 }
 
 /** Map one frame to its update, or undefined for a frame with nothing to hand
@@ -74,24 +102,25 @@ async function tailOnce(
 	return outcome;
 }
 
-/** Tail `sessionId` until it reaches a terminal state, the server answers
- *  NotFound, or `signal` aborts. A clean non-terminal end (the server drops a
- *  lagging subscriber the same way) or an error resubscribes, backing off when
- *  the previous attempt delivered nothing. */
-export async function runSessionTail(opts: SessionTailOptions): Promise<void> {
+/** Tail `sessionId` until a terminal state, a NotFound answer, or abort. Any other
+ *  error or a clean non-terminal end resubscribes, backing off after an idle try. */
+export async function runSessionTail(
+	opts: SessionTailOptions,
+): Promise<SessionTailEnd> {
 	const { signal, onError } = opts;
-	const backoff = createReconnectBackoff(signal);
+	const backoff = opts.backoff ?? createReconnectBackoff(signal);
 
 	while (!signal?.aborted) {
 		try {
 			const outcome = await tailOnce(opts, backoff.reset);
-			if (outcome === "ended") return;
+			if (outcome === "ended") return "ended";
 			if (outcome === "idle") await backoff.wait();
 		} catch (error) {
-			if (signal?.aborted) return;
+			if (signal?.aborted) return "aborted";
 			onError?.(error);
-			if (ConnectError.from(error).code === Code.NotFound) return;
+			if (ConnectError.from(error).code === Code.NotFound) return "notFound";
 			await backoff.wait();
 		}
 	}
+	return "aborted";
 }

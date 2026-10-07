@@ -31,9 +31,8 @@ export interface EventStreamOptions {
 	 *  id. A status whose account binding is no longer resolvable carries no
 	 *  account and is skipped rather than keyed under an empty id. */
 	onRuntime?: (runtime: ReadonlyMap<string, RuntimeMarker>) => void;
-	/** Called with each agent account's latest session id + lifecycle state,
-	 *  keyed by account id, with the same skip-unbound and resync-clear
-	 *  discipline as `onRuntime`. */
+	/** Called with each account's latest session id + state, keyed by account id;
+	 *  skips unbound statuses and clears on resync, like `onRuntime`. */
 	onSessions?: (sessions: ReadonlyMap<string, AccountSession>) => void;
 	signal?: AbortSignal;
 	onError?: (error: unknown) => void;

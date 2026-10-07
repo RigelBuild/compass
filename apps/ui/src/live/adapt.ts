@@ -645,10 +645,8 @@ function adaptFileDiff(w: WireSessionFileDiff): FileDiff {
 	return { path: w.path, oldText: w.oldText ?? null, newText: w.newText };
 }
 
-/** Map one wire SessionEvent to the domain trace event, or undefined for an
- *  unset/unknown oneof (a newer server's case renders nothing rather than throw).
- *  Injections and session errors have no domain kind of their own, so they
- *  render as notices. */
+/** Map a wire SessionEvent to the domain event; an unset or unknown oneof gives
+ *  undefined. Injections and session errors have no domain kind, so become notices. */
 export function adaptSessionEvent(
 	w: WireSessionEvent,
 ): DomainSessionEvent | undefined {
