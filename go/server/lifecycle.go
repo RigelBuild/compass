@@ -136,11 +136,8 @@ var errHandleTaken = errors.New("handle already taken")
 // never a normal outcome — CodeInternal, never a silent success.
 var errCallerNotAgent = errors.New("resolved caller is not an agent account")
 
-// errUnknownRole is the in-band cause when a spawn names a role outside the
-// closed taxonomy (spawnableRoles), including an empty role: every spawned node
-// carries a valid role, and the server is the authority on the set. The label,
-// not the prompt text, is validated — prompt text still arrives only via the
-// operator config bundle. CodeInvalidArgument.
+// errUnknownRole is the in-band cause when a spawn names a role rejected by
+// store.IsSpawnableRole, including an empty role. CodeInvalidArgument.
 var errUnknownRole = errors.New("unknown spawn role")
 
 // SpawnAsAccount creates a peer agent owned by the caller's OWNER and brings it
@@ -178,12 +175,13 @@ func (l *lifecycleService) SpawnAsAccount(
 	ctx, cancel := context.WithTimeout(ctx, spawnChainTimeout)
 	defer cancel()
 
-	// Role validation: every spawned node carries a role from the closed taxonomy,
-	// and the server is the authority. First check in the chain, so it covers the
-	// idempotent-resume branch too. The LABEL is validated, never the prompt text:
-	// a valid label with an unshipped prompt degrades to default block-0 (a warn).
-	if _, ok := spawnableRoles[req.GetRole()]; !ok {
+	// Role validation uses the shared closed taxonomy and runs first so it covers
+	// the idempotent-resume branch too. The label is validated, not prompt text.
+	if !store.IsSpawnableRole(req.GetRole()) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errUnknownRole)
+	}
+	if len(req.GetPersona()) > store.MaxPersonaBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("persona is %d bytes; the limit is %d", len(req.GetPersona()), store.MaxPersonaBytes))
 	}
 	// Before CreateAgent: a later Provision refusal would leave the handle taken.
 	if err := runnerhub.CheckClientRequestID(req.GetClientRequestId()); err != nil {

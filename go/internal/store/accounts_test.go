@@ -10,6 +10,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +95,22 @@ func TestCreateAgentEmptyHandleInvalid(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	_, err := s.CreateAgent(ctx, owner.ID, NewAgent{DisplayName: "no handle"})
 	sentinelIs(t, err, ErrInvalidArgument, "empty agent handle")
+}
+
+// TestCreateAgentPersonaCap pins the persona size bound at the store, the one
+// place both create doors (CreateAgent, SpawnPeer) pass through.
+func TestCreateAgentPersonaCap(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	if _, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "at-cap", Persona: strings.Repeat("p", MaxPersonaBytes)}); err != nil {
+		t.Fatalf("persona at the cap rejected: %v", err)
+	}
+	_, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "over-cap", Persona: strings.Repeat("p", MaxPersonaBytes+1)})
+	sentinelIs(t, err, ErrInvalidArgument, "persona over the cap")
+	if _, err := s.AgentByHandle(ctx, owner.ID, "over-cap"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("over-cap agent lookup = %v, want ErrNotFound (no row written)", err)
+	}
 }
 
 func TestGetAccountUnknownNotFound(t *testing.T) {
