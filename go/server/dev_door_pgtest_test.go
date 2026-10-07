@@ -49,6 +49,7 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 		SocketPath:  socketPath,
 		DatabaseDSN: pgtest.RequireDSN(t),
 		Version:     "dev-door-test",
+		Rev:         "0123456789abcdef0123456789abcdef01234567",
 		DevHTTP:     &devAddrPort,
 	}).dev
 	// Serve binds the dev listener before the socket and serves both off the same
@@ -93,6 +94,9 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 		}
 		if resp.Msg.GetVersion() != "dev-door-test" {
 			t.Fatalf("Version = %q, want dev-door-test", resp.Msg.GetVersion())
+		}
+		if got, want := resp.Msg.GetRev(), "0123456789abcdef0123456789abcdef01234567"; got != want {
+			t.Fatalf("Rev = %q, want %q (ServeConfig.Rev)", got, want)
 		}
 	})
 
