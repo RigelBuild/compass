@@ -558,7 +558,8 @@ DL-440 in `docs/designs/DECISIONS.md` §Transport, in this PR.
   - A user whose Role grants `create` and `update` on `daemonsets` is denied
     when creating a DaemonSet `evil` whose template names the Runner
     ServiceAccount, changing the `compass-runner` DaemonSet's `spec`, or
-    deleting and recreating it.
+    deleting and recreating it. The same user is admitted for a metadata-only
+    update of `compass-runner`, such as adding a label.
   - A server-side dry-run create of a Runner-ServiceAccount pod, impersonating
     each `controllers` username (`--as-group system:masters` so authorization
     passes), is admitted with a controller owner of DaemonSet `compass-runner`
