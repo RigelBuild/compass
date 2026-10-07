@@ -6,7 +6,7 @@
 /** The shell-injected launch mode. Client boots the connect-screen probe;
  *  embedded resolves the bridge connection directly. Owned here — the single
  *  source of truth both the injected global and every boot consumer name. */
-export type ShellMode = "embedded" | "client";
+export type ShellMode = "embedded" | "client" | "setup" | "reopen";
 
 declare global {
 	interface Window {
@@ -31,4 +31,9 @@ export function shellServerUrl(): string | undefined {
 		return undefined;
 	}
 	return window.__COMPASS_SERVER_URL__;
+}
+
+/** Store the server URL returned with a sibling window's client decision. */
+export function setShellServerUrl(serverUrl: string): void {
+	if (typeof window !== "undefined") window.__COMPASS_SERVER_URL__ = serverUrl;
 }

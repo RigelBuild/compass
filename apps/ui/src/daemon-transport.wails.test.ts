@@ -1,30 +1,27 @@
 /// <reference types="bun" />
 // Contracts defended here (the Wails binding of the shell IPC seam,
 // daemon-transport.ts):
-//  - wailsShellIpc().rpc subscribes to the per-request runtime event
-//    "compass_rpc:"+requestId BEFORE invoking the bound CompassRPC method, and
-//    delivers each ResponseFrame to onFrame in the order the runtime emits them.
-//  - it unsubscribes on the terminal frame (end / error): a frame pushed after
-//    the terminal one never reaches onFrame.
-//  - rpc invokes CompassRPC by name with the exact {requestId,path,headers,body}
-//    args; cancel invokes CompassRPCCancel by name with the requestId.
-//  - nativeConnectionProvider().resolve() yields token === undefined (DL-109:
-//    the UI-side Connection never carries a bearer in client mode) and a defined
-//    fetchImpl.
-//  - shellConnect(token) invokes the Connect method by name with the token and
-//    maps the returned ConnectResult through faithfully (ok and failure kinds).
+// - rpc subscribes before calling the shell, preserves frame order, and removes
+//   its listener after a terminal frame.
+// - Invalid runtime frames reach the transport as an error before unsubscription.
+// - Shell calls keep the established binding names and request arguments.
+// - Client provider connections never carry a bearer token (DL-109).
+// - shellConnect maps current Go results, including those without serverUrl.
 //
-// The Wails runtime is a hand-installed fake via mock.module: Events.On records
-// each subscription and hands back an unsubscribe that flips a flag, and
-// Call.ByName records every (method, args) and is driven by the test — exactly
-// the fake-the-seam style of FakeShellIpc (daemon-transport.test.ts). No live
-// Wails app, no Go process, no webview.
-
+// The Wails runtime is a hand-installed fake via mock.module. Events.On records
+// subscriptions and returns an unsubscribe function for each event.
+// Call.ByName records invocations that each test settles.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import * as realRuntime from "@wailsio/runtime";
 import {
+	chooseEmbedded,
+	createDaemonFetch,
 	nativeConnectionProvider,
+	onSetupDecided,
+	pickCACert,
+	quitApp,
 	shellConnect,
+	shellState,
 	wailsShellIpc,
 } from "./daemon-transport";
 
@@ -47,6 +44,7 @@ type Invocation = {
 
 let subscriptions: Subscription[];
 let calls: Invocation[];
+let quitCalls: number;
 
 /** Install a fresh fake `@wailsio/runtime` for a test. Bun's `mock.module`
  *  retroactively updates the live ESM binding, so the statically-imported
@@ -55,7 +53,14 @@ let calls: Invocation[];
 function installFakeRuntime(): void {
 	subscriptions = [];
 	calls = [];
+	quitCalls = 0;
 	mock.module("@wailsio/runtime", () => ({
+		Application: {
+			Quit() {
+				quitCalls++;
+				return Promise.resolve();
+			},
+		},
 		Events: {
 			On(name: string, cb: (event: { name: string; data: unknown }) => void) {
 				const sub: Subscription = { name, cb, off: false };
@@ -102,6 +107,9 @@ function emit(name: string, data: unknown): void {
 	}
 }
 
+async function flushMicrotasks(): Promise<void> {
+	for (let i = 0; i < 8; i++) await Promise.resolve();
+}
 describe("wailsShellIpc", () => {
 	const rpcArgs = {
 		requestId: "req-1",
@@ -127,6 +135,142 @@ describe("wailsShellIpc", () => {
 		emit("compass_rpc:req-1", { kind: "body", chunk: "AAEC" });
 		emit("compass_rpc:req-1", { kind: "end" });
 		expect(seen).toEqual(["head", "body", "end"]);
+	});
+	test("accepts a head frame with omitted headers", async () => {
+		const fetched = createDaemonFetch(wailsShellIpc())(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head", status: 200 });
+		emit(sub.name, { kind: "end" });
+
+		expect((await fetched).status).toBe(200);
+		expect(sub.off).toBe(true);
+	});
+	test("accepts a body frame with omitted chunk as empty bytes", async () => {
+		const fetched = createDaemonFetch(wailsShellIpc())(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head", status: 200 });
+		const response = await fetched;
+		emit(sub.name, { kind: "body" });
+		emit(sub.name, { kind: "end" });
+
+		expect((await response.arrayBuffer()).byteLength).toBe(0);
+		expect(sub.off).toBe(true);
+	});
+
+	test("invalid head frames reject fetch and unsubscribe", async () => {
+		for (const status of [700, 200.5]) {
+			installFakeRuntime();
+			const fetched = createDaemonFetch(wailsShellIpc())(
+				"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+			);
+			await flushMicrotasks();
+			const sub = subscriptions[0];
+			if (!sub) throw new Error("response subscription is missing");
+			emit(sub.name, { kind: "head", status, headers: [] });
+
+			await expect(fetched).rejects.toThrow(
+				"Invalid response frame from shell",
+			);
+			expect(sub.off).toBe(true);
+		}
+	});
+
+	test("a malformed head rejects fetch and unsubscribes", async () => {
+		const ipc = wailsShellIpc();
+		const fetched = createDaemonFetch(ipc)(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head" });
+
+		await expect(fetched).rejects.toThrow("Invalid response frame from shell");
+		expect(sub.off).toBe(true);
+	});
+	test("a body frame with a non-string chunk rejects the active response", async () => {
+		const fetched = createDaemonFetch(wailsShellIpc())(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head", status: 200 });
+		const response = await fetched;
+		emit(sub.name, { kind: "body", chunk: 42 });
+
+		await expect(response.arrayBuffer()).rejects.toThrow(
+			"Invalid response frame from shell",
+		);
+		expect(sub.off).toBe(true);
+	});
+	test("a malformed terminal frame rejects the active response and unsubscribes", async () => {
+		const fetched = createDaemonFetch(wailsShellIpc())(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head", status: 200 });
+		const response = await fetched;
+		emit(sub.name, { kind: "terminal" });
+
+		await expect(response.arrayBuffer()).rejects.toThrow(
+			"Invalid response frame from shell",
+		);
+		expect(sub.off).toBe(true);
+	});
+	test("an error frame with omitted message uses the default failure text", async () => {
+		const fetched = createDaemonFetch(wailsShellIpc())(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head", status: 200 });
+		const response = await fetched;
+		emit(sub.name, { kind: "error" });
+
+		await expect(response.arrayBuffer()).rejects.toThrow("Shell RPC failed");
+		expect(sub.off).toBe(true);
+	});
+	test("an error frame with a non-string message is rejected", async () => {
+		const fetched = createDaemonFetch(wailsShellIpc())(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head", status: 200 });
+		const response = await fetched;
+		emit(sub.name, { kind: "error", message: 42 });
+
+		await expect(response.arrayBuffer()).rejects.toThrow(
+			"Invalid response frame from shell",
+		);
+		expect(sub.off).toBe(true);
+	});
+	test("error frames with explicit messages fail the active response", async () => {
+		const fetched = createDaemonFetch(wailsShellIpc())(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+		);
+		await flushMicrotasks();
+		const sub = subscriptions[0];
+		if (!sub) throw new Error("response subscription is missing");
+		emit(sub.name, { kind: "head", status: 200 });
+		const response = await fetched;
+		emit(sub.name, { kind: "error", message: "daemon error" });
+
+		await expect(response.arrayBuffer()).rejects.toThrow("daemon error");
+		expect(sub.off).toBe(true);
 	});
 
 	test("unsubscribes on the terminal end frame — a later frame never reaches onFrame", async () => {
@@ -197,6 +341,7 @@ describe("shellConnect", () => {
 			accountId: "acc-1",
 			serverVersion: "1.2.3",
 			apiVersion: "compass.v1",
+			serverUrl: "https://compass.example",
 		});
 		const result = await promise;
 		expect(result.ok).toBe(true);
@@ -204,6 +349,21 @@ describe("shellConnect", () => {
 		expect(result.accountId).toBe("acc-1");
 		expect(result.serverVersion).toBe("1.2.3");
 		expect(result.apiVersion).toBe("compass.v1");
+	});
+
+	test("accepts the current Go ConnectResult without serverUrl", async () => {
+		const promise = shellConnect("");
+		calls[0]?.resolve({
+			ok: true,
+			kind: "",
+			message: "",
+			accountId: "acc-1",
+			serverVersion: "1.2.3",
+			apiVersion: "compass.v1",
+		});
+		const result = await promise;
+		expect(result.ok).toBe(true);
+		expect(result.serverUrl).toBeUndefined();
 	});
 
 	test("maps a failure-kind result through faithfully", async () => {
@@ -215,10 +375,76 @@ describe("shellConnect", () => {
 			accountId: "",
 			serverVersion: "",
 			apiVersion: "",
+			serverUrl: "",
 		});
 		const result = await promise;
 		expect(result.ok).toBe(false);
 		expect(result.kind).toBe("bad-token");
 		expect(result.message).toBe("the token was rejected");
+	});
+});
+describe("setup bindings", () => {
+	test("send server choice and call the exact setup methods", async () => {
+		const connect = shellConnect("first-token", {
+			url: "https://host",
+			caRef: "ca-ref",
+		});
+		expect(calls[0]?.method).toBe("main.bridgeService.Connect");
+		expect(calls[0]?.args).toEqual([
+			{
+				token: "first-token",
+				server: { url: "https://host", caRef: "ca-ref" },
+			},
+		]);
+		calls[0]?.resolve({
+			ok: true,
+			kind: "",
+			message: "",
+			accountId: "",
+			serverVersion: "",
+			apiVersion: "",
+			serverUrl: "https://host",
+		});
+		expect(await connect).toMatchObject({
+			ok: true,
+			serverUrl: "https://host",
+		});
+
+		const picked = pickCACert();
+		expect(calls[1]?.method).toBe("main.dialogService.PickCACert");
+		calls[1]?.resolve({ ref: "opaque-ref", name: "root.pem" });
+		expect(await picked).toEqual({ ref: "opaque-ref", name: "root.pem" });
+
+		const embedded = chooseEmbedded();
+		expect(calls[2]?.method).toBe("main.setupService.ChooseEmbedded");
+		calls[2]?.resolve({ ok: false, message: "not ready" });
+		expect(await embedded).toEqual({ ok: false, message: "not ready" });
+
+		const state = shellState();
+		expect(calls[3]?.method).toBe("main.bridgeService.ShellState");
+		calls[3]?.resolve({ mode: "setup", serverUrl: "" });
+		expect(await state).toEqual({ mode: "setup", serverUrl: "" });
+
+		const off = onSetupDecided(() => {});
+		expect(subscriptions[0]?.name).toBe("setup:decided");
+		off();
+		expect(subscriptions[0]?.off).toBe(true);
+		await quitApp();
+		expect(quitCalls).toBe(1);
+	});
+
+	test("send only token for a configured connect", async () => {
+		const connect = shellConnect("configured-token");
+		expect(calls[0]?.args).toEqual([{ token: "configured-token" }]);
+		calls[0]?.resolve({
+			ok: false,
+			kind: "invalid-ca",
+			message: "bad CA",
+			accountId: "",
+			serverVersion: "",
+			apiVersion: "",
+			serverUrl: "",
+		});
+		expect((await connect).kind).toBe("invalid-ca");
 	});
 });
