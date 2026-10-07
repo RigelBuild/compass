@@ -1012,7 +1012,11 @@ func startConcurrentRPCWorkers(svc *bridgeService, count int) (<-chan concurrent
 				case <-stop:
 					return
 				}
-				<-task.ready
+				select {
+				case <-task.ready:
+				case <-stop:
+					return
+				}
 				callCompassRPC(svc, task.requestID)
 				select {
 				case <-task.done:
@@ -1038,12 +1042,7 @@ func startConcurrentRPCWorkers(svc *bridgeService, count int) (<-chan concurrent
 // by the installed connection, so worker RPCs span the install.
 func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan concurrentRPCTask, releaseSave chan<- struct{}, connectDone <-chan connectResult, stop chan<- struct{}, workersDone <-chan struct{}) connectResult {
 	t.Helper()
-	const (
-		initial = iota
-		headSeen
-		terminated
-	)
-	states := make(map[string]int)
+	states := make(map[string]rpcFrameState)
 	pending := make(map[string]concurrentRPCTask)
 	connectC := connectDone
 	issueC := issue
@@ -1057,6 +1056,11 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 			close(stop)
 		}
 	}
+	defer func() {
+		if !stopped {
+			close(stop)
+		}
+	}()
 	for !stopped || len(pending) > 0 {
 		select {
 		case task := <-issueC:
@@ -1064,7 +1068,7 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 				t.Fatalf("duplicate RPC request ID %q", task.requestID)
 			}
 			pending[task.requestID] = task
-			states[task.requestID] = initial
+			states[task.requestID] = rpcInitial
 			close(task.ready)
 		case event := <-frames.ch:
 			requestID := strings.TrimPrefix(event.name, "compass_rpc:")
@@ -1072,40 +1076,18 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 			if !exists {
 				t.Fatalf("unexpected RPC event %q", event.name)
 			}
-			if state == terminated {
-				t.Fatalf("RPC %q emitted a frame after termination", requestID)
+			states[requestID] = advanceRPCFrame(t, requestID, state, event.frame)
+			if states[requestID] != rpcTerminated {
+				continue
 			}
-			switch event.frame.Kind {
-			case frameKindError:
-				if state != initial || event.frame.Message != "Not connected to a server" {
-					t.Errorf("RPC %q error frame = %+v, want one no-connection error", requestID, event.frame)
-					continue
-				}
-				states[requestID] = terminated
-				close(pending[requestID].done)
-				delete(pending, requestID)
-				if !released {
-					released = true
-					close(releaseSave)
-				}
-			case frameKindHead:
-				if state != initial {
-					t.Errorf("RPC %q received head in state %d", requestID, state)
-					continue
-				}
-				states[requestID] = headSeen
-			case frameKindEnd:
-				if state != headSeen {
-					t.Errorf("RPC %q received end in state %d", requestID, state)
-					continue
-				}
-				states[requestID] = terminated
-				close(pending[requestID].done)
-				delete(pending, requestID)
+			close(pending[requestID].done)
+			delete(pending, requestID)
+			if event.frame.Kind == frameKindEnd {
 				connected = true
 				stopIfDone()
-			default:
-				t.Errorf("RPC %q unexpected frame kind %q", requestID, event.frame.Kind)
+			} else if !released {
+				released = true
+				close(releaseSave)
 			}
 		case result = <-connectC:
 			connectC = nil
@@ -1116,11 +1098,36 @@ func collectConcurrentRPCResults(t *testing.T, frames *fakeEmitter, issue <-chan
 	}
 	<-workersDone
 	for requestID, state := range states {
-		if state != terminated {
+		if state != rpcTerminated {
 			t.Errorf("RPC %q did not reach a terminal outcome", requestID)
 		}
 	}
 	return result
+}
+
+type rpcFrameState int
+
+const (
+	rpcInitial rpcFrameState = iota
+	rpcHeadSeen
+	rpcTerminated
+)
+
+// advanceRPCFrame accepts one no-connection error, or a head then an end.
+func advanceRPCFrame(t *testing.T, requestID string, state rpcFrameState, frame responseFrame) rpcFrameState {
+	t.Helper()
+	switch {
+	case state == rpcTerminated:
+		t.Fatalf("RPC %q emitted a frame after termination", requestID)
+	case frame.Kind == frameKindError && state == rpcInitial && frame.Message == "Not connected to a server":
+		return rpcTerminated
+	case frame.Kind == frameKindHead && state == rpcInitial:
+		return rpcHeadSeen
+	case frame.Kind == frameKindEnd && state == rpcHeadSeen:
+		return rpcTerminated
+	}
+	t.Fatalf("RPC %q frame %+v in state %d, want one no-connection error or head then end", requestID, frame, state)
+	return state
 }
 
 func callCompassRPC(svc *bridgeService, requestID string) {
