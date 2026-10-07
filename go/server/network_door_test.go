@@ -950,3 +950,43 @@ func TestServeWithListenNeverLogsAdminToken(t *testing.T) {
 		t.Fatalf("admin-token path %q not found in logs — the bootstrap-token log line did not run, so the token-absence check above is vacuous", tokenPath)
 	}
 }
+
+// A --listen start whose existing state dir is group-accessible serves as
+// usual but logs the shared-dir warning naming that dir. Owns the global
+// logger, so it MUST NOT call t.Parallel().
+func TestServeWithListenWarnsOnSharedStateDir(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	sb := &syncBuffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(sb, nil)))
+
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "compass.sock")
+	stateDir := filepath.Join(dir, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stateDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	certPath, keyPath, _ := writeSelfSignedCert(t, dir)
+
+	serveInBackground(t, ServeConfig{
+		SocketPath:  socketPath,
+		DatabaseDSN: pgtest.RequireDSN(t),
+		Version:     "net-test",
+		Listen:      loopbackAny,
+		TLS:         &TLSConfig{CertPath: certPath, KeyPath: keyPath},
+		StateDir:    stateDir,
+	})
+	waitServing(t, socketPath)
+
+	// Match the WARN line itself: the INFO token line also carries path=<stateDir>/admin-token.
+	want := "path=" + stateDir + " mode=0750"
+	for line := range strings.SplitSeq(sb.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "admin-token dir is accessible to other users") && strings.Contains(line, want) {
+			return
+		}
+	}
+	t.Fatalf("no shared-dir WARN with %q in logs:\n%s", want, sb.String())
+}
