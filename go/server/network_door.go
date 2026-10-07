@@ -286,6 +286,7 @@ func buildNetworkServer(
 	// read process output or aggregated logs impersonate the admin.
 	slog.Info("network door bootstrap admin token written",
 		"path", tokenPath, "handle", handle, "listen", cfg.Listen)
+	warnIfSharedTokenDir(slog.Default(), filepath.Dir(tokenPath))
 
 	// otelconnect (outermost) produces the RPC span and stamps traceresponse,
 	// prepended to the shared bearer + admin-gate chain (inert when no provider).
@@ -386,6 +387,21 @@ func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store
 		return "", err
 	}
 	return writeTokenFile(stateDir, token)
+}
+
+// warnIfSharedTokenDir logs when the admin token's dir grants any group or
+// other permission bit: ensurePrivateDir keeps an existing dir's mode, so such
+// a dir exposes the file's presence and may let those users delete or replace it.
+func warnIfSharedTokenDir(log *slog.Logger, dir string) {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		log.Warn("network door admin-token dir could not be checked", "path", dir, "err", err)
+		return
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		log.Warn("network door admin-token dir is accessible to other users; use a 0700 --state-dir",
+			"path", dir, "mode", fmt.Sprintf("%#o", perm))
+	}
 }
 
 // writeTokenFile writes token to a 0600 file named adminTokenFile under dir,
