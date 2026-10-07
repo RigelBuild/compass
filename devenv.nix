@@ -326,7 +326,14 @@ in
         # fall through to the `exec` below and silently run the previously-built
         # binary at a stale version, and that must hold whether or not the
         # pinned devenv keeps rendering the wrapper.
-        go build -ldflags "-X main.version=$version_base+dev" \
+        # The commit GetServerInfo reports as `rev`, so a redeploy can confirm the
+        # running binary. Best-effort for the reason above: a working copy with no
+        # git checkout stamps an empty rev; any tracked or untracked change adds "-dirty".
+        rev="$(git -C "${config.devenv.root}" rev-parse HEAD 2>/dev/null)" || rev=""
+        if [ -n "$rev" ] && [ -n "$(git -C "${config.devenv.root}" status --porcelain 2>/dev/null)" ]; then
+          rev="$rev-dirty"
+        fi
+        go build -ldflags "-X main.version=$version_base+dev -X main.rev=$rev" \
           -o "$bin" ./cmd/compass-server || exit 1
         exec "$bin" \
           --socket "$COMPASS_SOCKET" \
