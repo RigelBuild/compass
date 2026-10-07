@@ -312,6 +312,9 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 	if ownerUserID == "" {
 		return Account{}, fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)
 	}
+	if len(a.Persona) > MaxPersonaBytes {
+		return Account{}, fmt.Errorf("%w: persona is %d bytes; the limit is %d", ErrInvalidArgument, len(a.Persona), MaxPersonaBytes)
+	}
 
 	accountID := newID()
 	channelID := newID()
