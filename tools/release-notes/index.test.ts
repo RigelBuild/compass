@@ -15,7 +15,7 @@ import {
 	assemble,
 	classifyImageResult,
 	IMAGE_ABSENT_LINE,
-	imageFromDigest,
+	imageFromDigests,
 	type NixOutput,
 	parseArgs,
 	requireImageAtRelease,
@@ -34,7 +34,7 @@ function input(over: Partial<AssembleInput> = {}): AssembleInput {
 		assets: ["compass_build-0123456789ab_linux-amd64", "SHA256SUMS"],
 		image: {
 			ref: "ghcr.io/rigelbuild/compass-agent@sha256:dead",
-			digest: "sha256:dead",
+			configDigest: "sha256:c0f1",
 		},
 		nixOutputs: OUTPUTS,
 		...over,
@@ -47,7 +47,7 @@ describe("image-present body — carries the ref and digest", () => {
 		expect(body).toContain(
 			"image: `ghcr.io/rigelbuild/compass-agent@sha256:dead`",
 		);
-		expect(body).toContain("digest: `sha256:dead`");
+		expect(body).toContain("config digest: `sha256:c0f1`");
 		// The absence line must NOT appear when the image is present.
 		expect(body).not.toContain(IMAGE_ABSENT_LINE);
 	});
@@ -58,7 +58,7 @@ describe("image-absent degradation — a null image is a recorded absence, not a
 		const { body } = assemble(input({ image: null }));
 		expect(body).toContain(IMAGE_ABSENT_LINE);
 		// No dangling digest/ref lines leak through.
-		expect(body).not.toContain("digest: `");
+		expect(body).not.toContain("config digest: `");
 		expect(body).not.toContain("image: `ghcr.io");
 	});
 });
@@ -138,11 +138,19 @@ describe("parseArgs — the edge's argv contract", () => {
 		expect(args.assets).toEqual(["a", "b"]);
 	});
 
-	test("--image-digest is optional: absent leaves the probe-selecting default", () => {
-		expect(parseArgs(required).imageDigest).toBe("");
-		expect(
-			parseArgs([...required, "--image-digest", "sha256:beef"]).imageDigest,
-		).toBe("sha256:beef");
+	test("the image digests are optional: absent leaves the probe-selecting default", () => {
+		const none = parseArgs(required);
+		expect(none.imageManifestDigest).toBe("");
+		expect(none.imageConfigDigest).toBe("");
+		const both = parseArgs([
+			...required,
+			"--image-manifest-digest",
+			"sha256:dead",
+			"--image-config-digest",
+			"sha256:beef",
+		]);
+		expect(both.imageManifestDigest).toBe("sha256:dead");
+		expect(both.imageConfigDigest).toBe("sha256:beef");
 	});
 
 	test("a missing required flag throws", () => {
@@ -163,7 +171,11 @@ describe("parseArgs — the edge's argv contract", () => {
 });
 
 describe("classifyImageResult — the skopeo-result contract (crux of the skopeo fix)", () => {
-	const digestJson = JSON.stringify({ config: { digest: "sha256:beef" } });
+	// Non-canonical bytes JSON.stringify would not reproduce: the ref must be
+	// the sha256 of exactly what skopeo printed.
+	const manifestRaw = '{"config": {"digest": "sha256:beef"}}\n';
+	const manifestDigest =
+		"sha256:0575d6de78ab5aa1b4a857e96b1e17d344fc18507e0f61eca24095d71e2222af";
 
 	test("exit 127 THROWS — a missing skopeo can never masquerade as an absent image", () => {
 		expect(() =>
@@ -185,12 +197,12 @@ describe("classifyImageResult — the skopeo-result contract (crux of the skopeo
 		).toBeNull();
 	});
 
-	test("exit 0 with a config digest yields the @digest ref and the digest", () => {
+	test("exit 0 pins the ref to the manifest digest, never the config digest", () => {
 		expect(
-			classifyImageResult({ exitCode: 0, stdout: digestJson, stderr: "" }),
+			classifyImageResult({ exitCode: 0, stdout: manifestRaw, stderr: "" }),
 		).toEqual({
-			ref: "ghcr.io/rigelbuild/compass-agent@sha256:beef",
-			digest: "sha256:beef",
+			ref: `ghcr.io/rigelbuild/compass-agent@${manifestDigest}`,
+			configDigest: "sha256:beef",
 		});
 	});
 
@@ -209,8 +221,8 @@ describe("classifyImageResult — the skopeo-result contract (crux of the skopeo
 
 describe("requireImageAtRelease — a null image is a release-time failure, a dry-run degradation", () => {
 	const image = {
-		ref: "ghcr.io/rigelbuild/compass-agent@sha256:beef",
-		digest: "sha256:beef",
+		ref: "ghcr.io/rigelbuild/compass-agent@sha256:dead",
+		configDigest: "sha256:beef",
 	};
 
 	test("release + null image FAILS — returns the no-image error message", () => {
@@ -232,16 +244,21 @@ describe("requireImageAtRelease — a null image is a release-time failure, a dr
 	});
 });
 
-describe("imageFromDigest — the caller-supplied digest bypasses the skopeo probe", () => {
-	test("a real digest yields the @digest ref and the digest itself", () => {
-		expect(imageFromDigest("sha256:beef")).toEqual({
-			ref: "ghcr.io/rigelbuild/compass-agent@sha256:beef",
-			digest: "sha256:beef",
+describe("imageFromDigests — the caller-supplied digests bypass the skopeo probe", () => {
+	test("the ref pins the manifest digest; the config digest is carried separately", () => {
+		expect(imageFromDigests("sha256:dead", "sha256:beef")).toEqual({
+			ref: "ghcr.io/rigelbuild/compass-agent@sha256:dead",
+			configDigest: "sha256:beef",
 		});
 	});
 
-	test("an empty or whitespace-only digest is null — the no-flag path", () => {
-		expect(imageFromDigest("")).toBeNull();
-		expect(imageFromDigest("   ")).toBeNull();
+	test("both digests empty is null — the no-flag path", () => {
+		expect(imageFromDigests("", "")).toBeNull();
+		expect(imageFromDigests("   ", " ")).toBeNull();
+	});
+
+	test("only one digest given throws — a half identity cannot be published", () => {
+		expect(() => imageFromDigests("", "sha256:beef")).toThrow("both");
+		expect(() => imageFromDigests("sha256:dead", "")).toThrow("both");
 	});
 });
