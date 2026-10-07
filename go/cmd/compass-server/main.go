@@ -15,12 +15,14 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/RigelBuild/compass/go/internal/otel"
+	"github.com/RigelBuild/compass/go/internal/store"
 	"github.com/RigelBuild/compass/go/internal/usage"
 	"github.com/RigelBuild/compass/go/server"
 )
@@ -444,6 +446,8 @@ type forgeFlags struct {
 	linearClientID         *string
 	linearClientSecret     *string
 	linearWebhook          *string
+	enforceScopes          *string
+	scopeGrants            *string
 }
 
 // registerForgeFlags declares the forge flags on the given FlagSet and returns
@@ -506,6 +510,13 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 				"against. Defaults to $COMPASS_FORGE_LINEAR_WEBHOOK_SECRET. The Linear "+
 				"data-change/session arm runs iff this is declared, independent of the "+
 				"GitHub App gate."),
+		enforceScopes: fs.String("forge-enforce-scopes", "",
+			"true gates agent forge writes on per-account scope grants; false or empty "+
+				"leaves writes ungated. Defaults to $COMPASS_FORGE_ENFORCE_SCOPES."),
+		scopeGrants: fs.String("forge-scope-grants", "",
+			"Comma-separated user scope grants seeded at boot, each "+
+				"account:provider:host:repo with provider github or linear and repo * for a "+
+				"whole host. Insert only. Defaults to $COMPASS_FORGE_SCOPE_GRANTS."),
 	}
 }
 
@@ -526,6 +537,8 @@ func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 		linearClientID:         firstNonEmpty(*f.linearClientID, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_ID")),
 		linearClientSecret:     firstNonEmpty(*f.linearClientSecret, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_SECRET")),
 		linearWebhook:          firstNonEmpty(*f.linearWebhook, os.Getenv("COMPASS_FORGE_LINEAR_WEBHOOK_SECRET")),
+		enforceScopes:          firstNonEmpty(*f.enforceScopes, os.Getenv("COMPASS_FORGE_ENFORCE_SCOPES")),
+		scopeGrants:            firstNonEmpty(*f.scopeGrants, os.Getenv("COMPASS_FORGE_SCOPE_GRANTS")),
 	})
 }
 
@@ -546,6 +559,8 @@ type forgeInputs struct {
 	linearClientID         string
 	linearClientSecret     string
 	linearWebhook          string
+	enforceScopes          string
+	scopeGrants            string
 }
 
 // resolveForge turns the forge inputs (already flag-then-env resolved) into the
@@ -576,6 +591,16 @@ func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 	if err != nil {
 		return server.ForgeConfig{}, err
 	}
+	enforce := false
+	if in.enforceScopes != "" {
+		if enforce, err = strconv.ParseBool(in.enforceScopes); err != nil {
+			return server.ForgeConfig{}, fmt.Errorf("invalid --forge-enforce-scopes %q: %w", in.enforceScopes, err)
+		}
+	}
+	grants, err := parseForgeScopeGrants(in.scopeGrants)
+	if err != nil {
+		return server.ForgeConfig{}, err
+	}
 	return server.ForgeConfig{
 		Host:                     in.host,
 		ForgeCAPath:              in.ca,
@@ -583,6 +608,8 @@ func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 		LinearClientIDSecretName: in.linearClientID,
 		LinearClientSecretName:   in.linearClientSecret,
 		LinearWebhookSecretName:  in.linearWebhook,
+		EnforceScopes:            enforce,
+		ScopeGrants:              grants,
 		App: server.ForgeAppConfig{
 			AppID:                id,
 			InstallationID:       instID,
@@ -630,6 +657,38 @@ func parseForgeRepos(repos string) ([]string, error) {
 			return nil, fmt.Errorf("invalid --forge-repos entry %q: want \"owner/name\"", raw)
 		}
 		out = append(out, strings.ToLower(trimmed))
+	}
+	return out, nil
+}
+
+// parseForgeScopeGrants parses account:provider:host:repo entries. The store
+// normalizes repo case, so this only validates shape and the provider name.
+func parseForgeScopeGrants(v string) ([]store.ForgeScope, error) {
+	var out []store.ForgeScope
+	for raw := range strings.SplitSeq(v, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		parts := strings.Split(entry, ":")
+		if len(parts) != 4 || slices.Contains(parts, "") {
+			return nil, fmt.Errorf("invalid --forge-scope-grants entry %q: want account:provider:host:repo", raw)
+		}
+		var provider store.ForgeProvider
+		switch parts[1] {
+		case "github":
+			provider = store.ForgeProviderGitHub
+		case "linear":
+			provider = store.ForgeProviderLinear
+		default:
+			return nil, fmt.Errorf("invalid --forge-scope-grants provider %q in %q: want github or linear", parts[1], raw)
+		}
+		if provider == store.ForgeProviderGitHub && parts[3] != "*" {
+			if owner, name, ok := strings.Cut(parts[3], "/"); !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+				return nil, fmt.Errorf("invalid --forge-scope-grants repo %q in %q: want owner/name or *", parts[3], raw)
+			}
+		}
+		out = append(out, store.ForgeScope{AccountID: store.AccountID(parts[0]), Provider: provider, Host: parts[2], Repo: parts[3]})
 	}
 	return out, nil
 }
