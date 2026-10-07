@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,21 +26,42 @@ const (
 
 func pgToken(pgid int) uint64 { return uint64(pgid) * 10 }
 
-// downTestDeps returns deps with shrunk drain budgets and a fast poll so the
-// bounded escalation and confirmation loops run without real waiting, plus a
-// controllable now-clock. It also points the probers at the group-signaller's
-// liveness so "socket dark" tracks "group gone" — one source of truth for the
-// server/postgres confirmation channel.
+// downTestDeps returns deps with shrunk drain budgets. Existing tests retain
+// group-backed probes; regression tests install independent socket fakes.
 func downTestDeps(t *testing.T, h *harness) Deps {
 	t.Helper()
 	shrinkBudgets(t)
 	deps := h.deps
-	// Server/postgres confirm by socket quiescence; model the socket as answering
-	// iff the group is still alive (identity-matched). The prober/dbprober here
-	// override the harness stubs for the down path.
 	deps.Prober = &groupBackedProber{gs: h.groupSig, pgid: serverPgid, token: pgToken(serverPgid)}
 	deps.DBProber = &groupBackedDBProber{gs: h.groupSig, pgid: pgPgid, token: pgToken(pgPgid)}
 	return deps
+}
+
+// groupBackedProber answers GetServerInfo iff the server group is alive.
+type groupBackedProber struct {
+	gs    *fakeGroupSignaller
+	pgid  int
+	token uint64
+}
+
+func (p *groupBackedProber) Probe(context.Context, string) (ServerInfo, error) {
+	if p.gs.ours(p.pgid, p.token) {
+		return ServerInfo{Version: testVersion}, nil
+	}
+	return ServerInfo{}, errNotAnswering
+}
+
+type groupBackedDBProber struct {
+	gs    *fakeGroupSignaller
+	pgid  int
+	token uint64
+}
+
+func (p *groupBackedDBProber) ProbeDB(context.Context, string) error {
+	if p.gs.ours(p.pgid, p.token) {
+		return nil
+	}
+	return errPostgresNotReady
 }
 
 // shrinkBudgets shrinks the package drain budgets/poll for the duration of a
@@ -59,32 +82,68 @@ func shrinkBudgets(t *testing.T) {
 	})
 }
 
-// groupBackedProber answers GetServerInfo iff the server group is alive; a dead
-// group means the socket is dark.
-type groupBackedProber struct {
-	gs    *fakeGroupSignaller
-	pgid  int
-	token uint64
-}
+type fixedServerProber bool
 
-func (p *groupBackedProber) Probe(ctx context.Context, socketPath string) (ServerInfo, error) {
-	if p.gs.Alive(p.pgid, p.token) {
+func (p fixedServerProber) Probe(context.Context, string) (ServerInfo, error) {
+	if p {
 		return ServerInfo{Version: testVersion}, nil
 	}
 	return ServerInfo{}, errNotAnswering
 }
 
-type groupBackedDBProber struct {
-	gs    *fakeGroupSignaller
-	pgid  int
-	token uint64
-}
+type fixedDBProber bool
 
-func (p *groupBackedDBProber) ProbeDB(ctx context.Context, dsn string) error {
-	if p.gs.Alive(p.pgid, p.token) {
+func (p fixedDBProber) ProbeDB(context.Context, string) error {
+	if p {
 		return nil
 	}
 	return errPostgresNotReady
+}
+
+// darkSocketDownDeps decouples socket state from process-group liveness.
+func darkSocketDownDeps(t *testing.T, h *harness) Deps {
+	t.Helper()
+	deps := downTestDeps(t, h)
+	deps.Prober = fixedServerProber(false)
+	deps.DBProber = fixedDBProber(false)
+	return deps
+}
+
+// stepClock advances a fixed step on every read, so drain budgets elapse on
+// poll count rather than wall time.
+type stepClock struct {
+	mu   sync.Mutex
+	t    time.Time
+	step time.Duration
+}
+
+func newStepClock(step time.Duration) *stepClock {
+	return &stepClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), step: step}
+}
+
+func (c *stepClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := c.t
+	c.t = c.t.Add(c.step)
+	return t
+}
+
+func (c *stepClock) peek() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+// assertKillAfterBudget fails unless pgid's SIGKILL came a full budget after its SIGTERM.
+func assertKillAfterBudget(t *testing.T, termAt, killAt time.Time, budget time.Duration) {
+	t.Helper()
+	if termAt.IsZero() || killAt.IsZero() {
+		t.Fatalf("SIGTERM at %v, SIGKILL at %v; want both delivered", termAt, killAt)
+	}
+	if gap := killAt.Sub(termAt); gap < budget {
+		t.Fatalf("SIGKILL %v after SIGTERM, want at least the %v drain budget", gap, budget)
+	}
 }
 
 // seedFullRecord writes a complete three-child pgid record and marks all three
@@ -160,7 +219,7 @@ func TestDownDetachedEscalatesToSIGKILL(t *testing.T) {
 	deps := downTestDeps(t, h)
 
 	// runner + postgres die on SIGTERM; the server ignores SIGTERM and only dies
-	// on SIGKILL — exercising escalation for a socket-confirmed component.
+	// on SIGKILL — exercising group-aware escalation.
 	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
 	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
 	h.groupSig.onKill[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
@@ -181,6 +240,270 @@ func TestDownDetachedEscalatesToSIGKILL(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
+// TestDownDetachedServerSocketDarkWaitsForGroupExit proves a dark server socket
+// does not confirm a live group: SIGKILL waits out the full drain budget.
+func TestDownDetachedServerSocketDarkWaitsForGroupExit(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	clock := newStepClock(time.Millisecond)
+	deps.Now = clock.Now
+	var termAt, killAt time.Time
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	h.groupSig.onTerm[serverPgid] = func() { termAt = clock.peek() }
+	h.groupSig.onKill[serverPgid] = func() {
+		killAt = clock.peek()
+		h.groupSig.set(serverPgid, pgToken(serverPgid), false)
+	}
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil after the server group exits", err)
+	}
+	if h.groupSig.ours(serverPgid, pgToken(serverPgid)) {
+		t.Fatal("server group is still alive after DownDetached returned nil")
+	}
+	events := signalEvents(h.rec.snapshot())
+	if countEvent(events, "group-kill "+strconv.Itoa(serverPgid)) != 1 {
+		t.Fatalf("server SIGKILL count = %d, want 1: %v", countEvent(events, "group-kill "+strconv.Itoa(serverPgid)), events)
+	}
+	assertKillAfterBudget(t, termAt, killAt, serverDrainBudget)
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedPostgresSocketDarkWaitsForGroupExit is the postgres analogue:
+// a dark DSN does not confirm a live group before the drain budget elapses.
+func TestDownDetachedPostgresSocketDarkWaitsForGroupExit(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	clock := newStepClock(time.Millisecond)
+	deps.Now = clock.Now
+	var termAt, killAt time.Time
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	h.groupSig.onTerm[pgPgid] = func() { termAt = clock.peek() }
+	h.groupSig.onKill[pgPgid] = func() {
+		killAt = clock.peek()
+		h.groupSig.set(pgPgid, pgToken(pgPgid), false)
+	}
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil after the postgres group exits", err)
+	}
+	if h.groupSig.ours(pgPgid, pgToken(pgPgid)) {
+		t.Fatal("postgres group is still alive after DownDetached returned nil")
+	}
+	events := signalEvents(h.rec.snapshot())
+	if countEvent(events, "group-kill "+strconv.Itoa(pgPgid)) != 1 {
+		t.Fatalf("postgres SIGKILL count = %d, want 1: %v", countEvent(events, "group-kill "+strconv.Itoa(pgPgid)), events)
+	}
+	assertKillAfterBudget(t, termAt, killAt, postgresDrainBudget)
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedOrphanedGroupEscalates proves a group whose leader is gone but
+// whose members remain is still ours: it is signalled, killed, and reported.
+func TestDownDetachedOrphanedGroupEscalates(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	// The runner leader exited; a forked member keeps the group alive through SIGKILL.
+	h.groupSig.setLeaderUnknown(runnerPgid)
+	h.groupSig.failSignal(runnerPgid, SignalKill, errors.New("operation not permitted"))
+
+	err := DownDetached(context.Background(), cfg, deps)
+	if err == nil || !strings.Contains(err.Error(), "runner") {
+		t.Fatalf("DownDetached = %v, want a survivor error naming the orphaned runner group", err)
+	}
+	events := signalEvents(h.rec.snapshot())
+	for _, want := range []string{"group-term " + strconv.Itoa(runnerPgid), "group-kill " + strconv.Itoa(runnerPgid)} {
+		if countEvent(events, want) != 1 {
+			t.Fatalf("orphaned group should get exactly one %q: %v", want, events)
+		}
+	}
+	rec, readErr := readPgidFile(cfg.StateDir)
+	if readErr != nil || len(rec.Entries) != 1 || rec.Entries[0].Component != ComponentRunner {
+		t.Fatalf("survivor record = %+v, err = %v; want only the runner", rec, readErr)
+	}
+}
+
+// TestDownDetachedOrphanedServerGroupIsAwaited proves an orphaned server group is
+// awaited until it is gone, never confirmed while its members remain.
+func TestDownDetachedOrphanedServerGroupIsAwaited(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	h.groupSig.setLeaderUnknown(serverPgid)
+	h.groupSig.onKill[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil once the orphaned group exits", err)
+	}
+	events := signalEvents(h.rec.snapshot())
+	for _, want := range []string{"group-term " + strconv.Itoa(serverPgid), "group-kill " + strconv.Itoa(serverPgid)} {
+		if countEvent(events, want) != 1 {
+			t.Fatalf("orphaned server group should get exactly one %q: %v", want, events)
+		}
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedRecycledBeforeSIGKILLIsNotSignalled proves identity is re-read
+// right before SIGKILL: a pid recycled as the drain budget expires is never killed.
+func TestDownDetachedRecycledBeforeSIGKILLIsNotSignalled(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	clock := newStepClock(time.Millisecond)
+	var termAt time.Time
+	// The recycle lands on the clock read that expires the runner budget, after
+	// its last confirm poll saw the group still owned.
+	deps.Now = func() time.Time {
+		now := clock.Now()
+		if !termAt.IsZero() && !now.Before(termAt.Add(runnerDrainBudget)) {
+			h.groupSig.set(runnerPgid, 777, true)
+		}
+		return now
+	}
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { termAt = clock.peek() }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil for a recycled group", err)
+	}
+	if n := countEvent(signalEvents(h.rec.snapshot()), "group-kill "+strconv.Itoa(runnerPgid)); n != 0 {
+		t.Fatalf("recycled runner pgid SIGKILLed %d times, want 0", n)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedRecycledBeforeSIGTERMIsNotSignalled proves identity is re-read
+// right before SIGTERM, after target selection.
+func TestDownDetachedRecycledBeforeSIGTERMIsNotSignalled(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	// The runner SIGTERM lands just as the server pgid is recycled.
+	h.groupSig.onTerm[runnerPgid] = func() {
+		h.groupSig.set(runnerPgid, pgToken(runnerPgid), false)
+		h.groupSig.set(serverPgid, 888, true)
+	}
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil for a recycled group", err)
+	}
+	events := signalEvents(h.rec.snapshot())
+	for _, forbidden := range []string{"group-term " + strconv.Itoa(serverPgid), "group-kill " + strconv.Itoa(serverPgid)} {
+		if countEvent(events, forbidden) != 0 {
+			t.Fatalf("recycled server pgid was signalled (%q): %v", forbidden, events)
+		}
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedFailedSIGKILLDoesNotShortCircuit proves an undelivered group
+// SIGKILL never takes the zombie shortcut: the live group is a survivor.
+func TestDownDetachedFailedSIGKILLDoesNotShortCircuit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		comp Component
+		pgid int
+	}{
+		{"runner", ComponentRunner, runnerPgid},
+		{"server", ComponentServer, serverPgid},
+		{"postgres", ComponentPostgres, pgPgid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, h := newHarness(t)
+			seedFullRecord(t, cfg, h)
+			deps := darkSocketDownDeps(t, h)
+			for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
+				if pgid != tc.pgid {
+					h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+				}
+			}
+			h.groupSig.failSignal(tc.pgid, SignalKill, errors.New("operation not permitted"))
+
+			err := DownDetached(context.Background(), cfg, deps)
+			if err == nil || !strings.Contains(err.Error(), tc.comp.String()) {
+				t.Fatalf("DownDetached = %v, want a survivor error naming %s", err, tc.comp)
+			}
+			rec, readErr := readPgidFile(cfg.StateDir)
+			if readErr != nil || len(rec.Entries) != 1 || rec.Entries[0].Component != tc.comp {
+				t.Fatalf("survivor record = %+v, err = %v; want only %s", rec, readErr, tc.comp)
+			}
+		})
+	}
+}
+
+// TestDownDetachedCanceledSIGKILLDoesNotShortCircuit proves a canceled teardown
+// re-checks the group instead of assuming post-kill zombies.
+func TestDownDetachedCanceledSIGKILLDoesNotShortCircuit(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	// The kill is delivered but the caller gave up; the group is still present.
+	h.groupSig.onKill[runnerPgid] = cancel
+
+	err := DownDetached(ctx, cfg, deps)
+	if err == nil || !strings.Contains(err.Error(), "runner") {
+		t.Fatalf("DownDetached = %v, want a survivor error naming the runner", err)
+	}
+}
+
+func TestDownDetachedGroupSurvivingSIGKILLIsReported(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	deps.DBProber = fixedDBProber(true)
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+
+	err := DownDetached(context.Background(), cfg, deps)
+	if err == nil || !strings.Contains(err.Error(), "postgres") || !strings.Contains(err.Error(), "teardown incomplete") {
+		t.Fatalf("DownDetached = %v, want survivor error naming postgres", err)
+	}
+	if !h.groupSig.ours(pgPgid, pgToken(pgPgid)) {
+		t.Fatal("fake postgres group did not survive SIGKILL")
+	}
+	if got := signalEvents(h.rec.snapshot()); countEvent(got, "group-kill "+strconv.Itoa(pgPgid)) != 1 {
+		t.Fatalf("postgres SIGKILL count = %d, want 1: %v", countEvent(got, "group-kill "+strconv.Itoa(pgPgid)), got)
+	}
+	rec, readErr := readPgidFile(cfg.StateDir)
+	if readErr != nil || len(rec.Entries) != 1 || rec.Entries[0].Component != ComponentPostgres {
+		t.Fatalf("survivor record = %+v, err = %v; want only postgres", rec, readErr)
+	}
+}
+
+func TestDownDetachedSocketDarkZombieGroupIsSuccess(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	// Leave the group visible after SIGKILL, modeling a zombie awaiting reap.
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil for a socket-dark zombie group", err)
+	}
+	events := signalEvents(h.rec.snapshot())
+	if countEvent(events, "group-kill "+strconv.Itoa(serverPgid)) != 1 {
+		t.Fatalf("server SIGKILL count = %d, want 1: %v", countEvent(events, "group-kill "+strconv.Itoa(serverPgid)), events)
+	}
+	if !h.groupSig.ours(serverPgid, pgToken(serverPgid)) {
+		t.Fatal("fake server zombie group should remain visible after SIGKILL")
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
 // TestDownDetachedRunnerZombieWindowIsSuccess proves the socketless runner is
 // confirmed torn down once SIGKILL is sent, even if its group is still non-ESRCH
 // (a zombie awaiting reap). Because SIGKILL is unblockable, a still-present group
@@ -190,12 +513,9 @@ func TestDownDetachedRunnerZombieWindowIsSuccess(t *testing.T) {
 	seedFullRecord(t, cfg, h)
 	deps := downTestDeps(t, h)
 
-	// server + postgres drain on SIGTERM.
+	// server and postgres drain on SIGTERM.
 	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
 	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
-	// The runner NEVER goes ESRCH: it ignores SIGTERM and stays "alive" even after
-	// SIGKILL (the zombie window). DownDetached must still treat it as torn down.
-	// (no onTerm/onKill flip for runnerPgid → stays alive throughout)
 
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatalf("DownDetached = %v, want nil (zombie window is success)", err)
@@ -472,7 +792,7 @@ type containerBackedDBProber struct {
 }
 
 func (p *containerBackedDBProber) ProbeDB(ctx context.Context, dsn string) error {
-	if p.c.Exists(p.name) {
+	if p.c.Exists(ctx, p.name) {
 		return nil // container up → socket answers → reachable
 	}
 	return errPostgresNotReady // container gone → socket dark → confirmed dead
@@ -512,7 +832,7 @@ func TestDownDetachedContainerGracefulStop(t *testing.T) {
 	// SIGTERM tears the two groups down; `podman stop` removes the container.
 	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
 	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
-	h.containers.onStop[pgContainerName] = func() { h.containers.setExists(false) }
+	h.containers.onStop[pgContainerName] = func(context.Context) { h.containers.setExists(false) }
 
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatalf("DownDetached = %v, want nil", err)
@@ -607,6 +927,170 @@ func TestDownDetachedContainerGoneIsSkipped(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
+// TestDownDetachedContainerDarkDBStillExistsIsSurvivor proves a container
+// postgres is confirmed only by its absence: a dark DB never confirms it.
+func TestDownDetachedContainerDarkDBStillExistsIsSurvivor(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedContainerRecord(t, cfg, h)
+	deps := containerDownDeps(t, h)
+	deps.DBProber = fixedDBProber(false)
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+
+	err := DownDetached(context.Background(), cfg, deps)
+	if err == nil || !strings.Contains(err.Error(), "postgres") {
+		t.Fatalf("DownDetached = %v, want a survivor error naming the present postgres container", err)
+	}
+	want := []string{"ctr-stop " + pgContainerName, "ctr-rm " + pgContainerName}
+	if got := ctrEvents(h.rec.snapshot()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("container escalation:\n got  %v\n want %v", got, want)
+	}
+	rec, readErr := readPgidFile(cfg.StateDir)
+	if readErr != nil || len(rec.Entries) != 1 || rec.Entries[0].ContainerName != pgContainerName {
+		t.Fatalf("survivor record = %+v, err = %v; want only the postgres container", rec, readErr)
+	}
+}
+
+// TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors: a SIGTERM
+// to down lands while a slow container stop is in flight. The stop must see the
+// cancelled ctx and return, and down must still rewrite the survivor record.
+func TestDownDetachedCancelledDuringSlowContainerStopRewritesSurvivors(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedContainerRecord(t, cfg, h)
+	deps := containerDownDeps(t, h)
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.containers.onStop[pgContainerName] = func(stopCtx context.Context) {
+		cancel() // the down process is signalled mid-stop
+		if stopCtx.Err() == nil {
+			t.Error("container stop ran on a ctx the caller's cancellation cannot reach")
+		}
+	}
+
+	err := DownDetached(ctx, cfg, deps)
+	if err == nil || !strings.Contains(err.Error(), "postgres") {
+		t.Fatalf("DownDetached = %v, want a survivor error naming postgres", err)
+	}
+	rec, rerr := readPgidFile(cfg.StateDir)
+	if rerr != nil {
+		t.Fatalf("survivor record read = %v, want the rewritten survivor set", rerr)
+	}
+	if len(rec.Entries) != 1 || rec.Entries[0].ContainerName != pgContainerName {
+		t.Fatalf("survivor record = %+v, want exactly the postgres container entry", rec.Entries)
+	}
+}
+
+// TestDownDetachedTierSignalDoesNotWaitOnContainerDrain: signalling a tier never
+// blocks on a container's drain. The gateway's stop is sent first in its tier,
+// and the runner and server get their SIGTERM before any container is removed.
+func TestDownDetachedTierSignalDoesNotWaitOnContainerDrain(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	for _, p := range []int{pgPgid, serverPgid, runnerPgid} {
+		pgid := p
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	// The gateway is listed after the runner and server in its tier, so move it
+	// first to prove its stop does not hold up the signals behind it.
+	rec, err := readPgidFile(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExited(gatewayContainerNameTest) }
+	targets := liveTargets(context.Background(), cfg, deps, rec)
+	for i, tg := range targets {
+		if tg.entry.Component == ComponentGateway {
+			targets[0], targets[i] = targets[i], targets[0]
+		}
+	}
+	if survivors := drainTier(context.Background(), deps, targets[:3]); len(survivors) != 0 {
+		t.Fatalf("survivors = %v, want none", survivors)
+	}
+	events := h.rec.snapshot()
+	runnerTerm := indexOf(events, "group-term "+strconv.Itoa(runnerPgid))
+	serverTerm := indexOf(events, "group-term "+strconv.Itoa(serverPgid))
+	if indexOf(events, "ctr-stop "+gatewayContainerNameTest) != 0 || runnerTerm < 0 || serverTerm < 0 {
+		t.Fatalf("want the gateway stop first and both consumers signalled: %v", events)
+	}
+	lastTerm := max(runnerTerm, serverTerm)
+	for i, e := range events[:lastTerm] {
+		if strings.HasPrefix(e, "ctr-rm") {
+			t.Fatalf("event %d %q removed a container before its tier was signalled: %v", i, e, events)
+		}
+	}
+}
+
+// TestDownDetachedInfraTierWaitsForConsumerTier: nats and postgres are not
+// signalled while a consumer still drains. The server ignores SIGTERM, so its
+// budget runs out and it is killed; only then may the infra tier get its stop.
+func TestDownDetachedInfraTierWaitsForConsumerTier(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedNatsRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	h.groupSig.onKill[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.containers.onStop[natsContainerNameTest] = func(context.Context) { h.containers.setExistsName(natsContainerNameTest, false) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatal(err)
+	}
+	events := h.rec.snapshot()
+	serverKill := indexOf(events, "group-kill "+strconv.Itoa(serverPgid))
+	if serverKill < 0 {
+		t.Fatalf("server never escalated: %v", events)
+	}
+	for _, infra := range []string{"ctr-stop " + natsContainerNameTest, "group-term " + strconv.Itoa(pgPgid)} {
+		if i := indexOf(events, infra); i < serverKill {
+			t.Fatalf("%q at %d, before the server's budget expired at %d: %v", infra, i, serverKill, events)
+		}
+	}
+}
+
+// TestDownDetachedCancelInConsumerTierStillStopsInfra: a down cancelled while
+// consumers drain must still send the infra tier its stop on a live ctx, and
+// record every infra target as a survivor so a retry can finish them.
+func TestDownDetachedCancelInConsumerTierStillStopsInfra(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedNatsRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.groupSig.onTerm[runnerPgid] = func() {
+		cancel() // the down process is signalled during the consumer tier
+		h.groupSig.set(runnerPgid, pgToken(runnerPgid), false)
+	}
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	var stopCtxErr error
+	h.containers.onStop[natsContainerNameTest] = func(stopCtx context.Context) { stopCtxErr = stopCtx.Err() }
+
+	err := DownDetached(ctx, cfg, deps)
+	if err == nil {
+		t.Fatal("DownDetached = nil, want a survivor error for the unconfirmed infra tier")
+	}
+	if indexOf(h.rec.snapshot(), "ctr-stop "+natsContainerNameTest) < 0 {
+		t.Fatalf("nats never got its stop after cancel: %v", h.rec.snapshot())
+	}
+	if stopCtxErr != nil {
+		t.Fatalf("nats stop ran on a done ctx (%v); exec would refuse it", stopCtxErr)
+	}
+	rec, rerr := readPgidFile(cfg.StateDir)
+	if rerr != nil {
+		t.Fatalf("survivor record read = %v", rerr)
+	}
+	got := map[Component]bool{}
+	for _, e := range rec.Entries {
+		got[e.Component] = true
+	}
+	if !got[ComponentNats] || !got[ComponentPostgres] {
+		t.Fatalf("survivor record = %+v, want nats and postgres", rec.Entries)
+	}
+}
+
 // The stable name a v2 collector container entry carries in these tests.
 const collectorContainerNameTest = "compass-otel-collector-test01"
 
@@ -673,7 +1157,7 @@ func TestDownDetachedCollectorContainerTornDownByName(t *testing.T) {
 	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
-	h.containers.onStop[collectorContainerNameTest] = func() {
+	h.containers.onStop[collectorContainerNameTest] = func(context.Context) {
 		h.containers.setExistsName(collectorContainerNameTest, false)
 	}
 
@@ -770,7 +1254,7 @@ func TestDownDetachedNatsContainerTornDownByName(t *testing.T) {
 	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
-	h.containers.onStop[natsContainerNameTest] = func() {
+	h.containers.onStop[natsContainerNameTest] = func(context.Context) {
 		h.containers.setExistsName(natsContainerNameTest, false)
 	}
 
@@ -831,7 +1315,10 @@ func seedGatewayRecord(t *testing.T, cfg Config, h *harness) {
 	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
 }
 
-func TestDownDetachedGatewayStopsThenRemoves(t *testing.T) {
+// TestDownDetachedGatewayExitedIsRemovedAndConfirmed: the gateway runs without
+// --rm, so after the stop signal it exits but lingers; the confirm poll removes
+// it with a non-forced rm and confirms by absence, with no rm -f escalation.
+func TestDownDetachedGatewayExitedIsRemovedAndConfirmed(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedGatewayRecord(t, cfg, h)
 	deps := sidecarContainerDownDeps(t, h)
@@ -839,15 +1326,38 @@ func TestDownDetachedGatewayStopsThenRemoves(t *testing.T) {
 		pgid := p
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
 	}
-	h.containers.onStop[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
+	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExited(gatewayContainerNameTest) }
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatal(err)
+	}
+	got := ctrEvents(h.rec.snapshot())
+	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm-exited " + gatewayContainerNameTest}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gateway teardown = %v, want stop then non-forced rm", got)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedGatewayStillRunningEscalatesToRemove: while the gateway runs,
+// the non-forced rm is a no-op, so it stays present until the budget's rm -f.
+func TestDownDetachedGatewayStillRunningEscalatesToRemove(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	for _, p := range []int{pgPgid, serverPgid, runnerPgid} {
+		pgid := p
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onRemove[gatewayContainerNameTest] = func() { h.containers.setExistsName(gatewayContainerNameTest, false) }
 	if err := DownDetached(context.Background(), cfg, deps); err != nil {
 		t.Fatal(err)
 	}
 	got := ctrEvents(h.rec.snapshot())
 	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm " + gatewayContainerNameTest}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("gateway teardown = %v, want stop then remove", got)
+		t.Fatalf("gateway teardown = %v, want stop then rm -f", got)
 	}
+	assertPgidFileGone(t, cfg.StateDir)
 }
 
 // assertPgidFileGone fails if the pgid record still exists.
@@ -887,6 +1397,7 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 		},
 	}
 
+	stubBootID(t, testBootID)
 	survivors := survivorRecord(rec, []Component{ComponentServer, ComponentRunner})
 	if err := writePgidFile(dir, survivors); err != nil {
 		t.Fatalf("writePgidFile survivor = %v", err)
@@ -899,6 +1410,7 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 	want := pgidRecord{
 		WriterPid: 7,
 		Version:   pgidFileVersion,
+		BootID:    testBootID,
 		Entries: []pgidEntry{
 			{Kind: entryProc, Component: ComponentServer, Pgid: 201, StartTime: 1000},
 			{Kind: entryProc, Component: ComponentRunner, Pgid: 202, StartTime: 1001},
@@ -907,4 +1419,87 @@ func TestSurvivorRecordV1RoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reread record = %+v; want %+v", got, want)
 	}
+}
+
+// TestDownDetachedRebootedRecordSignalsNothing proves a record from an earlier
+// boot, with no answering socket, signals no group and is removed.
+func TestDownDetachedRebootedRecordSignalsNothing(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := darkSocketDownDeps(t, h)
+	// The live groups now belong to whoever holds those pids this boot.
+	stubBootID(t, "99999999-8888-7777-6666-555555555555")
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached on a prior-boot record = %v, want nil", err)
+	}
+	if got := signalEvents(h.rec.snapshot()); len(got) != 0 {
+		t.Fatalf("prior-boot record signalled groups: %v", got)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedRebootedRecordLiveSocketRefuses proves an answering socket
+// contradicts a boot mismatch: down refuses, keeps the record, and signals nothing.
+func TestDownDetachedRebootedRecordLiveSocketRefuses(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedFullRecord(t, cfg, h)
+	deps := downTestDeps(t, h)
+	deps.Prober = fixedServerProber(true)
+	stubBootID(t, "99999999-8888-7777-6666-555555555555")
+
+	if err := DownDetached(context.Background(), cfg, deps); err == nil {
+		t.Fatal("DownDetached with a live socket under a boot mismatch = nil, want a refusal")
+	}
+	if got := signalEvents(h.rec.snapshot()); len(got) != 0 {
+		t.Fatalf("refusal signalled groups: %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, pgidFileName)); err != nil {
+		t.Fatalf("pgid record after refusal: %v; want it kept", err)
+	}
+}
+
+// TestDownDetachedRebootedRecordStillChecksContainers proves a reboot drops only
+// process entries: a container keeps its name identity and is confirmed by absence.
+func TestDownDetachedRebootedRecordStillChecksContainers(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedGatewayRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+	deps.Prober = fixedServerProber(false)
+	stubBootID(t, "99999999-8888-7777-6666-555555555555")
+	h.containers.onStop[gatewayContainerNameTest] = func(context.Context) { h.containers.setExited(gatewayContainerNameTest) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached on a prior-boot record = %v, want nil", err)
+	}
+	events := h.rec.snapshot()
+	if got := signalEvents(events); len(got) != 0 {
+		t.Fatalf("prior-boot record signalled groups: %v", got)
+	}
+	want := []string{"ctr-stop " + gatewayContainerNameTest, "ctr-rm-exited " + gatewayContainerNameTest}
+	if got := ctrEvents(events); !reflect.DeepEqual(got, want) {
+		t.Fatalf("prior-boot container teardown = %v, want %v", got, want)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedLegacyHeaderKeepsIdentityTeardown proves a record with no boot
+// id (an older build) is an unknown boot and tears down exactly as before.
+func TestDownDetachedLegacyHeaderKeepsIdentityTeardown(t *testing.T) {
+	cfg, h := newHarness(t)
+	legacy := "2 4242\nproc postgres " + strconv.Itoa(pgPgid) + " " + strconv.FormatUint(pgToken(pgPgid), 10) + "\n"
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, pgidFileName), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("seed legacy record = %v", err)
+	}
+	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	deps := downTestDeps(t, h)
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached(legacy) = %v, want nil", err)
+	}
+	if got, want := signalEvents(h.rec.snapshot()), []string{"group-term " + strconv.Itoa(pgPgid)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy teardown:\n got  %v\n want %v", got, want)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
 }

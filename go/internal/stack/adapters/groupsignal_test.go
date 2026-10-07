@@ -4,63 +4,104 @@ package adapters
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
-// TestGroupSignallerAliveThenSignalTearsDown drives the real syscall adapter
-// against a real child process group (the re-exec helper), with no timing
-// guesses: every wait is gated on an event (the child's ready file via
-// startHelper, then proc.Wait for exit).
-//
-//  1. A freshly started, identity-matched group is Alive.
-//  2. A wrong start-time token (a recycled pid) reports NOT alive — the identity
-//     gate, not bare existence.
-//  3. A real SIGTERM through Signal delivers to the group; after the child exits
-//     (gated on proc.Wait), the group is no longer Alive.
-func TestGroupSignallerAliveThenSignalTearsDown(t *testing.T) {
+// TestGroupSignallerLivenessThenSignalTearsDown drives the real adapter against
+// a real child group: owned with the right token, recycled with a wrong one, and
+// gone once a delivered SIGTERM ends it. Every wait is event-gated.
+func TestGroupSignallerLivenessThenSignalTearsDown(t *testing.T) {
 	proc := startHelper(t, "trap", stack.ComponentServer, nil)
 	pgid := proc.Pid()
-
 	gs := NewGroupSignaller()
 
 	startTime, err := readGroupLeaderStartTime(pgid)
 	if err != nil {
 		t.Fatalf("readGroupLeaderStartTime(%d) = %v", pgid, err)
 	}
-
-	// 1. Identity-matched → alive.
-	if !gs.Alive(pgid, startTime) {
-		t.Fatalf("Alive(%d, %d) = false, want true for a live identity-matched group", pgid, startTime)
+	if got := gs.Liveness(pgid, startTime); got != stack.GroupOwned {
+		t.Fatalf("Liveness(%d, matching token) = %v, want GroupOwned", pgid, got)
 	}
-	// 2. Wrong token (recycled pid) → not alive.
-	if gs.Alive(pgid, startTime+1) {
-		t.Fatalf("Alive(%d, %d) = true, want false for a mismatched start-time token", pgid, startTime+1)
+	if got := gs.Liveness(pgid, startTime+1); got != stack.GroupRecycled {
+		t.Fatalf("Liveness(%d, wrong token) = %v, want GroupRecycled", pgid, got)
 	}
 
-	// 3. Real SIGTERM to the group; the trap helper converts it to a clean exit.
 	if err := gs.Signal(pgid, stack.SignalTerm); err != nil {
 		t.Fatalf("Signal(SIGTERM) = %v", err)
 	}
-	// Gate on the actual exit event, not a sleep.
 	if err := proc.Wait(context.Background()); err != nil {
 		t.Fatalf("proc.Wait after SIGTERM = %v", err)
 	}
-	// The group leader has exited; a re-check with the original token is not alive.
-	// (kill(-pgid,0) ESRCH, or the /proc read fails — either way not-alive.)
-	if gs.Alive(pgid, startTime) {
-		t.Fatalf("Alive(%d, %d) = true after the group exited, want false", pgid, startTime)
+	// The reaped single-member group is ESRCH.
+	if got := gs.Liveness(pgid, startTime); got != stack.GroupGone {
+		t.Fatalf("Liveness(%d) after exit = %v, want GroupGone", pgid, got)
 	}
 }
 
-// TestGroupSignallerAliveDeadGroup proves a pgid that names no process reports
-// not-alive rather than erroring or signaling.
-func TestGroupSignallerAliveDeadGroup(t *testing.T) {
+// TestGroupSignallerLivenessOrphanedGroup proves a group whose leader was reaped
+// while a member lives is orphaned, never gone, and stays signalable.
+func TestGroupSignallerLivenessOrphanedGroup(t *testing.T) {
+	memberReady := filepath.Join(t.TempDir(), "member-ready")
+	proc := startHelper(t, "forkmember", stack.ComponentServer, []string{helperMemberReadyKey + "=" + memberReady})
+	pgid := proc.Pid()
 	gs := NewGroupSignaller()
-	dead := deadPGID(t)
-	if gs.Alive(dead, 12345) {
-		t.Fatalf("Alive(%d, ...) = true for a nonexistent group, want false", dead)
+	// Until the group is seen gone, only this test's members can hold the pgid.
+	released := false
+	t.Cleanup(func() {
+		if released {
+			return
+		}
+		if err := gs.Signal(pgid, stack.SignalKill); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Logf("cleanup SIGKILL of group %d: %v", pgid, err)
+		}
+	})
+	waitReady(t, memberReady, proc)
+
+	startTime, err := readGroupLeaderStartTime(pgid)
+	if err != nil {
+		t.Fatalf("readGroupLeaderStartTime(%d) = %v", pgid, err)
+	}
+	// Kill and reap only the leader, by its own pid; the member keeps the pgid.
+	if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil {
+		t.Fatalf("SIGKILL leader %d = %v", pgid, err)
+	}
+	if err := proc.Wait(context.Background()); err == nil {
+		t.Fatal("proc.Wait after leader SIGKILL = nil, want the kill exit error")
+	}
+	if got := gs.Liveness(pgid, startTime); got != stack.GroupOrphaned {
+		t.Fatalf("Liveness(%d) with a reaped leader and a live member = %v, want GroupOrphaned", pgid, got)
+	}
+
+	if err := gs.Signal(pgid, stack.SignalKill); err != nil {
+		t.Fatalf("Signal(SIGKILL) to orphaned group = %v", err)
+	}
+	// init reaps the reparented member; poll that event with a deadline.
+	deadline := time.Now().Add(5 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for gs.Liveness(pgid, startTime) != stack.GroupGone {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("orphaned group %d still present 5s after SIGKILL", pgid)
+		}
+		<-ticker.C
+	}
+	released = true
+}
+
+// TestGroupSignallerLivenessDeadGroup proves a pgid that names no process, and a
+// degenerate pgid, report gone rather than erroring or signaling.
+func TestGroupSignallerLivenessDeadGroup(t *testing.T) {
+	gs := NewGroupSignaller()
+	for _, pgid := range []int{deadPGID(t), 1, 0, -1} {
+		if got := gs.Liveness(pgid, 12345); got != stack.GroupGone {
+			t.Fatalf("Liveness(%d, ...) = %v, want GroupGone", pgid, got)
+		}
 	}
 }
 
@@ -100,12 +141,8 @@ func TestParseGroupLeaderStatParsesParenthesizedComm(t *testing.T) {
 // a high number until kill(-pgid, 0) reports ESRCH.
 func deadPGID(t *testing.T) int {
 	t.Helper()
-	gs := NewGroupSignaller()
 	for pgid := 1 << 20; pgid < (1<<20)+100000; pgid++ {
-		if !gs.Alive(pgid, 0) {
-			// Alive is false either because ESRCH or because /proc read failed;
-			// for a pgid with no process the kill(0) is ESRCH — good enough for a
-			// "not a live group" pgid the signal tests want.
+		if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
 			return pgid
 		}
 	}
