@@ -22,9 +22,9 @@ func TestComputeUsageRollupMigrationBackfillsClosedIntervals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	i := slices.IndexFunc(migs, func(m migration) bool { return m.name == "0002_compute_usage_rollups.sql" })
+	i := slices.IndexFunc(migs, func(m migration) bool { return m.name == "0003_compute_usage_rollups.sql" })
 	if i < 0 {
-		t.Fatal("migration 0002_compute_usage_rollups.sql is not embedded")
+		t.Fatal("migration 0003_compute_usage_rollups.sql is not embedded")
 	}
 	version := migs[i].version
 	applyMigrationsThrough(t, dsn, version-1)
