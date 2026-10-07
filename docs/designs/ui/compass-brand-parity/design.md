@@ -450,7 +450,8 @@ so later tasks recapture a stable base.
 - **Look line.** Base: the current top of the in-window tabs line, which is
   #1811 (RIG-4771) today. T2b and T8 need #1811's chrome; T5 needs that
   line's `RouteMatch` shape. Order: T1 → T2a → T9 → T4 → T6 → T7 → T8, then
-  T2b and T5 in the order their open questions are answered, then T10.
+  T2b and T5 in the order their open questions are answered, then T10 after
+  the RIG-4773 fix merges.
 - **State line.** Base: #1814 (RIG-4772). T3 only. It changes no baseline:
   `visual-smoke.spec.ts` renders stub data with no daemon.
 
@@ -679,8 +680,9 @@ Every task that changes baselines also waits for #1644 (DL-399).
     `backlogIssues(store.issues()).length + store.assignedIssues().length`)
     and `Done`, which call `view.navigate("/backlog")` and
     `view.navigate("/done")`. Issues and PRs call `view.navigate("/")`
-    before `setTab`. The grouping control, the roving group, and the
-    `board.*` commands run only on Issues and PRs.
+    before `setTab`. The grouping control, the roving group (with its
+    `list.*` row commands), and the `board.*` commands run only on Issues
+    and PRs.
   - `apps/ui/src/components/LeftSidebar.tsx`: delete the Backlog and Done
     links and `backlogCount`. The Bridge link is active for `bridge`,
     `backlog`, and `done`.
@@ -698,6 +700,9 @@ Every task that changes baselines also waits for #1644 (DL-399).
   link, and the CoachTip tests cover Bridge and Settings only.
   `keyboard-e2e.test.tsx`: drop `view.backlog` and `view.done` from
   `COACHED_COMMANDS`; they stay registered but are no longer coached.
+  Rewrite "list.* rows follow the board lifecycle": after
+  `store.showBacklog()` the `.bridge` stays mounted and the `list.*` rows
+  still retract.
 - **Baselines:** `backlog.png`, `done.png`, the `bridge*` shots, and the
   shots with the left sidebar.
 
@@ -714,8 +719,8 @@ Look line, on the in-window tabs line top (#1811):
 - [ ] T8 — Compass mark (after Open Question 4)
 - [ ] T2b — Surfaces and lines (after Open Question 1)
 - [ ] T5 — The agent tree view (after Open Question 2)
-- [ ] T10 — Backlog and Done inside the Bridge (after Open Question 5 and
-  T5)
+- [ ] T10 — Backlog and Done inside the Bridge (after Open Question 5, T5,
+  and the RIG-4773 merge)
 
 State line, on #1814:
 
