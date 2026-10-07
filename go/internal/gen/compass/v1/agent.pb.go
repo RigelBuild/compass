@@ -195,9 +195,9 @@ type AgentFrame_ReplayCompleteAck struct {
 type AgentFrame_ControlAck struct {
 	// control_ack — the agent's selective apply-ack: a contiguous cursor
 	//
-	//	(highest contiguously-APPLIED control_seq) plus a bounded set of seqs
-	//	applied out of order above it. The Runner retires retained ops up to
-	//	the cursor and drops the individually-acked ones.
+	//	plus inclusive runs of seqs applied out of order above it. The
+	//	Runner retires retained ops up to the cursor and drops the applied
+	//	ops named by the ranges.
 	ControlAck *ControlAck `protobuf:"bytes,5,opt,name=control_ack,json=controlAck,proto3,oneof"`
 }
 
@@ -1105,11 +1105,16 @@ type ControlAck struct {
 	// Highest contiguously-applied control_seq: the Runner retires retained ops
 	// up to and including this cursor.
 	AckedSeq uint64 `protobuf:"varint,1,opt,name=acked_seq,json=ackedSeq,proto3" json:"acked_seq,omitempty"`
-	// Seqs applied out of order ABOVE the contiguous cursor: the Runner drops
-	// these individually-acked ops from retention. Bounded (a small window).
-	AppliedAbove  []uint64 `protobuf:"varint,2,rep,packed,name=applied_above,json=appliedAbove,proto3" json:"applied_above,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Legacy per-seq form. Still read by the Runner for agents that predate
+	// applied_above_ranges; new agents leave it empty.
+	AppliedAbove []uint64 `protobuf:"varint,2,rep,packed,name=applied_above,json=appliedAbove,proto3" json:"applied_above,omitempty"`
+	// Out-of-order applied seqs above the cursor as flattened inclusive runs:
+	// [start0, end0, start1, end1, ...]. Packed scalars keep decode cost linear
+	// in wire bytes; a trailing unpaired value is ignored. The Runner reads at
+	// most its retention limit of pairs; more cannot name distinct retained ops.
+	AppliedAboveRanges []uint64 `protobuf:"varint,3,rep,packed,name=applied_above_ranges,json=appliedAboveRanges,proto3" json:"applied_above_ranges,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ControlAck) Reset() {
@@ -1152,6 +1157,13 @@ func (x *ControlAck) GetAckedSeq() uint64 {
 func (x *ControlAck) GetAppliedAbove() []uint64 {
 	if x != nil {
 		return x.AppliedAbove
+	}
+	return nil
+}
+
+func (x *ControlAck) GetAppliedAboveRanges() []uint64 {
+	if x != nil {
+		return x.AppliedAboveRanges
 	}
 	return nil
 }
@@ -1221,11 +1233,12 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\x14ForgeNotificationAck\x12'\n" +
 	"\x0fsubscription_id\x18\x01 \x01(\tR\x0esubscriptionId\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\tR\brevision\"\x13\n" +
-	"\x11ReplayCompleteAck\"N\n" +
+	"\x11ReplayCompleteAck\"\x80\x01\n" +
 	"\n" +
 	"ControlAck\x12\x1b\n" +
 	"\tacked_seq\x18\x01 \x01(\x04R\backedSeq\x12#\n" +
-	"\rapplied_above\x18\x02 \x03(\x04R\fappliedAboveb\x06proto3"
+	"\rapplied_above\x18\x02 \x03(\x04R\fappliedAbove\x120\n" +
+	"\x14applied_above_ranges\x18\x03 \x03(\x04R\x12appliedAboveRangesb\x06proto3"
 
 var (
 	file_compass_v1_agent_proto_rawDescOnce sync.Once

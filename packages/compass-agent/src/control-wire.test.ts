@@ -107,22 +107,26 @@ describe("AgentControl — controlSeq is a top-level envelope field", () => {
 });
 
 describe("AgentControl ack frames — scalar shapes survive the wire", () => {
-	test("ControlAck carries acked_seq + applied_above as uint64 JSON strings", () => {
+	test("ControlAck carries legacy seqs and inclusive ranges as uint64 JSON strings", () => {
 		const ack = create(ControlAckSchema, {
 			ackedSeq: 7n,
 			appliedAbove: [9n, 11n],
+			appliedAboveRanges: [12n, 15n, 20n, 20n],
 		});
 		const json = toJson(ControlAckSchema, ack);
 		const view = json as {
 			ackedSeq?: unknown;
 			appliedAbove?: unknown;
+			appliedAboveRanges?: unknown;
 		};
-		// uint64 → JSON string; repeated uint64 → array of strings.
+		// uint64 → JSON string; ranges are flattened [start, end] pairs.
 		expect(view.ackedSeq).toBe("7");
 		expect(view.appliedAbove).toEqual(["9", "11"]);
+		expect(view.appliedAboveRanges).toEqual(["12", "15", "20", "20"]);
 		const back: ControlAck = fromJson(ControlAckSchema, json);
 		expect(back.ackedSeq).toBe(7n);
 		expect(back.appliedAbove).toEqual([9n, 11n]);
+		expect(back.appliedAboveRanges).toEqual([12n, 15n, 20n, 20n]);
 	});
 
 	test("ReplayCompleteAck (empty) round-trips", () => {
@@ -163,6 +167,7 @@ describe("AgentFrame — ack variants carry the oneof discriminator", () => {
 				value: create(ControlAckSchema, {
 					ackedSeq: 7n,
 					appliedAbove: [9n, 11n],
+					appliedAboveRanges: [12n, 15n],
 				}),
 			},
 		});
@@ -175,6 +180,7 @@ describe("AgentFrame — ack variants carry the oneof discriminator", () => {
 		if (back.frame.case !== "controlAck") throw new Error("unreachable");
 		expect(back.frame.value.ackedSeq).toBe(7n);
 		expect(back.frame.value.appliedAbove).toEqual([9n, 11n]);
+		expect(back.frame.value.appliedAboveRanges).toEqual([12n, 15n]);
 	});
 });
 

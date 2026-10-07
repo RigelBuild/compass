@@ -202,10 +202,14 @@ func transcriptEntryFrame(entryJSON string, checkpoint bool, seq uint64) *compas
 
 // controlAckFrame builds a ControlAck AgentFrame — a control-plane ack routed to
 // the control lane, never relayed upstream.
-func controlAckFrame(ackedSeq uint64, appliedAbove []uint64) *compassv1internal.AgentFrame {
+func controlAckFrame(ackedSeq uint64, appliedAbove []uint64, appliedRanges ...uint64) *compassv1internal.AgentFrame {
 	return &compassv1internal.AgentFrame{
 		Frame: &compassv1internal.AgentFrame_ControlAck{
-			ControlAck: &compassv1internal.ControlAck{AckedSeq: ackedSeq, AppliedAbove: appliedAbove},
+			ControlAck: &compassv1internal.ControlAck{
+				AckedSeq:           ackedSeq,
+				AppliedAbove:       appliedAbove,
+				AppliedAboveRanges: appliedRanges,
+			},
 		},
 	}
 }
@@ -224,9 +228,10 @@ func replayCompleteAckFrame() *compassv1internal.AgentFrame {
 
 // controlAckCall records one AckControl invocation for the ack-routing test.
 type controlAckCall struct {
-	sessionID    string
-	ackedSeq     uint64
-	appliedAbove []uint64
+	sessionID     string
+	ackedSeq      uint64
+	appliedAbove  []uint64
+	appliedRanges []uint64
 }
 
 // fakeControlRouter records the acks the ingest path routes to the control lane,
@@ -239,10 +244,10 @@ type fakeControlRouter struct {
 	releaseCalls []string
 }
 
-func (f *fakeControlRouter) AckControl(sessionID string, _, ackedSeq uint64, appliedAbove []uint64) {
+func (f *fakeControlRouter) AckControl(sessionID string, _, ackedSeq uint64, appliedAbove []uint64, appliedRanges []uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.ackCalls = append(f.ackCalls, controlAckCall{sessionID: sessionID, ackedSeq: ackedSeq, appliedAbove: appliedAbove})
+	f.ackCalls = append(f.ackCalls, controlAckCall{sessionID: sessionID, ackedSeq: ackedSeq, appliedAbove: appliedAbove, appliedRanges: appliedRanges})
 }
 
 func (f *fakeControlRouter) Epoch(string) uint64 { return 0 }
@@ -1481,7 +1486,7 @@ func TestPublishRoutesAcksToControlRouterNotUpstream(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 
 	stream := client.Publish(context.Background())
-	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: controlAckFrame(7, []uint64{9})}); err != nil {
+	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: controlAckFrame(7, []uint64{9}, 12, 15)}); err != nil {
 		t.Fatalf("send control ack: %v", err)
 	}
 	if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: replayCompleteAckFrame()}); err != nil {
@@ -1514,8 +1519,8 @@ func TestPublishRoutesAcksToControlRouterNotUpstream(t *testing.T) {
 		t.Fatalf("AckControl calls = %d, want 1", len(router.ackCalls))
 	}
 	c := router.ackCalls[0]
-	if c.sessionID != "sess-1" || c.ackedSeq != 7 || len(c.appliedAbove) != 1 || c.appliedAbove[0] != 9 {
-		t.Fatalf("AckControl(%q, %d, %v), want (sess-1, 7, [9])", c.sessionID, c.ackedSeq, c.appliedAbove)
+	if c.sessionID != "sess-1" || c.ackedSeq != 7 || len(c.appliedAbove) != 1 || c.appliedAbove[0] != 9 || len(c.appliedRanges) != 2 || c.appliedRanges[0] != 12 || c.appliedRanges[1] != 15 {
+		t.Fatalf("AckControl(%q, %d, %v, %v), want (sess-1, 7, [9], [12 15])", c.sessionID, c.ackedSeq, c.appliedAbove, c.appliedRanges)
 	}
 	if len(router.releaseCalls) != 1 || router.releaseCalls[0] != "sess-1" {
 		t.Fatalf("ReleaseReplayBarrier calls = %v, want [sess-1]", router.releaseCalls)
