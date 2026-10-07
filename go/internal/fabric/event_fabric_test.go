@@ -2538,7 +2538,7 @@ func newParkRaceFabric(t *testing.T, ackWait time.Duration) (*Fabric, context.Co
 	return f, ctx, raw, dlq, advisories, wildcard
 }
 
-func TestCallbackRetriesAfterAdvisoryFetchTimeout(t *testing.T) {
+func TestCallbackRetriesAfterAdvisoryFetchFailure(t *testing.T) {
 	t.Parallel()
 	ackWait := 100 * time.Millisecond
 	f, ctx, raw, dlq, advisories, wildcard := newParkRaceFabric(t, ackWait)
@@ -2547,18 +2547,22 @@ func TestCallbackRetriesAfterAdvisoryFetchTimeout(t *testing.T) {
 	releaseCallbackOnce := sync.OnceFunc(func() { close(releaseCallback) })
 	defer releaseCallbackOnce()
 	fetchStarted := make(chan struct{})
-	fetchResult := make(chan error, 1)
 	releaseFetch := make(chan struct{})
 	releaseFetchOnce := sync.OnceFunc(func() { close(releaseFetch) })
 	defer releaseFetchOnce()
 	waitingClaim := make(chan string, 1)
 	f.parkClaimWaiting = func(path string) { waitingClaim <- path }
+	fetchBudget := make(chan time.Duration, 1)
 	f.getParkedMsg = func(ctx context.Context, _ uint64) (*jetstream.RawStreamMsg, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			fetchBudget <- 0
+		} else {
+			fetchBudget <- time.Until(deadline)
+		}
 		close(fetchStarted)
-		<-ctx.Done()
-		fetchResult <- ctx.Err()
 		<-releaseFetch
-		return nil, context.DeadlineExceeded
+		return nil, errors.New("injected fetch failure")
 	}
 	decisions := make(chan parkDecision, 2)
 	f.parkDecided = func(path string, published bool) {
@@ -2581,7 +2585,7 @@ func TestCallbackRetriesAfterAdvisoryFetchTimeout(t *testing.T) {
 		releaseFetchOnce()
 		unsub()
 	}()
-	if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "fetch-timeout"}); err != nil {
+	if err := f.Publish(ctx, subject, EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "fetch-failure"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -2597,14 +2601,8 @@ func TestCallbackRetriesAfterAdvisoryFetchTimeout(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("advisory did not claim the park before fetching the message")
 	}
-	var fetchErr error
-	select {
-	case fetchErr = <-fetchResult:
-	case <-ctx.Done():
-		t.Fatalf("advisory fetch did not time out before the test context: %v", ctx.Err())
-	}
-	if !errors.Is(fetchErr, context.DeadlineExceeded) {
-		t.Fatalf("advisory fetch error = %v, want context deadline exceeded", fetchErr)
+	if budget := <-fetchBudget; budget <= ackWait {
+		t.Fatalf("advisory fetch budget = %s, want greater than AckWait %s", budget, ackWait)
 	}
 	releaseCallbackOnce()
 	select {
@@ -2618,10 +2616,10 @@ func TestCallbackRetriesAfterAdvisoryFetchTimeout(t *testing.T) {
 	releaseFetchOnce()
 	seen := awaitTwoParkDecisions(t, ctx, decisions)
 	if seen["advisory:"+durableName(wildcard)] {
-		t.Fatal("timed-out advisory fetch was reported as published")
+		t.Fatal("failed advisory fetch was reported as published")
 	}
 	if !seen["callback:"+durableName(wildcard)] {
-		t.Fatal("callback did not reclaim and publish after advisory fetch timed out")
+		t.Fatal("callback did not reclaim and publish after advisory fetch failure")
 	}
 	if err := f.nc.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flushing fabric publish: %v", err)
@@ -2631,7 +2629,7 @@ func TestCallbackRetriesAfterAdvisoryFetchTimeout(t *testing.T) {
 	}
 	parked, err := dlq.NextMsgWithContext(ctx)
 	if err != nil {
-		t.Fatalf("callback did not park the event after advisory fetch timeout: %v", err)
+		t.Fatalf("callback did not park the event after advisory fetch failure: %v", err)
 	}
 	if got := parked.Header.Get(dlqHeaderSubject); got != subject {
 		t.Fatalf("parked subject = %q, want %q", got, subject)
