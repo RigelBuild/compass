@@ -213,6 +213,10 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 			err = bindings.DeleteSessionBinding(ctx, sessionID)
 		case only.version != "":
 			removed, err = bindings.DeleteSessionBindingVersion(ctx, sessionID, only.version)
+		default:
+			// Any row is someone else's write, so the session is still bound there.
+			_, _, _, rerr := bindings.ResolveSessionBinding(ctx, sessionID)
+			removed = errors.Is(rerr, store.ErrNotFound)
 		}
 		switch {
 		case err != nil:
@@ -222,8 +226,8 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 			h.log.Error("delete session binding failed; evicting cache anyway",
 				"session_id", sessionID, "error", err)
 		case !removed:
-			// Only a versioned release reports false: the row was re-bound since
-			// only was read, so it is not ours to release.
+			// The row was re-bound since only was read: the session is not lost.
+			h.evictStaleBinding(sessionID, only)
 			return false
 		default:
 			tenant = string(bindings.EffectiveTenant(ctx))
@@ -273,6 +277,19 @@ func (h *Hub) releaseSession(ctx context.Context, sessionID string, only *sessio
 		presence.OnSessionLifecycle(account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
 	}
 	return true
+}
+
+// evictStaleBinding drops sessionID's cache entry while it is still stale, so the
+// next read resolves the row that replaced it.
+func (h *Hub) evictStaleBinding(sessionID string, stale *sessionBinding) {
+	if stale == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if live, ok := h.sessionAccounts[sessionID]; ok && sameBinding(live, *stale) {
+		delete(h.sessionAccounts, sessionID)
+	}
 }
 
 // newBindingLocked builds a sessionAccounts entry with a fresh lifetime. Caller holds mu.
