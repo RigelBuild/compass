@@ -21,7 +21,7 @@ const STORAGE_KEY = "compass.windowLayout";
 const MAX_SEED = 1e9;
 
 export type LayoutAction =
-	| { kind: "open"; path: string; background?: boolean }
+	| { kind: "open"; path: string; background?: boolean; fresh?: boolean }
 	| { kind: "close"; tabId: string }
 	| { kind: "focusTab"; tabId: string }
 	| { kind: "move"; tabId: string; toIndex: number }
@@ -115,14 +115,18 @@ function withFocusedPath(tab: TabLayout, path: string): TabLayout {
 		: { ...tab, second: moved };
 }
 
+// `fresh` skips the dedupe: New tab always opens a tab, as in a browser.
 function open(
 	layout: WindowLayout,
 	path: string,
 	background: boolean,
+	fresh = false,
 ): WindowLayout | LayoutRefusal {
-	const existing = layout.tabs.find(
-		(tab) => tab.layout.kind === "single" && tab.layout.view.path === path,
-	);
+	const existing = fresh
+		? undefined
+		: layout.tabs.find(
+				(tab) => tab.layout.kind === "single" && tab.layout.view.path === path,
+			);
 	if (existing) {
 		return background || existing.id === layout.activeTabId
 			? layout
@@ -186,7 +190,12 @@ export function reduceLayout(
 ): WindowLayout | LayoutRefusal {
 	switch (action.kind) {
 		case "open":
-			return open(layout, action.path, action.background ?? false);
+			return open(
+				layout,
+				action.path,
+				action.background ?? false,
+				action.fresh,
+			);
 		case "close":
 			return close(layout, action.tabId);
 		case "focusTab":

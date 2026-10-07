@@ -40,12 +40,13 @@ const panelForView = (container: HTMLElement, viewId: string): HTMLElement => {
 afterEach(() => cleanup());
 
 describe("tab and pane commands on the real store", () => {
-	test("New tab on the Bridge tab keeps one tab with Bridge focused", async () => {
+	test("New tab on the Bridge tab opens a second Bridge tab and focuses it", async () => {
 		const { store } = mountApp("/");
 		await flush();
 		runCommand(store, "tab.new");
 		await flush();
-		expect(store.layout().tabs).toHaveLength(1);
+		expect(store.layout().tabs).toHaveLength(2);
+		expect(store.layout().activeTabId).toBe(tabIdAt(store, 1));
 		expect(store.view()).toBe("bridge");
 	});
 
