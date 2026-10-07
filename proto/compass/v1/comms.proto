@@ -630,6 +630,12 @@ message CreateAgentRequest {
   // resolves it to an account id; unknown → NOT_FOUND. Resolves owner-qualified
   // (a bare handle defaults to the caller's own owner namespace).
   string parent_handle = 3;
+  // Closed role taxonomy: supervisor, owner, or manager. Server-validated; it
+  // selects the block-0 prompt. Set at creation only; empty means none.
+  string role = 4;
+  // Free-text identity overlay baked at provision. Set at creation only; empty
+  // means none.
+  string persona = 5;
 }
 
 message CreateAgentResponse {
