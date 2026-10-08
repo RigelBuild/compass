@@ -219,7 +219,10 @@ type ChannelGroup struct {
 	// OwnerUserID is the user whose space this group is; empty for a shared
 	// group. Server-set to the creating caller.
 	OwnerUserID AccountID
-	Visibility  ChannelGroupVisibility
+	// NamespaceOwnerID is the user whose namespace holds the group: the creator,
+	// or an agent creator's owner. Top-level names are unique within it.
+	NamespaceOwnerID AccountID
+	Visibility       ChannelGroupVisibility
 }
 
 // Channel is a named conversation within a group (comms.proto:183-195). Per the

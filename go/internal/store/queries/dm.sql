@@ -14,8 +14,9 @@ SELECT id FROM channel_groups
 WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL AND visibility = $3;
 
 -- name: InsertOwnerDMGroup :exec
-INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility)
-VALUES ($1, $2, NULL, $3, $4);
+INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, namespace_owner_id)
+VALUES ($1, $2, NULL, $3, $4,
+        COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $3), $3));
 
 -- name: GetDMChannelByName :one
 SELECT id, kind FROM channels WHERE group_id = $1 AND name = $2;
