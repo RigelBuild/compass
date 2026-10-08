@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	type Mock,
+	spyOn,
+	test,
+} from "bun:test";
+import * as solidVirtual from "@rigelbuild/solid-virtual";
 import { render } from "@solidjs/testing-library";
 import { createSignal, flush } from "solid-js";
 import type { Account, Message } from "../comms-stub";
@@ -12,6 +21,24 @@ import {
 	messageVirtualizerOptions,
 } from "./conv-virtual";
 import { MessageStream } from "./MessageStream";
+
+// MessageStream keeps its virtualizer private; a pass-through spy on the real
+// factory (behavior unchanged) exposes the measurement cache for inspection.
+let lastVirtualizer:
+	| { elementsCache: Map<solidVirtual.VirtualItem["key"], Element> }
+	| undefined;
+let virtualizerSpy: Mock<typeof solidVirtual.createVirtualizer> | undefined;
+
+function captureVirtualizer(): void {
+	const real = solidVirtual.createVirtualizer;
+	virtualizerSpy = spyOn(solidVirtual, "createVirtualizer").mockImplementation(
+		(options) => {
+			const instance = real(options);
+			lastVirtualizer = instance;
+			return instance;
+		},
+	);
+}
 
 // The conversation stream's scroll contract, designed fresh
 // (ChannelView had NO scroll management before this lane). The behavior is
@@ -112,6 +139,9 @@ beforeEach(() => {
 afterEach(() => {
 	restoreGeometry?.();
 	restoreGeometry = undefined;
+	virtualizerSpy?.mockRestore();
+	virtualizerSpy = undefined;
+	lastVirtualizer = undefined;
 });
 
 function scrollToTop(el: HTMLElement): void {
@@ -365,6 +395,59 @@ describe("MessageStream scroll contract", () => {
 		expect(
 			Math.max(...rowsB.map((r) => Number(r.getAttribute("data-index")))),
 		).toBe(199); // B's final message is in view
+	});
+
+	// A topic switch reuses the rendered rows by index; a reused row now shows a
+	// different message, so it must be measured again or it keeps the estimate.
+	test("switching scope re-measures reused rows so message spacing stays uniform", () => {
+		const proto = Object.getPrototypeOf(document.createElement("div"));
+		const geometry = Object.getOwnPropertyDescriptor(proto, "offsetHeight");
+		Object.defineProperty(proto, "offsetHeight", {
+			configurable: true,
+			get(this: HTMLElement) {
+				if (!this.hasAttribute?.("data-index"))
+					return geometry?.get?.call(this);
+				return this.textContent?.includes("tall") ? 160 : 40;
+			},
+		});
+		const { setMessages, setScopeId, rows } = mountStream([
+			msg("a-0", 1_000, "short a"),
+			msg("a-1", 2_000, "short b"),
+		]);
+		setMessages([
+			msg("b-0", 3_000, "short c"),
+			msg("b-1", 4_000, "tall d"),
+			msg("b-2", 5_000, "short e"),
+		]);
+		setScopeId("top-b");
+		flush();
+		expect(rows().map(translateY)).toEqual([0, 40, 200]);
+	});
+
+	// A reused row must leave its previous key's cache entry; otherwise one node
+	// piles up under every key it has shown and is pinned after it detaches.
+	test("a reused row is cached only under the key it currently shows", () => {
+		captureVirtualizer();
+		const { setMessages, setScopeId, rows } = mountStream([
+			msg("a-0", 1_000),
+			msg("a-1", 2_000),
+		]);
+		for (const scope of ["b", "c", "d"]) {
+			setMessages([msg(`${scope}-0`, 3_000), msg(`${scope}-1`, 4_000)]);
+			setScopeId(`top-${scope}`);
+			flush();
+		}
+		const cache = lastVirtualizer?.elementsCache;
+		expect(cache).toBeDefined();
+		const live = rows();
+		expect(live.map((r) => r.getAttribute("data-key"))).toEqual(["d-0", "d-1"]);
+		for (const row of live) {
+			expect(cache?.get(row.getAttribute("data-key") ?? "")).toBe(row);
+		}
+		for (const [key, el] of cache ?? []) {
+			const shown = live.find((row) => row === el);
+			if (shown) expect(key).toBe(shown.getAttribute("data-key") ?? "");
+		}
 	});
 
 	// Case (8): shrinking a large WINDOWED topic to empty ([]) renders the empty

@@ -160,9 +160,17 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	test("bridge — PRs board", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });
-		// The PRs seg button (Bridge.tsx:154-158) — label "PRs · N", matched on
-		// its stable prefix so the live count doesn't perturb the selector.
+		// The tab seg must not move when the PRs tab hides the grouping seg, or
+		// the control slides out from under the pointer.
+		const tabSeg = page.locator('[aria-label="Board view"]');
+		const onIssues = await tabSeg.boundingBox();
+		// The PRs seg button — label "PRs · N", matched on its stable prefix so
+		// the live count doesn't perturb the selector.
 		await page.getByRole("button", { name: /^PRs/ }).click();
+		await page.locator('[aria-label="Board grouping"]').waitFor({
+			state: "detached",
+		});
+		expect(await tabSeg.boundingBox()).toEqual(onIssues);
 		// Wait on a populated PR card in the board (Bridge.tsx `.bridge-grid` >
 		// `.bridge-cell` > `.cx-card`), not the grid container — the grid renders
 		// even with no cards, so gating on a card guarantees the populated board is
