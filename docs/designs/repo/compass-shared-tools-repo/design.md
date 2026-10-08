@@ -38,10 +38,12 @@ record names no path in the private repo.
 
 ### One public repo, one package per tool
 
-Create one public repo (working name `RigelBuild/repo-tools`; see Open question). It is a bun workspace with one package per tool
+Use the public repo `RigelBuild/meissa` (see Decisions). The tooling lane
+creates it and builds its Nix side: a pinned nixpkgs, the shared rumdl and
+biome, and a daily relock. This record adds the TS tools to it. They form a bun
+workspace with one package per tool
 under `packages/<tool>/`, published as `@rigelbuild/<tool>` with a bin of the
-same name. It is also a nix flake that exports the shared Nix tooling (see
-"Nix tooling"). Each consumer pins exact versions and deletes its own copy in
+same name. Each consumer pins exact versions and deletes its own copy in
 the same PR. There is no shim and no re-export.
 
 The port base is the compass copy. It is already public, so starting from it
@@ -75,20 +77,18 @@ preflight step in `renovate.yml` run the tool from the checkout with no
 first. Per OQ4, those jobs run the full `bun install --frozen-lockfile`, so
 every install is checked against `bun.lock`.
 
-### Pinning (OQ1: npm, plus nix)
+### Pinning (OQ1: npm)
 
 | Option | How a consumer pins | For | Against |
 | --- | --- | --- | --- |
 | npm package (chosen for TS tools) | Exact version in the bun catalog; `bun.lock` keeps the integrity hash | Both repos already take tools as bun dependencies. Compass's Renovate catalog manager already reads npm versions. One package per tool. | Needs a publish lane in the shared repo and a one-time bootstrap publish per package |
-| bun git dependency | `github:RigelBuild/repo-tools#<sha>` in the root `package.json` | No registry and no publish lane | One package for the whole repo (bun installs a git repo root, not a subdirectory). Compass's catalog manager reads only npm versions. |
+| bun git dependency | `github:RigelBuild/meissa#<sha>` in the root `package.json` | No registry and no publish lane | One package for the whole repo (bun installs a git repo root, not a subdirectory). Compass's catalog manager reads only npm versions. |
 | Rev-pin JSON | A `{repo, ref, rev}` file plus a fetch step before each run. The private consumer already pins compass this way. | Precedent exists, and compass's Renovate config already bumps git revs with a regex manager | Each consumer writes its own fetch step. The tools' own npm dependencies need a separate install. No typed imports. Local runs need the fetch too. |
-| Nix flake input (chosen for Nix tooling) | Flake input, locked by the consumer's lock file (`devenv.lock` in compass) | Content-addressed and nix-native | Wrong fit for the bun tools: each would need a nix package build, and moon and `tsc` cannot typecheck against a store path. Right fit for Nix code. |
+| Nix flake input | Flake input, locked by the consumer's lock file (`devenv.lock` in compass) | Content-addressed and nix-native | Each bun tool would need a nix package build, and moon and `tsc` cannot typecheck against a store path. |
 
 TS tools ship as npm packages, so a tool bump is an ordinary catalog PR with
-release notes. Nix tooling ships as flake outputs, pinned by the consumer's
-`devenv.lock` (compass takes its RigelBuild forks as `devenv.yaml` inputs, and
-Renovate's nix manager is off by design). Per OQ5, first-party pins skip the
-release-age cooldown in every toolchain.
+release notes. Per OQ5, first-party pins skip the release-age cooldown in
+every toolchain.
 
 Publishing uses npm trusted publishing (OIDC from the shared repo's `main`
 release workflow), so no long-lived publish token exists. The `@rigelbuild`
@@ -99,14 +99,12 @@ These steps have no IaC path, so they go to Matt as one human-action issue.
 
 ### Nix tooling
 
-Matt's OQ1 ruling adds Nix: the shared repo is also a flake for the Nix code
-both repos carry. This record reads that as shared Nix modules and helpers
-(gate-tool sets, image-tool environments), not a nix build of the bun tools.
-Toolchain version pins stay local: the toolchain-parity gate checks them
-against each consumer's own dev shell, and the Renovate upgrade scripts that
-rewrite them are a later record. T10 is a design record that inventories the
-rest and plans each move to a flake output under `nix/`. The public boundary
-applies unchanged.
+Matt's OQ1 ruling first added Nix: meissa would also export the Nix code both
+repos carry. T10 measured it. Only one file is shared, the vendored bun, node
+and moon builder, with 6 lines of drift. Matt then ruled (RIG-4548) to
+reconcile that file by hand in each repo instead of shipping it from meissa.
+So this record moves no Nix code. Meissa's own Nix exports (rumdl, biome, the
+rumdl base policy) are the tooling lane's work.
 
 ### What may move (the public boundary)
 
@@ -159,7 +157,7 @@ shared-repo PR and reaches each consumer by pin bump.
   bin `<tool>` pointing at `./index.ts` (shebang `#!/usr/bin/env bun`).
 - CLIs read `GATE_ROOT` (default git toplevel) and exit 0 / 1 / 2 as defined
   in "Config, not literals".
-- Consumers pin an exact npm version or a locked flake input, never a range.
+- Consumers pin an exact npm version, never a range.
   Bumps arrive only by Renovate PR.
 - First-party pins skip the release-age cooldown wherever one applies (OQ5):
   `@rigelbuild/*` npm packages in `bunfig.toml` (exact names, one entry each)
@@ -172,33 +170,36 @@ shared-repo PR and reaches each consumer by pin bump.
 
 ## Plan
 
-Order: T1, T2, T3, then T4 and T6 in parallel, then T5, then T7, T8, T9. T10
-is a design record with no code dependency and can start at once.
-T3 comes first among the tools because it guards every later shared-repo PR.
+Order: T1 (meissa exists), T2, T3, then T4 and T6 in parallel, then T5, then
+T7, T8, T9. T10 is done.
+T3 comes first among the tools because it guards every later meissa PR.
 T5 follows T4 because it imports `LedgerConfig` from the T4 package. RIG-4184's
 scope is T4, T5, and the ledger part of T7 and T8.
 
-### T1 — Create the repo
+### T1 — Meissa exists
 
-Lands in: the org's GitHub IaC. A public repo (name per OQ2) with default
-branch `main`. The IaC creates it with `auto_init`, so `main` starts with one
-generated README commit and every later change lands by PR. The same apply
-turns on a ruleset that requires a PR and Matt's CODEOWNERS review. T2 adds
-the required CI checks to that ruleset after its CI has run once, because a
-required check that has never reported blocks every PR. Merges go through the
-Trunk queue as compass does.
+Not built here. The tooling lane creates meissa through the org's GitHub IaC,
+with a seeded `main`, a ruleset, and a place in the Trunk queue, then adds its
+Nix exports and daily relock. This record's T2 starts once that lands.
 
-Interfaces: produces the repo with an initialised `main` and the ruleset.
+Interfaces: consumes meissa's `main`, ruleset, and CI.
 
-### T2 — Scaffold and release lane
+### T2 — Bun workspace and release lane
 
-Lands in: the shared repo, plus one org GitHub IaC change after CI first runs
-(T1's ruleset gains the required checks). A bun workspace over `packages/*`, a `flake.nix`,
-moon, biome, rumdl, the licence files (after the outside-contribution check),
-a GitHub Actions CI that runs typecheck, lint, and test per package plus
-`nix flake check`, and the release lane: release-please per package, then
+Lands in: meissa, plus one org GitHub IaC change after its CI first runs
+(meissa's ruleset gains the required checks). A bun workspace over
+`packages/*`, moon, a licence file under each package (after the
+outside-contribution check), a GitHub Actions CI job that runs typecheck,
+lint, and test per package, and
+the release lane: release-please per package, then
 `npm publish --provenance` through trusted publishing, after the bootstrap
-publish of each package.
+publish of each package. It reuses the rumdl and biome meissa already exports.
+The tooling lane owns meissa's devenv, flake, and relock rules, and they
+export only rumdl and biome. So T2 adds bun, node, and moon to meissa's dev
+shell and CI, from nixpkgs at meissa's pin, as an addition the tooling lane
+reviews. T2 adds only the npm and release-please Renovate rules. Any secret
+the release lane needs on meissa is a separate org GitHub IaC change in T2;
+the tooling lane provisions only the Renovate App credentials.
 
 Interfaces: each `packages/<tool>/package.json` has
 `"name": "@rigelbuild/<tool>"` and `"bin": { "<tool>": "./index.ts" }`.
@@ -376,34 +377,23 @@ Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 
 ### T10 — Shared Nix tooling inventory
 
-Lands in: compass, as a design record. Matt ruled that Nix tooling is shared
-too, but this record has not measured which Nix files the two repos share.
-T10 is that measurement, published as its own record: each Nix file both
-repos carry, its drift, whether it holds a consumer literal, and the flake
-output it would become, with acceptance per output. The record also covers
-the consumer wiring: a `devenv.yaml` input, a `custom.regex` git-refs Renovate
-rule with `minimumReleaseAge: null`, and a `devenv.lock` relock. That relock
-needs `tools/renovate/refresh-devenv-lock.ts` to take its input name as an
-argument (it hard-codes `DEVENV_INPUT = "devenv"`), plus the bot config's
-`allowedCommands` entry and `config.test.ts` pins.
-
-Acceptance: the record merges with its own task list; the moves are filed from
-it.
-
-Interfaces: none; the flake outputs it plans come from T2's `flake.nix`.
+Its record is `docs/designs/repo/compass-shared-nix-tooling/design.md`. It
+measured the Nix both repos carry. Matt ruled to reconcile the one shared
+builder by hand (RIG-4548), so no Nix moves to meissa. The task is done when
+that record merges.
 
 ### Out of scope
 
-Later records: a shared Renovate preset, moving the Renovate upgrade scripts,
-and the Nix moves themselves (T10 designs them). The
+Later records: a shared Renovate preset and moving the Renovate upgrade
+scripts. The
 moon task template and the root checks stay local (see Inventory). Wiring the
 touch-coupling leg into compass CI is separate work. The DL counter service
 (`dl.rigel.build`) does not move.
 
 ## Tasks
 
-- [ ] T1 — Create the shared repo through the org's GitHub IaC.
-- [ ] T2 — Scaffold the shared repo and its release lane.
+- [ ] T1 — Meissa exists (tooling lane).
+- [ ] T2 — Add the bun workspace and release lane to meissa.
 - [ ] T3 — Ship `ref-gate` and make it the shared repo's required check.
 - [ ] T4 — Port `design-ledger-gate` onto a list of ledgers.
 - [ ] T5 — Port `dl-claim` and `dl-reconcile` onto `LedgerConfig`.
@@ -413,12 +403,12 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 - [ ] T9 — Turn on compass's extra ledger legs.
 - [ ] T10 — Write the shared Nix tooling inventory record.
 
-## Decisions (Matt, 2026-10-04, RIG-4440)
+## Decisions (Matt, 2026-10-04 RIG-4440; repo name and Nix 2026-10-05)
 
-- **OQ1 — pin mechanism:** npm packages for the TS tools. Matt added Nix: the
-  shared repo is also a flake for shared Nix tooling (T10).
-- **OQ2 — names:** npm scope `@rigelbuild/<tool>`. The repo name is still
-  open (RIG-4440 did not rule it); see the open question below.
+- **OQ1 — pin mechanism:** npm packages for the TS tools. Matt added Nix;
+  T10 measured it and RIG-4548 ruled reconcile by hand, so no Nix moves.
+- **OQ2 — names:** npm scope `@rigelbuild/<tool>`. The repo is
+  `RigelBuild/meissa`, the public shared infrastructure repo (RIG-4469).
 - **OQ3 — publish the private-only ledger-gate features:** yes, written again
   as public code with synthetic fixtures.
 - **OQ4 — install in secret-holding jobs:** a full
@@ -426,15 +416,3 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 - **OQ5 — cooldown:** every first-party pin skips the release-age cooldown, in
   every toolchain (TS, Go, Nix).
 - **OQ6 — licence:** relicense to `MIT OR Apache-2.0`.
-
-## Open question
-
-**Repo name.** RIG-4440 ruled the npm scope, not the repo slug. Options:
-
-| Option | For | Against |
-| --- | --- | --- |
-| `RigelBuild/repo-tools` (recommended) | Says what it holds: tooling for repos. Matches the package role. | Generic. |
-| `RigelBuild/devtools` | Short. | Reads as developer workstation tooling, which it is not. |
-| `RigelBuild/rigel-tools` | Brand-scoped. | Repeats the org name. |
-
-T1 cannot start until Matt picks one (RIG-4469).
