@@ -45,9 +45,10 @@ it. Two mechanisms exist, both verified live against this workspace:
    `moon ci --help`, "Parallelism options"): moon computes the affected task
    set itself and distributes it across N identical jobs.
 2. **A generated concern matrix** — a small setup job computes the affected
-   closure once with `moon query projects --affected --upstream deep
-   --downstream direct`, partitions the members into concern groups by an
-   explicit `ci-group` project tag, and emits a JSON matrix; each downstream
+   closure once as the union of `moon query projects --affected --upstream
+   deep --downstream direct` and `moon query tasks --affected`, partitions
+   the members into concern groups by an explicit `ci-group` project tag,
+   and emits a JSON matrix; each downstream
    matrix leg runs `moon run <its members' :ci targets>` — the pre-computed
    explicit set, unconditionally.
 
@@ -115,17 +116,34 @@ workflow edit, and the per-leg timeout ceilings shrink to post-forks reality
 (see the cost section).
 
 **The affected closure is moon's, not the generator's.** On `pull_request`,
-`setup` computes the affected set once with
-`moon query projects --affected --upstream deep --downstream direct`. The
-`--upstream deep --downstream direct` pair is the closure contract: it
-reproduces exactly the closure `moon ci` itself pre-fills — deep upstream
-dependencies plus direct downstream dependents. Verified live this session
+`setup` computes the affected set once as the **union** of two moon queries
+(`tools/ci-matrix/index.ts` `main`, joined by `unionAffectedIds`). The
+union is the closure contract; each half covers what the other cannot.
+
+- **Project half:** `moon query projects --affected --upstream deep
+  --downstream direct`. The `--upstream deep --downstream direct` pair
+  reproduces exactly the closure `moon ci` itself pre-fills — deep upstream
+  dependencies plus direct downstream dependents.
+- **Task half:** `moon query tasks --affected`, read by
+  `parseTaskAffectedIds`. The project walk never consults a project's
+  cross-tree task `inputs`, so a repo-scanning gate (`orion-ref-gate`,
+  `sea-ref-gate`, `inline-sql-gate`) whose own files did not change is
+  invisible to it. So is `sql-migration-gate` for its root `/.squawk.toml`
+  and `/.sqruff` config; its `dependsOn: compass-go` already brings it in on
+  Go and migration changes. The task query intersects the changed files with
+  each task's declared `inputs`, so it selects those gates, and projects such
+  as `compass-app-bundle` that declare another tree's files as inputs.
+  `unionAffectedIds` drops any task-half id the full `moon query projects`
+  set does not list; project-half ids pass through unchanged.
+
+The project half was verified live this session
 (moon 2.5.3, `main@fc835ca6`) by perturbing `proto/compass/v1/comms.proto`:
 a bare `moon query projects --affected` returns only
-`{compass-proto, oh-my-pi-fork, root}`, while the closure query additionally
+`{compass-proto, oh-my-pi-fork, root}`, while the project-half query additionally
 returns `{compass-go, compass-client}` — the dependents a proto change must
-re-test, which the bare query would silently skip. On `push`/`schedule`, the
-same query runs *without* `--affected` (the full project set).
+re-test, which the bare query would silently skip. On `push`/`schedule`,
+neither affected query runs: the set is every project from a plain
+`moon query projects`.
 
 **Why the legs run `moon run`, not `moon ci`:** `moon ci` re-applies its own
 affected filter even to explicit targets — verified this session:
@@ -236,10 +254,11 @@ graph LR
 
 1. **`setup`** — fetch-depth-0 checkout (the forge path-pattern and gtk3
    diff detections below need history) + phase-one toolchain bootstrap (moon
-   on PATH), runs the generator: on `pull_request`, the closure query
-   (`moon query projects --affected --upstream deep --downstream direct`);
-   on `push`/`schedule`, the same query *without* `--affected` (the full
-   project set). Partitions the members by `ci-group` tag, runs the
+   on PATH), runs the generator: on `pull_request`, the union closure
+   (`moon query projects --affected --upstream deep --downstream direct`
+   plus `moon query tasks --affected`, joined by `unionAffectedIds`); on
+   `push`/`schedule`, a plain `moon query projects` (the full project
+   set). Partitions the members by `ci-group` tag, runs the
    coverage/disjointness/zero-untagged assertions, and emits to
    `$GITHUB_OUTPUT`: `matrix` — one entry per group existing in the
    workspace (each `{group, run, targets[]}`, unaffected groups as
@@ -588,11 +607,12 @@ bootstrap, `edited` guard) running the generator — a bun-run TypeScript
 script under `tools/` (rule://scripts-ts-over-bash: loops, JSON output, set
 logic) whose translation core is a pure function per the generator section:
 
-- PR events: computes the affected closure once with
+- PR events: computes the affected closure once as the union of
   `moon query projects --affected --upstream deep --downstream direct` (the
-  `moon ci` closure contract: deep upstream dependencies, direct downstream
-  dependents); push/schedule: the same query without `--affected` (the full
-  set).
+  `moon ci` closure: deep upstream dependencies, direct downstream
+  dependents) and `moon query tasks --affected` (projects whose declared
+  task `inputs` the PR changed); push/schedule: a plain
+  `moon query projects` (the full set).
 - Partitions the members into groups by their `ci-group` tag and asserts —
   each failure exiting 1 with the offending project id named in one line:
   coverage (every member in exactly one group), disjointness (no project
@@ -627,7 +647,7 @@ gates: `pgtest`, `microvm`, `forge-oracle`, and `gtk3-e2e` each gain
 `needs: setup` and a job-level `if:` letting push/schedule through
 unconditionally and PRs through only when their setup flag is `'true'`.
 Rewrite the ci.yml header (ci.yml:1–44): the ONE-JOB section becomes the
-record of this reversal — the closure-query mechanism, why the
+record of this reversal — the union-closure mechanism, why the
 stale-enumeration ground no longer applies, and the assertions that replace
 it — and the `gates` display `name:` disappears with the job. Rollup:
 replace `gates` in `needs` with `[setup, moon]`, keep all T1–T4 entries,
@@ -639,9 +659,10 @@ run: 'true' | 'false', targets: string[]}]`) and four affected flags
 (`pgtest_affected`, `microvm_affected`, `forge_affected`, `gtk3_affected`,
 each `'true' | 'false'`); `moon` and the four gated legs consume them; the
 rollup consumes every job result plus the four flags for its computed-skip
-acceptance. The generator consumes
-`moon query projects [--affected] --upstream deep --downstream direct` JSON
-on stdout (including each member project's `ci-group` tag) plus the changed
+acceptance. The generator consumes `moon query projects` JSON (the full set,
+including each member project's `ci-group` tag) and, on PRs,
+`moon query projects --affected --upstream deep --downstream direct` plus
+`moon query tasks --affected` JSON, plus the changed
 paths its hoisted forge/gtk3 detections inspect; its translation core is
 pure (members + tags + changed paths in, outputs out) and exhaustively
 unit-tested.
@@ -659,7 +680,7 @@ wins before T5 lands.
 - [ ] T2 microVM → peer job (bare runner, Enable KVM, `COMPASS_REQUIRE_MICROVM=1`, guard verbatim; unconditional until T5's gate)
 - [ ] T3 forge oracle → peer job (tri-event guards + mint + guard verbatim, fetch-depth-0, phase-one bootstrap for bun+go)
 - [ ] T4 gtk3 e2e → peer job (in-step affected guard retained, own closure realization, phase-one bootstrap for go)
-- [ ] T5 `ci-group` tags on every project; setup generator (closure query + assertions, pure-function core, placeholder matrix) + moon concern matrix (`moon run`, per-group timeouts); setup-output gates on pgtest/microvm/forge-oracle/gtk3-e2e; delete `gates`; rewrite ci.yml header; rollup computed-skip acceptance per gated leg
+- [ ] T5 `ci-group` tags on every project; setup generator (union closure: projects + tasks queries; assertions, pure-function core, placeholder matrix) + moon concern matrix (`moon run`, per-group timeouts); setup-output gates on pgtest/microvm/forge-oracle/gtk3-e2e; delete `gates`; rewrite ci.yml header; rollup computed-skip acceptance per gated leg
 
 ## Resolved decisions
 
