@@ -17,12 +17,14 @@ package runnerhub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 
+	"github.com/RigelBuild/compass/go/internal/auth"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -74,10 +76,42 @@ func TestAuthenticateNoOracleAcrossCauses(t *testing.T) {
 					tc.name, err.Error(), refErr.Error())
 			}
 			// And it must not leak the underlying store sentinel.
-			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTokenRevoked) {
-				t.Fatalf("%s error wraps a store sentinel (%v) — the cause leaks to the client", tc.name, err)
+			if errors.Is(err, auth.ErrTokenLookupFailed) {
+				t.Fatalf("%s error wraps lookup-failure sentinel", tc.name)
 			}
 		})
+	}
+}
+
+func TestAuthenticateLookupFailureIsUnavailable(t *testing.T) {
+	cause := errors.New("connection failed with db-password-secret")
+	lookupErr := fmt.Errorf("%w: %w", auth.ErrTokenLookupFailed, cause)
+	b := &bearerAuth{resolve: func(context.Context, string, store.SubjectKind) (store.Subject, error) {
+		return store.Subject{}, lookupErr
+	}}
+	handlerCalled := false
+	next := b.unaryInterceptor()(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		handlerCalled = true
+		return nil, errors.New("unexpected handler invocation")
+	})
+
+	request := connect.NewRequest(&compassv1internal.EnrollRequest{})
+	request.Header().Set("Authorization", "Bearer runner-tok")
+	_, err := next(context.Background(), request)
+	if err == nil {
+		t.Fatal("Enroll during resolver failure succeeded, want Unavailable")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("code = %v, want Unavailable", got)
+	}
+	if ce, ok := errors.AsType[*connect.Error](err); !ok || ce.Message() != "credential check unavailable" {
+		t.Fatalf("error = %v, want fixed message %q", err, "credential check unavailable")
+	}
+	if strings.Contains(err.Error(), cause.Error()) {
+		t.Fatalf("wire error %q contains lookup cause", err)
+	}
+	if handlerCalled {
+		t.Fatal("Enroll handler ran despite resolver failure")
 	}
 }
 
@@ -248,6 +282,27 @@ func TestSuccessfulDurableReapEnrollsNormallyOverWire(t *testing.T) {
 	second, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
 	if err != nil || !second.Msg.GetReattached() {
 		t.Fatalf("second Enroll = (%v, %v), want successful reattached response", second, err)
+	}
+}
+
+func TestResolverFaultReturnsUnavailableOverWire(t *testing.T) {
+	hub := newHubOnly()
+	const secretCause = "db-password-secret"
+	resolve := func(context.Context, string, store.SubjectKind) (store.Subject, error) {
+		return store.Subject{}, fmt.Errorf("%w: %s", auth.ErrTokenLookupFailed, secretCause)
+	}
+	url := newMountedH2CServer(t, hub, resolve)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"}))
+	if err == nil {
+		t.Fatal("Enroll during resolver failure succeeded, want Unavailable")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("Enroll code = %v, want Unavailable", got)
+	}
+	if strings.Contains(err.Error(), secretCause) {
+		t.Fatalf("Enroll error %q contains resolver cause", err)
 	}
 }
 
