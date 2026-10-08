@@ -95,13 +95,10 @@ proves it cannot — per cycle, as a first-class deliverable.
 
 V8 adds no production feature: it is tests, a benchmark, and a CI lane. Every
 subsection resolves one concern the parent's V8 plan leaves to detailing;
-every genuine fork is also listed in `## Open Questions`. Where a fork has a
-workable default the body designs against the recommended option; where it
-does not — OQ-8's vsock-identity shape and OQ-9's cycle-8 exit code, both of
-which turn out to have **no** implementable drafting on today's tree — the
-affected assertion is marked pending that OQ instead, because writing a
-plausible-looking assertion that cannot pass is how a proving suite ends up
-certifying nothing.
+every genuine fork is also listed in `## Open Questions`. The load-bearing
+questions have now been ruled: W1 uses a per-session gateway identity probe,
+and W2 asserts transport-level unreachability on the production image, with
+a test-only variant image as its proving mutation.
 
 ### (a) Suite placement and the cycle map
 
@@ -162,14 +159,14 @@ assembled-backend layer; cycles marked *new* have no existing coverage.
 
 | Cycle | Property | Status on main | Task |
 | --- | --- | --- | --- |
-| 1 | Inter-tenant probe (volume, vsock, host fs, host metadata/net) | *escalate + new* — PR #912 already boots two sessions for the volume surface (`microvm_isolation_microvm_test.go:391-395`, `TestMicroVMCrossSessionVolumeUnreachable`) and confines a single session's traversal (`:302-304`); net-new are the host-network legs and the vsock leg (OQ-8) | W1 |
+| 1 | Inter-tenant probe (volume, vsock, host fs, host metadata/net) | *escalate + new* — PR #912 already boots two sessions for the volume surface (`microvm_isolation_microvm_test.go:391-395`, `TestMicroVMCrossSessionVolumeUnreachable`) and confines a single session's traversal (`:302-304`); net-new are the host-network legs and the per-session vsock identity leg | W1 |
 | 2 | Egress fail-closed inside the guest netns | *escalate* — `egress_inguest_microvm_test.go:37-42` already runs under the full backend and names itself V8 row (2) | W3 |
 | 3 | S1 contract tests pass unchanged | *escalate* — `contract_microvm_test.go:34-69` covers `WorkloadRuntime`; the `AgentRuntime.Launch` layer is podman-only (`lifecycle_test.go:1`) | W3 |
 | 4 | Boot timeout killed + cleaned | *escalate + new* — `microvm_lifecycle_microvm_test.go:62-118` proves the corrupt-rootfs deadline is **fail-closed** (Start errors `:98-100`, no exec client `:108-110`, runtime dir removable `:111-116`); it asserts NOTHING about processes — "no orphan processes" is doc-comment text only (`:57-61`), read by no assertion. V8's delta is therefore the orphan-freedom assertion *itself*, pidfile-identity-verified, plus the caller-deadline cancel leg | W4 |
 | 5 | Mid-session VMM death under the session lifecycle | *new* at this layer — V7 (PR #931 §(c)) designs runtime-layer detection; gateway streams above it are unproven | W4 |
 | 6 | KVM-absent hard-fail (D3) | *escalate* — `microvm_preflight_test.go:82-88` unit-tests the axis; no acceptance-level assertion of the capability-naming error text | W5 |
 | 7 | Boot-latency + RSS benchmark vs container baseline | *new* — `TestMicroVMQBudget` logs one uncompared sample (`contract_microvm_test.go:71-77`); the comparison needs the single-process bench invocation of § Approach (g), without which the baseline is structurally absent from the KVM lane | W6 |
-| 8 | In-guest escalation probe refused (peer-CID) | *new* — guestd's gate is hermetic-only (`go/internal/guestd/vsock.go:25-29`, `supervisor_test.go:712-715`); which property the live probe can assert is OQ-9 | W2 |
+| 8 | In-guest escalation probe refused (peer-CID) | *new* — guestd's gate is hermetic-only (`go/internal/guestd/vsock.go:25-29`, `supervisor_test.go:712-715`); W2 proves the stronger transport-level unreachability with an exit-3 assertion and variant-image mutation | W2 |
 
 ### (b) The anti-vacuity discipline: positive control + proving mutation
 
@@ -230,33 +227,21 @@ vsock leg, and its delta on the rest is the single-runtime topology.
   parent directory of both volumes (one-line harness change to the
   shared-dir argument); A's read of B's canary then succeeds and the test
   MUST go red.
-- **B's vsock surface — pending OQ-8 (load-bearing).** Under
-  cloud-hypervisor's hybrid vsock a guest dial terminates at its *own*
-  VMM's socket muxer: the host end is a per-session AF_UNIX path ("the
-  hybrid transport addresses by socket path, not CID",
-  `go/internal/runtime/microvm_lifecycle.go:44-45`; the guest-reachable
-  listener is `vsockSocket + "_" + port`,
-  `go/internal/runtime/microvm/config.go:46-48`), and both guests are given
-  the same CID (`const guestVsockCID uint32 = 3`,
-  `microvm_lifecycle.go:46`) — so cross-VM vsock is structurally absent,
-  and B has **no vsock address by which A could name it**. That makes
-  "probe B's vsock port" a question about interpretation rather than a test
-  to write, and the first drafting of this leg — dial CID 2 on the control
-  port (1024), issue `Health`, assert the call succeeds and the echoed
-  `boot_nonce` is A's — is not implementable: nothing binds the host path
-  `vsock.sock_1024` (port 1024 is direction-reversed — guestd listens
-  in-guest and the host dials it, `go/internal/guestd/vsock.go:75-77`,
-  `go/internal/runtime/microvm/dial.go:51`; the only host-side listener at a
-  suffixed path is the gateway at 1025,
-  `go/internal/runner/e2e_vsock_gateway_microvm_test.go:24`), bash has no
-  AF_VSOCK vehicle for an h2c `Health` RPC, and the drafted mutation
-  (pointing A's config at B's `VsockSocket`) reddens main's host-side nonce
-  check during setup (`microvm_lifecycle.go:441-445`) rather than the
-  in-guest probe. **OQ-8 carries the fork** — re-aim at CID 2:1025 where a
-  host listener exists and assert A reaches A's own gateway (recommended),
-  or concede the structural argument and assert only that A's dial surface
-  is bounded. W1 implements neither shape until it rules; the structural
-  facts above stand either way.
+- **B's vsock surface — OQ-8 ruling.** Under cloud-hypervisor's hybrid
+  vsock a guest dial terminates at its *own* VMM's socket muxer: the host end
+  is a per-session AF_UNIX path, each VM's `<runtimeDir>/vsock.sock`
+  (`MicroVMRuntime.bootConfig` and `guestVsockCID` in
+  `go/internal/runtime/microvm_lifecycle.go`), not the fixed CID.
+  The only host-side listener at a suffixed path is the gateway at port 1025
+  (`go/internal/runner/e2e_vsock_gateway_microvm_test.go:24`). From guest A,
+  W2's `vsockprobe` extended with identity-echo mode dials CID 2:1025; each
+  session gateway serves a distinct discriminator, and A must observe A's
+  own. This satisfies RIG-2499 row 1's “B's vsock port” by proving A's only
+  dialable gateway is its own, never B's. The mechanism is the per-session
+  `VsockSocket` path, not a distinct CID. A distinct-CID probe is rejected:
+  it would only re-prove the peer-CID gate already covered by `peerAllowed`'s
+  table test. Mutation: swap A's and B's gateway listeners in the harness;
+  the assertion MUST go red.
 - **Host filesystem.** V6's traversal probes re-run in the two-session
   topology (dot-dot, absolute path, symlink escape), asserting from both
   sides (guest output + host snapshot). Mutation: same virtiofsd-root
@@ -393,35 +378,27 @@ is a wall on first run:
 
 The test asserts, in order:
 
-1. **Positive control:** the probe dials CID 2 (host) on the control port
-   and the connection completes — proving the probe binary, the vsock
+1. **Positive control:** before `Start`, the test listens on the session's
+   `<runtimeDir>/vsock.sock_1025` and answers one probe line. The probe dials
+   CID 2:1025 and gets that answer, proving the probe binary, the vsock
    device, and the agent-uid dial path all work.
-2. **The refusal — pending OQ-9.** The probe dials CID 1 (loopback) on the
-   same port. Exit codes distinguish connected-and-served (0) /
-   connected-then-closed (2) / connect-refused-or-no-path (3), so the
-   assertion pins the *mechanism* rather than "some failure" — but **which**
-   code is the acceptance assertion is not settled here.
+2. **The refusal — OQ-9 ruling.** The production initrd omits
+   `vsock_loopback`, so the CID-1 dial exits **3** (transport-level
+   unreachability), strictly stronger than the parent's "refused" wording.
+   The module is built by the kernel and is present in its modules output,
+   but `bootModules` omits it from the initrd
+   (`guest-image/default.nix:142-155`).
 
-   Drafting it as exit 2 (guestd's refuse-before-first-byte) would be red on
-   today's image, and for a reason that strengthens rather than weakens the
-   isolation claim: a CID-1 (`VMADDR_CID_LOCAL`) connect needs the kernel's
-   `vsock_loopback` transport, and the initrd's `bootModules` list loads
-   only `virtio_pci`, `virtio_blk`, `erofs`, `overlay`, `virtio_net`,
-   `virtiofs`, `vmw_vsock_virtio_transport`, `af_packet`
-   (`guest-image/default.nix:153-162`), with no loopback entry in the
-   checked `bootModuleConfigs` list (`guest-image/default.nix:171-180`).
-   With no local transport registered the connect fails at the socket layer
-   and never reaches guestd's `Accept` — exit 3, not 2.
-   [INFERENCE: the exact errno; the transport-absence mechanism is standard
-   `af_vsock` behavior — a connect to a local CID requires a registered
-   local transport.] The guest cannot self-load the module either
-   (`modprobe` needs root; the backend advertises `refusesRootExec: true`,
-   `contract_microvm_test.go:49`). So the supervisor is today
-   **structurally unreachable** from any in-guest process, which is strictly
-   stronger than the parent's "refused" — and making the parent's literal
-   wording observable would mean *adding* the transport, widening the very
-   escalation surface this cycle certifies. OQ-9 (load-bearing) carries that
-   fork; W2 implements whichever exit code it rules for.
+   The proving mutation uses a TEST-ONLY initrd built with
+   `bootModules ++ [ "vsock_loopback" ]` and selected through
+   `COMPASS_TEST_GUEST_INITRD`. On that image the probe MUST flip to exit 2,
+   proving guestd closes the connection once the transport exists. Production
+   boots remain unchanged; the normal acceptance assertion stays exit 3.
+
+   [INFERENCE: the exact errno; without a registered local transport, the
+   `af_vsock` connect fails at the socket layer.] The guest cannot self-load
+   the module (`modprobe` needs root; the backend advertises
+   `refusesRootExec: true`, `contract_microvm_test.go:49`).
 
 Vacuity analysis: "dial fails" alone would pass if the vsock device were
 missing, the port wrong, or the probe binary broken — all caught by the
@@ -431,14 +408,10 @@ accepted-then-closed, `0` for connected-and-served. A missing or unstartable
 probe is deliberately **not** in that table: it never reaches an exit code,
 surfacing instead as an `Exec` error (guestd's `CodeInternal`, see above),
 which W2's `err == nil` assertion catches as a harness fault before any
-exit-code comparison runs. Proving mutation, per OQ-9's
-ruling: under (a) — asserting exit 3 — a guest image built WITH
-`vsock_loopback` MUST flip the probe to exit 2, reddening the assertion and
-simultaneously proving both the exit-code discrimination and that it is
-guestd's gate closing the connection once a transport exists; under (b) —
-asserting exit 2, transport present — a guest image whose `peerAllowed`
-returns `true` unconditionally (`go/internal/guestd/vsock.go:36-38`) makes
-the CID-1 dial complete an HTTP exchange (exit 0) and the test MUST go red.
+exit-code comparison runs. Proving mutation: use the test-only initrd built
+with `bootModules ++ [ "vsock_loopback" ]` and selected through
+`COMPASS_TEST_GUEST_INITRD`; the probe MUST flip from exit 3 to exit 2, making
+the production-image exit-3 assertion go red. Production boots are unchanged.
 
 ### (e) Cycles 2-5 — contract and failure modes at the assembled layer
 
@@ -1006,7 +979,8 @@ preamble forbids forking V6's symbols, W1 **consumes and extends** that test
 — it already takes caller-chosen names via `isolationSession(t, env, name)`
 (PR #912 `:85`) — rather than re-deriving four probes. W1's volume/host-fs
 delta is the one-runtime topology and the symlink-in-A's-volume shape; its
-net-new content is the host-network leg and the vsock leg (OQ-8).
+net-new content is the host-network leg and the per-session vsock identity
+leg.
 
 - **Interfaces:** consumes `NewMicroVMRuntime(cfg MicroVMConfig)
   *MicroVMRuntime`, the `WorkloadRuntime` verbs
@@ -1017,15 +991,14 @@ net-new content is the host-network leg and the vsock leg (OQ-8).
   fixture. Produces:
   `TestInterTenantVolumeUnreachable` (the V6 delta),
   `TestInterTenantHostFilesystemConfined`,
-  `TestInterTenantHostNetworkUnreachable(t *testing.T)`, and — **pending
-  OQ-8** — `TestInterTenantVsockIdentityBound`, whose assertion shape is not
-  yet decided and which must not be implemented before that OQ rules.
+  `TestInterTenantHostNetworkUnreachable(t *testing.T)`, and
+  `TestInterTenantVsockIdentityBound`.
 - **Test cycle (per-assertion vacuity + mutation):**
 
   | Assertion | Could pass while false when… | Proving mutation |
   | --- | --- | --- |
   | A cannot read/write B's volume (delta over PR #912's leg: one runtime, symlink shape) | probe script never ran (exit 127) or probed a wrong path | run both guests' virtiofsd rooted at the volumes' common parent — MUST go red |
-  | A's guest-side vsock dial is bound to A's own session — **pending OQ-8**, do not implement until it rules | as drafted the row was unimplementable, not merely vacuous: nothing binds host `vsock.sock_1024`, so the required "dial succeeds" can never hold, and the drafted mutation reddens main's host-side nonce check during setup instead of this row's property | supplied by OQ-8's ruling: under option (a) (dial CID 2:1025, assert A observes A's own gateway's per-session discriminator) the mutation is to swap A's and B's gateway listeners in the harness — A then observes B's discriminator and this row MUST go red |
+  | A's gateway dial (CID 2:1025) reaches A's own session gateway, never B's | A's response is not compared against distinct per-session discriminators | swap A's and B's gateway listeners in the harness — MUST go red |
   | host fs unreachable from A | write "succeeded" only inside the guest overlay and no host check ran | same virtiofsd-root widening; host snapshot MUST change and go red |
   | the host is unreachable through the gateway `10.0.2.2` even when it is allowlisted (`--no-map-gw`, OQ-1 (iii)); on a flag-removed run, the in-guest nft default-deny blocks the same connect under a policy that does not allowlist it | (a) the connect failed for want of any listener rather than being blocked; (b) passt never mapped the gateway because the runner's selected default route has no gateway, so neither run could fail. (a) is closed by the test-opened listener and (b) by the default-route check that skips the row | structural: remove `--no-map-gw` with `10.0.2.2` allowlisted; the host MUST observe the accept and the row MUST go red. nft: on the flag-removed run, add `10.0.2.2` to the policy; the connect MUST then reach the listener |
   | the metadata endpoint `169.254.169.254:80` is unreachable from A — **runs only when the host-side precondition holds** | this is the row's dominant failure mode, not an edge case: a guest connect to the metadata IP rides passt's ordinary outbound path as a host-originated connect, so on any box with no metadata service (every dev box) "must fail" passes for want of a listener **even with the entire nft ruleset deleted** | the test first probes the endpoint host-side; if it does not answer the leg SKIPS with that reason recorded (a vacuous pass is worse than a declared gap). Where it does answer, mutation: the same `169.254.169.254` allowlist-widening as the gateway row — the connect MUST succeed and the row MUST go red |
@@ -1036,7 +1009,7 @@ net-new content is the host-network leg and the vsock leg (OQ-8).
   *not* discriminate for the metadata row (it proves egress works, not that
   the metadata path could have succeeded), which is why that row carries the
   host-side precondition probe instead. The vsock row's positive
-  discriminator is supplied by OQ-8's ruling.
+  discriminator is its distinct per-session gateway response.
 - **Depends:** V6 merged — W1 extends
   `TestMicroVMCrossSessionVolumeUnreachable` and reuses its
   `isolationSession`/`guestSh`/`snapshotTree` helpers. No V7 symbol is
@@ -1052,7 +1025,8 @@ net-new content is the host-network leg and the vsock leg (OQ-8).
   `TestEscalationProbeRefusedOnLoopback(t *testing.T)` and the probe binary
   contract: `vsockprobe <cid> <port>` exits `0` = connected and received
   bytes, `2` = connected then closed with no bytes, `3` = connect refused/
-  no path. Per § Approach (d), the three executability terms:
+  no path. W2 extends the probe with identity-echo mode for W1's CID 2:1025
+  gateway check. Per § Approach (d), the three executability terms:
   - **Build.** `exec.Command` running, from the module root,
     `CGO_ENABLED=0 GOOS=linux go build -o <dst> ./internal/runtime/testdata/vsockprobe`
     — an **explicit path**, because the Go tool ignores `testdata` for
@@ -1075,36 +1049,32 @@ net-new content is the host-network leg and the vsock leg (OQ-8).
     test-only binary fails at `Create`.
 
   Exec'd via `Exec(ctx, id, NewExecSpec("/workspace/vsockprobe", cid, port))`
-  as the session's non-root uid. Consumes `guestVsockPort` (1024,
-  `microvm_lifecycle.go:52`) as the dialed port.
+  as the session's non-root uid. The positive control dials CID 2:1025,
+  served by a test listener on `<runtimeDir>/vsock.sock_1025` that the test
+  starts before `Start`. The CID-1 dial targets `guestVsockPort` (1024), where
+  guestd listens in the guest.
 - **Test cycle:** `Exec` returns **`err == nil`** first — a transport or
   spawn failure is a harness fault and `t.Fatal`s, matching V6's `guestSh`
   posture ("A transport/refusal error is fatal; a NON-ZERO EXIT IS NOT",
   PR #912 `microvm_isolation_microvm_test.go:111-123`) — and only then is an
-  exit code compared. Then: CID-2 dial exits 0 (positive control); the CID-1
-  dial's asserted exit code is **pending OQ-9** — drafted as exit 2
-  (refused-after-accept, guestd's close-before-first-byte,
-  `go/internal/guestd/vsock.go:57-59`), but on today's guest image the dial
-  cannot reach guestd's `Accept` at all for want of the `vsock_loopback`
-  transport, so exit 2 is red and exit **3** is the observable (and
-  strictly stronger) outcome. Do not implement this row until OQ-9 rules;
-  under either ruling the row asserts one specific exit code, never
-  "non-zero". Vacuity: covered by the CID-2 control plus the exit-code
-  discrimination — `3` for an absent transport or refused connect, `2` for
-  accepted-then-closed, `0` for connected-and-served, all distinct. **A
-  missing or unstaged probe is NOT in that table:** guestd converts an
-  unresolvable or unstartable program into
-  `connect.NewError(connect.CodeInternal, …)`
+  exit code compared. Then: CID 2:1025 dial to the test listener exits 0 (positive control); the CID-1
+  dial MUST exit 3 on the production image because `vsock_loopback` is
+  absent from the initrd. Exit 3 proves transport-level unreachability,
+  strictly stronger than the parent's "refused" wording. The CID-2 control
+  plus exit-code discrimination rules out a missing device, wrong port, or
+  broken probe: `3` means no transport or refused connect, `2` means
+  accepted-then-closed, and `0` means connected-and-served. **A missing or
+  unstaged probe is NOT in that table:** guestd converts an unresolvable or
+  unstartable program into `connect.NewError(connect.CodeInternal, …)`
   (`internal/guestd/supervisor.go:600-614`; a slash-bearing argv bypasses
   PATH entirely, `:643-646`), which `Exec` returns as
   `ExecOutput{}, err` (`microvm_lifecycle.go:486-496`) — so 126/127 can
   never be observed as an exit code on this path, and the `err == nil`
-  assertion above is what catches a broken staging. Proving mutation, per
-  OQ-9's ruling: under (a) a guest image built WITH `vsock_loopback` must
-  flip the probe from 3 to 2 — the exit-3 assertion MUST go red; under (b),
-  with the transport present, a guest image whose `peerAllowed` returns
-  `true` unconditionally (`guestd/vsock.go:36-38`) makes CID-1 exit 0 — the
-  exit-2 assertion MUST go red.
+  assertion above catches broken staging. Proving mutation: build a TEST-ONLY
+  initrd with `bootModules ++ [ "vsock_loopback" ]`, select it through
+  `COMPASS_TEST_GUEST_INITRD`, and rerun the probe. It MUST flip from exit 3
+  to exit 2, making the production-image assertion go red; production boots
+  remain unchanged.
 - **Depends:** none beyond main (the guestd gate is on main,
   `go/internal/guestd/vsock.go:25-29`); independent of W1 and of V6/V7 —
   one of the Plan preamble's **two** full exemptions (with W5), and W2's
@@ -1168,7 +1138,7 @@ launched session.
     (`supervisor.go:554-556`). Layer (1) is HOST code, so with a uid-0
     session the run never boots to an exec at all: `Start` fails during
     setup and the row reddens **for the wrong reason** — the same
-    mistargeting this record diagnosed and rejected for the OQ-8 vsock leg.
+    mistargeting rejected in the first draft of the vsock leg.
     So the mutation is re-aimed at **this row's own property — that the exec
     runs as uid 1000 rather than as some other non-zero uid**: in a local
     guest build, make guestd's credential resolution ignore the requested
@@ -1615,36 +1585,13 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
   and the check passes trivially — the same F-shape the check exists to
   close.
 
-  **The OQ-8/OQ-9 interaction, stated because source-derivation would
-  otherwise look like it reds the lane on the record's own gating.** The two
-  gates bite at different granularities, and only the first touches this
-  check:
-
-  - **OQ-8 blocks a whole test function.** W1's
-    `TestInterTenantVsockIdentityBound` "must not be implemented before that
-    OQ rules" (W1 Interfaces), so until it does the function does not exist,
-    **`grep ^func Test` does not derive it, and the check does not demand
-    it** — a name present nowhere in source is not a missing `--- PASS:`.
-  - **OQ-9 blocks a ROW inside a test that does exist.** W2's
-    `TestEscalationProbeRefusedOnLoopback` is produced and its CID-2
-    positive control runs; only the CID-1 exit-code row is gated ("Do not
-    implement this row until OQ-9 rules"). So that name IS derived and MUST
-    appear as `--- PASS:` — correctly, since the test really does run. The
-    gated row must be **absent**, not `t.Skip`ped: a skipped subtest beneath
-    a derived name is exactly what the depth-scoped `--- SKIP: <name>/…`
-    scan reds, and W1's metadata leg is the only allowlisted skip.
-
-  This is a reason the list must be source-derived
-  rather than a hand-maintained literal of the record's *intended* test set:
-  a literal would name OQ-8's blocked test and red the lane for honoring the
-  gating the record deliberately imposes. It also gives the mechanism its
-  payoff, worth stating because it is the point: **when OQ-8 rules and its
-  test is added, source-derivation enrols it in the presence check
-  automatically**, with no CI edit — so the post-ruling test cannot land and
-  then silently drop out of the sweep. (The converse the record accepts:
-  while OQ-8 is open, W1's Interfaces "Produces" list names a function that
-  does not exist yet and nothing checks that it is ever added. That is the
-  OQ's own gate to close on ruling, not this step's.)
+  **The ruled identity and exit-code tests participate in the same
+  source-derived presence check.** W1's
+  `TestInterTenantVsockIdentityBound` and W2's
+  `TestEscalationProbeRefusedOnLoopback` are both named by the derived test
+  set; each MUST appear as `--- PASS:` and MUST NOT be skipped. This is why
+  the list is source-derived rather than a hand-maintained literal: new
+  acceptance tests join the presence check automatically, with no CI edit.
 
   Failure lists the missing names, and separately the unexpectedly-skipped
   ones.
@@ -1701,8 +1648,9 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
       on one runtime; volume/host-fs legs as a delta over PR #912's
       `TestMicroVMCrossSessionVolumeUnreachable`; host gateway probe against
       a test-opened listener; metadata probe gated on its host-side
-      precondition; **vsock leg blocked on OQ-8**; per-assertion positive
-      controls + recorded proving mutations
+      precondition; vsock identity probe asserts that A's CID 2:1025 dial
+      reaches A's own session gateway and never B's, with the swap-listeners
+      mutation; per-assertion positive controls + recorded proving mutations
 - [ ] W2 — in-guest escalation probe: static `vsockprobe` built by
       **explicit path** (`CGO_ENABLED=0 GOOS=linux go build -o <dst>
       ./internal/runtime/testdata/vsockprobe` — `testdata` is invisible to
@@ -1710,9 +1658,10 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
       lane), staged by writing into the existing `/workspace` host dir
       before `Start` (never a second mount, `microvm_lifecycle.go:313-330`);
       `Exec` `err == nil` asserted BEFORE any exit code (a missing probe is
-      a `CodeInternal` error, never 126/127); CID-2 positive control; CID-1
-      assertion's exit code (**3 vs 2**) and its mutation **blocked on
-      OQ-9**; independent of V6/V7 — may land first
+      a `CodeInternal` error, never 126/127); CID 2:1025 positive control against a test listener; CID-1
+      exits 3 on the production initrd; the test-only initrd mutation adds
+      `vsock_loopback` and flips the probe to exit 2; independent of V6/V7 —
+      may land first
 - [ ] W3 — S1 contract at the assembled layer: `AgentRuntime.Launch` e2e on
       microVM in `package runtime` (five podman-leg properties) with the uid
       mutation **re-aimed at a reachable, on-property one** (guestd returns
@@ -1771,8 +1720,8 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
       `./...` splits it into two processes), a per-test presence check over
       `/tmp/microvm.log` with the name list derived from source over an
       **enumerated file list** (empty list ⇒ fail loudly, mirroring
-      `ci.yml:838-841`; the OQ-8/OQ-9-blocked tests are unwritten and so
-      underived, and adding one on ruling enrols it automatically) that
+      `ci.yml:838-841`; W1 and W2 tests are derived from source and enrolled
+      automatically) that
       **requires `--- PASS:` and rejects `--- SKIP:` at any depth** under a
       listed name (small skip allowlist: W1's metadata leg),
       `$GITHUB_STEP_SUMMARY` table, `actions/upload-artifact` v7.0.1
@@ -1896,16 +1845,16 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
 ## Open Questions
 
 OQ-1, OQ-2 and OQ-3 are ruled (Matt, 2026-10-08, RIG-3428: all
-recommendations); OQ-8 and OQ-9 are still open (RIG-3415).
+recommendations); OQ-8 and OQ-9 are ruled (Matt, 2026-10-08, RIG-3415:
+OQ-8 (a), OQ-9 (a)).
 
 Batched per the pre-freeze rule; each is graded **load-bearing** (an executor
 hits real ambiguity; blocks freeze, goes to Matt) or **non-load-bearing**
-(deferred with a rationale, resolved in implementation). Five are
-load-bearing — OQ-1, OQ-2, OQ-3 (regraded), OQ-8, OQ-9 — and four are not:
-OQ-4 through OQ-7. **OQ-8 and OQ-9 each block a specific
-assertion**, not merely the freeze: the W1 vsock row and the W2 CID-1 exit
-code have no implementable shape until they rule, and their W-rows say so
-inline rather than pretending a decision was made.
+(deferred with a rationale, resolved in implementation). All five
+load-bearing OQs — OQ-1, OQ-2, OQ-3 (regraded), OQ-8, and OQ-9 — are now
+ruled; OQ-4 through OQ-7 are non-load-bearing and remain deferred. The W1
+vsock identity probe and W2 CID-1 exit-code assertion are implementable under
+the rulings recorded below.
 
 - **OQ-1 (load-bearing) — should passt get `--no-map-gw`, making the
   host-network boundary structural rather than firewall-only?** Today the
@@ -1936,22 +1885,16 @@ inline rather than pretending a decision was made.
   workspace share** (§ Approach (d)) — exercises exactly the attacker
   position (an agent-uid process in the workload mount); cost: the test
   builds a Linux binary at run time (~2s, cached). **Cost correction — the
-  earlier "zero guest-image change" claim on this option is false, and its
-  real cost is set by OQ-9.** The *vehicle* is image-free, but the CID-1
-  *dial* it performs needs the kernel's `vsock_loopback` transport, and the
-  initrd's `bootModules` list is exactly `virtio_pci`, `virtio_blk`,
-  `erofs`, `overlay`, `virtio_net`, `virtiofs`,
-  `vmw_vsock_virtio_transport`, `af_packet`
-  (`guest-image/default.nix:153-162`) — no loopback transport, and no
-  loopback entry in the checked `bootModuleConfigs` list
-  (`guest-image/default.nix:171-180`). So option (i) is zero-guest-image
-  only under OQ-9 option (a) (assert the stronger transport-level absence);
-  under OQ-9 option (b) the image must grow the module. (ii) Bake a probe
-  into the guest image — faster per-run but grows the image's shipped
-  surface with a test-only tool, against the image's minimal-toolbox
-  posture. (iii) Have guestd itself expose a self-probe — worst: the SUT
-  would be probing itself. **Ruling (Matt, 2026-10-08, RIG-3428): (i).** **Recommendation: (i)**, with its guest-image
-  cost read off OQ-9's ruling rather than assumed zero.
+  earlier "zero guest-image change" claim on this option is false.** The
+  production image omits `vsock_loopback` from `bootModules`, though the
+  kernel builds it into the modules output. OQ-9's ruling requires one extra
+  test-only initrd derivation that adds the module for the proving mutation;
+  production boots remain unchanged. (ii) Bake a probe into the guest image —
+  faster per-run but grows the image's shipped surface with a test-only tool,
+  against the image's minimal-toolbox posture. (iii) Have guestd itself expose
+  a self-probe — worst: the SUT would be probing itself.
+  **Ruling (Matt, 2026-10-08, RIG-3428): (i).** **Recommendation: (i)**,
+  with its one-extra-test-derivation cost stated above.
 - **OQ-3 (load-bearing — regraded) — can the container baseline actually be
   present in the KVM lane, and does an absent baseline red it?** Drafted
   non-load-bearing on the assumption that the baseline is normally present
@@ -2070,103 +2013,36 @@ inline rather than pretending a decision was made.
   time; a standing harness can be revisited if a vacuity regression ever
   slips through. Default shipped: recorded mutations, no permanent harness.
 - **OQ-8 (load-bearing) — what does "probe B's vsock port" mean when B has
-  no vsock address?** RIG-2499 acceptance row 1 asks that guest A's attempt
-  to reach "B's vsock port" fail. Under cloud-hypervisor's hybrid vsock
-  there is no such addressable thing. Both guests are given the same CID
-  ("the hybrid transport addresses by socket path, not CID, so nothing
-  routes on it", `go/internal/runtime/microvm_lifecycle.go:44-45`;
-  `const guestVsockCID uint32 = 3`, `:46`), and a
-  guest dial of CID 2 port P lands at the host AF_UNIX path
-  `vsockSocket + "_" + P` ("the host-side AF_UNIX listener path a guest
-  reaches by dialing AF_VSOCK (CID 2, port): cloud-hypervisor's hybrid vsock
-  connects the guest's dial to the launch-time `--vsock` socket path with an
-  appended `_` and the guest-side port",
-  `go/internal/runtime/microvm/config.go:40-48`) — i.e. at A's own VMM's
-  muxer, per session. So A cannot name B at all, and the leg as drafted in
-  § Approach (c) is not implementable, for three independent reasons:
-  (1) **no listener** — nothing binds `vsock.sock_1024` on the host, because
-  port 1024 is direction-reversed: guestd *listens* in-guest ("serveVsock …
-  listens on AF_VSOCK at the guest CID and the given port",
-  `go/internal/guestd/vsock.go:75-77`) and the *host* dials it with a
-  `CONNECT 1024` preamble (`go/internal/runtime/microvm/dial.go:51`). The
-  only host-side listener at a suffixed path is the gateway at 1025 ("HOST
-  leg: the host serves gateway.Serve over `<runtimeDir>/vsock.sock_1025`",
-  `go/internal/runner/e2e_vsock_gateway_microvm_test.go:24`) — so an
-  in-guest CID-2:1024 dial is connection-refused and the drafted "the call
-  **succeeds**" assertion is unconditionally red. (2) **No vehicle** — the
-  leg needs an in-guest h2c Connect `Health` RPC and a protobuf nonce parse;
-  bash has no AF_VSOCK, and W2's `vsockprobe` contract is byte-count exit
-  codes, not an RPC client. (3) **Mutation mistargeted** — pointing A's
-  config at B's `VsockSocket` redirects the *host's* Health dial to B's
-  guestd, so `awaitHealthy` fails during setup against the already-proven
-  host-side check ("`if !bytes.Equal(resp.GetBootNonce(), nonce) { return
-  fmt.Errorf("microvm: boot nonce mismatch…")`",
-  `go/internal/runtime/microvm_lifecycle.go:441-445`) — it reddens main's
-  nonce binding, not the in-guest probe's discrimination.
-  Options: (a) **Re-aim the probe at the port that has a host listener.**
-  From A, via W2's `vsockprobe` extended with a small identity-echo mode,
-  dial CID 2:1025 and assert the connection terminates at *A's own* gateway
-  socket: the harness serves a distinct per-session discriminator byte
-  string on each session's gateway path, and A must observe A's. That is a
-  real positive discriminator with a mutation that reddens this row's own
-  property — swap A's and B's gateway listeners in the harness and the
-  assertion MUST go red. Cost: the probe binary grows a read-and-compare
-  mode, and the leg proves "the guest's dial surface is bound to its own
-  session" rather than the parent's literal wording. (b) **Concede the
-  structural argument at the design layer.** Record that path-addressed
-  hybrid vsock offers no cross-VM route at all, assert only that A's
-  guest-side dial surface is *bounded* (CID 2 connects on the two muxed
-  ports; nothing else connects), and let main's host-side nonce binding
-  carry per-session identity. Cheaper and honest, but cycle 1's vsock half
-  reduces to a structural argument plus a negative-space assertion, with no
-  positive identity discriminator inside the guest. Either way RIG-2499 row
-  1's wording ("B's vsock port … fails") needs an interpretation ruling,
-  because under both options nothing named "B's vsock port" is ever dialed —
-  no such address exists. **Recommendation: (a)** — it is the only shape
-  with an honest positive discriminator and a proving mutation that reddens
-  the property actually under test.
+  no vsock address?** RIG-2499 acceptance row 1's phrase is satisfied by
+  proving that A's only dialable gateway is A's own, never B's. Under
+  cloud-hypervisor's hybrid vsock, each VM has a per-session
+  `<runtimeDir>/vsock.sock` (`MicroVMRuntime.bootConfig` and `guestVsockCID` in
+  `go/internal/runtime/microvm_lifecycle.go`);
+  the mechanism is this socket path, not the fixed CID. A guest dial to CID 2
+  port P reaches that VM's host AF_UNIX path suffixed with P
+  (`go/internal/runtime/microvm/config.go:40-48`). Port 1024 is
+  direction-reversed: guestd listens in the guest and the host dials it
+  (`go/internal/guestd/vsock.go:75-77`,
+  `go/internal/runtime/microvm/dial.go:51`). The host listener is the
+  gateway at port 1025 (`go/internal/runner/e2e_vsock_gateway_microvm_test.go:24`).
+  Ruling: from guest A, extend W2's `vsockprobe` with identity-echo mode,
+  dial CID 2:1025, and assert the distinct per-session discriminator is A's.
+  Mutation: swap A's and B's gateway listeners in the harness; the assertion
+  MUST go red. A distinct-CID probe is rejected because it would only
+  re-prove the peer-CID gate already covered by `peerAllowed`'s table test.
+  **Ruling (Matt, 2026-10-08, RIG-3415): (a).**
 - **OQ-9 (load-bearing) — prove the peer-CID gate live, or pin the stronger
   absence?** Cycle 8 asks that an agent-uid in-guest process dial the
   supervisor over loopback (CID 1) "and is refused"
-  (microvm-runner.md:618-621), and § Approach (d)/W2 assert exit 2
-  (connected-then-closed by guestd's gate). That assertion cannot pass on
-  today's image — and not because the gate is broken. A CID-1
-  (`VMADDR_CID_LOCAL`) connect needs the kernel's `vsock_loopback`
-  transport; the initrd's `bootModules` list is exactly `virtio_pci`,
-  `virtio_blk`, `erofs`, `overlay`, `virtio_net`, `virtiofs`,
-  `vmw_vsock_virtio_transport`, `af_packet`
-  (`guest-image/default.nix:153-162`), with no loopback entry in the checked
-  `bootModuleConfigs` list (`guest-image/default.nix:171-180`, where
-  `vmw_vsock_virtio_transport` maps to `CONFIG_VIRTIO_VSOCKETS`,
-  `:164-170`). With no local transport registered the `connect()` fails at
-  the socket layer and never reaches guestd's `Accept`, so the probe exits
-  **3** (no path) under W2's
-  exit-code contract and the drafted exit-2 assertion is red.
-  [INFERENCE: the exact errno; the transport-absence mechanism is standard
-  `af_vsock` behavior — a connect to a local CID requires a registered local
-  transport.] The guest cannot self-load the module: `modprobe` needs root
-  and the backend advertises `refusesRootExec: true`
-  (`contract_microvm_test.go:49`). So today the supervisor is
-  **structurally unreachable** from any in-guest process — strictly stronger
-  than "refused" — and proving the gate *live* would mean ADDING the
-  transport, widening the very escalation surface this suite certifies.
-  Options: (a) **Keep loopback absent and pin the stronger property.** The
-  acceptance assertion becomes exit 3 (transport-level unreachability),
-  documented as strictly stronger than the parent's "refused", with guestd's
-  hermetic `peerAllowed` table
-  (`go/internal/guestd/supervisor_test.go:709-719`) continuing to prove the
-  gate itself as defense in depth. Its proving mutation is real and
-  available: a guest image built *with* `vsock_loopback` MUST flip the probe
-  to exit 2 — which reddens the exit-3 assertion and simultaneously proves
-  the exit-code discrimination and that the gate is what closes the
-  connection once a transport exists. (b) **Add `vsock_loopback` to the
-  guest image** so the parent's literal sentence is exercised end to end
-  (dial connects, gate closes it, exit 2). Cost: it enables the very channel
-  the cycle exists to prove unreachable, trading a structural guarantee for
-  a policy one on a multi-tenant box, and it is a guest-image change inside
-  a docs-then-tests milestone. The fork is the parent's wording
-  against the structurally stronger reality, so the ruling is Matt's, not an
-  executor's. **Recommendation: (a)** — never weaken an isolation surface to
-  make a test match its prose; assert the stronger property and record the
-  wording divergence. Under (a) OQ-2's option-(i) guest-image cost is
-  genuinely zero; under (b) it is not (see OQ-2's correction).
+  (microvm-runner.md:618-621). The kernel builds `vsock_loopback` into its
+  modules output, but production `bootModules` omits it from the initrd
+  (`guest-image/default.nix:136-155`). Ruling: keep it absent; the CID-1
+  probe MUST exit 3 for transport-level unreachability, strictly stronger
+  than the parent's "refused" wording. Guestd's hermetic `peerAllowed` table
+  (`go/internal/guestd/supervisor_test.go:709-719`) continues to prove the
+  peer-CID gate as defense in depth. For the proving mutation, build a
+  TEST-ONLY initrd with `bootModules ++ [ "vsock_loopback" ]` and select it
+  through `COMPASS_TEST_GUEST_INITRD`; the probe MUST flip to exit 2. This
+  mutation leaves production boots unchanged. The test-only initrd is the one
+  extra guest-image derivation accounted for under OQ-2.
+  **Ruling (Matt, 2026-10-08, RIG-3415): (a).**
