@@ -4,23 +4,26 @@
 // presented token to SubjectRunner on every RPC. Any other token (account,
 // revoked, not-found) collapses to a bare CodeUnauthenticated — no oracle,
 // fail-closed; distinct store sentinels are for server-side logging only.
+// A store fault is not a verdict: it returns a fixed Unavailable so the Runner retries.
 package runnerhub
 
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"connectrpc.com/connect"
 
+	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TokenResolver is the shared credential-resolution seam: sha256 the presented
-// token, resolve it in the store, and Kind-gate it against want. It mirrors the
-// T3 lane's exported auth.ResolveToken(ctx, st, presented, want) with the store
-// closed over. Returns the resolved subject, or a store sentinel (ErrNotFound /
-// ErrTokenRevoked / a wrong-kind error) the door collapses to Unauthenticated.
+// token, resolve it in the store, and Kind-gate it against want. It mirrors
+// auth.ResolveToken(ctx, st, presented, want) with the store closed over. Returns
+// the resolved subject, a credential sentinel the door collapses to
+// Unauthenticated, or an auth.ErrTokenLookupFailed-wrapped store fault.
 type TokenResolver func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error)
 
 // runnerSubjectKey carries the authenticated Runner subject on the request
@@ -44,15 +47,19 @@ func withRunnerSubject(ctx context.Context, subj store.Subject) context.Context 
 // account door (compass.proto:246 "authorization: Bearer <token>").
 const bearerPrefix = "Bearer "
 
-// errUnauthenticated is the single opaque error every auth failure maps to — no
-// detail distinguishes not-found, revoked, or wrong-kind to the client (no
+// errUnauthenticated is the single opaque error every credential failure maps to —
+// no detail distinguishes not-found, revoked, or wrong-kind to the client (no
 // oracle). The distinct store sentinels are logged server-side only.
 var errUnauthenticated = connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))
 
+// errLookupUnavailable is the fixed store-fault response; the cause can name DB hosts, so it stays server-side.
+var errLookupUnavailable = connect.NewError(connect.CodeUnavailable, errors.New("credential check unavailable"))
+
 // authenticate extracts the bearer token from the request header, resolves it as
 // a SubjectRunner token, and returns a context carrying the subject. Any
-// failure — missing/malformed header, not-found, revoked, wrong kind — returns
-// errUnauthenticated with no distinguishing detail.
+// credential failure — missing/malformed header, not-found, revoked, wrong kind —
+// returns errUnauthenticated with no distinguishing detail; a store fault returns
+// errLookupUnavailable.
 func (b *bearerAuth) authenticate(ctx context.Context, header interface{ Get(key string) string }) (context.Context, error) {
 	raw := header.Get("Authorization")
 	if !strings.HasPrefix(raw, bearerPrefix) {
@@ -64,9 +71,12 @@ func (b *bearerAuth) authenticate(ctx context.Context, header interface{ Get(key
 	}
 	subj, err := b.resolve(ctx, token, store.SubjectRunner)
 	if err != nil {
-		// A store sentinel (ErrNotFound / ErrTokenRevoked / wrong-kind) collapses
-		// to a bare Unauthenticated: the client learns only that it is not
-		// authenticated, never which. The resolver logs the distinct cause.
+		// The client learns only that it is not authenticated, never which; a store
+		// fault is not a credential verdict, so it is retryable Unavailable instead.
+		if errors.Is(err, auth.ErrTokenLookupFailed) {
+			slog.WarnContext(ctx, "runner credential check unavailable", "error", err)
+			return nil, errLookupUnavailable
+		}
 		return nil, errUnauthenticated
 	}
 	return withRunnerSubject(ctx, subj), nil
