@@ -11,10 +11,9 @@ package gateway
 // emission order, else the hub's gap detector records a false gap. So a publisher
 // holds its stream mutex across BOTH the seq allocation AND the Send.
 
-// Scope: the counter is Gateway-scoped (per socket / per Runner link) and survives
-// a publisher replacement, since a per-publisher counter would restart the
-// sequence on a swap. relay.go's eventPublisher owns a SECOND counter feeding the
-// same high-water mark, so gap detection holds only while one is live; unifying is T9.
+// Scope: the counter is Runner-link-wide (shared by every container's Gateway) and
+// survives a publisher replacement, since a per-publisher counter would restart the
+// sequence on a swap.
 
 import (
 	"context"
@@ -32,9 +31,9 @@ type EventRelay interface {
 	PublishEvents(ctx context.Context) *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse]
 }
 
-// seqCounter is the RunnerSeq allocator shared by every publisher a Gateway
-// builds for its socket. It carries ONLY the counter and the lock that guards
-// the counter — deliberately not the publishers' stream lock.
+// SeqCounter is the RunnerSeq allocator shared by every publisher of every
+// Gateway on one Runner link. It carries ONLY the counter and the lock that
+// guards the counter — deliberately not the publishers' stream lock.
 //
 // Sharing the counter is required: a publisher is replaceable within one session,
 // and a per-publisher counter restarts the sequence on that swap. Sharing the
@@ -42,17 +41,16 @@ type EventRelay interface {
 // a replacement and then closes the stale publisher outside pubMu, so a
 // CloseAndReceive round-trip against an unresponsive-but-connected Server would
 // block every forward on the live replacement's separate upstream stream. Two
-// distinct streams need no mutual ordering — the hub keeps one global high-water
-// mark and cannot observe an interleaving between them — so the coupling would
-// buy nothing and cost unbounded liveness.
-type seqCounter struct {
+// distinct streams may therefore deliver out of seq order; the hub tolerates a
+// late lower seq, so the coupling would buy nothing and cost unbounded liveness.
+type SeqCounter struct {
 	mu sync.Mutex
 	n  uint64
 }
 
 // next allocates and returns the next sequence. Called with the publisher's own
 // stream lock held, so allocation order still equals emission order.
-func (c *seqCounter) next() uint64 {
+func (c *SeqCounter) next() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.n++
@@ -64,9 +62,9 @@ func (c *seqCounter) next() uint64 {
 // permanent hole, and the hub flags a skipped number as in-transit loss
 // (runnerhub/hub.go:230). A durable frame erring back to the agent is correct,
 // expected behaviour — it must not make the Server report a loss that did not
-// happen. Safe because the caller holds its stream lock across allocate-and-send,
-// so no other goroutine can have sent past this value.
-func (c *seqCounter) rollback(seq uint64) {
+// happen. Only the latest seq is reclaimed: if another Gateway allocated since,
+// the number stays burned and shows as a gap once the hub has a baseline.
+func (c *SeqCounter) rollback(seq uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.n == seq {
@@ -99,7 +97,7 @@ type sessionPublisher struct {
 	// seq is the Gateway's shared allocator, carried across publishers so the
 	// sequence survives a replacement. Only the counter is shared; its lock is
 	// held just long enough to allocate.
-	seq *seqCounter
+	seq *SeqCounter
 	// admit, when set, allocates under the Gateway's publish gate so a sealed
 	// session refuses frames instead of sequencing them after its ERRORED report.
 	admit func() (uint64, error)
@@ -122,7 +120,7 @@ type sessionPublisher struct {
 // life: the Publish handler uses the socket-lifetime context, while lifecycle
 // reports use a bounded caller ctx. seq is the Gateway counter, carried across
 // publishers so the sequence never restarts.
-func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *seqCounter) *sessionPublisher {
+func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *SeqCounter) *sessionPublisher {
 	ctx, cancel := context.WithCancel(ctx)
 	return &sessionPublisher{
 		sessionID: sessionID,
@@ -230,7 +228,7 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 		g.pub = nil
 	}
 	if g.pub == nil {
-		g.pub = newSessionPublisher(g.baseCtx, g.events, sessionID, &g.seq)
+		g.pub = newSessionPublisher(g.baseCtx, g.events, sessionID, g.seq)
 		g.pub.admit = func() (uint64, error) { return g.admitFrame(sessionID) }
 		g.pub.afterAdmit = g.afterAdmit
 	}

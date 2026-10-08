@@ -23,7 +23,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -118,6 +120,47 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 	}
 	if got := calls[0].frame.GetTypedEvent().GetAssistantText().GetText(); got != "relayed over the wire" {
 		t.Fatalf("relayed trace text = %q, want the frame body", got)
+	}
+}
+
+func TestSeamPublishEventsOpenedBeforeEnrollIsFenced(t *testing.T) {
+	hub, _, tail := newHub()
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{
+		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}},
+	}}
+	url := newMountedH2CServer(t, hub, resolver.resolve)
+	client := newRawRunnerClient(t, url, "runner-tok")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	pub := client.PublishEvents(ctx)
+	if err := pub.Send(&compassv1internal.PublishEventsRequest{RunnerSeq: 1, SessionId: "sess-wire", Frame: sessionTraceFrame("before enroll")}); err != nil {
+		t.Fatalf("PublishEvents.Send = %v", err)
+	}
+	// Gate on the server handler having taken the frame, so the stream opened pre-enroll.
+	for deadline := time.Now().Add(10 * time.Second); ; runtime.Gosched() {
+		hub.mu.Lock()
+		seen := hub.lastSeq == 1
+		hub.mu.Unlock()
+		if seen {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pre-enroll frame never reached Deliver")
+		}
+	}
+	if _, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"})); err != nil {
+		t.Fatalf("Enroll = %v, want success", err)
+	}
+	bindSession(hub, "sess-wire")
+	if err := pub.Send(&compassv1internal.PublishEventsRequest{RunnerSeq: 2, SessionId: "sess-wire", Frame: sessionTraceFrame("after enroll")}); err != nil {
+		t.Fatalf("PublishEvents.Send = %v", err)
+	}
+	if _, err := pub.CloseAndReceive(); err != nil {
+		t.Fatalf("PublishEvents.CloseAndReceive = %v", err)
+	}
+	if calls := tail.snapshot(); len(calls) != 0 {
+		t.Fatalf("tail sink saw %d frames, want none from a stream opened before enroll", len(calls))
 	}
 }
 
