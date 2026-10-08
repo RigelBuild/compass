@@ -64,14 +64,14 @@ func IssueAccountToken(ctx context.Context, st *store.Store, account store.Accou
 	return "", errors.New("persisting issued token: hash collision on two successive mints")
 }
 
-// Sentinel resolution failures returned by ResolveToken. They exist so the server
-// can LOG which case fired (audit), NOT so a door tells them apart to the client:
-// a door MUST map all three to the same bare CodeUnauthenticated, or the response
-// becomes an oracle for whether a token is unknown, revoked, or for the other door.
+// Sentinel resolution failures returned by ResolveToken. The three credential
+// verdicts exist so the server can LOG which case fired (audit), NOT so a door
+// tells them apart to the client: a door MUST map them to the same bare
+// CodeUnauthenticated, or the response becomes an oracle for whether a token is
+// unknown, revoked, or for the other door. ErrTokenLookupFailed is not a verdict.
 var (
 	// ErrTokenNotFound: the presented token was never issued (or the store has
-	// no live record of it). Any unexpected store error folds here too, so
-	// resolution fails closed.
+	// no live record of it).
 	ErrTokenNotFound = errors.New("auth: token not found")
 	// ErrTokenRevoked: the token was issued but has since been withdrawn.
 	ErrTokenRevoked = errors.New("auth: token revoked")
@@ -79,6 +79,10 @@ var (
 	// token presented to the account door, or an account token to the Runner
 	// door. The OQ7 cross-door rejection (design.md:1308-1314).
 	ErrWrongKind = errors.New("auth: token subject kind mismatch")
+	// ErrTokenLookupFailed: the store could not answer, so no verdict exists. It
+	// still fails closed; a door MAY report it as Unavailable since it says nothing
+	// about the token.
+	ErrTokenLookupFailed = errors.New("auth: token lookup failed")
 )
 
 // ResolveToken authenticates a presented bearer to a subject of the required
@@ -88,12 +92,12 @@ var (
 // comparison never touches a stored plaintext — there is none), then verifies
 // the resolved subject's kind against want.
 //
-// It returns a distinct sentinel per failure — ErrTokenNotFound (never issued or
-// an unexpected store error, folded here to fail closed), ErrTokenRevoked
-// (withdrawn), ErrWrongKind (issued for the other door) — so the server can log
-// which fired. Every caller MUST map all three to the same bare
+// It returns a distinct sentinel per failure — ErrTokenNotFound (never issued),
+// ErrTokenRevoked (withdrawn), ErrWrongKind (issued for the other door) — so the
+// server can log which fired. Every caller MUST map those three to the same bare
 // CodeUnauthenticated: the distinction is a server-side audit signal, never a
 // client-visible one (a distinguishable response is a token-existence oracle).
+// Any other store error, including ctx cancellation, wraps ErrTokenLookupFailed.
 // Both the account door (want=SubjectAccount) and the Runner door
 // (want=SubjectRunner) share this one resolver, so the security-critical
 // resolve+kind-gate lives and is tested in exactly one place; each door adds only
@@ -101,17 +105,23 @@ var (
 func ResolveToken(ctx context.Context, st *store.Store, presented string, want store.SubjectKind) (store.Subject, error) {
 	subj, err := st.ResolveTokenHash(ctx, hashToken(presented))
 	if err != nil {
-		if errors.Is(err, store.ErrTokenRevoked) {
-			return store.Subject{}, ErrTokenRevoked
-		}
-		// store.ErrNotFound — and any other store error — is not a live
-		// credential; fail closed as not-found.
-		return store.Subject{}, ErrTokenNotFound
+		return store.Subject{}, tokenResolutionError(err)
 	}
 	if subj.Kind != want {
 		return store.Subject{}, ErrWrongKind
 	}
 	return subj, nil
+}
+
+// tokenResolutionError distinguishes credential verdicts from store failures.
+func tokenResolutionError(err error) error {
+	if errors.Is(err, store.ErrTokenRevoked) {
+		return ErrTokenRevoked
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return ErrTokenNotFound
+	}
+	return fmt.Errorf("%w: %w", ErrTokenLookupFailed, err)
 }
 
 // RevokeToken withdraws a bearer token by its presented plaintext, marking the
