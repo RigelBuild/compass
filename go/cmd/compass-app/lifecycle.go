@@ -35,6 +35,10 @@ import (
 // reusing it.
 const stackDownTimeout = 60 * time.Second
 
+// stackDownCancelGrace is how long a timed-out down gets after SIGTERM to
+// rewrite its survivor record before os/exec escalates to SIGKILL.
+const stackDownCancelGrace = 10 * time.Second
+
 // quitController is the explicit "Quit and stop stack" orchestration over its
 // injected effects. It holds the teardown seam (stackDown), the argv inputs
 // (params, resolved once in run()), the app-quit indirection (quit, wired to
