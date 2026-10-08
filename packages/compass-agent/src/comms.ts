@@ -406,7 +406,7 @@ export const createChannelGroupParameters = type({
 			"Optional parent group name (a leaf or slash path); must not be blank; omit for a top-level group",
 		),
 	"visibility?": type("'owner'|'shared'").describe(
-		"Group visibility: owner (default) or shared",
+		"Group visibility: owner (default) or shared; a nested group must match its parent, so pass shared under a shared parent",
 	),
 });
 
@@ -1181,7 +1181,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		label: "Create channel group",
 		approval: "write",
 		description:
-			"Create a channel group, optionally under a visible parent group; visibility is owner-scoped by default or may be shared.",
+			"Create a channel group, optionally under a visible parent group; visibility is owner-scoped by default or may be shared, and a nested group must use its parent's visibility.",
 		parameters: createChannelGroupParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
