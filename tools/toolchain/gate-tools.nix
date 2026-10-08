@@ -6,10 +6,10 @@
 # `packages = with pkgs; [ … ]` list, never hand-listed here: adding a dev-shell
 # tool extends CI and the gate with no edit to this file.
 #
-# Three outputs, one per consumer:
-#   env      a symlink tree of every nixpkgs tool; CI prepends its bin/ to PATH.
-#            The only way CI obtains buf/golangci-lint/biome/… at the pinned
-#            version — no `setup-*` action could match a nixpkgs pin.
+# Four outputs, one per consumer:
+#   env      a symlink tree of every nixpkgs tool plus Meissa's linters; CI
+#            prepends its bin/ to PATH. The only way CI obtains buf/biome/rumdl/…
+#            at the pinned version — no `setup-*` action could match a nix pin.
 #   identity attr -> { version, store, bins }. `store` is the derivation path the
 #            parity gate compares against; `bins` names the binaries to probe
 #            (the attr name often differs from the command). The field is `store`,
@@ -18,10 +18,13 @@
 #   langs    name -> identity for the language toolchains (bun/node/moon/go), the
 #            closed set appended outside the parsed `packages` literal. Never
 #            consumes `attrs` (the set is closed), which is why the head defaults it.
+#   meissa   name -> identity for rumdl + biome, built by the Meissa flake at the
+#            rev devenv.lock pins — the derivations devenv.nix appends. Closed set.
 { attrs ? [ ] }:
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
-  node = lock.nodes.nixpkgs.locked;
+  # By input name: Meissa's own nixpkgs can take the bare `nixpkgs` node key.
+  node = lock.nodes.${lock.nodes.root.inputs.nixpkgs}.locked;
   nixpkgsSrc = builtins.fetchTarball {
     url = "https://github.com/${node.owner}/${node.repo}/archive/${node.rev}.tar.gz";
     sha256 = node.narHash;
@@ -63,11 +66,17 @@ let
     store = drv.outPath;
     bins = binsOf drv;
   };
+
+  # Meissa at its devenv.lock rev; getFlake evaluates it with Meissa's own lock,
+  # the same nixpkgs the dev shell's unfollowed `meissa` input resolves.
+  meissaNode = lock.nodes.${lock.nodes.root.inputs.meissa}.locked;
+  meissaPkgs = (builtins.getFlake "github:${meissaNode.owner}/${meissaNode.repo}/${meissaNode.rev}?narHash=${meissaNode.narHash}").packages.${builtins.currentSystem};
+  meissaTools = { inherit (meissaPkgs) rumdl biome; };
 in
 {
   env = pkgs.buildEnv {
     name = "compass-gate-tools";
-    paths = map (a: pkgs.${a}) attrs;
+    paths = map (a: pkgs.${a}) attrs ++ builtins.attrValues meissaTools;
   };
 
   identity = builtins.listToAttrs (map
@@ -87,5 +96,8 @@ in
     go-licenses = identityOf goAnalysis.go-licenses;
     nilaway = identityOf goAnalysis.nilaway;
   };
+  meissa = builtins.mapAttrs (_: identityOf) meissaTools;
+  # The base policy .rumdl.toml extends; CI exports it as RUMDL_BASE_CONFIG.
+  rumdlBaseConfig = meissaPkgs."rumdl-base-config";
   analysis = goAnalysis;
 }

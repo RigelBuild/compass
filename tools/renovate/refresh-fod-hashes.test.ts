@@ -202,8 +202,8 @@ async function buildBaselineRepo(): Promise<string> {
 		}
 	}
 	// Channel locks the divergence diagnostic quotes. Real devenv locks; only
-	// `nodes.nixpkgs.locked.rev` is read, and only to name the two revs in the
-	// error, so a minimal shape with distinguishable revs is enough.
+	// root's `nixpkgs` input → `locked.rev` is read, and only to name the two
+	// revs in the error, so a minimal shape with distinguishable revs is enough.
 	for (const entry of FOD_ENTRIES) {
 		await write(
 			entry.vehicleChannelLock,
@@ -213,6 +213,7 @@ async function buildBaselineRepo(): Promise<string> {
 						nixpkgs: {
 							locked: { rev: revFor(entry.vehicleChannelLock) },
 						},
+						root: { inputs: { nixpkgs: "nixpkgs" } },
 					},
 				},
 				null,

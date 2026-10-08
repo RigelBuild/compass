@@ -85,12 +85,12 @@ function nixIdentities(attrs: readonly string[]): Record<string, NixIdentity> {
 }
 
 /**
- * Resolve the language toolchains (bun/node/moon/go) to their derivations and
- * command lists. Same identity shape as nixIdentities, from gate-tools.nix's
- * `langs` output — a closed set, so no `--arg attrs` is needed (the head there
+ * Resolve a closed toolchain set — gate-tools.nix's `langs` (bun/node/moon/go)
+ * or `meissa` (rumdl/biome) — to derivations and command lists. Same identity
+ * shape as nixIdentities; closed sets need no `--arg attrs` (the head there
  * defaults `attrs` to `[ ]`).
  */
-function nixLangs(): Record<string, NixIdentity> {
+function nixClosedSet(output: "langs" | "meissa"): Record<string, NixIdentity> {
 	const out = execFileSync(
 		"nix",
 		[
@@ -98,7 +98,7 @@ function nixLangs(): Record<string, NixIdentity> {
 			"--json",
 			"-f",
 			join(repoRoot, "tools/toolchain/gate-tools.nix"),
-			"langs",
+			output,
 		],
 		{ encoding: "utf8" },
 	);
@@ -109,17 +109,22 @@ const devenvAttrs = parseDevenvPackages(
 	readFileSync(join(repoRoot, "devenv.nix"), "utf8"),
 );
 
-// Resolve the closed language set up front so the refusal below can guard on it
-// too: an empty `langs` identity set means gate-tools.nix's shape moved out
-// from under the gate, the same false-green risk as an empty devenv parse.
-const langs = nixLangs();
+// Resolve the closed sets up front so the refusal below can guard on them too:
+// an empty `langs` or `meissa` identity set means gate-tools.nix's shape moved
+// out from under the gate, the same false-green risk as an empty devenv parse.
+const langs = nixClosedSet("langs");
+const meissa = nixClosedSet("meissa");
 
-if (devenvAttrs.length === 0 || Object.keys(langs).length === 0) {
-	// Either coming back empty means a source the gate parses moved out from
+if (
+	devenvAttrs.length === 0 ||
+	Object.keys(langs).length === 0 ||
+	Object.keys(meissa).length === 0
+) {
+	// Any coming back empty means a source the gate parses moved out from
 	// under it. Silently checking nothing is the exact false green this exists to
 	// stop, so refuse rather than report a vacuous pass.
 	console.error(
-		`toolchain parity: parsed ${devenvAttrs.length} devenv.nix packages and ${Object.keys(langs).length} language toolchains — ` +
+		`toolchain parity: parsed ${devenvAttrs.length} devenv.nix packages, ${Object.keys(langs).length} language toolchains and ${Object.keys(meissa).length} Meissa tools — ` +
 			"one of those sources no longer has the shape the gate parses. Refusing to report a pass over nothing.",
 	);
 	process.exit(1);
@@ -174,6 +179,14 @@ for (const [name, identity] of Object.entries(langs)) {
 	);
 }
 
+// Meissa's linters (rumdl/biome), built by the Meissa flake at the devenv.lock
+// rev — never the shell's nixpkgs attrs, so a nixpkgs rumdl on PATH mismatches.
+for (const [name, identity] of Object.entries(meissa)) {
+	verdicts.push(
+		...storePathVerdicts(name, identity, "not built by gate-tools.nix meissa"),
+	);
+}
+
 // Half two: the nixpkgs attributes parsed out of devenv.nix's packages literal,
 // each resolved to the derivation the devenv.lock-pinned nixpkgs builds.
 const identities = nixIdentities(devenvAttrs);
@@ -189,7 +202,7 @@ for (const attr of devenvAttrs) {
 
 const report = renderReport(verdicts);
 console.log(
-	"toolchain parity — CI toolchain vs the dev shell (devenv.nix packages + versions/*.nix @ devenv.lock)\n",
+	"toolchain parity — CI toolchain vs the dev shell (devenv.nix packages + versions/*.nix + meissa @ devenv.lock)\n",
 );
 console.log(report.table);
 process.exit(report.ok ? 0 : 1);

@@ -395,12 +395,14 @@ jobs:
       - name: Put the dev shell's nixpkgs tools on PATH
         if: matrix.run == 'true'
         # Phase two. buf, protoc, biome and rumdl have no `setup-*` action
-        # that could reproduce a nixpkgs pin. Rather than pick a close-enough
+        # that could reproduce a nix pin. Rather than pick a close-enough
         # release from some other channel and hope, CI resolves the SAME
-        # derivations the dev shell does, from the nixpkgs revision devenv.lock
-        # pins. (The Go analysis battery — golangci-lint/govulncheck/go-licenses/
-        # nilaway — is NOT here: it is rebuilt against the go toolchain and rides
-        # phase one via gate-tools.nix `langs`, not this nixpkgs-attrs step.)
+        # derivations the dev shell does: the nixpkgs attrs from the revision
+        # devenv.lock pins, plus biome and rumdl from the Meissa flake at the
+        # rev devenv.lock pins (gate-tools.nix `env` carries both). (The Go
+        # analysis battery — golangci-lint/govulncheck/go-licenses/nilaway — is
+        # NOT here: it is rebuilt against the go toolchain and rides phase one
+        # via gate-tools.nix `langs`, not this nixpkgs-attrs step.)
         #
         # The attribute list comes from the parity script's own parse of
         # devenv.nix (run under the bun that phase one just put on PATH), so what
@@ -411,6 +413,11 @@ jobs:
           out=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
           echo "$out/bin" >>"$GITHUB_PATH"
+          # .rumdl.toml extends Meissa's base policy through this variable, as
+          # devenv.nix sets it; rumdl hard-errors when it is unset.
+          base=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/gate-tools.nix rumdlBaseConfig)
+          echo "RUMDL_BASE_CONFIG=$base/rumdl/base.toml" >>"$GITHUB_ENV"
           # The dev-boot gate (apps/ui:dev-smoke) drives a headless Chromium
           # through Playwright, which resolves it from PLAYWRIGHT_CHROMIUM_PATH
           # (apps/ui/playwright.config.ts:31-33). chromium is Linux-only in
@@ -1501,7 +1508,7 @@ jobs:
           westonenv=$(nix build --no-link --print-out-paths --impure --expr '
             let
               lock = builtins.fromJSON (builtins.readFile ../devenv.lock);
-              node = lock.nodes.nixpkgs.locked;
+              node = lock.nodes.${lock.nodes.root.inputs.nixpkgs}.locked;
               src = builtins.fetchTarball {
                 url = "https://github.com/${node.owner}/${node.repo}/archive/${node.rev}.tar.gz";
                 sha256 = node.narHash;

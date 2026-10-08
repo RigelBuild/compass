@@ -147,36 +147,51 @@
     },
     {
       // ── devenv nixpkgs channel ──
-      // The dev shell bakes biome + rumdl from nixpkgs
-      // (devenv.nix:75-81), whose versions are governed by devenv's nixpkgs channel
+      // The dev shell bakes its nixpkgs tools (buf, the codegen plugins, the Go
+      // gate battery…) from devenv's nixpkgs channel
       // (devenv.yaml → github:cachix/devenv-nixpkgs/rolling), locked by git rev in
-      // devenv.lock. The native `nix` manager can't see it — there is no root
-      // flake.nix for it to anchor on, and devenv.lock is devenv's own lock format,
-      // not a flake.lock — so a catalog-only Renovate bump of biome moves the pin
-      // without moving the baked side and the baked==catalog dev-shell parity
-      // drifts. This customManager surfaces the channel rev as a git-refs digest so
-      // Renovate tracks it; the coupled postUpgradeTasks rule below re-locks
-      // devenv.lock and rewrites the biome catalog pin to the version the new rev
-      // bakes, so parity holds in one PR. (Only biome is dual-sourced here —
-      // rumdl has no catalog pin — so the relock rewrites one catalog
-      // pin, not two.)
+      // devenv.lock. The native `nix` manager can't see it — devenv.lock is
+      // devenv's own lock format, not a flake.lock. This customManager surfaces
+      // the channel rev as a git-refs digest so Renovate tracks it; the coupled
+      // postUpgradeTasks rule below re-locks devenv.lock and lockstep-aligns the
+      // root flake in one PR. biome + rumdl come from Meissa, not this channel.
       //
-      // Anchor: `"repo": "devenv-nixpkgs"` immediately followed by `"rev"`.
-      // devenv writes alphabetized keys inside `locked` (…owner, repo, rev,
-      // type…), so this pair is unique in the file — the `original` block
-      // repeats `"repo": "devenv-nixpkgs"` but is followed by `"ref"`, never
-      // `"rev"`, so the regex cannot mis-bind. The inner `nixpkgs-src` node
-      // (upstream NixOS/nixpkgs) is deliberately NOT matched: the re-lock
-      // refreshes it from the outer rev. config.test.ts pins the extraction
-      // against the real devenv.lock.
+      // Anchor: root's channel node `nixpkgs_2` and its `nixpkgs-src_2` input,
+      // then `"repo": "devenv-nixpkgs"` immediately followed by `"rev"`. The
+      // unfollowed `meissa` input sorts first and so owns the bare `nixpkgs`
+      // key for ITS devenv-nixpkgs node, which carries the same repo/rev pair.
+      // The `original` block repeats the repo but is followed by `"ref"`, never
+      // `"rev"`. The inner `nixpkgs-src_2` node is deliberately NOT matched: the
+      // re-lock refreshes it from the outer rev. config.test.ts pins the
+      // extraction against the real devenv.lock, so a node rename fails loudly.
       customType: "regex",
       managerFilePatterns: ["/^devenv\\.lock$/"],
       matchStrings: [
-        "\"repo\": \"devenv-nixpkgs\",\\s*\"rev\": \"(?<currentDigest>[a-f0-9]{40})\"",
+        "\"nixpkgs_2\": \\{\\s*\"inputs\": \\{\\s*\"nixpkgs-src\": \"nixpkgs-src_2\"\\s*\\},\\s*\"locked\": \\{[^}]*?\"repo\": \"devenv-nixpkgs\",\\s*\"rev\": \"(?<currentDigest>[a-f0-9]{40})\"",
       ],
       depNameTemplate: "cachix/devenv-nixpkgs",
       packageNameTemplate: "https://github.com/cachix/devenv-nixpkgs",
       currentValueTemplate: "rolling",
+      datasourceTemplate: "git-refs",
+    },
+    {
+      // ── Meissa: the shared lint toolchain (biome, rumdl, rumdl base policy) ──
+      // devenv.yaml resolves github:RigelBuild/meissa at its default branch, so
+      // the concrete rev lives only in devenv.lock. Surface it as a git-refs
+      // digest; the coupled packageRule below relocks the input and moves the
+      // biome catalog pin to Meissa's biome in the same PR.
+      //
+      // Anchor: `"owner": "RigelBuild"`, `"repo": "meissa"`, then `"rev"`. Only
+      // the `locked` block has a rev after the repo (`original` names no ref),
+      // so the match is unique. config.test.ts pins it to the real devenv.lock.
+      customType: "regex",
+      managerFilePatterns: ["/^devenv\\.lock$/"],
+      matchStrings: [
+        "\"owner\": \"RigelBuild\",\\s*\"repo\": \"meissa\",\\s*\"rev\": \"(?<currentDigest>[a-f0-9]{40})\"",
+      ],
+      depNameTemplate: "RigelBuild/meissa",
+      packageNameTemplate: "https://github.com/RigelBuild/meissa",
+      currentValueTemplate: "main",
       datasourceTemplate: "git-refs",
     },
     {
@@ -554,22 +569,21 @@
       allowedVersions: "<7",
     },
     {
-      // ── biome is channel-owned, not catalog-bumpable ──
-      // biome is BAKED into the dev shell from the devenv nixpkgs channel
-      // (devenv.nix:75-81) AND is a catalog pin (package.json:15). The ONLY path
-      // that moves both sides together is the devenv-nixpkgs channel customManager
-      // above + its lockstep postUpgradeTask, which rewrites the biome catalog pin
-      // to the version a new channel rev bakes. A generic catalog bump (the
-      // "TypeScript dependencies" rollup matches custom.regex/bun/npm) moves the pin
-      // ahead of the baked side and drifts dev-shell parity. Disable the generic
-      // managers for this key so the channel lockstep is its sole updater; the
-      // digest manager (datasource git-refs, no depType) is unaffected. This also
-      // fences the OSV security path for biome: a biome CVE is remediated only when
-      // the channel bakes a fixed version, not by an immediate security PR — an
-      // acceptable tradeoff for a build-time devDependency with no runtime attack
-      // surface. (rumdl is baked from the channel too but has no catalog
-      // pin, so no generic manager reaches it — no rule needed.) Remove only if
-      // biome ever stops being baked from the channel.
+      // ── biome is Meissa-owned, not catalog-bumpable ──
+      // The dev shell's biome comes from the `meissa` devenv input AND is a
+      // catalog pin (package.json). The ONLY path that moves both sides together
+      // is the Meissa customManager above + its packageRule's catalog writer
+      // (refresh-biome-catalog.ts), which rewrites the pin to Meissa's biome. A
+      // generic catalog bump (the "TypeScript dependencies" rollup matches
+      // custom.regex/bun/npm) moves the pin ahead of the shell's biome and drifts
+      // dev-shell parity. Disable the generic managers for this key so the Meissa
+      // lockstep is its sole updater; the digest manager (datasource git-refs, no
+      // depType) is unaffected. This also fences the OSV security path for biome:
+      // a biome CVE is remediated only when Meissa ships a fixed version, not by
+      // an immediate security PR — an acceptable tradeoff for a build-time
+      // devDependency with no runtime attack surface. (rumdl also comes from
+      // Meissa but has no catalog pin, so no generic manager reaches it.) Remove
+      // only if biome ever stops coming from Meissa.
       matchManagers: ["bun", "npm", "custom.regex"],
       matchPackageNames: ["@biomejs/biome"],
       enabled: false,
@@ -715,48 +729,44 @@
       // release risk, which applies weakly to a cachix-curated channel repo.
       minimumReleaseAge: null,
       // ── The lockstep task. ──
-      // On this solo branch, re-lock devenv.lock at the new rev, read the baked
-      // biome version the rev ships, and rewrite the catalog pin to match — so
-      // dev-shell baked==catalog parity holds in one PR. `executionMode: "branch"`
-      // runs it once after the digest update is applied; safe here because this dep
-      // never shares a branch (its own groupName above), so it owns the single
-      // branch-mode task slot Renovate builds per branch. Rule-level
-      // postUpgradeTasks REPLACE the top-level one for matching branches; the
-      // evicted top-level toolchain task self-gates on the versions/*.nix pins and
-      // would be a no-op here anyway. fileFilters is an INCLUDE allowlist —
-      // Renovate commits ONLY files matching it — so it must name every file the
-      // script writes: devenv.lock + package.json (biome catalog pin) + bun.lock
-      // (steps 2/4/5), and flake.nix + flake.lock (step 6's flake lockstep). Omit
-      // the flake pair and Renovate would run the re-lock but silently DROP it
-      // from the commit, shipping a channel bump with the flake still skewed →
+      // On this solo branch, re-lock devenv.lock at the new rev and lockstep the
+      // root flake to it. `executionMode: "branch"` runs it once after the digest
+      // update is applied; safe here because this dep never shares a branch (its
+      // own groupName above), so it owns the single branch-mode task slot
+      // Renovate builds per branch. Rule-level postUpgradeTasks REPLACE the
+      // top-level one for matching branches; the evicted top-level toolchain
+      // task self-gates on the versions/*.nix pins and would be a no-op here
+      // anyway. fileFilters is an INCLUDE allowlist — Renovate commits ONLY files
+      // matching it — so it must name every file the tasks write: devenv.lock
+      // (step 2), and flake.nix + flake.lock (step 3's flake lockstep). Omit the
+      // flake pair and Renovate would run the re-lock but silently DROP it from
+      // the commit, shipping a channel bump with the flake still skewed →
       // flake-parity red on every bump (the same silent-drop mode the FOD guard
-      // in config.test.ts documents). compass has no committed inner-rev guard
-      // file, so no such entry.
+      // in config.test.ts documents).
       //
-      // A channel bump re-resolves the agent-closure bun.lock (opentelemetry
-      // transitives) ONLY when the biome catalog pin moves — refresh-devenv-
-      // nixpkgs.ts skips the relock on a biome-static bump — and independently
-      // moves pkgs.bun, the nixpkgs-versioned builder the FOD realises. Either
-      // can move agent-image/entrypoint.nix's bun `outputHash`, so the FOD
-      // refresh MUST ride this rule. It gates on bun.lock OR devenv.lock (the
-      // channel rev this bump always rewrites), so it fires on EVERY channel
-      // bump regardless of whether the relock ran, and reconciles the pin
-      // idempotently — a no-op write when the realised tree is unchanged. It runs
-      // after refresh-devenv-nixpkgs.ts so the relock's bun.lock write is already
-      // in the working tree. The command and output file must both be listed here
-      // because fileFilters is an INCLUDE allowlist: omitting
-      // agent-image/entrypoint.nix would silently drop the recomputed hash edit
-      // and leave a channel bump red. The #580 digest bump empirically hit
-      // exactly that failure (`hash mismatch in fixed-output derivation
-      // compass-agent-node-modules`).
+      // The biome catalog writer then re-checks the pin against Meissa's biome.
+      // Meissa does not follow this channel, so it is a no-op unless the pin has
+      // drifted; package.json + bun.lock stay listed so a repaired pin commits.
       //
-      // Self-hosted bot config MUST allow both commands:
-      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",
-      //                         "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
-      // see tools/renovate/bot-config.json5 (config.test.ts pins the wiring).
+      // A channel bump moves pkgs.bun, the nixpkgs-versioned builder the FOD
+      // realises, so it can move agent-image/entrypoint.nix's bun `outputHash`;
+      // the FOD refresh MUST ride this rule. It gates on bun.lock OR devenv.lock
+      // (the channel rev this bump always rewrites), so it fires on EVERY
+      // channel bump, and reconciles the pin idempotently — a no-op write when
+      // the realised tree is unchanged. It runs LAST so the relock's and the
+      // writer's writes are already in the working tree. The command and output
+      // file must both be listed here because fileFilters is an INCLUDE
+      // allowlist: omitting agent-image/entrypoint.nix would silently drop the
+      // recomputed hash edit and leave a channel bump red. The #580 digest bump
+      // empirically hit exactly that failure (`hash mismatch in fixed-output
+      // derivation compass-agent-node-modules`).
+      //
+      // Self-hosted bot config MUST allow all three commands; see
+      // tools/renovate/bot-config.json5 (config.test.ts pins the wiring).
       postUpgradeTasks: {
         commands: [
           "bun tools/renovate/refresh-devenv-nixpkgs.ts",
+          "bun tools/renovate/refresh-biome-catalog.ts",
           "bun tools/renovate/refresh-fod-hashes.ts",
         ],
         fileFilters: [
@@ -769,6 +779,39 @@
           // flake.lock supplies the UI node_modules FOD's bun.
           "apps/ui/dist.nix",
         ],
+        executionMode: "branch",
+      },
+    },
+    {
+      // ── Meissa lockstep: lint toolchain input + biome catalog pin ──
+      // Solo branch for the Meissa digest, on the SAME shape as the
+      // devenv-nixpkgs rule above: its own groupName so it NEVER shares a branch
+      // with the "TypeScript dependencies" rollup (which also matches
+      // custom.regex) or any other branch-mode rule, so it owns the single
+      // branch-mode task slot. The rollup can't capture it regardless: a
+      // git-refs update is type `digest`, and the rollup admits only patch/minor.
+      matchManagers: ["custom.regex"],
+      matchDepNames: ["RigelBuild/meissa"],
+      groupName: "meissa lint toolchain",
+      // DAILY, in the same before-4am-ET window as the devenv-nixpkgs rule.
+      schedule: ["before 4am"],
+      // A git-refs digest carries no release timestamp, so the repo-wide strict
+      // cooldown would hold it `pending` forever (the RIG-1220 shape). The
+      // compensating control is the mandatory human review of the PR.
+      minimumReleaseAge: null,
+      // The regex update rewrites only the rev; `devenv update meissa` relocks the
+      // input and its own nixpkgs nodes. The writer then moves the biome catalog
+      // pin + bun.lock to Meissa's biome and runs that biome's migrate + format.
+      // Those writes include devenv.lock, bun.lock and package.json — FOD
+      // triggers — so the FOD refresh runs LAST, as on every trigger-writing site.
+      postUpgradeTasks: {
+        commands: [
+          "devenv update meissa",
+          "bun tools/renovate/refresh-biome-catalog.ts",
+          "bun tools/renovate/refresh-fod-hashes.ts",
+        ],
+        // Broad on purpose: `biome format --write .` can touch any source file.
+        fileFilters: ["**/*"],
         executionMode: "branch",
       },
     },

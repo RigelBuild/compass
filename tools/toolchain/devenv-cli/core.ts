@@ -14,7 +14,7 @@ export interface DevenvSource {
  * Parse `.nodes.devenv.locked` out of a devenv.lock's text. Throws loudly on
  * missing node, missing/short rev, or non-github type — a shape change must
  * fail the caller, never resolve a stale or wrong source (the same posture as
- * refresh-devenv-nixpkgs.core.ts's innerNixpkgsRev).
+ * refresh-devenv-nixpkgs.core.ts's lockedRevByInputs).
  *
  * The `dir` field some locks carry (e.g. the root lock's `src/modules`) is
  * deliberately IGNORED: the `#devenv` flake attribute is what the flakeref

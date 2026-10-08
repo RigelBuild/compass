@@ -7,7 +7,7 @@ let
   # (read the lock, fetch that rev, import it). Supplies the BOOT layer only: the
   # agent userland comes from the OCI image, not from this pin.
   lock = builtins.fromJSON (builtins.readFile ../devenv.lock);
-  node = lock.nodes.nixpkgs.locked;
+  node = lock.nodes.${lock.nodes.root.inputs.nixpkgs}.locked;
   nixpkgsSrc = builtins.fetchTarball {
     url = "https://github.com/${node.owner}/${node.repo}/archive/${node.rev}.tar.gz";
     sha256 = node.narHash;

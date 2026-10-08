@@ -82,7 +82,7 @@
   // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
   // quietly.)
   //
-  // Nine entries, all load-bearing:
+  // Eleven entries, all load-bearing:
   //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
   //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
   //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
@@ -92,10 +92,9 @@
   //      the branch. Drop this entry and Renovate refuses the command, silently
   //      restoring the stale-lock failure.
   //   3. the devenv-nixpkgs lockstep, which re-locks devenv.lock at a new channel
-  //      rev, rewrites the biome catalog pin to the version that rev bakes
-  //      (keeping dev-shell baked==catalog parity), and re-aligns the repo-root
-  //      flake (flake.nix inputs.nixpkgs.url + flake.lock) to the same channel
-  //      rev so the flake-parity gate does not red on the skew.
+  //      rev and re-aligns the repo-root flake (flake.nix inputs.nixpkgs.url +
+  //      flake.lock) to the same channel rev so the flake-parity gate does not
+  //      red on the skew.
   //   4. the FOD-hash refresh, which recomputes the pinned Nix fixed-output-
   //      derivation hashes a dep bump invalidates — the Go `vendorHash`
   //      (guest-image/default.nix) on a gomod bump, the bun `outputHash`
@@ -104,9 +103,9 @@
   //      image build fails `hash mismatch in fixed-output derivation` (PR #579).
   //      Wired at the top-level (branch mode), catalog-rule (update mode),
   //      devenv-nixpkgs channel rule (branch mode), devenv fork (root) rule
-  //      (branch mode), go↔go-overlay lockstep rule (branch mode), and agent-image
-  //      devenv fork rule (branch mode) — one command string, so ONE allowlist
-  //      entry covers all six sites.
+  //      (branch mode), go↔go-overlay lockstep rule (branch mode), agent-image
+  //      devenv fork rule (branch mode), and Meissa rule (branch mode) — one
+  //      command string, so ONE allowlist entry covers all seven sites.
   //   5. the go↔go-overlay lockstep, which on a go.nix toolchain bump advances
   //      the go-overlay input in devenv.lock to a rev that provides the new go
   //      release and validates it resolves through gate-tools.nix's `langs.go`
@@ -127,9 +126,8 @@
   //      agent-image/entrypoint.nix's bun `outputHash` — the channel rev
   //      resolves the bun that FOD's builder uses, so an advance can invalidate
   //      the pin with no manifest change. SEPARATE from (3) because the root
-  //      channel script's tail (biome eval, catalog pin, bun.lock, flake
-  //      lockstep) has no counterpart in this scope: agent-image bakes no dev
-  //      shell (`packages = [ ]`) and has no flake.
+  //      channel script's flake lockstep has no counterpart in this scope:
+  //      agent-image bakes no dev shell (`packages = [ ]`) and has no flake.
   //   8. the guest-rootfs agent-image relock: on the moving `:latest` digest it
   //      resolves which immutable `git-<sha12>` tag shares that manifest and
   //      rewrites guest-image/agent-oci.lock's tag + digest + every layer
@@ -138,9 +136,15 @@
   //      redden every fetch.
   //   9. the Go analysis pin refresh, which derives the paired fields and refreshes
   //      both source and vendor hashes after a nilaway or golangci-lint bump.
-  // (1), (3), (4), (5), (6), (7), (8), and (9) are `bun <script>.ts` — the Renovate
-  // hooks are TypeScript run via bun (AGENTS.md "Scripts: TypeScript over
-  // bash"); bun is on the runner PATH.
+  //  10. the Meissa relock: `devenv update meissa` rewrites the meissa input and
+  //      its own nixpkgs nodes at the regex-bumped rev. A bare devenv command,
+  //      run directly — the rule needs nothing a wrapper script would add.
+  //  11. the biome catalog writer, which moves the `@biomejs/biome` catalog pin
+  //      to the biome Meissa ships, re-resolves bun.lock, and runs that biome's
+  //      migrate + format. Rides both the Meissa and devenv-nixpkgs rules.
+  // All but (2) and (10) are `bun <script>.ts` — the Renovate hooks are
+  // TypeScript run via bun (AGENTS.md "Scripts: TypeScript over bash"); bun is
+  // on the runner PATH.
   allowedCommands: [
     "^bun tools/renovate/refresh-toolchain-hashes\\.ts$",
     "^bun install --lockfile-only$",
@@ -151,5 +155,7 @@
     "^bun tools/renovate/refresh-agent-image-nixpkgs\\.ts$",
     "^bun tools/guest-image/pin-agent-image\\.ts --relock$",
     "^bun tools/renovate/refresh-go-analysis-hashes\\.ts$",
+    "^devenv update meissa$",
+    "^bun tools/renovate/refresh-biome-catalog\\.ts$",
   ],
 }

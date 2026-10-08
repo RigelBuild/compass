@@ -73,7 +73,7 @@ const bot = botConfig as {
 // tools/renovate/ → repo root is two levels up.
 const repoRoot = join(import.meta.dir, "..", "..");
 
-// The FOD-hash refresh command, declared once. It rides SIX task sites in
+// The FOD-hash refresh command, declared once. It rides SEVEN task sites in
 // config.json5 and is asserted from several describes below; a rename must be a
 // single edit here, not one per assertion (a missed copy degrades quietly).
 const FOD_COMMAND = "bun tools/renovate/refresh-fod-hashes.ts";
@@ -180,7 +180,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// postUpgradeTasks.commands are gated by the BOT config's global
 	// `allowedCommands` allowlist (a repo config cannot self-authorize a command),
 	// which Renovate matches UNANCHORED via regEx(pattern).test(cmd). So each
-	// entry's `^…$` IS the security property. Compass declares nine DISTINCT
+	// entry's `^…$` IS the security property. Compass declares eleven DISTINCT
 	// commands across the task sites (the FOD-hash refresh rides SIX sites — see
 	// the per-site enumeration on the count test below — so it appears six times
 	// in the declared list but needs only one allowlist entry; the devenv-fork
@@ -195,20 +195,22 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// biome/catalog/bun.lock/flake tail has no counterpart in that scope. The
 	// eighth is the guest-rootfs agent-image relock, which rewrites the pinned
 	// tag, digest, and per-layer fetch keys together. The ninth refreshes the
-	// coupled source and vendor hashes for Go analysis pins.
+	// coupled source and vendor hashes for Go analysis pins. The tenth and
+	// eleventh are the Meissa relock (`devenv update meissa`) and the biome
+	// catalog writer that follows Meissa's biome.
 	const commands = allDeclaredCommands();
 	const distinctCommands = [...new Set(commands)];
 	const allowed = bot.allowedCommands ?? [];
 
-	test("declares nine DISTINCT postUpgrade commands and nine allowlist entries", () => {
-		expect(distinctCommands).toHaveLength(9);
-		expect(allowed).toHaveLength(9);
+	test("declares eleven DISTINCT postUpgrade commands and eleven allowlist entries", () => {
+		expect(distinctCommands).toHaveLength(11);
+		expect(allowed).toHaveLength(11);
 	});
 
-	test("the fod-hash refresh is declared at all six task sites", () => {
+	test("the fod-hash refresh is declared at all seven task sites", () => {
 		// The command must ride every task shape that can own a bump able to move a
 		// pinned FOD, because a rule-level task REPLACES the top-level one on its
-		// branch. The six sites, all carrying the refresh:
+		// branch. The seven sites, all carrying the refresh:
 		//   1. top-level (branch mode)      — gomod + bun/TypeScript-first branches
 		//   2. devenv-nixpkgs channel rule  — the channel moves pkgs.bun
 		//   3. devenv fork (root) rule      — relocks devenv.lock, a declared trigger
@@ -216,6 +218,8 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		//   5. workspaces.catalog rule      — update mode, eviction-proof
 		//   6. devenv fork (agent-image)    — relocks agent-image/devenv.lock, a
 		//                                     declared trigger of the same pin
+		//   7. Meissa lockstep              — relocks devenv.lock and may move the
+		//                                     biome pin + bun.lock
 		// Sites 3, 4 and 6 carry it fail-safe: each relocks ONE non-nixpkgs input, so
 		// neither moves pkgs.bun today — but each writes a declared trigger of the
 		// entrypoint.nix entry, so the coupling holds at file granularity and the
@@ -225,7 +229,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		// this file is what keeps that coverage property true for future sites: it
 		// derives from FOD_ENTRIES that any site declaring a trigger must run the
 		// refresh LAST and name the pin's file.
-		expect(commands.filter((c) => c === FOD_COMMAND)).toHaveLength(6);
+		expect(commands.filter((c) => c === FOD_COMMAND)).toHaveLength(7);
 		const topLevel = cfg.postUpgradeTasks?.commands ?? [];
 		expect(topLevel).toContain(FOD_COMMAND);
 		const catalogRule = cfg.packageRules.find(
@@ -266,7 +270,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		).toBe(false);
 	});
 
-	test("permits exactly the nine declared commands", () => {
+	test("permits exactly the eleven declared commands", () => {
 		expect(distinctCommands.sort()).toEqual(
 			[
 				"bun install --lockfile-only",
@@ -278,6 +282,8 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 				"bun tools/renovate/refresh-go-analysis-hashes.ts",
 				"bun tools/renovate/refresh-go-overlay.ts",
 				"bun tools/renovate/refresh-toolchain-hashes.ts",
+				"bun tools/renovate/refresh-biome-catalog.ts",
+				"devenv update meissa",
 			].sort(),
 		);
 	});
@@ -493,8 +499,8 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	});
 
 	// The matchString must recover EXACTLY ONE 40-hex rev from the REAL
-	// devenv.lock, and it must be the OUTER devenv-nixpkgs channel rev
-	// (nodes.nixpkgs.locked.rev), not the inner nixpkgs-src rev, and not zero.
+	// devenv.lock, and it must be root's OUTER devenv-nixpkgs channel rev
+	// (root.inputs.nixpkgs), not its inner src rev, and not Meissa's channel.
 	test("matchString extracts the channel rev from the real devenv.lock", () => {
 		const lockText = readFileSync(join(repoRoot, "devenv.lock"), "utf8");
 		const matchString = devenvManager?.matchStrings?.[0];
@@ -505,9 +511,15 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 		expect(matches).toHaveLength(1);
 		const rev = matches[0]?.groups?.currentDigest;
 		expect(rev).toMatch(/^[a-f0-9]{40}$/);
-		const parsed = JSON.parse(lockText);
-		expect(rev).toBe(parsed.nodes.nixpkgs.locked.rev);
-		expect(rev).not.toBe(parsed.nodes["nixpkgs-src"].locked.rev);
+		const { nodes } = JSON.parse(lockText);
+		const channel = nodes[nodes.root.inputs.nixpkgs];
+		expect(rev).toBe(channel.locked.rev);
+		expect(rev).not.toBe(nodes[channel.inputs["nixpkgs-src"]].locked.rev);
+		// The anchor names the channel node, so it must not bind Meissa's own
+		// devenv-nixpkgs node even if both share a rev on some day.
+		const meissaChannelKey = nodes[nodes.root.inputs.meissa].inputs.nixpkgs;
+		expect(meissaChannelKey).not.toBe(nodes.root.inputs.nixpkgs);
+		expect(matches[0]?.[0]).toContain(`"${nodes.root.inputs.nixpkgs}": {`);
 	});
 
 	// Solo-branched: its own unique groupName so the branch-mode lockstep task owns
@@ -525,18 +537,18 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 		expect(devenvRule?.minimumReleaseAge).toBeNull();
 	});
 
-	// Branch-mode lockstep task over the files the script writes: devenv.lock +
-	// package.json (biome catalog) + bun.lock (steps 2/4/5), flake.nix + flake.lock
-	// (step 6), and agent-image/entrypoint.nix (the FOD outputHash).
+	// Branch-mode lockstep task over the files the tasks write: devenv.lock (step
+	// 2), flake.nix + flake.lock (step 3), package.json + bun.lock (the biome
+	// catalog writer), and agent-image/entrypoint.nix (the FOD outputHash).
 
 	// The FOD refresh is required: a channel bump moves pkgs.bun (the FOD builder)
-	// and, when the biome pin moves, re-resolves the bun.lock closure — either can
-	// move the outputHash (PR #580 failed on this). refresh-fod-hashes.ts runs AFTER
-	// the relock and gates on bun.lock OR devenv.lock.
+	// and, when the biome pin moves, the writer re-resolves the bun.lock closure —
+	// either can move the outputHash (PR #580 failed on this). refresh-fod-hashes.ts
+	// runs LAST and gates on bun.lock OR devenv.lock.
 
 	// Order is load-bearing and silent when wrong: the devenv.lock trigger makes the
 	// FOD gate in either order, so a reversed order realises the FOD against the
-	// still-at-base bun.lock, then step 5 rewrites bun.lock underneath — committing a
+	// still-at-base bun.lock, then the writer rewrites bun.lock underneath — committing a
 	// pin over the OLD closure. The pinned toEqual below turns that reversal red.
 	test("the lockstep postUpgradeTask is branch-mode, runs relock-then-FOD, and commits every written file", () => {
 		const task = devenvRule?.postUpgradeTasks;
@@ -560,6 +572,7 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 		expect(task?.fileFilters).toContain("flake.lock");
 		expect(task?.commands).toEqual([
 			"bun tools/renovate/refresh-devenv-nixpkgs.ts",
+			"bun tools/renovate/refresh-biome-catalog.ts",
 			"bun tools/renovate/refresh-fod-hashes.ts",
 		]);
 		expect(task?.fileFilters).toContain("agent-image/entrypoint.nix");
@@ -579,6 +592,125 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 		expect(rollup?.matchUpdateTypes).not.toContain("digest");
 		for (const t of rollup?.matchUpdateTypes ?? []) {
 			expect(["patch", "minor"]).toContain(t);
+		}
+	});
+});
+
+describe("tools/renovate Meissa lint toolchain lockstep", () => {
+	// Meissa supplies the dev shell's biome + rumdl. Its manager surfaces the
+	// devenv.lock meissa rev; its solo rule relocks it and moves the biome
+	// catalog pin to Meissa's biome in the same PR.
+	const MEISSA = "RigelBuild/meissa";
+	const RELOCK = "devenv update meissa";
+	const WRITER = "bun tools/renovate/refresh-biome-catalog.ts";
+	const manager = cfg.customManagers?.find((m) => m.depNameTemplate === MEISSA);
+	const rule = cfg.packageRules.find((r) => r.matchDepNames?.includes(MEISSA));
+	const channelRule = cfg.packageRules.find(
+		(r) => r.groupName === "devenv nixpkgs channel",
+	);
+	const lockText = readFileSync(join(repoRoot, "devenv.lock"), "utf8");
+
+	test("declares a git-refs regex manager scoped to the root devenv.lock", () => {
+		expect(manager).toMatchObject({
+			customType: "regex",
+			datasourceTemplate: "git-refs",
+			packageNameTemplate: "https://github.com/RigelBuild/meissa",
+			currentValueTemplate: "main",
+		});
+		const delimited = /^\/(.*)\/$/.exec(
+			manager?.managerFilePatterns?.[0] ?? "",
+		);
+		const re = new RegExp(delimited?.[1] as string);
+		expect(re.test("devenv.lock")).toBe(true);
+		expect(re.test("agent-image/devenv.lock")).toBe(false);
+	});
+
+	// Exactly one match, and it is the meissa node's locked rev — not a nixpkgs
+	// node Meissa drags in, and not the `original` block.
+	test("matchString extracts the meissa rev, uniquely, from the real lock", () => {
+		const matches = [
+			...lockText.matchAll(
+				new RegExp(manager?.matchStrings?.[0] as string, "g"),
+			),
+		];
+		expect(matches).toHaveLength(1);
+		const { nodes } = JSON.parse(lockText);
+		expect(matches[0]?.groups?.currentDigest).toBe(
+			nodes[nodes.root.inputs.meissa].locked.rev,
+		);
+	});
+
+	// A `follows` would put Meissa's linters on compass's nixpkgs, so the shell
+	// would run a different biome/rumdl than every other Meissa consumer.
+	test("the meissa lock input has no follows (Meissa's own nixpkgs)", () => {
+		const { nodes } = JSON.parse(lockText);
+		const meissa = nodes[nodes.root.inputs.meissa];
+		for (const target of Object.values(meissa.inputs ?? {})) {
+			expect(typeof target).toBe("string"); // an array is a `follows` path
+		}
+		expect(meissa.inputs.nixpkgs).not.toBe(nodes.root.inputs.nixpkgs);
+	});
+
+	test("the rule is solo-grouped, daily, and cooldown-exempt", () => {
+		expect(rule).toBeDefined();
+		expect(rule?.matchManagers).toEqual(["custom.regex"]);
+		expect(rule?.groupName).toBe("meissa lint toolchain");
+		expect(
+			cfg.packageRules.filter((r) => r.groupName === rule?.groupName),
+		).toHaveLength(1);
+		expect(rule?.schedule).toEqual(channelRule?.schedule);
+		expect(rule?.minimumReleaseAge).toBeNull();
+		expect(
+			resolveGroupName({
+				manager: "custom.regex",
+				fileName: "devenv.lock",
+				depName: MEISSA,
+				updateType: "digest",
+			}),
+		).toBe("meissa lint toolchain");
+	});
+
+	// Relock before the writer reads devenv.lock, and the FOD refresh last so it
+	// realises against both writes. The filter must cover every file biome
+	// format can rewrite, so it is the catch-all.
+	test("the task relocks, then writes the catalog, then refreshes FODs", () => {
+		const task = rule?.postUpgradeTasks;
+		expect(task?.executionMode).toBe("branch");
+		expect(task?.commands).toEqual([RELOCK, WRITER, FOD_COMMAND]);
+		expect(task?.fileFilters).toEqual(["**/*"]);
+		for (const path of [
+			"devenv.lock",
+			"package.json",
+			"bun.lock",
+			"biome.json",
+			"tools/ci-matrix/biome.json",
+			"apps/ui/src/main.ts",
+			".github/workflows/ci.yml",
+		]) {
+			expect(new Bun.Glob("**/*").match(path)).toBe(true);
+		}
+	});
+
+	// The channel rule keeps its own relock, then re-checks the pin with the same
+	// writer, so a channel bump can never strand a drifted pin.
+	test("the devenv-nixpkgs rule runs the writer after its refresh", () => {
+		const commands = channelRule?.postUpgradeTasks?.commands ?? [];
+		expect(commands.indexOf(WRITER)).toBe(
+			commands.indexOf("bun tools/renovate/refresh-devenv-nixpkgs.ts") + 1,
+		);
+	});
+
+	test("both commands have exactly one anchored allowlist entry", () => {
+		for (const [command, entry] of [
+			[RELOCK, "^devenv update meissa$"],
+			[WRITER, "^bun tools/renovate/refresh-biome-catalog\\.ts$"],
+		] as const) {
+			expect(
+				bot.allowedCommands?.filter((a) => new RegExp(a).test(command)),
+			).toEqual([entry]);
+			expect(
+				bot.allowedCommands?.some((a) => new RegExp(a).test(`${command}; id`)),
+			).toBe(false);
 		}
 	});
 });
@@ -699,7 +831,13 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			// Not the devenv-nixpkgs channel rev — a `"repo": "devenv"` prefix match
 			// against `"devenv-nixpkgs"` is the exact mis-bind the trailing quote in
 			// the anchor prevents.
-			expect(rev).not.toBe(parsed.nodes.nixpkgs?.locked?.rev);
+			for (const node of Object.values<{
+				locked?: { repo?: string; rev?: string };
+			}>(parsed.nodes)) {
+				if (node.locked?.repo === "devenv-nixpkgs") {
+					expect(rev).not.toBe(node.locked.rev);
+				}
+			}
 		},
 	);
 
@@ -936,7 +1074,9 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		);
 		// Both are real 40-hex channel revs…
 		expect(agent.nodes.nixpkgs.locked.rev).toMatch(/^[a-f0-9]{40}$/);
-		expect(root.nodes.nixpkgs.locked.rev).toMatch(/^[a-f0-9]{40}$/);
+		expect(root.nodes[root.nodes.root.inputs.nixpkgs].locked.rev).toMatch(
+			/^[a-f0-9]{40}$/,
+		);
 		// …and nothing in the config compares them: each scope has its own
 		// manager, so a skew is legitimate rather than a drift to fix. (This
 		// test states the property; it deliberately does NOT assert inequality,
@@ -1698,12 +1838,12 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 		// that the population has not shrunk or grown. A newly coupled site is a
 		// deliberate edit: update this number in the same change.
 		//
-		// 14 = six sites naming a trigger of the two entrypoint.nix entries
-		// (2 entries × 6 sites), plus the UI pin's two sites (the lockstep and
-		// catalog rules name bun.lock), plus the guestd vendorHash entry's zero
-		// pairs — its triggers are go/go.mod and go/go.sum, which the gomod
-		// MANAGER writes and no fileFilters names.
-		expect(coupled.length).toBe(14);
+		// 18 = seven sites naming a trigger of the two entrypoint.nix entries
+		// (2 entries × 7 sites), plus the UI pin's three sites (the lockstep,
+		// catalog and Meissa rules name bun.lock), plus one guestd vendorHash
+		// pair: only the Meissa site's broad `**/*` filter covers go/go.mod and
+		// go/go.sum, which the gomod MANAGER otherwise writes undeclared.
+		expect(coupled.length).toBe(18);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 

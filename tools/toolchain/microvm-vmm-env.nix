@@ -19,7 +19,7 @@
 #   passt             the userspace networking backend for guest egress.
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
-  node = lock.nodes.nixpkgs.locked;
+  node = lock.nodes.${lock.nodes.root.inputs.nixpkgs}.locked;
   nixpkgsSrc = builtins.fetchTarball {
     url = "https://github.com/${node.owner}/${node.repo}/archive/${node.rev}.tar.gz";
     sha256 = node.narHash;

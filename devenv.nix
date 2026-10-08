@@ -38,6 +38,9 @@ let
   # attrs: those are go1.26-built and fail under go1.27 with `file requires newer
   # Go version`. Appended below (dotted refs), not in the parsed `with pkgs` list.
   goAnalysis = import ./tools/toolchain/go-analysis.nix { inherit pkgs goToolchain; };
+
+  # Meissa's rumdl/biome and the rumdl base policy (devenv.yaml `meissa` input).
+  meissaToolchain = inputs.meissa.packages.${pkgs.stdenv.hostPlatform.system};
 in
 {
   packages = (with pkgs; [
@@ -64,11 +67,8 @@ in
     # nixpkgs attr so the toolchain-parity gate resolves it in this literal.
     sqlc
 
-    # Lint gate. biome + rumdl are nixpkgs derivations here, not `bunx` — one
-    # pin means `moon run root:lint`/`root:markdownlint` resolve the identical
-    # binary for everyone. `@biomejs/biome` stays a package.json devDep for the LSP.
-    biome
-    rumdl
+    # Lint gate: biome + rumdl are NOT here — they come from Meissa, appended
+    # below. `@biomejs/biome` stays a package.json devDep for the LSP.
 
     # actionlint: static checker for the .github/workflows/ files. A bare nixpkgs
     # attr in this parsed literal so the toolchain-parity gate resolves it,
@@ -123,6 +123,13 @@ in
   ++ [
     inputs.hk.packages.${pkgs.stdenv.system}.default
   ]
+  # biome + rumdl: Meissa's lint toolchain at the devenv.lock-pinned `meissa`
+  # rev, one derivation for every consumer. Dotted refs, so outside the parsed
+  # literal; the parity gate covers them via gate-tools.nix's `meissa` output.
+  ++ [
+    meissaToolchain.biome
+    meissaToolchain.rumdl
+  ]
   # xvfb-run: virtual framebuffer wrapper for the multi-window gtk4 e2e — the
   # real GTK4/WebKit shell needs a display and dev boxes + CI runners are
   # headless. Linux-only, appended outside the parsed literal (the parity gate
@@ -173,6 +180,8 @@ in
     # Same per-clone cache as `compass-go:lint` (go/moon.yml), so a bare shell
     # `golangci-lint` never shares ~/.cache/golangci-lint across clones.
     GOLANGCI_LINT_CACHE = "${config.devenv.root}/go/.golangci-cache";
+    # The shared rumdl base policy; .rumdl.toml's `extends` expands this var.
+    RUMDL_BASE_CONFIG = "${meissaToolchain."rumdl-base-config"}/rumdl/base.toml";
   }
   # The Compass native app (Wails v3) links the Linux GTK4/WebKitGTK stack
   # through cgo. pkg-config finds each `.pc` file along PKG_CONFIG_PATH, built

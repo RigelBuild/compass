@@ -24,7 +24,7 @@
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
 
-  nixpkgsNode = lock.nodes.nixpkgs.locked;
+  nixpkgsNode = lock.nodes.${lock.nodes.root.inputs.nixpkgs}.locked;
   nixpkgsSrc = builtins.fetchTarball {
     url = "https://github.com/${nixpkgsNode.owner}/${nixpkgsNode.repo}/archive/${nixpkgsNode.rev}.tar.gz";
     sha256 = nixpkgsNode.narHash;

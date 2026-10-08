@@ -18,11 +18,11 @@ export interface FlakeParityReport {
 
 /**
  * Extract nixpkgs's locked revision from a flake-lock-shaped document
- * (devenv.lock and flake.lock share the shape): the `nixpkgs` node's
- * `locked.rev`. Narrows each step with `in`/`typeof` rather than an unchecked
- * cast, so a lock whose shape moved yields null — which the caller treats as a
- * failure — instead of a fabricated read. Returns null when the node or a
- * non-empty string rev is absent.
+ * (devenv.lock and flake.lock share the shape): the node root's `nixpkgs`
+ * input names, then its `locked.rev`. Resolved by input name because node keys
+ * shift (another input's own nixpkgs can take the bare `nixpkgs` key). Narrows
+ * each step with `in`/`typeof`, so a moved shape yields null — which the caller
+ * treats as a failure — instead of a fabricated read.
  */
 export function nixpkgsLockedRev(source: string): string | null {
 	let root: unknown;
@@ -38,10 +38,15 @@ export function nixpkgsLockedRev(source: string): string | null {
 		return null;
 	}
 	const { nodes } = root;
-	if (!("nixpkgs" in nodes) || !isObject(nodes.nixpkgs)) {
+	const rootNode = nodes.root;
+	const key =
+		isObject(rootNode) && isObject(rootNode.inputs)
+			? rootNode.inputs.nixpkgs
+			: undefined;
+	const nixpkgs = typeof key === "string" ? nodes[key] : undefined;
+	if (!isObject(nixpkgs)) {
 		return null;
 	}
-	const nixpkgs = nodes.nixpkgs;
 	if (!("locked" in nixpkgs) || !isObject(nixpkgs.locked)) {
 		return null;
 	}

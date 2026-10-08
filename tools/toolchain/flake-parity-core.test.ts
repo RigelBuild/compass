@@ -12,9 +12,9 @@ import { compareRevs, nixpkgsLockedRev } from "./flake-parity-core.ts";
 // The pinned rev both locks record today (devenv.lock:190, flake.lock).
 const PINNED = "c946ff36bf193309589932c371bd5ae6653c912e";
 
-// A minimal flake-lock-shaped document — the `nodes.nixpkgs.locked.rev` path
-// both real files carry, with the surrounding keys nix writes so the fixture is
-// a realistic shape rather than only the fields read.
+// A minimal flake-lock-shaped document — root's `nixpkgs` input naming a node
+// whose `locked.rev` both real files carry, with the surrounding keys nix
+// writes so the fixture is a realistic shape rather than only the fields read.
 const lockWithRev = (rev: string): string =>
 	JSON.stringify({
 		nodes: {
@@ -39,9 +39,30 @@ const lockWithRev = (rev: string): string =>
 		version: 7,
 	});
 
+// A lock whose root resolves `nixpkgs` to `node`, so each case below fails on
+// the node's own shape rather than on a missing root input.
+const rooted = (node: unknown): string =>
+	JSON.stringify({
+		nodes: { nixpkgs: node, root: { inputs: { nixpkgs: "nixpkgs" } } },
+	});
+
 describe("nixpkgsLockedRev", () => {
 	test("reads the nixpkgs locked rev from a lock document", () => {
 		expect(nixpkgsLockedRev(lockWithRev(PINNED))).toBe(PINNED);
+	});
+
+	// An unfollowed input's own nixpkgs takes the bare `nixpkgs` key and root's
+	// channel becomes `nixpkgs_2`. Reading by key would compare the wrong rev.
+	test("follows root's nixpkgs input, not the bare nixpkgs node key", () => {
+		const other = "92fc8111c5c49aee8efb1ccc9fb90ad55ae91139";
+		const renamed = JSON.stringify({
+			nodes: {
+				nixpkgs: { locked: { rev: other } },
+				nixpkgs_2: { locked: { rev: PINNED } },
+				root: { inputs: { nixpkgs: "nixpkgs_2" } },
+			},
+		});
+		expect(nixpkgsLockedRev(renamed)).toBe(PINNED);
 	});
 
 	// Every form below is a way the node can be absent. Each must yield null so
@@ -49,19 +70,23 @@ describe("nixpkgsLockedRev", () => {
 	// false-green this gate exists to prevent.
 	test.each([
 		["no nixpkgs node", JSON.stringify({ nodes: { root: {} }, version: 7 })],
-		["nixpkgs node without locked", JSON.stringify({ nodes: { nixpkgs: {} } })],
 		[
-			"locked without rev",
-			JSON.stringify({ nodes: { nixpkgs: { locked: { owner: "cachix" } } } }),
+			"root names a missing node",
+			JSON.stringify({
+				nodes: {
+					nixpkgs: { locked: { rev: PINNED } },
+					root: { inputs: { nixpkgs: "nixpkgs_2" } },
+				},
+			}),
 		],
 		[
-			"rev is not a string",
-			JSON.stringify({ nodes: { nixpkgs: { locked: { rev: 42 } } } }),
+			"root has no inputs",
+			JSON.stringify({ nodes: { nixpkgs: { locked: { rev: PINNED } } } }),
 		],
-		[
-			"rev is empty",
-			JSON.stringify({ nodes: { nixpkgs: { locked: { rev: "" } } } }),
-		],
+		["nixpkgs node without locked", rooted({})],
+		["locked without rev", rooted({ locked: { owner: "cachix" } })],
+		["rev is not a string", rooted({ locked: { rev: 42 } })],
+		["rev is empty", rooted({ locked: { rev: "" } })],
 		["nodes missing entirely", JSON.stringify({ version: 7 })],
 		// A corrupt / merge-conflicted lock is not valid JSON — it must fail
 		// closed (null) rather than throw a raw SyntaxError out of the extractor.
