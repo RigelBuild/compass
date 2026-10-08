@@ -12,6 +12,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -246,9 +247,11 @@ func TestRunStackDownCancelSendsSIGTERM(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
 	defer cancel()
 	go func() {
-		// Opening the FIFO blocks until the child has armed its trap.
+		// Read to EOF: the child has armed its trap once it opens the FIFO, and
+		// closing before its write lands would SIGPIPE it instead of the cancel.
 		f, err := os.Open(ready)
 		if err == nil {
+			_, _ = io.Copy(io.Discard, f)
 			_ = f.Close() // read end of a gate FIFO; nothing to flush
 		}
 		cancel()
