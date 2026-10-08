@@ -55,7 +55,7 @@ func TestUpColdSequencing(t *testing.T) {
 // either side stops using embeddedRunnerID.
 func TestRunnerIDCouplesSpawnAndMint(t *testing.T) {
 	// (a) runnerSpec carries --runner-id with the constant's value.
-	spec := runnerSpec(Config{ListenAddr: "127.0.0.1:50052"}, CertResult{CertPath: "/c"}, "tok", GuestPaths{})
+	spec := runnerSpec(Config{ListenAddr: "127.0.0.1:50052"}, CertResult{CertPath: "/c"}, "tok", GuestPaths{}, "")
 	specID, ok := flagValue(spec.Args, "--runner-id")
 	if !ok {
 		t.Fatalf("runner spec args %v carry no --runner-id", spec.Args)
