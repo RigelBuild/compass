@@ -192,6 +192,15 @@ describe("App shell (T7)", () => {
 		flushSync();
 		expect(leftPresent()).toBe(true);
 	});
+
+	// The top bar shows the bare wordmark and the shell has no bottom usage bar.
+	test("the shell carries no ADE subtitle and no usage bar", () => {
+		const { container } = mountApp();
+		expect(container.querySelector(".topbar .brand")?.textContent).toBe(
+			"Compass",
+		);
+		expect(container.querySelector("footer")).toBeNull();
+	});
 });
 
 // Coaching-tooltip adoption sweep (RIG-2530 T2). The two glyph-only sidebar

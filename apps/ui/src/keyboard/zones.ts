@@ -14,11 +14,8 @@
  * `topbar`. Cycled with `Ctrl+1..3` (left/main/right) and `F6`/`Shift+F6`
  * (topbar is F6-only).
  *
- * The usage bar (`UsageBar.tsx`) is a display-only landmark, NOT a zone: it
- * carries no interactive control, is reachable by screen-reader landmark
- * navigation but not in the F6 rotation. It rejoins as a fifth zone ONLY if it
- * gains an interactive control (T6 verifies this at flip time) — at which point
- * `'usagebar'` is appended to this union.
+ * A display-only landmark is not a zone: it joins this union only once it gains
+ * an interactive control.
  */
 export type FocusZone = "left" | "main" | "right" | "topbar";
 
