@@ -2,8 +2,7 @@
 
 Builds on: [UX foundation](../compass-ux-foundation/design.md) (DL-148, DL-150, DL-184), [glyph primitives](../compass-glyph-primitives/design.md) (DL-367), [channels in the agent tree](../compass-channels-in-agent-tree/design.md)
 Refs: RIG-4774 (parent RIG-4770); RIG-1622 (agent tree); ledger DL-418 to
-DL-421, DL-423, DL-424, DL-430 (DL-422 and DL-425 are held for Open
-Questions 2 and 4)
+DL-425, DL-430, DL-437, DL-438
 Depends on: #1811 (RIG-4771 chrome cleanup), #1814 (RIG-4772 session
 stream), #1644 (DL-399 local baselines)
 Siblings: RIG-4771 (chrome cleanup, pane edges), RIG-4772 (Session Log
@@ -48,17 +47,17 @@ view. It carries Matt's RIG-4776 answer.
 | Brand faces load from `@font-face` (`/fonts/SpaceMono-Regular.ttf`, `/fonts/DepartureMono-Regular.otf`) | No `@font-face` anywhere under `apps/ui`; `--cx-font-ui: var(--rigel-mono)` names Space Mono, but nothing loads it, so the host falls back to `ui-monospace` | The whole UI renders in the wrong face outside CI (CI pins the faces through fontconfig, so baselines hide it) | T1 |
 | Display face for headings (`.bridge-heading` in Departure Mono 22px) | `--cx-font-display` is used by one rule in `app.css`; the face never loads | Fixed when the face loads | T1 |
 | Square corners everywhere: cards, inputs, `.seg`, and square status pips (`.dot` 10×10, `.ci-badge` 7×7) | `--cx-radius-sm/md/lg` are 3/6/10px, used by 57 declarations; 26 more literal radii (`.tree-agent` 4px, `.bridge-link .count` 10px, round pips at 50%, 999px pills) | Rounded corners and round pips are off-brand | T2a |
-| Night-2 hairlines drawn on the night page (`html,body{background:var(--rigel-night)}`, `.topbar{border-bottom:1px solid var(--rigel-night-2)}`); raised is kept for cards, menus, the root card, and the human message | Topbar, `.left`, `.right`, and `.log-panel` sit on `--cx-bg-raised`; `--cx-border` is `color-mix(in srgb, var(--rigel-panel) 70%, transparent)`; night-2 and raised are the same hex (`#0b2942`) | Pane edges barely show; the site's own line color would vanish on raised chrome | T2b (Open Question 1) |
+| Night-2 hairlines drawn on the night page (`html,body{background:var(--rigel-night)}`, `.topbar{border-bottom:1px solid var(--rigel-night-2)}`); raised is kept for cards, menus, the root card, and the human message | Topbar, `.left`, `.right`, and `.log-panel` sit on `--cx-bg-raised`; `--cx-border` is `color-mix(in srgb, var(--rigel-panel) 70%, transparent)`; night-2 and raised are the same hex (`#0b2942`) | Pane edges barely show; the site's own line color would vanish on raised chrome | T2b |
 | Form input: raised ground, mute border, 11×14 padding, blue border on focus (site `input` rule) | Text boxes have no visible edge | No field border token | T7 |
 | CI success badge in green, approved review in cyan (selectors in A9) | `--cx-ci-pass` and `--cx-review-approved` both resolve to `--cx-ok`, the syntax-tier `--rigel-success` (`#22da6e`) | Wrong greens on every board card | T9 |
 | Hierarchy by color, case, and letter-spacing; no `font-weight` outside `@font-face` | 48 `font-weight: 600/700/bold` rules in `app.css`; Space Mono ships 400 and 700 only and `base.css` sets `font-synthesis: none`, so every 600 renders bold | Chrome reads heavy and loud | T9 |
 | Agent state glyph: 9×9 cells drawn at 16px (`.ac-glyph svg{width:16px;height:16px}`), state-colored, state label beside it; alive glyphs pulse 0.7→1 (`ac-pulse`) | `StateDot` draws 9×9 CSS px; live data reaches only 4 of 8 states; most rows show a grey hollow square; `cx-state-dot-pulse` dips to 0.4 | Icons "do not show" (root cause below) | T3, T4 |
-| Manager tree: depth-indented agent cards with spine elbows, glyph, name, colored state label, issue chip; root card raised with a 2px blue left rule; a blue pip runs down live spines (`spine-flow 1.4s` on `.tree-spine[data-flow="1"]`) | Left-sidebar text rows (`.tree-agent`, 12px name, 9px dot); `.tree-children` is a static 1px rule; no overview | No agent overview, no tree motion | T5 (Open Question 2) |
+| Manager tree: depth-indented agent cards with spine elbows, glyph, name, colored state label, issue chip; root card raised with a 2px blue left rule; a blue pip runs down live spines (`spine-flow 1.4s` on `.tree-spine[data-flow="1"]`) | Left-sidebar text rows (`.tree-agent`, 12px name, 9px dot); `.tree-children` is a static 1px rule; no overview | No agent overview, no tree motion | T5 |
 | Thread message: author in fog 12px, kind tag (`MANAGER`, `HUMAN`), `ASK` flag in blue and `STEER` flag in cyan (`.msg-flag.ask`, `.msg-flag.steer`), time right-aligned in mute, body in haze 13px; human messages on raised with a 2px blue left rule | `.msg-role` colors authors blue (`--cx-accent`), bright green (`--cx-ok`), or magenta (`--cx-author-system`), weight 600; `.msg-at` sits beside the name; no tag or flag | Messages read as plain text with loud names | T6 |
 | (no composer on the site; the site `input` rule is the reference) | `Composer` is a one-line `<input class="field">`; its border is `--cx-border` on `--cx-bg-raised` | Composer does not read as a composer | T7 |
 | Text inputs | `.new-topic-name`/`.new-topic-message` carry only flex sizing (browser-default box); `.topbar-search-input` has no `font: inherit` and a faint border | Fields look unstyled | T7 |
 | (site CSS is all loaded) | Six primitives are never imported: `ask`, `badge`, `input`, `loader`, `panel`, `tree`. Two have users today: `ShortcutsOverlay` renders `cx-search`, and `Palette` renders `.cx-loader[data-topology="bar"]`; both are unstyled | Users of an unimported primitive fail silently | T7 |
-| Compass needle mark (`/compass-c-needle.svg`, purple north half on the navy tile) | Top bar shows the 11×11 `logo` `Glyph` in `--cx-accent` blue | Product mark missing | T8 (Open Question 4) |
+| Compass needle mark (`/compass-c-needle.svg`, purple north half on the navy tile) | Top bar shows the 11×11 `logo` `Glyph` in `--cx-accent` blue beside a plain-text "Compass" | Product mark missing | T8 |
 
 ### Why the status icons do not show
 
@@ -132,7 +131,7 @@ would be dead weight, and would still leave the 26 literal radii. This
 supersedes the radius line of ux-foundation D1 ("Radius:
 `--cx-radius-sm|md|lg` (3/6/10)").
 
-### A2b — Surfaces and lines (Open Question 1)
+### A2b — Surfaces and lines
 
 The site draws night-2 lines on night ground: `html,body` are night,
 `.topbar` has `border-bottom:1px solid var(--rigel-night-2)`, and its product
@@ -145,9 +144,17 @@ on Compass chrome. `--cx-border` (panel at 70%) and `--cx-border-strong`
 the ask do not show. Note that `apps/ui/src/design/surfaces.md` already
 puts the topbar on `--cx-bg`, so `app.css` has drifted from its own spec.
 
-The surface model is Open Question 1. Settled under every option: a new
-`--cx-border-field: var(--rigel-mute)`, the site's input edge, used only by
-`input.css`.
+Compass takes the site's surface model with pane edges one step stronger
+(DL-437). Chrome (`.topbar`, `.left`, `.right`, `.log-panel`) moves to
+`--cx-bg`, and heads (`.conv-head`, `.av-pane-head`) to `--cx-bg-panel`.
+`--cx-border` becomes night-2, the site's line, for lines inside a pane.
+`--cx-border-strong` becomes selection and draws every pane edge: 1.57:1 on
+night, against the site's 1.23:1. #1811 puts the `.right` and `.log-panel`
+edges on it; T2b moves the `.left` and `.topbar` edges from `--cx-border` to
+it, or the left edge would be night-2 on night. No new surface token.
+Keeping raised chrome with selection and mute lines was rejected: it is not
+the site's look. A separate new token, `--cx-border-field: var(--rigel-mute)`,
+is the site's input edge, used only by `input.css` (A7).
 
 ### A3 — Agent lifecycle is a client-side join over session status
 
@@ -192,8 +199,12 @@ through `agentDotState` in `joinAgents`:
     not `done`.
 
 No proto change. Done, error, and disconnected become reachable, and
-waiting is kept. Whether to seed at cold start is Open Question 3; the plan
-assumes no seed.
+waiting is kept. There is no cold-start seed: `GetAgentStatus` is
+admin-only (`classifyProcedure` in `go/internal/auth/admin_gate.go`) and its
+snapshot drops STOPPED and ERRORED (`isTerminal` in
+`go/internal/board/projection.go`). An agent whose last status left the ring
+shows its presence state. A server status read open to the owner is filed
+only if dogfood shows a missing `error`.
 
 ### A4 — Site glyph cells and an integer 2× scale
 
@@ -213,11 +224,13 @@ The site's working glyph breathes from 0.7 to 1 (`ac-pulse`). Compass
 `cx-state-dot-pulse` dips to 0.4, which reads as blinking. Set the low
 point to 0.7.
 
-### A5 — The agent tree, the highlight (Open Question 2)
+### A5 — The agent tree, the highlight
 
-The anatomy is settled; where it lives is Open Question 2. The plan assumes
-the recommended option: a new main view at `/agents`. The view draws the
-site's Manager tree from `agentTree(store.agents())` (`stub-data.ts`):
+The tree is a main view at `/agents` (DL-422), first in the left sidebar's
+view links and first in the palette's view destinations. It is deep-linkable
+and a top-level window per DL-160. A Bridge `Tree` segment and a
+sidebar-only restyle were rejected. The view draws the site's Manager tree
+from `agentTree(store.agents())` (`stub-data.ts`):
 
 - Row: `padding-left: depth × 26px`, with a 1px elbow spine in
   `--cx-border` to the parent (site `.tree-row`, `.tree-spine`).
@@ -288,23 +301,25 @@ them; importing unused CSS adds bytes and no fix.
 - Delete the ad-hoc box rules (`.topbar-search-input` box, `.conv-composer
   .field`, `.conv-composer .send`); keep the layout rules.
 
-### A8 — The Compass mark in the top bar (Open Question 4)
+### A8 — The Compass mark in the top bar
 
-Replace `<Glyph name="logo" />` in `App.tsx` with an `<img>` of the needle
-mark, copied byte-for-byte from the public
-[compass-c-needle.svg](https://rigel.build/compass-c-needle.svg). Purple lives
-only in that static asset; no `--cx-*` token aliases purple (the rule in
-`tokens.css`). Remove the `logo` entry from `GlyphName` and its cells, since
-`App.tsx` is its only user.
+The topbar brand is the needle mark alone (DL-425). Today it is the `logo`
+`Glyph` beside the plain-text "Compass" title. Both become one `<img>` of
+the public [compass-c-needle.svg](https://rigel.build/compass-c-needle.svg),
+copied byte-for-byte. No text name sits beside it. The image keeps the
+accessible name "Compass" (`alt` and `title`). Purple lives only in that
+static asset; no `--cx-*` token aliases purple (the rule in `tokens.css`).
+Remove the `logo` entry from `GlyphName` and its cells, since `App.tsx` is
+its only user.
 
 Draw it at 24px. The SVG is a 12×12 grid of 8-unit cells in a 96 viewBox,
 so 24px gives each cell exactly 2px, and 24px is the topbar mark floor in
-`apps/ui/src/design/surfaces.md` § Mark placement. That paragraph also says
-the topbar mark is the sigil wordmark, standing alone, with "no
-icon-beside-wordmark lockup". The needle beside the "Compass" title breaks
-that rule, as today's `logo` glyph beside the title already does. Open
-Question 4 carries this; under the recommended option T8 rewrites the
-paragraph to name the needle at 24px beside the plain-text product name.
+`apps/ui/src/design/surfaces.md` § Mark placement. That paragraph names the
+sigil wordmark as the topbar mark, but the R wordmark names the company and
+Compass has no product wordmark. T8 rewrites it to name the needle, alone,
+at 24px or more. Its "no icon-beside-wordmark lockup" rule then holds as
+written. `docs/specs/brand/compass-mark.md` still marks the needle
+"Placeholder"; swapping one SVG later is cheap.
 
 ### A9 — Site greens and hierarchy by color
 
@@ -329,12 +344,10 @@ labels. Markdown headings keep their weight and `strong` keeps the browser
 default: that is author emphasis, not chrome. A stylelint rule stops new
 weights; `tokens.css` is exempt for its `@font-face` descriptors.
 
-### A10 — Backlog and Done inside the Bridge (Open Question 5)
+### A10 — Backlog and Done inside the Bridge
 
-Matt's RIG-4776 answer leans to folding both views into the Bridge (B). He
-was unsure because the layouts differ. The fallback is (1): keep both views
-but take them out of the left-sidebar list. Removing them is rejected. The
-layouts today:
+Backlog and Done become Bridge segments that keep their list layouts
+(DL-438). This answers RIG-4776. The layouts today:
 
 | Surface | Layout | What it holds |
 | --- | --- | --- |
@@ -356,39 +369,25 @@ left-sidebar link (Backlog carries a count), and a shot (`backlog.png`,
 `done.png`). The Bridge's Issues/PRs choice is a component-local signal
 (`tab` in `Bridge.tsx`, DL-097), not a route.
 
-Two ways to fold them in:
+The Bridge control becomes `Issues | PRs | Backlog · N | Done`. Backlog and
+Done render their current lists under the Bridge toolbar. Both segments are
+routed: `/backlog` and `/done` stay, their `appRoutes` entries render
+`Bridge`, and the Bridge picks the segment from `useView().route().view`.
+`ViewHost` resolves the three paths to the same component, so a segment
+change does not remount the Bridge. Deep links, palette entries, `G L`/`G D`,
+and tab titles keep working with no change to `view-route.ts`, `store.ts`, or
+`keyboard/`. The sidebar drops its two links; the Backlog count moves to the
+segment label. Costs: one control with two routed and two local buttons; the
+board roving group and `board.*` commands run only on the grid segments; the
+Backlog, Done, Bridge, and sidebar shots change.
 
-- **Segments that keep the list layouts (recommended).** The Bridge control
-  becomes `Issues | PRs | Backlog · N | Done`. Backlog and Done render their
-  current lists under the Bridge toolbar. Both segments are routed: `/backlog`
-  and `/done` stay, their `appRoutes` entries render `Bridge`, and the Bridge
-  picks the segment from `useView().route().view`. `ViewHost` resolves the
-  three paths to the same component, so a segment change does not remount the
-  Bridge. Deep links, palette entries, `G L`/`G D`, and tab titles keep
-  working with no change to `view-route.ts`, `store.ts`, or `keyboard/`. The
-  sidebar drops its two links; the Backlog count moves to the segment label.
-  Costs: one control with two routed and two local buttons; the board roving
-  group and `board.*` commands must run only on the grid segments; the
-  Backlog, Done, Bridge, and sidebar shots change.
-- **Board-native.** Backlog and Todo become columns ahead of Queued, with an
-  "Unassigned" lane; Archived becomes a filter on the Done column. Rejected:
-  it changes the D1 partition (`ACTIVE_STATES` derives from `BOARD_LANES`),
-  adds two columns that are empty in every agent row, has no place for
-  "Assigned to me", drops the Done rows' merge and thread detail, and changes
-  every board shot and the column counts in `board-nav.ts`.
+Rejected: board-native Backlog and Todo columns, which change the D1
+partition (`ACTIVE_STATES` derives from `BOARD_LANES`) and have no place for
+"Assigned to me"; and keeping both views with only the sidebar links
+removed, which takes the Backlog count off the screen.
 
-Fallback (1): keep both views and routes, and delete the two sidebar links.
-They stay reachable by palette, `G L`/`G D`, and deep link. Cost: the
-smallest diff (`LeftSidebar.tsx`, its test, the sidebar shots), but the
-Backlog count leaves the screen and a new user finds Backlog only through
-the palette. A "secondary menu" would be a new surface; no menu exists to
-reuse there.
-
-Overlap with Open Question 2 (c): both add segments to the same Bridge
-control, the one RIG-4773 is fixing. Under OQ2 (c) the control would carry
-five segments (`Tree | Issues | PRs | Backlog | Done`). Under the
-recommended OQ2 (a) there is no overlap, and the sidebar's view links become
-Agents, Bridge, and Settings.
+The agent tree is its own route (A5), so this control gains no `Tree`
+segment. The sidebar's view links become Agents, Bridge, and Settings.
 
 ## Alternatives considered
 
@@ -449,9 +448,8 @@ so later tasks recapture a stable base.
 
 - **Look line.** Base: the current top of the in-window tabs line, which is
   #1811 (RIG-4771) today. T2b and T8 need #1811's chrome; T5 needs that
-  line's `RouteMatch` shape. Order: T1 → T2a → T9 → T4 → T6 → T7 → T8, then
-  T2b and T5 in the order their open questions are answered, then T10 after
-  the RIG-4773 fix merges.
+  line's `RouteMatch` shape. Order: T1 → T2a → T9 → T4 → T6 → T7 → T8 →
+  T2b → T5, then T10 after the RIG-4773 fix merges.
 - **State line.** Base: #1814 (RIG-4772). T3 only. It changes no baseline:
   `visual-smoke.spec.ts` renders stub data with no daemon.
 
@@ -567,26 +565,35 @@ Every task that changes baselines also waits for #1644 (DL-399).
 
 ### T8 — Compass mark
 
-- **Do:** A8, after Open Question 4.
+- **Do:** A8.
 - **Interfaces:** new `apps/ui/src/assets/compass-needle.svg`; the
   `.brand` block in `App.tsx` as #1811 leaves it (`span.logo` holding
-  `<Glyph name="logo" />`) becomes `<img class="logo" src={needle} alt=""
-  width="24" height="24">`; `.brand .logo` in `app.css`; `GlyphName` and the
-  `logo` cells in `Glyph.tsx`; the `logo` grid in `components.md`; the topbar
-  Mark placement paragraph in `apps/ui/src/design/surfaces.md` (A8).
-- **Test:** `tsc` proves no `logo` user is left; `App.test.tsx` asserts the
-  brand `img` source.
+  `<Glyph name="logo" />`, then `span.title` "Compass") becomes one
+  `<img class="logo" src={needle} alt="Compass" title="Compass" width="24"
+  height="24">`, and `span.title` is deleted; `.brand .logo` in `app.css`
+  sizes the image, and `.brand .title` is deleted; `GlyphName` and the
+  `logo` cells in `Glyph.tsx`; the `logo` grid in `components.md` and its
+  conversion-table row "`App` brand mark | `◇` | `logo`", which is deleted;
+  in `apps/ui/src/design/surfaces.md`, the intro's Mark placement bullet
+  ("the wordmark lives in exactly one place") and, in § Shell, the Mark
+  placement paragraph, the Composition sentence, and flip-checklist step 4
+  name the needle instead of the wordmark (A8).
+- **Test (red first):** `App.test.tsx`: the #1811 test that reads
+  `.topbar .brand` text as "Compass" now asserts that the brand holds one
+  `img` with the needle source and the accessible name "Compass", and no
+  text. `tsc` proves no `logo` user is left.
 - **Baselines:** recapture all.
 
 ### T2b — Surfaces and lines
 
-- **Do:** A2b, after Open Question 1. The interfaces below are for the
-  recommended option (c); options (a) and (b) touch the same files.
+- **Do:** A2b.
 - **Interfaces:** `apps/ui/src/design/tokens.css` (`--cx-border:
   var(--rigel-night-2)`, `--cx-border-strong: var(--rigel-selection)`);
   `apps/ui/src/app.css` backgrounds (`.topbar`, `.left`, `.right`,
   `.log-panel` → `--cx-bg`; `.conv-head`, `.av-pane-head` →
-  `--cx-bg-panel`); `apps/ui/src/design/surfaces.md` composition paragraph.
+  `--cx-bg-panel`); `app.css` edges (`.left` `border-right` and `.topbar`
+  `border-bottom` → `--cx-border-strong`); `apps/ui/src/design/surfaces.md`
+  composition paragraph.
 - **Test:** stylelint green. The change is token and background values
   only, so the shots are the test: recapture all and check that each pane
   edge is visible.
@@ -630,8 +637,7 @@ Every task that changes baselines also waits for #1644 (DL-399).
 
 ### T5 — The agent tree view
 
-- **Do:** A5, after Open Question 2 and after T4. Interfaces are for the
-  recommended option (a), in the #1811 shapes.
+- **Do:** A5, after T4, in the #1811 shapes.
 - **Interfaces:**
   - `apps/ui/src/view-route.ts`: `RouteMatch` adds `{ view: "agents" }`;
     `parseRoute` and `routePath` gain the `"agents"` case.
@@ -641,8 +647,9 @@ Every task that changes baselines also waits for #1644 (DL-399).
     `"Agents"`.
   - `apps/ui/src/store.ts`: `View` adds `"agents"`; `showAgents(): void`
     runs `hideShortcuts(); navigateTo("/agents")`, like `showBacklog`.
-  - `apps/ui/src/keyboard/destinations.ts`: a static `{ id: "agents",
-    title: "Agents" }` destination that calls `store.showAgents()`;
+  - `apps/ui/src/keyboard/destinations.ts`: `{ id: "agents", title:
+    "Agents" }` as the first `VIEW_TARGETS` entry, and an `agents` arm in the
+    views provider that calls `store.showAgents()`;
     `apps/ui/src/keyboard/spine.ts`: a `showAgents` dep and a `view.agents`
     command "Go to Agents", like `viewBacklog`.
   - `apps/ui/src/board.ts`: `export function agentIssueChip(agentId:
@@ -652,20 +659,25 @@ Every task that changes baselines also waits for #1644 (DL-399).
     component.
   - `apps/ui/src/design/tokens.css`: `--cx-spine-flow-period: 1.4s`, zeroed
     in both reduced-motion blocks beside `--cx-motion-fast`.
-  - `LeftSidebar.tsx`: an "Agents" link above the Bridge link, calling
-    `store.showAgents()`.
+  - `LeftSidebar.tsx`: an "Agents" link first, above the Bridge link,
+    calling `store.showAgents()`.
 - **Test (red first):** `agentIssueChip` cases (0, 1, many, inactive issues
   ignored); `view-route` round trip for `/agents`; `AgentsView.test.tsx`:
   clicking a card sets `view() === "agent"` and `selectedAgentId()`, Enter
   on a focused card does the same, a spine to a `working` child has
   `data-flow="1"` and one to an idle child does not.
+  `keyboard/destinations.test.ts`: the test "the views provider yields
+  exactly Bridge/Backlog/Done/Settings" now expects the sorted titles
+  Agents, Backlog, Bridge, Done, Settings, and the empty query's
+  `views[0].title` is `"Agents"`. `LeftSidebar.test.tsx`: the first
+  `button.bridge-link` is Agents, and the coaching test's view-button count
+  goes from 4 to 5.
 - **Baselines:** new `agents.png`; the shots with the left sidebar.
 
 ### T10 — Backlog and Done inside the Bridge
 
-- **Do:** A10, after Open Question 5, after T5, and after the RIG-4773 fix
-  merges (it edits the same segment control). Interfaces are for the
-  recommended option (a).
+- **Do:** A10, after T5 and after the RIG-4773 fix merges (it edits the
+  same segment control).
 - **Interfaces:**
   - `apps/ui/src/routes.tsx`: the `/backlog` and `/done` entries render
     `Bridge`.
@@ -697,7 +709,7 @@ Every task that changes baselines also waits for #1644 (DL-399).
   remount; the Backlog label count is pre-active plus assigned issues.
   `routing.test.tsx`: `/backlog` and `/done` mount the Bridge; `G L` and
   `G D` land on their segments. `LeftSidebar.test.tsx`: no Backlog or Done
-  link, and the CoachTip tests cover Bridge and Settings only.
+  link; the view buttons are Agents, Bridge, and Settings, in that order.
   `keyboard-e2e.test.tsx`: drop `view.backlog` and `view.done` from
   `COACHED_COMMANDS`; they stay registered but are no longer coached.
   Rewrite "list.* rows follow the board lifecycle": after
@@ -716,96 +728,27 @@ Look line, on the in-window tabs line top (#1811):
 - [ ] T4 — Site glyph cells and 2× scale
 - [ ] T6 — Message anatomy
 - [ ] T7 — Text entry and composer
-- [ ] T8 — Compass mark (after Open Question 4)
-- [ ] T2b — Surfaces and lines (after Open Question 1)
-- [ ] T5 — The agent tree view (after Open Question 2)
-- [ ] T10 — Backlog and Done inside the Bridge (after Open Question 5, T5,
-  and the RIG-4773 merge)
+- [ ] T8 — Compass mark
+- [ ] T2b — Surfaces and lines
+- [ ] T5 — The agent tree view
+- [ ] T10 — Backlog and Done inside the Bridge (after T5 and the RIG-4773
+  merge)
 
 State line, on #1814:
 
 - [ ] T3 — Agent lifecycle from session status
 
-## Open Questions
+## Resolved Questions
 
-1. **Surface and line model (decides the pane-border ask).** The site draws
-   night-2 lines on night. Compass chrome is raised, which is the same hex
-   as night-2, so the site's line vanishes there. Today's pane edge is panel
-   on raised, 1.02:1. Every option changes every baseline.
-   - (a) Site-literal: chrome (`.topbar`, `.left`, `.right`, `.log-panel`)
-     moves to `--cx-bg`, heads to panel, and every line is night-2. Edge
-     contrast 1.23:1, as faint as the site. Sidebars and main become one
-     color split only by that line. Matches `surfaces.md` for the topbar
-     only; that spec keeps the sidebars raised.
-   - (b) Keep raised chrome. `--cx-border` becomes selection (1.28:1 on
-     raised) and `--cx-border-strong` becomes mute (3.49:1). Smallest
-     change; visible edges; not the site's look.
-   - (c) Hybrid: chrome on `--cx-bg` and heads on panel as in (a);
-     `--cx-border` is night-2 for in-pane lines; `--cx-border-strong`, which
-     #1811 already uses for pane edges, becomes selection (1.57:1 on
-     night). No new token.
-   - Recommendation: (c). It is the site's surface model with pane edges
-     one step stronger than the site, which is what the ask needs.
-2. **Where the agent tree lives.** ux-foundation D6 named the site's
-   Manager tree as the sidebar's starting point; the Bridge already draws
-   agent lanes in tree order; `/` is the Bridge (DL-031).
-   - (a) A main view at `/agents`, first in the left sidebar and in the
-     palette. Deep-linkable and a top-level window per DL-160. Costs an
-     eighth `View` kind on the tabs line.
-   - (b) No new view: the sidebar rows take the site anatomy in compact
-     form (spine, 2× glyph, colored state word, issue chip on hover). Fits
-     D6; a 244px sidebar cannot hold full cards.
-   - (c) A `Tree` segment on the Bridge toolbar (`Tree | Issues | PRs`), as
-     the site's `.seg`. On the landing surface with no new route, but not a
-     window of its own, and it shares the control RIG-4773 is fixing.
-   - Recommendation: (a), with the sidebar keeping its 2× glyph (T4).
-3. **Cold-start seed.** `GetAgentStatus` is admin-only (`classifyProcedure`
-   in `go/internal/auth/admin_gate.go`), and its all-sessions snapshot drops
-   STOPPED and ERRORED (`isTerminal` in `go/internal/board/projection.go`).
-   The cold-start ring replay already carries recent statuses.
-   - (a) No seed (the plan). An agent whose last status left the event ring
-     (`RingCapacity`, 1024, in `go/events/events.go`) shows its
-     presence state.
-   - (b) A best-effort seed for admins only; PermissionDenied is silent. It
-     adds DISCONNECTED and live states, never `error`.
-   - (c) A server change: an account-scoped status read open to the owner,
-     or ERRORED kept in the snapshot. A proto and server change outside
-     this record.
-   - Recommendation: (a). File (c) only if dogfood shows a missing `error`.
-4. **Placeholder mark in the topbar.** `docs/specs/brand/compass-mark.md`
-   marks the needle "Placeholder", not locked; the site ships it in the
-   Compass hero and footer. `apps/ui/src/design/surfaces.md` § Mark
-   placement wants the sigil wordmark alone in the topbar, at 24px or more,
-   with no icon beside a wordmark. Today's 11×11 `logo` glyph beside the
-   "Compass" title already breaks that rule.
-   - (a) Ship the needle now at 24px beside the plain-text name (T8). T8
-     rewrites the Mark placement paragraph to match. The needle is the
-     product mark the site pairs with Compass, and swapping one SVG later is
-     cheap.
-   - (b) Follow `surfaces.md` as written: the sigil wordmark alone, no
-     needle. This needs a wordmark asset Compass does not have, and the R
-     wordmark names the company, not the product.
-   - (c) Hold T8 until the mark locks; the `logo` glyph stays.
-   - Recommendation: (a).
-5. **Backlog and Done (RIG-4776).** Matt leaned to folding both into the
-   Bridge (B) but was unsure because the layouts differ; his fallback is (1),
-   keeping both out of the sidebar list. A10 compares the layouts: the Bridge
-   is agent rows × lifecycle columns, Backlog is a three-tier list with a
-   tracker queue, and Done is a wide-row list whose Archived half is on no
-   other surface.
-   - (a) Bridge segments that keep the list layouts: `Issues | PRs |
-     Backlog · N | Done`, with `/backlog` and `/done` rendering the Bridge.
-     Every path, chord, and palette entry keeps working; the sidebar loses
-     two links. Costs: a control with routed and local buttons, the board
-     keyboard group scoped to the grid segments, and the Backlog, Done,
-     Bridge, and sidebar shots.
-   - (b) Board-native: Backlog and Todo columns plus an Unassigned lane, and
-     Archived as a Done-column filter. The most "inside the board", but it
-     changes the D1 lane partition and the board keyboard model, adds empty
-     columns, and has no place for "Assigned to me" or the Done row detail.
-   - (c) Fallback (1): keep both views, delete the sidebar links, and reach
-     them by palette, `G L`/`G D`, and deep link. The smallest change; the
-     Backlog count leaves the screen.
-   - **Recommendation:** (a). It is B without forcing a list into the grid,
-     which answers the layout doubt, and it keeps every way in. If Matt picks
-     OQ2 (c), the same control carries five segments; decide both together.
+Matt ruled on 2026-10-08.
+
+1. **Surface and line model:** hybrid. Chrome on `--cx-bg`, heads on panel,
+   `--cx-border` night-2, `--cx-border-strong` selection (A2b, DL-437).
+2. **Where the agent tree lives:** a main view at `/agents`, first in the
+   sidebar and the palette; the sidebar keeps its 2× glyph (A5, DL-422).
+3. **Cold-start seed:** none (A3). No new row: DL-420 already says the dot
+   is a client-side join with no proto change.
+4. **Topbar mark:** the needle alone at 24px replaces the "Compass" text,
+   with "Compass" as its accessible name (A8, DL-425).
+5. **Backlog and Done:** Bridge segments `Issues | PRs | Backlog · N |
+   Done` that keep the list layouts (A10, DL-438).
