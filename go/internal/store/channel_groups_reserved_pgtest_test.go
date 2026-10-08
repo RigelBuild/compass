@@ -29,6 +29,9 @@ func TestCreateChannelGroupRefusesReservedTopLevelNames(t *testing.T) {
 		{"dm nested", NewChannelGroup{Name: dmGroupName, ParentGroupID: parent.ID, Visibility: VisibilityOwner}, false},
 		{"slash top level", NewChannelGroup{Name: "a/b", Visibility: VisibilityOwner}, true},
 		{"slash nested", NewChannelGroup{Name: "a/b", ParentGroupID: parent.ID, Visibility: VisibilityOwner}, true},
+		{"tilde top level", NewChannelGroup{Name: "~matt", Visibility: VisibilityOwner}, true},
+		{"tilde nested", NewChannelGroup{Name: "~ops", ParentGroupID: parent.ID, Visibility: VisibilityOwner}, true},
+		{"inner tilde", NewChannelGroup{Name: "a~b", Visibility: VisibilityOwner}, false},
 		{"ordinary", NewChannelGroup{Name: "ordinary", Visibility: VisibilityShared}, false},
 	}
 	for _, tc := range cases {
