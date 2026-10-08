@@ -54,6 +54,8 @@ type fakeBindingStore struct {
 	mu       sync.Mutex
 	tenant   store.TenantID
 	bindings map[string]store.SessionBinding // session id -> binding
+	versions map[string]string               // session id -> row version, new per write
+	written  int
 
 	resolveCalled        bool
 	resolveCtxSystemRole bool
@@ -66,14 +68,14 @@ type fakeBindingStore struct {
 }
 
 func newFakeBindingStore() *fakeBindingStore {
-	return &fakeBindingStore{tenant: "tenant-a", bindings: map[string]store.SessionBinding{}}
+	return &fakeBindingStore{tenant: "tenant-a", bindings: map[string]store.SessionBinding{}, versions: map[string]string{}}
 }
 
-func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID string, accountID store.AccountID, runnerID string) (string, error) {
+func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID string, accountID store.AccountID, runnerID string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recordErr != nil {
-		return "", f.recordErr
+		return "", "", f.recordErr
 	}
 	// session_bindings_session_key: this session id already belongs to a
 	// DIFFERENT account. The real store raises ErrConflict rather than
@@ -81,7 +83,7 @@ func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID str
 	// single-valued; a fake that silently overwrote would hide the whole
 	// class (a Runner restart re-mints "sess-1", so id reuse is routine).
 	if b, ok := f.bindings[sessionID]; ok && b.AccountID != accountID {
-		return "", fmt.Errorf("%w: session %q is already bound to a different agent", store.ErrConflict, sessionID)
+		return "", "", fmt.Errorf("%w: session %q is already bound to a different agent", store.ErrConflict, sessionID)
 	}
 	var displaced string
 	// Account-keyed UPSERT: a prior binding for this account is displaced.
@@ -89,47 +91,59 @@ func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID str
 		if b.AccountID == accountID && sid != sessionID {
 			displaced = sid
 			delete(f.bindings, sid)
+			delete(f.versions, sid)
 			break
 		}
 	}
-	f.bindings[sessionID] = store.SessionBinding{TenantID: f.tenant, SessionID: sessionID, AccountID: accountID, RunnerID: runnerID}
-	return displaced, nil
+	return displaced, f.putLocked(sessionID, accountID, runnerID), nil
 }
 
-func (f *fakeBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error) {
+func (f *fakeBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolveCalled = true
 	f.resolveCtxSystemRole = store.IsSystemRole(ctx)
 	if f.resolveErr != nil {
-		return "", "", f.resolveErr
+		return "", "", "", f.resolveErr
 	}
 	b, ok := f.bindings[sessionID]
 	if !ok {
-		return "", "", store.ErrNotFound
+		return "", "", "", store.ErrNotFound
 	}
-	return b.AccountID, b.RunnerID, nil
+	return b.AccountID, b.RunnerID, f.versions[sessionID], nil
 }
 
-func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.AccountID) (string, string, error) {
+func (f *fakeBindingStore) SessionForAccount(_ context.Context, accountID store.AccountID) (string, string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.reverseErr != nil {
-		return "", "", f.reverseErr
+		return "", "", "", f.reverseErr
 	}
 	for sid, b := range f.bindings {
 		if b.AccountID == accountID {
-			return sid, b.RunnerID, nil
+			return sid, b.RunnerID, f.versions[sid], nil
 		}
 	}
-	return "", "", store.ErrNotFound
+	return "", "", "", store.ErrNotFound
 }
 
 func (f *fakeBindingStore) DeleteSessionBinding(_ context.Context, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.bindings, sessionID)
+	delete(f.versions, sessionID)
 	return nil
+}
+
+func (f *fakeBindingStore) DeleteSessionBindingVersion(_ context.Context, sessionID, version string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.bindings[sessionID]; !ok || f.versions[sessionID] != version {
+		return false, nil
+	}
+	delete(f.bindings, sessionID)
+	delete(f.versions, sessionID)
+	return true, nil
 }
 
 func (f *fakeBindingStore) DeleteSessionBindingsForRunner(_ context.Context, runnerID string) ([]store.SessionBinding, error) {
@@ -143,6 +157,7 @@ func (f *fakeBindingStore) DeleteSessionBindingsForRunner(_ context.Context, run
 		if b.RunnerID == runnerID {
 			removed = append(removed, b)
 			delete(f.bindings, sid)
+			delete(f.versions, sid)
 		}
 	}
 	return removed, nil
@@ -173,6 +188,15 @@ func (f *fakeBindingStore) SessionBindingTenant(_ context.Context, sessionID, ru
 	return "", store.ErrNotFound
 }
 
+// putLocked writes a binding row with a fresh version, as every upsert does.
+func (f *fakeBindingStore) putLocked(sessionID string, accountID store.AccountID, runnerID string) string {
+	f.written++
+	version := fmt.Sprintf("v%d", f.written)
+	f.bindings[sessionID] = store.SessionBinding{TenantID: f.tenant, SessionID: sessionID, AccountID: accountID, RunnerID: runnerID}
+	f.versions[sessionID] = version
+	return version
+}
+
 func (f *fakeBindingStore) seed(sessionID string) {
 	f.seedBinding(sessionID, testAgentAccount, testRunnerID)
 }
@@ -180,7 +204,7 @@ func (f *fakeBindingStore) seed(sessionID string) {
 func (f *fakeBindingStore) seedBinding(sessionID string, accountID store.AccountID, runnerID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.bindings[sessionID] = store.SessionBinding{TenantID: f.tenant, SessionID: sessionID, AccountID: accountID, RunnerID: runnerID}
+	f.putLocked(sessionID, accountID, runnerID)
 }
 
 // fakeRoutingFabric is an in-memory RoutingFabric double: PublishBindingChange
@@ -843,18 +867,18 @@ func (b *reapAndReadBlockingBindingStore) DeleteSessionBindingsForRunner(ctx con
 	return b.fakeBindingStore.DeleteSessionBindingsForRunner(ctx, runnerID)
 }
 
-func (b *reapAndReadBlockingBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, error) {
-	account, runnerID, err := b.fakeBindingStore.ResolveSessionBinding(ctx, sessionID)
+func (b *reapAndReadBlockingBindingStore) ResolveSessionBinding(ctx context.Context, sessionID string) (store.AccountID, string, string, error) {
+	account, runnerID, version, err := b.fakeBindingStore.ResolveSessionBinding(ctx, sessionID)
 	close(b.readEntered)
 	<-b.readRelease
-	return account, runnerID, err
+	return account, runnerID, version, err
 }
 
-func (b *reapAndReadBlockingBindingStore) SessionForAccount(ctx context.Context, accountID store.AccountID) (string, string, error) {
-	sessionID, runnerID, err := b.fakeBindingStore.SessionForAccount(ctx, accountID)
+func (b *reapAndReadBlockingBindingStore) SessionForAccount(ctx context.Context, accountID store.AccountID) (string, string, string, error) {
+	sessionID, runnerID, version, err := b.fakeBindingStore.SessionForAccount(ctx, accountID)
 	close(b.readEntered)
 	<-b.readRelease
-	return sessionID, runnerID, err
+	return sessionID, runnerID, version, err
 }
 
 // TestConcurrentResolveDuringAFaultingReapCannotResurrect fences the window
@@ -951,11 +975,53 @@ func TestOlderEnrollReapCannotDeleteNewerPromotion(t *testing.T) {
 		t.Fatal("promotion wrote its binding while the older reap's delete was in flight")
 	}
 	// Ordered after the reap, the live session's binding survives in the store and cache.
-	if sessionID, runnerID, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); err != nil || sessionID != "sess-new" || runnerID != testRunnerID {
+	if sessionID, runnerID, _, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); err != nil || sessionID != "sess-new" || runnerID != testRunnerID {
 		t.Fatalf("durable SessionForAccount = (%q, %q, %v), want (sess-new, %s, nil)", sessionID, runnerID, err, testRunnerID)
 	}
 	if sessionID, ok := hub.CachedSessionForAccount(testAgentAccount); !ok || sessionID != "sess-new" {
 		t.Fatalf("CachedSessionForAccount = (%q, %v), want sess-new", sessionID, ok)
+	}
+}
+
+// A Stop's unbind racing an in-flight reap waits for the whole enroll, so the reap
+// still finds the session and drives its OFFLINE edge.
+func TestStopUnbindWaitsForEnrollReap(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{}
+	hub.SetPresenceSink(pres)
+	plain := newFakeBindingStore()
+	hub.SetSessionBindingStore(plain)
+	ctx := store.WithTenant(context.Background(), "tenant-a")
+	hub.enroll(ctx, testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, testRunnerID)
+	hub.promoteSession(ctx, "cont-1", "sess-1")
+
+	bindings := &blockingBindingStore{fakeBindingStore: plain, entered: make(chan struct{}), release: make(chan struct{})}
+	hub.SetSessionBindingStore(bindings)
+	reapDone := make(chan struct{})
+	go func() {
+		defer close(reapDone)
+		hub.enroll(ctx, testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	}()
+	<-bindings.entered
+	unbindDone := make(chan struct{})
+	go func() {
+		defer close(unbindDone)
+		hub.unbindSession(ctx, "sess-1")
+	}()
+	waitParkedOrDone(t, "(*Hub).releaseSession", unbindDone)
+	close(bindings.release)
+	<-reapDone
+	<-unbindDone
+
+	offline := 0
+	for _, rec := range pres.lifecycleSnapshot() {
+		if rec.sessionID == "sess-1" && rec.state == compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED {
+			offline++
+		}
+	}
+	if offline == 0 {
+		t.Fatal("neither the reap nor the Stop drove sess-1 OFFLINE")
 	}
 }
 
@@ -985,7 +1051,7 @@ func (b *overlapDetectingBindingStore) DeleteSessionBindingsForRunner(ctx contex
 	return b.fakeBindingStore.DeleteSessionBindingsForRunner(ctx, runnerID)
 }
 
-func (b *overlapDetectingBindingStore) RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (string, error) {
+func (b *overlapDetectingBindingStore) RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (string, string, error) {
 	b.mu.Lock()
 	if b.parked {
 		b.overlap = true
@@ -1069,7 +1135,7 @@ func TestEnrollDuringPromotionCannotResurrectBinding(t *testing.T) {
 	if forwardCached || reverseCached {
 		t.Fatalf("promotion repopulated cache after enroll: forward=%v reverse=%v", forwardCached, reverseCached)
 	}
-	if sessionID, _, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); !errors.Is(err, store.ErrNotFound) {
+	if sessionID, _, _, err := plain.SessionForAccount(store.WithTenant(context.Background(), "tenant-a"), testAgentAccount); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("durable SessionForAccount = (%q, %v), want ErrNotFound after enroll", sessionID, err)
 	}
 }
@@ -1134,7 +1200,7 @@ type blockingRecordBindingStore struct {
 	recordRelease chan struct{}
 }
 
-func (b *blockingRecordBindingStore) RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (string, error) {
+func (b *blockingRecordBindingStore) RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (string, string, error) {
 	close(b.recordEntered)
 	<-b.recordRelease
 	return b.fakeBindingStore.RecordSessionBinding(ctx, sessionID, accountID, runnerID)
