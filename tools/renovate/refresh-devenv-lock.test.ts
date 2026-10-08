@@ -309,8 +309,8 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 
 	// Fail-loud: a relock that wrote NOTHING leaves the regex-bumped rev beside the
 	// base narHash — the silent half-relock this surfaces. The non-zero exit does NOT
-	// abort the branch (Renovate still commits the bump); it reds renovate/artifacts,
-	// and human review stops the merge. The on-disk lock stays rev-bumped-unrelocked.
+	// abort the branch (Renovate still commits the bump); renovate:lock-integrity
+	// stops the merge. The on-disk lock stays rev-bumped-unrelocked.
 	test("exits non-zero when the relock leaves the lock byte-identical, and the lock stays rev-bumped-but-unrelocked", async () => {
 		await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");
 		await Bun.write(join(repo, ".force-noop-relock"), "");

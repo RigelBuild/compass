@@ -25,8 +25,8 @@
 
 // Exit 0 = relocked (or no-op); 1 = a step failed. A non-zero exit does NOT
 // abort the branch (verified against renovate@44.46.2): Renovate commits the
-// regex-bumped lock regardless. It buys a red renovate/artifacts status;
-// fail-closed rests on that required check plus human review (no automerge).
+// regex-bumped lock regardless. It reds the advisory renovate/artifacts status;
+// renovate:lock-integrity in the required rollup is what blocks the merge.
 
 import { readFileSync } from "node:fs";
 import { $ } from "bun";
@@ -121,8 +121,8 @@ async function main(): Promise<number> {
 			`refresh-devenv-lock: \`devenv update ${DEVENV_INPUT}\` left ${lock} byte-identical — ` +
 				"the regex-bumped rev still sits beside the base lock's narHash. Exiting non-zero to " +
 				"red the `renovate/artifacts` status; note that Renovate still commits the regex bump " +
-				"(a postUpgradeTask exit does not abort the branch), so the human review gate is what " +
-				"keeps this half-relock from merging.",
+				"(a postUpgradeTask exit does not abort the branch), so renovate:lock-integrity in the " +
+				"required rollup is what keeps this half-relock from merging.",
 		);
 	}
 	// Shape guard: the relocked file must still be a devenv lock pinning a
