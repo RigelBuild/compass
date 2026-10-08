@@ -148,7 +148,7 @@ func newClosedRunnerServiceServer(t *testing.T) compassv1internalconnect.RunnerS
 // to Publish and for the real over-limit bound.
 func newAgentGatewayServer(t *testing.T, g *Gateway) compassv1internalconnect.AgentGatewayClient {
 	t.Helper()
-	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, connect.WithReadMaxBytes(maxAgentMessageBytes))
+	path, handler := compassv1internalconnect.NewAgentGatewayHandler(g, agentGatewayHandlerOptions()...)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)
