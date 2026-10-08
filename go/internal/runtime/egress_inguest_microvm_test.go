@@ -223,6 +223,7 @@ func TestInGuestEgressAlwaysArmedDefaultDeny(t *testing.T) {
 // TestInGuestEgressGatewayDoesNotReachHost pins passt's --no-map-gw: with the
 // gateway allowlisted, a guest dial to it must not land on a host listener.
 func TestInGuestEgressGatewayDoesNotReachHost(t *testing.T) {
+	microvmtest.Require(t) // skip a KVM-less (or non-Linux) host before reading /proc
 	// passt implies --no-map-gw when the host has no default-route gateway, so
 	// there the test could not fail without the flag: skip as a declared gap.
 	if !hostHasDefaultGateway(t) {
@@ -257,19 +258,27 @@ func TestInGuestEgressGatewayDoesNotReachHost(t *testing.T) {
 	}
 }
 
-// hostHasDefaultGateway reports whether /proc/net/route has an IPv4 default
-// route with a non-zero gateway, the condition under which passt maps 10.0.2.2.
+// hostHasDefaultGateway reports whether the IPv4 default route the kernel
+// selects (lowest metric) has a gateway, the case where passt maps 10.0.2.2.
 func hostHasDefaultGateway(t *testing.T) bool {
 	t.Helper()
 	raw, err := os.ReadFile("/proc/net/route")
 	if err != nil {
 		t.Fatalf("read /proc/net/route: %v", err)
 	}
+	found, hasGW, best := false, false, 0
 	for _, line := range strings.Split(string(raw), "\n")[1:] {
 		f := strings.Fields(line)
-		if len(f) > 2 && f[1] == "00000000" && f[2] != "00000000" {
-			return true
+		if len(f) < 7 || f[1] != "00000000" {
+			continue
+		}
+		metric, convErr := strconv.Atoi(f[6])
+		if convErr != nil {
+			t.Fatalf("parse route metric %q: %v", f[6], convErr)
+		}
+		if !found || metric < best {
+			found, best, hasGW = true, metric, f[2] != "00000000"
 		}
 	}
-	return false
+	return hasGW
 }
