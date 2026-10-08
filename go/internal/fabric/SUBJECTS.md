@@ -231,7 +231,8 @@ consumer is shared. The server reaps a consumer through `InactiveThreshold`:
   waiting at the delete. A pull sent after it sees no-responders or a missed
   heartbeat instead, so those errors trigger a consumer-info probe. A delete in
   either form makes the subscription recreate the durable and resume. Recreation
-  retries every `AckWait` until it succeeds or the subscription ends.
+  retries from 100 ms, doubling up to `AckWait`, until it succeeds or the
+  subscription ends.
 - **Abandoned consumer** (a deleted tenant, a kind no Server subscribes to any
   more): the server deletes it after the threshold, so the consumer count tracks
   live subscriptions instead of every subject ever subscribed.
