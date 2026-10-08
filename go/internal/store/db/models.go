@@ -268,6 +268,15 @@ type ForgeStateTransition struct {
 	TenantID       string
 }
 
+type GatewayToken struct {
+	Hash           []byte
+	AgentAccountID string
+	OwnerUserID    string
+	TenantID       string
+	CreatedAt      pgtype.Timestamptz
+	RevokedAt      pgtype.Timestamptz
+}
+
 type Issue struct {
 	ID             string
 	ForgeProvider  int16
