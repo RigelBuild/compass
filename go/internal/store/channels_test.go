@@ -12,6 +12,192 @@ import (
 	"testing"
 )
 
+// TestCreateChannelGroupSiblingNamesUnique: a name is unique among its siblings,
+// so agent tools can address it; another parent, or another owner at top level, may reuse it.
+func TestCreateChannelGroupSiblingNamesUnique(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	other := mustUser(t, s, "other")
+	mk := func(by AccountID, name string, parent ChannelGroupID) error {
+		_, err := s.CreateChannelGroup(ctx, by, NewChannelGroup{Name: name, ParentGroupID: parent, Visibility: VisibilityOwner})
+		return err
+	}
+	parent, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{Name: "parent", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(parent): %v", err)
+	}
+	otherParent, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{Name: "other-parent", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(other-parent): %v", err)
+	}
+	if err := mk(owner.ID, "same", parent.ID); err != nil {
+		t.Fatalf("first sibling: %v", err)
+	}
+	sentinelIs(t, mk(owner.ID, "same", parent.ID), ErrConflict, "duplicate nested sibling")
+	sentinelIs(t, mk(owner.ID, "parent", ""), ErrConflict, "duplicate top-level sibling")
+	if err := mk(owner.ID, "same", otherParent.ID); err != nil {
+		t.Fatalf("same name under another parent: %v", err)
+	}
+	if err := mk(other.ID, "parent", ""); err != nil {
+		t.Fatalf("same top-level name for another owner: %v", err)
+	}
+}
+
+// TestCreateChannelGroupSiblingNamesUniquePerNamespace: an agent's groups live in
+// its owner's namespace, so the owner and its agents share one set of sibling names.
+func TestCreateChannelGroupSiblingNamesUniquePerNamespace(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	first := mustAgent(t, s, owner.ID, "first")
+	second := mustAgent(t, s, owner.ID, "second")
+	other := mustUser(t, s, "other")
+	mk := func(by AccountID, name string, parent ChannelGroupID) error {
+		_, err := s.CreateChannelGroup(ctx, by, NewChannelGroup{Name: name, ParentGroupID: parent, Visibility: VisibilityOwner})
+		return err
+	}
+	team, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{Name: "team", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(team): %v", err)
+	}
+	if team.NamespaceOwnerID != owner.ID {
+		t.Fatalf("owner group namespace = %q, want %q", team.NamespaceOwnerID, owner.ID)
+	}
+	sentinelIs(t, mk(first.ID, "team", ""), ErrConflict, "agent top-level name its owner already uses")
+
+	agentGroup, err := s.CreateChannelGroup(ctx, first.ID, NewChannelGroup{Name: "svc", ParentGroupID: team.ID, Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(agent svc): %v", err)
+	}
+	if agentGroup.NamespaceOwnerID != owner.ID {
+		t.Fatalf("agent group namespace = %q, want owner %q", agentGroup.NamespaceOwnerID, owner.ID)
+	}
+	sentinelIs(t, mk(second.ID, "svc", team.ID), ErrConflict, "two agents of one owner under one parent")
+	if err := mk(other.ID, "team", ""); err != nil {
+		t.Fatalf("same top-level name in another user's namespace: %v", err)
+	}
+}
+
+// TestChannelGroupByRefForViewerQualifiesOwner: a viewer's own top-level group
+// and a stranger's shared one share a name; only the owner-qualified form picks one.
+func TestChannelGroupByRefForViewerQualifiesOwner(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	viewer := mustUser(t, s, "viewer")
+	viewerAgent := mustAgent(t, s, viewer.ID, "helper")
+	stranger := mustUser(t, s, "stranger")
+	own, err := s.CreateChannelGroup(ctx, viewerAgent.ID, NewChannelGroup{Name: "eng", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(viewer eng): %v", err)
+	}
+	shared, err := s.CreateChannelGroup(ctx, stranger.ID, NewChannelGroup{Name: "eng", Visibility: VisibilityShared})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(stranger eng): %v", err)
+	}
+
+	_, err = s.ChannelGroupByRefForViewer(ctx, viewerAgent.ID, "eng")
+	sentinelIs(t, err, ErrInvalidArgument, "bare cross-owner eng")
+	for ref, want := range map[string]ChannelGroupID{"/~viewer/eng": own.ID, "/~stranger/eng": shared.ID} {
+		got, err := s.ChannelGroupByRefForViewer(ctx, viewerAgent.ID, ref)
+		if err != nil {
+			t.Fatalf("ChannelGroupByRefForViewer(%q): %v", ref, err)
+		}
+		if got.ID != want {
+			t.Fatalf("ChannelGroupByRefForViewer(%q) = %q, want %q", ref, got.ID, want)
+		}
+	}
+}
+
+// TestOwnerGroupVisibleAcrossNamespace: an owner-only group an agent creates
+// belongs to its user's namespace, so the user and sibling agents see it too.
+func TestOwnerGroupVisibleAcrossNamespace(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	a1 := mustAgent(t, s, owner.ID, "a1")
+	a2 := mustAgent(t, s, owner.ID, "a2")
+	stranger := mustUser(t, s, "stranger")
+	strangerAgent := mustAgent(t, s, stranger.ID, "spy")
+	secret, err := s.CreateChannelGroup(ctx, a1.ID, NewChannelGroup{Name: "secret", Visibility: VisibilityOwner})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(secret): %v", err)
+	}
+	for _, viewer := range []AccountID{owner.ID, a1.ID, a2.ID} {
+		visible, err := s.ChannelGroupVisibleTo(ctx, viewer, secret.ID)
+		if err != nil || !visible {
+			t.Fatalf("ChannelGroupVisibleTo(%s) = %v, %v; want true", viewer, visible, err)
+		}
+		got, err := s.ChannelGroupByRefForViewer(ctx, viewer, "secret")
+		if err != nil || got.ID != secret.ID {
+			t.Fatalf("ChannelGroupByRefForViewer(%s, secret) = %q, %v; want %q", viewer, got.ID, err, secret.ID)
+		}
+	}
+	// A sibling agent may nest under it, as it may under its owner's groups.
+	if _, err := s.CreateChannelGroup(ctx, a2.ID, NewChannelGroup{Name: "child", ParentGroupID: secret.ID, Visibility: VisibilityOwner}); err != nil {
+		t.Fatalf("sibling agent nests under namespace group: %v", err)
+	}
+	for _, viewer := range []AccountID{stranger.ID, strangerAgent.ID} {
+		visible, err := s.ChannelGroupVisibleTo(ctx, viewer, secret.ID)
+		if err != nil || visible {
+			t.Fatalf("ChannelGroupVisibleTo(stranger %s) = %v, %v; want false", viewer, visible, err)
+		}
+		_, err = s.ChannelGroupByRefForViewer(ctx, viewer, "secret")
+		sentinelIs(t, err, ErrNotFound, "stranger resolves owner-only namespace group")
+		_, err = s.CreateChannelGroup(ctx, viewer, NewChannelGroup{Name: "intruder", ParentGroupID: secret.ID, Visibility: VisibilityOwner})
+		sentinelIs(t, err, ErrNotFound, "stranger nests under owner-only namespace group")
+	}
+}
+
+// TestChannelGroupInsertWithoutNamespaceIsFilled: an older binary inserts no
+// namespace, so the trigger derives it from the creator during a rolling deploy.
+func TestChannelGroupInsertWithoutNamespaceIsFilled(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "legacy")
+	for _, creator := range []AccountID{owner.ID, agent.ID} {
+		id := newID()
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1, $2, NULL, $3, $4)",
+			id, "legacy-"+id, string(creator), int16(VisibilityOwner)); err != nil {
+			t.Fatalf("insert without namespace by %s: %v", creator, err)
+		}
+		var namespace string
+		if err := s.pool.QueryRow(ctx, "SELECT namespace_owner_id FROM channel_groups WHERE id = $1", id).Scan(&namespace); err != nil {
+			t.Fatalf("read namespace: %v", err)
+		}
+		if namespace != string(owner.ID) {
+			t.Fatalf("namespace for creator %s = %q, want %q", creator, namespace, owner.ID)
+		}
+	}
+}
+
+// TestCreateChannelGroupNestedNameUniquePerParent: a group shared by a whole
+// tenant has no per-user namespaces, so a child name exists once under it.
+func TestCreateChannelGroupNestedNameUniquePerParent(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	alice := mustUser(t, s, "alice")
+	bob := mustUser(t, s, "bob")
+	pub, err := s.CreateChannelGroup(ctx, alice.ID, NewChannelGroup{Name: "pub", Visibility: VisibilityShared})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(pub): %v", err)
+	}
+	infra, err := s.CreateChannelGroup(ctx, alice.ID, NewChannelGroup{Name: "infra", ParentGroupID: pub.ID, Visibility: VisibilityShared})
+	if err != nil {
+		t.Fatalf("CreateChannelGroup(pub/infra by alice): %v", err)
+	}
+	_, err = s.CreateChannelGroup(ctx, bob.ID, NewChannelGroup{Name: "infra", ParentGroupID: pub.ID, Visibility: VisibilityShared})
+	sentinelIs(t, err, ErrConflict, "second pub/infra from another namespace")
+	for _, viewer := range []AccountID{alice.ID, bob.ID} {
+		got, err := s.ChannelGroupByRefForViewer(ctx, viewer, "pub/infra")
+		if err != nil || got.ID != infra.ID {
+			t.Fatalf("ChannelGroupByRefForViewer(%s, pub/infra) = %q, %v; want %q", viewer, got.ID, err, infra.ID)
+		}
+	}
+}
+
 func TestCreateChannelGroupCeilingRejectsWiderChild(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
