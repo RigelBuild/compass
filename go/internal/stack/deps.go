@@ -195,20 +195,29 @@ type ProcessSupervisor interface {
 	Start(ctx context.Context, spec ProcessSpec) (Process, error)
 }
 
-// GroupSignaller signals and identity-checks a persisted child process group by
-// its process-group id. It is the cross-process teardown primitive: DownDetached
-// reads pgids from the state-dir record and drives them here, since the tearing
-// process holds no Process handle for a stack a prior up spawned.
-//
-// Signal delivers sig to the whole group (the real adapter targets the negative
-// pgid, matching the in-process escalation's syscall.Kill(-pid, ...)). Alive
-// reports whether a group with this pgid exists AND its leader's current start
-// time matches startTime — the identity gate that turns "a group with this pgid
-// exists" (which a recycled pid passes falsely) into "the ORIGINAL group is
-// still alive". A gone group (ESRCH) or a start-time mismatch reports not-alive.
+// GroupLiveness classifies a recorded process group against its leader's
+// recorded start time. Linux never reuses a pid as a pgid while any member of
+// that group lives, so a present group with an unreadable leader is still ours.
+type GroupLiveness int
+
+const (
+	// GroupGone means no process is left in the group.
+	GroupGone GroupLiveness = iota
+	// GroupOwned means the group exists and its leader's start time matches.
+	GroupOwned
+	// GroupOrphaned means the group exists but its leader is gone or unreadable.
+	GroupOrphaned
+	// GroupRecycled means the pid is someone else's: a different leader start time, or another uid's group.
+	GroupRecycled
+)
+
+// GroupSignaller signals and classifies a persisted child process group by its
+// pgid. It is the cross-process teardown primitive: DownDetached reads pgids
+// from the state-dir record, since it holds no Process handle for them. Callers
+// signal only an owned or orphaned group, never a recycled one.
 type GroupSignaller interface {
 	Signal(pgid int, sig ProcessSignal) error
-	Alive(pgid int, startTime uint64) bool
+	Liveness(pgid int, startTime uint64) GroupLiveness
 }
 
 // ContainerController tears down a container child by its stable name for the
@@ -220,7 +229,7 @@ type GroupSignaller interface {
 //
 // Exists reports whether a container with this name is present (the real adapter
 // runs `podman container exists <name>`) — the liveness channel, the container
-// analogue of GroupSignaller.Alive; a container needs no start-time identity
+// analogue of GroupSignaller.Liveness; a container needs no start-time identity
 // token because its name is unique per state dir (S4). Stop requests a graceful
 // stop bounded by timeout (`podman stop -t <seconds> <name>`); Remove is the
 // SIGKILL-tier escalation that force-removes it (`podman rm -f <name>`).
