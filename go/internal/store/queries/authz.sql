@@ -10,7 +10,7 @@
 SELECT EXISTS (SELECT 1 FROM topics t JOIN channel_members cm ON cm.channel_id = t.channel_id WHERE t.id = $1 AND cm.account_id = $2);
 
 -- name: GroupCreateAuthorized :one
--- Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
+-- Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 SELECT EXISTS (
         SELECT 1 FROM channel_groups g
         WHERE g.id = $1 AND (
@@ -26,7 +26,9 @@ SELECT EXISTS (
            -- bare-SHARED group nested under an OWNER parent would authorize
            -- creates it should not).
            OR g.visibility = $3
-           OR g.owner_user_id = (SELECT owner_user_id FROM agent_accounts WHERE account_id = $2)));
+           OR g.owner_user_id = (SELECT owner_user_id FROM agent_accounts WHERE account_id = $2)
+           -- A group an agent created lives in its owner's namespace.
+           OR g.namespace_owner_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $2), $2)));
 
 -- name: AgentWorkspaceVisible :one
 -- Feeds isAgentWorkspaceVisible: membership on the agent's home channel.

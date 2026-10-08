@@ -1,15 +1,15 @@
 # squawk — Postgres migration-safety linter for go/internal/store/migrations/.
 # Gate config for tools/sql-migration-gate/moon.yml.
 #
-# WHY THESE EXCLUSIONS: every migration so far (0001_init.sql, then the
-# append-only files after it) creates tables that are empty when it runs, inside
-# one transaction (see the migration runner + advisory lock). squawk's default
-# rule set is calibrated for changes to a large LIVE table, where a full-table
-# rewrite or a non-CONCURRENT index build takes a blocking lock that stalls
-# traffic. On a new empty table that hazard does not exist, so the rules below
-# are accepted. Revisit this list when a migration first alters or indexes a
-# populated table. The gate stays RED on genuinely unsafe NEW DDL (e.g. adding
-# a NOT NULL column with no default), which these exclusions do not silence.
+# WHY THESE EXCLUSIONS: every migration runs inside one transaction under the
+# runner's advisory lock (see the migration runner). squawk's default rule set
+# is calibrated for a large LIVE table, where a full-table rewrite or a
+# non-CONCURRENT index build stalls traffic for its duration. Most migrations
+# here create empty tables; the ones that touch populated tables (e.g.
+# channel_groups) touch small ones, where the lock is brief. Revisit this list
+# when a migration first alters or indexes a large populated table. The gate
+# stays RED on genuinely unsafe NEW DDL (e.g. adding a NOT NULL column with no
+# default), which these exclusions do not silence.
 
 pg_version = "16.0"
 
@@ -22,13 +22,13 @@ pg_version = "16.0"
 assume_in_transaction = true
 
 excluded_rules = [
-  # CREATE INDEX (non-CONCURRENTLY) and the lock it takes only block writes on a
-  # populated table. Every index here is built on an empty pre-live table inside
-  # the bootstrap transaction; CONCURRENTLY is in fact illegal inside a txn.
+  # A non-CONCURRENT index blocks writes while it builds. Indexes here land on
+  # new empty tables or on small populated ones, so the block is brief; and
+  # CONCURRENTLY is illegal inside the runner's transaction anyway.
   "require-concurrent-index-creation",
-  # lock_timeout / statement_timeout guard against a slow blocking op stalling
-  # live traffic. There is no live traffic during a pre-live bootstrap; the whole
-  # migration runs under one advisory-locked transaction.
+  # lock_timeout / statement_timeout guard a slow blocking op against stalling
+  # live traffic. Ours are short ops on empty or small tables; a migration that
+  # can queue behind long transactions sets its own lock_timeout.
   "require-timeout-settings",
   # IF NOT EXISTS makes a migration re-runnable after a partial failure. This
   # migration is transactional (all-or-nothing) and version-gated by the runner,
