@@ -277,7 +277,7 @@ func (s *Stack) startRunner(ctx context.Context) error {
 	if err := s.resolveGuest(ctx); err != nil {
 		return err
 	}
-	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, s.cert, token, s.guest))
+	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, s.cert, token, s.guest, os.Getenv(microVMRunRootEnvVar)))
 	if err != nil {
 		return fmt.Errorf("start compass-runner: %w", err)
 	}
