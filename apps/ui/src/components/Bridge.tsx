@@ -573,7 +573,7 @@ export const Bridge: Component = () => {
 				<span class="sub">
 					{boardAgents().length} agents · {inFlight()} in-flight issues
 				</span>
-				<div class="seg" role="toolbar" aria-label="Board view">
+				<div class="seg bridge-tabs" role="toolbar" aria-label="Board view">
 					<button
 						type="button"
 						class={{ active: tab() === "issues" }}
