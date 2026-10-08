@@ -271,8 +271,8 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // it to the live session, deps forwarding comms, lifecycle, forge and board calls
 // and telemetry to the Server, deps.Committer committing durable conversation
 // frames) onto the owner-only Unix socket the SocketListener owns, with an
-// explicit ReadMaxBytes bound on every method (Global Constraints: a large
-// agent-buffered message is a stream/unary error, not an OOM). Called at
+// explicit ReadMaxBytes bound and ControlAck size pre-scan on every method (Global
+// Constraints: a large agent-buffered message is a stream/unary error, not an OOM). Called at
 // Provision, before `podman run`, so the bind-mount source is live when the
 // container starts; the returned listener's Close tears the socket down at
 // container teardown.
@@ -292,7 +292,7 @@ func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketL
 	g.SetControlRouter(control)
 	mux.Handle(compassv1internalconnect.NewAgentGatewayHandler(
 		g,
-		connect.WithReadMaxBytes(maxAgentMessageBytes),
+		agentGatewayHandlerOptions()...,
 	))
 	l, err := listenAgentSocket(ctx, path, mux, socketCancel)
 	if err != nil {
