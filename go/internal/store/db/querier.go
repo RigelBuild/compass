@@ -240,10 +240,11 @@ type Querier interface {
 	GetTopicChannel(ctx context.Context, id string) (string, error)
 	// The caller is bound to one tenant by the store's scoped query path.
 	GetTourState(ctx context.Context, accountID string) (GetTourStateRow, error)
+	GlobalHandlesByAccountIDs(ctx context.Context, dollar_1 []string) ([]GlobalHandlesByAccountIDsRow, error)
 	// Scope grants are managed for user accounts; agents inherit their owner's rows.
 	// The SELECT runs under RLS, so a user from another tenant inserts nothing.
 	GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) (int64, error)
-	// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
+	// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
 	HasForgeScope(ctx context.Context, arg HasForgeScopeParams) (bool, error)
 	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)
@@ -288,7 +289,8 @@ type Querier interface {
 	// groupVisiblePredicate). The copies MUST stay textually identical so the stream
 	// edge's single-id visibility check cannot drift from the list read (the
 	// anti-drift guarantee the design record requires).
-	InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) error
+	// An agent's group lives in its owner's namespace, which keys top-level names.
+	InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) (string, error)
 	InsertChannelPin(ctx context.Context, arg InsertChannelPinParams) error
 	InsertCoordinationChannel(ctx context.Context, arg InsertCoordinationChannelParams) (string, error)
 	InsertCoordinationGroup(ctx context.Context, arg InsertCoordinationGroupParams) error

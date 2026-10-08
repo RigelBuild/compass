@@ -145,12 +145,13 @@ type Channel struct {
 }
 
 type ChannelGroup struct {
-	ID            string
-	Name          string
-	ParentGroupID pgtype.Text
-	OwnerUserID   string
-	Visibility    int16
-	TenantID      string
+	ID               string
+	Name             string
+	ParentGroupID    pgtype.Text
+	OwnerUserID      string
+	Visibility       int16
+	TenantID         string
+	NamespaceOwnerID string
 }
 
 type ChannelMember struct {
