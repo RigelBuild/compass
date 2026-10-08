@@ -365,7 +365,7 @@ func TestReconcileIgnoresMisVisibilityUserGroup(t *testing.T) {
 	// A top-level SHARED __coordination__ can still exist via paths other than
 	// CreateChannelGroup, so plant it with raw SQL.
 	if _, err := s.pool.Exec(ctx,
-		"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1,$2,NULL,$3,$4)",
+		"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, namespace_owner_id, visibility) VALUES ($1,$2,NULL,$3,$3,$4)",
 		newID(), coordinationGroupName, string(owner.ID), int16(VisibilityShared)); err != nil {
 		t.Fatalf("plant shared __coordination__ group: %v", err)
 	}
