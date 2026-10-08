@@ -86,8 +86,8 @@ func (UserRole) EnumDescriptor() ([]byte, []int) {
 	return file_compass_v1_comms_proto_rawDescGZIP(), []int{0}
 }
 
-// Group-level visibility. A group's own value must be no more open than its
-// parent's, and the effective visibility of a channel or nested group is the
+// Group-level visibility. A nested group's value must equal its parent's, and
+// the effective visibility of a channel or nested group is the
 // most restrictive value on its path to the root. The default (zero value) is
 // owner-scoped — a group is private to its owner unless explicitly opened up.
 type ChannelGroupVisibility int32
@@ -694,12 +694,12 @@ func (x *AgentAccount) GetParentAgentId() string {
 // A channel group: a namespace node holding channels and nested groups, so a
 // user's owned agents work in that user's space by default (e.g. group "matt" →
 // channel "coordination", the path "matt.coordination") while shared groups stay
-// available for wider collaboration. Visibility is set per group but constrained
-// to be no more open than its parent — a child group cannot widen its parent's
-// scope. A channel's or nested group's effective visibility is the most
-// restrictive value on its path to the root (D9): e.g. a "matt" group visible
-// only to matt and matt's agents keeps its channels and nested groups
-// owner-scoped too.
+// available for wider collaboration. Visibility is set per top-level group; a
+// nested group must carry its parent's value, so everything in a shared group is
+// shared and a private subset is a new top-level group. A channel's or nested
+// group's effective visibility is the most restrictive value on its path to the
+// root (D9): e.g. a "matt" group visible only to matt and matt's agents keeps its
+// channels and nested groups owner-scoped too.
 type ChannelGroup struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Server-assigned stable id.
@@ -711,9 +711,9 @@ type ChannelGroup struct {
 	// The user whose space this group is; empty for a shared/global group.
 	// Server-set to the creating caller.
 	OwnerUserId string `protobuf:"bytes,4,opt,name=owner_user_id,json=ownerUserId,proto3" json:"owner_user_id,omitempty"`
-	// This group's own visibility; the server rejects a value more open than the
-	// parent group's (child ≤ parent). Effective visibility is the most
-	// restrictive on the path to the root.
+	// This group's own visibility; the server rejects a nested group whose value
+	// differs from its parent's (INVALID_ARGUMENT). Effective visibility is the
+	// most restrictive on the path to the root.
 	Visibility    ChannelGroupVisibility `protobuf:"varint,5,opt,name=visibility,proto3,enum=compass.v1.ChannelGroupVisibility" json:"visibility,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

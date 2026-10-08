@@ -173,12 +173,12 @@ export const AgentAccountSchema: GenMessage<AgentAccount> = /*@__PURE__*/
  * A channel group: a namespace node holding channels and nested groups, so a
  * user's owned agents work in that user's space by default (e.g. group "matt" →
  * channel "coordination", the path "matt.coordination") while shared groups stay
- * available for wider collaboration. Visibility is set per group but constrained
- * to be no more open than its parent — a child group cannot widen its parent's
- * scope. A channel's or nested group's effective visibility is the most
- * restrictive value on its path to the root (D9): e.g. a "matt" group visible
- * only to matt and matt's agents keeps its channels and nested groups
- * owner-scoped too.
+ * available for wider collaboration. Visibility is set per top-level group; a
+ * nested group must carry its parent's value, so everything in a shared group is
+ * shared and a private subset is a new top-level group. A channel's or nested
+ * group's effective visibility is the most restrictive value on its path to the
+ * root (D9): e.g. a "matt" group visible only to matt and matt's agents keeps its
+ * channels and nested groups owner-scoped too.
  *
  * @generated from message compass.v1.ChannelGroup
  */
@@ -213,9 +213,9 @@ export type ChannelGroup = Message$1<"compass.v1.ChannelGroup"> & {
   ownerUserId: string;
 
   /**
-   * This group's own visibility; the server rejects a value more open than the
-   * parent group's (child ≤ parent). Effective visibility is the most
-   * restrictive on the path to the root.
+   * This group's own visibility; the server rejects a nested group whose value
+   * differs from its parent's (INVALID_ARGUMENT). Effective visibility is the
+   * most restrictive on the path to the root.
    *
    * @generated from field: compass.v1.ChannelGroupVisibility visibility = 5;
    */
@@ -2434,8 +2434,8 @@ export const UserRoleSchema: GenEnum<UserRole> = /*@__PURE__*/
   enumDesc(file_compass_v1_comms, 0);
 
 /**
- * Group-level visibility. A group's own value must be no more open than its
- * parent's, and the effective visibility of a channel or nested group is the
+ * Group-level visibility. A nested group's value must equal its parent's, and
+ * the effective visibility of a channel or nested group is the
  * most restrictive value on its path to the root. The default (zero value) is
  * owner-scoped — a group is private to its owner unless explicitly opened up.
  *
