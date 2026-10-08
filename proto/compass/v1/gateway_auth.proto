@@ -1,0 +1,28 @@
+// The LLM gateway resolves an agent's bearer token to its caller identity here.
+// Mounted only behind a SubjectService bearer with an llm-gateway allowlist.
+// Internal Go lane only; see docs/designs/server/compass-server-llm-gateway/design.md §T3.
+
+syntax = "proto3";
+
+package compass.v1;
+
+// service GatewayAuth — the gateway's per-agent token verifier. A suffix-less
+// name follows the AgentGateway precedent: a door for one internal tier.
+service GatewayAuth {
+  // An unknown, revoked or malformed token is UNAUTHENTICATED with one fixed
+  // message, so the response never says which.
+  rpc VerifyAgentToken(VerifyAgentTokenRequest) returns (VerifyAgentTokenResponse);
+}
+
+message VerifyAgentTokenRequest {
+  // The bearer the agent presented, verbatim. debug_redact is metadata only in
+  // protobuf-go, so the handler never logs req.Msg.
+  string token = 1 [debug_redact = true];
+}
+
+message VerifyAgentTokenResponse {
+  // The agent the token was minted for.
+  string agent_account_id = 1;
+  // The agent's owner; the gateway keys the credential pool and usage on it.
+  string owner_user_id = 2;
+}
