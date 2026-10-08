@@ -38,7 +38,7 @@ module.exports = {
 				// (`var(--bg)`, `var(--st-working)`, `var(--purple)`, …) reds CI here
 				// instead of resolving to `inherit`. Anchored on `var(--<name>` with a
 				// name-boundary char `[-),\s]`, so `var(--cx-bg…)` / `var(--cx-st-*)`
-				// (the DS tier) and the layout knobs `--topbar-h`/`--usage-h`/`--right-w`
+				// (the DS tier) and the layout knobs `--topbar-h`/`--right-w`
 				// are NOT matched — only the exact retired names and their `-<suffix>`
 				// families (`--bg-raised`, `--text-dim`, `--border-strong`, …).
 				"/var\\(\\s*--(bg|text|st|accent|purple|pink|radius|font-mono|add|del|warn|border|danger|surface|fg|bg-inset|text-muted)[-),\\s]/",
