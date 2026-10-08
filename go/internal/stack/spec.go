@@ -13,6 +13,8 @@ import (
 // table (cmd/compass-runner/main.go:105-110).
 const tokenEnvVar = "COMPASS_RUNNER_TOKEN"
 
+const microVMRunRootEnvVar = "COMPASS_MICROVM_RUNROOT"
+
 // embeddedRunnerID is the fixed identity of the single embedded runner. Embedded
 // mode is single-user/single-runner by design (DL-106), so the id is an internal
 // constant rather than a Config knob; it is cross-checked against the minted
@@ -58,7 +60,7 @@ func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 // the server's TLS door over https, trusts the same cert as its --ca anchor,
 // and mints per-container sockets under cfg.RuntimeDir. The token rides in Env
 // only; guest is resolved by the caller (zero = the Runner image's baked copy).
-func runnerSpec(cfg Config, cert CertResult, token string, guest GuestPaths) ProcessSpec {
+func runnerSpec(cfg Config, cert CertResult, token string, guest GuestPaths, microVMRunRootEnv string) ProcessSpec {
 	// The four unconditional flags every runner spawn carries. Each optional
 	// flag below is appended only when set, so a caller that leaves them zero
 	// (the embedded supervisor, the compass-stack CLI's resolveConfig) gets a
@@ -76,6 +78,10 @@ func runnerSpec(cfg Config, cert CertResult, token string, guest GuestPaths) Pro
 		args = append(args, "--image", cfg.AgentImage)
 	}
 	args = append(args, "--runtime-dir", cfg.RuntimeDir)
+	if cfg.microVM() && microVMRunRootEnv == "" {
+		// The flag overrides the inherited env, so only default it when unset.
+		args = append(args, "--microvm-runroot", cfg.RuntimeDir)
+	}
 	// AgentModel: forward a single --agent-model only when pinned. Forwarding
 	// --agent-model "" would break an embedded supervisor that relies on the
 	// runner's own default, so an empty selector must omit the flag entirely.
