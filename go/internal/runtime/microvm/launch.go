@@ -225,6 +225,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		// -f keeps passt in the foreground so this *exec.Cmd IS the passt process
 		// (default daemonizes, orphaning it). The -a/-g/-n/-D flags fix the
 		// host-controlled address plan passt serves over DHCP (§(c)).
+		// --no-map-gw stops passt mapping the gateway address onto the host, so an
+		// allowlist naming 10.0.2.2 still cannot reach host listeners.
 
 		// NO --pid: passt's pidfile is retired (§(a)). -f makes this Cmd the passt
 		// process, so the host knows its pid and carries the starttime+boot-id
@@ -237,7 +239,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 			"-a", guestAddr,
 			"-g", guestGW,
 			"-n", guestPrefix,
-			"-D", guestDNS),
+			"-D", guestDNS,
+			"--no-map-gw"),
 	}
 	if startErr := vm.startRecordedChild(vm.passt, dir, "passt.pid"); startErr != nil {
 		return nil, startErr

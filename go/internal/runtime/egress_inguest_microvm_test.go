@@ -43,6 +43,7 @@ package runtime
 
 import (
 	"context"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -71,6 +72,8 @@ const (
 	// never names — DNS resolution stalls the harness (see the file header).
 	allowedIP = "1.1.1.1"
 	deniedIP  = "8.8.8.8"
+	// guestGatewayIP is the gateway passt advertises (microvm launch's -g).
+	guestGatewayIP = "10.0.2.2"
 )
 
 // startEgressSession boots a real microVM session with the given egress policy
@@ -121,16 +124,22 @@ func startEgressSession(t *testing.T, egress EgressPolicy, name string) (*MicroV
 // (that is a harness fault, not a firewall verdict).
 func canReachIPv4(t *testing.T, m *MicroVMRuntime, id WorkloadID, ip string) bool {
 	t.Helper()
+	return canReachTCP(t, m, id, ip, "443")
+}
+
+// canReachTCP is canReachIPv4 for an arbitrary port.
+func canReachTCP(t *testing.T, m *MicroVMRuntime, id WorkloadID, ip, port string) bool {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), egressProbeTimeout)
 	defer cancel()
 	script := "timeout " + guestConnectTimeout +
-		" bash -c 'exec 3<>/dev/tcp/" + ip + "/443 && echo connected'"
+		" bash -c 'exec 3<>/dev/tcp/" + ip + "/" + port + " && echo connected'"
 	out, err := m.Exec(ctx, id, NewExecSpec("sh", "-c", script).AsUser(strconv.Itoa(int(agentuid.AgentUID))))
 	if err != nil {
 		t.Fatalf("in-guest connect probe to %s errored (harness fault, not a firewall verdict): %v", ip, err)
 	}
 	reached := out.ExitCode == 0 && strings.Contains(out.Stdout, "connected")
-	t.Logf("connect %s:443 -> reached=%v (exit=%d stdout=%q stderr=%q)", ip, reached, out.ExitCode, out.Stdout, out.Stderr)
+	t.Logf("connect %s:%s -> reached=%v (exit=%d stdout=%q stderr=%q)", ip, port, reached, out.ExitCode, out.Stdout, out.Stderr)
 	return reached
 }
 
@@ -207,5 +216,38 @@ func TestInGuestEgressAlwaysArmedDefaultDeny(t *testing.T) {
 	}
 	if canReachIPv4(t, m, id, deniedIP) {
 		t.Errorf("default-deny session must block %s: an always-armed empty policy allows no external egress", deniedIP)
+	}
+}
+
+// TestInGuestEgressGatewayDoesNotReachHost pins passt's --no-map-gw: even with
+// the gateway address allowlisted, a guest dial to it must not land on a host
+// loopback listener. passt maps the gateway to the host unless told not to.
+func TestInGuestEgressGatewayDoesNotReachHost(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("host listener: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan struct{}, 1)
+	go func() {
+		if c, acceptErr := ln.Accept(); acceptErr == nil {
+			_ = c.Close()
+			accepted <- struct{}{}
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	m, id := startEgressSession(t, MustAllowEgress(guestGatewayIP, allowedIP), "v8-no-map-gw")
+	// Positive control: the same armed session does reach an allowlisted host.
+	if !canReachIPv4(t, m, id, allowedIP) {
+		t.Fatalf("allowlisted host %s must be reachable, or the gateway verdict below proves nothing", allowedIP)
+	}
+	if canReachTCP(t, m, id, guestGatewayIP, port) {
+		t.Errorf("guest reached the host listener through gateway %s:%s: passt maps the gateway to the host", guestGatewayIP, port)
+	}
+	select {
+	case <-accepted:
+		t.Errorf("host loopback listener accepted a connection from the guest")
+	default:
 	}
 }
