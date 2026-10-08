@@ -57,9 +57,9 @@ const (
 )
 
 // ChannelGroupVisibility is a group's own visibility (comms.proto:175-180). A
-// child group's value may be no more open than its parent's, and a node's
-// effective visibility is the most restrictive value on its path to the root
-// (D9). The zero value is owner-scoped — private unless explicitly opened.
+// nested group's value must equal its parent's, and a node's effective
+// visibility is the most restrictive value on its path to the root (D9). The
+// zero value is owner-scoped — private unless explicitly opened.
 type ChannelGroupVisibility int32
 
 const (
@@ -208,8 +208,8 @@ type AgentAccount struct {
 }
 
 // ChannelGroup is a namespace node holding channels and nested groups
-// (comms.proto:155-169). Its own visibility may be no more open than its
-// parent's; effective visibility is the most restrictive on the path to root.
+// (comms.proto:155-169). A nested group carries its parent's visibility;
+// effective visibility is the most restrictive on the path to root.
 type ChannelGroup struct {
 	ID ChannelGroupID
 	// Name is the leaf segment of the namespace, e.g. "matt".
