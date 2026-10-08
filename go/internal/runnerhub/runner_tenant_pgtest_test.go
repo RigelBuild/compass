@@ -28,16 +28,16 @@ func TestDropLostSessionScopesToTheSessionTenant(t *testing.T) {
 	hub.SetSessionLostSink(sink)
 	hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	// Enroll reaps every binding on this Runner; re-record so the drop reads a live row cold.
-	if _, err := st.RecordSessionBinding(ctxB, "sess-b", agent.ID, "runner-1"); err != nil {
+	if _, _, err := st.RecordSessionBinding(ctxB, "sess-b", agent.ID, "runner-1"); err != nil {
 		t.Fatalf("RecordSessionBinding after enroll: %v", err)
 	}
 
-	hub.dropLostSession(ctx, "runner-1", "sess-b", false)
+	hub.dropLostSession(ctx, "runner-1", "sess-b", nil, false)
 
 	if lost, _ := sink.waitOne(t); lost != agent.ID {
 		t.Fatalf("lost = %s, want %s: the tenant-B session was not resolved, so no wake", lost, agent.ID)
 	}
-	if _, _, err := st.ResolveSessionBinding(ctxB, "sess-b"); err == nil {
+	if _, _, _, err := st.ResolveSessionBinding(ctxB, "sess-b"); err == nil {
 		t.Fatal("tenant B's durable binding survived the drop; a cache miss would resurrect it")
 	}
 }
@@ -101,7 +101,7 @@ func openTenantBSession(t *testing.T, ctx context.Context) (*store.Store, store.
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
-	if _, err := st.RecordSessionBinding(ctxB, "sess-b", agent.ID, "runner-1"); err != nil {
+	if _, _, err := st.RecordSessionBinding(ctxB, "sess-b", agent.ID, "runner-1"); err != nil {
 		t.Fatalf("RecordSessionBinding: %v", err)
 	}
 	return st, agent, ctxB
