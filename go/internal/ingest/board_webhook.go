@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -30,9 +31,14 @@ var boardWebhookDrops = expvar.NewInt("compass_board_webhook_drops")
 
 // defaultBoardQueueSize is the bounded drain-queue depth. Sized to absorb a
 // normal edit-storm burst between drains; a sustained overflow (the drain paused
-// on ErrBudgetExhausted while events keep arriving) drops with the metric+Warn
-// and is healed by the T3 reconciler.
+// on ErrBudgetExhausted while events keep arriving) drops with the metric+Warn.
+// The sweep heals a dropped issue; a dropped CI-only PR change waits for the PR's
+// next event.
 const defaultBoardQueueSize = 1024
+
+// defaultBoardRetryWait re-drains held PR keys when the budget error gave no
+// reset hint.
+const defaultBoardRetryWait = time.Minute
 
 // issueHydrator is the conditional point-read seam (satisfied structurally by
 // *forge.GitHub via GetIssueConditional, notify_reader.go:129). Defined locally
@@ -82,6 +88,12 @@ type BoardWebhookArm struct {
 	targets  TargetChecker
 	log      *slog.Logger
 	dropped  atomic.Int64
+
+	// pending holds PR keys a budget pause left un-hydrated. The sweep cannot
+	// heal a CI-only change, so the drain retries them. Drain goroutine only.
+	pending    map[boardCoord]struct{}
+	maxPending int
+	after      func(time.Duration) <-chan time.Time
 }
 
 // NewBoardWebhookArm returns an arm that hydrates each accepted event through h,
@@ -103,6 +115,10 @@ func NewBoardWebhookArm(h issueHydrator, ing *Ingester, targets TargetChecker, c
 		numbers:  cfg.PullNumbers,
 		targets:  targets,
 		log:      log,
+
+		pending:    map[boardCoord]struct{}{},
+		maxPending: size,
+		after:      time.After,
 	}
 }
 
@@ -130,16 +146,36 @@ func (a *BoardWebhookArm) Enqueue(_ context.Context, ev forge.ForgeEvent) {
 
 // Run drains the queue until ctx is cancelled — then it returns nil (clean
 // shutdown, driver.go:95-99 idiom). Each drain COALESCES per coordinate before
-// hydrating, so an N-event burst on one issue costs one GET.
+// hydrating, so an N-event burst on one issue costs one GET. After a budget
+// pause it re-drains the held PR keys once the gate's reset hint passes.
 func (a *BoardWebhookArm) Run(ctx context.Context) error {
+	var retry <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case ev := <-a.queue:
-			a.drainBatch(ctx, ev)
+			if wait, paused := a.drainBatch(ctx, ev); paused && retry == nil {
+				retry = a.retryTimer(wait)
+			}
+		case <-retry:
+			retry = nil
+			if wait, paused := a.retryPending(ctx); paused {
+				retry = a.retryTimer(wait)
+			}
 		}
 	}
+}
+
+// retryTimer arms the re-drain for held PR keys; nil when none are held.
+func (a *BoardWebhookArm) retryTimer(wait time.Duration) <-chan time.Time {
+	if len(a.pending) == 0 {
+		return nil
+	}
+	if wait <= 0 {
+		wait = defaultBoardRetryWait
+	}
+	return a.after(wait)
 }
 
 // boardRelevant reports whether an event changes what the board shows. Issue
@@ -173,17 +209,21 @@ func (a *BoardWebhookArm) boardRelevant(ev forge.ForgeEvent) bool {
 // drainBatch coalesces the event that woke the drain and every other queued
 // event into distinct keys: normalized repo, kind and number, or head SHA for a
 // CHECKS event with no number. An edit storm and a mixed-case duplicate both
-// collapse to one key. It then hydrates + sinks each key once, in arrival order.
-func (a *BoardWebhookArm) drainBatch(ctx context.Context, first forge.ForgeEvent) {
+// collapse to one key. A key already held for retry is left to the timer, so a
+// held PR whose budget is still out never pauses a fresh batch. It then hydrates
+// + sinks each key once, in arrival order, and reports a pause.
+func (a *BoardWebhookArm) drainBatch(ctx context.Context, first forge.ForgeEvent) (time.Duration, bool) {
 	seen := map[boardCoord]struct{}{}
 	var order []boardCoord
-
 	add := func(ev forge.ForgeEvent) {
 		c := boardCoord{repo: normalizeBoardRepo(ev.Repo), kind: ev.Kind, number: ev.Number}
 		if ev.Number == 0 {
 			c.headSHA = ev.HeadSHA
 		}
 		if _, ok := seen[c]; ok {
+			return
+		}
+		if _, held := a.pending[c]; held {
 			return
 		}
 		seen[c] = struct{}{}
@@ -196,29 +236,69 @@ func (a *BoardWebhookArm) drainBatch(ctx context.Context, first forge.ForgeEvent
 		case ev := <-a.queue:
 			add(ev)
 		default:
-			goto process
+			return a.process(ctx, order, seen)
 		}
 	}
+}
 
-process:
-	for _, c := range order {
+// retryPending re-drains the PR keys held by an earlier budget pause.
+func (a *BoardWebhookArm) retryPending(ctx context.Context) (time.Duration, bool) {
+	order, seen := a.takePending()
+	return a.process(ctx, order, seen)
+}
+
+// takePending empties the held PR keys into a fresh batch.
+func (a *BoardWebhookArm) takePending() ([]boardCoord, map[boardCoord]struct{}) {
+	seen := make(map[boardCoord]struct{}, len(a.pending))
+	order := make([]boardCoord, 0, len(a.pending))
+	for c := range a.pending {
+		seen[c] = struct{}{}
+		order = append(order, c)
+	}
+	clear(a.pending)
+	return order, seen
+}
+
+// hold keeps the batch's un-hydrated PR keys for a retry; issue keys are left to
+// the sweep, which sees their updated_at move. Past maxPending a key is dropped.
+func (a *BoardWebhookArm) hold(rest []boardCoord) {
+	for _, c := range rest {
+		if c.kind != compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST {
+			continue
+		}
+		if _, ok := a.pending[c]; !ok && len(a.pending) >= a.maxPending {
+			a.dropped.Add(1)
+			boardWebhookDrops.Add(1)
+			continue
+		}
+		a.pending[c] = struct{}{}
+	}
+}
+
+// process hydrates each key once. A budget error holds the remaining PR keys
+// and returns the gate's reset hint.
+func (a *BoardWebhookArm) process(ctx context.Context, order []boardCoord, seen map[boardCoord]struct{}) (time.Duration, bool) {
+	for i, c := range order {
 		if err := a.resolveAndSink(ctx, c, seen); err != nil {
 			if errors.Is(err, forge.ErrBudgetExhausted) {
-				// Budget exhausted pauses the drain: abandon the rest of this
-				// batch (the reconciler heals the un-hydrated coordinates) and
-				// resume once the client gate reopens.
-				a.log.WarnContext(ctx, "board webhook: budget exhausted, pausing drain (reconciler heals)",
-					"repo", c.repo, "number", c.number, "head_sha", c.headSHA)
-				return
+				a.hold(order[i:])
+				var wait time.Duration
+				if rle, ok := errors.AsType[*forge.RateLimitError](err); ok {
+					wait = rle.RetryAfter
+				}
+				a.log.WarnContext(ctx, "board webhook: budget exhausted, pausing drain",
+					"repo", c.repo, "number", c.number, "head_sha", c.headSHA, "held", len(a.pending))
+				return wait, true
 			}
 			// Per-event errors log-and-continue (driver.go:96-98 idiom).
 			a.log.WarnContext(ctx, "board webhook: hydrate/sink failed (isolated)",
 				"repo", c.repo, "number", c.number, "head_sha", c.headSHA, "err", err)
 		}
 		if ctx.Err() != nil {
-			return
+			return 0, false
 		}
 	}
+	return 0, false
 }
 
 // resolveAndSink maps a head-SHA CHECKS key to its PR number, then hydrates.

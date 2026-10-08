@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -444,5 +445,104 @@ func TestReconcileBackfillRetriesAfterRowFailure(t *testing.T) {
 	}
 	if _, ok := st.backfilled["o/r"]; !ok {
 		t.Fatal("repo not marked after the clean retry")
+	}
+}
+
+// TestArmBudgetPauseHoldsPRKeysForRetry: a budget pause keeps the batch's
+// un-hydrated PR keys, including a resolved CHECKS key, and the retry hydrates
+// them once; issue keys are left to the sweep.
+func TestArmBudgetPauseHoldsPRKeysForRetry(t *testing.T) {
+	pulls := &fakePulls{errFor: map[uint64]error{9: &forge.RateLimitError{RetryAfter: 30 * time.Second}}}
+	arm, sink := newPRArm(t, pulls, fakeNumbers{"abc": 12})
+	arm.Enqueue(context.Background(), prEvent(9, changeUpdate))
+	arm.Enqueue(context.Background(), checksEvent())
+	arm.Enqueue(context.Background(), issueEvent("owner/repo", 4, changeUpdate))
+	wait, paused := arm.drainBatch(context.Background(), <-arm.queue)
+	if !paused || wait != 30*time.Second {
+		t.Fatalf("pause = %v wait %v, want paused with the 30s hint", paused, wait)
+	}
+	if len(arm.pending) != 2 {
+		t.Fatalf("held %v, want the two PR keys", arm.pending)
+	}
+
+	pulls.errFor = nil
+	if _, paused := arm.retryPending(context.Background()); paused {
+		t.Fatal("retry paused with the gate open")
+	}
+	got := pulls.readNumbers()
+	slices.Sort(got)
+	if !slices.Equal(got, []uint64{9, 9, 12}) || len(sink.got) != 2 || len(arm.pending) != 0 {
+		t.Fatalf("reads = %v sank %d held %d, want [9 9 12], 2 and 0", got, len(sink.got), len(arm.pending))
+	}
+}
+
+// TestArmHeldKeyNeverPausesFreshBatch: while a PR key is held, a new event for
+// it is left to the timer and a fresh batch hydrates without touching it.
+func TestArmHeldKeyNeverPausesFreshBatch(t *testing.T) {
+	pulls := &fakePulls{errFor: map[uint64]error{9: forge.ErrBudgetExhausted}}
+	arm, sink := newPRArm(t, pulls, nil)
+	arm.Enqueue(context.Background(), prEvent(9, changeUpdate))
+	drainAll(context.Background(), arm)
+	arm.Enqueue(context.Background(), prEvent(9, changeComment))
+	arm.Enqueue(context.Background(), prEvent(10, changeUpdate))
+	drainAll(context.Background(), arm)
+	if got := pulls.readNumbers(); !slices.Equal(got, []uint64{9, 10}) || len(sink.got) != 1 {
+		t.Fatalf("reads = %v sank %d, want [9 10] and 1", got, len(sink.got))
+	}
+	if _, held := arm.pending[boardCoord{repo: "owner/repo", kind: boardKindPR, number: 9}]; !held || len(arm.pending) != 1 {
+		t.Fatalf("held = %v, want only PR 9", arm.pending)
+	}
+}
+
+// TestArmRunRetriesAfterResetHint: Run waits the gate's reset hint, then
+// re-drains the held keys with no new event.
+func TestArmRunRetriesAfterResetHint(t *testing.T) {
+	pulls := &fakePulls{errFor: map[uint64]error{9: &forge.RateLimitError{RetryAfter: 45 * time.Second}}}
+	arm, sink := newPRArm(t, pulls, nil)
+	waits := make(chan time.Duration, 1)
+	fire := make(chan time.Time)
+	arm.after = func(d time.Duration) <-chan time.Time {
+		waits <- d
+		return fire
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- arm.Run(ctx) }()
+
+	defer cancel()
+	arm.Enqueue(ctx, prEvent(9, changeUpdate))
+	select {
+	case d := <-waits:
+		if d != 45*time.Second {
+			t.Fatalf("retry wait = %v, want the 45s hint", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run armed no retry after the budget pause")
+	}
+	pulls.mu.Lock()
+	pulls.errFor = nil
+	pulls.mu.Unlock()
+	fire <- time.Time{}
+	waitForReads(t, pulls, 2)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if got := pulls.readNumbers(); !slices.Equal(got, []uint64{9, 9}) || len(sink.got) != 1 {
+		t.Fatalf("reads = %v sank %d, want [9 9] and 1", got, len(sink.got))
+	}
+}
+
+// waitForReads waits until pulls has seen n reads; the retry runs on Run's goroutine.
+func waitForReads(t *testing.T, pulls *fakePulls, n int) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for len(pulls.readNumbers()) < n {
+		select {
+		case <-deadline:
+			t.Fatalf("reads = %v, want %d", pulls.readNumbers(), n)
+		default:
+			runtime.Gosched()
+		}
 	}
 }
