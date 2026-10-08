@@ -163,13 +163,14 @@ func (c Component) String() string {
 	}
 }
 
-// Process is a handle to a started child. Signal requests a graceful stop; Wait
-// blocks until the child exits (or ctx is done) and returns its exit error, if
+// Process is a handle to a started child. Signal requests a graceful stop,
+// bounded by ctx; Wait blocks until the child exits (or ctx is done) and
+// returns its exit error, if
 // any. Pid reports the child's PID, which doubles as its process-group ID (the
 // adapter sets Setpgid at Start), so the supervisor can persist the pgid for a
 // cross-process teardown that no longer holds this in-memory handle.
 type Process interface {
-	Signal(sig ProcessSignal) error
+	Signal(ctx context.Context, sig ProcessSignal) error
 	Wait(ctx context.Context) error
 	Pid() int
 }
@@ -195,20 +196,29 @@ type ProcessSupervisor interface {
 	Start(ctx context.Context, spec ProcessSpec) (Process, error)
 }
 
-// GroupSignaller signals and identity-checks a persisted child process group by
-// its process-group id. It is the cross-process teardown primitive: DownDetached
-// reads pgids from the state-dir record and drives them here, since the tearing
-// process holds no Process handle for a stack a prior up spawned.
-//
-// Signal delivers sig to the whole group (the real adapter targets the negative
-// pgid, matching the in-process escalation's syscall.Kill(-pid, ...)). Alive
-// reports whether a group with this pgid exists AND its leader's current start
-// time matches startTime — the identity gate that turns "a group with this pgid
-// exists" (which a recycled pid passes falsely) into "the ORIGINAL group is
-// still alive". A gone group (ESRCH) or a start-time mismatch reports not-alive.
+// GroupLiveness classifies a recorded process group against its leader's
+// recorded start time. Linux never reuses a pid as a pgid while any member of
+// that group lives, so a present group with an unreadable leader is still ours.
+type GroupLiveness int
+
+const (
+	// GroupGone means no process is left in the group.
+	GroupGone GroupLiveness = iota
+	// GroupOwned means the group exists and its leader's start time matches.
+	GroupOwned
+	// GroupOrphaned means the group exists but its leader is gone or unreadable.
+	GroupOrphaned
+	// GroupRecycled means the pid is someone else's: a different leader start time, or another uid's group.
+	GroupRecycled
+)
+
+// GroupSignaller signals and classifies a persisted child process group by its
+// pgid. It is the cross-process teardown primitive: DownDetached reads pgids
+// from the state-dir record, since it holds no Process handle for them. Callers
+// signal only an owned or orphaned group, never a recycled one.
 type GroupSignaller interface {
 	Signal(pgid int, sig ProcessSignal) error
-	Alive(pgid int, startTime uint64) bool
+	Liveness(pgid int, startTime uint64) GroupLiveness
 }
 
 // ContainerController tears down a container child by its stable name for the
@@ -220,14 +230,20 @@ type GroupSignaller interface {
 //
 // Exists reports whether a container with this name is present (the real adapter
 // runs `podman container exists <name>`) — the liveness channel, the container
-// analogue of GroupSignaller.Alive; a container needs no start-time identity
-// token because its name is unique per state dir (S4). Stop requests a graceful
-// stop bounded by timeout (`podman stop -t <seconds> <name>`); Remove is the
+// analogue of GroupSignaller.Liveness; a container needs no start-time identity
+// token because its name is unique per state dir (S4). Stop delivers the graceful
+// stop signal without waiting for the container to exit (`podman kill --signal
+// <stop signal>`), so the caller's drain wait measures the budget; Remove is the
 // SIGKILL-tier escalation that force-removes it (`podman rm -f <name>`).
+// RemoveExited removes the container only once it has exited (`podman rm` without
+// --force); a still-running container is left alone and is not an error. It lets
+// a container run without --rm (the gateway) be confirmed gone by absence. Each
+// call is bounded by ctx.
 type ContainerController interface {
-	Exists(name string) bool
-	Stop(name string, timeout time.Duration) error
-	Remove(name string) error
+	Exists(ctx context.Context, name string) bool
+	Stop(ctx context.Context, name string) error
+	RemoveExited(ctx context.Context, name string) error
+	Remove(ctx context.Context, name string) error
 }
 
 // PostgresContainer starts the container-backed postgres child (S4): the
