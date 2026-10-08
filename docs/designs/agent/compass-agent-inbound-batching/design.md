@@ -167,7 +167,7 @@ new process's first window early. Accepted: it only moves a flush earlier.
 
 ### Q6: the UI sees an open window
 
-The button is enabled only while a window is open. The agent emits a
+The UI shows how many items wait and when the window fires. The agent emits a
 `SessionBatchPending` session event each time the window arms, re-arms, or
 closes:
 
@@ -182,12 +182,15 @@ message SessionBatchPending {
 }
 ```
 
-It rides the existing session-frame path with no new Runner or server code:
-`EventMapper.#sessionEvent` → `FrameSink` (priority lane, like
-`SessionInjection`) → gateway `PublishEvents` → `Hub.deliverSession` →
-`sessionTail` → `SubscribeAgentSession`. Session events are live-only, so a
-subscriber joining mid-window sees the next arm or close. A missed close leaves
-a stale enabled button, and clicking it is a no-op.
+It rides the existing session-frame path: `EventMapper.#sessionEvent` →
+`FrameSink` → gateway `PublishEvents` → `Hub.deliverSession` → `sessionTail` →
+`SubscribeAgentSession`. `FrameSink` puts it on the never-drop priority lane,
+as it does `sessionInjection`, by adding `batchPending` to its priority test.
+No Runner or server code changes.
+
+Session events are live-only: a subscriber that joins mid-window sees nothing
+until the next arm or close. So the count only labels the button; "Start now"
+stays enabled for any running session, and with no window open it is a no-op.
 
 ## Alternatives considered
 
@@ -235,11 +238,11 @@ a stale enabled button, and clicking it is a no-op.
   - the steer tail;
   - a `SessionBatchPending` emit from `#armBatch`, `#fireBatch`, and
     `#cancelBatch` (count 0 on close).
+- In `transport/frame-sink.ts`, add `batchPending` to the priority test beside
+  `sessionInjection`.
 - In `cli.ts`, add `MainDeps.batchWindow`. Absent → read
   `COMPASS_AGENT_BATCHING` (`=== "on"` → `DEFAULT_BATCH_WINDOW`, else none);
-  `"off"` → none. Never resolve with `??` or truthiness.
-- In the Runner, add `--agent-batching` / `$COMPASS_AGENT_BATCHING` and pass it
-  through `AgentEnv` as `COMPASS_AGENT_BATCHING`, beside `COMPASS_MODEL`.
+  `"off"` → none. Never resolve with `??` or truthiness. T3 sets the env var.
 - In `cli.test.ts`, `turnSpanFor` passes `"off"` and still gets its turn span.
   New cases, each with one idle deliver and no `batchWindow`: env `"on"` → no
   prompt before the window fires (batching on); env unset or `"1"` → the prompt
@@ -275,8 +278,8 @@ New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
 - A duplicate deliver of a queued id during the window → no ack.
 - Arm, re-arm, and fire each emit one `SessionBatchPending`; the counts are 1,
   2, then 0, and `fires_at_unix_ms` follows the timer.
-- An `AgentEnv` Go test: `Batching: "on"` sets `COMPASS_AGENT_BATCHING=on`;
-  empty sets nothing.
+- A `frame-sink.test.ts` case: a `batchPending` frame goes to
+  `enqueuePriority`, never `enqueueTrace`.
 
 Interfaces:
 
@@ -395,14 +398,26 @@ func (s *service) SkipBatchWindow(
 }
 ```
 
-### T3: Runner relay test (lane compass-runner)
+### T3: Runner flag and relay test (lane compass-runner)
 
-This task adds no production code. Next to the forge regression test in
-`go/internal/runner/dispatch_test.go`, add a case: a `DispatchControl` carrying
-`start_now` reaches `host.Deliver` unchanged, and `representable` returns true
-for it.
+- Add `--agent-batching`, defaulting to `$COMPASS_AGENT_BATCHING`, in
+  `go/cmd/compass-runner/main.go` beside `--agent-model`.
+- Carry it on the Runner and host config beside `AgentModel`, into a new
+  `AgentEnv.Batching`. `execSpec` sets `COMPASS_AGENT_BATCHING` when it is
+  non-empty, as it does `COMPASS_MODEL`.
+- Next to the forge regression test in `go/internal/runner/dispatch_test.go`,
+  add a case: a `DispatchControl` carrying `start_now` reaches `host.Deliver`
+  unchanged, and `representable` returns true for it.
 
-Interfaces: consumes `compassv1internal.AgentControl_StartNow` from T2.
+Tests:
+
+- `AgentEnv{Batching: "on"}.execSpec()` sets `COMPASS_AGENT_BATCHING=on`; an
+  empty value sets nothing.
+- A Runner started with `--agent-batching on` hands `on` to the `AgentEnv` it
+  builds; unset hands nothing.
+
+Interfaces: consumes `compassv1internal.AgentControl_StartNow` from T2. Hands
+T1 the `COMPASS_AGENT_BATCHING` env var.
 
 ### T4: route `start_now` to the agent (lane compass-agent)
 
@@ -443,9 +458,9 @@ startNow(): void;
   - route a refusal to `skipError` and `onCommsError`.
 - In `apps/ui/src/live/adapt.ts`, `adaptSessionEvent` maps `batchPending` to a
   pending state, not a trace row: `{ count, firesAtMs }`, cleared at count 0.
-- In `LogPanel.tsx`, add the button beside Stop. Enable it only while the
-  observed session's pending count is above 0, labelled with the count. Disable
-  it with a reason for a fixture session.
+- In `LogPanel.tsx`, add the button beside Stop for a running session. Label it
+  with the pending count and fire time when one is known. Disable it with a
+  reason for a fixture session.
 
 Tests:
 
@@ -454,8 +469,9 @@ Tests:
 - A store with no compass client is refused locally without a call, and sets
   `skipError`.
 - A server refusal sets `skipError` and calls `onCommsError` with the error.
-- A `batchPending` count 2 enables the button and shows 2; count 0 disables it;
-  neither adds a trace row.
+- A `batchPending` count 2 shows 2 on the button; count 0 clears the label;
+  neither adds a trace row. The button stays enabled for a running session
+  with no count.
 
 Interfaces:
 
@@ -494,18 +510,21 @@ In `docs/specs/product/compass.md`:
 Interfaces: none.
 
 Order: T1 first, then T2. T3, T4, T5, and T7 can run in parallel after T2. T6
-is last.
+is last. T1's env read and T3's env write share only the `COMPASS_AGENT_BATCHING`
+name and its exact `"on"` value.
 
 ## Tasks
 
 - [ ] T1: idle window, `batch-window.ts`, `MainDeps.batchWindow`, the
-  `COMPASS_AGENT_BATCHING` flag through `AgentEnv`, `SessionBatchPending` emit,
-  tests.
+  `COMPASS_AGENT_BATCHING` read, `SessionBatchPending` emit on the priority
+  lane, tests.
 - [ ] T2: `StartNowControl`, `SessionBatchPending`, gen-fence,
   `SkipBatchWindow`, owner check, tests.
-- [ ] T3: Runner relay test for `start_now`.
+- [ ] T3: Runner `--agent-batching` flag through `AgentEnv`, `start_now` relay
+  test.
 - [ ] T4: `start_now` route, `ImmediateControl` fixtures, `startNow`, tests.
-- [ ] T5: UI "Start now" button gated on the pending count, store action, tests.
+- [ ] T5: UI "Start now" button labelled with the pending count, store action,
+  tests.
 - [ ] T6: comms-model doc update.
 - [ ] T7: product spec update for `SkipBatchWindow`.
 
@@ -517,8 +536,8 @@ is last.
 | Idle steer with a window open | The steer drains both queues into its own prompt, steer last. | Q2 |
 | Skip granularity | Per agent. A per-message skip would flush the whole queue anyway. | Q5 |
 | Who may skip | The owner or an admin (`RequireAgentSessionOwner`); for people, not agents. | Q5, T2 |
-| Tell the UI a window is open | Yes: a `SessionBatchPending` event gates the button. | Q6, T1, T5 |
-| Measure the saving | Ship behind `COMPASS_AGENT_BATCHING`, default off, and compare both modes. | The change, T1 |
+| Tell the UI a window is open | Yes: a `SessionBatchPending` event shows the count on the button. The event is live-only, so the button stays enabled. | Q6, T1, T5 |
+| Measure the saving | Ship behind `COMPASS_AGENT_BATCHING`, default off, and compare both modes. | The change, T1, T3 |
 | Keep forge items immediate | No. CI bursts are the main saving, so the forge lane batches. | Q2 |
 
 ## Open Questions
