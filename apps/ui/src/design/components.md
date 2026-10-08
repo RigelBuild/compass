@@ -797,10 +797,10 @@ The two name-bearing rows are the hazard this table exists to catch: a bare
 `✓`/`✗` verdict mark reads as nothing once the glyph is hidden, so those sites
 carry the verdict word on the wrapper. `RightSidebar.prpane.test.tsx` pins that.
 
-### Chrome conversion audit — Bridge, Backlog, Settings, LogPanel and UsageBar
+### Chrome conversion audit — Bridge, Backlog, Settings and LogPanel
 
 The final chrome-pictograph slice: the remaining characters no brand face
-covers (`■ ⟩ ⟨ ⎇ ⌗ ▸`) and the `→` style calls. All converted sites below are
+covers (`■ ⟩ ⟨ ⌗ ▸`) and the `→` style calls. All converted sites below are
 **decorative** — adjacent text or an `aria-label` on the control names them.
 
 | Site | Was | Glyph |
@@ -808,7 +808,6 @@ covers (`■ ⟩ ⟨ ⎇ ⌗ ▸`) and the `→` style calls. All converted site
 | `BacklogView` section caret | `▸` | `disclosure` |
 | `LogPanel` Stop mark | `■` | `stop` |
 | `LogPanel` minimize toggle | `⟩` `⟨` | `disclosure` (CSS rotates 180°) |
-| `UsageBar` branch mark | `⎇` | `vcs` |
 
 Only `stop` is a new bitmap; the rest reuse existing glyphs. The `LogPanel`
 minimize toggle is the two-state case: both states are the one
@@ -850,7 +849,7 @@ Topbar view-tabs, right-sidebar activity bar, workspace tab strip.
   `--cx-font-ui`, `--cx-text-sm`, `--cx-radius-md`, `--cx-motion-base`,
   `--cx-ease-out`.
 
-The workspace's two fixed panes (home channel · session trace). Focus is
+The workspace's two fixed panes (home channel · Session Log). Focus is
 carried by the accent rule, not a raised background.
 
 ## Tree row

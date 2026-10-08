@@ -4,7 +4,6 @@
    counterpart; kept here and allowlisted by name in the D7 stylelint guard. */
 :root {
 	--topbar-h: 44px;
-	--usage-h: 26px;
 	/* Right sidebar width (dock-in-sidebar D4). The single knob the deferred
 	 * resize task (D7/T4) will drive; 400px is the locked default, comfortable
 	 * for the conversation text now that the fleet chats live here. */
@@ -17,11 +16,10 @@
 	display: grid;
 	height: 100%;
 	grid-template-columns: auto 1fr auto;
-	grid-template-rows: var(--topbar-h) 1fr var(--usage-h);
+	grid-template-rows: var(--topbar-h) 1fr;
 	grid-template-areas:
 		"topbar topbar topbar"
-		"left   main   right"
-		"usage  usage  usage";
+		"left   main   right";
 }
 
 /* ── Top bar ────────────────────────────────────────────────────────────── */
@@ -52,13 +50,6 @@
 	font-weight: 700;
 	font-size: 14px;
 	letter-spacing: 0.01em;
-}
-
-.brand .subtitle {
-	color: var(--cx-text-dim);
-	font-size: 11px;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
 }
 
 .topbar-sep {
@@ -1347,7 +1338,7 @@
 	grid-area: right;
 	width: var(--right-w);
 	background: var(--cx-bg-raised);
-	border-left: 1px solid var(--cx-border);
+	border-left: 1px solid var(--cx-border-strong);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -1571,84 +1562,6 @@
 .pr-threads .bar-fill {
 	height: 100%;
 	background: var(--cx-ok);
-}
-
-/* ── Usage bar (bottom status strip) ────────────────────────────────────── */
-
-.usage {
-	grid-area: usage;
-	display: flex;
-	align-items: center;
-	gap: 16px;
-	padding: 0 12px;
-	background: var(--cx-bg-panel);
-	border-top: 1px solid var(--cx-border);
-	font-size: 11px;
-}
-
-.usage-item {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-.usage-item .u-provider {
-	font-weight: 600;
-	color: var(--cx-text);
-}
-
-.usage-item .u-plan {
-	color: var(--cx-text-faint);
-	font-size: 10px;
-}
-
-.usage-meter {
-	width: 90px;
-	height: 5px;
-	border-radius: 3px;
-	background: var(--cx-bg-panel);
-	overflow: hidden;
-}
-
-.usage-meter .fill {
-	height: 100%;
-	background: var(--cx-accent);
-}
-
-.usage-meter .fill.hot {
-	background: var(--cx-warn);
-}
-
-.usage-item .u-pct {
-	color: var(--cx-text-dim);
-	font-family: var(--cx-font-ui);
-	font-variant-numeric: tabular-nums;
-}
-
-.usage-item .u-reset {
-	color: var(--cx-text-faint);
-	font-family: var(--cx-font-ui);
-}
-
-.usage-spacer {
-	flex: 1;
-}
-
-.usage-git {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	color: var(--cx-text-dim);
-	font-family: var(--cx-font-ui);
-}
-
-/* Seat the inline branch glyph (state-dot.css §seating). */
-.usage-git-glyph {
-	display: inline-flex;
-}
-
-.usage-git-glyph > svg {
-	display: block;
 }
 
 /* ── Shared helpers ─────────────────────────────────────────────────────── */
@@ -3493,7 +3406,7 @@
 	flex-direction: column;
 	min-height: 0;
 	width: 340px;
-	border-left: 1px solid var(--cx-border);
+	border-left: 1px solid var(--cx-border-strong);
 	background: var(--cx-bg-raised);
 	grid-area: log;
 }
@@ -3653,7 +3566,7 @@
 	.log-panel.minimized {
 		width: auto;
 		border-left: none;
-		border-top: 1px solid var(--cx-border);
+		border-top: 1px solid var(--cx-border-strong);
 	}
 
 	.log-panel.minimized .obs-head {
