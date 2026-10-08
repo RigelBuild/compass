@@ -931,6 +931,20 @@ describe("evaluate — touch-coupling (DL-Q1)", () => {
 			evaluate([], [], changed([rec], "LEDGER-IMPACT: none"), smallRecord),
 		).toEqual([]);
 	});
+	test("a nested supporting record or a platform record also couples", () => {
+		for (const file of [
+			"docs/designs/infra/runtime/compass-x/microvm-v3.md",
+			"docs/designs/platform/x/design.md",
+		]) {
+			const vs = evaluate(
+				[],
+				[],
+				changed([file], "no declaration"),
+				smallRecord,
+			);
+			expect(vs.map((v) => v.file)).toEqual(["(pull request)"]);
+		}
+	});
 	// Automation-exempt head branches (renovate/, trunk-merge/) skip
 	// touch-coupling. Mirrors spec-impact-gate's branch exemption.
 	test("renovate/ branch touching a record, no ledger, no decl → no violation", () => {
