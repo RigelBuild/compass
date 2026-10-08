@@ -1053,16 +1053,8 @@ var listLagDelays = []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * ti
 // was seen trailing a create by under a second. Short keeps the suite in budget.
 var visibilityDelays = []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 
-// findListedIssueWithBackoff polls ListIssues until the target issue appears,
-// tolerating a provider's list read-after-write lag: the list index is eventually
-// consistent, so a just-created issue can be absent for a while. GitHub's REST
-// /issues list exhibits this directly (the list index lags GetIssue-by-number).
-// An upstream transient on one poll is retried by the next. This is a bounded,
-// ctx-aware event-gate, not a retry loop masking a bug (rule://no-retries): a
-// genuinely-absent issue fails loud after the bound.
-// Returns the matching row, the row count observed on the last attempt (for the
-// caller's diagnostic), and an error on ctx cancellation, a non-transient
-// ListIssues failure, or a transient that outlasts the bound.
+// findListedIssueWithBackoff polls ListIssues through a provider's eventual list
+// lag; an exhausted window or a non-transient error still fails the caller.
 func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo string, f IssueFilter, want uint64, delays []time.Duration) (Issue, int, error) {
 	var lastLen int
 	var lastErr error
@@ -1094,9 +1086,8 @@ type issueGetter interface {
 	GetIssue(ctx context.Context, repo string, number uint64) (Issue, error)
 }
 
-// awaitIssueVisible polls GetIssue until a just-created issue resolves by
-// number. Linear's number lookup trails CreateIssue, so a transition or comment
-// sent at once can 404 `no issue`. Fails loud with the last error after delays.
+// awaitIssueVisible waits out Linear's number lookup trailing CreateIssue (an
+// immediate follow-up can 404); it returns the last error at the bound.
 func awaitIssueVisible(ctx context.Context, getter issueGetter, repo string, number uint64, delays []time.Duration) error {
 	var lastErr error
 	for _, d := range delays {

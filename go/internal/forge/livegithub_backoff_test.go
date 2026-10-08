@@ -139,3 +139,20 @@ func TestFindListedIssueWithBackoff(t *testing.T) {
 		}
 	})
 }
+
+// A gateway error or reset can follow an accepted write, so a create must not
+// re-issue on it: a second call would duplicate the artifact.
+func TestCreateWithBackoffDoesNotRetryUpstreamTransient(t *testing.T) {
+	for _, transient := range []error{errUpstream, errConnReset} {
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		_, err := createWithBackoff(ctx, func() (Issue, error) {
+			calls++
+			cancel() // a reintroduced retry returns ctx.Err() at once, not after 30s
+			return Issue{}, transient
+		})
+		if calls != 1 || !errors.Is(err, transient) {
+			t.Errorf("createWithBackoff(%v): %d calls, err %v; want 1 call and the original error", transient, calls, err)
+		}
+	}
+}
