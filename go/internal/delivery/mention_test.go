@@ -8,6 +8,7 @@ package delivery
 // never a retry (rule://no-retries).
 
 import (
+	"reflect"
 	"testing"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -25,6 +26,90 @@ func recordsFor(recs []dispatchRecord, sessionID string) []dispatchRecord {
 	return out
 }
 
+func TestParseMentionsQualified(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{name: "qualified", text: "@bob/x", want: []string{"bob/x"}},
+		{name: "duplicate case-insensitive qualified", text: "@Bob/X @bob/x @bob/y", want: []string{"bob/x", "bob/y"}},
+		{name: "trailing separator stays bare", text: "@bob/", want: []string{"bob"}},
+		{name: "leading separator does not match", text: "@/x", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseMentions(tt.text); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseMentions(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+func TestQualifiedMentionRoutesOnlyMatchingMember(t *testing.T) {
+	tests := []struct {
+		name       string
+		mention    string
+		members    []store.ChannelAgentMember
+		wantSteers []string
+	}{
+		{
+			name:       "qualified member",
+			mention:    "@bob/x",
+			members:    []store.ChannelAgentMember{{ID: "agent-a", OwnerUserID: "owner-a", OwnerHandle: "bob", Handle: "x"}},
+			wantSteers: []string{"sess-a"},
+		},
+		{
+			name:    "qualified non-member",
+			mention: "@bob/x",
+			members: []store.ChannelAgentMember{{ID: "agent-a", OwnerUserID: "owner-a", OwnerHandle: "alice", Handle: "x"}},
+		},
+		{
+			name:    "bare is scoped to author owner",
+			mention: "@x",
+			members: []store.ChannelAgentMember{
+				{ID: "agent-a", OwnerUserID: "human-1", OwnerHandle: "alice", Handle: "x"},
+				{ID: "agent-b", OwnerUserID: "owner-b", OwnerHandle: "bob", Handle: "x"},
+			},
+			wantSteers: []string{"sess-a"},
+		},
+		{
+			name:    "qualified alice bob does not match bare alice",
+			mention: "@alice/bob",
+			members: []store.ChannelAgentMember{{ID: "agent-a", OwnerUserID: "human-1", OwnerHandle: "owner", Handle: "alice"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, disp, res, reads := newTestConsumer(t)
+			const ch store.ChannelID = "chan-1"
+			const author store.AccountID = "human-1"
+			reads.members[ch] = tt.members
+			reads.owners[author] = "human-1"
+			for _, member := range tt.members {
+				reads.subscribers[ch] = append(reads.subscribers[ch], member.ID)
+				sessionID := "sess-" + string(member.ID[len("agent-"):])
+				res.bind(member.ID, sessionID)
+			}
+			startConsumer(t, c)
+
+			postMessage(t, c, reads, textMessage("m1", author, tt.mention))
+			disp.waitForDispatches(t, len(tt.members))
+
+			var steers []string
+			for _, record := range disp.snapshot() {
+				if record.kind == opSteer {
+					steers = append(steers, record.sessionID)
+				}
+			}
+			if !reflect.DeepEqual(steers, tt.wantSteers) {
+				t.Fatalf("steers = %v, want %v", steers, tt.wantSteers)
+			}
+		})
+	}
+}
+
 // Case 1 (design.md:848): an `@agent` member with a live session gets a STEER,
 // not a deliver — exactly one dispatch to its session, op-kind = steer.
 func TestMentionedMemberGetsSteerNotDeliver(t *testing.T) {
@@ -34,8 +119,7 @@ func TestMentionedMemberGetsSteerNotDeliver(t *testing.T) {
 	const agentA store.AccountID = "agent-a"
 
 	reads.subscribers[ch] = []store.AccountID{agentA}
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
@@ -60,8 +144,7 @@ func TestUnmentionedSubscriberGetsDeliver(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{agentA, agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, agentB)
 	res.bind(agentA, "sess-a")
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
@@ -92,14 +175,12 @@ func TestNonMemberMentionIsNoop(t *testing.T) {
 	const author store.AccountID = "human-1"
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
-	// agentA resolves by handle but is NOT a member of ch; agentB is the member.
+	// agentA is absent from the channel member set and cannot be mentioned.
 	reads.subscribers[ch] = []store.AccountID{agentB}
-	reads.members[ch] = []store.AccountID{agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
 	res.bind(agentA, "sess-a") // live, to prove membership (not liveness) is the gate
 	res.bind(agentB, "sess-b")
-	startConsumer(t, c)
 
+	startConsumer(t, c)
 	postMessage(t, c, reads, textMessage("m1", author, "@aa are you there"))
 	disp.waitForDispatches(t, 1)
 
@@ -126,9 +207,9 @@ func TestSelfMentionAndReservedSelfNoop(t *testing.T) {
 	const agentB store.AccountID = "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentB}
-	reads.members[ch] = []store.AccountID{authorAgent, agentB}
-	reads.agents[authorAgent] = true // agent-authored: held until the author settles
-	reads.handles["author"] = agentAccount(authorAgent, "author")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{authorAgent: "author"}, authorAgent, agentB)
+	reads.owners[authorAgent] = "human-1"
+	reads.agents[authorAgent] = true
 	res.bind(authorAgent, "sess-author")
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
@@ -163,7 +244,7 @@ func TestReservedAgentsExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{authorAgent, agentA, agentB}
+	reads.members[ch] = memberRows(authorAgent, agentA, agentB)
 	reads.agents[authorAgent] = true
 	// Author has NO live session, so its message delivers at post from the stored
 	// (settled) blocks — no hold needed. It is still excluded from @agents.
@@ -198,8 +279,7 @@ func TestMentionedAgentNoLiveSessionSkipped(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{agentA, agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, agentB)
 	// agentA (mentioned) has NO live session; only agentB is live.
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
@@ -227,8 +307,7 @@ func TestSteerCarriesMessage(t *testing.T) {
 	const agentA store.AccountID = "agent-a"
 
 	reads.subscribers[ch] = []store.AccountID{agentA}
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
@@ -253,8 +332,7 @@ func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{agentA, agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, agentB)
 	msg := textMessage("m1", human, "hey @aa")
 	msg.AuthorHandle = "matt/compass-ux"
 	res.bind(agentA, "sess-a")
@@ -311,8 +389,7 @@ func TestDeliverAndSteerCarrySourceChannelAndTopicNames(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{agentA, agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, agentB)
 	// The message's topic ("topic-1", the wireText default) resolves to its
 	// source channel+topic names.
 	reads.seedTopicNames("topic-1", "engineering", "general")
@@ -372,9 +449,9 @@ func TestStreamedMentionAtSettleEdgeSteers(t *testing.T) {
 	const agentA store.AccountID = "agent-a"
 
 	reads.subscribers[ch] = []store.AccountID{agentA}
-	reads.members[ch] = []store.AccountID{agentA, authorAgent}
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, authorAgent)
+	reads.owners[authorAgent] = "human-1"
 	reads.agents[authorAgent] = true
-	reads.handles["aa"] = agentAccount(agentA, "aa")
 	res.bind(authorAgent, "sess-author")
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
@@ -413,7 +490,7 @@ func TestReservedUsersIsNoop(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{agentA, agentB}
+	reads.members[ch] = memberRows(agentA, agentB)
 	res.bind(agentA, "sess-a")
 	res.bind(agentB, "sess-b")
 	startConsumer(t, c)
@@ -444,7 +521,7 @@ func TestReservedEveryoneExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	const agentA, agentB store.AccountID = "agent-a", "agent-b"
 
 	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
-	reads.members[ch] = []store.AccountID{authorAgent, agentA, agentB}
+	reads.members[ch] = memberRows(authorAgent, agentA, agentB)
 	reads.agents[authorAgent] = true
 	// Author has NO live session, so its message delivers at post from the stored
 	// (settled) blocks — no hold needed. It is still excluded from @everyone.
@@ -468,10 +545,8 @@ func TestReservedEveryoneExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	}
 }
 
-// Case 11: a mention whose handle resolves to NOTHING (unknown or human handle →
-// ErrNotFound) is a no-op on the steer path. `@nobody` returns ErrNotFound and is
-// dropped; the live subscribed member still gets its plain DELIVER, ZERO steers.
-// Proves the ErrNotFound → no-op arm; Case 3 covers a resolvable non-member.
+// Case 11: a mention whose handle matches no agent member is a no-op. The live
+// subscribed member still gets its plain DELIVER, with no steer.
 func TestUnknownHandleMentionIsNoop(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -479,8 +554,7 @@ func TestUnknownHandleMentionIsNoop(t *testing.T) {
 	const agentA store.AccountID = "agent-a"
 
 	reads.subscribers[ch] = []store.AccountID{agentA}
-	reads.members[ch] = []store.AccountID{agentA}
-	// @nobody is deliberately NOT seeded in reads.handles → AgentByHandle ErrNotFound.
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
@@ -506,8 +580,7 @@ func TestMultiBlockMentionDedupsToOneSteer(t *testing.T) {
 	const agentA store.AccountID = "agent-a"
 
 	reads.subscribers[ch] = []store.AccountID{agentA}
-	reads.members[ch] = []store.AccountID{agentA}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA)
 	res.bind(agentA, "sess-a")
 	startConsumer(t, c)
 
@@ -536,9 +609,8 @@ func TestUnsubscribedOfflineMentionedMemberGetsNoImmediateDispatch(t *testing.T)
 
 	// agentA is a member (so mention-resolvable + a steer target when live) but is
 	// NOT subscribed and is offline; agentB is subscribed and live.
-	reads.members[ch] = []store.AccountID{agentA, agentB}
+	reads.members[ch] = memberRowsWithHandles(map[store.AccountID]string{agentA: "aa"}, agentA, agentB)
 	reads.subscribers[ch] = []store.AccountID{agentB}
-	reads.handles["aa"] = agentAccount(agentA, "aa")
 	res.bind(agentB, "sess-b") // agentA is offline — never bound.
 	startConsumer(t, c)
 
