@@ -44,6 +44,7 @@ package runtime
 import (
 	"context"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -219,10 +220,14 @@ func TestInGuestEgressAlwaysArmedDefaultDeny(t *testing.T) {
 	}
 }
 
-// TestInGuestEgressGatewayDoesNotReachHost pins passt's --no-map-gw: even with
-// the gateway address allowlisted, a guest dial to it must not land on a host
-// loopback listener. passt maps the gateway to the host unless told not to.
+// TestInGuestEgressGatewayDoesNotReachHost pins passt's --no-map-gw: with the
+// gateway allowlisted, a guest dial to it must not land on a host listener.
 func TestInGuestEgressGatewayDoesNotReachHost(t *testing.T) {
+	// passt implies --no-map-gw when the host has no default-route gateway, so
+	// there the test could not fail without the flag: skip as a declared gap.
+	if !hostHasDefaultGateway(t) {
+		t.Skip("host has no IPv4 default-route gateway: passt would not map the gateway even without --no-map-gw, so this test cannot discriminate here")
+	}
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("host listener: %v", err)
@@ -250,4 +255,21 @@ func TestInGuestEgressGatewayDoesNotReachHost(t *testing.T) {
 		t.Errorf("host loopback listener accepted a connection from the guest")
 	default:
 	}
+}
+
+// hostHasDefaultGateway reports whether /proc/net/route has an IPv4 default
+// route with a non-zero gateway, the condition under which passt maps 10.0.2.2.
+func hostHasDefaultGateway(t *testing.T) bool {
+	t.Helper()
+	raw, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		t.Fatalf("read /proc/net/route: %v", err)
+	}
+	for _, line := range strings.Split(string(raw), "\n")[1:] {
+		f := strings.Fields(line)
+		if len(f) > 2 && f[1] == "00000000" && f[2] != "00000000" {
+			return true
+		}
+	}
+	return false
 }
