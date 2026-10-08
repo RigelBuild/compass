@@ -822,8 +822,9 @@ Interfaces:
   `server.ts:772-775`); `agent_accounts` (`0001_init.sql:74-80`).
 - Produces: a gateway boot option `authorize(req) → CallerIdentity | null`
   replacing `bearerTokens`; Go-side
-  `type TokenMinter interface { Mint(ctx, agentAccountID string) (token string, err error); Verify(ctx, token string) (agentAccountID string, err error) }`
-  and the verify RPC/lookup the gateway's verifier calls.
+  `type TokenMinter interface { Mint(ctx, agentAccountID string) (token string, err error); Verify(ctx, token string) (store.GatewayCaller, error); Revoke(ctx, agentAccountID string) error }`
+  (`GatewayCaller` carries `agent_account_id` and its `owner_user_id`, the tenant
+  that keys the pool) and the verify RPC/lookup the gateway's verifier calls.
 - Test cycle: mint/verify/revoke unit tests; pool-isolation tests (agent A
   cannot reach agent B's pool); 401 behavior parity with the fork suite.
 
