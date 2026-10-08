@@ -3,6 +3,7 @@
 package stack
 
 import (
+	"os"
 	"slices"
 	"testing"
 )
@@ -25,7 +26,11 @@ func baseRunnerArgs(cfg Config, cert CertResult) []string {
 	if !cfg.microVM() {
 		args = append(args, "--image", cfg.AgentImage)
 	}
-	return append(args, "--runtime-dir", cfg.RuntimeDir)
+	args = append(args, "--runtime-dir", cfg.RuntimeDir)
+	if cfg.microVM() {
+		args = append(args, "--microvm-runroot", cfg.RuntimeDir)
+	}
+	return args
 }
 
 // TestRunnerSpecForwardsOptionalFlagsConditionally is the load-bearing red→green
@@ -107,7 +112,7 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 			cfg.CheckoutDir = tt.checkoutDir
 			cfg.Mounts = tt.mounts
 
-			spec := runnerSpec(cfg, cert, token, GuestPaths{})
+			spec := runnerSpec(cfg, cert, token, GuestPaths{}, "")
 
 			want := append(baseRunnerArgs(cfg, cert), tt.wantExtra...)
 			if !slices.Equal(spec.Args, want) {
@@ -158,7 +163,7 @@ func TestRunnerSpecGuestArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := runnerSpec(tt.cfg, cert, "token", tt.guest).Args
+			got := runnerSpec(tt.cfg, cert, "token", tt.guest, "").Args
 			want := append(baseRunnerArgs(tt.cfg, cert), tt.wantEnd...)
 			if !slices.Equal(got, want) {
 				t.Fatalf("runnerSpec Args = %q, want %q", got, want)
@@ -176,18 +181,55 @@ func TestRunnerSpecOmitsAgentImageUnderMicroVM(t *testing.T) {
 	cert := CertResult{CertPath: "/state/tls.crt"}
 	cfg := Config{ListenAddr: "127.0.0.1:50052", AgentImage: "agent:latest", RuntimeDir: "/run/compass"}
 
-	container := runnerSpec(cfg, cert, "token", GuestPaths{}).Args
+	container := runnerSpec(cfg, cert, "token", GuestPaths{}, "").Args
 	if i := slices.Index(container, "--image"); i < 0 || container[i+1] != "agent:latest" {
 		t.Fatalf("container-backend args %q must still carry --image agent:latest", container)
 	}
 
 	cfg.RuntimeBackend = "microvm"
-	micro := runnerSpec(cfg, cert, "token", GuestPaths{}).Args
+	micro := runnerSpec(cfg, cert, "token", GuestPaths{}, "").Args
 	if slices.Contains(micro, "--image") {
 		t.Errorf("microVM args %q carry --image, which the runner refuses", micro)
 	}
 	if slices.Contains(micro, "agent:latest") {
 		t.Errorf("microVM args %q leak the agent image value", micro)
+	}
+}
+
+func TestRunnerSpecMicroVMRunRoot(t *testing.T) {
+	cert := CertResult{CertPath: "/state/tls.crt"}
+	base := Config{
+		ListenAddr:     "127.0.0.1:50052",
+		RuntimeDir:     "/run/compass",
+		RuntimeBackend: runtimeBackendMicroVM,
+	}
+	tests := []struct {
+		name        string
+		backend     string
+		envRunRoot  string
+		wantRunRoot string
+	}{
+		{name: "microVM defaults to RuntimeDir", backend: runtimeBackendMicroVM, wantRunRoot: base.RuntimeDir},
+		{name: "microVM environment override wins", backend: runtimeBackendMicroVM, envRunRoot: "/operator/runroot"},
+		{name: "container backend omits microVM run root", backend: "container", envRunRoot: "/operator/runroot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(microVMRunRootEnvVar, tt.envRunRoot)
+			cfg := base
+			cfg.RuntimeBackend = tt.backend
+			args := runnerSpec(cfg, cert, "token", GuestPaths{}, os.Getenv(microVMRunRootEnvVar)).Args
+			index := slices.Index(args, "--microvm-runroot")
+			if tt.wantRunRoot == "" {
+				if index >= 0 {
+					t.Fatalf("runner args %q include --microvm-runroot, want it omitted", args)
+				}
+				return
+			}
+			if index < 0 || index+1 >= len(args) || args[index+1] != tt.wantRunRoot {
+				t.Fatalf("runner args %q, want --microvm-runroot %q", args, tt.wantRunRoot)
+			}
+		})
 	}
 }
 
