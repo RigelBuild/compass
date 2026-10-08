@@ -71,18 +71,25 @@ func ensureGatewayToken(path string) error {
 }
 
 // Exists reports presence; an engine error counts as present so teardown still runs.
-func (c *GatewayContainer) Exists(name string) bool {
-	present, err := c.cli.exists(context.Background(), name)
+func (c *GatewayContainer) Exists(ctx context.Context, name string) bool {
+	present, err := c.cli.exists(ctx, name)
 	return err != nil || present
 }
 
-// Stop is the ContainerController graceful stop (`podman stop -t`).
-func (c *GatewayContainer) Stop(name string, timeout time.Duration) error {
-	return c.cli.stop(context.Background(), name, timeout)
+// Stop is the ContainerController graceful stop: the stop signal, sent without waiting.
+func (c *GatewayContainer) Stop(ctx context.Context, name string) error {
+	return c.cli.term(ctx, name)
+}
+
+// RemoveExited removes the gateway once it has exited; it runs without --rm.
+func (c *GatewayContainer) RemoveExited(ctx context.Context, name string) error {
+	return c.cli.removeExited(ctx, name)
 }
 
 // Remove is the ContainerController hard kill (`podman rm -f`).
-func (c *GatewayContainer) Remove(name string) error { return c.cli.remove(context.Background(), name) }
+func (c *GatewayContainer) Remove(ctx context.Context, name string) error {
+	return c.cli.remove(ctx, name)
+}
 
 // ProbeGateway returns nil once GET /healthz answers 200.
 func (c *GatewayContainer) ProbeGateway(ctx context.Context, endpoint string) error {
@@ -121,14 +128,14 @@ type gatewayProcess struct {
 
 var _ stack.Process = (*gatewayProcess)(nil)
 
-func (p *gatewayProcess) Signal(sig stack.ProcessSignal) error {
+func (p *gatewayProcess) Signal(ctx context.Context, sig stack.ProcessSignal) error {
 	if sig != stack.SignalTerm {
 		return fmt.Errorf("unknown process signal %d", int(sig))
 	}
-	if err := p.cli.stop(context.Background(), p.name, p.stopTimeout); err != nil {
+	if err := p.cli.stop(ctx, p.name, p.stopTimeout); err != nil {
 		return fmt.Errorf("podman stop gateway %q: %w", p.name, err)
 	}
-	if err := p.cli.remove(context.Background(), p.name); err != nil {
+	if err := p.cli.remove(ctx, p.name); err != nil {
 		return fmt.Errorf("podman remove gateway %q: %w", p.name, err)
 	}
 	return nil
