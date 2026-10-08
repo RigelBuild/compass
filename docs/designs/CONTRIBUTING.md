@@ -77,7 +77,7 @@ same standard as a live one's.
 
 ## 6. The bucket taxonomy
 
-Design records live under one of seven top-level buckets in `docs/designs/`. The
+Design records live under one of eight top-level buckets in `docs/designs/`. The
 bucket names the record's concern; pick the one that fits and place the record
 there.
 
@@ -92,6 +92,8 @@ there.
   strategy, scope gates.
 - `infra/` — runtime and CI/testing infrastructure, sub-grouped as
   `infra/runtime/` and `infra/ci/`.
+- `observability/` — telemetry for the product and its agents: OTel export,
+  agent-loop traces, trace continuity.
 - `repo/` — repository tooling and the dependency/library decisions that govern
   the build (Effect adoption, Renovate, proto drop, the eng-docs site).
 - `platform/` — deployment platforms and runner hosting: macOS runners, runner
