@@ -55,7 +55,8 @@ viewer AS (
 SELECT EXISTS (
 	SELECT 1 FROM channel_groups g
 	JOIN effective e ON e.id = g.id
-	WHERE g.id = $2 AND (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer))
+	WHERE g.id = $2 AND (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer)
+       OR g.namespace_owner_id IN (SELECT uid FROM viewer))
 )
 `
 
@@ -334,6 +335,36 @@ func (q *Queries) GetChannelGroupVisibility(ctx context.Context, id string) (int
 	return visibility, err
 }
 
+const globalHandlesByAccountIDs = `-- name: GlobalHandlesByAccountIDs :many
+SELECT account_id, handle FROM account_handles
+WHERE owner_user_id IS NULL AND account_id = ANY($1::text[])
+`
+
+type GlobalHandlesByAccountIDsRow struct {
+	AccountID string
+	Handle    string
+}
+
+func (q *Queries) GlobalHandlesByAccountIDs(ctx context.Context, dollar_1 []string) ([]GlobalHandlesByAccountIDsRow, error) {
+	rows, err := q.db.Query(ctx, globalHandlesByAccountIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GlobalHandlesByAccountIDsRow
+	for rows.Next() {
+		var i GlobalHandlesByAccountIDsRow
+		if err := rows.Scan(&i.AccountID, &i.Handle); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertAgentWorkspaceIgnore = `-- name: InsertAgentWorkspaceIgnore :exec
 INSERT INTO agent_workspaces (id, agent_account_id)
 VALUES ($1, $2)
@@ -378,10 +409,12 @@ func (q *Queries) InsertChannel(ctx context.Context, arg InsertChannelParams) er
 	return err
 }
 
-const insertChannelGroup = `-- name: InsertChannelGroup :exec
+const insertChannelGroup = `-- name: InsertChannelGroup :one
 
-INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility)
-VALUES ($1, $2, NULLIF($3, ''), $4, $5)
+INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, namespace_owner_id)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5,
+        COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $4), $4))
+RETURNING namespace_owner_id
 `
 
 type InsertChannelGroupParams struct {
@@ -404,15 +437,18 @@ type InsertChannelGroupParams struct {
 // groupVisiblePredicate). The copies MUST stay textually identical so the stream
 // edge's single-id visibility check cannot drift from the list read (the
 // anti-drift guarantee the design record requires).
-func (q *Queries) InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) error {
-	_, err := q.db.Exec(ctx, insertChannelGroup,
+// An agent's group lives in its owner's namespace, which keys top-level names.
+func (q *Queries) InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) (string, error) {
+	row := q.db.QueryRow(ctx, insertChannelGroup,
 		arg.ID,
 		arg.Name,
 		arg.Column3,
 		arg.OwnerUserID,
 		arg.Visibility,
 	)
-	return err
+	var namespace_owner_id string
+	err := row.Scan(&namespace_owner_id)
+	return namespace_owner_id, err
 }
 
 const listChannelGroups = `-- name: ListChannelGroups :many
@@ -434,19 +470,21 @@ viewer AS (
 	UNION ALL
 	SELECT $1 AS uid
 )
-SELECT g.id, g.name, COALESCE(g.parent_group_id, '') AS parent_group_id, g.owner_user_id, g.visibility
+SELECT g.id, g.name, COALESCE(g.parent_group_id, '') AS parent_group_id, g.owner_user_id, g.visibility, g.namespace_owner_id
 FROM channel_groups g
 JOIN effective e ON e.id = g.id
-WHERE (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer))
+WHERE (e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer)
+       OR g.namespace_owner_id IN (SELECT uid FROM viewer))
 ORDER BY g.name
 `
 
 type ListChannelGroupsRow struct {
-	ID            string
-	Name          string
-	ParentGroupID string
-	OwnerUserID   string
-	Visibility    int16
+	ID               string
+	Name             string
+	ParentGroupID    string
+	OwnerUserID      string
+	Visibility       int16
+	NamespaceOwnerID string
 }
 
 func (q *Queries) ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error) {
@@ -464,6 +502,7 @@ func (q *Queries) ListChannelGroups(ctx context.Context, accountID string) ([]Li
 			&i.ParentGroupID,
 			&i.OwnerUserID,
 			&i.Visibility,
+			&i.NamespaceOwnerID,
 		); err != nil {
 			return nil, err
 		}
