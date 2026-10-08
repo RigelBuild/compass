@@ -583,10 +583,8 @@ func rowStopGrace(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	}
 }
 
-// rowDefaultDenyAtStart — divergence 7: the primary session's spec sets no
-// Egress, yet a raw-IPv4 connect from inside it must be dropped. Exit 124 (the
-// guest `timeout` firing on a dropped SYN) is required: a guest with no route
-// fails fast instead, so dead networking cannot pass this row.
+// rowDefaultDenyAtStart — divergence 7. It requires exit 124 (a dropped SYN hits
+// the guest timeout) because a guest with no route fails fast and must not pass.
 func rowDefaultDenyAtStart(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
