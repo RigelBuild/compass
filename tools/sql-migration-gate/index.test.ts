@@ -217,6 +217,42 @@ describe("findMigrationViolations", () => {
 		).toEqual([path]);
 	});
 
+	test("a duplicated base version may move byte-identical to a new number", () => {
+		const dupA = "go/internal/store/migrations/0003_a.sql";
+		const dupB = "go/internal/store/migrations/0003_b.sql";
+		const moved = "go/internal/store/migrations/0005_b.sql";
+		const other = new TextEncoder().encode("SELECT 3;\n");
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, other],
+				]),
+				new Map([
+					[dupA, same],
+					[moved, other],
+				]),
+			),
+		).toEqual([]);
+	});
+
+	test("a duplicated base version may not move with edited bytes", () => {
+		const dupA = "go/internal/store/migrations/0003_a.sql";
+		const dupB = "go/internal/store/migrations/0003_b.sql";
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, original],
+				]),
+				new Map([
+					[dupA, same],
+					["go/internal/store/migrations/0005_b.sql", edited],
+				]),
+			),
+		).toEqual([dupB]);
+	});
+
 	test("new migrations are not checked even when edited", () => {
 		const added = "go/internal/store/migrations/0002_new.sql";
 		expect(

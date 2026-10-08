@@ -1125,7 +1125,7 @@ describe("tools/renovate go-analysis pins (RIG-3306)", () => {
 			...pinText.matchAll(new RegExp(golangci?.matchStrings?.[0] ?? "", "g")),
 		];
 		expect(golangciMatches).toHaveLength(1);
-		expect(golangciMatches[0]?.groups?.currentValue).toBe("2.13.2");
+		expect(golangciMatches[0]?.groups?.currentValue).toBe("2.14.0");
 		const nilawayMatches = [
 			...pinText.matchAll(new RegExp(nilaway?.matchStrings?.[0] ?? "", "g")),
 		];

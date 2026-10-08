@@ -14,7 +14,7 @@ inputs:
   # and — via the same input at this pinned rev — by the parity gate
   # (tools/toolchain/gate-tools.nix), so both resolve the identical derivation.
   go-overlay:
-    url: github:purpleclay/go-overlay
+    url: github:purpleclay/go-overlay/8b85dddecf1f835b8328120e9e55b55d76b8f3df
     inputs:
       nixpkgs:
         follows: nixpkgs

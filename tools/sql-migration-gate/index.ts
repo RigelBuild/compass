@@ -106,22 +106,41 @@ export async function runOnce(deps: Deps): Promise<number> {
 
 export type MigrationFileMap = ReadonlyMap<string, Uint8Array>;
 
-/** Return base migrations missing or byte-changed in the current tree. */
+/**
+ * Return base migrations missing or byte-changed in the current tree. One
+ * exception: when two concurrent PRs landed the same version, either file may
+ * move unchanged to a new number, since no deploy can have applied that version.
+ */
 export function findMigrationViolations(
 	baseFiles: MigrationFileMap,
 	currentFiles: MigrationFileMap,
 ): string[] {
+	const versionCounts = new Map<string, number>();
+	for (const path of baseFiles.keys()) {
+		const version = migrationVersion(path);
+		versionCounts.set(version, (versionCounts.get(version) ?? 0) + 1);
+	}
+	const added = [...currentFiles].filter(([path]) => !baseFiles.has(path));
 	const violations: string[] = [];
 	for (const [path, baseBytes] of baseFiles) {
 		const currentBytes = currentFiles.get(path);
-		if (
-			currentBytes === undefined ||
-			!Buffer.from(baseBytes).equals(Buffer.from(currentBytes))
-		) {
-			violations.push(path);
+		if (currentBytes !== undefined) {
+			if (!Buffer.from(baseBytes).equals(Buffer.from(currentBytes)))
+				violations.push(path);
+			continue;
 		}
+		const moved =
+			(versionCounts.get(migrationVersion(path)) ?? 0) > 1 &&
+			added.some(([, bytes]) =>
+				Buffer.from(baseBytes).equals(Buffer.from(bytes)),
+			);
+		if (!moved) violations.push(path);
 	}
 	return violations;
+}
+
+function migrationVersion(path: string): string {
+	return (path.split("/").pop() ?? path).split("_", 1)[0] ?? "";
 }
 
 /** The ref migrations are compared against: explicit, then the PR target, then main. */
@@ -207,7 +226,6 @@ export async function checkMigrationImmutability(
 			]),
 		);
 		const baseFiles = new Map<string, Uint8Array>();
-		const currentFiles = new Map<string, Uint8Array>();
 		for (const path of listed.split("\0").filter(Boolean)) {
 			if (!path.endsWith(".sql")) continue;
 			// go:embed takes only top-level *.sql; a nested one is not a migration.
@@ -217,9 +235,16 @@ export async function checkMigrationImmutability(
 				path,
 				await gitStdout(root, ["show", `${mergeBase}:${path}`]),
 			);
-			const file = Bun.file(`${root}/${path}`);
-			if (await file.exists())
-				currentFiles.set(path, new Uint8Array(await file.arrayBuffer()));
+		}
+		const currentFiles = new Map<string, Uint8Array>();
+		for await (const name of new Bun.Glob("*.sql").scan(
+			`${root}/go/internal/store/migrations`,
+		)) {
+			const path = `go/internal/store/migrations/${name}`;
+			currentFiles.set(
+				path,
+				new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()),
+			);
 		}
 		const violations = findMigrationViolations(baseFiles, currentFiles);
 		if (violations.length === 0) return { name, code: 0, output: "" };
