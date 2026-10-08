@@ -11,7 +11,7 @@
 > freeze-on-merge convention; a housekeeping flip of that line, being a change
 > to the merged record, is out of scope for this amendment.)
 
-Status: Active — ruled by Matt (2026-08-23)
+Ruled: Matt (2026-08-23)
 Tracking: RIG-1717 (elastic session runtime)
 Amends: RIG-1717 elastic session runtime record (PR #446)
 Refs: RIG-2394 microVM Runner backend record (`microvm-runner.md`, merged PR #488)

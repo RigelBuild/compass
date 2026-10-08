@@ -1,6 +1,6 @@
 # Containerizing the Compass Runner
 
-Status: Draft — freezes on merge. R7's nested-KVM VM run widened pod and node requirements; a real-node rerun remains required. No capability or privileged mode was needed.
+R7's nested-KVM VM run widened pod and node requirements; a real-node rerun remains required. No capability or privileged mode was needed.
 
 Ledger-impact: mints DL-358
 

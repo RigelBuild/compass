@@ -46,6 +46,7 @@ export const GOVERNED_ROOTS: readonly string[] = [
 	"infra",
 	"observability",
 	"repo",
+	"platform",
 ];
 /** The canonical ledger, parsed as the decision table (never as a record). */
 export const DECISIONS_PATH = `${DESIGNS_ROOT}/DECISIONS.md`;
@@ -206,20 +207,16 @@ export function splitLink(
 	return { path: target.slice(0, hash), anchor: target.slice(hash + 1) };
 }
 
-/** True when a repo-relative path is a governed design record (not the ledger). */
+/**
+ * True when a repo-relative path is a governed design record: any `.md` at any
+ * depth under a governed root. Matching by filename shape let new document kinds
+ * (nested amendments, milestone records) pass the gate unchecked.
+ */
 export function touchesRecord(file: string): boolean {
-	if (file === DECISIONS_PATH) return false;
-	for (const root of GOVERNED_ROOTS) {
-		const prefix = `${DESIGNS_ROOT}/${root}/`;
-		if (!file.startsWith(prefix)) continue;
-		// First governed root the file sits under: apply the two-layout test to
-		// the remainder (byte-identical to the historical per-PRODUCT_DIR logic).
-		const rest = file.slice(prefix.length);
-		if (rest.endsWith("/design.md")) return true; // <name>/design.md layout
-		if (rest.endsWith(".md") && !rest.includes("/")) return true; // <name>.md layout
-		return false;
-	}
-	return false;
+	if (!file.endsWith(".md")) return false;
+	return GOVERNED_ROOTS.some((root) =>
+		file.startsWith(`${DESIGNS_ROOT}/${root}/`),
+	);
 }
 
 /**

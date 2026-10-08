@@ -128,14 +128,19 @@ describe("touchesRecord", () => {
 	test("the ledger DECISIONS.md is NOT a record", () => {
 		expect(touchesRecord("docs/designs/DECISIONS.md")).toBe(false);
 	});
-	test("a nested non-design.md file is not a record", () => {
-		expect(touchesRecord("docs/designs/ui/foo/bar.md")).toBe(false);
+	test("a nested record below <bucket>/<name>/ is a record", () => {
+		expect(
+			touchesRecord("docs/designs/infra/runtime/compass-x/microvm-v3.md"),
+		).toBe(true);
 	});
-	test("a flat .md inside a subgroup is NOT a record (governed at root only)", () => {
-		expect(touchesRecord("docs/designs/infra/ci/foo.md")).toBe(false);
+	test("a flat .md inside a subgroup is a record", () => {
+		expect(touchesRecord("docs/designs/infra/ci/foo.md")).toBe(true);
 	});
-	test("a file under an ungoverned bucket is not a record", () => {
-		expect(touchesRecord("docs/designs/platform/x.md")).toBe(false);
+	test("a record under the platform bucket is a record", () => {
+		expect(touchesRecord("docs/designs/platform/x/design.md")).toBe(true);
+	});
+	test("CONTRIBUTING.md at the designs root is not a record", () => {
+		expect(touchesRecord("docs/designs/CONTRIBUTING.md")).toBe(false);
 	});
 	test("a file under a non-bucket path is not a record", () => {
 		expect(touchesRecord("docs/designs/notabucket/x.md")).toBe(false);

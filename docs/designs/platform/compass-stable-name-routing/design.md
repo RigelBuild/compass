@@ -3,7 +3,7 @@
 Ledger-impact: none (platform surface is ungoverned by the design ledger — no
 DECISIONS.md delta).
 
-Status: draft for freeze (red-teamed + folded; narrowed to stable-name
+Red-teamed + folded; narrowed to stable-name
 provider routing only — model SELECTION is owned by the RIG-2936
 profile record + OMP's built-in `modelRoles`; Matt's freeze-gate rulings
 on OQ-1/OQ-2/OQ-3/OQ-4/OQ-5 are all folded — the stable-name registry
@@ -13,7 +13,7 @@ earlier VC'd-content ruling now that the record is routing-only — the
 RIG-2936 delivery boundary holds, and the container-listing /
 bundle-hash sub-seam (OQ-2) is ruled belt-and-suspenders (gateway
 discovery + static cold-boot seed, composed-hash option A): NO
-load-bearing open forks remain — the record is freeze-ready).
+load-bearing open forks remain — the record is freeze-ready.
 Composes with the RIG-1715 gateway record
 (`docs/designs/platform/compass-server-llm-gateway/design.md`), the
 RIG-2936 per-Manager profile record

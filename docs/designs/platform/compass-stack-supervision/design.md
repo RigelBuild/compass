@@ -1,6 +1,6 @@
 # Compass self-host stack supervision: constant-on cross-platform service
 
-Status: Active (Matt, 2026-09-05)
+Ruled: Matt (2026-09-05)
 Issue: RIG-3239
 
 ## Problem / Intent

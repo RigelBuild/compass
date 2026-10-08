@@ -13,7 +13,7 @@
 > citation is a path in the **`RigelBuild/compass`** monorepo at main
 > `17111cc0` (line numbers drift; resolve against that commit).
 
-Status: PROPOSED — details P2 under the parent + the active amendment;
+Details P2 under the parent + the active amendment;
 the central clone/credential fork (OQ-1) is ruled (Matt, 2026-09-05, DL-326).
 Tracking: RIG-2395
 
