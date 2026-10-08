@@ -3,8 +3,10 @@ import type { Ask as WireAsk } from "@compass/client";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentPlanEntryStatus,
 	AgentPresence,
 	AgentSessionStatusSchema,
+	AgentToolCallStatus,
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
@@ -24,6 +26,9 @@ import {
 	PullRequestSchema,
 	RosterEntrySchema,
 	RuntimeTier,
+	SessionErrorKind,
+	SessionEventSchema,
+	SessionInjectionKind,
 	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,
@@ -40,6 +45,7 @@ import {
 	adaptPullRequest,
 	adaptRosterEntry,
 	adaptRuntimeMarker,
+	adaptSessionEvent,
 	adaptTopic,
 	agentHomeChannelIds,
 	deriveMembership,
@@ -1157,5 +1163,178 @@ describe("adaptRuntimeMarker", () => {
 		expect(marker.posture).toBe("unknown");
 		expect(marker.posture).not.toBe("armed");
 		expect(marker.posture).not.toBe("unenforced");
+	});
+});
+
+describe("adaptSessionEvent", () => {
+	type EventInit = NonNullable<
+		Parameters<typeof create<typeof SessionEventSchema>>[1]
+	>["event"];
+	const wire = (event: EventInit) =>
+		create(SessionEventSchema, {
+			eventId: "ev-1",
+			atUnixMs: 1_700_000_000_123n,
+			event,
+		});
+
+	test("assistant text and thinking carry id, number timestamp, message id", () => {
+		expect(
+			adaptSessionEvent(
+				wire({ case: "assistantText", value: { text: "hi", messageId: "m1" } }),
+			),
+		).toEqual({
+			id: "ev-1",
+			atUnixMs: 1_700_000_000_123,
+			kind: "assistant_text",
+			messageId: "m1",
+			text: "hi",
+		});
+		expect(
+			adaptSessionEvent(
+				wire({ case: "thinking", value: { text: "hm", messageId: "m2" } }),
+			),
+		).toMatchObject({ kind: "thinking", messageId: "m2", text: "hm" });
+	});
+
+	test("tool call and update map status; UNSPECIFIED reads as pending", () => {
+		expect(
+			adaptSessionEvent(
+				wire({
+					case: "toolCall",
+					value: {
+						toolCallId: "t1",
+						title: "ls",
+						status: AgentToolCallStatus.IN_PROGRESS,
+					},
+				}),
+			),
+		).toMatchObject({
+			kind: "tool_call",
+			toolCallId: "t1",
+			title: "ls",
+			status: "in_progress",
+		});
+		expect(
+			adaptSessionEvent(
+				wire({ case: "toolCall", value: { toolCallId: "t2", title: "x" } }),
+			),
+		).toMatchObject({ status: "pending" });
+		expect(
+			adaptSessionEvent(
+				wire({
+					case: "toolCallUpdate",
+					value: {
+						toolCallId: "t1",
+						status: AgentToolCallStatus.FAILED,
+						output: "boom",
+						diffs: [
+							{ path: "new.ts", newText: "a" },
+							{ path: "old.ts", oldText: "b", newText: "c" },
+						],
+					},
+				}),
+			),
+		).toMatchObject({
+			kind: "tool_call_update",
+			toolCallId: "t1",
+			status: "failed",
+			output: "boom",
+			diffs: [
+				{ path: "new.ts", oldText: null, newText: "a" },
+				{ path: "old.ts", oldText: "b", newText: "c" },
+			],
+		});
+	});
+
+	test("an update with no output or diffs leaves them absent, not blank", () => {
+		const event = adaptSessionEvent(
+			wire({
+				case: "toolCallUpdate",
+				value: { toolCallId: "t1", status: AgentToolCallStatus.COMPLETED },
+			}),
+		);
+		expect(event).toMatchObject({ kind: "tool_call_update" });
+		expect(event && "output" in event).toBe(false);
+		expect(event && "diffs" in event).toBe(false);
+	});
+
+	test("plan entries map status; UNSPECIFIED and unknown read as pending", () => {
+		expect(
+			adaptSessionEvent(
+				wire({
+					case: "plan",
+					value: {
+						entries: [
+							{ content: "a", status: AgentPlanEntryStatus.COMPLETED },
+							{ content: "b", status: AgentPlanEntryStatus.UNSPECIFIED },
+							// A newer server's value: protobuf-es keeps the bare number.
+							{ content: "c", status: 99 as AgentPlanEntryStatus },
+						],
+					},
+				}),
+			),
+		).toMatchObject({
+			kind: "plan",
+			entries: [
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "pending" },
+				{ content: "c", status: "pending" },
+			],
+		});
+	});
+
+	test("notice carries text and an optional link", () => {
+		expect(
+			adaptSessionEvent(
+				wire({ case: "notice", value: { text: "n", link: "https://x" } }),
+			),
+		).toMatchObject({ kind: "notice", text: "n", link: "https://x" });
+		const bare = adaptSessionEvent(
+			wire({ case: "notice", value: { text: "n" } }),
+		);
+		expect(bare && "link" in bare).toBe(false);
+	});
+
+	test("an injection renders as a steer/deliver notice naming the sender", () => {
+		const injection = (opKind: SessionInjectionKind, fromHandle: string) =>
+			adaptSessionEvent(
+				wire({
+					case: "sessionInjection",
+					value: { opKind, fromHandle, messageId: "msg-1" },
+				}),
+			);
+		expect(injection(SessionInjectionKind.STEER, "matt")).toMatchObject({
+			kind: "notice",
+			text: "steered by @matt",
+		});
+		expect(injection(SessionInjectionKind.DELIVER, "ana")).toMatchObject({
+			kind: "notice",
+			text: "delivered from @ana",
+		});
+		expect(injection(SessionInjectionKind.STEER, "")).toMatchObject({
+			text: "steered",
+		});
+		expect(injection(SessionInjectionKind.DELIVER, "")).toMatchObject({
+			text: "delivered",
+		});
+	});
+
+	test("a session error renders as an error/aborted notice", () => {
+		const error = (kind: SessionErrorKind, message: string) =>
+			adaptSessionEvent(
+				wire({ case: "sessionError", value: { kind, message } }),
+			);
+		expect(error(SessionErrorKind.ERROR, "rate limited")).toMatchObject({
+			kind: "notice",
+			text: "error: rate limited",
+		});
+		expect(error(SessionErrorKind.ABORTED, "steered")).toMatchObject({
+			kind: "notice",
+			text: "aborted: steered",
+		});
+	});
+
+	test("an unset oneof maps to undefined", () => {
+		expect(adaptSessionEvent(wire({ case: undefined }))).toBeUndefined();
 	});
 });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	AgentSessionState,
 	AgentSessionStatusSchema,
 	CompassService,
 	create,
@@ -137,6 +138,32 @@ function statusResp(
 	});
 }
 
+// A session-status response carrying a lifecycle transition for one session.
+function sessionResp(
+	seq: bigint,
+	account: string,
+	sessionId: string,
+	state: AgentSessionState,
+): SubscribeEventsResponse {
+	return create(SubscribeEventsResponseSchema, {
+		seq,
+		instanceEpoch: 7n,
+		payload: {
+			case: "agentSessionStatus",
+			value: create(AgentSessionStatusSchema, {
+				sessionId,
+				agentAccountId: account,
+				state,
+			}),
+		},
+	});
+}
+
+type SessionMap = ReadonlyMap<
+	string,
+	{ sessionId: string; state: AgentSessionState }
+>;
+
 describe("runEventStream (RIG-1729 read driver)", () => {
 	test("decodes a session status into a runtime marker keyed by account", async () => {
 		const transport = scriptedTransport([
@@ -192,6 +219,64 @@ describe("runEventStream (RIG-1729 read driver)", () => {
 
 		expect(runtime.size).toBe(1);
 		expect(runtime.has("")).toBe(false);
+	});
+
+	test("keys each account's latest session id + state; skips unbound", async () => {
+		const transport = scriptedTransport([
+			sessionResp(1n, "acc-a", "sess-1", AgentSessionState.STARTING),
+			sessionResp(2n, "", "sess-x", AgentSessionState.WORKING),
+			sessionResp(3n, "acc-b", "sess-2", AgentSessionState.READY),
+			// A newer session for acc-a replaces the old one.
+			sessionResp(4n, "acc-a", "sess-3", AgentSessionState.WORKING),
+		]);
+		const client = createCompassClient(transport);
+		const abort = new AbortController();
+		let sessions: SessionMap = new Map();
+		void runEventStream({
+			client,
+			onIssues: () => {},
+			onSessions: (next) => {
+				sessions = next;
+			},
+			signal: abort.signal,
+		});
+
+		await drainUntil(() => sessions.get("acc-a")?.sessionId === "sess-3");
+		abort.abort();
+
+		expect([...sessions.keys()].sort()).toEqual(["acc-a", "acc-b"]);
+		expect(sessions.get("acc-a")).toEqual({
+			sessionId: "sess-3",
+			state: AgentSessionState.WORKING,
+		});
+		expect(sessions.get("acc-b")).toEqual({
+			sessionId: "sess-2",
+			state: AgentSessionState.READY,
+		});
+	});
+
+	test("resyncRequired clears the session map", async () => {
+		const transport = scriptedTransport([
+			sessionResp(1n, "acc-a", "sess-1", AgentSessionState.WORKING),
+			resyncResp(),
+		]);
+		const client = createCompassClient(transport);
+		const abort = new AbortController();
+		const sizes: number[] = [];
+		const run = runEventStream({
+			client,
+			onIssues: () => {},
+			onSessions: (next) => sizes.push(next.size),
+			signal: abort.signal,
+		});
+		try {
+			await drainUntil(() => sizes.includes(1) && sizes.includes(0));
+			// The status was seen, then the resync pushed an empty map.
+			expect(sizes.indexOf(0)).toBeGreaterThan(sizes.indexOf(1));
+		} finally {
+			abort.abort();
+			await run;
+		}
 	});
 
 	test("pushes adapted domain issues; a repeat id REPLACES (upsert)", async () => {
