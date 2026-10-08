@@ -50,6 +50,7 @@ inputs:
       - proto/compass/v1/forge.proto
       - proto/compass/v1/guest_control.proto
       - proto/compass/v1/gateway_credentials.proto
+      - proto/compass/v1/gateway_auth.proto
 plugins:
   - local: protoc-gen-go
     out: go/internal/gen
@@ -61,6 +62,7 @@ plugins:
       - "Mcompass/v1/forge.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
       - "Mcompass/v1/guest_control.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
       - "Mcompass/v1/gateway_credentials.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/gateway_auth.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
       - "Mcompass/v1/compass.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"
       - "Mcompass/v1/comms.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"
   - local: protoc-gen-connect-go
@@ -73,5 +75,6 @@ plugins:
       - "Mcompass/v1/forge.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
       - "Mcompass/v1/guest_control.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
       - "Mcompass/v1/gateway_credentials.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/gateway_auth.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
       - "Mcompass/v1/compass.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"
       - "Mcompass/v1/comms.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"
