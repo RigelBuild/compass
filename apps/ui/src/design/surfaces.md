@@ -34,25 +34,22 @@ blank-page redraw.
 ## Shell
 
 The shell is the grid that hosts every other surface: topbar, left sidebar, main
-view, right sidebar, and a usage bar. Its shape is inherited (the `.app`
+view, and right sidebar. Its shape is inherited (the `.app`
 `grid-template-areas` rule, `app.css:112-115`; region markup `App.tsx:40-120`);
 this system re-clothes it, it does not re-lay it.
 
-**Composition.** The region surfaces carry depth by color, not shadow: topbar and
-usage bar on `--cx-bg`, sidebars on `--cx-bg-raised`, main on `--cx-bg`,
+**Composition.** The region surfaces carry depth by color, not shadow: topbar on
+`--cx-bg`, sidebars on `--cx-bg-raised`, main on `--cx-bg`,
 separated by 1px `--cx-border` rules. No box-shadow between docked regions —
 shadows are reserved for genuinely floating layers (menu, dialog, palette,
 toast). The topbar carries the wordmark treatment (see Mark placement), the
 view-tabs as a horizontal `.cx-tabs` (`data-orientation="h"`, accent-underline
 selection), a daemon status pip built from `.cx-pip`, and pane-toggle controls as
-`.cx-btn` `data-variant="ghost"`. The usage bar is a display-only landmark; it
-carries no interactive component.
+`.cx-btn` `data-variant="ghost"`.
 
 **Focus and keyboard.** The shell is four interactive focus zones: left sidebar,
 main view, right sidebar, and topbar. `Ctrl+1/2/3` jump to left / main / right;
-`F6` and `Shift+F6` cycle; the topbar is reachable by `F6` cycle only. The usage
-bar is a display-only landmark — reachable by screen-reader landmark navigation
-but not in the `F6` rotation, because it carries no interactive control. Pane
+`F6` and `Shift+F6` cycle; the topbar is reachable by `F6` cycle only. Pane
 toggles bind `Ctrl+\` (right sidebar) and `Ctrl+Shift+\` (left sidebar).
 
 **Empty states.** The shell frame is never empty — it always renders its regions.
@@ -71,8 +68,8 @@ chrome.
 
 **Flip checklist.**
 
-1. Land the type system on the shell chrome: topbar, sidebars, usage bar move to
-   the mono body face and the `--cx-*` surface tokens.
+1. Land the type system on the shell chrome: topbar and sidebars move to the
+   mono body face and the `--cx-*` surface tokens.
 2. Replace the region background/border rules with `--cx-bg` / `--cx-bg-raised` /
    `--cx-border`; remove any inter-region box-shadow.
 3. Re-clothe the view-tabs as `.cx-tabs[data-orientation="h"]`, the daemon pip as
@@ -82,9 +79,7 @@ chrome.
    and `app.css:3556-3559` — by applying `--cx-focus-ring` on `:focus-visible`.
 6. Wire the four focus zones (`Ctrl+1/2/3`, `F6`) and the pane-toggle bindings
    through the command registry.
-7. Verify the usage bar carries no interactive control; if a control is added
-   later, it rejoins the rotation as a fifth focus zone.
-8. Delete the legacy shell selectors in the same diff — no shims.
+7. Delete the legacy shell selectors in the same diff — no shims.
 
 ## Left sidebar — agent tree and channel rail
 
