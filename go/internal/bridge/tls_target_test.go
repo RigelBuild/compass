@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -283,5 +284,37 @@ func TestTLSTargetClientCloseIdleConnections(t *testing.T) {
 	case <-closed:
 	case <-time.After(testTimeout):
 		t.Fatal("server did not observe idle connection close")
+	}
+}
+
+// A redirect is returned to the caller, never followed: following it would
+// replay the armed bearer to whatever origin the Location names.
+func TestTLSTargetDoesNotFollowRedirect(t *testing.T) {
+	var foreignHits atomic.Int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		foreignHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+
+	srv, certPEM := tlsStubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, foreign.URL+"/steal", http.StatusTemporaryRedirect)
+	})
+	target := tlsTarget(t, srv, certPEM)
+	target.SetBearer("s3cr3t-token")
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	frames := collect(ctx, target, Call{Path: "/rpc"})
+
+	if n := foreignHits.Load(); n != 0 {
+		t.Fatalf("redirect target received %d requests, want 0", n)
+	}
+	if len(frames) == 0 {
+		t.Fatal("no frames emitted")
+	}
+	head, ok := frames[0].(HeadFrame)
+	if !ok || head.Status != http.StatusTemporaryRedirect {
+		t.Errorf("first frame = %#v, want HeadFrame with status 307", frames[0])
 	}
 }

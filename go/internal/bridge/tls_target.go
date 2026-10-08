@@ -32,6 +32,8 @@ import (
 //
 // The returned Target carries a bearer-injecting RoundTripper (see SetBearer):
 // it starts unarmed, so until SetBearer is called it forwards requests as-is.
+//
+// Redirects are never followed: the caller receives the 3xx response itself.
 func NewTLSTarget(serverURL string, caPEM []byte) (*Target, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS13}
 	if len(caPEM) > 0 {
@@ -49,7 +51,12 @@ func NewTLSTarget(serverURL string, caPEM []byte) (*Target, error) {
 	rt := &bearerRoundTripper{base: base}
 
 	return &Target{
-		client:  &http.Client{Transport: rt},
+		client: &http.Client{
+			Transport: rt,
+			// The bearer is injected per round trip, so a followed redirect would
+			// carry it to any origin; hand the 3xx back to the caller instead.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		baseURL: serverURL,
 	}, nil
 }
