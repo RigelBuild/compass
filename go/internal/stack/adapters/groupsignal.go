@@ -12,10 +12,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
-// GroupSignaller is the real stack.GroupSignaller: it signals and
-// identity-checks a persisted child process group by pgid for the cross-process
-// teardown. It targets the whole group (negative pgid), the same primitive the
-// in-process escalation uses (process.go: syscall.Kill(-pid, SIGKILL)).
+// GroupSignaller is the real stack.GroupSignaller: it signals and classifies a
+// persisted child process group by pgid for the cross-process teardown. It
+// targets the whole group (negative pgid), the same primitive the in-process
+// escalation uses (process.go: syscall.Kill(-pid, SIGKILL)).
 //
 // It is the only teardown seam that touches groups this process did not spawn,
 // so every operation is scoped to a caller-supplied pgid read from the stack's
@@ -56,37 +56,30 @@ func (g *GroupSignaller) Signal(pgid int, sig stack.ProcessSignal) error {
 	return nil
 }
 
-// Alive reports whether the process group named by pgid exists AND its leader's
-// current start time equals startTime — the identity gate. A group that no
-// longer exists (kill(-pgid, 0) == ESRCH) or whose leader's start time no longer
-// matches (a recycled pid) is reported not-alive, so the caller never signals a
-// gone-or-recycled group as if it were the original child.
-//
-// The two checks are ordered existence-then-identity: the kill(0) probe cheaply
-// rules out the ESRCH case, then the start-time read confirms the leader is the
-// same process. A start-time read failure (the leader vanished between the two
-// syscalls, or the kernel's process table is unreadable) is treated as
-// not-alive — the safe verdict is never to signal.
-func (g *GroupSignaller) Alive(pgid int, startTime uint64) bool {
-	// A degenerate pgid is never a live compass child: kill(-1, 0) probes the
-	// whole session and kill(0, 0) the caller's own group, both of which would
-	// falsely report "alive". Treat pgid <= 1 as not-alive so it can never be
-	// selected as a signal target.
+// Liveness classifies a group as gone, owned, orphaned, or recycled. Only ESRCH
+// means gone: any other kill(0) error falls through to the leader read, so a
+// probe failure can never report a live group torn down.
+func (g *GroupSignaller) Liveness(pgid int, startTime uint64) stack.GroupLiveness {
+	// kill(-1, 0) and kill(0, 0) probe far beyond one child group.
 	if pgid <= 1 {
-		return false
+		return stack.GroupGone
 	}
-	// Existence: signal 0 to the group. ESRCH means gone; EPERM means it exists
-	// but is not ours (still "exists"); nil means exists.
-	if err := syscall.Kill(-pgid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
-		return false
+	switch err := syscall.Kill(-pgid, 0); {
+	case errors.Is(err, syscall.ESRCH):
+		return stack.GroupGone
+	case errors.Is(err, syscall.EPERM):
+		// Another uid's group: our children share our uid, so this pgid was reused.
+		return stack.GroupRecycled
 	}
-	// Identity: the group leader's pid is the pgid; its start time must match the
-	// recorded token, closing the pid-recycling window.
 	got, err := readGroupLeaderStartTime(pgid)
 	if err != nil {
-		return false
+		// Members outlive a reaped leader, and Linux never reuses a live pgid.
+		return stack.GroupOrphaned
 	}
-	return got == startTime
+	if got != startTime {
+		return stack.GroupRecycled
+	}
+	return stack.GroupOwned
 }
 
 // parseGroupLeaderStat extracts field 22 (starttime) from a /proc/<pid>/stat

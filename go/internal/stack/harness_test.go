@@ -43,7 +43,7 @@ type stubProcess struct {
 	rec  *recorder
 }
 
-func (p *stubProcess) Signal(sig ProcessSignal) error {
+func (p *stubProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal " + p.name)
 	return nil
 }
@@ -254,32 +254,31 @@ func (i *stubImage) EnsureImage(ctx context.Context, image string) error {
 	return i.err
 }
 
-// fakeGroupSignaller is the cross-process teardown seam under test: it records
-// each signal in order and models per-group liveness as a controllable state
-// machine, so DownDetached's ordering / escalation / zombie-window / identity
-// logic is exercised with no real processes. alive maps pgid→liveness; identity
-// maps pgid→the start-time token a live group answers to (a mismatch models a
-// recycled pid). A pgid absent from alive is treated as gone (ESRCH).
+// fakeGroupSignaller records signals and models the process-group identity states
+// used by detached teardown. alive represents group existence; leaderReadable
+// distinguishes a missing/unreadable leader from a recycled leader.
 type fakeGroupSignaller struct {
-	rec      *recorder
-	mu       sync.Mutex
-	alive    map[int]bool
-	identity map[int]uint64
-	// onKill / onTerm, when set for a pgid, run after a SIGKILL / SIGTERM to that
-	// group — a test uses them to flip a group dead at the right escalation step
-	// (or to leave a killed group a zombie: still "alive" for the group-ESRCH
-	// channel, which DownDetached treats as success for the runner).
+	rec            *recorder
+	mu             sync.Mutex
+	alive          map[int]bool
+	identity       map[int]uint64
+	leaderReadable map[int]bool
+	signalErr      map[int]map[ProcessSignal]error
+	// onKill / onTerm run after a delivered signal, outside the lock, so a test
+	// can flip group state at the right escalation step.
 	onKill map[int]func()
 	onTerm map[int]func()
 }
 
 func newFakeGroupSignaller(rec *recorder) *fakeGroupSignaller {
 	return &fakeGroupSignaller{
-		rec:      rec,
-		alive:    map[int]bool{},
-		identity: map[int]uint64{},
-		onKill:   map[int]func(){},
-		onTerm:   map[int]func(){},
+		rec:            rec,
+		alive:          map[int]bool{},
+		identity:       map[int]uint64{},
+		leaderReadable: map[int]bool{},
+		signalErr:      map[int]map[ProcessSignal]error{},
+		onKill:         map[int]func(){},
+		onTerm:         map[int]func(){},
 	}
 }
 
@@ -297,19 +296,36 @@ func (f *fakeGroupSignaller) Signal(pgid int, sig ProcessSignal) error {
 	case SignalTerm:
 		cb = f.onTerm[pgid]
 	}
+	err := f.signalErr[pgid][sig]
 	f.mu.Unlock()
-	// Run the hook OUTSIDE the lock: a hook typically calls set(), which locks
-	// f.mu, so holding it here would deadlock.
+	if err != nil {
+		return err
+	}
 	if cb != nil {
 		cb()
 	}
 	return nil
 }
 
-func (f *fakeGroupSignaller) Alive(pgid int, startTime uint64) bool {
+func (f *fakeGroupSignaller) Liveness(pgid int, startTime uint64) GroupLiveness {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.alive[pgid] && f.identity[pgid] == startTime
+	switch {
+	case !f.alive[pgid]:
+		return GroupGone
+	case !f.leaderReadable[pgid]:
+		return GroupOrphaned
+	case f.identity[pgid] != startTime:
+		return GroupRecycled
+	default:
+		return GroupOwned
+	}
+}
+
+// ours reports whether the recorded group is still present and ours to signal.
+func (f *fakeGroupSignaller) ours(pgid int, startTime uint64) bool {
+	l := f.Liveness(pgid, startTime)
+	return l == GroupOwned || l == GroupOrphaned
 }
 
 func (f *fakeGroupSignaller) set(pgid int, startTime uint64, alive bool) {
@@ -317,19 +333,40 @@ func (f *fakeGroupSignaller) set(pgid int, startTime uint64, alive bool) {
 	defer f.mu.Unlock()
 	f.alive[pgid] = alive
 	f.identity[pgid] = startTime
+	f.leaderReadable[pgid] = alive
+}
+
+// setLeaderUnknown models a group whose members survive an exited, reaped leader.
+func (f *fakeGroupSignaller) setLeaderUnknown(pgid int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alive[pgid] = true
+	f.leaderReadable[pgid] = false
+}
+
+func (f *fakeGroupSignaller) failSignal(pgid int, sig ProcessSignal, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.signalErr[pgid] == nil {
+		f.signalErr[pgid] = map[ProcessSignal]error{}
+	}
+	f.signalErr[pgid][sig] = err
 }
 
 // fakeContainerController is the container-teardown seam under test: it records
 // each stop/remove in order and models per-container existence as a controllable
 // state machine, the container analogue of fakeGroupSignaller. exists maps
-// name→presence; a name absent from exists is treated as gone. onStop / onRemove
-// hooks flip a container's existence at the right escalation step so a test can
-// model a graceful stop, a stop-ignored→rm-f escalation, or a genuine survivor.
+// name→presence; a name absent from exists is treated as gone. exited marks a
+// present container that has stopped, which RemoveExited may remove. onStop /
+// onRemove hooks flip a container's state at the right escalation step so a test
+// can model a graceful stop, a stop-ignored→rm-f escalation, or a genuine
+// survivor; an onStop hook receives the caller's ctx so it can model a slow stop.
 type fakeContainerController struct {
 	rec      *recorder
 	mu       sync.Mutex
 	exists   map[string]bool
-	onStop   map[string]func()
+	exited   map[string]bool
+	onStop   map[string]func(ctx context.Context)
 	onRemove map[string]func()
 }
 
@@ -337,29 +374,42 @@ func newFakeContainerController(rec *recorder) *fakeContainerController {
 	return &fakeContainerController{
 		rec:      rec,
 		exists:   map[string]bool{},
-		onStop:   map[string]func(){},
+		exited:   map[string]bool{},
+		onStop:   map[string]func(context.Context){},
 		onRemove: map[string]func(){},
 	}
 }
 
-func (c *fakeContainerController) Exists(name string) bool {
+func (c *fakeContainerController) Exists(_ context.Context, name string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.exists[name]
 }
 
-func (c *fakeContainerController) Stop(name string, timeout time.Duration) error {
+func (c *fakeContainerController) Stop(ctx context.Context, name string) error {
 	c.mu.Lock()
 	c.rec.add("ctr-stop " + name)
 	cb := c.onStop[name]
 	c.mu.Unlock()
 	if cb != nil {
-		cb() // outside the lock: a hook calls setExists, which locks c.mu.
+		cb(ctx) // outside the lock: a hook calls setExists, which locks c.mu.
 	}
 	return nil
 }
 
-func (c *fakeContainerController) Remove(name string) error {
+// RemoveExited removes only an exited container, as a non-forced `podman rm`
+// does; a running one is left alone without error.
+func (c *fakeContainerController) RemoveExited(_ context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.exists[name] && c.exited[name] {
+		c.rec.add("ctr-rm-exited " + name)
+		c.exists[name] = false
+	}
+	return nil
+}
+
+func (c *fakeContainerController) Remove(_ context.Context, name string) error {
 	c.mu.Lock()
 	c.rec.add("ctr-rm " + name)
 	cb := c.onRemove[name]
@@ -380,6 +430,13 @@ func (c *fakeContainerController) setExistsName(name string, exists bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.exists[name] = exists
+}
+
+// setExited marks a present container as stopped but not yet removed.
+func (c *fakeContainerController) setExited(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.exited[name] = true
 }
 
 // fakePostgresContainer is the container-START seam under test (the analogue of
@@ -429,7 +486,7 @@ type stubContainerProcess struct {
 	stopped atomic.Bool
 }
 
-func (p *stubContainerProcess) Signal(sig ProcessSignal) error {
+func (p *stubContainerProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal postgres")
 	p.stopped.Store(true)
 	return nil
@@ -488,7 +545,7 @@ type stubCollectorProcess struct {
 	stopped atomic.Bool
 }
 
-func (p *stubCollectorProcess) Signal(sig ProcessSignal) error {
+func (p *stubCollectorProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal otel-collector")
 	p.stopped.Store(true)
 	return nil
@@ -588,7 +645,7 @@ type stubNatsProcess struct {
 	stopped atomic.Bool
 }
 
-func (p *stubNatsProcess) Signal(sig ProcessSignal) error {
+func (p *stubNatsProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal nats")
 	p.stopped.Store(true)
 	return nil
@@ -697,6 +754,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	prev := readStartTime
 	readStartTime = func(pid int) (uint64, error) { return uint64(pid) * 10, nil }
 	t.Cleanup(func() { readStartTime = prev })
+	stubBootID(t, testBootID)
 	h := &harness{
 		rec: rec, serverStarted: started,
 		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers, collector: collector, collectorProber: collectorProber, nats: nats, natsProber: natsProber,
