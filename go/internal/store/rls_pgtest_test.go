@@ -539,9 +539,10 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	// Bucket A (infrastructure) is exempt from RLS; the loop at the end asserts each
 	// listed table has RLS DISABLED, so an accidental ENABLE is caught.
 	// server_secrets / server_key_state / token_usage_prune_horizon are deployment-
-	// global. tokens carries its tenant but must resolve before any tenant GUC exists.
+	// global. tokens and gateway_tokens carry their tenant but must resolve before
+	// any tenant GUC exists.
 	bucketA := map[string]bool{
-		"tenants": true, "tokens": true, "agent_config_bundle": true,
+		"tenants": true, "tokens": true, "gateway_tokens": true, "agent_config_bundle": true,
 		"server_secrets": true, "server_key_state": true,
 		"token_usage_prune_horizon": true,
 	}
@@ -572,7 +573,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 			t.Fatalf("scan catalog row: %v", err)
 		}
 		if bucketA[tbl] {
-			if tbl != "tokens" {
+			if tbl != "tokens" && tbl != "gateway_tokens" {
 				t.Errorf("%s: bucket-A infrastructure table unexpectedly carries a tenant_id column", tbl)
 			}
 			continue

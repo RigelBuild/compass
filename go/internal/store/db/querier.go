@@ -302,6 +302,7 @@ type Querier interface {
 	// ON CONFLICT DO NOTHING on the partial unique index (a concurrent open yields
 	// zero rows, never a raised unique-violation).
 	InsertDMChannel(ctx context.Context, arg InsertDMChannelParams) (string, error)
+	InsertGatewayToken(ctx context.Context, arg InsertGatewayTokenParams) error
 	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
 	// ON CONFLICT DO NOTHING keeps a lost race from poisoning the tx; the caller re-selects.
 	InsertLinearRoutingChannel(ctx context.Context, arg InsertLinearRoutingChannelParams) (string, error)
@@ -407,6 +408,9 @@ type Querier interface {
 	// LockComputeUsageTenant takes the same lock for a system-role caller.
 	// The key must stay byte-identical to LockComputeUsage and the end trigger.
 	LockComputeUsageTenant(ctx context.Context, tenantID string) error
+	// Per-agent LLM gateway token queries. Rotation and revocation are scoped to the
+	// caller's tenant; ResolveLiveGatewayToken runs before any tenant is known.
+	LockGatewayTokenAgent(ctx context.Context, accountID string) (LockGatewayTokenAgentRow, error)
 	LockLinearRouting(ctx context.Context, dollar_1 pgtype.Text) error
 	LockOwnerCoordination(ctx context.Context, dollar_1 pgtype.Text) error
 	LockOwnerDM(ctx context.Context, dollar_1 pgtype.Text) error
@@ -533,6 +537,7 @@ type Querier interface {
 	ResolveAckMessage(ctx context.Context, arg ResolveAckMessageParams) (int64, error)
 	ResolveCoordinationManager(ctx context.Context, id string) (ResolveCoordinationManagerRow, error)
 	ResolveGlobalHandles(ctx context.Context, dollar_1 []string) ([]ResolveGlobalHandlesRow, error)
+	ResolveLiveGatewayToken(ctx context.Context, hash []byte) (ResolveLiveGatewayTokenRow, error)
 	ResolveOwner(ctx context.Context, accountID string) (string, error)
 	ResolveTokenHash(ctx context.Context, hash []byte) (ResolveTokenHashRow, error)
 	ResolveTopicForUpdate(ctx context.Context, arg ResolveTopicForUpdateParams) (string, error)
@@ -541,6 +546,7 @@ type Querier interface {
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
 	ReviveTopic(ctx context.Context, id string) error
 	RevokeForgeScope(ctx context.Context, arg RevokeForgeScopeParams) error
+	RevokeLiveGatewayToken(ctx context.Context, arg RevokeLiveGatewayTokenParams) (int64, error)
 	RevokeToken(ctx context.Context, hash []byte) (int64, error)
 	// RollUpComputeUsageFrom rebuilds only buckets at or after the horizon, which are
 	// the rows it deleted; older buckets are frozen. The sentinel skips clipping.
