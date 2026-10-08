@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -327,7 +328,7 @@ func TestLiveGitHubListIssues(t *testing.T) {
 
 	f := liveFixture(t, providerGitHub, "list_issues")
 	filter := IssueFilter{State: "open", Labels: []string{"bug"}}
-	row, n, err := findListedIssueWithBackoff(ctx, gh, repo, filter, setup.Number)
+	row, n, err := findListedIssueWithBackoff(ctx, gh, repo, filter, setup.Number, readAfterWriteDelays)
 	if err != nil {
 		t.Fatalf("findListedIssueWithBackoff: %v", err)
 	}
@@ -727,13 +728,7 @@ func TestLiveLinearCommentOnIssue(t *testing.T) {
 	ctx := context.Background()
 	ln := liveLinear(ts)
 
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 
 	body := "compass-live comment " + newRunID()
 	got, err := ln.CommentOnIssue(ctx, team, issue.Number, body)
@@ -757,15 +752,7 @@ func TestLiveLinearGetIssue(t *testing.T) {
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "get_issue")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{
-			Title: "compass-live-get-" + newRunID(),
-		})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-get-" + newRunID()})
 
 	got, err := ln.GetIssue(ctx, team, issue.Number)
 	if err != nil {
@@ -797,7 +784,7 @@ func TestLiveLinearListIssues(t *testing.T) {
 	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, setup.Number) })
 
 	f := liveFixture(t, providerLinear, "list_issues")
-	row, n, err := findListedIssueWithBackoff(ctx, ln, team, IssueFilter{State: "open"}, setup.Number)
+	row, n, err := findListedIssueWithBackoff(ctx, ln, team, IssueFilter{State: "open"}, setup.Number, readAfterWriteDelays)
 	if err != nil {
 		t.Fatalf("findListedIssueWithBackoff: %v", err)
 	}
@@ -827,13 +814,7 @@ func TestLiveLinearTransitionIssueClose(t *testing.T) {
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "transition_issue_close_default")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
 
 	got, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed})
 	if err != nil {
@@ -854,13 +835,7 @@ func TestLiveLinearTransitionIssueCloseByName(t *testing.T) {
 
 	named := liveStateNameOfType(t, ctx, ln, team, "canceled")
 	f := liveFixture(t, providerLinear, "transition_issue_close_by_name")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
 
 	got, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: named})
 	if err != nil {
@@ -877,13 +852,7 @@ func TestLiveLinearTransitionIssueReopen(t *testing.T) {
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "transition_issue_reopen_default")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
 
 	// Close first so the reopen is a real state change.
 	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
@@ -905,15 +874,9 @@ func TestLiveLinearTransitionUnknownName(t *testing.T) {
 	ctx := context.Background()
 	ln := liveLinear(ts)
 
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tunknown-" + newRunID()})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tunknown-" + newRunID()})
 
-	_, err = ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: "compass-live-nonexistent-state"})
+	_, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: "compass-live-nonexistent-state"})
 	var se *StatusError
 	if !errors.As(err, &se) || se.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown-name transition: want *StatusError 422, got %v", err)
@@ -937,15 +900,9 @@ func TestLiveLinearTransitionTypeContradiction(t *testing.T) {
 	ln := liveLinear(ts)
 
 	started := liveStateNameOfType(t, ctx, ln, team, "started")
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tcontra-" + newRunID()})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tcontra-" + newRunID()})
 
-	_, err = ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: started})
+	_, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: started})
 	var se *StatusError
 	if !errors.As(err, &se) || se.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("type-contradiction transition: want *StatusError 422, got %v", err)
@@ -989,13 +946,7 @@ func TestLiveLinearTransitionCrossOp(t *testing.T) {
 	ctx := context.Background()
 	ln := liveLinear(ts)
 
-	issue, err := createWithBackoff(ctx, func() (Issue, error) {
-		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-xop-" + newRunID()})
-	})
-	if err != nil {
-		t.Fatalf("CreateIssue (setup): %v", err)
-	}
-	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-xop-" + newRunID()})
 
 	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
 		t.Fatalf("TransitionIssueState close: %v", err)
@@ -1066,6 +1017,8 @@ func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
 //     awaiting response headers (a third-party latency/availability blip against
 //     api.github.com / api.linear.app). RIG-2909: a single such blip on a Linear
 //     setup create was failing the whole forge-oracle gate on unrelated PRs.
+//   - An upstream gateway failure (502/503/504) or a connection reset, e.g.
+//     Linear's edge answering `503 upstream connect error ... reset before headers`.
 //
 // It is a bounded ONE-SHOT ctx-aware backoff, not a retry loop: exactly one
 // re-issue, and if the condition persists the second attempt's error propagates
@@ -1073,7 +1026,7 @@ func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
 // It never executes on the skip path (no credentials -> the caller t.Skips first).
 func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T, error) {
 	got, err := create()
-	if isSecondaryRateLimit(err) || isTransientNetworkTimeout(err) {
+	if isSecondaryRateLimit(err) || isTransientNetworkTimeout(err) || isUpstreamTransient(err) {
 		// Back off once, then re-issue — the secondary limit clears quickly and a
 		// transient header timeout is gone by the next attempt.
 		select {
@@ -1094,35 +1047,36 @@ type issueLister interface {
 	ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error)
 }
 
+// readAfterWriteDelays spaces the read-after-create polls below. GitHub's list
+// index was seen missing a fresh issue after ~17s, so the window runs ~70s.
+var readAfterWriteDelays = []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second}
+
 // findListedIssueWithBackoff polls ListIssues until the target issue appears,
 // tolerating a provider's list read-after-write lag: the list index is eventually
-// consistent, so a just-created issue can be absent for a few seconds. GitHub's
-// REST /issues list exhibits this directly (the list index lags GetIssue-by-number);
-// the same bounded gate defensively covers any propagation lag on Linear's filtered
-// issues query. Like createWithBackoff this is real live-API timing behavior on the
-// network path — a bounded, ctx-aware event-gate, NOT a retry loop masking a bug
-// (rule://no-retries): a genuinely-absent issue still fails loud after the bound,
-// and it never executes on the skip path.
+// consistent, so a just-created issue can be absent for a while. GitHub's REST
+// /issues list exhibits this directly (the list index lags GetIssue-by-number).
+// An upstream transient on one poll is retried by the next. This is a bounded,
+// ctx-aware event-gate, not a retry loop masking a bug (rule://no-retries): a
+// genuinely-absent issue fails loud after the bound.
 // Returns the matching row, the row count observed on the last attempt (for the
-// caller's diagnostic), and an error only on ctx cancellation or a ListIssues
-// failure.
-func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo string, f IssueFilter, want uint64) (Issue, int, error) {
+// caller's diagnostic), and an error on ctx cancellation, a non-transient
+// ListIssues failure, or a transient that outlasts the bound.
+func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo string, f IssueFilter, want uint64, delays []time.Duration) (Issue, int, error) {
 	var lastLen int
-	// A few attempts spanning the propagation window; total bound (~17s) stays
-	// well under the oracle step budget, on the same scale as createWithBackoff.
-	delays := []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second}
+	var lastErr error
 	for _, d := range delays {
-		if d > 0 {
-			select {
-			case <-ctx.Done():
-				return Issue{}, lastLen, ctx.Err()
-			case <-time.After(d):
-			}
+		if err := sleepCtx(ctx, d); err != nil {
+			return Issue{}, lastLen, err
 		}
 		got, err := lister.ListIssues(ctx, repo, f)
+		if isUpstreamTransient(err) {
+			lastErr = err
+			continue
+		}
 		if err != nil {
 			return Issue{}, lastLen, err
 		}
+		lastErr = nil
 		lastLen = len(got)
 		for i := range got {
 			if got[i].Number == want {
@@ -1130,7 +1084,83 @@ func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo st
 			}
 		}
 	}
-	return Issue{}, lastLen, nil // not found within bound; caller fails loud
+	return Issue{}, lastLen, lastErr // zero row + nil error: not found; caller fails loud
+}
+
+// issueGetter is the GetIssue read the visibility gate polls.
+type issueGetter interface {
+	GetIssue(ctx context.Context, repo string, number uint64) (Issue, error)
+}
+
+// awaitIssueVisible polls GetIssue until a just-created issue resolves by
+// number. Linear's number lookup trails CreateIssue, so a transition or comment
+// sent at once can 404 `no issue`. Fails loud with the last error after delays.
+func awaitIssueVisible(ctx context.Context, getter issueGetter, repo string, number uint64, delays []time.Duration) error {
+	var lastErr error
+	for _, d := range delays {
+		if err := sleepCtx(ctx, d); err != nil {
+			return err
+		}
+		_, err := getter.GetIssue(ctx, repo, number)
+		if err == nil {
+			return nil
+		}
+		if !isNotFound(err) && !isUpstreamTransient(err) {
+			return err
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("issue %s-%d not visible after %d polls: %w", repo, number, len(delays), lastErr)
+}
+
+// createVisibleLinearIssue creates a Linear setup issue, registers its archive
+// on teardown, and waits until GetIssue resolves it by number.
+func createVisibleLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, in CreateIssue) Issue {
+	t.Helper()
+	ctx := context.Background()
+	issue, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+	if err := awaitIssueVisible(ctx, ln, team, issue.Number, readAfterWriteDelays); err != nil {
+		t.Fatalf("await setup issue visible: %v", err)
+	}
+	return issue
+}
+
+// sleepCtx waits d, or returns ctx's error if it ends first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// isNotFound reports whether err is a 404 *StatusError.
+func isNotFound(err error) bool {
+	se, ok := errors.AsType[*StatusError](err)
+	return ok && se.Status == http.StatusNotFound
+}
+
+// isUpstreamTransient reports an upstream gateway failure (502/503/504) or a
+// connection reset: provider availability blips, never a malformed request.
+func isUpstreamTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if se, ok := errors.AsType[*StatusError](err); ok {
+		switch se.Status {
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+	}
+	return errors.Is(err, syscall.ECONNRESET)
 }
 
 // isSecondaryRateLimit reports whether err is GitHub's 403 secondary-rate-limit.
@@ -1686,13 +1716,7 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
-				})
-				if err != nil {
-					t.Fatalf("CreateIssue (setup): %v", err)
-				}
-				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.GetIssue(ctx, team, issue.Number); err != nil {
 					t.Fatalf("GetIssue: %v", err)
@@ -1705,13 +1729,7 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
-				})
-				if err != nil {
-					t.Fatalf("CreateIssue (setup): %v", err)
-				}
-				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
 				filter := IssueFilter{State: "open"}
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.ListIssues(ctx, team, filter); err != nil {
@@ -1726,13 +1744,7 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
-				})
-				if err != nil {
-					t.Fatalf("CreateIssue (setup): %v", err)
-				}
-				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 				body := "a reply"
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.CommentOnIssue(ctx, team, issue.Number, body); err != nil {
@@ -1747,13 +1759,7 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
-				})
-				if err != nil {
-					t.Fatalf("CreateIssue (setup): %v", err)
-				}
-				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
 				ln := recordingLinear(ts, rt)
 				if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
 					t.Fatalf("TransitionIssueState close: %v", err)
@@ -1767,13 +1773,7 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
-				})
-				if err != nil {
-					t.Fatalf("CreateIssue (setup): %v", err)
-				}
-				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
 				// Discovered on the NON-recording setup client, so the lookup spends no
 				// prelude slot on the recording transport.
 				named := liveStateNameOfType(t, ctx, setup, team, "canceled")
@@ -1790,13 +1790,7 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := createWithBackoff(ctx, func() (Issue, error) {
-					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
-				})
-				if err != nil {
-					t.Fatalf("CreateIssue (setup): %v", err)
-				}
-				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				issue := createVisibleLinearIssue(t, setup, ts, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
 				if _, err := setup.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
 					t.Fatalf("TransitionIssueState close (setup): %v", err)
 				}
