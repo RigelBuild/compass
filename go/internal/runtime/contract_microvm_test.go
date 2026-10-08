@@ -5,7 +5,7 @@ package runtime
 // The microVM leg of the shared WorkloadRuntime contract suite (record §U5):
 // runs runContractSuite against a real MicroVMRuntime on live hardware, gated on
 // microvmtest.Require(t) (skip-on-absent-KVM, hard-fail under
-// COMPASS_REQUIRE_MICROVM=1). It supplies the microVM caps encoding all 6
+// COMPASS_REQUIRE_MICROVM=1). It supplies the microVM caps encoding all 7
 // conceded divergences (record 580-593) as ON flags, so every divergence row
 // runs here and a silent widening fails. It ALSO records the Q-budget numbers
 // (record 832-834): boot latency (Start wall-clock) and per-process PSS, emitted
@@ -44,7 +44,7 @@ func TestContractSuite_MicroVM(t *testing.T) {
 				Mounts: []Mount{{HostPath: t.TempDir(), ContainerPath: "/workspace"}},
 			}
 		},
-		// All 6 conceded divergences hold on the microVM backend (record
+		// All 7 conceded divergences hold on the microVM backend (record
 		// 580-593): each ON flag runs its row so a silent widening fails.
 		refusesRootExec:         true,
 		numericUIDOnly:          true,
@@ -53,6 +53,7 @@ func TestContractSuite_MicroVM(t *testing.T) {
 		capsOutput:              true,
 		gracefulStopPowersOff:   true,
 		portableKillError:       true,
+		armedDefaultDenyAtStart: true,
 		assertDuplicateName: func(t *testing.T, err error) {
 			t.Helper()
 			var dup *DuplicateNameError

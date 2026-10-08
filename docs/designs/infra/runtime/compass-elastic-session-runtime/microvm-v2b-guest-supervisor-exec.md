@@ -586,7 +586,9 @@ in V2b-concrete form.
   `spec.Command` and `spec.CapAdd` are ignored-and-asserted (no keep-alive
   process, no capability grant to the workload); (5) multi-mount specs beyond
   one workspace share are refused, not dropped (OQ-C); (6) the deliberate-kill
-  error is a portable type, not `*exec.ExitError` (OQ-G/U3b). Every item is
+  error is a portable type, not `*exec.ExitError` (OQ-G/U3b); (7) every session
+  is armed default-deny at Start, even with no `Egress` set, where podman
+  containers are armed only by `AgentRuntime` (added by V3 §(e)). Every item is
   asserted by a contract-suite row, so a divergence that silently widens is a
   test failure.
 - **Additive, buf-breaking-safe proto; internal-go-only.**

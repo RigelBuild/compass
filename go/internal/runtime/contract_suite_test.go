@@ -16,7 +16,7 @@ package runtime
 // TestPerAgentContainerLifecycle (lifecycle_test.go), which drives
 // AgentRuntime.Launch. The two do not overlap.
 //
-// The 6 conceded divergences (record 580-593) are expressed as per-backend
+// The 7 conceded divergences (record 580-593) are expressed as per-backend
 // capability flags on backendCaps, each asserted by a row, so a divergence that
 // silently WIDENS is a test failure. Each row is its own helper so the shared
 // runner stays a thin dispatcher.
@@ -33,7 +33,7 @@ import (
 )
 
 // backendCaps is the per-backend expectation descriptor the shared runner
-// consumes: a container/session factory plus the flags that encode the 6
+// consumes: a container/session factory plus the flags that encode the 7
 // conceded divergences (record 580-593). Every flag toggles the EXACT assertion
 // of a row, so a backend that silently widens a divergence fails a row rather
 // than passing quietly.
@@ -130,6 +130,11 @@ type backendCaps struct {
 	// rejectedUID is a uid the host backend must REFUSE (any uid other than its
 	// euid); used only when euidOnly is set. The engine legs leave it empty.
 	rejectedUID string
+
+	// armedDefaultDenyAtStart: every Start arms default-deny egress, even for a
+	// spec with no Egress set (microVM, divergence 7). When false (podman, host)
+	// arming is AgentRuntime's job, so the row is skipped.
+	armedDefaultDenyAtStart bool
 }
 
 // execUser is the uid the directed exec/stream rows run their commands as. The
@@ -213,6 +218,9 @@ func runContractSuite(t *testing.T, newRuntime func(t *testing.T) WorkloadRuntim
 	t.Run("running_lifecycle", func(t *testing.T) { rowRunningLifecycle(t, rt, caps) })
 	if caps.gracefulStopPowersOff {
 		t.Run("stop_grace_powers_off", func(t *testing.T) { rowStopGrace(t, rt, caps) })
+	}
+	if caps.armedDefaultDenyAtStart {
+		t.Run("default_deny_at_start", func(t *testing.T) { rowDefaultDenyAtStart(t, rt, caps, primary) })
 	}
 }
 
@@ -572,6 +580,25 @@ func rowStopGrace(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Logf("graceful Stop completed in %s (grace %s)", elapsed, grace)
 	if elapsed >= grace-5*time.Second {
 		t.Fatalf("Stop took %s of a %s grace: the guest did not power off gracefully — it fell through to the kill escalation", elapsed, grace)
+	}
+}
+
+// rowDefaultDenyAtStart — divergence 7: the primary session's spec sets no
+// Egress, yet a raw-IPv4 connect from inside it must be dropped. Exit 124 (the
+// guest `timeout` firing on a dropped SYN) is required: a guest with no route
+// fails fast instead, so dead networking cannot pass this row.
+func rowDefaultDenyAtStart(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+	defer cancel()
+	script := "timeout 10 bash -c 'exec 3<>/dev/tcp/8.8.8.8/443 && echo connected'"
+	out, err := rt.Exec(ctx, primary, NewExecSpec("sh", "-c", script).AsUser(caps.execUser()))
+	if err != nil {
+		t.Fatalf("connect probe errored (harness fault, not a firewall verdict): %v", err)
+	}
+	if out.ExitCode != 124 {
+		t.Fatalf("connect to 8.8.8.8:443 from a spec with no Egress: exit=%d stdout=%q stderr=%q; want 124 (SYN dropped by the default-deny ruleset)",
+			out.ExitCode, out.Stdout, out.Stderr)
 	}
 }
 
