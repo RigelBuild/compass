@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,8 +30,10 @@ import (
 // EOF, a timeout when the deadline cut the read). Delivered over a buffered
 // channel so the handler goroutine never blocks on the send.
 type bodyReadResult struct {
-	body []byte
-	err  error
+	body   []byte
+	err    error
+	remote string // server-side r.RemoteAddr: equal across streams iff one conn
+	proto  int
 }
 
 // isBodyReadTimeout reports whether err is the socket read-deadline failure the
@@ -259,9 +260,8 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	const wantB = "prompt-sibling-body"
 
 	// Per-stream server-side read outcomes, buffered so the handler goroutines never
-	// block on the send. startedA fires when the drip stream's handler is live (its
-	// h2 stream and the shared conn are established), so the sibling multiplexes onto
-	// the SAME conn rather than racing a fresh dial.
+	// block on the send. startedA fires when the drip stream's handler is live, so A
+	// is open and stalled before B launches and the two streams run concurrently.
 	resA := make(chan bodyReadResult, 1)
 	resB := make(chan bodyReadResult, 1)
 	startedA := make(chan struct{}, 1)
@@ -273,9 +273,9 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 		body, err := io.ReadAll(r.Body)
 		switch stream {
 		case "A":
-			resA <- bodyReadResult{body: body, err: err}
+			resA <- bodyReadResult{body: body, err: err, remote: r.RemoteAddr, proto: r.ProtoMajor}
 		case "B":
-			resB <- bodyReadResult{body: body, err: err}
+			resB <- bodyReadResult{body: body, err: err, remote: r.RemoteAddr, proto: r.ProtoMajor}
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -288,18 +288,22 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	// One shared h2c connection: the dialer counts dials so the test can prove both
-	// streams rode a SINGLE connection (dials == 1) — the premise that makes this a
-	// per-STREAM proof. Launching B only after A's handler is live keeps the
-	// single-conn behaviour deterministic instead of racing a second dial.
-	var dials atomic.Int32
+	// Both streams ride one explicit h2c ClientConn (it never redials), the
+	// premise that makes this a per-STREAM proof; asserted server-side below.
 	tr := h2cTransport(func(ctx context.Context, network, addr string) (net.Conn, error) {
-		dials.Add(1)
 		var d net.Dialer
 		return d.DialContext(ctx, network, addr)
 	})
-	t.Cleanup(tr.CloseIdleConnections)
-	client := &http.Client{Transport: tr}
+	cc, err := tr.NewClientConn(t.Context(), "http", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("open the shared h2c conn: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cc.Close(); err != nil {
+			t.Errorf("close the shared h2c conn: %v", err)
+		}
+	})
+	client := &http.Client{Transport: cc}
 
 	// Request A: writes a few bytes then blocks forever (the pipe writer only
 	// closes in cleanup), so the socket read deadline is the ONLY thing that can
@@ -370,10 +374,9 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	}
 
 	// The co-occurrence above (A cut, B clean) is only a per-STREAM proof if
-	// both rode ONE connection; otherwise a per-connection deadline could still
-	// pass. Assert the shared conn.
-	if got := dials.Load(); got != 1 {
-		t.Fatalf("dial count = %d, want 1: the two requests did not share a single h2 connection, so this cannot distinguish per-stream from per-connection isolation", got)
+	// both rode ONE h2 connection, so assert that from the server's side.
+	if outA.remote != outB.remote || outA.proto != 2 || outB.proto != 2 {
+		t.Fatalf("streams A (%s, HTTP/%d) and B (%s, HTTP/%d) did not share one h2 connection, so this cannot distinguish per-stream from per-connection isolation", outA.remote, outA.proto, outB.remote, outB.proto)
 	}
 }
 
