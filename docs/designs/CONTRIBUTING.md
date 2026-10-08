@@ -140,3 +140,5 @@ bun tools/dl-claim --ref RIG-1234 --lane feature/design-record
 
 Use `--count N` to claim more than one ID. Put each printed ID in its new row's
 `ID` cell, in the same PR as the record.
+
+Failure handling, the token, and rotation are in `tools/dl-claim/README.md`.
