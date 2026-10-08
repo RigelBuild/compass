@@ -5,6 +5,7 @@ package stack
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -93,11 +94,14 @@ type pgidEntry struct {
 // child-liveness signal: up always exits after a successful spawn
 // (main.go:235-238), so the writer pid is dead in every linger teardown and
 // discriminates nothing about whether the children are alive. Child liveness is
-// decided per entry by pgid identity (Pgid + StartTime), not by the header.
+// decided per entry by pgid identity (Pgid + StartTime), not by the header —
+// except that a BootID from an earlier boot means no recorded group survives.
 type pgidRecord struct {
 	WriterPid int
 	Version   string
-	Entries   []pgidEntry
+	// BootID is the writer's boot identity; empty means unknown (a pre-boot-id record).
+	BootID  string
+	Entries []pgidEntry
 }
 
 // writePgidFile publishes rec to <stateDir>/stack.pgids atomically (temp +
@@ -110,17 +114,25 @@ type pgidRecord struct {
 //
 // Format (v2):
 //
-//	<version> <writerPid>
+//	<version> <writerPid> <bootid>
 //	proc <component> <pgid> <starttime>   (a process-group child)
 //	ctr <component> <name>                (a container child)
 //	...          (one line per entry, in start order)
 //
 // The leading kind tag makes the entry line a discriminated union; a v1 record
 // (untagged 3-field proc lines) is read-only back-compat — this build never
-// writes it.
+// writes it. <bootid> is always the writer's current boot (rec.BootID is
+// ignored), and is omitted when unreadable, which a reader takes as unknown.
 func writePgidFile(stateDir string, rec pgidRecord) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %d\n", pgidFileVersion, rec.WriterPid)
+	fmt.Fprintf(&b, "%s %d", pgidFileVersion, rec.WriterPid)
+	if boot, err := readBootID(); err != nil || !isBootUUID(boot) {
+		// An unknown boot only forgoes the reboot shortcut; identity checks still guard every signal.
+		slog.Warn("pgid record written without a boot id", "boot_id", boot, "err", err)
+	} else {
+		fmt.Fprintf(&b, " %s", boot)
+	}
+	b.WriteString("\n")
 	for _, e := range rec.Entries {
 		switch e.Kind {
 		case entryContainer:
@@ -187,18 +199,28 @@ func readPgidFile(stateDir string) (pgidRecord, error) {
 	}
 
 	header := strings.Fields(lines[0])
-	if len(header) != 2 {
+	if len(header) != 2 && len(header) != 3 {
 		return pgidRecord{}, fmt.Errorf("pgid file %q: malformed header %q", path, lines[0])
 	}
 	version := header[0]
 	if version != pgidFileVersion && version != pgidFileVersionV1 {
 		return pgidRecord{}, fmt.Errorf("pgid file %q: unsupported record version %q (this build reads %q and %q); stop the stack with the build that started it", path, version, pgidFileVersionV1, pgidFileVersion)
 	}
+	// v1 predates the boot id, so a third column there is a malformed header.
+	if len(header) == 3 && version == pgidFileVersionV1 {
+		return pgidRecord{}, fmt.Errorf("pgid file %q: malformed v1 header %q", path, lines[0])
+	}
 	writerPid, err := strconv.Atoi(header[1])
 	if err != nil {
 		return pgidRecord{}, fmt.Errorf("pgid file %q: unparseable writer pid %q: %w", path, header[1], err)
 	}
 	rec := pgidRecord{WriterPid: writerPid, Version: version}
+	if len(header) == 3 {
+		if !isBootUUID(header[2]) {
+			return pgidRecord{}, fmt.Errorf("pgid file %q: malformed boot id in header %q", path, lines[0])
+		}
+		rec.BootID = header[2]
+	}
 
 	for _, line := range lines[1:] {
 		if line == "" {
@@ -211,6 +233,26 @@ func readPgidFile(stateDir string) (pgidRecord, error) {
 		rec.Entries = append(rec.Entries, entry)
 	}
 	return rec, nil
+}
+
+// isBootUUID reports whether s has the 8-4-4-4-12 hex UUID shape, in either case.
+func isBootUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // parsePgidLine parses one entry line, dispatched on the record version.
@@ -343,11 +385,14 @@ func removePgidFile(stateDir string) error {
 //
 // The invariant that IS load-bearing: this spawn-side reader and the down-side
 // reader (adapters.readGroupLeaderStartTime) must produce the IDENTICAL encoding
-// on a given OS. GroupSignaller.Alive compares the two for uint64 equality, so a
-// disagreement would report every live child as not-alive and silently skip it
+// on a given OS. GroupSignaller.Liveness compares the two for uint64 equality, so a
+// disagreement would report every live child as recycled and silently skip it
 // at teardown. The two darwin readers therefore share one packing rule
 // (sec*1e6 + usec), pinned by mirrored unit tests in both packages.
 var readStartTime = readProcessStartTime
+
+// readBootID is the boot-identity seam: a var so tests can model a reboot.
+var readBootID = readCurrentBootID
 
 // parseStatStartTime extracts field 22 (starttime) from a /proc/<pid>/stat line.
 // Split out from the Linux reader (readstarttime_linux.go) so the
