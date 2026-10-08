@@ -52,7 +52,7 @@ func (l *SocketListener) PublishSessionState(ctx context.Context, sessionID stri
 	}
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateSendTimeout)
 	defer cancel()
-	pub := newSessionPublisher(sendCtx, g.events, sessionID, &g.seq)
+	pub := newSessionPublisher(sendCtx, g.events, sessionID, g.seq)
 	forwardErr := pub.forward(frame)
 	if forwardErr == nil {
 		sharedErr = nil

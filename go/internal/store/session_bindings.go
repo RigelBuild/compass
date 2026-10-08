@@ -94,19 +94,19 @@ type SessionBinding struct {
 // resolves the principal a comms call runs under. Any OTHER unique violation is
 // unexpected, so it falls through to the generic wrap with its own message
 // intact rather than being relabelled as a session collision.
-func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, accountID AccountID, runnerID string) (string, error) {
+func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, accountID AccountID, runnerID string) (displaced, version string, err error) {
 	if sessionID == "" {
-		return "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+		return "", "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
 	if accountID == "" {
-		return "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+		return "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 	// Unlike agent_placements.runner_id, '' is NOT an accepted unknown sentinel:
 	// a placement outlives its Runner, but a binding exists only while a Runner
 	// is attached, and runner_id is the sweep key that retires it. A '' binding
 	// no real Runner's re-enroll could sweep would linger as a stale session.
 	if runnerID == "" {
-		return "", fmt.Errorf("%w: runner id is required", ErrInvalidArgument)
+		return "", "", fmt.Errorf("%w: runner id is required", ErrInvalidArgument)
 	}
 
 	// beginTenantTx, not s.pool.Begin: it arms SET LOCAL ROLE + the
@@ -115,7 +115,7 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 	// would run as the owner with no GUC and silently disable tenant isolation.
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
-		return "", fmt.Errorf("store: begin record session binding: %w", err)
+		return "", "", fmt.Errorf("store: begin record session binding: %w", err)
 	}
 	// No-op after a successful commit; the rollback that matters is on every
 	// error path below, where there is nothing further to report about it.
@@ -129,23 +129,23 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 		Column1: pgtype.Text{String: string(s.resolveTenant(ctx)), Valid: true},
 		Column2: pgtype.Text{String: string(accountID), Valid: true},
 	}); err != nil {
-		return "", fmt.Errorf("store: lock session binding account: %w", err)
+		return "", "", fmt.Errorf("store: lock session binding account: %w", err)
 	}
 
 	prior, err := qtx.SessionBindingForUpdate(ctx, string(accountID))
 	if err != nil && !noRows(err) {
-		return "", fmt.Errorf("store: read prior session binding: %w", err)
+		return "", "", fmt.Errorf("store: read prior session binding: %w", err)
 	}
 	if noRows(err) {
 		prior = db.SessionBindingForUpdateRow{}
 	}
-	displaced := prior.SessionID
+	displaced = prior.SessionID
 
 	intervalID := prior.UsageIntervalID
 	if intervalID != "" {
 		// An older server may have written the prior row without a start event.
 		if err := qtx.EnsureComputeUsageIntervalStart(ctx, string(accountID)); err != nil {
-			return "", fmt.Errorf("store: ensure compute usage interval start: %w", err)
+			return "", "", fmt.Errorf("store: ensure compute usage interval start: %w", err)
 		}
 	}
 	if prior.SessionID != sessionID {
@@ -156,7 +156,7 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 				SessionID:      prior.SessionID,
 				RunnerID:       prior.RunnerID,
 			}); err != nil {
-				return "", fmt.Errorf("store: end displaced compute usage interval: %w", err)
+				return "", "", fmt.Errorf("store: end displaced compute usage interval: %w", err)
 			}
 		}
 		intervalID = uuid.NewString()
@@ -166,28 +166,30 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 			SessionID:      sessionID,
 			RunnerID:       runnerID,
 		}); err != nil {
-			return "", fmt.Errorf("store: start compute usage interval: %w", err)
+			return "", "", fmt.Errorf("store: start compute usage interval: %w", err)
 		}
 	}
 
+	version = uuid.NewString()
 	if err := qtx.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
 		SessionID:       sessionID,
 		AgentAccountID:  string(accountID),
 		RunnerID:        runnerID,
 		UsageIntervalID: intervalID,
+		BindingVersion:  version,
 	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
-			return "", fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, accountID)
+			return "", "", fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, accountID)
 		}
 		if pgErrIs(err, pgUniqueViolation) && pgConstraintName(err) == "session_bindings_session_key" {
-			return "", fmt.Errorf("%w: session %q is already bound to a different agent", ErrConflict, sessionID)
+			return "", "", fmt.Errorf("%w: session %q is already bound to a different agent", ErrConflict, sessionID)
 		}
-		return "", fmt.Errorf("store: record session binding: %w", err)
+		return "", "", fmt.Errorf("store: record session binding: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("store: commit record session binding: %w", err)
+		return "", "", fmt.Errorf("store: commit record session binding: %w", err)
 	}
-	return displaced, nil
+	return displaced, version, nil
 }
 
 // ResolveSessionBinding resolves the account and Runner a live session speaks
@@ -197,18 +199,18 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 // resolves the scope a call runs under, so a miss must never surface as an
 // empty AccountID with a nil error. A zero-value account id would flow onward as
 // a real (wrong) principal instead of stopping the call.
-func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (AccountID, string, error) {
+func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (account AccountID, runnerID, version string, err error) {
 	if sessionID == "" {
-		return "", "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+		return "", "", "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
 	row, err := s.q.SessionBinding(ctx, sessionID)
 	if err != nil {
 		if noRows(err) {
-			return "", "", fmt.Errorf("%w: session %q is not bound", ErrNotFound, sessionID)
+			return "", "", "", fmt.Errorf("%w: session %q is not bound", ErrNotFound, sessionID)
 		}
-		return "", "", fmt.Errorf("store: resolve session binding: %w", err)
+		return "", "", "", fmt.Errorf("store: resolve session binding: %w", err)
 	}
-	return AccountID(row.AgentAccountID), row.RunnerID, nil
+	return AccountID(row.AgentAccountID), row.RunnerID, row.BindingVersion, nil
 }
 
 // SessionForAccount resolves the live session bound to an agent account — the
@@ -228,19 +230,20 @@ func (s *Store) ResolveSessionBinding(ctx context.Context, sessionID string) (Ac
 // dropped on a Runner reconnect. Fail-closed for the same reason as above: an
 // empty session id with a nil error would be dispatched to as if it were a live
 // session. The consumer's own contract turns this into "push nothing now, let
-// the cursor sweep deliver on the recipient's next start".
-func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (string, string, error) {
+// the cursor sweep deliver on the recipient's next start". version names the
+// row's write, as ResolveSessionBinding returns it.
+func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (sessionID, runnerID, version string, err error) {
 	if accountID == "" {
-		return "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+		return "", "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 	row, err := s.q.SessionBindingForAccount(ctx, string(accountID))
 	if err != nil {
 		if noRows(err) {
-			return "", "", fmt.Errorf("%w: agent %q has no live session", ErrNotFound, accountID)
+			return "", "", "", fmt.Errorf("%w: agent %q has no live session", ErrNotFound, accountID)
 		}
-		return "", "", fmt.Errorf("store: resolve session for account: %w", err)
+		return "", "", "", fmt.Errorf("store: resolve session for account: %w", err)
 	}
-	return row.SessionID, row.RunnerID, nil
+	return row.SessionID, row.RunnerID, row.BindingVersion, nil
 }
 
 // DeleteSessionBinding releases the binding for sessionID — the single-session
@@ -261,6 +264,20 @@ func (s *Store) DeleteSessionBinding(ctx context.Context, sessionID string) erro
 		return fmt.Errorf("store: delete session binding: %w", err)
 	}
 	return nil
+}
+
+// DeleteSessionBindingVersion is DeleteSessionBinding limited to the write that
+// returned version (from Record or Resolve): a re-bind of the same session id
+// since then has a new version and stays. removed reports whether a row went.
+func (s *Store) DeleteSessionBindingVersion(ctx context.Context, sessionID, version string) (removed bool, err error) {
+	if sessionID == "" {
+		return false, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	n, err := s.q.DeleteSessionBindingVersion(ctx, db.DeleteSessionBindingVersionParams{SessionID: sessionID, BindingVersion: version})
+	if err != nil {
+		return false, fmt.Errorf("store: delete session binding version: %w", err)
+	}
+	return n > 0, nil
 }
 
 // DeleteSessionBindingsForRunner is the enroll sweep: it releases every binding
