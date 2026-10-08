@@ -384,7 +384,7 @@ func waitServerAnswering(t *testing.T, deps stack.Deps, socketPath string) {
 // its process-group id and the group leader's start-time token. The start time
 // is what closes the pid-recycling window — the same (Pgid, StartTime) identity
 // the production teardown checks (internal/stack/pgidfile.go pgidEntry,
-// adapters/groupsignal.go Alive).
+// adapters/groupsignal.go Liveness).
 type recordedGroup struct {
 	pgid      int
 	startTime uint64
@@ -392,13 +392,11 @@ type recordedGroup struct {
 
 // waitGroupsGone polls every recorded process group until it is gone or the
 // budget elapses — the authoritative "the children are actually dead" proof
-// after a cross-process down. "Gone" is identity-checked, mirroring production's
-// teardown gate (adapters/groupsignal.go Alive): a group is gone when it is
-// ESRCH, OR it still exists but its leader's start time no longer equals the
-// recorded token (the kernel recycled the pid to an unrelated leader). Without
-// the identity check the probe is a false-FAILURE risk on the shared box — a
-// dead child's pgid reused by another process would read as "still alive" and
-// fail the test at budget even though teardown worked.
+// after a cross-process down. "Gone" mirrors production's teardown gate
+// (adapters/groupsignal.go Liveness): a group is gone when it is ESRCH, OR its
+// leader's start time no longer equals the recorded token (a recycled pid).
+// Without the identity check a dead child's pgid reused by another process
+// would read as "still alive" and fail the test even though teardown worked.
 //
 // It signals nothing: kill(-pgid, 0) is the existence probe (signal 0), run
 // only on pgids read from the stack's OWN stack.pgids record, never a scan
@@ -429,13 +427,10 @@ func waitGroupsGone(t *testing.T, groups []recordedGroup, budget time.Duration) 
 	}
 }
 
-// groupAlive reports whether the process group named by pgid still exists AND
-// its leader's start time equals the recorded token — the same existence-then-
-// identity gate production teardown uses (adapters/groupsignal.go Alive). A
-// group that is ESRCH, or whose leader start time no longer matches (a recycled
-// pid), or whose /proc entry cannot be read is reported not-alive: for a
-// post-down liveness probe the safe verdict is "gone", never a false "alive"
-// off a pid the kernel reused. It signals nothing — kill(-pgid, 0) is signal 0.
+// groupAlive reports whether the recorded process group still needs teardown,
+// mirroring adapters/groupsignal.go Liveness: ESRCH or a recycled leader is
+// gone; a matching leader or an unreadable one (members outliving a reaped
+// leader keep the pgid) is alive. It signals nothing — kill(-pgid, 0) is signal 0.
 // An unexpected kill errno (not ESRCH/EPERM) is surfaced as an error.
 func groupAlive(pgid int, startTime uint64) (bool, error) {
 	err := syscall.Kill(-pgid, 0)
@@ -445,16 +440,10 @@ func groupAlive(pgid int, startTime uint64) (bool, error) {
 	case err != nil && !errors.Is(err, syscall.EPERM):
 		return false, err // unexpected errno
 	}
-	// Exists (nil or EPERM). Confirm identity via the leader's start time; a read
-	// failure means the leader vanished or /proc is unreadable — treat as gone.
 	got, rerr := readLeaderStartTime(pgid)
 	if rerr != nil {
-		// Deliberate: a /proc read failure on an existing pgid means the leader
-		// vanished between the two syscalls (or /proc is unreadable) — the safe
-		// post-down verdict is "gone", never a false "alive". Mirrors production
-		// adapters/groupsignal.go Alive, which also treats a read failure as
-		// not-alive.
-		return false, nil //nolint:nilerr // read failure => leader gone => not-alive (see comment)
+		// The group exists without a readable leader: orphaned members remain.
+		return true, nil //nolint:nilerr // read failure on an existing group => orphaned => alive
 	}
 	return got == startTime, nil
 }
