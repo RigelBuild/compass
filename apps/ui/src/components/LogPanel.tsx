@@ -20,14 +20,14 @@ const TracePane: Component = () => {
 			when={items()}
 			fallback={
 				<div class="obs-empty muted">
-					No session trace — this agent hasn't run yet.
+					No Session Log yet: this agent hasn't run.
 				</div>
 			}
 		>
 			{(traceItems) => (
 				<Show
 					when={traceItems().length > 0}
-					fallback={<div class="obs-empty muted">Trace is empty.</div>}
+					fallback={<div class="obs-empty muted">Session Log is empty.</div>}
 				>
 					<div class="obs-trace">
 						<SessionTrace items={traceItems()} />
@@ -57,7 +57,7 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 	return (
 		<aside
 			class={["log-panel", { minimized: !store.logOpen() }]}
-			aria-label="Agent observation log"
+			aria-label="Session Log"
 		>
 			<div class="obs-head">
 				<Show when={store.logOpen()}>
@@ -107,7 +107,9 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 					type="button"
 					class="obs-min"
 					aria-label={store.logOpen() ? "Minimize" : "Expand"}
-					title={store.logOpen() ? "Minimize log panel" : "Expand log panel"}
+					title={
+						store.logOpen() ? "Minimize Session Log" : "Expand Session Log"
+					}
 					onClick={() => store.toggleLog()}
 				>
 					<span
