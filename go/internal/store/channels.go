@@ -11,8 +11,20 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
+// String names the visibility for error messages.
+func (v ChannelGroupVisibility) String() string {
+	switch v {
+	case VisibilityOwner:
+		return "owner"
+	case VisibilityShared:
+		return "shared"
+	default:
+		return fmt.Sprintf("visibility(%d)", int32(v))
+	}
+}
+
 // CreateChannelGroup gates a parented create in-tx on authz, reserved system parents
-// and the visibility ceiling; unknown, unauthorized and reserved parents are ErrNotFound.
+// and the parent's visibility; unknown, unauthorized and reserved parents are ErrNotFound.
 func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g NewChannelGroup) (ChannelGroup, error) {
 	if g.Name == "" {
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
@@ -56,11 +68,12 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 		if err != nil {
 			return ChannelGroup{}, fmt.Errorf("store: read parent group: %w", err)
 		}
-		// A higher enum value is more open (OWNER=0 < SHARED=1), so the child's
-		// value must not exceed the parent's.
-		if int32(g.Visibility) > int32(parentVis) {
+		// Everything in a group is shared with that group, so a child takes its
+		// parent's visibility; a private subset is a new top-level group.
+		if int32(g.Visibility) != int32(parentVis) {
 			return ChannelGroup{}, fmt.Errorf(
-				"%w: group visibility %d wider than parent %d", ErrInvalidArgument, g.Visibility, parentVis)
+				"%w: a nested group must use its parent's visibility (%s), got %s",
+				ErrInvalidArgument, ChannelGroupVisibility(parentVis), g.Visibility)
 		}
 	}
 

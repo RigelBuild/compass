@@ -36,8 +36,8 @@ type NewAgent struct {
 }
 
 // ChannelGroup input for CreateChannelGroup. OwnerUserID is the authenticated
-// caller (a separate argument); the visibility ceiling (child ≤ parent) is
-// enforced by the store against the parent, not trusted from input.
+// caller (a separate argument); the store checks a nested group's visibility
+// against its parent's, never trusting the input.
 type NewChannelGroup struct {
 	Name          string
 	ParentGroupID ChannelGroupID
