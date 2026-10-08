@@ -207,6 +207,8 @@ func attachContended(ctx context.Context, cfg Config, deps Deps) (*Stack, error)
 // cross-process teardown record has nothing left to describe. A partial or
 // failed drain leaves the file in place so a later fresh down can still finish
 // the job. An attached stack recorded no children, so removal is a no-op.
+// An expired ctx fails each stop and wait fast, so children may survive; the
+// record stays in place and a later DownDetached finishes them.
 func (s *Stack) Down(ctx context.Context) error {
 	err := s.drainChildren(ctx)
 	if err == nil {
@@ -231,7 +233,7 @@ func (s *Stack) RestartRunner(ctx context.Context) error {
 	if len(s.pgids) == 0 || s.pgids[len(s.pgids)-1].Component != ComponentRunner {
 		return errors.New("stack: runner teardown record is missing")
 	}
-	if err := s.runner.Signal(SignalTerm); err != nil {
+	if err := s.runner.Signal(ctx, SignalTerm); err != nil {
 		return fmt.Errorf("stop runner: %w", err)
 	}
 	if err := s.runner.Wait(ctx); err != nil {
@@ -705,7 +707,7 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 		if c.p == nil {
 			continue
 		}
-		if err := c.p.Signal(SignalTerm); err != nil {
+		if err := c.p.Signal(ctx, SignalTerm); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("signal %s: %w", c.name, err))
 			continue
 		}
