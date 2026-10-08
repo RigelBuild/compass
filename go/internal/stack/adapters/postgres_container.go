@@ -54,14 +54,16 @@ var (
 )
 
 // containerCLI is the narrow podman surface this adapter needs: run a detached
-// container, block on its exit, stop/remove/exists it by name. *podmanExec
+// container, block on its exit, stop/term/remove/exists it by name. *podmanExec
 // satisfies it; a fake satisfies it in tests, so the argv assembly and the
 // Process lifecycle are unit-testable without a real podman.
 type containerCLI interface {
 	run(ctx context.Context, args []string) error
 	wait(ctx context.Context, name string) error
 	stop(ctx context.Context, name string, timeout time.Duration) error
+	term(ctx context.Context, name string) error
 	remove(ctx context.Context, name string) error
+	removeExited(ctx context.Context, name string) error
 	exists(ctx context.Context, name string) (bool, error)
 }
 
@@ -110,23 +112,28 @@ func (c *PostgresContainer) Start(ctx context.Context, spec stack.PostgresContai
 // Assuming-present is safe: Stop/Remove are idempotent (an already-gone
 // container normalizes to success), so signaling a container that turns out gone
 // is harmless, while signaling a still-live one is the whole point.
-func (c *PostgresContainer) Exists(name string) bool {
-	present, err := c.cli.exists(context.Background(), name)
+func (c *PostgresContainer) Exists(ctx context.Context, name string) bool {
+	present, err := c.cli.exists(ctx, name)
 	if err != nil {
 		return true // cannot confirm absence → assume present and drive teardown
 	}
 	return present
 }
 
-// Stop requests a graceful `podman stop -t <timeout>` (stack.ContainerController).
-func (c *PostgresContainer) Stop(name string, timeout time.Duration) error {
-	return c.cli.stop(context.Background(), name, timeout)
+// Stop sends the container its stop signal without waiting (stack.ContainerController).
+func (c *PostgresContainer) Stop(ctx context.Context, name string) error {
+	return c.cli.term(ctx, name)
+}
+
+// RemoveExited removes the container once it has exited (stack.ContainerController).
+func (c *PostgresContainer) RemoveExited(ctx context.Context, name string) error {
+	return c.cli.removeExited(ctx, name)
 }
 
 // Remove force-removes the container, the SIGKILL-tier escalation
 // (stack.ContainerController): `podman rm -f`.
-func (c *PostgresContainer) Remove(name string) error {
-	return c.cli.remove(context.Background(), name)
+func (c *PostgresContainer) Remove(ctx context.Context, name string) error {
+	return c.cli.remove(ctx, name)
 }
 
 // runArgs assembles the S4 `podman run` argv (detached). Split out as a pure
@@ -238,14 +245,14 @@ type containerProcess struct {
 // Compile-time proof the handle satisfies the core seam.
 var _ stack.Process = (*containerProcess)(nil)
 
-// Signal requests a graceful stop: `podman stop -t <stopTimeout>`. SignalKill is
-// not a valid in-process disposition (the cross-process teardown escalates via
-// ContainerController.Remove instead), matching the process handle which also
-// rejects anything but SignalTerm.
-func (p *containerProcess) Signal(sig stack.ProcessSignal) error {
+// Signal requests a graceful stop bounded by ctx: `podman stop -t <stopTimeout>`.
+// SignalKill is not a valid in-process disposition (the cross-process teardown
+// escalates via ContainerController.Remove instead), matching the process handle
+// which also rejects anything but SignalTerm.
+func (p *containerProcess) Signal(ctx context.Context, sig stack.ProcessSignal) error {
 	switch sig {
 	case stack.SignalTerm:
-		if err := p.cli.stop(context.Background(), p.name, p.stopTimeout); err != nil {
+		if err := p.cli.stop(ctx, p.name, p.stopTimeout); err != nil {
 			return fmt.Errorf("podman stop postgres %q: %w", p.name, err)
 		}
 		return nil
@@ -316,11 +323,43 @@ func (e *podmanExec) stop(ctx context.Context, name string, timeout time.Duratio
 	return nil
 }
 
-// remove force-removes the container (`podman rm -f`). An absent container is
-// already removed — not an error.
+// term sends the container's configured stop signal and returns without waiting
+// for exit, so the caller's drain wait owns the budget. `podman kill` has no
+// "use the stop signal" mode, so the signal is read first; postgres stops on
+// SIGINT, not SIGTERM. An absent container is already stopped — not an error.
+func (e *podmanExec) term(ctx context.Context, name string) error {
+	sig, err := e.output(ctx, []string{"container", "inspect", "--format", "{{.Config.StopSignal}}", name})
+	if err == nil {
+		if sig == "" {
+			sig = "SIGTERM"
+		}
+		err = e.fireAndCheck(ctx, []string{"kill", "--signal", sig, name})
+	}
+	if err != nil && !isNoSuchContainer(err) {
+		return err
+	}
+	return nil
+}
+
+// remove force-removes the container without the stop-timeout grace (`podman rm
+// -f -t 0`): it is the hard-kill tier, reached only after the drain budget. An
+// absent container is already removed — not an error.
 func (e *podmanExec) remove(ctx context.Context, name string) error {
-	if err := e.fireAndCheck(ctx, []string{"rm", "--force", "--volumes", name}); err != nil {
+	if err := e.fireAndCheck(ctx, []string{"rm", "--force", "--time", "0", "--volumes", name}); err != nil {
 		if isNoSuchContainer(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// removeExited removes the container without --force (`podman rm`), which podman
+// refuses while it runs. That refusal, like an absent container, is not an error:
+// the caller polls absence and escalates to remove once its budget expires.
+func (e *podmanExec) removeExited(ctx context.Context, name string) error {
+	if err := e.fireAndCheck(ctx, []string{"rm", "--volumes", name}); err != nil {
+		if isNoSuchContainer(err) || isContainerRunning(err) {
 			return nil
 		}
 		return err
@@ -352,6 +391,7 @@ func (e *podmanExec) fireAndCheck(ctx context.Context, args []string) error {
 	cctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, e.program, args...) //nolint:gosec // G204: the container seam — program is the operator-set engine and args are Stack-built from a state-dir-derived spec, neither attacker-controlled
+	cmd.WaitDelay = podmanWaitDelay
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -364,9 +404,38 @@ func (e *podmanExec) fireAndCheck(ctx context.Context, args []string) error {
 	return nil
 }
 
+// output runs `podman <args>` under the command timeout and returns its trimmed
+// stdout, folding a non-zero exit into an error carrying the captured stderr.
+func (e *podmanExec) output(ctx context.Context, args []string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, e.program, args...) //nolint:gosec // G204: same seam as fireAndCheck; args are Stack-built from a state-dir-derived name
+	cmd.WaitDelay = podmanWaitDelay
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("podman %s: %w: %s", args[0], err, msg)
+		}
+		return "", fmt.Errorf("podman %s: %w", args[0], err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// podmanWaitDelay bounds how long a podman call waits on stdio a child still
+// holds open after podman exits or is killed, so a leaked pipe cannot hang down.
+const podmanWaitDelay = 2 * time.Second
+
 // isNoSuchContainer reports whether err is podman's "no such container" (the
 // container vanished in the verify→signal gap, or was already gone). The
 // teardown treats it as success — the container is gone, which is the goal.
 func isNoSuchContainer(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such container")
+}
+
+// isContainerRunning reports whether err is podman refusing a non-forced rm of a
+// running or paused container ("container state improper").
+func isContainerRunning(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "container state improper")
 }

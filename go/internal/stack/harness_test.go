@@ -43,7 +43,7 @@ type stubProcess struct {
 	rec  *recorder
 }
 
-func (p *stubProcess) Signal(sig ProcessSignal) error {
+func (p *stubProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal " + p.name)
 	return nil
 }
@@ -356,14 +356,17 @@ func (f *fakeGroupSignaller) failSignal(pgid int, sig ProcessSignal, err error) 
 // fakeContainerController is the container-teardown seam under test: it records
 // each stop/remove in order and models per-container existence as a controllable
 // state machine, the container analogue of fakeGroupSignaller. exists maps
-// name→presence; a name absent from exists is treated as gone. onStop / onRemove
-// hooks flip a container's existence at the right escalation step so a test can
-// model a graceful stop, a stop-ignored→rm-f escalation, or a genuine survivor.
+// name→presence; a name absent from exists is treated as gone. exited marks a
+// present container that has stopped, which RemoveExited may remove. onStop /
+// onRemove hooks flip a container's state at the right escalation step so a test
+// can model a graceful stop, a stop-ignored→rm-f escalation, or a genuine
+// survivor; an onStop hook receives the caller's ctx so it can model a slow stop.
 type fakeContainerController struct {
 	rec      *recorder
 	mu       sync.Mutex
 	exists   map[string]bool
-	onStop   map[string]func()
+	exited   map[string]bool
+	onStop   map[string]func(ctx context.Context)
 	onRemove map[string]func()
 }
 
@@ -371,29 +374,42 @@ func newFakeContainerController(rec *recorder) *fakeContainerController {
 	return &fakeContainerController{
 		rec:      rec,
 		exists:   map[string]bool{},
-		onStop:   map[string]func(){},
+		exited:   map[string]bool{},
+		onStop:   map[string]func(context.Context){},
 		onRemove: map[string]func(){},
 	}
 }
 
-func (c *fakeContainerController) Exists(name string) bool {
+func (c *fakeContainerController) Exists(_ context.Context, name string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.exists[name]
 }
 
-func (c *fakeContainerController) Stop(name string, timeout time.Duration) error {
+func (c *fakeContainerController) Stop(ctx context.Context, name string) error {
 	c.mu.Lock()
 	c.rec.add("ctr-stop " + name)
 	cb := c.onStop[name]
 	c.mu.Unlock()
 	if cb != nil {
-		cb() // outside the lock: a hook calls setExists, which locks c.mu.
+		cb(ctx) // outside the lock: a hook calls setExists, which locks c.mu.
 	}
 	return nil
 }
 
-func (c *fakeContainerController) Remove(name string) error {
+// RemoveExited removes only an exited container, as a non-forced `podman rm`
+// does; a running one is left alone without error.
+func (c *fakeContainerController) RemoveExited(_ context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.exists[name] && c.exited[name] {
+		c.rec.add("ctr-rm-exited " + name)
+		c.exists[name] = false
+	}
+	return nil
+}
+
+func (c *fakeContainerController) Remove(_ context.Context, name string) error {
 	c.mu.Lock()
 	c.rec.add("ctr-rm " + name)
 	cb := c.onRemove[name]
@@ -414,6 +430,13 @@ func (c *fakeContainerController) setExistsName(name string, exists bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.exists[name] = exists
+}
+
+// setExited marks a present container as stopped but not yet removed.
+func (c *fakeContainerController) setExited(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.exited[name] = true
 }
 
 // fakePostgresContainer is the container-START seam under test (the analogue of
@@ -463,7 +486,7 @@ type stubContainerProcess struct {
 	stopped atomic.Bool
 }
 
-func (p *stubContainerProcess) Signal(sig ProcessSignal) error {
+func (p *stubContainerProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal postgres")
 	p.stopped.Store(true)
 	return nil
@@ -522,7 +545,7 @@ type stubCollectorProcess struct {
 	stopped atomic.Bool
 }
 
-func (p *stubCollectorProcess) Signal(sig ProcessSignal) error {
+func (p *stubCollectorProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal otel-collector")
 	p.stopped.Store(true)
 	return nil
@@ -622,7 +645,7 @@ type stubNatsProcess struct {
 	stopped atomic.Bool
 }
 
-func (p *stubNatsProcess) Signal(sig ProcessSignal) error {
+func (p *stubNatsProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal nats")
 	p.stopped.Store(true)
 	return nil
