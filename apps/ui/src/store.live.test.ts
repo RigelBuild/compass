@@ -989,8 +989,8 @@ describe("store stopAgent (StopAgentSession)", () => {
 		events: [],
 	});
 
-	// THE GUARD. The store's session source is still the hand-written fixture
-	// (STUB_SESSION_EVENTS), whose ids were never minted by a server. Issuing
+	// THE GUARD. A fixture session (STUB_SESSION_EVENTS, passed explicitly since a
+	// compass store is otherwise live) carries ids no server minted. Issuing
 	// StopAgentSession for one is worse than a no-op: the server's
 	// unknown-session path is idempotent-success (go/internal/runner/host.go:
 	// 217-228), so the call returns OK, stops nothing, and never reaches
@@ -1005,6 +1005,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 			return createAppStore({
 				queryClient: testQueryClient(),
 				compass: compass.client,
+				sessions: STUB_SESSION_EVENTS,
 				onCommsError: (error) => errors.push(error),
 			});
 		});
@@ -1179,6 +1180,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 			disposeFixture = d;
 			return createAppStore({
 				compass: compass.client,
+				sessions: STUB_SESSION_EVENTS,
 				queryClient: testQueryClient(),
 			});
 		});
