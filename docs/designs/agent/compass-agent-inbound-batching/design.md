@@ -16,7 +16,9 @@ turn 1 and the rest wait for turn 2. We want an idle agent to wait a short
 window so a burst lands in one turn, and a UI control to skip that wait.
 
 The saving is unmeasured. Turn 2's context re-read is likely a prompt-cache
-hit, so the saving is mostly per-turn overhead and output tokens (OQ-7).
+hit, so the saving is mostly per-turn overhead and output tokens. CI bursts
+(several checks finishing together) are the main expected win. The window sits
+behind a Runner flag so both modes can be measured (§Resolved decisions).
 
 ## Approach
 
@@ -61,15 +63,23 @@ when `#batchCancel` is set. Queue contents do not define it.
 
 If `CompassAgentOptions.batchWindow` is absent, the agent flushes at once
 (today's behaviour). `run()`'s `finally` calls `#cancelBatch()`. `cli.ts`
-`main` takes `MainDeps.batchWindow`: absent selects `DEFAULT_BATCH_WINDOW`;
+`main` takes `MainDeps.batchWindow`: absent selects the env setting below;
 `"off"` passes none. The timer is an injected `BatchTimer`; the real one is the
 single `setTimeout` under a `biome-ignore` (`noRestrictedGlobals`, precedent
 `session-tee.ts`).
 
+The feature flag is `COMPASS_AGENT_BATCHING`, read by `main`: exactly `"on"`
+selects `DEFAULT_BATCH_WINDOW`, anything else (or unset) means off. The Runner
+passes it through `AgentEnv`, set from its own `--agent-batching` flag or
+`$COMPASS_AGENT_BATCHING`, the same path `--agent-model` takes to
+`COMPASS_MODEL`. It ships off; one Runner per mode gives the comparison.
+
 ### Q1: window length
 
-3 s quiet, 15 s cap, fixed. A person answering threads posts every few seconds,
-and the cap bounds latency when items trickle in. pi-ai's Anthropic provider
+10 s quiet, 60 s cap, fixed to start and tuned from use. A CI run finishes its
+checks over tens of seconds, and a person answering threads posts every few
+seconds; a longer window catches more of either. A reply that must land at once
+is an @-mention (a steer), which never waits. pi-ai's Anthropic provider
 defaults to the five-minute cache entry (`getCacheControl`,
 `pi-ai/src/providers/anthropic.ts`):
 
@@ -77,16 +87,16 @@ defaults to the five-minute cache entry (`getCacheControl`,
 const retention = resolveCacheRetention(cacheRetention, "short");
 ```
 
-A 15 s window uses at most 5% of that entry, so adapting to the TTL gains
-nothing (OQ-1).
+A 60 s window uses at most a fifth of that entry, so the cache stays warm.
 
 ### Q2: which sources batch
 
 Batched: the deliver lane (user replies, peer DMs, agent and CI posts, in-sweep
 ask answers) and the forge lane (PR comments, checks, reviews, state).
 Immediate: steers (@-mentions, out-of-sweep ask answers) and control prompts.
-An idle steer drains any queued items into its own prompt (OQ-2). A control
-prompt cancels the window, and the queue flushes at its `agent_end`.
+An idle steer drains any queued items into its own prompt, steer last, so the
+burst keeps its order and costs one turn. A control prompt cancels the window,
+and the queue flushes at its `agent_end`.
 
 ### Q3: how a batch is shown
 
@@ -132,13 +142,14 @@ A dropped forge op recovers weakly:
   no UPDATE. That item's own re-read cue covers the gap.
 
 Accepted: the agent re-reads the artifact on its next live turn, and mid-turn
-forge items share this exposure today. OQ-8 would remove only this forge
-exposure. The 5-minute deliver bound is accepted on its own.
+forge items share this exposure today. The 5-minute deliver bound is accepted
+on its own.
 
 ### Q5: the skip control
 
 The control is per agent. "Start now" fires the agent's open window at once.
-With no window open, it does nothing (OQ-3).
+With no window open, it does nothing. A per-message skip would only flush the
+whole queue anyway, so there is no finer grain.
 
 ```mermaid
 flowchart LR
@@ -148,8 +159,35 @@ flowchart LR
   A -->|ImmediateControl.startNow| C[CompassAgent.startNow]
 ```
 
+Only the agent's owner or an admin may call it (`RequireAgentSessionOwner`). A
+read grant such as channel membership must not start a turn (DL-396).
+
 A `start_now` retained across a reload (`controlProducer.Restart`) can end the
 new process's first window early. Accepted: it only moves a flush earlier.
+
+### Q6: the UI sees an open window
+
+The button is enabled only while a window is open. The agent emits a
+`SessionBatchPending` session event each time the window arms, re-arms, or
+closes:
+
+```proto
+// compass.proto, in SessionEvent's oneof:
+SessionBatchPending batch_pending = 11;
+
+// The agent's idle batching window. count 0 means it closed.
+message SessionBatchPending {
+  uint32 count = 1;          // items queued in the window
+  int64 fires_at_unix_ms = 2; // when the window fires; 0 when count is 0
+}
+```
+
+It rides the existing session-frame path with no new Runner or server code:
+`EventMapper.#sessionEvent` → `FrameSink` (priority lane, like
+`SessionInjection`) → gateway `PublishEvents` → `Hub.deliverSession` →
+`sessionTail` → `SubscribeAgentSession`. Session events are live-only, so a
+subscriber joining mid-window sees the next arm or close. A missed close leaves
+a stale enabled button, and clicking it is a no-op.
 
 ## Alternatives considered
 
@@ -161,7 +199,8 @@ new process's first window early. Accepted: it only moves a flush earlier.
 - **Skip via an empty `PromptControl`.** It starts a turn on empty text.
   Rejected.
 - **No window: steer items 2..N into turn 1** via `agent.steer`. No latency,
-  RPC, or UI, but any deliver could interrupt a turn (OQ-6).
+  RPC, or UI, but any deliver could interrupt a turn. Rejected: an interrupted
+  turn costs more than a wait, and a steer already covers urgency.
 
 ## Plan
 
@@ -170,15 +209,18 @@ new process's first window early. Accepted: it only moves a flush earlier.
 - Only `deliver` and `forgeNotification` arm the window. Steers and control
   prompts never wait.
 - "Ack means injected" is unchanged. There is no new ack, frame, cursor, or
-  server/Runner state.
+  server/Runner state. The one new event is `SessionBatchPending` on the
+  existing session-event path.
 - Existing test assertions stay unmodified. Existing harnesses change only to
   compile or to opt out of the window:
   - `turnSpanFor` in `cli.test.ts` passes `batchWindow: "off"` to `main`.
   - T4 adds `startNow` to the `ImmediateControl` fixtures.
 - There is one `setTimeout`, in `realBatchTimer.set`, under
   `// biome-ignore lint/style/noRestrictedGlobals: <reason>`.
-- Window values: `quietMs: 3000`, `maxMs: 15000`.
-- The proto tag is 10; never reuse 4. Regenerate with
+- Window values: `quietMs: 10000`, `maxMs: 60000`.
+- Batching is off unless `COMPASS_AGENT_BATCHING` is exactly `"on"`.
+- Proto tags: `start_now = 10` in `AgentControl` (never reuse 4), and
+  `batch_pending = 11` in `SessionEvent`. Regenerate with
   `moon run compass-proto:gen` and commit the output.
 - No tracker ids in source comments, and no private-repo names (public repo).
 
@@ -190,11 +232,18 @@ new process's first window early. Accepted: it only moves a flush earlier.
   - the window state and methods;
   - the idle swaps in `deliver` and `forgeNotification`;
   - the `#cancelBatch()` calls;
-  - the steer tail.
-- In `cli.ts`, add `MainDeps.batchWindow`, resolved with `=== "off"` (never
-  `??` or truthiness).
-- In `cli.test.ts`, `turnSpanFor` passes `"off"` and still gets its turn span. A
-  new case omits `batchWindow` and gets no span, proving the default is on.
+  - the steer tail;
+  - a `SessionBatchPending` emit from `#armBatch`, `#fireBatch`, and
+    `#cancelBatch` (count 0 on close).
+- In `cli.ts`, add `MainDeps.batchWindow`. Absent → read
+  `COMPASS_AGENT_BATCHING` (`=== "on"` → `DEFAULT_BATCH_WINDOW`, else none);
+  `"off"` → none. Never resolve with `??` or truthiness.
+- In the Runner, add `--agent-batching` / `$COMPASS_AGENT_BATCHING` and pass it
+  through `AgentEnv` as `COMPASS_AGENT_BATCHING`, beside `COMPASS_MODEL`.
+- In `cli.test.ts`, `turnSpanFor` passes `"off"` and still gets its turn span.
+  New cases, each with one idle deliver and no `batchWindow`: env `"on"` → no
+  prompt before the window fires (batching on); env unset or `"1"` → the prompt
+  starts at once (off).
 
 New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
 
@@ -224,6 +273,10 @@ New `agent.test.ts` cases, with a hand-driven fake `BatchTimer`:
 - The window is open when `run()` returns → the fake timer's cancel thunk has
   run, and firing the stale callback prompts nothing.
 - A duplicate deliver of a queued id during the window → no ack.
+- Arm, re-arm, and fire each emit one `SessionBatchPending`; the counts are 1,
+  2, then 0, and `fires_at_unix_ms` follows the timer.
+- An `AgentEnv` Go test: `Batching: "on"` sets `COMPASS_AGENT_BATCHING=on`;
+  empty sets nothing.
 
 Interfaces:
 
@@ -239,7 +292,7 @@ export interface BatchWindow {
 	readonly maxMs: number;
 	readonly timer?: BatchTimer; // default realBatchTimer
 }
-export const DEFAULT_BATCH_WINDOW: BatchWindow; // { quietMs: 3000, maxMs: 15000 }
+export const DEFAULT_BATCH_WINDOW: BatchWindow; // { quietMs: 10000, maxMs: 60000 }
 export const realBatchTimer: BatchTimer;
 
 // agent.ts
@@ -263,7 +316,7 @@ interface SteerTail {
 // cli.ts
 export interface MainDeps {
 	// …existing fields unchanged
-	/** Absent → DEFAULT_BATCH_WINDOW; "off" → no window. Resolve with === "off". */
+	/** Absent → COMPASS_AGENT_BATCHING ("on" only); "off" → none. Resolve with === "off". */
 	readonly batchWindow?: BatchWindow | "off";
 }
 ```
@@ -388,8 +441,11 @@ startNow(): void;
   - refuse locally for a fixture session or a store with no compass client;
   - otherwise call `client.skipBatchWindow({ sessionId })`;
   - route a refusal to `skipError` and `onCommsError`.
-- In `LogPanel.tsx`, add the button beside Stop. Show it for a running session,
-  and disable it with a reason for a fixture session.
+- In `apps/ui/src/live/adapt.ts`, `adaptSessionEvent` maps `batchPending` to a
+  pending state, not a trace row: `{ count, firesAtMs }`, cleared at count 0.
+- In `LogPanel.tsx`, add the button beside Stop. Enable it only while the
+  observed session's pending count is above 0, labelled with the count. Disable
+  it with a reason for a fixture session.
 
 Tests:
 
@@ -398,6 +454,8 @@ Tests:
 - A store with no compass client is refused locally without a call, and sets
   `skipError`.
 - A server refusal sets `skipError` and calls `onCommsError` with the error.
+- A `batchPending` count 2 enables the button and shows 2; count 0 disables it;
+  neither adds a trace row.
 
 Interfaces:
 
@@ -405,6 +463,7 @@ Interfaces:
 // AppStore
 skipBatchWindow: () => Promise<void>;
 skipError: Accessor<string | undefined>;
+batchPending: Accessor<{ count: number; firesAtMs: number } | undefined>;
 ```
 
 ### T6: docs (lane compass-agent)
@@ -412,8 +471,10 @@ skipError: Accessor<string | undefined>;
 In `docs/concepts/comms-model.md`, section "The session log is read-only — you
 never prompt into a session":
 
-- An idle agent waits a few seconds so a burst of posts lands in one turn.
-- Mentions still go through at once.
+- An idle agent can wait up to a minute so a burst of posts or CI results lands
+  in one turn, when the deployment turns batching on.
+- An @-mention still goes through at once; use it when a message must reach the
+  agent now.
 - Add "Start now" beside Stop, and update "exactly three ways" to match.
 
 Interfaces: none.
@@ -437,59 +498,38 @@ is last.
 
 ## Tasks
 
-- [ ] T1: idle window, `batch-window.ts`, `MainDeps.batchWindow`, tests.
-- [ ] T2: `StartNowControl`, gen-fence, `SkipBatchWindow`, owner check, tests.
+- [ ] T1: idle window, `batch-window.ts`, `MainDeps.batchWindow`, the
+  `COMPASS_AGENT_BATCHING` flag through `AgentEnv`, `SessionBatchPending` emit,
+  tests.
+- [ ] T2: `StartNowControl`, `SessionBatchPending`, gen-fence,
+  `SkipBatchWindow`, owner check, tests.
 - [ ] T3: Runner relay test for `start_now`.
 - [ ] T4: `start_now` route, `ImmediateControl` fixtures, `startNow`, tests.
-- [ ] T5: UI "Start now" button and store action, tests.
+- [ ] T5: UI "Start now" button gated on the pending count, store action, tests.
 - [ ] T6: comms-model doc update.
 - [ ] T7: product spec update for `SkipBatchWindow`.
 
+## Resolved decisions (Matt, 2026-10-08)
+
+| Question | Ruling | Folded into |
+| --- | --- | --- |
+| Window values | Longer: 10 s quiet, 60 s cap, tuned from use. An @-mention is the fast path. | Q1 |
+| Idle steer with a window open | The steer drains both queues into its own prompt, steer last. | Q2 |
+| Skip granularity | Per agent. A per-message skip would flush the whole queue anyway. | Q5 |
+| Who may skip | The owner or an admin (`RequireAgentSessionOwner`); for people, not agents. | Q5, T2 |
+| Tell the UI a window is open | Yes: a `SessionBatchPending` event gates the button. | Q6, T1, T5 |
+| Measure the saving | Ship behind `COMPASS_AGENT_BATCHING`, default off, and compare both modes. | The change, T1 |
+| Keep forge items immediate | No. CI bursts are the main saving, so the forge lane batches. | Q2 |
+
 ## Open Questions
 
-The plan follows each recommendation. OQ-1 to OQ-6 are load-bearing; OQ-7 and
-OQ-8 are not.
-
-- **OQ-1: window values.**
-  - (A) Fixed 3 s / 15 s.
-  - (B) Longer, such as 10 s / 60 s: bigger batches, slower lone replies.
-  - (C) Adapt the cap to the cache TTL: more state, pays off only when long.
-  - Recommendation: (A). Changing it is one line in `DEFAULT_BATCH_WINDOW`.
-- **OQ-2: an idle steer while a window is open.**
-  - (A) Steer alone, with the batch at `agent_end`. This reorders the burst (a
-    reply sent before the mention is read a turn after it) and costs two turns.
-  - (B) The steer drains both queues into its own prompt, steer last. One turn,
-    order kept. Acks, dedup, and un-dedup on rejection keep their meaning.
-  - (C) The steer waits too, which delays a direct mention by up to 15 s.
-  - Recommendation: (B).
-- **OQ-3: skip granularity, and whether to ship it now.**
-  - (A) Per agent.
-  - (B) Per message, which needs an id on the control and a split queue.
-  - (C) Ship T1 alone and defer T2–T5. That removes OQ-4, OQ-5, and the
-    stale-skip case.
-  - Recommendation: (A). Matt's sketch asks for the control.
-- **OQ-4: who may call `SkipBatchWindow`.**
-  - (A) Any member, via `RequireAgentSessionSubscriber`, "the read-path
-    authorization primitive". A read grant would then cause a write (a turn
-    start). That conflicts with DL-396, which gates cross-owner reach at
-    delivery, not by membership.
-  - (B) `adminOnly`, like `StopAgentSession`. A non-admin owner sees a dead
-    button.
-  - (C) Owner or `UserRoleAdmin`, via `RequireAgentSessionOwner`: one `EXISTS`
-    statement in the not-found-merge shape.
-  - Recommendation: (C). This is a door-class call and needs Matt's sign-off.
-- **OQ-5: tell the UI a window is open.**
-  - (A) No signal: the button is a no-op when nothing is waiting.
-  - (B) A pending-count `SessionEvent`, which needs Runner and UI plumbing.
-  - Recommendation: (A). A 15 s window would mostly flicker.
-- **OQ-6: window, or steer later items into the running turn** (see
-  Alternatives).
-  - (A) The window: up to 15 s on a lone reply, no interrupted turns.
-  - (B) Steer items 2..N into turn 1.
-  - Recommendation: (A). It matches Matt's sketch.
-- **OQ-7 (not load-bearing): measure the saving.** After T1 ships, compare
-  turns and tokens per burst against today in the LLM usage data. If the saving
-  is small, shorten `DEFAULT_BATCH_WINDOW` or drop it.
-- **OQ-8 (not load-bearing): keep forge items immediate when idle.** Only the
-  deliver lane would batch. That removes Q4's forge exposure, but a CI or PR
-  burst would cost extra turns. This record batches both lanes.
+- **OQ-1: while a turn is running, should a new message wait for the turn to
+  end, or be pushed into the running turn?** Not load-bearing; the plan assumes
+  (A).
+  - (A) Wait. A message that arrives mid-turn waits until the turn ends, then
+    goes in with everything else that arrived. This is how the agent works
+    today, and the window above only changes the idle case.
+  - (B) Push in. Each new message is injected into the running turn, the way an
+    @-mention is. The agent sees it sooner, but every message would interrupt
+    whatever the agent is doing.
+  - Recommendation: (A). Use an @-mention when a message must interrupt.
