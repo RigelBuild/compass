@@ -174,13 +174,12 @@ type Gateway struct {
 	// across the whole event stream and the hub only flags seq > lastSeq+1, so
 	// replayed low seqs are accepted and loss in that range stops being detectable.
 
-	// Scope is per-Runner-link: relay.go's eventPublisher owns a SECOND counter and
-	// both feed the hub's one high-water mark, so gap detection is meaningful only
-	// while exactly one is live. This path replaced the stdout relay for gateway
-	// traffic, so that holds today; unifying the two is T9.
+	// In production every Gateway of one Runner link shares deps.Seq, so RunnerSeq
+	// stays monotonic across container sockets. The hub's stale-ERRORED guard
+	// relies on that: a resumed session's new socket must not restart at 1.
 	pubMu sync.Mutex
 	pub   *sessionPublisher
-	seq   seqCounter
+	seq   *SeqCounter
 
 	// publishMu fences telemetry admission while a lifecycle terminal state is sent.
 	publishMu sync.Mutex
@@ -222,6 +221,8 @@ type Deps struct {
 	Events EventRelay
 	// Committer forwards a durable conversation frame to the Server for commit (CommitConversationFrame).
 	Committer ConversationCommitter
+	// Seq is the Runner link's RunnerSeq allocator; nil gives this Gateway its own.
+	Seq *SeqCounter
 }
 
 // NewGateway builds the AgentGateway handler for the container's socket:
@@ -240,6 +241,10 @@ type Deps struct {
 // the stream outlives any one agent request. A caller with no distinct socket
 // scope (a hermetic test) passes context.Background().
 func NewGateway(baseCtx context.Context, containerName string, deps Deps) *Gateway {
+	seq := deps.Seq
+	if seq == nil {
+		seq = &SeqCounter{}
+	}
 	return &Gateway{
 		baseCtx:       baseCtx,
 		containerName: containerName,
@@ -250,6 +255,7 @@ func NewGateway(baseCtx context.Context, containerName string, deps Deps) *Gatew
 		board:         deps.Board,
 		events:        deps.Events,
 		committer:     deps.Committer,
+		seq:           seq,
 		control:       noopControlRouter{},
 		// ttl=0: no expiry, a pure size-bounded LRU (committedKeysMax). The cache
 		// is advisory, so eviction is safe — it never drops the store's boundary.

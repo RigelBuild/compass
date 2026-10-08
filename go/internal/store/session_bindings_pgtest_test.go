@@ -35,7 +35,7 @@ import (
 // ctx is the SECOND parameter, after t, matching mustTopic (messages_test.go).
 func mustBind(t *testing.T, ctx context.Context, s *Store, sessionID string, accountID AccountID, runnerID string) string {
 	t.Helper()
-	displaced, err := s.RecordSessionBinding(ctx, sessionID, accountID, runnerID)
+	displaced, _, err := s.RecordSessionBinding(ctx, sessionID, accountID, runnerID)
 	if err != nil {
 		t.Fatalf("RecordSessionBinding(%q, %q, %q): %v", sessionID, accountID, runnerID, err)
 	}
@@ -91,7 +91,7 @@ func TestRecordSessionBindingRoundTripsBothDirections(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	displaced, err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1")
+	displaced, _, err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1")
 	if err != nil {
 		t.Fatalf("RecordSessionBinding: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestRecordSessionBindingRoundTripsBothDirections(t *testing.T) {
 		t.Fatalf("first bind displaced %q, want \"\" — the account held no prior session, and a caller reaping a phantom id would clear a live registry entry", displaced)
 	}
 
-	gotAccount, gotRunner, err := s.ResolveSessionBinding(ctx, "sess-1")
+	gotAccount, gotRunner, _, err := s.ResolveSessionBinding(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("ResolveSessionBinding: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestRecordSessionBindingRoundTripsBothDirections(t *testing.T) {
 		t.Fatalf("ResolveSessionBinding runner = %q, want runner-1", gotRunner)
 	}
 
-	gotSession, gotRunner, err := s.SessionForAccount(ctx, agent.ID)
+	gotSession, gotRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestSessionBindingLookupsFailClosed(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	account, runner, err := s.ResolveSessionBinding(ctx, "never-bound")
+	account, runner, _, err := s.ResolveSessionBinding(ctx, "never-bound")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveSessionBinding(never-bound) err = %v, want errors.Is(_, ErrNotFound)", err)
 	}
@@ -140,7 +140,7 @@ func TestSessionBindingLookupsFailClosed(t *testing.T) {
 	// started a session resolves nothing to dispatch to.
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
-	session, runner, err := s.SessionForAccount(ctx, agent.ID)
+	session, runner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionForAccount(unbound agent) err = %v, want errors.Is(_, ErrNotFound)", err)
 	}
@@ -167,7 +167,7 @@ func TestRecordSessionBindingRePointsAccountAndReportsDisplaced(t *testing.T) {
 
 	mustBind(t, ctx, s, "sess-old", agent.ID, "runner-1")
 
-	displaced, err := s.RecordSessionBinding(ctx, "sess-new", agent.ID, "runner-2")
+	displaced, _, err := s.RecordSessionBinding(ctx, "sess-new", agent.ID, "runner-2")
 	if err != nil {
 		t.Fatalf("re-point onto sess-new: %v (a re-point must never be refused — promoteSession has nowhere to put an error)", err)
 	}
@@ -176,7 +176,7 @@ func TestRecordSessionBindingRePointsAccountAndReportsDisplaced(t *testing.T) {
 	}
 
 	// The account now resolves to the NEW session (the session_id assignment).
-	gotSession, gotRunner, err := s.SessionForAccount(ctx, agent.ID)
+	gotSession, gotRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount after the re-point: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestRecordSessionBindingRePointsAccountAndReportsDisplaced(t *testing.T) {
 
 	// The displaced session id no longer resolves: it named the same row, which
 	// now carries the new session.
-	if _, _, err := s.ResolveSessionBinding(ctx, "sess-old"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.ResolveSessionBinding(ctx, "sess-old"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveSessionBinding(sess-old) err = %v, want ErrNotFound — the displaced session must stop resolving", err)
 	}
 
@@ -260,7 +260,7 @@ func TestRecordSessionBindingRejectsASessionClaimedByAnotherAccount(t *testing.T
 
 	mustBind(t, ctx, s, "sess-1", agentA.ID, "runner-1")
 
-	displaced, err := s.RecordSessionBinding(ctx, "sess-1", agentB.ID, "runner-1")
+	displaced, _, err := s.RecordSessionBinding(ctx, "sess-1", agentB.ID, "runner-1")
 	sentinelIs(t, err, ErrConflict, "a session id already bound to a different agent")
 	if displaced != "" {
 		t.Fatalf("the refused bind returned displaced = %q, want \"\" — a failed write displaced nothing", displaced)
@@ -268,14 +268,14 @@ func TestRecordSessionBindingRejectsASessionClaimedByAnotherAccount(t *testing.T
 
 	// The refused write changed nothing: the session still speaks for agent A,
 	// and agent B still has no live session.
-	gotAccount, _, err := s.ResolveSessionBinding(ctx, "sess-1")
+	gotAccount, _, _, err := s.ResolveSessionBinding(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("ResolveSessionAccount after the refused bind: %v", err)
 	}
 	if gotAccount != agentA.ID {
 		t.Fatalf("sess-1 resolves to %q, want the original owner %q", gotAccount, agentA.ID)
 	}
-	if _, _, err := s.SessionForAccount(ctx, agentB.ID); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.SessionForAccount(ctx, agentB.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionForAccount(agent-b) err = %v, want ErrNotFound — the refused bind must not have landed", err)
 	}
 }
@@ -287,7 +287,7 @@ func TestRecordSessionBindingRejectsASessionClaimedByAnotherAccount(t *testing.T
 func TestRecordSessionBindingUnknownAgentIsInvalidArgument(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.RecordSessionBinding(context.Background(), "sess-1", "no-such-agent", "runner-1")
+	_, _, err := s.RecordSessionBinding(context.Background(), "sess-1", "no-such-agent", "runner-1")
 	sentinelIs(t, err, ErrInvalidArgument, "binding for an unknown agent")
 }
 
@@ -307,10 +307,10 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
 
-	if _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveSessionAccount after delete err = %v, want ErrNotFound", err)
 	}
-	if _, _, err := s.SessionForAccount(ctx, agent.ID); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.SessionForAccount(ctx, agent.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SessionForAccount after delete err = %v, want ErrNotFound", err)
 	}
 
@@ -327,6 +327,53 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 	}
 	if err := s.DeleteSessionBinding(ctx, "never-bound"); err != nil {
 		t.Fatalf("DeleteSessionBinding(never-bound) = %v, want nil (idempotent)", err)
+	}
+}
+
+// A release conditioned on a version removes only that row version: a re-bind of
+// the same session id writes a new version, so the stale release leaves it bound.
+func TestDeleteSessionBindingByVersionSkipsRebind(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	_, oldVersion, err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1")
+	if err != nil {
+		t.Fatalf("RecordSessionBinding: %v", err)
+	}
+	if _, _, read, err := s.ResolveSessionBinding(ctx, "sess-1"); err != nil || read != oldVersion {
+		t.Fatalf("ResolveSessionBinding version = (%q, %v), want (%q, nil)", read, err, oldVersion)
+	}
+	_, newVersion, err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1")
+	if err != nil {
+		t.Fatalf("re-bind RecordSessionBinding: %v", err)
+	}
+	if newVersion == oldVersion || oldVersion == "" {
+		t.Fatalf("re-bind kept version %q, want a new one", oldVersion)
+	}
+
+	removed, err := s.DeleteSessionBindingVersion(ctx, "sess-1", oldVersion)
+	if err != nil || removed {
+		t.Fatalf("stale DeleteSessionBinding = (%v, %v), want (false, nil)", removed, err)
+	}
+	if got, _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); err != nil || got != agent.ID {
+		t.Fatalf("binding after stale delete = (%q, %v), want (%q, nil)", got, err, agent.ID)
+	}
+	tenant := s.EffectiveTenant(ctx)
+	if events := computeEvents(t, s, tenant, agent.ID); len(events) != 1 || events[0].Kind != "start" {
+		t.Fatalf("usage events after stale delete = %+v, want only the open start", events)
+	}
+	removed, err = s.DeleteSessionBindingVersion(ctx, "sess-1", newVersion)
+	if err != nil || !removed {
+		t.Fatalf("current DeleteSessionBinding = (%v, %v), want (true, nil)", removed, err)
+	}
+	if _, _, _, err := s.ResolveSessionBinding(ctx, "sess-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ResolveSessionBinding after delete err = %v, want ErrNotFound", err)
+	}
+	events := computeEvents(t, s, tenant, agent.ID)
+	if len(events) != 2 || events[0].Kind != "start" || events[1].Kind != "end" || events[0].IntervalID != events[1].IntervalID {
+		t.Fatalf("usage events after current delete = %+v, want one start and its end", events)
 	}
 }
 
@@ -390,14 +437,14 @@ func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
 
 	// The swept bindings are actually gone in both directions.
 	for _, sessionID := range []string{"sess-a", "sess-b", "sess-z"} {
-		if _, _, err := s.ResolveSessionBinding(ctx, sessionID); !errors.Is(err, ErrNotFound) {
+		if _, _, _, err := s.ResolveSessionBinding(ctx, sessionID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("ResolveSessionBinding(%s) after the sweep err = %v, want ErrNotFound", sessionID, err)
 		}
 	}
 
 	// The other Runner's binding SURVIVES: a re-enroll must not drop live
 	// sessions on a Runner that never reconnected.
-	gotAccount, _, err := s.ResolveSessionBinding(ctx, "sess-elsewhere")
+	gotAccount, _, _, err := s.ResolveSessionBinding(ctx, "sess-elsewhere")
 	if err != nil {
 		t.Fatalf("runner-2's binding did not survive the runner-1 sweep: %v", err)
 	}
@@ -470,7 +517,7 @@ func TestSessionBindingIsTenantIsolated(t *testing.T) {
 
 	// Tenant B resolves A's session id: the row is not in B's view, so this must
 	// fail closed rather than hand B tenant A's account.
-	gotAccount, _, err := s.ResolveSessionBinding(ctxB, "sess-a")
+	gotAccount, _, _, err := s.ResolveSessionBinding(ctxB, "sess-a")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("tenant B ResolveSessionBinding(sess-a) err = %v, want ErrNotFound — cross-tenant read leak", err)
 	}
@@ -479,7 +526,7 @@ func TestSessionBindingIsTenantIsolated(t *testing.T) {
 	}
 
 	// The reverse direction leaks nothing either.
-	if gotSession, _, err := s.SessionForAccount(ctxB, agentA.ID); !errors.Is(err, ErrNotFound) {
+	if gotSession, _, _, err := s.SessionForAccount(ctxB, agentA.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("tenant B SessionForAccount(A's agent) = (%q, %v), want ErrNotFound — cross-tenant read leak", gotSession, err)
 	}
 
@@ -495,7 +542,7 @@ func TestSessionBindingIsTenantIsolated(t *testing.T) {
 
 	// Control: tenant A still sees its OWN binding, proving the policy is not
 	// simply hiding everything.
-	if gotAccount, _, err := s.ResolveSessionBinding(ctxA, "sess-a"); err != nil {
+	if gotAccount, _, _, err := s.ResolveSessionBinding(ctxA, "sess-a"); err != nil {
 		t.Fatalf("tenant A cannot see its OWN binding — policy over-blocks: %v", err)
 	} else if gotAccount != agentA.ID {
 		t.Fatalf("tenant A's own binding resolves to %q, want %q", gotAccount, agentA.ID)
@@ -554,14 +601,14 @@ func TestSessionBindingSameSessionIDInTwoTenantsCoexist(t *testing.T) {
 	// Each tenant resolves its OWN account from the shared session id. A single
 	// surviving row would make one of these two answer with the other tenant's
 	// account — the relay resolving a foreign principal.
-	gotA, _, err := s.ResolveSessionBinding(ctxA, "sess-shared")
+	gotA, _, _, err := s.ResolveSessionBinding(ctxA, "sess-shared")
 	if err != nil {
 		t.Fatalf("tenant A ResolveSessionBinding(sess-shared) after B's bind: %v (B's write clobbered A's binding)", err)
 	}
 	if gotA != agentA.ID {
 		t.Fatalf("tenant A resolves sess-shared to %q, want its own agent %q", gotA, agentA.ID)
 	}
-	gotB, _, err := s.ResolveSessionBinding(ctxB, "sess-shared")
+	gotB, _, _, err := s.ResolveSessionBinding(ctxB, "sess-shared")
 	if err != nil {
 		t.Fatalf("tenant B ResolveSessionBinding(sess-shared): %v", err)
 	}
@@ -570,10 +617,10 @@ func TestSessionBindingSameSessionIDInTwoTenantsCoexist(t *testing.T) {
 	}
 
 	// And the reverse direction, per tenant.
-	if got, runner, err := s.SessionForAccount(ctxA, agentA.ID); err != nil || got != "sess-shared" || runner != "runner-a" {
+	if got, runner, _, err := s.SessionForAccount(ctxA, agentA.ID); err != nil || got != "sess-shared" || runner != "runner-a" {
 		t.Fatalf("tenant A SessionForAccount = (%q, %q, %v), want (sess-shared, runner-a, nil)", got, runner, err)
 	}
-	if got, runner, err := s.SessionForAccount(ctxB, agentB.ID); err != nil || got != "sess-shared" || runner != "runner-b" {
+	if got, runner, _, err := s.SessionForAccount(ctxB, agentB.ID); err != nil || got != "sess-shared" || runner != "runner-b" {
 		t.Fatalf("tenant B SessionForAccount = (%q, %q, %v), want (sess-shared, runner-b, nil)", got, runner, err)
 	}
 }
@@ -608,10 +655,10 @@ func TestSessionBindingSameAccountIDInTwoTenantsCoexist(t *testing.T) {
 	}
 
 	// Both rows survive, one per tenant, each resolving its own session.
-	if got, runner, err := s.SessionForAccount(ctxA, shared.ID); err != nil || got != "sess-a" || runner != "runner-a" {
+	if got, runner, _, err := s.SessionForAccount(ctxA, shared.ID); err != nil || got != "sess-a" || runner != "runner-a" {
 		t.Fatalf("tenant A SessionForAccount = (%q, %q, %v), want (sess-a, runner-a, nil) — B's write reached A's row", got, runner, err)
 	}
-	if got, runner, err := s.SessionForAccount(ctxB, shared.ID); err != nil || got != "sess-b" || runner != "runner-b" {
+	if got, runner, _, err := s.SessionForAccount(ctxB, shared.ID); err != nil || got != "sess-b" || runner != "runner-b" {
 		t.Fatalf("tenant B SessionForAccount = (%q, %q, %v), want (sess-b, runner-b, nil)", got, runner, err)
 	}
 
@@ -625,10 +672,10 @@ func TestSessionBindingSameAccountIDInTwoTenantsCoexist(t *testing.T) {
 	}
 
 	// Each tenant's session resolves only in its own tenant.
-	if _, _, err := s.ResolveSessionBinding(ctxA, "sess-b"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.ResolveSessionBinding(ctxA, "sess-b"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("tenant A resolved B's session err = %v, want ErrNotFound", err)
 	}
-	if _, _, err := s.ResolveSessionBinding(ctxB, "sess-a"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.ResolveSessionBinding(ctxB, "sess-a"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("tenant B resolved A's session err = %v, want ErrNotFound", err)
 	}
 }
@@ -663,7 +710,7 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 	// Under the system role BOTH rows are visible, so the :one read is ambiguous.
 	// It does NOT error — that is the hazard. It returns one of the two, and
 	// which one is not something the caller can control or detect.
-	got, gotRunner, err := s.SessionForAccount(WithSystemRole(context.Background()), shared.ID)
+	got, gotRunner, _, err := s.SessionForAccount(WithSystemRole(context.Background()), shared.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount under the system role: %v — the current behaviour is a SILENT pick, not an error; if this now errors, PR3 changed the contract and this test must be updated deliberately", err)
 	}
@@ -674,10 +721,10 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 
 	// The same read on the REQUEST path is exact in both tenants: the hazard is
 	// the system role's missing scoping, NOT anything about the data.
-	if v, runner, err := s.SessionForAccount(ctxA, shared.ID); err != nil || v != "sess-a" || runner != "runner-a" {
+	if v, runner, _, err := s.SessionForAccount(ctxA, shared.ID); err != nil || v != "sess-a" || runner != "runner-a" {
 		t.Fatalf("tenant A request-path SessionForAccount = (%q, %q, %v), want (sess-a, runner-a, nil)", v, runner, err)
 	}
-	if v, runner, err := s.SessionForAccount(ctxB, shared.ID); err != nil || v != "sess-b" || runner != "runner-b" {
+	if v, runner, _, err := s.SessionForAccount(ctxB, shared.ID); err != nil || v != "sess-b" || runner != "runner-b" {
 		t.Fatalf("tenant B request-path SessionForAccount = (%q, %q, %v), want (sess-b, runner-b, nil)", v, runner, err)
 	}
 
@@ -700,7 +747,7 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 	// pooled connection it draws, so this asserts the DISJUNCTION rather than
 	// pretending either branch is the contract. Both are defects; PR3 owns the
 	// fix, and this test is what will fail when it lands one.
-	sysDisplaced, sysErr := s.RecordSessionBinding(WithSystemRole(context.Background()), "sess-sys", shared.ID, "runner-sys")
+	sysDisplaced, _, sysErr := s.RecordSessionBinding(WithSystemRole(context.Background()), "sess-sys", shared.ID, "runner-sys")
 	switch {
 	case sysErr != nil:
 		t.Logf("system-role RecordSessionBinding failed (connection had no prior armed statement, so the GUC was undefined and the DEFAULT was NULL): %v", sysErr)
@@ -716,10 +763,10 @@ func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
 			t.Fatalf("system-role write left %d rows stamped tenant_id = '', want 1 — the observed failure mode is an ORPHAN row, so if it is now stamped with a real tenant the write path grew scoping and this test must be updated deliberately", orphans)
 		}
 		// And it is invisible to every tenant: no policy matches ''.
-		if _, _, err := s.ResolveSessionBinding(ctxA, "sess-sys"); !errors.Is(err, ErrNotFound) {
+		if _, _, _, err := s.ResolveSessionBinding(ctxA, "sess-sys"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("tenant A sees the untenanted binding err = %v, want ErrNotFound", err)
 		}
-		if _, _, err := s.ResolveSessionBinding(ctxB, "sess-sys"); !errors.Is(err, ErrNotFound) {
+		if _, _, _, err := s.ResolveSessionBinding(ctxB, "sess-sys"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("tenant B sees the untenanted binding err = %v, want ErrNotFound", err)
 		}
 	}
@@ -786,7 +833,7 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 	results := make(chan outcome, 2)
 	launch := func(sessionID, runnerID string) {
 		go func() {
-			d, err := s.RecordSessionBinding(ctx, sessionID, agent.ID, runnerID)
+			d, _, err := s.RecordSessionBinding(ctx, sessionID, agent.ID, runnerID)
 			results <- outcome{sessionID, d, err}
 		}()
 	}
@@ -836,7 +883,7 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 	if n := countBindings(t, ctx, s, agent.ID); n != 1 {
 		t.Fatalf("bindings after two concurrent re-points = %d, want 1", n)
 	}
-	live, liveRunner, err := s.SessionForAccount(ctx, agent.ID)
+	live, liveRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("SessionForAccount after the race: %v", err)
 	}
@@ -848,7 +895,7 @@ func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testin
 	// Both displaced sessions are gone, and between them they were reported to
 	// exactly the two callers: nothing was destroyed unreported.
 	for _, dead := range []string{"sess-A", winner} {
-		if _, _, err := s.ResolveSessionBinding(ctx, dead); !errors.Is(err, ErrNotFound) {
+		if _, _, _, err := s.ResolveSessionBinding(ctx, dead); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("displaced session %q still resolves (err = %v), want ErrNotFound", dead, err)
 		}
 	}
@@ -914,7 +961,7 @@ func TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession(t *te
 		{"sess-2", "runner-2"},
 	} {
 		go func() {
-			d, err := s.RecordSessionBinding(ctx, b.session, agent.ID, b.runner)
+			d, _, err := s.RecordSessionBinding(ctx, b.session, agent.ID, b.runner)
 			results <- outcome{b.session, d, err}
 		}()
 	}
@@ -957,7 +1004,7 @@ func TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession(t *te
 		t.Fatalf("bindings after two concurrent first binds = %d, want 1 — the PK must fold them into one row", n)
 	}
 	// The winner's session is gone, and it WAS reported, so it can be reaped.
-	if _, _, err := s.ResolveSessionBinding(ctx, winner); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.ResolveSessionBinding(ctx, winner); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the overwritten session %q still resolves (err = %v), want ErrNotFound", winner, err)
 	}
 }
@@ -1046,7 +1093,7 @@ func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *t
 		go func() {
 			ready.Done()
 			<-start
-			displaced, err := s.RecordSessionBinding(ctx, fresh, agent.ID, "runner-2")
+			displaced, _, err := s.RecordSessionBinding(ctx, fresh, agent.ID, "runner-2")
 			binds <- bindResult{displaced, err}
 		}()
 		go func() {
@@ -1098,7 +1145,7 @@ func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *t
 		if n := countBindings(t, ctx, s, agent.ID); n != 1 {
 			t.Fatalf("iteration %d: bindings after the race = %d, want 1 — the bind must land whether or not the sweep removed the prior row", i, n)
 		}
-		live, liveRunner, err := s.SessionForAccount(ctx, agent.ID)
+		live, liveRunner, _, err := s.SessionForAccount(ctx, agent.ID)
 		if err != nil {
 			t.Fatalf("iteration %d: SessionForAccount after the race: %v", i, err)
 		}
@@ -1107,7 +1154,7 @@ func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *t
 		}
 		// And the displaced session is gone in every ordering, which is what
 		// makes "reported to nobody" a genuine strand rather than a deferral.
-		if _, _, err := s.ResolveSessionBinding(ctx, old); !errors.Is(err, ErrNotFound) {
+		if _, _, _, err := s.ResolveSessionBinding(ctx, old); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("iteration %d: displaced session %q still resolves (err = %v), want ErrNotFound", i, old, err)
 		}
 	}
