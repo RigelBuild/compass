@@ -301,11 +301,10 @@ export function createCompassWebTransport(
 // Re-exported so non-web consumers can type a custom transport without
 // importing @connectrpc/connect directly (the fence blocks that import).
 export type { Transport } from "@connectrpc/connect";
-
-// Re-exported so test fixtures build an in-memory fake server through the one
-// door without importing @connectrpc/connect directly (the fence blocks that).
-// Dev/test-only; the shipped app dials `createCompassWebTransport`.
-export { createRouterTransport } from "@connectrpc/connect";
+// Re-exported so fixtures build an in-memory fake server (dev/test-only; the app
+// dials `createCompassWebTransport`) and UI code can branch on a stream's status
+// code, both without importing @connectrpc/connect directly (the fence blocks that).
+export { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
 
 /** True when `error` is the server rejecting the request's credential (missing,
  *  unknown, or revoked bearer). Lets UI code branch on auth failure without
@@ -475,6 +474,8 @@ export {
 } from "./gen/compass/v1/comms_pb";
 export type {
 	AgentAttribution,
+	AgentPlanEntry,
+	AgentSessionFrame,
 	AgentSessionStatus,
 	ChangedStats,
 	Check,
@@ -489,13 +490,21 @@ export type {
 	Review,
 	ReviewThread,
 	ServerStatus,
+	SessionEvent,
+	SessionFileDiff,
+	SessionInjection,
+	SubscribeAgentSessionRequest,
 	SubscribeEventsRequest,
 	SubscribeEventsResponse,
 	TrackerRef,
 } from "./gen/compass/v1/compass_pb";
 export {
+	AgentPlanEntrySchema,
+	AgentPlanEntryStatus,
+	AgentSessionFrameSchema,
 	AgentSessionState,
 	AgentSessionStatusSchema,
+	AgentToolCallStatus,
 	CompassService,
 	EgressPosture,
 	ForgeProvider,
@@ -506,5 +515,8 @@ export {
 	PullRequestSchema,
 	RuntimeTier,
 	ServerState,
+	SessionErrorKind,
+	SessionEventSchema,
+	SessionInjectionKind,
 	SubscribeEventsResponseSchema,
 } from "./gen/compass/v1/compass_pb";

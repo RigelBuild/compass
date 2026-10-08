@@ -7,6 +7,7 @@
 // store built WITHOUT a client is offline: starts from `initialComms`, writes reject.
 
 import {
+	AgentSessionState,
 	type CommsClient,
 	type CompassClient,
 	CompassService,
@@ -52,11 +53,17 @@ import type { FocusZone } from "./keyboard/zones";
 import { adaptMessage } from "./live/adapt";
 import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
-import { runEventStream } from "./live/events";
+import { type AccountSession, runEventStream } from "./live/events";
 import { createConnectQuery } from "./live/query";
+import {
+	appendSessionEvent,
+	isTerminalSessionState,
+	runSessionTail,
+	type SessionFrameUpdate,
+} from "./live/session-tail";
 import { runCommsStream } from "./live/stream";
 import { joinAgents } from "./roster";
-import type { AgentSession } from "./session-events";
+import type { AgentSession, SessionEvent } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import {
 	type Agent,
@@ -578,12 +585,8 @@ export interface AppStoreOptions {
 	 *  dialing. Separate from `comms`: the two services are separate clients over
 	 *  the one Connection (live/client.ts:28-33). */
 	readonly compass?: CompassClient;
-	/** The observable agent sessions, keyed by agent account id. Defaults to the
-	 *  hand-written fixture (STUB_SESSION_EVENTS), which is what the shipped app
-	 *  still shows until SubscribeAgentSession is wired — every fixture entry is
-	 *  marked `fixture: true`, so `stopAgent` refuses to put its id on the wire.
-	 *  A test (or, later, the live stream) supplies server-sourced sessions here
-	 *  to exercise the real Stop path. */
+	/** Overrides the sessions, keyed by account id. Absent: live when `compass` is set,
+	 *  else the fixture, whose `fixture: true` entries `stopAgent` refuses to send. */
 	readonly sessions?: Record<string, AgentSession>;
 	/** Observes a comms failure — a stream error the driver retries past, a
 	 *  rejected `RespondToAsk`, a refused `StopAgentSession`, or a failed boot
@@ -594,6 +597,214 @@ export interface AppStoreOptions {
 	/** Where the window layout persists (record A8): the boot passes
 	 *  `sessionStorage`. Absent, the layout lives only as long as the store. */
 	readonly layoutStorage?: Storage;
+}
+
+/** One live session's tailed trace and the last lifecycle state the tail saw.
+ *  `notFound` parks the tail until the next status for the session re-arms it. */
+interface SessionTrace {
+	readonly events: SessionEvent[];
+	readonly state?: AgentSessionState;
+	readonly notFound?: true;
+}
+
+/** A session runs until either stream reports a terminal state; terminal is
+ *  absorbing, so whichever stream saw it first wins. No state at all is not running. */
+function isRunning(
+	status: AgentSessionState,
+	tail: AgentSessionState | undefined,
+): boolean {
+	if (isTerminalSessionState(status)) return false;
+	if (tail !== undefined && isTerminalSessionState(tail)) return false;
+	return status !== AgentSessionState.UNSPECIFIED || tail !== undefined;
+}
+
+/** The live session source: each account's current session from the status
+ *  stream, plus each session's tailed trace, kept for the store's lifetime. */
+interface LiveSessions {
+	setAccountSessions: (sessions: ReadonlyMap<string, AccountSession>) => void;
+	sessionFor: (agentId: string) => AgentSession | undefined;
+}
+
+function createLiveSessions(
+	client: CompassClient,
+	deps: {
+		shownAgentIds: Accessor<readonly string[]>;
+		onError: (error: unknown) => void;
+	},
+): LiveSessions {
+	const [accountSessions, setAccountSessions] = createSignal<
+		ReadonlyMap<string, AccountSession>
+	>(new Map());
+	const [traces, setTraces] = createSignal<ReadonlyMap<string, SessionTrace>>(
+		new Map(),
+	);
+	const updateTrace = (
+		sessionId: string,
+		update: (trace: SessionTrace) => SessionTrace,
+	): void => {
+		setTraces((prev) => {
+			const next = new Map(prev);
+			next.set(sessionId, update(prev.get(sessionId) ?? { events: [] }));
+			return next;
+		});
+	};
+	const appendFrame = (sessionId: string, frame: SessionFrameUpdate): void => {
+		updateTrace(sessionId, (trace) => ({
+			events: frame.event
+				? appendSessionEvent(trace.events, frame.event)
+				: trace.events,
+			state: frame.state ?? trace.state,
+		}));
+	};
+	// Bumped on every changed status per session; a NotFound only parks the tail
+	// if no status arrived while it was in flight. Not reactive: only read on settle.
+	const statusCounts = new Map<string, number>();
+	// The last status per session id. Unlike the account map, a resync never
+	// clears it, so a reuse straddling a resync still sees the terminal state.
+	const lastStates = new Map<string, AgentSessionState>();
+	// The last `sessionFor` result per session id and the inputs it was built from.
+	const cached = new Map<
+		string,
+		{
+			trace: SessionTrace | undefined;
+			state: AgentSessionState;
+			session: AgentSession;
+		}
+	>();
+	// Drop each session whose account now maps to another id. A resync (an empty or
+	// partial map) prunes nothing: a reused id can straddle one.
+	const pruneMovedSessions = (
+		next: ReadonlyMap<string, AccountSession>,
+	): void => {
+		const prev = untrack(accountSessions);
+		const nextIds = new Set([...next.values()].map((s) => s.sessionId));
+		const dropped = new Set<string>();
+		for (const account of next.keys()) {
+			const moved = prev.get(account)?.sessionId;
+			if (moved !== undefined && !nextIds.has(moved)) dropped.add(moved);
+		}
+		for (const sessionId of dropped) {
+			statusCounts.delete(sessionId);
+			lastStates.delete(sessionId);
+			cached.delete(sessionId);
+		}
+		if (![...dropped].some((id) => untrack(traces).has(id))) return;
+		setTraces((prev) => {
+			const kept = new Map(prev);
+			for (const sessionId of dropped) kept.delete(sessionId);
+			return kept;
+		});
+	};
+	// A changed status lifts a NotFound park. Only a terminal-then-live status pair
+	// re-arms an ended trace: that is a reused id (reload, wake, resume), not a late one.
+	const adoptAccountSessions = (
+		next: ReadonlyMap<string, AccountSession>,
+	): void => {
+		pruneMovedSessions(next);
+		for (const status of next.values()) {
+			const old = lastStates.get(status.sessionId);
+			if (old === status.state) continue;
+			lastStates.set(status.sessionId, status.state);
+			statusCounts.set(
+				status.sessionId,
+				(statusCounts.get(status.sessionId) ?? 0) + 1,
+			);
+			if (!untrack(traces).has(status.sessionId)) continue;
+			const reused =
+				old !== undefined &&
+				isTerminalSessionState(old) &&
+				!isTerminalSessionState(status.state);
+			updateTrace(status.sessionId, (trace) => ({
+				events: trace.events,
+				state: reused ? undefined : trace.state,
+			}));
+		}
+		setAccountSessions(next);
+	};
+	// Tail until the session ends or aborts. A NotFound is retried only when a status
+	// landed meanwhile (the start race); otherwise the session parks until the next one.
+	const tailSession = async (
+		sessionId: string,
+		signal: AbortSignal,
+	): Promise<void> => {
+		for (;;) {
+			const seen = statusCounts.get(sessionId) ?? 0;
+			const end = await runSessionTail({
+				client,
+				sessionId,
+				signal,
+				onError: deps.onError,
+				onFrame: (frame) => appendFrame(sessionId, frame),
+			});
+			if (end !== "notFound") return;
+			if ((statusCounts.get(sessionId) ?? 0) === seen) {
+				updateTrace(sessionId, (trace) => ({ ...trace, notFound: true }));
+				return;
+			}
+		}
+	};
+	// Tail only the agents on screen: each tail holds a browser connection, and an
+	// HTTP/1.1 door allows about six per host. A new session id replaces the old.
+	const shownSessionIds = createMemo<readonly string[]>(() => {
+		const ids = new Set<string>();
+		for (const id of deps.shownAgentIds()) {
+			const status = accountSessions().get(id);
+			if (!status) continue;
+			const trace = traces().get(status.sessionId);
+			const ended =
+				isTerminalSessionState(status.state) ||
+				(trace?.state !== undefined && isTerminalSessionState(trace.state));
+			if (!ended && !trace?.notFound) ids.add(status.sessionId);
+		}
+		return [...ids];
+	});
+	// One tail per shown session, diffed so a pane change leaves the others open.
+	const tails = new Map<string, AbortController>();
+	createEffect(shownSessionIds, (sessionIds) => {
+		for (const [sessionId, abort] of tails) {
+			if (sessionIds.includes(sessionId)) continue;
+			abort.abort();
+			tails.delete(sessionId);
+		}
+		for (const sessionId of sessionIds) {
+			if (tails.has(sessionId)) continue;
+			const abort = new AbortController();
+			tails.set(sessionId, abort);
+			void tailSession(sessionId, abort.signal).catch((error) => {
+				if (!abort.signal.aborted) deps.onError(error);
+			});
+		}
+	});
+	if (getOwner())
+		onCleanup(() => {
+			for (const abort of tails.values()) abort.abort();
+		});
+	return {
+		setAccountSessions: adoptAccountSessions,
+		sessionFor: (agentId) => {
+			const status = accountSessions().get(agentId);
+			if (!status) return undefined;
+			const trace = traces().get(status.sessionId);
+			// Reuse the last object while its inputs hold, so a frame on another
+			// session does not hand every view a new session object.
+			const hit = cached.get(status.sessionId);
+			if (
+				hit !== undefined &&
+				hit.trace === trace &&
+				hit.state === status.state &&
+				hit.session.agentAccountId === agentId
+			)
+				return hit.session;
+			const session: AgentSession = {
+				sessionId: status.sessionId,
+				agentAccountId: agentId,
+				running: isRunning(status.state, trace?.state),
+				events: trace?.events ?? [],
+			};
+			cached.set(status.sessionId, { trace, state: status.state, session });
+			return session;
+		},
+	};
 }
 
 /** The `localStorage` handle, or undefined where it is absent or throwing (SSR,
@@ -943,6 +1154,22 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [runtimeMarkers, setRuntimeMarkers] = createSignal<
 		ReadonlyMap<string, RuntimeMarker>
 	>(new Map());
+	// Live sessions unless the caller overrides them or the store is offline. The
+	// shown agents read the layout, not the view scopes, which are built later.
+	const live =
+		options.compass && !options.sessions
+			? createLiveSessions(options.compass, {
+					shownAgentIds: () => {
+						const shown = shownViewIds(layout());
+						return layoutViews(layout()).flatMap((instance) => {
+							if (!shown.includes(instance.id)) return [];
+							const match = parseRoute(instance.path);
+							return match.view === "agent" ? [match.agentId] : [];
+						});
+					},
+					onError: (error) => options.onCommsError?.(error),
+				})
+			: undefined;
 	const agents = createMemo<readonly Agent[]>(() =>
 		options.comms
 			? joinAgents(accounts(), presence(), runtimeMarkers())
@@ -1015,6 +1242,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			client,
 			onIssues: setIssues,
 			onRuntime: setRuntimeMarkers,
+			onSessions: live?.setAccountSessions,
 			signal: eventsAbort.signal,
 			onError: (error) => options.onCommsError?.(error),
 		}).catch((error) => {
@@ -1047,12 +1275,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// plain counter. The daemon will assign real terminal ids at this same seam later.
 	let mintedTerminalCount = 0;
 
-	// Each agent's live session trace, or undefined when none. Sourced from the fixture
-	// unless the caller supplies sessions — fixture entries carry `fixture: true`,
-	// keeping their never-minted ids off the wire (see `stopAgent`).
-	const sessions = options.sessions ?? STUB_SESSION_EVENTS;
+	// Each agent's session trace, or undefined when none. Offline it reads the override
+	// or fixture (fixture ids never reach the wire; see `stopAgent`), live the tail.
+	const fixtureSessions = options.sessions ?? STUB_SESSION_EVENTS;
 	const agentSessionById = (agentId: string): AgentSession | undefined =>
-		sessions[agentId];
+		live ? live.sessionFor(agentId) : fixtureSessions[agentId];
 
 	// ── View scopes (record A1): one per view instance in the layout, keyed by
 	// view id, so a view keeps its workspace state while its path moves. ──
