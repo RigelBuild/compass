@@ -123,8 +123,13 @@ describe("LogPanel (T-U2)", () => {
 	test("empty state for an agent without a session", () => {
 		const { container } = mountLogPanel("acc-compass-comms");
 
-		expect(container.querySelector(".obs-empty")).not.toBeNull();
+		expect(container.querySelector(".obs-empty")?.textContent).toContain(
+			"Session Log",
+		);
 		expect(container.querySelector(".obs-trace")).toBeNull();
+		expect(
+			container.querySelector("aside.log-panel")?.getAttribute("aria-label"),
+		).toBe("Session Log");
 	});
 
 	// SHELL INVARIANT (stays GREEN): minimizing collapses the panel — the trace

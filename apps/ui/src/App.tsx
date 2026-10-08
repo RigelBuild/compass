@@ -30,7 +30,6 @@ import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { SplitPane } from "./components/SplitPane";
 import { TabStrip } from "./components/TabStrip";
 import { TopBarSearch } from "./components/TopBarSearch";
-import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
 import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
@@ -40,7 +39,7 @@ import { routeTitle } from "./route-title";
 import { focusViewPanel } from "./view-panel";
 import { focusedPane, focusedViewOf, shownViewIds } from "./window-layout";
 
-// Compass shell: routed center view with persistent navigation and usage chrome.
+// Compass shell: routed center view with persistent navigation chrome.
 
 // App owns the shell layout; the matched route renders in its center region.
 // Bind the store router seam to the active router location and navigation.
@@ -194,7 +193,6 @@ const App: Component<
 						<Glyph name="logo" />
 					</span>
 					<span class="title">Compass</span>
-					<span class="subtitle">ADE</span>
 				</div>
 
 				<div class="topbar-sep" />
@@ -277,8 +275,6 @@ const App: Component<
 			<Show when={store.rightOpen()}>
 				<RightSidebar />
 			</Show>
-
-			<UsageBar />
 
 			<Show when={store.shortcutsOpen()}>
 				<ShortcutsOverlay />
