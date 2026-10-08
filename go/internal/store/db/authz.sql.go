@@ -45,7 +45,9 @@ SELECT EXISTS (
            -- bare-SHARED group nested under an OWNER parent would authorize
            -- creates it should not).
            OR g.visibility = $3
-           OR g.owner_user_id = (SELECT owner_user_id FROM agent_accounts WHERE account_id = $2)))
+           OR g.owner_user_id = (SELECT owner_user_id FROM agent_accounts WHERE account_id = $2)
+           -- A group an agent created lives in its owner's namespace.
+           OR g.namespace_owner_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $2), $2)))
 `
 
 type GroupCreateAuthorizedParams struct {
@@ -54,7 +56,7 @@ type GroupCreateAuthorizedParams struct {
 	Visibility  int16
 }
 
-// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
+// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.
 func (q *Queries) GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error) {
 	row := q.db.QueryRow(ctx, groupCreateAuthorized, arg.ID, arg.OwnerUserID, arg.Visibility)
 	var exists bool

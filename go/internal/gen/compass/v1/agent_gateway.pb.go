@@ -115,8 +115,9 @@ type CommsCallRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	CallId string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
 	// create_channel and create_channel_group use group_name / parent_group_name
-	// as a leaf or root slash path, resolved within visible groups. Unknown or
-	// invisible is NOT_FOUND; ambiguous leaf or path is INVALID_ARGUMENT. Setting
+	// as a leaf, a root slash path, a top-level-anchored `/path`, or an
+	// owner-qualified `/~handle/path`, resolved within visible groups. Unknown or
+	// invisible is NOT_FOUND; an ambiguous ref is INVALID_ARGUMENT. Setting
 	// group_id / parent_group_id is INVALID_ARGUMENT.
 	//
 	// Types that are valid to be assigned to Call:

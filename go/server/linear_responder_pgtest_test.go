@@ -92,8 +92,8 @@ func plantRoutingLookalikes(t *testing.T, st *store.Store, dsn string, adminID s
 	// The store refuses the reserved group name (store.linearRoutingGroupName), so plant with raw SQL.
 	const sharedID, plantedID = "linear-lookalike-group", "linear-lookalike-channel"
 	execSQL(t, ctx, dsn,
-		`INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility, tenant_id)
-		 SELECT $1, '__linear__', NULL, a.id, $2, a.tenant_id FROM accounts a WHERE a.id = $3`,
+		`INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, namespace_owner_id, visibility, tenant_id)
+		 SELECT $1, '__linear__', NULL, a.id, a.id, $2, a.tenant_id FROM accounts a WHERE a.id = $3`,
 		sharedID, int16(store.VisibilityShared), string(adminID))
 	execSQL(t, ctx, dsn,
 		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription, tenant_id)

@@ -23,7 +23,8 @@ const dmGroupName = "__dm__"
 const coordinationGroupName = "__coordination__"
 
 // isReservedGroupName reports whether name is a system group name that a
-// caller may not claim at top level.
+// caller may not claim at top level. A new name must also join the exemption in
+// channel_groups_owner_parent_name_key, which needs a migration.
 func isReservedGroupName(name string) bool {
 	return name == dmGroupName || name == coordinationGroupName || name == linearRoutingGroupName
 }
@@ -48,8 +49,8 @@ type DMChannelSpec struct {
 // owner-private, never lattice-shared), un-parented — differing only in the
 // reserved name (__dm__ vs __coordination__) so the two reserved namespaces stay
 // disjoint. The get-half is VISIBILITY-DISCRIMINATED (AND visibility = $3, bound
-// to VisibilityOwner): CreateChannelGroup has no reserved-name guard, so a user
-// CAN plant a top-level group named __dm__ at any visibility; a wider
+// to VisibilityOwner): a top-level group named __dm__ may predate the
+// reserved-name guard or come from a raw insert, at any visibility; a wider
 // (VisibilityShared) planted group must NEVER be adopted (it would host
 // owner-private DMs in a shared group — a cross-tenant leak), so the
 // discriminator excludes it and the create-half INSERTs the correct
