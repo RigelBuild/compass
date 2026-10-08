@@ -4,7 +4,9 @@
 // and numeric enums → string literals (maps total, so an unhandled value is a compile error).
 
 import {
+	AgentPlanEntryStatus,
 	AgentPresence,
+	AgentToolCallStatus,
 	ChannelGroupVisibility,
 	ChannelKind,
 	ChannelMembershipMode,
@@ -13,6 +15,8 @@ import {
 	ForgeProvider,
 	IssueState,
 	RuntimeTier,
+	SessionErrorKind,
+	SessionInjectionKind,
 	type Account as WireAccount,
 	type AgentAttribution as WireAgentAttribution,
 	type AgentSessionStatus as WireAgentSessionStatus,
@@ -31,6 +35,9 @@ import {
 	type Review as WireReview,
 	type ReviewThread as WireReviewThread,
 	type RosterEntry as WireRosterEntry,
+	type SessionEvent as WireSessionEvent,
+	type SessionFileDiff as WireSessionFileDiff,
+	type SessionInjection as WireSessionInjection,
 	type Topic as WireTopic,
 	type TrackerRef as WireTrackerRef,
 } from "@compass/client";
@@ -48,6 +55,12 @@ import type {
 	PinnedEntry,
 	Topic,
 } from "../comms-stub";
+import type {
+	SessionEvent as DomainSessionEvent,
+	FileDiff,
+	PlanEntryStatus,
+	ToolCallStatus,
+} from "../session-events";
 import type {
 	Account,
 	AgentState,
@@ -598,4 +611,106 @@ export function adaptRuntimeMarker(w: WireAgentSessionStatus): RuntimeMarker {
 		tier: RUNTIME_TIER[w.runtimeTier] ?? "unknown",
 		posture: EGRESS_POSTURE[w.egressPosture] ?? "unknown",
 	};
+}
+
+/** Wire tool-call status → domain. UNSPECIFIED (and, via the lookup fallback,
+ *  an unknown newer value) reads as pending rather than a false terminal state. */
+const TOOL_CALL_STATUS: Record<AgentToolCallStatus, ToolCallStatus> = {
+	[AgentToolCallStatus.UNSPECIFIED]: "pending",
+	[AgentToolCallStatus.PENDING]: "pending",
+	[AgentToolCallStatus.IN_PROGRESS]: "in_progress",
+	[AgentToolCallStatus.COMPLETED]: "completed",
+	[AgentToolCallStatus.FAILED]: "failed",
+} satisfies Record<AgentToolCallStatus, ToolCallStatus>;
+
+/** Wire plan-entry status → domain, same pending fallback as TOOL_CALL_STATUS. */
+const PLAN_ENTRY_STATUS: Record<AgentPlanEntryStatus, PlanEntryStatus> = {
+	[AgentPlanEntryStatus.UNSPECIFIED]: "pending",
+	[AgentPlanEntryStatus.PENDING]: "pending",
+	[AgentPlanEntryStatus.IN_PROGRESS]: "in_progress",
+	[AgentPlanEntryStatus.COMPLETED]: "completed",
+} satisfies Record<AgentPlanEntryStatus, PlanEntryStatus>;
+
+/** The notice line for an injection: "steered by @x" / "delivered from @x",
+ *  or the bare verb when the sender's handle is unknown. */
+function injectionText(w: WireSessionInjection): string {
+	const steer = w.opKind === SessionInjectionKind.STEER;
+	const verb = steer ? "steered" : "delivered";
+	if (!w.fromHandle) return verb;
+	return `${verb} ${steer ? "by" : "from"} @${w.fromHandle}`;
+}
+
+/** A wire file diff → domain; an absent old_text is a new file (null). */
+function adaptFileDiff(w: WireSessionFileDiff): FileDiff {
+	return { path: w.path, oldText: w.oldText ?? null, newText: w.newText };
+}
+
+/** Map a wire SessionEvent to the domain event; an unset or unknown oneof gives
+ *  undefined. Injections and session errors have no domain kind, so become notices. */
+export function adaptSessionEvent(
+	w: WireSessionEvent,
+): DomainSessionEvent | undefined {
+	// int64 decodes to bigint; implicit coercion on a bigint throws.
+	const base = { id: w.eventId, atUnixMs: Number(w.atUnixMs) };
+	const e = w.event;
+	switch (e.case) {
+		case "assistantText":
+			return {
+				...base,
+				kind: "assistant_text",
+				messageId: e.value.messageId,
+				text: e.value.text,
+			};
+		case "thinking":
+			return {
+				...base,
+				kind: "thinking",
+				messageId: e.value.messageId,
+				text: e.value.text,
+			};
+		case "toolCall":
+			return {
+				...base,
+				kind: "tool_call",
+				toolCallId: e.value.toolCallId,
+				title: e.value.title,
+				status: TOOL_CALL_STATUS[e.value.status] ?? "pending",
+			};
+		case "toolCallUpdate": {
+			const { output, diffs } = e.value;
+			return {
+				...base,
+				kind: "tool_call_update",
+				toolCallId: e.value.toolCallId,
+				status: TOOL_CALL_STATUS[e.value.status] ?? "pending",
+				...(output ? { output } : {}),
+				...(diffs.length > 0 ? { diffs: diffs.map(adaptFileDiff) } : {}),
+			};
+		}
+		case "plan":
+			return {
+				...base,
+				kind: "plan",
+				entries: e.value.entries.map((entry) => ({
+					content: entry.content,
+					status: PLAN_ENTRY_STATUS[entry.status] ?? "pending",
+				})),
+			};
+		case "notice":
+			return {
+				...base,
+				kind: "notice",
+				text: e.value.text,
+				...(e.value.link !== undefined ? { link: e.value.link } : {}),
+			};
+		case "sessionInjection":
+			return { ...base, kind: "notice", text: injectionText(e.value) };
+		case "sessionError": {
+			const label =
+				e.value.kind === SessionErrorKind.ABORTED ? "aborted" : "error";
+			return { ...base, kind: "notice", text: `${label}: ${e.value.message}` };
+		}
+		default:
+			return undefined;
+	}
 }
