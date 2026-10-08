@@ -328,7 +328,7 @@ func TestLiveGitHubListIssues(t *testing.T) {
 
 	f := liveFixture(t, providerGitHub, "list_issues")
 	filter := IssueFilter{State: "open", Labels: []string{"bug"}}
-	row, n, err := findListedIssueWithBackoff(ctx, gh, repo, filter, setup.Number, readAfterWriteDelays)
+	row, n, err := findListedIssueWithBackoff(ctx, gh, repo, filter, setup.Number, listLagDelays)
 	if err != nil {
 		t.Fatalf("findListedIssueWithBackoff: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestLiveLinearListIssues(t *testing.T) {
 	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, setup.Number) })
 
 	f := liveFixture(t, providerLinear, "list_issues")
-	row, n, err := findListedIssueWithBackoff(ctx, ln, team, IssueFilter{State: "open"}, setup.Number, readAfterWriteDelays)
+	row, n, err := findListedIssueWithBackoff(ctx, ln, team, IssueFilter{State: "open"}, setup.Number, listLagDelays)
 	if err != nil {
 		t.Fatalf("findListedIssueWithBackoff: %v", err)
 	}
@@ -1017,8 +1017,6 @@ func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
 //     awaiting response headers (a third-party latency/availability blip against
 //     api.github.com / api.linear.app). RIG-2909: a single such blip on a Linear
 //     setup create was failing the whole forge-oracle gate on unrelated PRs.
-//   - An upstream gateway failure (502/503/504) or a connection reset, e.g.
-//     Linear's edge answering `503 upstream connect error ... reset before headers`.
 //
 // It is a bounded ONE-SHOT ctx-aware backoff, not a retry loop: exactly one
 // re-issue, and if the condition persists the second attempt's error propagates
@@ -1026,7 +1024,7 @@ func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
 // It never executes on the skip path (no credentials -> the caller t.Skips first).
 func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T, error) {
 	got, err := create()
-	if isSecondaryRateLimit(err) || isTransientNetworkTimeout(err) || isUpstreamTransient(err) {
+	if isSecondaryRateLimit(err) || isTransientNetworkTimeout(err) {
 		// Back off once, then re-issue — the secondary limit clears quickly and a
 		// transient header timeout is gone by the next attempt.
 		select {
@@ -1047,9 +1045,13 @@ type issueLister interface {
 	ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error)
 }
 
-// readAfterWriteDelays spaces the read-after-create polls below. GitHub's list
-// index was seen missing a fresh issue after ~17s, so the window runs ~70s.
-var readAfterWriteDelays = []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second}
+// listLagDelays spaces the list polls below (~67s). GitHub's list index was
+// seen missing a fresh issue after ~17s.
+var listLagDelays = []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second}
+
+// visibilityDelays spaces the GetIssue polls (~15s); Linear's number lookup
+// was seen trailing a create by under a second. Short keeps the suite in budget.
+var visibilityDelays = []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 
 // findListedIssueWithBackoff polls ListIssues until the target issue appears,
 // tolerating a provider's list read-after-write lag: the list index is eventually
@@ -1123,7 +1125,7 @@ func createVisibleLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team str
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
 	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
-	if err := awaitIssueVisible(ctx, ln, team, issue.Number, readAfterWriteDelays); err != nil {
+	if err := awaitIssueVisible(ctx, ln, team, issue.Number, visibilityDelays); err != nil {
 		t.Fatalf("await setup issue visible: %v", err)
 	}
 	return issue
@@ -1149,7 +1151,7 @@ func isNotFound(err error) bool {
 }
 
 // isUpstreamTransient reports an upstream gateway failure (502/503/504) or a
-// connection reset: provider availability blips, never a malformed request.
+// connection reset. Only reads retry on it: a write may have landed before it.
 func isUpstreamTransient(err error) bool {
 	if err == nil {
 		return false
