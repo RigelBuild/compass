@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // TestAgentImageVCSTools checks the agent image ships jj and jj-vine, the
@@ -30,23 +32,28 @@ func TestAgentImageVCSTools(t *testing.T) {
 	}
 }
 
-// TestAgentImageGHTokenAuth verifies gh and Git read the materialized token and
-// jj-vine has its token command configured, without contacting GitHub.
+// TestAgentImageGHTokenAuth installs a fixture token with the production
+// GHHostsScript, then checks gh, Git, and jj-vine's tokenCommand all return it.
 func TestAgentImageGHTokenAuth(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the image toolchain check")
 	}
-	cmd := `set -eu
-mkdir -p "$HOME/.config/gh"
-printf 'github.com:\n    oauth_token: "ghs_fake"\n' > "$HOME/.config/gh/hosts.yml"
-printf 'version: "1"\n' > "$HOME/.config/gh/config.yml"
-test "$(gh auth token)" = "ghs_fake"
+	const tok = "ghs_fixture"
+	install, err := runtime.GHHostsScript("/home/agent", []runtime.GHCredentials{{Host: "github.com", Token: tok}})
+	if err != nil {
+		t.Fatalf("GHHostsScript: %v", err)
+	}
+	// tokenCommand is a TOML string array; run that argv exactly as configured.
+	check := `set -eu
+test "$(gh auth token)" = "` + tok + `"
 credential=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
-case "$credential" in *"password=ghs_fake"*) ;; *) exit 1 ;; esac
-jjconfig=$(jj config get jj-vine.github.tokenCommand)
-case "$jjconfig" in *gh*) ;; *) exit 1 ;; esac
+case "$credential" in *"password=` + tok + `"*) ;; *) echo "git credential: $credential"; exit 1 ;; esac
+argv=$(jj config get jj-vine.github.tokenCommand | tr -d '[],"')
+test "$($argv)" = "` + tok + `"
 `
-	out, err := exec.Command("podman", "run", "--rm", agentImage, "sh", "-c", cmd).CombinedOutput()
+	cmd := exec.Command("podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", agentImage, "sh", "-s")
+	cmd.Stdin = strings.NewReader(install + check)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("GitHub token auth smoke in %s: %v\n%s", agentImage, err, out)
 	}

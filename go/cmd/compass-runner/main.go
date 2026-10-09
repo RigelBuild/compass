@@ -58,7 +58,8 @@ func run() error {
 			"COMPASS_MODEL). Empty leaves each agent on its own default. "+
 			"Defaults to $COMPASS_AGENT_MODEL.")
 	egressHosts := flag.String("egress-allow", "",
-		"Comma-separated default-deny egress allowlist (DNS names or IP literals).")
+		"Comma-separated default-deny egress allowlist (DNS names or IP literals). "+
+			"Agents that push with jj-vine need github.com and api.github.com.")
 	runtimeDir := flag.String("runtime-dir", "/run/compass",
 		"Runner-owned base dir for per-container agent sockets (RuntimeDir/containers/<container>/agent.sock).")
 	caPath := flag.String("ca", "",

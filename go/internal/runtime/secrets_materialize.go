@@ -228,14 +228,15 @@ func GHHostsScript(homeDir string, creds []GHCredentials) (string, error) {
 	b.WriteString("umask 077\n")
 	b.WriteString("h=" + home + "\n")
 	b.WriteString(`mkdir -p "$h/.config/gh"` + "\n")
+	b.WriteString(`c="$h/.config/gh/config.yml"` + "\n")
+	// gh migrates version-less config by calling /user, which App tokens cannot;
+	// write it before the token lands and never through a symlink.
+	b.WriteString(`if [ ! -e "$c" ] && [ ! -L "$c" ]; then (set -C; printf 'version: "1"\n' > "$c"); fi` + "\n")
 	b.WriteString(`f="$h/.config/gh/hosts.yml"` + "\n")
 	b.WriteString(`t="$f.tmp.$$"` + "\n")
 	writeBase64ToFile(&b, b64)
 	b.WriteString(`chmod 600 "$t"` + "\n")
 	b.WriteString(`mv "$t" "$f"` + "\n")
-	b.WriteString(`c="$h/.config/gh/config.yml"` + "\n")
-	// gh migrates version-less config by calling /user, which App tokens cannot.
-	b.WriteString(`if [ ! -e "$c" ] && [ ! -L "$c" ]; then (set -C; printf 'version: "1"\n' > "$c"); fi` + "\n")
 	return b.String(), nil
 }
 
