@@ -103,8 +103,9 @@ func (f *fakeDeliveryStore) forgeSnapshot() []forgeAdvance {
 
 // settleRecord is one recorded settle edge.
 type settleRecord struct {
-	sessionID string
-	state     compassv1.AgentSessionState
+	sessionID    string
+	state        compassv1.AgentSessionState
+	turnSequence uint64
 }
 
 // fakeSettleSink records OnSessionSettled calls — the hub's settle-edge sink.
@@ -113,10 +114,10 @@ type fakeSettleSink struct {
 	settles []settleRecord
 }
 
-func (f *fakeSettleSink) OnSessionSettled(sessionID string, state compassv1.AgentSessionState) {
+func (f *fakeSettleSink) OnSessionSettled(sessionID string, state compassv1.AgentSessionState, turnSequence uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.settles = append(f.settles, settleRecord{sessionID: sessionID, state: state})
+	f.settles = append(f.settles, settleRecord{sessionID: sessionID, state: state, turnSequence: turnSequence})
 }
 
 func (f *fakeSettleSink) snapshot() []settleRecord {
@@ -192,33 +193,29 @@ func TestDeliveryAckUnboundSessionIsNoOp(t *testing.T) {
 	}
 }
 
-// Case 2/§2: the hub fires its settle-edge sink at the deliverSession arm, right
-// after the lifecycle publish, with the transition's session + state — and does
-// NOT fire on a trace-only frame (UNSPECIFIED). Nil-safe: a hub with no settle
-// sink (every pre-existing test) is unchanged, covered by the existing suite.
+// Case 2/§2: the hub forwards lifecycle frames to the settle sink with their
+// sequence and ignores trace-only frames.
 func TestDeliverSessionFiresSettleSink(t *testing.T) {
 	hub, life, _ := newHub()
 	hub.enroll(context.Background(), testRunnerID, runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	settle := &fakeSettleSink{}
 	hub.SetSettleSink(settle)
 
-	// A lifecycle transition fires both the lifecycle publish and the settle sink.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerID:  testRunnerID,
 		RunnerSeq: 1, SessionID: "sess-1",
-		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
+		Frame: sessionFrameWithSequence(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 5),
 	}); err != nil {
 		t.Fatalf("Deliver(session READY) = %v, want nil", err)
 	}
 	if got := len(life.snapshot()); got != 1 {
-		t.Fatalf("lifecycle publishes = %d, want 1 (settle must not replace the lifecycle publish)", got)
+		t.Fatalf("lifecycle publishes = %d, want 1", got)
 	}
 	got := settle.snapshot()
-	if len(got) != 1 || got[0].sessionID != "sess-1" || got[0].state != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
-		t.Fatalf("settle = %+v, want one {sess-1, READY}", got)
+	if len(got) != 1 || got[0].sessionID != "sess-1" || got[0].state != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY || got[0].turnSequence != 5 {
+		t.Fatalf("settle = %+v, want one {sess-1, READY, 5}", got)
 	}
 
-	// A trace-only frame (UNSPECIFIED) is not a settle edge: no settle fires.
 	if err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerID:  testRunnerID,
 		RunnerSeq: 2, SessionID: "sess-1", Frame: sessionTraceFrame("trace"),
@@ -226,7 +223,15 @@ func TestDeliverSessionFiresSettleSink(t *testing.T) {
 		t.Fatalf("Deliver(trace) = %v, want nil", err)
 	}
 	if got := len(settle.snapshot()); got != 1 {
-		t.Fatalf("settles after trace = %d, want still 1 (trace is not a settle edge)", got)
+		t.Fatalf("settles after trace = %d, want still 1", got)
+	}
+}
+
+func sessionFrameWithSequence(state compassv1.AgentSessionState, turnSequence uint64) *compassv1internal.AgentFrame {
+	return &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_Session{
+			Session: &compassv1internal.SessionFrame{State: state, TurnSequence: turnSequence},
+		},
 	}
 }
 

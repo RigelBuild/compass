@@ -1190,6 +1190,7 @@ type Message struct {
 	AuthorHandle string `protobuf:"bytes,6,opt,name=author_handle,json=authorHandle,proto3" json:"author_handle,omitempty"`
 	// Set on SearchMessages hits to identify the topic's channel; empty otherwise.
 	ChannelId     string `protobuf:"bytes,7,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	TurnSequence  uint64 `protobuf:"varint,8,opt,name=turn_sequence,json=turnSequence,proto3" json:"turn_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1271,6 +1272,13 @@ func (x *Message) GetChannelId() string {
 		return x.ChannelId
 	}
 	return ""
+}
+
+func (x *Message) GetTurnSequence() uint64 {
+	if x != nil {
+		return x.TurnSequence
+	}
+	return 0
 }
 
 // One content block in a message: the durable conversation the comms layer
@@ -1989,6 +1997,7 @@ func (*SubscribeCommsResponse_TopicUpserted) isSubscribeCommsResponse_Payload() 
 type MessagePosted struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Message       *Message               `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	TurnSequence  uint64                 `protobuf:"varint,2,opt,name=turn_sequence,json=turnSequence,proto3" json:"turn_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2028,6 +2037,13 @@ func (x *MessagePosted) GetMessage() *Message {
 		return x.Message
 	}
 	return nil
+}
+
+func (x *MessagePosted) GetTurnSequence() uint64 {
+	if x != nil {
+		return x.TurnSequence
+	}
+	return 0
 }
 
 // An existing message changed — a streaming agent turn appended a block, or a
@@ -4417,7 +4433,8 @@ type PostMessageRequest struct {
 	// topic proliferation now that agents must always name their topic
 	// (peer-DM record DL-293; amends the get-or-create semantics of DL-098).
 	// Ignored when `topic_id` is set or `topic_name` is unset.
-	CreateTopic   bool `protobuf:"varint,6,opt,name=create_topic,json=createTopic,proto3" json:"create_topic,omitempty"`
+	CreateTopic   bool   `protobuf:"varint,6,opt,name=create_topic,json=createTopic,proto3" json:"create_topic,omitempty"`
+	TurnSequence  uint64 `protobuf:"varint,7,opt,name=turn_sequence,json=turnSequence,proto3" json:"turn_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4512,6 +4529,13 @@ func (x *PostMessageRequest) GetCreateTopic() bool {
 		return x.CreateTopic
 	}
 	return false
+}
+
+func (x *PostMessageRequest) GetTurnSequence() uint64 {
+	if x != nil {
+		return x.TurnSequence
+	}
+	return 0
 }
 
 type isPostMessageRequest_Container interface {
@@ -5203,7 +5227,7 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12+\n" +
 	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\x121\n" +
 	"\x15created_by_account_id\x18\x05 \x01(\tR\x12createdByAccountId\x12\x1a\n" +
-	"\barchived\x18\x06 \x01(\bR\barchived\"\xf4\x01\n" +
+	"\barchived\x18\x06 \x01(\bR\barchived\"\x99\x02\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\btopic_id\x18\x02 \x01(\tR\atopicId\x12*\n" +
@@ -5213,7 +5237,8 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\x12#\n" +
 	"\rauthor_handle\x18\x06 \x01(\tR\fauthorHandle\x12\x1d\n" +
 	"\n" +
-	"channel_id\x18\a \x01(\tR\tchannelId\"\x8f\x01\n" +
+	"channel_id\x18\a \x01(\tR\tchannelId\x12#\n" +
+	"\rturn_sequence\x18\b \x01(\x04R\fturnSequence\"\x8f\x01\n" +
 	"\fMessageBlock\x12\x14\n" +
 	"\x04text\x18\x01 \x01(\tH\x00R\x04text\x12#\n" +
 	"\x03ask\x18\x02 \x01(\v2\x0f.compass.v1.AskH\x00R\x03ask\x12;\n" +
@@ -5261,9 +5286,10 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x0fresync_required\x18\x10 \x01(\v2\x1f.compass.v1.CommsResyncRequiredH\x00R\x0eresyncRequired\x12X\n" +
 	"\x16agent_presence_changed\x18\x11 \x01(\v2 .compass.v1.AgentPresenceChangedH\x00R\x14agentPresenceChanged\x12B\n" +
 	"\x0etopic_upserted\x18\x12 \x01(\v2\x19.compass.v1.TopicUpsertedH\x00R\rtopicUpsertedB\t\n" +
-	"\apayload\">\n" +
+	"\apayload\"c\n" +
 	"\rMessagePosted\x12-\n" +
-	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\"?\n" +
+	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12#\n" +
+	"\rturn_sequence\x18\x02 \x01(\x04R\fturnSequence\"?\n" +
 	"\x0eMessageUpdated\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\"8\n" +
 	"\rTopicUpserted\x12'\n" +
@@ -5402,7 +5428,7 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\btopic_id\x18\x05 \x01(\tR\atopicIdB\v\n" +
 	"\tcontainer\"G\n" +
 	"\x14ListMessagesResponse\x12/\n" +
-	"\bmessages\x18\x01 \x03(\v2\x13.compass.v1.MessageR\bmessages\"\x8a\x02\n" +
+	"\bmessages\x18\x01 \x03(\v2\x13.compass.v1.MessageR\bmessages\"\xaf\x02\n" +
 	"\x12PostMessageRequest\x12\x1f\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tH\x00R\tchannelId\x120\n" +
@@ -5411,7 +5437,8 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\n" +
 	"topic_name\x18\x04 \x01(\tH\x01R\ttopicName\x12*\n" +
 	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestId\x12!\n" +
-	"\fcreate_topic\x18\x06 \x01(\bR\vcreateTopicB\v\n" +
+	"\fcreate_topic\x18\x06 \x01(\bR\vcreateTopic\x12#\n" +
+	"\rturn_sequence\x18\a \x01(\x04R\fturnSequenceB\v\n" +
 	"\tcontainerB\a\n" +
 	"\x05topic\"D\n" +
 	"\x13PostMessageResponse\x12-\n" +

@@ -67,7 +67,7 @@ func TestHoldAfterSettleFiresAtOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c, disp, reads := heldGapFixture(t, settleAt)
 
-			c.OnSessionSettled("sess-author", tc.state)
+			c.OnSessionSettled("sess-author", tc.state, 0)
 			c.waitSettleDrained(t)
 
 			postMessage(t, c, reads, messageAt("m1", "settled body", tc.at))
@@ -117,7 +117,7 @@ func TestFireNowKeepsPostOrderBehindHeld(t *testing.T) {
 			reads.seedMessage(messageAt("m1", "m1 settled", time.UnixMilli(100)))
 			armed.Store(true)
 
-			c.OnSessionSettled("sess-author", state)
+			c.OnSessionSettled("sess-author", state, 0)
 			select {
 			case <-entered:
 			case <-time.After(testTimeout):
@@ -163,7 +163,7 @@ func TestFireNowSparesNextTurnMessage(t *testing.T) {
 	postMessage(t, c, reads, messageAt("m1", "m1 body", time.UnixMilli(100)))
 	c.waitHeld(t, "sess-author", 1)
 	armed.Store(true)
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	select {
 	case <-entered:
 	case <-time.After(testTimeout):
@@ -178,7 +178,7 @@ func TestFireNowSparesNextTurnMessage(t *testing.T) {
 	disp.waitFor(t, "m-late")
 	// The loop drains edges in order, so once this one is popped every earlier
 	// fire returned.
-	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-other", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	c.waitSettleDrained(t)
 	got := disp.records()
 	if len(got) != 2 || got[0].messageID != "m1" || got[1].messageID != "m-late" {
@@ -189,7 +189,7 @@ func TestFireNowSparesNextTurnMessage(t *testing.T) {
 	}
 
 	reads.seedMessage(messageAt("m-next", "next settled", time.UnixMilli(300)))
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	rec := disp.waitFor(t, "m-next")
 	if rec.sessionID != "sess-recip" || rec.firstText != "next settled" {
 		t.Fatalf("m-next deliver = %+v, want {sess-recip, next settled}", rec)
@@ -205,7 +205,7 @@ func TestHoldAfterSettleKeepsLaterMessageHeld(t *testing.T) {
 	settleAt := time.UnixMilli(2_000_000)
 	c, disp, reads := heldGapFixture(t, settleAt)
 
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	c.waitSettleDrained(t)
 
 	postMessage(t, c, reads, messageAt("m2", "next turn", settleAt.Add(time.Second)))
@@ -214,7 +214,7 @@ func TestHoldAfterSettleKeepsLaterMessageHeld(t *testing.T) {
 		t.Fatalf("m2 dispatched %d times before the next settle, want 0", n)
 	}
 
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	disp.waitFor(t, "m2")
 	if n := disp.countFor("m2"); n != 1 {
 		t.Fatalf("m2 dispatched %d times, want exactly 1", n)
@@ -229,8 +229,8 @@ func TestRecoveryPrunesSettleTimesByLiveness(t *testing.T) {
 	c.now = func() time.Time { return now }
 	res.bind("agent-live", "sess-live")
 
-	c.OnSessionSettled("sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
-	c.OnSessionSettled("sess-dead", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
+	c.OnSessionSettled("sess-dead", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	now = now.Add(recoveryFloorInterval + time.Hour)
 	if !c.hasLastSettle("sess-live") || !c.hasLastSettle("sess-dead") {
 		t.Fatal("precondition: both settles should be recorded")
@@ -282,7 +282,7 @@ func TestStartSweepSkipsHeldMessage(t *testing.T) {
 	}
 
 	reads.seedMessage(textMessage("m1", "agent-author", "settled body"))
-	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 	rec := disp.waitFor(t, "m1")
 	if rec.sessionID != "sess-recip" || rec.firstText != "settled body" {
 		t.Fatalf("settled deliver = %+v, want {sess-recip, m1, settled body}", rec)

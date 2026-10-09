@@ -136,6 +136,7 @@ message TranscriptEntry {
 message SessionFrame {
   AgentSessionState state = 1;
   SessionEvent typed_event = 2;
+  uint64 turn_sequence = 3;
 }
 
 // The agent's inbound control envelope — the other half of this §T5 contract,

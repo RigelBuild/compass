@@ -149,7 +149,7 @@ func (q *Queries) OwedMentionAccounts(ctx context.Context) ([]string, error) {
 }
 
 const owedMentions = `-- name: OwedMentions :many
-SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM owed_mentions om
 JOIN messages m ON m.id = om.message_id
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
@@ -167,6 +167,7 @@ type OwedMentionsRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 }
 
 func (q *Queries) OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error) {
@@ -186,6 +187,7 @@ func (q *Queries) OwedMentions(ctx context.Context, agentAccountID string) ([]Ow
 			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
+			&i.TurnSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -318,7 +320,7 @@ func (q *Queries) SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeq
 }
 
 const undeliveredMessages = `-- name: UndeliveredMessages :many
-SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks
+SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM channel_members cm
 JOIN agent_accounts aa ON aa.account_id = cm.account_id
 JOIN topics t ON t.channel_id = cm.channel_id
@@ -346,6 +348,7 @@ type UndeliveredMessagesRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 }
 
 func (q *Queries) UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error) {
@@ -365,6 +368,7 @@ func (q *Queries) UndeliveredMessages(ctx context.Context, accountID string) ([]
 			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
+			&i.TurnSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -377,7 +381,7 @@ func (q *Queries) UndeliveredMessages(ctx context.Context, accountID string) ([]
 }
 
 const unroutedMentionMessages = `-- name: UnroutedMentionMessages :many
-SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, t.channel_id, m.seq
+SELECT m.id, m.topic_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence, t.channel_id, m.seq
 FROM messages m
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
@@ -399,6 +403,7 @@ type UnroutedMentionMessagesRow struct {
 	AuthorHandle    string
 	AtUnixMs        int64
 	Blocks          []byte
+	TurnSequence    int64
 	ChannelID       string
 	Seq             int64
 }
@@ -419,6 +424,7 @@ func (q *Queries) UnroutedMentionMessages(ctx context.Context, arg UnroutedMenti
 			&i.AuthorHandle,
 			&i.AtUnixMs,
 			&i.Blocks,
+			&i.TurnSequence,
 			&i.ChannelID,
 			&i.Seq,
 		); err != nil {

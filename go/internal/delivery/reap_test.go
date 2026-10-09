@@ -75,8 +75,8 @@ func TestOnSessionsReapedAbsentIDIsNoop(t *testing.T) {
 // enroll too; an unreaped session keeps its entry.
 func TestOnSessionsReapedDropsSettleTimes(t *testing.T) {
 	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // only the consumer's settle map is exercised.
-	c.OnSessionSettled("sess-dead", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
-	c.OnSessionSettled("sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	c.OnSessionSettled("sess-dead", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
+	c.OnSessionSettled("sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
 
 	c.OnSessionsReaped([]string{"sess-dead"})
 

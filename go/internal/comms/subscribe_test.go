@@ -291,7 +291,7 @@ func TestSubscribeCommsPostDeliversMessagePosted(t *testing.T) {
 	// subscribe not block the post.
 	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello stream"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, TurnSequence: 11, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello stream"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
@@ -304,6 +304,12 @@ func TestSubscribeCommsPostDeliversMessagePosted(t *testing.T) {
 	}
 	if mp.GetMessage().GetId() != wantID {
 		t.Fatalf("delivered message id = %q, want the posted %q", mp.GetMessage().GetId(), wantID)
+	}
+	if got := mp.GetTurnSequence(); got != 11 {
+		t.Fatalf("MessagePosted turn_sequence = %d, want 11", got)
+	}
+	if got := mp.GetMessage().GetTurnSequence(); got != 11 {
+		t.Fatalf("MessagePosted.Message turn_sequence = %d, want 11", got)
 	}
 	if blocks := mp.GetMessage().GetBlocks(); len(blocks) != 1 || blocks[0].GetText() != "hello stream" {
 		t.Fatalf("delivered blocks = %+v, want one text block 'hello stream'", blocks)

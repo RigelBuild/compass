@@ -66,6 +66,47 @@ func TestPostAsAccountByNameResolvesVisibleChannel(t *testing.T) {
 	}
 }
 
+// TestPostAsAccountByNamePreservesTurnSequence verifies the channel-name adapter
+// does not drop the sequence before the shared post handler persists it.
+func TestPostAsAccountByNamePreservesTurnSequence(t *testing.T) {
+
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+	ch, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name:             "war-room",
+		Kind:             store.ChannelKindChannel,
+		MemberAccountIDs: []store.AccountID{agent.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	resp, err := svc.PostAsAccountByName(ctx, agent.ID, &compassv1.PostMessageRequest{
+		Container:    &compassv1.PostMessageRequest_ChannelId{ChannelId: "war-room"},
+		Topic:        &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		CreateTopic:  true,
+		TurnSequence: 7,
+		Blocks:       textBlocks("turn seven"),
+	})
+	if err != nil {
+		t.Fatalf("PostAsAccountByName: %v", err)
+	}
+	if got := resp.GetMessage().GetTurnSequence(); got != 7 {
+		t.Fatalf("PostAsAccountByName response turn_sequence = %d, want 7", got)
+	}
+
+	stored, err := st.MessageByID(ctx, resp.GetMessage().GetId())
+	if err != nil {
+		t.Fatalf("MessageByID: %v", err)
+	}
+	if stored.TurnSequence != 7 {
+		t.Fatalf("PostAsAccountByName stored turn_sequence = %d, want 7 (channel %q)", stored.TurnSequence, ch.ID)
+	}
+}
+
 // TestPostAsAccountByNameUnknownChannelIsNotFound: a name no visible channel
 // carries is CodeNotFound — the resolver miss surfaced at the tool edge.
 func TestPostAsAccountByNameUnknownChannelIsNotFound(t *testing.T) {

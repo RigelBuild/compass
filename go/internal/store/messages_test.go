@@ -10,6 +10,7 @@ package store
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -61,6 +62,54 @@ func TestAppendMessageAssignsIDAndTimestamp(t *testing.T) {
 	if msg.At.IsZero() {
 		t.Fatal("AppendMessage did not assign a timestamp")
 	}
+}
+
+func TestMessageTurnSequence(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	author := mustUser(t, s, "author")
+	ch := mustChannel(t, s, author.ID)
+
+	written, _, err := s.AppendMessage(ctx, Message{
+		AuthorAccountID: author.ID,
+		TurnSequence:    7,
+		Blocks:          []MessageBlock{textBlock("turn seven")},
+	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
+	if err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	got, err := s.MessageByID(ctx, string(written.ID))
+	if err != nil {
+		t.Fatalf("MessageByID: %v", err)
+	}
+	if got.TurnSequence != 7 {
+		t.Fatalf("MessageByID turn_sequence = %d, want 7", got.TurnSequence)
+	}
+
+	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "legacy")
+	legacyID := newID()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+		legacyID, topicID, string(author.ID), int64(1), []byte(`[{"kind":"text","text":"legacy"}]`), string(s.resolveTenant(ctx)),
+	); err != nil {
+		t.Fatalf("insert legacy row without turn_sequence: %v", err)
+	}
+	legacy, err := s.MessageByID(ctx, legacyID)
+	if err != nil {
+		t.Fatalf("MessageByID(legacy): %v", err)
+	}
+	if legacy.TurnSequence != 0 {
+		t.Fatalf("legacy MessageByID turn_sequence = %d, want 0", legacy.TurnSequence)
+	}
+}
+
+func TestAppendMessageRejectsTurnSequenceBeyondSignedBigint(t *testing.T) {
+	s := newTestStore(t)
+	_, _, err := s.AppendMessage(context.Background(), Message{
+		TurnSequence: uint64(math.MaxInt64) + 1,
+		Blocks:       []MessageBlock{textBlock("out of range")},
+	}, "channel", TopicRef{Name: "general", Create: true}, "")
+	sentinelIs(t, err, ErrInvalidArgument, "AppendMessage with out-of-range turn sequence")
 }
 
 func TestAppendMessageNoBlocksInvalid(t *testing.T) {

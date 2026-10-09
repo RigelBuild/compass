@@ -35,18 +35,20 @@ func TestToPublicFrameRepackaging(t *testing.T) {
 	ev := assistantEvent("hello")
 
 	for _, tc := range []struct {
-		name      string
-		frame     *compassv1internal.SessionFrame
-		wantEvent *compassv1.SessionEvent // exact pointer expected, or nil
-		wantText  string                  // "" when no event
-		wantState compassv1.AgentSessionState
+		name         string
+		frame        *compassv1internal.SessionFrame
+		wantEvent    *compassv1.SessionEvent // exact pointer expected, or nil
+		wantText     string                  // "" when no event
+		wantState    compassv1.AgentSessionState
+		wantSequence uint64
 	}{
 		{
-			name:      "event-only",
-			frame:     &compassv1internal.SessionFrame{TypedEvent: ev},
-			wantEvent: ev,
-			wantText:  "hello",
-			wantState: compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED,
+			name:         "event-only",
+			frame:        &compassv1internal.SessionFrame{TypedEvent: ev, TurnSequence: 5},
+			wantEvent:    ev,
+			wantText:     "hello",
+			wantState:    compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED,
+			wantSequence: 5,
 		},
 		{
 			name:      "state-only",
@@ -57,22 +59,21 @@ func TestToPublicFrameRepackaging(t *testing.T) {
 		{
 			name: "both-set",
 			frame: &compassv1internal.SessionFrame{
-				TypedEvent: ev,
-				State:      compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+				TypedEvent:   ev,
+				State:        compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+				TurnSequence: 7,
 			},
-			wantEvent: ev,
-			wantText:  "hello",
-			wantState: compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+			wantEvent:    ev,
+			wantText:     "hello",
+			wantState:    compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+			wantSequence: 7,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pub := toPublicFrame("sess-routing", tc.frame)
-
 			if pub.GetSessionId() != "sess-routing" {
 				t.Fatalf("session_id = %q, want sess-routing (stamped from the routing key)", pub.GetSessionId())
 			}
-			// Pointer identity: the public type IS the internal envelope's
-			// referenced type, so it transfers without a re-encode.
 			if pub.GetEvent() != tc.wantEvent {
 				t.Fatalf("event pointer = %p, want %p (transfer by pointer, no re-encode)", pub.GetEvent(), tc.wantEvent)
 			}
@@ -81,6 +82,9 @@ func TestToPublicFrameRepackaging(t *testing.T) {
 			}
 			if pub.GetState() != tc.wantState {
 				t.Fatalf("state = %v, want %v", pub.GetState(), tc.wantState)
+			}
+			if got := pub.GetTurnSequence(); got != tc.wantSequence {
+				t.Fatalf("turn_sequence = %d, want %d", got, tc.wantSequence)
 			}
 		})
 	}

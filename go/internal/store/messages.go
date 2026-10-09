@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -31,6 +32,9 @@ import (
 func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, topic TopicRef, clientRequestID string) (Message, bool, error) {
 	if channelID == "" {
 		return Message{}, false, fmt.Errorf("%w: message channel is required", ErrInvalidArgument)
+	}
+	if m.TurnSequence > math.MaxInt64 {
+		return Message{}, false, fmt.Errorf("%w: turn_sequence %d exceeds signed BIGINT range", ErrInvalidArgument, m.TurnSequence)
 	}
 	if len(m.Blocks) == 0 {
 		return Message{}, false, fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
@@ -134,6 +138,7 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 		Blocks:          blocksJSON,
 		TextContent:     textContent(m.Blocks),
 		ClientRequestID: clientRequestID,
+		TurnSequence:    int64(m.TurnSequence), //nolint:gosec // validated against MaxInt64 at AppendMessage's boundary
 	})
 	switch {
 	case noRows(err):
@@ -364,7 +369,7 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 		}
 		return Message{}, fmt.Errorf("store: update message blocks as author: %w", err)
 	}
-	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AuthorHandle, row.AtUnixMs, row.Blocks)
+	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AuthorHandle, row.AtUnixMs, row.Blocks, row.TurnSequence)
 }
 
 // MessageAskIDs returns the message's ask_ids in block order for the relayed
@@ -552,7 +557,7 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	if len(found) == 0 {
 		return Message{}, Message{}, fmt.Errorf("%w: ask %q", ErrNotFound, askID)
 	}
-	msg, err := messageFromParts(found[0].ID, found[0].TopicID, found[0].AuthorAccountID, found[0].AuthorHandle, found[0].AtUnixMs, found[0].Blocks)
+	msg, err := messageFromParts(found[0].ID, found[0].TopicID, found[0].AuthorAccountID, found[0].AuthorHandle, found[0].AtUnixMs, found[0].Blocks, found[0].TurnSequence)
 	if err != nil {
 		return Message{}, Message{}, err
 	}
@@ -737,13 +742,12 @@ func (s *Store) getMessageByRequestID(ctx context.Context, author AccountID, cli
 	if len(rows) == 0 {
 		return Message{}, fmt.Errorf("%w: deduped message for key %q", ErrNotFound, clientRequestID)
 	}
-	return messageFromParts(rows[0].ID, rows[0].TopicID, rows[0].AuthorAccountID, rows[0].AuthorHandle, rows[0].AtUnixMs, rows[0].Blocks)
+	return messageFromParts(rows[0].ID, rows[0].TopicID, rows[0].AuthorAccountID, rows[0].AuthorHandle, rows[0].AtUnixMs, rows[0].Blocks, rows[0].TurnSequence)
 }
 
-// messageFromParts reconstructs a domain Message from the shared six-column
-// projection (id, topic_id, author_account_id, author_handle, at_unix_ms, blocks)
-// every message read returns, decoding the JSONB block set.
-func messageFromParts(id, topicID, author, authorHandle string, atMS int64, blocksJSON []byte) (Message, error) {
+// messageFromParts reconstructs a domain Message from the shared message
+// projection returned by each read query, decoding the JSONB block set.
+func messageFromParts(id, topicID, author, authorHandle string, atMS int64, blocksJSON []byte, turnSequence int64) (Message, error) {
 	blocks, err := unmarshalBlocks(blocksJSON)
 	if err != nil {
 		return Message{}, err
@@ -755,6 +759,7 @@ func messageFromParts(id, topicID, author, authorHandle string, atMS int64, bloc
 		AuthorHandle:    authorHandle,
 		At:              time.UnixMilli(atMS).UTC(),
 		Blocks:          blocks,
+		TurnSequence:    uint64(turnSequence), //nolint:gosec // stored values are nonnegative by the migration CHECK constraint
 	}, nil
 }
 
@@ -769,7 +774,7 @@ func messagesFromListRows(rows []db.ListMessagesRow) ([]Message, error) {
 	}
 	out := make([]Message, 0, len(rows))
 	for _, r := range rows {
-		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks)
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks, r.TurnSequence)
 		if err != nil {
 			return nil, err
 		}
@@ -784,7 +789,7 @@ func messagesFromSearchRows(rows []db.SearchMessagesRow) ([]Message, error) {
 	}
 	out := make([]Message, 0, len(rows))
 	for _, r := range rows {
-		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks)
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AuthorHandle, r.AtUnixMs, r.Blocks, r.TurnSequence)
 		if err != nil {
 			return nil, err
 		}

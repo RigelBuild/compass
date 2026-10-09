@@ -323,6 +323,7 @@ type Message struct {
 	TopicID          string
 	MentionsRoutedAt pgtype.Int8
 	TenantID         string
+	TurnSequence     int64
 }
 
 type ModelRegistry struct {
