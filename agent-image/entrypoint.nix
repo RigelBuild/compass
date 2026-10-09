@@ -134,23 +134,12 @@ let
     outputHash = native.outputHash;
   };
 
-  # The package's own source, filtered as a DENYLIST. A bare path would copy the
-  # directory wholesale, taking a developer's checked-out `node_modules` (no
-  # `.gitignore` filtering), which would shadow the pinned FOD tree. It is a
-  # denylist, not an allowlist, for the same reason the `nodeModules` src reads
-  # its member list from the manifest: `bun build` only errors on a
-  # statically-resolvable missing import, so an allowlist would silently drop a
-  # new JSON fixture or proto dir. `moon.yml` is excluded (it drives moon tasks,
-  # not this bundle); `node_modules` (the defect) is wrapped in `maybeMissing`
-  # because `lib.fileset` errors on a path a clean checkout lacks.
+  # A denylist (`bun build` only errors on a statically-resolvable missing
+  # import, so an allowlist would silently drop a new fixture). Shared with
+  # source-fingerprint.nix so the stale-image check hashes exactly these files.
   pkgSrc = lib.fileset.toSource {
     root = ../packages/compass-agent;
-    fileset = lib.fileset.difference ../packages/compass-agent (
-      lib.fileset.unions [
-        (lib.fileset.maybeMissing ../packages/compass-agent/node_modules)
-        ../packages/compass-agent/moon.yml
-      ]
-    );
+    fileset = import ./agent-source-files.nix { inherit lib; };
   };
 
   # Bundle inside a RECONSTRUCTED workspace: the package source at the same depth

@@ -25,6 +25,7 @@ let
   toolchain = import ./toolchain.nix {
     inherit pkgs lib compassAgent;
     jjVineSrc = inputs.jj-vine-src;
+    sourceFingerprint = import ./source-fingerprint.nix { inherit pkgs lib; };
   };
 
 in

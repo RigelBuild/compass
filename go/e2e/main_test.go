@@ -30,6 +30,10 @@ func TestMain(m *testing.M) {
 	if !podmanUsable() {
 		os.Exit(m.Run())
 	}
+	if err := requireFreshAgentImage(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e TestMain: %v\n", err)
+		os.Exit(1)
+	}
 
 	binDir, err := buildStackBinaries()
 	if err != nil {
@@ -81,4 +85,15 @@ func buildStackBinaries() (string, error) {
 		}
 	}
 	return binDir, nil
+}
+
+// requireFreshAgentImage gates the run on agentImageGate with the real tree,
+// environment and image stamp.
+func requireFreshAgentImage() error {
+	return agentImageGate(os.Getenv, filepath.Join("..", "..", "packages", "compass-agent"), func() string {
+		// A missing stamp file exits non-zero; that image predates stamping, so stale.
+		out, _ := exec.Command("podman", "run", "--rm", "--entrypoint", "cat", agentImage,
+			"/etc/compass-agent/source-fingerprint").Output()
+		return string(out)
+	})
 }
