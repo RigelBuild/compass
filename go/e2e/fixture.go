@@ -162,6 +162,9 @@ type fixtureConfig struct {
 	// additive to the built-in Setup marker. Empty is the default (Setup marker
 	// only).
 	cannedMarkers []cannedMarker
+	// cannedImageInput declares the canned model vision-capable, so the SDK keeps
+	// image tool results instead of an inspect_image metadata note.
+	cannedImageInput bool
 	// site, when non-nil, makes NewFixture reuse a persistent root/stateDir/ports
 	// (WithSite) instead of minting fresh ephemeral ones — the RIG-1790 H6
 	// cross-restart substrate. nil is the default ephemeral fixture.
@@ -240,6 +243,11 @@ func WithCannedMarkerScript(marker string, turns ...CannedTurn) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.cannedMarkers = append(fc.cannedMarkers, newCannedMarkerScript(marker, turns...))
 	}
+}
+
+// WithCannedImageInput declares image input on the canned model.
+func WithCannedImageInput() fixtureOption {
+	return func(fc *fixtureConfig) { fc.cannedImageInput = true }
 }
 
 // WithObjectStore points the server at g, so two Ups over one site share one archive.
@@ -379,7 +387,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// stub means plain mode and every canned field stays as set above.
 	var stub *cannedModelServer
 	if fc.canned {
-		stub = configureCannedModel(tb, &cfg, root, fc.cannedScript, fc.cannedMarkers)
+		stub = configureCannedModel(tb, &cfg, root, fc.cannedScript, fc.cannedMarkers, fc.cannedImageInput)
 	}
 
 	deps := stack.Deps{
@@ -790,7 +798,7 @@ const pastaHostGateway = "169.254.1.2"
 // It returns the running stub; its Close rides a t.Cleanup so teardown never
 // leaks it. cfgRoot is the fixture's short root (the models.yml host dir lives
 // under it, short enough to stay clear of any path budget).
-func configureCannedModel(tb testing.TB, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker) *cannedModelServer {
+func configureCannedModel(tb testing.TB, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker, imageInput bool) *cannedModelServer {
 	tb.Helper()
 
 	hostAddr, err := hostRoutableAddr()
@@ -818,6 +826,9 @@ func configureCannedModel(tb testing.TB, cfg *stack.Config, cfgRoot string, scri
 		"    auth: none\n" +
 		"    models:\n" +
 		"      - id: " + cannedModelID + "\n"
+	if imageInput {
+		modelsYML += "        input: [text, image]\n"
+	}
 
 	agentCfgDir := filepath.Join(cfgRoot, "agentcfg")
 	if err := os.MkdirAll(agentCfgDir, 0o700); err != nil {
