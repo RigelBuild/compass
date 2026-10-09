@@ -29,7 +29,7 @@ import (
 	"time"
 )
 
-// mintServer scripts the access-tokens endpoint and records each request body.
+// mintServer scripts the access-tokens endpoint and captures the last request body.
 type mintServer struct {
 	srv          *httptest.Server
 	hits         atomic.Int64

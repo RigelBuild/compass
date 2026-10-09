@@ -141,7 +141,8 @@ func TestGitCredentialBrokerMintsNarrowedGrant(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/zeta", "owner/alpha"}}
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_scoped"}, expiresAt: now.Add(time.Hour)}
-	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	signals := 0
+	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 
 	got := resolveBrokeredSecret(t, resolver)
@@ -156,6 +157,9 @@ func TestGitCredentialBrokerMintsNarrowedGrant(t *testing.T) {
 	minter.mu.Unlock()
 	if !reflect.DeepEqual(gotPerms, gitCredentialPermissions) {
 		t.Fatalf("mint permissions = %v, want %v", gotPerms, gitCredentialPermissions)
+	}
+	if signals != 0 {
+		t.Fatalf("signal calls after first mint = %d, want 0", signals)
 	}
 }
 
@@ -341,10 +345,13 @@ func TestGitCredentialBrokerRefreshSignalsOnce(t *testing.T) {
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
-	now = now.Add(time.Hour - 5*time.Minute)
+	now = now.Add(time.Hour - gitCredentialRefreshLead)
+	minter.mu.Lock()
+	minter.expiresAt = now.Add(time.Hour)
+	minter.mu.Unlock()
 	broker.refreshDue(context.Background())
 	if minter.callCount() != 2 {
-		t.Fatalf("mint calls = %d, want 2 after refresh boundary", minter.callCount())
+		t.Fatalf("mint calls = %d, want 2 at refresh boundary", minter.callCount())
 	}
 	if signals != 1 {
 		t.Fatalf("signal calls = %d, want exactly 1", signals)
@@ -362,7 +369,7 @@ func TestGitCredentialBrokerRefreshSkipsEntryRefreshedAfterSnapshot(t *testing.T
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
-	now = now.Add(time.Hour - 5*time.Minute)
+	now = now.Add(time.Hour - gitCredentialRefreshLead)
 	minter.mu.Lock()
 	minter.expiresAt = now.Add(time.Hour)
 	minter.mu.Unlock()
@@ -373,8 +380,8 @@ func TestGitCredentialBrokerRefreshSkipsEntryRefreshedAfterSnapshot(t *testing.T
 	if minter.callCount() != 2 {
 		t.Fatalf("mint calls = %d, want initial and request refresh only", minter.callCount())
 	}
-	if signals != 0 {
-		t.Fatalf("signal calls before processing ticker snapshot = %d, want 0", signals)
+	if signals != 1 {
+		t.Fatalf("signal calls after request replacement = %d, want exactly 1", signals)
 	}
 	broker.refreshSnapshot(context.Background(), []string{"owner/repo"}, map[string]string{"owner/repo": previousToken})
 	if minter.callCount() != 2 {
@@ -382,6 +389,33 @@ func TestGitCredentialBrokerRefreshSkipsEntryRefreshedAfterSnapshot(t *testing.T
 	}
 	if signals != 1 {
 		t.Fatalf("signal calls after processing snapshot = %d, want exactly 1", signals)
+	}
+}
+
+func TestGitCredentialBrokerRefreshMismatchRemovesEntry(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_old", "ghs_mismatch"}, expiresAt: now.Add(time.Hour),
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+	resolveBrokeredSecret(t, resolver)
+
+	now = now.Add(time.Hour - gitCredentialRefreshLead)
+	minter.mu.Lock()
+	minter.grantedRepos = []string{"owner/other"}
+	minter.mu.Unlock()
+	broker.refreshDue(context.Background())
+	if _, exists := broker.entries["owner/repo"]; exists {
+		t.Fatal("cached entry remains after refresh scope mismatch")
+	}
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls after mismatch = %d, want initial and one refresh", minter.callCount())
+	}
+	broker.refreshDue(context.Background())
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls after next tick = %d, want no repeated refresh", minter.callCount())
 	}
 }
 
@@ -415,7 +449,7 @@ func TestGitCredentialBrokerRefreshStopsWhenContextCancelled(t *testing.T) {
 	}
 }
 
-func TestGitCredentialBrokerRefreshFailureOmitsNearExpiryToken(t *testing.T) {
+func TestGitCredentialBrokerRefreshFailureServesStaleToken(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}}
 	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_old"}, expiresAt: now.Add(time.Hour)}
@@ -424,18 +458,19 @@ func TestGitCredentialBrokerRefreshFailureOmitsNearExpiryToken(t *testing.T) {
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
-	now = now.Add(time.Hour - 5*time.Minute)
+	now = now.Add(time.Hour - gitCredentialRefreshLead)
 	minter.mu.Lock()
 	minter.err = errors.New("mint failed")
 	minter.mu.Unlock()
-	if got := resolveBrokeredSecret(t, resolver); len(got) != 0 {
-		t.Fatalf("resolved secrets = %+v, want near-expiry token omitted", got)
+	got := resolveBrokeredSecret(t, resolver)
+	if len(got) != 1 || got[0].Value != "ghs_old" {
+		t.Fatalf("resolved secrets = %+v, want stale token with fifteen minutes remaining", got)
 	}
 	if signals != 0 {
 		t.Fatalf("signal calls = %d, want 0", signals)
 	}
-	if got := broker.staleCredential("owner/repo"); got != "" {
-		t.Fatalf("stale credential with five minutes left = %q, want omitted", got)
+	if got := broker.staleCredential("owner/repo"); got != "ghs_old" {
+		t.Fatalf("stale credential with fifteen minutes left = %q, want old token", got)
 	}
 }
 
@@ -505,7 +540,7 @@ func TestGitCredentialBrokerSingleflightsConcurrentMints(t *testing.T) {
 	const callers = 8
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}, listed: make(chan struct{}, callers)}
 	minter := &blockingGitCredentialMinter{
-		started: make(chan struct{}), release: make(chan struct{}), expiresAt: now.Add(time.Hour),
+		started: make(chan struct{}, callers), release: make(chan struct{}), expiresAt: now.Add(time.Hour),
 	}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 	results := make(chan string, callers)
@@ -546,7 +581,7 @@ func TestGitCredentialBrokerCancelledFirstCallerDoesNotCancelSharedMint(t *testi
 	const callers = 2
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}, listed: make(chan struct{}, callers)}
 	minter := &blockingGitCredentialMinter{
-		started: make(chan struct{}), release: make(chan struct{}), expiresAt: now.Add(time.Hour),
+		started: make(chan struct{}, callers), release: make(chan struct{}), expiresAt: now.Add(time.Hour),
 	}
 	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
@@ -597,10 +632,7 @@ func (m *blockingGitCredentialMinter) Mint(ctx context.Context, repos []string, 
 	m.mu.Lock()
 	m.calls++
 	m.mu.Unlock()
-	select {
-	case m.started <- struct{}{}:
-	default:
-	}
+	m.started <- struct{}{}
 	select {
 	case <-ctx.Done():
 		return forge.ScopedToken{}, ctx.Err()

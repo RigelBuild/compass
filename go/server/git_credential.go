@@ -26,6 +26,7 @@ const (
 	gitCredentialMaxRepos      = 500
 	gitCredentialMaxAge        = 90 * time.Minute
 	gitCredentialMinStale      = 10 * time.Minute
+	gitCredentialRefreshLead   = 15 * time.Minute
 	gitCredentialMintTimeout   = 30 * time.Second
 	gitCredentialMismatchCache = 5 * time.Minute
 )
@@ -162,8 +163,13 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 		}
 		mintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCredentialMintTimeout)
 		defer cancel()
-		tok, err := b.mint(mintCtx, key, names)
-		return gitCredentialFlightResult{token: tok, minted: err == nil && tok != ""}, err
+		tok, replaced, err := b.mint(mintCtx, key, names)
+		if err == nil && replaced && b.signal != nil {
+			if signalErr := b.signal(); signalErr != nil {
+				b.log.ErrorContext(ctx, "signal replaced GitHub credential", "error", signalErr)
+			}
+		}
+		return gitCredentialFlightResult{token: tok}, err
 	})
 	if err != nil {
 		b.log.ErrorContext(ctx, "mint scoped GitHub credential", "scope", key, "error", err)
@@ -250,19 +256,19 @@ func (b *gitCredentialBroker) staleCredential(key string) string {
 	return entry.token
 }
 
-func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []string) (string, error) {
+func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []string) (string, bool, error) {
 	token, err := b.minter.Mint(ctx, repos, gitCredentialPermissions)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if token.Token == "" {
-		return "", nil
+		return "", false, nil
 	}
 	if key != "*" && !sameRepositorySet(strings.Split(key, ","), token.Repositories) {
 		b.mu.Lock()
 		b.negative[key] = gitCredentialNegativeEntry{expiresAt: b.clock().Add(gitCredentialMismatchCache)}
 		b.mu.Unlock()
-		return "", errGitCredentialScopeMismatch
+		return "", false, errGitCredentialScopeMismatch
 	}
 	now := b.clock()
 	expiresAt := token.ExpiresAt
@@ -271,16 +277,17 @@ func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []stri
 	}
 	b.mu.Lock()
 	lastUsed := now
-	if previous, ok := b.entries[key]; ok {
+	previous, existed := b.entries[key]
+	if existed {
 		lastUsed = previous.lastUsed
 	}
 	delete(b.negative, key)
 	b.entries[key] = gitCredentialEntry{
 		token: token.Token, expiresAt: expiresAt,
-		refreshAt: expiresAt.Add(-5 * time.Minute), lastUsed: lastUsed,
+		refreshAt: expiresAt.Add(-gitCredentialRefreshLead), lastUsed: lastUsed,
 	}
 	b.mu.Unlock()
-	return token.Token, nil
+	return token.Token, existed && previous.token != token.Token, nil
 }
 
 func sameRepositorySet(want, got []string) bool {
@@ -334,11 +341,14 @@ func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string
 
 func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previous string) bool {
 	value, err, _ := b.group.Do(key, func() (any, error) {
+		if b.negativeCredential(key) {
+			return gitCredentialFlightResult{}, nil
+		}
 		b.mu.Lock()
 		entry, ok := b.entries[key]
 		if !ok || entry.token != previous || b.clock().Before(entry.refreshAt) {
 			b.mu.Unlock()
-			return gitCredentialFlightResult{token: entry.token, minted: ok && entry.token != previous}, nil
+			return gitCredentialFlightResult{token: entry.token}, nil
 		}
 		b.mu.Unlock()
 		var repos []string
@@ -353,11 +363,18 @@ func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previo
 		}
 		mintCtx, cancel := context.WithTimeout(ctx, gitCredentialMintTimeout)
 		defer cancel()
-		token, err := b.mint(mintCtx, key, repos)
+		token, _, err := b.mint(mintCtx, key, repos)
 		return gitCredentialFlightResult{token: token, minted: err == nil && token != ""}, err
 	})
 	if err != nil {
 		b.log.ErrorContext(ctx, "refresh scoped GitHub credential", "scope", key, "error", err)
+		if errors.Is(err, errGitCredentialScopeMismatch) {
+			b.mu.Lock()
+			if entry, exists := b.entries[key]; exists && entry.token == previous {
+				delete(b.entries, key)
+			}
+			b.mu.Unlock()
+		}
 		return false
 	}
 	result, ok := value.(gitCredentialFlightResult)
