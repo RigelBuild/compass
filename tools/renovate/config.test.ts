@@ -538,8 +538,8 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	});
 
 	// Branch-mode lockstep task over the files the tasks write: devenv.lock (step
-	// 2), flake.nix + flake.lock (step 3), package.json + bun.lock (the biome
-	// catalog writer), and agent-image/entrypoint.nix (the FOD outputHash).
+	// 2), flake.nix + flake.lock (step 3), package.json + bun.lock + biome.json
+	// files + reformatted sources (the biome catalog writer), and the FOD pins.
 
 	// The FOD refresh is required: a channel bump moves pkgs.bun (the FOD builder)
 	// and, when the biome pin moves, the writer re-resolves the bun.lock closure —
@@ -553,29 +553,33 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	test("the lockstep postUpgradeTask is branch-mode, runs relock-then-FOD, and commits every written file", () => {
 		const task = devenvRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
-		expect(task?.fileFilters).toEqual([
+		// `biome format --write .` can touch any source file, so the filter is the
+		// catch-all — the same as the Meissa rule, which runs the same writer.
+		expect(task?.fileFilters).toEqual(["**/*"]);
+		// Silent-drop guard: fileFilters is an INCLUDE allowlist — Renovate commits
+		// ONLY matching files. Every file a task here writes must match, or a
+		// channel bump ships with that write dropped (flake skew → flake-parity
+		// red; stale pin → hash mismatch) while the scripts' own tests stay green.
+		const filters = task?.fileFilters ?? [];
+		for (const path of [
 			"devenv.lock",
-			"package.json",
-			"bun.lock",
 			"flake.nix",
 			"flake.lock",
+			"package.json",
+			"bun.lock",
+			"biome.json",
+			"tools/ci-matrix/biome.json",
+			"apps/ui/src/main.ts",
 			"agent-image/entrypoint.nix",
 			"apps/ui/dist.nix",
-		]);
-		// Silent-drop guard (mirrors the top-level rule's flake.nix guard): step 6
-		// writes flake.nix + flake.lock, and fileFilters is an INCLUDE allowlist —
-		// Renovate commits ONLY listed files. Drop either from the filter and a
-		// channel bump ships with the flake skewed from devenv.lock → flake-parity
-		// reds on every bump while the script's own tests stay green. These two
-		// asserts turn that silent drop into a red test.
-		expect(task?.fileFilters).toContain("flake.nix");
-		expect(task?.fileFilters).toContain("flake.lock");
+		]) {
+			expect(filters.some((f) => new Bun.Glob(f).match(path))).toBe(true);
+		}
 		expect(task?.commands).toEqual([
 			"bun tools/renovate/refresh-devenv-nixpkgs.ts",
 			"bun tools/renovate/refresh-biome-catalog.ts",
 			"bun tools/renovate/refresh-fod-hashes.ts",
 		]);
-		expect(task?.fileFilters).toContain("agent-image/entrypoint.nix");
 	});
 
 	// The digest-excludes-rollup seam: the TS rollup ALSO matches custom.regex, so
@@ -1838,12 +1842,13 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 		// that the population has not shrunk or grown. A newly coupled site is a
 		// deliberate edit: update this number in the same change.
 		//
-		// 18 = seven sites naming a trigger of the two entrypoint.nix entries
+		// 19 = seven sites naming a trigger of the two entrypoint.nix entries
 		// (2 entries × 7 sites), plus the UI pin's three sites (the lockstep,
-		// catalog and Meissa rules name bun.lock), plus one guestd vendorHash
-		// pair: only the Meissa site's broad `**/*` filter covers go/go.mod and
-		// go/go.sum, which the gomod MANAGER otherwise writes undeclared.
-		expect(coupled.length).toBe(18);
+		// catalog and Meissa rules name bun.lock), plus two guestd vendorHash
+		// pairs: the channel and Meissa sites' broad `**/*` filters cover
+		// go/go.mod and go/go.sum, which the gomod MANAGER otherwise writes
+		// undeclared.
+		expect(coupled.length).toBe(19);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 

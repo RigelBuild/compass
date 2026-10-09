@@ -3,72 +3,78 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	BIOME_CATALOG_KEY,
-	meissaInnerNixpkgsRev,
+	meissaFlakeRef,
 	rewriteCatalogPin,
 } from "./refresh-biome-catalog.core.ts";
 
-// Unit tests for the pure core of refresh-biome-catalog.ts: resolving Meissa's
-// raw nixpkgs rev out of devenv.lock and rewriting the biome catalog pin. No
+// Unit tests for the pure core of refresh-biome-catalog.ts: building the locked
+// Meissa flake ref out of devenv.lock and rewriting the biome catalog pin. No
 // nix/network/git — those live in the entry point.
 
 const repoRoot = join(import.meta.dir, "..", "..");
 
-describe("meissaInnerNixpkgsRev", () => {
+describe("meissaFlakeRef", () => {
 	const realLock = () => readFileSync(join(repoRoot, "devenv.lock"), "utf8");
+	const REV = "a".repeat(40);
+	const NAR = "sha256-hTbUK2SWyMCnTsliex+x98361TfchhpuHAKQUopMsYQ=";
+	const github = (rev: string, narHash: string) => ({
+		locked: {
+			narHash,
+			owner: "RigelBuild",
+			repo: "meissa",
+			rev,
+			type: "github",
+		},
+	});
+	const withMeissa = (node: unknown) =>
+		JSON.stringify({ nodes: { m: node, root: { inputs: { meissa: "m" } } } });
 
 	// The real-manifest guard: a devenv lock-format change fails HERE, loudly,
-	// instead of evaluating a stale or wrong rev in production.
-	test("recovers Meissa's nixpkgs-src rev from the real devenv.lock", () => {
-		const nodes = JSON.parse(realLock()).nodes;
-		const meissaChannel = nodes[nodes[nodes.root.inputs.meissa].inputs.nixpkgs];
-		const src = nodes[meissaChannel.inputs["nixpkgs-src"]];
-		expect(src.locked.owner).toBe("NixOS");
-		expect(meissaInnerNixpkgsRev(realLock())).toBe(src.locked.rev);
+	// instead of evaluating a stale or wrong biome in production.
+	test("builds the locked ref from the real devenv.lock", () => {
+		const { nodes } = JSON.parse(realLock());
+		const { owner, repo, rev, narHash } =
+			nodes[nodes.root.inputs.meissa].locked;
+		expect(meissaFlakeRef(realLock())).toBe(
+			`github:${owner}/${repo}/${rev}?narHash=${narHash}`,
+		);
 	});
 
-	// Meissa's channel and root's channel are both devenv-nixpkgs nodes, each
-	// with a nixpkgs-src. The bare `nixpkgs-src` key belongs to whichever won the
-	// name; follow input names so biome comes from Meissa's tree only.
-	test("follows meissa → nixpkgs → nixpkgs-src, not root's channel", () => {
+	// Node keys are not stable; only root's `meissa` input names the node.
+	test("follows root's meissa input, not a bare meissa node key", () => {
 		const lock = JSON.stringify({
 			nodes: {
-				meissa: { inputs: { nixpkgs: "nixpkgs_2" } },
-				nixpkgs: { inputs: { "nixpkgs-src": "nixpkgs-src" } },
-				"nixpkgs-src": { locked: { rev: "a".repeat(40) } },
-				nixpkgs_2: { inputs: { "nixpkgs-src": "nixpkgs-src_2" } },
-				"nixpkgs-src_2": { locked: { rev: "b".repeat(40) } },
-				root: { inputs: { meissa: "meissa", nixpkgs: "nixpkgs" } },
+				meissa: github("b".repeat(40), NAR),
+				meissa_2: github(REV, NAR),
+				root: { inputs: { meissa: "meissa_2" } },
 			},
 		});
-		expect(meissaInnerNixpkgsRev(lock)).toBe("b".repeat(40));
+		expect(meissaFlakeRef(lock)).toBe(
+			`github:RigelBuild/meissa/${REV}?narHash=${NAR}`,
+		);
 	});
 
 	test("throws on invalid JSON", () => {
-		expect(() => meissaInnerNixpkgsRev("{not json")).toThrow(/not valid JSON/);
+		expect(() => meissaFlakeRef("{not json")).toThrow(/not valid JSON/);
 	});
 
-	test("throws when root has no meissa input", () => {
-		const noMeissa = JSON.stringify({
-			nodes: {
-				"nixpkgs-src": { locked: { rev: "a".repeat(40) } },
-				root: { inputs: { nixpkgs: "nixpkgs" } },
-			},
-		});
-		expect(() => meissaInnerNixpkgsRev(noMeissa)).toThrow(/no 'meissa' input/);
-	});
-
-	test("throws on a non-40-hex rev (shape drift)", () => {
-		const shortRev = JSON.stringify({
-			nodes: {
-				meissa: { inputs: { nixpkgs: "n" } },
-				n: { inputs: { "nixpkgs-src": "s" } },
-				s: { locked: { rev: "abc123" } },
-				root: { inputs: { meissa: "meissa" } },
-			},
-		});
-		expect(() => meissaInnerNixpkgsRev(shortRev)).toThrow(
-			/no 40-hex locked rev/,
-		);
+	test.each([
+		[
+			"root has no meissa input",
+			JSON.stringify({ nodes: { meissa: github(REV, NAR), root: {} } }),
+		],
+		[
+			"root names a missing node",
+			JSON.stringify({ nodes: { root: { inputs: { meissa: "m" } } } }),
+		],
+		["the rev is not 40-hex", withMeissa(github("abc123", NAR))],
+		["the narHash is absent", withMeissa(github(REV, ""))],
+		[
+			"the node is not a github lock",
+			withMeissa({ locked: { ...github(REV, NAR).locked, type: "path" } }),
+		],
+	])("throws when %s", (_label, lock) => {
+		expect(() => meissaFlakeRef(lock)).toThrow(/root.inputs → meissa/);
 	});
 });
 

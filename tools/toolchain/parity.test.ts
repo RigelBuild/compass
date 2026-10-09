@@ -4,18 +4,17 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 const SCRIPT_REL = "tools/toolchain/parity.ts";
 const CORE_REL = "tools/toolchain/parity-core.ts";
 
 // The gate resolves commands with `sh -c 'command -v …'`, so PATH must reach sh
-// and nothing else ambient (a host rumdl would otherwise answer the probe).
-const SH_DIR = dirname(
-	execFileSync("sh", ["-c", "command -v sh"]).toString().trim(),
-);
+// and nothing else ambient (a host rumdl would otherwise answer the probe):
+// the resolved sh is symlinked alone into the stub bin dir.
+const SH = execFileSync("sh", ["-c", "command -v sh"]).toString().trim();
 // Stub `nix eval --json -f gate-tools.nix <output> …`: prints <output>.json.
 // Shell builtins only — PATH holds no coreutils, so `cat` is unavailable.
 const STUB_NIX = `#!/bin/sh
@@ -49,7 +48,7 @@ async function runParity(pathDirs: readonly string[]) {
 	const proc = Bun.spawn([process.execPath, SCRIPT_REL], {
 		cwd: repo,
 		env: {
-			PATH: [join(repo, "stubbin"), ...pathDirs, SH_DIR].join(":"),
+			PATH: [join(repo, "stubbin"), ...pathDirs].join(":"),
 			STUB_JSON: join(repo, "json"),
 		},
 		stdout: "pipe",
@@ -80,6 +79,7 @@ beforeEach(async () => {
 	await mkdir(join(repo, "stubbin"), { recursive: true });
 	await Bun.write(join(repo, "stubbin", "nix"), STUB_NIX);
 	await chmod(join(repo, "stubbin", "nix"), 0o755);
+	await symlink(SH, join(repo, "stubbin", "sh"));
 
 	const buf = await derivation("buf", "buf");
 	const bun = await derivation("bun", "bun");

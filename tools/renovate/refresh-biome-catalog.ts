@@ -2,8 +2,8 @@
 // biome Meissa ships (the dev shell's biome comes from the `meissa` input in
 // devenv.lock). No relock and no flake lockstep: the calling rule relocks first.
 
-// 1. Resolve Meissa's raw nixpkgs rev through devenv.lock by input name and eval
-// biome's version there (pure fetch+eval, no IFD, no build). 2. Rewrite the
+// 1. Build the locked Meissa flake ref from devenv.lock (by input name) and eval
+// its exported biome's version (pure fetch+eval, no build). 2. Rewrite the
 // catalog pin. 3. When it moved: bun install --lockfile-only, then biome migrate
 // and format with that exact biome, so config and sources match the new version.
 
@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { $ } from "bun";
 import {
 	BIOME_CATALOG_KEY,
-	meissaInnerNixpkgsRev,
+	meissaFlakeRef,
 	rewriteCatalogPin,
 } from "./refresh-biome-catalog.core.ts";
 
@@ -34,9 +34,8 @@ async function main(): Promise<number> {
 	const repoRoot = (await $`git rev-parse --show-toplevel`.text()).trim();
 	process.chdir(repoRoot);
 
-	const rev = meissaInnerNixpkgsRev(readFileSync(DEVENV_LOCK, "utf8"));
-	const nixpkgs = `github:NixOS/nixpkgs/${rev}`;
-	const versionRef = `${nixpkgs}#legacyPackages.${NIX_SYSTEM}.biome.version`;
+	const meissa = meissaFlakeRef(readFileSync(DEVENV_LOCK, "utf8"));
+	const versionRef = `${meissa}#packages.${NIX_SYSTEM}.biome.version`;
 	console.log(`refresh-biome-catalog: evaluating ${versionRef} ...`);
 	const version = (
 		await $`nix eval --raw ${NIX_FEATURES} ${versionRef}`.text()
@@ -68,7 +67,7 @@ async function main(): Promise<number> {
 		"nix",
 		"shell",
 		...NIX_FEATURES,
-		`${nixpkgs}#biome`,
+		`${meissa}#biome`,
 		"-c",
 		"biome",
 	];

@@ -23,20 +23,29 @@ const HERMETIC_ENV = {
 	HOME: "/dev/null",
 };
 
-// Meissa's raw nixpkgs (the eval target) vs root's own channel src (a decoy
-// under the bare `nixpkgs-src` key, as in the real renamed lock).
-const MEISSA_SRC_REV = "1111111111111111111111111111111111111111";
-const ROOT_SRC_REV = "2222222222222222222222222222222222222222";
+// Meissa's locked flake (the eval target) beside Meissa's own raw nixpkgs src,
+// a decoy: biome must come from Meissa's exported package, not that tree.
+const MEISSA_REV = "1111111111111111111111111111111111111111";
+const MEISSA_NAR = "sha256-hTbUK2SWyMCnTsliex+x98361TfchhpuHAKQUopMsYQ=";
+const MEISSA_REF = `github:RigelBuild/meissa/${MEISSA_REV}?narHash=${MEISSA_NAR}`;
+const SRC_REV = "2222222222222222222222222222222222222222";
 
-function devenvLock(meissaSrcRev: string): string {
+function devenvLock(meissaRev: string): string {
 	return JSON.stringify(
 		{
 			nodes: {
-				meissa: { inputs: { nixpkgs: "nixpkgs" } },
+				meissa: {
+					inputs: { nixpkgs: "nixpkgs" },
+					locked: {
+						narHash: MEISSA_NAR,
+						owner: "RigelBuild",
+						repo: "meissa",
+						rev: meissaRev,
+						type: "github",
+					},
+				},
 				nixpkgs: { inputs: { "nixpkgs-src": "nixpkgs-src" } },
-				"nixpkgs-src": { locked: { rev: meissaSrcRev } },
-				nixpkgs_2: { inputs: { "nixpkgs-src": "nixpkgs-src_2" } },
-				"nixpkgs-src_2": { locked: { rev: ROOT_SRC_REV } },
+				"nixpkgs-src": { locked: { rev: SRC_REV } },
 				root: { inputs: { meissa: "meissa", nixpkgs: "nixpkgs_2" } },
 			},
 			root: "root",
@@ -61,9 +70,9 @@ function packageJson(biome: string): string {
 	)}\n`;
 }
 
-// Stub nix. `eval` answers biome's version keyed off the rev, so a pass proves
-// the script evaluated Meissa's src rev; any other rev yields garbage. `shell`
-// appends its argv to a log so the harness can assert which biome ran what.
+// Stub nix. `eval` answers biome's version only for Meissa's exported package
+// at the locked ref; anything else (another rev, raw nixpkgs) yields garbage.
+// `shell` appends its argv to a log so the harness can assert which biome ran.
 const STUB_NIX = `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "shell" ]; then
@@ -72,7 +81,7 @@ if [ "\${1:-}" = "shell" ]; then
 fi
 ref="\${@: -1}"
 case "$ref" in
-  "github:NixOS/nixpkgs/${MEISSA_SRC_REV}#legacyPackages.x86_64-linux.biome.version") printf '2.5.9' ;;
+  "${MEISSA_REF}#packages.x86_64-linux.biome.version") printf '2.5.9' ;;
   *) printf 'WRONG-REF-%s' "$ref" ;;
 esac
 `;
@@ -135,7 +144,7 @@ describe("tools/renovate/refresh-biome-catalog.ts", () => {
 
 	describe("when Meissa's biome moved", () => {
 		beforeEach(async () => {
-			repo = await buildRepo("2.5.4", MEISSA_SRC_REV);
+			repo = await buildRepo("2.5.4", MEISSA_REV);
 		});
 
 		// Pin follows Meissa's biome, then bun.lock re-resolves, then the NEW
@@ -149,7 +158,7 @@ describe("tools/renovate/refresh-biome-catalog.ts", () => {
 			expect(await logOf(repo, ".bun-install.log")).toBe(
 				"install --lockfile-only\n",
 			);
-			const biome = `shell --extra-experimental-features nix-command flakes github:NixOS/nixpkgs/${MEISSA_SRC_REV}#biome -c biome`;
+			const biome = `shell --extra-experimental-features nix-command flakes ${MEISSA_REF}#biome -c biome`;
 			expect(await logOf(repo, ".nix-shell.log")).toBe(
 				`${biome} migrate --write\n${biome} format --write .\n`,
 			);
@@ -158,7 +167,7 @@ describe("tools/renovate/refresh-biome-catalog.ts", () => {
 
 	// Already equal: nothing to re-resolve, migrate, or format.
 	test("is a no-op when the pin already matches Meissa's biome", async () => {
-		repo = await buildRepo("2.5.9", MEISSA_SRC_REV);
+		repo = await buildRepo("2.5.9", MEISSA_REV);
 		const res = await runWriter(repo);
 		expect(res.exitCode).toBe(0);
 		expect(res.stdout.toString()).toContain("already matches");

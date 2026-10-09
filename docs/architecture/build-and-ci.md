@@ -16,11 +16,12 @@ version-parity gate below fails builds when toolchains diverge.
 
 [devenv](https://devenv.sh) (nix underneath) owns the entire toolchain — one
 owner, one activation path. The language runtimes (Go, bun, node, moon) are
-pinned in `tools/toolchain/versions/*.nix`; everything else — the
-protobuf/contract tooling (buf, protoc, the Go codegen plugins), the Go
-analysis tools (golangci-lint, govulncheck, go-licenses, nilaway), and the
-linters — comes from the pinned nixpkgs revision. A single owner means PATH
-order never silently decides which copy of a tool wins.
+pinned in `tools/toolchain/versions/*.nix`; the linters (biome, rumdl) and
+rumdl's base policy come from the `meissa` devenv input, built from Meissa's own
+locked nixpkgs; everything else — the protobuf/contract tooling (buf, protoc,
+the Go codegen plugins) and the Go analysis tools (golangci-lint, govulncheck,
+go-licenses, nilaway) — comes from the pinned nixpkgs revision. A single owner
+means PATH order never silently decides which copy of a tool wins.
 
 - **Local:** `direnv allow` puts the toolchain on PATH. devenv injects tools,
   not a whole shell — you keep your own prompt and dotfiles.
@@ -92,10 +93,11 @@ derivations the dev shell builds, from the same pinned sources: the language
 runtimes (bun, node, moon, go) from `tools/toolchain/versions/*.nix`; the Go
 analysis battery (golangci-lint, govulncheck, go-licenses, nilaway), each rebuilt
 against that go toolchain so analyzer and compiler share one Go version
-(`tools/toolchain/go-analysis.nix`); and the remaining nixpkgs-provided tools —
-buf, protoc, biome, rumdl — from the nixpkgs revision `devenv.lock` pins
-(`tools/toolchain/gate-tools.nix`). Their `bin/` dirs go on PATH; there are no
-`setup-*` actions. One owner, one activation path, remotely and locally.
+(`tools/toolchain/go-analysis.nix`); the remaining nixpkgs-provided tools —
+buf, protoc — from the nixpkgs revision `devenv.lock` pins; and biome and rumdl
+from the locked `meissa` input (both via `tools/toolchain/gate-tools.nix`,
+which also yields `RUMDL_BASE_CONFIG`). Their `bin/` dirs go on PATH; there
+are no `setup-*` actions. One owner, one activation path, remotely and locally.
 
 ### The parity gate
 

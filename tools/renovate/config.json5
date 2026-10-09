@@ -737,16 +737,16 @@
       // top-level one for matching branches; the evicted top-level toolchain
       // task self-gates on the versions/*.nix pins and would be a no-op here
       // anyway. fileFilters is an INCLUDE allowlist — Renovate commits ONLY files
-      // matching it — so it must name every file the tasks write: devenv.lock
-      // (step 2), and flake.nix + flake.lock (step 3's flake lockstep). Omit the
-      // flake pair and Renovate would run the re-lock but silently DROP it from
-      // the commit, shipping a channel bump with the flake still skewed →
-      // flake-parity red on every bump (the same silent-drop mode the FOD guard
-      // in config.test.ts documents).
+      // matching it — so it must cover every file the tasks write: devenv.lock
+      // (step 2), flake.nix + flake.lock (step 3's flake lockstep), the writer's
+      // files below, and the FOD pins. Narrow it and Renovate would run a task
+      // but silently DROP its write from the commit (the same silent-drop mode
+      // the FOD guard in config.test.ts documents).
       //
       // The biome catalog writer then re-checks the pin against Meissa's biome.
       // Meissa does not follow this channel, so it is a no-op unless the pin has
-      // drifted; package.json + bun.lock stay listed so a repaired pin commits.
+      // drifted; when it repairs one, it writes package.json, bun.lock, the
+      // biome.json files and any reformatted source, so the filter is `**/*`.
       //
       // A channel bump moves pkgs.bun, the nixpkgs-versioned builder the FOD
       // realises, so it can move agent-image/entrypoint.nix's bun `outputHash`;
@@ -755,9 +755,9 @@
       // channel bump, and reconciles the pin idempotently — a no-op write when
       // the realised tree is unchanged. It runs LAST so the relock's and the
       // writer's writes are already in the working tree. The command and output
-      // file must both be listed here because fileFilters is an INCLUDE
-      // allowlist: omitting agent-image/entrypoint.nix would silently drop the
-      // recomputed hash edit and leave a channel bump red. The #580 digest bump
+      // file must both be covered because fileFilters is an INCLUDE allowlist:
+      // dropping agent-image/entrypoint.nix would silently drop the recomputed
+      // hash edit and leave a channel bump red. The #580 digest bump
       // empirically hit exactly that failure (`hash mismatch in fixed-output
       // derivation compass-agent-node-modules`).
       //
@@ -769,16 +769,8 @@
           "bun tools/renovate/refresh-biome-catalog.ts",
           "bun tools/renovate/refresh-fod-hashes.ts",
         ],
-        fileFilters: [
-          "devenv.lock",
-          "package.json",
-          "bun.lock",
-          "flake.nix",
-          "flake.lock",
-          "agent-image/entrypoint.nix",
-          // flake.lock supplies the UI node_modules FOD's bun.
-          "apps/ui/dist.nix",
-        ],
+        // Broad on purpose: `biome format --write .` can touch any source file.
+        fileFilters: ["**/*"],
         executionMode: "branch",
       },
     },

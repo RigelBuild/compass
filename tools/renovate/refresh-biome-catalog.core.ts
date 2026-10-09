@@ -1,24 +1,46 @@
-// Pure core for refresh-biome-catalog.ts: where Meissa's biome version comes
-// from in devenv.lock, and the scoped package.json catalog-pin rewrite —
+// Pure core for refresh-biome-catalog.ts: the locked Meissa flake ref in
+// devenv.lock, and the scoped package.json catalog-pin rewrite —
 // unit-testable without a nix runner, network, or git tree.
-
-import { lockedRevByInputs } from "./refresh-devenv-nixpkgs.core.ts";
 
 // The catalog key whose pin mirrors Meissa's biome. Exact-version pin, kept
 // string-equal to the biome the dev shell runs. rumdl has no catalog pin.
 export const BIOME_CATALOG_KEY = "@biomejs/biome";
 
 /**
- * The raw NixOS/nixpkgs rev under Meissa's channel: root.inputs.meissa → its
- * nixpkgs → that node's nixpkgs-src. Evaluating biome there is IFD-free and
- * matches Meissa's biome, which is that nixpkgs' plain `pkgs.biome`.
+ * The exact locked Meissa flake ref, `github:<owner>/<repo>/<rev>?narHash=…`,
+ * from root's `meissa` input (resolved by input name, like gate-tools.nix).
+ * Its `packages.<sys>.biome` is the derivation the dev shell runs. Throws on any
+ * missing field: a shape change must fail the task, never read a stale biome.
  */
-export function meissaInnerNixpkgsRev(devenvLockText: string): string {
-	return lockedRevByInputs(devenvLockText, [
-		"meissa",
-		"nixpkgs",
-		"nixpkgs-src",
-	]);
+export function meissaFlakeRef(devenvLockText: string): string {
+	let lock: unknown;
+	try {
+		lock = JSON.parse(devenvLockText);
+	} catch (error) {
+		throw new Error(`devenv.lock is not valid JSON: ${String(error)}`);
+	}
+	const isObj = (v: unknown): v is Record<string, unknown> =>
+		typeof v === "object" && v !== null;
+	const nodes = isObj(lock) && isObj(lock.nodes) ? lock.nodes : {};
+	const root = nodes.root;
+	const key = isObj(root) && isObj(root.inputs) ? root.inputs.meissa : null;
+	const node = typeof key === "string" ? nodes[key] : undefined;
+	const locked = isObj(node) && isObj(node.locked) ? node.locked : {};
+	const { owner, repo, rev, narHash } = locked;
+	if (
+		locked.type !== "github" ||
+		typeof owner !== "string" ||
+		typeof repo !== "string" ||
+		typeof rev !== "string" ||
+		!/^[a-f0-9]{40}$/.test(rev) ||
+		typeof narHash !== "string" ||
+		!narHash.startsWith("sha256-")
+	) {
+		throw new Error(
+			"devenv.lock has no locked github owner/repo/40-hex rev/narHash at root.inputs → meissa — devenv lock shape may have changed.",
+		);
+	}
+	return `github:${owner}/${repo}/${rev}?narHash=${narHash}`;
 }
 
 // The catalog object in package.json: "catalog": { … }. [^}]* stops at the first
