@@ -471,6 +471,52 @@ console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(roo
 		);
 	});
 
+	test("the duplicate merged last is movable even when its commit is older", async () => {
+		const dir = "go/internal/store/migrations";
+		await withRepo(
+			{ [`${dir}/0001_init.sql`]: "SELECT 1;\n" },
+			async (root) => {
+				const git = (args: string[], env: Record<string, string> = {}) =>
+					Bun.$`git ${args}`
+						.cwd(root)
+						.env({ ...process.env, ...env })
+						.quiet();
+				const at = (date: string) => ({
+					GIT_AUTHOR_DATE: date,
+					GIT_COMMITTER_DATE: date,
+				});
+				// The late PR's commit is older than the one that merged first.
+				await git(["checkout", "-qb", "late"]);
+				writeFileSync(join(root, `${dir}/0002_late.sql`), "SELECT 'late';\n");
+				await git(["add", "."]);
+				await git(["commit", "-qm", "late"], at("2026-01-01T00:00:00Z"));
+				await git(["checkout", "-q", "base"]);
+				writeFileSync(join(root, `${dir}/0002_early.sql`), "SELECT 'early';\n");
+				await git(["add", "."]);
+				await git(["commit", "-qm", "early"], at("2026-02-01T00:00:00Z"));
+				await git(
+					["merge", "-q", "--no-ff", "--no-edit", "late"],
+					at("2026-03-01T00:00:00Z"),
+				);
+				await git(["checkout", "-qb", "fix"]);
+
+				await git(["mv", `${dir}/0002_late.sql`, `${dir}/0003_late.sql`]);
+				expect(
+					(await checkMigrationImmutability(root, { GATE_BASE_REF: "base" }))
+						.code,
+				).toBe(0);
+
+				await git(["mv", `${dir}/0003_late.sql`, `${dir}/0002_late.sql`]);
+				await git(["mv", `${dir}/0002_early.sql`, `${dir}/0003_early.sql`]);
+				const wrong = await checkMigrationImmutability(root, {
+					GATE_BASE_REF: "base",
+				});
+				expect(wrong.code).toBe(1);
+				expect(wrong.output).toContain(`${dir}/0002_early.sql`);
+			},
+		);
+	});
+
 	test("outside a git worktree: skipped locally, fails closed on GitHub Actions", async () => {
 		const root = mkdtempSync(join(tmpdir(), "sql-gate-nogit-"));
 		try {

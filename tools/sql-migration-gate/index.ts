@@ -267,10 +267,15 @@ export async function checkMigrationImmutability(
 				new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()),
 			);
 		}
+		// First-parent: each step is one integration into the base branch, so the
+		// order is merge order, not the commit dates of the branches merged in.
 		const addedInOrder = decoder
 			.decode(
 				await gitStdout(root, [
 					"log",
+					"--first-parent",
+					"-m",
+					"--no-renames",
 					"--diff-filter=A",
 					"--reverse",
 					"--format=",
