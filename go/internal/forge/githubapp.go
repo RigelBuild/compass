@@ -116,20 +116,27 @@ func NewScopedAppMinter(cfg GitHubAppConfig) (*ScopedAppMinter, error) {
 	return &ScopedAppMinter{source: source}, nil
 }
 
-// Mint requests a fresh token for repos and permissions without caching it.
-func (m *ScopedAppMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (string, time.Time, error) {
+// Mint requests a fresh token and returns the repositories GitHub granted.
+func (m *ScopedAppMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (ScopedToken, error) {
 	body, err := json.Marshal(struct {
 		Repositories []string          `json:"repositories,omitempty"`
 		Permissions  map[string]string `json:"permissions,omitempty"`
 	}{Repositories: repos, Permissions: perms})
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("forge: build mint request: %w", err)
+		return ScopedToken{}, fmt.Errorf("forge: build mint request: %w", err)
 	}
 	out, err := m.source.postInstallationToken(ctx, body)
 	if err != nil {
-		return "", time.Time{}, err
+		return ScopedToken{}, err
 	}
-	return out.Token, effectiveTokenExpiry(out.ExpiresAt, m.source.clock()), nil
+	repositories := make([]string, 0, len(out.Repositories))
+	for _, repo := range out.Repositories {
+		repositories = append(repositories, repo.FullName)
+	}
+	return ScopedToken{
+		Token: out.Token, ExpiresAt: effectiveTokenExpiry(out.ExpiresAt, m.source.clock()),
+		Repositories: repositories,
+	}, nil
 }
 
 // appAPIBase derives the REST API base URL from the configured host, mirroring
@@ -195,10 +202,21 @@ func (s *appTokenSource) cached() (string, bool) {
 }
 
 // installationToken is the wire shape of the access-tokens POST 201 response.
-// Only the fields this source needs are decoded.
 type installationToken struct {
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Token        string                   `json:"token"`
+	ExpiresAt    time.Time                `json:"expires_at"`
+	Repositories []installationRepository `json:"repositories"`
+}
+
+type installationRepository struct {
+	FullName string `json:"full_name"`
+}
+
+// ScopedToken carries a newly minted token and the scope GitHub granted.
+type ScopedToken struct {
+	Token        string
+	ExpiresAt    time.Time
+	Repositories []string
 }
 
 // mint builds an App JWT, POSTs it to the installation access-tokens endpoint,

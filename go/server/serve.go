@@ -953,12 +953,7 @@ type serveDoors struct {
 	uds *http.Server
 	dev *http.Server
 	net *http.Server
-	// netResolver is the resolver threaded to the net door, i.e. the one
-	// runnerhub's FetchSecrets delivers from. Its inner must always be the
-	// CONTAINER StoreResolver (reading `secrets`); recorded because
-	// buildNetworkServer resolves nothing at build time, so a swap to the server
-	// instance would silently deliver every deployment secret into every agent
-	// container. Asserted by the buildDoors routing test.
+	// The net door must use the container StoreResolver or deployment secrets reach agents.
 	netResolver *brokeredSecretResolver
 	// gitCredentials refreshes the brokered App tokens; nil without a GitHub App.
 	gitCredentials *gitCredentialBroker

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,14 +31,15 @@ import (
 
 // mintServer scripts the access-tokens endpoint and records each request body.
 type mintServer struct {
-	srv      *httptest.Server
-	hits     atomic.Int64
-	lastJWT  string
-	lastBody []byte
-	token    string
-	status   int
-	nowFn    func() time.Time
-	lifetime time.Duration
+	srv          *httptest.Server
+	hits         atomic.Int64
+	lastJWT      string
+	lastBody     []byte
+	token        string
+	status       int
+	nowFn        func() time.Time
+	lifetime     time.Duration
+	repositories []installationRepository
 }
 
 func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServer {
@@ -60,7 +62,7 @@ func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServ
 			return
 		}
 		exp := m.nowFn().Add(m.lifetime)
-		response, err := json.Marshal(installationToken{Token: m.token, ExpiresAt: exp})
+		response, err := json.Marshal(installationToken{Token: m.token, ExpiresAt: exp, Repositories: m.repositories})
 		if err != nil {
 			http.Error(w, "encode response", http.StatusInternalServerError)
 			return
@@ -118,6 +120,7 @@ func TestScopedAppMinterSendsRepositoryAndPermissionScope(t *testing.T) {
 	key := testAppKey(t)
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	m := newMintServer(t, "ghs_scoped", func() time.Time { return now })
+	m.repositories = []installationRepository{{FullName: "owner/alpha"}, {FullName: "owner/beta"}}
 	minter := newScopedAppMinter(t, m, GitHubAppConfig{
 		AppID: 1, InstallationID: 2,
 		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
@@ -125,15 +128,18 @@ func TestScopedAppMinterSendsRepositoryAndPermissionScope(t *testing.T) {
 	})
 	repos := []string{"alpha", "beta"}
 	permissions := map[string]string{"contents": "write", "pull_requests": "write", "metadata": "read"}
-	tok, expiresAt, err := minter.Mint(context.Background(), repos, permissions)
+	result, err := minter.Mint(context.Background(), repos, permissions)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	if tok != "ghs_scoped" {
-		t.Fatalf("token = %q, want ghs_scoped", tok)
+	if result.Token != "ghs_scoped" {
+		t.Fatalf("token = %q, want ghs_scoped", result.Token)
 	}
-	if want := now.Add(time.Hour); !expiresAt.Equal(want) {
-		t.Fatalf("expiresAt = %s, want %s", expiresAt, want)
+	if want := now.Add(time.Hour); !result.ExpiresAt.Equal(want) {
+		t.Fatalf("expiresAt = %s, want %s", result.ExpiresAt, want)
+	}
+	if want := []string{"owner/alpha", "owner/beta"}; !reflect.DeepEqual(result.Repositories, want) {
+		t.Fatalf("granted repositories = %v, want %v", result.Repositories, want)
 	}
 	var body struct {
 		Repositories []string          `json:"repositories"`
@@ -164,7 +170,7 @@ func TestScopedAppMinterWildcardOmitsRepositories(t *testing.T) {
 		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
 		Clock:      func() time.Time { return now },
 	})
-	if _, _, err := minter.Mint(context.Background(), nil, map[string]string{"contents": "write"}); err != nil {
+	if _, err := minter.Mint(context.Background(), nil, map[string]string{"contents": "write"}); err != nil {
 		t.Fatalf("Mint wildcard: %v", err)
 	}
 	var body map[string]json.RawMessage
@@ -189,7 +195,7 @@ func TestScopedAppMinterSurfacesGitHubError(t *testing.T) {
 		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
 		Clock:      func() time.Time { return now },
 	})
-	_, _, err := minter.Mint(context.Background(), []string{"repo"}, map[string]string{"contents": "write"})
+	_, err := minter.Mint(context.Background(), []string{"repo"}, map[string]string{"contents": "write"})
 	if err == nil || !strings.Contains(err.Error(), "403: scripted failure") {
 		t.Fatalf("Mint error = %v, want GitHub 403 message", err)
 	}
