@@ -552,7 +552,7 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 	// D6: the net door — runnerhub's FetchSecrets delivery path — must have
 	// received the CONTAINER instance. Pointer identity is the assertion: this
 	// is the swap that leaks every deployment secret into every agent container,
-	if doors.netResolver != container {
+	if doors.netResolver == nil || doors.netResolver.inner != container {
 		t.Fatal("net door did not receive the CONTAINER resolver: runnerhub FetchSecrets would serve server_secrets, delivering every deployment secret (App PEMs, webhook secrets, Linear credentials) into every agent container")
 	}
 

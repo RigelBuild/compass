@@ -916,7 +916,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// each lane joins the SAME scoped group so it inherits the doors' lifecycle.
 	// The board + GitHub notify lanes are nil when the GitHub App is absent; the
 	// Linear notify lane is nil when Linear is not configured. A nil lane starts nothing.
-	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, forgeWiring.notifyLane, doors.linearNotify)
+	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, doors.gitCredentials, forgeWiring.notifyLane, doors.linearNotify)
 	// The Linear session responder drains on the same group; nil when Linear is off.
 	startLinearResponder(gctx, g, doors.linearResponder, commsBus)
 	// The comms consumers: delivery fan-out on the event fabric and the presence
@@ -953,14 +953,15 @@ type serveDoors struct {
 	uds *http.Server
 	dev *http.Server
 	net *http.Server
-	// netResolver is the user-secret resolver INSTANCE threaded to the net door,
-	// i.e. the one runnerhub's FetchSecrets delivers from. It must always be the
-	// CONTAINER instance (the DB-backed StoreResolver reading `secrets`); recorded
-	// because buildNetworkServer resolves nothing at build time, so the wiring is
-	// otherwise unobservable and a swap to the server instance would silently
-	// deliver every deployment secret into every agent container. Asserted by the
-	// buildDoors routing test.
-	netResolver *secrets.StoreResolver
+	// netResolver is the resolver threaded to the net door, i.e. the one
+	// runnerhub's FetchSecrets delivers from. Its inner must always be the
+	// CONTAINER StoreResolver (reading `secrets`); recorded because
+	// buildNetworkServer resolves nothing at build time, so a swap to the server
+	// instance would silently deliver every deployment secret into every agent
+	// container. Asserted by the buildDoors routing test.
+	netResolver *brokeredSecretResolver
+	// gitCredentials refreshes the brokered App tokens; nil without a GitHub App.
+	gitCredentials *gitCredentialBroker
 	// linearNotify is the Linear agent-notification lane (RIG-2732 T7), built
 	// beside the webhook handler it feeds; nil when Linear is not configured (its
 	// client-credentials pair undeclared). Serve starts its arm + reconciler on
@@ -1074,8 +1075,13 @@ func buildDoors(
 	// the board lane is on — the POST /webhooks/github ingress outside that gate.
 	var netServer *http.Server
 	// One variable feeds both the call and the record below, so the two cannot
-	// drift apart and the recorded instance is always the delivered one.
-	netResolver := resolver
+	// drift apart and the recorded instance is always the delivered one. The
+	// broker mints from the SERVER App key but adds only a repo-scoped token.
+	gitCredentials, err := buildGitCredentialBroker(cfg, st, serverResolver, hub, slog.Default())
+	if err != nil {
+		return serveDoors{}, err
+	}
+	netResolver := &brokeredSecretResolver{inner: resolver, broker: gitCredentials}
 	if netListener != nil {
 		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, usageSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linear.webhook, linear.sessionLink)
 		if err != nil {
@@ -1088,7 +1094,7 @@ func buildDoors(
 	// swap here is silent and severe: runnerhub's FetchSecrets would serve
 	// `server_secrets`, handing every deployment secret to every agent container.
 	return serveDoors{
-		uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver,
+		uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
 		linearNotify: linear.notify, linearResponder: linear.responder,
 	}, nil
 }

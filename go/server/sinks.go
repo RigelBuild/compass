@@ -170,13 +170,14 @@ func startCommsConsumers(gctx context.Context, g *errgroup.Group, commsBus *even
 // nothing. The notify lanes are the same *forgeNotifyLane type, taken variadically so a new
 // notify lane is one more argument, not a new param. Serve calls this one helper
 // so the Run starts, which share the serve group + gctx, stay one statement at
-// the call site (mirroring startCommsConsumers). Every Run returns nil on
-// ctx-cancel.
-func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, notify ...*forgeNotifyLane) {
+// the call site (mirroring startCommsConsumers). The App token broker shares
+// the board lane's App gate. Every Run returns nil on ctx-cancel.
+func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, gitCredentials *gitCredentialBroker, notify ...*forgeNotifyLane) {
 	if board != nil {
 		g.Go(func() error { return board.arm.Run(gctx) })
 		g.Go(func() error { return board.reconciler.Run(gctx) })
 	}
+	startGitCredentialRefresh(gctx, g, gitCredentials)
 	for _, lane := range notify {
 		if lane == nil {
 			continue

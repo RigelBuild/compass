@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,6 +27,173 @@ import (
 	"testing"
 	"time"
 )
+
+// mintServer scripts the access-tokens endpoint and records each request body.
+type mintServer struct {
+	srv      *httptest.Server
+	hits     atomic.Int64
+	lastJWT  string
+	lastBody []byte
+	token    string
+	status   int
+	nowFn    func() time.Time
+	lifetime time.Duration
+}
+
+func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServer {
+	t.Helper()
+	m := &mintServer{token: token, status: http.StatusCreated, nowFn: nowFn, lifetime: time.Hour}
+	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.hits.Add(1)
+		m.lastJWT = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read request body", http.StatusBadRequest)
+			return
+		}
+		m.lastBody = body
+		if m.status != http.StatusCreated {
+			w.WriteHeader(m.status)
+			if _, err := w.Write([]byte(`{"message":"scripted failure"}`)); err != nil {
+				return
+			}
+			return
+		}
+		exp := m.nowFn().Add(m.lifetime)
+		response, err := json.Marshal(installationToken{Token: m.token, ExpiresAt: exp})
+		if err != nil {
+			http.Error(w, "encode response", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		if _, err := w.Write(append(response, '\n')); err != nil {
+			return
+		}
+	}))
+	t.Cleanup(m.srv.Close)
+	return m
+}
+
+// rewriteTransport routes requests to the test server while preserving the
+// source's API URL construction.
+type rewriteTransport struct {
+	target *url.URL
+}
+
+func newAppSource(t *testing.T, m *mintServer, cfg GitHubAppConfig) TokenSource {
+	t.Helper()
+	target, err := url.Parse(m.srv.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	cfg.Client = &http.Client{Transport: &rewriteTransport{target: target}}
+	src, err := NewAppTokenSource(cfg)
+	if err != nil {
+		t.Fatalf("NewAppTokenSource: %v", err)
+	}
+	return src
+}
+
+func newScopedAppMinter(t *testing.T, m *mintServer, cfg GitHubAppConfig) *ScopedAppMinter {
+	t.Helper()
+	target, err := url.Parse(m.srv.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	cfg.Client = &http.Client{Transport: &rewriteTransport{target: target}}
+	minter, err := NewScopedAppMinter(cfg)
+	if err != nil {
+		t.Fatalf("NewScopedAppMinter: %v", err)
+	}
+	return minter
+}
+
+func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestScopedAppMinterSendsRepositoryAndPermissionScope(t *testing.T) {
+	key := testAppKey(t)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	m := newMintServer(t, "ghs_scoped", func() time.Time { return now })
+	minter := newScopedAppMinter(t, m, GitHubAppConfig{
+		AppID: 1, InstallationID: 2,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      func() time.Time { return now },
+	})
+	repos := []string{"alpha", "beta"}
+	permissions := map[string]string{"contents": "write", "pull_requests": "write", "metadata": "read"}
+	tok, expiresAt, err := minter.Mint(context.Background(), repos, permissions)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if tok != "ghs_scoped" {
+		t.Fatalf("token = %q, want ghs_scoped", tok)
+	}
+	if want := now.Add(time.Hour); !expiresAt.Equal(want) {
+		t.Fatalf("expiresAt = %s, want %s", expiresAt, want)
+	}
+	var body struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal(m.lastBody, &body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if len(body.Repositories) != 2 || body.Repositories[0] != "alpha" || body.Repositories[1] != "beta" {
+		t.Errorf("repositories = %v, want [alpha beta]", body.Repositories)
+	}
+	if len(body.Permissions) != len(permissions) {
+		t.Fatalf("permissions = %v, want %v", body.Permissions, permissions)
+	}
+	for name, want := range permissions {
+		if body.Permissions[name] != want {
+			t.Errorf("permission %q = %q, want %q", name, body.Permissions[name], want)
+		}
+	}
+}
+
+func TestScopedAppMinterWildcardOmitsRepositories(t *testing.T) {
+	key := testAppKey(t)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	m := newMintServer(t, "ghs_wildcard", func() time.Time { return now })
+	minter := newScopedAppMinter(t, m, GitHubAppConfig{
+		AppID: 1, InstallationID: 2,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      func() time.Time { return now },
+	})
+	if _, _, err := minter.Mint(context.Background(), nil, map[string]string{"contents": "write"}); err != nil {
+		t.Fatalf("Mint wildcard: %v", err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(m.lastBody, &body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if _, ok := body["repositories"]; ok {
+		t.Errorf("wildcard request includes repositories: %s", m.lastBody)
+	}
+	if _, ok := body["permissions"]; !ok {
+		t.Errorf("wildcard request omits permissions: %s", m.lastBody)
+	}
+}
+
+func TestScopedAppMinterSurfacesGitHubError(t *testing.T) {
+	key := testAppKey(t)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	m := newMintServer(t, "unused", func() time.Time { return now })
+	m.status = http.StatusForbidden
+	minter := newScopedAppMinter(t, m, GitHubAppConfig{
+		AppID: 1, InstallationID: 2,
+		PrivateKey: func(context.Context) ([]byte, error) { return pemPKCS1(t, key), nil },
+		Clock:      func() time.Time { return now },
+	})
+	_, _, err := minter.Mint(context.Background(), []string{"repo"}, map[string]string{"contents": "write"})
+	if err == nil || !strings.Contains(err.Error(), "403: scripted failure") {
+		t.Fatalf("Mint error = %v, want GitHub 403 message", err)
+	}
+}
 
 // testAppKey generates an RSA key once per test run for signing/verification.
 func testAppKey(t *testing.T) *rsa.PrivateKey {
@@ -69,67 +237,6 @@ func pemEd25519(t *testing.T) []byte {
 		t.Fatalf("marshal ed25519 PKCS#8 key: %v", err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-}
-
-// mintServer scripts the access-tokens endpoint: it counts hits, captures the
-// last presented App JWT, and returns the configured token/expiry (or a status
-// override). expiresAt is resolved lazily per request via nowFn so a test can
-// advance the clock and assert the fresh expiry.
-type mintServer struct {
-	srv      *httptest.Server
-	hits     atomic.Int64
-	lastJWT  string
-	token    string
-	status   int
-	nowFn    func() time.Time
-	lifetime time.Duration
-}
-
-func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServer {
-	t.Helper()
-	m := &mintServer{token: token, status: http.StatusCreated, nowFn: nowFn, lifetime: time.Hour}
-	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m.hits.Add(1)
-		auth := r.Header.Get("Authorization")
-		m.lastJWT = strings.TrimPrefix(auth, "Bearer ")
-		if m.status != http.StatusCreated {
-			w.WriteHeader(m.status)
-			_, _ = w.Write([]byte(`{"message":"scripted failure"}`))
-			return
-		}
-		exp := m.nowFn().Add(m.lifetime)
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(installationToken{Token: m.token, ExpiresAt: exp})
-	}))
-	t.Cleanup(m.srv.Close)
-	return m
-}
-
-// rewriteTransport routes every request to the test server regardless of the
-// https://<host>/api/v3 URL the source builds, so the source's real URL
-// construction is exercised while the request still lands on httptest.
-type rewriteTransport struct {
-	target *url.URL
-}
-
-func newAppSource(t *testing.T, m *mintServer, cfg GitHubAppConfig) TokenSource {
-	t.Helper()
-	target, err := url.Parse(m.srv.URL)
-	if err != nil {
-		t.Fatalf("parse server url: %v", err)
-	}
-	cfg.Client = &http.Client{Transport: &rewriteTransport{target: target}}
-	src, err := NewAppTokenSource(cfg)
-	if err != nil {
-		t.Fatalf("NewAppTokenSource: %v", err)
-	}
-	return src
-}
-
-func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.URL.Scheme = rt.target.Scheme
-	req.URL.Host = rt.target.Host
-	return http.DefaultTransport.RoundTrip(req)
 }
 
 func TestAppTokenSourceJWTClaimsAndSignature(t *testing.T) {
