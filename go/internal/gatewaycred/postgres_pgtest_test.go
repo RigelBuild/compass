@@ -247,7 +247,7 @@ func TestGatewayCredentialsRefreshWritesFreshNonce(t *testing.T) {
 }
 
 func TestGatewayCredentialsRedactSecrets(t *testing.T) {
-	_, _, creds, _, owner, ctx := newCredentialFixture(t)
+	_, pool, creds, _, owner, ctx := newCredentialFixture(t)
 	credential := mustCreate(t, ctx, creds, gatewaycred.NewOAuthCredential(gatewaycred.Credential{
 		Provider: "anthropic", Scope: gatewaycred.ScopeOwn, OwnerUserID: owner,
 	}, gatewaycred.OAuthToken{Access: "redact-access-secret", Refresh: "redact-refresh-secret"}))
@@ -282,6 +282,7 @@ func TestGatewayCredentialsRedactSecrets(t *testing.T) {
 	if _, err := creds.UpdateOAuth(ctx, store.AccountID("unknown"), credential.ID, gatewaycred.OAuthToken{Access: "next"}, credential.Version); !errors.Is(err, gatewaycred.ErrNotFound) {
 		t.Fatalf("not-found guard: %v", err)
 	}
+	assertRawCredentialRowHasNoSecrets(t, ctx, pool, credential.ID, "redact-access-secret", "redact-refresh-secret")
 }
 
 func postgresHarness() gatewaycredtest.Harness {
@@ -291,6 +292,7 @@ func postgresHarness() gatewaycredtest.Harness {
 	var key envelope.Key
 	return gatewaycredtest.Harness{
 		New: func(t *testing.T) (gatewaycred.CredentialStore, gatewaycred.PoolResolver) {
+			t.Helper()
 			dsn := pgtest.RequireDSN(t)
 			st, err := store.Open(t.Context(), dsn)
 			if err != nil {
@@ -303,6 +305,7 @@ func postgresHarness() gatewaycredtest.Harness {
 			return creds, creds
 		},
 		Ctx: func(t *testing.T, tenant int) context.Context {
+			t.Helper()
 			if tenant == 0 {
 				return store.WithTenant(t.Context(), current.EffectiveTenant(t.Context()))
 			}
