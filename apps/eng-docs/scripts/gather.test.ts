@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { parseDecisionFile } from "../../../tools/design-ledger-gate/decision-files.ts";
 import {
+	buildDecisionIndex,
 	buildFrontmatter,
 	buildIndex,
 	buildSidebar,
@@ -509,6 +511,55 @@ describe("transform", () => {
 		);
 	});
 });
+describe("decision pages", () => {
+	const path = "docs/designs/decisions/meta/DL-021.md";
+	const recordPath = "docs/designs/meta/compass-architecture-lineage/design.md";
+	const source =
+		'---\nid: DL-021\ndecision: "Postgres fan-out"\nstatus: "Superseded by DL-313 (Matt, 2026-08-31)"\nrecord: ../../meta/compass-architecture-lineage/design.md\n---\n\nSee [lineage](../../meta/compass-architecture-lineage/design.md).\n';
+	const gathered = new Set([path, recordPath]);
+
+	test("renders decision fields as prose and rewrites record and body links", () => {
+		const rendered = transform(source, path, gathered);
+		expect(rendered).toContain('title: "DL-021"');
+		expect(rendered).toContain(
+			"Postgres fan-out\n\n**Status:** Superseded by DL-313 (Matt, 2026-08-31)",
+		);
+		expect(rendered).toContain(
+			"**Record:** [../../meta/compass-architecture-lineage/design.md](/designs/meta/compass-architecture-lineage/design)",
+		);
+		expect(rendered).toContain(
+			"See [lineage](/designs/meta/compass-architecture-lineage/design).",
+		);
+		expect(rendered).not.toContain("id: DL-021");
+	});
+
+	test("throws the parser's path, line, and reason for malformed decisions", () => {
+		expect(() =>
+			transform(source.replace("id: DL-021", "id: DL-022"), path, gathered),
+		).toThrow(
+			`${path}:2: id \`DL-022\` does not match file name \`DL-021.md\``,
+		);
+	});
+
+	test("builds sorted area sections with rewritten decision and record links", () => {
+		const agent = parseDecisionFile(
+			"docs/designs/decisions/agent/DL-001.md",
+			'---\nid: DL-001\ndecision: "Agent boundary"\nstatus: "Active (Matt, 2026-08-31)"\nrecord: ../../agent/contracts/design.md\n---\n',
+		);
+		const meta = parseDecisionFile(path, source);
+		if (!agent.ok || !meta.ok) throw new Error("fixture must parse");
+
+		const index = buildDecisionIndex(
+			[meta.row, agent.row],
+			new Set([path, recordPath]),
+		);
+		expect(index.indexOf("## agent")).toBeLessThan(index.indexOf("## meta"));
+		expect(index).toContain("[DL-021](/designs/decisions/meta/dl-021)");
+		expect(index).toContain(
+			"[../../meta/compass-architecture-lineage/design.md](/designs/meta/compass-architecture-lineage/design)",
+		);
+	});
+});
 
 // -- routeSlug ----------------------------------------------------------------
 // The Starlight route for a gathered doc: its content-relative path minus the
@@ -520,6 +571,13 @@ describe("routeSlug", () => {
 		expect(routeSlug("designs/repo/compass-eng-docs/design.md")).toBe(
 			"/designs/repo/compass-eng-docs/design",
 		);
+	});
+
+	test("keeps README and generated index on distinct Starlight routes", () => {
+		expect(routeSlug("designs/decisions/README.md")).toBe(
+			"/designs/decisions/readme",
+		);
+		expect(routeSlug("designs/decisions/index.md")).toBe("/designs/decisions");
 	});
 
 	test("lowercases the route (Starlight lowercases slugs)", () => {
@@ -606,6 +664,13 @@ describe("buildIndex", () => {
 		);
 		expect(md).toContain("- [Architecture](/architecture/overview) — Overview");
 		expect(md).toContain("- [Contributing](/contributing/readme) — Readme");
+	});
+
+	test("links to the generated decision index", () => {
+		const md = buildIndex(entries, "/designs/decisions");
+		expect(md).toContain(
+			"- [Design decisions](/designs/decisions) — Every decision, by area.",
+		);
 	});
 
 	test("orders the links by SECTIONS, not by entry order", () => {

@@ -4,7 +4,7 @@ Living source-of-truth for the **Compass runtime tier strategy** — which
 runner backends exist, what each isolates, and how a user adopts them. The
 point-in-time *design records* (the why) live in the
 [design corpus](../../designs/) (`../../designs/`), bucketed by domain and
-indexed by [`DECISIONS.md`](../../designs/DECISIONS.md).
+indexed by [`decisions/`](../../designs/decisions/README.md).
 
 Available specs:
 
@@ -17,5 +17,5 @@ Available specs:
 > These specs describe the strategy and current behavior. The *why* — the
 > rulings behind the trust-model split and each tier — lives in the design
 > records under [`../../designs/`](../../designs/) (bucketed by domain,
-> indexed by `DECISIONS.md`); each spec's "Not yet specified" section names
+> indexed by `decisions/`); each spec's "Not yet specified" section names
 > the surfaces still ahead of the code.

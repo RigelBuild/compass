@@ -16,8 +16,8 @@ Two records carry the why:
 ## The trust-model axis
 
 **The security boundary follows the trust model, not the deployment
-uniformly.** That is the ruled axis (DL-325,
-[`DECISIONS.md`](../../designs/DECISIONS.md): "The runner end state splits by
+uniformly.** That is the ruled axis
+([DL-325](../../designs/decisions/infra/DL-325.md): "The runner end state splits by
 trust model (RIG-3070): untrusted multi-tenant operation requires the microVM
 hardware boundary (KVM, unchanged); self-host single-tenant deployments keep
 podman as a permanent, supported entry tier requiring no `/dev/kvm`, with
@@ -31,8 +31,8 @@ operator's own agents on their own code on their own box — there is no
 untrusted tenant to isolate from — so the boundary strength is the operator's
 choice, graded across three tiers.
 
-One doctrine governs what every tier's boundary is *for* (DL-024,
-[`DECISIONS.md`](../../designs/DECISIONS.md): "Each agent runs in a per-agent
+One doctrine governs what every tier's boundary is *for*
+([DL-024](../../designs/decisions/meta/DL-024.md): "Each agent runs in a per-agent
 container on the Runner for blast-radius isolation, not credential
 avoidance"). No tier withholds credentials from the agent — secrets are
 materialized into the agent's environment on every tier. What varies across
@@ -138,7 +138,7 @@ Each stage is a graduation, never a gate — a user may stay at any stage.
    staying on their existing agent with the same exposure and none of
    Compass.
 2. **Embedded-local (podman)** — the low-friction onboarding front door
-   (DL-319, [`DECISIONS.md`](../../designs/DECISIONS.md): "`mode="embedded"`
+   ([DL-319](../../designs/decisions/ui/DL-319.md): "`mode="embedded"`
    returns as the low-friction onboarding / local-dev front door — the app
    spawns/supervises a LOCAL stack via rootless podman on the user's own
    machine"), with zero-config mode selection (DL-320: "absent → embedded

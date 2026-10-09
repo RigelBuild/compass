@@ -6,7 +6,7 @@ Tracker: SEA
 
 > **Superseded** by the board webhook-ingestion record
 > ([`../compass-forge-board-webhook-ingestion/design.md`](../compass-forge-board-webhook-ingestion/design.md),
-> DL-281 in [`../../DECISIONS.md`](../../DECISIONS.md)): board issue ingestion is
+> [DL-281](../../decisions/server/DL-281.md)): board issue ingestion is
 > now webhook-driven, not polled. This record's board-ingestion poll driver
 > (DL-161) is retired; DL-162's `forge_repo_subscriptions` target table and the
 > `--forge-repos` seed survive verbatim as the webhook lane's subscribed-repo

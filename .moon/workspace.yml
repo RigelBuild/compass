@@ -93,7 +93,7 @@ projects:
   # rather than the schema.
   stamp-gate: 'tools/stamp-gate'
   # The design-ledger gate: validates the Compass design-decision ledger
-  # (docs/designs/DECISIONS.md), the per-record `Status:` headers, and
+  # (docs/designs/decisions/<area>/DL-NNN.md), the per-record `Status:` headers, and
   # dangling supersession/Record pointers (RIG-1187).
   design-ledger-gate: 'tools/design-ledger-gate'
   # The orion-ref-gate boundary gate (RIG-2489): fail-closed scan that the PUBLIC

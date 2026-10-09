@@ -1,8 +1,9 @@
 # design-ledger-gate
 
-Validates `docs/designs/DECISIONS.md`, record `Status:` headers, and record
-links and supersession pointers. On pull requests, it also checks that a
-changed design record is coupled to a ledger change or a `Ledger-impact:` note.
+Validates per-area decision files under `docs/designs/decisions/`, record
+`Status:` headers, record links, and supersession pointers. On pull requests, it
+also checks that a changed design record is coupled to a changed decision file
+or a `Ledger-impact:` note.
 
 ## Run
 

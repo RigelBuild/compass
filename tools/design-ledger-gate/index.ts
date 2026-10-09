@@ -1,43 +1,14 @@
-// design-ledger-gate — validate the Compass design-decision ledger (RIG-1187).
-//
-// The design corpus under docs/designs/<bucket>/ derives ordinary record status
-// from presence on main. Only Historical and Superseded by pointers remain as
-// explicit metadata; later records supersede specific decisions by citation.
-//
-// This gate has TWO legs sharing one pure core (evaluate):
-//   * SNAPSHOT — pointer/grammar integrity over a single tree state at
-//     GATE_ROOT: ledger row grammar, dangling/self/cyclic supersessions,
-//     unresolvable Record links, and every record's optional Status header.
-//     Runs on every event (the tool's own moon gate).
-//   * TOUCH-COUPLING (DL-Q1) — a PR whose changed set touches a governed
-//     design record MUST also touch DECISIONS.md, unless it declares
-//     Ledger-impact in the PR body. PR-event-only.
-//
-// Inputs (env):
-//   GATE_ROOT  - directory to scan (default: git toplevel). Tests point the
-//                injected reads at fixtures instead.
-//   REPO, PR_NUMBER, GH_TOKEN - set by ci.yml's moon job on pull_request and
-//                base-re-point dispatch runs, for the touch-coupling leg. A
-//                pull_request event without them, or any set PR_NUMBER without
-//                a valid pair, is an error (exit 2), never a skip.
-// Exit codes:
-//   0 - all checks pass
-//   1 - one or more violations (printed one per line as `<file>:<line>: <msg>`)
-//   2 - usage / internal error (e.g. cannot read the tree)
-//
-// What the SNAPSHOT core does NOT prove (rows are append-only; frozen
-// `Decision`-cell prose is immutable-after-append) is review-enforced in v1; a
-// future diff-aware core may promote it to gate-checked.
+// design-ledger-gate: validate docs/designs/decisions/<area>/DL-NNN.md and the
+// records they cite; PR runs also check touch coupling (needs REPO, PR_NUMBER).
+// GATE_ROOT overrides the scanned root. Exit 0 pass, 1 violations, 2 usage error.
 import { existsSync, readFileSync } from "node:fs";
 import { posix as pathPosix } from "node:path";
 import { $ } from "bun";
+import { type DecisionRow, parseDecisionFile } from "./decision-files.ts";
 
 /** The design-corpus root the gate governs (all buckets beneath it). */
 export const DESIGNS_ROOT = "docs/designs";
-/**
- * The governed buckets under `DESIGNS_ROOT`. Every record lives under exactly
- * one of these; a file outside them is not a governed record.
- */
+/** Every record lives under exactly one of these governed buckets. */
 export const GOVERNED_ROOTS: readonly string[] = [
 	"ui",
 	"agent",
@@ -48,110 +19,65 @@ export const GOVERNED_ROOTS: readonly string[] = [
 	"repo",
 	"platform",
 ];
-/** The canonical ledger, parsed as the decision table (never as a record). */
-export const DECISIONS_PATH = `${DESIGNS_ROOT}/DECISIONS.md`;
-/**
- * A Record link into a record larger than this MUST carry a resolving
- * `#anchor`, so rationale is genuinely one hop away, not a hunt through a big
- * file (design record §Approach part 1). ~50 KB.
- */
+/** A Record link into a record larger than this MUST carry a resolving anchor. */
 export const LARGE_RECORD_BYTES = 50 * 1024;
 
-/**
- * The version-narrative chain: a record is `Historical` IFF it is one of
- * these (design record §Approach part 2, §T2). Pinned as literal paths — the
- * set is the thing under test, so deriving it from anything else would let a
- * drifted membership pass silently.
- *
- * Currently EMPTY: the early v0.3–v0.8 milestone records that made up the
- * chain were retired (RIG-2453), so no record is `Historical` today. The
- * status is kept in the grammar (below) and the membership check still runs —
- * a future version-narrative record is added here and marked `Historical`.
- */
+/** Records that may legitimately carry `Status: Historical`. */
 export const HISTORICAL_CHAIN: Record<string, true> = {};
 
-/**
- * A `Ledger-impact:` declaration line in a PR body — the touch-coupling escape
- * hatch, mirroring `Spec-impact:` (tools/spec-impact-gate/gate.ts). Must start
- * its own line; a single leading `>` quote (GitHub quoted trailers)
- * or indentation is tolerated; the value must be non-empty.
- */
+/** A non-empty `Ledger-impact:` declaration exempts the touch-coupling leg. */
 const LEDGER_IMPACT_RE = /^\s*>?\s*ledger-impact:\s*(\S.*)$/im;
 
-/**
- * Head-branch prefixes exempt from the touch-coupling leg — automation branches
- * that cannot author a `Ledger-impact:` declaration (mirrors
- * tools/spec-impact-gate's EXEMPT_BRANCH_PREFIXES):
- *   - `renovate/` — Renovate dependency bumps.
- *   - `trunk-merge/` — Trunk merge-queue test PRs; the body is Trunk's banner,
- *     and each source PR already passed this leg on its own PR event.
- * The SNAPSHOT leg still runs on these events; only touch-coupling is skipped.
- * Everything else — human and agent feature branches alike — must comply.
- */
+/** Automation branches cannot author a `Ledger-impact:` declaration. */
 export const EXEMPT_BRANCH_PREFIXES = ["renovate/", "trunk-merge/"];
 
 /** The record-level Status grammar is reject-by-default. */
 const STATUS_RE = /^Status:\s*(Historical|Superseded\s+by\s+(\S+))$/i;
+/** A decision status that names a successor. */
+const ROW_SUPERSEDED_RE =
+	/^Superseded by (DL-(?:\d{3}|[1-9]\d{3,})) \(.+, \d{4}-\d{2}-\d{2}\)$/;
 
-/** A ledger row's `Active (<who>, YYYY-MM-DD)` status cell. */
-const ROW_ACTIVE_RE = /^Active \(.+, \d{4}-\d{2}-\d{2}\)$/;
-/** A ledger row's `Superseded by DL-<n> (<who>, YYYY-MM-DD)` status cell. */
-const ROW_SUPERSEDED_RE = /^Superseded by (DL-\d+) \(.+, \d{4}-\d{2}-\d{2}\)$/;
-/**
- * A ledger row's `Retired (<who>, YYYY-MM-DD)` status cell — a decision
- * retracted with NO successor (the ADR/MADR `deprecated`/retired state).
- * Distinct from `Superseded by DL-<n>`, which requires a successor row; a
- * `Retired` row points nowhere, so it never enters supersession resolution.
- */
-const ROW_RETIRED_RE = /^Retired \(.+, \d{4}-\d{2}-\d{2}\)$/;
+/** The physical lines of the four decision front-matter keys. */
+export const KEY_LINE = { id: 2, decision: 3, status: 4, record: 5 } as const;
 
-// ---------------------------------------------------------------------------
-// Parsed shapes (produced by the pure parsers below, consumed by evaluate).
-// ---------------------------------------------------------------------------
+/** What a discovered path under docs/designs means to the gate. */
+export type DesignPathKind =
+	| "decision"
+	| "decisions-readme"
+	| "legacy-ledger"
+	| "misplaced"
+	| "other";
 
-/** One parsed ledger table row. */
-export interface LedgerRow {
-	/** `DL-<n>` id. */
-	id: string;
-	/** One-line decision paraphrase cell (opaque to the gate). */
-	decision: string;
-	/** Raw status cell text. */
-	status: string;
-	/** Raw Record cell text (a markdown link `[label](target)`). */
-	recordCell: string;
-	/** 1-based line in DECISIONS.md, for error reporting. */
-	line: number;
+/** One rejected decision file or forbidden layout path. */
+export interface StrayPath {
+	path: string;
+	kind: "legacy-ledger" | "misplaced";
+}
+
+/** The parsed decisions, malformed files, and forbidden paths in one tree. */
+export interface DecisionCorpus {
+	rows: DecisionRow[];
+	malformed: Array<{ path: string; line: number; reason: string }>;
+	strays: StrayPath[];
 }
 
 /** One record's `Status:` header slot. */
 export interface RecordHeader {
-	/** Repo-relative record path. */
 	path: string;
-	/** The raw `Status:` line if the H1's first non-blank successor is one,
-	 *  else null (no parseable header present). */
 	statusLine: string | null;
-	/** 1-based line of the status slot, for error reporting. */
 	line: number;
 }
 
 /** The diff-aware input for the touch-coupling leg. */
 export interface Changed {
-	/** Repo-relative paths the PR adds/modifies/deletes. */
 	files: string[];
-	/** The PR body (touch-coupling escape-hatch scan). Null off PR events. */
 	body: string | null;
-	/**
-	 * The PR's head branch name, for the automation exemption. Empty string off
-	 * PR events (the touch-coupling leg no-ops there regardless).
-	 */
 	headBranch: string;
 }
 
 /** What `readRecord` returns for a link/pointer target. */
 export interface RecordContent {
-	/** GitHub-style slugs of every heading in the target. */
 	headings: string[];
-	/** Byte size on disk (drives the large-record anchor rule). */
 	sizeBytes: number;
 }
 
@@ -167,16 +93,39 @@ export type StatusValue =
 	| { kind: "Historical" }
 	| { kind: "Superseded"; path: string };
 
-// ---------------------------------------------------------------------------
-// Pure helpers (exported for unit tests).
-// ---------------------------------------------------------------------------
+/** Classify one path from the single docs/designs discovery listing. */
+export function classifyDesignPath(file: string): DesignPathKind {
+	const prefix = `${DESIGNS_ROOT}/`;
+	if (!file.startsWith(prefix)) return "other";
+	const base = pathPosix.basename(file);
+	if (base === "DECISIONS.md") return "legacy-ledger";
+	if (file === `${DESIGNS_ROOT}/decisions/README.md`) return "decisions-readme";
+	const decisionsPrefix = `${DESIGNS_ROOT}/decisions/`;
+	if (file.startsWith(decisionsPrefix)) {
+		const parts = file.slice(decisionsPrefix.length).split("/");
+		return parts.length === 2 && parts[0] !== "" && /^DL-.*\.md$/.test(base)
+			? "decision"
+			: "misplaced";
+	}
+	return /^DL-\d+\.md$/.test(base) ? "misplaced" : "other";
+}
 
-/**
- * GitHub-style heading slug (github-slugger algorithm): lowercase, strip
- * punctuation (keep word chars, whitespace, hyphen), each whitespace run's
- * chars each become one hyphen (NO collapse — `Problem / Intent` →
- * `problem--intent`, matching GitHub so ledger anchors resolve for humans too).
- */
+/** Build the decision corpus from already-classified paths and file contents. */
+export function buildDecisionCorpus(
+	files: readonly { path: string; text: string }[],
+	strays: readonly StrayPath[] = [],
+): DecisionCorpus {
+	const rows: DecisionRow[] = [];
+	const malformed: DecisionCorpus["malformed"] = [];
+	for (const file of files) {
+		const parsed = parseDecisionFile(file.path, file.text);
+		if (parsed.ok) rows.push(parsed.row);
+		else malformed.push(parsed.error);
+	}
+	return { rows, malformed, strays: [...strays] };
+}
+
+/** GitHub-style heading slug used to resolve record anchors. */
 export function slugify(heading: string): string {
 	return heading
 		.trim()
@@ -195,17 +144,6 @@ export function parseStatusValue(statusLine: string): StatusValue | null {
 	const pointer = match[2];
 	return pointer === undefined ? null : { kind: "Superseded", path: pointer };
 }
-/** Split a Record cell's markdown link into its path + optional `#anchor`. */
-export function splitLink(
-	cell: string,
-): { path: string; anchor: string | null } | null {
-	const m = /\[[^\]]*\]\(([^)]+)\)/.exec(cell);
-	if (!m) return null;
-	const target = m[1] ?? "";
-	const hash = target.indexOf("#");
-	if (hash === -1) return { path: target, anchor: null };
-	return { path: target.slice(0, hash), anchor: target.slice(hash + 1) };
-}
 
 /**
  * True when a repo-relative path is a governed design record: any `.md` at any
@@ -219,61 +157,17 @@ export function touchesRecord(file: string): boolean {
 	);
 }
 
-/**
- * Resolve a record-level `Status: Superseded by <path>` pointer to a
- * designs-root-relative path for `readRecord`. That header value is written
- * RECORD-relative (a link a human follows from inside the record's own
- * directory — e.g. `../compass-native-app/design.md` from another bucket),
- * unlike a ledger Record cell which is designs-root-relative (bucket-qualified).
- * `recordRelPath` is the superseded record's own designs-root-relative path;
- * the result is normalized designs-root-relative (no leading `./`), or null if
- * the pointer escapes DESIGNS_ROOT. Cross-bucket pointers resolve as long as
- * they stay inside DESIGNS_ROOT.
- */
+/** Resolve a record-relative supersession pointer under docs/designs. */
 export function resolveRecordRelative(
 	recordRelPath: string,
 	pointer: string,
 ): string | null {
 	const joined = pathPosix.join(pathPosix.dirname(recordRelPath), pointer);
-	// A pointer that climbs out of DESIGNS_ROOT (leading `..`) can't be a
-	// governed record; readRecord would resolve it outside the corpus.
 	if (joined.startsWith("..")) return null;
 	return joined;
 }
 
-/**
- * Split a GFM table row on unescaped `|`, resolving cell escapes. In GFM a
- * backslash escapes the following pipe (`\|` is a literal `|` inside the cell),
- * so it must not act as a column delimiter; `\\` resolves to a single
- * backslash. A naive `.split("|")` treats `\|` as a delimiter, inflating the
- * cell count so `parseLedger`'s 4-cell check silently discards the row.
- */
-function splitLedgerRow(row: string): string[] {
-	const cells: string[] = [];
-	let cur = "";
-	for (let i = 0; i < row.length; i++) {
-		const ch = row[i];
-		if (ch === "\\" && (row[i + 1] === "|" || row[i + 1] === "\\")) {
-			cur += row[i + 1];
-			i++;
-			continue;
-		}
-		if (ch === "|") {
-			cells.push(cur);
-			cur = "";
-			continue;
-		}
-		cur += ch;
-	}
-	cells.push(cur);
-	return cells;
-}
-
-/**
- * Unresolved merge markers in a governed file. The ledger is one append-only
- * file every lane appends to, so conflicts are routine — and markers can leave
- * every `| DL-` row syntactically valid, which passes every other check here.
- */
+/** Unresolved merge markers in a governed file, excluding fenced examples. */
 export function conflictMarkerViolations(
 	file: string,
 	text: string,
@@ -282,99 +176,17 @@ export function conflictMarkerViolations(
 	let inFence = false;
 	text.split("\n").forEach((line, i) => {
 		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
-		// A record may legitimately show a marker as fenced example text; the rest
-		// of this module skips fences for the same reason.
 		if (inFence) return;
-		// jj adds `%%%%%%%`/`+++++++` to git's three, and both tools LENGTHEN every
-		// marker past 7 when the conflicting hunk itself holds a marker-like run.
-		// `=` stays exact: governed records use long `=` setext underlines.
-		const m = /^(<{7,}|>{7,}|%{7,}|\+{7,}|={7})(\s|$)/.exec(line);
-		if (m) {
+		const marker = /^(<{7,}|>{7,}|%{7,}|\+{7,}|={7})(\s|$)/.exec(line);
+		if (marker) {
 			out.push({
 				file,
 				line: i + 1,
-				message: `unresolved merge conflict marker: ${m[1]}`,
+				message: `unresolved merge conflict marker: ${marker[1]}`,
 			});
 		}
 	});
 	return out;
-}
-
-type LedgerFence = { marker: "`" | "~"; length: number };
-
-function updateLedgerFence(
-	line: string,
-	fence: LedgerFence | null,
-): LedgerFence | null {
-	const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-	if (!match) return fence;
-	const run = match[1] ?? "";
-	const marker = run[0];
-	if (fence === null && (marker === "`" || marker === "~"))
-		return { marker, length: run.length };
-	if (
-		fence !== null &&
-		marker === fence.marker &&
-		run.length >= fence.length &&
-		(match[2] ?? "").trim() === ""
-	)
-		return null;
-	return fence;
-}
-
-function ledgerContentLines(text: string): string[] {
-	let fence: LedgerFence | null = null;
-	let inComment = false;
-	const lines: string[] = [];
-	for (const line of text.split("\n")) {
-		if (inComment) {
-			if (line.includes("-->")) inComment = false;
-			lines.push("");
-			continue;
-		}
-		if (fence === null && /^ {0,3}<!--/.test(line)) {
-			inComment = !line.includes("-->");
-			lines.push("");
-			continue;
-		}
-		const updatedFence = updateLedgerFence(line, fence);
-		if (updatedFence !== fence || /^ {0,3}(`{3,}|~{3,})/.test(line)) {
-			fence = updatedFence;
-			lines.push("");
-			continue;
-		}
-		lines.push(fence === null ? line : "");
-	}
-	if (fence !== null)
-		throw new Error("unterminated fenced block in design ledger");
-	if (inComment) throw new Error("unterminated HTML comment in design ledger");
-	return lines;
-}
-
-/** Parse DECISIONS.md text into ledger rows (topic headings/prose skipped). */
-export function parseLedger(text: string): LedgerRow[] {
-	const rows: LedgerRow[] = [];
-	ledgerContentLines(text).forEach((line, i) => {
-		const trimmed = line.trim();
-		if (!trimmed.startsWith("|")) return;
-		const raw = splitLedgerRow(trimmed);
-		if (raw[0] === "") raw.shift();
-		if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
-		const cells = raw.map((c) => c.trim());
-		if (cells.length !== 4) return;
-		const id = cells[0] ?? "";
-		if (!/^DL-\d+$/.test(id)) return;
-		rows.push({
-			id,
-			decision: cells[1] ?? "",
-			status: cells[2] ?? "",
-			recordCell: cells[3] ?? "",
-			line: i + 1,
-		});
-	});
-	if (rows.length === 0)
-		throw new Error("design ledger contains no decision rows");
-	return rows;
 }
 
 /** Parse Status anywhere in the header zone, skipping fenced examples. */
@@ -410,209 +222,220 @@ export function parseRecordHeader(path: string, text: string): RecordHeader {
 	return { path, statusLine: null, line: h1 + 2 };
 }
 
-// ---------------------------------------------------------------------------
-// The pure decision core.
-// ---------------------------------------------------------------------------
-
-/**
- * The gate decision over a single tree snapshot + the PR's changed set. Pure:
- * all I/O is behind `readRecord` (a link/pointer target's slugs + byte size,
- * or null when the path does not resolve). Returns every violation found (the
- * caller sorts + prints); an empty array is a pass.
- */
+/** Evaluate decision integrity, record headers, completeness, and PR coupling. */
 export function evaluate(
-	ledger: LedgerRow[],
+	corpus: DecisionCorpus,
 	records: RecordHeader[],
 	changed: Changed,
-	readRecord: (path: string) => RecordContent | null,
+	readRecord: (repoRelPath: string) => RecordContent | null,
 ): Violation[] {
 	const violations: Violation[] = [];
 	const v = (file: string, line: number, message: string) =>
 		violations.push({ file, line, message });
+	const { rows } = corpus;
 
-	// --- Ledger rows: id uniqueness, status grammar, supersession integrity,
-	//     and Record-link resolution. ---
-	const byId = new Map<string, LedgerRow>();
-	for (const row of ledger) {
-		if (byId.has(row.id)) {
-			v(DECISIONS_PATH, row.line, `duplicate ledger id ${row.id}`);
-			continue; // first occurrence is canonical for pointer resolution
-		}
-		byId.set(row.id, row);
+	for (const stray of corpus.strays) {
+		v(
+			stray.path,
+			0,
+			stray.kind === "legacy-ledger"
+				? "DECISIONS.md is retired: record each decision as docs/designs/decisions/<area>/DL-NNN.md"
+				: "misplaced design file: only docs/designs/decisions/README.md or docs/designs/decisions/<area>/DL-*.md may be under the decisions tree; DL-<n>.md files must be in that layout",
+		);
+	}
+	for (const malformed of corpus.malformed) {
+		v(
+			malformed.path,
+			malformed.line,
+			`malformed decision file: ${malformed.reason}`,
+		);
+	}
+	if (rows.length === 0) {
+		v(`${DESIGNS_ROOT}/decisions`, 0, "no valid decision files were found");
 	}
 
-	for (const row of ledger) {
-		// Record-link resolution (independent of status).
-		const link = splitLink(row.recordCell);
-		if (link === null) {
+	const byId = new Map<string, DecisionRow>();
+	for (const row of rows) {
+		const first = byId.get(row.id);
+		if (first === undefined) byId.set(row.id, row);
+		else {
 			v(
-				DECISIONS_PATH,
-				row.line,
-				`${row.id}: Record cell is not a markdown link \`[label](path)\``,
+				row.path,
+				KEY_LINE.id,
+				`${row.id}: duplicate decision id (also defined in ${first.path})`,
 			);
-		} else {
-			const target = readRecord(link.path);
-			if (target === null) {
+		}
+	}
+
+	for (const row of rows) {
+		const decisionArea = row.path.startsWith(`${DESIGNS_ROOT}/decisions/`)
+			? row.path.slice(`${DESIGNS_ROOT}/decisions/`.length).split("/")[0]
+			: undefined;
+		const recordArea = row.recordPath.startsWith(`${DESIGNS_ROOT}/`)
+			? row.recordPath.slice(`${DESIGNS_ROOT}/`.length).split("/")[0]
+			: undefined;
+		if (
+			recordArea === undefined ||
+			recordArea === "" ||
+			recordArea !== decisionArea
+		) {
+			v(
+				row.path,
+				KEY_LINE.record,
+				`${row.id}: decision area must match the top-level docs/designs directory of its Record path (${row.recordPath})`,
+			);
+		}
+
+		const target = readRecord(row.recordPath);
+		if (target === null) {
+			v(
+				row.path,
+				KEY_LINE.record,
+				`${row.id}: Record link path does not resolve: ${row.recordRaw}`,
+			);
+		} else if (row.recordAnchor !== null) {
+			if (!target.headings.includes(row.recordAnchor)) {
 				v(
-					DECISIONS_PATH,
-					row.line,
-					`${row.id}: Record link path does not resolve: ${link.path}`,
-				);
-			} else if (link.anchor !== null) {
-				if (!target.headings.includes(link.anchor)) {
-					v(
-						DECISIONS_PATH,
-						row.line,
-						`${row.id}: Record link #anchor not found in ${link.path}: #${link.anchor}`,
-					);
-				}
-			} else if (target.sizeBytes > LARGE_RECORD_BYTES) {
-				v(
-					DECISIONS_PATH,
-					row.line,
-					`${row.id}: Record link into a large record (>${Math.floor(
-						LARGE_RECORD_BYTES / 1024,
-					)} KB) must carry a #anchor: ${link.path}`,
+					row.path,
+					KEY_LINE.record,
+					`${row.id}: Record link #anchor not found in ${row.recordRaw.split("#")[0]}: #${row.recordAnchor}`,
 				);
 			}
+		} else if (target.sizeBytes > LARGE_RECORD_BYTES) {
+			v(
+				row.path,
+				KEY_LINE.record,
+				`${row.id}: Record link into a large record (>${Math.floor(LARGE_RECORD_BYTES / 1024)} KB) must carry a #anchor: ${row.recordRaw}`,
+			);
 		}
 
-		// Status-cell grammar, then supersession-target integrity. `Active` and
-		// `Retired` are terminal (no target to resolve); only `Superseded by
-		// DL-<n>` carries a successor that must exist.
-		if (ROW_ACTIVE_RE.test(row.status)) continue;
-		if (ROW_RETIRED_RE.test(row.status)) continue;
-		const sup = ROW_SUPERSEDED_RE.exec(row.status);
-		if (sup === null) {
-			v(
-				DECISIONS_PATH,
-				row.line,
-				`${row.id}: malformed Status cell (want \`Active (<who>, YYYY-MM-DD)\`, \`Retired (<who>, YYYY-MM-DD)\`, or \`Superseded by DL-<n> (<who>, YYYY-MM-DD)\`): ${row.status}`,
-			);
-			continue;
-		}
-		const targetId = sup[1] ?? "";
+		const supersession = ROW_SUPERSEDED_RE.exec(row.status);
+		if (supersession === null) continue;
+		const targetId = supersession[1] ?? "";
 		if (targetId === row.id) {
-			v(DECISIONS_PATH, row.line, `${row.id}: superseded by itself`);
-			continue;
-		}
-		const targetRow = byId.get(targetId);
-		if (targetRow === undefined) {
+			v(row.path, KEY_LINE.status, `${row.id}: superseded by itself`);
+		} else if (!byId.has(targetId)) {
 			v(
-				DECISIONS_PATH,
-				row.line,
-				`${row.id}: Superseded by ${targetId}, which is not a ledger row`,
+				row.path,
+				KEY_LINE.status,
+				`${row.id}: Superseded by ${targetId}, which is not a decision file`,
 			);
 		}
 	}
 
-	// Walk each Superseded chain to its terminus. A ledger row cell is only ever
-	// `Active` or `Superseded` (`Historical` is a record-level Status, never a
-	// row), so a well-formed chain ends at an `Active` row. A chain that never
-	// reaches a non-`Superseded` row loops — a 2-cycle, a ≥3-cycle, or any
-	// longer loop — so none of its decisions is live current truth, the exact
-	// silent drift the ledger exists to prevent. (Self-loops and dangling
-	// targets are reported per-row above; a self-loop is a degenerate 1-cycle
-	// skipped here to avoid a double report.) Each distinct cycle is reported
-	// once, keyed by its member set, at the lowest line number among its members
-	// (stable regardless of ledger array order).
 	const cyclesReported = new Set<string>();
-	for (const start of ledger) {
+	for (const start of byId.values()) {
 		if (!ROW_SUPERSEDED_RE.test(start.status)) continue;
-		const path: LedgerRow[] = [];
-		let cur: LedgerRow | undefined = start;
-		while (cur !== undefined) {
-			const node = cur;
-			const idx = path.findIndex((r) => r.id === node.id);
-			if (idx !== -1) {
-				const cycle = path.slice(idx);
-				const key = cycle
-					.map((r) => r.id)
+		const walk: DecisionRow[] = [];
+		let current: DecisionRow | undefined = start;
+		while (current !== undefined) {
+			const node: DecisionRow = current;
+			const index = walk.findIndex((candidate) => candidate.id === node.id);
+			if (index !== -1) {
+				const cycle = walk.slice(index);
+				const cycleKey = cycle
+					.map((row) => row.id)
 					.sort()
 					.join("|");
-				if (cycle.length > 1 && !cyclesReported.has(key)) {
-					cyclesReported.add(key);
-					const ids = cycle.map((r) => r.id);
+				if (cycle.length > 1 && !cyclesReported.has(cycleKey)) {
+					cyclesReported.add(cycleKey);
+					const anchor = cycle.reduce((a, b) => (b.id < a.id ? b : a));
 					v(
-						DECISIONS_PATH,
-						Math.min(...cycle.map((r) => r.line)),
-						`supersession cycle: ${ids.join(" → ")} → ${node.id}`,
+						anchor.path,
+						KEY_LINE.status,
+						`supersession cycle: ${cycle.map((row) => row.id).join(" → ")} → ${node.id}`,
 					);
 				}
 				break;
 			}
-			path.push(node);
-			const m = ROW_SUPERSEDED_RE.exec(node.status);
-			if (m === null) break;
-			cur = byId.get(m[1] ?? "");
+			walk.push(node);
+			const next: string | undefined = ROW_SUPERSEDED_RE.exec(node.status)?.[1];
+			current = next === undefined ? undefined : byId.get(next);
 		}
 	}
 
-	// --- Record `Status:` headers: absent is ordinary; present is
-	//     reject-by-default, with Historical and resolving Superseded only. ---
-	const rowByRecord = new Map<string, LedgerRow>();
-	for (const ledgerRow of ledger) {
-		const link = splitLink(ledgerRow.recordCell);
-		if (link !== null && link.anchor === null) {
-			rowByRecord.set(pathPosix.join(DESIGNS_ROOT, link.path), ledgerRow);
+	const decisionAreas = new Set(
+		rows.map(
+			(row) =>
+				row.path.slice(`${DESIGNS_ROOT}/decisions/`.length).split("/")[0] ?? "",
+		),
+	);
+	for (const root of GOVERNED_ROOTS) {
+		const hasRecords = records.some((record) =>
+			record.path.startsWith(`${DESIGNS_ROOT}/${root}/`),
+		);
+		if (hasRecords && !decisionAreas.has(root)) {
+			v(
+				`${DESIGNS_ROOT}/decisions/${root}`,
+				0,
+				`docs/designs/${root}/ has design records but no valid decision file in docs/designs/decisions/${root}/`,
+			);
 		}
 	}
-	for (const rec of records) {
-		if (rec.statusLine === null) continue;
-		const value = parseStatusValue(rec.statusLine);
+
+	const rowByRecord = new Map<string, DecisionRow>();
+	for (const row of rows) {
+		if (row.recordAnchor === null) rowByRecord.set(row.recordPath, row);
+	}
+	for (const record of records) {
+		if (record.statusLine === null) continue;
+		const value = parseStatusValue(record.statusLine);
 		if (value === null) {
 			v(
-				rec.path,
-				rec.line,
+				record.path,
+				record.line,
 				"malformed or prohibited `Status:` header (only `Historical` or resolving `Superseded by <path>` is allowed)",
 			);
 			continue;
 		}
-		const inChain = rec.path in HISTORICAL_CHAIN;
-		if (value.kind === "Historical" && !inChain) {
+		if (value.kind === "Historical" && !(record.path in HISTORICAL_CHAIN)) {
 			v(
-				rec.path,
-				rec.line,
+				record.path,
+				record.line,
 				"`Status: Historical` but the record is not in the version-narrative chain",
 			);
 		}
 		if (value.kind === "Superseded") {
-			const recDesignsRel = rec.path.startsWith(`${DESIGNS_ROOT}/`)
-				? rec.path.slice(DESIGNS_ROOT.length + 1)
-				: rec.path;
-			const resolved = resolveRecordRelative(recDesignsRel, value.path);
-			if (resolved === null || readRecord(resolved) === null) {
+			const recordDesignsRel = record.path.startsWith(`${DESIGNS_ROOT}/`)
+				? record.path.slice(DESIGNS_ROOT.length + 1)
+				: record.path;
+			const resolved = resolveRecordRelative(recordDesignsRel, value.path);
+			const targetPath =
+				resolved === null ? null : `${DESIGNS_ROOT}/${resolved}`;
+			if (targetPath === null || readRecord(targetPath) === null) {
 				v(
-					rec.path,
-					rec.line,
+					record.path,
+					record.line,
 					`Status supersession does not resolve to a record: ${value.path}`,
 				);
 			}
-			const linkedRow = rowByRecord.get(rec.path);
+			const linkedDecision = rowByRecord.get(record.path);
 			if (
-				linkedRow !== undefined &&
-				!ROW_SUPERSEDED_RE.test(linkedRow.status)
+				linkedDecision !== undefined &&
+				!ROW_SUPERSEDED_RE.test(linkedDecision.status)
 			) {
 				v(
-					rec.path,
-					rec.line,
-					"record Status supersession disagrees with its ledger row",
+					record.path,
+					record.line,
+					"record Status supersession disagrees with its decision status",
 				);
 			}
 		}
 	}
 
-	// --- Touch-coupling (DL-Q1): declaration exempts only this leg. ---
-	const exemptBranch = EXEMPT_BRANCH_PREFIXES.some((p) =>
-		changed.headBranch.startsWith(p),
+	const exemptBranch = EXEMPT_BRANCH_PREFIXES.some((prefix) =>
+		changed.headBranch.startsWith(prefix),
 	);
 	const declared = LEDGER_IMPACT_RE.test(changed.body ?? "");
 	const touchedRecord = !exemptBranch && changed.files.some(touchesRecord);
-	if (touchedRecord && !changed.files.includes(DECISIONS_PATH) && !declared) {
+	const touchedDecision = changed.files.some(
+		(file) => classifyDesignPath(file) === "decision",
+	);
+	if (touchedRecord && !touchedDecision && !declared) {
 		v(
 			"(pull request)",
 			0,
-			"PR touches a governed design record without DECISIONS.md or Ledger-impact declaration",
+			"PR touches a governed design record without a changed decision file or Ledger-impact declaration",
 		);
 	}
 
@@ -627,70 +450,72 @@ export interface Deps {
 	root: string;
 	/** Read a repo-relative file, or null if it does not exist. */
 	readText: (root: string, relPath: string) => Promise<string | null>;
-	/** List repo-relative record paths under the governed roots (excl. DECISIONS.md). */
-	listRecordFiles: (root: string) => Promise<string[]>;
-	/** Resolve a link/pointer target (designs-root-relative) to its slugs + bytes. */
-	readRecord: (root: string, recordRelPath: string) => RecordContent | null;
-	/** The PR's changed set (empty off PR events). */
+	/** List every file under docs/designs in one discovery pass. */
+	listDesignFiles: (root: string) => Promise<string[]>;
+	/** Resolve a repo-relative record path to its slugs + bytes. */
+	readRecord: (root: string, repoRelPath: string) => RecordContent | null;
 	changed: Changed;
 	log: (msg: string) => void;
 	err: (msg: string) => void;
 }
 
 export async function runOnce(deps: Deps): Promise<number> {
-	const { root, readText, listRecordFiles, readRecord, changed, log, err } =
+	const { root, readText, listDesignFiles, readRecord, changed, log, err } =
 		deps;
-
-	let ledgerText: string | null;
-	let recordFiles: string[];
+	let paths: string[];
 	try {
-		ledgerText = await readText(root, DECISIONS_PATH);
-		recordFiles = await listRecordFiles(root);
+		paths = await listDesignFiles(root);
 	} catch (error) {
 		err(`design-ledger-gate: cannot read the tree at ${root}`);
 		err(error instanceof Error ? error.message : String(error));
 		return 2;
 	}
 
-	const violations: Violation[] = [];
-	if (ledgerText === null) {
-		violations.push({
-			file: DECISIONS_PATH,
-			line: 0,
-			message: "the ledger DECISIONS.md was not found",
-		});
-	}
-	let ledger: LedgerRow[] = [];
-	if (ledgerText !== null) {
-		try {
-			ledger = parseLedger(ledgerText);
-		} catch (error) {
-			violations.push({
-				file: DECISIONS_PATH,
-				line: 0,
-				message: error instanceof Error ? error.message : String(error),
-			});
+	const decisionPaths: string[] = [];
+	const recordPaths: string[] = [];
+	const strays: StrayPath[] = [];
+	for (const path of paths) {
+		const kind = classifyDesignPath(path);
+		if (kind === "decision") decisionPaths.push(path);
+		if (kind === "legacy-ledger" || kind === "misplaced") {
+			strays.push({ path, kind });
 		}
+		if (touchesRecord(path)) recordPaths.push(path);
 	}
-	if (ledgerText !== null) {
-		violations.push(...conflictMarkerViolations(DECISIONS_PATH, ledgerText));
-	}
+	const decisionPathSet = new Set(decisionPaths);
+	const recordPathSet = new Set(recordPaths);
 
+	const decisionFiles: Array<{ path: string; text: string }> = [];
 	const records: RecordHeader[] = [];
-	for (const path of recordFiles) {
-		const text = await readText(root, path);
-		if (text === null) continue; // listed but vanished — ignore
-		records.push(parseRecordHeader(path, text));
-		violations.push(...conflictMarkerViolations(path, text));
+	const violations: Violation[] = [];
+	try {
+		for (const path of [
+			...new Set([...decisionPaths, ...recordPaths]),
+		].sort()) {
+			const text = await readText(root, path);
+			if (text === null) continue;
+			if (decisionPathSet.has(path)) {
+				decisionFiles.push({ path, text });
+				violations.push(...conflictMarkerViolations(path, text));
+			}
+			if (recordPathSet.has(path)) {
+				records.push(parseRecordHeader(path, text));
+				violations.push(...conflictMarkerViolations(path, text));
+			}
+		}
+	} catch (error) {
+		err(`design-ledger-gate: cannot read the tree at ${root}`);
+		err(error instanceof Error ? error.message : String(error));
+		return 2;
 	}
 
+	const corpus = buildDecisionCorpus(decisionFiles, strays);
 	violations.push(
-		...evaluate(ledger, records, changed, (p) => readRecord(root, p)),
+		...evaluate(corpus, records, changed, (path) => readRecord(root, path)),
 	);
-
 	if (violations.length === 0) {
 		log(
-			`design-ledger-gate: OK — ${ledger.length} ledger row(s), ${records.length} record(s) status-checked.`,
+			`design-ledger-gate: OK — ${corpus.rows.length} decision file(s), ${records.length} record(s) status-checked.`,
 		);
 		return 0;
 	}
@@ -712,12 +537,7 @@ export type PrContext =
 	| { kind: "skip" }
 	| { kind: "error"; message: string };
 
-/**
- * Decide the touch-coupling leg's PR context from the environment. A
- * pull_request event MUST carry REPO and PR_NUMBER, and any event whose
- * PR_NUMBER is set must carry a valid pair: either gap would silently pass the
- * leg, so it is an error. With no PR_NUMBER off a PR event, the leg skips.
- */
+/** Require PR coordinates whenever a pull-request event or PR number is present. */
 export function prContextFrom(
 	env: Readonly<Record<string, string | undefined>>,
 ): PrContext {
@@ -735,21 +555,18 @@ export function prContextFrom(
 	return { kind: "skip" };
 }
 
-/** Compute a target record's heading slugs + byte size from its text. */
+/** Compute a target record's heading slugs and byte size from its text. */
 export function recordContentFromText(text: string): RecordContent {
 	const headings: string[] = [];
 	let inFence = false;
 	for (const line of text.split("\n")) {
-		// A ``` or ~~~ fence line toggles code-block state; a `#`-prefixed line
-		// inside a fence is code, not a heading, so it must not become a slug
-		// (else a dead ledger #anchor could false-pass against it).
 		if (/^\s*(```|~~~)/.test(line)) {
 			inFence = !inFence;
 			continue;
 		}
 		if (inFence) continue;
-		const m = /^#{1,6}\s+(.*)$/.exec(line);
-		if (m) headings.push(slugify(m[1] ?? ""));
+		const heading = /^#{1,6}\s+(.*)$/.exec(line);
+		if (heading) headings.push(slugify(heading[1] ?? ""));
 	}
 	return { headings, sizeBytes: Buffer.byteLength(text, "utf8") };
 }
@@ -758,10 +575,6 @@ if (import.meta.main) {
 	const root =
 		process.env.GATE_ROOT ??
 		(await $`git rev-parse --show-toplevel`.nothrow().quiet().text()).trim();
-
-	// Touch-coupling needs PR context. Without PR coordinates (push, schedule,
-	// local `moon ci`) the changed set is empty and the leg no-ops; the
-	// snapshot checks still run off GATE_ROOT.
 	let changed: Changed = { files: [], body: null, headBranch: "" };
 	const ctx = prContextFrom(process.env);
 	if (ctx.kind === "error") {
@@ -776,13 +589,11 @@ if (import.meta.main) {
 			const files =
 				await $`timeout 60 gh api --paginate repos/${repo}/pulls/${prNumber}/files --jq .[].filename`.text();
 			changed = {
-				files: files.split("\n").filter((l) => l.length > 0),
+				files: files.split("\n").filter((line) => line.length > 0),
 				body: view.body,
 				headBranch: view.headRefName,
 			};
 		} catch (error) {
-			// Fail closed: a PR-context fetch failure must not silently skip
-			// the touch-coupling leg.
 			console.error(
 				`design-ledger-gate: failed to fetch PR #${prNumber} changed set:`,
 				error,
@@ -792,10 +603,10 @@ if (import.meta.main) {
 	}
 
 	const readTextReal = async (
-		r: string,
+		workspaceRoot: string,
 		relPath: string,
 	): Promise<string | null> => {
-		const file = Bun.file(`${r}/${relPath}`);
+		const file = Bun.file(`${workspaceRoot}/${relPath}`);
 		return (await file.exists()) ? await file.text() : null;
 	};
 
@@ -803,28 +614,29 @@ if (import.meta.main) {
 		await runOnce({
 			root,
 			readText: readTextReal,
-			listRecordFiles: async (r) => {
-				const glob = new Bun.Glob(`${DESIGNS_ROOT}/**/*.md`);
+			listDesignFiles: async (workspaceRoot) => {
+				const glob = new Bun.Glob(`${DESIGNS_ROOT}/**`);
 				const out: string[] = [];
-				for await (const rel of glob.scan({ cwd: r })) {
-					const posix = rel.replaceAll("\\", "/");
-					if (touchesRecord(posix)) out.push(posix);
+				for await (const path of glob.scan({
+					cwd: workspaceRoot,
+					onlyFiles: true,
+				})) {
+					out.push(path.replaceAll("\\", "/"));
 				}
 				return out.sort();
 			},
-			readRecord: (r, recordRelPath) => {
-				const path = `${r}/${DESIGNS_ROOT}/${recordRelPath}`;
-				// Synchronous read (readRecord is sync); missing path → null.
+			readRecord: (workspaceRoot, repoRelPath) => {
+				const file = `${workspaceRoot}/${repoRelPath}`;
 				try {
-					if (!existsSync(path)) return null;
-					return recordContentFromText(readFileSync(path, "utf8"));
+					if (!existsSync(file)) return null;
+					return recordContentFromText(readFileSync(file, "utf8"));
 				} catch {
 					return null;
 				}
 			},
 			changed,
-			log: (msg) => console.log(msg),
-			err: (msg) => console.error(msg),
+			log: (message) => console.log(message),
+			err: (message) => console.error(message),
 		}),
 	);
 }

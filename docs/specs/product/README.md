@@ -3,7 +3,7 @@
 Living source-of-truth for **Compass** — how it currently behaves and is
 architected. The point-in-time *design records* (the why) live in the
 [design corpus](../../designs/) (`../../designs/`), bucketed by domain and indexed by
-[`DECISIONS.md`](../../designs/DECISIONS.md).
+[`decisions/`](../../designs/decisions/README.md).
 
 Available specs:
 
@@ -16,5 +16,5 @@ Available specs:
 > These specs describe current behavior. The *why* — including Compass's full
 > ADE design, much of which is designed but not yet built — lives in the design
 > records under [`../../designs/`](../../designs/) (bucketed by domain, indexed by
-> `DECISIONS.md`); each spec's "Not yet specified" section names the surfaces
+> `decisions/`); each spec's "Not yet specified" section names the surfaces
 > still ahead of the code.

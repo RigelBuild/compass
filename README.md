@@ -90,7 +90,7 @@ config/                   agent-facing skills, rules, prompts, personas
 docs/
   concepts/               the agent-system model — read to orient
   architecture/           build, CI, and toolchain notes
-  designs/                frozen design records + the decision ledger
+  designs/                frozen design records + decisions/ (one file per decision)
   specs/                  the living product/behavior spec
   self-host.md            the self-hosting guide
 agent-image/ guest-image/ the sandbox image builds

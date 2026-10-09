@@ -1,6 +1,6 @@
 # dl-claim
 
-Claims design-ledger IDs (`DL-NNN`) for new `docs/designs/DECISIONS.md` rows
+Claims design-ledger IDs (`DL-NNN`) for new `docs/designs/decisions/<area>/DL-NNN.md` files
 from the shared counter at `https://dl.rigel.build`. The counter hands out each
 ID once, so concurrent PRs never pick the same number. The
 `dl-reconcile` workflow marks claimed IDs as landed after the PR merges.
