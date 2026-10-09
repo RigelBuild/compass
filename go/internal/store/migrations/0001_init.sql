@@ -768,6 +768,18 @@ CREATE TABLE agent_session_archive_segments (
     PRIMARY KEY (session_id, object_key)
 );
 
+-- Session inline-image index. Object bytes live once per hash at
+-- blobs/<sha256>; a read needs this session's row first.
+CREATE TABLE agent_session_blobs (
+    session_id  TEXT        NOT NULL REFERENCES agent_sessions (session_id) ON DELETE RESTRICT,
+    sha256      TEXT        NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
+    size_bytes  BIGINT      NOT NULL CHECK (size_bytes > 0),
+    tenant_id   TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, sha256)
+);
+
 -- ── Delivery cursors ──────────────────────────────────────────────────────────
 -- The durable per-(agent, channel) delivery cursor (RIG-1569 T2, design record
 -- D2). One row records how far an agent has confirmed delivery on a channel, so
@@ -1569,6 +1581,7 @@ DECLARE
         'topics', 'messages', 'channel_pins', 'secrets',
         'agent_sessions', 'agent_placements', 'session_bindings',
         'agent_session_transcript_entries', 'agent_session_archive_segments',
+        'agent_session_blobs',
         'agent_delivery_cursors', 'owed_mentions', 'agent_activity',
         'agent_forge_subscriptions', 'forge_authored_artifacts',
         'linear_agent_sessions',
@@ -1653,6 +1666,7 @@ DECLARE
         'secrets',
         'agent_placements',
         'session_bindings',
+        'agent_session_blobs',
         'agent_config_bundle',
         'model_registry',
         'forge_repo_subscriptions',

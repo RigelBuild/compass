@@ -117,6 +117,15 @@ type AgentSessionArchiveSegment struct {
 	TenantID    string
 }
 
+type AgentSessionBlob struct {
+	SessionID string
+	Sha256    string
+	SizeBytes int64
+	TenantID  string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
 type AgentSessionTranscriptEntry struct {
 	SessionID      string
 	EntrySeq       int64

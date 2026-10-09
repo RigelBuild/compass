@@ -13,7 +13,9 @@ package store
 // pruning.
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -90,6 +92,88 @@ func seedSession(t *testing.T, s *Store, handle, sessionID string) string {
 		t.Fatalf("RecordAgentSession(%q): %v", sessionID, err)
 	}
 	return sessionID
+}
+
+func TestPutSessionBlobPersistence(t *testing.T) {
+	s, objects := storeWithFake(t)
+	sessionID := seedSession(t, s, "blob", "sess-blob")
+	data := []byte("session image bytes")
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+
+	if err := s.PutSessionBlob(t.Context(), sessionID, hash, data); err != nil {
+		t.Fatalf("PutSessionBlob: %v", err)
+	}
+	if !objects.has("blobs/" + hash) {
+		t.Fatal("PutSessionBlob did not write the content-addressed object key")
+	}
+	if err := s.PutSessionBlob(t.Context(), sessionID, hash, data); err != nil {
+		t.Fatalf("idempotent PutSessionBlob: %v", err)
+	}
+	objects.mu.Lock()
+	putCount := len(objects.objects)
+	objects.mu.Unlock()
+	if putCount != 1 {
+		t.Fatalf("object store has %d objects after repeat put, want 1", putCount)
+	}
+
+	got, err := s.ReadSessionBlob(t.Context(), sessionID, hash)
+	if err != nil {
+		t.Fatalf("ReadSessionBlob: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("ReadSessionBlob = %q, want %q", got, data)
+	}
+	rows, err := s.ResumeSessionBlobs(t.Context(), sessionID, sessionOwner(t, s, sessionID), []string{hash})
+	if err != nil {
+		t.Fatalf("ResumeSessionBlobs: %v", err)
+	}
+	if len(rows) != 1 || rows[0] != (SessionBlobRow{SHA256: hash, SizeBytes: int64(len(data))}) {
+		t.Fatalf("ResumeSessionBlobs = %+v, want one row for %s", rows, hash)
+	}
+}
+
+func TestPutSessionBlobFailsBeforePut(t *testing.T) {
+	s, objects := storeWithFake(t)
+	sessionID := seedSession(t, s, "blobmismatch", "sess-blob-mismatch")
+	data := []byte("session image bytes")
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+
+	t.Run("missing object store", func(t *testing.T) {
+		s.objectStore = nil
+		if err := s.PutSessionBlob(t.Context(), sessionID, hash, data); !errors.Is(err, ErrFailedPrecondition) {
+			t.Fatalf("PutSessionBlob without object store = %v, want ErrFailedPrecondition", err)
+		}
+	})
+	// Rewire the fake after proving the nil-object-store guard.
+	s.SetObjectStore(objects)
+	t.Run("digest mismatch", func(t *testing.T) {
+		if err := s.PutSessionBlob(t.Context(), sessionID, hash, []byte("different bytes")); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("PutSessionBlob with mismatched digest = %v, want ErrInvalidArgument", err)
+		}
+		if objects.has("blobs/" + hash) {
+			t.Fatal("digest mismatch caused an object-store PUT")
+		}
+		var count int
+		if err := s.pool.QueryRow(t.Context(), "SELECT count(*) FROM agent_session_blobs WHERE session_id = $1", sessionID).Scan(&count); err != nil {
+			t.Fatalf("count session blob rows: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("digest mismatch persisted %d rows, want 0", count)
+		}
+	})
+}
+
+func TestReadSessionBlobRequiresSessionIndexRow(t *testing.T) {
+	s, objects := storeWithFake(t)
+	seedSession(t, s, "blobreader", "sess-blob-indexed")
+	data := []byte("shared object")
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	if err := objects.PutSegment(t.Context(), "blobs/"+hash, data); err != nil {
+		t.Fatalf("seed global object: %v", err)
+	}
+	if _, err := s.ReadSessionBlob(t.Context(), "other-session", hash); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ReadSessionBlob for a session without an index row = %v, want ErrNotFound", err)
+	}
 }
 
 // manifestRows reads the archive manifest for a session, ordered by min seq —
