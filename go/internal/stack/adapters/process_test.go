@@ -5,6 +5,7 @@ package adapters
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -60,6 +61,22 @@ func TestMain(m *testing.M) {
 			if err := os.WriteFile(out, []byte(os.Getenv(helperEchoKey)), 0o600); err != nil {
 				os.Exit(4)
 			}
+		}
+		os.Exit(0)
+	case "fd3":
+		file := os.NewFile(3, "listen-fd")
+		if file == nil {
+			os.Exit(4)
+		}
+		listener, err := net.FileListener(file)
+		if closeErr := file.Close(); closeErr != nil {
+			os.Exit(5)
+		}
+		if err != nil {
+			os.Exit(6)
+		}
+		if err := listener.Close(); err != nil {
+			os.Exit(7)
 		}
 		os.Exit(0)
 	case "trapexit1":
@@ -334,6 +351,35 @@ func TestWaitNormalizesNonzeroExitAfterSignal(t *testing.T) {
 	}
 	if err := proc.Wait(context.Background()); err != nil {
 		t.Fatalf("Wait after SIGTERM = %v, want nil (nonzero exit after our SIGTERM is a clean drain)", err)
+	}
+}
+
+func TestStartPassesExtraFilesAsFD3(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP: %v", err)
+	}
+	file, err := listener.File()
+	if err != nil {
+		t.Fatalf("listener File: %v", err)
+	}
+	defer file.Close()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("listener Close: %v", err)
+	}
+	dir := t.TempDir()
+	binary := mustComponentBinary(t, stack.ComponentServer)
+	writeReexecWrapper(t, dir, binary, "fd3")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	proc, err := NewProcessSupervisor().Start(t.Context(), stack.ProcessSpec{
+		Component:  stack.ComponentServer,
+		ExtraFiles: []*os.File{file},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := proc.Wait(t.Context()); err != nil {
+		t.Fatalf("fd3 helper Wait: %v", err)
 	}
 }
 

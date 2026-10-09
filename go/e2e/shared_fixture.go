@@ -233,7 +233,7 @@ func (r *standUpRecorder) dirs() []string {
 	return slices.Clone(r.tempDirs)
 }
 
-// newSharedSite mints the shared stack's own root, state dir, and port pair.
+// newSharedSite mints the shared stack's own root, state dir, and pg port.
 // It mirrors newPersistentSite but is t-free and registers no cleanup, because
 // shutdownShared owns this site's lifetime.
 func newSharedSite() (fixtureSite, error) {
@@ -245,11 +245,11 @@ func newSharedSite() (fixtureSite, error) {
 	if err != nil {
 		return fixtureSite{}, fmt.Errorf("make shared state dir: %w", err)
 	}
-	ports, err := freeSharedPorts(2)
+	ports, err := freeSharedPorts(1)
 	if err != nil {
 		return fixtureSite{}, err
 	}
-	return fixtureSite{root: root, stateDir: stateDir, listenPort: ports[0], pgPort: ports[1]}, nil
+	return fixtureSite{root: root, stateDir: stateDir, pgPort: ports[0]}, nil
 }
 
 // freeSharedPorts is freePorts without the *testing.T. Every listener is held

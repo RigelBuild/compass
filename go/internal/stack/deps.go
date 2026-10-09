@@ -4,6 +4,8 @@ package stack
 
 import (
 	"context"
+	"net"
+	"os"
 	"time"
 )
 
@@ -12,6 +14,9 @@ import (
 // server/runner/certgen/runtime packages) are supplied by the CLI slice, and
 // unit tests supply stubs. The core imports none of those packages itself.
 type Deps struct {
+	// ListenTCP binds the network door before the server starts. Nil uses the
+	// standard library listener for production; tests can supply an isolated bind.
+	ListenTCP func(network, address string) (*net.TCPListener, error)
 	// Supervisor starts, signals, and waits child processes (postgres,
 	// compass-server, compass-runner). These are the record's "stubbed process
 	// execs".
@@ -110,9 +115,10 @@ type Deps struct {
 // core's. Secrets (the runner token) travel in Env, never Args, so they never
 // reach the process table.
 type ProcessSpec struct {
-	Component Component
-	Args      []string
-	Env       []string
+	Component  Component
+	Args       []string
+	Env        []string
+	ExtraFiles []*os.File
 }
 
 // Component identifies a supervised child of the stack. It doubles as the log

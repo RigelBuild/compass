@@ -247,7 +247,7 @@ func WithObjectStore(g *garageFixture) fixtureOption {
 	return func(fc *fixtureConfig) { fc.objectStore = g }
 }
 
-// WithSite makes NewFixture reuse a persistent site (root/stateDir/ports) rather
+// WithSite makes NewFixture reuse a persistent site (root/stateDir/pg port) rather
 // than minting fresh ephemeral ones — the RIG-1790 H6 cross-restart substrate.
 // Two NewFixture calls over the SAME site drive two stack lifecycles that share
 // the postgres data dir (under stateDir), so the second Up re-attaches the
@@ -543,19 +543,18 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	// mints per-call state exactly as before. Only the acquisition differs — the
 	// downstream cfg build is shared.
 	var root, stateDir string
-	var listenPort, pgPort int
+	var pgPort int
 	if fc.site != nil {
 		root = fc.site.root
 		stateDir = fc.site.stateDir
-		listenPort, pgPort = fc.site.listenPort, fc.site.pgPort
+		pgPort = fc.site.pgPort
 	} else {
 		// shortRoot registers its own RemoveAll on tb.Cleanup; the site path must
 		// NOT (else run1's cleanup would delete the persisted DB before run2), so
 		// newPersistentSite owns the site's single end-of-test RemoveAll instead.
 		root = shortRoot(tb, "h1")
 		stateDir = tb.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
-		ports := freePorts(tb, 2)
-		listenPort, pgPort = ports[0], ports[1]
+		pgPort = freePorts(tb, 1)[0]
 	}
 	pgSockDir := filepath.Join(root, "pg")
 	runtimeDir := filepath.Join(root, "rt")
@@ -590,10 +589,12 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 	}
 
 	var garage *garageFixture
+	// Port 0: the stack binds the door and hands it to the server, so no
+	// released port can be taken in between; clients read st.ListenAddr().
 	cfg := stack.Config{
 		StateDir:       stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
 		SocketPath:     serverSock,
-		ListenAddr:     "127.0.0.1:" + strconv.Itoa(listenPort),
+		ListenAddr:     "127.0.0.1:0",
 		DatabaseDSN:    dsn,
 		SecretProvider: "dotenv://" + secretsPath,
 		AgentImage:     agentImage,
@@ -685,7 +686,7 @@ func NewFixture(ctx context.Context, tb testing.TB, opts ...fixtureOption) *Fixt
 		tb.Fatalf("admin-token file %q is empty", adminTokenPath)
 	}
 
-	serverURL := "https://" + cfg.ListenAddr
+	serverURL := "https://" + st.ListenAddr()
 	compass, comms, err := newAuthedClients(caPath, serverURL, adminToken)
 	if err != nil {
 		tb.Fatalf("build authed clients: %v", err)
@@ -825,10 +826,9 @@ func configureCannedModel(tb testing.TB, cfg *stack.Config, cfgRoot string, scri
 }
 
 // freePorts returns n distinct free TCP ports on loopback by binding :0 on each,
-// reading the kernel-assigned port, then closing — the only way to a fixed port
-// Config.Validate accepts (it rejects :0; there is no bound-address discovery
-// API). All listeners are held open until every port is read so the kernel
-// cannot hand the same port twice.
+// reading the kernel-assigned port, then closing — for children that take a
+// fixed port number. All listeners are held open until every port is read so
+// the kernel cannot hand the same port twice.
 func freePorts(tb testing.TB, n int) []int {
 	tb.Helper()
 	lns := make([]net.Listener, 0, n)
@@ -871,10 +871,9 @@ func shortRoot(tb testing.TB, suffix string) string {
 // the cluster the first initialized. Produced by newPersistentSite, consumed via
 // WithSite. The RIG-1790 H6 cross-restart leg is its only user.
 type fixtureSite struct {
-	root       string
-	stateDir   string
-	listenPort int
-	pgPort     int
+	root     string
+	stateDir string
+	pgPort   int
 }
 
 // newPersistentSite mints a persistent site whose lifetime spans a whole test —
@@ -884,8 +883,8 @@ type fixtureSite struct {
 // framework reaps it after the test). The root stays short off shortRoot because
 // the runner's agent-socket path under it is sun_path-budgeted (run.go
 // validateRuntimeDir); the state dir is not budgeted, so a t.TempDir is fine
-// there. The two ports are allocated ONCE — run1's Down closes its listeners
-// before run2's Up rebinds them, so a single freePorts pair serves both.
+// there. The pg port is allocated ONCE — run1's Down stops postgres before
+// run2's Up reuses it; the network door is bound fresh (:0) by each Up.
 func newPersistentSite(t *testing.T) fixtureSite {
 	t.Helper()
 	// A short, unique root — NOT via shortRoot: inlined to keep the site's single
@@ -898,12 +897,10 @@ func newPersistentSite(t *testing.T) fixtureSite {
 	t.Cleanup(func() {
 		_ = os.RemoveAll(root) // best-effort end-of-test sweep: the site is this test's alone and both Downs have drained by now
 	})
-	ports := freePorts(t, 2)
 	return fixtureSite{
-		root:       root,
-		stateDir:   t.TempDir(),
-		listenPort: ports[0],
-		pgPort:     ports[1],
+		root:     root,
+		stateDir: t.TempDir(),
+		pgPort:   freePorts(t, 1)[0],
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,8 +41,9 @@ import (
 var version = "0.1.0"
 
 // defaultListenAddr is the fixed loopback TLS door the server binds when
-// --listen is unset. It is deliberately a fixed port, never ":0": the server
-// exposes no bound-address discovery API (Config.Validate rejects ":0").
+// --listen is unset. It is deliberately a fixed port, never ":0": later clients
+// of the detached stack find the door only by this address (resolveConfig
+// rejects ":0").
 const defaultListenAddr = "127.0.0.1:50052"
 
 func main() {
@@ -238,6 +240,11 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 	listen := f.listen
 	if listen == "" {
 		listen = defaultListenAddr
+	}
+	// The detached CLI exits after Up, so an ephemeral port would be known to no
+	// later client; the in-process stack accepts :0 because its caller reads it.
+	if _, port, err := net.SplitHostPort(listen); err == nil && port == "0" {
+		return stack.Config{}, fmt.Errorf("--listen %q must be a fixed port, not :0 (the detached stack cannot publish an ephemeral port)", listen)
 	}
 
 	socketPath := f.socket

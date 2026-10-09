@@ -2,15 +2,16 @@
 
 package main
 
-// Unit test for resolveNetworkDoor: the all-or-none CLI validation of the three
-// network-door flags (--listen, --tls-cert, --tls-key). No I/O, no store, no
-// sockets — a pure input→output contract, so a plain table-driven test covers
-// the whole truth table.
+// TestResolveNetworkDoor covers address and inherited-descriptor validation.
 
 import (
 	"errors"
 	"flag"
+	"net"
+	"os"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,179 +24,179 @@ func TestResolveNetworkDoor(t *testing.T) {
 		cert   = "/etc/compass/tls.crt"
 		key    = "/etc/compass/tls.key"
 	)
-
-	// The two non-error rows: none set (socket-only default) and all three set
-	// (network door enabled). Asserted individually below because the success
-	// case checks the returned TLSConfig, which the error rows don't have.
-	t.Run("none set yields socket-only default", func(t *testing.T) {
-		assertSocketOnlyDefault(t)
-	})
-
-	t.Run("all three set enables the network door", func(t *testing.T) {
-		assertNetworkDoorEnabled(t, listen, cert, key)
-	})
-
-	// The partial rows: every meaningful proper subset of the three flags is a
-	// startup error whose message names precisely the missing flag(s). wantMissing
-	// lists the flag names the error MUST mention; wantAbsent lists the flag names
-	// it MUST NOT mention (the ones that were supplied), so a message that named
-	// every flag regardless of input would still fail these rows.
-	partials := []struct {
-		name                    string
-		listen, cert, key       string
-		wantMissing, wantAbsent []string
+	tests := []struct {
+		name              string
+		listen, cert, key string
+		listenFD          int
+		wantListen        string
+		wantFD            int
+		wantErr           []string
 	}{
-		{
-			name:        "only --listen set (missing both TLS flags)",
-			listen:      listen,
-			wantMissing: []string{"--tls-cert", "--tls-key"},
-			wantAbsent:  []string{"--listen"},
-		},
-		{
-			name:        "only --tls-cert set (missing listen and key)",
-			cert:        cert,
-			wantMissing: []string{"--listen", "--tls-key"},
-			wantAbsent:  []string{"--tls-cert"},
-		},
-		{
-			name:        "only --tls-key set (missing listen and cert)",
-			key:         key,
-			wantMissing: []string{"--listen", "--tls-cert"},
-			wantAbsent:  []string{"--tls-key"},
-		},
-		{
-			name:        "--listen and --tls-cert set (missing --tls-key)",
-			listen:      listen,
-			cert:        cert,
-			wantMissing: []string{"--tls-key"},
-			wantAbsent:  []string{"--listen", "--tls-cert"},
-		},
-		{
-			name:        "--listen and --tls-key set (missing --tls-cert)",
-			listen:      listen,
-			key:         key,
-			wantMissing: []string{"--tls-cert"},
-			wantAbsent:  []string{"--listen", "--tls-key"},
-		},
-		{
-			name:        "--tls-cert and --tls-key set (missing --listen)",
-			cert:        cert,
-			key:         key,
-			wantMissing: []string{"--listen"},
-			wantAbsent:  []string{"--tls-cert", "--tls-key"},
-		},
+		{name: "none set yields socket-only default"},
+		{name: "listen enables network door", listen: listen, cert: cert, key: key, wantListen: listen},
+		{name: "only listen misses both TLS flags", listen: listen, wantErr: []string{"--tls-cert", "--tls-key"}},
+		{name: "only cert misses listen and key", cert: cert, wantErr: []string{"--listen", "--listen-fd", "--tls-key"}},
+		{name: "only key misses listen and cert", key: key, wantErr: []string{"--listen", "--listen-fd", "--tls-cert"}},
+		{name: "listen and cert miss key", listen: listen, cert: cert, wantErr: []string{"--tls-key"}},
+		{name: "listen and key miss cert", listen: listen, key: key, wantErr: []string{"--tls-cert"}},
+		{name: "both TLS flags miss listener", cert: cert, key: key, wantErr: []string{"--listen", "--listen-fd"}},
+		{name: "inherited fd with TLS enables network door", listenFD: 3, cert: cert, key: key, wantFD: 3},
+		{name: "inherited fd misses both TLS flags", listenFD: 3, wantErr: []string{"--tls-cert", "--tls-key"}},
+		{name: "listen and inherited fd conflict", listen: listen, listenFD: 3, cert: cert, key: key, wantErr: []string{"--listen", "--listen-fd"}},
+		{name: "negative inherited fd is rejected", listenFD: -1, cert: cert, key: key, wantErr: []string{"--listen-fd", "3"}},
+		{name: "inherited fd below 3 is rejected", listenFD: 2, cert: cert, key: key, wantErr: []string{"--listen-fd", "3"}},
 	}
-
-	for _, tc := range partials {
+	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assertPartialFlagError(t, tc.listen, tc.cert, tc.key, tc.wantMissing, tc.wantAbsent)
+			gotListen, gotFD, gotTLS, err := resolveNetworkDoor(tc.listen, tc.listenFD, tc.cert, tc.key)
+			if len(tc.wantErr) > 0 {
+				assertNetworkDoorError(t, gotListen, gotFD, gotTLS, err, tc.wantErr)
+				return
+			}
+			assertNetworkDoorSuccess(t, gotListen, gotFD, gotTLS, err, tc.wantListen, tc.wantFD, cert, key)
 		})
 	}
 }
 
-// assertSocketOnlyDefault verifies that supplying none of the three network-door
-// flags yields the socket-only default: no listen address and no TLS config.
-func assertSocketOnlyDefault(t *testing.T) {
+func assertNetworkDoorError(t *testing.T, gotListen string, gotFD int, gotTLS *server.TLSConfig, err error, want []string) {
 	t.Helper()
-	gotListen, gotTLS, err := resolveNetworkDoor("", "", "")
-	if err != nil {
-		t.Fatalf("resolveNetworkDoor(\"\",\"\",\"\") error = %v, want nil", err)
-	}
-	if gotListen != "" {
-		t.Errorf("listen = %q, want \"\"", gotListen)
-	}
-	if gotTLS != nil {
-		t.Errorf("tlsConfig = %+v, want nil", gotTLS)
-	}
-}
-
-// assertNetworkDoorEnabled verifies that supplying all three flags enables the
-// network door: the listen string is passed through unchanged and the TLS config
-// carries the cert/key paths on their correct fields (the arg-swap guard).
-func assertNetworkDoorEnabled(t *testing.T, listen, cert, key string) {
-	t.Helper()
-	gotListen, gotTLS, err := resolveNetworkDoor(listen, cert, key)
-	if err != nil {
-		t.Fatalf("resolveNetworkDoor(%q,%q,%q) error = %v, want nil", listen, cert, key, err)
-	}
-	// Same listen string, unchanged — guards against the function mangling
-	// or dropping the address.
-	if gotListen != listen {
-		t.Errorf("listen = %q, want %q", gotListen, listen)
-	}
-	if gotTLS == nil {
-		t.Fatal("tlsConfig = nil, want non-nil *server.TLSConfig")
-	}
-	// Exact cert/key paths on the right fields — this is the arg-swap guard:
-	// if the impl passed tlsKey into CertPath (or vice versa) these fail.
-	if gotTLS.CertPath != cert {
-		t.Errorf("tlsConfig.CertPath = %q, want %q", gotTLS.CertPath, cert)
-	}
-	if gotTLS.KeyPath != key {
-		t.Errorf("tlsConfig.KeyPath = %q, want %q", gotTLS.KeyPath, key)
-	}
-	// Belt-and-suspenders on the whole struct value.
-	want := server.TLSConfig{CertPath: cert, KeyPath: key}
-	if *gotTLS != want {
-		t.Errorf("tlsConfig = %+v, want %+v", *gotTLS, want)
-	}
-}
-
-// assertPartialFlagError verifies that a proper subset of the three flags is a
-// startup error that surfaces no usable config and whose "(missing ...)" clause
-// names precisely the wantMissing flags and none of the wantAbsent ones.
-func assertPartialFlagError(t *testing.T, listen, cert, key string, wantMissing, wantAbsent []string) {
-	t.Helper()
-	gotListen, gotTLS, err := resolveNetworkDoor(listen, cert, key)
 	if err == nil {
-		t.Fatalf("resolveNetworkDoor(%q,%q,%q) error = nil, want a partial-flag error",
-			listen, cert, key)
+		t.Fatal("resolveNetworkDoor() error = nil, want error")
 	}
-	// A partial (error) case must not smuggle out a usable config.
-	if gotListen != "" {
-		t.Errorf("listen = %q, want \"\" on error", gotListen)
-	}
-	if gotTLS != nil {
-		t.Errorf("tlsConfig = %+v, want nil on error", gotTLS)
-	}
-	msg := err.Error()
-	// The error's preamble names all three flags ("needs --listen,
-	// --tls-cert, and --tls-key together"), so BOTH the presence and the
-	// absence assertions must read only the "(missing ...)" clause —
-	// checking the whole message would pass regardless of which flags the
-	// impl actually detected as missing.
-	missingClause := extractMissingClause(t, msg)
-	for _, flag := range wantMissing {
-		if !strings.Contains(missingClause, flag) {
-			t.Errorf("error %q does not report %q as missing in %q",
-				msg, flag, missingClause)
+	for _, part := range want {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("error %q does not contain %q", err, part)
 		}
 	}
-	for _, flag := range wantAbsent {
-		if strings.Contains(missingClause, flag) {
-			t.Errorf("error %q lists %q as missing in %q, but it was supplied",
-				msg, flag, missingClause)
-		}
+	if gotListen != "" || gotFD != 0 || gotTLS != nil {
+		t.Errorf("resolveNetworkDoor() returned %q/%d/%+v on error", gotListen, gotFD, gotTLS)
 	}
 }
 
-// extractMissingClause returns the contents of the "(missing ...)" parenthetical
-// from a resolveNetworkDoor error message. The message names all three flags in
-// its preamble, so asserting which flags were reported missing requires reading
-// only this clause. Fails the test if the clause is absent — a message shape the
-// contract does not permit.
-func extractMissingClause(t *testing.T, msg string) string {
+func assertNetworkDoorSuccess(t *testing.T, gotListen string, gotFD int, gotTLS *server.TLSConfig, err error, wantListen string, wantFD int, cert, key string) {
 	t.Helper()
-	const marker = "(missing "
-	_, rest, found := strings.Cut(msg, marker)
-	if !found {
-		t.Fatalf("error %q has no %q clause", msg, marker)
+	if err != nil {
+		t.Fatalf("resolveNetworkDoor() error = %v, want nil", err)
 	}
-	clause, _, terminated := strings.Cut(rest, ")")
-	if !terminated {
-		t.Fatalf("error %q has an unterminated %q clause", msg, marker)
+	if gotListen != wantListen || gotFD != wantFD {
+		t.Errorf("resolved listen/fd = %q/%d, want %q/%d", gotListen, gotFD, wantListen, wantFD)
 	}
-	return clause
+	if wantListen == "" && wantFD == 0 {
+		if gotTLS != nil {
+			t.Errorf("TLS = %+v, want nil in socket-only mode", gotTLS)
+		}
+		return
+	}
+	if gotTLS == nil || gotTLS.CertPath != cert || gotTLS.KeyPath != key {
+		t.Errorf("TLS = %+v, want cert=%q key=%q", gotTLS, cert, key)
+	}
+}
+
+// rawListenerFD returns a dup of l's descriptor that no *os.File owns, as a
+// child inherits it; an *os.File here would close the number again when GC'd.
+func rawListenerFD(t *testing.T, l *net.TCPListener) int {
+	t.Helper()
+	file, err := l.File()
+	if err != nil {
+		t.Fatalf("listener File: %v", err)
+	}
+	defer file.Close()
+	fd, err := syscall.Dup(int(file.Fd()))
+	if err != nil {
+		t.Fatalf("dup listener fd: %v", err)
+	}
+	return fd
+}
+
+// An inherited fd becomes ServeConfig.ListenListener, and the passed fd is
+// closed (FileListener dups it) so the process holds exactly one descriptor.
+func TestBuildServeConfigInheritedListener(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("ListenTCP: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	fd := rawListenerFD(t, listener)
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222")
+	cfg, _, err := buildServeConfig([]string{
+		"--database", "postgres://x/db",
+		"--socket", "/tmp/x.sock",
+		"--listen-fd", strconv.Itoa(fd),
+		"--tls-cert", "/c.pem",
+		"--tls-key", "/k.pem",
+	})
+	if err != nil {
+		t.Fatalf("buildServeConfig with inherited listener: %v", err)
+	}
+	t.Cleanup(func() {
+		if cfg.ListenListener != nil {
+			_ = cfg.ListenListener.Close()
+		}
+	})
+	if cfg.Listen != "" || cfg.ListenListener == nil {
+		t.Fatalf("listen config = %q/%v, want inherited listener only", cfg.Listen, cfg.ListenListener)
+	}
+	if got, want := cfg.ListenListener.Addr().String(), listener.Addr().String(); got != want {
+		t.Fatalf("inherited listener address = %q, want %q", got, want)
+	}
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); !errors.Is(err, syscall.EBADF) {
+		t.Fatalf("passed fd %d Fstat error = %v, want EBADF (closed after adoption)", fd, err)
+	}
+}
+
+// A non-listener fd is rejected and left open (it may not be ours to close).
+func TestBuildServeConfigRejectsNonTCPListenerFD(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer writer.Close()
+	defer reader.Close()
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222")
+	_, _, err = buildServeConfig([]string{
+		"--database", "postgres://x/db",
+		"--socket", "/tmp/x.sock",
+		"--listen-fd", strconv.Itoa(int(reader.Fd())),
+		"--tls-cert", "/c.pem",
+		"--tls-key", "/k.pem",
+	})
+	if err == nil || !strings.Contains(err.Error(), "TCP listener") {
+		t.Fatalf("buildServeConfig with pipe fd = %v, want non-TCP listener error", err)
+	}
+	if _, err := reader.Stat(); err != nil {
+		t.Fatalf("pipe fd was closed by a rejected adoption: %v", err)
+	}
+}
+
+// A config error after the fd was adopted must close the adopted listener, or
+// the failed process would keep the stack's port open until it exits.
+func TestBuildServeConfigClosesAdoptedListenerOnLaterError(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("ListenTCP: %v", err)
+	}
+	addr := listener.Addr().String()
+	fd := rawListenerFD(t, listener)
+	if err := listener.Close(); err != nil { // fd is now the only copy
+		t.Fatalf("close original listener: %v", err)
+	}
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222")
+	_, _, err = buildServeConfig([]string{
+		"--database", "postgres://x/db",
+		"--socket", "/tmp/x.sock",
+		"--listen-fd", strconv.Itoa(fd),
+		"--tls-cert", "/c.pem",
+		"--tls-key", "/k.pem",
+		"--cors-allowed-origin", "*",
+	})
+	if err == nil {
+		t.Fatal("buildServeConfig with a wildcard origin = nil, want error")
+	}
+	if conn, err := net.Dial("tcp", addr); err == nil {
+		_ = conn.Close()
+		t.Fatal("adopted listener still accepts after a config error")
+	}
 }
 
 // TestBuildServeConfigFlagRoundTrip pins the CLI flag→ServeConfig mapping: the

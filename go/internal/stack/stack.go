@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"time"
 )
@@ -55,6 +56,8 @@ type Stack struct {
 	lock   *stackLock
 	server Process
 	runner Process
+	// listenAddr is the network door spawnChain bound (port resolved from :0).
+	listenAddr string
 	// cert is the TLS anchor spawnChain issued, reused when the runner restarts.
 	cert      CertResult
 	pg        Process
@@ -224,6 +227,16 @@ func (s *Stack) Down(ctx context.Context) error {
 	return err
 }
 
+// ListenAddr reports the network-door address an owned stack bound in Up (the
+// resolved port when configured with :0). An attached stack binds nothing, so it
+// reports the configured address, which is dialable only when it is a fixed port.
+func (s *Stack) ListenAddr() string {
+	if s.listenAddr != "" {
+		return s.listenAddr
+	}
+	return s.cfg.ListenAddr
+}
+
 // RestartRunner replaces the owned runner process without stopping the server.
 func (s *Stack) RestartRunner(ctx context.Context) error {
 	if s.attached || s.runner == nil {
@@ -279,7 +292,7 @@ func (s *Stack) startRunner(ctx context.Context) error {
 	if err := s.resolveGuest(ctx); err != nil {
 		return err
 	}
-	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, s.cert, token, s.guest, os.Getenv(microVMRunRootEnvVar)))
+	runner, err := s.deps.Supervisor.Start(ctx, runnerSpec(s.cfg, s.cert, token, s.guest, os.Getenv(microVMRunRootEnvVar), s.ListenAddr()))
 	if err != nil {
 		return fmt.Errorf("start compass-runner: %w", err)
 	}
@@ -294,6 +307,16 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 	if err := s.cfg.checkBundledPortsDistinct(); err != nil {
 		return err
 	}
+	// 0. Bind the network door before any child starts, so no other process can
+	// take the port; the server inherits it as fd 3 and :0 resolves here.
+	listen, err := s.listenTCP("tcp", s.cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("bind stack network door at %s: %w", s.cfg.ListenAddr, err)
+	}
+	// Covers every return before the server starts; after it, the explicit
+	// Close below has already run and this second Close is a harmless no-op.
+	defer func() { _ = listen.Close() }()
+	s.listenAddr = listen.Addr().String()
 
 	// 1. Private postgres child. Three paths (S4): external (skip the component,
 	// probe the caller's DSN as-is), container-backed (the installed default), or
@@ -348,14 +371,24 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 	}
 	s.cert = cert
 
-	// 3. compass-server (socket / listen / tls / database).
-	server, err := s.deps.Supervisor.Start(ctx, serverSpec(s.cfg, cert))
+	// 3. compass-server (socket / listen-fd / tls / database).
+	listenFile, err := listen.File()
 	if err != nil {
-		return fmt.Errorf("start compass-server: %w", err)
+		return fmt.Errorf("duplicate stack network listener: %w", err)
+	}
+	server, err := s.deps.Supervisor.Start(ctx, serverSpec(s.cfg, cert, listenFile))
+	// The child holds its own copy now. Keeping ours open would let the kernel
+	// queue connections for a dead server instead of refusing them.
+	closeErr := errors.Join(listenFile.Close(), listen.Close())
+	if err != nil {
+		return fmt.Errorf("start compass-server: %w", errors.Join(err, closeErr))
 	}
 	s.server = server
 	if err := s.recordChild(ComponentServer, server); err != nil {
 		return err
+	}
+	if closeErr != nil {
+		return fmt.Errorf("release stack network listener: %w", closeErr)
 	}
 
 	// 4. Poll GetServerInfo readiness — the socket binds before migrations, so
@@ -717,4 +750,16 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 	}
 	s.runner, s.server, s.gateway, s.nats, s.collector, s.pg = nil, nil, nil, nil, nil, nil
 	return errs
+}
+
+// listenTCP binds the network door through the Deps seam when one is set.
+func (s *Stack) listenTCP(network, address string) (*net.TCPListener, error) {
+	if s.deps.ListenTCP != nil {
+		return s.deps.ListenTCP(network, address)
+	}
+	addr, err := net.ResolveTCPAddr(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return net.ListenTCP(network, addr)
 }

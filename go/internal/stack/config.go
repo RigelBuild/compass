@@ -23,10 +23,9 @@ type Config struct {
 	// probes GetServerInfo over. Caller-provided — default resolution (the
 	// XDG_RUNTIME_DIR/HOME fallback) is the CLI slice's job, not the core's.
 	SocketPath string
-	// ListenAddr is the configured loopback TLS network door (e.g.
-	// 127.0.0.1:50052). It must be a fixed port, never ":0": the server exposes
-	// no bound-address discovery API, so an ephemeral port could not be handed
-	// to the runner as its --server target.
+	// ListenAddr is the loopback TLS network door to bind (e.g.
+	// 127.0.0.1:50052). Port 0 asks the stack to resolve an ephemeral port
+	// while it holds the listener.
 	ListenAddr string
 	// DatabaseDSN is the postgres DSN compass-server opens the store of record
 	// on.
@@ -172,13 +171,7 @@ var agentSocketTailWidth = len(filepath.Join(
 // an over-budget runner socket path, and coherent guest image settings.
 func (c Config) Validate() error {
 	if c.ListenAddr == "" {
-		return errors.New("stack config: ListenAddr is required (a fixed loopback TLS door, e.g. 127.0.0.1:50052)")
-	}
-	// ":0" (and any ":0" host variant) requests an ephemeral port. The server
-	// has no bound-address discovery API, so the runner could never be told the
-	// real port — reject it up front rather than spawn an unreachable door.
-	if _, port, ok := splitPort(c.ListenAddr); ok && port == "0" {
-		return fmt.Errorf("stack config: ListenAddr %q must be a fixed port, not :0 (no bound-address discovery API exists)", c.ListenAddr)
+		return errors.New("stack config: ListenAddr is required (a loopback TLS door, e.g. 127.0.0.1:50052)")
 	}
 	// Both guest knobs name the same thing by different means, so accepting
 	// both would leave which one wins unspecified.

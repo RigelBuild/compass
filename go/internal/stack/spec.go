@@ -4,6 +4,7 @@ package stack
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -24,16 +25,16 @@ const microVMRunRootEnvVar = "COMPASS_MICROVM_RUNROOT"
 const embeddedRunnerID = "embedded"
 
 // serverSpec builds the compass-server child spec from the resolved config and
-// cert paths, mirroring the devenv dogfood invocation: --socket / --database /
-// --nats-url / --listen / --tls-cert / --tls-key, plus --secret-provider when
-// pinned. --nats-url is unconditional because the server refuses to boot
-// without an event fabric.
-func serverSpec(cfg Config, cert CertResult) ProcessSpec {
+// cert paths, mirroring the devenv dogfood invocation except that the network
+// door arrives as inherited fd 3 (--listen-fd): the stack holds the bound
+// listener, so no other process can take the port before the server starts.
+// --nats-url is unconditional because the server refuses to boot without it.
+func serverSpec(cfg Config, cert CertResult, listen *os.File) ProcessSpec {
 	args := []string{
 		"--socket", cfg.SocketPath,
 		"--database", cfg.DatabaseDSN,
 		"--nats-url", natsURL(cfg),
-		"--listen", cfg.ListenAddr,
+		"--listen-fd", "3",
 		"--tls-cert", cert.CertPath,
 		"--tls-key", cert.KeyPath,
 	}
@@ -53,23 +54,24 @@ func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 	if cfg.TranscriptSafetyValveCapBytes > 0 {
 		env = append(env, "COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES="+strconv.Itoa(cfg.TranscriptSafetyValveCapBytes))
 	}
-	return ProcessSpec{Component: ComponentServer, Args: args, Env: env}
+	return ProcessSpec{Component: ComponentServer, Args: args, Env: env, ExtraFiles: []*os.File{listen}}
 }
 
 // runnerSpec builds the compass-runner child spec (devenv.nix:497-502): it dials
 // the server's TLS door over https, trusts the same cert as its --ca anchor,
 // and mints per-container sockets under cfg.RuntimeDir. The token rides in Env
 // only; guest is resolved by the caller (zero = the Runner image's baked copy).
-func runnerSpec(cfg Config, cert CertResult, token string, guest GuestPaths, microVMRunRootEnv string) ProcessSpec {
+func runnerSpec(cfg Config, cert CertResult, token string, guest GuestPaths, microVMRunRootEnv string, listenAddr string) ProcessSpec {
 	// The four unconditional flags every runner spawn carries. Each optional
 	// flag below is appended only when set, so a caller that leaves them zero
 	// (the embedded supervisor, the compass-stack CLI's resolveConfig) gets a
 	// byte-identical Args to before those features existed.
 	args := []string{
 		"--runner-id", embeddedRunnerID,
-		"--server", "https://" + cfg.ListenAddr,
+		"--server", "https://" + listenAddr,
 		"--ca", cert.CertPath,
 	}
+
 	// AgentImage: the microVM backend runs the agent from the guest rootfs and
 	// REFUSES a configured --image (runner.ResolveAgentImage), so forwarding one
 	// would make every microVM runner fail at startup. Omit it there; every

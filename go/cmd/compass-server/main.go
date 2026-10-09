@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -70,6 +71,9 @@ func run() error {
 	}
 	if err != nil {
 		return err
+	}
+	if cfg.ListenListener != nil {
+		defer func() { _ = cfg.ListenListener.Close() }()
 	}
 	if showVersion {
 		// Genuine CLI output — the --version result to stdout, not a diagnostic — so
@@ -183,11 +187,23 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		devHTTP = &addr
 	}
 
-	listen, tlsConfig, err := resolveNetworkDoor(*f.listen, *f.tlsCert, *f.tlsKey)
+	listen, listenFD, tlsConfig, err := resolveNetworkDoor(*f.listen, *f.listenFD, *f.tlsCert, *f.tlsKey)
 	if err != nil {
 		return server.ServeConfig{}, false, err
 	}
-
+	var listenListener net.Listener
+	if listenFD != 0 {
+		listenListener, err = listenerFromFileDescriptor(listenFD)
+		if err != nil {
+			return server.ServeConfig{}, false, err
+		}
+	}
+	keepListenListener := false
+	defer func() {
+		if listenListener != nil && !keepListenListener {
+			_ = listenListener.Close()
+		}
+	}()
 	// The network door's CORS contract is exactly one explicit origin, never a
 	// wildcard — it is internet-facing, so an any-origin door is exactly the state
 	// the design forbids. rs/cors treats a literal "*" (or a '*' pattern) as
@@ -234,12 +250,13 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		return server.ServeConfig{}, false, err
 	}
 
-	return server.ServeConfig{
+	config := server.ServeConfig{
 		SocketPath:        socketPath,
 		Version:           version,
 		Rev:               rev,
 		DevHTTP:           devHTTP,
 		Listen:            listen,
+		ListenListener:    listenListener,
 		TLS:               tlsConfig,
 		DatabaseDSN:       databaseDSN,
 		NatsURL:           natsURL,
@@ -255,7 +272,9 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		OtelEndpoint:                  os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		TranscriptSafetyValveCapBytes: positiveCap(*f.transcriptSafetyValveCapBytes, os.Getenv("COMPASS_TRANSCRIPT_SAFETY_VALVE_CAP_BYTES")),
 		UsageEventRetention:           usageRetention,
-	}, false, nil
+	}
+	keepListenListener = true
+	return config, false, nil
 }
 
 // logOnDrainSignal registers a one-shot handler that logs the first SIGINT/SIGTERM
@@ -281,6 +300,7 @@ type serveFlags struct {
 	socket                        *string
 	devHTTP                       *string
 	listen                        *string
+	listenFD                      *int
 	tlsCert                       *string
 	tlsKey                        *string
 	database                      *string
@@ -313,6 +333,8 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 			"Dev only: also serve gRPC-Web on this loopback TCP address (e.g. "+
 				"127.0.0.1:50051) for a browser dev server. Off by default; the "+
 				"shipped path is socket-only. A non-loopback address is rejected."),
+		listenFD: fs.Int("listen-fd", 0,
+			"Inherited TCP listener descriptor for the network door; mutually exclusive with --listen."),
 		listen: fs.String("listen", "",
 			"Serve the authenticated gRPC network door on this TCP address (e.g. "+
 				"0.0.0.0:8443). Off by default; the shipped local path is socket-only. "+
@@ -375,43 +397,57 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 	}
 }
 
-// resolveNetworkDoor validates the three network-door flags as an all-or-none
-// group and turns them into the ServeConfig fields the serve loop consumes.
-// Either all three are set (the authenticated TCP door is enabled) or none are
-// (the shipped socket-only path). Any partial combination is a startup error:
-// --listen without both TLS flags would serve bearer tokens over cleartext
-// (credential disclosure), and TLS paths without --listen is a keypair nothing
-// serves — both are operator mistakes worth failing fast on rather than deep in
-// the serve loop. server.Serve re-asserts the TLS-required invariant as defense
-// in depth (network_door.go loadNetworkTLS); this is the friendly CLI-level check.
-func resolveNetworkDoor(listen, tlsCert, tlsKey string) (string, *server.TLSConfig, error) {
-	set := 0
-	for _, v := range []string{listen, tlsCert, tlsKey} {
-		if v != "" {
-			set++
-		}
+// resolveNetworkDoor validates the network-door flags: either --listen or
+// --listen-fd (never both) with both TLS flags, or none of them for the
+// socket-only default. A door without TLS would send bearer tokens in cleartext,
+// and TLS without a door is a keypair nothing serves; both fail fast here.
+func resolveNetworkDoor(listen string, listenFD int, tlsCert, tlsKey string) (string, int, *server.TLSConfig, error) {
+	if listenFD < 0 || (listenFD > 0 && listenFD < 3) {
+		return "", 0, nil, fmt.Errorf("--listen-fd must be 0 (unset) or at least 3, got %d", listenFD)
 	}
-	switch set {
-	case 0:
-		return "", nil, nil
-	case 3:
-		return listen, &server.TLSConfig{CertPath: tlsCert, KeyPath: tlsKey}, nil
-	default:
-		var missing []string
-		if listen == "" {
-			missing = append(missing, "--listen")
+	if listen != "" && listenFD != 0 {
+		return "", 0, nil, errors.New("--listen and --listen-fd are mutually exclusive")
+	}
+	if listen == "" && listenFD == 0 {
+		if tlsCert != "" || tlsKey != "" {
+			return "", 0, nil, errors.New("--tls-cert and --tls-key require --listen or --listen-fd")
 		}
+		return "", 0, nil, nil
+	}
+	if tlsCert == "" || tlsKey == "" {
+		missing := make([]string, 0, 2)
 		if tlsCert == "" {
 			missing = append(missing, "--tls-cert")
 		}
 		if tlsKey == "" {
 			missing = append(missing, "--tls-key")
 		}
-		return "", nil, fmt.Errorf(
-			"the network door needs --listen, --tls-cert, and --tls-key together "+
-				"(missing %s); pass all three to enable it or none for the "+
-				"socket-only default", strings.Join(missing, ", "))
+		return "", 0, nil, fmt.Errorf("--listen or --listen-fd requires --tls-cert and --tls-key (missing %s)", strings.Join(missing, ", "))
 	}
+	return listen, listenFD, &server.TLSConfig{CertPath: tlsCert, KeyPath: tlsKey}, nil
+}
+
+// listenerFromFileDescriptor adopts an inherited TCP listener. FileListener dups
+// the descriptor, so the original is closed once adopted. A descriptor that is
+// not a listener is left open: it may belong to the runtime, and startup exits.
+func listenerFromFileDescriptor(fd int) (net.Listener, error) {
+	file := os.NewFile(uintptr(fd), "listen-fd")
+	if file == nil {
+		return nil, fmt.Errorf("--listen-fd %d is not an open file descriptor", fd)
+	}
+	listener, err := net.FileListener(file)
+	if err != nil {
+		return nil, fmt.Errorf("--listen-fd %d is not a TCP listener: %w", fd, err)
+	}
+	if err := file.Close(); err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("closing --listen-fd file: %w", err)
+	}
+	if _, ok := listener.(*net.TCPListener); !ok {
+		_ = listener.Close()
+		return nil, fmt.Errorf("--listen-fd %d must refer to a TCP listener", fd)
+	}
+	return listener, nil
 }
 
 // resolveUsageEventRetention parses the retention window (flag, then env). Empty

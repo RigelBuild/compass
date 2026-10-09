@@ -61,7 +61,7 @@ const siblingServiceMaxReadBytes = 16 << 20 // 16 MiB
 // bad address, an in-use port, or a bad keypair fails Serve before it creates a
 // socket, directory, or admin-token file — so a startup failure leaves nothing
 // behind. A nil listener means that door is off (dev unless --dev-http, network
-// unless --listen).
+// unless --listen or an inherited listener).
 type boundListeners struct {
 	dev     net.Listener
 	network net.Listener
@@ -77,37 +77,47 @@ func (b boundListeners) close() {
 }
 
 // bindListeners eagerly binds the optional dev and network-door TCP listeners
-// (and loads the network door's TLS keypair) before Serve touches disk. On any
-// error it closes whatever it already bound and returns, so the caller never
-// sees a half-bound value. The dev endpoint must be loopback (defense in depth;
-// the CLI checks it too) and the network door requires TLS (a bearer token over
-// cleartext is credential disclosure).
+// (and loads the network door's TLS keypair) before Serve touches disk; an
+// inherited network listener arrives already bound. On any error it closes
+// every listener it holds, so the caller never sees a half-bound value. The dev
+// endpoint must be loopback and the network door requires TLS.
 func bindListeners(cfg ServeConfig) (boundListeners, error) {
 	var b boundListeners
 	if cfg.DevHTTP != nil {
 		if !cfg.DevHTTP.Addr().IsLoopback() {
+			if cfg.ListenListener != nil {
+				_ = cfg.ListenListener.Close()
+			}
 			return boundListeners{}, fmt.Errorf("dev_http must be a loopback address (127.0.0.1 or ::1), got %s", cfg.DevHTTP)
 		}
 		l, err := net.Listen("tcp", cfg.DevHTTP.String())
 		if err != nil {
+			if cfg.ListenListener != nil {
+				_ = cfg.ListenListener.Close()
+			}
 			return boundListeners{}, fmt.Errorf("binding dev gRPC-Web endpoint at %s: %w", cfg.DevHTTP, err)
 		}
 		b.dev = l
 	}
-	if cfg.Listen != "" {
+	if cfg.Listen != "" || cfg.ListenListener != nil {
+		l := cfg.ListenListener
+		if l == nil {
+			var err error
+			l, err = net.Listen("tcp", cfg.Listen)
+			if err != nil {
+				b.close()
+				return boundListeners{}, fmt.Errorf("binding network door at %s: %w", cfg.Listen, err)
+			}
+		}
+		b.network = l
 		t, err := loadNetworkTLS(cfg.TLS)
 		if err != nil {
 			b.close()
 			return boundListeners{}, err
 		}
-		l, err := net.Listen("tcp", cfg.Listen)
-		if err != nil {
-			b.close()
-			return boundListeners{}, fmt.Errorf("binding network door at %s: %w", cfg.Listen, err)
-		}
-		b.network, b.netTLS = l, t
+		b.netTLS = t
 	}
-	if cfg.OnBound != nil { // report what bound, so a port-0 caller learns the real port
+	if cfg.OnBound != nil {
 		cfg.OnBound(listenerAddr(b.dev), listenerAddr(b.network))
 	}
 	return b, nil
@@ -123,8 +133,8 @@ func loadNetworkTLS(cfg *TLSConfig) (*tls.Config, error) {
 	if cfg == nil || cfg.CertPath == "" || cfg.KeyPath == "" {
 		// A bearer token over cleartext is credential disclosure, so TLS is
 		// required whenever the network door is enabled. The CLI checks this too;
-		// this is defense in depth against a caller that set Listen without TLS.
-		return nil, errors.New("network door requires TLS: both a certificate and a key are required with --listen")
+		// this is defense in depth against a caller that set a door without TLS.
+		return nil, errors.New("network door requires TLS: both a certificate and a key are required with --listen or --listen-fd")
 	}
 	cert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
 	if err != nil {
@@ -285,7 +295,7 @@ func buildNetworkServer(
 	// Log the path, never the token: a logged bearer credential lets anyone who can
 	// read process output or aggregated logs impersonate the admin.
 	slog.Info("network door bootstrap admin token written",
-		"path", tokenPath, "handle", handle, "listen", cfg.Listen)
+		"path", tokenPath, "handle", handle, "listen", networkListenAddr(cfg))
 	warnIfSharedTokenDir(slog.Default(), filepath.Dir(tokenPath))
 
 	// otelconnect (outermost) produces the RPC span and stamps traceresponse,
@@ -376,11 +386,11 @@ func buildNetworkServer(
 }
 
 // issueAndWriteAdminToken mints a bearer token for the bootstrap admin and
-// writes it 0600 under stateDir. It runs only when the network door is enabled
-// (--listen): the token is the network-door credential, so socket-only startup
-// (whose credential is the 0600 socket) mints none. The token is written to
-// disk (never logged) for the operator to read; the returned path is logged (the
-// path, not the token). A failed write leaves no partial credential.
+// writes it 0600 under the state dir. It runs only when the network door is enabled
+// by --listen or ListenListener: the token is the network-door credential, so
+// socket-only startup (whose credential is the 0600 socket) mints none. The token
+// is written to disk (never logged) for the operator to read; the returned path
+// is logged (the path, not the token). A failed write leaves no partial credential.
 func issueAndWriteAdminToken(ctx context.Context, st *store.Store, adminID store.AccountID, stateDir string) (string, error) {
 	token, err := auth.IssueAccountToken(ctx, st, adminID)
 	if err != nil {
@@ -446,4 +456,12 @@ func writeTokenFile(dir, token string) (string, error) {
 		return "", fmt.Errorf("renaming admin-token file into place at %q: %w", final, err)
 	}
 	return final, nil
+}
+
+// networkListenAddr names the door for logs: the inherited listener's address, else --listen.
+func networkListenAddr(cfg ServeConfig) string {
+	if cfg.ListenListener != nil {
+		return cfg.ListenListener.Addr().String()
+	}
+	return cfg.Listen
 }
