@@ -9,14 +9,12 @@ package guestd
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
 	"testing"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -34,19 +32,11 @@ func TestServeHandshakeHealthOverH2C(t *testing.T) {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- serveHandshake(ctx, ln, svc) }()
 
-	// h2c client: dial cleartext and speak prior-knowledge HTTP/2, matching the
-	// server's cleartextHTTP2 door. This is the test-side mirror of the host's
-	// h2c Connect client; it uses x/net/http2 only in the test, never in the
-	// binary (the house pattern is the stdlib http.Protocols server path).
-	h2cClient := &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		},
-	}
+	// h2c client: prior-knowledge HTTP/2 over cleartext, matching the server's
+	// cleartextHTTP2 door.
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	h2cClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
 
 	client := compassv1internalconnect.NewGuestControlClient(h2cClient, "http://"+ln.Addr().String())
 	resp, err := client.Health(t.Context(), connect.NewRequest(&compassv1internal.HealthRequest{}))

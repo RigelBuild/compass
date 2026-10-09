@@ -21,6 +21,8 @@ package store
 
 import (
 	"errors"
+	"iter"
+	"maps"
 	"time"
 )
 
@@ -188,6 +190,11 @@ var managerRoles = map[string]struct{}{
 func IsManagerRole(role string) bool {
 	_, ok := managerRoles[role]
 	return ok
+}
+
+// ManagerRoles yields the taxonomy's roles; callers can read the set, never widen it.
+func ManagerRoles() iter.Seq[string] {
+	return maps.Keys(managerRoles)
 }
 
 // ErrUnknownRole is the CodeInvalidArgument cause for a role outside the

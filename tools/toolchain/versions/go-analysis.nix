@@ -5,27 +5,27 @@
 #
 # Rebuilding is necessary but not sufficient: an analyzer also needs a RELEASE new
 # enough for the newer language/IR, so two carry a source override past the
-# nixpkgs pin — nilaway (nixpkgs' x/tools v0.31.0 can't parse go1.27; pinned to
-# v0.45.0) and golangci-lint (nixpkgs' bundled staticcheck panics on go1.27 IR;
-# 2.13.0 added support, pinned to 2.13.2). govulncheck/go-licenses need none.
+# nixpkgs pin — nilaway (go1.27.2 export data v5 needs x/tools v0.50.0; pinned to
+# that) and golangci-lint (nixpkgs' bundled staticcheck panics on go1.27 IR;
+# 2.14.0 reads go1.27.2 export data). govulncheck/go-licenses need none.
 #
 # Renovate manages nilaway and golangci-lint. refresh-go-analysis-hashes.ts updates
 # their derived version/tag fields and both source and vendor hashes after a bump.
 {
   nilaway = {
-    version = "0-unstable-2026-08-08";
+    version = "0-unstable-2026-09-18";
     owner = "uber-go";
     repo = "nilaway";
-    rev = "8649a03c818a94ba1e27c405843dad4753d85149";
-    hash = "sha256-YCMQIxrfOtdV3UvtIVm9LsFJ8pV9pw7MHvTJpKRtl2Y=";
-    vendorHash = "sha256-O6suySxR53G5agmbdqZ7z8QoBemLbSDLPTpyKTjo2WE=";
+    rev = "acb8859b9031bb9496be97e027df5573f9fb5340";
+    hash = "sha256-GvDZ5tlvOrTI93tYcIcLd45ZHdqwFopVtoBffD/kbuM=";
+    vendorHash = "sha256-qVmvDneq6V/q5UHZ/Cjjqd5/XPPNfvVGoxwg9nz4/Ds=";
   };
   golangci-lint = {
-    version = "2.13.2";
+    version = "2.14.0";
     owner = "golangci";
     repo = "golangci-lint";
-    tag = "v2.13.2";
-    hash = "sha256-RbWKPIG+UK82S9W9tp/CciZ669vudh95VOfHfdQWx3M=";
-    vendorHash = "sha256-R83GeyfuZ+w30jZqFGYi0yua8E1Ey2q7/OlVmw8zDCg=";
+    tag = "v2.14.0";
+    hash = "sha256-HATA7JKHwEouM+8jYZbQrkX7p4gut4IpyTvcBexu/4o=";
+    vendorHash = "sha256-ekP/zDhYMpMG+tYAyYHNfLOCt/JkxrXUw1jHUEfsM8k=";
   };
 }

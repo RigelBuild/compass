@@ -106,22 +106,62 @@ export async function runOnce(deps: Deps): Promise<number> {
 
 export type MigrationFileMap = ReadonlyMap<string, Uint8Array>;
 
-/** Return base migrations missing or byte-changed in the current tree. */
+/**
+ * Return base migrations missing or byte-changed in the current tree. One
+ * exception: when two concurrent PRs landed the same version, the one added
+ * last (`movable`) may move unchanged to a new number. Only it can be unapplied:
+ * any deploy built between the two merges already ran the earlier one.
+ */
 export function findMigrationViolations(
 	baseFiles: MigrationFileMap,
 	currentFiles: MigrationFileMap,
+	movable: ReadonlySet<string> = new Set(),
 ): string[] {
+	const unclaimed = [...currentFiles]
+		.filter(([path]) => !baseFiles.has(path))
+		.map(([, bytes]) => Buffer.from(bytes));
 	const violations: string[] = [];
 	for (const [path, baseBytes] of baseFiles) {
 		const currentBytes = currentFiles.get(path);
-		if (
-			currentBytes === undefined ||
-			!Buffer.from(baseBytes).equals(Buffer.from(currentBytes))
-		) {
-			violations.push(path);
+		if (currentBytes !== undefined) {
+			if (!Buffer.from(baseBytes).equals(Buffer.from(currentBytes)))
+				violations.push(path);
+			continue;
 		}
+		const match = movable.has(path)
+			? unclaimed.findIndex((bytes) => bytes.equals(Buffer.from(baseBytes)))
+			: -1;
+		if (match < 0) violations.push(path);
+		else unclaimed.splice(match, 1);
 	}
 	return violations;
+}
+
+/**
+ * The base migrations that may move: for each version held by two or more
+ * files, every file except the first added. `addedInOrder` is the base
+ * branch's migration paths in the order commits added them.
+ */
+export function movableMigrations(
+	baseFiles: MigrationFileMap,
+	addedInOrder: readonly string[],
+): Set<string> {
+	const firstByVersion = new Map<string, string>();
+	for (const path of addedInOrder) {
+		if (!baseFiles.has(path)) continue;
+		const version = migrationVersion(path);
+		if (!firstByVersion.has(version)) firstByVersion.set(version, path);
+	}
+	const movable = new Set<string>();
+	for (const path of baseFiles.keys()) {
+		const first = firstByVersion.get(migrationVersion(path));
+		if (first !== undefined && first !== path) movable.add(path);
+	}
+	return movable;
+}
+
+function migrationVersion(path: string): string {
+	return (path.split("/").pop() ?? path).split("_", 1)[0] ?? "";
 }
 
 /** The ref migrations are compared against: explicit, then the PR target, then main. */
@@ -188,6 +228,14 @@ export async function checkMigrationImmutability(
 		};
 	}
 	try {
+		// Add order needs the base branch's full history; a shallow repo reports
+		// every migration as added by the boundary commit.
+		const shallow = await gitStdout(root, [
+			"rev-parse",
+			"--is-shallow-repository",
+		]);
+		if (new TextDecoder().decode(shallow).trim() === "true")
+			await gitStdout(root, ["fetch", "--unshallow", "--no-tags", "origin"]);
 		const baseRef = migrationBaseRef(env);
 		const decoder = new TextDecoder();
 		const mergeBase = decoder
@@ -207,7 +255,6 @@ export async function checkMigrationImmutability(
 			]),
 		);
 		const baseFiles = new Map<string, Uint8Array>();
-		const currentFiles = new Map<string, Uint8Array>();
 		for (const path of listed.split("\0").filter(Boolean)) {
 			if (!path.endsWith(".sql")) continue;
 			// go:embed takes only top-level *.sql; a nested one is not a migration.
@@ -217,22 +264,54 @@ export async function checkMigrationImmutability(
 				path,
 				await gitStdout(root, ["show", `${mergeBase}:${path}`]),
 			);
-			const file = Bun.file(`${root}/${path}`);
-			if (await file.exists())
-				currentFiles.set(path, new Uint8Array(await file.arrayBuffer()));
 		}
-		const violations = findMigrationViolations(baseFiles, currentFiles);
+		const currentFiles = new Map<string, Uint8Array>();
+		for await (const name of new Bun.Glob("*.sql").scan(
+			`${root}/go/internal/store/migrations`,
+		)) {
+			const path = `go/internal/store/migrations/${name}`;
+			currentFiles.set(
+				path,
+				new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()),
+			);
+		}
+		// First-parent: each step is one integration into the base branch, so the
+		// order is merge order, not the commit dates of the branches merged in.
+		const addedInOrder = decoder
+			.decode(
+				await gitStdout(root, [
+					"log",
+					"--first-parent",
+					"--diff-merges=first-parent",
+					"--no-renames",
+					"--diff-filter=A",
+					"--reverse",
+					"--format=",
+					"--name-only",
+					mergeBase,
+					"--",
+					"go/internal/store/migrations",
+				]),
+			)
+			.split("\n")
+			.filter(Boolean);
+		const violations = findMigrationViolations(
+			baseFiles,
+			currentFiles,
+			movableMigrations(baseFiles, addedInOrder),
+		);
 		if (violations.length === 0) return { name, code: 0, output: "" };
 		// Runtime verification rejects changed bytes, so an allowlist would ship a boot failure.
 		return {
 			name,
 			code: 1,
-			output: violations
-				.map(
+			output: [
+				...violations.map(
 					(path) =>
 						`${path}: migrations are append-only; add a new numbered migration instead.`,
-				)
-				.join("\n"),
+				),
+				`base ${mergeBase.slice(0, 12)} migration add order: ${addedInOrder.join(", ") || "(none)"}`,
+			].join("\n"),
 		};
 	} catch (error) {
 		return {

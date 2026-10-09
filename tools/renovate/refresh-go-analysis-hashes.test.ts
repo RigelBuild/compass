@@ -306,9 +306,9 @@ describe("tools/renovate/refresh-go-analysis-hashes.ts", () => {
 	test("refreshes against origin/main when RENOVATE_BASE_BRANCH is unset", async () => {
 		const entry = entryFor("golangci-lint");
 		const before = await readFile(join(repo, PIN_FILE), "utf8");
-		await commitMainPin(setField(before, entry, "version", "2.14.9"));
+		await commitMainPin(setField(before, entry, "version", "99.0.9"));
 		await Bun.write(join(repo, PIN_FILE), before);
-		const bumped = setField(before, entry, "version", "2.14.0");
+		const bumped = setField(before, entry, "version", "99.0.0");
 		await Bun.write(join(repo, PIN_FILE), bumped);
 		const result = await runRefresh({}, undefined);
 		const block = blockFrom(
@@ -378,15 +378,15 @@ describe("tools/renovate/refresh-go-analysis-hashes.ts", () => {
 		const other = entryFor("nilaway");
 		const before = await readFile(join(repo, PIN_FILE), "utf8");
 		const otherBefore = blockFrom(before, other);
-		const bumped = setField(before, entry, "version", "2.14.0");
+		const bumped = setField(before, entry, "version", "99.0.0");
 		await Bun.write(join(repo, PIN_FILE), bumped);
 
 		const result = await runRefresh();
 		const after = await readFile(join(repo, PIN_FILE), "utf8");
 		const block = blockFrom(after, entry);
 		expect(result.exitCode).toBe(0);
-		expect(block).toContain('version = "2.14.0";');
-		expect(block).toContain('tag = "v2.14.0";');
+		expect(block).toContain('version = "99.0.0";');
+		expect(block).toContain('tag = "v99.0.0";');
 		expect(block).toContain('hash = "sha256-stub-golangci-lint-source";');
 		expect(block).toContain('vendorHash = "sha256-stub-golangci-lint-vendor";');
 		expect(blockFrom(after, other)).toBe(otherBefore);
@@ -402,7 +402,7 @@ describe("tools/renovate/refresh-go-analysis-hashes.ts", () => {
 			calls.some(
 				(call) =>
 					call.expression === "analysis.golangci-lint.goModules.drvPath" &&
-					call.path?.includes("2.14.0-go-modules.drv"),
+					call.path?.includes("99.0.0-go-modules.drv"),
 			),
 		).toBe(true);
 

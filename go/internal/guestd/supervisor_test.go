@@ -4,7 +4,6 @@ package guestd
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -71,15 +69,9 @@ func newTestSupervisor(t *testing.T, provisioned bool, defaultUID uint32) (compa
 		<-serveErr
 	})
 
-	h2cClient := &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		},
-	}
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	h2cClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
 	client := compassv1internalconnect.NewGuestControlClient(h2cClient, "http://"+ln.Addr().String())
 	return client, svc
 }

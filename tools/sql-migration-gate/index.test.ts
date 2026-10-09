@@ -23,6 +23,7 @@ import {
 	MIGRATION_GLOB,
 	makeSpawnLinter,
 	migrationBaseRef,
+	movableMigrations,
 	runOnce,
 } from "./index.ts";
 
@@ -217,6 +218,77 @@ describe("findMigrationViolations", () => {
 		).toEqual([path]);
 	});
 
+	const dupA = "go/internal/store/migrations/0003_a.sql";
+	const dupB = "go/internal/store/migrations/0003_b.sql";
+	const movedB = "go/internal/store/migrations/0005_b.sql";
+	const other = new TextEncoder().encode("SELECT 3;\n");
+
+	test("the later duplicate may move byte-identical to a new number", () => {
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, other],
+				]),
+				new Map([
+					[dupA, same],
+					[movedB, other],
+				]),
+				new Set([dupB]),
+			),
+		).toEqual([]);
+	});
+
+	test("a migration outside the movable set may not move", () => {
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, other],
+				]),
+				new Map([
+					["go/internal/store/migrations/0005_a.sql", original],
+					[dupB, other],
+				]),
+				new Set([dupB]),
+			),
+		).toEqual([dupA]);
+	});
+
+	test("a movable migration may not move with edited bytes", () => {
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, other],
+				]),
+				new Map([
+					[dupA, same],
+					[movedB, edited],
+				]),
+				new Set([dupB]),
+			),
+		).toEqual([dupB]);
+	});
+
+	test("one added copy accounts for only one moved migration", () => {
+		const dupC = "go/internal/store/migrations/0003_c.sql";
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, other],
+					[dupC, other],
+				]),
+				new Map([
+					[dupA, same],
+					[movedB, other],
+				]),
+				new Set([dupB, dupC]),
+			),
+		).toEqual([dupC]);
+	});
+
 	test("new migrations are not checked even when edited", () => {
 		const added = "go/internal/store/migrations/0002_new.sql";
 		expect(
@@ -237,6 +309,36 @@ describe("findMigrationViolations", () => {
 				new Map([[path, new TextEncoder().encode("SELECT 1;")]]),
 			),
 		).toEqual([path]);
+	});
+});
+
+describe("movableMigrations", () => {
+	const bytes = new TextEncoder().encode("SELECT 1;\n");
+	const init = "go/internal/store/migrations/0001_init.sql";
+	const first = "go/internal/store/migrations/0003_first.sql";
+	const second = "go/internal/store/migrations/0003_second.sql";
+	const base = new Map([
+		[init, bytes],
+		[first, bytes],
+		[second, bytes],
+	]);
+
+	test("only the later-added duplicate is movable", () => {
+		expect(movableMigrations(base, [init, first, second])).toEqual(
+			new Set([second]),
+		);
+	});
+
+	test("add order, not name order, picks the movable file", () => {
+		expect(movableMigrations(base, [init, second, first])).toEqual(
+			new Set([first]),
+		);
+	});
+
+	test("unique versions are never movable", () => {
+		expect(movableMigrations(new Map([[init, bytes]]), [init])).toEqual(
+			new Set(),
+		);
 	});
 });
 
@@ -365,6 +467,94 @@ console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(roo
 				});
 				expect(result.code).toBe(2);
 				expect(result.output).toContain("no-such-ref");
+			},
+		);
+	});
+
+	test("the duplicate merged last is movable even when its commit is older", async () => {
+		const dir = "go/internal/store/migrations";
+		await withRepo(
+			{ [`${dir}/0001_init.sql`]: "SELECT 1;\n" },
+			async (root) => {
+				const git = (args: string[], env: Record<string, string> = {}) =>
+					Bun.$`git ${args}`
+						.cwd(root)
+						.env({ ...process.env, ...env })
+						.quiet();
+				const at = (date: string) => ({
+					GIT_AUTHOR_DATE: date,
+					GIT_COMMITTER_DATE: date,
+				});
+				// The late PR's commit is older than the one that merged first.
+				await git(["checkout", "-qb", "late"]);
+				writeFileSync(join(root, `${dir}/0002_late.sql`), "SELECT 'late';\n");
+				await git(["add", "."]);
+				await git(["commit", "-qm", "late"], at("2026-01-01T00:00:00Z"));
+				await git(["checkout", "-q", "base"]);
+				writeFileSync(join(root, `${dir}/0002_early.sql`), "SELECT 'early';\n");
+				await git(["add", "."]);
+				await git(["commit", "-qm", "early"], at("2026-02-01T00:00:00Z"));
+				await git(
+					["merge", "-q", "--no-ff", "--no-edit", "late"],
+					at("2026-03-01T00:00:00Z"),
+				);
+				await git(["checkout", "-qb", "fix"]);
+
+				await git(["mv", `${dir}/0002_late.sql`, `${dir}/0003_late.sql`]);
+				expect(
+					(await checkMigrationImmutability(root, { GATE_BASE_REF: "base" }))
+						.code,
+				).toBe(0);
+
+				await git(["mv", `${dir}/0003_late.sql`, `${dir}/0002_late.sql`]);
+				await git(["mv", `${dir}/0002_early.sql`, `${dir}/0003_early.sql`]);
+				const wrong = await checkMigrationImmutability(root, {
+					GATE_BASE_REF: "base",
+				});
+				expect(wrong.code).toBe(1);
+				expect(wrong.output).toContain(`${dir}/0002_early.sql`);
+			},
+		);
+	});
+
+	test("a shallow clone is deepened before add order is read", async () => {
+		const dir = "go/internal/store/migrations";
+		await withRepo(
+			{ [`${dir}/0001_init.sql`]: "SELECT 1;\n" },
+			async (upstream) => {
+				const git = (cwd: string, args: string[]) =>
+					Bun.$`git ${args}`.cwd(cwd).quiet();
+				// Added later but sorts first, so tree order would pick the wrong file.
+				for (const name of ["0002_early", "0002_a_late"]) {
+					writeFileSync(
+						join(upstream, `${dir}/${name}.sql`),
+						`SELECT '${name}';\n`,
+					);
+					await git(upstream, ["add", "."]);
+					await git(upstream, ["commit", "-qm", name]);
+				}
+				const clone = mkdtempSync(join(tmpdir(), "sql-gate-shallow-"));
+				try {
+					await git(clone, [
+						"clone",
+						"-q",
+						"--depth=1",
+						`file://${upstream}`,
+						".",
+					]);
+					await git(clone, [
+						"mv",
+						`${dir}/0002_a_late.sql`,
+						`${dir}/0003_a_late.sql`,
+					]);
+					const result = await checkMigrationImmutability(clone, {
+						GATE_BASE_REF: "origin/HEAD",
+					});
+					expect(result.output).toBe("");
+					expect(result.code).toBe(0);
+				} finally {
+					rmSync(clone, { recursive: true, force: true });
+				}
 			},
 		);
 	});
