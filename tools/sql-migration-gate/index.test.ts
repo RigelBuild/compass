@@ -517,6 +517,48 @@ console.log(JSON.stringify(await checkMigrationImmutability(${JSON.stringify(roo
 		);
 	});
 
+	test("a shallow clone is deepened before add order is read", async () => {
+		const dir = "go/internal/store/migrations";
+		await withRepo(
+			{ [`${dir}/0001_init.sql`]: "SELECT 1;\n" },
+			async (upstream) => {
+				const git = (cwd: string, args: string[]) =>
+					Bun.$`git ${args}`.cwd(cwd).quiet();
+				// Added later but sorts first, so tree order would pick the wrong file.
+				for (const name of ["0002_early", "0002_a_late"]) {
+					writeFileSync(
+						join(upstream, `${dir}/${name}.sql`),
+						`SELECT '${name}';\n`,
+					);
+					await git(upstream, ["add", "."]);
+					await git(upstream, ["commit", "-qm", name]);
+				}
+				const clone = mkdtempSync(join(tmpdir(), "sql-gate-shallow-"));
+				try {
+					await git(clone, [
+						"clone",
+						"-q",
+						"--depth=1",
+						`file://${upstream}`,
+						".",
+					]);
+					await git(clone, [
+						"mv",
+						`${dir}/0002_a_late.sql`,
+						`${dir}/0003_a_late.sql`,
+					]);
+					const result = await checkMigrationImmutability(clone, {
+						GATE_BASE_REF: "origin/HEAD",
+					});
+					expect(result.output).toBe("");
+					expect(result.code).toBe(0);
+				} finally {
+					rmSync(clone, { recursive: true, force: true });
+				}
+			},
+		);
+	});
+
 	test("outside a git worktree: skipped locally, fails closed on GitHub Actions", async () => {
 		const root = mkdtempSync(join(tmpdir(), "sql-gate-nogit-"));
 		try {

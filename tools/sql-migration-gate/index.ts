@@ -228,6 +228,14 @@ export async function checkMigrationImmutability(
 		};
 	}
 	try {
+		// Add order needs the base branch's full history; a shallow repo reports
+		// every migration as added by the boundary commit.
+		const shallow = await gitStdout(root, [
+			"rev-parse",
+			"--is-shallow-repository",
+		]);
+		if (new TextDecoder().decode(shallow).trim() === "true")
+			await gitStdout(root, ["fetch", "--unshallow", "--no-tags", "origin"]);
 		const baseRef = migrationBaseRef(env);
 		const decoder = new TextDecoder();
 		const mergeBase = decoder
