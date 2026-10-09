@@ -78,6 +78,9 @@ const (
 	AgentGatewayForgeProcedure = "/compass.v1.AgentGateway/Forge"
 	// AgentGatewayBoardProcedure is the fully-qualified name of the AgentGateway's Board RPC.
 	AgentGatewayBoardProcedure = "/compass.v1.AgentGateway/Board"
+	// AgentGatewayPutSessionBlobProcedure is the fully-qualified name of the AgentGateway's
+	// PutSessionBlob RPC.
+	AgentGatewayPutSessionBlobProcedure = "/compass.v1.AgentGateway/PutSessionBlob"
 )
 
 // AgentGatewayClient is a client for the compass.v1.AgentGateway service.
@@ -126,6 +129,9 @@ type AgentGatewayClient interface {
 	// account and runs the transition under that caller (single-trust-domain MVP,
 	// amendment §Resolved decisions 2). INTERNAL surface (never public gen).
 	Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error)
+	// PutSessionBlob (unary): best-effort upload of one inline-image blob from
+	// the session's blob dir. The Runner binds the session from the socket.
+	PutSessionBlob(context.Context, *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error)
 }
 
 // NewAgentGatewayClient constructs a client for the compass.v1.AgentGateway service. By default, it
@@ -181,6 +187,12 @@ func NewAgentGatewayClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentGatewayMethods.ByName("Board")),
 			connect.WithClientOptions(opts...),
 		),
+		putSessionBlob: connect.NewClient[v1.PutSessionBlobRequest, v1.PutSessionBlobResponse](
+			httpClient,
+			baseURL+AgentGatewayPutSessionBlobProcedure,
+			connect.WithSchema(agentGatewayMethods.ByName("PutSessionBlob")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -193,6 +205,7 @@ type agentGatewayClient struct {
 	control               *connect.Client[v1.ControlSubscribeRequest, v1.AgentControl]
 	forge                 *connect.Client[v1.ForgeCallRequest, v1.ForgeCallResult]
 	board                 *connect.Client[v1.BoardCallRequest, v1.BoardCallResult]
+	putSessionBlob        *connect.Client[v1.PutSessionBlobRequest, v1.PutSessionBlobResponse]
 }
 
 // Comms calls compass.v1.AgentGateway.Comms.
@@ -228,6 +241,11 @@ func (c *agentGatewayClient) Forge(ctx context.Context, req *connect.Request[v1.
 // Board calls compass.v1.AgentGateway.Board.
 func (c *agentGatewayClient) Board(ctx context.Context, req *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error) {
 	return c.board.CallUnary(ctx, req)
+}
+
+// PutSessionBlob calls compass.v1.AgentGateway.PutSessionBlob.
+func (c *agentGatewayClient) PutSessionBlob(ctx context.Context, req *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error) {
+	return c.putSessionBlob.CallUnary(ctx, req)
 }
 
 // AgentGatewayHandler is an implementation of the compass.v1.AgentGateway service.
@@ -276,6 +294,9 @@ type AgentGatewayHandler interface {
 	// account and runs the transition under that caller (single-trust-domain MVP,
 	// amendment §Resolved decisions 2). INTERNAL surface (never public gen).
 	Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error)
+	// PutSessionBlob (unary): best-effort upload of one inline-image blob from
+	// the session's blob dir. The Runner binds the session from the socket.
+	PutSessionBlob(context.Context, *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error)
 }
 
 // NewAgentGatewayHandler builds an HTTP handler from the service implementation. It returns the
@@ -327,6 +348,12 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentGatewayMethods.ByName("Board")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentGatewayPutSessionBlobHandler := connect.NewUnaryHandler(
+		AgentGatewayPutSessionBlobProcedure,
+		svc.PutSessionBlob,
+		connect.WithSchema(agentGatewayMethods.ByName("PutSessionBlob")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.AgentGateway/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AgentGatewayCommsProcedure:
@@ -343,6 +370,8 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 			agentGatewayForgeHandler.ServeHTTP(w, r)
 		case AgentGatewayBoardProcedure:
 			agentGatewayBoardHandler.ServeHTTP(w, r)
+		case AgentGatewayPutSessionBlobProcedure:
+			agentGatewayPutSessionBlobHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -378,4 +407,8 @@ func (UnimplementedAgentGatewayHandler) Forge(context.Context, *connect.Request[
 
 func (UnimplementedAgentGatewayHandler) Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Board is not implemented"))
+}
+
+func (UnimplementedAgentGatewayHandler) PutSessionBlob(context.Context, *connect.Request[v1.PutSessionBlobRequest]) (*connect.Response[v1.PutSessionBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.PutSessionBlob is not implemented"))
 }

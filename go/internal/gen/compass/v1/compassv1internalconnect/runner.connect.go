@@ -88,6 +88,12 @@ const (
 	// RunnerServiceFetchAgentConfigProcedure is the fully-qualified name of the RunnerService's
 	// FetchAgentConfig RPC.
 	RunnerServiceFetchAgentConfigProcedure = "/compass.v1.RunnerService/FetchAgentConfig"
+	// RunnerServiceRelaySessionBlobProcedure is the fully-qualified name of the RunnerService's
+	// RelaySessionBlob RPC.
+	RunnerServiceRelaySessionBlobProcedure = "/compass.v1.RunnerService/RelaySessionBlob"
+	// RunnerServiceFetchSessionBlobsProcedure is the fully-qualified name of the RunnerService's
+	// FetchSessionBlobs RPC.
+	RunnerServiceFetchSessionBlobsProcedure = "/compass.v1.RunnerService/FetchSessionBlobs"
 )
 
 // RunnerServiceClient is a client for the compass.v1.RunnerService service.
@@ -225,6 +231,14 @@ type RunnerServiceClient interface {
 	// version and no chunks, never an error. Additive to the dial-out shape
 	// (the Runner still initiates; the Server gains no inbound route).
 	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest]) (*connect.ServerStreamForClient[v1.FetchAgentConfigResponse], error)
+	// RelaySessionBlob (unary, Runner->Server): forward an agent's PutSessionBlob
+	// for the session bound to its container. FailedPrecondition means the Server
+	// has no object store; the agent stops uploading.
+	RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error)
+	// FetchSessionBlobs (server-streaming, Runner->Server): on resume, fetch the
+	// blobs a resume body references. Each blob is a header frame then chunk
+	// frames; a header with absent set means the Server confirmed it is not stored.
+	FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest]) (*connect.ServerStreamForClient[v1.FetchSessionBlobsResponse], error)
 }
 
 // NewRunnerServiceClient constructs a client for the compass.v1.RunnerService service. By default,
@@ -304,6 +318,18 @@ func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(runnerServiceMethods.ByName("FetchAgentConfig")),
 			connect.WithClientOptions(opts...),
 		),
+		relaySessionBlob: connect.NewClient[v1.RelaySessionBlobRequest, v1.RelaySessionBlobResponse](
+			httpClient,
+			baseURL+RunnerServiceRelaySessionBlobProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("RelaySessionBlob")),
+			connect.WithClientOptions(opts...),
+		),
+		fetchSessionBlobs: connect.NewClient[v1.FetchSessionBlobsRequest, v1.FetchSessionBlobsResponse](
+			httpClient,
+			baseURL+RunnerServiceFetchSessionBlobsProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("FetchSessionBlobs")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -320,6 +346,8 @@ type runnerServiceClient struct {
 	fetchSecrets            *connect.Client[v1.FetchSecretsRequest, v1.FetchSecretsResponse]
 	bindLifetime            *connect.Client[v1.BindLifetimeRequest, v1.BindLifetimeResponse]
 	fetchAgentConfig        *connect.Client[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse]
+	relaySessionBlob        *connect.Client[v1.RelaySessionBlobRequest, v1.RelaySessionBlobResponse]
+	fetchSessionBlobs       *connect.Client[v1.FetchSessionBlobsRequest, v1.FetchSessionBlobsResponse]
 }
 
 // Enroll calls compass.v1.RunnerService.Enroll.
@@ -375,6 +403,16 @@ func (c *runnerServiceClient) BindLifetime(ctx context.Context, req *connect.Req
 // FetchAgentConfig calls compass.v1.RunnerService.FetchAgentConfig.
 func (c *runnerServiceClient) FetchAgentConfig(ctx context.Context, req *connect.Request[v1.FetchAgentConfigRequest]) (*connect.ServerStreamForClient[v1.FetchAgentConfigResponse], error) {
 	return c.fetchAgentConfig.CallServerStream(ctx, req)
+}
+
+// RelaySessionBlob calls compass.v1.RunnerService.RelaySessionBlob.
+func (c *runnerServiceClient) RelaySessionBlob(ctx context.Context, req *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error) {
+	return c.relaySessionBlob.CallUnary(ctx, req)
+}
+
+// FetchSessionBlobs calls compass.v1.RunnerService.FetchSessionBlobs.
+func (c *runnerServiceClient) FetchSessionBlobs(ctx context.Context, req *connect.Request[v1.FetchSessionBlobsRequest]) (*connect.ServerStreamForClient[v1.FetchSessionBlobsResponse], error) {
+	return c.fetchSessionBlobs.CallServerStream(ctx, req)
 }
 
 // RunnerServiceHandler is an implementation of the compass.v1.RunnerService service.
@@ -512,6 +550,14 @@ type RunnerServiceHandler interface {
 	// version and no chunks, never an error. Additive to the dial-out shape
 	// (the Runner still initiates; the Server gains no inbound route).
 	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error
+	// RelaySessionBlob (unary, Runner->Server): forward an agent's PutSessionBlob
+	// for the session bound to its container. FailedPrecondition means the Server
+	// has no object store; the agent stops uploading.
+	RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error)
+	// FetchSessionBlobs (server-streaming, Runner->Server): on resume, fetch the
+	// blobs a resume body references. Each blob is a header frame then chunk
+	// frames; a header with absent set means the Server confirmed it is not stored.
+	FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest], *connect.ServerStream[v1.FetchSessionBlobsResponse]) error
 }
 
 // NewRunnerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -587,6 +633,18 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(runnerServiceMethods.ByName("FetchAgentConfig")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runnerServiceRelaySessionBlobHandler := connect.NewUnaryHandler(
+		RunnerServiceRelaySessionBlobProcedure,
+		svc.RelaySessionBlob,
+		connect.WithSchema(runnerServiceMethods.ByName("RelaySessionBlob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	runnerServiceFetchSessionBlobsHandler := connect.NewServerStreamHandler(
+		RunnerServiceFetchSessionBlobsProcedure,
+		svc.FetchSessionBlobs,
+		connect.WithSchema(runnerServiceMethods.ByName("FetchSessionBlobs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.RunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case RunnerServiceEnrollProcedure:
@@ -611,6 +669,10 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 			runnerServiceBindLifetimeHandler.ServeHTTP(w, r)
 		case RunnerServiceFetchAgentConfigProcedure:
 			runnerServiceFetchAgentConfigHandler.ServeHTTP(w, r)
+		case RunnerServiceRelaySessionBlobProcedure:
+			runnerServiceRelaySessionBlobHandler.ServeHTTP(w, r)
+		case RunnerServiceFetchSessionBlobsProcedure:
+			runnerServiceFetchSessionBlobsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -662,4 +724,12 @@ func (UnimplementedRunnerServiceHandler) BindLifetime(context.Context, *connect.
 
 func (UnimplementedRunnerServiceHandler) FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchAgentConfig is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) RelaySessionBlob(context.Context, *connect.Request[v1.RelaySessionBlobRequest]) (*connect.Response[v1.RelaySessionBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelaySessionBlob is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) FetchSessionBlobs(context.Context, *connect.Request[v1.FetchSessionBlobsRequest], *connect.ServerStream[v1.FetchSessionBlobsResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchSessionBlobs is not implemented"))
 }

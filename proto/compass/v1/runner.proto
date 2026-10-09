@@ -190,6 +190,16 @@ service RunnerService {
   // version and no chunks, never an error. Additive to the dial-out shape
   // (the Runner still initiates; the Server gains no inbound route).
   rpc FetchAgentConfig(FetchAgentConfigRequest) returns (stream FetchAgentConfigResponse);
+
+  // RelaySessionBlob (unary, Runner->Server): forward an agent's PutSessionBlob
+  // for the session bound to its container. FailedPrecondition means the Server
+  // has no object store; the agent stops uploading.
+  rpc RelaySessionBlob(RelaySessionBlobRequest) returns (RelaySessionBlobResponse);
+
+  // FetchSessionBlobs (server-streaming, Runner->Server): on resume, fetch the
+  // blobs a resume body references. Each blob is a header frame then chunk
+  // frames; a header with absent set means the Server confirmed it is not stored.
+  rpc FetchSessionBlobs(FetchSessionBlobsRequest) returns (stream FetchSessionBlobsResponse);
 }
 
 // Enroll request: the Runner announces its stable identity at connect. The id
@@ -334,8 +344,8 @@ message ResumeBody {
   // The reconstructed post-supersession session-JSONL body (T5) — string,
   // consistent with TranscriptEntry.entry_json.
   string session_body = 1;
-  // Inline-image blob bytes are OUT of MVP scope (RIG-1582): no grounded
-  // agent-side capture seam exists, so the carrier holds only the JSONL body.
+  // Inline-image blobs travel separately: the Runner fetches them with
+  // FetchSessionBlobs and writes them before the agent starts.
 }
 
 // DispatchControl — the Server->Runner relay envelope for a control op
@@ -643,4 +653,29 @@ message CommitConversationFrameResponse {
   bool committed = 1;
   string message_id = 2;
   uint64 seq = 3;
+}
+
+message RelaySessionBlobRequest {
+  string session_id = 1;
+  PutSessionBlobRequest blob = 2;
+}
+message RelaySessionBlobResponse {}
+
+message FetchSessionBlobsRequest {
+  string container_name = 1;
+  string session_id = 2;
+  // Lowercase hex digests, newest first; the Server stops at its byte budget.
+  repeated string sha256 = 3;
+}
+message FetchSessionBlobsResponse {
+  oneof frame {
+    SessionBlobHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+message SessionBlobHeader {
+  string sha256 = 1;
+  uint64 size_bytes = 2;
+  // Set when the Server confirmed the blob is not stored; no chunks follow.
+  bool absent = 3;
 }
