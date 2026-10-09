@@ -117,13 +117,14 @@ func (r *fakeAgentSecretResolver) ResolveFor(context.Context, store.AccountID, s
 
 func newGitCredentialTestBroker(grants gitCredentialGrantLister, minter gitCredentialMinter, now *time.Time, signal func() error) *gitCredentialBroker {
 	return &gitCredentialBroker{
-		host:    "github.com",
-		grants:  grants,
-		minter:  minter,
-		log:     slog.New(slog.DiscardHandler),
-		signal:  signal,
-		clock:   func() time.Time { return *now },
-		entries: make(map[string]gitCredentialEntry),
+		host:     "github.com",
+		grants:   grants,
+		minter:   minter,
+		log:      slog.New(slog.DiscardHandler),
+		signal:   signal,
+		clock:    func() time.Time { return *now },
+		entries:  make(map[string]gitCredentialEntry),
+		negative: make(map[string]gitCredentialNegativeEntry),
 	}
 }
 
@@ -175,20 +176,47 @@ func TestGitCredentialScopeSeparatesOwners(t *testing.T) {
 	}
 }
 
-func TestGitCredentialBrokerRejectsGrantedOwnerMismatch(t *testing.T) {
-	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
-	grants := &fakeGitCredentialGrants{repos: []string{"alice/app"}}
-	minter := &fakeGitCredentialMinter{
-		tokens: []string{"must-not-deliver"}, expiresAt: now.Add(time.Hour),
-		grantedRepos: []string{"bob/app"},
+func TestGitCredentialBrokerRejectsGrantedRepositoryMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		grantedRepo string
+	}{
+		{name: "different owner", grantedRepo: "bob/app"},
+		{name: "different repository same owner", grantedRepo: "alice/other"},
 	}
-	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
-	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
-	if got := resolveBrokeredSecret(t, resolver); len(got) != 0 {
-		t.Fatalf("resolved secrets = %+v, want no credential for mismatched grant owner", got)
-	}
-	if len(broker.entries) != 0 {
-		t.Fatalf("cached entries = %d, want 0 after scope mismatch", len(broker.entries))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+			grants := &fakeGitCredentialGrants{repos: []string{"alice/app"}}
+			minter := &fakeGitCredentialMinter{
+				tokens: []string{"must-not-deliver", "ghs_after_negative_cache"}, expiresAt: now.Add(time.Hour),
+				grantedRepos: []string{tt.grantedRepo},
+			}
+			broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+			resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+			if got := resolveBrokeredSecret(t, resolver); len(got) != 0 {
+				t.Fatalf("resolved secrets = %+v, want no credential for mismatched repository grant", got)
+			}
+			if len(broker.entries) != 0 {
+				t.Fatalf("cached entries = %d, want 0 after scope mismatch", len(broker.entries))
+			}
+			if got := resolveBrokeredSecret(t, resolver); len(got) != 0 {
+				t.Fatalf("resolved secrets = %+v, want negative cache to suppress remint", got)
+			}
+			if minter.callCount() != 1 {
+				t.Fatalf("mint calls = %d, want one before negative cache expiry", minter.callCount())
+			}
+			now = now.Add(gitCredentialMismatchCache)
+			minter.mu.Lock()
+			minter.grantedRepos = []string{"alice/app"}
+			minter.mu.Unlock()
+			if got := resolveBrokeredSecret(t, resolver); len(got) != 1 || got[0].Value != "ghs_after_negative_cache" {
+				t.Fatalf("resolved secrets after negative cache expiry = %+v, want newly minted credential", got)
+			}
+			if minter.callCount() != 2 {
+				t.Fatalf("mint calls after negative cache expiry = %d, want 2", minter.callCount())
+			}
+		})
 	}
 }
 
@@ -329,7 +357,8 @@ func TestGitCredentialBrokerRefreshSkipsEntryRefreshedAfterSnapshot(t *testing.T
 	minter := &fakeGitCredentialMinter{
 		tokens: []string{"ghs_old", "ghs_request", "ghs_unexpected"}, expiresAt: now.Add(time.Hour),
 	}
-	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	signals := 0
+	broker := newGitCredentialTestBroker(grants, minter, &now, func() error { signals++; return nil })
 	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
 	resolveBrokeredSecret(t, resolver)
 
@@ -341,11 +370,48 @@ func TestGitCredentialBrokerRefreshSkipsEntryRefreshedAfterSnapshot(t *testing.T
 	if token, ok := broker.credential(context.Background(), "agent-id"); !ok || token != "ghs_request" {
 		t.Fatalf("request refresh credential = (%q, %v), want request token", token, ok)
 	}
-	if broker.refreshCredential(context.Background(), "owner/repo", previousToken) {
-		t.Fatal("ticker refreshed the entry again after the request replaced it")
-	}
 	if minter.callCount() != 2 {
 		t.Fatalf("mint calls = %d, want initial and request refresh only", minter.callCount())
+	}
+	if signals != 0 {
+		t.Fatalf("signal calls before processing ticker snapshot = %d, want 0", signals)
+	}
+	broker.refreshSnapshot(context.Background(), []string{"owner/repo"}, map[string]string{"owner/repo": previousToken})
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls after processing snapshot = %d, want no duplicate mint", minter.callCount())
+	}
+	if signals != 1 {
+		t.Fatalf("signal calls after processing snapshot = %d, want exactly 1", signals)
+	}
+}
+
+func TestGitCredentialBrokerRefreshStopsWhenContextCancelled(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/alpha"}}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_alpha_new"}, expiresAt: now.Add(time.Hour),
+		started: make(chan struct{}, 1), release: make(chan struct{}),
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	broker.entries["owner/alpha"] = gitCredentialEntry{
+		token: "ghs_alpha_old", expiresAt: now.Add(time.Hour), refreshAt: now, lastUsed: now,
+	}
+	broker.entries["owner/beta"] = gitCredentialEntry{
+		token: "ghs_beta_old", expiresAt: now.Add(time.Hour), refreshAt: now, lastUsed: now,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	go func() {
+		broker.refreshDue(ctx)
+		close(finished)
+	}()
+	<-minter.started
+	cancel()
+	close(minter.release)
+	<-finished
+	if minter.callCount() != 1 {
+		t.Fatalf("mint calls = %d, want one before cancellation stops remaining keys", minter.callCount())
 	}
 }
 

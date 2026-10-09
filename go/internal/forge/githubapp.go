@@ -117,6 +117,7 @@ func NewScopedAppMinter(cfg GitHubAppConfig) (*ScopedAppMinter, error) {
 }
 
 // Mint requests a fresh token and returns the repositories GitHub granted.
+// Empty repos requests an installation-wide token; scoped names must be leaf names under the installation owner.
 func (m *ScopedAppMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (ScopedToken, error) {
 	body, err := json.Marshal(struct {
 		Repositories []string          `json:"repositories,omitempty"`
@@ -212,7 +213,9 @@ type installationRepository struct {
 	FullName string `json:"full_name"`
 }
 
-// ScopedToken carries a newly minted token and the scope GitHub granted.
+// ScopedToken contains the token and repository scope GitHub granted.
+// ExpiresAt defaults to now+1h when omitted; Repositories contains GitHub's
+// owner/name full names.
 type ScopedToken struct {
 	Token        string
 	ExpiresAt    time.Time

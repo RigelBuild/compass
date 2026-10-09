@@ -21,12 +21,13 @@ import (
 )
 
 const (
-	gitCredentialSecretName  = "GITHUB_APP_TOKEN" //nolint:gosec // secret NAME, not a value
-	gitCredentialReason      = "runner fetch"
-	gitCredentialMaxRepos    = 500
-	gitCredentialMaxAge      = 90 * time.Minute
-	gitCredentialMinStale    = 10 * time.Minute
-	gitCredentialMintTimeout = 30 * time.Second
+	gitCredentialSecretName    = "GITHUB_APP_TOKEN" //nolint:gosec // secret NAME, not a value
+	gitCredentialReason        = "runner fetch"
+	gitCredentialMaxRepos      = 500
+	gitCredentialMaxAge        = 90 * time.Minute
+	gitCredentialMinStale      = 10 * time.Minute
+	gitCredentialMintTimeout   = 30 * time.Second
+	gitCredentialMismatchCache = 5 * time.Minute
 )
 
 var errGitCredentialScopeMismatch = errors.New("GitHub granted repository scope differs from requested scope")
@@ -56,6 +57,10 @@ type gitCredentialEntry struct {
 	lastUsed  time.Time
 }
 
+type gitCredentialNegativeEntry struct {
+	expiresAt time.Time
+}
+
 type gitCredentialFlightResult struct {
 	token  string
 	minted bool
@@ -69,9 +74,10 @@ type gitCredentialBroker struct {
 	signal func() error
 	clock  func() time.Time
 
-	mu      sync.Mutex
-	entries map[string]gitCredentialEntry
-	group   singleflight.Group
+	mu       sync.Mutex
+	entries  map[string]gitCredentialEntry
+	negative map[string]gitCredentialNegativeEntry
+	group    singleflight.Group
 }
 
 type brokeredSecretResolver struct {
@@ -130,6 +136,13 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 	}
 	now := b.clock()
 	b.mu.Lock()
+	if negative, exists := b.negative[key]; exists {
+		if now.Before(negative.expiresAt) {
+			b.mu.Unlock()
+			return "", false
+		}
+		delete(b.negative, key)
+	}
 	if entry, exists := b.entries[key]; exists {
 		entry.lastUsed = now
 		b.entries[key] = entry
@@ -141,6 +154,9 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 	b.mu.Unlock()
 
 	value, err, _ := b.group.Do(key, func() (any, error) {
+		if b.negativeCredential(key) {
+			return gitCredentialFlightResult{}, nil
+		}
 		if tok, ok := b.cachedCredential(key); ok {
 			return gitCredentialFlightResult{token: tok}, nil
 		}
@@ -206,6 +222,21 @@ func (b *gitCredentialBroker) cachedCredential(key string) (string, bool) {
 	return entry.token, now.Before(entry.refreshAt)
 }
 
+func (b *gitCredentialBroker) negativeCredential(key string) bool {
+	now := b.clock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.negative[key]
+	if !ok {
+		return false
+	}
+	if now.Before(entry.expiresAt) {
+		return true
+	}
+	delete(b.negative, key)
+	return false
+}
+
 func (b *gitCredentialBroker) staleCredential(key string) string {
 	now := b.clock()
 	b.mu.Lock()
@@ -228,6 +259,9 @@ func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []stri
 		return "", nil
 	}
 	if key != "*" && !sameRepositorySet(strings.Split(key, ","), token.Repositories) {
+		b.mu.Lock()
+		b.negative[key] = gitCredentialNegativeEntry{expiresAt: b.clock().Add(gitCredentialMismatchCache)}
+		b.mu.Unlock()
 		return "", errGitCredentialScopeMismatch
 	}
 	now := b.clock()
@@ -240,6 +274,7 @@ func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []stri
 	if previous, ok := b.entries[key]; ok {
 		lastUsed = previous.lastUsed
 	}
+	delete(b.negative, key)
 	b.entries[key] = gitCredentialEntry{
 		token: token.Token, expiresAt: expiresAt,
 		refreshAt: expiresAt.Add(-5 * time.Minute), lastUsed: lastUsed,
@@ -277,8 +312,15 @@ func (b *gitCredentialBroker) refreshDue(ctx context.Context) {
 	}
 	b.mu.Unlock()
 	sort.Strings(keys)
+	b.refreshSnapshot(ctx, keys, previousTokens)
+}
+
+func (b *gitCredentialBroker) refreshSnapshot(ctx context.Context, keys []string, previousTokens map[string]string) {
 	changed := false
 	for _, key := range keys {
+		if ctx.Err() != nil {
+			break
+		}
 		if b.refreshCredential(ctx, key, previousTokens[key]) {
 			changed = true
 		}
@@ -294,9 +336,9 @@ func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previo
 	value, err, _ := b.group.Do(key, func() (any, error) {
 		b.mu.Lock()
 		entry, ok := b.entries[key]
-		if !ok || b.clock().Before(entry.refreshAt) {
+		if !ok || entry.token != previous || b.clock().Before(entry.refreshAt) {
 			b.mu.Unlock()
-			return gitCredentialFlightResult{token: entry.token}, nil
+			return gitCredentialFlightResult{token: entry.token, minted: ok && entry.token != previous}, nil
 		}
 		b.mu.Unlock()
 		var repos []string
@@ -309,7 +351,7 @@ func (b *gitCredentialBroker) refreshCredential(ctx context.Context, key, previo
 				repos = append(repos, parts[1])
 			}
 		}
-		mintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCredentialMintTimeout)
+		mintCtx, cancel := context.WithTimeout(ctx, gitCredentialMintTimeout)
 		defer cancel()
 		token, err := b.mint(mintCtx, key, repos)
 		return gitCredentialFlightResult{token: token, minted: err == nil && token != ""}, err
@@ -355,7 +397,7 @@ func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets
 	return &gitCredentialBroker{
 		host: rc.Host, grants: st, minter: minter, log: log,
 		signal: hub.SignalSecretsVersion, clock: time.Now,
-		entries: make(map[string]gitCredentialEntry),
+		entries: make(map[string]gitCredentialEntry), negative: make(map[string]gitCredentialNegativeEntry),
 	}, nil
 }
 
