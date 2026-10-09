@@ -299,6 +299,10 @@ func (s *forgeService) subscribeForge(ctx context.Context, caller store.AccountI
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
+	// Linear emits only issue events, so a pull-request subscription would never notify.
+	if rf.provider == compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR && kind == store.ForgeArtifactKindPullRequest {
+		return forgeErrorResult(forgeErr(connect.CodeInvalidArgument, "forge: Linear subscriptions must use kind issue"))
+	}
 	id, err := s.store.EnsureAgentForgeSubscription(ctx, store.AgentForgeSubscription{
 		AgentAccountID: caller,
 		Provider:       store.ForgeProvider(rf.provider),

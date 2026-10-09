@@ -13,54 +13,70 @@ import (
 
 	"connectrpc.com/connect"
 
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// newForgeSubscribeNotifyEndpoint mounts the GitHub notify lane on the forge wire's hub.
+// newForgeSubscribeNotifyEndpoint mounts the GitHub and Linear notify lanes on the forge wire's hub.
 func newForgeSubscribeNotifyEndpoint(t *testing.T, w *forgeE2EWire) (string, []byte) {
 	t.Helper()
 	w.hub.SetDeliveryStore(w.store)
 	secret := []byte("forge-subscribe-e2e-webhook-secret")
 	log := slog.New(slog.DiscardHandler)
 	secretFn := func(context.Context) ([]byte, error) { return secret, nil }
-	router := ingest.NewNotifyRouter(
-		&forgeNotifyStore{st: w.store, provider: store.ForgeProviderGitHub, host: forgeE2EHost},
-		&forgeNotifyDispatcher{hub: w.hub},
-		&matrixChecksRoller{res: forge.ConditionalResult[forge.Checks]{V: forge.Checks{State: "success"}}},
-		nil,
-		&forgeIdentityResolver{st: w.store, provider: store.ForgeProviderGitHub, host: forgeE2EHost},
-		mxRef(),
-		log,
-	)
-	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
+	newArm := func(provider store.ForgeProvider, host string, ref *compassv1.ForgeRef) *ingest.NotifyWebhookArm {
+		router := ingest.NewNotifyRouter(
+			&forgeNotifyStore{st: w.store, provider: provider, host: host},
+			&forgeNotifyDispatcher{hub: w.hub},
+			&matrixChecksRoller{res: forge.ConditionalResult[forge.Checks]{V: forge.Checks{State: "success"}}},
+			nil,
+			&forgeIdentityResolver{st: w.store, provider: provider, host: host},
+			ref,
+			log,
+		)
+		return ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
+	}
+	githubArm := newArm(store.ForgeProviderGitHub, forgeE2EHost, mxRef())
+	linearArm := newArm(store.ForgeProviderLinear, forge.LinearHost,
+		&compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: forge.LinearHost})
 	runCtx, cancel := context.WithCancel(w.ctx)
-	runResult := make(chan error, 1)
-	go func() { runResult <- arm.Run(runCtx) }()
+	runResult := make(chan error, 2)
+	go func() { runResult <- githubArm.Run(runCtx) }()
+	go func() { runResult <- linearArm.Run(runCtx) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-runResult:
-			if err != nil {
-				t.Errorf("notify arm Run: %v", err)
+		for range 2 {
+			select {
+			case err := <-runResult:
+				if err != nil {
+					t.Errorf("notify arm Run: %v", err)
+				}
+			case <-time.After(e2eTimeout):
+				t.Error("notify arm did not stop after cancellation")
 			}
-		case <-time.After(e2eTimeout):
-			t.Error("notify arm did not stop after cancellation")
 		}
 	})
 
-	path, handler := NewGitHubWebhookHandler(secretFn, arm, log)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	githubPath, githubHandler := NewGitHubWebhookHandler(secretFn, githubArm, log)
+	mux.Handle(githubPath, githubHandler)
+	linearPath, linearHandler := NewLinearWebhookHandler(secretFn, linearArm, nil, log)
+	// The fake Linear payloads carry no webhookTimestamp, so pin the freshness clock to the epoch.
+	linearHandler.(*linearWebhookHandler).now = func() time.Time { return time.UnixMilli(0) }
+	mux.Handle(linearPath, linearHandler)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server.URL, secret
 }
 
 // openForgeSubscribeControl reads through replay_complete before observing live notifications.
-func openForgeSubscribeControl(t *testing.T, w *forgeE2EWire) (context.Context, *connect.ServerStreamForClient[compassv1internal.AgentControl]) {
+func openForgeSubscribeControl(
+	t *testing.T,
+	w *forgeE2EWire,
+) (context.Context, *connect.ServerStreamForClient[compassv1internal.AgentControl]) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(w.ctx, e2eTimeout)
 	t.Cleanup(cancel)
@@ -84,7 +100,10 @@ func openForgeSubscribeControl(t *testing.T, w *forgeE2EWire) (context.Context, 
 }
 
 // receiveForgeSubscribeNotification skips unrelated ops until a forge notification arrives.
-func receiveForgeSubscribeNotification(t *testing.T, stream *connect.ServerStreamForClient[compassv1internal.AgentControl]) *compassv1internal.ForgeNotification {
+func receiveForgeSubscribeNotification(
+	t *testing.T,
+	stream *connect.ServerStreamForClient[compassv1internal.AgentControl],
+) *compassv1internal.ForgeNotification {
 	t.Helper()
 	for {
 		if !stream.Receive() {
@@ -96,38 +115,56 @@ func receiveForgeSubscribeNotification(t *testing.T, stream *connect.ServerStrea
 	}
 }
 
-// postForgeSubscribeGitHub posts a signed webhook through the mounted ingress.
+// postForgeSubscribeGitHub posts a signed GitHub webhook through the mounted ingress.
 func postForgeSubscribeGitHub(t *testing.T, parent context.Context, endpoint string, webhook signedWebhook) {
+	t.Helper()
+	postForgeSubscribeWebhook(t, parent, endpoint+githubWebhookPath, webhook.body, map[string]string{
+		githubEventHeader:     webhook.event,
+		githubDeliveryHeader:  webhook.delivery,
+		githubSignatureHeader: webhook.sig,
+	})
+}
+
+// postForgeSubscribeLinear posts a signed Linear webhook through the mounted ingress.
+func postForgeSubscribeLinear(t *testing.T, parent context.Context, endpoint string, webhook signedLinearWebhook) {
+	t.Helper()
+	postForgeSubscribeWebhook(t, parent, endpoint+linearWebhookPath, webhook.body, map[string]string{
+		linearSignatureHeader: webhook.sig,
+	})
+}
+
+func postForgeSubscribeWebhook(t *testing.T, parent context.Context, url string, body []byte, headers map[string]string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(parent, e2eTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		endpoint+githubWebhookPath,
-		bytes.NewReader(webhook.body),
-	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		t.Fatalf("build GitHub webhook request: %v", err)
+		t.Fatalf("build webhook request: %v", err)
 	}
-	request.Header.Set(githubEventHeader, webhook.event)
-	request.Header.Set(githubDeliveryHeader, webhook.delivery)
-	request.Header.Set(githubSignatureHeader, webhook.sig)
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		t.Fatalf("POST GitHub webhook: %v", err)
+		t.Fatalf("POST %s: %v", url, err)
 	}
 	if err := response.Body.Close(); err != nil {
-		t.Errorf("close GitHub webhook response: %v", err)
+		t.Errorf("close webhook response: %v", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GitHub webhook status = %d, want 200", response.StatusCode)
+		t.Fatalf("POST %s status = %d, want 200", url, response.StatusCode)
 	}
 }
 
 // ackForgeNotificationAndAssertCursor acks over the socket and checks the delivery cursor moved.
-func ackForgeNotificationAndAssertCursor(t *testing.T, ctx context.Context, w *forgeE2EWire, subscriptionID, revision string) {
+func ackForgeNotificationAndAssertCursor(
+	ctx context.Context,
+	t *testing.T,
+	w *forgeE2EWire,
+	notification *compassv1internal.ForgeNotification,
+) {
 	t.Helper()
+	subscriptionID, revision := notification.GetSubscriptionId(), notification.GetRevision()
 	publish := w.supervisorClient.Publish(ctx)
 	if err := publish.Send(&compassv1internal.PublishFrameRequest{Frame: &compassv1internal.AgentFrame{
 		Frame: &compassv1internal.AgentFrame_ForgeNotificationAck{ForgeNotificationAck: &compassv1internal.ForgeNotificationAck{
@@ -140,7 +177,7 @@ func ackForgeNotificationAndAssertCursor(t *testing.T, ctx context.Context, w *f
 	if _, err := publish.CloseAndReceive(); err != nil {
 		t.Fatalf("close Publish after forge notification ack: %v", err)
 	}
-	subscribers, err := w.store.SubscribersForArtifact(ctx, store.ForgeProviderGitHub, forgeE2EHost, forgeE2ERepo, store.ForgeArtifactKindIssue, 11, "", false)
+	subscribers, err := w.store.SubscribersForArtifact(ctx, store.ForgeProviderGitHub, forgeE2EHost, forgeE2ERepo, store.ForgeArtifactKindIssue, notification.GetNumber(), "", false)
 	if err != nil {
 		t.Fatalf("SubscribersForArtifact after ack: %v", err)
 	}
@@ -201,11 +238,11 @@ func TestForgeSubscribeOverTheWire(t *testing.T) {
 	if notification.GetComment().GetForgeAccount() != "octocat" {
 		t.Errorf("comment author = %q, want octocat", notification.GetComment().GetForgeAccount())
 	}
+
 	if notification.GetRevision() == "" {
 		t.Fatal("notification revision is empty")
 	}
-
-	ackForgeNotificationAndAssertCursor(t, ctx, w, issue11, notification.GetRevision())
+	ackForgeNotificationAndAssertCursor(ctx, t, w, notification)
 
 	unsubscribed, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
 		CallId: "unsubscribe-issue-11",
@@ -287,5 +324,47 @@ func TestForgeContainerSubscribeOverTheWire(t *testing.T) {
 	}
 	if notification.GetNumber() != 42 {
 		t.Errorf("number = %d, want 42", notification.GetNumber())
+	}
+}
+
+// TestForgeLinearProjectSubscribeOverTheWire proves a subscribed Linear project receives only its own new issues.
+func TestForgeLinearProjectSubscribeOverTheWire(t *testing.T) {
+	w := newForgeE2EWire(t)
+	endpoint, secret := newForgeSubscribeNotifyEndpoint(t, w)
+	ctx, control := openForgeSubscribeControl(t, w)
+	const team, project = "RIG", "proj-alpha"
+
+	response, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
+		CallId: "subscribe-linear-project",
+		Forge:  &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR},
+		Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
+			Repo:    team,
+			Kind:    mxIssue,
+			Scope:   compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER,
+			Project: project,
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("Forge Linear project subscribe: %v", err)
+	}
+	subscription := response.Msg.GetSubscribed()
+	if subscription == nil || subscription.GetSubscriptionId() == "" {
+		t.Fatalf("Forge Linear project subscribe result = %v, want subscription id", response.Msg.GetResult())
+	}
+
+	// The matching-project issue is posted second, so its arrival proves the other-project issue was dropped.
+	postForgeSubscribeLinear(t, w.ctx, endpoint,
+		newFakeLinearForge(secret, team, "proj-beta").openIssue(t, 7, "https://linear.app/rigel/RIG-7"))
+	postForgeSubscribeLinear(t, w.ctx, endpoint,
+		newFakeLinearForge(secret, team, project).openIssue(t, 8, "https://linear.app/rigel/RIG-8"))
+	notification := receiveForgeSubscribeNotification(t, control)
+	if notification.GetSubscriptionId() != subscription.GetSubscriptionId() {
+		t.Errorf("subscription id = %q, want %q", notification.GetSubscriptionId(), subscription.GetSubscriptionId())
+	}
+	if notification.GetNumber() != 8 {
+		t.Fatalf("number = %d, want 8 (the other-project issue 7 must not notify)", notification.GetNumber())
+	}
+	if notification.GetChange() != mxOpened {
+		t.Errorf("change = %v, want OPENED", notification.GetChange())
 	}
 }

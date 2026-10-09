@@ -953,8 +953,10 @@ func TestForgeSubscribeReturnsIdAndIsIdempotent(t *testing.T) {
 
 // TestForgeSubscribeCarriesScopeAndProject pins the request coordinate passed to the store.
 func TestForgeSubscribeCarriesScopeAndProject(t *testing.T) {
+	linearRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}
 	tests := []struct {
 		name      string
+		forge     *compassv1.ForgeRef
 		scope     compassv1internal.ForgeSubscriptionScope
 		project   string
 		number    uint64
@@ -966,8 +968,16 @@ func TestForgeSubscribeCarriesScopeAndProject(t *testing.T) {
 			wantScope: store.ForgeSubscriptionScopeContainer,
 		},
 		{
-			name:   "unspecified scope keeps artifact number",
-			number: 7,
+			name:      "Linear project container",
+			forge:     linearRef,
+			scope:     compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER,
+			project:   "proj-alpha",
+			wantScope: store.ForgeSubscriptionScopeContainer,
+		},
+		{
+			name:      "unspecified scope keeps artifact number",
+			number:    7,
+			wantScope: store.ForgeSubscriptionScopeUnspecified,
 		},
 	}
 	for _, tt := range tests {
@@ -975,8 +985,10 @@ func TestForgeSubscribeCarriesScopeAndProject(t *testing.T) {
 			author := forge.NewFakeProvider("gh-author")
 			reviewer := forge.NewFakeProvider("gh-reviewer")
 			svc, st := newForgeServiceForTest(t, author, reviewer)
+			registerLinearForTest(t, svc)
 
 			call := subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, tt.number)
+			call.Forge = tt.forge
 			call.GetSubscribe().Scope = tt.scope
 			call.GetSubscribe().Project = tt.project
 			res := svc.ExecuteForgeCallAsAccountMust(t, call)
@@ -992,14 +1004,37 @@ func TestForgeSubscribeCarriesScopeAndProject(t *testing.T) {
 			if got.Number != tt.number {
 				t.Errorf("recorded number = %d, want %d", got.Number, tt.number)
 			}
-			if tt.scope != compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_UNSPECIFIED &&
-				got.Scope != tt.wantScope {
+			if got.Scope != tt.wantScope {
 				t.Errorf("recorded scope = %d, want %d", got.Scope, tt.wantScope)
 			}
 			if got.Project != tt.project {
 				t.Errorf("recorded project = %q, want %q", got.Project, tt.project)
 			}
 		})
+	}
+}
+
+// TestForgeSubscribeLinearPullRequestIsInvalidArgument rejects a subscription Linear can never notify.
+func TestForgeSubscribeLinearPullRequestIsInvalidArgument(t *testing.T) {
+	svc, st := newForgeServiceForTest(t, forge.NewFakeProvider("gh-author"), forge.NewFakeProvider("gh-reviewer"))
+	registerLinearForTest(t, svc)
+
+	call := subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST, 3)
+	call.Forge = &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if code := res.GetError().GetCode(); code != "invalid_argument" {
+		t.Fatalf("error code = %q (result %v), want invalid_argument", code, res.GetResult())
+	}
+	if len(st.subs) != 0 {
+		t.Fatalf("recorded subscriptions = %d, want 0", len(st.subs))
+	}
+}
+
+// registerLinearForTest adds the Linear coordinate beside the default GitHub one.
+func registerLinearForTest(t *testing.T, svc *forgeService) {
+	t.Helper()
+	if err := registerLinearForgeCoordinate(svc.providers, forge.NewFakeProvider("linear")); err != nil {
+		t.Fatalf("register linear: %v", err)
 	}
 }
 
