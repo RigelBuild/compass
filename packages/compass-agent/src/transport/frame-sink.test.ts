@@ -601,6 +601,8 @@ function spineTransport(spine: PublishSpine): RunnerTransport {
 		forge: () => Promise.reject(new Error("forge not used by this test")),
 		board: () => Promise.reject(new Error("board not used by this test")),
 		publishSpine: () => spine,
+		putSessionBlob: () =>
+			Promise.reject(new Error("putSessionBlob not used by this test")),
 		postConversationFrame: () =>
 			Promise.reject(new Error("postConversationFrame not used by this test")),
 		control: () => {

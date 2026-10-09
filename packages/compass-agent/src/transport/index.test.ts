@@ -27,7 +27,10 @@ import {
 	ForgeCallResultSchema,
 	GetIssueRequestSchema,
 	PublishFrameResponseSchema,
+	type PutSessionBlobRequest,
+	PutSessionBlobRequestSchema,
 } from "../gen/compass/v1/agent_gateway_pb";
+
 import {
 	MessageBlockSchema,
 	PostMessageRequestSchema,
@@ -79,6 +82,47 @@ async function serveComms(
 	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
 	return socketPath;
 }
+
+async function serveSessionBlob(
+	handler: (request: PutSessionBlobRequest) => void | Promise<void>,
+): Promise<string> {
+	const socketPath = path.join(
+		os.tmpdir(),
+		`t4b-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sock`,
+	);
+	const adapter = connectNodeAdapter({
+		routes(router) {
+			router.rpc(AgentGateway.method.putSessionBlob, async (req) => {
+				await handler(req);
+				return {};
+			});
+		},
+	});
+	const server = http2.createServer(adapter);
+	activeServer = server;
+	activeSocketPath = socketPath;
+	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+	return socketPath;
+}
+
+test("putSessionBlob() dials the Unix socket and forwards the bytes", async () => {
+	const received: PutSessionBlobRequest[] = [];
+	const socketPath = await serveSessionBlob((req) => {
+		received.push(req);
+	});
+	const transport = createUnixSocketTransport(socketPath);
+	const request = create(PutSessionBlobRequestSchema, {
+		sha256: "0123456789abcdef".repeat(4),
+		data: Uint8Array.of(1, 2, 3, 4),
+	});
+
+	await transport.putSessionBlob(request);
+
+	expect(received).toHaveLength(1);
+	expect(received[0]?.sha256).toBe(request.sha256);
+	expect(received[0]?.data).toEqual(request.data);
+	transport.close();
+});
 
 test("comms() dials the Unix socket over h2c and round-trips the post result", async () => {
 	// Server echoes the caller's callId and answers with the post-response

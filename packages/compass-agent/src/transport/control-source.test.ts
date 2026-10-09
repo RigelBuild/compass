@@ -1413,6 +1413,7 @@ function headerObserver(
 		forge: (req) => inner.forge(req),
 		board: (req) => inner.board(req),
 		publishSpine: () => inner.publishSpine(),
+		putSessionBlob: (req) => inner.putSessionBlob(req),
 		postConversationFrame: (req, options) =>
 			inner.postConversationFrame(req, options),
 		close: () => inner.close(),
@@ -1484,6 +1485,7 @@ function observingTransport(inner: RunnerTransport): TransportObserver {
 		forge: (req) => inner.forge(req),
 		board: (req) => inner.board(req),
 		publishSpine: () => inner.publishSpine(),
+		putSessionBlob: (req) => inner.putSessionBlob(req),
 		postConversationFrame: (req, options) =>
 			inner.postConversationFrame(req, options),
 		close: () => inner.close(),

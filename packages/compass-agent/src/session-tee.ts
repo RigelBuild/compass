@@ -57,6 +57,8 @@ export interface TranscriptTeeOptions {
 	    `path.resolve(sessionFile)`, session-manager.ts:969) does not ENOENT a
 	    resume file that lives outside `sessionDir` or is passed non-canonically. */
 	readonly resumeFile?: string;
+	/** Runs after local persistence; throws are logged without failing the write. */
+	readonly onCommittedLine?: (line: string) => void;
 }
 
 function enoent(p: string): NodeJS.ErrnoException {
@@ -95,6 +97,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 	// (mirrors the SDK's #diskFailure fatal-by-design latch, session-manager.ts:674).
 	#fatalError: Error | undefined;
 	readonly #backoffMs: readonly number[];
+	readonly #onCommittedLine: ((line: string) => void) | undefined;
 	readonly #resumeFile: string | undefined;
 
 	constructor(
@@ -104,6 +107,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 	) {
 		this.#sink = sink;
 		this.#sessionDir = sessionDir;
+		this.#onCommittedLine = options?.onCommittedLine;
 		this.#backoffMs = options?.emitBackoffMs ?? TEE_EMIT_BACKOFF_MS;
 		// Canonicalize once at the trust boundary: the SDK looks the resume file
 		// up under `path.resolve(sessionFile)` (session-manager.ts:969), and the
@@ -113,6 +117,15 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 			options?.resumeFile !== undefined
 				? path.resolve(options.resumeFile)
 				: undefined;
+	}
+
+	#commitLine(line: string): void {
+		try {
+			this.#onCommittedLine?.(line);
+		} catch (err) {
+			// biome-ignore lint/suspicious/noConsole: best-effort hook failures are operator diagnostics
+			console.error("[compass-agent] committed-line hook failed:", err);
+		}
 	}
 
 	#nextFrame(entryJson: string, checkpoint: boolean): OutboundFrame {
@@ -314,6 +327,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 			await fs.rm(tempPath, { force: true });
 			throw err;
 		}
+		this.#commitLine(content);
 		await this.#tee(this.#nextFrame(content, true));
 	}
 
@@ -327,6 +341,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 		// the line verbatim (its trailing newline included) so concatenation
 		// reconstructs the JSONL body exactly (T5).
 		await fs.appendFile(filePath, line);
+		this.#commitLine(line);
 		await this.#tee(this.#nextFrame(line, false));
 	}
 
