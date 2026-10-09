@@ -874,7 +874,7 @@ func (h *agentHost) provisionVsockGateway(ctx context.Context, spec runtime.Agen
 		h.teardownContainer(ctx, name)
 		return "", fmt.Errorf("resolving vsock gateway endpoint for container %q: backend reports no session", name)
 	}
-	deps := gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client, Seq: &h.runnerSeq}
+	deps := gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client, Seq: &h.runnerSeq, SessionBlobs: h.link.client}
 	h.log.InfoContext(ctx, "serving agent gateway over vsock path",
 		slog.String("container", name), slog.String("path", endpoint))
 	listener, err := gateway.Serve(ctx, endpoint, name, deps)
@@ -1253,7 +1253,7 @@ func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gat
 // serveSocketAt is serveSocket with an explicit socket path: container tiers pass the
 // fixed RuntimeDir socket, the host tier a path in the handle's state dir (no mount).
 func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, error) {
-	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client, Seq: &h.runnerSeq})
+	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client, Board: h.link.client, Seq: &h.runnerSeq, SessionBlobs: h.link.client})
 	if err != nil {
 		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
 	}

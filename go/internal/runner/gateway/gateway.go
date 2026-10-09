@@ -10,6 +10,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -112,6 +113,11 @@ type BoardRelay interface {
 	RelayBoardCall(ctx context.Context, req *connect.Request[compassv1internal.RelayBoardCallRequest]) (*connect.Response[compassv1internal.RelayBoardCallResponse], error)
 }
 
+// SessionBlobRelay forwards one content-addressed blob under a bound session.
+type SessionBlobRelay interface {
+	RelaySessionBlob(ctx context.Context, req *connect.Request[compassv1internal.RelaySessionBlobRequest]) (*connect.Response[compassv1internal.RelaySessionBlobResponse], error)
+}
+
 // ConversationCommitter is the narrow slice of the generated RunnerServiceClient
 // the durable conversation path needs — just CommitConversationFrame. The real
 // client satisfies it; a test supplies a fake. Mirrors CommsRelay's narrowing of
@@ -134,6 +140,7 @@ type Gateway struct {
 	containerName string
 	sessions      SessionForContainer
 	relay         CommsRelay
+	sessionBlobs  SessionBlobRelay
 	// lifecycle forwards ONE agent-initiated lifecycle call (spawn/despawn a
 	// peer) to the Server (RelayLifecycleCall), the sibling of relay's comms
 	// forward. Same pure-forwarder posture: no account, session id the Runner
@@ -217,6 +224,8 @@ type Deps struct {
 	Forge ForgeRelay
 	// Board forwards an agent-initiated board call to the Server (RelayBoardCall).
 	Board BoardRelay
+	// SessionBlobs relays content-addressed image bytes to the Server.
+	SessionBlobs SessionBlobRelay
 	// Events forwards trace/session telemetry up the loss-tolerant PublishEvents stream.
 	Events EventRelay
 	// Committer forwards a durable conversation frame to the Server for commit (CommitConversationFrame).
@@ -253,8 +262,9 @@ func NewGateway(baseCtx context.Context, containerName string, deps Deps) *Gatew
 		lifecycle:     deps.Lifecycle,
 		forge:         deps.Forge,
 		board:         deps.Board,
-		events:        deps.Events,
 		committer:     deps.Committer,
+		sessionBlobs:  deps.SessionBlobs,
+		events:        deps.Events,
 		seq:           seq,
 		control:       noopControlRouter{},
 		// ttl=0: no expiry, a pure size-bounded LRU (committedKeysMax). The cache
@@ -352,4 +362,31 @@ func (g *Gateway) Comms(
 		return nil, connect.NewError(connect.CodeInternal, errNilRelayResult)
 	}
 	return connect.NewResponse(result), nil
+}
+
+// maxSessionBlobBytes leaves one MiB of envelope headroom below the gateway read cap.
+const maxSessionBlobBytes = agentmsg.MaxSessionBlobBytes
+
+// PutSessionBlob forwards an image blob under the session bound to this container.
+func (g *Gateway) PutSessionBlob(
+	ctx context.Context, req *connect.Request[compassv1internal.PutSessionBlobRequest],
+) (*connect.Response[compassv1internal.PutSessionBlobResponse], error) {
+	sessionID, ok := g.sessions.Session(g.containerName)
+	if !ok || sessionID == "" {
+		return nil, connect.NewError(connect.CodePermissionDenied, errNoSessionForBoard)
+	}
+	if len(req.Msg.GetData()) > maxSessionBlobBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("gateway: session blob exceeds %d bytes", maxSessionBlobBytes))
+	}
+	if g.sessionBlobs == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("gateway: session blob relay is not configured"))
+	}
+	_, err := g.sessionBlobs.RelaySessionBlob(ctx, connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{
+		SessionId: sessionID,
+		Blob:      req.Msg,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&compassv1internal.PutSessionBlobResponse{}), nil
 }

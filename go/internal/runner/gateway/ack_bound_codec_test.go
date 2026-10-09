@@ -105,6 +105,27 @@ func TestAckBoundCodecAcceptsHonestAck(t *testing.T) {
 	}
 }
 
+func TestAckBoundCodecAcceptsBinaryPutSessionBlob(t *testing.T) {
+	want := &compassv1internal.PutSessionBlobRequest{
+		Sha256: "abababababababababababababababababababababababababababababababab",
+		Data:   []byte{0, 1, 0xfe, 0xff},
+	}
+	wire, err := (ackBoundCodec{}).Marshal(want)
+	if err != nil {
+		t.Fatalf("Marshal(PutSessionBlobRequest) = %v", err)
+	}
+	var got compassv1internal.PutSessionBlobRequest
+	if err := (ackBoundCodec{}).Unmarshal(wire, &got); err != nil {
+		t.Fatalf("Unmarshal(PutSessionBlobRequest) = %v", err)
+	}
+	if !proto.Equal(&got, want) {
+		t.Fatalf("binary round trip = %v, want %v", &got, want)
+	}
+	if _, err := (frameJSONCodec{name: "json"}).Marshal(want); err != nil {
+		t.Fatalf("blob request JSON marshal = %v, want success", err)
+	}
+}
+
 // JSON would bypass the binary pre-scan, so the mount refuses it outright.
 // RED without the JSON codec overrides: protojson decodes the ack and routes it.
 func TestAgentGatewayRejectsJSON(t *testing.T) {
