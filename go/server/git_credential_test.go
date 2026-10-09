@@ -419,6 +419,34 @@ func TestGitCredentialBrokerRefreshMismatchRemovesEntry(t *testing.T) {
 	}
 }
 
+// A request-path mismatch leaves the old entry cached; refresh must not re-mint
+// while the mismatch is negatively cached.
+func TestGitCredentialBrokerRefreshHonoursMismatchCache(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}}
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_old", "ghs_mismatch", "ghs_unused"}, expiresAt: now.Add(time.Hour),
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	resolver := &brokeredSecretResolver{inner: &fakeAgentSecretResolver{}, broker: broker}
+	resolveBrokeredSecret(t, resolver)
+
+	now = now.Add(time.Hour - gitCredentialRefreshLead)
+	minter.mu.Lock()
+	minter.grantedRepos = []string{"owner/other"}
+	minter.mu.Unlock()
+	if tok, ok := broker.credential(context.Background(), "agent"); ok {
+		t.Fatalf("credential after request-path mismatch = %q, want none", tok)
+	}
+	if _, exists := broker.entries["owner/repo"]; !exists {
+		t.Fatal("precondition: request-path mismatch should leave the old entry cached")
+	}
+	broker.refreshDue(context.Background())
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls = %d, want initial and request-path only", minter.callCount())
+	}
+}
+
 func TestGitCredentialBrokerRefreshStopsWhenContextCancelled(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/alpha"}}
