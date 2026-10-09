@@ -108,19 +108,18 @@ export type MigrationFileMap = ReadonlyMap<string, Uint8Array>;
 
 /**
  * Return base migrations missing or byte-changed in the current tree. One
- * exception: when two concurrent PRs landed the same version, either file may
- * move unchanged to a new number, since no deploy can have applied that version.
+ * exception: when two concurrent PRs landed the same version, the one added
+ * last (`movable`) may move unchanged to a new number. Only it can be unapplied:
+ * any deploy built between the two merges already ran the earlier one.
  */
 export function findMigrationViolations(
 	baseFiles: MigrationFileMap,
 	currentFiles: MigrationFileMap,
+	movable: ReadonlySet<string> = new Set(),
 ): string[] {
-	const versionCounts = new Map<string, number>();
-	for (const path of baseFiles.keys()) {
-		const version = migrationVersion(path);
-		versionCounts.set(version, (versionCounts.get(version) ?? 0) + 1);
-	}
-	const added = [...currentFiles].filter(([path]) => !baseFiles.has(path));
+	const unclaimed = [...currentFiles]
+		.filter(([path]) => !baseFiles.has(path))
+		.map(([, bytes]) => Buffer.from(bytes));
 	const violations: string[] = [];
 	for (const [path, baseBytes] of baseFiles) {
 		const currentBytes = currentFiles.get(path);
@@ -129,14 +128,36 @@ export function findMigrationViolations(
 				violations.push(path);
 			continue;
 		}
-		const moved =
-			(versionCounts.get(migrationVersion(path)) ?? 0) > 1 &&
-			added.some(([, bytes]) =>
-				Buffer.from(baseBytes).equals(Buffer.from(bytes)),
-			);
-		if (!moved) violations.push(path);
+		const match = movable.has(path)
+			? unclaimed.findIndex((bytes) => bytes.equals(Buffer.from(baseBytes)))
+			: -1;
+		if (match < 0) violations.push(path);
+		else unclaimed.splice(match, 1);
 	}
 	return violations;
+}
+
+/**
+ * The base migrations that may move: for each version held by two or more
+ * files, every file except the first added. `addedInOrder` is the base
+ * branch's migration paths in the order commits added them.
+ */
+export function movableMigrations(
+	baseFiles: MigrationFileMap,
+	addedInOrder: readonly string[],
+): Set<string> {
+	const firstByVersion = new Map<string, string>();
+	for (const path of addedInOrder) {
+		if (!baseFiles.has(path)) continue;
+		const version = migrationVersion(path);
+		if (!firstByVersion.has(version)) firstByVersion.set(version, path);
+	}
+	const movable = new Set<string>();
+	for (const path of baseFiles.keys()) {
+		const first = firstByVersion.get(migrationVersion(path));
+		if (first !== undefined && first !== path) movable.add(path);
+	}
+	return movable;
 }
 
 function migrationVersion(path: string): string {
@@ -246,7 +267,26 @@ export async function checkMigrationImmutability(
 				new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()),
 			);
 		}
-		const violations = findMigrationViolations(baseFiles, currentFiles);
+		const addedInOrder = decoder
+			.decode(
+				await gitStdout(root, [
+					"log",
+					"--diff-filter=A",
+					"--reverse",
+					"--format=",
+					"--name-only",
+					mergeBase,
+					"--",
+					"go/internal/store/migrations",
+				]),
+			)
+			.split("\n")
+			.filter(Boolean);
+		const violations = findMigrationViolations(
+			baseFiles,
+			currentFiles,
+			movableMigrations(baseFiles, addedInOrder),
+		);
 		if (violations.length === 0) return { name, code: 0, output: "" };
 		// Runtime verification rejects changed bytes, so an allowlist would ship a boot failure.
 		return {

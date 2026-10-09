@@ -23,6 +23,7 @@ import {
 	MIGRATION_GLOB,
 	makeSpawnLinter,
 	migrationBaseRef,
+	movableMigrations,
 	runOnce,
 } from "./index.ts";
 
@@ -217,11 +218,12 @@ describe("findMigrationViolations", () => {
 		).toEqual([path]);
 	});
 
-	test("a duplicated base version may move byte-identical to a new number", () => {
-		const dupA = "go/internal/store/migrations/0003_a.sql";
-		const dupB = "go/internal/store/migrations/0003_b.sql";
-		const moved = "go/internal/store/migrations/0005_b.sql";
-		const other = new TextEncoder().encode("SELECT 3;\n");
+	const dupA = "go/internal/store/migrations/0003_a.sql";
+	const dupB = "go/internal/store/migrations/0003_b.sql";
+	const movedB = "go/internal/store/migrations/0005_b.sql";
+	const other = new TextEncoder().encode("SELECT 3;\n");
+
+	test("the later duplicate may move byte-identical to a new number", () => {
 		expect(
 			findMigrationViolations(
 				new Map([
@@ -230,27 +232,61 @@ describe("findMigrationViolations", () => {
 				]),
 				new Map([
 					[dupA, same],
-					[moved, other],
+					[movedB, other],
 				]),
+				new Set([dupB]),
 			),
 		).toEqual([]);
 	});
 
-	test("a duplicated base version may not move with edited bytes", () => {
-		const dupA = "go/internal/store/migrations/0003_a.sql";
-		const dupB = "go/internal/store/migrations/0003_b.sql";
+	test("a migration outside the movable set may not move", () => {
 		expect(
 			findMigrationViolations(
 				new Map([
 					[dupA, original],
-					[dupB, original],
+					[dupB, other],
+				]),
+				new Map([
+					["go/internal/store/migrations/0005_a.sql", original],
+					[dupB, other],
+				]),
+				new Set([dupB]),
+			),
+		).toEqual([dupA]);
+	});
+
+	test("a movable migration may not move with edited bytes", () => {
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, other],
 				]),
 				new Map([
 					[dupA, same],
-					["go/internal/store/migrations/0005_b.sql", edited],
+					[movedB, edited],
 				]),
+				new Set([dupB]),
 			),
 		).toEqual([dupB]);
+	});
+
+	test("one added copy accounts for only one moved migration", () => {
+		const dupC = "go/internal/store/migrations/0003_c.sql";
+		expect(
+			findMigrationViolations(
+				new Map([
+					[dupA, original],
+					[dupB, other],
+					[dupC, other],
+				]),
+				new Map([
+					[dupA, same],
+					[movedB, other],
+				]),
+				new Set([dupB, dupC]),
+			),
+		).toEqual([dupC]);
 	});
 
 	test("new migrations are not checked even when edited", () => {
@@ -273,6 +309,36 @@ describe("findMigrationViolations", () => {
 				new Map([[path, new TextEncoder().encode("SELECT 1;")]]),
 			),
 		).toEqual([path]);
+	});
+});
+
+describe("movableMigrations", () => {
+	const bytes = new TextEncoder().encode("SELECT 1;\n");
+	const init = "go/internal/store/migrations/0001_init.sql";
+	const first = "go/internal/store/migrations/0003_first.sql";
+	const second = "go/internal/store/migrations/0003_second.sql";
+	const base = new Map([
+		[init, bytes],
+		[first, bytes],
+		[second, bytes],
+	]);
+
+	test("only the later-added duplicate is movable", () => {
+		expect(movableMigrations(base, [init, first, second])).toEqual(
+			new Set([second]),
+		);
+	});
+
+	test("add order, not name order, picks the movable file", () => {
+		expect(movableMigrations(base, [init, second, first])).toEqual(
+			new Set([first]),
+		);
+	});
+
+	test("unique versions are never movable", () => {
+		expect(movableMigrations(new Map([[init, bytes]]), [init])).toEqual(
+			new Set(),
+		);
 	});
 });
 
