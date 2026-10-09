@@ -10,6 +10,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -143,6 +144,24 @@ func TestSpawnOffTaxonomyRoleIsRejected(t *testing.T) {
 		t.Fatal("an account was created for an off-taxonomy-role spawn, want none (rejected before CreateAgent)")
 	} else if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("AgentByHandle(peer-director) = %v, want ErrNotFound (no row written)", err)
+	}
+}
+
+// TestSpawnOverCapPersonaIsInvalidArgument: the store's persona cap reaches an
+// agent caller as CodeInvalidArgument, not a retryable server fault.
+func TestSpawnOverCapPersonaIsInvalidArgument(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	_, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-big-persona",
+		DisplayName:     "Peer Big Persona",
+		ClientRequestId: "spawn-big-persona",
+		Role:            "manager",
+		Persona:         strings.Repeat("p", store.MaxPersonaBytes+1),
+	})
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("over-cap persona spawn = %v (code %v), want CodeInvalidArgument", err, got)
 	}
 }
 

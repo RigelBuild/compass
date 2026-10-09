@@ -3,19 +3,24 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // spawnTimeout bounds SpawnAgent, which may pull the agent image first. The
@@ -28,6 +33,9 @@ type agentSpawnArgs struct {
 	displayName string
 	parent      string
 	requestID   string
+	role        string
+	personaFile string
+	persona     string
 }
 
 // agentSpawnClients holds the two services `agent spawn` drives: CommsService
@@ -42,13 +50,19 @@ type agentSpawnClients struct {
 func newAgentSpawnCmd() *cobra.Command {
 	var args agentSpawnArgs
 	cmd := &cobra.Command{
-		Use:   "spawn --handle <handle>",
+		Use:   "spawn --handle <handle> --role <role>",
 		Short: "Create an agent account and bring it online (CreateAgent, then SpawnAgent)",
-		Long: "Create an agent owned by the caller and start its session. If the handle " +
-			"already exists for the caller, that agent is spawned as it is: --display-name " +
-			"and --parent are not applied to it. If a spawn fails partway, rerun with the " +
-			"--request-id it printed; a rerun without it fails once the container exists.",
+		Long: "Create an agent owned by the caller and start its session. --role is required " +
+			"and must be supervisor, owner, or manager. --persona-file optionally supplies " +
+			"a free-text persona overlay baked at provision. If the handle already exists " +
+			"for the caller, that agent is spawned as it is: --display-name, --parent, " +
+			"--role, and --persona-file are not applied to it. If a spawn fails partway, " +
+			"rerun with the --request-id it printed; a rerun without it fails once the " +
+			"container exists.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateAgentSpawnRole(args.role); err != nil {
+				return err
+			}
 			cfg, err := resolveConn(cmd)
 			if err != nil {
 				return err
@@ -68,10 +82,23 @@ func newAgentSpawnCmd() *cobra.Command {
 	f.StringVar(&args.handle, "handle", "", "Agent handle, unique within the caller's agents (required).")
 	f.StringVar(&args.displayName, "display-name", "", "Display name (default: the handle).")
 	f.StringVar(&args.parent, "parent", "", "Parent agent handle in the agent tree (default: a root agent).")
+	f.StringVar(&args.role, "role", "", "Agent role: supervisor, owner, or manager (required).")
+	f.StringVar(&args.personaFile, "persona-file", "", "Optional UTF-8 persona text file (max 64 KiB; baked at provision).")
 	f.StringVar(&args.requestID, "request-id", "",
 		"Idempotency key for the spawn. A retry with the same key rejoins the failed spawn "+
 			"(default: a fresh random key, printed when a retry can help).")
 	return cmd
+}
+
+// validateAgentSpawnRole rejects a missing or off-taxonomy --role before any RPC.
+func validateAgentSpawnRole(role string) error {
+	if role == "" {
+		return errors.New("--role is required (supervisor, owner, or manager)")
+	}
+	if !store.IsManagerRole(role) {
+		return fmt.Errorf("invalid --role %q; want supervisor, owner, or manager", role)
+	}
+	return nil
 }
 
 // runAgentSpawn runs CreateAgent then SpawnAgent. An AlreadyExists create falls
@@ -80,6 +107,17 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 	if args.handle == "" {
 		return errors.New("--handle is required")
 	}
+	if err := validateAgentSpawnRole(args.role); err != nil {
+		return err
+	}
+	persona := ""
+	if args.personaFile != "" {
+		var err error
+		persona, err = readPersonaFile(args.personaFile)
+		if err != nil {
+			return err
+		}
+	}
 	if args.displayName == "" {
 		args.displayName = args.handle
 	}
@@ -87,6 +125,7 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 		args.requestID = newSpawnRequestID()
 	}
 
+	args.persona = persona
 	existed, createErr := createAgent(ctx, c.comms, args)
 	if createErr != nil && !existed {
 		return createErr
@@ -108,13 +147,53 @@ func runAgentSpawn(ctx context.Context, c agentSpawnClients, args agentSpawnArgs
 	}
 	if existed {
 		if _, err := fmt.Fprintf(out,
-			"agent %s already exists; spawned it (--display-name and --parent not applied)\n", qualified); err != nil {
+			"agent %s already exists; spawned it (--display-name, --parent, --role, and --persona-file not applied)\n", qualified); err != nil {
 			return err
 		}
 	}
 	_, err = fmt.Fprintf(out, "agent:     %s\nsession:   %s\ncontainer: %s\n",
 		qualified, resp.Msg.GetSessionId(), resp.Msg.GetContainerName())
 	return err
+}
+
+// personaReadSlack bounds the whitespace read past the persona cap.
+const personaReadSlack = 4096
+
+// readPersonaFile reads, caps, and trims --persona-file; an empty file is an error.
+func readPersonaFile(path string) (persona string, err error) {
+	file, err := os.Open(path) // #nosec G304 -- operator explicitly selects the persona file path.
+	if err != nil {
+		return "", fmt.Errorf("reading persona file %q: %w", path, err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("closing persona file %q: %w", path, closeErr))
+		}
+	}()
+
+	// The slack lets an at-cap persona carry editor whitespace; the cap applies after trimming.
+	contents, err := io.ReadAll(io.LimitReader(file, store.MaxPersonaBytes+personaReadSlack+1))
+	if err != nil {
+		return "", fmt.Errorf("reading persona file %q: %w", path, err)
+	}
+	if len(contents) > store.MaxPersonaBytes+personaReadSlack {
+		return "", fmt.Errorf("persona file %q exceeds the 64 KiB limit", path)
+	}
+	if !utf8.Valid(contents) {
+		return "", fmt.Errorf("persona file %q is not valid UTF-8", path)
+	}
+	// Postgres text cannot hold NUL, so reject it here rather than as a server error.
+	if bytes.IndexByte(contents, 0) >= 0 {
+		return "", fmt.Errorf("persona file %q contains a NUL byte", path)
+	}
+	persona = strings.TrimSpace(strings.TrimPrefix(string(contents), "\ufeff"))
+	if len(persona) > store.MaxPersonaBytes {
+		return "", fmt.Errorf("persona file %q exceeds the 64 KiB limit", path)
+	}
+	if persona == "" {
+		return "", fmt.Errorf("persona file %q is empty", path)
+	}
+	return persona, nil
 }
 
 // spawnError names the next step: rejoin with the key only after a cut-short
@@ -141,6 +220,8 @@ func createAgent(ctx context.Context, comms compassv1connect.CommsServiceClient,
 		Handle:       args.handle,
 		DisplayName:  args.displayName,
 		ParentHandle: args.parent,
+		Role:         args.role,
+		Persona:      args.persona,
 	}))
 	if err != nil {
 		return connect.CodeOf(err) == connect.CodeAlreadyExists, fmt.Errorf("creating agent %q: %w", args.handle, err)

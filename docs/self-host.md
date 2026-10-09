@@ -358,8 +358,12 @@ The `compass` operator CLI (`github:RigelBuild/compass#compass`) brings an agent
 online with one command:
 
 ```console
-compass agent spawn --handle lead --parent ops
+compass agent spawn --handle lead --role owner --parent ops
 ```
+
+`--role` is required and must be `supervisor`, `owner`, or `manager`; it selects
+the agent's block-0 prompt. Use `--persona-file <path>` to add an optional
+free-text identity overlay that is baked into the agent at provision.
 
 It creates the agent account under the caller, then provisions its container and
 starts its session. It prints the agent's `owner/handle`, the session id, and
@@ -367,7 +371,8 @@ the container name. `--display-name` defaults to the handle, and `--parent`
 places the agent under an existing agent in the tree.
 
 If the handle already exists for the caller, `spawn` starts that agent as it
-is; `--display-name` and `--parent` are not applied to it.
+is; `--display-name`, `--parent`, `--role`, and `--persona-file` are not applied
+to it.
 
 When a spawn fails with a timeout or an unavailable server, the error prints a
 `--request-id`. Rerun with it to rejoin that spawn. A rerun without it fails
