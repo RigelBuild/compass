@@ -44,6 +44,10 @@ let
   # The package's dependency closure, fetched once as a fixed-output derivation
   # (the only derivation here allowed network access). `--frozen-lockfile` pins
   # versions to `bun.lock`; the output hash pins the installed tree on THIS host.
+  # Install and compile with the repo-pinned bun: the binary embeds this runtime,
+  # and the SDK decodes images with Bun.Image, which the nixpkgs bun lacks.
+  pinnedBun = (import ../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
+
   nodeModules = pkgs.stdenv.mkDerivation {
     pname = "compass-agent-node-modules";
     version = "0.1.0";
@@ -86,7 +90,7 @@ let
         );
       };
 
-    nativeBuildInputs = [ pkgs.bun ];
+    nativeBuildInputs = [ pinnedBun ];
     dontConfigure = true;
 
     buildPhase = ''
@@ -148,7 +152,7 @@ let
   # Every copy MERGES into its destination (`cp -R <src>/. <dst>/`) rather than
   # relying on absence: plain `cp -R src dst` NESTS when dst exists, burying the
   # pinned tree at `node_modules/node_modules`.
-  bundle = pkgs.runCommand "compass-agent-bundle" { nativeBuildInputs = [ pkgs.bun ]; } ''
+  bundle = pkgs.runCommand "compass-agent-bundle" { nativeBuildInputs = [ pinnedBun ]; } ''
     export HOME=$TMPDIR
     pkgDir=packages/compass-agent
 
