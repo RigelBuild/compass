@@ -351,3 +351,31 @@ The repo ships Grafana dashboard JSON for the agent's metrics and traces under
 [`dashboards/`](../dashboards/README.md). Import is manual and needs your own
 Prometheus and Tempo datasources; that README covers the import steps and which
 signals each dashboard binds.
+
+## Spawning an agent
+
+The `compass` operator CLI (`github:RigelBuild/compass#compass`) brings an agent
+online with one command:
+
+```console
+compass agent spawn --handle lead --parent ops
+```
+
+It creates the agent account under the caller, then provisions its container and
+starts its session. It prints the agent's `owner/handle`, the session id, and
+the container name. `--display-name` defaults to the handle, and `--parent`
+places the agent under an existing agent in the tree.
+
+If the handle already exists for the caller, `spawn` starts that agent as it
+is; `--display-name` and `--parent` are not applied to it.
+
+When a spawn fails with a timeout or an unavailable server, the error prints a
+`--request-id`. Rerun with it to rejoin that spawn. A rerun without it fails
+once the agent's container exists, because each agent has one container. If
+the error says the agent already has a session or container, check it with
+`compass agent status`.
+
+Every `compass` command needs `--server-addr` (or `$COMPASS_SERVER_ADDR`) and
+the admin bearer token in `$COMPASS_ADMIN_TOKEN` or a `--token-file`. The token
+is never a flag. For the self-signed one-box door, pass its certificate with
+`--ca`.
