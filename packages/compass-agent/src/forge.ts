@@ -246,15 +246,23 @@ export const subscribeParameters = type({
 		"Issue or pull-request number; required for artifact subscriptions and omitted for container subscriptions",
 	),
 	"project?": nonBlank(
-		"Linear project id for a container subscription; required for Linear",
+		"Linear project id for a container subscription; required for Linear and omitted otherwise",
 	),
 }).narrow((v, ctx) => {
+	// Linear emits only issue events, so a pull-request subscription would never notify.
+	if (v.forge_provider === "linear" && v.kind === "pull_request")
+		return ctx.reject("Linear subscriptions must use kind issue");
 	if (v.scope === "container") {
 		if (v.number !== undefined)
 			return ctx.reject("number must be omitted for container subscriptions");
-		if (v.forge_provider === "linear" && v.project === undefined)
+		if (v.forge_provider === "linear") {
+			if (v.project === undefined)
+				return ctx.reject(
+					"project is required for Linear container subscriptions",
+				);
+		} else if (v.project !== undefined)
 			return ctx.reject(
-				"project is required for Linear container subscriptions",
+				"project is only valid for Linear container subscriptions",
 			);
 		return true;
 	}

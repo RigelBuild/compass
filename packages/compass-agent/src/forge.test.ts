@@ -1318,4 +1318,40 @@ describe("forge parameter schemas", () => {
 			}),
 		).toBe(false);
 	});
+
+	test("subscribe rejects provider combinations that can never notify", () => {
+		expect(
+			rejects(subscribeParameters, {
+				repo: "SEA",
+				forge_provider: "linear",
+				kind: "pull_request",
+				scope: "container",
+				project: "project-1",
+			}),
+		).toBe(true);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "SEA",
+				forge_provider: "linear",
+				kind: "pull_request",
+				number: 3,
+			}),
+		).toBe(true);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "o/r",
+				kind: "issue",
+				scope: "container",
+				project: "project-1",
+			}),
+		).toBe(true);
+		expect(
+			rejects(subscribeParameters, {
+				repo: "o/r",
+				forge_provider: "github",
+				kind: "pull_request",
+				scope: "container",
+			}),
+		).toBe(false);
+	});
 });
