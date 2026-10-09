@@ -634,6 +634,9 @@ message CreateAgentRequest {
   string parent_handle = 3;
   // Required: supervisor, owner, or manager. Other values → INVALID_ARGUMENT.
   string role = 4;
+  // Free-text identity overlay baked at provision. Set at creation only; empty
+  // means none.
+  string persona = 5;
 }
 
 message CreateAgentResponse {

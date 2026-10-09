@@ -61,6 +61,26 @@ func newHandler(t *testing.T) (*Comms, *store.Store) {
 	}
 	return NewComms(st, bus, nil, admin.ID), st
 }
+func TestCreateAgentStoresRoleAndPersona(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+
+	_, err := svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle: "role-persona", Role: "owner", Persona: "You own the domain.",
+	}))
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	created, err := st.AgentByHandle(ctx, owner.ID, "role-persona")
+	if err != nil {
+		t.Fatalf("AgentByHandle: %v", err)
+	}
+	if created.Agent.Role != "owner" || created.Agent.Persona != "You own the domain." {
+		t.Errorf("stored role/persona = %q/%q, want owner/%q", created.Agent.Role, created.Agent.Persona, "You own the domain.")
+	}
+}
 
 func TestCreateChannelEmitsChannelChanged(t *testing.T) {
 	h := newStreamHarness(t)

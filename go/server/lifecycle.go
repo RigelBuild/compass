@@ -175,6 +175,9 @@ func (l *lifecycleService) SpawnAsAccount(
 	if !store.IsManagerRole(req.GetRole()) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrUnknownRole)
 	}
+	if len(req.GetPersona()) > store.MaxPersonaBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("persona is %d bytes; the limit is %d", len(req.GetPersona()), store.MaxPersonaBytes))
+	}
 	// Before CreateAgent: a later Provision refusal would leave the handle taken.
 	if err := runnerhub.CheckClientRequestID(req.GetClientRequestId()); err != nil {
 		return nil, err

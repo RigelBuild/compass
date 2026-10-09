@@ -156,6 +156,7 @@ func (c *Comms) CreateAgent(
 	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
 		Handle:        req.Msg.GetHandle(),
 		DisplayName:   req.Msg.GetDisplayName(),
+		Persona:       req.Msg.GetPersona(),
 		ParentAgentID: parentID,
 		Role:          req.Msg.GetRole(),
 	})

@@ -2533,7 +2533,10 @@ type CreateAgentRequest struct {
 	// (a bare handle defaults to the caller's own owner namespace).
 	ParentHandle string `protobuf:"bytes,3,opt,name=parent_handle,json=parentHandle,proto3" json:"parent_handle,omitempty"`
 	// Required: supervisor, owner, or manager. Other values → INVALID_ARGUMENT.
-	Role          string `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	Role string `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	// Free-text identity overlay baked at provision. Set at creation only; empty
+	// means none.
+	Persona       string `protobuf:"bytes,5,opt,name=persona,proto3" json:"persona,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2592,6 +2595,13 @@ func (x *CreateAgentRequest) GetParentHandle() string {
 func (x *CreateAgentRequest) GetRole() string {
 	if x != nil {
 		return x.Role
+	}
+	return ""
+}
+
+func (x *CreateAgentRequest) GetPersona() string {
+	if x != nil {
+		return x.Persona
 	}
 	return ""
 }
@@ -5276,12 +5286,13 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\"C\n" +
 	"\x12CreateUserResponse\x12-\n" +
-	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"\x88\x01\n" +
+	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"\xa2\x01\n" +
 	"\x12CreateAgentRequest\x12\x16\n" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12#\n" +
 	"\rparent_handle\x18\x03 \x01(\tR\fparentHandle\x12\x12\n" +
-	"\x04role\x18\x04 \x01(\tR\x04role\"D\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12\x18\n" +
+	"\apersona\x18\x05 \x01(\tR\apersona\"D\n" +
 	"\x13CreateAgentResponse\x12-\n" +
 	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"8\n" +
 	"\x13ListAccountsRequest\x12!\n" +
