@@ -159,10 +159,8 @@ func newNotifyE2EWire(t *testing.T, opts ...notifyE2EOpt) *notifyE2EWire {
 	ghPath, ghHandler := NewGitHubWebhookHandler(secretFn, ghArm, log)
 	mux.Handle(ghPath, ghHandler)
 	lnPath, lnHandler := NewLinearWebhookHandler(secretFn, lnArm, nil, log)
-	// Pin the Linear freshness clock to the epoch: the notify fakes carry no
-	// webhookTimestamp (the notify path never reads it), so a zero timestamp must
-	// read as fresh — the same now-injection the Linear handler unit tests use.
-	lnHandler.(*linearWebhookHandler).now = func() time.Time { return time.UnixMilli(0) }
+	// The fakes stamp linearFakeNow, so the freshness check runs against that same clock.
+	lnHandler.(*linearWebhookHandler).now = func() time.Time { return linearFakeNow }
 	mux.Handle(lnPath, lnHandler)
 
 	srv := httptest.NewServer(mux)
