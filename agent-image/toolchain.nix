@@ -135,7 +135,7 @@ pkgs.buildEnv {
       openAsDraft = true
       [jj-vine.github]
       host = "https://api.github.com"
-      tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token"]
+      tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "github.com"]
     '')
     # Git delegates GitHub credential lookup to gh's materialized host token.
     (pkgs.writeTextDir "etc/gitconfig" ''

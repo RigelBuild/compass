@@ -32,29 +32,48 @@ func TestAgentImageVCSTools(t *testing.T) {
 	}
 }
 
-// TestAgentImageGHTokenAuth installs a fixture token with the production
-// GHHostsScript, then checks gh, Git, and jj-vine's tokenCommand all return it.
+// TestAgentImageGHTokenAuth installs fixture tokens with the production
+// GHHostsScript, then checks Git and jj-vine's tokenCommand return only the
+// github.com token, never another host's.
 func TestAgentImageGHTokenAuth(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the image toolchain check")
 	}
 	const tok = "ghs_fixture"
-	install, err := runtime.GHHostsScript("/home/agent", []runtime.GHCredentials{{Host: "github.com", Token: tok}})
-	if err != nil {
-		t.Fatalf("GHHostsScript: %v", err)
-	}
-	// tokenCommand is a TOML string array; run that argv exactly as configured.
-	check := `set -eu
-test "$(gh auth token)" = "` + tok + `"
-credential=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
-case "$credential" in *"password=` + tok + `"*) ;; *) echo "git credential: $credential"; exit 1 ;; esac
-argv=$(jj config get jj-vine.github.tokenCommand | tr -d '[],"')
-test "$($argv)" = "` + tok + `"
+	// tokenCommand is a TOML string array; $argv is unquoted so it splits into argv.
+	const tokenCommand = `argv=$(jj config get jj-vine.github.tokenCommand | tr -d '[],"')
+got=$($argv 2>/dev/null || true)
 `
-	cmd := exec.Command("podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", agentImage, "sh", "-s")
-	cmd.Stdin = strings.NewReader(install + check)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("GitHub token auth smoke in %s: %v\n%s", agentImage, err, out)
+	for _, tc := range []struct {
+		name  string
+		creds []runtime.GHCredentials
+		check string
+	}{
+		{
+			name:  "github token",
+			creds: []runtime.GHCredentials{{Host: "ghe.example.com", Token: "ghs_other"}, {Host: "github.com", Token: tok}},
+			check: `credential=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
+case "$credential" in *"password=` + tok + `"*) ;; *) echo "git credential: $credential"; exit 1 ;; esac
+` + tokenCommand + `test "$got" = "` + tok + `" || { echo "tokenCommand returned $got"; exit 1; }
+`,
+		},
+		{
+			name:  "other host only",
+			creds: []runtime.GHCredentials{{Host: "ghe.example.com", Token: "ghs_other"}},
+			check: tokenCommand + `test -z "$got" || { echo "tokenCommand returned $got"; exit 1; }
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			install, err := runtime.GHHostsScript("/home/agent", tc.creds)
+			if err != nil {
+				t.Fatalf("GHHostsScript: %v", err)
+			}
+			cmd := exec.Command("podman", "run", "--rm", "-i", "-e", "HOME=/home/agent", agentImage, "sh", "-s")
+			cmd.Stdin = strings.NewReader(install + "set -eu\n" + tc.check)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("GitHub token auth smoke in %s: %v\n%s", agentImage, err, out)
+			}
+		})
 	}
 }
