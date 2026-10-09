@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -38,6 +39,15 @@ func TestChannelGroupNamesMigrationRepairsExistingRows(t *testing.T) {
 		t.Fatalf("acquire migration connection: %v", err)
 	}
 	defer conn.Release()
+	// 0001 edits cluster-global roles, so hold the lock migrate holds or a parallel package's Open races it.
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		t.Fatalf("acquire migration lock: %v", err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+			t.Errorf("release migration lock: %v", err)
+		}
+	}()
 	if err := ensureMigrationsTable(ctx, conn); err != nil {
 		t.Fatalf("ensure migrations table: %v", err)
 	}
