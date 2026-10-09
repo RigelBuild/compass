@@ -4,25 +4,19 @@
   // root stub — is the repo config.
   //
   // Goal (RIG-2432): retire Dependabot and run ONE dependency manager, matching
-  // the fleet. Grouped, scheduled PRs (one grouped PR = one branch) replace
+  // the fleet. Grouped, once-daily PRs (one grouped PR = one branch) replace
   // Dependabot's per-bump storm.
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: [
     "config:recommended",
-    "schedule:daily", // batch per language, once a day (not per-bump)
     // Pin any un-pinned workflow `uses:` to a commit SHA on sight — see the
     // github-actions manager rationale below; going beyond Dependabot (which
     // only maintained EXISTING pins), this pins NEW actions too.
     "helpers:pinGitHubActionDigests",
   ],
-  // The GHA cron that runs this bot fires `0 6 * * *` (UTC). Renovate evaluates
-  // `schedule:daily` ("before 4am") in the configured timezone; pin it to
-  // America/New_York so 06:00 UTC = 02:00 EDT / 01:00 EST lands INSIDE the daily
-  // before-4am-ET window with 2-3h of margin in both DST phases. GHA scheduled
-  // runs are best-effort and routinely start 5-30+ min late, so this margin keeps
-  // a delayed start from sliding past 04:00 ET — which would silently open zero
-  // PRs forever (RIG-1220).
-  timezone: "America/New_York",
+  // No Renovate schedule window, globally or per rule: the workflow's daily cron
+  // is the cadence. GitHub now starts that cron hours late, and a late start
+  // outside a window opens zero PRs.
   dependencyDashboard: true,
 
   // Rebase every open branch that falls behind main, not only conflicted ones.
@@ -33,7 +27,7 @@
   // last touched, and days-old red CI from a since-fixed main becomes
   // indistinguishable from a real failure. The renovate job runs on the daily GHA
   // cron plus workflow_dispatch only, never per-merge — so this rebases the open
-  // set at most once a day, off-peak, not on every push to main.
+  // set once per run, not on every push to main.
   rebaseWhen: "behind-base-branch",
 
   // Renovate owns security remediation for first-party deps (RIG-2432 moves ALL
@@ -700,11 +694,9 @@
       matchManagers: ["custom.regex"],
       matchDepNames: ["cachix/devenv-nixpkgs"],
       groupName: "devenv nixpkgs channel",
-      // DAILY, aligned to the same before-4am-ET window the daily cron lands in
-      // (see `timezone` above). This is a deliberate compass divergence from the prior art,
-      // whose rule schedules weekly (`before 4am on monday`) to bound `rolling`'s
+      // Daily, on the workflow cron's cadence. This is a deliberate compass divergence
+      // from the prior art, whose rule schedules weekly to bound `rolling`'s
       // near-daily churn — Matt's ruling for compass: nixpkgs tracks daily too.
-      schedule: ["before 4am"],
       // The repo-wide `minimumReleaseAge` + `internalChecksFilter: "strict"`
       // measures age from a release TIMESTAMP. A git-refs digest update to a moving
       // branch HEAD carries no release-age metadata, so a strict cooldown treats it
@@ -790,12 +782,10 @@
       matchManagers: ["custom.regex"],
       matchDepNames: ["RigelBuild/devenv"],
       groupName: "devenv fork (root)",
-      // DAILY, in the same before-4am-ET window the daily cron lands in (see
-      // `timezone` above) — matching the devenv-nixpkgs rule's cadence. The
+      // Daily, on the workflow cron's cadence, like the devenv-nixpkgs rule. The
       // fork's `main` moves whenever the shared canonical devenv does, and both
       // locks resolve it by default branch, so daily is what "keep current"
       // means here.
-      schedule: ["before 4am"],
       // The repo-wide `minimumReleaseAge` + `internalChecksFilter: "strict"`
       // measures age from a release TIMESTAMP. A git-refs digest update to a
       // moving branch HEAD carries no release-age metadata, so a strict
@@ -899,7 +889,6 @@
       matchManagers: ["custom.regex"],
       matchDepNames: ["RigelBuild/devenv-agent-image"],
       groupName: "devenv fork (agent-image)",
-      schedule: ["before 4am"],
       minimumReleaseAge: null,
       // The FOD refresh rides LAST, after the relock: `agent-image/devenv.lock`
       // is a declared trigger of the `agent-image/entrypoint.nix` entry (it
@@ -941,10 +930,8 @@
       // The compensating control is the mandatory human review before merge
       // (no automerge is configured — see the top of this file).
       minimumReleaseAge: null,
-      // Daily, in the same before-4am-ET window as the other currency rules:
-      // the agent image republishes on every push to main, so "keep current"
-      // means daily rather than on Renovate's default cadence.
-      schedule: ["before 4am"],
+      // Daily, on the workflow cron's cadence: the agent image republishes on
+      // every push to main, so "keep current" means every run.
       // ── The relock task. ──
       // The regex update rewrites ONLY the digest, leaving `tag` and the
       // per-layer descriptor set describing the PREVIOUS manifest. Those
@@ -989,13 +976,11 @@
       // cooldown would peg the digest permanently `pending` and cut zero PRs
       // (the RIG-1220 silent-no-updates shape), and the compensating control is
       // the mandatory human review of the PR before merge (no automerge is
-      // configured). Daily, in the same before-4am-ET window the daily cron
-      // lands in — matching the root channel rule's cadence, since `rolling`
-      // moves near-daily.
+      // configured). Daily, on the workflow cron's cadence, matching the root
+      // channel rule, since `rolling` moves near-daily.
       matchManagers: ["custom.regex"],
       matchDepNames: ["cachix/devenv-nixpkgs-agent-image"],
       groupName: "devenv nixpkgs channel (agent-image)",
-      schedule: ["before 4am"],
       minimumReleaseAge: null,
       // ── The relock task. ──
       // A SEPARATE script from the root channel's lockstep, deliberately: that

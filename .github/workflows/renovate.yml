@@ -15,11 +15,9 @@ name: renovate
 
 on:
   schedule:
-    # 06:00 UTC = 02:00 EDT / 01:00 EST — inside the before-4am-ET `schedule:daily`
-    # window with 2-3h of margin in both DST phases. GHA cron is best-effort and
-    # routinely starts 5-30+ min late; the margin absorbs that. A tighter cron
-    # (e.g. `0 7`) risks a delayed start slipping past 04:00 ET, which reproduces
-    # the silent-zero-PR symptom Renovate's `timezone`/`schedule` alignment guards.
+    # The cadence: Renovate sets no schedule window of its own, so a run opens
+    # PRs whenever GitHub starts it. GHA cron is best-effort and now starts hours
+    # late; a window would make those runs open zero PRs.
     - cron: "0 6 * * *"
   # Manual runs (the GHA analogue of a Woodpecker `manual` trigger). Also revives
   # the schedule: GHA auto-disables a scheduled workflow after 60 days without

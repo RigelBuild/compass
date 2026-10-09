@@ -54,6 +54,8 @@ type CustomManager = {
 type RenovateConfig = {
 	extends: string[];
 	timezone?: string;
+	schedule?: string[];
+	lockFileMaintenance?: { enabled?: boolean; schedule?: string[] };
 	rebaseWhen?: string;
 	minimumReleaseAge?: string;
 	packageRules: PackageRule[];
@@ -361,9 +363,18 @@ describe("tools/renovate extends", () => {
 		expect(cfg.extends).toContain("helpers:pinGitHubActionDigests");
 	});
 
-	test("schedules daily, not weekly", () => {
-		expect(cfg.extends).toContain("schedule:daily");
-		expect(cfg.extends).not.toContain("schedule:weekly");
+	// A Renovate schedule window opens zero PRs once GitHub starts the cron hours
+	// late, so the workflow's daily cron alone sets the cadence.
+	test("sets no Renovate schedule window, globally or per rule", () => {
+		expect(
+			cfg.extends.filter(
+				(p) => p.startsWith("schedule:") || p.startsWith(":timezone("),
+			),
+		).toEqual([]);
+		expect(cfg.timezone).toBeUndefined();
+		expect(cfg.schedule).toBeUndefined();
+		expect(cfg.lockFileMaintenance).toBeUndefined();
+		expect(cfg.packageRules.filter((r) => "schedule" in r)).toEqual([]);
 	});
 });
 
@@ -511,9 +522,9 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	});
 
 	// Solo-branched: its own unique groupName so the branch-mode lockstep task owns
-	// the single per-branch task slot; scheduled; cooldown-nulled (a git-refs
-	// digest carries no release age, so a strict cooldown would defer it forever).
-	test("the devenv rule is solo-grouped, scheduled, and cooldown-exempt", () => {
+	// the single per-branch task slot; cooldown-nulled (a git-refs digest carries
+	// no release age, so a strict cooldown would defer it forever).
+	test("the devenv rule is solo-grouped and cooldown-exempt", () => {
 		expect(devenvRule).toBeDefined();
 		expect(devenvRule?.matchDepNames).toContain("cachix/devenv-nixpkgs");
 		expect(devenvRule?.groupName).toBe("devenv nixpkgs channel");
@@ -521,7 +532,6 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 			(r) => r.groupName === "devenv nixpkgs channel",
 		);
 		expect(sharing).toHaveLength(1);
-		expect(devenvRule?.schedule?.length).toBeGreaterThan(0);
 		expect(devenvRule?.minimumReleaseAge).toBeNull();
 	});
 
@@ -703,12 +713,12 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		},
 	);
 
-	// Solo-branched, scheduled, cooldown-nulled — the devenv-nixpkgs rule's shape.
+	// Solo-branched, cooldown-nulled — the devenv-nixpkgs rule's shape.
 	// The groupName must be UNIQUE to this rule: it is what makes the branch-mode
 	// relock task safe (one branch-mode task slot per branch, so the dep must own
 	// its branch) AND what keeps the two locks on independent cadences.
 	test.each(forkScopes)(
-		"the $label fork rule is solo-grouped, scheduled, and cooldown-exempt",
+		"the $label fork rule is solo-grouped and cooldown-exempt",
 		({ depName, groupName }) => {
 			const rule = ruleFor(depName);
 			expect(rule).toBeDefined();
@@ -717,7 +727,6 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			expect(
 				cfg.packageRules.filter((r) => r.groupName === groupName),
 			).toHaveLength(1);
-			expect(rule?.schedule?.length).toBeGreaterThan(0);
 			// A git-refs digest on a moving branch HEAD carries no release age, so
 			// the repo-wide strict cooldown would peg it permanently `pending` and
 			// cut zero PRs (the RIG-1220 silent-no-updates shape).
@@ -950,18 +959,17 @@ describe("tools/renovate devenv nixpkgs channel: agent base image", () => {
 		).toBe(2);
 	});
 
-	// Solo-branched, scheduled, cooldown-nulled — its siblings' shape. The
+	// Solo-branched, cooldown-nulled — its siblings' shape. The
 	// groupName must be UNIQUE to this rule: it is what makes the branch-mode
 	// relock task safe (one branch-mode task slot per branch, so the dep must own
 	// its branch) AND what keeps the two channel pins on independent cadences.
-	test("the rule is solo-grouped, scheduled, and cooldown-exempt", () => {
+	test("the rule is solo-grouped and cooldown-exempt", () => {
 		expect(rule).toBeDefined();
 		expect(rule?.matchManagers).toContain("custom.regex");
 		expect(rule?.groupName).toBe(GROUP);
 		expect(cfg.packageRules.filter((r) => r.groupName === GROUP)).toHaveLength(
 			1,
 		);
-		expect(rule?.schedule?.length).toBeGreaterThan(0);
 		// A git-refs digest on a moving branch HEAD carries no release age, so the
 		// repo-wide strict cooldown would peg it permanently `pending` and cut
 		// zero PRs (the RIG-1220 silent-no-updates shape).
