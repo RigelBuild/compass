@@ -1988,7 +1988,9 @@ jobs:
       # own agent-container spawns) need the userns + mount caps the default
       # container sandbox withholds.
       image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
-      options: --privileged
+      # --init: the runner's `tail` PID 1 never reaps, so a lingering stack child
+      # orphaned by `compass-stack up` would stay a zombie after `down`.
+      options: --privileged --init
     # Mirror the moon battery's dispatch-aware gate guard: run on
     # push/schedule/pull_request and on a base-re-point re-trigger
     # (workflow_dispatch with a non-empty pr); stay off the fixture-regen
