@@ -444,6 +444,56 @@ func TestInstallRemovesStaleGHHostsAfterLastCredentialDisappears(t *testing.T) {
 	}
 }
 
+// TestInstallGHHostsConfig creates the gh config gh needs without overwriting
+// an existing user config.
+func TestInstallGHHostsConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []byte
+		want     []byte
+	}{
+		{
+			name: "creates version config",
+			want: []byte("version: \"1\"\n"),
+		},
+		{
+			name:     "preserves existing config",
+			existing: []byte("version: \"7\"\nuser: keep\n"),
+			want:     []byte("version: \"7\"\nuser: keep\n"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			configPath := filepath.Join(home, ".config", "gh", "config.yml")
+			if tt.existing != nil {
+				if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+					t.Fatalf("create gh config dir: %v", err)
+				}
+				if err := os.WriteFile(configPath, tt.existing, 0o600); err != nil {
+					t.Fatalf("write existing gh config: %v", err)
+				}
+			}
+			rt := &scriptRunner{}
+			m := NewSecretMaterializer(rt, discardLog())
+			resolved := []secrets.ResolvedSecret{
+				{Name: "GH", Value: "ghs_fake", Kind: secrets.SecretGH, Host: "github.com", Delivery: secrets.DeliveryFile},
+			}
+			if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, resolved); err != nil {
+				t.Fatalf("Install = %v, want nil", err)
+			}
+			got, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("gh config.yml not written: %v", err)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("gh config.yml = %q, want %q", got, tt.want)
+			}
+			assert0600(t, configPath)
+		})
+	}
+}
+
 // TestGHHostsScriptSameHostCollapsesToOneBlock: two gh credentials naming the
 // SAME host must collapse to a single host block (last wins). gh loads
 // hosts.yml with yaml.v3, which rejects a duplicate mapping key — so emitting
