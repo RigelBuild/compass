@@ -1,4 +1,4 @@
--- 0001_init: the WHOLE compass v0.6 store of record, as a single squashed
+-- 0001_init: the complete compass v0.6 store schema in one squashed migration.
 -- schema. This one file produces the complete schema the Server serves —
 -- accounts and their user/agent subtypes, the agent tree, channel groups,
 -- channels + membership + policy, topics and topic-scoped messages, the pinned
@@ -8,16 +8,11 @@
 -- authored-artifact ownership, and tenants — the isolation root every
 -- tenant-owned table hangs off (RIG-2861).
 --
--- History note: this replaces the original sequential 0001..0016 migration
--- chain PLUS every migration added after it, all folded back into this single
--- init. Pre-dogfood — zero users, zero deployed databases — so migration
--- history was dead weight and Matt ruled (2026-08-07) to collapse it; the
--- 2026-10-05 dogfood reset (wiped dev database) folded 0002..0008 the same
--- way. It is a schema RESET, correct ONLY because no deployed DB exists to
--- migrate; the resulting schema is identical (pg_dump) to applying the folded
--- files in order. The `schema_migrations` bookkeeping table is deliberately
--- NOT here: the Go runner creates it (store.go ensureMigrationsTable) so it
--- can record v1 itself.
+-- History note: this replaces the original sequential migration chain, all
+-- folded back into this init before any deployed database depended on it.
+-- Schema changes require a dev DB reset; the resulting schema matches the
+-- full migration chain when applied in order. schema_migrations is deliberately
+-- NOT here: the Go runner creates it and records v1 itself.
 --
 -- Convention: text ids are server-assigned (the store generates a UUID per
 -- row); FKs are ON DELETE RESTRICT so a referenced account/channel/agent cannot
@@ -117,6 +112,21 @@ CREATE INDEX agent_accounts_owner_idx ON agent_accounts (owner_user_id);
 -- The "children of this parent" read direction for the agent tree.
 CREATE INDEX agent_accounts_parent_idx ON agent_accounts (parent_agent_id);
 
+-- Gateway tokens are looked up before a tenant is known; store only their hashes.
+CREATE TABLE gateway_tokens (
+    hash             BYTEA       PRIMARY KEY,
+    agent_account_id TEXT        NOT NULL,
+    owner_user_id    TEXT        NOT NULL,
+    tenant_id        TEXT        NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at       TIMESTAMPTZ,
+    FOREIGN KEY (agent_account_id, owner_user_id)
+        REFERENCES agent_accounts (account_id, owner_user_id) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX gateway_tokens_live_agent_idx ON gateway_tokens (agent_account_id)
+    WHERE revoked_at IS NULL;
+
 -- System accounts: the reserved platform sender (@compass), a distinct
 -- first-class subtype alongside user_accounts and agent_accounts. No payload
 -- columns — the row's existence is the discriminator (there is exactly one,
@@ -167,11 +177,34 @@ CREATE TABLE channel_groups (
     parent_group_id TEXT REFERENCES channel_groups (id) ON DELETE RESTRICT,
     owner_user_id   TEXT NOT NULL DEFAULT '',
     visibility      SMALLINT NOT NULL DEFAULT 0 CHECK (visibility IN (0, 1)),
-    tenant_id       TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+    tenant_id       TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    namespace_owner_id TEXT NOT NULL
 );
 
 CREATE INDEX channel_groups_parent_idx ON channel_groups (parent_group_id);
 CREATE INDEX channel_groups_owner_idx ON channel_groups (owner_user_id);
+
+CREATE UNIQUE INDEX channel_groups_owner_parent_name_key
+    ON channel_groups ((CASE WHEN parent_group_id IS NULL THEN namespace_owner_id ELSE '' END),
+                       coalesce(parent_group_id, ''), name)
+    WHERE NOT (parent_group_id IS NULL AND name IN ('__dm__', '__linear__', '__coordination__'));
+
+ALTER TABLE channel_groups ADD CONSTRAINT channel_groups_name_no_slash
+    CHECK (position('/' IN name) = 0);
+
+CREATE FUNCTION channel_groups_fill_namespace() RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.namespace_owner_id IS NULL THEN
+        NEW.namespace_owner_id := coalesce(
+            (SELECT a.owner_user_id FROM agent_accounts AS a WHERE a.account_id = NEW.owner_user_id),
+            NEW.owner_user_id);
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER channel_groups_fill_namespace BEFORE INSERT ON channel_groups
+    FOR EACH ROW EXECUTE FUNCTION channel_groups_fill_namespace();
 
 -- ── Channels ────────────────────────────────────────────────────────────────
 -- A named conversation in a group (group_id NULL = ungrouped, owner-scoped).
@@ -293,7 +326,8 @@ CREATE TABLE messages (
     -- non-NULL. Unix-ms BIGINT per the schema convention (at_unix_ms above),
     -- never a SQL TIMESTAMP.
     mentions_routed_at BIGINT,
-    tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+    tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    turn_sequence      BIGINT NOT NULL DEFAULT 0 CHECK (turn_sequence >= 0)
 );
 
 -- Pre-settle mention-loss recovery scan (RIG-2490 T1). The scan's only query is
@@ -935,6 +969,19 @@ CREATE TABLE forge_repo_subscriptions (
     PRIMARY KEY (tenant_id, forge_provider, forge_host, repo)
 );
 
+-- Owner-managed allowlist of forge coordinates an account may write.
+CREATE TABLE account_forge_scopes (
+    tenant_id      TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    account_id     TEXT NOT NULL REFERENCES user_accounts (account_id) ON DELETE RESTRICT,
+    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
+    forge_host     TEXT NOT NULL,
+    repo           TEXT NOT NULL CHECK (repo <> ''),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, account_id, forge_provider, forge_host, repo)
+);
+
+CREATE INDEX account_forge_scopes_coordinate_idx
+    ON account_forge_scopes (tenant_id, forge_provider, forge_host, account_id);
 -- DL-053's forge_subscriptions, renamed agent_forge_subscriptions (OQ-C) and
 -- coordinate-aligned. The UNIQUE (agent, coordinate, kind, number, project)
 -- makes an agent's subscription to one artifact (or one container) idempotent.
@@ -1219,6 +1266,119 @@ CREATE TABLE compute_usage_events (
 
 CREATE INDEX compute_usage_events_occurred_at_idx ON compute_usage_events (tenant_id, occurred_at);
 
+-- Derived hourly and daily totals for closed compute intervals.
+CREATE TABLE compute_usage_rollups_hourly (
+    tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    bucket_start     TIMESTAMPTZ NOT NULL,
+    owner_user_id    TEXT        NOT NULL,
+    agent_account_id TEXT        NOT NULL,
+    active_ms        BIGINT      NOT NULL,
+    intervals        BIGINT      NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id)
+);
+
+CREATE TABLE compute_usage_rollups_daily (
+    tenant_id        TEXT        NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    bucket_start     TIMESTAMPTZ NOT NULL,
+    owner_user_id    TEXT        NOT NULL,
+    agent_account_id TEXT        NOT NULL,
+    active_ms        BIGINT      NOT NULL,
+    intervals        BIGINT      NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, bucket_start, owner_user_id, agent_account_id)
+);
+
+CREATE TABLE compute_usage_prune_horizon (
+    singleton  BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    horizon    TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO compute_usage_prune_horizon (horizon) VALUES ('-infinity');
+
+-- Rebuild the UTC buckets when an interval's end event is inserted.
+CREATE FUNCTION roll_up_compute_usage_end() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    started compute_usage_events%ROWTYPE;
+    start_ms BIGINT;
+    end_ms BIGINT;
+    width_ms BIGINT;
+    rollup_bucket TIMESTAMPTZ;
+    first_bucket TIMESTAMPTZ;
+    last_bucket TIMESTAMPTZ;
+    bucket_ms BIGINT;
+    active_ms BIGINT;
+BEGIN
+    IF NEW.kind <> 'end' THEN
+        RETURN NEW;
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtext('compute_usage:' || NEW.tenant_id));
+    -- No horizon clipping: an interval open at prune time is in no frozen bucket yet.
+    SELECT events.* INTO started
+      FROM compute_usage_events AS events
+     WHERE events.tenant_id = NEW.tenant_id
+       AND events.interval_id = NEW.interval_id
+       AND events.kind = 'start';
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
+
+    start_ms := floor(extract(epoch FROM started.occurred_at) * 1000)::bigint;
+    end_ms := floor(extract(epoch FROM NEW.occurred_at) * 1000)::bigint;
+
+    FOREACH width_ms IN ARRAY ARRAY[3600000::bigint, 86400000::bigint] LOOP
+        IF width_ms = 3600000 THEN
+            first_bucket := date_trunc('hour', started.occurred_at, 'UTC');
+            last_bucket := greatest(first_bucket, date_trunc('hour', NEW.occurred_at - interval '1 millisecond', 'UTC'));
+        ELSE
+            first_bucket := date_trunc('day', started.occurred_at, 'UTC');
+            last_bucket := greatest(first_bucket, date_trunc('day', NEW.occurred_at - interval '1 millisecond', 'UTC'));
+        END IF;
+
+        rollup_bucket := first_bucket;
+        WHILE rollup_bucket <= last_bucket LOOP
+            bucket_ms := floor(extract(epoch FROM rollup_bucket) * 1000)::bigint;
+            active_ms := greatest(0, least(end_ms, bucket_ms + width_ms) - greatest(start_ms, bucket_ms));
+            IF width_ms = 3600000 THEN
+                INSERT INTO compute_usage_rollups_hourly (
+                    tenant_id, bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+                ) VALUES (
+                    NEW.tenant_id, rollup_bucket, started.owner_user_id, started.agent_account_id,
+                    active_ms, CASE WHEN rollup_bucket = first_bucket THEN 1 ELSE 0 END
+                )
+                ON CONFLICT (tenant_id, bucket_start, owner_user_id, agent_account_id)
+                DO UPDATE SET
+                    active_ms = compute_usage_rollups_hourly.active_ms + EXCLUDED.active_ms,
+                    intervals = compute_usage_rollups_hourly.intervals + EXCLUDED.intervals;
+            ELSE
+                INSERT INTO compute_usage_rollups_daily (
+                    tenant_id, bucket_start, owner_user_id, agent_account_id, active_ms, intervals
+                ) VALUES (
+                    NEW.tenant_id, rollup_bucket, started.owner_user_id, started.agent_account_id,
+                    active_ms, CASE WHEN rollup_bucket = first_bucket THEN 1 ELSE 0 END
+                )
+                ON CONFLICT (tenant_id, bucket_start, owner_user_id, agent_account_id)
+                DO UPDATE SET
+                    active_ms = compute_usage_rollups_daily.active_ms + EXCLUDED.active_ms,
+                    intervals = compute_usage_rollups_daily.intervals + EXCLUDED.intervals;
+            END IF;
+            rollup_bucket := rollup_bucket + CASE WHEN width_ms = 3600000 THEN interval '1 hour' ELSE interval '24 hours' END;
+        END LOOP;
+    END LOOP;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER compute_usage_rollup_after_end
+AFTER INSERT ON compute_usage_events
+FOR EACH ROW EXECUTE FUNCTION roll_up_compute_usage_end();
+
 -- ── First-run tour state ─────────────────────────────────────────────────────
 -- Per-account first-run tour progress. The composite key scopes each account's
 -- one-way first-run claim to its tenant.
@@ -1303,6 +1463,13 @@ BEGIN
     EXECUTE format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA %I TO compass_app, compass_system', sch);
 END $$;
 
+GRANT SELECT, INSERT, UPDATE, DELETE ON gateway_tokens TO compass_app, compass_system;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON compute_usage_rollups_hourly, compute_usage_rollups_daily,
+       compute_usage_prune_horizon
+    TO compass_app, compass_system;
+GRANT SELECT, INSERT, DELETE ON account_forge_scopes TO compass_app, compass_system;
+REVOKE UPDATE ON account_forge_scopes FROM compass_app, compass_system;
 -- server_key_state withholds DELETE, revoked here because the schema-wide grant
 -- above hands it out with everything else. The tripwire row is written once at
 -- provision and updated in place on rotation, so DELETE is never needed — and
@@ -1312,15 +1479,17 @@ END $$;
 -- pinned rather than incidental.
 REVOKE DELETE ON server_key_state FROM compass_app, compass_system;
 
--- token_usage_prune_horizon holds the one row inserted above. Re-inserting it
--- at '-infinity' would let a rebuild drop pruned-day rollups; UPDATE stays.
+-- token_usage_prune_horizon holds the one global row. Re-inserting it at
+-- '-infinity' would let a rebuild drop pruned-day rollups; UPDATE stays.
 REVOKE INSERT, DELETE ON token_usage_prune_horizon FROM compass_app, compass_system;
 
--- compute_usage_events is an append-only log: rows are inserted, never rewritten.
 REVOKE UPDATE, DELETE ON compute_usage_events FROM compass_app, compass_system;
+GRANT SELECT, INSERT ON compute_usage_events TO compass_app;
+GRANT SELECT, INSERT, DELETE ON compute_usage_events TO compass_system;
+
+REVOKE INSERT, DELETE ON compute_usage_prune_horizon FROM compass_app, compass_system;
 
 GRANT EXECUTE ON FUNCTION compass_labels_text(TEXT[]) TO compass_app, compass_system;
-
 -- ENABLE + FORCE RLS + the per-tenant policy on every tenant-owned table. The
 -- policy shape is the T2 form: a scalar-subquery GUC read (evaluated once
 -- per statement), a non-empty guard (fail-closed on an unset/empty GUC), and
@@ -1340,9 +1509,9 @@ DECLARE
         'agent_forge_subscriptions', 'forge_authored_artifacts',
         'linear_agent_sessions',
         'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
-        'forge_state_transitions',
+        'forge_state_transitions', 'account_forge_scopes',
         'token_usage_events', 'token_usage_rollups_hourly', 'token_usage_rollups_daily',
-        'compute_usage_events', 'account_tour_state'
+        'compute_usage_events', 'compute_usage_rollups_hourly', 'compute_usage_rollups_daily', 'account_tour_state'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -1425,6 +1594,9 @@ DECLARE
         'forge_state_transitions',
         'server_secrets',
         'server_key_state',
+        'compute_usage_rollups_hourly',
+        'compute_usage_rollups_daily',
+        'compute_usage_prune_horizon',
         'token_usage_rollups_hourly',
         'token_usage_rollups_daily',
         'token_usage_prune_horizon',
