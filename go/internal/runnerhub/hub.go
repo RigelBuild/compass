@@ -395,6 +395,8 @@ type Hub struct {
 	// it; read under mu. Nil-safe: a hub with no transcript store fails a
 	// transcript commit closed CodeUnavailable.
 	transcripts TranscriptStore
+	// sessionBlobs stores verified content-addressed images across resumes.
+	sessionBlobs SessionBlobStore
 	// reader is the durable transcript READ store T5's resume-body reconstructor reads
 	// through. Nil until SetTranscriptReader; read under mu. Nil-safe fails
 	// ReconstructSessionBody closed CodeUnavailable — the resume read leg is unmounted.

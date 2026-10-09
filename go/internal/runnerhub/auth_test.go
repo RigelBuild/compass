@@ -194,6 +194,56 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 	})
 }
 
+func TestSessionBlobRPCsRejectNonRunnerSubject(t *testing.T) {
+	h := newHubOnly()
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{
+		"account-tok": {subj: store.Subject{Kind: store.SubjectAccount, ID: "account-1"}},
+	}}
+	url := newMountedH2CServer(t, h, resolver.resolve)
+	client := newRawRunnerClient(t, url, "account-tok")
+	_, err := client.RelaySessionBlob(context.Background(), connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{}))
+	assertUnauthenticated(t, err)
+	stream, err := client.FetchSessionBlobs(context.Background(), connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{}))
+	if err != nil {
+		assertUnauthenticated(t, err)
+		return
+	}
+	if stream.Receive() {
+		t.Fatal("FetchSessionBlobs account token unexpectedly received a frame")
+	}
+	assertUnauthenticated(t, stream.Err())
+}
+
+// Direct handler calls also enforce SubjectRunner, independent of the door.
+func TestSessionBlobHandlersRejectAccountSubject(t *testing.T) {
+	handler := NewHandler(newHubOnly(), nil, nil)
+	ctx := withRunnerSubject(context.Background(), store.Subject{Kind: store.SubjectAccount, ID: "account-1"})
+	_, err := handler.RelaySessionBlob(ctx, connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{}))
+	assertUnauthenticated(t, err)
+	err = handler.FetchSessionBlobs(ctx, connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{}), nil)
+	assertUnauthenticated(t, err)
+}
+
+func TestSessionBlobRPCsRegisteredOverWire(t *testing.T) {
+	h := newHubOnly()
+	url := newMountedH2CServer(t, h, runnerResolverForFetch().resolve)
+	client := newRawRunnerClient(t, url, "runner-tok")
+	_, err := client.RelaySessionBlob(context.Background(), connect.NewRequest(&compassv1internal.RelaySessionBlobRequest{}))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("RelaySessionBlob without store = %v, want Unavailable (err %v)", got, err)
+	}
+	stream, err := client.FetchSessionBlobs(context.Background(), connect.NewRequest(&compassv1internal.FetchSessionBlobsRequest{}))
+	if err == nil {
+		if stream.Receive() {
+			t.Fatal("FetchSessionBlobs without store unexpectedly received a frame")
+		}
+		err = stream.Err()
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("FetchSessionBlobs without store = %v, want Unavailable (err %v)", got, err)
+	}
+}
+
 // The positive wire path: a SubjectRunner token is accepted end-to-end — Enroll
 // succeeds through the mounted door. Proves the door does not reject everything.
 func TestRunnerTokenAcceptedOverWire(t *testing.T) {

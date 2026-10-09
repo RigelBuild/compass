@@ -4,12 +4,15 @@ package runnerhub
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -105,6 +108,62 @@ func openTenantBSession(t *testing.T, ctx context.Context) (*store.Store, store.
 		t.Fatalf("RecordSessionBinding: %v", err)
 	}
 	return st, agent, ctxB
+}
+
+type sessionBlobObjects map[string][]byte
+
+func (o sessionBlobObjects) PutSegment(_ context.Context, key string, body []byte) error {
+	o[key] = append([]byte(nil), body...)
+	return nil
+}
+
+func (o sessionBlobObjects) GetSegment(_ context.Context, key string) ([]byte, error) {
+	data, ok := o[key]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return append([]byte(nil), data...), nil
+}
+
+// A tenant-B Runner relay must stamp the session blob row with tenant B.
+func TestRelaySessionBlobUsesBoundSessionTenant(t *testing.T) {
+	ctx := context.Background()
+	st, agent, ctxB := openTenantBSession(t, ctx)
+	const sessionID = "sess-b-blob"
+	if err := st.RecordAgentSession(ctxB, sessionID, agent.ID); err != nil {
+		t.Fatalf("RecordAgentSession: %v", err)
+	}
+	data := []byte("tenant B image")
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	objects := sessionBlobObjects{}
+	st.SetObjectStore(objects)
+
+	hub := newHubOnly()
+	hub.SetSessionBindingStore(st)
+	hub.SetSessionBlobStore(st)
+	if _, err := hub.enroll(ctx, "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); err != nil {
+		t.Fatalf("enroll Runner: %v", err)
+	}
+	if _, _, err := st.RecordSessionBinding(ctxB, sessionID, agent.ID, "runner-1"); err != nil {
+		t.Fatalf("RecordSessionBinding after enroll: %v", err)
+	}
+
+	if _, err := hub.RelaySessionBlob(ctx, "runner-1", &compassv1internal.RelaySessionBlobRequest{
+		SessionId: sessionID,
+		Blob:      &compassv1internal.PutSessionBlobRequest{Sha256: hash, Data: data},
+	}); err != nil {
+		t.Fatalf("RelaySessionBlob: %v", err)
+	}
+	var tenant string
+	if err := st.WithTx(ctxB, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctxB, "SELECT tenant_id FROM agent_session_blobs WHERE session_id = $1 AND sha256 = $2", sessionID, hash).Scan(&tenant)
+	}); err != nil {
+		t.Fatalf("read tenant B blob row: %v", err)
+	}
+	wantTenant, ok := store.TenantFromContext(ctxB)
+	if !ok || tenant != string(wantTenant) {
+		t.Fatalf("blob tenant = %q, want tenant B %q", tenant, wantTenant)
+	}
 }
 
 // seedTenantRow inserts a non-bootstrap tenant. tenants is RLS-exempt, so a plain
