@@ -421,6 +421,10 @@ type capturePublish struct {
 	bindReqs []*compassv1internal.BindLifetimeRequest
 	bindErr  error
 	onBind   func()
+	// Session-blob responses and request history support resume-path coverage.
+	blobFrames []*compassv1internal.FetchSessionBlobsResponse
+	blobErr    error
+	blobReqs   []*compassv1internal.FetchSessionBlobsRequest
 }
 
 func newCapturePublish() *capturePublish {
@@ -484,6 +488,22 @@ func (c *capturePublish) FetchAgentConfig(_ context.Context, _ *connect.Request[
 	}
 	if len(bundle.Tarball) > 0 {
 		if err := stream.Send(chunkFrame(bundle.Tarball)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *capturePublish) FetchSessionBlobs(_ context.Context, req *connect.Request[compassv1internal.FetchSessionBlobsRequest], stream *connect.ServerStream[compassv1internal.FetchSessionBlobsResponse]) error {
+	c.mu.Lock()
+	c.blobReqs = append(c.blobReqs, req.Msg)
+	frames, err := c.blobFrames, c.blobErr
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, frame := range frames {
+		if err := stream.Send(frame); err != nil {
 			return err
 		}
 	}

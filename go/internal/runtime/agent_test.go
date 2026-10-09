@@ -8,8 +8,13 @@ package runtime
 // break.
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -466,5 +471,112 @@ func TestCreateArgsIgnoresEgress(t *testing.T) {
 	want := createArgs(base)
 	if !slices.Equal(got, want) {
 		t.Errorf("createArgs changed when Egress was set:\n with = %q\n without = %q", got, want)
+	}
+}
+
+func TestWriteAgentFilesUsesOnePrivateAgentExec(t *testing.T) {
+	fake := newFakeRuntime(t)
+	rt := NewAgentRuntime(fake)
+	first := []byte{0, 1, 2, 0xfe, 0xff}
+	second := []byte("second blob")
+	firstDigest := sha256.Sum256(first)
+	secondDigest := sha256.Sum256(second)
+	files := []AgentFile{
+		{Name: hex.EncodeToString(firstDigest[:]), Data: first},
+		{Name: hex.EncodeToString(secondDigest[:]), Data: second},
+	}
+	wantFiles := append([]AgentFile(nil), files...)
+
+	if err := rt.WriteAgentFiles(t.Context(), "workload", 4242, "/home/agent", ".omp/agent/blobs", files); err != nil {
+		t.Fatalf("WriteAgentFiles = %v, want success", err)
+	}
+	execs := fake.execsSnapshot()
+	if len(execs) != 1 {
+		t.Fatalf("one-shot exec count = %d, want one tar exec", len(execs))
+	}
+	exec := execs[0]
+	if exec.User == nil || *exec.User != "4242" {
+		t.Fatalf("exec user = %v, want 4242", exec.User)
+	}
+	if exec.Workdir == nil || *exec.Workdir != "/home/agent" {
+		t.Fatalf("exec workdir = %v, want /home/agent", exec.Workdir)
+	}
+	if exec.Stdin == nil {
+		t.Fatal("tar archive missing from exec stdin")
+	}
+	if len(exec.Command) != 5 || exec.Command[0] != "sh" || exec.Command[1] != "-c" || exec.Command[3] != "sh" || exec.Command[4] != "/home/agent/.omp/agent/blobs" {
+		t.Fatalf("exec command = %q, want fixed shell script and positional blob directory", exec.Command)
+	}
+	if got, want := exec.Command[2], `set -eu; umask 077; mkdir -p "$1"; tar -x -f - -C "$1"`; got != want {
+		t.Fatalf("archive command = %q, want %q", got, want)
+	}
+
+	reader := tar.NewReader(strings.NewReader(*exec.Stdin))
+	for i, want := range wantFiles {
+		header, err := reader.Next()
+		if err != nil {
+			t.Fatalf("read tar entry %q: %v", want.Name, err)
+		}
+		if header.Name != want.Name || header.Typeflag != tar.TypeReg || header.Mode != 0o600 || header.Size != int64(len(want.Data)) {
+			t.Fatalf("tar header = %+v, want regular 0600 %q of %d bytes", header, want.Name, len(want.Data))
+		}
+		got, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("read tar data %q: %v", want.Name, err)
+		}
+		if !bytes.Equal(got, want.Data) {
+			t.Fatalf("tar entry %q data = %v, want %v", want.Name, got, want.Data)
+		}
+		if files[i].Data != nil {
+			t.Errorf("AgentFile %q retained its payload after archiving", want.Name)
+		}
+	}
+	if header, err := reader.Next(); err != io.EOF {
+		t.Fatalf("extra tar entry = %+v, %v; want EOF", header, err)
+	}
+}
+
+func TestWriteAgentFilesSplitsArchivesUnderExecLimit(t *testing.T) {
+	fake := newFakeRuntime(t)
+	rt := NewAgentRuntime(fake)
+	const blobBytes = 9 << 20
+	files := make([]AgentFile, 3)
+	wantNames := make([]string, len(files))
+	for i := range files {
+		data := bytes.Repeat([]byte{byte(i + 1)}, blobBytes)
+		digest := sha256.Sum256(data)
+		files[i] = AgentFile{Name: hex.EncodeToString(digest[:]), Data: data}
+		wantNames[i] = files[i].Name
+	}
+
+	if err := rt.WriteAgentFiles(t.Context(), "workload", 4242, "/home/agent", ".omp/agent/blobs", files); err != nil {
+		t.Fatalf("WriteAgentFiles = %v, want success", err)
+	}
+	var gotNames []string
+	for _, exec := range fake.execsSnapshot() {
+		if exec.Stdin == nil {
+			t.Fatal("tar archive missing from exec stdin")
+		}
+		// guestd reads at most 16 MiB per Exec request, stdin included.
+		if len(*exec.Stdin) >= 16<<20 {
+			t.Fatalf("exec stdin = %d bytes, want under guestd's 16 MiB read cap", len(*exec.Stdin))
+		}
+		reader := tar.NewReader(strings.NewReader(*exec.Stdin))
+		for {
+			header, err := reader.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("read tar entry: %v", err)
+			}
+			if header.Size != blobBytes {
+				t.Fatalf("tar entry %q size = %d, want %d", header.Name, header.Size, blobBytes)
+			}
+			gotNames = append(gotNames, header.Name)
+		}
+	}
+	if !slices.Equal(gotNames, wantNames) {
+		t.Fatalf("archived names = %q, want %q", gotNames, wantNames)
 	}
 }
