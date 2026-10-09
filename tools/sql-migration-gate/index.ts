@@ -297,12 +297,13 @@ export async function checkMigrationImmutability(
 		return {
 			name,
 			code: 1,
-			output: violations
-				.map(
+			output: [
+				...violations.map(
 					(path) =>
 						`${path}: migrations are append-only; add a new numbered migration instead.`,
-				)
-				.join("\n"),
+				),
+				`base ${mergeBase.slice(0, 12)} migration add order: ${addedInOrder.join(", ") || "(none)"}`,
+			].join("\n"),
 		};
 	} catch (error) {
 		return {
