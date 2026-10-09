@@ -274,7 +274,7 @@ export async function checkMigrationImmutability(
 				await gitStdout(root, [
 					"log",
 					"--first-parent",
-					"-m",
+					"--diff-merges=first-parent",
 					"--no-renames",
 					"--diff-filter=A",
 					"--reverse",
