@@ -2557,7 +2557,10 @@ describe("main activates loop OpenTelemetry", () => {
 // is still open at close (run() cancels it), so no prompt starts; with it off the deliver
 // prompts at once.
 describe("main reads COMPASS_AGENT_BATCHING", () => {
-	async function runIdleDeliver(batching: string | undefined) {
+	async function runIdleDeliver(
+		batching: string | undefined,
+		batchWindow?: "off",
+	) {
 		const log = emptyLog();
 		const session = fakeSession();
 		const prompts: string[] = [];
@@ -2572,15 +2575,18 @@ describe("main reads COMPASS_AGENT_BATCHING", () => {
 				HOME: scratch(),
 				...(batching === undefined ? {} : { COMPASS_AGENT_BATCHING: batching }),
 			},
-			deps(
-				session,
-				fakeCarrier(log, {
-					control: async function* () {
-						yield replayCompleteOp(1n);
-						yield deliverOp(2n, "m1", "hi");
-					},
-				}),
-			),
+			{
+				...deps(
+					session,
+					fakeCarrier(log, {
+						control: async function* () {
+							yield replayCompleteOp(1n);
+							yield deliverOp(2n, "m1", "hi");
+						},
+					}),
+				),
+				...(batchWindow === undefined ? {} : { batchWindow }),
+			},
 		);
 		const pendingCounts = log.publishFrames.flatMap((f) => {
 			const inner = f.frame?.frame;
@@ -2607,6 +2613,12 @@ describe("main reads COMPASS_AGENT_BATCHING", () => {
 
 	test('"1" is off: only the exact value "on" enables batching', async () => {
 		const { prompts, pendingCounts } = await runIdleDeliver("1");
+		expect(prompts).toHaveLength(1);
+		expect(pendingCounts).toEqual([]);
+	});
+
+	test('batchWindow "off" overrides env "on": the idle deliver prompts at once', async () => {
+		const { prompts, pendingCounts } = await runIdleDeliver("on", "off");
 		expect(prompts).toHaveLength(1);
 		expect(pendingCounts).toEqual([]);
 	});
