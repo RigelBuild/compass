@@ -5,7 +5,8 @@ package server
 // Store-gated end-to-end proofs for the RIG-2883 board webhook-ingestion serve wiring:
 // buildBoardIngestLane's pieces driven over the REAL signed ingress against a REAL
 // Postgres. Covers a signed `issues` webhook landing durably, and App-absent boot
-// (all-nil, with warnDisabledBoardIngestion Warning on enabled rows). Behind `pgtest`.
+// (all-nil, with warnDisabledBoardIngestion Warning on enabled rows), and the
+// scope gate driven through the production builder. Behind `pgtest`.
 
 import (
 	"context"
@@ -13,7 +14,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +25,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/forge"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/secrets"
@@ -576,4 +580,96 @@ func hasLinearWebhookRoute(t *testing.T, srv *http.Server) bool {
 	// An unmounted path 404s. A mounted handler rejects an unsigned body
 	// (401/400) — either way it is NOT a 404, which is the distinction here.
 	return rec.Code != http.StatusNotFound
+}
+
+func TestBuildForgeWriteServiceEnforcesScopesBehaviorally(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		scopeEnforcementOff bool
+	}{
+		{name: "zero-value config rejects ungranted write"},
+		{name: "explicit opt-out allows write", scopeEnforcementOff: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background() // test root
+			st := forgeTestStore(t)
+			owner, err := st.CreateUser(ctx, store.NewUser{Handle: "scope-owner", DisplayName: "Scope Owner"})
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			agent, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "scope-agent", DisplayName: "Scope Agent"})
+			if err != nil {
+				t.Fatalf("CreateAgent: %v", err)
+			}
+
+			primary, providerCalls := newScopeTestGitHubProvider(t)
+			const reviewerKey = "REVIEWER_APP_KEY"
+			cfg := ServeConfig{Forge: ForgeConfig{
+				Host:                     forgeTestHost,
+				ScopeEnforcementDisabled: tc.scopeEnforcementOff,
+				App:                      ForgeAppConfig{AppID: 42, InstallationID: 7, AppPrivateKeySecret: "APP_KEY"},
+				ReviewerApp:              ForgeAppConfig{AppID: 43, InstallationID: 8, AppPrivateKeySecret: reviewerKey},
+			}}
+			resolver := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName(reviewerKey), Value: "key"}}}
+			svc, err := buildForgeWriteService(ctx, cfg, st, nil, resolver, primary, nil, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatalf("buildForgeWriteService: %v", err)
+			}
+
+			call := &compassv1internal.ForgeCallRequest{
+				Call: &compassv1internal.ForgeCallRequest_CreateIssue{CreateIssue: &compassv1internal.CreateIssueRequest{
+					Repo: "owner/repo", Title: "title", Body: "body",
+				}},
+			}
+			result, err := svc.ExecuteForgeCallAsAccount(ctx, agent.ID, "scope-session", call)
+			if err != nil {
+				t.Fatalf("ExecuteForgeCallAsAccount: %v", err)
+			}
+			if !tc.scopeEnforcementOff {
+				fe := result.GetError()
+				if fe == nil || fe.GetCode() != "not_found" || fe.GetMessage() != "forge: artifact not found" {
+					t.Fatalf("ungranted write error = %v, want fixed in-band not_found", fe)
+				}
+				if n := providerCalls.Load(); n != 0 {
+					t.Fatalf("provider calls = %d, want 0", n)
+				}
+				return
+			}
+			if result.GetError() != nil || result.GetIssue() == nil {
+				t.Fatalf("opt-out write result = %v, want created issue", result.GetError())
+			}
+			if n := providerCalls.Load(); n != 1 {
+				t.Fatalf("opt-out provider calls = %d, want 1", n)
+			}
+		})
+	}
+}
+
+func newScopeTestGitHubProvider(t *testing.T) (*forge.GitHub, *atomic.Int32) {
+	t.Helper()
+	calls := &atomic.Int32{}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/owner/repo/issues" {
+			t.Errorf("provider request = %s %s, want POST /repos/owner/repo/issues", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if _, err := w.Write([]byte(`{"number":17,"title":"created","body":"body","state":"open","html_url":"https://github.com/owner/repo/issues/17","user":{"login":"compass"}}`)); err != nil {
+			t.Errorf("write fake provider response: %v", err)
+		}
+	}))
+	t.Cleanup(api.Close)
+	target, err := url.Parse(api.URL)
+	if err != nil {
+		t.Fatalf("parse fake provider URL: %v", err)
+	}
+	primary := forge.NewGitHub(forge.GitHubConfig{
+		Host:   forgeTestHost,
+		Token:  staticTokenSource{},
+		Client: &http.Client{Transport: &armedRewriteTransport{target: target}},
+	})
+	return primary, calls
 }

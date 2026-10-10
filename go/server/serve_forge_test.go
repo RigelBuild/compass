@@ -718,22 +718,3 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 		t.Fatal("GitHub coordinate author is not the primaryClient passed to buildForgeWriteService")
 	}
 }
-
-func TestBuildForgeWriteServiceEnforcesScopesByDefault(t *testing.T) {
-	const reviewerKey = "REVIEWER_APP_KEY"
-	cfg := ServeConfig{Forge: ForgeConfig{
-		Host:        "github.com",
-		App:         ForgeAppConfig{AppID: 42, InstallationID: 7, AppPrivateKeySecret: "APP_KEY"},
-		ReviewerApp: ForgeAppConfig{AppID: 43, InstallationID: 8, AppPrivateKeySecret: reviewerKey},
-	}}
-	resolver := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName(reviewerKey), Value: "key"}}}
-	primary := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: staticTokenSource{}})
-
-	svc, err := buildForgeWriteService(context.Background(), cfg, nil, nil, resolver, primary, nil, slog.Default())
-	if err != nil {
-		t.Fatalf("buildForgeWriteService: %v", err)
-	}
-	if !svc.enforceScopes {
-		t.Fatal("zero-value ScopeEnforcementDisabled must enforce scope grants")
-	}
-}

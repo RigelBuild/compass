@@ -2143,8 +2143,8 @@ type forgeScopeGranter interface {
 	GrantForgeScope(ctx context.Context, scope store.ForgeScope) error
 }
 
-// reconcileForgeScopeGrants inserts the declared grants (idempotently) and warns
-// when enforcement is on with none declared, since agent forge writes are rejected.
+// reconcileForgeScopeGrants seeds declared grants and warns when enforcement is
+// on with none declared at boot; writes still need a matching store grant.
 func reconcileForgeScopeGrants(ctx context.Context, st forgeScopeGranter, fc ForgeConfig, log *slog.Logger) error {
 	for _, g := range fc.ScopeGrants {
 		if err := st.GrantForgeScope(ctx, g); err != nil {
@@ -2152,7 +2152,7 @@ func reconcileForgeScopeGrants(ctx context.Context, st forgeScopeGranter, fc For
 		}
 	}
 	if !fc.ScopeEnforcementDisabled && len(fc.ScopeGrants) == 0 {
-		log.Warn("forge scope enforcement is on with no declared grants; every agent forge write is rejected until grants are declared")
+		log.Warn("forge scope enforcement is on with no grants declared at boot; agent forge writes need a matching store grant")
 	}
 	return nil
 }

@@ -41,8 +41,9 @@ func TestReconcileForgeScopeGrants(t *testing.T) {
 	t.Run("warns by default when no grants are declared", func(t *testing.T) {
 		var logs bytes.Buffer
 		err := reconcileForgeScopeGrants(context.Background(), &recordingGranter{}, ForgeConfig{}, slog.New(slog.NewTextHandler(&logs, nil)))
-		if err != nil || !strings.Contains(logs.String(), "every agent forge write is rejected until grants are declared") {
+		if err != nil || !strings.Contains(logs.String(), "no grants declared at boot") || !strings.Contains(logs.String(), "writes need a matching store grant") {
 			t.Fatalf("err=%v logs=%q", err, logs.String())
+
 		}
 	})
 	t.Run("does not warn when single-trust-domain enforcement is disabled", func(t *testing.T) {
