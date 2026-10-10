@@ -191,6 +191,9 @@
 	border: 1px solid transparent;
 	color: var(--cx-text);
 	font-size: 13px;
+	/* A whole-pixel row (the 15px glyph line is 22.5px) keeps the 2x sidebar
+	   glyphs below on the pixel grid for any number of view links. */
+	line-height: 22px;
 	width: calc(100% - 16px);
 	text-align: left;
 }
