@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { TourOutcome } from "@compass/client";
 import { createRoot, createSignal, flush } from "solid-js";
 import { STUB_COMMS_STATE } from "./comms-stub";
+import type { CommandId } from "./keyboard/commands";
 import {
 	createFakeComms,
 	type FakeComms,
@@ -335,6 +336,125 @@ describe("tour first-run arming", () => {
 				expect(errors.map(String)).toEqual(["Error: read down"]);
 			},
 		);
+	});
+});
+
+describe("tour.start command", () => {
+	type Trigger = Parameters<AppStore["tour"]["start"]>[0];
+	// Records the trigger the command picks; the real start still runs.
+	function runCommand(store: AppStore): Trigger[] {
+		const triggers: Trigger[] = [];
+		const start = store.tour.start;
+		store.tour.start = (trigger) => {
+			triggers.push(trigger);
+			start(trigger);
+		};
+		store.keyboard.registry.get("tour.start" as CommandId)?.run();
+		flush();
+		store.tour.start = start;
+		return triggers;
+	}
+
+	const cases: [string, TourOutcome, number | null, Trigger, number][] = [
+		["no stored state replays", TourOutcome.UNSPECIFIED, null, "replay", 0],
+		["a skipped tour resumes", TourOutcome.DISMISSED, 3, "resume", 3],
+		["a tour closed mid-way resumes", TourOutcome.STARTED, 2, "resume", 2],
+		["a completed tour replays", TourOutcome.COMPLETED, LAST, "replay", 0],
+	];
+	for (const [name, outcome, step, trigger, index] of cases) {
+		test(name, async () => {
+			const fake = tourFake({
+				outcome,
+				stepId: step === null ? "" : stepId(step),
+			});
+			await withStore({ tour: fake.client }, async (store) => {
+				await settle();
+				expect(runCommand(store)).toEqual([trigger]);
+				expect(store.tour.open()).toBe(true);
+				expect(store.tour.stepIndex()).toBe(index);
+			});
+		});
+	}
+
+	test("a tour closed this session resumes at the reached step", async () => {
+		const fake = tourFake({});
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.next();
+			flush();
+			store.tour.close();
+			flush();
+			flush();
+			expect(runCommand(store)).toEqual(["resume"]);
+			expect(store.tour.stepIndex()).toBe(2);
+		});
+	});
+
+	test("a tour completed this session replays from the start", async () => {
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("resume");
+			flush();
+			store.tour.complete();
+			flush();
+			flush();
+			expect(runCommand(store)).toEqual(["replay"]);
+			expect(store.tour.stepIndex()).toBe(0);
+		});
+	});
+
+	test("without a tour client a finished tour replays from the start", async () => {
+		await withStore({}, async (store) => {
+			store.tour.start("replay");
+			flush();
+			for (let i = 0; i < LAST; i++) {
+				store.tour.next();
+				flush();
+			}
+			store.tour.complete();
+			flush();
+			expect(runCommand(store)).toEqual(["replay"]);
+			expect(store.tour.stepIndex()).toBe(0);
+		});
+	});
+
+	test("before the boot read lands the command waits, then resumes", async () => {
+		const read = gate();
+		const fake = tourFake({
+			outcome: TourOutcome.DISMISSED,
+			stepId: stepId(3),
+			readGate: read.promise,
+		});
+		await withStore({ tour: fake.client }, async (store) => {
+			expect(runCommand(store)).toEqual([]);
+			expect(store.tour.open()).toBe(false);
+			read.open();
+			await settle();
+			expect(store.tour.open()).toBe(true);
+			expect(store.tour.stepIndex()).toBe(3);
+		});
+	});
+
+	test("while the tour is open the command does nothing", async () => {
+		const fake = tourFake({});
+		await withStore({ tour: fake.client }, async (store) => {
+			await settle();
+			store.tour.start("replay");
+			flush();
+			store.tour.next();
+			flush();
+			flush();
+			expect(runCommand(store)).toEqual([]);
+			expect(store.tour.stepIndex()).toBe(1);
+		});
 	});
 });
 

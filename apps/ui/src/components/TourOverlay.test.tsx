@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, jest, test } from "bun:test";
 import { TourOutcome } from "@compass/client";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
+import { IDLE_FALLBACK_MS } from "../idle";
 import type { TourClient } from "../store";
 import { flush, mountApp } from "../test-router";
 import { TOUR_STEPS } from "../tour/state";
@@ -22,6 +23,34 @@ const nextFrame = (): Promise<void> =>
 const outsideListenerAttached = (): Promise<void> =>
 	// biome-ignore lint/style/noRestrictedGlobals: matches the library's own setTimeout(0) attach.
 	new Promise((resolve) => setTimeout(resolve, 0));
+
+// A controllable requestIdleCallback; happy-dom has none.
+function fakeIdle() {
+	const queue = new Map<number, IdleRequestCallback>();
+	let next = 1;
+	window.requestIdleCallback = (cb) => {
+		const handle = next++;
+		queue.set(handle, cb);
+		return handle;
+	};
+	window.cancelIdleCallback = (handle) => {
+		queue.delete(handle);
+	};
+	return {
+		pending: () => queue.size,
+		run: () => {
+			const callbacks = [...queue.values()];
+			queue.clear();
+			for (const cb of callbacks) {
+				cb({ didTimeout: false, timeRemaining: () => 50 });
+			}
+		},
+		restore: () => {
+			Reflect.deleteProperty(window, "requestIdleCallback");
+			Reflect.deleteProperty(window, "cancelIdleCallback");
+		},
+	};
+}
 
 function tourClient(outcome = TourOutcome.UNSPECIFIED, stepId = "") {
 	const writes: { outcome: TourOutcome; stepId: string }[] = [];
@@ -53,19 +82,92 @@ function callout(container: HTMLElement): HTMLElement | null {
 }
 
 describe("TourOverlay", () => {
-	test("a successful first-run claim opens the welcome dialog", async () => {
+	test("a successful first-run claim opens the welcome dialog once idle", async () => {
+		const idle = fakeIdle();
+		try {
+			const fake = tourClient();
+			const { store, container } = mountApp("/", {
+				tour: fake.client,
+				claimFirstRun: true,
+			});
+			await settle();
+			expect(store.tour.shouldAutoStart()).toBe(true);
+			expect(store.tour.open()).toBe(false);
+			idle.run();
+			await settle();
+			expect(store.tour.open()).toBe(true);
+			expect(store.tour.shouldAutoStart()).toBe(false);
+			expect(
+				container.querySelector('[role="dialog"][aria-label="Compass tour"] h2')
+					?.textContent,
+			).toBe("Welcome to Compass");
+			// Closing must not re-arm: the auto-start fired exactly once.
+			store.tour.close();
+			await settle();
+			expect(idle.pending()).toBe(0);
+			expect(store.tour.open()).toBe(false);
+		} finally {
+			idle.restore();
+		}
+	});
+
+	test("a stored outcome never auto-starts", async () => {
+		const idle = fakeIdle();
+		try {
+			for (const outcome of [
+				TourOutcome.STARTED,
+				TourOutcome.DISMISSED,
+				TourOutcome.COMPLETED,
+			]) {
+				const fake = tourClient(outcome, "board");
+				const { store } = mountApp("/", {
+					tour: fake.client,
+					claimFirstRun: true,
+				});
+				await settle();
+				expect(idle.pending()).toBe(0);
+				expect(store.tour.open()).toBe(false);
+				cleanup();
+			}
+		} finally {
+			idle.restore();
+		}
+	});
+
+	test("without requestIdleCallback the auto-start waits a short delay", async () => {
 		const fake = tourClient();
-		const { store, container } = mountApp("/", {
+		const { store } = mountApp("/", {
 			tour: fake.client,
 			claimFirstRun: true,
 		});
-		await settle();
-		expect(store.tour.shouldAutoStart()).toBe(false);
-		expect(store.tour.open()).toBe(true);
-		expect(
-			container.querySelector('[role="dialog"][aria-label="Compass tour"] h2')
-				?.textContent,
-		).toBe("Welcome to Compass");
+		jest.useFakeTimers();
+		try {
+			await settle();
+			expect(store.tour.open()).toBe(false);
+			jest.advanceTimersByTime(IDLE_FALLBACK_MS);
+			await settle();
+			expect(store.tour.open()).toBe(true);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("an unmount before idle cancels the auto-start", async () => {
+		const idle = fakeIdle();
+		try {
+			const fake = tourClient();
+			const { store } = mountApp("/", {
+				tour: fake.client,
+				claimFirstRun: true,
+			});
+			await settle();
+			expect(idle.pending()).toBe(1);
+			cleanup();
+			expect(idle.pending()).toBe(0);
+			expect(store.tour.open()).toBe(false);
+		} finally {
+			idle.restore();
+		}
 	});
 
 	test("dialog traps focus and Escape restores it without a permanent write", async () => {

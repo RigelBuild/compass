@@ -32,6 +32,7 @@ import { TabStrip } from "./components/TabStrip";
 import { TopBarSearch } from "./components/TopBarSearch";
 import { TourOverlay } from "./components/TourOverlay";
 import { useStore } from "./context";
+import { whenIdle } from "./idle";
 import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
 import { shortcutForAria } from "./keyboard/keymap";
@@ -55,11 +56,13 @@ const App: Component<
 		currentPath: () => location.pathname,
 		currentState: () => location.state,
 	});
-	// Start once when the store has won the per-account first-run claim.
+	// Start once when the store has won the per-account first-run claim, after
+	// the first paint settles.
 	createEffect(
 		() => store.tour.shouldAutoStart(),
 		(shouldStart) => {
-			if (shouldStart) store.tour.start("first-run");
+			if (!shouldStart) return;
+			return whenIdle(() => store.tour.start("first-run"));
 		},
 	);
 	// Install the single production window keymap listener over the store's
