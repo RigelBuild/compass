@@ -11,12 +11,15 @@ taints, host paths, the Server address, token lifetimes, and admission identitie
 before applying.
 
 The DaemonSet uses a projected `compass-runner` ServiceAccount token at
-`/var/run/secrets/compass/runner/token`. Set `tokenExpirationSeconds` to at
-least 600 and no higher than `maxTokenLifetimeSeconds`. The admission policy
-uses `admission.controllers` and `admission.deployers`; set them to the
-controller identities that create Runner pods and the identity that applies
-the DaemonSet. The ServiceAccount has no RBAC binding. Rollout beyond one node
-waits for the multi-Runner hub.
+`/var/run/secrets/compass/runner/token`. Set `tokenExpirationSeconds` between
+600 and 4294967296, and no higher than the matching Server cluster's
+`maxTokenLifetime`. The namespace, ServiceAccount, and audience (`compass-runner`)
+must match that Server cluster entry. The admission policy uses
+`admission.controllers` and `admission.deployers`; set them to the controller
+identities that create Runner pods and the identity that applies the DaemonSet.
+It denies exec, attach, and ephemeral containers on Runner pods.
+The Server assigns each Runner ID during enrollment. The ServiceAccount has no
+RBAC binding. Rollout beyond one node waits for the multi-Runner hub.
 
 ## KVM device delivery
 

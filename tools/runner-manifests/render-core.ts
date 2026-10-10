@@ -559,6 +559,18 @@ export function renderRunnerManifests(
 						{
 							apiGroups: [""],
 							apiVersions: ["v1"],
+							operations: ["CREATE"],
+							resources: ["pods/exec", "pods/attach"],
+						},
+						{
+							apiGroups: [""],
+							apiVersions: ["v1"],
+							operations: ["UPDATE"],
+							resources: ["pods/ephemeralcontainers"],
+						},
+						{
+							apiGroups: [""],
+							apiVersions: ["v1"],
 							operations: ["CREATE", "UPDATE"],
 							resources: ["replicationcontrollers"],
 						},
@@ -594,12 +606,12 @@ export function renderRunnerManifests(
 					{
 						name: "podSpec",
 						expression:
-							"variables.res == 'pods' ? object.spec : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec",
+							"request.subResource != '' ? null : variables.res == 'pods' ? object.spec : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec",
 					},
 					{
 						name: "usesRunnerSA",
 						expression:
-							"has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == 'compass-runner'",
+							"request.subResource != '' ? false : has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == 'compass-runner'",
 					},
 					{
 						name: "isRunnerDS",
@@ -608,6 +620,12 @@ export function renderRunnerManifests(
 					},
 				],
 				validations: [
+					{
+						expression:
+							"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-')",
+						message:
+							"the compass-runner pod cannot be exec'd, attached, or given ephemeral containers",
+					},
 					{
 						expression:
 							"variables.res != 'serviceaccounts' || request.name != 'compass-runner' || request.userInfo.username.startsWith('system:node:')",

@@ -279,6 +279,9 @@ describe("renderRunnerManifests", () => {
 			throw new Error("policy and binding are required");
 		const spec = object(policy.spec);
 		expect(spec.failurePolicy).toBe("Fail");
+		expect(nested(binding, "spec", "policyName")).toBe(
+			nested(policy, "metadata", "name"),
+		);
 		expect(nested(policy, "spec", "matchConstraints", "resourceRules")).toEqual(
 			[
 				{
@@ -286,6 +289,18 @@ describe("renderRunnerManifests", () => {
 					apiVersions: ["v1"],
 					operations: ["CREATE"],
 					resources: ["pods", "serviceaccounts/token"],
+				},
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["CREATE"],
+					resources: ["pods/exec", "pods/attach"],
+				},
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["UPDATE"],
+					resources: ["pods/ephemeralcontainers"],
 				},
 				{
 					apiGroups: [""],
@@ -321,13 +336,18 @@ describe("renderRunnerManifests", () => {
 			}),
 		);
 		expect(expressions.podSpec).toBe(
-			"variables.res == 'pods' ? object.spec : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec",
+			"request.subResource != '' ? null : variables.res == 'pods' ? object.spec : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec",
 		);
 		expect(expressions.usesRunnerSA).toBe(
-			"has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == 'compass-runner'",
+			"request.subResource != '' ? false : has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == 'compass-runner'",
+		);
+		const validations = nested(policy, "spec", "validations");
+		if (!Array.isArray(validations))
+			throw new Error("policy validations missing");
+		expect(object(validations[0]).expression).toBe(
+			"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-')",
 		);
 	});
-
 	test("restores the DaemonSet selector to the pod template labels", () => {
 		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
 		expect(nested(daemonSet, "spec", "selector", "matchLabels")).toEqual(

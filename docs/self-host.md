@@ -184,14 +184,21 @@ clusters:
     maxTokenLifetime: 600s
 ```
 
+The rendered Runner's namespace, `serviceAccount: compass-runner`, audience, and
+`tokenExpirationSeconds` / `maxTokenLifetimeSeconds` must match the Server
+cluster entry. A token lifetime above the Server's `maxTokenLifetime` fails
+authentication. The admission policy denies exec, attach, and ephemeral
+containers on Runner pods.
+
 `audience` and `maxTokenLifetime` show their defaults. By default the Server
 finds keys through OIDC discovery on `issuer`. Set at most one of `jwksURI` or
 `jwksFile` to override that, and set `caFile` for an issuer with a private CA.
 
 Every cluster must have a unique issuer. The Server selects a cluster by the
-token's `iss`; sharing an issuer or a signing key across clusters is rejected.
-For a self-managed cluster, set a unique `--service-account-issuer` and do not
-copy the same service-account signing key into another cluster.
+token's `iss`; sharing an issuer across clusters is rejected. Reusing one
+signing key does not stop the Server starting, but every cluster sharing it
+fails closed when tokens are verified.
+
 The default Kubernetes configuration binds `system:service-account-issuer-discovery`
 to `system:serviceaccounts`, so the cluster's discovery document and JWKS
 require authenticated access. An out-of-cluster Server can reach the keys by
