@@ -206,9 +206,9 @@ type ForgeConfig struct {
 	// INDEPENDENT of the GitHub App gate (a deployment can run Linear
 	// notifications without a GitHub App and vice versa).
 	LinearWebhookSecretName string
-	// EnforceScopes gates agent forge writes on account_forge_scopes grants.
-	// Off keeps the single-trust-domain behaviour; the Beta default is still undecided.
-	EnforceScopes bool
+	// ScopeEnforcementDisabled opts out of grant-gated forge writes. The zero
+	// value enforces; Dogfood opts out to keep the single-trust-domain posture.
+	ScopeEnforcementDisabled bool
 	// ScopeGrants are boot-reconciled into account_forge_scopes in the bootstrap
 	// tenant (insert only; removing a row here does not revoke it).
 	ScopeGrants []store.ForgeScope
@@ -2166,7 +2166,7 @@ func buildForgeWriteService(
 		return nil, err
 	}
 	svc := newForgeService(st, issueBrd, registry)
-	svc.enforceScopes = fc.EnforceScopes
+	svc.enforceScopes = !fc.ScopeEnforcementDisabled
 	return svc, nil
 }
 
@@ -2175,17 +2175,16 @@ type forgeScopeGranter interface {
 	GrantForgeScope(ctx context.Context, scope store.ForgeScope) error
 }
 
-// reconcileForgeScopeGrants inserts the declared grants (idempotent) and warns
-// when enforcement is on with none declared, since every write would then be rejected
-// unless grants were added another way.
+// reconcileForgeScopeGrants seeds declared grants and warns when enforcement is
+// on with none declared at boot; writes still need a matching store grant.
 func reconcileForgeScopeGrants(ctx context.Context, st forgeScopeGranter, fc ForgeConfig, log *slog.Logger) error {
 	for _, g := range fc.ScopeGrants {
 		if err := st.GrantForgeScope(ctx, g); err != nil {
 			return fmt.Errorf("seeding forge scope grant (provider %d) %s/%s for %s: %w", g.Provider, g.Host, g.Repo, g.AccountID, err)
 		}
 	}
-	if fc.EnforceScopes && len(fc.ScopeGrants) == 0 {
-		log.Warn("forge scope enforcement is on with no declared grants; writes need grants from the store")
+	if !fc.ScopeEnforcementDisabled && len(fc.ScopeGrants) == 0 {
+		log.Warn("forge scope enforcement is on with no grants declared at boot; agent forge writes need a matching store grant")
 	}
 	return nil
 }

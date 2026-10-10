@@ -30,7 +30,7 @@ func TestReconcileForgeScopeGrants(t *testing.T) {
 	t.Run("seeds every declared grant without warning", func(t *testing.T) {
 		var logs bytes.Buffer
 		g := &recordingGranter{}
-		fc := ForgeConfig{EnforceScopes: true, ScopeGrants: []store.ForgeScope{grant}}
+		fc := ForgeConfig{ScopeGrants: []store.ForgeScope{grant}}
 		if err := reconcileForgeScopeGrants(context.Background(), g, fc, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
@@ -38,10 +38,18 @@ func TestReconcileForgeScopeGrants(t *testing.T) {
 			t.Fatalf("granted=%+v logs=%q", g.granted, logs.String())
 		}
 	})
-	t.Run("warns when enforcing with no grants", func(t *testing.T) {
+	t.Run("warns by default when no grants are declared", func(t *testing.T) {
 		var logs bytes.Buffer
-		err := reconcileForgeScopeGrants(context.Background(), &recordingGranter{}, ForgeConfig{EnforceScopes: true}, slog.New(slog.NewTextHandler(&logs, nil)))
-		if err != nil || !strings.Contains(logs.String(), "no declared grants") {
+		err := reconcileForgeScopeGrants(context.Background(), &recordingGranter{}, ForgeConfig{}, slog.New(slog.NewTextHandler(&logs, nil)))
+		if err != nil || !strings.Contains(logs.String(), "no grants declared at boot") || !strings.Contains(logs.String(), "writes need a matching store grant") {
+			t.Fatalf("err=%v logs=%q", err, logs.String())
+
+		}
+	})
+	t.Run("does not warn when single-trust-domain enforcement is disabled", func(t *testing.T) {
+		var logs bytes.Buffer
+		err := reconcileForgeScopeGrants(context.Background(), &recordingGranter{}, ForgeConfig{ScopeEnforcementDisabled: true}, slog.New(slog.NewTextHandler(&logs, nil)))
+		if err != nil || logs.Len() != 0 {
 			t.Fatalf("err=%v logs=%q", err, logs.String())
 		}
 	})

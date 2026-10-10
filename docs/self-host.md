@@ -279,11 +279,11 @@ must set it before upgrading.
 
 ### Forge write scopes
 
-By default an agent can write to any repo the forge credential reaches. Two flags limit agent writes to granted repos:
+Agent forge writes require a scope grant by default. The opt-out is for a single-trust-domain Dogfood deployment only:
 
 | Flag | Environment variable | Meaning |
 | --- | --- | --- |
-| `--forge-enforce-scopes` | `$COMPASS_FORGE_ENFORCE_SCOPES` | `true` rejects agent forge writes outside the agent owner's grants. Default off. |
+| `--forge-disable-scope-enforcement` | `$COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT` | `true` disables enforcement. Default `false` enforces grants; disable it only for single-trust-domain Dogfood. |
 | `--forge-scope-grants` | `$COMPASS_FORGE_SCOPE_GRANTS` | Comma-separated `account:provider:host:repo` grants seeded at boot. `provider` is `github` or `linear`; `repo` is `owner/name`, a Linear team key, or `*` for every repo on the host. |
 
 Grants name a user account. That user's agents inherit them. A rejected write looks the same as a write to a missing repo. Reads are not gated.

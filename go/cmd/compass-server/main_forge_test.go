@@ -22,14 +22,12 @@ import (
 )
 
 func TestResolveForgeMapping(t *testing.T) {
-	t.Run("disabled default: no repos, no Apps", func(t *testing.T) {
+	t.Run("zero-value default: no repos, no Apps", func(t *testing.T) {
 		fc, err := resolveForge(forgeInputs{})
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
 		}
-		// Everything stays zero: no seed, no Apps, and — crucially — empty host /
-		// secret NAMEs are NOT defaulted here (server-side ServeConfig owns those
-		// defaults). A zero-value ForgeConfig is exactly that contract.
+		// Host and secret names are defaulted in the server package, not here.
 		if want := (server.ForgeConfig{}); !reflect.DeepEqual(fc, want) {
 			t.Fatalf("empty inputs should map to a zero ForgeConfig\n got %+v\nwant %+v", fc, want)
 		}
@@ -137,8 +135,8 @@ func TestResolveForgeRejectsBadAppID(t *testing.T) {
 
 func TestResolveForgeScopeSettings(t *testing.T) {
 	fc, err := resolveForge(forgeInputs{
-		enforceScopes: "true",
-		scopeGrants:   " acct-u:github:github.com:Owner/Repo , acct-u:linear:linear.app:* ",
+		scopeEnforcementDisabled: "true",
+		scopeGrants:              " acct-u:github:github.com:Owner/Repo , acct-u:linear:linear.app:* ",
 	})
 	if err != nil {
 		t.Fatalf("resolveForge: %v", err)
@@ -147,12 +145,18 @@ func TestResolveForgeScopeSettings(t *testing.T) {
 		{AccountID: "acct-u", Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: "Owner/Repo"},
 		{AccountID: "acct-u", Provider: store.ForgeProviderLinear, Host: "linear.app", Repo: "*"},
 	}
-	if !fc.EnforceScopes || !reflect.DeepEqual(fc.ScopeGrants, want) {
-		t.Fatalf("enforce=%v grants=%+v, want true %+v", fc.EnforceScopes, fc.ScopeGrants, want)
+	if !fc.ScopeEnforcementDisabled || !reflect.DeepEqual(fc.ScopeGrants, want) {
+		t.Fatalf("disabled=%v grants=%+v, want true %+v", fc.ScopeEnforcementDisabled, fc.ScopeGrants, want)
 	}
 
+	if fc, err := resolveForge(forgeInputs{}); err != nil || fc.ScopeEnforcementDisabled {
+		t.Fatalf("zero-value scope setting = %+v, %v; want enforcement enabled", fc, err)
+	}
+
+	if _, err := resolveForge(forgeInputs{scopeEnforcementDisabled: "invalid"}); err == nil || !strings.Contains(err.Error(), "--forge-disable-scope-enforcement") {
+		t.Fatalf("invalid opt-out = %v, want an error naming --forge-disable-scope-enforcement", err)
+	}
 	for _, in := range []forgeInputs{
-		{enforceScopes: "yes"},
 		{scopeGrants: "acct-u:github:github.com"},
 		{scopeGrants: "acct-u:gitlab:gitlab.com:a/b"},
 		{scopeGrants: "acct-u:github::a/b"},
@@ -161,5 +165,40 @@ func TestResolveForgeScopeSettings(t *testing.T) {
 		if _, err := resolveForge(in); err == nil {
 			t.Errorf("resolveForge(%+v) = nil error, want rejection", in)
 		}
+	}
+}
+
+func TestBuildServeConfigScopeEnforcementSetting(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	t.Setenv("COMPASS_NATS_URL", "nats://127.0.0.1:4222")
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		env     string
+		wantOff bool
+		wantErr bool
+	}{
+		{name: "default enforced"},
+		{name: "flag opts out", args: []string{"--forge-disable-scope-enforcement=true"}, wantOff: true},
+		{name: "environment opts out", env: "true", wantOff: true},
+		{name: "invalid value rejected", env: "not-a-bool", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT", tc.env)
+			args := append([]string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"}, tc.args...)
+			cfg, _, err := buildServeConfig(args)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "--forge-disable-scope-enforcement") {
+					t.Fatalf("buildServeConfig error = %v, want opt-out parse error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildServeConfig: %v", err)
+			}
+			if got := cfg.Forge.ScopeEnforcementDisabled; got != tc.wantOff {
+				t.Fatalf("ScopeEnforcementDisabled = %v, want %v", got, tc.wantOff)
+			}
+		})
 	}
 }

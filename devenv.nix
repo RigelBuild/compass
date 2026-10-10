@@ -366,6 +366,8 @@ in
         # pgx keyword/value DSN over the Postgres Unix socket. No user= : pgx
         # defaults to the OS user, the peer-auth identity that owns `compass`.
         COMPASS_DATABASE_DSN = dogfoodDSN;
+        # Dogfood is single-trust-domain and has no scope grant seed.
+        COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT = "true";
         # The event fabric; compass-server reads it when --nats-url is absent.
         COMPASS_NATS_URL = "nats://127.0.0.1:${toString config.processes.nats.ports.client.value}";
       };
