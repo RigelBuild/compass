@@ -285,11 +285,8 @@ func subscribeToStoreKind(kind compassv1internal.ForgeArtifactKind) (store.Forge
 	}
 }
 
-// subscribeForge records the caller's standing interest in one forge artifact
-// (DL-053). It resolves the coordinate (repo + provider/host), maps the wire
-// kind to the store enum, and idempotently ensures the subscription row —
-// returning the EXISTING subscription id on a repeat (the store upsert dedups on
-// the UNIQUE coordinate per agent). No owner stamp: a subscribe authors nothing.
+// subscribeForge records interest in an artifact or container coordinate.
+// It carries scope and project to the store; subscriptions do not stamp writes.
 func (s *forgeService) subscribeForge(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubscribeForgeRequest) *compassv1internal.ForgeCallResult {
 	rf, fe := s.resolveTarget(call, req.GetRepo())
 	if fe != nil {
@@ -302,6 +299,10 @@ func (s *forgeService) subscribeForge(ctx context.Context, caller store.AccountI
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
+	// Linear emits only issue events, so a pull-request subscription would never notify.
+	if rf.provider == compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR && kind == store.ForgeArtifactKindPullRequest {
+		return forgeErrorResult(forgeErr(connect.CodeInvalidArgument, "forge: Linear subscriptions must use kind issue"))
+	}
 	id, err := s.store.EnsureAgentForgeSubscription(ctx, store.AgentForgeSubscription{
 		AgentAccountID: caller,
 		Provider:       store.ForgeProvider(rf.provider),
@@ -309,6 +310,8 @@ func (s *forgeService) subscribeForge(ctx context.Context, caller store.AccountI
 		Repo:           req.GetRepo(),
 		Kind:           kind,
 		Number:         req.GetNumber(),
+		Scope:          store.ForgeSubscriptionScope(req.GetScope()),
+		Project:        req.GetProject(),
 	})
 	if err != nil {
 		return forgeErrorResult(storeForgeError(err))
