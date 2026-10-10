@@ -740,9 +740,9 @@
       // drifted; when it repairs one, it writes package.json, bun.lock, the
       // biome.json files and any reformatted source, so the filter is `**/*`.
       //
-      // A channel bump moves pkgs.bun, the nixpkgs-versioned builder the FOD
-      // realises, so it can move agent-image/entrypoint.nix's bun `outputHash`;
-      // the FOD refresh MUST ride this rule. It gates on bun.lock OR devenv.lock
+      // devenv.lock is a conservative trigger of agent-image/entrypoint.nix's bun
+      // `outputHash` (its vehicle reads agent-image/devenv.lock), so the FOD
+      // refresh rides this rule. It gates on bun.lock OR devenv.lock
       // (the channel rev this bump always rewrites), so it fires on EVERY
       // channel bump, and reconciles the pin idempotently — a no-op write when
       // the realised tree is unchanged. It runs LAST so the relock's and the
@@ -867,12 +867,12 @@
       //
       // Carrying the refresh here is FAIL-SAFE, not a fix for a live break:
       // `devenv update devenv` re-locks ONE non-nixpkgs input, so it does not
-      // move the nixpkgs rev that supplies pkgs.bun — the FOD's builder — and the
-      // installed tree, hence today's pin, is unchanged. But the coupling is
+      // move the nixpkgs rev that supplies the FOD's bun, and the installed tree,
+      // hence today's pin, is unchanged. But the coupling is
       // declared at FILE granularity (devenv.lock IS a trigger of that entry),
       // and a fork bump that altered how `pkgs` is constructed would falsify the
       // causal argument silently. The gate fires, so the price of being safe is
-      // one extra rootfs realise per branch whose write is then a no-op.
+      // one extra vehicle realise per branch whose write is then a no-op.
       //
       // fileFilters is an INCLUDE allowlist — Renovate commits ONLY matching
       // files — and it names exhaustively the files this task can write: the lock
@@ -1047,8 +1047,8 @@
       // Omit the latter and Renovate would run the refresh but silently DROP
       // it, shipping a channel bump whose outputHash never moved.
       //
-      // Step 3 also REALISES tools/renovate/agent-image-fod-vehicle.nix, to check
-      // the same outputHash through the bun this lock resolves. That file is only
+      // Step 3 REALISES tools/renovate/agent-image-fod-vehicle.nix to recompute
+      // the outputHash through the bun this lock resolves. That file is only
       // read, never written, so it must NOT be listed: the allowlist governs what
       // Renovate commits, and adding a file the task cannot modify is dead
       // surface that reads as a claim the task writes it.
@@ -1100,11 +1100,11 @@
       //
       // Carrying it here is FAIL-SAFE, not a fix for a live break: `devenv update
       // go-overlay` re-locks ONE non-nixpkgs input, so it does not move the
-      // nixpkgs rev that supplies pkgs.bun — the FOD's builder — and today's pin
+      // nixpkgs rev that supplies the FOD's bun, and today's pin
       // stays valid. But the coupling is declared at FILE granularity (devenv.lock
       // IS a trigger of that entry) and the causal argument is one input-graph
       // refactor away from being wrong. The gate fires, so the price of being
-      // safe is one extra rootfs realise per branch whose write is then a no-op.
+      // safe is one extra vehicle realise per branch whose write is then a no-op.
       //
       // fileFilters is an INCLUDE allowlist — Renovate commits ONLY files matching
       // it — and it names exhaustively what this task writes: devenv.lock (the

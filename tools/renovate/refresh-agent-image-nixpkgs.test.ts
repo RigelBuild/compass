@@ -130,10 +130,9 @@ describe("agent-image scope geometry", () => {
 		}
 	});
 
-	// This lock resolves the bun the OCI image build uses, so the shared outputHash
-	// is CHECKED for that builder only if some entry realises a vehicle from this
-	// lock. Without one, the refresh reverts to a one-builder rewrite. The vehicle
-	// file must exist too — a deleted file would fail at realise time, not here.
+	// This lock resolves the bun the OCI image build uses, so the outputHash must
+	// be realised through a vehicle from this lock. The vehicle file must exist
+	// too — a deleted file would fail at realise time, not here.
 	test("a FOD entry realises entrypoint.nix through this lock's own pkgs", () => {
 		const viaThisLock = FOD_ENTRIES.filter(
 			(e) =>
@@ -143,9 +142,6 @@ describe("agent-image scope geometry", () => {
 		expect(viaThisLock.length).toBe(1);
 		const [entry] = viaThisLock;
 		if (!entry) throw new Error("expected exactly one entry via this lock");
-		// It VERIFIES; the authoritative write stays with the root-pkgs vehicle, or
-		// two writers over one marker would be last-write-wins.
-		expect(entry.verifyOf).toBeDefined();
 		expect(existsSync(join(repoRoot, entry.buildFile))).toBe(true);
 	});
 });
@@ -284,7 +280,7 @@ async function buildEntryRepo(): Promise<string> {
 		agentImageLock(CHANNEL_REV, INNER_REV, FORK_REV),
 	);
 
-	// The FOD leg runs after the relock, so the pin file and both vehicles have
+	// The FOD leg runs after the relock, so the pin file and its vehicle have
 	// to exist. The stub answers `nix build` by printing a got: line for the
 	// fragment, which is what recompute parses the real value out of.
 	await Bun.write(

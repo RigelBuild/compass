@@ -7,10 +7,8 @@
 // catalog eval, bun.lock, flake.nix lockstep) has no analogue here — agent-image
 // bakes nothing into a shell and is not expressed as a flake.
 
-// entrypoint.nix's single outputHash is realised through TWO nixpkgs revs
-// (agent-image's and root's), so one hash is safe only while both buns produce a
-// byte-identical install tree. refresh-fod-hashes.ts writes the authoritative SRI
-// then verifies via the agent-image vehicle, failing loud if they disagree.
+// entrypoint.nix's outputHash is realised through the agent-image vehicle, on
+// this lock's pkgs, so a channel relock must refresh it here.
 
 // Self-provisions the scope-correct devenv by nix run-ing the fork flakeref read
 // from this lock (an ambient devenv would relock under root's fork rev, which
@@ -36,8 +34,7 @@ import {
 	refreshFodEntries,
 } from "./refresh-fod-hashes.ts";
 
-// BOTH entrypoint.nix FOD entries: the authoritative one (root's pkgs) and the
-// verify one (this lock's pkgs). Resolved from refresh-fod-hashes.ts's shipped
+// The entrypoint.nix FOD entries, resolved from refresh-fod-hashes.ts's shipped
 // table by the file they pin, so a table edit that moves an entry fails loud
 // here instead of silently skipping the refresh.
 const ENTRYPOINT_NIX = "agent-image/entrypoint.nix";
@@ -51,13 +48,13 @@ function agentImageFodEntries(): FodEntry[] {
 		);
 	}
 	// One entry must realise a vehicle resolved from THIS lock, else the relock
-	// moves a bun nothing then builds against — the blind spot the verify entry
-	// closes. Checked so dropping the vehicle reds this task.
+	// moves a bun nothing then builds against. Checked so dropping the vehicle
+	// reds this task.
 	if (!entries.some((e) => e.vehicleChannelLock === AGENT_IMAGE_LOCK)) {
 		throw new Error(
 			`refresh-agent-image-nixpkgs: no ${ENTRYPOINT_NIX} FOD entry realises a vehicle ` +
 				`resolved from ${AGENT_IMAGE_LOCK}, so this relock's new bun would never build the ` +
-				"pin it can invalidate. Restore the agent-image verification vehicle before shipping.",
+				"pin it can invalidate. Restore the agent-image vehicle before shipping.",
 		);
 	}
 	// Every entry must ALSO be gated on this lock, or a real Renovate run of
@@ -166,17 +163,12 @@ async function main(): Promise<number> {
 		`refresh-agent-image-nixpkgs: ${AGENT_IMAGE_LOCK} relocked — '${NIXPKGS_INPUT}' now at ${agentImageNixpkgsRev(after)}.`,
 	);
 
-	// Step 3: recompute the shared FOD hash and check BOTH builders. A stale
+	// Step 3: recompute the FOD hash with the just-relocked bun. A stale
 	// outputHash fails the image build with hash mismatch. refreshFodEntries
 	// drives refresh-fod-hashes.ts's machinery, sharing got:-attribution and
 	// restore-on-failure.
-
-	// Two entries, one pin, fixed order: the authoritative realise (root's pkgs)
-	// writes the canonical SRI (a no-op on an agent-image-only branch); the verify
-	// realise re-derives with the just-relocked bun and compares. Disagreement
-	// throws — reddening renovate/artifacts rather than waiting for the OCI build.
 	console.log(
-		`refresh-agent-image-nixpkgs: recomputing the ${ENTRYPOINT_NIX} outputHash and verifying it ` +
+		`refresh-agent-image-nixpkgs: recomputing the ${ENTRYPOINT_NIX} outputHash ` +
 			`through this scope's own bun (${fodEntries.length} vehicle(s)) ...`,
 	);
 	await refreshFodEntries(fodEntries);
