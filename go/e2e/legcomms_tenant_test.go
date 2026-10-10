@@ -239,15 +239,9 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 	assertTenantOpenDMIndistinguishable(t, ctx, agent1Comms)
 }
 
-// createAgentAs creates an agent over an EXPLICIT comms client (an observer's),
-// so the agent is owned by that client's account rather than by the fixture's
-// bootstrap admin — CreateAgent places the new agent under the CALLER's resolved
-// owner (comms/comms.go:109). Returns the new account id AND the owner the
-// server actually resolved, because per-owner ownership is an emergent property
-// of which client was passed: nothing in the request names an owner, so the
-// caller cannot assume it landed where intended and must check. Fatal on
-// failure: a setup miss makes every assertion below meaningless.
-func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, handle, displayName string) (accountID, ownerID string) {
+// createAgentAs creates an agent under the caller's resolved owner. The request names no
+// owner, so it returns the owner the server resolved for the caller to check, plus the home channel.
+func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, handle, displayName string) (accountID, ownerID, homeChannelID string) {
 	t.Helper()
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -270,7 +264,7 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 	if owner == "" {
 		t.Fatalf("CreateAgent(%s) returned account %q with no agent owner id; cannot verify which tenant it landed under", handle, id)
 	}
-	return id, owner
+	return id, owner, account.GetAgent().GetHomeChannelId()
 }
 
 // awaitSubscriptionLive drains the leading control frame a sinceSeq=0
@@ -451,8 +445,8 @@ func t4SetupTenants(ctx context.Context, t *testing.T, f *Fixture) (owner1ID, ow
 	// about. So each agent is created over its OWN owner's observer client — the
 	// same "call the generated client AsObserver returned" shape assertion 3
 	// uses for OpenDM, not a new fixture primitive.
-	agent1ID, agent1Owner := createAgentAs(ctx, t, owner1Comms, t4Agent1Handle, "T4 Agent One")
-	agent2ID, agent2Owner := createAgentAs(ctx, t, owner2Comms, t4Agent2Handle, "T4 Agent Two")
+	agent1ID, agent1Owner, _ := createAgentAs(ctx, t, owner1Comms, t4Agent1Handle, "T4 Agent One")
+	agent2ID, agent2Owner, _ := createAgentAs(ctx, t, owner2Comms, t4Agent2Handle, "T4 Agent Two")
 	if agent1ID == agent2ID {
 		t.Fatalf("the two owners' agents share account id %q; the per-owner agent namespaces are not distinct", agent1ID)
 	}

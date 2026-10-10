@@ -103,7 +103,13 @@ func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID str
 // AwaitTurnSettled via its own derived settleTimeout, mirroring how
 // SubscribeComms opens under the caller's ctx and AwaitDelivery bounds the read.
 func (f *Fixture) OpenSessionTail(ctx context.Context, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
-	stream, err := f.Compass().SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{
+	return f.OpenSessionTailAs(ctx, f.Compass(), sessionID)
+}
+
+// OpenSessionTailAs opens the tail as client's account, which must be a member
+// of the agent's home channel (another owner's agent is invisible to admin).
+func (f *Fixture) OpenSessionTailAs(ctx context.Context, client compassServiceClient, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
+	stream, err := client.SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{
 		SessionId: sessionID,
 	}))
 	if err != nil {
