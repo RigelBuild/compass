@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import {
 	CommsBroker,
 	type CommsTransport,
@@ -55,6 +56,7 @@ import {
 	SetAgentStatusResponseSchema,
 	UpdateChannelMembersResponseSchema,
 } from "./compassv1";
+import { TurnSequence } from "./turn-sequence";
 
 // A fake of the one transport method the broker consumes. Records every request
 // it is handed (so the wire shape is asserted) and returns a canned result.
@@ -263,10 +265,11 @@ function rosterEntry(
 	});
 }
 
-// Pull one tool out of the set by name, failing loudly if the set stops carrying
-// it (so a rename reddens here rather than silently skipping the assertions).
+const testTurnSequence = new TurnSequence(SessionManager.inMemory());
 function tool(broker: CommsBroker, name: string): AgentTool {
-	const found = createCommsTools(broker).find((t) => t.name === name);
+	const found = createCommsTools(broker, testTurnSequence).find(
+		(t) => t.name === name,
+	);
 	if (!found) throw new Error(`no such tool: ${name}`);
 	return found;
 }
@@ -502,6 +505,51 @@ describe("CommsBroker turn-trigger re-attach (RIG-2894)", () => {
 		expect(req?.call.case).toBe("list");
 		expect(req?.triggerTraceparent).toBe("");
 	});
+});
+
+describe("CommsBroker turn sequence", () => {
+	async function assertPostTurn(
+		name: "comms_post_message" | "comms_post_ask" | "comms_dm",
+		transport: FakeTransport | SequencedTransport,
+		params: Record<string, unknown>,
+	): Promise<void> {
+		const sequence = new TurnSequence(SessionManager.inMemory());
+		const tools = createCommsTools(new CommsBroker(transport), sequence);
+		const post = tools.find((item) => item.name === name);
+		if (!post) throw new Error(`no ${name} tool`);
+		sequence.start();
+		sequence.start();
+		await exec(post, "tc-1", params);
+		const request = transport.requests.at(-1);
+		if (request?.call.case !== "post") throw new Error("expected post request");
+		expect(request.call.value.turnSequence).toBe(2n);
+	}
+
+	test.each([
+		[
+			"comms_post_message",
+			new FakeTransport(postResult("m-1", "t-1")),
+			{ text: "hi", topic: "t", channel: "c" },
+		],
+		[
+			"comms_post_ask",
+			new FakeTransport(askPostResult("a-1", "t-1")),
+			{ questions: [{ id: "q1", question: "Q?", options: [] }], channel: "c" },
+		],
+		[
+			"comms_dm",
+			new SequencedTransport([
+				openDmResult("dm--a--b", true),
+				postResult("m-1", "t-1"),
+			]),
+			{ peer_handle: "@b", topic: "t", text: "hi" },
+		],
+	] as const)(
+		"%s stamps the turn started after tool construction",
+		async (name, transport, params) => {
+			await assertPostTurn(name, transport, params);
+		},
+	);
 });
 
 // The agent loop validates model-supplied arguments against these schemas before

@@ -39,6 +39,7 @@ import {
 	SessionToolCallUpdateSchema,
 } from "./compassv1";
 import type { OutboundFrame } from "./frame";
+import type { TurnSequence } from "./turn-sequence";
 
 // A frame the mapper could not produce a compass.v1 payload for — surfaced, never
 // silently dropped (the design's "unknown frame types logged + counted" rule
@@ -75,9 +76,30 @@ export class EventMapper {
 	#eventSeq = 0;
 	// Injectable wall-clock for `at_unix_ms`.
 	readonly #now: Clock;
+	readonly #turnSequence: TurnSequence | undefined;
+	readonly #capturedStarts: bigint[] = [];
+	readonly #endingSequences: bigint[] = [];
 
-	constructor(now: Clock = Date.now) {
+	constructor(now: Clock = Date.now, turnSequence?: TurnSequence) {
 		this.#now = now;
+		this.#turnSequence = turnSequence;
+	}
+
+	captureTurnStart(): void {
+		this.#capturedStarts.push(this.#turnSequence?.start() ?? 0n);
+	}
+
+	// A terminal end settles every started run; the SDK can supersede or drop an end.
+	// Clearing captured starts drops one whose session start a detach swallowed.
+	#endSequence(event: { readonly isTerminal?: boolean }): bigint {
+		if (event.isTerminal === false) {
+			return (
+				this.#endingSequences.shift() ?? this.#turnSequence?.current() ?? 0n
+			);
+		}
+		this.#endingSequences.length = 0;
+		this.#capturedStarts.length = 0;
+		return this.#turnSequence?.current() ?? 0n;
 	}
 
 	// Map one session event to zero or more compass.v1 frames. Zero frames is
@@ -86,6 +108,10 @@ export class EventMapper {
 	map(event: AgentSessionEvent): MapOutput[] {
 		switch (event.type) {
 			case "agent_start":
+				this.#endingSequences.push(
+					this.#capturedStarts.shift() ?? this.#turnSequence?.start() ?? 0n,
+				);
+				return [this.#sessionState(AgentSessionState.WORKING)];
 			case "turn_start":
 				return [this.#sessionState(AgentSessionState.WORKING)];
 			case "message_start":
@@ -94,7 +120,9 @@ export class EventMapper {
 				this.#messageSeq++;
 				return [this.#sessionState(AgentSessionState.WORKING)];
 			case "agent_end":
-				return [this.#sessionState(AgentSessionState.READY)];
+				return [
+					this.#sessionState(AgentSessionState.READY, this.#endSequence(event)),
+				];
 			case "message_update":
 				return this.#onMessageUpdate(event.assistantMessageEvent);
 			case "tool_execution_start":
@@ -197,8 +225,11 @@ export class EventMapper {
 	// The Runner extracts the state into an AgentSessionStatus, stamping the
 	// session_id it owns (the agent mints no server ids; see `AgentSessionStatus` in
 	// `compass.proto`).
-	#sessionState(state: AgentSessionState): OutboundFrame {
-		const value: SessionFrame = create(SessionFrameSchema, { state });
+	#sessionState(state: AgentSessionState, turnSequence = 0n): OutboundFrame {
+		const value: SessionFrame = create(SessionFrameSchema, {
+			state,
+			turnSequence,
+		});
 		return { kind: "session", value };
 	}
 

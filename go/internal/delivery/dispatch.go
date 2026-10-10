@@ -4,6 +4,7 @@ package delivery
 
 import (
 	"context"
+	"math"
 	"slices"
 
 	"go.opentelemetry.io/otel"
@@ -76,25 +77,28 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 		c.fanOut(ctx, channel, storedAuthor, wire)
 		return nil
 	}
-	c.hold(ctx, authorSession, messageID, msg.GetAtUnixMs())
+	c.hold(ctx, authorSession, messageID, msg.GetAtUnixMs(), msg.GetTurnSequence())
 	return nil
 }
 
 // hold registers messageID under its author's session, ordered by commit time,
-// for firing at the author's settle edge (design.md:157-160); a ref redelivered
-// after a later one still fires in post order. If the author already settled at
-// or after atUnixMs, it also queues a settle edge so the loop fires it at once.
-//
-// The two clocks come from different instances. A settling clock behind the
-// committing one holds a message until the next settle, which is benign. A
-// settling clock ahead by more than the gap between turns fires a still-streaming
-// message early, with partial blocks. One process stamping both has no skew.
-func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, atUnixMs int64) {
-	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx), atUnixMs: atUnixMs}
+// for firing at the author's settle edge. A late hold replays its observed settle.
+func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, atUnixMs int64, turnSequence uint64) {
+	entry := heldEntry{messageID: messageID, traceparent: otelx.Traceparent(ctx), atUnixMs: atUnixMs, turnSequence: turnSequence}
 	if tenant, ok := store.TenantFromContext(ctx); ok {
 		entry.tenant = tenant
 	}
 	c.mu.Lock()
+	entry.generation = c.generation[authorSession]
+	// Committed before the restart (same server clock as the insert): the old
+	// identity's turn, whose settle won't come; any new-identity settle frees it.
+	oldIdentity := false
+	start, started := c.generationStart[authorSession]
+	if started && atUnixMs < start {
+		entry.turnSequence = 0
+		turnSequence = 0
+		oldIdentity = true
+	}
 	entries := c.held[authorSession]
 	// First index strictly after atUnixMs: equal stamps keep arrival order.
 	i, _ := slices.BinarySearchFunc(entries, atUnixMs, func(e heldEntry, at int64) int {
@@ -105,18 +109,32 @@ func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, at
 	})
 	c.held[authorSession] = slices.Insert(entries, i, entry)
 	settled, ok := c.lastSettle[authorSession]
-	fireNow := ok && settled >= atUnixMs
-	if fireNow {
-		// lastSettle stays as is: this replays that settle, bounded to its turn so
-		// a later, still-streaming message of the author stays held.
+	settledSequence := c.lastSettleSequence[authorSession]
+	legacySettle := c.lastSettleLegacy[authorSession]
+	// Compare sequences when both sides have one; fall back to commit time only
+	// after a legacy (zero-sequence) settle.
+	sequenceObserved := turnSequence > 0 && settledSequence >= turnSequence
+	eligible := ok && (sequenceObserved || oldIdentity || legacySettle && settled >= atUnixMs)
+	if eligible {
+		upTo := int64(math.MaxInt64)
+		replaySequence := turnSequence
+		if oldIdentity {
+			upTo = start - 1
+			replaySequence = 0
+		} else if turnSequence == 0 || legacySettle {
+			upTo = settled
+			replaySequence = 0
+		}
 		c.settleQueue = append(c.settleQueue, settleEvent{
-			sessionID: authorSession,
-			state:     compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
-			upTo:      settled,
+			generation:   entry.generation,
+			sessionID:    authorSession,
+			state:        compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
+			turnSequence: replaySequence,
+			upTo:         upTo,
 		})
 	}
 	c.mu.Unlock()
-	if fireNow {
+	if eligible {
 		select {
 		case c.notify <- struct{}{}:
 		default:

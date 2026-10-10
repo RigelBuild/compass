@@ -586,7 +586,7 @@ func TestHoldOrdersByCommitTimeNotArrival(t *testing.T) {
 		msg := textMessage(m.id, author, m.id+" body")
 		msg.At = time.UnixMilli(m.at)
 		reads.seedMessage(msg)
-		c.hold(store.WithTenant(context.Background(), testTenant), "sess-author", m.id, m.at)
+		c.hold(store.WithTenant(context.Background(), testTenant), "sess-author", m.id, m.at, 0)
 	}
 	startConsumer(t, c)
 	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)

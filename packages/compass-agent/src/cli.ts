@@ -67,6 +67,7 @@ import {
 	createUnixSocketTransport,
 	type RunnerTransport,
 } from "./transport/index";
+import { TurnSequence } from "./turn-sequence";
 
 /**
  * The in-container path the Runner bind-mounts this agent's socket to. Fixed by
@@ -986,6 +987,7 @@ export async function main(
 	// and their tools merge into customTools below. The comms broker also reads the
 	// turn trigger (RIG-2894) via TraceBridge to stamp trigger_traceparent (off ⇒ "").
 	const commsBroker = new CommsBroker(transport, traceBridge);
+	const turnSequence = new TurnSequence(manager);
 	const lifecycleBroker = new LifecycleBroker(transport);
 	const forgeBroker = new ForgeBroker(transport);
 	const boardBroker = new BoardBroker(transport);
@@ -994,7 +996,7 @@ export async function main(
 	// SDK runs them as CustomTools, so execute receives args 3-5 SHUFFLED — safe ONLY
 	// because every native reads solely (id, params); cli.test.ts pins execute.length===2.
 	const nativeTools = [
-		...createCommsTools(commsBroker),
+		...createCommsTools(commsBroker, turnSequence),
 		...createLifecycleTools(lifecycleBroker),
 		...createForgeTools(forgeBroker),
 		...createBoardTools(boardBroker),
@@ -1134,7 +1136,13 @@ export async function main(
 	try {
 		// `traceBridge` (undefined when telemetry is off) flows in as the narrow
 		// `TurnTracer` facet — off ⇒ every agent-side trace call no-ops.
-		agent = new CompassAgent({ session, sink, control, tracer: traceBridge });
+		agent = new CompassAgent({
+			session,
+			sink,
+			control,
+			tracer: traceBridge,
+			turnSequence,
+		});
 		await agent.run();
 	} finally {
 		// The load-bearing drain→close chain is UNTOUCHED (storage.drain → sink.drain
