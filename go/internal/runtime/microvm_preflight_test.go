@@ -45,9 +45,8 @@ func okProbes() preflightProbes {
 				FilesystemBytes: 1 << 40, FilesystemInodes: 1 << 26,
 			}, nil
 		},
-		// The invoking user's /etc/subuid range: all-green by default, so only
-		// the row exercising that axis fails it.
-		verifySubordinateIDs: func() error { return nil },
+		// A non-root Runner by default, so only the root row trips that axis.
+		geteuid: func() int { return 1000 },
 	}
 }
 
@@ -227,17 +226,13 @@ func TestVerifyMicroVMSupport(t *testing.T) {
 			wantParts: []string{"not creatable/writable"},
 		},
 		{
-			// The /etc/subuid axis: virtiofsd's mapping is validated by
-			// newuidmap against the invoking user's subordinate range, so a
-			// host without one must fail HERE rather than at the first boot as
-			// an opaque daemon-socket timeout.
-			name: "no subordinate uid range for the invoking user",
+			// At euid 0 virtiofsd skips its user namespace, so untranslated guest
+			// ids reach the host as themselves; the Runner must refuse to start.
+			name: "runner running as root",
 			mutate: func(_ *MicroVMConfig, p *preflightProbes) {
-				p.verifySubordinateIDs = func() error {
-					return errors.New("virtiofsd id-mapping requires a subordinate uid range for mattw in /etc/subuid")
-				}
+				p.geteuid = func() int { return 0 }
 			},
-			wantParts: []string{"/etc/subuid", "subordinate uid range"},
+			wantParts: []string{"root", "euid 0", "non-root user"},
 		},
 	})
 }

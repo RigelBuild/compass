@@ -749,8 +749,8 @@ func TestMicroVMHostOwnershipParity(t *testing.T) {
 			entry, gotUID, gotGID, wantUID, wantGID)
 		if gotUID != wantUID || gotGID != wantGID {
 			t.Errorf("host-ownership PARITY BROKEN for %s: guest-authored file is %d:%d, "+
-				"but the podman --userns=keep-id path yields %d:%d — virtiofsd's uid/gid mapping "+
-				"(launch.go --uid-map/--gid-map) must map the in-guest agent id to the invoking host user",
+				"but the podman --userns=keep-id path yields %d:%d — virtiofsd's uid/gid translation "+
+				"(launch.go --translate-uid/--translate-gid) must map the in-guest agent id to the invoking host user",
 				entry, gotUID, gotGID, wantUID, wantGID)
 		}
 	}
@@ -796,6 +796,49 @@ func TestMicroVMHostOwnershipParity(t *testing.T) {
 	if int(stat.Uid) != wantUID || int(stat.Gid) != wantGID {
 		t.Errorf("a host-authored file changed owner to %d:%d after a guest append, want %d:%d",
 			stat.Uid, stat.Gid, wantUID, wantGID)
+	}
+}
+
+// TestMicroVMGuestCannotReassignHostOwnership is the attack side of parity:
+// virtiofsd translates only the agent id, so a guest that could stamp another
+// id would reach the host as that raw id. Guest root is not reachable — guestd
+// refuses an exec as uid 0 — so this pins that refusal, then has the agent try
+// to chown a workspace file to a foreign id and asserts the host owner holds.
+func TestMicroVMGuestCannotReassignHostOwnership(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, volume := isolationSession(t, env, "iso-chown")
+	wantUID, wantGID := os.Getuid(), os.Getgid()
+
+	if out, err := m.Exec(t.Context(), id,
+		NewExecSpec("sh", "-c", "echo root-write > /workspace/from-root.txt").AsUser("0")); err == nil {
+		t.Fatalf("a guest exec as uid 0 was accepted (exit %d, %q); guest root must be refused", out.ExitCode, out.Stdout+out.Stderr)
+	} else {
+		t.Logf("guest exec as uid 0 refused: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(volume, "from-root.txt")); err == nil {
+		t.Fatal("a refused uid-0 exec still wrote /workspace/from-root.txt")
+	}
+
+	const foreign = "4242:4242"
+	out, code := guestSh(t, m, id, "echo victim > /workspace/chown-target.txt && chown "+foreign+" /workspace/chown-target.txt")
+	t.Logf("guest chown to %s -> exit %d, %q", foreign, code, strings.TrimSpace(out))
+	path := filepath.Join(volume, "chown-target.txt")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("guest-authored chown target is absent host-side (the write leg failed, so the chown was not exercised): %v", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("stat %s: unexpected Sys type %T", path, info.Sys())
+	}
+	t.Logf("host-side ownership after the guest chown attempt: uid=%d gid=%d (invoker: uid=%d gid=%d)",
+		stat.Uid, stat.Gid, wantUID, wantGID)
+	if int(stat.Uid) != wantUID || int(stat.Gid) != wantGID {
+		t.Errorf("a guest chown to %s moved the host-side owner to %d:%d, want the invoker's %d:%d",
+			foreign, stat.Uid, stat.Gid, wantUID, wantGID)
+	}
+	if code == 0 {
+		t.Errorf("guest chown to %s exited 0; it must be refused", foreign)
 	}
 }
 

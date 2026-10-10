@@ -45,11 +45,9 @@ type preflightProbes struct {
 	// provisioned rootless, so a fake reading is the only way this decision is
 	// covered on a dev box.
 	readQuota quotaReadFn
-	// verifySubordinateIDs resolves the invoking user's /etc/subuid range, the
-	// host allocation newuidmap validates virtiofsd's uid/gid mapping against.
-	// Behind the seam so the axis is testable on a box whose own subuid file
-	// cannot be arranged to fail.
-	verifySubordinateIDs func() error
+	// geteuid returns the Runner's effective uid, behind the seam so the root
+	// refusal is testable without running the suite as root.
+	geteuid func() int
 }
 
 // defaultPreflightProbes wires the real host-facing implementations behind the
@@ -77,9 +75,9 @@ func defaultPreflightProbes() preflightProbes {
 			_ = f.Close()
 			return nil
 		},
-		hashImage:            hashFileSHA256,
-		readQuota:            readVolumeQuota,
-		verifySubordinateIDs: microvm.VerifySubordinateIDRange,
+		hashImage: hashFileSHA256,
+		readQuota: readVolumeQuota,
+		geteuid:   os.Geteuid,
 	}
 }
 
@@ -125,12 +123,12 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 		return err
 	}
 
-	// 5. Subordinate id range: newuidmap validates virtiofsd's mapping against
-	// the invoking user's /etc/subuid, so a host with no range must fail HERE
-	// with the fix named — not at first boot, where virtiofsd dies before
-	// binding its socket and the cause surfaces only as "waiting for sockets".
-	if err := probes.verifySubordinateIDs(); err != nil {
-		return fmt.Errorf("microvm preflight: %w", err)
+	// 5. Non-root Runner: at euid 0 virtiofsd skips its user namespace and
+	// passes untranslated guest ids through, so guest root could chown to any
+	// host id. Refuse rather than run with that authority.
+	if probes.geteuid() == 0 {
+		return errors.New("microvm preflight: the Runner is running as root (euid 0), where virtiofsd " +
+			"passes untranslated guest ids through to the host — run the Runner as a non-root user")
 	}
 
 	// 6. Session-volume quota (D7): under the multi-tenant profile an

@@ -578,7 +578,7 @@ func startedAndReapedChild(t *testing.T, dir, name string) *child {
 		// Writes a diagnostic to its captured log and exits non-zero, as a
 		// daemon that cannot start does — so the log tail the error carries
 		// has something in it to assert on.
-		cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c", "echo 'could not setup id mappings' >&2; exit 1"),
+		cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c", "echo 'could not set up the sandbox' >&2; exit 1"),
 	}
 	if err := startChild(c); err != nil {
 		t.Fatalf("startChild(%s fake): %v", name, err)
@@ -676,7 +676,7 @@ func TestStartRecordedChildNamesADeadChildNotAProcPath(t *testing.T) {
 		t.Errorf("error %q reports a /proc path; the operator needs the daemon's cause, not the failed read", msg)
 	}
 	// The daemon's own diagnostic is the thing the operator acts on.
-	if !strings.Contains(msg, "could not setup id mappings") {
+	if !strings.Contains(msg, "could not set up the sandbox") {
 		t.Errorf("error %q does not carry the daemon's log tail", msg)
 	}
 	// The death-cause slot, asserted through the production callsite rather
