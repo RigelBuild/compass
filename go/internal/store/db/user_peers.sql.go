@@ -92,6 +92,67 @@ func (q *Queries) ListUserPeerings(ctx context.Context, userID string) ([]ListUs
 	return items, nil
 }
 
+const ownersPeered = `-- name: OwnersPeered :one
+SELECT EXISTS (
+    SELECT 1
+    FROM user_peers p_out
+    JOIN user_peers p_in
+      ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+    WHERE p_out.user_id = $1 AND p_out.peer_user_id = $2
+)
+`
+
+type OwnersPeeredParams struct {
+	UserID     string
+	PeerUserID string
+}
+
+func (q *Queries) OwnersPeered(ctx context.Context, arg OwnersPeeredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, ownersPeered, arg.UserID, arg.PeerUserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const ownersPeeredRowsForShare = `-- name: OwnersPeeredRowsForShare :many
+SELECT user_id, peer_user_id
+FROM user_peers
+WHERE (user_id = $1 AND peer_user_id = $2)
+   OR (user_id = $2 AND peer_user_id = $1)
+ORDER BY user_id, peer_user_id
+FOR SHARE
+`
+
+type OwnersPeeredRowsForShareParams struct {
+	UserID     string
+	PeerUserID string
+}
+
+type OwnersPeeredRowsForShareRow struct {
+	UserID     string
+	PeerUserID string
+}
+
+func (q *Queries) OwnersPeeredRowsForShare(ctx context.Context, arg OwnersPeeredRowsForShareParams) ([]OwnersPeeredRowsForShareRow, error) {
+	rows, err := q.db.Query(ctx, ownersPeeredRowsForShare, arg.UserID, arg.PeerUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OwnersPeeredRowsForShareRow
+	for rows.Next() {
+		var i OwnersPeeredRowsForShareRow
+		if err := rows.Scan(&i.UserID, &i.PeerUserID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const userPeerPair = `-- name: UserPeerPair :one
 SELECT EXISTS (SELECT 1 FROM user_peers p_out WHERE p_out.user_id = $1 AND p_out.peer_user_id = $2) AS outgoing,
        EXISTS (SELECT 1 FROM user_peers p_in WHERE p_in.user_id = $2 AND p_in.peer_user_id = $1) AS incoming

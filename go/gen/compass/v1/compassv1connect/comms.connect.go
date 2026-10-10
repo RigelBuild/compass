@@ -149,13 +149,10 @@ type CommsServiceClient interface {
 	// covers join, subscribe-toggle, DM-to-channel conversion (convert_channel_name),
 	// and share-replacement.
 	UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error)
-	// Open (or fetch) the two-party DM channel between the caller and a peer,
-	// addressed by the peer's owner-namespaced handle. Resolve-or-create and
-	// idempotent: the channel is minted on first open in the caller-owner's
-	// reserved DM group under a deterministic sorted-handle name, and returned
-	// on every subsequent open. Same-owner only — unknown and cross-owner both
-	// return NOT_FOUND; a self-open is INVALID_ARGUMENT. Emits ChannelChanged on
-	// create.
+	// Open (or fetch) a two-party DM between the caller and a peer agent,
+	// addressed by the peer's owner-namespaced handle. Same-owner and mutually
+	// peered owners are allowed; unknown and unpeered peers return NOT_FOUND.
+	// Self-opens are INVALID_ARGUMENT. Emits ChannelChanged on create.
 	OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error)
 	// Re-parent an agent in the agent tree, or promote it to a root (empty
 	// new_parent_agent_id) — caller-authorized against the agent's owner. The
@@ -568,13 +565,10 @@ type CommsServiceHandler interface {
 	// covers join, subscribe-toggle, DM-to-channel conversion (convert_channel_name),
 	// and share-replacement.
 	UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error)
-	// Open (or fetch) the two-party DM channel between the caller and a peer,
-	// addressed by the peer's owner-namespaced handle. Resolve-or-create and
-	// idempotent: the channel is minted on first open in the caller-owner's
-	// reserved DM group under a deterministic sorted-handle name, and returned
-	// on every subsequent open. Same-owner only — unknown and cross-owner both
-	// return NOT_FOUND; a self-open is INVALID_ARGUMENT. Emits ChannelChanged on
-	// create.
+	// Open (or fetch) a two-party DM between the caller and a peer agent,
+	// addressed by the peer's owner-namespaced handle. Same-owner and mutually
+	// peered owners are allowed; unknown and unpeered peers return NOT_FOUND.
+	// Self-opens are INVALID_ARGUMENT. Emits ChannelChanged on create.
 	OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error)
 	// Re-parent an agent in the agent tree, or promote it to a root (empty
 	// new_parent_agent_id) — caller-authorized against the agent's owner. The

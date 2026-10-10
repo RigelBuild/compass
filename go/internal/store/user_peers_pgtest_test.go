@@ -8,6 +8,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
@@ -61,6 +63,56 @@ func TestApprovePeerIdempotentAndListStates(t *testing.T) {
 	assertPair(b.ID, a.ID, PeeringApproved)
 	assertPeerings(a.ID, b.ID, b.Handle, PeeringApproved)
 	assertPeerings(b.ID, a.ID, a.Handle, PeeringApproved)
+}
+
+// TestOwnersPeeredAndTx follows mutual approval in both argument orders and locks live rows.
+func TestOwnersPeeredAndTx(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	a := mustUser(t, s, "owners-peered-a")
+	b := mustUser(t, s, "owners-peered-b")
+
+	assertBoth := func(a, b AccountID, want bool) {
+		t.Helper()
+		got, err := s.OwnersPeered(ctx, a, b)
+		if err != nil || got != want {
+			t.Errorf("OwnersPeered(%q, %q) = %v, %v; want %v", a, b, got, err, want)
+		}
+		err = s.WithTx(ctx, func(tx pgx.Tx) error {
+			got, err = s.OwnersPeeredTx(ctx, tx, a, b)
+			return err
+		})
+		if err != nil || got != want {
+			t.Errorf("OwnersPeeredTx(%q, %q) = %v, %v; want %v", a, b, got, err, want)
+		}
+	}
+
+	assertBoth(a.ID, b.ID, false)
+	assertBoth(b.ID, a.ID, false)
+	if _, err := s.ApprovePeer(ctx, a.ID, b.ID); err != nil {
+		t.Fatalf("ApprovePeer(a->b): %v", err)
+	}
+	assertBoth(a.ID, b.ID, false)
+	assertBoth(b.ID, a.ID, false)
+	if _, err := s.ApprovePeer(ctx, b.ID, a.ID); err != nil {
+		t.Fatalf("ApprovePeer(b->a): %v", err)
+	}
+	assertBoth(a.ID, b.ID, true)
+	assertBoth(b.ID, a.ID, true)
+
+	if _, err := s.RevokePeer(ctx, a.ID, b.ID); err != nil {
+		t.Fatalf("RevokePeer(a->b): %v", err)
+	}
+	assertBoth(a.ID, b.ID, false)
+	assertBoth(b.ID, a.ID, false)
+	if _, err := s.ApprovePeer(ctx, a.ID, b.ID); err != nil {
+		t.Fatalf("restore ApprovePeer(a->b): %v", err)
+	}
+	if _, err := s.RevokePeer(ctx, b.ID, a.ID); err != nil {
+		t.Fatalf("RevokePeer(b->a): %v", err)
+	}
+	assertBoth(a.ID, b.ID, false)
+	assertBoth(b.ID, a.ID, false)
 }
 
 func TestListPeeringsOrdersByHandle(t *testing.T) {

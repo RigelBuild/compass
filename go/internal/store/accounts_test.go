@@ -403,6 +403,50 @@ func TestListAccountsVisibilityScoping(t *testing.T) {
 	}
 }
 
+func TestPeeringWidensResolutionNotListing(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	a := mustUser(t, s, "owner-a")
+	b := mustUser(t, s, "owner-b")
+	aAgent := mustAgent(t, s, a.ID, "agent-a")
+	aSibling := mustAgent(t, s, a.ID, "sibling-a")
+	bAgent := mustAgent(t, s, b.ID, "agent-b")
+
+	for _, edge := range [][2]AccountID{{a.ID, b.ID}, {b.ID, a.ID}} {
+		if _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
+		}
+	}
+	for _, viewer := range []AccountID{a.ID, aAgent.ID} {
+		accounts, err := s.ListAccounts(ctx, viewer)
+		if err != nil {
+			t.Fatalf("ListAccounts(%q): %v", viewer, err)
+		}
+		if accountIDSet(accounts)[bAgent.ID] {
+			t.Errorf("ListAccounts(%q) includes peered agent %q", viewer, bAgent.ID)
+		}
+	}
+
+	visible, err := s.AccountVisibleTo(ctx, aAgent.ID, bAgent.ID)
+	if err != nil || visible {
+		t.Fatalf("AccountVisibleTo(agent-a, agent-b) = %v, %v; want false when peered but not co-members", visible, err)
+	}
+	visible, err = s.AccountVisibleTo(ctx, aAgent.ID, aSibling.ID)
+	if err != nil || !visible {
+		t.Fatalf("AccountVisibleTo(agent-a, sibling-a) = %v, %v; want true", visible, err)
+	}
+
+	if _, err := s.CreateChannel(ctx, aAgent.ID, NewChannel{
+		Name: "shared-room", Kind: ChannelKindGroupDM, MemberAccountIDs: []AccountID{bAgent.ID},
+	}); err != nil {
+		t.Fatalf("CreateChannel(shared-room): %v", err)
+	}
+	visible, err = s.AccountVisibleTo(ctx, aAgent.ID, bAgent.ID)
+	if err != nil || !visible {
+		t.Fatalf("AccountVisibleTo(agent-a, shared agent-b) = %v, %v; want true", visible, err)
+	}
+}
+
 // accountIDSet indexes a slice of accounts by id for membership checks.
 func accountIDSet(accts []Account) map[AccountID]bool {
 	set := make(map[AccountID]bool, len(accts))

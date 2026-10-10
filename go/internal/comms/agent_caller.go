@@ -361,12 +361,11 @@ func (c *Comms) CreateChannelGroupAsAccount(
 	return resp.Msg, nil
 }
 
-// OpenDMAsAccount executes one agent-initiated OpenDM as account, mirroring
-// UpdatePinnedBoardAsAccount: WithActor + the shared OpenDM handler path, so
-// the peer resolve, the same-owner authz, the reserved-DM-group upsert, and the
-// post-commit ChannelChanged fan-out are identical to a human caller's. An
-// unknown, cross-owner, or self peer collapses to the same code a human gets. The
-// request names the peer by handle, so there is no home-channel defaulting here.
+// OpenDMAsAccount executes an agent-initiated OpenDM as account, mirroring
+// UpdatePinnedBoardAsAccount: it uses the shared handler path, including peer
+// resolution, same-owner or mutual-peering authorization, DM upsert, and event.
+// Unknown and unpeered peers return the same error; self opens are invalid.
+// The request names the peer by handle, so there is no home-channel defaulting.
 func (c *Comms) OpenDMAsAccount(
 	ctx context.Context,
 	account store.AccountID,

@@ -8,10 +8,11 @@
 -- sqlc has no query-fragment composition. It is column-identical to the former
 -- scanAccount projection (accounts LEFT JOIN user_accounts LEFT JOIN
 -- agent_accounts LEFT JOIN system_accounts), with the two `role` columns aliased
--- (user_role / agent_role) so the generated row fields do not collide. The
--- account-visibility predicate (formerly the accountVisibleFromWhere Go const) is
--- likewise inlined into each read that needs it; the four copies MUST stay
--- textually identical so the roster clip cannot drift from the ListAccounts read.
+-- (user_role / agent_role) so the generated row fields do not collide.
+--
+-- List predicates match each other; resolver predicates match each other and
+-- add exactly the live-peering disjunct. Normalize whitespace in the parity test.
+-- All copies include the caller's fleet; peering grants name resolution only.
 
 -- name: InsertAccount :exec
 INSERT INTO accounts (id, handle, display_name, tenant_id)
@@ -132,8 +133,15 @@ WHERE ah.owner_user_id IS NULL AND ah.handle = ANY($2::text[])
       WHERE (
               a.id = $1
            OR u.account_id IS NOT NULL
-           OR ag.owner_user_id = $1
-           OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
+           OR ag.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
+           OR EXISTS (
+               SELECT 1
+               FROM user_peers p_out
+               JOIN user_peers p_in
+                 ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+               WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
+                 AND p_out.peer_user_id = ag.owner_user_id
+           )
            OR EXISTS (
                SELECT 1
                FROM channel_members cm_self
@@ -157,8 +165,15 @@ WHERE (ah.owner_user_id, ah.handle) IN (SELECT unnest($2::text[]), unnest($3::te
       WHERE (
               a.id = $1
            OR u.account_id IS NOT NULL
-           OR ag.owner_user_id = $1
-           OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
+           OR ag.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
+           OR EXISTS (
+               SELECT 1
+               FROM user_peers p_out
+               JOIN user_peers p_in
+                 ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+               WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
+                 AND p_out.peer_user_id = ag.owner_user_id
+           )
            OR EXISTS (
                SELECT 1
                FROM channel_members cm_self
@@ -181,8 +196,7 @@ LEFT JOIN system_accounts sy ON sy.account_id = a.id
 WHERE (
         a.id = $1
      OR u.account_id IS NOT NULL
-     OR ag.owner_user_id = $1
-     OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
+     OR ag.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
      OR EXISTS (
          SELECT 1
          FROM channel_members cm_self
@@ -202,8 +216,7 @@ SELECT EXISTS (
     WHERE (
             a.id = $1
          OR u.account_id IS NOT NULL
-         OR ag.owner_user_id = $1
-         OR ag.owner_user_id = (SELECT own.owner_user_id FROM agent_accounts own WHERE own.account_id = $1)
+         OR ag.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)
          OR EXISTS (
              SELECT 1
              FROM channel_members cm_self

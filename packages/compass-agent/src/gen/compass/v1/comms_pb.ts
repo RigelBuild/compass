@@ -1722,9 +1722,9 @@ export const UpdateChannelMembersResponseSchema: GenMessage<UpdateChannelMembers
  */
 export type OpenDMRequest = Message$1<"compass.v1.OpenDMRequest"> & {
   /**
-   * The peer agent's handle (owner-namespaced per DL-271). The server resolves
-   * it and enforces same-owner; unknown and cross-owner both return NOT_FOUND.
-   * A self-handle is INVALID_ARGUMENT.
+   * Peer agent's owner-namespaced handle; same-owner or mutually peered owners
+   * are allowed. Unknown and unpeered peers return NOT_FOUND; self is
+   * INVALID_ARGUMENT.
    *
    * @generated from field: string peer_handle = 1;
    */
@@ -2919,13 +2919,10 @@ export const CommsService: GenService<{
     output: typeof UpdateChannelMembersResponseSchema;
   },
   /**
-   * Open (or fetch) the two-party DM channel between the caller and a peer,
-   * addressed by the peer's owner-namespaced handle. Resolve-or-create and
-   * idempotent: the channel is minted on first open in the caller-owner's
-   * reserved DM group under a deterministic sorted-handle name, and returned
-   * on every subsequent open. Same-owner only — unknown and cross-owner both
-   * return NOT_FOUND; a self-open is INVALID_ARGUMENT. Emits ChannelChanged on
-   * create.
+   * Open (or fetch) a two-party DM between the caller and a peer agent,
+   * addressed by the peer's owner-namespaced handle. Same-owner and mutually
+   * peered owners are allowed; unknown and unpeered peers return NOT_FOUND.
+   * Self-opens are INVALID_ARGUMENT. Emits ChannelChanged on create.
    *
    * @generated from rpc compass.v1.CommsService.OpenDM
    */

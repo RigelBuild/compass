@@ -436,3 +436,74 @@ func TestAccountsByHandlesQueryCountBounded(t *testing.T) {
 		t.Fatalf("AccountsByHandles(no callerOwner) ran %d queries, want 1 (global only)", n)
 	}
 }
+
+func TestAccountsByHandlesOwnFleetAndPeeredOwners(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	a := mustUser(t, s, "owner-a")
+	b := mustUser(t, s, "owner-b")
+	aAgent := mustAgent(t, s, a.ID, "agent-a")
+	aSibling := mustAgent(t, s, a.ID, "sibling-a")
+	bAgent := mustAgent(t, s, b.ID, "agent-b")
+
+	assertMissLikeUnknown := func(viewer, callerOwner AccountID, handle string) {
+		t.Helper()
+		_, gotErr := s.AccountsByHandles(ctx, viewer, callerOwner, []QualifiedHandle{ParseQualifiedHandle(handle)})
+		_, unknownErr := s.AccountsByHandles(ctx, viewer, callerOwner, []QualifiedHandle{ParseQualifiedHandle("missing-agent")})
+		if gotErr == nil || unknownErr == nil {
+			t.Fatalf("AccountsByHandles(%q) error = %v, unknown error = %v; want not-found misses", handle, gotErr, unknownErr)
+		}
+		gotMessage := strings.Replace(gotErr.Error(), handle, "<handle>", 1)
+		unknownMessage := strings.Replace(unknownErr.Error(), "missing-agent", "<handle>", 1)
+		if gotMessage != unknownMessage {
+			t.Fatalf("AccountsByHandles(%q) error = %v, unknown error = %v; want byte-identical misses modulo handle", handle, gotErr, unknownErr)
+		}
+	}
+
+	assertMissLikeUnknown(a.ID, a.ID, "owner-b/agent-b")
+	assertMissLikeUnknown(aAgent.ID, a.ID, "owner-b/agent-b")
+	if _, err := s.ApprovePeer(ctx, a.ID, b.ID); err != nil {
+		t.Fatalf("ApprovePeer(a->b): %v", err)
+	}
+	assertMissLikeUnknown(a.ID, a.ID, "owner-b/agent-b")
+	assertMissLikeUnknown(aAgent.ID, a.ID, "owner-b/agent-b")
+	if _, err := s.ApprovePeer(ctx, b.ID, a.ID); err != nil {
+		t.Fatalf("ApprovePeer(b->a): %v", err)
+	}
+	for _, viewer := range []AccountID{a.ID, aAgent.ID} {
+		got, err := s.AccountsByHandles(ctx, viewer, a.ID, []QualifiedHandle{ParseQualifiedHandle("owner-b/agent-b")})
+		if err != nil || got["owner-b/agent-b"] != bAgent.ID {
+			t.Fatalf("AccountsByHandles(%q, peered) = %v, %v; want %q", viewer, got, err, bAgent.ID)
+		}
+	}
+	if _, err := s.RevokePeer(ctx, b.ID, a.ID); err != nil {
+		t.Fatalf("RevokePeer(b->a): %v", err)
+	}
+	assertMissLikeUnknown(a.ID, a.ID, "owner-b/agent-b")
+	assertMissLikeUnknown(aAgent.ID, a.ID, "owner-b/agent-b")
+
+	got, err := s.AccountsByHandles(ctx, aAgent.ID, a.ID, []QualifiedHandle{ParseQualifiedHandle("sibling-a")})
+	if err != nil || got["sibling-a"] != aSibling.ID {
+		t.Fatalf("AccountsByHandles(agent own sibling) = %v, %v; want %q", got, err, aSibling.ID)
+	}
+}
+
+// TestAccountsByHandlesPeeringDoesNotLeakAnotherPair resolves only mutual peers of the viewer.
+func TestAccountsByHandlesPeeringDoesNotLeakAnotherPair(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	a := mustUser(t, s, "peering-isolation-a")
+	b := mustUser(t, s, "peering-isolation-b")
+	c := mustUser(t, s, "peering-isolation-c")
+	mustAgent(t, s, b.ID, "x")
+
+	for _, edge := range [][2]AccountID{{b.ID, c.ID}, {c.ID, b.ID}} {
+		if _, err := s.ApprovePeer(ctx, edge[0], edge[1]); err != nil {
+			t.Fatalf("ApprovePeer(%q, %q): %v", edge[0], edge[1], err)
+		}
+	}
+
+	if _, err := s.AccountsByHandles(ctx, a.ID, a.ID, []QualifiedHandle{ParseQualifiedHandle("peering-isolation-b/x")}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AccountsByHandles(A, B/x) error = %v; want ErrNotFound when only B and C are peers", err)
+	}
+}

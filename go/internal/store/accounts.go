@@ -811,9 +811,8 @@ func ParseQualifiedHandle(raw string) QualifiedHandle {
 //     (callerOwner). The system account is never a member/owner target, so the
 //     global arm excludes system_accounts rows.
 //
-// Every arm is intersected with the account-visibility predicate keyed on viewer
-// (OQ-6 SCOPED): a real-but-invisible handle misses exactly like an unknown one,
-// so resolution and the roster clip stay aligned by construction.
+// Agent resolution uses the viewer-scoped resolver predicate; account lists
+// retain the narrower predicate, and roster clipping uses its own visibility check.
 //
 // ATOMIC (OQ-2): any handle that fails to resolve fails the whole call with
 // ErrNotFound naming EVERY unresolved handle in its submitted spelling (same
@@ -963,9 +962,8 @@ func (s *Store) visibleGlobalHandleIDs(ctx context.Context, viewer AccountID, ha
 	return ids, nil
 }
 
-// visibleAgentHandleIDs resolves (owner, handle) pairs in each owner's agent
-// namespace (owner_user_id = owner), intersecting the viewer's account-visible
-// set. A miss (unknown or invisible) is absent from the map.
+// visibleAgentHandleIDs resolves owner/handle pairs through viewer-scoped access;
+// misses (unknown or unauthorized) are omitted from the result map.
 func (s *Store) visibleAgentHandleIDs(ctx context.Context, viewer AccountID, keys []agentHandleKey) (map[agentHandleKey]AccountID, error) {
 	owners := make([]string, len(keys))
 	handles := make([]string, len(keys))
@@ -988,19 +986,26 @@ func (s *Store) visibleAgentHandleIDs(ctx context.Context, viewer AccountID, key
 	return ids, nil
 }
 
-// ListAccounts returns the accounts visible to visibleTo. The visibility rule
-// (D9, owner-gated access — the design record pins DM/channel visibility
-// precisely but delegates account-listing scope to "the accounts visible to the
-// caller", comms.proto:48-49; this is the store's conservative realization,
-// flagged for review): the caller always sees itself and every user account (the
-// first-class member directory the management hierarchy needs), and sees an agent
-// account only when it owns that agent, shares its owner (an agent caller sees
-// its owner's whole fleet), or shares a channel with it — so an owner-scoped
-// agent never leaks to an unrelated owner's account. The predicate is
-// textually shared across the ListVisibleAccounts, AccountVisibleTo, and the two
-// visible-handle queries (queries/accounts.sql) so the stream edge's per-event
-// account filter cannot drift from this list read (the anti-drift guarantee the
-// record's "store is the D9 source of truth" requires).
+// VisibleAgentByHandle resolves an agent only when the resolver visibility rule
+// admits viewer to its owner's namespace; a miss names the submitted handle.
+func (s *Store) VisibleAgentByHandle(ctx context.Context, viewer, owner AccountID, handle string) (Account, error) {
+	if handle == "" {
+		return Account{}, fmt.Errorf("%w: handle is required", ErrInvalidArgument)
+	}
+	ids, err := s.visibleAgentHandleIDs(ctx, viewer, []agentHandleKey{{owner: owner, handle: handle}})
+	if err != nil {
+		return Account{}, err
+	}
+	id := ids[agentHandleKey{owner: owner, handle: handle}]
+	if id == "" {
+		return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
+	}
+	return s.GetAccount(ctx, id)
+}
+
+// ListAccounts returns accounts the viewer may enumerate: all users, its own
+// fleet, and other agents that share a channel. Peering grants resolution only.
+// The matching list predicate also filters account-change events.
 func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Account, error) {
 	rows, err := s.q.ListVisibleAccounts(ctx, string(visibleTo))
 	if err != nil {
@@ -1014,11 +1019,9 @@ func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Accoun
 	return accounts, nil
 }
 
-// AccountVisibleTo reports whether actor may see target — the single-id form of
-// the ListAccounts predicate, used by the SubscribeComms stream edge to filter
-// AccountChanged so the directory event rides at read-parity (a viewer never
-// learns of an agent it could not list). Shares the visibility predicate with
-// the list read (queries/accounts.sql) so the two cannot drift.
+// AccountVisibleTo reports whether actor may enumerate target. It shares the
+// ListAccounts predicate used to filter account-change events; peering grants
+// addressing only and does not widen this relation.
 func (s *Store) AccountVisibleTo(ctx context.Context, actor AccountID, target AccountID) (bool, error) {
 	visible, err := s.q.AccountVisibleTo(ctx, db.AccountVisibleToParams{
 		ID:   string(actor),

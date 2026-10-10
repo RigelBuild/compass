@@ -575,3 +575,28 @@ func TestGetRosterAgentCallerSeesSameOwnerGrandchild(t *testing.T) {
 		t.Errorf("ListAccounts(supervisor): grandchild=%v foreign=%v, want true/false", ids[grandchild.ID], ids[foreign.ID])
 	}
 }
+
+func TestGetRosterAgentCallerSeesSameOwnerSiblingsWithoutSharedChannel(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "roster-owner")
+	caller := mustAgent(t, st, owner.ID, "roster-caller")
+	sibling := mustAgent(t, st, owner.ID, "roster-sibling")
+	foreignOwner := mustUser(t, st, "roster-foreign-owner")
+	foreign := mustAgent(t, st, foreignOwner.ID, "roster-foreign")
+
+	resp, err := svc.GetRoster(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
+		VantageHandle: caller.Handle,
+	}))
+	if err != nil {
+		t.Fatalf("GetRoster(agent caller, owner scope): %v", err)
+	}
+	got := rosterByID(resp.Msg.GetEntries())
+	if _, ok := got[string(sibling.ID)]; !ok {
+		t.Fatalf("agent caller roster omits same-owner sibling %q", sibling.ID)
+	}
+	if _, ok := got[string(foreign.ID)]; ok {
+		t.Fatalf("agent caller roster includes foreign agent %q", foreign.ID)
+	}
+}

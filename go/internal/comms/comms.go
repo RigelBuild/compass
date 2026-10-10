@@ -655,56 +655,49 @@ func (c *Comms) UpdatePinnedBoard(
 }
 
 // OpenDM resolves-or-creates the two-party DM channel between the caller and a
-// peer, addressed by handle (RIG-2962 T3, design.md T3:745-762). The caller is
-// the actor on the connection; the peer is resolved owner-namespaced (resolve.go
-// AgentByHandle), and both must share the caller's owner. Unknown, cross-owner,
-// and self-handle-that-resolves-to-the-caller all collapse oracle-safe: an
-// unknown OR cross-owner handle is the byte-identical merged NOT_FOUND naming the
-// submitted handle (a foreign peer's existence is never leaked), and a self-DM is
-// CodeInvalidArgument. The name is the deterministic sorted-handle pair, so
-// open(a,b) and open(b,a) resolve the same channel; the whole open runs in one
-// store tx (lock → ensure group → upsert) and a create fans a best-effort
-// post-commit ChannelChanged (a resume emits nothing).
+// peer agent. Same-owner and mutually peered owners are allowed; unknown and
+// unpeered peers return the same NOT_FOUND. A self-DM is INVALID_ARGUMENT. Same-
+// owner channels use sorted handles; cross-owner names use sorted party ids so
+// handle reclaim cannot resume a stranger's channel. The host is the lower owner
+// id. A create emits ChannelChanged after commit; a resume emits nothing.
 func (c *Comms) OpenDM(
 	ctx context.Context,
 	req *connect.Request[compassv1.OpenDMRequest],
 ) (*connect.Response[compassv1.OpenDMResponse], error) {
 	caller := c.actorFromContext(ctx)
 
-	// Resolve the peer owner-namespaced (bare → the caller's own owner). An
-	// unknown, wrong-owner, or non-agent handle is the merged NOT_FOUND naming
-	// the submitted handle.
-	peer, err := c.resolveAgentAccount(ctx, caller, req.Msg.GetPeerHandle())
+	peerHandle := req.Msg.GetPeerHandle()
+	peer, err := c.resolveAddressableAgent(ctx, caller, peerHandle)
 	if err != nil {
 		return nil, edgeError(err)
 	}
 
-	// Self-DM guard: a handle that resolves to the caller itself is not a peer.
+	// A handle that resolves to the caller itself is not a peer.
 	if peer.ID == caller {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: cannot open a DM with yourself"))
 	}
 
-	// Same-owner authz. resolveAgentAccount for a BARE handle already resolves in the
-	// caller's own owner namespace, so a bare peer is same-owner by construction; the
-	// check bites an owner-QUALIFIED handle naming another owner's agent. A
-	// cross-owner peer is oracle-safe: the merged NOT_FOUND names the submitted handle.
-	owner, err := c.store.ResolveOwner(ctx, caller)
+	callerOwner, err := c.store.ResolveOwner(ctx, caller)
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	if peer.Agent.OwnerUserID != owner {
-		return nil, edgeError(notFoundHandle(store.ErrNotFound, req.Msg.GetPeerHandle()))
+	peerOwner := peer.Agent.OwnerUserID
+	host := callerOwner
+	var name string
+	if peerOwner == callerOwner {
+		callerAcc, err := c.store.GetAccount(ctx, caller)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		name = dmChannelName(callerAcc.Handle, peer.Handle)
+	} else {
+		if peerOwner < host {
+			host = peerOwner
+		}
+		name = crossOwnerDMName(caller, peer.ID)
 	}
 
-	// The deterministic name is keyed on the two HANDLES: the caller's own handle
-	// and the peer's, sorted lexicographically.
-	callerAcc, err := c.store.GetAccount(ctx, caller)
-	if err != nil {
-		return nil, edgeError(err)
-	}
-	name := dmChannelName(callerAcc.Handle, peer.Handle)
-
-	channelID, created, err := c.openDMTx(ctx, owner, name, []store.AccountID{caller, peer.ID})
+	channelID, created, err := c.openDMTx(ctx, host, callerOwner, peerOwner, name, peerHandle, []store.AccountID{caller, peer.ID})
 	if err != nil {
 		return nil, edgeError(err)
 	}
