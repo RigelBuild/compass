@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { flush as flushSync } from "solid-js";
+import needle from "./assets/compass-needle.svg";
 import { STUB_CHANNELS, STUB_MESSAGES, STUB_TOPICS } from "./comms-stub";
 import type { CommandId } from "./keyboard/commands";
 import { STUB_AGENTS } from "./stub-data";
@@ -193,12 +194,15 @@ describe("App shell (T7)", () => {
 		expect(leftPresent()).toBe(true);
 	});
 
-	// The top bar shows the bare wordmark and the shell has no bottom usage bar.
-	test("the shell carries no ADE subtitle and no usage bar", () => {
+	// The top bar shows the needle mark alone and the shell has no bottom usage bar.
+	test("the shell carries the needle mark alone and no usage bar", () => {
 		const { container } = mountApp();
-		expect(container.querySelector(".topbar .brand")?.textContent).toBe(
-			"Compass",
-		);
+		const brand = container.querySelector(".topbar .brand");
+		const imgs = brand?.querySelectorAll("img") ?? [];
+		expect(imgs).toHaveLength(1);
+		expect(imgs[0]?.getAttribute("src")).toBe(needle);
+		expect(imgs[0]?.getAttribute("alt")).toBe("Compass");
+		expect(brand?.textContent).toBe("");
 		expect(container.querySelector("footer")).toBeNull();
 	});
 });

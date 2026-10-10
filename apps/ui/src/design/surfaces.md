@@ -16,7 +16,7 @@ Each surface is specified along five facets:
 - **Empty states** — what renders before there is content, so no surface is a
   blank void.
 - **Mark placement** — which brand asset appears, per the brand mark surface
-  table. The default is none: the wordmark lives in exactly one place.
+  table. The default is none: the needle mark lives in exactly one place.
 - **Flip checklist** — the ordered steps an adoption PR executes to re-clothe the
   surface from the legacy vocabulary to `.cx-*`, deleting the legacy in the same
   diff (no shims).
@@ -42,7 +42,7 @@ this system re-clothes it, it does not re-lay it.
 `--cx-bg`, sidebars on `--cx-bg-raised`, main on `--cx-bg`,
 separated by 1px `--cx-border` rules. No box-shadow between docked regions —
 shadows are reserved for genuinely floating layers (menu, dialog, palette,
-toast). The topbar carries the wordmark treatment (see Mark placement), the
+toast). The topbar carries the needle mark (see Mark placement), the
 view-tabs as a horizontal `.cx-tabs` (`data-orientation="h"`, accent-underline
 selection), a daemon status pip built from `.cx-pip`, and pane-toggle controls as
 `.cx-btn` `data-variant="ghost"`.
@@ -57,11 +57,13 @@ A region with no content delegates its empty state to the surface mounted in it
 (tree-empty, pins-empty, and the board/comms empties below).
 
 **Mark placement.** The topbar is the one surface that carries the brand mark:
-the sigil-led wordmark, and it is the sole in-app purple (`brand identity.md`
-§"Which mark on which surface"). The wordmark is set at or above its 24px-tall
-floor; below that floor the mark is omitted, never shrunk. No other region
-carries a mark, and no icon-beside-wordmark lockup is composed anywhere in the
-shell — the wordmark stands alone (the one-R rule). The phosphor mark
+the Compass needle (`docs/specs/brand/compass-mark.md`), and it is the sole
+in-app purple. The sigil-led wordmark names the company, and Compass has no
+product wordmark, so the needle stands for the product. It is set at or above
+24px, where each of its 12 grid cells is a whole 2px; below that floor the mark
+is omitted, never shrunk. No other region carries a mark, and no
+icon-beside-wordmark lockup is composed anywhere in the shell — the needle
+stands alone, with "Compass" as its accessible name. The phosphor mark
 (`icon-phosphor`, the only permitted purple-in-motion) belongs to the first-load
 boot sequence and to the one sanctioned purple spinner, not to steady-state
 chrome.
@@ -74,7 +76,8 @@ chrome.
    `--cx-border`; remove any inter-region box-shadow.
 3. Re-clothe the view-tabs as `.cx-tabs[data-orientation="h"]`, the daemon pip as
    `.cx-pip`, and the pane toggles as `.cx-btn[data-variant="ghost"]`.
-4. Apply the topbar wordmark treatment; confirm it renders at or above 24px.
+4. Place the needle mark alone in the topbar; confirm it renders at or above
+   24px.
 5. Fix the two focus defects — the `outline: none` rules at `app.css:2385-2388`
    and `app.css:3556-3559` — by applying `--cx-focus-ring` on `:focus-visible`.
 6. Wire the four focus zones (`Ctrl+1/2/3`, `F6`) and the pane-toggle bindings
