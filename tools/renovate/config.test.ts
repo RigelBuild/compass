@@ -765,8 +765,6 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 	];
 	const managerFor = (depName: string) =>
 		cfg.customManagers?.find((m) => m.depNameTemplate === depName);
-	const ruleFor = (depName: string) =>
-		cfg.packageRules.find((r) => r.matchDepNames?.includes(depName));
 
 	test.each(forkScopes)(
 		"declares a git-refs regex manager for the $label lock's fork rev",
@@ -787,8 +785,8 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			// pattern would make the root manager extract from the agent-image lock
 			// too (or vice versa), so each manager remains scoped to one lock.
 			//
-			// Pin the LITERAL first, then re-parse it behaviourally below. The
-			// literal assertion is what makes a Renovate delimiter-semantics drift
+			// Pin the literal first, so a Renovate delimiter-semantics drift fails as
+			// a changed literal, then re-parse it behaviourally below.
 			expect(manager?.managerFilePatterns).toEqual([patternLiteral]);
 			const pattern = manager?.managerFilePatterns?.[0];
 			const delimited = /^\/(.*)\/$/.exec(pattern as string);
