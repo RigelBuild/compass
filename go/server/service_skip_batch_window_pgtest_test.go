@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"runtime"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -18,23 +19,25 @@ import (
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type skipBatchWindowFixture struct {
-	client      compassv1connect.CompassServiceClient
-	runner      *recordingRunner
-	ownerToken  string
-	adminToken  string
-	memberToken string
-	otherToken  string
-	sessionID   string
-	foreignID   string
+	client            compassv1connect.CompassServiceClient
+	runner            *recordingRunner
+	ownerToken        string
+	adminToken        string
+	memberToken       string
+	otherToken        string
+	foreignAdminToken string
+	sessionID         string
 }
 
 func newSkipBatchWindowFixture(t *testing.T, liveRunner bool) skipBatchWindowFixture {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, pgtest.RequireDSN(t))
+	dsn := pgtest.RequireDSN(t)
+	st, err := store.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("store Open: %v", err)
 	}
@@ -55,6 +58,19 @@ func newSkipBatchWindowFixture(t *testing.T, liveRunner bool) skipBatchWindowFix
 	otherOwner, err := st.CreateUser(ctx, store.NewUser{Handle: "other-owner", DisplayName: "other-owner"})
 	if err != nil {
 		t.Fatalf("CreateUser(other-owner): %v", err)
+	}
+	otherTenant := store.TenantID("skip-batch-window-other")
+	tenantPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(tenantPool.Close)
+	if _, err := tenantPool.Exec(ctx, "INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ($1, $2, $3, $4)", string(otherTenant), string(otherTenant), string(otherTenant), time.Now().UnixMilli()); err != nil {
+		t.Fatalf("seed other tenant: %v", err)
+	}
+	foreignAdmin, err := st.BootstrapAdmin(store.WithTenant(ctx, otherTenant), store.NewUser{Handle: "foreign-admin", DisplayName: "Foreign admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin(other tenant): %v", err)
 	}
 	agent, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "agent", DisplayName: "agent"})
 	if err != nil {
@@ -106,14 +122,14 @@ func newSkipBatchWindowFixture(t *testing.T, liveRunner bool) skipBatchWindowFix
 	}
 
 	return skipBatchWindowFixture{
-		client:      newH2CClient(t, url),
-		runner:      runner,
-		ownerToken:  issueToken(owner.ID),
-		adminToken:  issueToken(admin.ID),
-		memberToken: issueToken(member.ID),
-		otherToken:  issueToken(otherOwner.ID),
-		sessionID:   sessionID,
-		foreignID:   foreignID,
+		client:            newH2CClient(t, url),
+		runner:            runner,
+		ownerToken:        issueToken(owner.ID),
+		adminToken:        issueToken(admin.ID),
+		memberToken:       issueToken(member.ID),
+		otherToken:        issueToken(otherOwner.ID),
+		foreignAdminToken: issueToken(foreignAdmin.ID),
+		sessionID:         sessionID,
 	}
 }
 
@@ -176,6 +192,7 @@ func TestSkipBatchWindowNotFoundParityDoesNotDispatch(t *testing.T) {
 		sessionID string
 	}{
 		{name: "non-owner home-channel member", token: f.memberToken, sessionID: f.sessionID},
+		{name: "admin from another tenant", token: f.foreignAdminToken, sessionID: f.sessionID},
 		{name: "owner of another agent", token: f.otherToken, sessionID: f.sessionID},
 		{name: "unknown session", token: f.ownerToken, sessionID: "unknown-session"},
 	} {

@@ -197,6 +197,13 @@ func TestRequireAgentSessionOwnerAuthorizationAndQueryShape(t *testing.T) {
 	member := mustUser(t, s, "member")
 	agent := mustAgent(t, s, owner.ID, "agent")
 	otherAgent := mustAgent(t, s, otherOwner.ID, "other-agent")
+	otherTenant := seedTenant(t, s, "session-owner-authz-other")
+	otherTenantAdmin, err := s.BootstrapAdmin(WithTenant(ctx, otherTenant), NewUser{
+		Handle: "other-tenant-admin", DisplayName: "other-tenant-admin",
+	})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin(other tenant): %v", err)
+	}
 	recordSession(t, s, agent, "owner-session")
 	recordSession(t, s, otherAgent, "other-session")
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, agent.Agent.HomeChannelID,
@@ -205,15 +212,17 @@ func TestRequireAgentSessionOwnerAuthorizationAndQueryShape(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		caller    AccountID
-		sessionID string
-		want      error
-		queries   int
+		name         string
+		caller       AccountID
+		sessionID    string
+		want         error
+		queries      int
+		tenantScoped bool
 	}{
 		{name: "owner", caller: owner.ID, sessionID: "owner-session", queries: 1},
 		{name: "admin", caller: admin.ID, sessionID: "owner-session", queries: 1},
 		{name: "non-owner home-channel member", caller: member.ID, sessionID: "owner-session", want: ErrNotFound, queries: 1},
+		{name: "admin from another tenant", caller: otherTenantAdmin.ID, sessionID: "owner-session", want: ErrNotFound, queries: 1, tenantScoped: true},
 		{name: "owner of another agent", caller: otherOwner.ID, sessionID: "owner-session", want: ErrNotFound, queries: 1},
 		{name: "unknown session", caller: owner.ID, sessionID: "unknown-session", want: ErrNotFound, queries: 1},
 		{name: "empty session id", caller: owner.ID, want: ErrInvalidArgument},
@@ -221,7 +230,11 @@ func TestRequireAgentSessionOwnerAuthorizationAndQueryShape(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			counter.Reset()
-			err := s.RequireAgentSessionOwner(ctx, tc.caller, tc.sessionID)
+			requestCtx := ctx
+			if tc.tenantScoped {
+				requestCtx = WithTenant(ctx, otherTenant)
+			}
+			err := s.RequireAgentSessionOwner(requestCtx, tc.caller, tc.sessionID)
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("RequireAgentSessionOwner = %v, want nil", err)
