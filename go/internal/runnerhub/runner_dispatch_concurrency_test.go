@@ -175,7 +175,7 @@ func runnerLoopFixture(t *testing.T, host runner.SessionHost) (hub *Hub, cancel 
 	link, err := runner.Dial(ctx, runner.RunnerConfig{
 		RunnerID:   "runner-1",
 		ServerAddr: url,
-		Token:      "runner-tok",
+		Token:      runner.StaticToken("runner-tok"),
 		HTTPClient: h2cHTTPClient(t),
 	})
 	if err != nil {

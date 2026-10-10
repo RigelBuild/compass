@@ -343,7 +343,7 @@ func TestRunRejectsOverBudgetRuntimeDirBeforeDialing(t *testing.T) {
 	cfg := RunnerConfig{
 		RunnerID:   "runner-1",
 		ServerAddr: "http://127.0.0.1:1", // never reached
-		Token:      "t",
+		Token:      StaticToken("t"),
 		Engine:     newPipeRuntime(),
 		RuntimeDir: dir,
 	}
@@ -356,14 +356,32 @@ func TestRunRejectsOverBudgetRuntimeDirBeforeDialing(t *testing.T) {
 	}
 }
 
-func TestRunRejectsEmptyRunnerID(t *testing.T) {
+func TestRunRejectsEmptyRunnerIDWithoutTokenFile(t *testing.T) {
 	err := Run(context.Background(), RunnerConfig{
 		ServerAddr: "http://127.0.0.1:1",
-		Token:      "t",
+		Token:      StaticToken("t"),
 		Engine:     newPipeRuntime(),
 		RuntimeDir: t.TempDir(),
 	}, nil, discardLoggerRunner())
 	if err == nil || !strings.Contains(err.Error(), "runner id") {
-		t.Fatalf("Run with empty runner ID = %v, want runner-id configuration error", err)
+		t.Fatalf("Run with empty RunnerID and static token = %v, want runner-id configuration error", err)
+	}
+}
+
+func TestRunAcceptsEmptyRunnerIDWithTokenFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte(tokenWithExpiry(t, time.Now().Add(time.Minute))), 0o600); err != nil {
+		t.Fatalf("write projected token: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := Run(ctx, RunnerConfig{
+		ServerAddr: "http://127.0.0.1:1",
+		Token:      NewFileToken(path, discardLoggerRunner(), time.Now),
+		Engine:     newPipeRuntime(),
+		RuntimeDir: shortRuntimeDir(t),
+	}, nil, discardLoggerRunner())
+	if err != nil {
+		t.Fatalf("Run with empty RunnerID and projected token = %v, want clean cancellation", err)
 	}
 }

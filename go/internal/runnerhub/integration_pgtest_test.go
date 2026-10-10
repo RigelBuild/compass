@@ -103,7 +103,7 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	link, err := runner.Dial(ctx, runner.RunnerConfig{
 		RunnerID:   "runner-1",
 		ServerAddr: url,
-		Token:      "runner-tok",
+		Token:      runner.StaticToken("runner-tok"),
 		Engine:     engine,
 		HTTPClient: runnertest.H2CClient(t),
 	})

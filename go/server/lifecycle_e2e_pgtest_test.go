@@ -494,7 +494,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	link, err := runner.Dial(ctx, runner.RunnerConfig{
 		RunnerID:   "runner-1",
 		ServerAddr: url,
-		Token:      "runner-tok",
+		Token:      runner.StaticToken("runner-tok"),
 		Engine:     engine,
 		HTTPClient: runnertest.H2CClient(t),
 	})

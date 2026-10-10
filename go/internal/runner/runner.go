@@ -16,6 +16,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -35,18 +36,15 @@ func (e *dialConfigurationError) Error() string { return "runner dial configurat
 func (e *dialConfigurationError) Unwrap() error { return e.err }
 
 // RunnerConfig is everything the Runner needs to attach to a Server and host
-// agents. ServerAddr is the Server's base URL (the authenticated TCP door);
-// Token is the per-Runner bearer credential (OQ7, operator-provisioned, stored
-// 0600); Engine is the container runtime the Runner drives (a *runtime.PodmanCLI
-// in production, a fake in tests).
+// agents. ServerAddr is the Server's base URL; Token supplies its bearer token.
 type RunnerConfig struct {
 	// RunnerID is this Runner's stable identity, cross-checked against the token
-	// subject at enrollment.
+	// subject at enrollment. Empty is accepted for Server-assigned identities.
 	RunnerID string
 	// ServerAddr is the Server's base URL, e.g. https://server.example:443.
 	ServerAddr string
-	// Token is the per-Runner bearer token presented on every RPC.
-	Token string
+	// Token supplies a bearer token on every RPC.
+	Token TokenSource
 	// Engine is the container runtime seam the Runner hosts agents on.
 	Engine runtime.WorkloadRuntime
 	// RuntimeDir is the Runner-owned base directory under which per-container
@@ -68,7 +66,6 @@ type RunnerConfig struct {
 type ServerLink struct {
 	client     compassv1internalconnect.RunnerServiceClient
 	runnerID   string
-	token      string
 	reattached bool
 	// beforeWait, set only by tests, runs inside each stream's shared wait just
 	// before Process.Wait, so a test can hold the reaper there while Stop runs.
@@ -81,15 +78,21 @@ type ServerLink struct {
 // (OQ6 duplicate enrollment) rather than registering fresh.
 func (l *ServerLink) Reattached() bool { return l.reattached }
 
-// bearerToken is the interceptor that stamps the per-Runner bearer credential on
-// every outbound RPC (unary + streaming), so the Server door authenticates it.
+// RunnerID reports the identity assigned by the Server during enrollment.
+func (l *ServerLink) RunnerID() string { return l.runnerID }
+
+// bearerToken asks its source for a fresh token on every outbound RPC.
 type bearerToken struct {
-	token string
+	source TokenSource
 }
 
 func (b *bearerToken) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		req.Header().Set("Authorization", "Bearer "+b.token)
+		token, err := b.source.Token()
+		if err != nil {
+			return nil, err
+		}
+		req.Header().Set("Authorization", "Bearer "+token)
 		return next(ctx, req)
 	}
 }
@@ -97,7 +100,10 @@ func (b *bearerToken) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 func (b *bearerToken) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		conn := next(ctx, spec)
-		conn.RequestHeader().Set("Authorization", "Bearer "+b.token)
+		conn.RequestHeader().Del("Authorization")
+		if token, err := b.source.Token(); err == nil {
+			conn.RequestHeader().Set("Authorization", "Bearer "+token)
+		}
 		return conn
 	}
 }
@@ -112,6 +118,9 @@ func (b *bearerToken) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 // Server rejected the credential at the door). httpClient may be nil for the
 // default.
 func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
+	if cfg.Token == nil {
+		return nil, &dialConfigurationError{err: errors.New("runner token source is required")}
+	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -124,7 +133,7 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 		httpClient, cfg.ServerAddr,
 		// otelconnect goes first (outermost) so enroll/Sessions dials emit
 		// client spans; it is a no-op when no global provider is installed.
-		connect.WithInterceptors(otelInterceptor, &bearerToken{token: cfg.Token}),
+		connect.WithInterceptors(otelInterceptor, &bearerToken{source: cfg.Token}),
 	)
 	resp, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{
 		RunnerId:      cfg.RunnerID,
@@ -134,10 +143,14 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("enrolling runner %q: %w", cfg.RunnerID, err)
 	}
+	runnerID := resp.Msg.GetRunnerId()
+	if runnerID == "" {
+		runnerID = cfg.RunnerID
+	}
 	return &ServerLink{
 		client:     client,
-		runnerID:   cfg.RunnerID,
-		token:      cfg.Token,
+		runnerID:   runnerID,
 		reattached: resp.Msg.GetReattached(),
 	}, nil
+
 }

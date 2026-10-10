@@ -74,7 +74,7 @@ func TestDialEmitsClientSpanWhenEnabled(t *testing.T) {
 	if _, err := Dial(context.Background(), RunnerConfig{
 		RunnerID:   "r-1",
 		ServerAddr: url,
-		Token:      "tok",
+		Token:      StaticToken("tok"),
 		HTTPClient: h2cHTTPClient(t),
 		// Emission gated by the installed global tracer provider, not any config
 		// field — installInMemoryTracer set one above.
@@ -108,7 +108,7 @@ func TestDialEmitsNoClientSpanWhenDisabled(t *testing.T) {
 	if _, err := Dial(context.Background(), RunnerConfig{
 		RunnerID:   "r-1",
 		ServerAddr: url,
-		Token:      "tok",
+		Token:      StaticToken("tok"),
 		HTTPClient: h2cHTTPClient(t),
 	}); err != nil {
 		t.Fatalf("Dial err = %v, want nil", err)

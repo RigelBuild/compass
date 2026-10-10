@@ -16,6 +16,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime"
@@ -40,13 +41,20 @@ type sweepTestEngine struct {
 	attempted    []runtime.WorkloadID
 	entered      chan runtime.WorkloadID
 	removeGate   chan struct{}
+	ownerQueried chan string
 }
 
 func (e *sweepTestEngine) ListByOwner(_ context.Context, prefix, runnerID string) ([]runtime.WorkloadID, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if prefix != AgentContainerNamePrefix || runnerID != "runner-1" {
+	if prefix != AgentContainerNamePrefix {
 		return nil, errors.New("unexpected ownership query")
+	}
+	if e.ownerQueried != nil {
+		e.ownerQueried <- runnerID
+	}
+	if runnerID != "runner-1" && runnerID != "cluster/node" {
+		return nil, errors.New("unexpected owner id")
 	}
 	return slices.Clone(e.listed), e.listErr
 }
@@ -278,7 +286,7 @@ func TestRunReturnsNilWhenSweepCancelsContext(t *testing.T) {
 	err := Run(ctx, RunnerConfig{
 		RunnerID:   "runner-1",
 		ServerAddr: url,
-		Token:      "tok",
+		Token:      StaticToken("tok"),
 		Engine:     engine,
 		RuntimeDir: shortRuntimeDir(t),
 		HTTPClient: h2cHTTPClient(t),
@@ -317,6 +325,15 @@ type sessionsStartedTestHandler struct {
 	sessions chan struct{}
 }
 
+func (h *sessionsStartedTestHandler) Enroll(ctx context.Context, req *connect.Request[compassv1internal.EnrollRequest]) (*connect.Response[compassv1internal.EnrollResponse], error) {
+	resp, err := h.recordingEnroll.Enroll(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Msg.RunnerId = "cluster/node"
+	return resp, nil
+}
+
 func (h *sessionsStartedTestHandler) Sessions(context.Context, *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
 	close(h.sessions)
 	return nil
@@ -351,7 +368,7 @@ func TestRunStartsSessionsWhenStaleSweepTimesOut(t *testing.T) {
 		runErr = Run(ctx, RunnerConfig{
 			RunnerID:   "runner-1",
 			ServerAddr: server.URL,
-			Token:      "tok",
+			Token:      StaticToken("tok"),
 			Engine:     engine,
 			RuntimeDir: runtimeDir,
 			HTTPClient: httpClient,
@@ -399,6 +416,107 @@ func TestRunStartsSessionsWhenStaleSweepTimesOut(t *testing.T) {
 		}
 	case <-time.After(testTimeout):
 		t.Fatal("Run did not return after Sessions completed")
+	}
+}
+
+type assignedIdentityRunHandler struct {
+	recordingEnroll
+	result chan *compassv1internal.SessionsRequest
+}
+
+func (h *assignedIdentityRunHandler) FetchAgentConfig(_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+	return sendEmptyAgentConfig(stream)
+}
+func (h *assignedIdentityRunHandler) Sessions(_ context.Context, stream *connect.BidiStream[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse]) error {
+	for {
+		request, err := stream.Receive()
+		if err != nil {
+			return err
+		}
+		if request.GetRequestId() == "" {
+			break
+		}
+	}
+	if err := stream.Send(&compassv1internal.SessionsResponse{
+		RequestId:      "provision-request",
+		AgentAccountId: "0123456789abcdef0123456789abcdef",
+		Command: &compassv1internal.SessionsResponse_Provision{
+			Provision: &compassv1.ProvisionAgentWorkspaceRequest{},
+		},
+	}); err != nil {
+		return err
+	}
+	for {
+		request, err := stream.Receive()
+		if err != nil {
+			return err
+		}
+		if request.GetRequestId() == "provision-request" {
+			h.result <- request
+			return nil
+		}
+	}
+}
+
+type assignedIdentityRunEngine struct {
+	*stubStreamingRuntime
+	ownerIDs chan string
+}
+
+func (e *assignedIdentityRunEngine) ListByOwner(_ context.Context, _ string, runnerID string) ([]runtime.WorkloadID, error) {
+	e.ownerIDs <- runnerID
+	return nil, nil
+}
+
+func TestRunUsesServerAssignedRunnerIDForSweepAndLabels(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte(tokenWithExpiry(t, time.Now().Add(time.Minute))), 0o600); err != nil {
+		t.Fatalf("write projected token: %v", err)
+	}
+	handler := &assignedIdentityRunHandler{
+		recordingEnroll: recordingEnroll{assignedRunnerID: "cluster/node"},
+		result:          make(chan *compassv1internal.SessionsRequest, 1),
+	}
+	path, service := compassv1internalconnect.NewRunnerServiceHandler(handler)
+	mux := http.NewServeMux()
+	mux.Handle(path, service)
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = cleartextHTTP2()
+	server.Start()
+	t.Cleanup(server.Close)
+
+	engine := &assignedIdentityRunEngine{
+		stubStreamingRuntime: newStubStreamingRuntime(t),
+		ownerIDs:             make(chan string, 1),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	err := Run(ctx, RunnerConfig{
+		ServerAddr: server.URL,
+		Token:      NewFileToken(tokenPath, discardLoggerRunner(), time.Now),
+		Engine:     engine,
+		RuntimeDir: shortRuntimeDir(t),
+		HTTPClient: h2cHTTPClient(t),
+	}, &fakeSpecBuilder{spec: liveSpec()}, discardLoggerRunner())
+	if err != nil {
+		t.Fatalf("Run = %v, want nil after Sessions ended", err)
+	}
+	if got := <-engine.ownerIDs; got != "cluster/node" {
+		t.Fatalf("startup sweep owner = %q, want Server-assigned ID", got)
+	}
+	result := <-handler.result
+	if result.GetProvision() == nil {
+		t.Fatalf("Provision result = %v, error = %v", result.GetResult(), result.GetError())
+	}
+	if result.GetProvision().GetContainerName() != "cont-1" {
+		t.Fatalf("Provision result = %v, want container cont-1", result.GetProvision())
+	}
+	created := engine.createdSpecs()
+	if len(created) != 1 {
+		t.Fatalf("created containers = %d, want 1", len(created))
+	}
+	if got := created[0].Labels[runtime.RunnerIDLabel]; got != "cluster/node" {
+		t.Fatalf("container runner label = %q, want Server-assigned ID", got)
 	}
 }
 
