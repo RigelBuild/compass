@@ -1,9 +1,9 @@
 //go:build (linux && gtk4) || darwin
 
-// The native-client launch: the app dials a headless Compass stack over the
-// authenticated TLS door (design §T5.6). Embedded mode — the in-process stack
-// supervisor — was retired in RIG-2554, so this is the only launch arm: there
-// is no stack to spawn, monitor, or tear down.
+// The native shell's launch services. A first-run chooser opens without a
+// connection; configured embedded launches supervise a local stack, while
+// configured client launches dial a headless stack over the authenticated TLS
+// door. The embedded stack supervisor is implemented in embedded.go.
 package main
 
 import (

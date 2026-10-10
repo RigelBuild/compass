@@ -115,3 +115,10 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	return b.base.RoundTrip(clone)
 }
+
+// CloseIdleConnections forwards the optional idle-connection close hook.
+func (b *bearerRoundTripper) CloseIdleConnections() {
+	if transport, ok := b.base.(interface{ CloseIdleConnections() }); ok {
+		transport.CloseIdleConnections()
+	}
+}

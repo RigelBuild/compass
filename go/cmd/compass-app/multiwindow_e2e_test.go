@@ -178,8 +178,8 @@ func TestMultiWindowCloseCancelsOnlyClosingWindowE2E(t *testing.T) {
 	// distinguishable, and it keeps the factory's title parameter genuinely
 	// varied rather than a package-wide constant.
 	application.InvokeSync(func() {
-		newAppWindow(e2eApp, svc, nameA, "Compass — "+nameA, "")
-		newAppWindow(e2eApp, svc, nameB, "Compass — "+nameB, "")
+		newAppWindow(e2eApp, svc, nameA, "Compass — "+nameA)
+		newAppWindow(e2eApp, svc, nameB, "Compass — "+nameB)
 	})
 
 	winA := mustGetWindow(t, nameA)
