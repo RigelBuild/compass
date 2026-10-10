@@ -167,8 +167,8 @@ func pemEncodeCert(t *testing.T, cert *x509.Certificate) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 }
 
-// TestShellStartupJS covers the OQ-8 startup-global injection in both modes: the
-// mode token, __COMPASS_SERVER_URL__ present only in client mode, and
+// TestShellStartupJS covers the OQ-8 startup-global injection in all shell
+// states: the mode token, __COMPASS_SERVER_URL__ only in client mode, and
 // JSON-escaping of a hostile server URL so it cannot break out of the script.
 func TestShellStartupJS(t *testing.T) {
 	t.Run("client injects mode and server url", func(t *testing.T) {
@@ -200,7 +200,27 @@ func TestShellStartupJS(t *testing.T) {
 			t.Errorf("embedded JS = %q, must not emit the server-url global", js)
 		}
 	})
-
+	tests := []struct {
+		name string
+		mode string
+	}{
+		{name: "setup omits server-url global", mode: "setup"},
+		{name: "reopen omits server-url global", mode: "reopen"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			js, err := shellStartupJS(tt.mode, "")
+			if err != nil {
+				t.Fatalf("shellStartupJS err = %v, want nil", err)
+			}
+			if !strings.Contains(js, `window.__COMPASS_MODE__="`+tt.mode+`";`) {
+				t.Errorf("startup JS = %q, want %q mode global", js, tt.mode)
+			}
+			if strings.Contains(js, "__COMPASS_SERVER_URL__") {
+				t.Errorf("startup JS = %q, must not emit the server-url global", js)
+			}
+		})
+	}
 	t.Run("hostile server url is JSON-escaped, not a breakout", func(t *testing.T) {
 		hostile := `https://x/"+alert(1)+"</script><script>`
 		js, err := shellStartupJS(appconfig.ModeClient.String(), hostile)

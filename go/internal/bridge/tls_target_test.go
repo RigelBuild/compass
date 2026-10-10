@@ -7,9 +7,12 @@ import (
 	"crypto/tls"
 	"encoding/pem"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // tlsStubServer starts an httptest TLS server (self-signed cert) running handler
@@ -242,5 +245,43 @@ func TestTLSTargetClientAccessor(t *testing.T) {
 	}
 	if baseURL != srv.URL {
 		t.Errorf("Client() baseURL = %q, want %q", baseURL, srv.URL)
+	}
+}
+
+func TestTLSTargetClientCloseIdleConnections(t *testing.T) {
+	closed := make(chan struct{}, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	target := tlsTarget(t, srv, certPEM)
+	client, _ := target.Client()
+
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("GET server: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close response: %v", err)
+	}
+	client.CloseIdleConnections()
+	select {
+	case <-closed:
+	case <-time.After(testTimeout):
+		t.Fatal("server did not observe idle connection close")
 	}
 }
