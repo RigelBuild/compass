@@ -91,6 +91,23 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		});
 	});
 
+	test("agents — replayed waiting transition", async ({ page }) => {
+		await page.goto("/?replay#/agents");
+		const card = page.locator(
+			'.agent-card:has(.ac-name:text-is("compass-ui"))',
+		);
+		await card.waitFor({ state: "visible" });
+		await card.locator('.cx-state-dot[data-state="waiting"]').waitFor({
+			state: "visible",
+		});
+		await page.evaluate(() => document.fonts.ready);
+		await expect(page).toHaveScreenshot("agents-replay-waiting.png", {
+			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
 	test("backlog", async ({ page }) => {
 		await page.goto("/#/backlog");
 		await page.locator(".backlog-view").waitFor({ state: "visible" });

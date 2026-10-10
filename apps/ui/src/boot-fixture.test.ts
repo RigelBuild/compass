@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { TourOutcome } from "@compass/client";
+import { flush as flushSolid } from "solid-js";
 import {
 	bootFixture,
 	createMemoryTourClient,
@@ -50,6 +51,32 @@ describe("bootFixture (offline fixture boot)", () => {
 			// onto the shared happy-dom window and fires during a sibling suite.
 			dispose?.();
 			root.remove();
+		}
+	});
+	test("replays a working SubscribeEvents status into waiting presence", async () => {
+		const priorHref = window.location.href;
+		window.location.href = "http://localhost/?replay#/agents";
+		const root = document.createElement("div");
+		document.body.appendChild(root);
+		let dispose: (() => void) | undefined;
+		try {
+			dispose = bootFixture(root);
+			await flush();
+			flushSolid();
+			await flush();
+			expect(
+				[...root.querySelectorAll<HTMLElement>(".agent-card")]
+					.find(
+						(item) =>
+							item.querySelector(".ac-name")?.textContent === "compass-ui",
+					)
+					?.querySelector('.cx-state-dot[data-state="waiting"]'),
+			).not.toBeNull();
+		} finally {
+			dispose?.();
+			root.remove();
+			// Restore, not reset: an http origin would satisfy later env-URL tests.
+			window.location.href = priorHref;
 		}
 	});
 
