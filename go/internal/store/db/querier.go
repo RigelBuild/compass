@@ -669,6 +669,11 @@ type Querier interface {
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error
 	// The marked reach predicate is one gate shared with delivery_cursors.sql;
 	// sql_parity_test.go fails if the copies drift.
+	// The five delivery membership sites (SubscribedAgents, ChannelAgentMembers,
+	// SweepChannels here; UndeliveredMessages, InSweepSet in delivery_cursors.sql)
+	// drive from a participants CTE: stored member rows UNION the TREE-derived set.
+	// Channel-keyed sites walk the anchor's subtree; account-keyed ones the chain up.
+	// Copies of each walk MUST stay identical; the stored arm skips TREE channels.
 	// reach: the author may reach agent aa
 	SubscribedAgents(ctx context.Context, arg SubscribedAgentsParams) ([]string, error)
 	// Exact-artifact subscribers, plus (on an opened event) the container-scope
@@ -711,6 +716,8 @@ type Querier interface {
 	UpdateModelRegistry(ctx context.Context, arg UpdateModelRegistryParams) (int64, error)
 	UpdateTopicLastSeq(ctx context.Context, arg UpdateTopicLastSeqParams) error
 	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error
+	// A TREE channel's per-account subscribe override; it has no member rows.
+	UpsertChannelSubscription(ctx context.Context, arg UpsertChannelSubscriptionParams) error
 	UpsertExplicitPullRequestLink(ctx context.Context, arg UpsertExplicitPullRequestLinkParams) error
 	UpsertForgeArtifactCursor(ctx context.Context, arg UpsertForgeArtifactCursorParams) error
 	// Issue-domain queries (sqlc adoption T6, RIG-3034). These replace the inline

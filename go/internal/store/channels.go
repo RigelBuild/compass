@@ -688,6 +688,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 // Returns the channel with its updated member set, plus the accounts a removal
 // actually deleted (a remove of a non-member deletes nothing and owes no event)
 // so the stream can deliver each departed member its one final ChannelChanged.
+// On a TREE channel only subscription changes are accepted (updateTreeSubscriptions).
 // D9 write-authz is enforced here in the store: the actor must be a member of
 // the channel to mutate it, so an unknown channel and a non-member both return
 // ErrNotFound (the not-found/forbidden merge).
@@ -716,6 +717,16 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 	}
 	mandatory := lock.MandatorySubscription
 	kind := ChannelKind(lock.Kind)
+	if ChannelMembershipMode(lock.MembershipMode) == ChannelMembershipModeTree {
+		if err := updateTreeSubscriptions(ctx, tx, channelID, updates); err != nil {
+			return Channel{}, nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Channel{}, nil, fmt.Errorf("store: commit tree subscriptions: %w", err)
+		}
+		ch, err := s.getChannel(ctx, channelID)
+		return ch, nil, err
+	}
 	// The unsubscribe guard reads the PRE-convert mandatory state: a DM is
 	// born-mandatory, so an unsubscribe batched with a genuine convert-add is
 	// rejected even though the post-convert channel would permit it. Not
@@ -774,6 +785,43 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 		return Channel{}, nil, err
 	}
 	return ch, removed, nil
+}
+
+// updateTreeSubscriptions applies a batch to a TREE channel, whose membership is
+// derived: add/remove are refused, and a subscribe toggle writes the
+// account's override row. Subscribe seeds the D2 cursor in the same tx, as the
+// explicit path does; an account outside the derived set is ErrNotFound.
+func updateTreeSubscriptions(ctx context.Context, tx pgx.Tx, channelID ChannelID, updates []MemberUpdate) error {
+	for _, u := range updates {
+		if u.AccountID == "" {
+			return fmt.Errorf("%w: member update missing account id", ErrInvalidArgument)
+		}
+		if u.Remove || (!u.Subscribed && !u.Unsubscribe) {
+			return fmt.Errorf("%w: TREE channel membership follows the agent tree; only subscription may change", ErrInvalidArgument)
+		}
+	}
+	for _, u := range updates {
+		participant, err := isChannelMember(ctx, tx, u.AccountID, channelID)
+		if err != nil {
+			return err
+		}
+		if !participant {
+			return fmt.Errorf("%w: account %q is not a participant of channel %q", ErrNotFound, u.AccountID, channelID)
+		}
+		if err := db.New(tx).UpsertChannelSubscription(ctx, db.UpsertChannelSubscriptionParams{
+			ChannelID:  string(channelID),
+			AccountID:  string(u.AccountID),
+			Subscribed: u.Subscribed,
+		}); err != nil {
+			return fmt.Errorf("store: upsert channel subscription: %w", err)
+		}
+		if u.Subscribed {
+			if err := seedDeliveryCursor(ctx, tx, u.AccountID, channelID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // maybeConvertDM applies the R4 DM-to-CHANNEL conversion when a genuine member
@@ -1020,6 +1068,16 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	}
 	wasMandatory := lock.MandatorySubscription
 	currentOwner := lock.OwnerAccountID
+	// TREE delivery and the owner coherence check are defined over member rows,
+	// which a TREE channel never has; see SeedChannelDeliveryCursors.
+	if ChannelMembershipMode(lock.MembershipMode) == ChannelMembershipModeTree {
+		if p.MandatorySubscription != wasMandatory {
+			return Channel{}, fmt.Errorf("%w: mandatory subscription is not supported on a TREE channel", ErrInvalidArgument)
+		}
+		if p.PostPolicy == ChannelPostPolicyOwnerOnly {
+			return Channel{}, fmt.Errorf("%w: OWNER_ONLY is not supported on a TREE channel", ErrInvalidArgument)
+		}
+	}
 
 	// T4 owner-only policy gate. On an ownerless channel any member may set the
 	// first owner/policy. Once an owner exists, only that owner may change

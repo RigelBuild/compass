@@ -14,6 +14,8 @@ import (
 
 // SubscribedAgents resolves subscribed agent members the author may reach,
 // author excluded. Home and mandatory channels still bypass the stored flag.
+// A TREE channel's participants are derived; their flag is the
+// channel_subscriptions override, default FALSE.
 func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author AccountID) ([]AccountID, error) {
 	rows, err := s.q.SubscribedAgents(ctx, db.SubscribedAgentsParams{
 		ChannelID: string(channel),
@@ -26,7 +28,8 @@ func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author 
 }
 
 // ChannelAgentMembers resolves every reachable agent member, author excluded,
-// regardless of subscribe state; out-of-reach members are absent.
+// regardless of subscribe state; out-of-reach members are absent. On a TREE
+// channel the members are the anchor's agent subtree.
 func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, author AccountID) ([]ChannelAgentMember, error) {
 	rows, err := s.q.ChannelAgentMembers(ctx, db.ChannelAgentMembersParams{
 		ChannelID: string(channel),
@@ -126,7 +129,8 @@ func (s *Store) TopicChannelNames(ctx context.Context, topicID string) (topicNam
 // disjunct mirrors UndeliveredMessages/SubscribedAgents EXACTLY
 // (design.md:118-120, :127-128, :343, :708) so the pin sweep's channel set and
 // the cursor sweep's cannot drift. $1 is always an agent, so the JOIN to
-// agent_accounts matches exactly one row and yields its home_channel_id.
+// agent_accounts matches exactly one row and yields its home_channel_id. TREE
+// channels anchored on the agent's ancestor chain join through their override.
 func (s *Store) SweepChannels(ctx context.Context, agent AccountID) ([]ChannelID, error) {
 	rows, err := s.q.SweepChannels(ctx, string(agent))
 	if err != nil {
