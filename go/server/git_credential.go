@@ -93,6 +93,7 @@ type gitCredentialBroker struct {
 	mu       sync.Mutex
 	entries  map[string]gitCredentialEntry
 	negative map[string]gitCredentialNegativeEntry
+	last     map[store.AccountID]string
 	group    singleflight.Group
 }
 
@@ -134,6 +135,9 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 	}
 	tok, ok, rejected := b.credentialForRepos(ctx, agent, repos)
 	if !rejected {
+		if ok {
+			b.recordLastCredential(agent, gitCredentialScopeKey(repos))
+		}
 		return tok, ok
 	}
 	owner, err := b.store.AgentOwner(ctx, agent)
@@ -151,6 +155,9 @@ func (b *gitCredentialBroker) credential(ctx context.Context, agent store.Accoun
 		return "", false
 	}
 	tok, ok, _ = b.credentialForRepos(ctx, agent, ownerRepos)
+	if ok {
+		b.recordLastCredential(agent, ownerKey)
+	}
 	return tok, ok
 }
 
@@ -209,6 +216,9 @@ func (b *gitCredentialBroker) credentialForRepos(ctx context.Context, agent stor
 			return "", false, true
 		}
 		tok = b.staleCredential(key)
+		if tok == "" {
+			tok = b.credentialForLastKey(agent)
+		}
 		return tok, tok != "", false
 	}
 	result, validResult := value.(gitCredentialFlightResult)
@@ -295,6 +305,24 @@ func gitCredentialScopeKey(repos []string) string {
 	return key
 }
 
+func (b *gitCredentialBroker) recordLastCredential(agent store.AccountID, key string) {
+	if agent == "" || key == "" {
+		return
+	}
+	b.mu.Lock()
+	b.last[agent] = key
+	b.mu.Unlock()
+}
+
+func (b *gitCredentialBroker) lastCredential(agent store.AccountID) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.last[agent]
+}
+
+func (b *gitCredentialBroker) credentialForLastKey(agent store.AccountID) string {
+	return b.staleCredential(b.lastCredential(agent))
+}
 func (b *gitCredentialBroker) mint(ctx context.Context, key string, repos []string) (string, bool, error) {
 	token, err := b.minter.Mint(ctx, repos, gitCredentialPermissions)
 	if err != nil {
@@ -354,6 +382,11 @@ func (b *gitCredentialBroker) refreshDue(ctx context.Context) {
 	for key, entry := range b.entries {
 		if now.Sub(entry.lastUsed) > gitCredentialMaxAge {
 			delete(b.entries, key)
+			for agent, lastKey := range b.last {
+				if lastKey == key {
+					delete(b.last, agent)
+				}
+			}
 			continue
 		}
 		if !now.Before(entry.refreshAt) {
@@ -459,6 +492,7 @@ func buildGitCredentialBroker(cfg ServeConfig, st *store.Store, resolver secrets
 		host: rc.Host, store: st, minter: minter, log: log,
 		signal: hub.SignalSecretsVersion, clock: time.Now,
 		entries: make(map[string]gitCredentialEntry), negative: make(map[string]gitCredentialNegativeEntry),
+		last: make(map[store.AccountID]string),
 	}, nil
 }
 
