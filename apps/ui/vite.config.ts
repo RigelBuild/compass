@@ -7,6 +7,8 @@ import solid from "vite-plugin-solid";
 // no dev proxy is needed here.
 export default defineConfig({
 	plugins: [solid()],
+	// Unset outside e2e; playwright.config.ts gives each run its own optimizer cache.
+	cacheDir: process.env.COMPASS_VITE_CACHE_DIR,
 	// Pin the dev-server port so the URL is copy-paste stable across restarts;
 	// strictPort fails loudly rather than silently drifting to 5174 if taken.
 	server: { port: 5173, strictPort: true },
