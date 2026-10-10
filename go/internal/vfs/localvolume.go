@@ -34,19 +34,13 @@ import (
 	"time"
 )
 
-// metaDirName is the per-volume metadata dir inside a volume root: it holds the
-// close-stamp, and it is also this package's VOLUME-IDENTITY TOKEN — a
-// directory under the base dir that does not contain it is not a volume this
-// package owns, and is never scanned, stamped, or reaped (see scanBaseDir). It
-// lives INSIDE the volume root so that reaping the volume reaps its stamp in
-// the stamp travels with the renamed tree and is never read again. The
-// per-volume lock file deliberately does NOT live here (see lockFileSuffix): a
-// lock inside the reaped subtree cannot serialize against the reap itself. The
-// dotted, package-prefixed name keeps it clear of any path a checkout would
-// write.
-const metaDirName = ".compass-vfs-meta"
-
 const (
+	// metaDirSuffix names the per-volume metadata dir, a sibling of the root:
+	// <baseDir>/<sessionID><metaDirSuffix>. It holds the close-stamp and is the
+	// volume-identity token scanBaseDir keys on. It sits outside the root because
+	// keep-id makes the root agent-owned, and an agent must not be able to hide
+	// its volume from the reaper by deleting what lives inside it.
+	metaDirSuffix = ".compass-vfs.meta"
 	// stampFileName is the close-stamp marker. Written atomically (temp +
 	// rename) so the reaper can never observe a half-written stamp and
 	// mis-decide eligibility.
@@ -148,6 +142,10 @@ func (m *LocalManager) BaseDir() string { return m.baseDir }
 // a volume it returns the existing one untouched, because volume destruction is
 // Expire's alone (P2-GC-c) — a re-create must never clear a tree.
 //
+// It runs under the per-volume lock so Expire's slot cleanup cannot delete the
+// metadata dir between the two mkdirs. A fresh root drops any stamp a crashed
+// reap left in the metadata dir; that stamp belonged to the reaped volume.
+//
 // The subtree is created as the invoking host user, per the keep-id ownership
 // invariant documented on LocalManager: the container's keep-id remap makes this
 // Runner-owned root agent-owned in-container, satisfying ensureCheckoutDir's
@@ -161,10 +159,36 @@ func (m *LocalManager) CreateVolume(ctx context.Context, sessionID string) (Volu
 	if err := ctx.Err(); err != nil {
 		return Volume{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(root, metaDirName), volumeDirMode); err != nil {
-		return Volume{}, fmt.Errorf("vfs: creating volume root %q: %w", root, err)
+	lock, err := lockVolume(ctx, root)
+	if err != nil {
+		return Volume{}, err
+	}
+	createErr := createLocked(root)
+	if err := errors.Join(createErr, lock.release()); err != nil {
+		return Volume{}, err
 	}
 	return Volume{SessionID: sessionID, HostRoot: root}, nil
+}
+
+// createLocked makes the metadata dir before the root, so a crash between the
+// two leaves a metadata dir Expire can reclaim, never a root it cannot see.
+func createLocked(root string) error {
+	rootExists, err := pathExists(root)
+	if err != nil {
+		return err
+	}
+	if !rootExists {
+		if err := clearStamp(root); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(metaDir(root), volumeDirMode); err != nil {
+		return fmt.Errorf("vfs: creating volume metadata dir %q: %w", metaDir(root), err)
+	}
+	if err := os.MkdirAll(root, volumeDirMode); err != nil {
+		return fmt.Errorf("vfs: creating volume root %q: %w", root, err)
+	}
+	return nil
 }
 
 // Lookup resolves a session's existing volume or returns ErrVolumeNotFound. It
@@ -282,11 +306,9 @@ func requireVolumeRoot(root, sessionID string) error {
 // (invariant (b)): Attach's clear and the reaper's read already serialize on
 // that lock, and stamping under it too closes the one remaining gap — a
 // teardown stamp landing in the middle of a reap could otherwise re-create the
-// metadata dir writeStamp needs inside a subtree Expire is deleting, leaving an
-// empty resurrected root behind. Existence is re-checked under the lock for the
+// metadata dir of a volume Expire just reaped. Existence is re-checked under the lock for the
 // same reason Attach re-checks it: a volume reaped while this call was blocked
-// must surface as ErrVolumeNotFound, not be silently resurrected as an empty
-// stamped shell the reaper would then have to re-reap.
+// must surface as ErrVolumeNotFound, not leave orphan metadata behind.
 func (m *LocalManager) Stamp(ctx context.Context, v Volume, intent CloseIntent) error {
 	resolved, err := m.Lookup(ctx, v.SessionID)
 	if err != nil {
@@ -389,10 +411,8 @@ func (m *LocalManager) ReconcileOrphans(ctx context.Context) error {
 // stampOrphanLocked stamps only an existing, unstamped volume under its lock.
 // It must not recreate a reaped root or overwrite a suspended volume's stamp.
 func stampOrphanLocked(root string, discoveredAt time.Time) error {
-	// A volume reaped out from under this pass — between eachVolume's marker stat
-	// and this lock acquisition — is not an orphan to stamp. Without this guard
-	// writeStamp's MkdirAll would resurrect the reaped root's shell and the
-	// provision path would warm-Attach an EMPTY volume, defeating the not-found signal.
+	// A volume reaped between scanBaseDir's root stat and this lock acquisition
+	// is not an orphan; stamping it would recreate metadata for a gone volume.
 	if err := requireVolumeRoot(root, filepath.Base(root)); err != nil {
 		if errors.Is(err, ErrVolumeNotFound) {
 			return nil
@@ -459,7 +479,7 @@ func (m *LocalManager) Expire(ctx context.Context, olderThan time.Duration) erro
 				removeErr = fmt.Errorf("vfs: sweeping reaping leftover %q: %w", reapingPath(root), removeErr)
 			}
 			return errors.Join(removeErr, lock.release())
-		case entryLock:
+		case entryLock, entryMeta:
 			rootExists, err := pathExists(root)
 			if err != nil {
 				return err
@@ -505,8 +525,9 @@ func reapLocked(root string, now time.Time, olderThan time.Duration) error {
 	return reclaimLockLocked(root)
 }
 
-// reclaimLockLocked removes the lock only after confirming both session paths are
-// absent under the lock. Its unlink is the critical section's final mutation.
+// reclaimLockLocked removes the metadata dir and then the lock, only after
+// confirming both session paths are absent under the lock. The lock unlink is
+// the critical section's final mutation.
 func reclaimLockLocked(root string) error {
 	rootExists, err := pathExists(root)
 	if err != nil {
@@ -518,6 +539,9 @@ func reclaimLockLocked(root string) error {
 	}
 	if rootExists || leftoverExists {
 		return nil
+	}
+	if err := os.RemoveAll(metaDir(root)); err != nil {
+		return fmt.Errorf("vfs: removing orphan volume metadata %q: %w", metaDir(root), err)
 	}
 	err = os.Remove(root + lockFileSuffix)
 	if errors.Is(err, os.ErrNotExist) {
@@ -567,7 +591,7 @@ func (m *LocalManager) Restore(ctx context.Context, ref ArchiveRef) (Volume, err
 }
 
 // volumeRoot rejects IDs that escape the base dir or collide with a sibling
-// lock-file or reaping path; callers already provide sanitized internal IDs.
+// lock-file, metadata, or reaping path; callers already provide sanitized internal IDs.
 func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("%w: empty", ErrInvalidSessionID)
@@ -584,6 +608,9 @@ func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 	if strings.HasSuffix(sessionID, reapingSuffix) {
 		return "", fmt.Errorf("%w: %q collides with the volume reaping namespace %q", ErrInvalidSessionID, sessionID, reapingSuffix)
 	}
+	if strings.HasSuffix(sessionID, metaDirSuffix) {
+		return "", fmt.Errorf("%w: %q collides with the volume metadata namespace %q", ErrInvalidSessionID, sessionID, metaDirSuffix)
+	}
 	return filepath.Join(m.baseDir, sessionID), nil
 }
 
@@ -595,6 +622,7 @@ const (
 	entryVolume
 	entryLock
 	entryReaping
+	entryMeta // a metadata dir whose root is gone
 )
 
 // reapingPath returns the fixed sibling name for a renamed volume tree.
@@ -620,19 +648,18 @@ func (m *LocalManager) scanBaseDir(ctx context.Context, visit func(entryKind, st
 			kind, root = entryLock, filepath.Join(m.baseDir, strings.TrimSuffix(name, lockFileSuffix))
 		case strings.HasSuffix(name, reapingSuffix) && entry.IsDir():
 			kind, root = entryReaping, filepath.Join(m.baseDir, strings.TrimSuffix(name, reapingSuffix))
-		case entry.IsDir():
-			candidate := filepath.Join(m.baseDir, name)
-			marker, statErr := os.Stat(filepath.Join(candidate, metaDirName))
-			if statErr != nil {
-				if !errors.Is(statErr, os.ErrNotExist) {
-					errs = append(errs, fmt.Errorf("vfs: inspecting volume marker in %q: %w", candidate, statErr))
-				}
+		case strings.HasSuffix(name, metaDirSuffix) && entry.IsDir():
+			root = filepath.Join(m.baseDir, strings.TrimSuffix(name, metaDirSuffix))
+			info, statErr := os.Stat(root)
+			switch {
+			case statErr == nil && info.IsDir():
+				kind = entryVolume
+			case statErr == nil || errors.Is(statErr, os.ErrNotExist):
+				kind = entryMeta
+			default:
+				errs = append(errs, fmt.Errorf("vfs: inspecting volume root %q: %w", root, statErr))
 				continue
 			}
-			if !marker.IsDir() {
-				continue
-			}
-			kind, root = entryVolume, candidate
 		default:
 			continue
 		}
@@ -643,7 +670,7 @@ func (m *LocalManager) scanBaseDir(ctx context.Context, visit func(entryKind, st
 	return errors.Join(errs...)
 }
 
-// eachVolume filters scanBaseDir to marked volume directories.
+// eachVolume filters scanBaseDir to volume roots that have a metadata dir.
 func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) error) error {
 	return m.scanBaseDir(ctx, func(kind entryKind, root string) error {
 		if kind == entryVolume {
@@ -653,8 +680,8 @@ func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) erro
 	})
 }
 
-// metaDir stores volume metadata. The lock lives outside it, beside the root.
-func metaDir(root string) string { return filepath.Join(root, metaDirName) }
+// metaDir stores volume metadata beside the root, out of the agent's reach.
+func metaDir(root string) string { return root + metaDirSuffix }
 
 // stampPath is the volume's close-stamp file.
 func stampPath(root string) string { return filepath.Join(metaDir(root), stampFileName) }

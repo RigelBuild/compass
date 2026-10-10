@@ -7,6 +7,11 @@ record [p2-persistent-session-volume.md](./p2-persistent-session-volume.md)
 findings W1's review deferred (MED-4, MED-5, LOW-2). Every `go/internal/*`
 citation is a symbol in the `RigelBuild/compass` monorepo at main `d3205926`.
 
+Later change: the metadata dir (close-stamp and volume marker) has since moved
+out of the root to a sibling `<root>.compass-vfs.meta`, so an agent cannot hide
+its volume from the reaper. Statements below that place it inside the root
+describe the code at `d3205926`.
+
 Ledger impact: none. This record changes no cross-cutting decision: the
 `VolumeManager` interface (`go/internal/vfs/vfs.go`) is untouched, the
 close-stamp invariants (a)/(b)/(c) and P2-GC-c/P2-GC-d are preserved as
