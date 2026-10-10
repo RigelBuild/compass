@@ -247,6 +247,24 @@ func TestLinearCreateThenWriteSkipsNumberLookup(t *testing.T) {
 	}
 }
 
+// At the cap the oldest created id is evicted, never the newest: a create past
+// the cap must still serve its own follow-ups without the number lookup.
+func TestLinearCreatedIDCacheEvictsOldestAtCap(t *testing.T) {
+	l := newTestLinear(&scriptedRoundTripper{}, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	for n := range uint64(createdIDCap + 1) {
+		l.rememberCreated(issueKey("SEA", n), fmt.Sprintf("id-%d", n))
+	}
+	if _, ok := l.createdIDs[issueKey("SEA", 0)]; ok {
+		t.Errorf("oldest entry survived the cap")
+	}
+	if id := l.createdIDs[issueKey("SEA", createdIDCap)]; id != fmt.Sprintf("id-%d", createdIDCap) {
+		t.Errorf("newest entry = %q, want id-%d", id, createdIDCap)
+	}
+	if got := len(l.createdIDs); got != createdIDCap {
+		t.Errorf("cache size = %d, want %d", got, createdIDCap)
+	}
+}
+
 // --- item 4: read-query mapping (GetIssue + ListIssues incl. filter state) ---
 
 func TestLinearGetIssueMapping(t *testing.T) {

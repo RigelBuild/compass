@@ -119,7 +119,7 @@ type Linear struct {
 	client *http.Client
 	log    *slog.Logger
 
-	// mu guards resetAt, teamIDs, workflowStates, and the actor-probe fields.
+	// mu guards resetAt, teamIDs, workflowStates, createdIDs, and the actor-probe fields.
 	// The client may be shared between the poll driver and write-RPC goroutines
 	// (OQ-6), so all are concurrent read-modify-write; mu is held only around
 	// the fast state touches, never across an HTTP round-trip.
@@ -144,6 +144,8 @@ type Linear struct {
 	// createdIDs maps "<team>-<number>" -> issue UUID for issues this client
 	// created; the number index trails a create, so follow-ups must not query it.
 	createdIDs map[string]string
+	// createdOrder is createdIDs' keys oldest-first, so the cap evicts the oldest.
+	createdOrder []string
 
 	// probeDone/actorCapable cache the one-time actor-capability probe (A4).
 	// Once probeDone, actorCapable governs whether writes set createAsUser.
@@ -224,12 +226,7 @@ func (l *Linear) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 	}
 	issue := out.IssueCreate.Issue
 	if issue.ID != "" {
-		l.mu.Lock()
-		if len(l.createdIDs) >= createdIDCap {
-			clear(l.createdIDs)
-		}
-		l.createdIDs[issueKey(repo, uint64(issue.Number))] = issue.ID
-		l.mu.Unlock()
+		l.rememberCreated(issueKey(repo, uint64(issue.Number)), issue.ID)
 	}
 	return issue.toIssue(), nil
 }
@@ -648,11 +645,24 @@ func (l *Linear) resolveTeamID(ctx context.Context, key string) (string, error) 
 	return id, nil
 }
 
-// createdIDCap bounds createdIDs; a full map is cleared, and a miss falls back
-// to the number lookup, which by then has caught up.
+// createdIDCap bounds createdIDs. The oldest entry is evicted first: by then the
+// number index has caught up, so its miss falls back to the lookup safely.
 const createdIDCap = 1024
 
 func issueKey(repo string, number uint64) string { return repo + "-" + strconv.FormatUint(number, 10) }
+
+func (l *Linear) rememberCreated(key, id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.createdIDs[key]; !ok {
+		if len(l.createdOrder) >= createdIDCap {
+			delete(l.createdIDs, l.createdOrder[0])
+			l.createdOrder = l.createdOrder[1:]
+		}
+		l.createdOrder = append(l.createdOrder, key)
+	}
+	l.createdIDs[key] = id
+}
 
 // resolveIssueID maps a (team key, per-team number) pair to a Linear issue UUID,
 // from createdIDs when this client made the issue, else via the issues query.
