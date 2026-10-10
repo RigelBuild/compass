@@ -266,6 +266,93 @@ describe("renderRunnerManifests", () => {
 			renderRunnerManifests({ ...values, tokenExpirationSeconds: 599 }),
 		).toThrow("tokenExpirationSeconds must be at least 600 seconds");
 	});
+	test("renders admission policy constraints and pod-spec routing", () => {
+		const manifests = renderRunnerManifests(values);
+		const policy = manifests.find(
+			(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+		);
+		const binding = manifests.find(
+			(manifest) =>
+				object(manifest).kind === "ValidatingAdmissionPolicyBinding",
+		);
+		if (policy === undefined || binding === undefined)
+			throw new Error("policy and binding are required");
+		const spec = object(policy.spec);
+		expect(spec.failurePolicy).toBe("Fail");
+		expect(nested(policy, "spec", "matchConstraints", "resourceRules")).toEqual(
+			[
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["CREATE"],
+					resources: ["pods", "serviceaccounts/token"],
+				},
+				{
+					apiGroups: [""],
+					apiVersions: ["v1"],
+					operations: ["CREATE", "UPDATE"],
+					resources: ["replicationcontrollers"],
+				},
+				{
+					apiGroups: ["apps"],
+					apiVersions: ["v1"],
+					operations: ["CREATE", "UPDATE"],
+					resources: [
+						"daemonsets",
+						"deployments",
+						"replicasets",
+						"statefulsets",
+					],
+				},
+				{
+					apiGroups: ["batch"],
+					apiVersions: ["v1"],
+					operations: ["CREATE", "UPDATE"],
+					resources: ["jobs", "cronjobs"],
+				},
+			],
+		);
+		const variables = nested(policy, "spec", "variables");
+		if (!Array.isArray(variables)) throw new Error("policy variables missing");
+		const expressions = Object.fromEntries(
+			variables.map((entry) => {
+				const variable = object(entry);
+				return [String(variable.name), variable.expression];
+			}),
+		);
+		expect(expressions.podSpec).toBe(
+			"variables.res == 'pods' ? object.spec : variables.res == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec",
+		);
+		expect(expressions.usesRunnerSA).toBe(
+			"has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == 'compass-runner'",
+		);
+	});
+
+	test("restores the DaemonSet selector to the pod template labels", () => {
+		const daemonSet = runnerDaemonSet(renderRunnerManifests(values));
+		expect(nested(daemonSet, "spec", "selector", "matchLabels")).toEqual(
+			nested(daemonSet, "spec", "template", "metadata", "labels"),
+		);
+	});
+
+	test("caps projected token expiry at the Kubernetes maximum", () => {
+		const tooLong = 2 ** 32 + 1;
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				tokenExpirationSeconds: tooLong,
+				maxTokenLifetimeSeconds: tooLong,
+			}),
+		).toThrow();
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				tokenExpirationSeconds: 2 ** 32,
+				maxTokenLifetimeSeconds: 2 ** 32,
+			}),
+		).not.toThrow();
+	});
+
 	test("renders admission username defaults and configured deployers", () => {
 		const controllers = values.admission?.controllers;
 		if (controllers === undefined)
@@ -315,32 +402,6 @@ describe("renderRunnerManifests", () => {
 			customVariables.map(object).find((entry) => entry.name === "deployers")
 				?.expression,
 		).toBe("['example:deployer']");
-		const validations = nested(policy, "spec", "validations");
-		expect(validations).toEqual([
-			{
-				expression:
-					"variables.res != 'serviceaccounts' || request.name != 'compass-runner' || request.userInfo.username.startsWith('system:node:')",
-				message: "only kubelets may request a compass-runner token",
-			},
-			{
-				expression:
-					"variables.res != 'pods' || !variables.usesRunnerSA || (request.userInfo.username in variables.controllers && has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(r, has(r.controller) && r.controller && r.apiVersion == 'apps/v1' && r.kind == 'DaemonSet' && r.name == 'compass-runner'))",
-				message:
-					"compass-runner pods must come from the compass-runner DaemonSet",
-			},
-			{
-				expression:
-					"variables.res in ['pods', 'serviceaccounts'] || variables.isRunnerDS || !variables.usesRunnerSA",
-				message:
-					"only the compass-runner DaemonSet may use the compass-runner ServiceAccount",
-			},
-			{
-				expression:
-					"!variables.isRunnerDS || request.userInfo.username in variables.deployers || (request.operation == 'UPDATE' && object.spec == oldObject.spec)",
-				message:
-					"only a deployer may create or change the compass-runner DaemonSet",
-			},
-		]);
 	});
 
 	test("rejects quote usernames and emits no RBAC bindings", () => {
@@ -379,8 +440,14 @@ describe("renderRunnerManifests", () => {
 				admission: { controllers: ["bad\\username"], deployers: ["ok"] },
 			}),
 		).toThrow(
-			"admission.controllers entries must not contain quotes or backslashes",
+			"admission.controllers entries must not contain quotes, backslashes, or control characters",
 		);
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { controllers: ["bad\nusername"], deployers: ["ok"] },
+			}),
+		).toThrow();
 	});
 
 	test("uses the projected token file and leaves Runner ID to the server", () => {

@@ -118,6 +118,7 @@ function assertResourceName(name: string): void {
 	if (
 		parts.length !== 2 ||
 		prefix === undefined ||
+		domain === undefined ||
 		resource === undefined ||
 		!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(resource) ||
 		!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(prefix) ||
@@ -149,6 +150,11 @@ function validateTokenLifetimes(values: ValidatedRunnerDeployValues): void {
 	if (values.tokenExpirationSeconds < DEFAULT_TOKEN_LIFETIME_SECONDS) {
 		throw new Error("tokenExpirationSeconds must be at least 600 seconds");
 	}
+	if (values.tokenExpirationSeconds > 2 ** 32) {
+		throw new Error(
+			"tokenExpirationSeconds must not exceed 4294967296 seconds",
+		);
+	}
 	assertPositiveInteger(
 		"maxTokenLifetimeSeconds",
 		values.maxTokenLifetimeSeconds,
@@ -171,9 +177,9 @@ function validateAdmissionNames(
 			throw new Error(`admission.${name} must not be empty`);
 		for (const entry of entries) {
 			assertNonEmpty(`admission.${name} entry`, entry);
-			if (entry.includes("'") || entry.includes("\\")) {
+			if (/['\\\p{Cc}]/u.test(entry)) {
 				throw new Error(
-					`admission.${name} entries must not contain quotes or backslashes`,
+					`admission.${name} entries must not contain quotes, backslashes, or control characters`,
 				);
 			}
 		}
@@ -404,9 +410,13 @@ export function renderRunnerManifests(
 			kind: "DaemonSet",
 			metadata: { name: RUNNER_NAME, namespace: values.namespace, labels },
 			spec: {
+				selector: { matchLabels: labels },
 				updateStrategy: {
 					type: "RollingUpdate",
-					rollingUpdate: { maxSurge: 0, maxUnavailable: values.maxUnavailable },
+					rollingUpdate: {
+						maxSurge: 0,
+						maxUnavailable: values.maxUnavailable,
+					},
 				},
 				template: {
 					metadata: { labels },
