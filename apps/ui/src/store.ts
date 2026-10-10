@@ -64,6 +64,12 @@ import {
 	type SessionFrameUpdate,
 } from "./live/session-tail";
 import { runCommsStream } from "./live/stream";
+import {
+	applyReduceMotion,
+	loadReduceMotion,
+	type ReduceMotion,
+	saveReduceMotion,
+} from "./preferences";
 import { joinAgents } from "./roster";
 import type { AgentSession, SessionEvent } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
@@ -276,6 +282,10 @@ export interface AppStore {
 	settingsSection: () => SettingsSection;
 	setSettingsSection: (section: SettingsSection) => void;
 	settingsPath: () => string;
+	/** The per-device reduced-motion override. */
+	reduceMotion: () => ReduceMotion;
+	/** Apply and persist the per-device reduced-motion override. */
+	setReduceMotion: (value: ReduceMotion) => void;
 	/** Whether the keyboard-shortcuts overlay is open (RIG-2482). */
 	shortcutsOpen: Accessor<boolean>;
 	/** Close the keyboard-shortcuts overlay (Escape/backdrop/navigation). */
@@ -988,6 +998,16 @@ function savePinnedAgents(
  * disposed (index.tsx's root lives for the app's lifetime).
  */
 export function createAppStore(options: AppStoreOptions): AppStore {
+	const [reduceMotion, setReduceMotionValue] = createSignal<ReduceMotion>(
+		loadReduceMotion(safeLocalStorage()),
+	);
+	const setReduceMotion = (value: ReduceMotion): void => {
+		setReduceMotionValue(value);
+		saveReduceMotion(safeLocalStorage(), value);
+		if (typeof document !== "undefined") {
+			applyReduceMotion(document.documentElement, value);
+		}
+	};
 	const callerId = options.callerId ?? CALLER_ID;
 	// The issue list is reactive so promote/archive (below) are visible on
 	// every surface at once. Seeded from the fixture (or an explicit override);
@@ -2420,6 +2440,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		settingsSection,
 		setSettingsSection,
 		settingsPath,
+		reduceMotion,
+		setReduceMotion,
 		shortcutsOpen,
 		tour,
 		hideShortcuts,
