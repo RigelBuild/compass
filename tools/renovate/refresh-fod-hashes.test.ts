@@ -7,9 +7,7 @@ import {
 	assertFodTableInvariants,
 	FOD_ENTRIES,
 	type FodEntry,
-	hashOnMarker,
 	parseGotForFragment,
-	refreshEntry,
 	rewriteInlineHash,
 } from "./refresh-fod-hashes.ts";
 
@@ -18,11 +16,6 @@ import {
 // outputHash on a bun/catalog bump), nothing regenerates it, so the image build
 // fails "hash mismatch" and the PR goes red. The refresher recomputes it in-branch.
 
-// It also guards the SECOND half: outputHash is realised by two builders, so the
-// table pairs an AUTHORITATIVE entry that writes with a VERIFY entry that
-// recomputes through the agent-image vehicle and compares. Equal is a quiet no-op;
-// a difference must throw naming both SRIs.
-
 // The failure mode is the script's cwd × git-cwd-relative-pathspec gate plus the
 // fake-hash→build→parse-got: recovery — only a real run in a real git repo
 // exercises it. So this drives the ACTUAL shipped script in a throwaway git tree
@@ -30,8 +23,7 @@ import {
 
 // Network-free: the stub nix derives a stable got: SRI from the drv fragment, so
 // asserting a pin took the fragment-specific value proves both that the per-FOD
-// gate fired and that the right derivation was parsed. The stub also honours a
-// per-vehicle divergence knob for the two-builders disagreement.
+// gate fired and that the right derivation was parsed.
 
 // The fixture layout, triggers, vehicles, and pin markers are DERIVED from the
 // script's own exported FOD_ENTRIES, so a rebase editing the table stays honest.
@@ -40,9 +32,7 @@ const SCRIPT_REL = "tools/renovate/refresh-fod-hashes.ts";
 const REAL_SCRIPT = join(import.meta.dir, "refresh-fod-hashes.ts");
 
 // Resolve each FOD entry from the shipped table by its stable id, throwing on
-// drift so the fixture follows the script. Keyed on id, not drvFragment: the two
-// entrypoint.nix entries share a fragment by design (the same derivation through
-// two nixpkgs).
+// drift so the fixture follows the script.
 function mustFind(id: string): FodEntry {
 	const entry = FOD_ENTRIES.find((e) => e.id === id);
 	if (!entry) {
@@ -51,8 +41,7 @@ function mustFind(id: string): FodEntry {
 	return entry;
 }
 const GO_ENTRY = mustFind("guestd-go-vendor");
-const BUN_WRITE_ENTRY = mustFind("agent-node-modules-root-pkgs");
-const BUN_VERIFY_ENTRY = mustFind("agent-node-modules-agent-image-pkgs");
+const BUN_ENTRY = mustFind("agent-node-modules-agent-image-pkgs");
 const UI_ENTRY = mustFind("ui-node-modules");
 
 // The real repo, for the table properties that must hold against files on disk
@@ -98,7 +87,7 @@ in compass-app
 `;
 const BUN_NIX_FIXTURE = `let
   nodeModules = pkgs.stdenv.mkDerivation {
-    ${BUN_WRITE_ENTRY.marker}${bodyOf(PLACEHOLDER_BUN)}";
+    ${BUN_ENTRY.marker}${bodyOf(PLACEHOLDER_BUN)}";
   };
 in nodeModules
 `;
@@ -109,24 +98,12 @@ const VEHICLE_FIXTURE = "{ }\n";
 
 // A fake nix: emit a hash mismatch block for BOTH FODs (the real build with
 // --keep-going reports every stale FOD), each with a fragment-derived got: SRI.
-// Offline. STUB_DIVERGE_VEHICLE, set to a -f <file> value, makes THAT vehicle
-// report a different SRI for the same fragment — the two-builders-disagree case.
+// Offline.
 const STUB_NIX = `#!/usr/bin/env bash
-# Find the \`-f <file>\` vehicle so a per-vehicle divergence can be simulated.
-vehicle=""
-prev=""
-for arg in "$@"; do
-  if [ "$prev" = "-f" ]; then vehicle="$arg"; fi
-  prev="$arg"
-done
-salt=""
-if [ -n "\${STUB_DIVERGE_VEHICLE:-}" ] && [ "$vehicle" = "$STUB_DIVERGE_VEHICLE" ]; then
-  salt="diverged"
-fi
 emit() {
   local frag="$1"
   local digest
-  digest="$(printf %s "$salt$frag" | sha256sum | cut -d' ' -f1)"
+  digest="$(printf %s "$frag" | sha256sum | cut -d' ' -f1)"
   echo "error: hash mismatch in fixed-output derivation '/nix/store/deadbeef-compass-\${frag}.drv':" >&2
   echo "         specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" >&2
   echo "            got:    sha256-stub-\${digest}" >&2
@@ -138,16 +115,15 @@ exit 1
 `;
 
 // Mirror the stub's fragment→SRI derivation so the expected value is computable
-// in-process. `salt` matches the stub's divergence prefix.
-function stubSriForFragment(fragment: string, salt = ""): string {
+// in-process.
+function stubSriForFragment(fragment: string): string {
 	const hasher = new Bun.CryptoHasher("sha256");
-	hasher.update(`${salt}${fragment}`);
+	hasher.update(fragment);
 	return `sha256-stub-${hasher.digest("hex")}`;
 }
 
-// The `sha256-…` value on the marker line, tolerating absence — the shipped
-// hashOnMarker throws instead (a verify that cannot find its pin must fail
-// loud), so tests asserting "unchanged/absent" use this local reader.
+// The `sha256-…` value on the marker line, tolerating absence, so tests
+// asserting "unchanged/absent" can read it.
 function maybeHashOnMarker(
 	nixText: string,
 	marker: string,
@@ -171,7 +147,7 @@ async function buildBaselineRepo(): Promise<string> {
 	await write(SCRIPT_REL, await readFile(REAL_SCRIPT, "utf8"));
 	// Pin files at the paths the TABLE declares.
 	await write(GO_ENTRY.file, GO_NIX_FIXTURE);
-	await write(BUN_WRITE_ENTRY.file, BUN_NIX_FIXTURE);
+	await write(BUN_ENTRY.file, BUN_NIX_FIXTURE);
 	await write(
 		UI_ENTRY.file,
 		await readFile(join(repoRoot, UI_ENTRY.file), "utf8"),
@@ -201,26 +177,6 @@ async function buildBaselineRepo(): Promise<string> {
 			await write(trigger, "baseline\n");
 		}
 	}
-	// Channel locks the divergence diagnostic quotes. Real devenv locks; only
-	// root's `nixpkgs` input → `locked.rev` is read, and only to name the two
-	// revs in the error, so a minimal shape with distinguishable revs is enough.
-	for (const entry of FOD_ENTRIES) {
-		await write(
-			entry.vehicleChannelLock,
-			`${JSON.stringify(
-				{
-					nodes: {
-						nixpkgs: {
-							locked: { rev: revFor(entry.vehicleChannelLock) },
-						},
-						root: { inputs: { nixpkgs: "nixpkgs" } },
-					},
-				},
-				null,
-				2,
-			)}\n`,
-		);
-	}
 	// The fake nix.
 	const binDir = join(repo, "stubbin");
 	await mkdir(binDir, { recursive: true });
@@ -239,14 +195,6 @@ async function buildBaselineRepo(): Promise<string> {
 		.env(HERMETIC_ENV)
 		.quiet();
 	return repo;
-}
-
-// A deterministic 40-hex rev per lock path, so the divergence error's two revs
-// are distinguishable and assertable.
-function revFor(lockPath: string): string {
-	const hasher = new Bun.CryptoHasher("sha256");
-	hasher.update(lockPath);
-	return hasher.digest("hex").slice(0, 40);
 }
 
 // Run the shipped script exactly as Renovate does: cwd = repo root, stub nix
@@ -315,7 +263,7 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 	// A gomod-only bump refreshes the Go vendorHash and leaves the bun outputHash
 	// pin byte-for-byte untouched — the per-FOD self-gate granularity.
 	test("a go/go.mod bump leaves the bun outputHash pin untouched", async () => {
-		const bunBefore = await readFile(join(repo, BUN_WRITE_ENTRY.file), "utf8");
+		const bunBefore = await readFile(join(repo, BUN_ENTRY.file), "utf8");
 		await Bun.write(join(repo, "go/go.mod"), "bumped\n");
 
 		const res = await runRefresh(repo);
@@ -325,9 +273,7 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		expect(maybeHashOnMarker(goNix, GO_ENTRY.marker)).toBe(
 			stubSriForFragment("go-modules"),
 		);
-		expect(await readFile(join(repo, BUN_WRITE_ENTRY.file), "utf8")).toBe(
-			bunBefore,
-		);
+		expect(await readFile(join(repo, BUN_ENTRY.file), "utf8")).toBe(bunBefore);
 	});
 
 	// A bun.lock bump refreshes only the bun outputHash; the Go vendorHash is left
@@ -339,28 +285,27 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		const res = await runRefresh(repo);
 		expect(res.exitCode).toBe(0);
 
-		const bunNix = await readFile(join(repo, BUN_WRITE_ENTRY.file), "utf8");
-		expect(maybeHashOnMarker(bunNix, BUN_WRITE_ENTRY.marker)).toBe(
+		const bunNix = await readFile(join(repo, BUN_ENTRY.file), "utf8");
+		expect(maybeHashOnMarker(bunNix, BUN_ENTRY.marker)).toBe(
 			stubSriForFragment("node-modules"),
 		);
 		expect(await readFile(join(repo, GO_ENTRY.file), "utf8")).toBe(goBefore);
 	});
 
 	// The HIGH-finding regression (RIG-3296 review): a devenv-nixpkgs channel bump
-	// that does NOT move biome leaves bun.lock untouched, yet the channel moves
-	// pkgs.bun (the FOD builder). So the node-modules entry gates on devenv.lock too:
-	// a devenv.lock-only diff must still refresh the bun outputHash.
-	test("a devenv.lock-only bump refreshes the bun outputHash (channel pkgs.bun move)", async () => {
+	// that does NOT move biome leaves bun.lock untouched. The node-modules entry
+	// still gates on devenv.lock conservatively: a devenv.lock-only diff refreshes it.
+	test("a devenv.lock-only bump refreshes the bun outputHash", async () => {
 		const goBefore = await readFile(join(repo, GO_ENTRY.file), "utf8");
 		await Bun.write(join(repo, "devenv.lock"), "bumped\n");
 
 		const res = await runRefresh(repo);
 		expect(res.exitCode).toBe(0);
 
-		const bunNix = await readFile(join(repo, BUN_WRITE_ENTRY.file), "utf8");
-		expect(
-			hashOnMarker(bunNix, BUN_WRITE_ENTRY.marker, BUN_WRITE_ENTRY.file),
-		).toBe(stubSriForFragment("node-modules"));
+		const bunNix = await readFile(join(repo, BUN_ENTRY.file), "utf8");
+		expect(maybeHashOnMarker(bunNix, BUN_ENTRY.marker)).toBe(
+			stubSriForFragment("node-modules"),
+		);
 		expect(await readFile(join(repo, GO_ENTRY.file), "utf8")).toBe(goBefore);
 	});
 	test.each([
@@ -426,7 +371,7 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 	});
 });
 
-describe("two builders, one outputHash: the verify entry", () => {
+describe("entrypoint outputHash refresh", () => {
 	let repo: string;
 	beforeEach(async () => {
 		repo = await buildBaselineRepo();
@@ -435,96 +380,22 @@ describe("two builders, one outputHash: the verify entry", () => {
 		if (repo) await rm(repo, { recursive: true, force: true });
 	});
 
-	// The EQUAL path — the expected outcome on a healthy branch. Both vehicles
-	// report the same SRI, so the verify entry writes nothing, changes nothing,
-	// and does not fail the task. The pin ends at the authoritative value.
-	test("agreement between the two vehicles is a silent no-op", async () => {
+	// The pin's only importer is the agent image, so its vehicle is the one realised.
+	test("refreshes the pin through the agent-image vehicle", async () => {
 		await Bun.write(join(repo, "bun.lock"), "bumped\n");
 
 		const res = await runRefresh(repo);
 		const stdout = res.stdout.toString();
 
 		expect(res.exitCode).toBe(0);
-		expect(stdout).toContain("verified");
-		expect(stdout).not.toContain("cannot satisfy both");
-		const bunNix = await readFile(join(repo, BUN_WRITE_ENTRY.file), "utf8");
-		expect(maybeHashOnMarker(bunNix, BUN_WRITE_ENTRY.marker)).toBe(
-			stubSriForFragment("node-modules"),
+		expect(stdout).toContain(
+			`via ${BUN_ENTRY.buildTarget} (${BUN_ENTRY.buildFile})`,
 		);
-		// And it left no fake behind on the second realise either.
-		expect(bunNix).not.toContain("sha256-AAAAAAAA");
-	});
-
-	// The MISMATCH path — the whole reason the second vehicle exists. The agent-image
-	// vehicle reports a different SRI for the same FOD (the two channel revs' buns
-	// produce different trees). One literal cannot serve both, so the task exits
-	// non-zero with a diagnosis naming BOTH SRIs, both vehicles, and both channel revs.
-	test("a divergent second vehicle throws naming both SRIs, vehicles and revs", async () => {
-		await Bun.write(join(repo, "bun.lock"), "bumped\n");
-
-		const res = await runRefresh(repo, {
-			STUB_DIVERGE_VEHICLE: BUN_VERIFY_ENTRY.buildFile,
-		});
-		const stderr = res.stderr.toString();
-
-		expect(res.exitCode).not.toBe(0);
-		expect(stderr).toContain("cannot satisfy both");
-		// Both SRIs, named.
-		expect(stderr).toContain(stubSriForFragment("node-modules"));
-		expect(stderr).toContain(stubSriForFragment("node-modules", "diverged"));
-		// Both vehicles, named.
-		expect(stderr).toContain(BUN_WRITE_ENTRY.buildFile);
-		expect(stderr).toContain(BUN_VERIFY_ENTRY.buildFile);
-		// Both channel revs, named.
-		expect(stderr).toContain(revFor(BUN_WRITE_ENTRY.vehicleChannelLock));
-		expect(stderr).toContain(revFor(BUN_VERIFY_ENTRY.vehicleChannelLock));
-	});
-
-	// A verify entry must never leave its own recomputed value in the tree: the
-	// authoritative write is what ships. Even on the throwing path the pin on disk
-	// is the authoritative SRI, never the divergent one and never the fake.
-	test("the verify entry never writes its own value, even when it diverges", async () => {
-		await Bun.write(join(repo, "bun.lock"), "bumped\n");
-
-		const res = await runRefresh(repo, {
-			STUB_DIVERGE_VEHICLE: BUN_VERIFY_ENTRY.buildFile,
-		});
-		expect(res.exitCode).not.toBe(0);
-
-		const bunNix = await readFile(join(repo, BUN_WRITE_ENTRY.file), "utf8");
-		expect(maybeHashOnMarker(bunNix, BUN_WRITE_ENTRY.marker)).toBe(
+		const bunNix = await readFile(join(repo, BUN_ENTRY.file), "utf8");
+		expect(maybeHashOnMarker(bunNix, BUN_ENTRY.marker)).toBe(
 			stubSriForFragment("node-modules"),
 		);
 		expect(bunNix).not.toContain("sha256-AAAAAAAA");
-	});
-
-	// Ordering is load-bearing: the authoritative write must land BEFORE the verify
-	// reads its baseline, or every ordinary refresh would read as a divergence.
-	// Assert it on the observable log order, so a refactor that reorders the run set
-	// fails here.
-	test("writes the authoritative value before the verify reads its baseline", async () => {
-		await Bun.write(join(repo, "bun.lock"), "bumped\n");
-
-		const res = await runRefresh(repo);
-		expect(res.exitCode).toBe(0);
-
-		const stdout = res.stdout.toString();
-		const wrote = stdout.indexOf(
-			`${BUN_WRITE_ENTRY.file} -> ${stubSriForFragment("node-modules")}`,
-		);
-		const verified = stdout.indexOf("verifying");
-		expect(wrote).toBeGreaterThanOrEqual(0);
-		expect(verified).toBeGreaterThanOrEqual(0);
-		expect(wrote).toBeLessThan(verified);
-	});
-
-	// Structural guard, not just ordering: refreshEntry itself refuses a verify
-	// entry, so no future caller can write through one by accident and clobber the
-	// authoritative value with the second builder's.
-	test("refreshEntry refuses to write a verify entry", async () => {
-		await expect(refreshEntry(BUN_VERIFY_ENTRY)).rejects.toThrow(
-			/must never write/,
-		);
 	});
 });
 
@@ -610,7 +481,7 @@ describe("rewriteInlineHash", () => {
 			"sha256-correct=",
 			UI_ENTRY.file,
 		);
-		expect(hashOnMarker(corrected, UI_ENTRY.marker, UI_ENTRY.file)).toBe(
+		expect(maybeHashOnMarker(corrected, UI_ENTRY.marker)).toBe(
 			"sha256-correct=",
 		);
 		expect(corrected.match(/outputHash = "sha256-/g)).toHaveLength(1);
@@ -659,28 +530,6 @@ describe("rewriteInlineHash", () => {
 	});
 });
 
-describe("hashOnMarker", () => {
-	test("reads the committed SRI off the marker line", () => {
-		expect(hashOnMarker(BUN_NIX_FIXTURE, BUN_WRITE_ENTRY.marker, "f.nix")).toBe(
-			PLACEHOLDER_BUN,
-		);
-	});
-
-	// The verify baseline must never degrade to "no mismatch observed" when the
-	// pin cannot be read — that would pass a branch whose pin was never checked.
-	test("throws when the marker is missing", () => {
-		expect(() =>
-			hashOnMarker(BUN_NIX_FIXTURE, 'noSuch = "sha256-', "f.nix"),
-		).toThrow(/marker .* not found/);
-	});
-
-	test("throws when the marker line carries no SRI", () => {
-		expect(() =>
-			hashOnMarker('  outputHash = "";\n', "outputHash", "f.nix"),
-		).toThrow(/no sha256- SRI/);
-	});
-});
-
 describe("FOD_ENTRIES table invariants", () => {
 	// A base row to mutate per case, so each violating table differs from a legal
 	// one in exactly the property under test.
@@ -694,12 +543,12 @@ describe("FOD_ENTRIES table invariants", () => {
 		vehicleChannelLock: "a.lock",
 		triggers: ["bun.lock"],
 	};
-	const verify: FodEntry = {
+	const other: FodEntry = {
 		...write,
 		id: "v",
+		file: "b.nix",
 		buildFile: "veh-b.nix",
 		vehicleChannelLock: "b.lock",
-		verifyOf: "w",
 	};
 
 	test("the shipped table satisfies every invariant", () => {
@@ -709,7 +558,7 @@ describe("FOD_ENTRIES table invariants", () => {
 	// vehicleChannelLock is a CLAIM about buildFile: it names the lock whose nixpkgs
 	// node supplies that vehicle's pkgs. Nothing in the type system ties the two, so
 	// a vehicle pointed at the sibling scope's lock would satisfy every structural
-	// invariant and re-derive the identical hash — a verify that always agrees.
+	// invariant and build with a bun the pin's consumer never uses.
 	test("every entry's vehicle reads the channel lock the table declares", async () => {
 		for (const entry of FOD_ENTRIES) {
 			const vehicle = await readFile(join(repoRoot, entry.buildFile), "utf8");
@@ -757,18 +606,6 @@ describe("FOD_ENTRIES table invariants", () => {
 		}
 	});
 
-	// The shipped pairing is the point of the whole mechanism: one writer, one
-	// verifier, two vehicles over the SAME pin.
-	test("the shipped table pairs the entrypoint outputHash across two vehicles", () => {
-		expect(BUN_VERIFY_ENTRY.verifyOf).toBe(BUN_WRITE_ENTRY.id);
-		expect(BUN_VERIFY_ENTRY.file).toBe(BUN_WRITE_ENTRY.file);
-		expect(BUN_VERIFY_ENTRY.marker).toBe(BUN_WRITE_ENTRY.marker);
-		expect(BUN_VERIFY_ENTRY.buildFile).not.toBe(BUN_WRITE_ENTRY.buildFile);
-		expect(BUN_VERIFY_ENTRY.vehicleChannelLock).not.toBe(
-			BUN_WRITE_ENTRY.vehicleChannelLock,
-		);
-	});
-
 	test("rejects duplicate ids", () => {
 		expect(() => assertFodTableInvariants([write, { ...write }])).toThrow(
 			/duplicate FodEntry id/,
@@ -792,66 +629,17 @@ describe("FOD_ENTRIES table invariants", () => {
 		).toThrow(/ambiguous drvFragment/);
 	});
 
-	// …but the SAME fragment across two vehicles is legal and load-bearing: it is
-	// literally the same derivation seen through two nixpkgs, and each realise
-	// reads only its own vehicle's output.
+	// …but the SAME fragment across two vehicles is legal: each realise reads
+	// only its own vehicle's output.
 	test("allows the same drvFragment across two different vehicles", () => {
-		expect(() => assertFodTableInvariants([write, verify])).not.toThrow();
+		expect(() => assertFodTableInvariants([write, other])).not.toThrow();
 	});
 
 	// Two writers over one pin are last-write-wins: the second realise's value
-	// silently overwrites the first, hiding the divergence the pairing exists to
-	// surface.
-	test("rejects two authoritative entries writing the same file+marker", () => {
+	// silently overwrites the first.
+	test("rejects two entries writing the same file+marker", () => {
 		expect(() =>
-			assertFodTableInvariants([
-				write,
-				{ ...verify, verifyOf: undefined, id: "w2" },
-			]),
+			assertFodTableInvariants([write, { ...other, file: write.file }]),
 		).toThrow(/both WRITE/);
-	});
-
-	test("rejects a verifyOf naming a nonexistent entry", () => {
-		expect(() =>
-			assertFodTableInvariants([{ ...verify, verifyOf: "nope" }]),
-		).toThrow(/not an authoritative/);
-	});
-
-	test("rejects a verify entry checking a different pin", () => {
-		expect(() =>
-			assertFodTableInvariants([write, { ...verify, file: "other.nix" }]),
-		).toThrow(/SAME pin/);
-	});
-
-	// A verify entry on the same vehicle re-derives the identical value: it would
-	// always agree and check nothing, which is worse than absent because it reads
-	// as coverage.
-	test("rejects a verify entry realising the same vehicle as its target", () => {
-		expect(() =>
-			assertFodTableInvariants([
-				write,
-				{ ...verify, buildFile: write.buildFile },
-			]),
-		).toThrow(/SAME vehicle/);
-	});
-
-	// Divergent triggers would let the gate open the verify without its writer, so
-	// the comparison baseline would be the pre-write (stale) pin.
-	test("rejects a verify entry gated differently from its target", () => {
-		expect(() =>
-			assertFodTableInvariants([
-				write,
-				{ ...verify, triggers: ["bun.lock", "extra"] },
-			]),
-		).toThrow(/SAME triggers/);
-	});
-
-	test("rejects mirrorFiles on a verify entry", () => {
-		expect(() =>
-			assertFodTableInvariants([
-				write,
-				{ ...verify, mirrorFiles: ["flake.nix"] },
-			]),
-		).toThrow(/writes nothing/);
 	});
 });

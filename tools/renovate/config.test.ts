@@ -214,7 +214,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		// pinned FOD, because a rule-level task REPLACES the top-level one on its
 		// branch. The seven sites, all carrying the refresh:
 		//   1. top-level (branch mode)      — gomod + bun/TypeScript-first branches
-		//   2. devenv-nixpkgs channel rule  — the channel moves pkgs.bun
+		//   2. devenv-nixpkgs channel rule  — relocks devenv.lock, a declared trigger
 		//   3. devenv fork (root) rule      — relocks devenv.lock, a declared trigger
 		//   4. go ↔ go-overlay lockstep     — relocks devenv.lock likewise
 		//   5. workspaces.catalog rule      — update mode, eviction-proof
@@ -551,8 +551,8 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	// 2), flake.nix + flake.lock (step 3), package.json + bun.lock + biome.json
 	// files + reformatted sources (the biome catalog writer), and the FOD pins.
 
-	// The FOD refresh is required: a channel bump moves pkgs.bun (the FOD builder)
-	// and, when the biome pin moves, the writer re-resolves the bun.lock closure —
+	// The FOD refresh is required: devenv.lock is a declared FOD trigger and,
+	// when the biome pin moves, the writer re-resolves the bun.lock closure —
 	// either can move the outputHash (PR #580 failed on this). refresh-fod-hashes.ts
 	// runs LAST and gates on bun.lock OR devenv.lock.
 
@@ -749,8 +749,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		groupName: string;
 		patternLiteral: string;
 		// The rule's WHOLE declared task, pinned literally per scope. Both locks are
-		// declared triggers of the entrypoint.nix FOD entry — each supplies a
-		// `pkgs.bun` to one of that file's two importers — so both rules carry the
+		// declared triggers of the entrypoint.nix FOD entry, so both rules carry the
 		// FOD refresh and name the FOD file.
 		taskCommands: string[];
 		taskFileFilters: string[];
@@ -1776,10 +1775,10 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 	// self-gates per entry on TRIGGER CHANGE, and devenv.lock is exactly what
 	// these tasks rewrite — so on those branches the gate FIRES rather than
 	// passing over: firing means writing a deliberately-fake SRI and running a
-	// full `nix build` of compass-guest-rootfs, a guaranteed fixed-output cache
+	// full `nix build` of the FOD's vehicle, a guaranteed fixed-output cache
 	// miss that forces a networked `bun install`. What is a no-op is the
 	// resulting WRITE (the same SRI), not the work. So covering a site whose
-	// installed tree did not actually move costs one extra rootfs realise per
+	// installed tree did not actually move costs one extra realise per
 	// such branch (refresh-fod-hashes.ts:54: "costs at most one extra realise"),
 	// and no site's coverage gap is worth that price.
 	//
@@ -1840,23 +1839,20 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 	test("the coupled (site, entry) set has its expected shape (guard is not vacuous)", () => {
 		// The guard below iterates `coupled`, so a set that emptied or thinned out
 		// would leave it passing while checking nothing. A bare `> 0` cannot see
-		// the thinning: the pairs bind only two of the three entries, and the
-		// entrypoint.nix pin is now carried by TWO entries (the authoritative
-		// write and its verify sibling) sharing one trigger list, so renaming a
-		// single trigger dissolves many pairings while leaving the count positive.
+		// the thinning: renaming a single trigger dissolves several pairings while
+		// leaving the count positive.
 		// Pinning the exact count catches a partial trigger rename, or a
 		// fileFilters edit, that dissolves any single pairing. It does NOT check
 		// WHICH sites are coupled — the per-site describes above pin that — only
 		// that the population has not shrunk or grown. A newly coupled site is a
 		// deliberate edit: update this number in the same change.
 		//
-		// 19 = seven sites naming a trigger of the two entrypoint.nix entries
-		// (2 entries × 7 sites), plus the UI pin's three sites (the lockstep,
+		// 12 = seven sites naming a trigger of the entrypoint.nix entry, plus the UI pin's three sites (the lockstep,
 		// catalog and Meissa rules name bun.lock), plus two guestd vendorHash
 		// pairs: the channel and Meissa sites' broad `**/*` filters cover
 		// go/go.mod and go/go.sum, which the gomod MANAGER otherwise writes
 		// undeclared.
-		expect(coupled.length).toBe(19);
+		expect(coupled.length).toBe(12);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 
@@ -1904,8 +1900,7 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 	// added here without that call fails the assertion below.
 	const IN_PROCESS_REFRESHERS: Record<string, string> = {
 		// refresh-agent-image-nixpkgs.ts: relocks the agent-image channel, then
-		// awaits refreshFodEntries(agentImageFodEntries()) — the authoritative write
-		// and its verify sibling, in the order refreshFodEntries enforces.
+		// awaits refreshFodEntries(agentImageFodEntries()).
 		"bun tools/renovate/refresh-agent-image-nixpkgs.ts": "refreshFodEntries",
 	};
 

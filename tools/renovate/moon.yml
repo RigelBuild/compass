@@ -25,7 +25,7 @@ tasks:
   test:
     inputs:
       - '*.ts'
-      # The FOD verification vehicle (agent-image-fod-vehicle.nix) lives here and
+      # The FOD vehicle (agent-image-fod-vehicle.nix) lives here and
       # is named by refresh-fod-hashes.ts's table; the suite asserts it exists, so
       # deleting or renaming it must schedule this project.
       - '*.nix'

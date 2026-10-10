@@ -1,17 +1,10 @@
-# A VERIFICATION VEHICLE for the agent image's view of one shared FOD hash. It
-# is NOT how the agent image is built; its only consumer is
+# The build vehicle for the agent image's node_modules FOD hash. It is NOT how the agent image is built; its only consumer is
 # tools/renovate/refresh-fod-hashes.ts, whose FOD_ENTRIES table names this file
 # and the `compass-agent` attribute below as one entry's build vehicle.
 #
-# Why it exists: `agent-image/entrypoint.nix` carries a SINGLE `outputHash` over
-# the installed `node_modules`, imported by two consumers resolving two nixpkgs
-# revs (guest-image with ROOT's pkgs, agent-image/devenv.nix with AGENT-IMAGE's).
-# The one hash is correct for both only while their two buns produce a
-# byte-identical install tree. The refresher's only vehicle was
-# guest-image/default.nix (ROOT's pkgs); the agent-image consumer's builder was
-# never exercised, so a bun drift stayed silently wrong until the heavy OCI build.
-# This file closes that gap: a plain `nix build`-able expression with the SAME
-# pkgs the image uses.
+# Why it exists: `agent-image/entrypoint.nix` carries an `outputHash` over the
+# installed `node_modules`, and its only image consumer is agent-image/devenv.nix. This
+# is a plain `nix build`-able expression with the SAME pkgs the image uses.
 #
 # It lives under tools/renovate/ beside its consumer deliberately: a file under
 # agent-image/ would reschedule the image build (moon `inputs: ['**/*']`, the
@@ -25,8 +18,7 @@
 let
   # The AGENT-IMAGE devenv lock's nixpkgs, resolved as the repo's other plain-nix
   # vehicles resolve theirs (read the lock, fetch that rev, import it). Using the
-  # ROOT lock instead would re-derive the value the authoritative vehicle already
-  # produces and verify nothing.
+  # ROOT lock instead would build with a bun the image never uses.
   lock = builtins.fromJSON (builtins.readFile ../../agent-image/devenv.lock);
   node = lock.nodes.nixpkgs.locked;
   nixpkgsSrc = builtins.fetchTarball {
