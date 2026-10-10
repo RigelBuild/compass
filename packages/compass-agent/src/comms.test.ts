@@ -391,6 +391,9 @@ describe("createCommsTools", () => {
 			"comms_create_channel_group",
 		]);
 		expect(tools.every((t) => t.label.length > 0)).toBe(true);
+		// `approval` decides which modes auto-approve the call. A silent flip of
+		// the post tool to `read` would broaden auto-approval for a write, and
+		// nothing else here would redden.
 		const byName = (n: string) => {
 			const t = tools.find((x) => x.name === n);
 			if (t === undefined) throw new Error(`no tool ${n}`);
@@ -403,9 +406,8 @@ describe("createCommsTools", () => {
 		expect(byName("compass_roster").approval).toBe("read");
 		expect(byName("compass_set_status").approval).toBe("write");
 		expect(byName("comms_post_ask").approval).toBe("write");
-		// `approval` decides which modes auto-approve the call. A silent flip of
-		// the post tool to `read` would broaden auto-approval for a write, and
-		// nothing else here would redden.
+		// Each tool carries its own schema — a crossed wiring would otherwise
+		// only surface as a confusing validation failure at call time.
 		expect(byName("comms_post_message").parameters).toBe(postParameters);
 		expect(byName("comms_post_ask").parameters).toBe(postAskParameters);
 		expect(byName("comms_create_channel").approval).toBe("write");
@@ -1237,7 +1239,26 @@ describe("comms_list_topics", () => {
 		);
 		const text = textOf(await exec(topics, "tc-topic-spaces", {}));
 		expect(text).toMatch(/ name: release plan q4$/);
-		expect(text).toContain("last=none");
+		expect(text).toContain("last=?");
+	});
+
+	test("a computed empty topic renders zero messages and no activity", async () => {
+		const topics = tool(
+			new CommsBroker(
+				new FakeTransport(
+					listTopicsResult(
+						create(TopicSchema, {
+							name: "fresh",
+							messageCount: 0n,
+							lastMessageAtUnixMs: 0n,
+						}),
+					),
+				),
+			),
+			"comms_list_topics",
+		);
+		const text = textOf(await exec(topics, "tc-topic-empty-stats", {}));
+		expect(text).toContain("messages=0 last=none");
 	});
 
 	test("renders missing activity fields as unknown", async () => {
@@ -1251,7 +1272,7 @@ describe("comms_list_topics", () => {
 		);
 		const text = textOf(await exec(topics, "tc-topic-missing-stats", {}));
 		expect(text).toContain("messages=?");
-		expect(text).toContain("last=none");
+		expect(text).toContain("last=?");
 	});
 
 	test("topic names cannot forge a second record line", async () => {

@@ -947,14 +947,13 @@ export function createCommsTools(
 			const fence = crypto.randomUUID().slice(0, 8);
 			const lines = topics.map((topic) => {
 				const lastMessageAt = topic.lastMessageAtUnixMs;
-				const at =
-					lastMessageAt === undefined
-						? undefined
-						: new Date(Number(lastMessageAt));
+				const at = new Date(Number(lastMessageAt ?? 0n));
 				const last =
-					at === undefined || lastMessageAt === 0n || Number.isNaN(at.getTime())
-						? "none"
-						: at.toISOString();
+					lastMessageAt === undefined
+						? "?"
+						: lastMessageAt === 0n || Number.isNaN(at.getTime())
+							? "none"
+							: at.toISOString();
 				const archived = topic.archived ? " archived" : "";
 				return `[topic ${fence}] messages=${topic.messageCount ?? "?"} last=${last}${archived} name: ${flat(topic.name)}`;
 			});
