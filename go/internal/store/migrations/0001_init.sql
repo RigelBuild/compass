@@ -1091,7 +1091,7 @@ CREATE INDEX pull_request_issue_links_issue_idx ON pull_request_issue_links
 -- Owner-managed allowlist of forge coordinates an account may write.
 CREATE TABLE account_forge_scopes (
     tenant_id      TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
-    account_id     TEXT NOT NULL REFERENCES user_accounts (account_id) ON DELETE RESTRICT,
+    account_id     TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
     forge_host     TEXT NOT NULL,
     repo           TEXT NOT NULL CHECK (repo <> ''),

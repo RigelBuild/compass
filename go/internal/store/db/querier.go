@@ -265,7 +265,9 @@ type Querier interface {
 	// The caller is bound to one tenant by the store's scoped query path.
 	GetTourState(ctx context.Context, accountID string) (GetTourStateRow, error)
 	GlobalHandlesByAccountIDs(ctx context.Context, dollar_1 []string) ([]GlobalHandlesByAccountIDsRow, error)
-	// Scope grants are managed for user accounts; agents inherit their owner's rows.
+	// Server-written workstream row; the SELECT runs under RLS.
+	GrantAgentForgeScope(ctx context.Context, arg GrantAgentForgeScopeParams) (int64, error)
+	// Scope grants are managed for user accounts and agent-specific repositories.
 	// The SELECT runs under RLS, so a user from another tenant inserts nothing.
 	GrantForgeScope(ctx context.Context, arg GrantForgeScopeParams) (int64, error)
 	// Feeds requireGroupCreateAuthz: owner, agent-owner, same namespace, or SHARED-visibility group.

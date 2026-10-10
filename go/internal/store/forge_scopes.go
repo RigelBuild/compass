@@ -67,6 +67,44 @@ func (s *Store) GrantForgeScope(ctx context.Context, scope ForgeScope) error {
 	return nil
 }
 
+// GrantAgentForgeScope adds a server-written exact-repo row for an agent.
+func (s *Store) GrantAgentForgeScope(ctx context.Context, scope ForgeScope) (added bool, err error) {
+	scope, err = scope.normalized()
+	if err != nil {
+		return false, err
+	}
+	if scope.Repo == "*" || (scope.Provider == ForgeProviderGitHub && !validForgeRepository(scope.Repo)) {
+		return false, fmt.Errorf("%w: agent forge scope requires an exact org/name repository", ErrInvalidArgument)
+	}
+
+	n, err := s.q.GrantAgentForgeScope(ctx, db.GrantAgentForgeScopeParams{
+		AccountID:     string(scope.AccountID),
+		ForgeProvider: int16(scope.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16.
+		ForgeHost:     scope.Host,
+		Repo:          scope.Repo,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: grant agent forge scope: %w", err)
+	}
+	if n > 0 {
+		return true, nil
+	}
+
+	visible, err := s.q.AgentAccountVisible(ctx, string(scope.AccountID))
+	if err != nil {
+		return false, fmt.Errorf("store: check agent forge scope account: %w", err)
+	}
+	if !visible {
+		return false, fmt.Errorf("%w: scope account %q is not an agent in this tenant", ErrInvalidArgument, scope.AccountID)
+	}
+	return false, nil
+}
+
+func validForgeRepository(repo string) bool {
+	org, name, ok := strings.Cut(repo, "/")
+	return ok && org != "" && name != "" && !strings.Contains(name, "/")
+}
+
 // RevokeForgeScope removes one user grant; a missing grant is a no-op.
 func (s *Store) RevokeForgeScope(ctx context.Context, scope ForgeScope) error {
 	scope, err := scope.normalized()
