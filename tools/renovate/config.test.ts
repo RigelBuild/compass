@@ -226,7 +226,7 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		//   7. Meissa lockstep              — relocks devenv.lock and may move the
 		//                                     biome pin + bun.lock
 		// Sites 3, 4 and 6 carry it fail-safe: each relocks ONE non-nixpkgs input, so
-		// neither moves pkgs.bun today — but each writes a declared trigger of the
+		// neither moves the FOD's bun — but each writes a declared trigger of the
 		// entrypoint.nix entry, so the coupling holds at file granularity and the
 		// refresh's write is a no-op when nothing moved (the gate itself fires on
 		// those branches — the relocked devenv.lock IS the trigger — so the price
@@ -1855,12 +1855,13 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 		// that the population has not shrunk or grown. A newly coupled site is a
 		// deliberate edit: update this number in the same change.
 		//
-		// 12 = seven sites naming a trigger of the entrypoint.nix entry, plus the UI pin's three sites (the lockstep,
-		// catalog and Meissa rules name bun.lock), plus two guestd vendorHash
-		// pairs: the channel and Meissa sites' broad `**/*` filters cover
-		// go/go.mod and go/go.sum, which the gomod MANAGER otherwise writes
-		// undeclared.
-		expect(coupled.length).toBe(12);
+		// 14 = eight sites naming a trigger of the entrypoint.nix entry, plus the UI
+		// pin's four sites (the lockstep, catalog and Meissa rules name bun.lock),
+		// plus two guestd vendorHash pairs: the channel and Meissa sites' broad
+		// `**/*` filters cover go/go.mod and go/go.sum, which the gomod MANAGER
+		// otherwise writes undeclared. The top-level task couples to both bun pins
+		// through tools/toolchain/versions/bun.nix.
+		expect(coupled.length).toBe(14);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 

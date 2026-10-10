@@ -32,6 +32,10 @@
 # workspace link, so the member must sit at that path for the link to land
 # anywhere.
 let
+  # The repo-pinned bun, not nixpkgs': one bun version for the dev shell, CI and
+  # every Nix build, so a nixpkgs bump cannot change the toolchain under us.
+  pinnedBun = (import ../../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
+
   # Both members whose dependencies the build needs. `@compass/client` is not
   # merely a workspace sibling to resolve: the UI imports it, it is source-only
   # (`"exports": { ".": "./src/index.ts" }`,
@@ -112,7 +116,7 @@ let
         );
       };
 
-    nativeBuildInputs = [ pkgs.bun ];
+    nativeBuildInputs = [ pinnedBun ];
     dontConfigure = true;
 
     # `--linker=hoisted` IS THE REPRODUCIBILITY FIX, not a style choice, and it
@@ -179,8 +183,8 @@ let
       runHook postInstall
     '';
 
-    # Expect this hash to move when `bun.lock` or a workspace manifest changes,
-    # and on a flake nixpkgs bump (which moves `pkgs.bun`). Refresh it through
+    # Expect this hash to move when `bun.lock`, a workspace manifest or the bun
+    # pin changes. Refresh it through
     # tools/renovate/refresh-fod-hashes.ts; the UI pin is registered there.
     dontFixup = true;
     outputHashMode = "recursive";
@@ -240,7 +244,7 @@ let
 in
 pkgs.runCommand "compass-ui-${version}"
   {
-    nativeBuildInputs = [ pkgs.bun ];
+    nativeBuildInputs = [ pinnedBun ];
   }
   ''
     export HOME=$TMPDIR

@@ -279,10 +279,10 @@
       //
       // WHAT THIS REV GOVERNS. It resolves the image's toolchain closure:
       // agent-image/toolchain.nix overlays the repo's own vendored bun, but
-      // `pkgs.cacert`, `pkgs.devenv`, and `getent` come straight from this pin
-      // — and agent-image/entrypoint.nix's FOD builder takes
-      // `nativeBuildInputs = [ pkgs.bun ]` from it too, which is why the rule
-      // below must also refresh that `outputHash` (see its note).
+      // `pkgs.cacert`, `pkgs.devenv`, and `getent` come straight from this pin.
+      // agent-image/entrypoint.nix's FOD builds with the pinned bun, not this
+      // pin's; the rule below still refreshes that `outputHash` as a fail-safe
+      // (see its note).
       //
       // WHY NOT JUST WIDEN THE ROOT CHANNEL MANAGER'S managerFilePatterns. RD-1
       // unifies the devenv SOURCE across the two scopes but deliberately does
@@ -943,7 +943,7 @@
       minimumReleaseAge: null,
       // The FOD refresh rides LAST, after the relock: `agent-image/devenv.lock`
       // is a declared trigger of the `agent-image/entrypoint.nix` entry (it
-      // supplies that consumer's `pkgs.bun`), so a branch that commits this lock
+      // supplies that consumer's `pkgs`), so a branch that commits this lock
       // must recompute the pin against the WRITTEN lock, not the still-at-base
       // one. `agent-image/entrypoint.nix` is listed because fileFilters is an
       // INCLUDE allowlist over what Renovate commits: without it the refreshed
@@ -1044,11 +1044,10 @@
       // agent-image/ under that lock's OWN devenv, then refreshes the FOD hash.
       //
       // WHY THE FOD REFRESH IS PRESENT HERE (unlike the root channel rule, which
-      // documents its exemption): this rev resolves the bun that
-      // agent-image/entrypoint.nix's FOD builder uses (`nativeBuildInputs = [
-      // pkgs.bun ]`), and that install tree IS what its `outputHash`
-      // content-addresses. So a channel advance here can move the hash with no
-      // manifest change at all — left stale, the image build fails
+      // documents its exemption): this rev supplies the `pkgs` that
+      // agent-image/entrypoint.nix's FOD is built in. The FOD's bun is the
+      // repo pin, so a channel advance should not move the hash; the refresh
+      // stays as a fail-safe, because a stale pin fails the image build with
       // `hash mismatch in fixed-output derivation`.
       //
       // `executionMode: "branch"` runs it once after the digest update is
@@ -1233,9 +1232,12 @@
   //     platform legs in each changed pin file in the same branch. Self-gates (no-op
   //     unless a versions/*.nix pin changed); no-ops on go.nix, whose hashes come
   //     from go-overlay.
-  //  2. refresh-fod-hashes.ts — a gomod bump (go/go.mod|go.sum) moves the pinned
-  //     Go vendorHash in guest-image/default.nix; a bun bump (bun.lock) moves the
-  //     pinned bun outputHash in agent-image/entrypoint.nix. Left stale the
+  //  2. refresh-go-analysis-hashes.ts — recomputes the source and vendor hashes
+  //     when go-analysis.nix differs from the base branch; otherwise it no-ops.
+  //  3. refresh-fod-hashes.ts, LAST so it reads the bun pin step 1 wrote — a
+  //     gomod bump (go/go.mod|go.sum) moves the pinned Go vendorHash in
+  //     guest-image/default.nix; a bun.lock or bun-pin bump moves the pinned bun
+  //     outputHashes in agent-image/entrypoint.nix and apps/ui/dist.nix. Left stale the
   //     guest-image/agent-image build fails `hash mismatch in fixed-output
   //     derivation` (PR #579). Recomputes the invalidated hash by realising it.
   //     Self-gates per FOD on its trigger manifest. This is the branch-mode leg
@@ -1244,8 +1246,6 @@
   //     collapsed config carries the catalog rule's update-mode task instead), so
   //     the SAME fod command also rides that rule above — one command, one
   //     allowlist entry, idempotent on a double-fire.
-  //  3. refresh-go-analysis-hashes.ts — recomputes the source and vendor hashes
-  //     when go-analysis.nix differs from the base branch; otherwise it no-ops.
   //
   // `executionMode: branch` runs each once per branch after the update is applied.
   //
@@ -1257,8 +1257,8 @@
   postUpgradeTasks: {
     commands: [
       "bun tools/renovate/refresh-toolchain-hashes.ts",
-      "bun tools/renovate/refresh-fod-hashes.ts",
       "bun tools/renovate/refresh-go-analysis-hashes.ts",
+      "bun tools/renovate/refresh-fod-hashes.ts",
     ],
     fileFilters: [
       "tools/toolchain/versions/bun.nix",

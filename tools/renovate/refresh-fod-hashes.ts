@@ -10,12 +10,13 @@
 // realises only guestd's FOD; flake.nix is a MIRROR (FodEntry.mirrorFiles).
 
 // agent-image/entrypoint.nix's outputHash content-addresses compass-agent's
-// installed node_modules (a bun install FOD). Invalidated by a bun.lock bump or
-// an agent-image channel bump; root devenv.lock stays a conservative trigger.
+// installed node_modules (a bun install FOD) built by the pinned bun. Invalidated
+// by a bun.lock or bun-pin bump; the agent-image and root devenv.lock channel
+// bumps stay fail-safe triggers.
 
 // apps/ui/dist.nix's outputHash pins the bun-workspace node_modules closure.
-// It moves with bun.lock, root and workspace package manifests, or flake.lock,
-// which supplies the flake vehicle's pkgs.bun.
+// It moves with bun.lock, root and workspace package manifests, the bun pin, or
+// flake.lock, which supplies the flake vehicle's pkgs.
 
 // Neither is a URL hash prefetch-file can recompute — a vendorHash/outputHash is
 // only knowable by REALISING the derivation and reading the SRI Nix reports on the
@@ -31,8 +32,8 @@
 // 4. write it back. Fail LOUD if no got:.
 
 // Self-gating: act only when a trigger manifest differs from base. A gomod bump
-// refreshes only the Go vendorHash; a bun.lock OR devenv-nixpkgs channel bump
-// refreshes the bun outputHash. Idempotent: re-running rewrites the same SRI.
+// refreshes only the Go vendorHash; a bun.lock, bun-pin OR devenv-nixpkgs channel
+// bump refreshes the bun outputHash. Idempotent: re-running rewrites the same SRI.
 
 // Wired from config.json5 at FIVE sites, all the same command (allowlisted once,
 // config.test.ts pins them together): top-level postUpgradeTasks, the catalog
@@ -109,7 +110,12 @@ export const FOD_ENTRIES: FodEntry[] = [
 		buildFile: "tools/renovate/agent-image-fod-vehicle.nix",
 		buildTarget: "compass-agent",
 		vehicleChannelLock: "agent-image/devenv.lock",
-		triggers: ["bun.lock", "devenv.lock", "agent-image/devenv.lock"],
+		triggers: [
+			"bun.lock",
+			"devenv.lock",
+			"agent-image/devenv.lock",
+			"tools/toolchain/versions/bun.nix",
+		],
 	},
 	{
 		id: "ui-node-modules",
@@ -126,6 +132,7 @@ export const FOD_ENTRIES: FodEntry[] = [
 			"apps/*/package.json",
 			"tools/*/package.json",
 			"flake.lock",
+			"tools/toolchain/versions/bun.nix",
 		],
 	},
 ];
