@@ -443,15 +443,15 @@ func openDMRejection(ctx context.Context, t *testing.T, comms commsServiceClient
 // CodeUnknown) — so it fires only if that guarantee changes.
 //
 // Transport faults are NOT caught here; they arrive already coded
-// (CodeUnavailable, CodeDeadlineExceeded, CodeInternal) and so pass errors.As.
+// (CodeUnavailable, CodeDeadlineExceeded, CodeInternal) are handled by errors.AsType.
 // What stops them is the absolute NOT_FOUND assertion at each call site, which
 // fatals before the message compare runs. Do not weaken those to a bare
 // cross-vs-unknown code compare: two identical transport faults would satisfy
 // it, and this helper would not save you.
 func rejectionMessage(t *testing.T, peerHandle string, err error) string {
 	t.Helper()
-	var cerr *connect.Error
-	if !errors.As(err, &cerr) {
+	cerr, ok := errors.AsType[*connect.Error](err)
+	if !ok {
 		t.Fatalf("OpenDM(peer %q) failed with an uncoded error %T (%v); connect is expected to code every client error, and without a connect message the comparison below would be vacuous",
 			peerHandle, err, err)
 	}

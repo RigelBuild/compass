@@ -2,7 +2,7 @@ package forge
 
 // Contracts for the raw-forge error surface: ErrUnsupported is a distinct
 // sentinel recoverable via errors.Is, and StatusError carries an HTTP status the
-// later Service layer flattens (403/404) — recoverable via errors.As without
+// later Service layer flattens (403/404) — recoverable via errors.AsType without
 // inspecting the wire. Pure value assertions; no network.
 
 import (
@@ -28,12 +28,12 @@ func TestStatusError(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 
-	// A provider returns it; the Service recovers the status via errors.As
+	// A provider returns it; the Service recovers the status via errors.AsType
 	// without touching the wire.
 	var err error = base
-	var se *StatusError
-	if !errors.As(err, &se) {
-		t.Fatal("StatusError not recoverable via errors.As")
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
+		t.Fatal("StatusError not recoverable via errors.AsType")
 	}
 	if se.Status != 403 {
 		t.Errorf("recovered status = %d, want 403", se.Status)
@@ -54,15 +54,14 @@ func TestRateLimitError(t *testing.T) {
 		t.Error("RateLimitError not recoverable via errors.Is(ErrBudgetExhausted) after wrapping")
 	}
 
-	// errors.As recovers the hint through the same wrap.
-	var got *RateLimitError
-	if !errors.As(wrapped, &got) {
-		t.Fatal("RateLimitError not recoverable via errors.As")
+	// errors.AsType recovers the hint through the same wrap.
+	got, ok := errors.AsType[*RateLimitError](wrapped)
+	if !ok {
+		t.Fatal("RateLimitError not recoverable via errors.AsType")
 	}
 	if got.RetryAfter != 60*time.Second {
 		t.Errorf("recovered RetryAfter = %v, want 60s", got.RetryAfter)
 	}
-
 	// A zero-hint value still unwraps to the sentinel.
 	if !errors.Is(&RateLimitError{}, ErrBudgetExhausted) {
 		t.Error("zero-hint RateLimitError not recoverable via errors.Is(ErrBudgetExhausted)")

@@ -187,8 +187,7 @@ func volumeExists(t *testing.T, cli, vol string) bool {
 	// Both engines name a missing volume in stderr ("no such volume" on podman,
 	// "no such volume"/"not found" on docker); match either, case-insensitively,
 	// so the classification is a genuine absence and not a catch-all 125.
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
+	if _, ok := errors.AsType[*exec.ExitError](err); ok {
 		lower := strings.ToLower(string(out))
 		if strings.Contains(lower, "no such volume") || strings.Contains(lower, "not found") {
 			return false

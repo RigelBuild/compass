@@ -353,8 +353,8 @@ func TestNormalizeServerURL(t *testing.T) {
 				}
 				return
 			}
-			var urlErr *URLError
-			if !errors.As(err, &urlErr) {
+			urlErr, ok := errors.AsType[*URLError](err)
+			if !ok {
 				t.Fatalf("NormalizeServerURL(%q) error = %v (%T), want *URLError", tt.raw, err, err)
 			}
 			if urlErr.URL != tt.raw || urlErr.Reason != tt.wantReason {
