@@ -676,8 +676,10 @@ func (h *Hub) PublishBoard(ctx context.Context, agent store.AccountID, board *co
   `Prime` picks the reconciler for `coord.Host` and calls `PrimeTarget` on
   `context.WithoutCancel(ctx)`. A missing reconciler or an error is logged;
   the next sweep fills the cursor.
-- `UpdateBoardAsAccount` maps `BoardTaskPatch` presence onto
-  `store.BoardTaskPatch` (unset to nil, a present list op to a non-nil
+- `UpdateBoardAsAccount` rejects a present `state` outside `ACTIVE` through
+  `DONE` (including `UNSPECIFIED` and unknown values) with
+  `invalid_argument` before any store call. It maps `BoardTaskPatch` presence
+  onto `store.BoardTaskPatch` (unset to nil, a present list op to a non-nil
   slice), canonicalizes refs with `refs.Parse`, builds `BoardPatch.Watch`
   from Linear refs that pass `CanWatch`, applies the patch, primes new
   watches, re-drives open mirrors (T5), publishes, and returns the board.
@@ -690,6 +692,8 @@ Tests:
 
 - An unset field keeps its value, an explicit `""` note clears it, and a
   present empty `refs` op clears refs.
+- An explicit `UNSPECIFIED` or unknown `state` returns `invalid_argument`
+  and writes nothing.
 - A board is readable by a peer the roster clip admits, and not by another
   owner; the event follows the same split.
 - A non-agent caller on `update_board` gets `permission_denied`.
