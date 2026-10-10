@@ -37,11 +37,13 @@ type fakeResolverSecrets struct {
 	resolveErr   error
 	resolveCalls int
 	gotAgent     store.AccountID
+	resolveCtx   context.Context
 }
 
-func (f *fakeResolverSecrets) ResolveFor(_ context.Context, agent store.AccountID, _ string) ([]secrets.ResolvedSecret, error) {
+func (f *fakeResolverSecrets) ResolveFor(ctx context.Context, agent store.AccountID, _ string) ([]secrets.ResolvedSecret, error) {
 	f.resolveCalls++
 	f.gotAgent = agent
+	f.resolveCtx = ctx
 	if f.resolveErr != nil {
 		return nil, f.resolveErr
 	}
@@ -65,6 +67,7 @@ func runnerResolverForFetch() *fakeResolver {
 func TestFetchSecretsUnboundSessionPermissionDenied(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	wireRecordingBinder(hub)
 	// No session bound: the hub has no live session for "sess-unbound".
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
@@ -89,6 +92,7 @@ func TestFetchSecretsUnboundSessionPermissionDenied(t *testing.T) {
 func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	wireRecordingBinder(hub)
 	bindSession(hub, "sess-1")
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{
 		{Name: "DB_URL", Value: "postgres://secret", Version: "v1", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
@@ -115,6 +119,70 @@ func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 		t.Fatalf("GH_TOKEN kind/host = %v/%q, want GH (3)/github.com", got[1].GetKind(), got[1].GetHost())
 	}
 }
+func TestFetchSecretsResolvesUnderAgentTenant(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	binder := wireRecordingBinder(hub)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	resolver := &fakeResolverSecrets{}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	if _, err := client.FetchSecrets(t.Context(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-1"})); err != nil {
+		t.Fatalf("FetchSecrets for bound container = %v, want success", err)
+	}
+	if binder.tenantAccount != testAgentAccount || !store.IsSystemRole(binder.tenantCtx) {
+		t.Fatalf("AccountTenant called for %q under system role %v, want %q under system role", binder.tenantAccount, store.IsSystemRole(binder.tenantCtx), testAgentAccount)
+	}
+	if resolver.resolveCalls != 1 || resolver.gotAgent != testAgentAccount {
+		t.Fatalf("ResolveFor calls = %d for agent %q, want one call for %q", resolver.resolveCalls, resolver.gotAgent, testAgentAccount)
+	}
+	if resolver.resolveCtx == nil {
+		t.Fatal("ResolveFor was not called")
+	}
+	if store.IsSystemRole(resolver.resolveCtx) {
+		t.Fatal("ResolveFor ran under the system role, want tenant-scoped context")
+	}
+	if tenant, ok := store.TenantFromContext(resolver.resolveCtx); !ok || tenant != binder.tenant {
+		t.Fatalf("ResolveFor tenant = %q (set=%v), want %q", tenant, ok, binder.tenant)
+	}
+}
+
+func TestFetchSecretsWithoutLifetimeBinderUnavailable(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	resolver := &fakeResolverSecrets{}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.FetchSecrets(t.Context(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-1"}))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("FetchSecrets without lifetime binder code = %v, want Unavailable", got)
+	}
+	if resolver.resolveCalls != 0 {
+		t.Fatalf("ResolveFor called %d times without a lifetime binder, want 0", resolver.resolveCalls)
+	}
+}
+
+func TestFetchSecretsTenantLookupErrorInternal(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(t.Context(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	binder := wireRecordingBinder(hub)
+	binder.tenantErr = errors.New("tenant lookup failed")
+	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	resolver := &fakeResolverSecrets{}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.FetchSecrets(t.Context(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-1"}))
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("FetchSecrets with tenant lookup failure code = %v, want Internal", got)
+	}
+	if resolver.resolveCalls != 0 {
+		t.Fatalf("ResolveFor called %d times after tenant lookup failure, want 0", resolver.resolveCalls)
+	}
+}
 
 // TestFetchSecretsResolveErrorInternal: a bound live session whose resolve FAILS
 // maps to CodeInternal (handler.go's "resolving secrets" path). This exercises the
@@ -123,6 +191,7 @@ func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 func TestFetchSecretsResolveErrorInternal(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	wireRecordingBinder(hub)
 	bindSession(hub, "sess-1")
 	resolver := &fakeResolverSecrets{resolveErr: errors.New("resolve boom")}
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
@@ -143,6 +212,7 @@ func TestFetchSecretsResolveErrorInternal(t *testing.T) {
 func TestFetchSecretsByBoundContainerReturnsResolvedSet(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	wireRecordingBinder(hub)
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v", Version: "v1"}}}
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
@@ -171,6 +241,7 @@ func TestFetchSecretsRejectsForeignRunner(t *testing.T) {
 			hub := newHubOnly()
 			hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 			hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+			wireRecordingBinder(hub)
 			bindSession(hub, "sess-1")
 			resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
 			url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
@@ -199,6 +270,7 @@ func TestFetchSecretsUnboundContainerPermissionDenied(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
+	wireRecordingBinder(hub)
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
@@ -217,6 +289,7 @@ func TestFetchSecretsMissingSelectorInvalidArgument(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
+	wireRecordingBinder(hub)
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
@@ -236,6 +309,7 @@ func TestFetchSecretsBothSelectorsInvalidArgument(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("cont-1", testAgentAccount, "runner-1")
+	wireRecordingBinder(hub)
 	bindSession(hub, "sess-1")
 	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
@@ -260,6 +334,7 @@ func TestFetchSecretsNoResolverFailedPrecondition(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	bindSession(hub, "sess-1")
+	wireRecordingBinder(hub)
 	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, nil)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
