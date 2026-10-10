@@ -1265,6 +1265,7 @@ describe("daemon banner (live GetServerInfo)", () => {
 		const compass = createFakeCompass();
 		compass.serverInfo.version = "1.2.3";
 		compass.serverInfo.apiVersion = "compass.v2";
+		compass.serverInfo.rev = "deadbee";
 		let dispose!: () => void;
 		const store = createRoot((d) => {
 			dispose = d;
@@ -1278,6 +1279,7 @@ describe("daemon banner (live GetServerInfo)", () => {
 			expect(store.daemon()).toEqual({
 				version: "1.2.3",
 				apiVersion: "compass.v2",
+				rev: "deadbee",
 				live: true,
 			});
 		} finally {

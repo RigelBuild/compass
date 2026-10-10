@@ -3,6 +3,11 @@ import type { RouteMatch } from "./view-route";
 import { parseRoute, routePath, SETTINGS_SECTIONS } from "./view-route";
 
 const routes: { name: string; path: string; match: RouteMatch }[] = [
+	{
+		name: "settings general",
+		path: "/settings/general",
+		match: { view: "settings", section: "general" },
+	},
 	{ name: "bridge", path: "/", match: { view: "bridge" } },
 	{
 		name: "channel",
@@ -40,12 +45,12 @@ describe("view routes", () => {
 		expect(routePath(parseRoute("/not-a-view"))).toBe("/");
 	});
 	test("bare settings selects the first section", () => {
-		expect(SETTINGS_SECTIONS[0]).toBe("tracker");
+		expect(SETTINGS_SECTIONS[0]).toBe("general");
 		expect(parseRoute("/settings")).toEqual({
 			view: "settings",
-			section: "tracker",
+			section: "general",
 		});
-		expect(routePath(parseRoute("/settings"))).toBe("/settings/tracker");
+		expect(routePath(parseRoute("/settings"))).toBe("/settings/general");
 	});
 
 	test("unknown settings sections map to the bridge", () => {
