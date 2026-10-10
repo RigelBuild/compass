@@ -3,10 +3,11 @@
 // dead-code-eliminates and this chunk is never emitted (the hard wall, §A1). The PROD
 // tripwire below is defense-in-depth behind the build-scan gate `fixture-wall.test.ts`.
 
+import { TourOutcome } from "@compass/client";
 import { createRoot } from "solid-js";
 import { STUB_COMMS_STATE } from "./comms-stub";
 import { mountShell, newAppQueryClient } from "./mount";
-import { createAppStore } from "./store";
+import { createAppStore, type TourClient } from "./store";
 import { sessionLayoutStorage } from "./window-layout";
 
 /** The unique build-scan sentinel — the literal `fixture-wall.test.ts` asserts
@@ -14,6 +15,26 @@ import { sessionLayoutStorage } from "./window-layout";
  *  literal is guaranteed present in this module. */
 export const FIXTURE_SENTINEL = "COMPASS-FIXTURE-BOOT-SENTINEL-7f3a";
 
+/** Per-page-load tour state: the fixture has no server or account, so nothing
+ *  persists past a reload. The boot claims only once a consumer sets `claimFirstRun`. */
+export function createMemoryTourClient(): TourClient {
+	let outcome = TourOutcome.UNSPECIFIED;
+	let stepId = "";
+	return {
+		getTourState: async () => ({ outcome, stepId }),
+		claimTourStart: async (req) => {
+			if (outcome !== TourOutcome.UNSPECIFIED) return { claimed: false };
+			outcome = TourOutcome.STARTED;
+			stepId = req.stepId;
+			return { claimed: true };
+		},
+		setTourState: async (req) => {
+			outcome = req.outcome;
+			stepId = req.stepId;
+			return {};
+		},
+	};
+}
 /** Boot the UI fully offline, seeded from the existing fixtures. Builds the
  *  clientless (offline) store and mounts the same shell the live boot mounts.
  *  Returns the shell disposer (from `mountShell`) so a test can tear the mount
@@ -41,6 +62,7 @@ export function bootFixture(root: HTMLElement): () => void {
 			initialComms: STUB_COMMS_STATE,
 			workspaceKey: "fixture",
 			layoutStorage: sessionLayoutStorage(),
+			tour: createMemoryTourClient(),
 			...(emptyBoard ? { initialIssues: [] } : {}),
 		}),
 	);
