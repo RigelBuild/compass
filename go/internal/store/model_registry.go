@@ -230,6 +230,19 @@ func (s *Store) CurrentModelRegistry(ctx context.Context) (version int64, reg Mo
 	return row.Version, reg, nil
 }
 
+// ModelRegistryVersion returns the current version without loading the registry payload.
+// An unconfigured registry has version 0.
+func (s *Store) ModelRegistryVersion(ctx context.Context) (int64, error) {
+	version, err := s.q.ModelRegistryVersion(ctx)
+	if err != nil {
+		if noRows(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("store: read model registry version: %w", err)
+	}
+	return version, nil
+}
+
 // PutModelRegistry declares the fleet model registry under a compare-and-set on
 // the whole-registry version, returning the new version. It validates the
 // payload shape (ValidateModelRegistry) and, for a write that REMOVES a stable

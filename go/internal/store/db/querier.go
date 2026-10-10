@@ -515,6 +515,7 @@ type Querier interface {
 	MessageChannel(ctx context.Context, id string) (string, error)
 	MessageInChannel(ctx context.Context, arg MessageInChannelParams) (int32, error)
 	MessagesHeadSeq(ctx context.Context) (int64, error)
+	ModelRegistryVersion(ctx context.Context) (int64, error)
 	MoveMessagesToTopic(ctx context.Context, arg MoveMessagesToTopicParams) error
 	// The accounts still owed a mention: a wake that failed before any Runner could
 	// serve it is retried for these once one attaches.

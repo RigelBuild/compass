@@ -1,0 +1,27 @@
+// The LLM gateway's model-registry read, mounted only behind a SubjectService
+// bearer with an llm-gateway allowlist. Internal Go lane only.
+
+syntax = "proto3";
+
+package compass.v1;
+
+import "compass/v1/compass.proto";
+
+// GatewayRegistry is the gateway's versioned stable-name registry read surface.
+service GatewayRegistry {
+  rpc GetGatewayModelRegistry(GetGatewayModelRegistryRequest) returns (GetGatewayModelRegistryResponse);
+  rpc GetGatewayModelRegistryVersion(GetGatewayModelRegistryVersionRequest) returns (GetGatewayModelRegistryVersionResponse);
+}
+
+message GetGatewayModelRegistryRequest {}
+
+message GetGatewayModelRegistryResponse {
+  int64 version = 1;
+  compass.v1.ModelRegistry registry = 2;
+}
+
+message GetGatewayModelRegistryVersionRequest {}
+
+message GetGatewayModelRegistryVersionResponse {
+  int64 version = 1;
+}

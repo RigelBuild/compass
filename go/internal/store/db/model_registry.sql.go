@@ -59,6 +59,17 @@ func (q *Queries) InsertModelRegistry(ctx context.Context, registry []byte) (int
 	return version, err
 }
 
+const modelRegistryVersion = `-- name: ModelRegistryVersion :one
+SELECT version FROM model_registry WHERE singleton = TRUE
+`
+
+func (q *Queries) ModelRegistryVersion(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, modelRegistryVersion)
+	var version int64
+	err := row.Scan(&version)
+	return version, err
+}
+
 const updateModelRegistry = `-- name: UpdateModelRegistry :one
 UPDATE model_registry
    SET registry = $1, version = version + 1

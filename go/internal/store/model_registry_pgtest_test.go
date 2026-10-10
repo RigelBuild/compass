@@ -63,6 +63,27 @@ func TestCurrentModelRegistryEmptyNotFound(t *testing.T) {
 	}
 }
 
+func TestModelRegistryVersionReportsUnconfiguredAndCurrent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if version, err := s.ModelRegistryVersion(ctx); err != nil || version != 0 {
+		t.Fatalf("unconfigured ModelRegistryVersion = (%d, %v), want (0, nil)", version, err)
+	}
+	actor := mustUser(t, s, "registry-version-operator")
+	if _, err := s.PutModelRegistry(ctx, actor.ID, reg1("opus"), 0); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	if version, err := s.ModelRegistryVersion(ctx); err != nil || version != 1 {
+		t.Fatalf("seeded ModelRegistryVersion = (%d, %v), want (1, nil)", version, err)
+	}
+	if _, err := s.PutModelRegistry(ctx, actor.ID, reg1("sonnet"), 1); err != nil {
+		t.Fatalf("update registry: %v", err)
+	}
+	if version, err := s.ModelRegistryVersion(ctx); err != nil || version != 2 {
+		t.Fatalf("updated ModelRegistryVersion = (%d, %v), want (2, nil)", version, err)
+	}
+}
+
 // TestPutModelRegistryEmptyActorInvalid: an empty writer id is rejected before
 // any row write.
 func TestPutModelRegistryEmptyActorInvalid(t *testing.T) {

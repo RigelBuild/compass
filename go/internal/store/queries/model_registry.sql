@@ -8,6 +8,9 @@
 -- name: CurrentModelRegistry :one
 SELECT version, registry FROM model_registry WHERE singleton = TRUE;
 
+-- name: ModelRegistryVersion :one
+SELECT version FROM model_registry WHERE singleton = TRUE;
+
 -- InsertModelRegistry seeds the FIRST registry (the caller read no row, expected
 -- version 0). ON CONFLICT DO NOTHING makes it a CAS: it lands only when the
 -- singleton is still absent, so a racing seed loses (zero rows, ErrNoRows via

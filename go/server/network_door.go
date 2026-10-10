@@ -282,6 +282,7 @@ func buildNetworkServer(
 	linearSessionLinkHandler http.Handler,
 	runnerVerifier *auth.RunnerVerifier,
 	gatewayCredentials *gatewayCredentialsService,
+	gatewayRegistry *gatewayRegistryService,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -351,14 +352,7 @@ func buildNetworkServer(
 	// is the outermost interceptor (it creates the RelayCommsCall origin span).
 	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st, otelIC)
 	netMux.Handle(runnerPath, runnerHandler)
-	if gatewayCredentials != nil {
-		// The gateway uses a service subject, not the account/admin chain; kind-gating
-		// and the service-ID allowlist are the authorization boundary.
-		gatewayPath, gatewayHandler := compassv1internalconnect.NewGatewayCredentialsHandler(gatewayCredentials,
-			connect.WithInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID)),
-			connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
-		netMux.Handle(gatewayPath, gatewayHandler)
-	}
+	mountGatewayServices(netMux, gatewayCredentials, gatewayRegistry, otelIC, runnerResolve)
 
 	// The internet-facing GitHub App webhook ingress (RIG-2883 T5), mounted only
 	// when the board lane is on. It sits on the TLS door and OUTSIDE the bearer +
@@ -401,6 +395,24 @@ func buildNetworkServer(
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}, nil
+}
+
+func mountGatewayServices(
+	netMux *http.ServeMux,
+	credentials *gatewayCredentialsService,
+	registry *gatewayRegistryService,
+	otelIC *otelconnect.Interceptor,
+	runnerResolve runnerhub.TokenResolver,
+) {
+	if credentials == nil {
+		return
+	}
+	interceptors := connect.WithInterceptors(otelIC, auth.ServiceBearerInterceptor(runnerResolve, auth.LLMGatewayServiceID))
+	options := []connect.HandlerOption{interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes)}
+	credentialsPath, credentialsHandler := compassv1internalconnect.NewGatewayCredentialsHandler(credentials, options...)
+	netMux.Handle(credentialsPath, credentialsHandler)
+	registryPath, registryHandler := compassv1internalconnect.NewGatewayRegistryHandler(registry, options...)
+	netMux.Handle(registryPath, registryHandler)
 }
 
 // runnerTokenVerifier authenticates a projected ServiceAccount token to a Runner
