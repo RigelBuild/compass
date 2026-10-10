@@ -6,12 +6,16 @@ package delivery
 // sweep runs while an author streams. These cases pin both held-message gaps.
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -199,6 +203,297 @@ func TestFireNowSparesNextTurnMessage(t *testing.T) {
 	}
 }
 
+// A queued settle for turn N must not fire a held turn N+1 post that raced ahead
+// of its drain. The fake store exposes different partial and settled block sets.
+// Turn N's queued edge cannot consume a raced-ahead N+1 post or its partial blocks.
+func TestQueuedSettleFiresOnlyItsTurn(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	post := func(m store.Message) {
+		t.Helper()
+		reads.seedMessage(m)
+		ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+		if err := c.onEventRef(t.Context(), ref); err != nil {
+			t.Fatalf("onEventRef(%s): %v", m.ID, err)
+		}
+	}
+
+	mN := messageAt("mN", "turn N partial", time.UnixMilli(100))
+	mN.TurnSequence = 10
+	mNext := messageAt("mNext", "turn N+1 partial", time.UnixMilli(200))
+	mNext.TurnSequence = 11
+	post(mN)
+	post(mNext)
+	if !c.isHeld("sess-author", "mN") || !c.isHeld("sess-author", "mNext") {
+		t.Fatal("both turn messages must be held before the settle drains")
+	}
+	reads.seedMessage(messageAt("mN", "turn N settled", time.UnixMilli(100)))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.drainSettles(t.Context())
+
+	rec := disp.waitFor(t, "mN")
+	if rec.firstText != "turn N settled" {
+		t.Fatalf("turn N blocks = %q, want settled blocks", rec.firstText)
+	}
+	if n := disp.countFor("mNext"); n != 0 {
+		t.Fatalf("turn N+1 dispatched %d times after turn N settled, want 0", n)
+	}
+	if !c.isHeld("sess-author", "mNext") {
+		t.Fatal("turn N+1 must remain held after turn N settles")
+	}
+
+	reads.seedMessage(messageAt("mNext", "turn N+1 settled", time.UnixMilli(200)))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 11)
+	c.drainSettles(t.Context())
+	rec = disp.waitFor(t, "mNext")
+	if rec.firstText != "turn N+1 settled" {
+		t.Fatalf("turn N+1 blocks = %q, want settled blocks", rec.firstText)
+	}
+	if n := disp.countFor("mNext"); n != 1 {
+		t.Fatalf("turn N+1 dispatched %d times, want exactly 1", n)
+	}
+
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 11)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("mN"); n != 1 {
+		t.Fatalf("turn N dispatched %d times after repeated edges, want exactly 1", n)
+	}
+	if n := disp.countFor("mNext"); n != 1 {
+		t.Fatalf("turn N+1 dispatched %d times after repeated edges, want exactly 1", n)
+	}
+}
+
+// A STARTING edge (fresh agent identity on reload) resets the settle mark, so
+// the restarted counter's turn 1 is held until its own settle.
+func TestStartingEdgeResetsSettleSequence(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.drainSettles(t.Context())
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+
+	m := messageAt("m-restart", "restarted turn partial", time.UnixMilli(600))
+	m.TurnSequence = 1
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 0 {
+		t.Fatalf("restarted turn 1 dispatched %d times before its settle, want 0", n)
+	}
+	if !c.isHeld("sess-author", "m-restart") {
+		t.Fatal("restarted turn 1 must stay held until its own settle")
+	}
+
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 1 {
+		t.Fatalf("restarted turn 1 dispatched %d times after its settle, want 1", n)
+	}
+}
+
+// An old identity's settle still queued at STARTING cannot release a post from
+// the restarted counter.
+func TestQueuedOldSettleCannotFireRestartedTurn(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	m := messageAt("m-restart", "restarted turn partial", time.UnixMilli(600))
+	m.TurnSequence = 1
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 0 {
+		t.Fatalf("old queued settle dispatched the restarted turn %d times, want 0", n)
+	}
+
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-restart"); n != 1 {
+		t.Fatalf("restarted turn dispatched %d times after its settle, want 1", n)
+	}
+}
+
+// A post held at the old identity's turn N, interrupted by a reload before its
+// settle, is released by the new identity's first settle.
+func TestRestartReleasesOldIdentityHoldOnFirstSettle(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	m := messageAt("m-old", "old turn", time.UnixMilli(100))
+	m.TurnSequence = 10
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-old"); n != 1 {
+		t.Fatalf("old-identity hold dispatched %d times after the new first settle, want 1", n)
+	}
+}
+
+// An old-identity post whose event is handled only after STARTING is still
+// released by the new identity's first settle, not stranded at its old turn.
+func TestDelayedOldIdentityPostReleasedAfterRestart(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	m := messageAt("m-delayed", "old turn", time.UnixMilli(100))
+	m.TurnSequence = 10
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-delayed"); n != 0 {
+		t.Fatalf("delayed old post dispatched %d times before any settle, want 0", n)
+	}
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-delayed"); n != 1 {
+		t.Fatalf("delayed old post dispatched %d times after the new first settle, want 1", n)
+	}
+}
+
+// An old-identity post handled only after the new identity already settled
+// replays that settle instead of waiting for another.
+func TestOldIdentityPostAfterNewSettleReplays(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_STARTING, 0)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 1)
+	c.drainSettles(t.Context())
+	m := messageAt("m-late-old", "old turn", time.UnixMilli(100))
+	m.TurnSequence = 10
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef: %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-late-old"); n != 1 {
+		t.Fatalf("late old-identity post dispatched %d times, want 1", n)
+	}
+}
+
+// Zero sequence preserves fire-all behavior and logs once; late holds compare turns.
+func TestSettleSequenceCompatibilityAndLateHold(t *testing.T) {
+	t.Run("legacy settle logs once and fires all", func(t *testing.T) {
+		var logs bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logs, nil))
+		disp := newBlockCapturingDispatcher()
+		res := newFakeResolver()
+		reads := newFakeReads()
+		c := NewConsumer(reads, disp, res, newFakeFabric(), logger)
+		reads.subscribers["chan-1"] = []store.AccountID{"agent-recip"}
+		reads.agents["agent-author"] = true
+		res.bind("agent-author", "sess-author")
+		res.bind("agent-recip", "sess-recip")
+		for _, id := range []string{"m1", "m2"} {
+			m := messageAt(id, id+" settled", time.UnixMilli(100))
+			m.TurnSequence = 5
+			reads.seedMessage(m)
+			c.hold(store.WithTenant(t.Context(), testTenant), "sess-author", id, 100, 5)
+		}
+		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
+		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
+		c.drainSettles(t.Context())
+		if got := len(disp.records()); got != 2 {
+			t.Fatalf("legacy settle dispatched %d messages, want 2", got)
+		}
+		if got := strings.Count(logs.String(), "legacy fire-all fallback"); got != 1 {
+			t.Fatalf("legacy fallback logs = %d, want exactly 1", got)
+		}
+	})
+
+	t.Run("numbered late hold ignores settle timestamp", func(t *testing.T) {
+		c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(100))
+		c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+		c.drainSettles(t.Context())
+		m := messageAt("m-late-sequence", "settled blocks", time.UnixMilli(50_000))
+		m.TurnSequence = 10
+		post := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+		reads.seedMessage(m)
+		if err := c.onEventRef(t.Context(), post); err != nil {
+			t.Fatalf("onEventRef(late sequence): %v", err)
+		}
+		c.drainSettles(t.Context())
+		if rec := disp.waitFor(t, "m-late-sequence"); rec.firstText != "settled blocks" {
+			t.Fatalf("late hold blocks = %q, want settled blocks", rec.firstText)
+		}
+		if c.isHeld("sess-author", "m-late-sequence") {
+			t.Fatal("late hold remained held after its own numbered settle")
+		}
+	})
+}
+
+func TestNumberedSettleFiresLegacyHeldEntry(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(100))
+	m := messageAt("m-legacy", "legacy settled", time.UnixMilli(50))
+	reads.seedMessage(m)
+	c.hold(t.Context(), "sess-author", "m-legacy", 50, 0)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.drainSettles(t.Context())
+	if rec := disp.waitFor(t, "m-legacy"); rec.firstText != "legacy settled" {
+		t.Fatalf("legacy held blocks = %q, want settled blocks", rec.firstText)
+	}
+}
+
+// Out-of-order numbered edges retain the highest observed sequence for late posts.
+func TestOutOfOrderSettleKeepsHighestSequence(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(500))
+	message := messageAt("m11", "turn 11 settled", time.UnixMilli(110))
+	message.TurnSequence = 11
+	reads.seedMessage(message)
+	c.hold(t.Context(), "sess-author", "m11", message.At.UnixMilli(), 11)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 11)
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 10)
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m11"); n != 1 {
+		t.Fatalf("turn 11 dispatched %d times after out-of-order settles, want exactly 1", n)
+	}
+
+	late := messageAt("m10-late", "late turn 10 settled", time.UnixMilli(20_000))
+	late.TurnSequence = 10
+	reads.seedMessage(late)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(late.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef(late turn 10): %v", err)
+	}
+	c.drainSettles(t.Context())
+	if rec := disp.waitFor(t, "m10-late"); rec.firstText != "late turn 10 settled" {
+		t.Fatalf("late turn 10 blocks = %q, want settled blocks", rec.firstText)
+	}
+	if n := disp.countFor("m10-late"); n != 1 {
+		t.Fatalf("late turn 10 dispatched %d times, want exactly 1", n)
+	}
+}
+
+// A numbered post newer than a legacy settle is not inferred from its timestamp.
+func TestNumberedLateHoldDoesNotUseLegacyTimestamp(t *testing.T) {
+	c, disp, reads := newHeldGapConsumer(t, time.UnixMilli(100))
+	c.OnSessionSettled("sess-author", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
+	c.drainSettles(t.Context())
+	m := messageAt("m-late-legacy", "still streaming", time.UnixMilli(200))
+	m.TurnSequence = 10
+	reads.seedMessage(m)
+	ref := fabric.EventRef{Tenant: string(testTenant), Kind: fabric.KindMessagePosted, RowID: string(m.ID)}
+	if err := c.onEventRef(t.Context(), ref); err != nil {
+		t.Fatalf("onEventRef(late legacy): %v", err)
+	}
+	c.drainSettles(t.Context())
+	if n := disp.countFor("m-late-legacy"); n != 0 {
+		t.Fatalf("numbered late hold dispatched %d times from an earlier legacy timestamp, want 0", n)
+	}
+	if !c.isHeld("sess-author", "m-late-legacy") {
+		t.Fatal("numbered hold must remain held when prior legacy settle predates its commit")
+	}
+}
+
 // Control: a message committed after the recorded settle belongs to a later
 // turn, so it is held until the next settle.
 func TestHoldAfterSettleKeepsLaterMessageHeld(t *testing.T) {
@@ -300,7 +595,7 @@ func deadAuthorFixture(t *testing.T) (*Consumer, *blockCapturingDispatcher, *fak
 	res := newFakeResolver()
 	reads := newFakeReads()
 	c := NewConsumer(reads, disp, res, newFakeFabric(), discardLogger())
-	c.hold(t.Context(), "sess-dead", "m1", 0)
+	c.hold(t.Context(), "sess-dead", "m1", 0, 0)
 	reads.owed["agent-recip"] = map[store.ChannelID][]store.Message{"chan-1": {
 		textMessage("m1", "agent-author", "stored body"),
 		textMessage("plain", "human-1", "plain body"),
