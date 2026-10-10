@@ -14,7 +14,8 @@ The RIG-4951 record names no producer. Its `### Producers` section says:
 
 Matt rejected a deployment seed: "you don't know which agents will be spawned
 before you start the server. We can't land this until we can dynamically
-configure it on the agents." Spawn stays repo-free (OQ-8, DL-090).
+configure it on the agents." Spawn stays repo-free (scope-enforcement OQ-8,
+DL-090).
 
 Today nothing writes a scope row while the server runs. The only writer is the
 boot seed. `reconcileForgeScopeGrants` in `go/server/serve.go` reads:
@@ -32,54 +33,69 @@ rows end.
 
 ## Approach
 
-### The authority: a tenant admin
+### The authority: the owning user
 
-An agent row widens an agent past its owner's grants. That is the design:
+An agent row adds a repository to one agent on top of its owner's grants.
 `HasForgeScope` in `go/internal/store/queries/forge_scopes.sql` admits both:
 
 ```sql
 WHERE scope.account_id IN ($1, agent.owner_user_id)
 ```
 
-The owner's grants are the operator's ceiling. They come from the boot seed,
-and the scope-enforcement record's `## Global Constraints` says "Grants belong
-to an owning user and apply to that user's agents; agent self-grant is not
-allowed." Its `## Approach` says "agents never manage their own grants". If a
-member user could write rows for its own agents, it could widen them to any
-repository in the App installation. The gate and the token would then admit
-writes the operator never granted. In a single-user self-host the user is the
-admin, so the risk only appears in multi-user tenants, where enforcement is on
-(DL-442 OQ-1).
+The agent's owning user writes its agents' rows (OQ-2, ruled A). Matt: "a
+user granting agents repos doesn't let agents self grant." A user grant is a
+human decision, not agent self-grant. The scope-enforcement record's
+`## Global Constraints` says "Grants belong to an owning user and apply to
+that user's agents; agent self-grant is not allowed." Agents never write rows:
+an agent caller gets `PERMISSION_DENIED` for grant and revoke. The App
+installation still bounds reach: a repository outside it fails the mint, and
+the RIG-4951 T3 fallback mints the owner's grants.
 
-So only a tenant admin writes agent rows (OQ-2). The check reads the caller's
-role, as the tenant-scope secret write does. `resolveSecretScope` in
-`go/server/secrets_service.go` reads:
+The caller must be a user. `requireUser` in `go/server/secrets_service.go` is
+the precedent:
 
 ```go
-if role != store.UserRoleAdmin {
-	return 0, "", connect.NewError(connect.CodePermissionDenied, errors.New("tenant-scoped secret writes require an admin"))
+if acct.IsAgent() {
+	return "", 0, connect.NewError(connect.CodePermissionDenied, errors.New("secret writes are user-only"))
 }
 ```
 
-The bootstrap admin has that role. `BootstrapAdmin` in
-`go/internal/store/accounts.go` returns `User: &UserAccount{Role: UserRoleAdmin}`.
+The target must be an agent the caller owns. `resolveSameOwnerAgent` in
+`go/internal/comms/resolve.go` is the precedent for the check and its miss:
 
-The procedures are classified `authenticatedOpen`, not `adminOnly`. The
-`adminOnly` gate admits only the bootstrap admin. `adminGate.check` in
-`go/internal/auth/admin_gate.go` reads:
+```go
+if agentOwner != owner {
+	return "", notFoundHandle(store.ErrNotFound, handle)
+}
+```
+
+That method belongs to `Comms`, so the new service applies the same rule in
+`go/server` as `resolveOwnedAgent`. A bare handle resolves under the caller,
+because `ResolveOwner` in `go/internal/store/accounts.go` says "a user owns
+itself". An `owner/agent` handle resolves through `resolveQualifiedAgent` in
+`go/server/service.go`, and then `acc.Agent.OwnerUserID` must equal the
+caller. An unknown handle, a non-agent, another user's agent and another
+tenant's agent all get one `handleNotFound(raw)`, which reads `"no account
+with handle %q"`. `AgentByHandle` "never resolves or elevates a non-agent".
+Tenant scope comes from the door: `BearerInterceptor` in
+`go/internal/auth/interceptor.go` runs
+`next(store.WithTenant(withCaller(ctx, account), tenant), req)`. A tenant-B
+agent also has a tenant-B owner, so the owner check misses it.
+
+A tenant admin has no override: it writes only its own agents' rows.
+
+The procedures are classified `authenticatedOpen`, not `adminOnly`, because
+every user must reach its own agents. The `adminOnly` gate admits only the
+bootstrap admin. `adminGate.check` in `go/internal/auth/admin_gate.go` reads:
 
 ```go
 if !ok || caller != g.admin {
 ```
 
-A tenant admin is not that account, so the role check lives in the handler.
-
-**Tension with DL-442.** DL-442 OQ-2 ruled "grants come from the ForgeConfig
-seed plus store operations, no admin RPC for Beta". This writer is an admin
-RPC for agent rows. Matt's later F3 ruling needs a runtime write, and a
-tenant-admin RPC is the narrowest one that keeps the operator as the only
-authority that widens. Matt must amend DL-442 OQ-2 for agent rows (OQ-1,
-OQ-2).
+**DL-442.** DL-442 OQ-2 ruled "grants come from the ForgeConfig seed plus
+store operations, no admin RPC for Beta". Matt's OQ-1 ruling amends it for
+agent rows: this runtime RPC writes agent rows only, and user grants still
+come from the seed. This record's decision row records the amendment.
 
 ### Surface: a dedicated `AgentRepositoryService` in `go/server`
 
@@ -87,7 +103,7 @@ Add `AgentRepositoryService` to `proto/compass/v1/compass.proto`, beside
 `SecretsService`, with `GrantAgentRepository`, `RevokeAgentRepository` and
 `ListAgentRepositories`. Implement it in
 `go/server/agent_repository_service.go`, next to the broker that consumes the
-rows (OQ-1 D).
+rows (OQ-1, ruled D).
 
 This placement has three benefits over `CommsService`:
 
@@ -120,16 +136,6 @@ The host is the broker's own host (`host: rc.Host` in
 always GitHub, as `gitCredentialBroker.credential` reads
 `store.ForgeProviderGitHub`.
 
-The target is named `owner/agent`. The admin door resolves qualified handles
-without a visibility clip. `IssueToken` in `go/server/service.go` says "The
-admin door is not visibility-scoped (no D9 clip): the admin may name any
-account", and `resolveQualifiedAgent` maps every miss to one `NOT_FOUND` that
-names the submitted handle. `AgentByHandle` "never resolves or elevates a
-non-agent". Tenant scope comes from the door: `BearerInterceptor` in
-`go/internal/auth/interceptor.go` runs
-`next(store.WithTenant(withCaller(ctx, account), tenant), req)`, so an admin
-in tenant A cannot resolve a tenant-B agent.
-
 An agent caller may list its own rows, as `ListSecrets` is open to agent
 tokens. The `SecretsService` comment in `proto/compass/v1/compass.proto` says
 "ListSecrets is callable by user AND agent tokens". A read of its own rows
@@ -144,7 +150,7 @@ which repositories its credential covers.
   `removed`. It deletes only when the account is an agent, the same shape as
   the grant's `FROM agent_accounts`. `RevokeForgeScope` stays unchanged: its
   comment says it "removes one user grant; a missing grant is a no-op", and
-  the agent surface must never delete an operator grant.
+  the agent surface must never delete a user grant.
 - **List.** A new `Store.ListAgentForgeScopeRepos` returns only the agent's
   own rows. `ListForgeScopeRepos` also returns the owner's grants (the `IN
   ($1, agent.owner_user_id)` predicate above), which this surface cannot
@@ -182,12 +188,12 @@ in-process subagents and share the manager's credential, but a spawned
 manager does not.
 
 So `Store.CreateAgent` copies the parent's own agent rows to the new agent, in
-the same transaction (OQ-3 C). It already runs one tenant transaction and
+the same transaction (OQ-3, ruled C). It already runs one tenant transaction and
 writes the tree edge there: `tx, err := s.beginTenantTx(ctx)`, then the
 coordination hook "so the channel reconcile commits atomically with the tree
 edge". The copy reads only rows whose `account_id` is the parent agent. The
 owner's grants live under the owner id, so they are not copied, and the
-child's set never exceeds what an admin granted the parent.
+child's set never exceeds what its owner granted the parent.
 
 The copy runs only on a fresh creation. A spawn on a taken handle resumes
 without `CreateAgent`:
@@ -197,14 +203,14 @@ case errors.Is(err, store.ErrConflict):
 	resp, err = l.resumeOrReject(ctx, callerOwner, req)
 ```
 
-So an admin's revoke at a child is not undone by the parent's next spawn, and
+So an owner's revoke at a child is not undone by the parent's next spawn, and
 no tombstone is needed. The copy is a snapshot. A row added to or removed from
-the parent later does not reach existing children; the admin changes each
+the parent later does not reach existing children; the owner changes each
 child. `ReparentAgent` copies nothing. The rule applies to every agent created
 under a parent, including a human `CreateAgent` with `parent_handle`.
 
 What needs a human step: a root agent (no parent) starts with only its owner's
-grants until an admin runs `compass agent repo add`. Every agent spawned under
+grants until its owner runs `compass agent repo add`. Every agent spawned under
 it inherits with no human step.
 
 ### Live refresh: a targeted signal after a change
@@ -265,11 +271,11 @@ old one with `DELETE /installation/token`") is not built:
 `forge.ScopedAppMinter` has only `Mint`. A removed repository stays reachable
 through the old token until it expires, at most one hour (`mint` falls back
 to `expiresAt = now.Add(time.Hour)` for an unset expiry). This record accepts
-that window (OQ-4).
+that window (OQ-4, ruled A).
 
 ### Dispatcher
 
-This record adds no Dispatcher writer and no producer column (OQ-5). Rows
+This record adds no Dispatcher writer and no producer column (OQ-5, ruled A). Rows
 carry no producer today. A producer column with no second writer would be
 inert (`no-inert-gating`).
 
@@ -284,18 +290,20 @@ inert (`no-inert-gating`).
   then T1–T6 of this record. RIG-4951 T5 is this record. No PR in the stack
   merges alone.
 - **No spawn proto change.** Add no field to `ProvisionAgentWorkspaceRequest`,
-  `SpawnAgentRequest` or `SpawnPeerRequest` (OQ-8). Agents self-clone
-  (DL-090). The GitHub App is the only credential (OQ-6), and
+  `SpawnAgentRequest` or `SpawnPeerRequest` (scope-enforcement OQ-8). Agents
+  self-clone (DL-090). The GitHub App is the only credential (DL-441), and
   `gitCredentialPermissions` is unchanged.
 - **Allowlist, not resolver.** No forge call, subscription or board path
   derives a repository from these rows.
 - **Exact repositories only.** An agent row is one GitHub `org/name`,
   lowercased, never `*`. A wildcard is an owner grant decision.
-- **Operator authority.** Only a `UserRoleAdmin` user writes agent rows. An
-  agent and a member user are `PERMISSION_DENIED` before any target lookup.
-  The copy at creation never writes a row its parent does not hold.
-- **Oracle-safe misses.** An unknown or non-agent target is one `NOT_FOUND`
-  that names the submitted handle (`handleNotFound` in `go/server/service.go`).
+- **Owner authority.** Only the agent's owning user writes its rows. A tenant
+  admin has no override. An agent caller is `PERMISSION_DENIED` for grant and
+  revoke before any target lookup. The copy at creation never writes a row its
+  parent does not hold.
+- **Oracle-safe misses.** An unknown, non-agent, other-owner or other-tenant
+  target is one `NOT_FOUND` that names the submitted handle (`handleNotFound`
+  in `go/server/service.go`).
 - **Exhaustive classification.** Every new procedure is classified in
   `classifyProcedure`, or `classify_exhaustive_test.go` in `go/internal/auth`
   fails (it ranges `File_compass_v1_compass_proto`).
@@ -314,7 +322,7 @@ In `go/internal/store/queries/forge_scopes.sql`, add:
 
 ```sql
 -- name: RevokeAgentForgeScope :execrows
--- Agent rows only: a user id deletes nothing, so an operator grant is never removed here.
+-- Agent rows only: a user id deletes nothing, so a user grant is never removed here.
 DELETE FROM account_forge_scopes
 WHERE account_id IN (SELECT a.account_id FROM agent_accounts AS a WHERE a.account_id = $1)
   AND forge_provider = $2 AND forge_host = $3 AND repo = $4;
@@ -410,8 +418,8 @@ In `proto/compass/v1/compass.proto`, after `SecretsService`:
 
 ```proto
 // Workstream repositories of one agent: exact GitHub repositories added to
-// the agent's credential and forge write grants. Writes require a tenant
-// admin; an agent may list its own rows.
+// the agent's credential and forge write grants. Writes require the agent's
+// owning user; an agent may list its own rows.
 service AgentRepositoryService {
   // Add one `org/name`. FAILED_PRECONDITION when no GitHub App is configured
   // or the org differs from the agent's credential org.
@@ -424,7 +432,7 @@ service AgentRepositoryService {
 }
 
 message GrantAgentRepositoryRequest {
-  string agent_handle = 1; // `owner/agent`
+  string agent_handle = 1; // bare (the caller's agent) or `owner/agent`
   string repository = 2;   // `org/name`; never `*`
 }
 message GrantAgentRepositoryResponse { bool added = 1; }
@@ -438,7 +446,8 @@ message ListAgentRepositoriesResponse { repeated string repositories = 1; }
 ```
 
 Regenerate. Classify the three procedures `authenticatedOpen` in
-`classifyProcedure`, with a comment that the handler checks the admin role.
+`classifyProcedure`, with a comment that the handler checks the caller kind
+and the owner.
 
 In `go/server/service.go`, turn `(*service).resolveQualifiedAgent` into a
 package function and update its three callers (`ProvisionAgentWorkspace`,
@@ -467,17 +476,22 @@ func newAgentRepositoryService(st *store.Store, broker *gitCredentialBroker, sig
 // agentRepository lowercases one GitHub `org/name` and rejects anything else,
 // including `*`, with store.ErrInvalidArgument.
 func agentRepository(raw string) (string, error)
+
+// resolveOwnedAgent resolves a bare handle under caller, or an `owner/agent`
+// handle, to an agent caller owns. Every other outcome is handleNotFound(raw).
+func resolveOwnedAgent(ctx context.Context, st *store.Store, caller store.AccountID, raw string) (store.Account, error)
 ```
 
 The constructor sets `host` from `broker.host` when the broker is non-nil. A
 nil hub must land as a nil interface, as `newService` guards. Grant and revoke
 run in order:
 
-1. No caller → `UNAUTHENTICATED`. An agent or a member user →
-   `PERMISSION_DENIED` ("agent repository changes require a tenant admin").
+1. No caller → `UNAUTHENTICATED`. A caller that is not a user (an agent, or
+   the system account) → `PERMISSION_DENIED` ("agent repository changes are
+   user-only"), read with `GetAccount` as `requireUser` does.
 2. `host == ""` → `FAILED_PRECONDITION` ("GitHub App not configured").
-3. `agentRepository` → `INVALID_ARGUMENT`.
-4. `resolveQualifiedAgent` → `NOT_FOUND` naming the submitted handle.
+3. An empty handle, or an `agentRepository` error → `INVALID_ARGUMENT`.
+4. `resolveOwnedAgent` → `NOT_FOUND` naming the submitted handle.
 5. Grant only: the org check against `ListForgeScopeRepos(agent)` →
    `FAILED_PRECONDITION`.
 6. `GrantAgentForgeScope` or `RevokeAgentForgeScope` with
@@ -485,10 +499,10 @@ run in order:
    `removed`, call `SignalSecretsVersionFor(ctx, agent)` and log a failure with
    `slog.WarnContext`.
 
-`ListAgentRepositories`: an agent caller with an empty handle lists itself,
-and an agent caller with any handle is `PERMISSION_DENIED`. An admin runs
-steps 2 and 4, then `ListAgentForgeScopeRepos`. Anyone else is
-`PERMISSION_DENIED`.
+`ListAgentRepositories` runs step 2 first. An agent caller with an empty
+handle lists itself, and an agent caller with any handle is
+`PERMISSION_DENIED`. A user runs steps 3 and 4 for the handle, then
+`ListAgentForgeScopeRepos`. A caller that is neither is `PERMISSION_DENIED`.
 
 In `buildDoors` (`go/server/serve.go`), move the `buildGitCredentialBroker`
 call above the socket door. Build `newAgentRepositoryService(st,
@@ -502,16 +516,19 @@ Produces the RPCs for T5. Pgtests in
 `go/server/agent_repository_service_pgtest_test.go`, with a recording
 signaler:
 
-- The admin adds a repository: `added=true`, one signal for that agent, and
-  the row is listed. A repeat add is `added=false` with no signal.
+- The owner adds a repository to its agent: `added=true`, one signal for that
+  agent, and the row is listed. A repeat add is `added=false` with no signal.
+- The owner names its agent bare and as `owner/agent`; both resolve.
 - A mixed-case repository is stored lowercased. `*`, `org`, `org/` and
   `a/b/c` are `INVALID_ARGUMENT`.
-- A member user is `PERMISSION_DENIED` for grant, revoke and list of its own
-  agent, and no row is written.
-- An agent caller is `PERMISSION_DENIED` for grant and revoke. It lists its
-  own rows with an empty handle, and gets `PERMISSION_DENIED` for any handle.
-- An unknown handle and a bare handle return `NOT_FOUND` naming the handle.
-- A tenant-B admin naming a tenant-A agent gets `NOT_FOUND`.
+- A user naming another user's agent gets `NOT_FOUND` naming the handle for
+  grant, revoke and list, and no row is written. A `UserRoleAdmin` user
+  naming a member's agent gets the same `NOT_FOUND`.
+- An agent caller is `PERMISSION_DENIED` for grant and revoke, including on
+  itself. It lists its own rows with an empty handle, and gets
+  `PERMISSION_DENIED` for any handle.
+- An unknown handle and a user's handle return `NOT_FOUND` naming the handle.
+- A tenant-B user naming a tenant-A agent gets `NOT_FOUND`.
 - A repository in a second org is `FAILED_PRECONDITION` and writes nothing.
   With an owner `*` grant, it is accepted.
 - A nil broker gives `FAILED_PRECONDITION` and writes nothing.
@@ -527,7 +544,7 @@ Add `dialAgentRepositoryClient` to `go/cmd/compass/client.go`, modeled on
 `dialSecretsClient`:
 
 ```go
-func newAgentRepoCmd() *cobra.Command // "repo": add <owner/agent> <org/name>, remove <owner/agent> <org/name>, list <owner/agent>
+func newAgentRepoCmd() *cobra.Command // "repo": add <agent> <org/name>, remove <agent> <org/name>, list <agent>; <agent> is bare or owner/agent
 
 func runAgentRepoAdd(ctx context.Context, client compassv1connect.AgentRepositoryServiceClient, agent, repo string, out io.Writer) error
 func runAgentRepoRemove(ctx context.Context, client compassv1connect.AgentRepositoryServiceClient, agent, repo string, out io.Writer) error
@@ -541,7 +558,10 @@ line.
 Interfaces: consumes T4. Tests use a fake server, as `secret_test.go` does
 with `startFakeSecretsServer`. They assert the request fields, the exact
 output of each branch, and that a server error is returned, not printed as
-success.
+success. On the socket door the caller is the bootstrap admin, so the verb
+changes that user's agents. Another user runs it on the network door with its
+own token through `--token-file`; `IssueToken` mints one for a bare user
+handle.
 
 ### T6 — End-to-end proof and operator docs
 
@@ -561,9 +581,10 @@ and grant the owner one repository. Then:
   same set.
 
 In `docs/self-host.md`, after "Grants name a user account. That user's agents
-inherit them.", add a short section: the CLI verbs, admin-only writes, exact
-`org/name` in the agent's org, inheritance by children created later, the
-live signal, and the up-to-one-hour window for the old token after a remove.
+inherit them.", add a short section: the CLI verbs, owner-only writes with the
+owning user's own token, exact `org/name` in the agent's org, inheritance by
+children created later, the live signal, and the up-to-one-hour window for the
+old token after a remove.
 
 Interfaces: consumes T1–T5. Produces no code interface.
 
@@ -572,102 +593,52 @@ Interfaces: consumes T1–T5. Produces no code interface.
 - [ ] T1: `RevokeAgentForgeScope`, `ListAgentForgeScopeRepos`, and the parent-row copy in `CreateAgent`, with tenant-B pgtests.
 - [ ] T2: `Hub.SignalSecretsVersionFor`, with unit tests.
 - [ ] T3: broker serves the agent's last key on a transient mint failure.
-- [ ] T4: `AgentRepositoryService` (admin-only writes, agent self-list, org check, App precondition, targeted signal), classified and mounted on all three doors.
+- [ ] T4: `AgentRepositoryService` (owner-only writes, agent self-list, org check, App precondition, targeted signal), classified and mounted on all three doors.
 - [ ] T5: `compass agent repo add|remove|list`, with fake-server tests.
 - [ ] T6: end-to-end pgtest (grant, revoke, spawn inheritance, despawn) and the `docs/self-host.md` section.
 
 ## Alternatives considered
 
-The OQs cover the surface, the authority and inheritance. The smaller choices:
+The Rulings cover the surface, the authority and inheritance. The smaller
+choices:
 
 - **Transient mint failure.** Accepting the outage and pinning it with a test
-  was rejected: an admin adding a repository during GitHub throttling would
+  was rejected: the owner adding a repository during GitHub throttling would
   strip the agent's git access.
 - **Fleet-wide signal.** Reusing `SignalSecretsVersion` was rejected: each
   agent-row change would make every session in every tenant re-fetch.
 - **Org mismatch.** Returning `added` with a warning flag was rejected: the
   mixed set drops every agent row from the token, not only the new one.
 - **Revoke reuse.** Changing `RevokeForgeScope` to return `removed` was
-  rejected: the agent surface could then delete an operator grant.
+  rejected: the agent surface could then delete a user grant.
 
-## Open Questions
+## Rulings
 
-Each question is for Matt. The body is designed against each recommendation.
-OQ-2 and OQ-3 are load-bearing: the record must not freeze before they are
-ruled.
+Matt ruled on RIG-5064 (2026-10-10): D for OQ-1, A for OQ-2, C for OQ-3, and
+"lgtm" for OQ-4 and OQ-5. No open questions remain.
 
-- **OQ-1 — Writer surface.**
-  - (A) Three `CommsService` RPCs. They reuse the comms resolvers, but they
-    need a post-construction setter (comms is built before the hub) and add
-    forge config to comms.
-  - (B) An `adminOnly` `CompassService` RPC. The gate admits only the
-    bootstrap admin (`caller != g.admin`), so a tenant admin cannot use it.
-  - (C) An agent-gateway tool. It needs an `agent_gateway.proto` arm, a
-    Runner relay and a TS tool, and it lets an agent change credentials.
-  - (D) A dedicated `AgentRepositoryService` in `go/server`, beside the broker
-    and `SecretsService`. Hub and broker are available at construction: no
-    setter, no unwired state, a real App precondition, and no forge coupling
-    in comms.
-  - **Tension:** every option is a runtime RPC that writes
-    `account_forge_scopes`, and DL-442 OQ-2 says "no admin RPC for Beta".
-    F3's runtime-write ruling needs one.
-  - **Recommendation: (D).** Matt to amend DL-442 OQ-2 to allow it for agent
-    rows.
-- **OQ-2 — Who may widen an agent past its owner's grants (load-bearing).**
-  The owner's grants are the operator's ceiling. Any writer of agent rows can
-  raise an agent above it.
-  - (A) The agent's owning user. A member user could widen its own agents to
-    any repository in the installation. This bypasses the scope-enforcement
-    constraint "agent self-grant is not allowed" in multi-user tenants, where
-    enforcement is on. It is invisible in a single-user self-host.
-  - (B) A tenant admin (`UserRoleAdmin`). The operator stays the only
-    authority that widens. Members need an admin for each root agent.
-  - (C) The owner, but only for repositories in an operator-managed allowlist.
-    Self-service inside a ceiling, at the cost of a second allowlist, its
-    store, and a surface to manage it.
-  - **Recommendation: (B).** The body checks `UserRoleAdmin` in the handler,
-    and a pgtest shows a member is `PERMISSION_DENIED`. Ratifying (A) would
-    need Matt to accept, on the record, that owner grants stop being a
-    ceiling.
-- **OQ-3 — Agent-spawned agents get rows with no human step (load-bearing).**
-  A manager-spawned child runs in its own container (`SpawnAsAccount` →
-  `provisionAndStart(ctx, created.ID, …)`). With no inheritance and a
-  human-only writer, it gets only owner grants until a human notices and runs
-  the CLI. That moves "unknown at boot" to "unknown until a human reacts".
-  Variants that never widen past what an admin granted:
-  - (A) No inheritance. Every agent needs an admin step. Fails "dynamically
-    configure it on the agents" for agent-spawned agents.
-  - (B) Attenuated delegation. A manager copies a subset of its own agent rows
-    to an agent in its strict subtree (`AgentSubtree` in
-    `go/internal/store/agent_tree.go`) through a new agent-gateway tool. It is
-    dynamic, can act after spawn, and never widens. It needs a proto arm, a
-    relay, a TS tool and its own red-team record.
-  - (C) Copy at creation. `CreateAgent` copies the parent agent's own rows in
-    its transaction, only on a fresh creation. A resume does not copy, so a
-    revoke at a child sticks with no tombstone. No new agent surface; the
-    spawn proto stays repo-free. The copy is a snapshot: later parent changes
-    need an admin step per child.
-  - **Recommendation: (C).** It meets Matt's "dynamically configure it on the
-    agents" for every agent spawned under a configured manager, with no new
-    agent-facing surface. Only root agents need the admin step. Revisit (B)
-    if managers need to change a child's set after spawn.
-- **OQ-4 — Old token after a remove.**
-  - (A) Accept: the old token lives until expiry, at most one hour, until the
-    parent's T5 adds `DELETE /installation/token`.
-  - (B) Build revocation in this stack. Tokens are shared by key: the RIG-4951
-    `### Lifecycle` table says "The cache key is the sorted full set, so
-    agents with equal sets share one token." Revoking the old key's token
-    would also cut off every other agent with that set, often the owner-grant
-    set. The old key also stays cached until `now.Sub(entry.lastUsed) >
-    gitCredentialMaxAge` (90 minutes), so `refreshDue` may re-mint it once
-    more; that token reaches no agent that lost the row.
-  - **Recommendation: (A).** Document the window in `docs/self-host.md`.
-- **OQ-5 — Dispatcher lifetime.**
-  - (A) Defer. When the Dispatcher lands, add a producer column to the primary
-    key, so each writer adds and removes only its own row.
-  - (B) The Dispatcher never revokes; rows stay until an admin removes them.
-  - (C) A reference count on one row.
-  - (A) is exact but is a schema change, inert until a second writer exists.
-    (B) grows reach with every assignment. (C) cannot say which writer holds
-    the row.
-  - **Recommendation: (A).** This record adds nothing for it.
+- **OQ-1 — Writer surface: D.** A dedicated `AgentRepositoryService` in
+  `go/server`, beside the broker. Rejected: `CommsService` RPCs (a
+  post-construction setter and forge config in comms), an `adminOnly`
+  `CompassService` RPC (the gate admits only the bootstrap admin), and an
+  agent-gateway tool (agents would change credentials). This ruling amends
+  DL-442 OQ-2 ("no admin RPC for Beta") for agent rows; this record's
+  decision row records it.
+- **OQ-2 — Who writes agent rows: A, the owning user.** Matt: "A, that
+  doesn't widen, a user granting agents repos doesn't let agents self grant."
+  Agents never write rows, and a tenant admin has no override on other users'
+  agents. Rejected: a tenant admin only, and the owner within an
+  operator-managed allowlist.
+- **OQ-3 — Agent-spawned agents: C, copy at creation.** `CreateAgent` copies
+  the parent agent's own rows on a fresh creation only; a resume does not
+  copy, so a revoke at a child sticks. Rejected: no inheritance (an owner step
+  for every agent), and an attenuated delegation tool (a new agent-facing
+  surface).
+- **OQ-4 — Old token after a remove: A.** Accept the up-to-one-hour window and
+  document it. Rejected: building `DELETE /installation/token` now. The
+  RIG-4951 `### Lifecycle` table says "agents with equal sets share one
+  token", so a revoke would cut off every agent with that set.
+- **OQ-5 — Dispatcher lifetime: A, defer.** When a Dispatcher writer lands, it
+  adds a producer column to the primary key, so each writer removes only its
+  own row. Rejected: never revoking (reach grows with each assignment) and a
+  reference count (it cannot name the writer that holds a row).
