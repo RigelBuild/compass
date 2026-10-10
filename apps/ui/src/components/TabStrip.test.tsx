@@ -76,12 +76,12 @@ describe("TabStrip", () => {
 
 	test("the close button closes its tab; the last tab goes home instead", async () => {
 		const { store, container } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		expect(tabs(container).length).toBe(2);
 
 		const close = container.querySelector<HTMLElement>(
-			'.cx-tab-strip button[aria-label="Close Settings"]',
+			'.cx-tab-strip button[aria-label="Close Settings · Tracker"]',
 		);
 		if (!close) throw new Error("no close button for Settings");
 		fireEvent.click(close);
@@ -156,7 +156,7 @@ describe("TabStrip", () => {
 		expect(tabs(container).length).toBe(MAX_TABS);
 		const before = store.layout();
 
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		expect(store.layout()).toBe(before);
 		expect(tabs(container).length).toBe(MAX_TABS);
@@ -173,7 +173,7 @@ describe("TabStrip", () => {
 	test("a repeated refusal changes the announced text again", async () => {
 		const { store, container } = mountApp("/");
 		fillToCap(store);
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		const first = region(container)?.textContent;
 		store.dispatchLayout({ kind: "open", path: "/done" });
@@ -187,7 +187,7 @@ describe("TabStrip", () => {
 	test("an unrelated layout action keeps the notice", async () => {
 		const { store, container } = mountApp("/");
 		fillToCap(store);
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		store.dispatchLayout({
 			kind: "focusTab",
@@ -200,7 +200,7 @@ describe("TabStrip", () => {
 	test("the dismiss button clears the notice", async () => {
 		const { store, container } = mountApp("/");
 		fillToCap(store);
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		const dismiss = region(container)?.querySelector<HTMLElement>(
 			'button[aria-label="Dismiss"]',
@@ -216,7 +216,7 @@ describe("TabStrip", () => {
 		try {
 			const { store, container } = mountApp("/");
 			fillToCap(store);
-			store.dispatchLayout({ kind: "open", path: "/settings" });
+			store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 			await flush();
 			expect(region(container)?.textContent).toContain(`${MAX_TABS} tabs`);
 			jest.advanceTimersByTime(NOTICE_TIMEOUT_MS + 1);
@@ -234,7 +234,7 @@ describe("TabStrip", () => {
 	}> => {
 		const { store, container } = mountApp("/");
 		fillToCap(store);
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		const dismiss = region(container)?.querySelector<HTMLElement>(
 			'button[aria-label="Dismiss"]',
@@ -281,7 +281,7 @@ describe("TabStrip", () => {
 		try {
 			const { store, container } = mountApp("/");
 			fillToCap(store);
-			store.dispatchLayout({ kind: "open", path: "/settings" });
+			store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 			await flush();
 			const dismiss = region(container)?.querySelector<HTMLElement>(
 				'button[aria-label="Dismiss"]',
@@ -306,7 +306,7 @@ describe("TabStrip", () => {
 		try {
 			const { store, container } = mountApp("/");
 			fillToCap(store);
-			store.dispatchLayout({ kind: "open", path: "/settings" });
+			store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 			await flush();
 			const toast = region(container)?.querySelector<HTMLElement>(".cx-toast");
 			if (!toast) throw new Error("no toast");

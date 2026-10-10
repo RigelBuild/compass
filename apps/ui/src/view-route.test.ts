@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RouteMatch } from "./view-route";
-import { parseRoute, routePath } from "./view-route";
+import { parseRoute, routePath, SETTINGS_SECTIONS } from "./view-route";
 
 const routes: { name: string; path: string; match: RouteMatch }[] = [
 	{ name: "bridge", path: "/", match: { view: "bridge" } },
@@ -22,7 +22,11 @@ const routes: { name: string; path: string; match: RouteMatch }[] = [
 	{ name: "agents", path: "/agents", match: { view: "agents" } },
 	{ name: "backlog", path: "/backlog", match: { view: "backlog" } },
 	{ name: "done", path: "/done", match: { view: "done" } },
-	{ name: "settings", path: "/settings", match: { view: "settings" } },
+	{
+		name: "settings models",
+		path: "/settings/models",
+		match: { view: "settings", section: "models" },
+	},
 ];
 
 describe("view routes", () => {
@@ -34,5 +38,17 @@ describe("view routes", () => {
 	test("maps an unknown path to the bridge route", () => {
 		expect(parseRoute("/not-a-view")).toEqual({ view: "bridge" });
 		expect(routePath(parseRoute("/not-a-view"))).toBe("/");
+	});
+	test("bare settings selects the first section", () => {
+		expect(SETTINGS_SECTIONS[0]).toBe("tracker");
+		expect(parseRoute("/settings")).toEqual({
+			view: "settings",
+			section: "tracker",
+		});
+		expect(routePath(parseRoute("/settings"))).toBe("/settings/tracker");
+	});
+
+	test("unknown settings sections map to the bridge", () => {
+		expect(parseRoute("/settings/nope")).toEqual({ view: "bridge" });
 	});
 });

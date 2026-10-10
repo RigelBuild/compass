@@ -88,7 +88,7 @@ describe("tab and pane commands on the real store", () => {
 
 	test("next and previous wrap; go to tab past the end changes nothing", async () => {
 		const { store } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		const [first, second] = [tabIdAt(store, 0), tabIdAt(store, 1)];
 		runCommand(store, "tab.next");
@@ -108,7 +108,7 @@ describe("tab and pane commands on the real store", () => {
 
 	test("move left and right reorder, and stop at the ends", async () => {
 		const { store } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		const [first, second] = [tabIdAt(store, 0), tabIdAt(store, 1)];
 		const atEnd = store.layout();
@@ -307,7 +307,11 @@ describe("inactive tabs stay mounted", () => {
 
 	test("a switch leaves focus alone when it is outside the hidden view", async () => {
 		const { store, container } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings", background: true });
+		store.dispatchLayout({
+			kind: "open",
+			path: "/settings/tracker",
+			background: true,
+		});
 		await flush();
 		const toggle = container.querySelector<HTMLElement>(".pane-toggle");
 		if (!toggle) throw new Error("no pane toggle");
@@ -380,7 +384,7 @@ describe("two mounted Bridge views", () => {
 	test("closing one Bridge keeps the board commands for the other", async () => {
 		const { store } = mountApp("/");
 		// The second tab is a Bridge too: opened elsewhere, navigated to `/` in place.
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		store.showBridge();
 		await flush();
@@ -396,7 +400,7 @@ describe("two mounted Bridge views", () => {
 
 	test("switching between two Bridges hands the commands over without a duplicate", async () => {
 		const { store, container } = mountApp("/");
-		store.dispatchLayout({ kind: "open", path: "/settings" });
+		store.dispatchLayout({ kind: "open", path: "/settings/tracker" });
 		await flush();
 		store.showBridge();
 		await flush();

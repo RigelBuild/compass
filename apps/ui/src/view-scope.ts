@@ -30,7 +30,8 @@ export interface ViewScope {
 	channel: Accessor<Channel | undefined>;
 	topic: Accessor<Topic | undefined>;
 	agent: Accessor<Agent | undefined>;
-	navigate: (path: string) => void;
+	/** `replace` swaps the history entry instead of pushing one. */
+	navigate: (path: string, options?: { replace?: boolean }) => void;
 	/** Whether the view is on screen; a hidden tab's view stays mounted. */
 	shown: Accessor<boolean>;
 	/** The view agent's home DM: the agent workspace's chat pane. */
@@ -83,7 +84,7 @@ export type ViewScopeStore = Pick<
  *  holds every view's path (record A2), so the scope reads and writes through. */
 export type ViewPathSource = {
 	path: Accessor<string>;
-	navigate: (path: string) => void;
+	navigate: (path: string, options?: { replace?: boolean }) => void;
 	shown: Accessor<boolean>;
 };
 

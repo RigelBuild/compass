@@ -1,9 +1,16 @@
+export const SETTINGS_SECTIONS = ["tracker", "models"] as const;
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {
+	tracker: "Tracker",
+	models: "Models",
+};
+
 export type RouteMatch =
 	| { view: "bridge" }
 	| { view: "agents" }
 	| { view: "backlog" }
 	| { view: "done" }
-	| { view: "settings" }
+	| { view: "settings"; section: SettingsSection }
 	| { view: "channel"; channelId: string }
 	| { view: "topic"; channelId: string; topicId: string }
 	| { view: "agent"; agentId: string };
@@ -29,8 +36,13 @@ export function parseRoute(path: string): RouteMatch {
 			return { view: "backlog" };
 		case "done":
 			return { view: "done" };
-		case "settings":
-			return { view: "settings" };
+		case "settings": {
+			const section =
+				param === undefined
+					? SETTINGS_SECTIONS[0]
+					: SETTINGS_SECTIONS.find((known) => known === param);
+			return section ? { view: "settings", section } : { view: "bridge" };
+		}
 		default:
 			return { view: "bridge" };
 	}
@@ -47,7 +59,7 @@ export function routePath(match: RouteMatch): string {
 		case "done":
 			return "/done";
 		case "settings":
-			return "/settings";
+			return `/settings/${match.section}`;
 		case "channel":
 			return `/channel/${match.channelId}`;
 		case "topic":

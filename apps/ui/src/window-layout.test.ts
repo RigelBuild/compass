@@ -214,9 +214,9 @@ describe("loadLayout / saveLayout", () => {
 	test("a deep-link hash not in the restored layout opens as the focused tab", () => {
 		const storage = memoryStorage();
 		saveLayout(storage, openAll(["/", "/backlog"]));
-		const restored = loadLayout(storage, "/settings");
-		expect(tabPaths(restored)).toEqual(["/", "/backlog", "/settings"]);
-		expect(activePath(restored)).toBe("/settings");
+		const restored = loadLayout(storage, "/settings/tracker");
+		expect(tabPaths(restored)).toEqual(["/", "/backlog", "/settings/tracker"]);
+		expect(activePath(restored)).toBe("/settings/tracker");
 	});
 
 	test("with no storage the hash opens as a single view", () => {

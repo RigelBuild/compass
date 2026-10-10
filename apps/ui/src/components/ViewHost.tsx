@@ -14,7 +14,7 @@ const ROUTE_PATTERN: Record<RouteMatch["view"], string> = {
 	agents: "/agents",
 	backlog: "/backlog",
 	done: "/done",
-	settings: "/settings",
+	settings: "/settings/:section",
 };
 const CATCH_ALL = "*all";
 

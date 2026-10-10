@@ -36,6 +36,11 @@
  * (record T1 §343-345), so it is a plain `Set`, read fresh on each call.
  */
 
+import {
+	SETTINGS_SECTION_LABEL,
+	SETTINGS_SECTIONS,
+	type SettingsSection,
+} from "../view-route";
 import type { LayoutAction, WindowLayout } from "../window-layout";
 import type { Command, CommandId, CommandRegistry } from "./commands";
 import { createCommandRegistry } from "./registry";
@@ -76,6 +81,7 @@ export function createKeyboardSpine(deps: {
 	showAgents: () => void;
 	showBacklog: () => void;
 	showDone: () => void;
+	navigateSettings: (section: SettingsSection) => void;
 	showSettings: () => void;
 	togglePalette: () => void;
 	toggleLeft: () => void;
@@ -120,6 +126,16 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.togglePalette(),
 	};
 	registry.register(paletteOpen);
+	for (const section of SETTINGS_SECTIONS) {
+		const command: Command = {
+			id: `view.settings.${section}` as CommandId,
+			title: `Go to Settings: ${SETTINGS_SECTION_LABEL[section]}`,
+			keywords: ["settings", "preferences", section],
+			scope: "global",
+			run: () => deps.navigateSettings(section),
+		};
+		registry.register(command);
+	}
 	const viewSettings: Command = {
 		id: "view.settings" as CommandId,
 		title: "Go to Settings",

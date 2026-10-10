@@ -20,16 +20,17 @@ import { AgentsView } from "./components/AgentsView";
 import { AgentView } from "./components/AgentView";
 import { Bridge } from "./components/Bridge";
 import { ChannelView } from "./components/ChannelView";
-import { SettingsView } from "./components/SettingsView";
+import { SettingsView } from "./components/settings/SettingsView";
 import { TopicView } from "./components/TopicView";
+import { routePath } from "./view-route";
 import { useView } from "./view-scope";
 
-/** Redirect a catch-all match to the board. It moves its own view, so a stale
- *  path in a hidden tab never redirects the tab the user is looking at. */
-const RedirectHome: Component = () => {
+/** Redirect a stale path to the canonical route for its parsed view. It moves
+ *  its own view and replaces the entry, so Back cannot loop onto the stale path. */
+const RedirectCanonical: Component = () => {
 	const view = useView();
 	onSettled(() => {
-		view.navigate("/");
+		view.navigate(routePath(view.route()), { replace: true });
 	});
 	return null;
 };
@@ -46,6 +47,6 @@ export const appRoutes = defineRoutes([
 	// Backlog and Done are Bridge segments; one component keeps the Bridge mounted.
 	{ path: "/backlog", component: Bridge },
 	{ path: "/done", component: Bridge },
-	{ path: "/settings", component: SettingsView },
-	{ path: "*all", component: RedirectHome },
+	{ path: "/settings/:section", component: SettingsView },
+	{ path: "*all", component: RedirectCanonical },
 ]);

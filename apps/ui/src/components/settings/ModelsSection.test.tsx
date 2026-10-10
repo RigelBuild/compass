@@ -8,10 +8,10 @@ import {
 } from "@compass/client";
 import { render } from "@solidjs/testing-library";
 import { flush } from "solid-js";
-import { StoreContext } from "../context";
-import { type AppStoreOptions, createAppStore } from "../store";
-import { testQueryClient } from "../test-support";
-import { SettingsView } from "./SettingsView";
+import { StoreContext } from "../../context";
+import { type AppStoreOptions, createAppStore } from "../../store";
+import { testQueryClient } from "../../test-support";
+import { ModelsSection } from "./ModelsSection";
 
 type Entries = Record<
 	string,
@@ -29,7 +29,7 @@ const transportFor = (entries: Entries): Transport =>
 		}),
 	);
 
-/** Mount SettingsView over a store and drain the registry round-trip. */
+/** Mount ModelsSection over a store and drain the registry round-trip. */
 async function mountSettings(
 	options: Omit<AppStoreOptions, "queryClient">,
 ): Promise<{ container: HTMLElement; unmount: () => void }> {
@@ -37,7 +37,7 @@ async function mountSettings(
 		<StoreContext
 			value={createAppStore({ ...options, queryClient: testQueryClient() })}
 		>
-			<SettingsView />
+			<ModelsSection />
 		</StoreContext>
 	));
 	for (let i = 0; i < 200; i++) {
@@ -50,7 +50,7 @@ async function mountSettings(
 const region = (c: HTMLElement) =>
 	c.querySelector<HTMLElement>('section[aria-label="Model registry"]');
 
-describe("SettingsView model registry", () => {
+describe("ModelsSection model registry", () => {
 	test("renders no registry section for an offline store", async () => {
 		const { container, unmount } = await mountSettings({});
 		try {

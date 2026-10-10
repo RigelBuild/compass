@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeFromTracker } from "./components/SettingsView";
+import { mergeFromTracker } from "./components/settings/TrackerSection";
 import type { WorkingIssueState } from "./stub-data";
 import { LINEAR_STATUS_MAPPING } from "./tracker";
 
