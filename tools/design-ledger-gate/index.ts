@@ -28,8 +28,17 @@ export const HISTORICAL_CHAIN: Record<string, true> = {};
 /** A non-empty `Ledger-impact:` declaration exempts the touch-coupling leg. */
 const LEDGER_IMPACT_RE = /^\s*>?\s*ledger-impact:\s*(\S.*)$/im;
 
-/** Automation branches cannot author a `Ledger-impact:` declaration. */
-export const EXEMPT_BRANCH_PREFIXES = ["renovate/", "trunk-merge/"];
+/**
+ * Automation branches cannot author a `Ledger-impact:` declaration. Each prefix
+ * is exempt only for PRs its bot opened from this repo; a spoofed branch fails.
+ */
+export const EXEMPT_BRANCHES: ReadonlyArray<{
+	prefix: string;
+	author: string;
+}> = [
+	{ prefix: "renovate/", author: "app/rigelbuild-renovate" },
+	{ prefix: "trunk-merge/", author: "app/trunk-io" },
+];
 
 /** The record-level Status grammar is reject-by-default. */
 const STATUS_RE = /^Status:\s*(Historical|Superseded\s+by\s+(\S+))$/i;
@@ -73,6 +82,10 @@ export interface Changed {
 	files: string[];
 	body: string | null;
 	headBranch: string;
+	/** PR author login as `gh pr view` reports it (`app/<slug>` for apps). */
+	author: string;
+	/** True when the head branch lives in a fork. */
+	crossRepository: boolean;
 }
 
 /** What `readRecord` returns for a link/pointer target. */
@@ -423,9 +436,12 @@ export function evaluate(
 		}
 	}
 
-	const exemptBranch = EXEMPT_BRANCH_PREFIXES.some((prefix) =>
-		changed.headBranch.startsWith(prefix),
-	);
+	const exemptBranch =
+		!changed.crossRepository &&
+		EXEMPT_BRANCHES.some(
+			({ prefix, author }) =>
+				changed.headBranch.startsWith(prefix) && changed.author === author,
+		);
 	const declared = LEDGER_IMPACT_RE.test(changed.body ?? "");
 	const touchedRecord = !exemptBranch && changed.files.some(touchesRecord);
 	const touchedDecision = changed.files.some(
@@ -575,7 +591,13 @@ if (import.meta.main) {
 	const root =
 		process.env.GATE_ROOT ??
 		(await $`git rev-parse --show-toplevel`.nothrow().quiet().text()).trim();
-	let changed: Changed = { files: [], body: null, headBranch: "" };
+	let changed: Changed = {
+		files: [],
+		body: null,
+		headBranch: "",
+		author: "",
+		crossRepository: false,
+	};
 	const ctx = prContextFrom(process.env);
 	if (ctx.kind === "error") {
 		console.error(`design-ledger-gate: ${ctx.message}`);
@@ -585,13 +607,21 @@ if (import.meta.main) {
 		const { repo, prNumber } = ctx;
 		try {
 			const view =
-				await $`timeout 30 gh pr view ${prNumber} --repo ${repo} --json headRefName,body`.json();
+				await $`timeout 30 gh pr view ${prNumber} --repo ${repo} --json headRefName,body,author,isCrossRepository`.json();
+			if (
+				typeof view.author?.login !== "string" ||
+				typeof view.isCrossRepository !== "boolean"
+			) {
+				throw new Error("gh pr view omitted author.login or isCrossRepository");
+			}
 			const files =
 				await $`timeout 60 gh api --paginate repos/${repo}/pulls/${prNumber}/files --jq .[].filename`.text();
 			changed = {
 				files: files.split("\n").filter((line) => line.length > 0),
 				body: view.body,
 				headBranch: view.headRefName,
+				author: view.author.login,
+				crossRepository: view.isCrossRepository,
 			};
 		} catch (error) {
 			console.error(
