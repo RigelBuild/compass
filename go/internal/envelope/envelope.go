@@ -167,3 +167,28 @@ func UserSecretAAD(tenantID string, scopeKind int16, scopeID, name string, keyVe
 	buf = append(buf, strconv.FormatInt(int64(keyVersion), 10)...)
 	return buf, nil
 }
+
+// GatewayCredentialAAD binds sealed credential values to their tenant, stable
+// row id, and encryption-key generation. CAS versions are deliberately absent.
+func GatewayCredentialAAD(tenantID, id string, keyVersion int16) ([]byte, error) {
+	const domain = "compass/gateway-credential/v1"
+	for _, field := range []struct {
+		name, value string
+	}{
+		{"tenantID", tenantID},
+		{"id", id},
+	} {
+		if strings.IndexByte(field.value, 0) >= 0 {
+			return nil, fmt.Errorf("%w: field %s", ErrAADField, field.name)
+		}
+	}
+	buf := make([]byte, 0, len(domain)+len(tenantID)+len(id)+8)
+	buf = append(buf, domain...)
+	buf = append(buf, 0)
+	buf = append(buf, tenantID...)
+	buf = append(buf, 0)
+	buf = append(buf, id...)
+	buf = append(buf, 0)
+	buf = strconv.AppendInt(buf, int64(keyVersion), 10)
+	return buf, nil
+}

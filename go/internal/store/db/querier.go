@@ -169,6 +169,7 @@ type Querier interface {
 	DeleteTokenUsageRollupsFrom(ctx context.Context, horizon pgtype.Timestamptz) error
 	DeleteTopic(ctx context.Context, id string) error
 	DeleteUserPeer(ctx context.Context, arg DeleteUserPeerParams) (int64, error)
+	DisableGatewayCredential(ctx context.Context, arg DisableGatewayCredentialParams) (int64, error)
 	// The account owner is read in SQL so callers continue to supply only the
 	// session binding identity.
 	EndComputeUsageInterval(ctx context.Context, arg EndComputeUsageIntervalParams) error
@@ -197,6 +198,8 @@ type Querier interface {
 	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
 	// EXISTS guard leaves it in place if any other agent still subscribes).
 	GCForgeArtifactCursorIfUnsubscribed(ctx context.Context, arg GCForgeArtifactCursorIfUnsubscribedParams) error
+	GatewayAgentTenant(ctx context.Context, accountID string) (string, error)
+	GatewayCredentialOwnerExists(ctx context.Context, ownerUserID string) (bool, error)
 	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
 	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
@@ -228,6 +231,7 @@ type Querier interface {
 	// DeleteChannelMember (channels.sql) — the statements are identical.
 	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
 	GetDMChannelByName(ctx context.Context, arg GetDMChannelByNameParams) (GetDMChannelByNameRow, error)
+	GetGatewayCredentialForUpdate(ctx context.Context, id string) (GetGatewayCredentialForUpdateRow, error)
 	// Feeds isReservedGroupTx: the reserved-group discriminator (top-level AND a reserved name AND
 	// VisibilityOwner) the CreateChannel and CreateChannelGroup create-guards key on.
 	GetGroupNameVisibility(ctx context.Context, id string) (GetGroupNameVisibilityRow, error)
@@ -323,6 +327,7 @@ type Querier interface {
 	// ON CONFLICT DO NOTHING on the partial unique index (a concurrent open yields
 	// zero rows, never a raised unique-violation).
 	InsertDMChannel(ctx context.Context, arg InsertDMChannelParams) (string, error)
+	InsertGatewayCredential(ctx context.Context, arg InsertGatewayCredentialParams) error
 	InsertGatewayToken(ctx context.Context, arg InsertGatewayTokenParams) error
 	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
 	// ON CONFLICT DO NOTHING keeps a lost race from poisoning the tx; the caller re-selects.
@@ -397,6 +402,7 @@ type Querier interface {
 	// (repo, kind) to coord_number 0. The Go groups the flat rows into targets.
 	ListForgeNotifyTargets(ctx context.Context, arg ListForgeNotifyTargetsParams) ([]ListForgeNotifyTargetsRow, error)
 	ListForgeScopeRepos(ctx context.Context, arg ListForgeScopeReposParams) ([]string, error)
+	ListGatewayCredentials(ctx context.Context, arg ListGatewayCredentialsParams) ([]ListGatewayCredentialsRow, error)
 	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
 	ListPullRequestLinks(ctx context.Context, arg ListPullRequestLinksParams) ([]ListPullRequestLinksRow, error)
@@ -710,6 +716,7 @@ type Querier interface {
 	UpdateAgentParent(ctx context.Context, arg UpdateAgentParentParams) error
 	UpdateChannelParent(ctx context.Context, arg UpdateChannelParentParams) error
 	UpdateChannelPolicy(ctx context.Context, arg UpdateChannelPolicyParams) error
+	UpdateGatewayOAuthCredential(ctx context.Context, arg UpdateGatewayOAuthCredentialParams) (int64, error)
 	UpdateMessageBlocks(ctx context.Context, arg UpdateMessageBlocksParams) (int64, error)
 	UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMessageBlocksAsAuthorParams) (UpdateMessageBlocksAsAuthorRow, error)
 	// UpdateModelRegistry is the compare-and-set write over an existing row: it

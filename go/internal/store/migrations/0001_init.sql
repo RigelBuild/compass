@@ -129,6 +129,29 @@ CREATE TABLE gateway_tokens (
 CREATE UNIQUE INDEX gateway_tokens_live_agent_idx ON gateway_tokens (agent_account_id)
     WHERE revoked_at IS NULL;
 
+-- Credential values stay sealed so raw rows cannot expose provider secrets.
+CREATE TABLE gateway_credentials (
+    id                 TEXT PRIMARY KEY,
+    tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
+    provider           TEXT NOT NULL CHECK (provider <> ''),
+    scope              SMALLINT NOT NULL CHECK (scope IN (1, 2)),
+    owner_user_id      TEXT REFERENCES user_accounts (account_id) ON DELETE RESTRICT,
+    kind               SMALLINT NOT NULL CHECK (kind IN (1, 2)),
+    version            BIGINT NOT NULL DEFAULT 1 CHECK (version >= 1),
+    expires_at_unix_ms BIGINT NOT NULL DEFAULT 0,
+    value_ciphertext   BYTEA NOT NULL,
+    value_nonce        BYTEA NOT NULL,
+    key_version        SMALLINT NOT NULL DEFAULT 1,
+    disabled_at        TIMESTAMPTZ,
+    disabled_cause     TEXT NOT NULL DEFAULT '',
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((scope = 1 AND owner_user_id IS NOT NULL) OR (scope = 2 AND owner_user_id IS NULL))
+);
+
+CREATE INDEX gateway_credentials_tenant_provider_idx ON gateway_credentials (tenant_id, provider);
+CREATE INDEX gateway_credentials_owner_idx ON gateway_credentials (owner_user_id);
+
 -- System accounts: the reserved platform sender (@compass), a distinct
 -- first-class subtype alongside user_accounts and agent_accounts. No payload
 -- columns — the row's existence is the discriminator (there is exactly one,
@@ -1560,6 +1583,8 @@ BEGIN
 END $$;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON gateway_tokens TO compass_app, compass_system;
+-- The schema-wide grant includes compass_system; sealed credentials need no system-role path.
+REVOKE ALL ON gateway_credentials FROM compass_system;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON compute_usage_rollups_hourly, compute_usage_rollups_daily,
        compute_usage_prune_horizon
@@ -1601,6 +1626,7 @@ DECLARE
         'user_accounts', 'user_peers', 'agent_accounts', 'system_accounts', 'account_handles',
         'channel_groups', 'channels', 'channel_members', 'channel_subscriptions',
         'agent_workspaces', 'topics', 'messages', 'channel_pins', 'secrets',
+        'gateway_credentials',
         'agent_sessions', 'agent_placements', 'session_bindings',
         'agent_session_transcript_entries', 'agent_session_archive_segments',
         'agent_session_blobs',
@@ -1686,6 +1712,7 @@ DECLARE
     t text;
     updated_at_tables text[] := ARRAY[
         'secrets',
+        'gateway_credentials',
         'agent_placements',
         'session_bindings',
         'agent_session_blobs',
