@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // ---- GitHub fake webhook sender ----
@@ -281,11 +282,15 @@ type lnDataPayload struct {
 
 // lnDataEvent is the data-change envelope (type + action + data + updatedFrom).
 type lnDataEvent struct {
-	Type        string          `json:"type"`
-	Action      string          `json:"action"`
-	Data        lnDataPayload   `json:"data"`
-	UpdatedFrom json.RawMessage `json:"updatedFrom,omitempty"`
+	Type             string          `json:"type"`
+	Action           string          `json:"action"`
+	Data             lnDataPayload   `json:"data"`
+	UpdatedFrom      json.RawMessage `json:"updatedFrom,omitempty"`
+	WebhookTimestamp int64           `json:"webhookTimestamp"`
 }
+
+// linearFakeNow stamps every fake Linear webhook; a fixture pins the handler clock to it.
+var linearFakeNow = time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 
 // fakeLinearForge emits signed Linear data-change webhooks for one team/project.
 // Linear signs the raw body with a plain hex HMAC-SHA256 (no "sha256=" prefix)
@@ -304,6 +309,7 @@ func newFakeLinearForge(secret []byte, teamKey, project string) *fakeLinearForge
 // emit marshals the envelope and signs the raw body as Linear does (bare hex).
 func (f *fakeLinearForge) emit(t *testing.T, ev lnDataEvent) signedLinearWebhook {
 	t.Helper()
+	ev.WebhookTimestamp = linearFakeNow.UnixMilli()
 	body, err := json.Marshal(&ev)
 	if err != nil {
 		t.Fatalf("fakeLinearForge.emit marshal %s: %v", ev.Type, err)

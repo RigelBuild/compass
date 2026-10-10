@@ -64,8 +64,8 @@ func newForgeSubscribeNotifyEndpoint(t *testing.T, w *forgeE2EWire) (string, []b
 	githubPath, githubHandler := NewGitHubWebhookHandler(secretFn, githubArm, log)
 	mux.Handle(githubPath, githubHandler)
 	linearPath, linearHandler := NewLinearWebhookHandler(secretFn, linearArm, nil, log)
-	// The fake Linear payloads carry no webhookTimestamp, so pin the freshness clock to the epoch.
-	linearHandler.(*linearWebhookHandler).now = func() time.Time { return time.UnixMilli(0) }
+	// The fakes stamp linearFakeNow, so the freshness check runs against that same clock.
+	linearHandler.(*linearWebhookHandler).now = func() time.Time { return linearFakeNow }
 	mux.Handle(linearPath, linearHandler)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
