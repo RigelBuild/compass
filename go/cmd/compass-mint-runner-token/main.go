@@ -153,6 +153,11 @@ type tokenStore interface {
 //   - existing file, token registered under ANOTHER subject: it can never enroll
 //     as runnerID, so rotate exactly as --force would.
 func mintToFile(ctx context.Context, st tokenStore, runnerID, path string, force bool) error {
+	// Before any file write: a store-side refusal would make the cleanup below
+	// delete the credential this run just replaced.
+	if err := runnerhub.CheckMintedRunnerID(runnerID); err != nil {
+		return err
+	}
 	if !force && fileExists(path) {
 		existing, err := os.ReadFile(path) //nolint:gosec // path is the operator-provided --token-out flag, the file this binary owns and just checked exists
 		if err != nil {

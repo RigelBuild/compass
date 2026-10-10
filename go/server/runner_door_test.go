@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,7 +119,8 @@ func TestRunnerResolveJWSNeverReachesHashLookup(t *testing.T) {
 // RunnerService door, so the code mapping is the one a Runner sees.
 func TestRunnerDoorProjectedTokenCodes(t *testing.T) {
 	key := newTestSigningKey(t, "k1")
-	verifier := newTestRunnerVerifier(t, key)
+	fetches := &refusingTransport{}
+	verifier := newTestRunnerVerifier(t, key, &http.Client{Transport: fetches})
 	url := mountRunnerDoor(t, newRunnerResolve((&lookupSpy{}).resolve, verifier))
 
 	t.Run("valid token enrolls and learns its id", func(t *testing.T) {
@@ -147,7 +149,31 @@ func TestRunnerDoorProjectedTokenCodes(t *testing.T) {
 		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 			t.Fatalf("code = %v (%v), want Unavailable", got, err)
 		}
+		// The refetch must go through the injected client, never the network.
+		if fetches.count() == 0 {
+			t.Fatal("verifier never used the injected client")
+		}
 	})
+}
+
+// refusingTransport fails every request at once and counts them, so a key
+// fetch is observable and never leaves the process.
+type refusingTransport struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (r *refusingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.n++
+	return nil, errors.New("network disabled in test")
+}
+
+func (r *refusingTransport) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.n
 }
 
 // testUnfetchedIssuer names a fetched-JWKS cluster that is never started, so
@@ -169,8 +195,23 @@ func newTestSigningKey(t *testing.T, kid string) testSigningKey {
 }
 
 // newTestRunnerVerifier registers "prod" from a jwksFile holding key, and an
-// unfetched cluster whose keys are unavailable.
-func newTestRunnerVerifier(t *testing.T, key testSigningKey) *auth.RunnerVerifier {
+// unfetched cluster whose keys are unavailable. Fetches go through client.
+func newTestRunnerVerifier(t *testing.T, key testSigningKey, client *http.Client) *auth.RunnerVerifier {
+	t.Helper()
+	path := writeTestJWKS(t, key)
+	prod := testRunnerCluster("prod", testClusterIssuer)
+	prod.JWKSFile = path
+	unfetched := testRunnerCluster("unfetched", testUnfetchedIssuer)
+	v, err := auth.NewRunnerVerifier([]auth.RunnerCluster{prod, unfetched}, "tenant-boot", client,
+		func() time.Time { return testTokenEpoch })
+	if err != nil {
+		t.Fatalf("NewRunnerVerifier: %v", err)
+	}
+	return v
+}
+
+// writeTestJWKS writes key's public half as a JWKS file and returns its path.
+func writeTestJWKS(t *testing.T, key testSigningKey) string {
 	t.Helper()
 	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: key.key.Public(), KeyID: key.kid, Algorithm: string(jose.ES256), Use: "sig"}}}
 	data, err := json.Marshal(set)
@@ -181,27 +222,26 @@ func newTestRunnerVerifier(t *testing.T, key testSigningKey) *auth.RunnerVerifie
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("writing jwks: %v", err)
 	}
-	cluster := func(name, issuer string) auth.RunnerCluster {
-		return auth.RunnerCluster{
-			Name: name, Issuer: issuer, Audience: "compass-runner",
-			Namespace: "compass-runner", ServiceAccount: "compass-runner",
-			MaxTokenLifetime: 600 * time.Second,
-		}
+	return path
+}
+
+func testRunnerCluster(name, issuer string) auth.RunnerCluster {
+	return auth.RunnerCluster{
+		Name: name, Issuer: issuer, Audience: "compass-runner",
+		Namespace: "compass-runner", ServiceAccount: "compass-runner",
+		MaxTokenLifetime: 600 * time.Second,
 	}
-	prod := cluster("prod", testClusterIssuer)
-	prod.JWKSFile = path
-	unfetched := cluster("unfetched", testUnfetchedIssuer)
-	v, err := auth.NewRunnerVerifier([]auth.RunnerCluster{prod, unfetched}, "tenant-boot", nil,
-		func() time.Time { return testTokenEpoch })
-	if err != nil {
-		t.Fatalf("NewRunnerVerifier: %v", err)
-	}
-	return v
 }
 
 // signTestToken signs a valid projected token for the node behind
 // testNodeRunnerID, issued by iss at testTokenEpoch.
 func signTestToken(t *testing.T, k testSigningKey, iss string) string {
+	t.Helper()
+	return signTestTokenAt(t, k, iss, testTokenEpoch)
+}
+
+// signTestTokenAt is signTestToken issued at iat, for a verifier on the real clock.
+func signTestTokenAt(t *testing.T, k testSigningKey, iss string, iat time.Time) string {
 	t.Helper()
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: k.key},
 		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", k.kid))
@@ -212,9 +252,9 @@ func signTestToken(t *testing.T, k testSigningKey, iss string) string {
 		"iss": iss,
 		"aud": []string{"compass-runner"},
 		"sub": "system:serviceaccount:compass-runner:compass-runner",
-		"iat": testTokenEpoch.Unix(),
-		"nbf": testTokenEpoch.Unix(),
-		"exp": testTokenEpoch.Add(600 * time.Second).Unix(),
+		"iat": iat.Unix(),
+		"nbf": iat.Unix(),
+		"exp": iat.Add(600 * time.Second).Unix(),
 		"kubernetes.io": map[string]any{
 			"namespace":      "compass-runner",
 			"node":           map[string]any{"name": "ip-10-0-1-5.ec2.internal"},

@@ -252,6 +252,22 @@ func TestEnrollReturnsSubjectRunnerID(t *testing.T) {
 	}
 }
 
+// A non-empty runner_id must still match the token subject: valid Runner
+// credentials cannot enroll under another Runner's identity.
+func TestEnrollMismatchedRunnerIDIsUnauthenticated(t *testing.T) {
+	hub := newHubOnly()
+	resolver := &fakeResolver{tokens: map[string]resolverEntry{
+		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: "prod/node-a"}},
+	}}
+	url := newMountedH2CServer(t, hub, resolver.resolve)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.Enroll(t.Context(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "prod/node-b"}))
+	if got := connect.CodeOf(err); got != connect.CodeUnauthenticated {
+		t.Fatalf("Enroll with mismatched runner_id = code %v (%v), want Unauthenticated", got, err)
+	}
+}
+
 func TestEnrollFaultedDurableReapReturnsUnavailableOverWire(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()

@@ -400,6 +400,26 @@ func TestMintToFile(t *testing.T) {
 	})
 }
 
+// "/" is reserved for projected-token IDs. The refusal must come before the
+// file write, or the cleanup after a rejected commit deletes the old credential.
+func TestMintToFileForceSlashedIDLeavesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner.token")
+	if err := writeTokenFile(path, "existing-token"); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	fake := &fakeTokenPutter{}
+	err := mintToFile(t.Context(), fake, "prod/node-a", path, true)
+	if !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("mintToFile(prod/node-a) = %v, want ErrInvalidArgument", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "existing-token" {
+		t.Errorf("token file = %q after a refused mint, want the existing token", got)
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("PutTokenHash called %d times, want 0", len(fake.calls))
+	}
+}
+
 // assertFreshMintWritesAndStores verifies the no-existing-file path: a token is
 // minted, the file lands raw (no trailing newline) at 0600, and exactly that
 // token's hash is committed once under the Runner subject.

@@ -58,7 +58,7 @@ func StoreRunnerTokenHash(ctx context.Context, st TokenPutter, token, runnerID s
 	if runnerID == "" {
 		return errors.New("runner id is required to store a token")
 	}
-	if err := checkMintedRunnerID(runnerID); err != nil {
+	if err := CheckMintedRunnerID(runnerID); err != nil {
 		return err
 	}
 	// A token with "." is routed to the projected-token verifier and would never resolve.
@@ -121,7 +121,7 @@ func MintRunnerToken(ctx context.Context, st TokenPutter, runnerID string) (stri
 	if runnerID == "" {
 		return "", errors.New("runner id is required to mint a token")
 	}
-	if err := checkMintedRunnerID(runnerID); err != nil {
+	if err := CheckMintedRunnerID(runnerID); err != nil {
 		return "", err
 	}
 	token, err := GenerateRunnerToken()
@@ -134,9 +134,9 @@ func MintRunnerToken(ctx context.Context, st TokenPutter, runnerID string) (stri
 	return token, nil
 }
 
-// checkMintedRunnerID rejects "/", which is reserved for projected-token Runner
+// CheckMintedRunnerID rejects "/", which is reserved for projected-token Runner
 // IDs ("<cluster>/<node>") so a minted ID can never shadow one.
-func checkMintedRunnerID(runnerID string) error {
+func CheckMintedRunnerID(runnerID string) error {
 	if strings.Contains(runnerID, "/") {
 		return fmt.Errorf("%w: runner id %q must not contain %q", store.ErrInvalidArgument, runnerID, "/")
 	}

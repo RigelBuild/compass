@@ -897,11 +897,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return err
 	}
 
-	// Run every door under one scoped group. errgroup.WithContext gives scoped
-	// lifecycle, first-error-wins, and sibling cancellation: gctx cancels on
-	// parent shutdown or a server self-terminating with an error. The UDS door is
-	// primary; its error — recorded first — wins over the drain result below.
-	g, gctx := errgroup.WithContext(ctx)
+	// Run every door under one scoped group: scoped lifecycle, first-error-wins,
+	// and sibling cancellation. gctx cancels on parent shutdown or a door's own
+	// error and always ends by Wait, so the verifier's key refresh never outlives
+	// Serve. The UDS door is primary; its error wins over the drain result below.
+	g, gctx := newServeGroup(ctx, doors.runnerVerifier)
 	g.Go(func() error { return classifyServe(doors.uds.Serve(udsListener), "compass.v1 UDS server") })
 	if doors.dev != nil {
 		g.Go(func() error { return classifyServe(doors.dev.Serve(devListener), "dev gRPC-Web server") })
@@ -967,6 +967,9 @@ type serveDoors struct {
 	linearNotify *forgeNotifyLane
 	// linearResponder drains verified Linear session events; nil when Linear is off.
 	linearResponder *linearagent.Dispatcher
+	// runnerVerifier refreshes the RunnerService door's cluster keys; nil
+	// without --runner-clusters. Serve starts it once startup cannot fail.
+	runnerVerifier keyRefresher
 }
 
 // buildDoors assembles the three compass.v1 doors off the already-built service
@@ -1094,18 +1097,33 @@ func buildDoors(
 		netServer = s
 	}
 
-	// Started after every fallible step above; key refresh ends with the serve ctx.
-	if runnerVerifier != nil {
-		runnerVerifier.Start(ctx)
-	}
-
 	// netResolver records WHICH instance reached the container delivery path; a
 	// swap here is silent and severe: runnerhub's FetchSecrets would serve
 	// `server_secrets`, handing every deployment secret to every agent container.
-	return serveDoors{
+	doors := serveDoors{
 		uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver, gitCredentials: gitCredentials,
 		linearNotify: linear.notify, linearResponder: linear.responder,
-	}, nil
+	}
+	// Only when set: a nil pointer stored in the interface would not compare nil.
+	if runnerVerifier != nil {
+		doors.runnerVerifier = runnerVerifier
+	}
+	return doors, nil
+}
+
+// keyRefresher is the verifier's background half; *auth.RunnerVerifier satisfies it.
+type keyRefresher interface {
+	Start(ctx context.Context)
+}
+
+// newServeGroup returns Serve's scoped errgroup and starts v's key refresh under
+// its ctx, which is cancelled when Wait returns. A nil v starts nothing.
+func newServeGroup(ctx context.Context, v keyRefresher) (*errgroup.Group, context.Context) {
+	g, gctx := errgroup.WithContext(ctx)
+	if v != nil {
+		v.Start(gctx)
+	}
+	return g, gctx
 }
 
 // drainSet is the shutdown-side view of what Serve built: the two buses whose

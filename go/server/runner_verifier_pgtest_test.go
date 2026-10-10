@@ -8,10 +8,52 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"connectrpc.com/connect"
+
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
+
+// The whole Serve wiring: a configured cluster reaches the network door, so a
+// projected token enrolls over TLS and learns its derived Runner ID.
+func TestServeEnrollsProjectedRunnerTokenOverNetworkDoor(t *testing.T) {
+	dir := t.TempDir()
+	key := newTestSigningKey(t, "k1")
+	clusters := filepath.Join(dir, "runner-clusters.yaml")
+	body := "clusters:\n  - name: prod\n    issuer: " + testClusterIssuer +
+		"\n    namespace: compass-runner\n    serviceAccount: compass-runner\n    jwksFile: " + writeTestJWKS(t, key) + "\n"
+	if err := os.WriteFile(clusters, []byte(body), 0o600); err != nil {
+		t.Fatalf("writing cluster file: %v", err)
+	}
+	certPath, keyPath, pool := writeSelfSignedCert(t, dir)
+	socketPath := filepath.Join(dir, "compass.sock")
+	addr := serveInBackground(t, ServeConfig{
+		SocketPath:         socketPath,
+		DatabaseDSN:        pgtest.RequireDSN(t),
+		Version:            "runner-projected-test",
+		Listen:             loopbackAny,
+		TLS:                &TLSConfig{CertPath: certPath, KeyPath: keyPath},
+		StateDir:           filepath.Join(dir, "state"),
+		RunnerClustersPath: clusters,
+	}).network
+	waitServing(t, socketPath)
+
+	token := signTestTokenAt(t, key, testClusterIssuer, time.Now())
+	client := compassv1internalconnect.NewRunnerServiceClient(newTLSRunnerHTTPClient(t, pool), "https://"+addr)
+	req := connect.NewRequest(&compassv1internal.EnrollRequest{})
+	req.Header().Set("Authorization", "Bearer "+token)
+	resp, err := client.Enroll(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Enroll with a projected token over the network door: %v", err)
+	}
+	if got := resp.Msg.GetRunnerId(); got != testNodeRunnerID {
+		t.Fatalf("runner_id = %q, want %q", got, testNodeRunnerID)
+	}
+}
 
 // A live minted Runner ID with "/" could equal a node's projected ID, so Serve
 // refuses to start with clusters configured; a revoked one no longer counts.
