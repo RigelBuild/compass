@@ -237,6 +237,25 @@ func dialSecretsClient(cmd *cobra.Command) (compassv1connect.SecretsServiceClien
 	return newSecretsClient(cfg)
 }
 
+func newAgentRepositoryClient(cfg connConfig) (compassv1connect.AgentRepositoryServiceClient, error) {
+	httpClient, err := httpClientFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return compassv1connect.NewAgentRepositoryServiceClient(
+		httpClient, cfg.serverAddr,
+		connect.WithInterceptors(&bearerToken{token: cfg.token}),
+	), nil
+}
+
+func dialAgentRepositoryClient(cmd *cobra.Command) (compassv1connect.AgentRepositoryServiceClient, error) {
+	cfg, err := resolveConn(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return newAgentRepositoryClient(cfg)
+}
+
 // newCommsClient constructs the CommsService client for the resolved
 // connection, reusing the same httpClient + bearer interceptor as newClient.
 func newCommsClient(cfg connConfig) (compassv1connect.CommsServiceClient, error) {
