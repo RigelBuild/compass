@@ -602,7 +602,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 		"agent_sessions", "agent_placements", "session_bindings",
 		"agent_session_transcript_entries", "agent_session_archive_segments",
 		"agent_delivery_cursors", "owed_mentions", "agent_activity",
-		"agent_forge_subscriptions", "forge_authored_artifacts",
+		"agent_forge_subscriptions", "forge_authored_artifacts", "agent_session_blobs",
 		"linear_agent_sessions",
 		"issues", "forge_repo_subscriptions", "forge_artifact_cursors",
 		"forge_state_transitions",

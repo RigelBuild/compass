@@ -8,3 +8,6 @@ package agentmsg
 // it a compromised in-container agent could stream one arbitrarily large
 // message. It is a small multiple of the retired 4 MiB stdout line cap.
 const MaxBytes = 16 * 1024 * 1024
+
+// MaxSessionBlobBytes leaves room for the RunnerService envelope within its read limit.
+const MaxSessionBlobBytes = MaxBytes - 1<<20

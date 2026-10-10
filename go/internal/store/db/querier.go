@@ -339,6 +339,7 @@ type Querier interface {
 	// human actor, so it is written as NULL rather than attributed to the
 	// bootstrap-admin account.
 	InsertServerSecret(ctx context.Context, arg InsertServerSecretParams) error
+	InsertSessionBlob(ctx context.Context, arg InsertSessionBlobParams) error
 	InsertSystemAccount(ctx context.Context, accountID string) error
 	// Tenant-bootstrap queries (sqlc adoption T6, RIG-3034). These replace the inline
 	// SQL literals in internal/store/tenant.go; the hand-written Store methods keep
@@ -569,6 +570,7 @@ type Querier interface {
 	ResolveTopicRenameTarget(ctx context.Context, arg ResolveTopicRenameTargetParams) (string, error)
 	ResolveVisibleAgentHandles(ctx context.Context, arg ResolveVisibleAgentHandlesParams) ([]ResolveVisibleAgentHandlesRow, error)
 	ResolveVisibleGlobalHandles(ctx context.Context, arg ResolveVisibleGlobalHandlesParams) ([]ResolveVisibleGlobalHandlesRow, error)
+	ResumeSessionBlobs(ctx context.Context, arg ResumeSessionBlobsParams) ([]ResumeSessionBlobsRow, error)
 	ReviveTopic(ctx context.Context, id string) error
 	RevokeForgeScope(ctx context.Context, arg RevokeForgeScopeParams) error
 	RevokeLiveGatewayToken(ctx context.Context, arg RevokeLiveGatewayTokenParams) (int64, error)
@@ -623,6 +625,9 @@ type Querier interface {
 	// no tenant, so the hub reads the session's tenant cross-tenant, then acts under it.
 	// :many so a session id minted in two tenants is refused, not resolved arbitrarily.
 	SessionBindingTenants(ctx context.Context, arg SessionBindingTenantsParams) ([]string, error)
+	// Session blob index queries. Every lookup remains scoped to the owning session
+	// and tenant; global object keys are reached only after this row check.
+	SessionBlobRowExists(ctx context.Context, arg SessionBlobRowExistsParams) (bool, error)
 	SessionMaxEntrySeq(ctx context.Context, sessionID string) (int64, error)
 	SessionTranscript(ctx context.Context, sessionID string) ([]SessionTranscriptRow, error)
 	// Agent-activity queries (sqlc adoption T5, RIG-3034). These replace the inline
