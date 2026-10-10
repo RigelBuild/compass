@@ -469,21 +469,21 @@ func resolveUsageEventRetention(v string) (time.Duration, error) {
 // forgeFlags holds the RIG-1810/RIG-2883 forge CLI flag pointers, registered as
 // a group so run() stays short (they mirror the S3 flag set's precedence).
 type forgeFlags struct {
-	repos                  *string
-	host                   *string
-	ca                     *string
-	appID                  *string
-	installationID         *string
-	appKeySecret           *string
-	appWebhook             *string
-	reviewerAppID          *string
-	reviewerInstallationID *string
-	reviewerAppKeySecret   *string
-	linearClientID         *string
-	linearClientSecret     *string
-	linearWebhook          *string
-	enforceScopes          *string
-	scopeGrants            *string
+	repos                    *string
+	host                     *string
+	ca                       *string
+	appID                    *string
+	installationID           *string
+	appKeySecret             *string
+	appWebhook               *string
+	reviewerAppID            *string
+	reviewerInstallationID   *string
+	reviewerAppKeySecret     *string
+	linearClientID           *string
+	linearClientSecret       *string
+	linearWebhook            *string
+	scopeEnforcementDisabled *string
+	scopeGrants              *string
 }
 
 // registerForgeFlags declares the forge flags on the given FlagSet and returns
@@ -546,9 +546,8 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 				"against. Defaults to $COMPASS_FORGE_LINEAR_WEBHOOK_SECRET. The Linear "+
 				"data-change/session arm runs iff this is declared, independent of the "+
 				"GitHub App gate."),
-		enforceScopes: fs.String("forge-enforce-scopes", "",
-			"true gates agent forge writes on per-account scope grants; false or empty "+
-				"leaves writes ungated. Defaults to $COMPASS_FORGE_ENFORCE_SCOPES."),
+		scopeEnforcementDisabled: fs.String("forge-disable-scope-enforcement", "",
+			"Disable per-account grant enforcement for agent forge writes (single-trust-domain Dogfood only). Defaults to $COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT, then false."),
 		scopeGrants: fs.String("forge-scope-grants", "",
 			"Comma-separated user scope grants seeded at boot, each "+
 				"account:provider:host:repo with provider github or linear and repo * for a "+
@@ -560,21 +559,21 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 // to resolveForge (the pure input->output core, unit-tested directly).
 func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 	return resolveForge(forgeInputs{
-		repos:                  firstNonEmpty(*f.repos, os.Getenv("COMPASS_FORGE_REPOS")),
-		host:                   firstNonEmpty(*f.host, os.Getenv("COMPASS_FORGE_HOST")),
-		ca:                     firstNonEmpty(*f.ca, os.Getenv("COMPASS_FORGE_CA")),
-		appID:                  firstNonEmpty(*f.appID, os.Getenv("COMPASS_FORGE_APP_ID")),
-		installationID:         firstNonEmpty(*f.installationID, os.Getenv("COMPASS_FORGE_INSTALLATION_ID")),
-		appKeySecret:           firstNonEmpty(*f.appKeySecret, os.Getenv("COMPASS_FORGE_APP_KEY_SECRET")),
-		appWebhook:             firstNonEmpty(*f.appWebhook, os.Getenv("COMPASS_FORGE_APP_WEBHOOK_SECRET")),
-		reviewerAppID:          firstNonEmpty(*f.reviewerAppID, os.Getenv("COMPASS_FORGE_REVIEWER_APP_ID")),
-		reviewerInstallationID: firstNonEmpty(*f.reviewerInstallationID, os.Getenv("COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID")),
-		reviewerAppKeySecret:   firstNonEmpty(*f.reviewerAppKeySecret, os.Getenv("COMPASS_FORGE_REVIEWER_APP_KEY_SECRET")),
-		linearClientID:         firstNonEmpty(*f.linearClientID, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_ID")),
-		linearClientSecret:     firstNonEmpty(*f.linearClientSecret, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_SECRET")),
-		linearWebhook:          firstNonEmpty(*f.linearWebhook, os.Getenv("COMPASS_FORGE_LINEAR_WEBHOOK_SECRET")),
-		enforceScopes:          firstNonEmpty(*f.enforceScopes, os.Getenv("COMPASS_FORGE_ENFORCE_SCOPES")),
-		scopeGrants:            firstNonEmpty(*f.scopeGrants, os.Getenv("COMPASS_FORGE_SCOPE_GRANTS")),
+		repos:                    firstNonEmpty(*f.repos, os.Getenv("COMPASS_FORGE_REPOS")),
+		host:                     firstNonEmpty(*f.host, os.Getenv("COMPASS_FORGE_HOST")),
+		ca:                       firstNonEmpty(*f.ca, os.Getenv("COMPASS_FORGE_CA")),
+		appID:                    firstNonEmpty(*f.appID, os.Getenv("COMPASS_FORGE_APP_ID")),
+		installationID:           firstNonEmpty(*f.installationID, os.Getenv("COMPASS_FORGE_INSTALLATION_ID")),
+		appKeySecret:             firstNonEmpty(*f.appKeySecret, os.Getenv("COMPASS_FORGE_APP_KEY_SECRET")),
+		appWebhook:               firstNonEmpty(*f.appWebhook, os.Getenv("COMPASS_FORGE_APP_WEBHOOK_SECRET")),
+		reviewerAppID:            firstNonEmpty(*f.reviewerAppID, os.Getenv("COMPASS_FORGE_REVIEWER_APP_ID")),
+		reviewerInstallationID:   firstNonEmpty(*f.reviewerInstallationID, os.Getenv("COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID")),
+		reviewerAppKeySecret:     firstNonEmpty(*f.reviewerAppKeySecret, os.Getenv("COMPASS_FORGE_REVIEWER_APP_KEY_SECRET")),
+		linearClientID:           firstNonEmpty(*f.linearClientID, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_ID")),
+		linearClientSecret:       firstNonEmpty(*f.linearClientSecret, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_SECRET")),
+		linearWebhook:            firstNonEmpty(*f.linearWebhook, os.Getenv("COMPASS_FORGE_LINEAR_WEBHOOK_SECRET")),
+		scopeEnforcementDisabled: firstNonEmpty(*f.scopeEnforcementDisabled, os.Getenv("COMPASS_FORGE_DISABLE_SCOPE_ENFORCEMENT")),
+		scopeGrants:              firstNonEmpty(*f.scopeGrants, os.Getenv("COMPASS_FORGE_SCOPE_GRANTS")),
 	})
 }
 
@@ -582,21 +581,21 @@ func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 // resolveForge core maps onto server.ForgeConfig. A struct rather than a long
 // positional list so a new knob is a named field, not another unlabeled arg.
 type forgeInputs struct {
-	repos                  string
-	host                   string
-	ca                     string
-	appID                  string
-	installationID         string
-	appKeySecret           string
-	appWebhook             string
-	reviewerAppID          string
-	reviewerInstallationID string
-	reviewerAppKeySecret   string
-	linearClientID         string
-	linearClientSecret     string
-	linearWebhook          string
-	enforceScopes          string
-	scopeGrants            string
+	repos                    string
+	host                     string
+	ca                       string
+	appID                    string
+	installationID           string
+	appKeySecret             string
+	appWebhook               string
+	reviewerAppID            string
+	reviewerInstallationID   string
+	reviewerAppKeySecret     string
+	linearClientID           string
+	linearClientSecret       string
+	linearWebhook            string
+	scopeEnforcementDisabled string
+	scopeGrants              string
 }
 
 // resolveForge turns the forge inputs (already flag-then-env resolved) into the
@@ -627,10 +626,10 @@ func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 	if err != nil {
 		return server.ForgeConfig{}, err
 	}
-	enforce := false
-	if in.enforceScopes != "" {
-		if enforce, err = strconv.ParseBool(in.enforceScopes); err != nil {
-			return server.ForgeConfig{}, fmt.Errorf("invalid --forge-enforce-scopes %q: %w", in.enforceScopes, err)
+	disableScopeEnforcement := false
+	if in.scopeEnforcementDisabled != "" {
+		if disableScopeEnforcement, err = strconv.ParseBool(in.scopeEnforcementDisabled); err != nil {
+			return server.ForgeConfig{}, fmt.Errorf("invalid --forge-disable-scope-enforcement %q: %w", in.scopeEnforcementDisabled, err)
 		}
 	}
 	grants, err := parseForgeScopeGrants(in.scopeGrants)
@@ -644,7 +643,7 @@ func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
 		LinearClientIDSecretName: in.linearClientID,
 		LinearClientSecretName:   in.linearClientSecret,
 		LinearWebhookSecretName:  in.linearWebhook,
-		EnforceScopes:            enforce,
+		ScopeEnforcementDisabled: disableScopeEnforcement,
 		ScopeGrants:              grants,
 		App: server.ForgeAppConfig{
 			AppID:                id,
