@@ -137,13 +137,11 @@ Each stage is a graduation, never a gate — a user may stay at any stage.
    The counterfactual is not "that user on a container tier"; it is that user
    staying on their existing agent with the same exposure and none of
    Compass.
-2. **Embedded-local (podman)** — the low-friction onboarding front door
-   ([DL-319](../../designs/decisions/ui/DL-319.md): "`mode="embedded"`
-   returns as the low-friction onboarding / local-dev front door — the app
-   spawns/supervises a LOCAL stack via rootless podman on the user's own
-   machine"), with zero-config mode selection (DL-320: "absent → embedded
-   (the zero-config onboarding default returns)"). Real isolation, still on
-   your own box.
+2. **Embedded-local (podman)** — the local-stack option in the native app's
+   first-run chooser. When `app.toml` is absent and neither `--mode` nor
+   `COMPASS_APP_MODE` is set, the app offers embedded-local or a server
+   connection. It saves the chosen config to `app.toml` once and never rewrites
+   an existing file. Real isolation, still on your own box.
 3. **Self-host graduation** — always-on operation on a dedicated box: the
    podman entry tier on any VPS (no `/dev/kvm` needed), or the microVM tier
    on a KVM-capable machine. Client mode is the recommended steady state
@@ -172,14 +170,13 @@ This spec mixes current behavior with ruled strategy. The line:
 
 - **Current:** the podman and microVM backends behind `SelectBackend`
   (`go/internal/runtime/microvm.go:117-125`), podman as the default, egress
-  enforcement on both, and the trust-model split itself (DL-325, Active).
+  enforcement on both, the trust-model split itself (DL-325, Active), and the
+  native app's first-run chooser with one-time `app.toml` persistence (DL-406,
+  Active; DL-319 retains the embedded-local product direction).
 - **Not yet built:** the **host tier** in its entirety — there is today no
   host/process backend and no `"host"` value in `SelectBackend`. Its design
   lives in the
   [host runtime tier record](../../designs/infra/runtime/compass-host-runtime-tier/design.md).
-- **Not yet built:** the embedded-local front door's app architecture
-  (DL-319/DL-320's dual-mode revival) is designed in the compass-native
-  lane's embedded-revival record and lands there.
 - **Future work, not designed:** an OS-sandbox egress mode for the host tier
   (bubblewrap / sandbox-exec) is a possible later addition; nothing in this
   spec depends on it.

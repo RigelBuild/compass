@@ -26,6 +26,7 @@ package e2e
 // time.Sleep, no polling, no retries.
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/appconfig"
 	"github.com/RigelBuild/compass/go/internal/bridge"
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
@@ -169,24 +171,45 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	// the door as a bearer, never on a command line.
 	assertTokenNotInCmdlines(t, f.RuntimeDir(), f.AdminToken())
 
-	// A client-mode app.toml carries mode/server_url/ca_cert but NEVER the token
-	// (the token lives in the tokenstore, DL-109). NOTE: this is a
-	// design-conformance placeholder, not regression coverage — compass-app has
-	// no app.toml WRITER yet (embedded.go/main.go only Load it), so this
-	// constructs the TOML the client setup would write and asserts the shape.
-	// The real hygiene coverage is the /proc scan + tokenstore legs above; when a
-	// production client-mode config writer lands, point this at it instead of a
-	// test-authored literal so it catches a real leak.
-	appToml := "mode = \"client\"\n" +
-		"server_url = " + strconv.Quote(f.ServerURL()) + "\n" +
-		"ca_cert = " + strconv.Quote(f.CAPath()) + "\n"
+	// Exercise the production SaveClient writer.
 	appTomlPath := filepath.Join(t.TempDir(), "app.toml")
-	if err := os.WriteFile(appTomlPath, []byte(appToml), 0o600); err != nil {
-		t.Fatalf("write client-mode app.toml: %v", err)
+	if _, err := appconfig.SaveClient(appTomlPath, appconfig.Config{
+		Mode:      appconfig.ModeClient,
+		ServerURL: f.ServerURL(),
+	}, caPEM); err != nil {
+		t.Fatalf("save client-mode app.toml: %v", err)
 	}
 	raw, err := os.ReadFile(appTomlPath)
 	if err != nil {
 		t.Fatalf("read client-mode app.toml: %v", err)
+	}
+	saved, err := appconfig.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse client-mode app.toml: %v", err)
+	}
+	if saved.Mode != appconfig.ModeClient {
+		t.Fatalf("saved mode = %s, want client", saved.Mode)
+	}
+	wantURL, err := appconfig.NormalizeServerURL(f.ServerURL())
+	if err != nil {
+		t.Fatalf("normalize fixture server URL: %v", err)
+	}
+	if saved.ServerURL != wantURL {
+		t.Fatalf("saved server URL = %q, want %q", saved.ServerURL, wantURL)
+	}
+	if filepath.Dir(saved.CACert) != filepath.Dir(appTomlPath) {
+		t.Fatalf("saved CA path = %q, want a file beside app.toml", saved.CACert)
+	}
+	caName := filepath.Base(saved.CACert)
+	if match, err := filepath.Match("server-ca-*.pem", caName); err != nil || !match {
+		t.Fatalf("saved CA filename = %q, want server-ca-*.pem", caName)
+	}
+	savedCA, err := os.ReadFile(saved.CACert)
+	if err != nil {
+		t.Fatalf("read saved CA copy: %v", err)
+	}
+	if !bytes.Equal(savedCA, caPEM) {
+		t.Fatal("saved CA copy does not match fixture CA")
 	}
 	if strings.Contains(string(raw), f.AdminToken()) {
 		t.Fatal("client-mode app.toml contains the admin token substring; the token must never be persisted in config")

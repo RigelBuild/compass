@@ -66,15 +66,20 @@ directory (the sidecar build loop in `app-bundle/build.sh`).
 
 ### 3. Launch with no `app.toml`
 
-The resolved `app.toml` path is `${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. Do not create that file
-for this part, and remove one left by an earlier client smoke. An absent file
-resolves to embedded mode, the zero-config default
-(`Load` in `go/internal/appconfig/appconfig.go`: "zero-config default"), so a leftover client config
-silently makes this part launch in the wrong mode:
+Use a temporary config home so the smoke does not remove or replace a user
+configuration. With no `app.toml` and no `--mode` or `COMPASS_APP_MODE`
+override, launch opens the first-run chooser. Choose **Run Compass on this
+computer**; the app runs preflight in the window. After preflight succeeds, it
+writes `mode = "embedded"` once and asks you to quit and reopen Compass. It
+never rewrites an existing config file.
+
+Deleting `app.toml` does not stop a lingering embedded stack; use **Quit and
+stop stack** before removing the config file (Approach A1: deleting `app.toml`
+brings back the chooser but leaves the stack running).
 
 ```bash
-APP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml"
-# no app.toml: this part is the zero-config path
+ECONFIG=$(mktemp -d)
+APP_CONFIG="$ECONFIG/compass/app.toml"
 rm -f "$APP_CONFIG"
 ```
 
@@ -106,20 +111,29 @@ prepends that same `bin/` directory for the supervised sidecars
 `compass-stack` wins even when an ambient one is on PATH, which is what the
 launch below relies on.
 
-Pin the stack's state directory and socket for the smoke. Left unset they
-default under `$HOME/.compass` (`resolveStateDir` in
-`go/cmd/compass-app/client.go`), which mixes smoke state into the real
-dev-box install and leaves nothing safe to delete afterwards:
+Pin the embedded stack's state directory and socket. Left unset they default
+under `$HOME/.compass` (`resolveStateDir` in
+`go/cmd/compass-app/client.go`), which mixes smoke state into the real dev-box
+install and leaves nothing safe to delete afterwards:
 
 ```bash
 ESTATE=$(mktemp -d); ERT=$(mktemp -d)
 BINENV=$(nix build --no-link --print-out-paths \
   -f tools/toolchain/gtk-e2e-env.nix bin)
-PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
+```
+
+Launch the app with the pinned paths:
+
+```bash
+XDG_CONFIG_HOME="$ECONFIG" PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
   xvfb-run -a "$BUNDLE/bin/compass-app" \
     --state-dir "$ESTATE" --socket "$ERT/server.sock" \
-    2>"$ERT/app.log"
+    2>>"$ERT/app.log"
 ```
+
+Quit Compass, then rerun only the launch block above with the same pinned paths.
+The append redirection preserves the first launch's log. The next launch starts
+the embedded stack under those paths.
 
 `xvfb-run` is the same virtual-framebuffer setup the client part uses, needed on
 a headless box.
@@ -177,7 +191,7 @@ Pinning them in step 3 is what makes this safe to delete: an unpinned run writes
 into the real `$HOME/.compass` install instead.
 
 ```bash
-rm -rf "$PREFIX" "$ESTATE" "$ERT"
+rm -rf "$ECONFIG" "$PREFIX" "$ESTATE" "$ERT"
 ```
 
 Embedded mode stores no bearer, so there is no keychain entry to clear here
@@ -237,61 +251,198 @@ tar -xzf app-bundle/compass-app-<version>-linux-amd64.tar.gz -C "$PREFIX"
 BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 ```
 
-The resolved client `app.toml` path is `${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. Create that file
-with `mode = "client"`, the HTTPS `server_url`, and `ca_cert` set to
-`$CSTATE/tls.crt` (`Parse` in `go/internal/appconfig/appconfig.go`: "mode" and "ca_cert").
-Put the bearer in the connect screen, never in `app.toml` (DL-109).
+The resolved client `app.toml` path is
+`${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. For this smoke, use an
+isolated temporary config home so the app config and copied CA are safe to
+remove during cleanup:
 
 ```bash
-APP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml"
-mkdir -p "$(dirname "$APP_CONFIG")"
-cat >"$APP_CONFIG" <<EOF
-mode = "client"
-server_url = "https://127.0.0.1:50052"
-ca_cert = "$CSTATE/tls.crt"
-EOF
+CCONFIG=$(mktemp -d)
+APP_CONFIG="$CCONFIG/compass/app.toml"
+rm -f "$APP_CONFIG"
 ```
 
-### 3. Launch, connect, and render the board
+Launch with no file and no `--mode` or `COMPASS_APP_MODE` override. The app
+opens the first-run chooser. It writes the config and CA copy only after a
+successful connection, and never rewrites an existing file. Tokenstore saves
+the bearer under the exact URL, using the OS keychain or its 0600-file fallback;
+the token is never written to `app.toml` (DL-109).
+
+`NormalizeServerURL` removes a root trailing slash. A token stored under the
+slash-terminated URL is not found under the normalized origin because tokenstore
+matches the exact URL. Paste it once more to save it under the origin
+(`NormalizeServerURL` in `go/internal/appconfig/appconfig.go` and `Store.Read`
+in `go/internal/tokenstore/tokenstore.go`).
+
+### 3. Launch, validate setup, connect, and render the board
 
 ```bash
 BINENV=$(nix build --no-link --print-out-paths \
   -f tools/toolchain/gtk-e2e-env.nix bin)
-PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
+XDG_CONFIG_HOME="$CCONFIG" PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
   xvfb-run -a "$BUNDLE/bin/compass-app" \
-    --state-dir "$CAPPSTATE" --socket "$CRT/server.sock" 2>"$CRT/app.log"
+    --state-dir "$CAPPSTATE" --socket "$CRT/server.sock" \
+    2>>"$CRT/app.log" &
 ```
 
-With no stored token, the app paints the connect screen. The server URL is
-read-only and comes from `app.toml`; the bearer is the `$CRT/admin-token` value.
-Paste it and connect. The shell probes `GetServerInfo`, calls `WhoAmI`, writes
-the token to the OS keychain, arms the bearer injector, and boots into the
-board (`bridgeService.Connect` in `go/cmd/compass-app/bridge_service.go`: "tokenstore"). Confirm
-the board renders live over the TLS door.
+The app runs in the background so you can use the same interactive shell for
+the checks below while its window stays open. With no config file or mode
+override, it opens the first-run chooser. It writes the config and copied CA
+only after a successful connection, and never rewrites an existing file.
+Tokenstore saves the bearer under the exact URL, using the OS keychain or its
+0600-file fallback; the token is never written to `app.toml` (DL-109).
+
+`NormalizeServerURL` removes a root trailing slash. A token stored under the
+slash-terminated URL is not found under the normalized origin because tokenstore
+matches the exact URL. Paste it once more to save it under the origin
+(`NormalizeServerURL` in `go/internal/appconfig/appconfig.go` and `Store.Read`
+in `go/internal/tokenstore/tokenstore.go`).
+
+Before connecting, open a second window via **Window → New Window** while the
+first window still shows the chooser. Confirm the second window also shows the
+chooser. In the first window, choose **Connect to a server**.
+
+Test each rejected URL in the first window's form. Enter `http://x` and a
+temporary non-secret value in the token field, then click **Connect**. Confirm
+the form shows a validation message, then check that no config was written:
+
+```bash
+test ! -e "$APP_CONFIG" || echo "FAIL: invalid URL wrote app.toml" >&2
+```
+
+Enter a temporary non-secret token value again, since the form clears the token
+after each attempt. Repeat with `https://h/p`. Confirm its validation message,
+then check again:
+
+```bash
+test ! -e "$APP_CONFIG" || echo "FAIL: invalid URL wrote app.toml" >&2
+```
+
+In the first window, enter `https://127.0.0.1:50052`, choose
+`$CSTATE/tls.crt`, paste the token from `$CRT/admin-token`, then connect. The
+shell probes `GetServerInfo`, calls `WhoAmI`, writes the config and CA copy,
+stores the token, arms the bearer injector, and boots into the board
+(`connectServerChoice` in `go/cmd/compass-app/bridge_service.go`). Confirm the
+board renders live over the TLS door. The still-open second window receives
+the setup decision and boots as the configured client: confirm it leaves the
+chooser and reaches the board without another connect. The refusal of a late
+embedded choice is covered by `TestSetupServiceChooseEmbeddedGateRefusals`.
+
+Inspect the saved config in this same shell while the app is running. Confirm
+that it contains the origin and that `ca_cert` names the copied
+`server-ca-*.pem` file beside `app.toml`:
+
+```bash
+cat "$APP_CONFIG"
+CA_CERT=$(sed -n 's/^ca_cert = "\(.*\)"$/\1/p' "$APP_CONFIG")
+test "$(sed -n 's/^server_url = "\(.*\)"$/\1/p' "$APP_CONFIG")" = \
+  "https://127.0.0.1:50052" || echo "FAIL: unexpected server_url" >&2
+test "$(dirname "$CA_CERT")" = "$(dirname "$APP_CONFIG")" || \
+  echo "FAIL: CA file is not beside app.toml" >&2
+test -f "$CA_CERT" || echo "FAIL: CA file is missing" >&2
+case "$(basename "$CA_CERT")" in
+  server-ca-*.pem) ;;
+  *) echo "FAIL: unexpected CA filename: $CA_CERT" >&2 ;;
+esac
+```
 
 ### 4. Drive one agent session to a running container
 
 From the board, start one agent session. Confirm the session reaches a running
 container under the stack's podman runtime.
 
-### 5. Quit and relaunch from the keychain
+### 5. Quit and relaunch from tokenstore
 
-Quit the app, then relaunch it:
+Quit the app, then relaunch it with the same isolated config home and pinned
+state paths:
 
 ```bash
-PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
+XDG_CONFIG_HOME="$CCONFIG" PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
   xvfb-run -a "$BUNDLE/bin/compass-app" \
     --state-dir "$CAPPSTATE" --socket "$CRT/server.sock" \
-    2>>"$CRT/app.log"
+    2>>"$CRT/app.log" &
 ```
 
-Auto-connect reads the stored bearer from the OS keychain and boots straight to
-the board with no connect screen or bearer re-entry
-(`bridgeService.Connect` in `go/cmd/compass-app/bridge_service.go`:
-"use the stored one"). The keychain entry is keyed
-by service `compass-app` and the server URL.
+Auto-connect reads the stored bearer from tokenstore's selected backend (the OS
+keychain or 0600-file fallback) and boots straight to the board, with no connect
+screen or bearer re-entry (`bridgeService.Connect` in
+`go/cmd/compass-app/bridge_service.go`: `tokens.Read(serverURL)`). The keyring
+entry is keyed by service `compass-app` and the exact server URL.
+
+Clear the stored origin token with the helper:
+
+```bash
+"$BUNDLE/bin/compass-clear-token" \
+  --server-url "https://127.0.0.1:50052" \
+  --state-dir "$CAPPSTATE"
+```
+
+Quit the app after the helper completes. Relaunch it with the same launch
+command above. The configured-client form should show the server URL as text
+and one token input. Paste the token again to reconnect, then confirm the board
+renders over TLS. Reconnecting stores the token under the origin again; §6
+clears it after the remaining checks.
 
 ### 6. Cleanup
+
+Quit Compass after the configured-client check. Clear the token stored under
+the normalized origin; this step is required on both tokenstore backends:
+
+```bash
+"$BUNDLE/bin/compass-clear-token" \
+  --server-url "https://127.0.0.1:50052" \
+  --state-dir "$CAPPSTATE"
+```
+
+If the keyring backend is in use and an older build may have stored the token
+under a trailing-slash URL, clear that optional legacy key too:
+
+```bash
+"$BUNDLE/bin/compass-clear-token" \
+  --server-url "https://127.0.0.1:50052/" \
+  --state-dir "$CAPPSTATE"
+```
+
+The helper is silent on success and exits 0 if it found a mismatched URL or
+nothing, so verify the result below. On the file-fallback path, confirm that
+the token file is absent:
+
+```bash
+if test -e "$CAPPSTATE/remote-token"; then echo "FAIL: remote-token still present" >&2
+else echo "file-backend token cleared"; fi
+```
+
+Which backend is bound depends on whether a Secret Service is reachable. On a
+keyring backend, probe both exact URL keys without printing either secret:
+
+```bash
+if err=$(secret-tool lookup service compass-app \
+     username "https://127.0.0.1:50052" 2>&1 >/dev/null); then
+  echo "keychain entry STILL PRESENT for normalized origin"
+elif [ -n "$err" ]; then
+  echo "LOOKUP FAILED, entry state UNKNOWN: $err"
+else
+  echo "keychain entry cleared for normalized origin"
+fi
+
+if err=$(secret-tool lookup service compass-app \
+     username "https://127.0.0.1:50052/" 2>&1 >/dev/null); then
+  echo "keychain entry STILL PRESENT for trailing-slash URL"
+elif [ -n "$err" ]; then
+  echo "LOOKUP FAILED, entry state UNKNOWN: $err"
+else
+  echo "keychain entry absent for trailing-slash URL"
+fi
+```
+
+`secret-tool lookup` exits 1 both when the entry is absent and when it cannot
+reach a Secret Service. The three-way checks separate those cases, and treat
+an absent `secret-tool` as UNKNOWN. The `2>&1 >/dev/null` order captures stderr
+first and then sends stdout to `/dev/null`, so the token is never captured.
+Use `lookup`, never `secret-tool search`: `search` loads and prints the secret.
+
+The client stack runs independently of the app. Stop it with `compass-stack down`
+before removing the pinned state:
 
 ```bash
 compass-stack down \
@@ -300,80 +451,20 @@ compass-stack down \
   --image ghcr.io/rigelbuild/compass-agent:latest
 ```
 
-The bearer outlives all of that. Step 3 stored it under the OS keychain service
-`compass-app`, keyed by the server URL, or in a 0600 `remote-token` file under
-the state dir when no keychain backend is available (`tokenFileName` and `New` in
-`go/internal/tokenstore/tokenstore.go`: "fallback file under the caller-supplied
-state dir"). The packaged app has no logout action, so use the bundled
-`compass-clear-token` helper. Its `run` function in
-`go/cmd/compass-clear-token/main.go` reads the stored entry only to confirm the
-URL matches, discarding the token, then passes the URL to `Store.Delete`. The
-credential is never printed. That read is what makes the helper URL-scoped: a
-matching URL deletes its token; a mismatched URL or an absent token leaves the
-stored file intact. Use the exact URL from `app.toml`:
+Remove the isolated client config home and pinned smoke state:
 
 ```bash
-"$BUNDLE/bin/compass-clear-token" \
-  --server-url "https://127.0.0.1:50052" \
-  --state-dir "$CAPPSTATE"
-```
-
-The helper is silent on success, and exits 0 whether it deleted a token, found a
-mismatched URL, or found nothing at all. So confirm the outcome yourself rather
-than reading exit 0 as proof. On the file-fallback path the entry is a file:
-
-```bash
-if test -e "$CAPPSTATE/remote-token"; then echo "FAIL: remote-token still present" >&2
-else echo "file-backend token cleared"; fi
-```
-
-Which backend is bound depends on whether a Secret Service is reachable. A
-headless smoke box usually has none, so the file check above is the one that
-applies. If a keychain is bound instead, the entry lives under service
-`compass-app` keyed by the server URL, outside the state directory, so the
-`rm -rf` below cannot clear it. Probe it by exact key, keeping the secret off
-the capture and separating a real miss from a probe that never ran:
-
-```bash
-if err=$(secret-tool lookup service compass-app \
-     username "https://127.0.0.1:50052" 2>&1 >/dev/null); then
-  echo "keychain entry STILL PRESENT"
-elif [ -n "$err" ]; then
-  echo "LOOKUP FAILED, entry state UNKNOWN: $err"
-else
-  echo "keychain entry cleared"
-fi
-```
-
-`secret-tool lookup` exits 1 both when the entry is absent and when it cannot
-reach a Secret Service, so a bare `||` would report "cleared" for a probe that
-never ran — the same false all-clear this step exists to prevent. The three-way
-form above separates them, and treats an absent `secret-tool` as UNKNOWN too.
-The `2>&1 >/dev/null` order matters: stderr is duplicated onto the capture
-first, then fd 1 is sent to `/dev/null`, so the secret is never captured.
-
-Use `lookup`, never `secret-tool search`: `search` loads and prints the secret
-itself, which would dump a still-live bearer into the terminal on exactly the
-path this check exists to catch. `lookup` needs the exact key, so it also
-confirms the URL scoping. A typo in `--server-url` is a silent no-op, and that
-is what this check catches.
-
-After this check, remove the client configuration and the pinned smoke state:
-
-```bash
-rm -f "$APP_CONFIG"
-rm -rf "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
+rm -rf "$CCONFIG" "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 ```
 
 ## Manual checklist
 
 ### Embedded mode
 
-- [ ] no `app.toml` is present, so launch selects embedded mode (§Part (a), 3)
-- [ ] rootless podman and podman 4.3 or newer are available, and the agent image
-      is pulled so bring-up does not cold-pull (§Part (a), 1)
-- [ ] the bundle contains the shell and four sidecars (§Part (a), 2)
-- [ ] **Quit and stop stack** (not plain close) closes the app; `podman ps -a
+- [ ] choosing **Run Compass on this computer** completes preflight, writes
+      `mode = "embedded"` once, then asks for a reopen; the same pinned launch
+      command starts the stack on the next run (§Part (a), 3)
+- [ ] **Quit and stop stack** closes the app; `podman ps -a
       --filter name='^compass-(postgres|otel-collector|nats|gateway|agent)-'` is empty
       and `$ERT/app.log` reports no teardown failure (§Part (a), 5)
 - [ ] the pinned `--state-dir`/`--socket` paths are removed and `$HOME/.compass`
@@ -381,19 +472,22 @@ rm -rf "$PREFIX" "$CSTATE" "$CAPPSTATE" "$CRT"
 
 ### Client mode
 
-- [ ] the resolved client `app.toml` has `mode = "client"`, an HTTPS
-      `server_url`, and `ca_cert`; it has no bearer (§Part (b), 2)
-- [ ] the app launches with a read-only server URL and one bearer input (§Part
-      (b), 3)
-- [ ] pasting the bearer connects and the board renders over the TLS door (§Part
-      (b), 3)
+- [ ] with no `app.toml`, `--mode`, or `COMPASS_APP_MODE` override, the app opens
+      the first-run chooser (§Part (b), 3)
+- [ ] open **Window → New Window** while both windows show the chooser; complete
+      the invalid-URL checks and connect in the first window, then confirm the
+      second window leaves the chooser and reaches the board (§Part (b), 3)
+- [ ] before the successful connection, `http://x` and `https://h/p` each show a
+      validation message and leave `app.toml` absent (§Part (b), 3)
+- [ ] a valid connection writes client `app.toml` with the normalized origin and
+      copied `server-ca-*.pem`; the bearer is not written (§Part (b), 3)
 - [ ] one agent session reaches a running container (§Part (b), 4)
-- [ ] quit and relaunch auto-connects from the OS keychain, with no connect
-      screen or bearer re-entry (§Part (b), 5)
-- [ ] the stored bearer for the matching server URL is cleared, confirmed by an
-      observation and not by the helper's exit code: `$CAPPSTATE/remote-token` is
-      absent on the file-fallback path, or the keychain probe reports the entry
-      cleared.
-      A probe reporting UNKNOWN does not satisfy this — re-run it where the
-      keychain is reachable. A mismatched or absent URL leaves the stored file
-      intact, and the client `app.toml` is removed (§Part (b), 6)
+- [ ] quit and relaunch auto-connects from tokenstore, with no connect screen or
+      bearer re-entry (§Part (b), 5)
+- [ ] after clearing the origin token and relaunching, the configured-client form
+      shows the server URL as text and one token input; pasting the token connects
+      (§Part (b), 5)
+- [ ] clear the normalized-origin token; on a keyring backend, check both the
+      normalized and trailing-slash URL entries with `secret-tool lookup`; on the
+      file fallback, confirm its token file is absent (§Part (b), 6)
+- [ ] the isolated config home and pinned smoke state are removed (§Part (b), 6)
