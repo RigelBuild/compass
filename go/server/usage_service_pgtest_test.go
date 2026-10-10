@@ -154,14 +154,14 @@ func TestUsageSeriesScopesAccounts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetUsageSeries: %v", err)
 			}
-			if len(resp.Msg.Buckets) != tc.wantCount {
-				t.Fatalf("bucket count = %d, want %d (%+v)", len(resp.Msg.Buckets), tc.wantCount, resp.Msg.Buckets)
+			if len(resp.Msg.GetBuckets()) != tc.wantCount {
+				t.Fatalf("bucket count = %d, want %d (%+v)", len(resp.Msg.GetBuckets()), tc.wantCount, resp.Msg.GetBuckets())
 			}
-			if tc.wantCount > 0 && resp.Msg.Buckets[0].InputTokens != tc.wantInput {
-				t.Fatalf("input tokens = %d, want %d", resp.Msg.Buckets[0].InputTokens, tc.wantInput)
+			if tc.wantCount > 0 && resp.Msg.GetBuckets()[0].GetInputTokens() != tc.wantInput {
+				t.Fatalf("input tokens = %d, want %d", resp.Msg.GetBuckets()[0].GetInputTokens(), tc.wantInput)
 			}
-			if tc.wantBucket != nil && !proto.Equal(resp.Msg.Buckets[0], tc.wantBucket) {
-				t.Fatalf("bucket = %+v, want %+v", resp.Msg.Buckets[0], tc.wantBucket)
+			if tc.wantBucket != nil && !proto.Equal(resp.Msg.GetBuckets()[0], tc.wantBucket) {
+				t.Fatalf("bucket = %+v, want %+v", resp.Msg.GetBuckets()[0], tc.wantBucket)
 			}
 		})
 	}
@@ -209,8 +209,8 @@ func TestUsageSeriesNetworkDoor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("network GetUsageSeries: %v", err)
 	}
-	if len(resp.Msg.Buckets) != 1 || resp.Msg.Buckets[0].InputTokens != 17 {
-		t.Fatalf("network buckets = %+v, want one bucket with 17 input tokens", resp.Msg.Buckets)
+	if len(resp.Msg.GetBuckets()) != 1 || resp.Msg.GetBuckets()[0].GetInputTokens() != 17 {
+		t.Fatalf("network buckets = %+v, want one bucket with 17 input tokens", resp.Msg.GetBuckets())
 	}
 }
 

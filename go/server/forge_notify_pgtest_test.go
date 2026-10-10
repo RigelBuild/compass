@@ -55,7 +55,7 @@ func (fixedChecksRoller) RollUp(_ context.Context, _ string, _ uint64, _, _ stri
 // seedNotifySubscription creates an agent + its owning user and an artifact-scope
 // subscription at the coordinate, returning the agent account id and the
 // subscription id. The FK on agent_forge_subscriptions requires a real agent.
-func seedNotifySubscription(t *testing.T, st *store.Store, repo string, kind store.ForgeArtifactKind, number uint64) (store.AccountID, string) {
+func seedNotifySubscription(t *testing.T, st *store.Store, repo string, kind store.ForgeArtifactKind, number uint64) (store.AccountID, string) { //nolint:unparam // read-clarity signature: repo names the coordinate each test subscribes to; currently constant, not dead code.
 	t.Helper()
 	ctx := context.Background() // test root
 	owner, err := st.CreateUser(ctx, store.NewUser{Handle: "notify-owner", DisplayName: "Notify Owner"})
@@ -82,7 +82,7 @@ func seedNotifySubscription(t *testing.T, st *store.Store, repo string, kind sto
 
 // deliveredRevision reads one subscription's per-subscriber DELIVERY cursor
 // directly — the W3 assertion surface (no public reader exposes it in isolation).
-func deliveredRevision(t *testing.T, st *store.Store, agent store.AccountID, subID string) string {
+func deliveredRevision(t *testing.T, st *store.Store, subID string) string {
 	t.Helper()
 	// AdvanceForgeDeliveredRevision is the only writer; the value is otherwise
 	// read only via ListForgeNotifyTargets, so enumerate and match the sub.
@@ -192,7 +192,7 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{})
 
 	// Precondition: never observed → no fetch cursor, empty delivered_revision.
-	if got := deliveredRevision(t, st, agent, subID); got != "" {
+	if got := deliveredRevision(t, st, subID); got != "" {
 		t.Fatalf("precondition delivered_revision = %q, want empty", got)
 	}
 
@@ -255,7 +255,7 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 	}
 
 	// (2) delivered_revision did NOT advance (W3 — the route never touches it).
-	if got := deliveredRevision(t, st, agent, subID); got != "" {
+	if got := deliveredRevision(t, st, subID); got != "" {
 		t.Fatalf("delivered_revision = %q after route, want empty (W3: the route never advances it)", got)
 	}
 }
@@ -277,7 +277,7 @@ func TestForgeNotifyNoLiveSessionIsNonFatal(t *testing.T) {
 		number = uint64(7)
 		url    = "https://github.com/a/b/issues/7#c1"
 	)
-	agent, subID := seedNotifySubscription(t, st, repo, store.ForgeArtifactKindIssue, number)
+	_, subID := seedNotifySubscription(t, st, repo, store.ForgeArtifactKindIssue, number)
 
 	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: forgeTestHost}
 	disp := &recordingDispatcher{noSession: true}
@@ -302,7 +302,7 @@ func TestForgeNotifyNoLiveSessionIsNonFatal(t *testing.T) {
 
 	// delivered_revision stays unadvanced (W3 — the ack arm owns it, and the
 	// dispatch never landed anyway).
-	if got := deliveredRevision(t, st, agent, subID); got != "" {
+	if got := deliveredRevision(t, st, subID); got != "" {
 		t.Fatalf("delivered_revision = %q after a no-session route, want empty", got)
 	}
 
@@ -486,7 +486,7 @@ func TestForgeNotifySuppressAdvancesCaughtUpCursor(t *testing.T) {
 	if err := st.AdvanceForgeDeliveredRevision(ctx, agentID, subID, cur.Revision); err != nil {
 		t.Fatalf("simulate ack: %v", err)
 	}
-	if got := deliveredRevision(t, st, agentID, subID); got != cur.Revision {
+	if got := deliveredRevision(t, st, subID); got != cur.Revision {
 		t.Fatalf("precondition: delivered_revision = %q, want the caught-up cursor revision %q", got, cur.Revision)
 	}
 
@@ -502,7 +502,7 @@ func TestForgeNotifySuppressAdvancesCaughtUpCursor(t *testing.T) {
 	if err != nil || after == nil {
 		t.Fatalf("LoadForgeArtifactCursor (post): %v (cur=%v)", err, after)
 	}
-	if got := deliveredRevision(t, st, agentID, subID); got != after.Revision {
+	if got := deliveredRevision(t, st, subID); got != after.Revision {
 		t.Fatalf("delivered_revision = %q after suppress, want the advanced route revision %q", got, after.Revision)
 	}
 }
@@ -534,7 +534,7 @@ func TestForgeNotifySuppressDoesNotAdvanceTrailingCursor(t *testing.T) {
 	if err := router.Route(ctx, notifyCommentEvent(repo, number, "https://github.com/a/b/issues/43#c1")); err != nil {
 		t.Fatalf("Route (human comment): %v", err)
 	}
-	if got := deliveredRevision(t, st, agentID, subID); got != "" {
+	if got := deliveredRevision(t, st, subID); got != "" {
 		t.Fatalf("precondition: delivered_revision = %q, want empty (trailing, unacked)", got)
 	}
 
@@ -542,7 +542,7 @@ func TestForgeNotifySuppressDoesNotAdvanceTrailingCursor(t *testing.T) {
 	if err := router.Route(ctx, selfCommentEvent(repo, number, "https://github.com/a/b/issues/43#c2", owner, agent)); err != nil {
 		t.Fatalf("Route (self comment): %v", err)
 	}
-	if got := deliveredRevision(t, st, agentID, subID); got != "" {
+	if got := deliveredRevision(t, st, subID); got != "" {
 		t.Fatalf("delivered_revision = %q after suppress, want empty (trailing sub NOT advanced — the E1 gap survives for the sweep)", got)
 	}
 }

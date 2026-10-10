@@ -898,12 +898,7 @@ func TestSpawnDMOpenFailureNeverRollsBackSpawn(t *testing.T) {
 
 // containsAccountID reports whether ids contains want.
 func containsAccountID(ids []store.AccountID, want store.AccountID) bool {
-	for _, id := range ids {
-		if id == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, want)
 }
 
 // An over-long client_request_id is refused before CreateAgent, so the handle

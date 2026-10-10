@@ -28,7 +28,7 @@ func TestServeBindsSocketServesClientAndCleansUpOnCancel(t *testing.T) {
 	cfg := ServeConfig{
 		SocketPath:  socketPath,
 		Version:     "serve-test",
-		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
+		DatabaseDSN: pgtest.RequireDSN(t),
 	}
 	provisionMasterKeyProvider(t, &cfg)
 	provisionNats(t, &cfg)
@@ -96,7 +96,7 @@ func TestServeShutdownIsClean(t *testing.T) {
 	cfg := ServeConfig{
 		SocketPath:  socketPath,
 		Version:     "serve-test",
-		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
+		DatabaseDSN: pgtest.RequireDSN(t),
 	}
 	provisionMasterKeyProvider(t, &cfg)
 	provisionNats(t, &cfg)
@@ -158,7 +158,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	cfg := ServeConfig{
 		SocketPath:  socketPath,
 		Version:     "serve-test",
-		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
+		DatabaseDSN: pgtest.RequireDSN(t),
 	}
 	provisionMasterKeyProvider(t, &cfg)
 	provisionNats(t, &cfg)

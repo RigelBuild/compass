@@ -13,10 +13,13 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // recordingHook is a coordination hook that records the manager ids it was
@@ -83,6 +86,33 @@ func coordChannels(t *testing.T, s *Store, owner AccountID) []Channel {
 		t.Fatalf("scan coordination channels: %v", err)
 	}
 	return chs
+}
+
+// scanChannels reads channel rows and populates each channel's member set with
+// one follow-up query over the whole id set, so member loading is O(1)
+// round-trips rather than one per channel.
+func scanChannels(ctx context.Context, q db.DBTX, rows pgx.Rows) ([]Channel, error) {
+	var channels []Channel
+	for rows.Next() {
+		var (
+			id, name, groupID     string
+			kind                  int16
+			postPolicy            int16
+			ownerAccountID        string
+			mandatorySubscription bool
+		)
+		if err := rows.Scan(&id, &name, &groupID, &kind, &postPolicy, &ownerAccountID, &mandatorySubscription); err != nil {
+			return nil, fmt.Errorf("store: scan channel: %w", err)
+		}
+		channels = append(channels, channelFromRow(id, name, groupID, kind, postPolicy, ownerAccountID, mandatorySubscription))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate channels: %w", err)
+	}
+	if err := loadChannelMembers(ctx, q, channels); err != nil {
+		return nil, err
+	}
+	return channels, nil
 }
 
 // memberSet returns channel members as a set for order-independent comparison.

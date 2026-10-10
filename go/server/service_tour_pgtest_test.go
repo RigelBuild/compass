@@ -30,8 +30,8 @@ func TestNonAdminBearerCanUseTourRPCs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("non-admin GetTourState: %v", err)
 	}
-	if state.Msg.Outcome != compassv1.TourOutcome_TOUR_OUTCOME_UNSPECIFIED {
-		t.Fatalf("initial outcome = %v, want unspecified", state.Msg.Outcome)
+	if state.Msg.GetOutcome() != compassv1.TourOutcome_TOUR_OUTCOME_UNSPECIFIED {
+		t.Fatalf("initial outcome = %v, want unspecified", state.Msg.GetOutcome())
 	}
 
 	claim := connect.NewRequest(&compassv1.ClaimTourStartRequest{StepId: "welcome"})
@@ -40,7 +40,7 @@ func TestNonAdminBearerCanUseTourRPCs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("non-admin ClaimTourStart: %v", err)
 	}
-	if !claimed.Msg.Claimed {
+	if !claimed.Msg.GetClaimed() {
 		t.Fatal("first non-admin ClaimTourStart returned false, want true")
 	}
 
@@ -59,8 +59,8 @@ func TestNonAdminBearerCanUseTourRPCs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("non-admin GetTourState after SetTourState: %v", err)
 	}
-	if state.Msg.Outcome != compassv1.TourOutcome_TOUR_OUTCOME_DISMISSED || state.Msg.StepId != "last-step" {
-		t.Fatalf("state after set = %v at %q, want dismissed at last-step", state.Msg.Outcome, state.Msg.StepId)
+	if state.Msg.GetOutcome() != compassv1.TourOutcome_TOUR_OUTCOME_DISMISSED || state.Msg.GetStepId() != "last-step" {
+		t.Fatalf("state after set = %v at %q, want dismissed at last-step", state.Msg.GetOutcome(), state.Msg.GetStepId())
 	}
 }
 
