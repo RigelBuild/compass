@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/http"
 	"reflect"
 	"sync"
 	"testing"
@@ -19,15 +20,23 @@ import (
 )
 
 type fakeGitCredentialGrants struct {
-	repos  []string
-	err    error
-	mu     sync.Mutex
-	listed chan struct{}
+	repos          []string
+	reposByAccount map[store.AccountID][]string
+	owners         map[store.AccountID]store.AccountID
+	err            error
+	ownerErr       error
+	ownerCalls     int
+	mu             sync.Mutex
+	listed         chan struct{}
 }
 
-func (g *fakeGitCredentialGrants) ListForgeScopeRepos(context.Context, store.AccountID, store.ForgeProvider, string) ([]string, error) {
+func (g *fakeGitCredentialGrants) ListForgeScopeRepos(_ context.Context, account store.AccountID, _ store.ForgeProvider, _ string) ([]string, error) {
 	g.mu.Lock()
-	repos, err := append([]string(nil), g.repos...), g.err
+	repos, ok := g.reposByAccount[account]
+	if !ok {
+		repos = g.repos
+	}
+	repos, err := append([]string(nil), repos...), g.err
 	listed := g.listed
 	g.mu.Unlock()
 	if listed != nil {
@@ -37,6 +46,28 @@ func (g *fakeGitCredentialGrants) ListForgeScopeRepos(context.Context, store.Acc
 		}
 	}
 	return repos, err
+}
+
+func (g *fakeGitCredentialGrants) AgentOwner(_ context.Context, agent store.AccountID) (store.AccountID, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.ownerCalls++
+	return g.owners[agent], g.ownerErr
+}
+
+func (g *fakeGitCredentialGrants) setRepos(account store.AccountID, repos []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reposByAccount == nil {
+		g.reposByAccount = make(map[store.AccountID][]string)
+	}
+	g.reposByAccount[account] = append([]string(nil), repos...)
+}
+
+func (g *fakeGitCredentialGrants) ownerCallCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.ownerCalls
 }
 
 type fakeGitCredentialMinter struct {
@@ -50,6 +81,7 @@ type fakeGitCredentialMinter struct {
 	mu           sync.Mutex
 	started      chan struct{}
 	release      chan struct{}
+	errByCall    []error
 }
 
 func (m *fakeGitCredentialMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (forge.ScopedToken, error) {
@@ -58,10 +90,14 @@ func (m *fakeGitCredentialMinter) Mint(ctx context.Context, repos []string, perm
 	m.repos = append(m.repos, append([]string(nil), repos...))
 	copyPerms := make(map[string]string, len(perms))
 	maps.Copy(copyPerms, perms)
+	callIndex := m.calls - 1
 	m.perms = append(m.perms, copyPerms)
-	index := min(m.calls-1, len(m.tokens)-1)
+	index := min(callIndex, len(m.tokens)-1)
 	token := m.tokens[index]
 	expiresAt, granted, err, started, release := m.expiresAt, m.grantedRepos, m.err, m.started, m.release
+	if callIndex < len(m.errByCall) && m.errByCall[callIndex] != nil {
+		err = m.errByCall[callIndex]
+	}
 	m.mu.Unlock()
 	if started != nil {
 		select {
@@ -115,10 +151,10 @@ func (r *fakeAgentSecretResolver) ResolveFor(context.Context, store.AccountID, s
 	return append([]secrets.ResolvedSecret(nil), r.resolved...), r.err
 }
 
-func newGitCredentialTestBroker(grants gitCredentialGrantLister, minter gitCredentialMinter, now *time.Time, signal func() error) *gitCredentialBroker {
+func newGitCredentialTestBroker(credentialStore gitCredentialStore, minter gitCredentialMinter, now *time.Time, signal func() error) *gitCredentialBroker {
 	return &gitCredentialBroker{
 		host:     "github.com",
-		grants:   grants,
+		store:    credentialStore,
 		minter:   minter,
 		log:      slog.New(slog.DiscardHandler),
 		signal:   signal,
@@ -137,6 +173,163 @@ func resolveBrokeredSecret(t *testing.T, resolver *brokeredSecretResolver) []sec
 	return got
 }
 
+func TestGitCredentialBrokerAgentRepositoryWidensMintedSet(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"owner/base"})
+	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_widened"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+
+	tok, ok := broker.credential(context.Background(), "agent-id")
+	if !ok || tok != "ghs_widened" {
+		t.Fatalf("credential = (%q, %v), want widened token", tok, ok)
+	}
+	if got, want := minter.mintRepos()[0], []string{"base", "workstream"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mint repositories = %v, want %v", got, want)
+	}
+}
+
+func TestGitCredentialBrokerCrossOwnerAgentRowFallsBackToOwnerGrants(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"owner/base"})
+	grants.setRepos("agent-id", []string{"owner/base", "other/workstream"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+
+	tok, ok := broker.credential(context.Background(), "agent-id")
+	if !ok || tok != "ghs_owner" {
+		t.Fatalf("credential = (%q, %v), want owner-grants token", tok, ok)
+	}
+	if got, want := minter.mintRepos(), [][]string{{"base"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mint repository sets = %v, want %v", got, want)
+	}
+	if grants.ownerCallCount() != 1 {
+		t.Fatalf("owner lookups = %d, want one", grants.ownerCallCount())
+	}
+}
+
+func TestGitCredentialBrokerOversizedAgentScopeFallsBackToOwnerGrants(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"owner/base"})
+	repos := make([]string, gitCredentialMaxRepos)
+	for i := range repos {
+		repos[i] = fmt.Sprintf("owner/agent-%d", i)
+	}
+	grants.setRepos("agent-id", append([]string{"owner/base"}, repos...))
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_owner"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+
+	tok, ok := broker.credential(context.Background(), "agent-id")
+	if !ok || tok != "ghs_owner" {
+		t.Fatalf("credential = (%q, %v), want owner-grants token", tok, ok)
+	}
+	if got, want := minter.mintRepos(), [][]string{{"base"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mint repository sets = %v, want %v", got, want)
+	}
+}
+
+func TestGitCredentialBrokerCachesScopeRejectedMintAndFallsBack(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"owner/base"})
+	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"unused", "ghs_owner"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{&forge.StatusError{Status: http.StatusUnprocessableEntity, Message: "scope rejected"}},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+
+	for range 2 {
+		tok, ok := broker.credential(context.Background(), "agent-id")
+		if !ok || tok != "ghs_owner" {
+			t.Fatalf("credential = (%q, %v), want owner-grants token", tok, ok)
+		}
+	}
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls = %d, want one full-set mint and one owner mint", minter.callCount())
+	}
+	if got, want := minter.mintRepos(), [][]string{{"base", "workstream"}, {"base"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mint repository sets = %v, want %v", got, want)
+	}
+}
+
+func TestGitCredentialBrokerRateLimitServesStaleFullScopeWithoutOwnerLookup(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"owner/base"})
+	grants.setRepos("agent-id", []string{"owner/base", "owner/workstream"})
+	minter := &fakeGitCredentialMinter{
+		tokens: []string{"ghs_full"}, expiresAt: now.Add(time.Hour),
+		errByCall: []error{nil, &forge.StatusError{Status: http.StatusTooManyRequests, Message: "try later"}},
+	}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_full" {
+		t.Fatalf("initial credential = (%q, %v), want full-set token", tok, ok)
+	}
+	now = now.Add(time.Hour - gitCredentialRefreshLead)
+	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_full" {
+		t.Fatalf("credential after 429 = (%q, %v), want stale full-set token", tok, ok)
+	}
+	if minter.callCount() != 2 {
+		t.Fatalf("mint calls = %d, want initial mint and one failed refresh", minter.callCount())
+	}
+	if grants.ownerCallCount() != 0 {
+		t.Fatalf("owner lookups = %d, want none after transient failure", grants.ownerCallCount())
+	}
+}
+
+func TestGitCredentialBrokerOwnerWildcardDominatesAgentRows(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{"*"})
+	grants.setRepos("agent-id", []string{"*", "other/workstream"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_wildcard"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+
+	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_wildcard" {
+		t.Fatalf("credential = (%q, %v), want wildcard token", tok, ok)
+	}
+	if got := minter.mintRepos(); len(got) != 1 || got[0] != nil {
+		t.Fatalf("mint repository sets = %v, want one installation-wide request", got)
+	}
+}
+
+func TestGitCredentialBrokerOwnerLookupErrorStopsFallback(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{
+		owners:   map[store.AccountID]store.AccountID{"agent-id": "owner-id"},
+		ownerErr: errors.New("owner lookup failed"),
+	}
+	grants.setRepos("agent-id", []string{"owner/base", "other/workstream"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"must-not-mint"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+
+	if tok, ok := broker.credential(context.Background(), "agent-id"); ok || tok != "" {
+		t.Fatalf("credential = (%q, %v), want none after owner lookup error", tok, ok)
+	}
+	if minter.callCount() != 0 {
+		t.Fatalf("mint calls = %d, want none", minter.callCount())
+	}
+}
+
+func TestGitCredentialBrokerAgentRowsMintWithoutOwnerGrants(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	grants := &fakeGitCredentialGrants{owners: map[store.AccountID]store.AccountID{"agent-id": "owner-id"}}
+	grants.setRepos("owner-id", []string{})
+	grants.setRepos("agent-id", []string{"owner/workstream"})
+	minter := &fakeGitCredentialMinter{tokens: []string{"ghs_agent"}, expiresAt: now.Add(time.Hour)}
+	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+
+	if tok, ok := broker.credential(context.Background(), "agent-id"); !ok || tok != "ghs_agent" {
+		t.Fatalf("credential = (%q, %v), want agent-row token", tok, ok)
+	}
+	if grants.ownerCallCount() != 0 {
+		t.Fatalf("owner lookups = %d, want none for a valid agent scope", grants.ownerCallCount())
+	}
+}
 func TestGitCredentialBrokerMintsNarrowedGrant(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	grants := &fakeGitCredentialGrants{repos: []string{"owner/zeta", "owner/alpha"}}
