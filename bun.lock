@@ -311,6 +311,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/runner-manifests": {
+      "name": "@compass/runner-manifests",
+      "bin": {
+        "runner-manifests-render": "./render.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/sea-ref-gate": {
       "name": "@compass/sea-ref-gate",
       "bin": {
@@ -581,6 +591,8 @@
     "@compass/renovate-preflight": ["@compass/renovate-preflight@workspace:tools/renovate-preflight"],
 
     "@compass/runner-image": ["@compass/runner-image@workspace:tools/runner-image"],
+
+    "@compass/runner-manifests": ["@compass/runner-manifests@workspace:tools/runner-manifests"],
 
     "@compass/sea-ref-gate": ["@compass/sea-ref-gate@workspace:tools/sea-ref-gate"],
 

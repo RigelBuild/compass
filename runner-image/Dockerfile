@@ -23,9 +23,9 @@
 # proving the loader comes from the closure rather than the base.
 #
 # The pinned digest is the nonroot variant (uid/gid 65532). The Runner needs no
-# root: /dev/kvm access is granted by supplementary group at the pod layer.
-# Pinned by digest, never by tag — GHCR-style tag mutability gives no
-# immutability guarantee.
+# root: the device plugin grants the cgroup allowance and node mode 0666 grants
+# DAC access. Pinned by digest, never by tag — GHCR-style tag mutability gives
+# no immutability guarantee.
 FROM gcr.io/distroless/static-debian12@sha256:c0f429e16b13e583da7e5a6ec20dd656d325d88e6819cafe0adb0828976529dc
 
 # The realised nix closure: the Runner binary, the KVM userland and the guest

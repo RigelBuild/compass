@@ -237,7 +237,8 @@ capacity sizing); this record fixes the *shape*.
     §Privilege shape.
   - `spec.nodeName` via `fieldRef` into the environment, so the Runner can
     identify its node.
-  - A scrape annotation for the metrics endpoint.
+  - No scrape annotation: the Runner pushes metrics over OTLP
+    (`OTEL_EXPORTER_OTLP_ENDPOINT`) and serves no scrape endpoint.
   - **Liveness probe: conservative, or absent.** A probe-driven container
     restart is the same full-session teardown as a rollout (§Privilege shape,
     restart semantics) — pid 1 dies and every session on the node dies with

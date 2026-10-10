@@ -1,0 +1,14 @@
+{
+	"name": "@compass/runner-manifests",
+	"private": true,
+	"type": "module",
+	"description": "Render operator-configured Kubernetes manifests for compass-runner.",
+	"module": "render.ts",
+	"bin": {
+		"runner-manifests-render": "./render.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
