@@ -651,462 +651,482 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 	// (a) The op captured at the gateway/agent seam parses to the SAME trace id
 	// as the PostMessage handler span — the one-turn-one-trace claim itself,
 	// measured on the WIRE (what the agent actually receives), not on a span.
-	t.Run("a: the agent-seam op carries the PostMessage handler span's trace id", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		recip := w.seedAgentMember(t, "seamrecip", true)
-		const recipSess = "sess-seamrecip-1"
-		bringSessionLive(t, w, exp, recip.ID, containerFor("seamrecip"), recipSess)
-
-		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-		resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "one turn, one trace")
-
-		waitForControlDelivers(t, w.runner, recipSess, 1)
-
-		origin := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure)
-		if got, _ := spanAttr(origin, messageIDAttr); got != msgID {
-			t.Fatalf("origin span %s = %q, want the appended message %q", messageIDAttr, got, msgID)
-		}
-		want := origin.SpanContext.TraceID()
-
-		op := tracedOpFor(t, w.runner, recipSess, msgID)
-		if op.kind != controlDeliver {
-			t.Fatalf("seam op kind = %v, want a plain deliver (a subscribed, unmentioned recipient)", op.kind)
-		}
-		if got := traceIDOfTraceparent(t, ctx, "the agent-seam deliver op", op.traceparent); got != want {
-			t.Fatalf("seam op trace id = %s, want the PostMessage handler span's %s — the turn's trace did not reach the agent", got, want)
-		}
-		// The response header is (c)'s subject; asserting it is set here keeps
-		// this fixture's own precondition honest.
-		if resp.Header().Get(traceResponseHdr) == "" {
-			t.Fatal("enabled path set no traceresponse header on the post")
-		}
-	})
+	t.Run("a: the agent-seam op carries the PostMessage handler span's trace id", traceContinuityA)
 
 	// (b) Every recorded server hop span of the turn shares that one trace id —
 	// ONE CONNECTED TRACE, not a set of correlated fragments.
-	t.Run("b: every recorded server hop span shares the one trace id", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		recip := w.seedAgentMember(t, "hoprecip", true)
-		const recipSess = "sess-hoprecip-1"
-		bringSessionLive(t, w, exp, recip.ID, containerFor("hoprecip"), recipSess)
-
-		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-		_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "every hop, one trace")
-
-		waitForDeliverOfMessage(t, w.runner, recipSess, msgID)
-
-		// FIFO BARRIER, not a sleep: gatedDispatch completes inside the consumer's
-		// serial fabric callback before the next event is handled, so a LATER post's
-		// deliver proves the first dispatch returned. Waited BY IDENTITY (a re-
-		// delivered first message would shift any fixed index; position never held).
-		barrierMsgID := w.post(t, "barrier: a plain post completes the earlier dispatch")
-		waitForDeliverOfMessage(t, w.runner, recipSess, barrierMsgID)
-
-		spans := exp.GetSpans()
-		want := originServerSpan(t, spans, compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
-
-		hops := spansForMessage(spans, msgID)
-		// Non-vacuous by construction: the origin handler span AND at least one
-		// delivery.dispatch hop span must both be present, or "they all agree"
-		// would be a statement about a one-element set.
-		if len(hops) < 2 {
-			t.Fatalf("spans carrying %s=%q = %d, want >= 2 (the origin handler span plus at least one delivery hop)", messageIDAttr, msgID, len(hops))
-		}
-		for _, s := range hops {
-			if got := s.SpanContext.TraceID(); got != want {
-				t.Fatalf("hop span %q trace id = %s, want the turn's %s — the trace is fragmented, not connected", s.Name, got, want)
-			}
-		}
-	})
+	t.Run("b: every recorded server hop span shares the one trace id", traceContinuityB)
 
 	// (c) The traceresponse header on the PostMessage response carries the same
 	// trace id — the UI/PostHog handle on the turn.
-	t.Run("c: the traceresponse header carries the turn's trace id", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		recip := w.seedAgentMember(t, "hdrrecip", true)
-		const recipSess = "sess-hdrrecip-1"
-		bringSessionLive(t, w, exp, recip.ID, containerFor("hdrrecip"), recipSess)
-
-		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-		resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "header carries the trace")
-
-		waitForControlDelivers(t, w.runner, recipSess, 1)
-
-		want := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID().String()
-
-		hdr := resp.Header().Get(traceResponseHdr)
-		if hdr == "" {
-			t.Fatal("response carried no traceresponse header on the enabled path")
-		}
-		if !w3cTraceResponse.MatchString(hdr) {
-			t.Fatalf("traceresponse %q is not the W3C 00-… grammar", hdr)
-		}
-		if got := hdr[3:35]; got != want {
-			t.Fatalf("traceresponse trace id = %q, want the handler span's %q (header %q)", got, want, hdr)
-		}
-		// The same turn, same trace: the header the caller reads and the op the
-		// agent receives name ONE trace id.
-		op := tracedOpFor(t, w.runner, recipSess, msgID)
-		if got := traceIDOfTraceparent(t, ctx, "the agent-seam deliver op", op.traceparent).String(); got != want {
-			t.Fatalf("seam op trace id = %q, want the traceresponse header's %q", got, want)
-		}
-	})
+	t.Run("c: the traceresponse header carries the turn's trace id", traceContinuityC)
 
 	// (d) THE OFF-BY-DEFAULT INVARIANT: with the endpoint unset — no global SDK
 	// provider, the shipped default — the identical flow still DISPATCHES, with
 	// an empty traceparent and zero recorded spans. Absence of tracing must never
 	// break delivery.
-	t.Run("d: disabled dispatches successfully with an empty traceparent and no spans", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		// (d) brings the session live while tracing is still ON so it can use the
-		// start-edge sweep gate, and only THEN pins the provider to no-op. Ordering
-		// is load-bearing: the pin must precede the door build (otelconnect captures
-		// the global provider at construction) and the post below it.
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-		recip := w.seedAgentMember(t, "offrecip", true)
-		const recipSess = "sess-offrecip-1"
-		bringSessionLive(t, w, exp, recip.ID, containerFor("offrecip"), recipSess)
-
-		// NOW pin the disabled state: install NO SDK provider (the shipped disabled
-		// state), PINNED to an explicit no-op rather than left alone so a leaked
-		// provider cannot weaken the assertion. Cleanup is LIFO: this restore runs
-		// before installGlobalSpanExporter's own.
-		prevTP := otel.GetTracerProvider()
-		prevProp := otel.GetTextMapPropagator()
-		otel.SetTracerProvider(noop.NewTracerProvider())
-		t.Cleanup(func() {
-			otel.SetTracerProvider(prevTP)
-			otel.SetTextMapPropagator(prevProp)
-		})
-		// A recorder deliberately NOT made global (house idiom at
-		// internal/runner/otel_test.go:98-103): nothing routes spans into a
-		// non-global provider, so its emptiness is a catch-net, not the proof. The
-		// real disabled-path proof is the empty traceparent + absent header below.
-		offExp := tracetest.NewInMemoryExporter()
-		offTP := sdktrace.NewTracerProvider(sdktrace.WithSyncer(offExp))
-		t.Cleanup(func() {
-			_ = offTP.Shutdown(context.Background()) // deferred test cleanup: the sync exporter already holds any spans, so this error is not actionable
-		})
-		// Non-vacuous counterpart to offExp: exp IS fed by a global SDK provider,
-		// right up to the pin above. Freezing its count here means the post below
-		// can be asserted to add NOTHING, which proves the pin actually took
-		// effect — the one absence claim in (d) that does not rely on offExp.
-		spansAtPin := len(exp.GetSpans())
-
-		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-		resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "delivery survives tracing being off")
-
-		// The load-bearing half: delivery still happens.
-		waitForControlDelivers(t, w.runner, recipSess, 1)
-		op := tracedOpFor(t, w.runner, recipSess, msgID)
-		if op.kind != controlDeliver {
-			t.Fatalf("disabled-path op kind = %v, want a plain deliver", op.kind)
-		}
-		if op.traceparent != "" {
-			t.Fatalf("disabled-path op traceparent = %q, want EMPTY (no provider ⇒ no span ⇒ nothing to stamp)", op.traceparent)
-		}
-		if hdr := resp.Header().Get(traceResponseHdr); hdr != "" {
-			t.Fatalf("disabled path set traceresponse = %q, want none", hdr)
-		}
-		if got := offExp.GetSpans(); len(got) != 0 {
-			t.Fatalf("disabled path recorded %d spans, want 0", len(got))
-		}
-		if got := len(exp.GetSpans()); got != spansAtPin {
-			t.Fatalf("disabled path added %d spans to the global-fed exporter (%d -> %d), want none — the no-op pin did not take effect", got-spansAtPin, spansAtPin, got)
-		}
-	})
+	t.Run("d: disabled dispatches successfully with an empty traceparent and no spans", traceContinuityD)
 
 	// (e) CONTINUITY ACROSS THE HOLD EDGE: an agent post is HELD while its author
 	// streams and fired at the author's settle edge on the ctx-free drain loop, so
 	// only the traceparent captured at hold() and restamped at fireHeld keeps the
 	// fired deliver inside the reply turn's trace.
-	t.Run("e: a held-then-settled deliver stays in the agent post's own trace", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		author := w.seedAgentMember(t, "heldauthor", true)
-		recip := w.seedAgentMember(t, "heldrecip", true)
-		const authorSess = "sess-heldauthor-1"
-		const recipSess = "sess-heldrecip-1"
-		// BOTH live before any post: the author's live session is what makes the
-		// post take the hold arm, and the recipient's is what lets the fired
-		// deliver reach the wire.
-		bringSessionLive(t, w, exp, author.ID, containerFor("heldauthor"), authorSess)
-		bringSessionLive(t, w, exp, recip.ID, containerFor("heldrecip"), recipSess)
-
-		// The author posts over a door attributed to the AGENT, so the post has a
-		// real handler span AND an agent author (the hold arm's precondition).
-		authorClient := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, author.ID))
-		_, heldMsgID := postOverTracedDoor(t, ctx, authorClient, w.channel, "held until I settle")
-
-		// FIFO BARRIER, not a sleep: the fabric runs delivery callbacks serially and
-		// in order, so a later HUMAN post (settled at post, dispatched at once) whose
-		// deliver is observed proves the earlier agent post was already held. Same
-		// barrier idiom as the offline-mention e2e's cycle A.
-		barrierMsgID := w.post(t, "barrier: a human post settles at once")
-		barrier := waitForControlDelivers(t, w.runner, recipSess, 1)
-		if barrier[0].messageID != barrierMsgID {
-			t.Fatalf("first deliver = %q, want the barrier message %q", barrier[0].messageID, barrierMsgID)
-		}
-		// Held, therefore NOT yet dispatched: the agent post is absent from the wire.
-		for _, op := range tracedOps(w.runner) {
-			if op.messageID == heldMsgID {
-				t.Fatalf("the agent post %q dispatched before its settle edge (op %+v), want it HELD", heldMsgID, op)
-			}
-		}
-
-		// Settle fires the held set on the bare drain ctx (no active span).
-		w.consumer.OnSessionSettled(authorSess, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
-		waitForControlDelivers(t, w.runner, recipSess, 2)
-
-		want := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
-		op := tracedOpFor(t, w.runner, recipSess, heldMsgID)
-		if got := traceIDOfTraceparent(t, ctx, "the settled deliver", op.traceparent); got != want {
-			t.Fatalf("settled deliver trace id = %s, want the agent post's origin %s — continuity was lost across the settle edge", got, want)
-		}
-	})
+	t.Run("e: a held-then-settled deliver stays in the agent post's own trace", traceContinuityE)
 
 	// (f) THE CONTINUITY BOUNDARY: a SWEEP-delivered message is fresh-rooted BY
 	// DESIGN — a sweep is its own operation, not a continuation of the post that
 	// happened to be missed. So its op's trace id must DIFFER from the post's,
 	// and both must be real (a fresh root is a NEW trace, never the empty one).
-	t.Run("f: a sweep-delivered op is fresh-rooted, not the post's trace", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		// Subscribed (in the sweep set) but NOT hub-live: the post finds no live
-		// session, so nothing dispatches and the cursor sweep is the delivery path.
-		agent := w.seedAgentMember(t, "sweeprecip", true)
-
-		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-		_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "swept on the next start")
-
-		// Event-gate on the wake's wire fact, so the post is fully processed
-		// before the start edge is driven.
-		waitForStartCount(t, w.runner, 1)
-		if got := allControlDelivers(w.runner); len(got) != 0 {
-			t.Fatalf("dispatches while offline = %d, want 0 (nothing live to deliver to)", len(got))
-		}
-
-		// The agent comes live: the start-edge cursor sweep delivers, rooting its
-		// own delivery.sweep.session span.
-		const sess = "sess-sweeprecip-1"
-		w.consumer.OnSessionStarted(sess, agent.ID)
-		waitForControlDelivers(t, w.runner, sess, 1)
-
-		postTraceID := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
-		if !postTraceID.IsValid() {
-			t.Fatal("the post's own trace id is invalid; the boundary assertion would be vacuous")
-		}
-		op := tracedOpFor(t, w.runner, sess, msgID)
-		// Valid and non-empty: traceIDOfTraceparent fails on either, so a fresh
-		// root that silently stamped nothing cannot pass as "different".
-		sweepTraceID := traceIDOfTraceparent(t, ctx, "the swept deliver op", op.traceparent)
-		if sweepTraceID == postTraceID {
-			t.Fatalf("swept op trace id = %s, want a trace DIFFERENT from the post's %s (a sweep is fresh-rooted by design, never a continuation)", sweepTraceID, postTraceID)
-		}
-	})
+	t.Run("f: a sweep-delivered op is fresh-rooted, not the post's trace", traceContinuityF)
 
 	// (g) An ask-answer turn: the answer message rides the normal message rail,
 	// so its deliver must sit in the RespondToAsk handler's trace — the answer's
 	// delivery origin.
-	t.Run("g: the ask answer's deliver carries the RespondToAsk handler span's trace id", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		recip := w.seedAgentMember(t, "askrecip", true)
-		const recipSess = "sess-askrecip-1"
-		bringSessionLive(t, w, exp, recip.ID, containerFor("askrecip"), recipSess)
-
-		// The ask itself needs no span — only the ANSWER's handler span is under
-		// test — so it is posted in-process.
-		askMsgID, askID := postAsk(t, w, "Which environment?")
-		// The ask post is itself a message on the rail: gate on its deliver so the
-		// answer's deliver is unambiguously the second one.
-		askDeliver := waitForControlDelivers(t, w.runner, recipSess, 1)
-		if askDeliver[0].messageID != askMsgID {
-			t.Fatalf("first deliver = %q, want the ask message %q", askDeliver[0].messageID, askMsgID)
-		}
-
-		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-		if _, err := client.RespondToAsk(ctx, connect.NewRequest(&compassv1.RespondToAskRequest{
-			AskId:   askID,
-			Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
-		})); err != nil {
-			t.Fatalf("RespondToAsk over the traced door: %v", err)
-		}
-		waitForControlDelivers(t, w.runner, recipSess, 2)
-
-		// RespondToAskResponse carries no fields, so the answer message id is read
-		// off the handler span's own compass.message.id — the id comms stamps there
-		// (comms.go:465) — which is also what makes this the answer's origin span.
-		answerSpan := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServiceRespondToAskProcedure)
-		answerMsgID, ok := spanAttr(answerSpan, messageIDAttr)
-		if !ok || answerMsgID == "" {
-			t.Fatalf("RespondToAsk span carries no %s attribute; the answer's delivery origin is unidentifiable", messageIDAttr)
-		}
-		if answerMsgID == askMsgID {
-			t.Fatalf("RespondToAsk span %s = %q, want the NEW answer message, not the ask %q", messageIDAttr, answerMsgID, askMsgID)
-		}
-
-		op := tracedOpFor(t, w.runner, recipSess, answerMsgID)
-		want := answerSpan.SpanContext.TraceID()
-		if got := traceIDOfTraceparent(t, ctx, "the answer message's deliver op", op.traceparent); got != want {
-			t.Fatalf("answer deliver trace id = %s, want the RespondToAsk handler span's %s", got, want)
-		}
-	})
+	t.Run("g: the ask answer's deliver carries the RespondToAsk handler span's trace id", traceContinuityG)
 
 	// (h) An agent-authored post over the RunnerService door: its origin span is
 	// the otelconnect RelayCommsCall handler span. Proves it EXISTS and is a FRESH
 	// ROOT — the door REFUSING an offered parent (the Runner propagates one when
 	// tracing is on), because otelconnect's trustRemote defaults false.
-	t.Run("h: an agent-authored post's RelayCommsCall origin span is a fresh root", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		author := w.seedAgentMember(t, "relayauthor", true)
-		const authorSess = "sess-relayauthor-1"
-		bringSessionLive(t, w, exp, author.ID, containerFor("relayauthor"), authorSess)
-
-		// The door is built HERE, after the exporter: otelconnect captures the
-		// global tracer provider once, at NewInterceptor().
-		relay := newRelayRunnerClient(t, w.hub, w.store)
-		msgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "agent speaks first", "")
-
-		origin := relayOriginSpanForMessage(t, exp.GetSpans(), msgID)
-		// A fresh root is a statement about the recorded PARENT, not about trace
-		// ids: a trace-id comparison can pass by accident (two independent roots
-		// differ trivially), while a nested span would carry a valid parent.
-		if origin.Parent.IsValid() {
-			t.Fatalf("RelayCommsCall origin span parent = %s (trace %s), want NO valid parent — the agent-authored post's trace must start at this door, not continue an inbound one",
-				origin.Parent.SpanID(), origin.Parent.TraceID())
-		}
-		// The fixture must be the shipped topology: the client interceptor
-		// propagates a traceparent that otelconnect turns into one transport link.
-		// Drop it and the parent check above passes vacuously, so this keeps it
-		// honest. No trigger_traceparent, so the count isolates the transport link.
-		if len(origin.Links) != 1 {
-			t.Fatalf("origin span carries %d links, want 1 (otelconnect's transport link) — no traceparent reached the door, so this is not the shipped topology and the fresh-root assertion above is vacuous", len(origin.Links))
-		}
-		if !origin.SpanContext.TraceID().IsValid() {
-			t.Fatal("RelayCommsCall origin span has an invalid trace id; it recorded nothing, so 'fresh root' would be vacuous")
-		}
-	})
+	t.Run("h: an agent-authored post's RelayCommsCall origin span is a fresh root", traceContinuityH)
 
 	// (i) TERMINATION. A reply whose call carries a trigger_traceparent starts a
 	// NEW trace and merely LINKS back — never nests, which stops a conversation
 	// from growing one unbounded tree. Both halves asserted, plus the empty-
 	// trigger negative control that makes the positive non-vacuous.
-	t.Run("i: a reply carrying a trigger_traceparent starts a NEW trace linked to the trigger", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
-
-		author := w.seedAgentMember(t, "linkauthor", true)
-		const authorSess = "sess-linkauthor-1"
-		bringSessionLive(t, w, exp, author.ID, containerFor("linkauthor"), authorSess)
-
-		// A synthetic-but-VALID remote trigger context, parsed through the one
-		// shipped W3C helper (never string-sliced) so trigger names exactly what
-		// production's linkTrigger will parse out of the same bytes.
-		const triggerTP = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-		trigger := spanContextOfTraceparent(t, ctx, "the synthetic trigger", triggerTP)
-
-		relay := newRelayRunnerClient(t, w.hub, w.store)
-		linkedMsgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "reply to the trigger", triggerTP)
-		// The negative control, same fixture and same door: no trigger at all.
-		plainMsgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "unprompted post", "")
-
-		spans := exp.GetSpans()
-		linked := relayOriginSpanForMessage(t, spans, linkedMsgID)
-
-		// Half 1 — TERMINATION: the reply is a new trace, not a continuation.
-		if got := linked.SpanContext.TraceID(); got == trigger.TraceID() {
-			t.Fatalf("reply span trace id = %s, want a trace DIFFERENT from the trigger's %s — the reply NESTED into the trigger's trace instead of terminating it", got, trigger.TraceID())
-		}
-		// And not a child by any other route: a link is not a parent.
-		if linked.Parent.IsValid() {
-			t.Fatalf("reply span parent = %s, want none — a trigger_traceparent must produce a LINK, never a parent", linked.Parent.SpanID())
-		}
-
-		// Half 2 — the causal edge is recorded, pointing at the trigger. Selected
-		// BY ATTRIBUTE, never by position: otelconnect's server branch mints its own
-		// link from the inbound transport context, so this span legitimately carries
-		// more than one link.
-		link := triggerLinkOf(t, linked)
-		if link.TraceID() != trigger.TraceID() || link.SpanID() != trigger.SpanID() {
-			t.Fatalf("reply span trigger link = (trace %s, span %s), want the trigger's (trace %s, span %s)",
-				link.TraceID(), link.SpanID(), trigger.TraceID(), trigger.SpanID())
-		}
-
-		// The negative: with no trigger_traceparent there is no CROSS-TURN link.
-		// Without this, half 2 would also pass against an implementation that
-		// links unconditionally to something. Counted by attribute, so
-		// otelconnect's transport link does not mask the assertion.
-		plain := relayOriginSpanForMessage(t, spans, plainMsgID)
-		if n := countTriggerLinks(plain); n != 0 {
-			t.Fatalf("a post with an EMPTY trigger_traceparent carries %d cross-turn trigger links, want 0 (links=%+v)", n, plain.Links)
-		}
-	})
+	t.Run("i: a reply carrying a trigger_traceparent starts a NEW trace linked to the trigger", traceContinuityI)
 
 	// (j) The op-kind delivery counter increments — and, the load-bearing half,
 	// carries NO per-session/per-channel label. A session or channel id here is
 	// an unbounded-cardinality metric, the §Global Constraints hard rule.
-	t.Run("j: the dispatch counter increments with the op kind as its only label", func(t *testing.T) {
-		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		// The meter provider MUST precede the wire: the counter is created once at
-		// delivery.NewConsumer from the then-global meter.
-		reader := installGlobalMetricReader(t)
-		exp := installGlobalSpanExporter(t)
-		w := newMentionE2EWire(t)
+	t.Run("j: the dispatch counter increments with the op kind as its only label", traceContinuityJ)
+}
 
-		// One recipient of each op kind: a MENTIONED member is steered, a plain
-		// subscriber is delivered to — so both label values are exercised.
-		steered := w.seedAgentMember(t, "metricsteer", true)
-		delivered := w.seedAgentMember(t, "metricdeliver", true)
-		const steerSess = "sess-metricsteer-1"
-		const deliverSess = "sess-metricdeliver-1"
-		bringSessionLive(t, w, exp, steered.ID, containerFor("metricsteer"), steerSess)
-		bringSessionLive(t, w, exp, delivered.ID, containerFor("metricdeliver"), deliverSess)
+func traceContinuityA(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
 
-		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
-		_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "@metricsteer counted once, by kind")
+	recip := w.seedAgentMember(t, "seamrecip", true)
+	const recipSess = "sess-seamrecip-1"
+	bringSessionLive(t, w, exp, recip.ID, containerFor("seamrecip"), recipSess)
 
-		steer := waitForControlDelivers(t, w.runner, steerSess, 1)
-		if steer[0].kind != controlSteer || steer[0].messageID != msgID {
-			t.Fatalf("mentioned member's dispatch = %+v, want {steer, %s}", steer[0], msgID)
-		}
-		deliver := waitForControlDelivers(t, w.runner, deliverSess, 1)
-		if deliver[0].kind != controlDeliver || deliver[0].messageID != msgID {
-			t.Fatalf("plain subscriber's dispatch = %+v, want {deliver, %s}", deliver[0], msgID)
-		}
+	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
+	resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "one turn, one trace")
 
-		var rm metricdata.ResourceMetrics
-		if err := reader.Collect(ctx, &rm); err != nil {
-			t.Fatalf("collect metrics: %v", err)
+	waitForControlDelivers(t, w.runner, recipSess, 1)
+
+	origin := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure)
+	if got, _ := spanAttr(origin, messageIDAttr); got != msgID {
+		t.Fatalf("origin span %s = %q, want the appended message %q", messageIDAttr, got, msgID)
+	}
+	want := origin.SpanContext.TraceID()
+
+	op := tracedOpFor(t, w.runner, recipSess, msgID)
+	if op.kind != controlDeliver {
+		t.Fatalf("seam op kind = %v, want a plain deliver (a subscribed, unmentioned recipient)", op.kind)
+	}
+	if got := traceIDOfTraceparent(t, ctx, "the agent-seam deliver op", op.traceparent); got != want {
+		t.Fatalf("seam op trace id = %s, want the PostMessage handler span's %s — the turn's trace did not reach the agent", got, want)
+	}
+	// The response header is (c)'s subject; asserting it is set here keeps
+	// this fixture's own precondition honest.
+	if resp.Header().Get(traceResponseHdr) == "" {
+		t.Fatal("enabled path set no traceresponse header on the post")
+	}
+}
+
+func traceContinuityB(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	recip := w.seedAgentMember(t, "hoprecip", true)
+	const recipSess = "sess-hoprecip-1"
+	bringSessionLive(t, w, exp, recip.ID, containerFor("hoprecip"), recipSess)
+
+	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
+	_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "every hop, one trace")
+
+	waitForDeliverOfMessage(t, w.runner, recipSess, msgID)
+
+	// FIFO BARRIER, not a sleep: gatedDispatch completes inside the consumer's
+	// serial fabric callback before the next event is handled, so a LATER post's
+	// deliver proves the first dispatch returned. Waited BY IDENTITY (a re-
+	// delivered first message would shift any fixed index; position never held).
+	barrierMsgID := w.post(t, "barrier: a plain post completes the earlier dispatch")
+	waitForDeliverOfMessage(t, w.runner, recipSess, barrierMsgID)
+
+	spans := exp.GetSpans()
+	want := originServerSpan(t, spans, compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
+
+	hops := spansForMessage(spans, msgID)
+	// Non-vacuous by construction: the origin handler span AND at least one
+	// delivery.dispatch hop span must both be present, or "they all agree"
+	// would be a statement about a one-element set.
+	if len(hops) < 2 {
+		t.Fatalf("spans carrying %s=%q = %d, want >= 2 (the origin handler span plus at least one delivery hop)", messageIDAttr, msgID, len(hops))
+	}
+	for _, s := range hops {
+		if got := s.SpanContext.TraceID(); got != want {
+			t.Fatalf("hop span %q trace id = %s, want the turn's %s — the trace is fragmented, not connected", s.Name, got, want)
 		}
-		// The cardinality rule is enforced inside dispatchedOpKindCounts: it fails
-		// if any data point carries an attribute other than the op kind.
-		counts := dispatchedOpKindCounts(t, &rm)
-		if counts["steer"] != 1 {
-			t.Fatalf("%s{steer} = %d, want 1 (counts=%v)", dispatchedMetricName, counts["steer"], counts)
-		}
-		if counts["deliver"] != 1 {
-			t.Fatalf("%s{deliver} = %d, want 1 (counts=%v)", dispatchedMetricName, counts["deliver"], counts)
-		}
+	}
+}
+
+func traceContinuityC(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	recip := w.seedAgentMember(t, "hdrrecip", true)
+	const recipSess = "sess-hdrrecip-1"
+	bringSessionLive(t, w, exp, recip.ID, containerFor("hdrrecip"), recipSess)
+
+	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
+	resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "header carries the trace")
+
+	waitForControlDelivers(t, w.runner, recipSess, 1)
+
+	want := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID().String()
+
+	hdr := resp.Header().Get(traceResponseHdr)
+	if hdr == "" {
+		t.Fatal("response carried no traceresponse header on the enabled path")
+	}
+	if !w3cTraceResponse.MatchString(hdr) {
+		t.Fatalf("traceresponse %q is not the W3C 00-… grammar", hdr)
+	}
+	if got := hdr[3:35]; got != want {
+		t.Fatalf("traceresponse trace id = %q, want the handler span's %q (header %q)", got, want, hdr)
+	}
+	// The same turn, same trace: the header the caller reads and the op the
+	// agent receives name ONE trace id.
+	op := tracedOpFor(t, w.runner, recipSess, msgID)
+	if got := traceIDOfTraceparent(t, ctx, "the agent-seam deliver op", op.traceparent).String(); got != want {
+		t.Fatalf("seam op trace id = %q, want the traceresponse header's %q", got, want)
+	}
+}
+
+func traceContinuityD(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	// (d) brings the session live while tracing is still ON so it can use the
+	// start-edge sweep gate, and only THEN pins the provider to no-op. Ordering
+	// is load-bearing: the pin must precede the door build (otelconnect captures
+	// the global provider at construction) and the post below it.
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+	recip := w.seedAgentMember(t, "offrecip", true)
+	const recipSess = "sess-offrecip-1"
+	bringSessionLive(t, w, exp, recip.ID, containerFor("offrecip"), recipSess)
+
+	// NOW pin the disabled state: install NO SDK provider (the shipped disabled
+	// state), PINNED to an explicit no-op rather than left alone so a leaked
+	// provider cannot weaken the assertion. Cleanup is LIFO: this restore runs
+	// before installGlobalSpanExporter's own.
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTracerProvider(noop.NewTracerProvider())
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
 	})
+	// A recorder deliberately NOT made global (house idiom at
+	// internal/runner/otel_test.go:98-103): nothing routes spans into a
+	// non-global provider, so its emptiness is a catch-net, not the proof. The
+	// real disabled-path proof is the empty traceparent + absent header below.
+	offExp := tracetest.NewInMemoryExporter()
+	offTP := sdktrace.NewTracerProvider(sdktrace.WithSyncer(offExp))
+	t.Cleanup(func() {
+		_ = offTP.Shutdown(context.Background()) // deferred test cleanup: the sync exporter already holds any spans, so this error is not actionable
+	})
+	// Non-vacuous counterpart to offExp: exp IS fed by a global SDK provider,
+	// right up to the pin above. Freezing its count here means the post below
+	// can be asserted to add NOTHING, which proves the pin actually took
+	// effect — the one absence claim in (d) that does not rely on offExp.
+	spansAtPin := len(exp.GetSpans())
+
+	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
+	resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "delivery survives tracing being off")
+
+	// The load-bearing half: delivery still happens.
+	waitForControlDelivers(t, w.runner, recipSess, 1)
+	op := tracedOpFor(t, w.runner, recipSess, msgID)
+	if op.kind != controlDeliver {
+		t.Fatalf("disabled-path op kind = %v, want a plain deliver", op.kind)
+	}
+	if op.traceparent != "" {
+		t.Fatalf("disabled-path op traceparent = %q, want EMPTY (no provider ⇒ no span ⇒ nothing to stamp)", op.traceparent)
+	}
+	if hdr := resp.Header().Get(traceResponseHdr); hdr != "" {
+		t.Fatalf("disabled path set traceresponse = %q, want none", hdr)
+	}
+	if got := offExp.GetSpans(); len(got) != 0 {
+		t.Fatalf("disabled path recorded %d spans, want 0", len(got))
+	}
+	if got := len(exp.GetSpans()); got != spansAtPin {
+		t.Fatalf("disabled path added %d spans to the global-fed exporter (%d -> %d), want none — the no-op pin did not take effect", got-spansAtPin, spansAtPin, got)
+	}
+}
+
+func traceContinuityE(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	author := w.seedAgentMember(t, "heldauthor", true)
+	recip := w.seedAgentMember(t, "heldrecip", true)
+	const authorSess = "sess-heldauthor-1"
+	const recipSess = "sess-heldrecip-1"
+	// BOTH live before any post: the author's live session is what makes the
+	// post take the hold arm, and the recipient's is what lets the fired
+	// deliver reach the wire.
+	bringSessionLive(t, w, exp, author.ID, containerFor("heldauthor"), authorSess)
+	bringSessionLive(t, w, exp, recip.ID, containerFor("heldrecip"), recipSess)
+
+	// The author posts over a door attributed to the AGENT, so the post has a
+	// real handler span AND an agent author (the hold arm's precondition).
+	authorClient := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, author.ID))
+	_, heldMsgID := postOverTracedDoor(t, ctx, authorClient, w.channel, "held until I settle")
+
+	// FIFO BARRIER, not a sleep: the fabric runs delivery callbacks serially and
+	// in order, so a later HUMAN post (settled at post, dispatched at once) whose
+	// deliver is observed proves the earlier agent post was already held. Same
+	// barrier idiom as the offline-mention e2e's cycle A.
+	barrierMsgID := w.post(t, "barrier: a human post settles at once")
+	barrier := waitForControlDelivers(t, w.runner, recipSess, 1)
+	if barrier[0].messageID != barrierMsgID {
+		t.Fatalf("first deliver = %q, want the barrier message %q", barrier[0].messageID, barrierMsgID)
+	}
+	// Held, therefore NOT yet dispatched: the agent post is absent from the wire.
+	for _, op := range tracedOps(w.runner) {
+		if op.messageID == heldMsgID {
+			t.Fatalf("the agent post %q dispatched before its settle edge (op %+v), want it HELD", heldMsgID, op)
+		}
+	}
+
+	// Settle fires the held set on the bare drain ctx (no active span).
+	w.consumer.OnSessionSettled(authorSess, compassv1.AgentSessionState_AGENT_SESSION_STATE_READY, 0)
+	waitForControlDelivers(t, w.runner, recipSess, 2)
+
+	want := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
+	op := tracedOpFor(t, w.runner, recipSess, heldMsgID)
+	if got := traceIDOfTraceparent(t, ctx, "the settled deliver", op.traceparent); got != want {
+		t.Fatalf("settled deliver trace id = %s, want the agent post's origin %s — continuity was lost across the settle edge", got, want)
+	}
+}
+
+func traceContinuityF(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	// Subscribed (in the sweep set) but NOT hub-live: the post finds no live
+	// session, so nothing dispatches and the cursor sweep is the delivery path.
+	agent := w.seedAgentMember(t, "sweeprecip", true)
+
+	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
+	_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "swept on the next start")
+
+	// Event-gate on the wake's wire fact, so the post is fully processed
+	// before the start edge is driven.
+	waitForStartCount(t, w.runner, 1)
+	if got := allControlDelivers(w.runner); len(got) != 0 {
+		t.Fatalf("dispatches while offline = %d, want 0 (nothing live to deliver to)", len(got))
+	}
+
+	// The agent comes live: the start-edge cursor sweep delivers, rooting its
+	// own delivery.sweep.session span.
+	const sess = "sess-sweeprecip-1"
+	w.consumer.OnSessionStarted(sess, agent.ID)
+	waitForControlDelivers(t, w.runner, sess, 1)
+
+	postTraceID := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
+	if !postTraceID.IsValid() {
+		t.Fatal("the post's own trace id is invalid; the boundary assertion would be vacuous")
+	}
+	op := tracedOpFor(t, w.runner, sess, msgID)
+	// Valid and non-empty: traceIDOfTraceparent fails on either, so a fresh
+	// root that silently stamped nothing cannot pass as "different".
+	sweepTraceID := traceIDOfTraceparent(t, ctx, "the swept deliver op", op.traceparent)
+	if sweepTraceID == postTraceID {
+		t.Fatalf("swept op trace id = %s, want a trace DIFFERENT from the post's %s (a sweep is fresh-rooted by design, never a continuation)", sweepTraceID, postTraceID)
+	}
+}
+
+func traceContinuityG(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	recip := w.seedAgentMember(t, "askrecip", true)
+	const recipSess = "sess-askrecip-1"
+	bringSessionLive(t, w, exp, recip.ID, containerFor("askrecip"), recipSess)
+
+	// The ask itself needs no span — only the ANSWER's handler span is under
+	// test — so it is posted in-process.
+	askMsgID, askID := postAsk(t, w, "Which environment?")
+	// The ask post is itself a message on the rail: gate on its deliver so the
+	// answer's deliver is unambiguously the second one.
+	askDeliver := waitForControlDelivers(t, w.runner, recipSess, 1)
+	if askDeliver[0].messageID != askMsgID {
+		t.Fatalf("first deliver = %q, want the ask message %q", askDeliver[0].messageID, askMsgID)
+	}
+
+	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
+	if _, err := client.RespondToAsk(ctx, connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   askID,
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err != nil {
+		t.Fatalf("RespondToAsk over the traced door: %v", err)
+	}
+	waitForControlDelivers(t, w.runner, recipSess, 2)
+
+	// RespondToAskResponse carries no fields, so the answer message id is read
+	// off the handler span's own compass.message.id — the id comms stamps there
+	// (comms.go:465) — which is also what makes this the answer's origin span.
+	answerSpan := originServerSpan(t, exp.GetSpans(), compassv1connect.CommsServiceRespondToAskProcedure)
+	answerMsgID, ok := spanAttr(answerSpan, messageIDAttr)
+	if !ok || answerMsgID == "" {
+		t.Fatalf("RespondToAsk span carries no %s attribute; the answer's delivery origin is unidentifiable", messageIDAttr)
+	}
+	if answerMsgID == askMsgID {
+		t.Fatalf("RespondToAsk span %s = %q, want the NEW answer message, not the ask %q", messageIDAttr, answerMsgID, askMsgID)
+	}
+
+	op := tracedOpFor(t, w.runner, recipSess, answerMsgID)
+	want := answerSpan.SpanContext.TraceID()
+	if got := traceIDOfTraceparent(t, ctx, "the answer message's deliver op", op.traceparent); got != want {
+		t.Fatalf("answer deliver trace id = %s, want the RespondToAsk handler span's %s", got, want)
+	}
+}
+
+func traceContinuityH(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	author := w.seedAgentMember(t, "relayauthor", true)
+	const authorSess = "sess-relayauthor-1"
+	bringSessionLive(t, w, exp, author.ID, containerFor("relayauthor"), authorSess)
+
+	// The door is built HERE, after the exporter: otelconnect captures the
+	// global tracer provider once, at NewInterceptor().
+	relay := newRelayRunnerClient(t, w.hub, w.store)
+	msgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "agent speaks first", "")
+
+	origin := relayOriginSpanForMessage(t, exp.GetSpans(), msgID)
+	// A fresh root is a statement about the recorded PARENT, not about trace
+	// ids: a trace-id comparison can pass by accident (two independent roots
+	// differ trivially), while a nested span would carry a valid parent.
+	if origin.Parent.IsValid() {
+		t.Fatalf("RelayCommsCall origin span parent = %s (trace %s), want NO valid parent — the agent-authored post's trace must start at this door, not continue an inbound one",
+			origin.Parent.SpanID(), origin.Parent.TraceID())
+	}
+	// The fixture must be the shipped topology: the client interceptor
+	// propagates a traceparent that otelconnect turns into one transport link.
+	// Drop it and the parent check above passes vacuously, so this keeps it
+	// honest. No trigger_traceparent, so the count isolates the transport link.
+	if len(origin.Links) != 1 {
+		t.Fatalf("origin span carries %d links, want 1 (otelconnect's transport link) — no traceparent reached the door, so this is not the shipped topology and the fresh-root assertion above is vacuous", len(origin.Links))
+	}
+	if !origin.SpanContext.TraceID().IsValid() {
+		t.Fatal("RelayCommsCall origin span has an invalid trace id; it recorded nothing, so 'fresh root' would be vacuous")
+	}
+}
+
+func traceContinuityI(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	author := w.seedAgentMember(t, "linkauthor", true)
+	const authorSess = "sess-linkauthor-1"
+	bringSessionLive(t, w, exp, author.ID, containerFor("linkauthor"), authorSess)
+
+	// A synthetic-but-VALID remote trigger context, parsed through the one
+	// shipped W3C helper (never string-sliced) so trigger names exactly what
+	// production's linkTrigger will parse out of the same bytes.
+	const triggerTP = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	trigger := spanContextOfTraceparent(t, ctx, "the synthetic trigger", triggerTP)
+
+	relay := newRelayRunnerClient(t, w.hub, w.store)
+	linkedMsgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "reply to the trigger", triggerTP)
+	// The negative control, same fixture and same door: no trigger at all.
+	plainMsgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "unprompted post", "")
+
+	spans := exp.GetSpans()
+	linked := relayOriginSpanForMessage(t, spans, linkedMsgID)
+
+	// Half 1 — TERMINATION: the reply is a new trace, not a continuation.
+	if got := linked.SpanContext.TraceID(); got == trigger.TraceID() {
+		t.Fatalf("reply span trace id = %s, want a trace DIFFERENT from the trigger's %s — the reply NESTED into the trigger's trace instead of terminating it", got, trigger.TraceID())
+	}
+	// And not a child by any other route: a link is not a parent.
+	if linked.Parent.IsValid() {
+		t.Fatalf("reply span parent = %s, want none — a trigger_traceparent must produce a LINK, never a parent", linked.Parent.SpanID())
+	}
+
+	// Half 2 — the causal edge is recorded, pointing at the trigger. Selected
+	// BY ATTRIBUTE, never by position: otelconnect's server branch mints its own
+	// link from the inbound transport context, so this span legitimately carries
+	// more than one link.
+	link := triggerLinkOf(t, linked)
+	if link.TraceID() != trigger.TraceID() || link.SpanID() != trigger.SpanID() {
+		t.Fatalf("reply span trigger link = (trace %s, span %s), want the trigger's (trace %s, span %s)",
+			link.TraceID(), link.SpanID(), trigger.TraceID(), trigger.SpanID())
+	}
+
+	// The negative: with no trigger_traceparent there is no CROSS-TURN link.
+	// Without this, half 2 would also pass against an implementation that
+	// links unconditionally to something. Counted by attribute, so
+	// otelconnect's transport link does not mask the assertion.
+	plain := relayOriginSpanForMessage(t, spans, plainMsgID)
+	if n := countTriggerLinks(plain); n != 0 {
+		t.Fatalf("a post with an EMPTY trigger_traceparent carries %d cross-turn trigger links, want 0 (links=%+v)", n, plain.Links)
+	}
+}
+
+func traceContinuityJ(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	// The meter provider MUST precede the wire: the counter is created once at
+	// delivery.NewConsumer from the then-global meter.
+	reader := installGlobalMetricReader(t)
+	exp := installGlobalSpanExporter(t)
+	w := newMentionE2EWire(t)
+
+	// One recipient of each op kind: a MENTIONED member is steered, a plain
+	// subscriber is delivered to — so both label values are exercised.
+	steered := w.seedAgentMember(t, "metricsteer", true)
+	delivered := w.seedAgentMember(t, "metricdeliver", true)
+	const steerSess = "sess-metricsteer-1"
+	const deliverSess = "sess-metricdeliver-1"
+	bringSessionLive(t, w, exp, steered.ID, containerFor("metricsteer"), steerSess)
+	bringSessionLive(t, w, exp, delivered.ID, containerFor("metricdeliver"), deliverSess)
+
+	client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
+	_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "@metricsteer counted once, by kind")
+
+	steer := waitForControlDelivers(t, w.runner, steerSess, 1)
+	if steer[0].kind != controlSteer || steer[0].messageID != msgID {
+		t.Fatalf("mentioned member's dispatch = %+v, want {steer, %s}", steer[0], msgID)
+	}
+	deliver := waitForControlDelivers(t, w.runner, deliverSess, 1)
+	if deliver[0].kind != controlDeliver || deliver[0].messageID != msgID {
+		t.Fatalf("plain subscriber's dispatch = %+v, want {deliver, %s}", deliver[0], msgID)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	// The cardinality rule is enforced inside dispatchedOpKindCounts: it fails
+	// if any data point carries an attribute other than the op kind.
+	counts := dispatchedOpKindCounts(t, &rm)
+	if counts["steer"] != 1 {
+		t.Fatalf("%s{steer} = %d, want 1 (counts=%v)", dispatchedMetricName, counts["steer"], counts)
+	}
+	if counts["deliver"] != 1 {
+		t.Fatalf("%s{deliver} = %d, want 1 (counts=%v)", dispatchedMetricName, counts["deliver"], counts)
+	}
 }
