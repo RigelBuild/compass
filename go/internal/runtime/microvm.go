@@ -76,8 +76,8 @@ type MicroVMConfig struct {
 // MicroVM and AppleContainer carry the backend-specific wiring, each consulted
 // only when Backend selects it.
 type BackendConfig struct {
-	// Backend names the runtime backend: "podman" (or empty, the transitional
-	// default), "microvm", or "apple-container".
+	// Backend names the runtime backend: "podman" (or empty, the default),
+	// "microvm", or "apple-container".
 	Backend string
 	// MicroVM configures the microVM backend; ignored for the others.
 	MicroVM MicroVMConfig
@@ -136,13 +136,9 @@ func (m *MicroVMRuntime) AgentImageIrrelevant() bool {
 // single-trust-domain tier); any other value is an error naming the unknown
 // backend and the accepted values.
 //
-// During the transitional period both backends ship and the default is podman:
-// the proven container path stays the floor while the microVM backend is
-// brought up, so an unset backend never silently switches an operator onto the
-// unfinished path. Once the microVM backend is the sole runtime, the default
-// collapses to microVM guarded by a VerifyMicroVMSupport hard gate at startup —
-// a legible refusal when the host cannot run microVMs, with no fallback to the
-// container path.
+// An unset backend is podman, the permanent self-host entry tier, so it never
+// silently switches an operator onto microVM; microVM is the opt-in that
+// untrusted multi-tenant operation requires.
 func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
 	switch strings.TrimSpace(cfg.Backend) {
 	case "", "podman":

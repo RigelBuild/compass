@@ -1,7 +1,7 @@
 package runtime
 
 // The microVM backend-selection suite: hermetic, no subprocess, no build tag.
-// It pins the backend-selection contract (the transitional podman default, the
+// It pins the backend-selection contract (the podman default, the
 // microVM opt-in, the loud rejection of an unknown backend) — the part of the
 // microVM seam that must type-check and run on any platform. The lifecycle
 // method behavior (spec→BootConfig, spec→ExecCall, the session table, mount

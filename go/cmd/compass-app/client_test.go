@@ -5,8 +5,8 @@ package main
 // Native-client launch gate. runClient builds the ONE TLS-anchored bridge target
 // and shares it across the pump and the bridge service (design §T5.6); the
 // startup-JS injection and the state-dir resolver are the shell's other
-// client-launch seams. Embedded mode was retired in RIG-2554, so there is no
-// stack pipeline to exercise here.
+// client-launch seams. The embedded stack pipeline is exercised by the embedded
+// launch tests, not here.
 
 import (
 	"context"

@@ -2,6 +2,16 @@
 
 Parent: [compass-elastic-session-runtime/design.md](./design.md) — this record details under the parent's decisions but replaces its falsified I1 implementation premise.
 
+> **D2 deferred to the runner adoption strategy
+> ([`../compass-runner-adoption-strategy/design.md`](../compass-runner-adoption-strategy/design.md#the-ruled-topology),
+> DL-325, Matt 2026-08-31; PR #804).** D2's end state — the container path is
+> removed and microVM becomes the sole runtime — does not hold. The runner
+> splits by trust model: untrusted multi-tenant operation requires microVM;
+> single-tenant self-host keeps podman as a permanent, supported entry tier,
+> with microVM recommended. Read every "transitional container path" and "once
+> the container path is removed (D2)" below through DL-325. The frozen prose
+> below is otherwise left intact.
+
 ## Problem / Intent
 
 The parent record's task I1 assumed the microVM inter-tenant boundary is an
