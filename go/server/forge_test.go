@@ -88,7 +88,7 @@ func newFakeForgeStore() *fakeForgeStore {
 // subCoordKey builds the UNIQUE (agent, coordinate) index key the real store's
 // ON CONFLICT constrains on, so a repeat subscribe re-lands on the same id.
 func subCoordKey(agent store.AccountID, sub store.AgentForgeSubscription) string {
-	return fmt.Sprintf("%s|%d|%s|%s|%d|%d", agent, sub.Provider, sub.Host, sub.Repo, sub.Kind, sub.Number)
+	return fmt.Sprintf("%s|%d|%s|%s|%d|%d|%s", agent, sub.Provider, sub.Host, sub.Repo, sub.Kind, sub.Number, sub.Project)
 }
 
 // EnsureAgentForgeSubscription mirrors the real store's idempotent upsert: a
@@ -948,6 +948,93 @@ func TestForgeSubscribeReturnsIdAndIsIdempotent(t *testing.T) {
 	}
 	if len(st.subs) != 1 {
 		t.Fatalf("subscription rows = %d, want 1 (no duplicate)", len(st.subs))
+	}
+}
+
+// TestForgeSubscribeCarriesScopeAndProject pins the request coordinate passed to the store.
+func TestForgeSubscribeCarriesScopeAndProject(t *testing.T) {
+	linearRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}
+	tests := []struct {
+		name      string
+		forge     *compassv1.ForgeRef
+		scope     compassv1internal.ForgeSubscriptionScope
+		project   string
+		number    uint64
+		wantScope store.ForgeSubscriptionScope
+	}{
+		{
+			name:      "GitHub container",
+			scope:     compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER,
+			wantScope: store.ForgeSubscriptionScopeContainer,
+		},
+		{
+			name:      "Linear project container",
+			forge:     linearRef,
+			scope:     compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER,
+			project:   "proj-alpha",
+			wantScope: store.ForgeSubscriptionScopeContainer,
+		},
+		{
+			name:      "unspecified scope keeps artifact number",
+			number:    7,
+			wantScope: store.ForgeSubscriptionScopeUnspecified,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			author := forge.NewFakeProvider("gh-author")
+			reviewer := forge.NewFakeProvider("gh-reviewer")
+			svc, st := newForgeServiceForTest(t, author, reviewer)
+			registerLinearForTest(t, svc)
+
+			call := subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, tt.number)
+			call.Forge = tt.forge
+			call.GetSubscribe().Scope = tt.scope
+			call.GetSubscribe().Project = tt.project
+			res := svc.ExecuteForgeCallAsAccountMust(t, call)
+			sub := res.GetSubscribed()
+			if sub == nil || sub.GetSubscriptionId() == "" {
+				t.Fatalf("subscribe result = %v, want a subscription id", res.GetResult())
+			}
+
+			got, ok := st.subs[sub.GetSubscriptionId()]
+			if !ok {
+				t.Fatalf("recorded subscription %q not found", sub.GetSubscriptionId())
+			}
+			if got.Number != tt.number {
+				t.Errorf("recorded number = %d, want %d", got.Number, tt.number)
+			}
+			if got.Scope != tt.wantScope {
+				t.Errorf("recorded scope = %d, want %d", got.Scope, tt.wantScope)
+			}
+			if got.Project != tt.project {
+				t.Errorf("recorded project = %q, want %q", got.Project, tt.project)
+			}
+		})
+	}
+}
+
+// TestForgeSubscribeLinearPullRequestIsInvalidArgument rejects a subscription Linear can never notify.
+func TestForgeSubscribeLinearPullRequestIsInvalidArgument(t *testing.T) {
+	svc, st := newForgeServiceForTest(t, forge.NewFakeProvider("gh-author"), forge.NewFakeProvider("gh-reviewer"))
+	registerLinearForTest(t, svc)
+
+	call := subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST, 3)
+	call.Forge = &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if code := res.GetError().GetCode(); code != "invalid_argument" {
+		t.Fatalf("error code = %q (result %v), want invalid_argument", code, res.GetResult())
+	}
+	if len(st.subs) != 0 {
+		t.Fatalf("recorded subscriptions = %d, want 0", len(st.subs))
+	}
+}
+
+// registerLinearForTest adds the Linear coordinate beside the default GitHub one.
+func registerLinearForTest(t *testing.T, svc *forgeService) {
+	t.Helper()
+	if err := registerLinearForgeCoordinate(svc.providers, forge.NewFakeProvider("linear")); err != nil {
+		t.Fatalf("register linear: %v", err)
 	}
 }
 
