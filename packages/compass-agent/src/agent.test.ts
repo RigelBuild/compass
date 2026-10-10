@@ -2952,6 +2952,45 @@ function batchPendings(
 }
 
 describe("CompassAgent — idle batching window", () => {
+	test("startNow flushes an open window immediately with its queued items", async () => {
+		const h = startBatchAgent();
+		h.agent.deliver(deliverMsg("m1", "first queued reply"));
+		h.agent.deliver(deliverMsg("m2", "second queued reply"));
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(h.clock.liveCount()).toBe(1);
+		expect(batchPendings(h.frames).map((pending) => pending.count)).toEqual([
+			1, 2,
+		]);
+		h.agent.startNow();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("first queued reply");
+		expect(h.session.agent.prompts[0]).toContain("second queued reply");
+		expect(h.clock.liveCount()).toBe(0);
+		h.clock.advance(QUIET_MS);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(batchPendings(h.frames).map((pending) => pending.count)).toEqual([
+			1, 2, 0,
+		]);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["m1", "m2"]);
+		await h.close();
+	});
+
+	test("startNow without an open window leaves a queued in-turn deliver for agent_end", async () => {
+		const h = startBatchAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "mid-turn reply"));
+		h.agent.startNow();
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(h.clock.liveCount()).toBe(0);
+		expect(ackIds(h.frames)).toEqual([]);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
 	test("two idle delivers inside quietMs → no prompt until it elapses, then one prompt with both, then the acks", async () => {
 		const h = startBatchAgent();
 		h.agent.deliver(deliverMsg("m1", "hello one"));
