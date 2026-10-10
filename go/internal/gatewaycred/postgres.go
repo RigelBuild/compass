@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -248,13 +249,46 @@ func (p *Postgres) Pool(ctx context.Context, agent store.AccountID) ([]Credentia
 		if err != nil {
 			return fmt.Errorf("gatewaycred: list credential pool: %w", err)
 		}
-		credentials, err = openCredentialRows(p.keyVersion, p.st.EffectiveTenant(ctx), p.key, rows)
+		credentials, err = openPoolRows(ctx, p.keyVersion, p.st.EffectiveTenant(ctx), p.key, rows)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return credentials, nil
+}
+
+// openPoolRows drops a row that cannot be opened so one bad credential does not
+// take the tenant offline. The row still shadows shared rows in the query.
+func openPoolRows(ctx context.Context, keyVersion int16, tenant store.TenantID, key envelope.Key, rows []db.ListGatewayCredentialsRow) ([]Credential, error) {
+	out := make([]Credential, 0, len(rows))
+	for _, row := range rows {
+		credential, err := openCredentialRow(keyVersion, tenant, key, row.GatewayCredential)
+		if unreadable, ok := errors.AsType[*unreadableRowError](err); ok {
+			slog.ErrorContext(ctx, "gatewaycred: skipping unreadable credential",
+				"tenant", string(tenant), "id", row.GatewayCredential.ID,
+				"key_version", row.GatewayCredential.KeyVersion, "class", unreadable.class)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, credential)
+	}
+	return out, nil
+}
+
+// unreadableRowError marks a fault in one stored row, as opposed to the read.
+type unreadableRowError struct {
+	class string
+	err   error
+}
+
+func (e *unreadableRowError) Error() string { return e.err.Error() }
+func (e *unreadableRowError) Unwrap() error { return e.err }
+
+func unreadableRow(class string, err error) error {
+	return &unreadableRowError{class: class, err: err}
 }
 
 func credentialInPool(ctx context.Context, q *db.Queries, id, provider string, owner store.AccountID) (bool, error) {
@@ -299,7 +333,7 @@ func openCredentialRows(keyVersion int16, tenant store.TenantID, key envelope.Ke
 
 func openCredentialRow(keyVersion int16, tenant store.TenantID, key envelope.Key, row db.GatewayCredential) (Credential, error) {
 	if row.KeyVersion != keyVersion {
-		return Credential{}, fmt.Errorf("gatewaycred: key version mismatch: row %d, configured %d", row.KeyVersion, keyVersion)
+		return Credential{}, unreadableRow("key_version", fmt.Errorf("gatewaycred: key version mismatch: row %d, configured %d", row.KeyVersion, keyVersion))
 	}
 	aad, err := envelope.GatewayCredentialAAD(string(tenant), row.ID, row.KeyVersion)
 	if err != nil {
@@ -307,11 +341,15 @@ func openCredentialRow(keyVersion int16, tenant store.TenantID, key envelope.Key
 	}
 	plaintext, err := key.Decrypt(row.ValueNonce, row.ValueCiphertext, aad)
 	if err != nil {
-		return Credential{}, fmt.Errorf("gatewaycred: decrypt credential: %w", err)
+		err = fmt.Errorf("gatewaycred: decrypt credential: %w", err)
+		if !errors.Is(err, envelope.ErrDecrypt) {
+			return Credential{}, err // an unset key is a wiring bug, never one bad row
+		}
+		return Credential{}, unreadableRow("decrypt", err)
 	}
 	var value sealedCredentialValue
 	if err := json.Unmarshal(plaintext, &value); err != nil {
-		return Credential{}, fmt.Errorf("gatewaycred: decode credential: %w", err)
+		return Credential{}, unreadableRow("decode", fmt.Errorf("gatewaycred: decode credential: %w", err))
 	}
 	credential := Credential{ID: row.ID, Provider: row.Provider, Scope: Scope(row.Scope), Version: row.Version}
 	if row.OwnerUserID.Valid {
@@ -320,16 +358,16 @@ func openCredentialRow(keyVersion int16, tenant store.TenantID, key envelope.Key
 	switch row.Kind {
 	case credentialKindAPIKey:
 		if value.APIKey == "" || value.OAuth != nil {
-			return Credential{}, errors.New("gatewaycred: invalid sealed credential value")
+			return Credential{}, unreadableRow("decode", errors.New("gatewaycred: invalid sealed credential value"))
 		}
 		credential = NewAPIKeyCredential(credential, value.APIKey)
 	case credentialKindOAuth:
 		if value.OAuth == nil || value.APIKey != "" {
-			return Credential{}, errors.New("gatewaycred: invalid sealed credential value")
+			return Credential{}, unreadableRow("decode", errors.New("gatewaycred: invalid sealed credential value"))
 		}
 		credential = NewOAuthCredential(credential, value.OAuth.token())
 	default:
-		return Credential{}, errors.New("gatewaycred: invalid credential kind")
+		return Credential{}, unreadableRow("decode", errors.New("gatewaycred: invalid credential kind"))
 	}
 	return credential, nil
 }

@@ -943,7 +943,8 @@ RPC exactly as the gateway record already specifies.
   server-side", design.md:333-337). Writes stamp the current `key_version`;
   reads select the key by the row's `key_version` (v1: single live key — a
   mismatched version is a diagnosable error naming the expected/found
-  version numbers, never key material; see OQ-1).
+  version numbers, never key material; see OQ-1). The pool read skips a row
+  that fails this way instead of failing the whole pool (RIG-4783, T5).
 - Consumes: T1, T2's key, T3's columns.
 - Tests: see T5.
 
@@ -976,7 +977,10 @@ RPC exactly as the gateway record already specifies.
     fresh nonce (nonce differs from the previous row state).
   - Wrong-key / tampered-row read → error, no partial plaintext; a
     key_version-mismatch error is distinguishable from a GCM auth failure
-    (names the versions, never key material).
+    (names the versions, never key material). The pool read skips such a
+    row and logs its id, key_version and failure class; the row still
+    shadows shared rows. The owner listing and `UpdateOAuth` on it still
+    error; `Disable` still works and is how to clear it (Matt, RIG-4783).
 
 ## Tasks
 
