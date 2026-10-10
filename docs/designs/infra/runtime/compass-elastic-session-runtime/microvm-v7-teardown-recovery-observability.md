@@ -15,11 +15,10 @@ VMs found at restart are **killed and rebooted on next request, not adopted**"
 (microvm-runner.md:258-259) — plus a metric-naming translation (§(d)) that is
 an implementation-convention fact, not a new cross-cutting decision. There is
 no `DECISIONS.md` under `docs/designs/infra/` (V5's precedent), and
-`docs/designs/DECISIONS.md` is untouched. Two forks DO land on the parent's
-supervised-set sentence rather than merely detailing it — the guest (OQ-10)
-and the net backend (OQ-6) both leave V7's session-fatal handling — and both
-are graded load-bearing and carried to the human for an explicit ruling.
-OQ-8 is ruled: any RunRoot lock failure fails startup.
+`docs/designs/DECISIONS.md` is untouched. The supervised-set concerns are
+resolved: OQ-6 makes passt death fatal, so the net backend remains
+supervised; OQ-10 explicitly defers guest-liveness probing to V8. OQ-8 is
+ruled: any RunRoot lock failure fails startup.
 
 ## Problem / Intent
 
@@ -79,8 +78,8 @@ mechanism that produces the numbers and invents no threshold.
 ## Approach
 
 Each subsection resolves one concern the parent's V7 plan leaves to detailing.
-Every fork is listed in `## Open Questions`. OQ-8 is ruled; for the rest the
-body designs against the recommended option. Line numbers into the V6 supervision core cite
+The body reflects all applicable rulings; OQ-6 selects the option opposite its
+earlier recommendation. Line numbers into the V6 supervision core cite
 PR #912's branch (the shape V7 lands on); everything else cites main.
 
 ### (a) Per-session pidfiles for all three children, with PID-reuse defense
@@ -236,16 +235,16 @@ attempt to re-dial a found VM's vsock socket.
 func (m *MicroVMRuntime) ReapOrphans(ctx context.Context, held RunRootLock) error
 ```
 
-**Step 0 — the RunRoot lock, a DELIVERED mechanism, not an assumption,
-owned by the STARTUP unit.** `run()` (`go/cmd/compass-runner/main.go:43`)
-calls `LockRunRoot` ONCE before sampler startup, preflight, and reap. On
-success, startup passes the returned token and defers the release until process
-shutdown, so the lock is held for the Runner's life and the kernel drops it
-on any holder death, SIGKILL included. On any lock failure, startup returns an
-ERROR (naming the other owner on `EWOULDBLOCK`) and does not start the sampler,
-run preflight or reap, or serve. The reaper rejects a zero token before
-scanning and never acquires the lock itself. This is a W2 deliverable; the
-OQ-8 ruling requires the lock to protect a second live Runner's sessions.
+**Step 0 — the RunRoot lock, a delivered mechanism owned by the startup unit.**
+`run()` (`go/cmd/compass-runner/main.go:43`) calls `LockRunRoot` ONCE before
+sampler startup, preflight, and reap. On success, startup passes the returned
+token and defers the release until process shutdown, so the lock is held for
+the Runner's life and the kernel drops it on any holder death, SIGKILL
+included. On any lock failure, startup returns an ERROR (naming the other
+owner on `EWOULDBLOCK`) and does not start the sampler, run preflight or reap,
+or serve. The reaper rejects a zero token before scanning and never acquires
+the lock itself. This is a W2 deliverable; OQ-8 rules that the lock protects
+a second live Runner's sessions.
 
 **Why the startup unit and not `ReapOrphans`.** Two reasons, both
 structural rather than stylistic. First, a lock the reaper acquires cannot
@@ -301,7 +300,7 @@ a WARNING, not an abort (OQ-5).
    could see a fresh dir with no table entry and no pidfiles. At startup,
    the token is passed to the reaper. A zero token is rejected before
    scanning. The reaper takes the token rather than acquiring it, so it
-   avoids a second in-process `flock`. OQ-8 (load-bearing) rules on the
+   avoids a second in-process `flock`. The OQ-8 ruling specifies the
    mechanism and requires a failed lock attempt to fail startup.
 2. **Kill recorded processes, VMM first.** For each pidfile present: parse
    the line. An INTENT record (`intent <bootid>`, §(a)) names a child whose
@@ -372,9 +371,8 @@ a WARNING, not an abort (OQ-5).
    - **A dir with NO pidfiles at all**, younger than a small grace
      (mtime ≤ `orphanDirGrace = time.Minute`), which may be a concurrent
      `Create`'s pre-insert window (see 1). Older than the grace it is
-     removed, per OQ-7's recommendation. Like `orphanReapGrace` (see 2)
-     this is a reaper-local constant in package `runtime`, declared
-     beside it.
+     removed, per OQ-7's ruling. Like `orphanReapGrace` (see 2) this is a
+     reaper-local constant in package `runtime`, declared beside it.
 **Call site.** `run()` (`go/cmd/compass-runner/main.go:43`), through W5's
 `startup` unit, takes the RunRoot lock (step 0) before sampler startup, runs
 backend-gated preflight under the lock, then runs reap once, via two unexported
@@ -429,37 +427,32 @@ type DeathCause string
 const (
     DeathVMM       DeathCause = "vmm"
     DeathVirtiofsd DeathCause = "virtiofsd"
-    // DeathPasst is REPORTED, never fatal (§(c)): the monitor logs and
-    // counts it and keeps watching. It exists so the net backend does not
-    // leave the parent's supervised set unobserved (microvm-runner.md:240-241).
+    // DeathPasst is fatal like the other causes: the session monitor records
+    // the death and shuts down the VM (§(c)).
     DeathPasst DeathCause = "passt"
 )
 
-// DeathWatch returns a channel that receives one DeathCause per child death
-// among the VMM, virtiofsd, and passt, and closes once every watched child
-// that can still die has died — and that CLOSE is the consumer's
-// termination signal: the monitor ranges over this channel, so it exits
-// when the channel does (see the monitor below). SINGLE-CONSUMER: each
-// send is drained by exactly one receiver, the session monitor below; a
-// second receiver would steal events and then observe only the close,
-// reading the zero value DeathCause(""). At most three sends occur, so
-// the channel is buffered to three and the internal goroutine never
-// blocks on a monitor that has stopped receiving after a fatal cause.
-// The method cannot be unexported instead — the monitor lives in package
-// runtime and reaches it through the guestVM seam
-// (microvm_lifecycle.go:99-113) — so the contract is this
-// comment plus the hermetic test, not visibility. It observes the children
-// through their sole reapers' exited channels — it never calls Wait — so
-// the one-reaper-per-child invariant holds.
+// DeathWatch returns the first DeathCause among the VMM, virtiofsd, and
+// passt deaths, then closes. The CLOSE is the consumer's termination
+// signal: the session monitor ranges over this channel and exits when it
+// closes (see below). SINGLE-CONSUMER: the send is drained by exactly one
+// receiver, the session monitor; a second receiver could steal the event
+// and observe only the close, reading the zero value DeathCause(""). At
+// most one send occurs, so the channel is buffered to one and the internal
+// goroutine never blocks after a fatal cause. The method cannot be
+// unexported instead — the monitor lives in package runtime and reaches it
+// through the guestVM seam (microvm_lifecycle.go:99-113) — so the contract
+// is this comment plus the hermetic test, not visibility. It observes the
+// children through their sole reapers' exited channels — it never calls
+// Wait — so the one-reaper-per-child invariant holds.
 func (vm *VM) DeathWatch() <-chan DeathCause
 ```
 
 Internally one goroutine per VM `select`s over `vm.vmm.exited`,
 `vm.virtiofsd.exited`, and `vm.passt.exited` (nil-guarded like every other
-consumer of those channels), sending each exit as it is observed and
-returning when all non-nil children have been reported. It always
-terminates: any teardown path kills the VMM and reaps the daemons, closing
-all three channels.
+consumer of those channels), sends the first exit it observes, and returns,
+closing the channel. It always terminates after a death: teardown kills the
+VMM and reaps the daemons, closing all three channels.
 
 **The session monitor, stamped with its VM's epoch.** `Start`, in the same
 locked critical section that transfers ownership to the session table
@@ -467,11 +460,10 @@ locked critical section that transfers ownership to the session table
 increments the session's `epoch`, captures that value, and spawns one
 monitor goroutine carrying it. The monitor RANGES over the channel — `for
 cause := range vm.DeathWatch()` — so the channel's CLOSE is its
-termination, on every path: every watched child is dead, so there is
-nothing left to observe. That is the only exit on the non-fatal passt
-path, and a `for { cause := <-ch }` loop would instead spin forever on
-the zero value `DeathCause("")` a closed channel yields, one goroutine
-per session that ever saw a passt death.
+termination, on every path: the first observed child death is sent, then
+the channel closes. A bare receive loop could instead spin forever on the
+zero value `DeathCause("")` a closed channel yields, one goroutine per
+session that ever saw a death.
 
 For each received cause, under `m.mu`, two gates apply before acting: the
 death must belong to the CURRENT VM life (`session.epoch == myEpoch`) and
@@ -481,17 +473,13 @@ is discarded silently and the loop continues to the close.
 
 Past those gates the cause decides:
 
-- `DeathPasst` — log INFO, count `peer.deaths{process=passt}`, and CONTINUE
-  receiving. Not fatal, but never unobserved (§(c) deviation note below).
-- `DeathVMM` / `DeathVirtiofsd` — record `deadCause` AND
-  `deadEpoch = myEpoch` on the session and run
-  the one teardown path that already exists, `vm.Shutdown` ("the VMM is
-  killed first … then virtiofsd and passt are reaped … and finally the
-  AF_UNIX sockets and passt's pidfile are removed", `launch.go:352-357`) —
-  which is exactly "kill the VMM, same teardown path" for the virtiofsd
-  arm, kills the peers for the VMM arm, and removes the socket/pidfile
-  state. Then the monitor returns: the teardown's own cascade of child
-  exits is not a second death to report.
+- `DeathVMM` / `DeathVirtiofsd` / `DeathPasst` — record `deadCause` AND
+  `deadEpoch = myEpoch` on the session and run the one teardown path that
+  already exists, `vm.Shutdown` ("the VMM is killed first … then virtiofsd
+  and passt are reaped … and finally the AF_UNIX sockets and passt's pidfile
+  are removed", `launch.go:352-357`). Emit the cause-specific
+  `teardowns` point and INFO `microvm session died` line, then return: the
+  teardown's own cascade of child exits is not a second death to report.
 
 The vsock "port" needs no separate release: the port is a fixed constant
 and per-session identity rides the AF_UNIX socket paths Shutdown removes
@@ -669,32 +657,16 @@ must never refuse.
 path and `Exists` behave identically to a live session's, and the death is
 reportable rather than silently vanished.
 
-**Deviation surfaced: the net backend leaves V7's supervised set for
-FATALITY, not for observation.** The parent's §(f) preamble supervises the
-process set including the "net backend" and "the guest via the supervisor
-channel's liveness" (microvm-runner.md:240-241). V7 diverges on BOTH members
-of that one sentence, and both are surfaced:
-
-- **passt (net backend).** A passt death is not session-fatal — the vsock
-  control plane is served by the VMM and stays up, so `Stop`/`Remove` keep
-  working while the guest loses egress. But non-fatal must not mean
-  UNOBSERVED: with no host-side detection an operator gets no signal at all
-  that a session lost egress, which would remove passt from the supervised
-  set outright rather than re-scoping its failure handling. So `DeathWatch`
-  gains a `DeathPasst` cause that is REPORTED and NEVER fatal: the monitor
-  records an INFO `microvm session peer died` line and a
-  `compass.microvm.peer.deaths{process=passt}` counter, then keeps watching
-  — it does not set `deadCause`, does not call `vm.Shutdown`, and does not
-  make the session refuse anything. `DeathWatch` therefore no longer closes
-  after one send; see its contract above. The fatality ruling is OQ-6
-  (load-bearing: it rules on the parent's text), and the body designs against its
-  recommendation, matrix-literal non-fatality WITH observation.
+**Deviation surfaced: guest health probing is deferred from V7.** The parent's
+§(f) preamble supervises the process set, including the "net backend", and
+the guest via the supervisor channel's liveness (microvm-runner.md:240-241).
+OQ-6 rules passt death fatal, so the net backend remains supervised. OQ-10
+explicitly defers guest-liveness probing to V8:
 - **The guest.** `DeathWatch` observes host children only, so a guest that
   kernel-panics and hangs under a live VMM is a zombie session nothing
-  detects except per-exec timeouts on sessions actively in use. That is a
-  deliberate V7 re-scope carried as OQ-10 (load-bearing), not a silent drop;
-  the body assumes its recommendation — per-exec timeout coverage suffices
-  for V7, active guest health-probing lands with V8's acceptance evidence.
+  detects except per-exec timeouts on sessions actively in use. The ruling
+  keeps that V7 limit; active guest health-probing lands with V8's acceptance
+  evidence.
 
 ### (d) Observability: concrete dotted OTel metrics, warn-and-disable, no per-session labels
 
@@ -723,28 +695,21 @@ nil-guarded and off the hot path's critical section.
 | OTel name | Instrument | Unit | Attributes | Meaning |
 | --- | --- | --- | --- | --- |
 | `compass.microvm.boot.duration` | Float64Histogram | `s` | `outcome` = `ok`\|`error` | Wall time of `Start` (Launch → Health-OK → nonce → Provision), the "VMM start → supervisor handshake" latency; same basis as `CanaryReport.BootLatency` (`microvm_preflight.go:351-355`) |
-| `compass.microvm.teardowns` | Int64Counter | `{teardown}` | `cause` = `remove`\|`stop`\|`vmm_death`\|`virtiofsd_death` | Session teardowns by cause; the `virtiofsd_death` series IS the parent's "virtiofsd restarts" number (OQ-4: under §(f)'s fatal-no-restart posture a virtiofsd death is a session teardown, never a restart). A reaped orphan is NOT a cause here — it is a previous Runner process's leftover, not a session this process ever had, and `compass.microvm.orphans.reaped` already carries that number with richer attributes; conflating them would corrupt the one series an operator uses to count session deaths |
+| `compass.microvm.teardowns` | Int64Counter | `{teardown}` | `cause` = `remove`\|`stop`\|`vmm_death`\|`virtiofsd_death`\|`passt` | Session teardowns by cause; the `virtiofsd_death` series IS the parent's "virtiofsd restarts" number (OQ-4: under §(f)'s fatal-no-restart posture a virtiofsd death is a session teardown, never a restart). A reaped orphan is NOT a cause here — it is a previous Runner process's leftover, not a session this process ever had, and `compass.microvm.orphans.reaped` already carries that number with richer attributes; conflating them would corrupt the one series an operator uses to count session deaths |
 | `compass.microvm.vsock.rpc.duration` | Float64Histogram | `s` | `rpc` = `exec`\|`health`\|`provision`\|`signal`, `outcome` = `ok`\|`error` | Host-side wall time of guest control-plane RPCs, recorded in `Exec`/`awaitHealthy`/`Start`'s Provision/`stopGuest` (`microvm_lifecycle.go:476-502,426-458,393-399,641-650`) |
 | `compass.microvm.guest.memory.pss` | Int64ObservableGauge | `By` | `process` = `vmm`\|`virtiofsd`\|`passt` | Sum over live sessions of per-process PSS via the existing `VM.PSS()` ("PSS, NOT summed VmHWM … PSS divides shared pages among their mappers", PR #912 `launch.go:663-668`), summed per process kind so no per-session label exists; kB→bytes at record |
 | `compass.microvm.quota.used.ratio` | Float64ObservableGauge | `1` | none | Observed byte utilization of the session-volume quota, read from `m.lastQuota` (the preflight-time snapshot; see below) and recorded ONLY when that reading's `LimitBytes > 0` — the condition under which `UsedRatio()` is meaningful, which is NOT `Active()` (see below); V6's single-meaning discipline ("the caller must gate on Active() … V7 inherits a single-meaning number", PR #912 `microvm_quota.go:138-145`) applied to the number actually emitted; silent (no point) for a zero-value snapshot and for an inode-only active quota |
 | `compass.microvm.canary.runs` | Int64Counter | `{run}` | `outcome` = `ok`\|`error` | Boot-canary executions by outcome — the parent's `compass_microvm_canary_ok` as a countable series |
 | `compass.microvm.orphans.reaped` | Int64Counter | `{process}` | `process` = `vmm`\|`virtiofsd`\|`passt`, `outcome` = `killed`\|`possibly_live` | Orphan processes killed by `ReapOrphans`; the `possibly_live` series counts §(b) step 3's dangling-intent arm, where a child may be running with no pid on disk |
-| `compass.microvm.peer.deaths` | Int64Counter | `{death}` | `process` = `passt` | Non-fatal peer-daemon deaths observed by the session monitor (§(c)): the net backend's death is reported, never a teardown |
 
-The PSS gauge is fleet-summed per process kind while the parent's
-line reads "per-VM RSS" (microvm-runner.md:266) — whether that sentence
-means the aggregate or a per-VM series is OQ-9 (load-bearing, a ruling on
-the parent's text). The body assumes OQ-9's recommendation: the aggregate gauge
-stays, per-session PSS rides a low-frequency INFO log line (logs are exempt
-from the cardinality rule, below), and V8's benchmark sources per-VM
-numbers from the harness calling `PSS()` directly, never from a metric.
-That log line is a NAMED W4 deliverable, not an assumption — the
-`microvm session memory` sampler below — because it is the ONLY
-runaway-VM identification signal V7 ships: the aggregate gauge cannot
-name a session and V8's benchmark path is explicitly no-metric. Under an
-OQ-9 (i)-only ruling the sampler is dropped and V7 then ships NO
-runaway-identification signal at all; that is the visible consequence of
-that ruling, not a silent gap.
+The PSS gauge is fleet-summed per process kind, while the parent's line reads
+"per-VM RSS" (microvm-runner.md:266). OQ-9 rules to keep the aggregate gauge,
+add per-session PSS to a low-frequency INFO log line (logs are exempt from
+the cardinality rule, below), and source V8's benchmark numbers from the
+harness calling `PSS()` directly, never from a metric. The `microvm session
+memory` sampler below is a named W4 deliverable, not an assumption. It is
+V7's runaway-VM identification signal: the aggregate gauge cannot name a
+session, and V8's benchmark path is explicitly no-metric.
 
 Every attribute value is drawn from a closed enumeration named in this table;
 no session id, container name, or path ever becomes a label. The observable
@@ -835,9 +800,8 @@ discipline as `main.go`'s probes) at construction, never per-call.
 transitions log at INFO with session id and timings (parent,
 microvm-runner.md:268): `Start` logs
 `microvm session booted` (`session_id`, `boot_duration`); the monitor logs
-`microvm session died` (`session_id`, `cause`, `uptime`) on a fatal cause
-and `microvm session peer died` (`session_id`, `process`, `uptime`) on the
-non-fatal passt arm (§(c)); `Stop`/`Remove` log `microvm session
+`microvm session died` (`session_id`, `cause`, `uptime`) for every fatal
+cause, including passt (§(c)); `Stop`/`Remove` log `microvm session
 stopped`/`removed` (`session_id`, `teardown_duration`); `ReapOrphans` logs
 one line per reaped dir (`session_id`, `reaped` process list) plus a WARN
 per dangling-intent dir naming the child (§(b) step 3). Session id in LOGS
@@ -1002,12 +966,11 @@ about instrument validity.
   keeps ONE generation concept in the design, gating reads exactly as
   `epoch` gates writes. Rejected.
 - **A bare `for { cause := <-vm.DeathWatch() }` monitor loop** ((c)).
-  Adequate while `DeathWatch` closed after one fatal send, but the
-  `DeathPasst` arm (OQ-6) made the channel multi-send and its consumer
-  long-lived, and a receive on a closed channel yields the zero value
-  `DeathCause("")` forever — a full-CPU spin, one goroutine per session
-  that ever saw a passt death. `for cause := range …` makes the close the
-  termination on every path. Rejected.
+  `DeathWatch` sends the first fatal cause and then closes; after handling
+  the send, a bare receive on the closed channel yields the zero value
+  `DeathCause("")` forever — a full-CPU spin, one goroutine per session.
+  `for cause := range …` makes channel close the termination signal.
+  Rejected.
 
 ## Global Constraints
 
@@ -1264,11 +1227,10 @@ assertion; see the Plan preamble).
 - **Interfaces:** produces
   - `type DeathCause string` (`DeathVMM`, `DeathVirtiofsd`, `DeathPasst`)
     and `func (vm *VM) DeathWatch() <-chan DeathCause` in the microvm
-    package — select over all three children's `exited` channels, one send
-    per observed exit on a buffered (cap 3) channel, closed when every
-    non-nil child has been reported, nil-device tolerant, no `Wait` calls,
-    single-consumer by documented contract (§(c): the session monitor is
-    the one receiver);
+    package — select over all three children's `exited` channels, send the
+    first observed exit on a buffered (cap 1) channel and close it, nil-device
+    tolerant, no `Wait` calls, single-consumer by documented contract (§(c):
+    the session monitor is the one receiver);
   - `func (vm *VM) VMMExited() bool` — nil-safe delegation to the VMM
     child's `hasExited()` (PR #912 `launch.go:96-107`; a channel read, not
     a zombie-blind signal-0 probe), for `Exec`'s in-flight wrap (§(c));
@@ -1291,14 +1253,12 @@ assertion; see the Plan preamble).
   - `Start` spawns the monitor goroutine after ownership transfer
     (`microvm_lifecycle.go:401-415`) carrying its epoch, and it RANGES
     over `DeathWatch()` — `for cause := range vm.DeathWatch()` — so the
-    channel's close is its termination on every path, including the
-    non-fatal passt path that has no other exit. It DISCARDS any
-    death whose `session.epoch != myEpoch` (a superseded VM life, then
-    returns) and any death arriving while `tearingDown`; on a fatal cause
-    it records `deadCause` AND `deadEpoch = myEpoch`, runs
+    channel closes after its single event. It DISCARDS any death whose
+    `session.epoch != myEpoch` (a superseded VM life, then returns) and
+    any death arriving while `tearingDown`; on a current fatal cause it
+    records `deadCause` AND `deadEpoch = myEpoch`, runs
     `vm.Shutdown(context.WithoutCancel(…))`, logs + counts (W4 hooks) and
-    returns; on `DeathPasst` it logs + counts `peer.deaths{process=passt}`
-    and KEEPS RECEIVING, never setting `deadCause` (§(c));
+    returns;
   - `startedExec`/`Exec`/`ExecStreaming` refuse a dead session with
     `*SessionDeadError` when the refuse condition above holds. `Stop`,
     `Remove` and `Start` do NOT — `Stop` on a dead
@@ -1318,10 +1278,12 @@ assertion; see the Plan preamble).
   - *Hermetic (seam-faked VM):* fake fires a VMM death ⇒ monitor records
     cause, Shutdown called once, next Exec refuses with `errors.As`
     `*SessionDeadError{Cause:"vmm"}`; virtiofsd death ⇒ same with
-    `"virtiofsd"`; **passt death ⇒ NO `deadCause`, NO Shutdown, the next
-    Exec still succeeds, and the peer-death counter and INFO line are
-    both emitted** (the non-fatal-but-observed arm, §(c)); deliberate
-    Stop/Remove ⇒ monitor exits silently, no death recorded;
+    `*SessionDeadError{Cause:"virtiofsd"}`; passt death is fatal:
+    `deadCause=passt`, `vm.Shutdown` called once, the next Exec refuses
+    with `*SessionDeadError{Cause:"passt"}`, and
+    `teardowns{cause=passt}` = 1, and one INFO `microvm session died` line
+    carries the session ID and `cause=passt`; deliberate Stop/Remove ⇒ monitor exits
+    silently, no death recorded;
     Stop → Start → fake death ⇒ the second life's death IS recorded (the
     per-epoch reset proven); **STALE-MONITOR CASE: hold monitor#1's death
     event undelivered across a `Stop` and a `Start` that stores VM#2, then
@@ -1342,20 +1304,14 @@ assertion; see the Plan preamble).
     is 1 while `epoch` is 2, so the stale cause refuses nothing, and
     monitor#2 still records VM#2's own death (the per-life scoping of
     the READ side, §(c));
-    **MONITOR-TERMINATION CASE: fake fires a passt death (non-fatal, the
-    monitor keeps receiving), then CLOSES the `DeathWatch` channel ⇒ the
-    monitor goroutine EXITS** — asserted on a done-channel the monitor
-    closes on return, so the case fails on a spinning `for { <-ch }`
-    loop rather than merely being slow — with no `deadCause` set and no
-    `teardowns` point (§(c)).
   - *KVM:* boot a session, `SIGKILL` the VMM pid mid-exec ⇒ the in-flight
     `Exec` fails with `*SessionDeadError`, peers reaped (proc-verified),
     sockets/pidfiles removed, `Stop` returns nil and `Remove` returns nil;
     kill virtiofsd ⇒ session torn down, the workspace share content intact
     on the host — the parent's V7 test-cycle rows verbatim
-    (microvm-runner.md:595-598); `SIGKILL` passt ⇒ the session stays alive
-    and a subsequent `Exec` still succeeds over vsock (egress lost, control
-    plane intact), with the peer-death counter incremented.
+    (microvm-runner.md:595-598); `SIGKILL` passt ⇒ the session is torn down,
+    peers reaped, sockets/pidfiles removed, and a subsequent Exec refuses
+    with `*SessionDeadError{Cause:"passt"}`.
 
 ### W4 — backend metrics + INFO transition logs (hermetic)
 
@@ -1363,7 +1319,7 @@ The §(d) instrument set inside the microVM backend.
 
 - **Interfaces:** produces
   - `const microvmInstrumentationScope = "github.com/RigelBuild/compass/go/internal/runtime"`;
-  - `type microvmMetrics struct { bootDuration metric.Float64Histogram; teardowns metric.Int64Counter; vsockRPCDuration metric.Float64Histogram; canaryRuns metric.Int64Counter; orphansReaped metric.Int64Counter; peerDeaths metric.Int64Counter; guestPSS metric.Int64ObservableGauge; quotaUsedRatio metric.Float64ObservableGauge }`
+  - `type microvmMetrics struct { bootDuration metric.Float64Histogram; teardowns metric.Int64Counter; vsockRPCDuration metric.Float64Histogram; canaryRuns metric.Int64Counter; orphansReaped metric.Int64Counter; guestPSS metric.Int64ObservableGauge; quotaUsedRatio metric.Float64ObservableGauge }`
     built in `NewMicroVMRuntime` from the global meter, each instrument nil
     plus one `slog.Warn` on creation error, every record nil-guarded;
   - `lastQuota QuotaReading` on `MicroVMRuntime` — the quota gauge's ONLY
@@ -1374,9 +1330,8 @@ The §(d) instrument set inside the microVM backend.
     `microvm.go:96-111`). Preflight-time snapshot, never refreshed; the
     callback does NO `statfs` and therefore needs no error posture (§(d));
   - record points: `Start` (boot duration + INFO `microvm session booted`),
-    the W3 monitor (`teardowns{cause}` + INFO `microvm session died` on a
-    fatal cause; `peer.deaths{process=passt}` + INFO `microvm session peer
-    died` on the non-fatal arm), `Stop`/`Remove` (`teardowns` + INFO),
+    the W3 monitor (`teardowns{cause}` + INFO `microvm session died` on
+    every fatal cause, including passt), `Stop`/`Remove` (`teardowns` + INFO),
     `Exec`/`awaitHealthy`/Provision/`stopGuest`
     (`vsock.rpc.duration{rpc,outcome}`), `BootCanary`
     (`canary.runs{outcome}`), `ReapOrphans`
@@ -1398,26 +1353,25 @@ The §(d) instrument set inside the microVM backend.
     (PR #912 `microvm_quota.go:117-125`). The zero-value snapshot is
     still silent under this gate, with no extra flag (§(d));
   - `pssSampleInterval = 60 * time.Second` and the per-session PSS sampler
-    OQ-9(ii)'s recommendation assumes: after successful lock acquisition,
-    W5's startup unit calls `StartPSSSampler(ctx context.Context)` on
+    required by OQ-9(ii): after successful lock acquisition, W5's startup
+    unit calls `StartPSSSampler(ctx context.Context)` on
     `*MicroVMRuntime`. The sampler goroutine is bound to the run context and
     exits when it is cancelled. On each tick it snapshots the live session/VM
-    RELEASES the lock, then emits one INFO `microvm session memory` line per
-    session — `session_id` plus `vmm_pss_kb`/`virtiofsd_pss_kb`/
-    `passt_pss_kb` from `vm.PSS()`, which returns `map[string]int64`
-    keyed by child name in kB (PR #912 `launch.go:663-669`). Same
-    snapshot-then-read-outside-the-lock discipline as the `guestPSS`
-    callback, so it costs no additional `m.mu` hold, and same
-    best-effort posture (a missing key is a dropped field, never an
-    error). This is the ONLY runaway-identification signal V7 ships
-    (§(d), OQ-9); it is dropped only if the human rules OQ-9 (i)-only;
+    pairs under `m.mu`, RELEASES the lock, then emits one INFO
+    `microvm session memory` line per session — `session_id` plus
+    `vmm_pss_kb`/`virtiofsd_pss_kb`/`passt_pss_kb` from `vm.PSS()`, which
+    returns `map[string]int64` keyed by child name in kB (PR #912
+    `launch.go:663-669`). It uses the same snapshot-then-read-outside-the-lock
+    discipline as the `guestPSS` callback, with best-effort missing fields.
+    This is the runaway-identification signal required by OQ-9 (§(d)).
   - consumes W2/W3 hooks and exposes the sampler starter for W5 startup.
 - **Test cycle (hermetic):** `sdkmetric.NewManualReader` +
   `NewMeterProvider` installed as the global BEFORE `NewMicroVMRuntime`
   (the `trace_test.go:209-220` harness); seam-faked boot ⇒
   `compass.microvm.boot.duration` has one point with `outcome=ok` and no
-  other attribute; faked death ⇒ `teardowns{cause=vmm_death}` = 1; faked
-  passt death ⇒ `peer.deaths{process=passt}` = 1 and `teardowns` unchanged;
+  other attribute; faked VMM death ⇒ `teardowns{cause=vmm_death}` = 1;
+  faked passt death ⇒ `deadCause=passt`, one Shutdown, and
+  `teardowns{cause=passt}` = 1;
   every data point asserted to carry ONLY enum attributes (the
   `dispatchedCounts`-style attribute audit, `trace_test.go:253-256`); a
   no-op global meter ⇒ construction succeeds, records are skipped, nothing
@@ -1568,12 +1522,11 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
       same-boot-intent dirs (WARN + `possibly_live` count), age-gate empty
       dirs, skip table-live sessions; `main.go` probe wiring, warn-never-abort
 - [ ] W3 — `VM.DeathWatch()` (single-consumer, all three children,
-      one send per exit) + `VM.VMMExited()` over the reaper channels;
-      per-session monitor stamped with the session's `epoch` — a
-      superseded VM life's death event is DISCARDED — plus `tearingDown`
-      for the current epoch's deliberate teardown; the monitor RANGES
-      over the channel and returns when it closes (no other termination
-      exists on the non-fatal passt path);
+      sends the first observed exit once, then closes) + `VM.VMMExited()`
+      over the reaper channels; per-session monitor stamped with the
+      session's `epoch` — a superseded VM life's death event is DISCARDED —
+      plus `tearingDown` for the current epoch's deliberate teardown; the
+      monitor RANGES over the channel and returns when it closes;
       `*runtime.SessionDeadError` on refused and in-flight execs
 - [ ] W3 — death is scoped to ONE VM life: the monitor records
       `deadEpoch` beside `deadCause`, and readers refuse only when
@@ -1583,12 +1536,12 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
       success (only `Exec`/`ExecStreaming` refuse), so
       `AgentRuntime.Teardown`'s Stop-then-Remove reaches `Remove`;
       idempotent Remove proven on a dead VM and the table entry gone
-- [ ] W3 — passt death observed but never fatal: `DeathPasst` arm logging
-      `microvm session peer died` and counting
-      `peer.deaths{process=passt}` with no `deadCause` and no teardown
-- [ ] W4 — `microvmMetrics` (boot/teardown/vsock-RPC/canary/orphans/
-      peer-deaths/PSS/quota instruments, warn-and-disable), INFO
-      transition logs with session id + timings
+- [ ] W3 — passt death is fatal: `deadCause=passt`, `vm.Shutdown` called
+      once, `teardowns{cause=passt}` = 1, and one INFO `microvm session died`
+      line with `cause=passt`
+- [ ] W4 — `microvmMetrics` (boot/teardown/vsock-RPC/canary/orphans/PSS/
+      quota instruments, warn-and-disable), INFO transition logs with
+      session id + timings
 - [ ] W4 — `lastQuota QuotaReading` on `MicroVMRuntime`, written under
       `m.mu` by the preflight's `verifyQuota` and read by the
       `quota.used.ratio` callback: preflight-time snapshot, never
@@ -1596,7 +1549,7 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
       `lastQuota.LimitBytes > 0` — the condition under which
       `UsedRatio()` is meaningful, NOT `Active()` (an inode-only active
       quota emits no byte-ratio point, §(d))
-- [ ] W4 — the per-session PSS sampler OQ-9(ii) assumes: after successful
+- [ ] W4 — the per-session PSS sampler required by OQ-9(ii): after successful
       lock acquisition, W5 startup calls `StartPSSSampler(ctx context.Context)`
       on `*MicroVMRuntime`. The goroutine runs while the RunRoot lock is held
       and is bound to the run context; its `pssSampleInterval = 60 * time.Second`
@@ -1612,14 +1565,13 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
       ONCE via the `runRootLocker` probe and `defer`s the release for the
       process's life; any lock failure returns an error before sampler startup,
       preflight, reap, or serving (OQ-8). Preflight runs under the lock; reap
-      errors WARN without aborting (OQ-5)
+      runs afterward.
 - [ ] W5 — `BackendName()` probes;
       `compass.runner.session.starts{backend,outcome}` in the Runner host
 
 ## Open Questions
 
-Batched for the pre-freeze ruling; the body designs against each
-recommendation, except OQ-8, which is ruled.
+OQ-2, OQ-5, OQ-6, OQ-7, OQ-8, OQ-9, and OQ-10 are ruled below.
 
 - **OQ-1 (non-load-bearing) — the runtime-dir file set diverges from the
   parent's Interfaces sketch.** The parent sketches
@@ -1648,9 +1600,9 @@ recommendation, except OQ-8, which is ruled.
   the obligation satisfied-by-vacuity and ship nothing (honest to the
   letter, but V8's benchmark then has no per-backend series to compare);
   (iii) retrofit `compass.delivery.dispatched` (wrong process — the server
-  doesn't know the backend). **Recommendation:** (i). If the parent meant a
-  wider session-metric set, that set does not exist to label, and inventing
-  it is not V7 scope.
+  doesn't know the backend). **Ruling (Matt, 2026-10-08, RIG-3429): (i),
+  ratified.** If the parent meant a wider session-metric set, that set does
+  not exist to label, and inventing it is not V7 scope.
 - **OQ-3 (non-load-bearing) — `setupOtel` moves ahead of `selectEngine`,
   not merely ahead of the backend preflight.** Today `selectEngine` is at
   `main.go:106`, the preflight (and its canary) at `main.go:110-112`, and
@@ -1685,43 +1637,31 @@ recommendation, except OQ-8, which is ruled.
   Options: (i) warn + retry next startup; (ii) abort startup (symmetric
   with D3 but over-broad); (iii) warn but refuse only microVM-backend
   session creation until a clean reap (complexity without a demonstrated
-  need). **Recommendation:** (i), with the per-dir error detail in the WARN
-  and the `orphans.reaped` counter making silent rot visible. A failed RunRoot
-  lock attempt is distinct from a reap failure and fails startup (OQ-8).
-  After successful lock acquisition, startup passes the returned token to the
-  reap hook; a reap failure remains a WARN and does not abort.
-- **OQ-6 (LOAD-BEARING) — the net backend leaves the parent's supervised
-  set; this rules on the parent's text.** State the divergence plainly, because
-  it is larger than a fatality question: the parent's §(f) preamble
-  supervises the per-session process set including the "net backend"
-  (microvm-runner.md:240-241), and V7 removes passt from session-FATAL
-  handling entirely. That is the same class of change as OQ-10's dropping
-  the guest — the other member of that one parent sentence — which this
-  record grades load-bearing and sends to the human; grading passt lower
-  was an inconsistency, and it is corrected here.
+  need). **Ruling (Matt, 2026-10-08, RIG-3429): (i), ratified.** The
+  per-dir error detail goes in the WARN, and the `orphans.reaped` counter
+  makes silent rot visible.
+  A failed RunRoot lock attempt is distinct from a reap failure and fails
+  startup (OQ-8). After successful lock acquisition, startup passes the
+  returned token to the reap hook; a reap failure remains a WARN and does
+  not abort.
+- **OQ-6 (load-bearing) — passt is in the parent's supervised set, and its
+  death is session-fatal.** Parent §(f) supervises the per-session process
+  set including the "net backend" (microvm-runner.md:240-241). The parent
+  failure matrix names VMM and virtiofsd death only
+  (microvm-runner.md:244-253), while passt death leaves the vsock control
+  plane up and loses guest egress. But the agent's model API traffic leaves
+  through guest egress; the vsock gateway carries only
+  Comms/Lifecycle/Publish/PostConversationFrame/Control/Forge/Board, so a
+  session without passt can do no model work. Therefore passt death follows
+  the same fatal path as virtiofsd death: record `deadCause` and `deadEpoch`,
+  run `vm.Shutdown`, emit `teardowns{cause=passt}` and INFO
+  `microvm session died` (§(c), §(d)). No parent amendment is needed because
+  §(f) already lists the net backend as supervised.
 
-  On the merits, non-fatality is right: the parent's failure matrix names
-  VMM death and virtiofsd death only (microvm-runner.md:244-253), and passt
-  dying leaves the vsock control plane (served by the VMM over AF_UNIX)
-  intact, so Stop/Remove still work while the guest loses egress. But
-  "non-fatal" must not silently become "unobserved": with no host-side
-  detection there is no death signal, no metric series, and no log line, so
-  an operator gets nothing when a session loses egress and OQ-6's own
-  closing rationale ("the session lifecycle handles it") would rest on no
-  mechanism at all. So the body ships observation WITHOUT fatality
-  regardless of the ruling — a `DeathPasst` arm on `DeathWatch` that logs
-  `microvm session peer died` and counts
-  `compass.microvm.peer.deaths{process=passt}` and does NOT tear the
-  session down (§(c), §(d)).
-
-  Options: (i) matrix-literal non-fatal, WITH the observation arm (what
-  the body designs against); (ii) extend the parent's matrix and treat passt
-  as fatal too (symmetric with virtiofsd, but widens the matrix and
-  converts a degraded session into a killed one); (iii) non-fatal and
-  unobserved (what an earlier draft implied — rejected here as removing
-  passt from the supervised set outright). **Recommendation:** (i); revisit
-  fatality with V8 evidence if egress-less zombie sessions show up in
-  practice.
+  Options: (i) follow the failure matrix literally and keep passt death
+  non-fatal, retaining the session despite lost guest egress; (ii) make passt
+  death fatal like virtiofsd death. **Ruling (Matt, 2026-10-08, RIG-3429):
+  (ii), fatal.**
 - **OQ-7 (load-bearing) — what the reaper does with an unidentifiable dir,
   ruled together with §(a)'s write lifecycle.** Two distinct states get
   confused here, and the ruling needs them separated:
@@ -1762,9 +1702,9 @@ recommendation, except OQ-8, which is ruled.
   (leave or rename aside, log loudly, never auto-remove). Options for state
   2: (a) keep-and-WARN forever (what the body ships); (b) age-gate it into
   removal like state 1 — rejected, since it re-opens exactly the leak the
-  intent record exists to prevent. **Recommendation:** (i) + (a), and
-  ratify 1m as the named constant. Rule the write lifecycle (intent record
-  included) and the removal arms together.
+  intent record exists to prevent. **Ruling (Matt, 2026-10-08, RIG-3429):
+  (i) + (a), and ratify the 1m `orphanDirGrace`.** Apply it to the write
+  lifecycle (including the intent record) and the removal arms together.
 - **OQ-8 (load-bearing) — RunRoot single-owner exclusion: without it, two
   Runners over one RunRoot let the reaper kill LIVE sessions.** The most
   serious pre-freeze finding. §(b)'s table-skip guard is intra-process; the
@@ -1781,12 +1721,13 @@ recommendation, except OQ-8, which is ruled.
   deployment tooling the guarantee and document `ReapOrphans` as unsafe
   under concurrent Runners; (iii) record the owning Runner's own
   (pid, starttime, bootid) in RunRoot and have `ReapOrphans` skip dirs
-  while that recorded owner is alive. **Ruling (Matt, 2026-10-07, RIG-4840): (i), refuse-not-wait, and a refused lock fails startup.** The
-  standard single-owner mechanism uses one file and one syscall; lock refusal
-  fails startup rather than allowing a second Runner to continue without
-  ownership. Unlike (iii), it has no stale-record arm to reason about (the
-  lock IS liveness). (ii) leaves the kill reachable; (iii) rebuilds half of
-  `flock` by hand.
+  while that recorded owner is alive. **Ruling (Matt, 2026-10-07, RIG-4840):
+  (i), refuse-not-wait, and a refused lock fails startup.** The standard
+  single-owner mechanism uses one file and one syscall; lock refusal fails
+  startup rather than allowing a second Runner to continue without ownership.
+  Unlike (iii), it has no stale-record arm to reason about (the lock IS
+  liveness). (ii) leaves the kill reachable; (iii) rebuilds half of `flock`
+  by hand.
 
   **The ruling selects the mechanism and the failure behavior.** The body
   SHIPS (i) as a named W2 deliverable — `LockRunRoot` in W2's Interfaces and
@@ -1795,12 +1736,7 @@ recommendation, except OQ-8, which is ruled.
   startup, preflight, reap, or serving. After successful acquisition, the
   startup unit starts the sampler, runs preflight under the lock, and reaps.
   W2 also tests that a zero-token `ReapOrphans` call scans nothing (§(b) step
-  0); this verifies zero-value rejection. An earlier draft left the defense
-  as this question's recommendation only, which meant an executor implementing
-  W1-W5 verbatim would have shipped `ReapOrphans` with zero cross-process
-  exclusion — precisely the live-session-killing reaper this question exists
-  to prevent. A safety property that lives only in an Open Question is not a
-  delivered defense.
+  0); this verifies zero-value rejection.
 
   **The lock's OWNER is the startup unit, not the reaper**, and that
   follows from (i)'s own "held for the Runner's life" wording rather than
@@ -1829,31 +1765,18 @@ recommendation, except OQ-8, which is ruled.
   (microvm-runner.md:266); §(d) delivers `compass.microvm.guest.memory.pss`
   summed per process kind with no per-session label (the cardinality rule,
   `consumer.go:249-254`). The aggregate cannot identify a runaway VM and
-  cannot feed V8's per-VM RSS benchmark comparison — whether the frozen
-  line means fleet-sum or per-VM is not the designer's call. Options: (i)
-  accept the aggregate gauge and source V8's per-VM numbers from the
-  benchmark harness calling `PSS()` directly (no metric); (ii) periodic
-  INFO log lines carrying per-session PSS — logs are exempt from the
-  cardinality rule, the record's own argument (§(d); the delivery
-  consumer meters without ids, `dispatch.go:379-383`, while carrying them
-  in the adjacent WARN, `dispatch.go:392-393`);
-  (iii) an exemplar/high-watermark scheme (e.g. a max-per-session gauge).
-  **Recommendation:** (i) + (ii) combined: keep the aggregate gauge as
-  the fleet trend, add per-session PSS to a low-frequency INFO line for
-  runaway identification, and let V8's benchmark read `PSS()` directly —
-  no per-session metric label is ever minted and every consumer of the
-  frozen sentence gets a number. The body designs against this assumption
-  (§(d)), and (ii)'s emitter is a NAMED W4 deliverable — the
-  `microvm session memory` sampler and its `pssSampleInterval` constant,
-  in W4's Interfaces and its own `## Tasks` bullet — not a property left
-  to this recommendation. The same rule OQ-8 states applies here: a
-  signal that lives only in an Open Question is not a delivered signal,
-  and an executor implementing W1-W5 verbatim must not end up with the
-  aggregate gauge and nothing that can identify a runaway VM. If the
-  human rules (i)-only, W4's sampler deliverable and its Task bullet are
-  dropped with the ruling, and V7 then ships NO runaway-identification
-  signal at all — §(d) says so explicitly so the consequence of that
-  ruling is visible rather than silently unimplemented.
+  cannot feed V8's per-VM RSS benchmark comparison. Options: (i) keep the
+  aggregate gauge and source V8's per-VM numbers from the benchmark harness
+  calling `PSS()` directly (no metric); (ii) add periodic INFO log lines
+  carrying per-session PSS (logs are exempt from the cardinality rule);
+  (iii) use an exemplar/high-watermark scheme (e.g. a max-per-session gauge).
+  **Ruling (Matt, 2026-10-08, RIG-3429): (i) + (ii), ratified.** Keep the
+  aggregate gauge as the fleet trend, add per-session PSS to a low-frequency
+  INFO line for runaway identification, and let V8's benchmark read `PSS()`
+  directly. No per-session metric label is minted. The `microvm session
+  memory` sampler and `pssSampleInterval` are required W4 deliverables in its
+  Interfaces and `## Tasks`; the sampler emits the signal required by this
+  ruling.
 - **OQ-10 (load-bearing) — the guest is dropped from V7's supervised set;
   the parent's sentence says it is in it.** Parent §(f): the backend
   supervises the per-session process set including "the guest via the
@@ -1866,9 +1789,9 @@ recommendation, except OQ-8, which is ruled.
   and defer active guest health-probing to V8 alongside the acceptance
   suite; (ii) add a low-frequency `Health`-poll arm to the session monitor
   now (the RPC exists, PR #912 `launch.go:548-555`).
-  **Recommendation:** (i): an idle-guest zombie holds quota but corrupts
-  nothing, a poll arm mints a new false-positive teardown class (a loaded
-  guest missing a poll deadline) with no V8 evidence to tune against, and
-  V8's acceptance suite is where liveness probing earns its thresholds.
-  The deviation is surfaced in §(c), not silent; either option needs the
-  human's explicit ruling on the parent's sentence.
+  **Ruling (Matt, 2026-10-08, RIG-3429): (i), ratified.** Per-exec timeout
+  coverage is sufficient for V7: an idle-guest zombie holds quota but
+  corrupts nothing, while a poll arm would add a false-positive teardown
+  class without V8 evidence to tune against. V8's acceptance suite is where
+  liveness probing earns its thresholds. The deviation remains explicit in
+  §(c); active guest health-probing is deferred to V8.
