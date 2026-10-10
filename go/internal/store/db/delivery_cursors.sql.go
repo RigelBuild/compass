@@ -152,10 +152,19 @@ const owedMentions = `-- name: OwedMentions :many
 SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, (CASE WHEN ah.owner_user_id IS NULL THEN COALESCE(ah.handle, '') WHEN oh.handle IS NULL THEN '' ELSE oh.handle || '/' || ah.handle END)::text AS author_handle, m.at_unix_ms, m.blocks, m.turn_sequence
 FROM owed_mentions om
 JOIN messages m ON m.id = om.message_id
+JOIN agent_accounts aa ON aa.account_id = om.agent_account_id
 LEFT JOIN account_handles ah ON ah.account_id = m.author_account_id
 LEFT JOIN account_handles oh ON oh.account_id = ah.owner_user_id
 JOIN topics t ON t.id = m.topic_id
 WHERE om.agent_account_id = $1
+  AND
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = m.author_account_id)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+              AND p_out.peer_user_id = aa.owner_user_id)
+)
 ORDER BY t.channel_id, m.seq ASC
 `
 
@@ -170,6 +179,7 @@ type OwedMentionsRow struct {
 	TurnSequence    int64
 }
 
+// reach: the author may reach agent aa
 func (q *Queries) OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error) {
 	rows, err := q.db.Query(ctx, owedMentions, agentAccountID)
 	if err != nil {
@@ -276,31 +286,36 @@ type SeedDeliveryCursorParams struct {
 	ChannelID      string
 }
 
-// Delivery-cursor queries (sqlc adoption T4, RIG-3034). These replace the inline
-// SQL literals in internal/store/delivery_cursors.go; the hand-written Store
-// methods keep their signatures, the AckDelivery tx orchestration (the owed-clear
-// FIRST, the commit-if-cleared arm, the contiguous-advance loop in Go), and the
-// D2 seed self-guard/idempotency contract. The two message-fanout reads
-// (OwedMentions, UndeliveredMessages) share the per-channel projection the Go
-// drains with an inline loop calling messageFromParts.
+// Delivery-cursor reads share the author's reach predicate with delivery_reads.sql.
+// A member outside the author's owner or live peering is not delivered.
 func (q *Queries) SeedDeliveryCursor(ctx context.Context, arg SeedDeliveryCursorParams) error {
 	_, err := q.db.Exec(ctx, seedDeliveryCursor, arg.AgentAccountID, arg.ChannelID)
 	return err
 }
 
-const selfAuthoredSeqsAbove = `-- name: SelfAuthoredSeqsAbove :many
+const skippableSeqsAbove = `-- name: SkippableSeqsAbove :many
 SELECT m.seq FROM messages m JOIN topics t ON t.id = m.topic_id
-WHERE t.channel_id = $1 AND m.seq > $2 AND m.author_account_id = $3
+JOIN agent_accounts aa ON aa.account_id = $3
+WHERE t.channel_id = $1 AND m.seq > $2
+  AND (m.author_account_id = $3 OR NOT
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = m.author_account_id)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+              AND p_out.peer_user_id = aa.owner_user_id)
+))
 `
 
-type SelfAuthoredSeqsAboveParams struct {
-	ChannelID       string
-	Seq             int64
-	AuthorAccountID string
+type SkippableSeqsAboveParams struct {
+	ChannelID      string
+	Seq            int64
+	AgentAccountID string
 }
 
-func (q *Queries) SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, selfAuthoredSeqsAbove, arg.ChannelID, arg.Seq, arg.AuthorAccountID)
+// reach: the author may reach agent aa
+func (q *Queries) SkippableSeqsAbove(ctx context.Context, arg SkippableSeqsAboveParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, skippableSeqsAbove, arg.ChannelID, arg.Seq, arg.AgentAccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +348,14 @@ LEFT JOIN agent_delivery_cursors dc
 WHERE cm.account_id = $1
   AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
   AND m.author_account_id <> $1
+  AND
+(   aa.owner_user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+ OR EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = m.author_account_id)
+ OR EXISTS (SELECT 1 FROM user_peers p_out
+            JOIN user_peers p_in ON p_in.user_id = p_out.peer_user_id AND p_in.peer_user_id = p_out.user_id
+            WHERE p_out.user_id = COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = m.author_account_id), m.author_account_id)
+              AND p_out.peer_user_id = aa.owner_user_id)
+)
   AND m.seq > COALESCE(
         dc.acked_seq,
         (SELECT COALESCE(MAX(mh.seq), 0) FROM messages mh JOIN topics th ON th.id = mh.topic_id WHERE th.channel_id = cm.channel_id))
@@ -351,6 +374,7 @@ type UndeliveredMessagesRow struct {
 	TurnSequence    int64
 }
 
+// reach: the author may reach agent aa
 func (q *Queries) UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error) {
 	rows, err := q.db.Query(ctx, undeliveredMessages, accountID)
 	if err != nil {

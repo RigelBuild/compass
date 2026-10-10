@@ -142,18 +142,8 @@ func (c *Consumer) hold(ctx context.Context, authorSession, messageID string, at
 	}
 }
 
-// fanOut dispatches one settled message. It first routes any `@`-mentions to a
-// steer for each mentioned channel agent member (D5, routeMentionsFor), then
-// delivers the plain message to every live subscribed agent session, author
-// excluded — but SKIPS any agent that was mentioned: the mentioned agent gets a
-// steer only, never steer + deliver of the same message (steer-only precedence,
-// OQ-3, design.md:537-546). A recipient with no live session is woken via the
-// AgentWaker seam (OQ-6, best-effort resume) and otherwise skipped — the D2
-// cursor sweep is the durable backstop that delivers on its next start
-// (design.md:137,149), so no owed row is recorded on this arm. Folding mention
-// routing here (not at the raw MessagePosted) parses at the author's settle edge
-// for all three delivery paths at once, so a mention that streams in via a later
-// MessageUpdated block is still seen (design.md:519-523).
+// fanOut routes mentions and delivers the message to reachable channel agents.
+// A member out of reach is absent from both recipient sets.
 func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) {
 	mentioned := c.routeMentionsFor(ctx, channel, author, msg)
 	// RIG-2257: an ask_answer message targets its asking agent when that agent is
@@ -313,7 +303,7 @@ func (c *Consumer) routeAskAnswerFor(ctx context.Context, channel store.ChannelI
 	}
 }
 
-// resolveMentioned resolves handles against the channel's agent members, with a
+// resolveMentioned returns mentioned channel agents the author may reach, with a
 // bare handle scoped to the posting author's owner namespace.
 func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID, author store.AccountID, handles []string) map[store.AccountID]bool {
 	members, err := c.st.ChannelAgentMembers(ctx, channel, author)

@@ -76,6 +76,7 @@ type Querier interface {
 	// WithTx), so one generated query backs both call sites.
 	BindLifetime(ctx context.Context, arg BindLifetimeParams) (int64, error)
 	// Keep handle joins optional so missing handle rows do not hide @everyone members.
+	// reach: the author may reach agent aa
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]ChannelAgentMembersRow, error)
 	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
@@ -482,6 +483,7 @@ type Querier interface {
 	// The accounts still owed a mention: a wake that failed before any Runner could
 	// serve it is retried for these once one attaches.
 	OwedMentionAccounts(ctx context.Context) ([]string, error)
+	// reach: the author may reach agent aa
 	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
@@ -575,16 +577,10 @@ type Querier interface {
 	// agent's account id. Ciphertext only — the store never decrypts.
 	SecretRecordsForAgent(ctx context.Context, accountID string) ([]Secret, error)
 	SeedChannelDeliveryCursors(ctx context.Context, channelID string) error
-	// Delivery-cursor queries (sqlc adoption T4, RIG-3034). These replace the inline
-	// SQL literals in internal/store/delivery_cursors.go; the hand-written Store
-	// methods keep their signatures, the AckDelivery tx orchestration (the owed-clear
-	// FIRST, the commit-if-cleared arm, the contiguous-advance loop in Go), and the
-	// D2 seed self-guard/idempotency contract. The two message-fanout reads
-	// (OwedMentions, UndeliveredMessages) share the per-channel projection the Go
-	// drains with an inline loop calling messageFromParts.
+	// Delivery-cursor reads share the author's reach predicate with delivery_reads.sql.
+	// A member outside the author's owner or live peering is not delivered.
 	SeedDeliveryCursor(ctx context.Context, arg SeedDeliveryCursorParams) error
 	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
-	SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error)
 	SessionBase(ctx context.Context, sessionID string) (int64, error)
 	SessionBinding(ctx context.Context, sessionID string) (SessionBindingRow, error)
 	SessionBindingForAccount(ctx context.Context, agentAccountID string) (SessionBindingForAccountRow, error)
@@ -621,18 +617,17 @@ type Querier interface {
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
 	SetTourState(ctx context.Context, arg SetTourStateParams) error
 	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)
+	// reach: the author may reach agent aa
+	SkippableSeqsAbove(ctx context.Context, arg SkippableSeqsAboveParams) ([]int64, error)
 	// Event writes share RecordSessionBinding's transaction, so neither half of an
 	// interval can commit without its binding transition.
 	// clock_timestamp records after lock waits, unlike now() which uses tx start time.
 	StartComputeUsageInterval(ctx context.Context, arg StartComputeUsageIntervalParams) error
 	StoreForgeRepoWatermark(ctx context.Context, arg StoreForgeRepoWatermarkParams) (int64, error)
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error
-	// Delivery-consumer read queries (sqlc adoption T4, RIG-3034). These replace the
-	// inline SQL literals in internal/store/delivery_reads.go; the hand-written Store
-	// methods keep their signatures, the D1 sweep-set disjunct (kept textually in
-	// sync with delivery_cursors.sql UndeliveredMessages/InSweepSet), and the D9
-	// error mapping. MessageByID shares the message projection the Go drains via
-	// messageFromParts.
+	// The marked reach predicate is one gate shared with delivery_cursors.sql;
+	// sql_parity_test.go fails if the copies drift.
+	// reach: the author may reach agent aa
 	SubscribedAgents(ctx context.Context, arg SubscribedAgentsParams) ([]string, error)
 	// Exact-artifact subscribers, plus (on an opened event) the container-scope
 	// subscribers for the same container/project.
@@ -656,6 +651,7 @@ type Querier interface {
 	// Feeds IsTopicChannelMember: membership on the channel that owns the topic.
 	TopicChannelMemberExists(ctx context.Context, arg TopicChannelMemberExistsParams) (bool, error)
 	TopicChannelNames(ctx context.Context, id string) (TopicChannelNamesRow, error)
+	// reach: the author may reach agent aa
 	UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error)
 	UnroutedMentionMessages(ctx context.Context, arg UnroutedMentionMessagesParams) ([]UnroutedMentionMessagesRow, error)
 	UpdateAgentParent(ctx context.Context, arg UpdateAgentParentParams) error
