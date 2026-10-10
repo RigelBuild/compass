@@ -162,6 +162,20 @@ func TestAskAnsweredProjectsOutbound(t *testing.T) {
 	}
 }
 
+func TestTopicToWireOnlySetsStatsWhenComputed(t *testing.T) {
+	plain := topicToWire(store.Topic{ID: "topic", Name: "deploy"})
+	if plain.MessageCount != nil || plain.LastMessageAtUnixMs != nil {
+		t.Fatalf("topic without stats = %v/%v, want absent fields", plain.MessageCount, plain.LastMessageAtUnixMs)
+	}
+	withStats := topicToWire(store.Topic{
+		ID:    "topic",
+		Stats: &store.TopicStats{MessageCount: 3, LastMessageAtUnixMS: 123},
+	})
+	if withStats.GetMessageCount() != 3 || withStats.GetLastMessageAtUnixMs() != 123 {
+		t.Fatalf("topic stats = %d/%d, want 3/123", withStats.GetMessageCount(), withStats.GetLastMessageAtUnixMs())
+	}
+}
+
 // assertEveryFieldClassified fails when a descriptor field appears in neither
 // ownership set (a field was added to the proto without deciding whether
 // askFromWire maps or drops it) or when a set names a field the descriptor no

@@ -354,6 +354,14 @@ type Topic struct {
 	// LastSeq is the highest messages.seq under this topic, maintained in the
 	// append tx so a topic index can order by recency without scanning messages.
 	LastSeq int64
+	// Stats is set only by ListTopicsWithStats; other topic surfaces leave it nil.
+	Stats *TopicStats
+}
+
+// TopicStats holds message activity calculated by ListTopicsWithStats.
+type TopicStats struct {
+	MessageCount        int64
+	LastMessageAtUnixMS int64
 }
 
 // TopicRef addresses the topic a message targets: exactly one of ID or Name is

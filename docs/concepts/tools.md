@@ -25,6 +25,8 @@ routing manual: the `comms-playbook` skill (`config/skills/comms-playbook`).
   later turn, it does not block.
 - **`comms_list_messages`** — read a channel's recent messages, grouped by
   topic. There is no separate inbox — reading is always this call.
+- **`comms_list_topics`** — list channel topics with message counts, last
+  activity, and archived state.
 - **`comms_create_channel`** — create a named channel, optionally in a group
   (a leaf name or slash path) with initial members by handle. DMs use
   `comms_open_dm`, never this tool.
@@ -78,8 +80,8 @@ a subagent spawn.
 ## Approval
 
 Each tool declares whether it is a **read** or a **write**. Reads
-(`comms_list_messages`, `compass_roster`, `compass_tree`) run freely; writes
-(`comms_post_message`, `comms_post_ask`, `compass_set_status`,
+(`comms_list_messages`, `comms_list_topics`, `compass_roster`, `compass_tree`)
+run freely; writes (`comms_post_message`, `comms_post_ask`, `compass_set_status`,
 `comms_create_channel`, `comms_update_members`, `comms_create_channel_group`,
 `agents_spawn_peer`, `agents_despawn_peer`) are the mutating surface. In a
 headless container the write natives auto-approve (there is no human in the

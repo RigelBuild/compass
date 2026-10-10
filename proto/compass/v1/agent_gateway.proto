@@ -117,7 +117,9 @@ message CommsCallRequest {
   oneof call {
     // post, list and update_members carry a channel NAME in channel_id, resolved
     // within the caller's visible set: unknown or invisible is NOT_FOUND,
-    // ambiguous is INVALID_ARGUMENT. Only list defaults an empty name to home.
+    // ambiguous is INVALID_ARGUMENT.
+    // list and list_topics default an empty name to home; post and
+    // update_members do not.
     PostMessageRequest post = 2;
     ListMessagesRequest list = 3;
     GetRosterRequest roster = 4;
@@ -130,6 +132,7 @@ message CommsCallRequest {
     // next-free arm above it (design Global Constraints: never renumber down
     // into an org-management slot).
     OpenDMRequest open_dm = 11;
+    ListTopicsRequest list_topics = 12;
   }
   // The W3C `traceparent` of the delivered message that triggered this outbound
   // call, re-attached by the agent so the Server can LINK the reply's fresh
@@ -147,7 +150,7 @@ message CommsCallRequest {
 // The result of one comms call, correlated by `call_id`. A successful call sets
 // the response arm matching the request's operation (`post`, `list`, `roster`,
 // `set_status`, `pin`, `create_channel`, `update_members`,
-// `create_channel_group`, `open_dm`); an in-band failure (a tool error — non-member
+// `create_channel_group`, `open_dm`, `list_topics`); an in-band failure (a tool error — non-member
 // channel, bad input) sets `error`, which is NOT a transport teardown. The same
 // message is the `RelayCommsCallResponse.result` payload on the Runner->Server
 // leg.
@@ -164,6 +167,7 @@ message CommsCallResult {
     UpdateChannelMembersResponse update_members = 9;
     CreateChannelGroupResponse create_channel_group = 10;
     OpenDMResponse open_dm = 11;
+    ListTopicsResponse list_topics = 12;
   }
 }
 

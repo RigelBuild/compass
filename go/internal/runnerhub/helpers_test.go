@@ -187,6 +187,7 @@ type commsCall struct {
 	account   store.AccountID
 	post      *compassv1.PostMessageRequest
 	list      *compassv1.ListMessagesRequest
+	topicList *compassv1.ListTopicsRequest
 	roster    *compassv1.GetRosterRequest
 	setStatus string
 	pin       *compassv1.UpdatePinnedBoardRequest
@@ -207,10 +208,12 @@ type fakeCommsCaller struct {
 	mu    sync.Mutex
 	calls []commsCall
 
-	postResp *compassv1.PostMessageResponse
-	postErr  error
-	listResp *compassv1.ListMessagesResponse
-	listErr  error
+	postResp      *compassv1.PostMessageResponse
+	postErr       error
+	listResp      *compassv1.ListMessagesResponse
+	listErr       error
+	topicListResp *compassv1.ListTopicsResponse
+	topicListErr  error
 
 	rosterResp *compassv1.GetRosterResponse
 	rosterErr  error
@@ -269,6 +272,16 @@ func (f *fakeCommsCaller) ListAsAccount(_ context.Context, account store.Account
 // identically to ListAsAccount (see PostAsAccountByName).
 func (f *fakeCommsCaller) ListAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error) {
 	return f.ListAsAccount(ctx, account, req)
+}
+
+func (f *fakeCommsCaller) ListTopicsAsAccountByName(_ context.Context, account store.AccountID, req *compassv1.ListTopicsRequest) (*compassv1.ListTopicsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, topicList: req})
+	if f.topicListErr != nil {
+		return nil, f.topicListErr
+	}
+	return f.topicListResp, nil
 }
 
 func (f *fakeCommsCaller) RosterAsAccount(_ context.Context, account store.AccountID, req *compassv1.GetRosterRequest) (*compassv1.GetRosterResponse, error) {

@@ -36,12 +36,14 @@ restatement of the role prompt.
 
 ## The comms toolset
 
-Eleven native comms tools ship (`src/comms.ts`), none of them ask-answering:
+Twelve native comms tools ship (`src/comms.ts`), none of them ask-answering:
 
 - `comms_post_message` — post a markdown message to a channel topic.
 - `comms_post_ask` — raise a structured ask (async; the answer arrives on a
   later turn).
 - `comms_list_messages` — read a channel's recent messages.
+- `comms_list_topics` — list a channel's topics, counts, last activity, and
+  archived status.
 - `compass_roster` — list the agent's neighborhood/subtree/owner roster.
 - `compass_tree` — render the agent's subtree/owner scope as an indented
   parent→child tree, each node carrying its presence and activity.

@@ -218,7 +218,7 @@ func messagesToWire(ms []store.Message) []*compassv1.Message {
 // store->wire topic mapper, shared by the ListTopics/UpdateTopic responses and
 // the TopicUpserted fan-out (design.md's live topic index).
 func topicToWire(t store.Topic) *compassv1.Topic {
-	return &compassv1.Topic{
+	wire := &compassv1.Topic{
 		Id:                 t.ID,
 		ChannelId:          t.ChannelID,
 		Name:               t.Name,
@@ -226,6 +226,12 @@ func topicToWire(t store.Topic) *compassv1.Topic {
 		CreatedByAccountId: t.CreatedByAccountID,
 		Archived:           t.Archived,
 	}
+	if t.Stats != nil {
+		count := uint64(max(t.Stats.MessageCount, 0))
+		wire.MessageCount = &count
+		wire.LastMessageAtUnixMs = &t.Stats.LastMessageAtUnixMS
+	}
+	return wire
 }
 
 func topicsToWire(ts []store.Topic) []*compassv1.Topic {

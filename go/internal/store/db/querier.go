@@ -420,6 +420,7 @@ type Querier interface {
 	// equal to ChannelParticipant (channels.sql). It is participation, not channel
 	// visibility: never widen it to the owner-set predicate. ACL conjuncts go in each.
 	ListTopics(ctx context.Context, arg ListTopicsParams) ([]Topic, error)
+	ListTopicsWithStats(ctx context.Context, arg ListTopicsWithStatsParams) ([]ListTopicsWithStatsRow, error)
 	ListUserPeerings(ctx context.Context, userID string) ([]ListUserPeeringsRow, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
 	LoadDeliveryCursor(ctx context.Context, arg LoadDeliveryCursorParams) (LoadDeliveryCursorRow, error)

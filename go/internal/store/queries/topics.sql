@@ -16,6 +16,14 @@ FROM topics
 WHERE channel_id = $1 AND ($2 OR NOT archived)
 ORDER BY last_seq DESC, created_at_unix_ms DESC, id;
 
+-- name: ListTopicsWithStats :many
+SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id,
+       (SELECT count(*) FROM messages m WHERE m.topic_id = t.id) AS message_count,
+       COALESCE((SELECT m.at_unix_ms FROM messages m WHERE m.topic_id = t.id ORDER BY m.seq DESC LIMIT 1), 0)::bigint AS last_message_at_unix_ms
+FROM topics t
+WHERE channel_id = $1 AND ($2 OR NOT archived)
+ORDER BY last_seq DESC, created_at_unix_ms DESC, id;
+
 -- name: ResolveTopicForUpdate :one
 WITH RECURSIVE chain AS (
     SELECT aa.account_id, aa.parent_agent_id

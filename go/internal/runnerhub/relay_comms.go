@@ -861,7 +861,7 @@ func (h *Hub) executeCall(
 	if oneof == nil {
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)"),
+			errors.New("runnerhub: comms call has no recognized variant set (post/list/list_topics/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)"),
 		)
 	}
 	switch c := oneof.(type) {
@@ -881,6 +881,14 @@ func (h *Hub) executeCall(
 		}
 		return &compassv1internal.CommsCallResult{
 			Result: &compassv1internal.CommsCallResult_List{List: resp},
+		}, nil
+	case *compassv1internal.CommsCallRequest_ListTopics:
+		resp, err := h.comms.ListTopicsAsAccountByName(ctx, account, c.ListTopics)
+		if err != nil {
+			return nil, err
+		}
+		return &compassv1internal.CommsCallResult{
+			Result: &compassv1internal.CommsCallResult_ListTopics{ListTopics: resp},
 		}, nil
 	case *compassv1internal.CommsCallRequest_Roster:
 		resp, err := h.comms.RosterAsAccount(ctx, account, c.Roster)
@@ -946,7 +954,7 @@ func (h *Hub) executeCall(
 	default:
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)"),
+			errors.New("runnerhub: comms call has no recognized variant set (post/list/list_topics/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)"),
 		)
 	}
 }
