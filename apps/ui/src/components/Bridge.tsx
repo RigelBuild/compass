@@ -4,11 +4,11 @@ import {
 	createMemo,
 	createSignal,
 	For,
-	onCleanup,
 	Show,
 } from "solid-js";
 import {
 	activeIssues,
+	backlogIssues,
 	boardAgents as boardAgentsOf,
 	cellItems as cellItemsOf,
 	laneTotal as laneTotalOf,
@@ -41,7 +41,9 @@ import { createRovingGroup, type Stop } from "../keyboard/roving";
 import { openLink } from "../open-link";
 import type { IssueState } from "../stub-data";
 import { useView } from "../view-scope";
+import { BacklogList } from "./BacklogView";
 import { BadgeGlyph } from "./BadgeGlyph";
+import { DoneList } from "./DoneView";
 import { IssueCard } from "./IssueCard";
 import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
@@ -209,9 +211,20 @@ const PrCard: Component<{
  *  agent's cards in that state. Clicking an agent gutter opens the agent view. */
 export const Bridge: Component = () => {
 	const store = useStore();
+	const view = useView();
 	const [mode, setMode] = createSignal<BoardMode>("swimlane");
 	// The active artifact tab — a Bridge-local view axis, peer to `mode`.
 	const [tab, setTab] = createSignal<BoardTab>("issues");
+	// Backlog and Done are routed segments (DL-438); Issues/PRs stay local.
+	const segment = (): BoardTab | "backlog" | "done" => {
+		const routed = view.route().view;
+		return routed === "backlog" || routed === "done" ? routed : tab();
+	};
+	const onGrid = () => segment() === "issues" || segment() === "prs";
+	const showGrid = (next: BoardTab): void => {
+		view.navigate("/");
+		setTab(next);
+	};
 
 	// SEAM (subtree-scope): Record C's subtree filter has no store accessor yet,
 	// so the board is always unscoped here — `scope()` is `undefined`, and both
@@ -495,7 +508,6 @@ export const Bridge: Component = () => {
 	});
 	// Several tabs can mount a Bridge, so only the focused view's Bridge holds the
 	// shared board/list command ids; a cleanup removes only the entry it added.
-	const view = useView();
 	const commands: Command[] = [
 		{
 			id: "board.openAssignedAgent" as CommandId,
@@ -520,9 +532,9 @@ export const Bridge: Component = () => {
 		})),
 	];
 	createEffect(
-		() => store.focusedView().id === view.id,
-		(focused) => {
-			if (!focused) return;
+		() => store.focusedView().id === view.id && onGrid(),
+		(active) => {
+			if (!active) return;
 			// Take the ids over from the previous owner, whose cleanup may run
 			// after this; its identity check then leaves these entries alone.
 			for (const cmd of commands) {
@@ -536,8 +548,12 @@ export const Bridge: Component = () => {
 			};
 		},
 	);
-	store.keyboard.registerGroup(rovingGroup);
-	onCleanup(() => store.keyboard.unregisterGroup(rovingGroup));
+	// The board group exists only on the grid segments; the lists are not a board.
+	createEffect(onGrid, (on) => {
+		if (!on) return;
+		store.keyboard.registerGroup(rovingGroup);
+		return () => store.keyboard.unregisterGroup(rovingGroup);
+	});
 
 	// Apply the positional a11y strings to each stop element, and name the Space
 	// cross-link on the cursor card (design §219-223, §491). Static-dep effect
@@ -570,26 +586,43 @@ export const Bridge: Component = () => {
 		<div class="bridge">
 			<div class="bridge-toolbar">
 				<span class="heading">Bridge</span>
-				<span class="sub">
-					{boardAgents().length} agents · {inFlight()} in-flight issues
-				</span>
 				<div class="seg bridge-tabs" role="toolbar" aria-label="Board view">
 					<button
 						type="button"
-						class={{ active: tab() === "issues" }}
-						onClick={() => setTab("issues")}
+						class={{ active: segment() === "issues" }}
+						onClick={() => showGrid("issues")}
 					>
 						Issues
 					</button>
 					<button
 						type="button"
-						class={{ active: tab() === "prs" }}
-						onClick={() => setTab("prs")}
+						class={{ active: segment() === "prs" }}
+						onClick={() => showGrid("prs")}
 					>
 						PRs · {prCount(store.issues(), scope())}
 					</button>
+					<button
+						type="button"
+						class={{ active: segment() === "backlog" }}
+						onClick={() => view.navigate("/backlog")}
+					>
+						Backlog ·{" "}
+						{backlogIssues(store.issues()).length +
+							store.assignedIssues().length}
+					</button>
+					<button
+						type="button"
+						class={{ active: segment() === "done" }}
+						onClick={() => view.navigate("/done")}
+					>
+						Done
+					</button>
 				</div>
-				<Show when={tab() === "issues"}>
+				{/* After the tabs, so the subtitle alone gives way to the grouping seg. */}
+				<span class="sub">
+					{boardAgents().length} agents · {inFlight()} in-flight issues
+				</span>
+				<Show when={segment() === "issues"}>
 					<div class="seg" role="toolbar" aria-label="Board grouping">
 						<button
 							type="button"
@@ -609,7 +642,14 @@ export const Bridge: Component = () => {
 				</Show>
 			</div>
 
-			<Show when={tab() === "issues"}>
+			<Show when={segment() === "backlog"}>
+				<BacklogList />
+			</Show>
+			<Show when={segment() === "done"}>
+				<DoneList />
+			</Show>
+
+			<Show when={segment() === "issues"}>
 				<Show
 					when={stops().length > 0}
 					fallback={
@@ -732,7 +772,7 @@ export const Bridge: Component = () => {
 				</Show>
 			</Show>
 
-			<Show when={tab() === "prs"}>
+			<Show when={segment() === "prs"}>
 				<Show
 					when={stops().length > 0}
 					fallback={

@@ -18,10 +18,8 @@ import type { Component } from "solid-js";
 import { onSettled } from "solid-js";
 import { AgentsView } from "./components/AgentsView";
 import { AgentView } from "./components/AgentView";
-import { BacklogView } from "./components/BacklogView";
 import { Bridge } from "./components/Bridge";
 import { ChannelView } from "./components/ChannelView";
-import { DoneView } from "./components/DoneView";
 import { SettingsView } from "./components/SettingsView";
 import { TopicView } from "./components/TopicView";
 import { useView } from "./view-scope";
@@ -45,8 +43,9 @@ export const appRoutes = defineRoutes([
 	{ path: "/channel/:channelId/topic/:topicId", component: TopicView },
 	{ path: "/agent/:agentId", component: AgentView },
 	{ path: "/agents", component: AgentsView },
-	{ path: "/backlog", component: BacklogView },
-	{ path: "/done", component: DoneView },
+	// Backlog and Done are Bridge segments; one component keeps the Bridge mounted.
+	{ path: "/backlog", component: Bridge },
+	{ path: "/done", component: Bridge },
 	{ path: "/settings", component: SettingsView },
 	{ path: "*all", component: RedirectHome },
 ]);

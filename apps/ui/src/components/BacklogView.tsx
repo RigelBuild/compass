@@ -86,11 +86,11 @@ const BacklogSection: Component<{
 	);
 };
 
-/** The Backlog view (design D3/T4): a Linear-style vertical issue list with
- *  three collapsible sections — Todo (the global promoted-but-unassigned pool),
- *  Backlog (the un-promoted tier), and Assigned to me (the user's personal
+/** The Bridge's Backlog segment (design D3/T4): a Linear-style vertical issue
+ *  list with three collapsible sections — Todo (the global promoted-but-unassigned
+ *  pool), Backlog (the un-promoted tier), and Assigned to me (the user's personal
  *  tracker queue). All lists read reactively through the store. */
-export const BacklogView: Component = () => {
+export const BacklogList: Component = () => {
 	const store = useStore();
 
 	const todo = () => store.issues().filter((w) => w.state === "todo");
@@ -98,7 +98,6 @@ export const BacklogView: Component = () => {
 
 	return (
 		<section class="backlog-view" aria-label="Backlog">
-			<h2 class="heading">Backlog</h2>
 			<BacklogSection
 				title="Todo"
 				rows={todo()}

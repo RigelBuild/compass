@@ -13,7 +13,7 @@ import { type Component, For } from "solid-js";
  *  the code span (the Option A glyph-only fallback for cramped surfaces via
  *  `data-compact`).
  *
- *  Consumers (IssueCard / Bridge / DoneView) are flipped in a separate slice
+ *  Consumers (IssueCard / Bridge / DoneList) are flipped in a separate slice
  *  (RIG-2122); this component is the primitive they will adopt. */
 
 type CiStatus = "success" | "pending" | "failure";

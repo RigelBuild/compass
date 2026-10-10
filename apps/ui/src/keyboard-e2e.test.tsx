@@ -305,10 +305,11 @@ describe("shortcuts overlay (RIG-2482)", () => {
 		store.hideShortcuts();
 		await flush();
 
-		// Navigate to a board-less route: the board unmounts, list.* retract.
+		// Backlog is a Bridge segment: the Bridge stays, but the board group and
+		// its list.* rows retract off the grid segments.
 		store.showBacklog();
 		await flush();
-		expect(container.querySelector(".bridge")).toBeNull();
+		expect(container.querySelector(".bridge")).not.toBeNull();
 
 		press({ key: "?", shiftKey: true });
 		await flush();
@@ -345,12 +346,9 @@ describe("shortcuts overlay (RIG-2482)", () => {
 // sidebar toggles are the load-bearing case: T2 registered them beside their
 // store behavior, so their coached chord now actually fires.
 describe("coached-chord dispatch (RIG-2530 T2)", () => {
-	// Every command id the sweep coaches. view.backlog/view.done are coached
-	// label-only (no keymap row yet) but must still resolve in the registry.
+	// Every command id the sweep coaches; each must resolve in the registry.
 	const COACHED_COMMANDS = [
 		"view.bridge",
-		"view.backlog",
-		"view.done",
 		"view.settings",
 		"sidebar.toggleLeft",
 		"sidebar.toggleRight",

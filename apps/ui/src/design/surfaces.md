@@ -418,7 +418,9 @@ or `Enter` opens the agent's workspace.
 ## Backlog / Done / Settings
 
 These are list and form surfaces with no bespoke styling: they reuse the shared
-contracts directly.
+contracts directly. Backlog and Done render inside the Bridge, as the `Backlog ·
+N` and `Done` segments after Issues and PRs, under the Bridge toolbar (DL-438).
+`/backlog` and `/done` stay routed and pick the segment.
 
 **Composition.** Backlog and Done are list surfaces built from `.cx-card` (or
 `.cx-tree-row` where a dense row reads better), `.cx-badge` (`data-status`) and a

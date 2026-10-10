@@ -444,6 +444,8 @@
 	overflow: hidden;
 }
 
+/* Four segments plus grouping overflow a narrow pane. Whole items wrap, so the
+   first line stays fixed and the tab seg does not move when grouping hides. */
 .bridge-toolbar {
 	display: flex;
 	align-items: center;
@@ -458,7 +460,13 @@
 	font-size: var(--cx-display-sm);
 }
 
+/* The subtitle gives way first, so four segments and the grouping seg stay
+   on one row and nothing below or beside the tabs moves between segments. */
 .bridge-toolbar .sub {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-size: 11px;
 	color: var(--cx-text-dim);
 }
@@ -467,6 +475,11 @@
    seg would slide it right whenever the PRs tab hides that seg. */
 .bridge-toolbar .bridge-tabs {
 	margin-left: 0;
+	flex: none;
+}
+
+.bridge-toolbar .seg {
+	flex: none;
 }
 
 .seg {
@@ -483,6 +496,8 @@
 	padding: 4px 10px;
 	font-size: 11px;
 	color: var(--cx-text-dim);
+	/* A label like "Backlog · 3" must not split when the toolbar crowds. */
+	white-space: nowrap;
 }
 
 .seg button.active {
@@ -1551,11 +1566,9 @@
 	gap: 14px;
 }
 
-.agents-view > .heading,
-.backlog-view > .heading,
-.done-view > .heading {
+.agents-view > .heading {
 	font-size: 14px;
-	/* Agents and Backlog render an h2, which is bold by browser default. */
+	/* Agents renders an h2, which is bold by browser default. */
 	font-weight: 400;
 }
 

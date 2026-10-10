@@ -1,5 +1,5 @@
 import { type Component, createMemo, createSignal, For, Show } from "solid-js";
-import { activeIssues, backlogIssues } from "../board";
+import { activeIssues } from "../board";
 import {
 	agentDmAccountId,
 	browsableChannels,
@@ -444,13 +444,10 @@ export const LeftSidebar: Component = () => {
 	// never show more than the board displays (D1, one source of truth).
 	const inFlightCount = () =>
 		activeIssues(store.issues()).filter((w) => w.state !== "done").length;
-	// Backlog view badge: the pre-active tier (Todo + Backlog) the human triages.
-	const backlogCount = () =>
-		backlogIssues(store.issues()).length + store.assignedIssues().length;
 	// Point-of-use coaching (RIG-2530): the view buttons announce their chord via
 	// aria-keyshortcuts + a CoachTip tooltip, resolved from the keymap through
-	// shortcutFor inside CoachTipContent (never hand-authored — D4). view.agents/
-	// view.backlog/view.done have no keymap row yet, so the tooltip is label-only there.
+	// shortcutFor inside CoachTipContent (never hand-authored — D4). view.agents
+	// has no keymap row yet, so the tooltip is label-only there.
 	const platform = detectPlatform();
 	const ariaChord = (id: string) => shortcutForAria(id as CommandId, platform);
 	return (
@@ -481,7 +478,16 @@ export const LeftSidebar: Component = () => {
 				<CoachTipTrigger
 					as="button"
 					type="button"
-					class={["bridge-link", { active: store.view() === "bridge" }]}
+					// Backlog and Done are Bridge segments, so the Bridge link owns them.
+					class={[
+						"bridge-link",
+						{
+							active:
+								store.view() === "bridge" ||
+								store.view() === "backlog" ||
+								store.view() === "done",
+						},
+					]}
 					{...openLink(
 						store,
 						() => "/",
@@ -496,48 +502,6 @@ export const LeftSidebar: Component = () => {
 					<span class="count">{inFlightCount()}</span>
 				</CoachTipTrigger>
 				<CoachTipContent label="Bridge" command={"view.bridge" as CommandId} />
-			</CoachTip>
-			<CoachTip>
-				<CoachTipTrigger
-					as="button"
-					type="button"
-					class={["bridge-link", { active: store.view() === "backlog" }]}
-					{...openLink(
-						store,
-						() => "/backlog",
-						() => store.showBacklog(),
-					)}
-					aria-keyshortcuts={ariaChord("view.backlog")}
-				>
-					<span class="glyph" aria-hidden="true">
-						<Glyph name="list" />
-					</span>
-					<span>Backlog</span>
-					<span class="count">{backlogCount()}</span>
-				</CoachTipTrigger>
-				<CoachTipContent
-					label="Backlog"
-					command={"view.backlog" as CommandId}
-				/>
-			</CoachTip>
-			<CoachTip>
-				<CoachTipTrigger
-					as="button"
-					type="button"
-					class={["bridge-link", { active: store.view() === "done" }]}
-					{...openLink(
-						store,
-						() => "/done",
-						() => store.showDone(),
-					)}
-					aria-keyshortcuts={ariaChord("view.done")}
-				>
-					<span class="glyph" aria-hidden="true">
-						<Glyph name="check" />
-					</span>
-					<span>Done</span>
-				</CoachTipTrigger>
-				<CoachTipContent label="Done" command={"view.done" as CommandId} />
 			</CoachTip>
 			<CoachTip>
 				<CoachTipTrigger

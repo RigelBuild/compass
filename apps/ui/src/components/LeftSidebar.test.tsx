@@ -352,8 +352,8 @@ describe("LeftSidebar (T7)", () => {
 	});
 });
 
-// Coaching-tooltip adoption sweep (RIG-2530 T2). The four view buttons
-// (Bridge/Backlog/Done/Settings) convert from a native `title=` to a CoachTip;
+// Coaching-tooltip adoption sweep (RIG-2530 T2). The view buttons convert from
+// a native `title=` to a CoachTip;
 // the new-folder button stays native (no registered command → nothing to
 // coach, the A4/D4 boundary). These assert the observable adoption contract.
 
@@ -397,7 +397,7 @@ describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
 	test("every converted view button drops `title`, keeps `aria-keyshortcuts` where a chord exists, and has a text accessible name", () => {
 		const { container } = mountSidebar();
 		const buttons = viewButtons(container);
-		expect(buttons.length).toBe(5);
+		expect(buttons.length).toBe(3);
 		for (const b of buttons) {
 			expect(b.hasAttribute("title")).toBe(false);
 			// Text-labelled buttons carry their accessible name from visible text —
@@ -418,6 +418,13 @@ describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
 		fireEvent.click(first);
 		flushSync();
 		expect(store.view()).toBe("agents");
+	});
+
+	test("the view buttons are Agents, Bridge, and Settings; Backlog and Done live in the Bridge", () => {
+		const { container } = mountSidebar();
+		expect(
+			viewButtons(container).map((b) => b.textContent?.trim().split(/\d/)[0]),
+		).toEqual(["Agents", "Bridge", "Settings"]);
 	});
 });
 

@@ -78,11 +78,11 @@ const DoneRow: Component<{ issue: Issue }> = (props) => {
 	);
 };
 
-/** The Done / archive view (T5 / D4). Two sections read reactively off the
+/** The Bridge's Done segment (T5 / D4). Two sections read reactively off the
  *  board, partitioned by `state` (DL-071): Done — `state === "done"` — and
  *  Archived — `state === "archived"`. The board is read-only for state, so both
  *  sections are marker-only; lifecycle transitions arrive via the stream. */
-export const DoneView: Component = () => {
+export const DoneList: Component = () => {
 	const store = useStore();
 
 	const done = () => store.issues().filter((w) => w.state === "done");
