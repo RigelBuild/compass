@@ -68,8 +68,16 @@ type appTokenSource struct {
 // RS256 App JWT (~10 min) -> POST /app/installations/{id}/access_tokens ->
 // cached until ~5 min before the 1 h expiry. Invalidate drops the cache (the
 // client calls it on 401/bad-creds-403, github.go:24-31). Safe for concurrent
-// use; mint is singleflighted.
+// use; the mint is singleflighted.
 func NewAppTokenSource(cfg GitHubAppConfig) (TokenSource, error) {
+	s, err := newAppTokenSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func newAppTokenSource(cfg GitHubAppConfig) (*appTokenSource, error) {
 	if cfg.AppID == 0 {
 		return nil, errors.New("forge: GitHubAppConfig.AppID is required")
 	}
@@ -92,6 +100,44 @@ func NewAppTokenSource(cfg GitHubAppConfig) (TokenSource, error) {
 		s.clock = time.Now
 	}
 	return s, nil
+}
+
+// ScopedAppMinter mints uncached installation tokens with caller-selected scope.
+type ScopedAppMinter struct {
+	source *appTokenSource
+}
+
+// NewScopedAppMinter constructs an uncached installation-token minter.
+func NewScopedAppMinter(cfg GitHubAppConfig) (*ScopedAppMinter, error) {
+	source, err := newAppTokenSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &ScopedAppMinter{source: source}, nil
+}
+
+// Mint requests a fresh token and returns the repositories GitHub granted.
+// Empty repos requests an installation-wide token; scoped names must be leaf names under the installation owner.
+func (m *ScopedAppMinter) Mint(ctx context.Context, repos []string, perms map[string]string) (ScopedToken, error) {
+	body, err := json.Marshal(struct {
+		Repositories []string          `json:"repositories,omitempty"`
+		Permissions  map[string]string `json:"permissions,omitempty"`
+	}{Repositories: repos, Permissions: perms})
+	if err != nil {
+		return ScopedToken{}, fmt.Errorf("forge: build mint request: %w", err)
+	}
+	out, err := m.source.postInstallationToken(ctx, body)
+	if err != nil {
+		return ScopedToken{}, err
+	}
+	repositories := make([]string, 0, len(out.Repositories))
+	for _, repo := range out.Repositories {
+		repositories = append(repositories, repo.FullName)
+	}
+	return ScopedToken{
+		Token: out.Token, ExpiresAt: effectiveTokenExpiry(out.ExpiresAt, m.source.clock()),
+		Repositories: repositories,
+	}, nil
 }
 
 // appAPIBase derives the REST API base URL from the configured host, mirroring
@@ -157,75 +203,97 @@ func (s *appTokenSource) cached() (string, bool) {
 }
 
 // installationToken is the wire shape of the access-tokens POST 201 response.
-// Only the fields this source needs are decoded.
 type installationToken struct {
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Token        string                   `json:"token"`
+	ExpiresAt    time.Time                `json:"expires_at"`
+	Repositories []installationRepository `json:"repositories"`
+}
+
+type installationRepository struct {
+	FullName string `json:"full_name"`
+}
+
+// ScopedToken contains the token and repository scope GitHub granted.
+// ExpiresAt defaults to now+1h when omitted; Repositories contains GitHub's
+// owner/name full names.
+type ScopedToken struct {
+	Token        string
+	ExpiresAt    time.Time
+	Repositories []string
 }
 
 // mint builds an App JWT, POSTs it to the installation access-tokens endpoint,
 // and caches the returned token until tokenRefreshLead before its expiry.
 func (s *appTokenSource) mint(ctx context.Context) (string, error) {
+	out, err := s.postInstallationToken(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	s.store(out)
+	return out.Token, nil
+}
+
+func (s *appTokenSource) postInstallationToken(ctx context.Context, requestBody []byte) (installationToken, error) {
 	pemBytes, err := s.cfg.PrivateKey(ctx)
 	if err != nil {
-		return "", fmt.Errorf("forge: resolve app private key: %w", err)
+		return installationToken{}, fmt.Errorf("forge: resolve app private key: %w", err)
 	}
 	key, err := parseRSAPrivateKey(pemBytes)
 	if err != nil {
-		return "", fmt.Errorf("forge: parse app private key: %w", err)
+		return installationToken{}, fmt.Errorf("forge: parse app private key: %w", err)
 	}
-
 	jwt, err := s.buildAppJWT(key)
 	if err != nil {
-		return "", fmt.Errorf("forge: build app jwt: %w", err)
+		return installationToken{}, fmt.Errorf("forge: build app jwt: %w", err)
 	}
-
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", s.apiBase, s.cfg.InstallationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(nil))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(requestBody))
 	if err != nil {
-		return "", fmt.Errorf("forge: build mint request: %w", err)
+		return installationToken{}, fmt.Errorf("forge: build mint request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
-
+	if len(requestBody) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("forge: mint installation token: %w", err)
+		return installationToken{}, fmt.Errorf("forge: mint installation token: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }() // deferred cleanup on a read body; no actionable close error
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("forge: read mint response: %w", err)
+		return installationToken{}, fmt.Errorf("forge: read mint response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var ghErr ghError
 		if jsonErr := json.Unmarshal(body, &ghErr); jsonErr == nil && ghErr.Message != "" {
-			return "", fmt.Errorf("forge: mint installation token: status %d: %s", resp.StatusCode, ghErr.Message)
+			return installationToken{}, fmt.Errorf("forge: mint installation token: status %d: %s", resp.StatusCode, ghErr.Message)
 		}
-		return "", fmt.Errorf("forge: mint installation token: status %d", resp.StatusCode)
+		return installationToken{}, fmt.Errorf("forge: mint installation token: status %d", resp.StatusCode)
 	}
-
 	var out installationToken
 	if err := json.Unmarshal(body, &out); err != nil {
-		return "", fmt.Errorf("forge: decode mint response: %w", err)
+		return installationToken{}, fmt.Errorf("forge: decode mint response: %w", err)
 	}
 	if out.Token == "" {
-		return "", errors.New("forge: mint response carried no token")
+		return installationToken{}, errors.New("forge: mint response carried no token")
 	}
+	return out, nil
+}
 
-	s.store(out)
-	return out.Token, nil
+func effectiveTokenExpiry(expiry, now time.Time) time.Time {
+	if expiry.IsZero() || !expiry.After(now) {
+		return now.Add(time.Hour)
+	}
+	return expiry
 }
 
 // store caches the minted token and computes its refresh boundary. A missing or
 // non-positive expiry falls back to a conservative 1 h GitHub default so the
 // cache still self-refreshes rather than pinning a possibly-dead token forever.
 func (s *appTokenSource) store(out installationToken) {
-	exp := out.ExpiresAt
-	if exp.IsZero() || !exp.After(s.clock()) {
-		exp = s.clock().Add(time.Hour)
-	}
+	exp := effectiveTokenExpiry(out.ExpiresAt, s.clock())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.token = out.Token

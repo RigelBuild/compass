@@ -160,23 +160,14 @@ func startCommsConsumers(gctx context.Context, g *errgroup.Group, commsBus *even
 	startPresencePublisher(gctx, g, commsBus, st, hub, log)
 }
 
-// startForgeIngestLanes starts the forge webhook-ingestion lanes' background
-// goroutines on the serve group: the board lane (RIG-2883) and the two agent-
-// notification lanes (RIG-2732 T7) — the GitHub notify lane and the Linear notify
-// lane — each contributing its webhook-arm drain and its reconciler sweep. The
-// board and GitHub notify lanes share the App gate (nil-or-set together); the
-// Linear notify lane gates INDEPENDENTLY on the Linear client-credentials pair,
-// so it is nil-or-set on its own. Every lane is nil-checked; a nil lane starts
-// nothing. The notify lanes are the same *forgeNotifyLane type, taken variadically so a new
-// notify lane is one more argument, not a new param. Serve calls this one helper
-// so the Run starts, which share the serve group + gctx, stay one statement at
-// the call site (mirroring startCommsConsumers). Every Run returns nil on
-// ctx-cancel.
-func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, notify ...*forgeNotifyLane) {
+// startForgeIngestLanes starts each non-nil lane's arm+reconciler on the serve group; the token
+// broker shares the board lane's App gate; Linear notify lanes gate independently.
+func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, gitCredentials *gitCredentialBroker, notify ...*forgeNotifyLane) {
 	if board != nil {
 		g.Go(func() error { return board.arm.Run(gctx) })
 		g.Go(func() error { return board.reconciler.Run(gctx) })
 	}
+	startGitCredentialRefresh(gctx, g, gitCredentials)
 	for _, lane := range notify {
 		if lane == nil {
 			continue

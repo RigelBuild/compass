@@ -28,7 +28,6 @@ import (
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
-	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -272,7 +271,7 @@ func buildNetworkServer(
 	st *store.Store,
 	adminID store.AccountID,
 	netTLS *tls.Config,
-	resolver *secrets.StoreResolver,
+	resolver agentSecretResolver,
 	otelIC *otelconnect.Interceptor,
 	webhookSink ForgeEventSink,
 	webhookSecret func(ctx context.Context) ([]byte, error),
