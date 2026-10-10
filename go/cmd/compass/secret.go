@@ -94,7 +94,7 @@ func newSecretSetCmd() *cobra.Command {
 // is none on the wire). An empty list renders a clear message, not an error.
 func newSecretListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
+		Use:   listVerb,
 		Short: "List declared secrets with set/unset state and routing (never values)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := dialSecretsClient(cmd)

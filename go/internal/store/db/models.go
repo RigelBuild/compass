@@ -485,3 +485,10 @@ type UserAccount struct {
 	Role      int16
 	TenantID  string
 }
+
+type UserPeer struct {
+	UserID     string
+	PeerUserID string
+	TenantID   string
+	CreatedAt  pgtype.Timestamptz
+}

@@ -134,6 +134,17 @@ service CommsService {
   // may compare-and-swap a currently pinned entry. Emits ChannelChanged.
   rpc UpdatePinnedBoard(UpdatePinnedBoardRequest) returns (UpdatePinnedBoardResponse);
 
+  // Approve a user as a peer of the caller (a user account). A peering is
+  // live only when both users have approved each other; until then this is
+  // a pending request. Idempotent. peer_handle is a bare user handle;
+  // unknown, agent, or system handles are NOT_FOUND, self is INVALID_ARGUMENT,
+  // an agent caller is PERMISSION_DENIED.
+  rpc ApprovePeer(ApprovePeerRequest) returns (ApprovePeerResponse);
+  // Withdraw the caller's approval of a user. Idempotent; deleted reports
+  // whether an approval existed. Changes no channel, member, or message.
+  rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
+  // List the caller's peerings: every user with an approval in either direction.
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
   // The event stream: message, channel, group, account, and workspace updates,
   // scoped to the caller's visible set, with gap-free replay-on-join. The sole
   // push path for the comms surface, mirroring CompassService.SubscribeEvents'
@@ -617,6 +628,26 @@ enum AgentPresence {
 }
 
 // ── Request / response envelopes ───────────────────────────────────────────
+
+enum PeeringState {
+  PEERING_STATE_UNSPECIFIED = 0;
+  PEERING_STATE_PENDING_OUTGOING = 1;
+  PEERING_STATE_PENDING_INCOMING = 2;
+  PEERING_STATE_APPROVED = 3;
+}
+
+message Peering {
+  string user_account_id = 1;
+  string handle = 2;
+  PeeringState state = 3;
+}
+
+message ApprovePeerRequest { string peer_handle = 1; }
+message ApprovePeerResponse { Peering peering = 1; }
+message RevokePeerRequest { string peer_handle = 1; }
+message RevokePeerResponse { bool deleted = 1; }
+message ListPeersRequest {}
+message ListPeersResponse { repeated Peering peerings = 1; }
 
 message CreateUserRequest {
   string handle = 1;

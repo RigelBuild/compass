@@ -35,7 +35,7 @@ func newServerSecretCmd() *cobra.Command {
 // message, not an error.
 func newServerSecretListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
+		Use:   listVerb,
 		Short: "List declared server secrets with set/unset state (never values)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
