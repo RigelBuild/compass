@@ -122,13 +122,16 @@ failure mode this file exists to prevent.
 
 ## Results
 
-**Status: R7 is not complete.** These are observations on a nested-KVM VM, not
-the real-hardware run R7 requires, so no item below closes an R3 or R4 gate.
-They do show that the opening hypothesis, that every answer costs at most a
-grant the record already names, **did not hold**: S1 needs grants and a node
-setting outside §Privilege shape, and one of them conflicts with the S3 grant.
-The design record now adopts that wider shape. Every item must still be re-run
-on the target node before R3 encodes the pod spec.
+**Status: the real-KVM run is done; the production node-image run is not.**
+The sections from Environment to S6 below record the first run, on a
+nested-KVM VM. The [real-KVM rerun](#real-kvm-rerun) repeated every item on a
+bare-metal node and agrees with it on S1, S2, S4, S5, and S6. It could not test
+AppArmor or the node sysctl, and S3 stayed inconclusive. Both runs disproved
+the opening hypothesis that every answer costs at most a grant the record
+already names: S1 needs grants and a node setting outside §Privilege shape,
+and one of them conflicts with the S3 grant. The design record adopts that
+wider shape. The AppArmor and sysctl rows still need a run on the production
+node image.
 
 ### Environment
 
@@ -259,3 +262,29 @@ virtiofsd processes from the runner image. pid 1 was killed via
 cloud-hypervisor, virtiofsd, or passt processes on the node. The pid namespace
 teardown reaps them. The stale-pidfile reap on restart was **not verified**:
 the harness used an `emptyDir` runtime dir and is not the Runner binary.
+
+### Real-KVM rerun
+
+- **Node:** a bare-metal homelab k3s agent with non-nested KVM, kernel 6.18.
+  It has no AppArmor (no LSM listed), so the AppArmor grant is inert and the
+  `apparmor_restrict_unprivileged_userns` sysctl does not exist.
+- **Node `/dev/kvm`:** `crw-rw-rw- 0:302`.
+- **Image and harness:** the published runner image, by digest. The boot test
+  binary was built from compass `872dd71`. The pod specs match the first run.
+  Results were read from pod logs, plus a privileged observer that sampled pod
+  memory cgroups and VMM processes every 20 s.
+
+| Item | Observed | Agrees with the VM run? |
+| --- | --- | --- |
+| S1 full set | `TestNetOnlyBootSmoke` and `TestFullBoot` PASS | Yes |
+| S1 minus `procMount: Unmasked` | NetOnly PASS; FullBoot fails, virtiofsd: `Error entering sandbox: MountProc(... Operation not permitted)` | Yes |
+| S1 with `hostUsers: true` (and `/proc` masked) | Same `MountProc` failure | Yes |
+| S1 AppArmor and sysctl rows | Not testable: the node has no AppArmor | **Not verified** |
+| S2 | hostPath `open()` fails `EPERM`; privileged control opens | Yes |
+| S3 | Opens with the kvm gid, without it, and under `hostUsers: false` | **Inconclusive:** the plugin-injected device is `0666` here, so DAC never checks the gid |
+| S4 | `RuntimeDefault` fails, passt: `Couldn't create user namespace: Operation not permitted`; `Localhost` boots | Yes |
+| S5 | Booted guest: `current=227MiB shmem=204MiB`; after writing 900 MiB: `current=1086MiB shmem=1058MiB` | Yes |
+| S6 | pid 1 exits without `Shutdown`; 4 VMM processes drop to 0 within one sample | Yes (pidfile reap not verified) |
+
+The S5 fill step's trailing `grep` was missing from the guest (exit 127), but
+`dd` wrote all 943718400 bytes first, so the 900 MiB figure stands.
