@@ -159,7 +159,7 @@ func TestComputeUsageEventsStampedAfterLockWait(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.RecordSessionBinding(ctx, "wait-after", agent.ID, "runner-1")
+		_, _, err := s.RecordSessionBinding(ctx, "wait-after", agent.ID, "runner-1")
 		done <- err
 	}()
 	deadline := time.After(5 * time.Second)
@@ -223,7 +223,7 @@ func TestComputeUsageConflictRollsBackIntervalEvents(t *testing.T) {
 	mustBind(t, ctx, s, "sess-2", accountY.ID, "runner-1")
 
 	before := computeEvents(t, s, tenant, accountX.ID)
-	if _, err := s.RecordSessionBinding(ctx, "sess-2", accountX.ID, "runner-1"); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.RecordSessionBinding(ctx, "sess-2", accountX.ID, "runner-1"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RecordSessionBinding(X, sess-2) error = %v, want ErrConflict", err)
 	}
 	after := computeEvents(t, s, tenant, accountX.ID)
@@ -231,7 +231,7 @@ func TestComputeUsageConflictRollsBackIntervalEvents(t *testing.T) {
 		after[0].IntervalID != before[0].IntervalID || !after[0].OccurredAt.Equal(before[0].OccurredAt) {
 		t.Fatalf("account X events before=%+v after=%+v, want its unchanged open start only", before, after)
 	}
-	if sessionID, runnerID, err := s.SessionForAccount(ctx, accountX.ID); err != nil || sessionID != "sess-1" || runnerID != "runner-1" {
+	if sessionID, runnerID, _, err := s.SessionForAccount(ctx, accountX.ID); err != nil || sessionID != "sess-1" || runnerID != "runner-1" {
 		t.Fatalf("account X resolves to (%q, %q, %v), want (sess-1, runner-1)", sessionID, runnerID, err)
 	}
 }
@@ -474,7 +474,7 @@ func TestComputeUsageCrossTenantSweepsLockTenantsInOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateAgent(%s): %v", tenant, err)
 		}
-		if _, err := s.RecordSessionBinding(tenantCtx, "compute-lock-session-"+suffix, agent.ID, "compute-lock-runner"); err != nil {
+		if _, _, err := s.RecordSessionBinding(tenantCtx, "compute-lock-session-"+suffix, agent.ID, "compute-lock-runner"); err != nil {
 			t.Fatalf("RecordSessionBinding(%s): %v", tenant, err)
 		}
 	}

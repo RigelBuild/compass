@@ -121,7 +121,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	if !ok {
 		return errUnauthenticated
 	}
-	router, _, err := h.hub.routerFor(subj.ID)
+	router, enrollGen, err := h.hub.routerForStream(subj.ID)
 	if err != nil {
 		// A Sessions stream with no enrolled Runner — the Runner must Enroll
 		// before opening Sessions.
@@ -129,7 +129,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	}
 
 	router.setSessionUnknown(func(sessionID string) {
-		h.hub.dropLostSessionDetached(ctx, subj.ID, sessionID, false)
+		h.hub.dropLostSessionDetached(ctx, enrollGen, subj.ID, sessionID, nil, false)
 	})
 	router.attach(stream.Send)
 	defer router.detach(errStreamClosed)
@@ -169,6 +169,7 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 	if !ok {
 		return nil, errUnauthenticated
 	}
+	enrollGen := h.hub.EnrollGeneration()
 	for stream.Receive() {
 		msg := stream.Msg()
 		if err := h.hub.Deliver(ctx, RunnerEvent{
@@ -176,6 +177,7 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 			SessionID: msg.GetSessionId(),
 			RunnerID:  subj.ID,
 			Frame:     msg.GetFrame(),
+			EnrollGen: enrollGen,
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
