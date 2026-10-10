@@ -450,14 +450,25 @@ The package skeleton mirrors `go/internal/compute`'s layering
       // Expire reaps volumes whose session is closed and whose close-stamp
       // is older than olderThan. Never touches live/suspended sessions.
       Expire(ctx context.Context, olderThan time.Duration) error
+      // Stamp writes the caller's close-vs-suspend intent (teardown, W5).
+      Stamp(ctx context.Context, v Volume, intent CloseIntent) error
+      // ReconcileOrphans is the startup pass that stamps crash orphans (W6).
+      ReconcileOrphans(ctx context.Context) error
   }
   ```
+
+  *Amendment (Matt, 2026-10-04):* `Stamp` and `ReconcileOrphans` are on the
+  interface, not only on `*LocalManager`. `Expire` is correct only on a
+  backend that can stamp, so stamping is part of the seam, and W5/W6 consume
+  the interface instead of the concrete type. `ReadStamp` stays a concrete
+  diagnostic.
 
   `Archive`/`Restore` are **reserved-not-implemented** at P2 (honest
   sentinel, the `ErrExecStreamingNotImplemented` discipline,
   `compute.go:26-29`; see OQ-2). **Close-stamp mechanism** (the leak the
   parent's 14-day policy exists to bound, design.md:619-621, made robust): a
-  marker file in the volume root's metadata dir, written by the teardown path
+  file in the volume's metadata dir (a sibling of the root, outside the
+  agent-owned tree), written by the teardown path
   and read by `Expire`, with three invariants the W1 backend holds —
   (a) **`Attach` atomically clears the stamp**, so a reopened
   closed-but-unexpired session never carries a past-deadline stamp into its

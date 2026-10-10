@@ -180,4 +180,10 @@ type VolumeManager interface {
 	// IntentSuspended is ineligible however old. This is the ONLY path that
 	// destroys volume contents (P2-GC-c).
 	Expire(ctx context.Context, olderThan time.Duration) error
+	// Stamp records the caller's close-vs-suspend intent on the volume. It is
+	// on the seam because Expire is only correct on a backend that can stamp.
+	Stamp(ctx context.Context, v Volume, intent CloseIntent) error
+	// ReconcileOrphans stamps every unstamped volume closed at discovery time.
+	// Startup only: it must finish before the backend serves any Attach.
+	ReconcileOrphans(ctx context.Context) error
 }
