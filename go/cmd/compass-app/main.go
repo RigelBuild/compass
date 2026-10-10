@@ -392,7 +392,7 @@ func distDirForExecutable(exe string) string {
 // controller. It runs the pipeline (preflight → stack up → WhoAmI) and, on
 // success, returns the resolved caller account id together with a *quitController
 // wired to the injected stackDown seam (its quit func is wired to app.Quit by
-// run() once the app exists). resolveStackBin and this controller are embedded
+// run() once the app exists). embedded.ResolveStackBin and this controller are embedded
 // concerns only: a client-only install has no compass-stack binary and no stack
 // to stop, so neither may gate a client launch (design §T5.6).
 func runEmbedded(

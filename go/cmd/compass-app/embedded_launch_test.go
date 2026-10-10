@@ -129,7 +129,7 @@ func TestRunEmbeddedPreflightShortCircuits(t *testing.T) {
 
 // TestRunEmbeddedStackUpFails: a non-zero compass-stack up exit is surfaced and
 // the pipeline stops before WhoAmI. The stackUp seam already folds stderr into
-// its error (see TestRunStackUpNonZeroExitSurfacesStderr); here the contract is
+// its error (see embedded.TestRunStackUpNonZeroExitSurfacesStderr); here the contract is
 // that runEmbedded propagates it and does not dial.
 func TestRunEmbeddedStackUpFails(t *testing.T) {
 	rec := &recorder{}
