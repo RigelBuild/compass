@@ -192,14 +192,11 @@
       datasourceTemplate: "git-refs",
     },
     {
-      // ── devenv fork rev: root dev shell (RIG-2815 / RIG-2546 T7) ──
+      // ── devenv fork rev: root dev shell ──
       // Both compass devenv scopes resolve the shared canonical fork
-      // `github:RigelBuild/devenv` at its DEFAULT BRANCH (devenv.yaml:52-56 —
-      // no ref, no rev), so the concrete rev lives only in devenv.lock and
-      // nothing moved it: both locks drifted months behind the fork's `main`
-      // until someone relocked by hand. This manager surfaces the root lock's
-      // fork rev as a git-refs digest so Renovate tracks it, and the coupled
-      // packageRule below relocks the file properly on the branch it opens.
+      // `github:RigelBuild/devenv` at its default branch (no ref, no rev), so
+      // this manager surfaces the root lock's rev and the sibling manager
+      // surfaces the agent-image lock's rev. The shared rule relocks both.
       //
       // WHY A REGEX MANAGER + A postUpgradeTask, NOT `lockFileMaintenance` —
       // DO NOT "SIMPLIFY" THIS. Source-verified against the pinned
@@ -239,20 +236,9 @@
       datasourceTemplate: "git-refs",
     },
     {
-      // ── devenv fork rev: agent base image (RIG-2815 / RIG-2546 T7) ──
-      // Same fork, same mechanism, SEPARATE scope: agent-image/devenv.lock is
-      // the agent base image's own devenv (agent-image/devenv.yaml:45-49). RD-1
-      // unifies the devenv SOURCE across the two scopes but deliberately does
-      // NOT reconcile the two locks — each tracks the fork on its own cadence —
-      // so this is a second manager over the second file rather than a widened
-      // managerFilePatterns on the one above. Its `depNameTemplate` is
-      // DISTINCT (`RigelBuild/devenv-agent-image`, not the upstream slug) so
-      // the two rules are independently governed and, crucially, land in
-      // DIFFERENT groups/branches — the distinct-name idiom the
-      // `postgres-stack` manager below already uses to fence a rule off its
-      // same-named sibling. The lockFileMaintenance-is-unimplementable
-      // reasoning on the root manager above applies verbatim here.
       customType: "regex",
+      // Separate manager, same fork source: each update remains scoped to its lock.
+      // The distinct depName keeps a separate dep per lock in the one group.
       // The interior slash is escaped so the whole value reads unambiguously as
       // a `/…/`-delimited regex (behaviourally identical under Renovate's
       // parseRegexMatch; config.test.ts pins the literal).
@@ -291,13 +277,8 @@
       // pattern would collapse both files into ONE dep carrying two
       // conflicting digests. So this is a second manager over the second file,
       // and its `depNameTemplate` is DISTINCT
-      // (`cachix/devenv-nixpkgs-agent-image`, not the upstream slug) so the two
-      // rules are independently governed and, crucially, land in DIFFERENT
-      // groups/branches — the same distinct-name fencing idiom the agent-image
-      // FORK manager above and the `postgres-stack` manager below use. The
-      // lockFileMaintenance-is-unimplementable reasoning on the fork managers
-      // applies verbatim here.
-      //
+      // (`cachix/devenv-nixpkgs-agent-image`, not the upstream slug), keeping
+      // the root and agent-image channel rules independently governed.
       // Anchor: `"repo": "devenv-nixpkgs"` immediately followed by `"rev"`.
       // devenv writes alphabetized keys inside each `locked` block (…owner,
       // repo, rev, type…), so this pair is unique in the file — the `original`
@@ -310,9 +291,8 @@
       // config.test.ts pins the extraction against the real lock.
       customType: "regex",
       // The interior slash is escaped so the whole value reads unambiguously as
-      // a `/…/`-delimited regex, matching the agent-image fork manager above
-      // (behaviourally identical under Renovate's parseRegexMatch;
-      // config.test.ts pins the literal).
+      // a `/…/`-delimited regex (behaviourally identical under Renovate's
+      // parseRegexMatch; config.test.ts pins the literal).
       managerFilePatterns: ["/^agent-image\\/devenv\\.lock$/"],
       matchStrings: [
         "\"repo\": \"devenv-nixpkgs\",\\s*\"rev\": \"(?<currentDigest>[a-f0-9]{40})\"",
@@ -816,150 +796,35 @@
       },
     },
     {
-      // ── devenv fork currency: root dev shell (RIG-2815 / RIG-2546 T7) ──
-      // Solo branch for the root lock's devenv-fork digest, on the SAME shape
-      // as the devenv-nixpkgs rule above: its own groupName so it NEVER shares
-      // a branch with the "TypeScript dependencies" rollup (which also matches
-      // custom.regex) NOR with its agent-image sibling below. That isolation is
-      // what makes the branch-mode postUpgradeTask safe — Renovate builds
-      // exactly ONE branch-mode task per branch, so a dep that never shares a
-      // branch owns that single slot. It is also what keeps the two locks on
-      // INDEPENDENT cadences per RD-1 (unify the source, do NOT reconcile the
-      // locks): two groupNames, two branches, two PRs. The isolation chain is
-      // groupName -> branchTopic -> branchName, so two distinct groupNames
-      // yield two distinct branch names (no need to re-derive it). The rollup
-      // can't capture this dep regardless — its update type is `digest` and the
-      // rollup admits only patch/minor.
+      // One fork commit moves both locks, so one rule groups both updates.
+      // Renovate takes the branch task from the first upgrade only, so one
+      // rule ensures either update carries both relocks.
       matchManagers: ["custom.regex"],
-      matchDepNames: ["RigelBuild/devenv"],
-      groupName: "devenv fork (root)",
-      // Daily, on the workflow cron's cadence, like the devenv-nixpkgs rule. The
-      // fork's `main` moves whenever the shared canonical devenv does, and both
-      // locks resolve it by default branch, so daily is what "keep current"
-      // means here.
-      // The repo-wide `minimumReleaseAge` + `internalChecksFilter: "strict"`
-      // measures age from a release TIMESTAMP. A git-refs digest update to a
-      // moving branch HEAD carries no release-age metadata, so a strict
-      // cooldown treats it as permanently `pending` and the digest sits on the
-      // dashboard forever with zero PRs cut (the RIG-1220 silent-no-updates
-      // shape). Disable the cooldown for THIS rule only — SAME reason as the
-      // devenv-nixpkgs rule above. The cooldown is mechanically INAPPLICABLE to
-      // a git-refs digest (there is no release timestamp to age), so nulling it
-      // is not a risk judgement about the fork: the compensating control is the
-      // MANDATORY human review of the PR before merge (no automerge is
-      // configured — see the top of this file).
+      matchDepNames: ["RigelBuild/devenv", "RigelBuild/devenv-agent-image"],
+      groupName: "devenv fork",
+      // Daily, on the workflow cron's cadence, like the devenv-nixpkgs rule.
+      // Both locks resolve the moving fork `main` by default branch.
+      // A git-refs digest has no release timestamp, so the repo-wide strict
+      // cooldown would keep it pending forever. Human review remains required.
       minimumReleaseAge: null,
-      // ── The relock task. ──
-      // The regex update rewrites ONLY the rev string, leaving narHash /
-      // lastModified / the fork's transitive nodes describing the OLD rev. This
-      // task runs `nix run <the lock's own fork flakeref> -- update devenv` in
-      // the repo root to rewrite the whole lock consistently at the fork's
-      // current HEAD.
-      //
-      // This pairing — regex digest + postUpgradeTask — is NOT a workaround to
-      // be simplified away: `lockFileMaintenance` cannot do this job. See the
-      // full source-verified argument on the manager (renovate@44.46.2:
-      // custom.regex exports no `updateArtifacts`/`supportsLockFileMaintenance`;
-      // the nix manager's maintenance covers flake.lock only; and
-      // postUpgradeTasks are filtered off maintenance branches per
-      // execute-post-upgrade-commands.ts:387-400). A normal digest upgrade
-      // carries postUpgradeTasks — a maintenance branch does not.
-      //
-      // `executionMode: "branch"` runs it once after the digest update is
-      // applied; safe because this dep never shares a branch (its own groupName
-      // above), so it owns the single branch-mode slot. Rule-level
-      // postUpgradeTasks REPLACE the top-level one for matching branches, which
-      // evicts the top-level task's FOD-hash refresh too — and that refresh's
-      // agent-image/entrypoint.nix entry gates on devenv.lock (a declared trigger
-      // in refresh-fod-hashes.ts's FOD_ENTRIES), the very file this relock
-      // rewrites. So the refresh is re-declared below rather than left to the
-      // evicted slot; the toolchain-hash leg really is lost-free, since it
-      // self-gates on the versions/*.nix pins this branch never touches.
-      //
-      // Order is LOAD-BEARING: relock FIRST, refresh SECOND. The refresh realises
-      // the pin against the lock as it stands on disk, so the reverse order would
-      // realise against the still-at-base lock and then have that lock rewritten
-      // underneath it — shipping a pin that content-addresses the OLD closure,
-      // i.e. the silent form of the `hash mismatch in fixed-output derivation`
-      // build break these tasks exist to prevent.
-      //
-      // Carrying the refresh here is FAIL-SAFE, not a fix for a live break:
-      // `devenv update devenv` re-locks ONE non-nixpkgs input, so it does not
-      // move the nixpkgs rev that supplies the FOD's bun, and the installed tree,
-      // hence today's pin, is unchanged. But the coupling is
-      // declared at FILE granularity (devenv.lock IS a trigger of that entry),
-      // and a fork bump that altered how `pkgs` is constructed would falsify the
-      // causal argument silently. The gate fires, so the price of being safe is
-      // one extra vehicle realise per branch whose write is then a no-op.
-      //
-      // fileFilters is an INCLUDE allowlist — Renovate commits ONLY matching
-      // files — and it names exhaustively the files this task can write: the lock
-      // the relock rewrites, plus the FOD file whose recomputed pin would
-      // otherwise be silently dropped. Listing the agent-image lock would be dead
-      // surface (that lock is the sibling rule's), as would guest-image/default.nix
-      // and flake.nix (the Go entry's triggers are go/go.mod and go/go.sum, which
-      // this task never writes). Listing LESS silent-drops the relock — shipping a
-      // rev bump whose narHash never moved — or the refreshed pin.
-      //
-      // Self-hosted bot config MUST allow both commands:
-      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-lock\\.ts$",
-      //                          "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
-      // see tools/renovate/bot-config.json5 (config.test.ts pins them together).
-      // ONE relock command string serves both locks — the script self-gates on
-      // WHICH lock changed — so one allowlist entry covers both rules, and the
-      // FOD refresh's entry is the same one the other refresh sites already use.
+      // Regex updates change only the rev. Each lock's own devenv CLI must
+      // relock its scope before the FOD pin is refreshed against both locks.
       postUpgradeTasks: {
         commands: [
           "bun tools/renovate/refresh-devenv-lock.ts",
           "bun tools/renovate/refresh-fod-hashes.ts",
         ],
-        fileFilters: ["devenv.lock", "agent-image/entrypoint.nix"],
-        executionMode: "branch",
-      },
-    },
-    {
-      // ── devenv fork currency: agent base image (RIG-2815 / RIG-2546 T7) ──
-      // The agent-image sibling of the rule above, scoped by the DISTINCT
-      // depName its manager stamps (`RigelBuild/devenv-agent-image`) and
-      // carrying its OWN groupName. Both properties are load-bearing: the
-      // distinct name keeps the two rules independently governed, and the
-      // distinct groupName is what puts the two locks on independent cadences
-      // (RD-1: unify the source, do NOT reconcile the locks) AND guarantees the
-      // two branch-mode relock tasks never contend for one branch's single
-      // task slot. Same command as the root rule — the script decides which
-      // lock to relock from the branch diff and, for this one, runs
-      // `nix run <agent-image/devenv.lock's OWN fork flakeref> -- update devenv`
-      // in agent-image/ (so this lock is written by the devenv version IT pins,
-      // never the root lock's) — so one allowlist entry covers both.
-      // `minimumReleaseAge: null` for the same git-refs-carries-no-release-age
-      // reason: the cooldown is mechanically inapplicable to a git-refs digest
-      // (no release timestamp to age), and the compensating control is the
-      // mandatory human review of the PR before merge (no automerge is
-      // configured). The same lockFileMaintenance-is-unimplementable argument
-      // (see the manager) applies verbatim.
-      matchManagers: ["custom.regex"],
-      matchDepNames: ["RigelBuild/devenv-agent-image"],
-      groupName: "devenv fork (agent-image)",
-      minimumReleaseAge: null,
-      // The FOD refresh rides LAST, after the relock: `agent-image/devenv.lock`
-      // is a declared trigger of the `agent-image/entrypoint.nix` entry (it
-      // supplies that consumer's `pkgs`), so a branch that commits this lock
-      // must recompute the pin against the WRITTEN lock, not the still-at-base
-      // one. `agent-image/entrypoint.nix` is listed because fileFilters is an
-      // INCLUDE allowlist over what Renovate commits: without it the refreshed
-      // pin would be computed and then silently dropped.
-      postUpgradeTasks: {
-        commands: [
-          "bun tools/renovate/refresh-devenv-lock.ts",
-          "bun tools/renovate/refresh-fod-hashes.ts",
+        fileFilters: [
+          "devenv.lock",
+          "agent-image/devenv.lock",
+          "agent-image/entrypoint.nix",
         ],
-        fileFilters: ["agent-image/devenv.lock", "agent-image/entrypoint.nix"],
         executionMode: "branch",
       },
     },
     {
       // ── Agent image currency: the microVM guest rootfs ──
-      // Solo-grouped like the devenv-fork rules above: its own groupName so it
+      // Solo-grouped like the devenv-fork rule above: its own groupName so it
       // NEVER shares a branch with the "TypeScript dependencies" rollup (which
       // also matches custom.regex) nor with any other branch-mode rule. That
       // isolation is what makes the branch-mode postUpgradeTask safe — Renovate

@@ -35,10 +35,8 @@
 // refreshes only the Go vendorHash; a bun.lock, bun-pin OR devenv-nixpkgs channel
 // bump refreshes the bun outputHash. Idempotent: re-running rewrites the same SRI.
 
-// Wired from config.json5 at FIVE sites, all the same command (allowlisted once,
-// config.test.ts pins them together): top-level postUpgradeTasks, the catalog
-// packageRule, the devenv-nixpkgs channel rule, the devenv fork (root) rule, and
-// the go ↔ go-overlay lockstep rule.
+// Wired at SIX sites: top-level, catalog, devenv-nixpkgs, devenv fork,
+// go-overlay, and Meissa. The command is allowlisted once.
 
 // Requires nix + bun + git on PATH and network; nix build fetches the toolchains
 // itself. Provided by renovate.yml's bootstrap.

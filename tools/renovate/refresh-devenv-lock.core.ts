@@ -1,13 +1,11 @@
-// Pure decision core for refresh-devenv-lock.ts (RIG-2815): which of the two
-// devenv locks a branch touched, and which rev it pins — unit-testable without a
-// devenv runner, network, or git tree. The wrong scope relocks the wrong lock
-// and the fileFilters allowlist drops the write, shipping an unrelocked bump.
+// Pure decision core for refresh-devenv-lock.ts (RIG-2815): which devenv locks a
+// branch touched, and which rev each pins — unit-testable without a devenv runner,
+// network, or git tree. The wrong scope relocks the sibling and leaves this lock
+// unrelocked.
 
 /**
- * The two independently-locked devenv scopes in this repo. RD-1 unifies the
- * devenv SOURCE (both `github:RigelBuild/devenv`) but deliberately does NOT
- * reconcile the two locks — each tracks the fork on its own cadence, so each
- * gets its own manager, its own packageRule, and its own branch.
+ * The two separately-locked devenv scopes in this repo. A fork bump moves both
+ * locks in one PR, but each lock remains written by its own devenv CLI.
  */
 export type DevenvLockScope = "root" | "agent-image";
 
@@ -37,47 +35,15 @@ export const DEVENV_LOCK_PATHS: readonly string[] = Object.values(
 ).map((s) => s.lock);
 
 /**
- * Which devenv lock this branch changed, decided from the paths a diff against
- * the branch point reported.
- *
- * - Exactly one lock changed → that scope (the normal Renovate branch: one
- *   manager, one rule, one lock).
- * - No lock changed → `null`, the self-gate no-op. This is the common case:
- *   the task rides one specific rule, but a maintainer copy-pasting it onto
- *   another rule (or a manual run) must be a cheap no-op, not a spurious
- *   relock.
- * - BOTH locks changed → throws. The two rules carry distinct groupNames
- *   precisely so they never share a branch, so this shape means an assumption
- *   broke. Relocking either one would be worse than useless: each rule's
- *   `fileFilters` names ONE lock, so Renovate would commit one relock and
- *   silently discard the other — a PR that bumped a rev without relocking it.
- *   Exit non-zero instead. That exit does NOT abort the branch (Renovate
- *   commits the regex bump regardless); it reds the `renovate/artifacts`
- *   status (advisory); renovate:lock-integrity in the required rollup is what
- *   stops a half-relock from merging.
- *
- * Paths are compared exactly (repo-root-relative, as `git diff --name-only`
- * emits them), so an unrelated `foo/devenv.lock` can never be mistaken for
- * either scope.
+ * Every scope whose lock is in changedPaths (exact match), in DEVENV_LOCK_SCOPES
+ * key order; [] when none. Never throws.
  */
-export function changedDevenvLock(
+export function changedDevenvLocks(
 	changedPaths: readonly string[],
-): DevenvLockScope | null {
-	const changed = (Object.keys(DEVENV_LOCK_SCOPES) as DevenvLockScope[]).filter(
+): readonly DevenvLockScope[] {
+	return (Object.keys(DEVENV_LOCK_SCOPES) as DevenvLockScope[]).filter(
 		(scope) => changedPaths.includes(DEVENV_LOCK_SCOPES[scope].lock),
 	);
-	if (changed.length > 1) {
-		throw new Error(
-			`refresh-devenv-lock: ${changed.length} devenv locks changed vs the branch point ` +
-				`(${changed.map((s) => DEVENV_LOCK_SCOPES[s].lock).join(", ")}) — each packageRule's ` +
-				"fileFilters names exactly ONE lock, so a two-lock branch would commit one relock and " +
-				"silently drop the other. The two rules carry distinct groupNames so they never share a " +
-				"branch; this shape means that invariant broke. Exiting non-zero reds the " +
-				"`renovate/artifacts` status, which is advisory and does not abort the branch; " +
-				"renovate:lock-integrity in the required rollup fails any half-relock either lock carries.",
-		);
-	}
-	return changed[0] ?? null;
 }
 
 /**
