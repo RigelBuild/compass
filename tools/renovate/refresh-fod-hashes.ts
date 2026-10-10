@@ -11,8 +11,8 @@
 
 // agent-image/entrypoint.nix's outputHash content-addresses compass-agent's
 // installed node_modules (a bun install FOD) built by the pinned bun. Invalidated
-// by a bun.lock or bun-pin bump or an agent-image channel bump; root devenv.lock
-// stays a conservative trigger.
+// by a bun.lock or bun-pin bump; the agent-image and root devenv.lock channel
+// bumps stay fail-safe triggers.
 
 // apps/ui/dist.nix's outputHash pins the bun-workspace node_modules closure.
 // It moves with bun.lock, root and workspace package manifests, the bun pin, or
