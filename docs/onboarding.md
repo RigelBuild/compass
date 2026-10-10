@@ -117,7 +117,7 @@ instructions apply to both tiers.
 ## Bringing the stack up
 
 Install the binaries with the [recommended Nix flake](./self-host.md#nix-flake-recommended)
-or a [release tarball](./self-host.md#release-tarball), then follow the
+or the [release binaries](./self-host.md#release-binaries), then follow the
 [prerequisites](./self-host.md#prerequisites) and the commands for your
 [deployment shape](./self-host.md#deployment-shapes). Containers are the
 default tier. Select microVMs with `COMPASS_RUNTIME_BACKEND=microvm`; that tier
