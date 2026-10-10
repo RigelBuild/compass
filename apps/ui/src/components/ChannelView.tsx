@@ -242,18 +242,21 @@ export const MessageRow: Component<{
 	const kind = () => props.byId.get(props.msg.authorAccountId)?.kind ?? "user";
 	return (
 		<div class="msg" data-kind={kind()}>
+			{/* The spaces keep the parts apart for screen readers; flex gap spaces them visually. */}
 			<div class="msg-head">
 				<span class="msg-author">
 					{handleOf(props.byId, props.msg.authorAccountId)}
-				</span>
+				</span>{" "}
 				<span class="msg-tag" data-kind={kind()}>
 					{KIND_TAG[kind()]}
-				</span>
+				</span>{" "}
 				<For each={messageFlags(props.msg, props.byHandle)}>
 					{(flag) => (
-						<span class="msg-flag" data-flag={flag}>
-							{flag.toUpperCase()}
-						</span>
+						<>
+							<span class="msg-flag" data-flag={flag}>
+								{flag.toUpperCase()}
+							</span>{" "}
+						</>
 					)}
 				</For>
 				<span class="msg-at">{hhmm(props.msg.atUnixMs)}</span>

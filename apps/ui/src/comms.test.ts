@@ -495,9 +495,12 @@ describe("messageFlags", () => {
 	// nothing, so a plain human ping never reads as steering.
 	const agent = acc({ id: "acc-cook", handle: "cook", kind: "agent" });
 	const human = acc({ id: "acc-matt", handle: "matt", kind: "user" });
+	// An agent account on a reserved handle, so only the reserved check stops steer.
+	const reserved = acc({ id: "acc-agents", handle: "agents", kind: "agent" });
 	const byHandle = new Map([
 		[agent.handle, agent],
 		[human.handle, human],
+		[reserved.handle, reserved],
 	]);
 	const flags = (...blocks: ConvBlock[]) =>
 		messageFlags(msg({ id: "m", topicId: "t", atUnixMs: 0, blocks }), byHandle);

@@ -304,6 +304,34 @@ describe("MessageRow anatomy", () => {
 	test("a human row shows tag HUMAN", () => {
 		expect(tagOf("user")).toBe("HUMAN");
 	});
+	// Assistive tech reads adjacent spans as one word unless text separates them.
+	test("the head reads author, tag, flag and time as separate words", () => {
+		const author: Account = {
+			id: "acc-a",
+			handle: "cook",
+			displayName: "cook",
+			kind: "agent",
+		};
+		const msg: Message = {
+			id: "m1",
+			topicId: "t",
+			authorAccountId: author.id,
+			atUnixMs: 0,
+			blocks: [{ kind: "text", text: "@cook rebase" }],
+		};
+		const { container } = render(() => (
+			<MessageRow
+				msg={msg}
+				byId={new Map([[author.id, author]])}
+				byHandle={new Map([[author.handle, author]])}
+			/>
+		));
+		const words = container
+			.querySelector(".msg-head")
+			?.textContent?.trim()
+			.split(/\s+/);
+		expect(words?.slice(0, 3)).toEqual(["cook", "AGENT", "STEER"]);
+	});
 });
 
 // The settled-state render lock and its interaction guard (design.md §242-256),
