@@ -645,6 +645,9 @@ func (f *Fabric) publishDLQ(ctx context.Context, subject string, data []byte, ca
 	return reason, nil
 }
 
+// minAdvisoryGetTimeout floors the advisory's stream fetch under a short AckWait.
+const minAdvisoryGetTimeout = 5 * time.Second
+
 // maxDeliveriesAdvisory is the server's notice that a consumer gave up on a
 // message after MaxDeliver attempts. Only the fields the park needs.
 type maxDeliveriesAdvisory struct {
@@ -681,8 +684,9 @@ func (f *Fabric) parkOnMaxDeliveries(ctx context.Context, subject string) (*nats
 			f.notifyParkDecided(path, false)
 			return
 		}
-		// Bounded so a stalled fetch cannot hold the claim in flight and park its waiters.
-		getCtx, cancelGet := context.WithTimeout(context.WithoutCancel(ctx), f.cfg.ackWait())
+		// Bounded so a stalled fetch cannot hold the claim; floored because AckWait
+		// has already expired by the advisory and says nothing about fetch latency.
+		getCtx, cancelGet := context.WithTimeout(context.WithoutCancel(ctx), max(f.cfg.ackWait(), minAdvisoryGetTimeout))
 		getParkedMsg := f.getParkedMsg
 		if getParkedMsg == nil {
 			getParkedMsg = func(ctx context.Context, seq uint64) (*jetstream.RawStreamMsg, error) {

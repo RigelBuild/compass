@@ -280,6 +280,8 @@ instance handles each advisory.
 - The reason reads `fabric: dropped by the server after N delivery attempts
   (callback outlived ack_wait)`.
 - A message that aged out of the stream before the fetch is logged, not parked.
+- The fetch has its own bounded deadline. This is needed because the advisory arrives
+  after `AckWait`.
 - The fabric's NATS user needs subscribe permission on
   `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>`.
 
