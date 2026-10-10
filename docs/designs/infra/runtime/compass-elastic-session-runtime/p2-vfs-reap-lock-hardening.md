@@ -1,6 +1,6 @@
 # P2 — VFS reap/lock hardening: atomic rename-then-delete reap, ctx-interruptible lock acquisition, orphan lock reclaim
 
-Status: PROPOSED — a hardening pass over the merged W1 backend
+A hardening pass over the merged W1 backend
 (`go/internal/vfs/localvolume.go`, PR #898, RIG-3278) under the frozen P2
 record [p2-persistent-session-volume.md](./p2-persistent-session-volume.md)
 (RIG-2395; its Plan § W1). Authoritative issue scope: RIG-3310 — the three

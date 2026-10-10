@@ -1,6 +1,6 @@
 # Apple `container` as an embedded-macOS runner backend
 
-Status: Active (Matt, 2026-09-05)
+Ruled: Matt (2026-09-05)
 Linear: RIG-3238 (design)
 
 > **Amended by

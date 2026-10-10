@@ -12,7 +12,7 @@
 > flip of that line, being a change to the merged record, is out of scope for
 > this amendment.)
 
-Status: Active — ruled by Matt (2026-08-19)
+Ruled: Matt (2026-08-19)
 Tracking: RIG-2393 (S1), RIG-2395 (P2)
 Amends: RIG-1717 elastic session runtime record (PR #446)
 

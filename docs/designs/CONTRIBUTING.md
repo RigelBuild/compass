@@ -77,7 +77,7 @@ same standard as a live one's.
 
 ## 6. The bucket taxonomy
 
-Design records live under one of six top-level buckets in `docs/designs/`. The
+Design records live under one of eight top-level buckets in `docs/designs/`. The
 bucket names the record's concern; pick the one that fits and place the record
 there.
 
@@ -92,24 +92,26 @@ there.
   strategy, scope gates.
 - `infra/` — runtime and CI/testing infrastructure, sub-grouped as
   `infra/runtime/` and `infra/ci/`.
+- `observability/` — telemetry for the product and its agents: OTel export,
+  agent-loop traces, trace continuity.
 - `repo/` — repository tooling and the dependency/library decisions that govern
   the build (Effect adoption, Renovate, proto drop, the eng-docs site).
+- `platform/` — deployment platforms and runner hosting: macOS runners, runner
+  containerization, stack supervision, model routing.
 
 ### Layout
 
 The layout rule is `<bucket>/[<subgroup>/]<name>/design.md`: a record is a
 `<name>/design.md` directory (which may own supporting `.md` files beside its
 `design.md`), optionally nested one subgroup deep under a bucket (as `infra/`
-is). A flat `<name>.md` is allowed **only at a bucket root** — a flat `.md`
-nested inside a subgroup falls out of gate governance, so a sub-grouped record
-must use the `<name>/design.md` directory layout. Add a subgroup when a bucket
+is). A flat `<name>.md` belongs at a bucket root. Add a subgroup when a bucket
 outgrows flat scanning; until then records sit directly under their bucket.
 
 ### The design-ledger-gate governs every bucket
 
-`tools/design-ledger-gate` scans every governed bucket (the six taxonomy buckets
-above): every record's `Status:`
-header is checked for presence and grammar, and a PR that touches a governed
+`tools/design-ledger-gate` scans every governed bucket (the taxonomy buckets
+above) and every `.md` beneath one, at any depth, supporting files included: a
+record `Status:` header, when present, must have valid grammar, and a PR that touches a governed
 record must either touch the ledger (`docs/designs/DECISIONS.md`) or declare a
 `Ledger-impact:` line in its description. The `DECISIONS.md` ledger rows stay
 scoped to **product decisions** — the gate governing a record is independent of

@@ -9,7 +9,7 @@
 > record disagree. Every citation is a path in the **`RigelBuild/compass`**
 > monorepo.
 
-Status: Active — ruled by Matt (2026-09-07)
+Ruled: Matt (2026-09-07)
 Tracking: RIG-3490 (transport ruling)
 Amends: RIG-3238 apple-container macOS runner (`design.md`)
 Refs: DL-338; DL-330 (sequencing narrowed, direction intact); T-1 spike findings (`spike-findings.md`)

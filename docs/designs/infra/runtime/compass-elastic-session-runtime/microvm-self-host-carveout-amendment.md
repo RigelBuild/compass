@@ -8,7 +8,7 @@
 > (2026-08-31, DL-325) and is the authority where it and the KVM-only amendment
 > disagree. Every citation is a path in the **`RigelBuild/compass`** monorepo.
 
-Status: Active — ruled by Matt (2026-08-31)
+Ruled: Matt (2026-08-31)
 Tracking: RIG-3070 (runner adoption strategy)
 Amends: RIG-1717/RIG-2394 microVM KVM-only amendment (`microvm-kvm-only-amendment.md`)
 Refs: DL-325; runner-adoption-strategy record (`../compass-runner-adoption-strategy/design.md`, §The ruled topology)
