@@ -67,6 +67,8 @@ module.exports = {
 		// Space Mono ships 400/700 only, so any heavier step renders bold.
 		"declaration-property-value-allowed-list": {
 			"font-weight": ["400", "normal", "inherit"],
+			// The shorthand can carry a weight too, so it may only inherit.
+			font: ["inherit"],
 		},
 	},
 	overrides: [

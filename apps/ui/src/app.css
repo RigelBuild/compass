@@ -1535,6 +1535,8 @@
 .backlog-view > .heading,
 .done-view > .heading {
 	font-size: 14px;
+	/* Backlog renders an h2, which is bold by browser default. */
+	font-weight: 400;
 }
 
 .backlog-section {
