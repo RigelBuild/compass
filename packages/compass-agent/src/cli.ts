@@ -1162,6 +1162,7 @@ export async function main(
 			agent?.deliver(msg, fromHandle, traceparent, sourceNames),
 		forgeNotification: (notification, ackRail) =>
 			agent?.forgeNotification(notification, ackRail),
+		startNow: () => agent?.startNow(),
 	});
 
 	// Drain in `finally` on both paths, then CLOSE the carrier, in that order: run()
