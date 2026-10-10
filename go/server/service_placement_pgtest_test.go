@@ -828,6 +828,18 @@ func (r *recordingRunner) commands() []string {
 	return out
 }
 
+func (r *recordingRunner) controls() []*compassv1internal.AgentControl {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var controls []*compassv1internal.AgentControl
+	for _, cmd := range r.seen {
+		if dispatch := cmd.GetDeliverControl(); dispatch != nil {
+			controls = append(controls, dispatch.GetOp())
+		}
+	}
+	return controls
+}
+
 // sawStop reports whether the Server pushed a Stop for sessionID.
 func (r *recordingRunner) sawStop(sessionID string) bool {
 	r.mu.Lock()

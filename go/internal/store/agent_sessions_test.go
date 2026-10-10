@@ -13,7 +13,10 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/pgtest"
 )
 
 // recordSession seeds the ownership chain for agent and returns the session_id a
@@ -176,6 +179,65 @@ func TestRequireAgentSessionSubscriberCollapseIsUniformAcrossRefusalCauses(t *te
 	// refused EVERYTHING would satisfy the uniformity check above.
 	if err := s.RequireAgentSessionSubscriber(ctx, owner.ID, "live-session"); err != nil {
 		t.Fatalf("owner on its own agent's session = %v, want nil (uniform refusal must not mean universal refusal)", err)
+	}
+}
+
+// TestRequireAgentSessionOwnerAuthorizationAndQueryShape pins the owner/admin
+// grant and the single-query not-found merge for every refusal.
+func TestRequireAgentSessionOwnerAuthorizationAndQueryShape(t *testing.T) {
+	ctx := context.Background()
+	counter := &pgtest.SQLCQueryCounter{}
+	s := newTracedTestStore(t, counter)
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "admin", DisplayName: "admin"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	owner := mustUser(t, s, "owner")
+	otherOwner := mustUser(t, s, "other-owner")
+	member := mustUser(t, s, "member")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	otherAgent := mustAgent(t, s, otherOwner.ID, "other-agent")
+	recordSession(t, s, agent, "owner-session")
+	recordSession(t, s, otherAgent, "other-session")
+	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, agent.Agent.HomeChannelID,
+		[]MemberUpdate{{AccountID: member.ID}}, MemberUpdatesOptions{}); err != nil {
+		t.Fatalf("add home-channel member: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		caller    AccountID
+		sessionID string
+		want      error
+		queries   int
+	}{
+		{name: "owner", caller: owner.ID, sessionID: "owner-session", queries: 1},
+		{name: "admin", caller: admin.ID, sessionID: "owner-session", queries: 1},
+		{name: "non-owner home-channel member", caller: member.ID, sessionID: "owner-session", want: ErrNotFound, queries: 1},
+		{name: "owner of another agent", caller: otherOwner.ID, sessionID: "owner-session", want: ErrNotFound, queries: 1},
+		{name: "unknown session", caller: owner.ID, sessionID: "unknown-session", want: ErrNotFound, queries: 1},
+		{name: "empty session id", caller: owner.ID, want: ErrInvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			counter.Reset()
+			err := s.RequireAgentSessionOwner(ctx, tc.caller, tc.sessionID)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("RequireAgentSessionOwner = %v, want nil", err)
+				}
+			} else {
+				sentinelIs(t, err, tc.want, "RequireAgentSessionOwner")
+			}
+			if got := counter.Count(); got != tc.queries {
+				t.Fatalf("RequireAgentSessionOwner ran %d SQLC queries, want %d", got, tc.queries)
+			}
+			if tc.queries == 1 {
+				if got, want := counter.Names(), []string{"RequireAgentSessionOwner"}; !slices.Equal(got, want) {
+					t.Fatalf("SQLC queries = %v, want %v", got, want)
+				}
+			}
+		})
 	}
 }
 

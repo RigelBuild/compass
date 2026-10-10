@@ -585,6 +585,7 @@ type Querier interface {
 	RecordStateTransition(ctx context.Context, arg RecordStateTransitionParams) error
 	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
+	RequireAgentSessionOwner(ctx context.Context, arg RequireAgentSessionOwnerParams) (bool, error)
 	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)
 	ResolveAckMessage(ctx context.Context, arg ResolveAckMessageParams) (int64, error)
 	ResolveCoordinationManager(ctx context.Context, id string) (ResolveCoordinationManagerRow, error)

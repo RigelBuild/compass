@@ -9,6 +9,8 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -16,6 +18,8 @@ import (
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
 )
 
 // recvAgentFrameOrTimeout runs one Receive on a SubscribeAgentSession client
@@ -94,5 +98,49 @@ func TestSubscribeAgentSessionWithoutCallerIsUnauthenticated(t *testing.T) {
 
 	if code := subscribeAgentSessionCode(t, client, "sess-1"); code != connect.CodeUnauthenticated {
 		t.Fatalf("SubscribeAgentSession with no caller = %v, want CodeUnauthenticated", code)
+	}
+}
+
+// TestSkipBatchWindowEarlyFailuresSkipStore pins the handler's pre-authorization
+// ordering. A nil store makes any premature lookup fail the test.
+func TestSkipBatchWindowEarlyFailuresSkipStore(t *testing.T) {
+	tests := []struct {
+		name   string
+		hub    *runnerhub.Hub
+		id     string
+		caller bool
+		want   connect.Code
+	}{
+		{name: "no hub", want: connect.CodeUnavailable},
+		{name: "no caller", hub: runnerhub.NewHub(nil, nil, nil, nil), id: "session", want: connect.CodeUnauthenticated},
+		{name: "empty session id", hub: runnerhub.NewHub(nil, nil, nil, nil), caller: true, want: connect.CodeInvalidArgument},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := events.NewBus[busPayload]()
+			t.Cleanup(bus.Close)
+			svc := newService("test", bus, nil, tc.hub, nil, nil, nil)
+			var url string
+			if tc.caller {
+				path, handler := compassv1connect.NewCompassServiceHandler(svc,
+					connect.WithInterceptors(auth.AmbientIdentity("caller")))
+				mux := http.NewServeMux()
+				mux.Handle(path, handler)
+				srv := httptest.NewUnstartedServer(mux)
+				srv.Config.Protocols = cleartextHTTP2()
+				srv.Start()
+				t.Cleanup(srv.Close)
+				url = srv.URL
+			} else {
+				url = newH2CTestServer(t, svc)
+			}
+			client := newH2CClient(t, url)
+			ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+			defer cancel()
+			_, err := client.SkipBatchWindow(ctx, connect.NewRequest(&compassv1.SkipBatchWindowRequest{SessionId: tc.id}))
+			if got := connect.CodeOf(err); got != tc.want {
+				t.Fatalf("SkipBatchWindow error = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

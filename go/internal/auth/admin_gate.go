@@ -78,8 +78,9 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceSubscribeEventsProcedure,
 		compassv1connect.CompassServiceListBoardIssuesProcedure,
 		compassv1connect.CompassServiceSearchIssuesProcedure,
-		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
+		compassv1connect.CompassServiceSkipBatchWindowProcedure,
 		compassv1connect.CompassServiceGetAgentConfigInfoProcedure,
+		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
 		compassv1connect.CompassServiceGetModelRegistryProcedure:
 		return authenticatedOpen{}, true
 
