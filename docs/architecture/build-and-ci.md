@@ -262,15 +262,12 @@ published before its assets exist could never get them.
 
 | Asset | Built by | Notes |
 | --- | --- | --- |
-| `compass`, `compass-server`, `compass-runner` (`_linux-amd64`) | `release-assets` | static (`CGO_ENABLED=0`) |
+| `compass`, `compass-server`, `compass-runner`, `compass-stack` (`_linux-amd64`) | `release-assets` | static (`CGO_ENABLED=0`) |
 | `compass_<tag>_darwin-arm64` | `release-assets` | the CLI, cross-built |
 | `compass-app_<tag>_linux-amd64.tar.gz` | `release-assets` | gtk4 shell, the embedded sidecars, UI dist |
 | `compass-app_<tag>_darwin-arm64.dmg` | `release-assets-macos` (`macos-14`) | ad-hoc signed `.app`; handed over as an artifact |
-| `SHA256SUMS` | `release-assets` | checksums of the six downloads above |
+| `SHA256SUMS` | `release-assets` | checksums of the seven downloads above |
 | `nix-outputs.json` | `release-assets` | nix output manifest; not in `SHA256SUMS` |
-
-`compass-stack` is not a release asset yet, although the design record adds it
-to the binary set. Install it from the flake.
 
 The macOS app links the system WebKit framework, so it builds only on a mac
 runner and is never cross-compiled. Developer ID signing, notarization and the

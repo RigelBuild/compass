@@ -142,7 +142,7 @@ Download the three stack binaries for a tag, check them, and place them on
 `PATH`:
 
 ```console
-$ tag=v0.4.0   # the release to install
+$ tag=vX.Y.Z   # a release that ships compass-stack
 $ base=https://github.com/RigelBuild/compass/releases/download/$tag
 $ for b in compass-stack compass-server compass-runner; do
     curl -fsSLO "$base/${b}_${tag}_linux-amd64"

@@ -831,7 +831,7 @@ jobs:
         # version.txt (Global Constraint 1: ONE version string across all
         # binaries AND the image tag). Asset names carry the semver tag. #711's
         # build step, re-based from the `build-<sha12>` prerelease shape to the
-        # semver `vX.Y.Z` tag. -trimpath + CGO_ENABLED=0: the three daemons/CLI
+        # semver `vX.Y.Z` tag. -trimpath + CGO_ENABLED=0: all four linux binaries
         # are pure Go (cgo is needed only by the pgtest suites, not any build
         # here), and the darwin-arm64 CLI cross-compiles cleanly from this ubuntu
         # runner.
