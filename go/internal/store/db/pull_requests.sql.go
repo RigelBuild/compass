@@ -268,8 +268,9 @@ SELECT l.issue_forge_provider, l.issue_forge_host, l.issue_repo, l.issue_number,
           FROM pull_request_issue_links e
           JOIN issues i
             ON i.tenant_id = e.tenant_id AND i.forge_provider = e.issue_forge_provider
-           AND i.forge_host = e.issue_forge_host AND i.repo = e.issue_repo
-           AND i.number = e.issue_number
+           AND i.forge_host = e.issue_forge_host AND i.number = e.issue_number
+           -- issues keeps the ingested repo casing; links hold GitHub repos lowercased.
+           AND (CASE WHEN i.forge_provider = 1 THEN lower(i.repo) ELSE i.repo END) = e.issue_repo
          WHERE e.source = 1 AND e.tenant_id = l.tenant_id
            AND e.pr_forge_provider = l.pr_forge_provider AND e.pr_forge_host = l.pr_forge_host
            AND e.pr_repo = l.pr_repo AND e.pr_number = l.pr_number)
