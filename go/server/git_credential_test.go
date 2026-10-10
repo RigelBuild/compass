@@ -313,6 +313,7 @@ func TestBrokeredSecretResolverFiltersUserGitHubSecrets(t *testing.T) {
 		{Name: "GITHUB_TOKEN", Value: "legacy-token", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
 		{Name: "GH_ENTERPRISE_TOKEN", Value: "legacy-token", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
 		{Name: "GITHUB_ENTERPRISE_TOKEN", Value: "legacy-token", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
+		{Name: "GIT_CONFIG_VALUE_0", Value: "!legacy-helper", Delivery: secrets.DeliveryEnv, Kind: secrets.SecretGeneric},
 	}
 	tests := []struct {
 		name          string

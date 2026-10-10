@@ -258,6 +258,19 @@ func TestRunSecretDelete(t *testing.T) {
 	}
 }
 
+// TestSecretSetRejectsHostFlag: `--host` only routed a gh secret, so a script
+// still passing it must fail at parse time rather than silently drop it.
+func TestSecretSetRejectsHostFlag(t *testing.T) {
+	cmd := newSecretSetCmd()
+	cmd.SetArgs([]string{"X", "--kind", "generic", "--delivery", "env", "--host", "github.com"})
+	cmd.SetIn(strings.NewReader("v"))
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --host") {
+		t.Fatalf("secret set --host = %v, want unknown flag error", err)
+	}
+}
+
 // TestParseKindRoutingRejections asserts parseKind rejects unknown kinds and
 // routing flags that do not belong to the chosen kind.
 func TestParseKindRoutingRejections(t *testing.T) {

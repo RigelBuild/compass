@@ -92,8 +92,7 @@ func (r *brokeredSecretResolver) ResolveFor(ctx context.Context, agent store.Acc
 	}
 	resolved, err := r.inner.ResolveFor(ctx, agent, reason)
 	resolved = slices.DeleteFunc(resolved, func(secret secrets.ResolvedSecret) bool {
-		_, reservedEnvName := secrets.ReservedGitHubEnvNames[secret.Name]
-		return secret.Kind == secrets.SecretGH || reservedEnvName
+		return secret.Kind == secrets.SecretGH || secrets.IsReservedGitHubEnvName(secret.Name)
 	})
 	if err != nil || r.broker == nil || reason != gitCredentialReason {
 		return resolved, err

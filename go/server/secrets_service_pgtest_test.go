@@ -257,7 +257,7 @@ func TestSetSecretRejectsGitHubKind(t *testing.T) {
 
 func TestSetSecretRejectsReservedGitHubEnvNames(t *testing.T) {
 	f := newSecretsFixture(t)
-	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR", "GIT_ASKPASS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_GLOBAL"} {
 		t.Run(name, func(t *testing.T) {
 			_, err := f.client.SetSecret(context.Background(), setReq(f.userToken, name, "user-token"))
 			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
