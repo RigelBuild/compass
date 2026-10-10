@@ -69,7 +69,7 @@ With two rules in one group, the task would come from whichever upgrade sorts fi
    },
    ```
 
-   The branch is `renovate/devenv-fork` (the slug rule in `generateBranchName`, `dist/workers/repository/updates/branch-name.js`; "devenv fork (root)" gave #2064's `renovate/devenv-fork-(root)`). `minimumReleaseAge: null` and daily `main` HEAD tracking carry over unchanged (DL-415).
+   The branch is `renovate/devenv-fork` (the slug rule in `generateBranchName`, `dist/workers/repository/updates/branch-name.js`; "devenv fork (root)" gave #2064's `renovate/devenv-fork-(root)`). `minimumReleaseAge: null` and daily `main` HEAD tracking carry over unchanged (DL-415, carried into DL-446).
 
 2. **Keep both managers.** The two regex managers keep their file patterns, matchStrings and distinct depNames, so each still extracts one rev from one file and the extraction tests stay valid. The distinct depName now only keeps the two updates apart in the PR body and on the dashboard; it no longer splits them into two groups. Only the comments that say otherwise change.
 
@@ -119,7 +119,7 @@ Ruling B creates that coupling for the `devenv` input. **This record supersedes 
 
 No decision file records RD-1: no file under `docs/designs/decisions/` points at the devenv-source record, so there is no row to flip. DL-446 records this ruling. The frozen RD-1 record is not edited.
 
-DL-415 ("The two `RigelBuild/devenv` fork rules keep tracking `main` HEAD daily with no soak") stays Active. Its ruling applies unchanged to the one merged rule; only its rule count is out of date.
+DL-415 ("The two `RigelBuild/devenv` fork rules keep tracking `main` HEAD daily with no soak") names two rules, so DL-446 supersedes it and carries its daily, no-soak ruling forward unchanged for the one merged rule.
 
 ## Alternatives considered
 
