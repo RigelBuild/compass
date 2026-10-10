@@ -186,16 +186,18 @@ describe("createStoreDestinationProviders", () => {
 		});
 	});
 
-	test("the views provider yields exactly Bridge/Backlog/Done/Settings", async () => {
+	test("the views provider yields exactly Agents/Bridge/Backlog/Done/Settings", async () => {
 		await withStoreAsync(async (store) => {
 			const providers = createStoreDestinationProviders(store);
 			const views = await providers.find((p) => p.id === "views")?.query("");
 			expect((views ?? []).map((d) => d.title).sort()).toEqual([
+				"Agents",
 				"Backlog",
 				"Bridge",
 				"Done",
 				"Settings",
 			]);
+			expect(views?.[0]?.title).toBe("Agents");
 		});
 	});
 

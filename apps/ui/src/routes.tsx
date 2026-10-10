@@ -2,7 +2,7 @@
 // identically by production (hashHistory, mount.tsx) and tests (memoryHistory,
 // test-router.tsx) — no drift between prod and test.
 //
-// The seven `View` surfaces map 1:1 to routes; the `:channelId` / `:topicId` /
+// The eight `View` surfaces map 1:1 to routes; the `:channelId` / `:topicId` /
 // `:agentId` params carry the selection that today lives only in signals. The
 // channel segment nests the `/channel/:channelId/topic/:topicId` deep link —
 // the topic message view — as a child route under it. The `*all` catch-all
@@ -16,6 +16,7 @@
 import { defineRoutes } from "@solidjs/router";
 import type { Component } from "solid-js";
 import { onSettled } from "solid-js";
+import { AgentsView } from "./components/AgentsView";
 import { AgentView } from "./components/AgentView";
 import { BacklogView } from "./components/BacklogView";
 import { Bridge } from "./components/Bridge";
@@ -43,6 +44,7 @@ export const appRoutes = defineRoutes([
 	{ path: "/channel/:channelId", component: ChannelView },
 	{ path: "/channel/:channelId/topic/:topicId", component: TopicView },
 	{ path: "/agent/:agentId", component: AgentView },
+	{ path: "/agents", component: AgentsView },
 	{ path: "/backlog", component: BacklogView },
 	{ path: "/done", component: DoneView },
 	{ path: "/settings", component: SettingsView },

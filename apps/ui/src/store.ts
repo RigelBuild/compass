@@ -127,16 +127,18 @@ export interface LayoutNotice {
 	count: number;
 }
 
-/** The top-level surface the shell routes between. `bridge`/`backlog`/`done`/
- *  `settings` are the board-family surfaces (the default is `bridge`), still
- *  primary, reachable from the top bar; they swap the whole UI. `channel` is the
- *  channel's topic index; `topic` is one topic's messages + composer; `agent` is
- *  the per-agent workspace — the agent's channel plus its tab/split panes. */
+/** The top-level surface the shell routes between. `bridge`/`agents`/`backlog`/
+ *  `done`/`settings` are the board-family surfaces (the default is `bridge`),
+ *  still primary, reachable from the top bar; they swap the whole UI. `channel`
+ *  is the channel's topic index; `topic` is one topic's messages + composer;
+ *  `agent` is the per-agent workspace — the agent's channel plus its tab/split
+ *  panes. */
 export type View =
 	| "channel"
 	| "topic"
 	| "agent"
 	| "bridge"
+	| "agents"
 	| "backlog"
 	| "done"
 	| "settings";
@@ -259,6 +261,8 @@ export interface AppStore {
 	view: Accessor<View>;
 	/** Jump to the Bridge board. */
 	showBridge: () => void;
+	/** Show the agent tree view. */
+	showAgents: () => void;
 	/** Show the Backlog view (Todo + Backlog tiers, D3). */
 	showBacklog: () => void;
 	/** Show the Done/archive view (D4). */
@@ -2049,6 +2053,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		hideShortcuts();
 		navigateTo("/");
 	};
+	const showAgents = () => {
+		hideShortcuts();
+		navigateTo("/agents");
+	};
 	const showBacklog = () => {
 		hideShortcuts();
 		navigateTo("/backlog");
@@ -2256,6 +2264,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const keyboard = createKeyboardSpine({
 		showBridge,
 		toggleShortcuts,
+		showAgents,
 		showBacklog,
 		showDone,
 		showSettings,
@@ -2373,6 +2382,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		bindRouter,
 		keyboard,
 		showBridge,
+		showAgents,
 		showBacklog,
 		showDone,
 		showSettings,

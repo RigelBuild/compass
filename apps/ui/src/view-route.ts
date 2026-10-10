@@ -1,5 +1,6 @@
 export type RouteMatch =
 	| { view: "bridge" }
+	| { view: "agents" }
 	| { view: "backlog" }
 	| { view: "done" }
 	| { view: "settings" }
@@ -22,6 +23,8 @@ export function parseRoute(path: string): RouteMatch {
 			return param ? { view: "channel", channelId: param } : { view: "bridge" };
 		case "agent":
 			return param ? { view: "agent", agentId: param } : { view: "bridge" };
+		case "agents":
+			return { view: "agents" };
 		case "backlog":
 			return { view: "backlog" };
 		case "done":
@@ -37,6 +40,8 @@ export function routePath(match: RouteMatch): string {
 	switch (match.view) {
 		case "bridge":
 			return "/";
+		case "agents":
+			return "/agents";
 		case "backlog":
 			return "/backlog";
 		case "done":

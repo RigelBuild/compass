@@ -3,7 +3,7 @@
 // board and the Backlog/Done views so the partition can never drift between surfaces. Pure
 // over an injected issue list (no fixture import, no store), so the D1 contract is testable.
 
-import { openPrs } from "./board-render";
+import { issueKey, openPrs } from "./board-render";
 import { BOARD_LANES } from "./constants";
 import type {
 	Agent,
@@ -53,6 +53,23 @@ export function boardAgents(
 	return agents.filter((a) =>
 		all.some((w) => w.assignee === a.account.id && isActiveState(w.state)),
 	);
+}
+
+/** The issue chip on an agent's tree card: no chip without an active issue,
+ *  the issue key for one, and a count for more. */
+export function agentIssueChip(
+	agentId: string,
+	issues: readonly Issue[],
+	multiForge: boolean,
+): string | null {
+	const active = issues.filter(
+		(w) => w.assignee === agentId && isActiveState(w.state),
+	);
+	const [only] = active;
+	if (!only) return null;
+	return active.length === 1
+		? issueKey(only, multiForge)
+		: `${active.length} open`;
 }
 
 /** The cards for one swimlane cell: issues in `state`, optionally narrowed to

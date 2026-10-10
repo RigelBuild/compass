@@ -449,8 +449,8 @@ export const LeftSidebar: Component = () => {
 		backlogIssues(store.issues()).length + store.assignedIssues().length;
 	// Point-of-use coaching (RIG-2530): the view buttons announce their chord via
 	// aria-keyshortcuts + a CoachTip tooltip, resolved from the keymap through
-	// shortcutFor inside CoachTipContent (never hand-authored — D4). view.backlog/
-	// view.done have no keymap row yet, so the tooltip is label-only there.
+	// shortcutFor inside CoachTipContent (never hand-authored — D4). view.agents/
+	// view.backlog/view.done have no keymap row yet, so the tooltip is label-only there.
 	const platform = detectPlatform();
 	const ariaChord = (id: string) => shortcutForAria(id as CommandId, platform);
 	return (
@@ -458,6 +458,25 @@ export const LeftSidebar: Component = () => {
 			<div class="left-head">
 				<span class="label">Workspace</span>
 			</div>
+			<CoachTip>
+				<CoachTipTrigger
+					as="button"
+					type="button"
+					class={["bridge-link", { active: store.view() === "agents" }]}
+					{...openLink(
+						store,
+						() => "/agents",
+						() => store.showAgents(),
+					)}
+					aria-keyshortcuts={ariaChord("view.agents")}
+				>
+					<span class="glyph" aria-hidden="true">
+						<Glyph name="role" />
+					</span>
+					<span>Agents</span>
+				</CoachTipTrigger>
+				<CoachTipContent label="Agents" command={"view.agents" as CommandId} />
+			</CoachTip>
 			<CoachTip>
 				<CoachTipTrigger
 					as="button"

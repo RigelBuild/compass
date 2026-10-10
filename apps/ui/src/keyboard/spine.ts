@@ -60,18 +60,20 @@ export interface KeyboardSpine {
 /**
  * Create the keyboard spine. Registers `view.bridge → deps.showBridge()`,
  * `view.shortcuts → deps.toggleShortcuts()` (RIG-2482), `tour.start →
- * deps.startTour()`, and the RIG-2483 seed
- * commands — `palette.open → deps.togglePalette()` plus the view seeds
- * `view.settings`/`view.backlog`/`view.done` (→ the matching `show*`) — as its
- * commands before returning (record A4 §182-186 / A3/D6: the registration lives
- * with the behavior — the spine is created in `createAppStore` where the
- * closures are in scope), so `Mod+B`, `?`, `Mod+K`, and `Mod+,` resolve through
- * the real wiring with no App-specific setup. No seed sets a `shortcut` string:
- * chips derive from the keymap via `shortcutFor` (D4).
+ * deps.startTour()`, and the RIG-2483 seed commands — `palette.open →
+ * deps.togglePalette()` plus the view seeds
+ * `view.settings`/`view.agents`/`view.backlog`/`view.done` (→ the matching
+ * `show*`) — as its commands before returning (record A4 §182-186 / A3/D6: the
+ * registration lives with the behavior — the spine is created in
+ * `createAppStore` where the closures are in scope), so `Mod+B`, `?`, `Mod+K`,
+ * and `Mod+,` resolve through the real wiring with no App-specific setup. No
+ * seed sets a `shortcut` string: chips derive from the keymap via
+ * `shortcutFor` (D4).
  */
 export function createKeyboardSpine(deps: {
 	showBridge: () => void;
 	toggleShortcuts: () => void;
+	showAgents: () => void;
 	showBacklog: () => void;
 	showDone: () => void;
 	showSettings: () => void;
@@ -126,6 +128,14 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.showSettings(),
 	};
 	registry.register(viewSettings);
+	const viewAgents: Command = {
+		id: "view.agents" as CommandId,
+		title: "Go to Agents",
+		keywords: ["agents", "tree", "manager"],
+		scope: "global",
+		run: () => deps.showAgents(),
+	};
+	registry.register(viewAgents);
 	const viewBacklog: Command = {
 		id: "view.backlog" as CommandId,
 		title: "Go to Backlog",
