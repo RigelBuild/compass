@@ -25,6 +25,26 @@ import (
 	"connectrpc.com/connect"
 )
 
+func TestAgentHostConfigCarriesRunnerSettings(t *testing.T) {
+	cfg := RunnerConfig{
+		RuntimeDir:    "/run/compass",
+		AgentModel:    "claude-opus-4",
+		AgentBatching: "on",
+	}
+	got := agentHostConfig(cfg, "runner-1")
+	if got.AgentBatching != "on" {
+		t.Fatalf("AgentBatching = %q, want on", got.AgentBatching)
+	}
+	if got.AgentModel != cfg.AgentModel || got.RuntimeDir != cfg.RuntimeDir || got.RunnerID != "runner-1" {
+		t.Fatalf("agentHostConfig = %+v, lost existing Runner config", got)
+	}
+
+	got = agentHostConfig(RunnerConfig{}, "runner-1")
+	if got.AgentBatching != "" {
+		t.Fatalf("unset AgentBatching = %q, want empty", got.AgentBatching)
+	}
+}
+
 func TestRunDialWithRetryTransientThenSuccess(t *testing.T) {
 	cfg := RunnerConfig{RunnerID: "runner-1", RuntimeDir: t.TempDir(), Engine: newPipeRuntime()}
 	want := &ServerLink{}

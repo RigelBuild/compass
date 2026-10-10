@@ -74,6 +74,32 @@ func TestExecSpecExportsModelOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
+// COMPASS_AGENT_BATCHING is omitted when Runner config is empty, which keeps
+// the agent's default behavior; configured values pass through verbatim.
+func TestExecSpecExportsBatchingOnlyWhenConfigured(t *testing.T) {
+	tests := []struct {
+		name     string
+		batching string
+		want     string
+		present  bool
+	}{
+		{name: "empty batching omits the key", present: false},
+		{name: "configured batching is exported verbatim", batching: "on", want: "on", present: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := AgentEnv{UID: 1000, HomeDir: "/home/coder", Workdir: "/srv/checkout", Batching: tc.batching}.execSpec()
+			got, ok := spec.Env["COMPASS_AGENT_BATCHING"]
+			if ok != tc.present {
+				t.Fatalf("COMPASS_AGENT_BATCHING present = %v (value %q), want present = %v", ok, got, tc.present)
+			}
+			if ok && got != tc.want {
+				t.Fatalf("COMPASS_AGENT_BATCHING = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // COMPASS_PERSONA is exported only when a persona is configured. An empty
 // Persona must leave the key ABSENT, not mapped to "": the agent treats an
 // absent var as "no identity overlay" and stays on its default system prompt,

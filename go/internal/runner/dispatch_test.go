@@ -25,6 +25,8 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runner/gateway"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeSessionHost is a hand-written SessionHost that counts calls and returns
@@ -821,6 +823,35 @@ func TestExecuteDispatchControlCarriesForgeNotificationToHost(t *testing.T) {
 	}
 	if fn.GetSubscriptionId() != "sub-1" {
 		t.Fatalf("forge notification subscription id = %q, want sub-1 (op relayed intact)", fn.GetSubscriptionId())
+	}
+}
+
+func TestExecuteDispatchControlCarriesStartNowToHost(t *testing.T) {
+	op := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_StartNow{
+			StartNow: &compassv1internal.StartNowControl{},
+		},
+	}
+	cmd := &compassv1internal.SessionsResponse{
+		RequestId: "req-start-now",
+		Command: &compassv1internal.SessionsResponse_DeliverControl{
+			DeliverControl: &compassv1internal.DispatchControl{SessionId: "sess-1", Op: op},
+		},
+	}
+	host := &fakeSessionHost{}
+	d := newDispatcher(host, discardLoggerRunner())
+	res := d.execute(context.Background(), "req-start-now", cmd)
+	if res != nil {
+		t.Fatalf("start_now DispatchControl produced a result frame %+v, want nil (send-only)", res)
+	}
+	if host.deliverCalls != 1 {
+		t.Fatalf("Deliver called %d times, want 1", host.deliverCalls)
+	}
+	if host.lastDeliverID != "sess-1" {
+		t.Fatalf("Deliver got session %q, want sess-1", host.lastDeliverID)
+	}
+	if !proto.Equal(host.lastDeliverOp, op) {
+		t.Fatalf("Deliver op = %v, want unchanged start_now op %v", host.lastDeliverOp, op)
 	}
 }
 
