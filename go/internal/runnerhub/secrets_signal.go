@@ -7,9 +7,11 @@
 package runnerhub
 
 import (
+	"context"
 	"strconv"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // mintSecretsVersion returns the next opaque per-Server monotonic set-change
@@ -76,4 +78,29 @@ func (h *Hub) SignalSecretsVersion() error {
 		}
 	}
 	return nil
+}
+
+// SignalSecretsVersionFor pushes one SecretsVersion to account's live session.
+// No live session, or no Runner, is a nil no-op.
+func (h *Hub) SignalSecretsVersionFor(ctx context.Context, account store.AccountID) error {
+	sessionID, ok := h.SessionForAccount(ctx, account)
+	if !ok {
+		return nil
+	}
+
+	h.mu.Lock()
+	router := h.runner
+	h.mu.Unlock()
+	if router == nil {
+		return nil
+	}
+	cmd := &compassv1internal.SessionsResponse{
+		Command: &compassv1internal.SessionsResponse_SecretsVersion{
+			SecretsVersion: &compassv1internal.SecretsVersion{
+				SessionId: sessionID,
+				Version:   h.mintSecretsVersion(),
+			},
+		},
+	}
+	return router.router.push(cmd)
 }
