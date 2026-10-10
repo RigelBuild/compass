@@ -13,20 +13,16 @@ const STATE_CELLS: Record<
 	ReadonlyArray<readonly [number, number]>
 > = {
 	working: [
-		[0, 1],
-		[4, 1],
 		[1, 2],
-		[5, 2],
+		[4, 2],
 		[2, 3],
-		[6, 3],
+		[5, 3],
 		[3, 4],
-		[7, 4],
+		[6, 4],
 		[2, 5],
-		[6, 5],
+		[5, 5],
 		[1, 6],
-		[5, 6],
-		[0, 7],
-		[4, 7],
+		[4, 6],
 	],
 	idle: [
 		[3, 3],
@@ -40,28 +36,25 @@ const STATE_CELLS: Record<
 		[5, 5],
 	],
 	waiting: [
-		[2, 0],
-		[3, 0],
-		[4, 0],
-		[5, 0],
-		[1, 1],
-		[6, 1],
+		[3, 1],
+		[4, 1],
+		[5, 1],
+		[2, 2],
 		[6, 2],
-		[5, 3],
+		[6, 3],
 		[4, 4],
+		[5, 4],
 		[4, 5],
 		[4, 7],
 	],
 	done: [
-		[8, 3],
-		[7, 4],
-		[0, 5],
-		[6, 5],
-		[1, 6],
-		[5, 6],
-		[2, 7],
-		[4, 7],
-		[3, 8],
+		[1, 4],
+		[2, 5],
+		[3, 6],
+		[4, 5],
+		[5, 4],
+		[6, 3],
+		[7, 2],
 	],
 	paused: [
 		[2, 2],
@@ -127,12 +120,17 @@ const STATE_CELLS: Record<
 	],
 };
 
-export const StateDot: Component<{ state: AgentState }> = (props) => {
+// Integer scales only, so every cell stays a whole pixel block: 1× (9px) in
+// dense spots, 2× (18px) in tree rows.
+export const StateDot: Component<{ state: AgentState; scale?: 1 | 2 }> = (
+	props,
+) => {
 	const label = () => AGENT_STATE_LABEL[props.state];
 	return (
 		<span
 			class="cx-state-dot"
 			data-state={props.state}
+			data-scale={props.scale === 2 ? "2" : undefined}
 			data-alive={props.state === "working" ? "1" : undefined}
 			title={label()}
 			aria-label={label()}

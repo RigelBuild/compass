@@ -34,6 +34,15 @@
    `> svg` rule is the seating counterpart. */
 .cx-state-dot > svg {
 	display: block;
+	/* Fill the box so the 2× wrapper scales the 9×9 grid to whole 2px cells. */
+	width: 100%;
+	height: 100%;
+}
+
+/* 2× for tree rows: an integer scale keeps the 1-bit grid exact. */
+.cx-state-dot[data-scale="2"] {
+	width: 18px;
+	height: 18px;
 }
 
 /* --- Per-state color (fill/stroke resolves from currentColor) --- */
@@ -75,8 +84,9 @@
 	100% {
 		opacity: 1;
 	}
+	/* Breathe, not blink: the low point matches the site's 0.7. */
 	50% {
-		opacity: 0.4;
+		opacity: 0.7;
 	}
 }
 
