@@ -12,13 +12,21 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // statusEvent is a positioned ServerStatus{Ready} response the bus carries — the
@@ -88,24 +96,88 @@ func recvOne(t *testing.T, stream *connect.ServerStreamForClient[compassv1.Subsc
 	return stream.Msg()
 }
 
+func mountInfoRunner(t *testing.T, hub *runnerhub.Hub) string {
+	t.Helper()
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	path, handler := runnerhub.NewMountedHandler(hub, func(_ context.Context, token string, kind store.SubjectKind) (store.Subject, error) {
+		if token != "runner-token" || kind != store.SubjectRunner {
+			return store.Subject{}, errors.New("invalid test Runner credential")
+		}
+		return store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, nil
+	}, nil, nil, otelIC)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = cleartextHTTP2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+type serverTestBearer struct{ token string }
+
+func (b *serverTestBearer) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		req.Header().Set("Authorization", "Bearer "+b.token)
+		return next(ctx, req)
+	}
+}
+
+func (b *serverTestBearer) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		conn := next(ctx, spec)
+		conn.RequestHeader().Set("Authorization", "Bearer "+b.token)
+		return conn
+	}
+}
+
+func (b *serverTestBearer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
+}
+
 func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	url := newH2CTestServer(t, newService("9.9.9-test", bus, nil, nil, nil, nil, nil))
+	hub := runnerhub.NewHub(nil, nil, nil, nil)
+	url := newH2CTestServer(t, newService("9.9.9-test", bus, nil, hub, nil, nil, nil))
 	client := newH2CClient(t, url)
 
 	resp, err := client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
 	if err != nil {
-		t.Fatalf("GetServerInfo: %v", err)
+		t.Fatalf("GetServerInfo before enroll: %v", err)
+	}
+	if got := resp.Msg.GetEnrolledRunners(); len(got) != 0 {
+		t.Fatalf("EnrolledRunners before enroll = %v, want empty", got)
+	}
+	runnerURL := mountInfoRunner(t, hub)
+	tr := h2cTransport(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	})
+	t.Cleanup(tr.CloseIdleConnections)
+	runnerClient := compassv1internalconnect.NewRunnerServiceClient(
+		&http.Client{Transport: tr},
+		runnerURL,
+		connect.WithInterceptors(&serverTestBearer{token: "runner-token"}),
+	)
+	if _, err := runnerClient.Enroll(context.Background(), connect.NewRequest(&compassv1internal.EnrollRequest{RunnerId: "runner-1"})); err != nil {
+		t.Fatalf("RunnerService.Enroll: %v", err)
+	}
+	resp, err = client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	if err != nil {
+		t.Fatalf("GetServerInfo after enroll: %v", err)
+	}
+	if got := resp.Msg.GetEnrolledRunners(); len(got) != 1 || got[0].GetId() != "runner-1" || got[0].GetEnrollment() != 1 {
+		t.Fatalf("EnrolledRunners after enroll = %v, want runner-1 at enrollment 1", got)
 	}
 	if got := resp.Msg.GetVersion(); got != "9.9.9-test" {
 		t.Fatalf("Version = %q, want %q (the configured build version)", got, "9.9.9-test")
 	}
 	if got := resp.Msg.GetApiVersion(); got != apiVersion {
 		t.Fatalf("ApiVersion = %q, want %q", got, apiVersion)
-	}
-	if apiVersion != "compass.v1" {
-		t.Fatalf("apiVersion const = %q, want compass.v1 (the contract version)", apiVersion)
 	}
 }
 

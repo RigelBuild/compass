@@ -45,17 +45,22 @@ const (
 	natsReadyPollBudget      = 30 * time.Second
 	gatewayReadyPollInterval = 100 * time.Millisecond
 	gatewayReadyPollBudget   = 30 * time.Second
+	// Enrollment is a single local probe after Runner preflight; this short budget
+	// fails a dead or wedged Runner without holding up a healthy cold start.
+	runnerEnrollPollInterval = 100 * time.Millisecond
+	runnerEnrollPollBudget   = 15 * time.Second
 )
 
 // Stack is a supervised embedded stack: the resolved config plus the child
 // handles this process owns. An attached stack (a live server was already
 // answering) owns no children — Down on it only releases the lock.
 type Stack struct {
-	cfg    Config
-	deps   Deps
-	lock   *stackLock
-	server Process
-	runner Process
+	cfg        Config
+	deps       Deps
+	lock       *stackLock
+	server     Process
+	runner     Process
+	runnerWait *processWait
 	// listenAddr is the network door spawnChain bound (port resolved from :0).
 	listenAddr string
 	// cert is the TLS anchor spawnChain issued, reused when the runner restarts.
@@ -106,6 +111,13 @@ type Stack struct {
 	attached bool
 }
 
+// processWait is the single Wait on a child: done closes after err is set.
+type processWait struct {
+	done   chan struct{}
+	err    error
+	cancel context.CancelFunc
+}
+
 // Up brings the embedded stack to Ready (or attaches to a live one). The
 // attach-probe and the spawn decision are serialized under the state-dir O_EXCL
 // lockfile, so two concurrent Ups yield exactly one spawning stack and never a
@@ -113,9 +125,10 @@ type Stack struct {
 //
 // Cold sequence (devenv.nix:122-143): private postgres up+reachable → TLS anchor
 // (expiry-aware) → compass-server → poll GetServerInfo readiness → runner token
-// (idempotent 0600) → agent image present → compass-runner (token via env). On
-// any step failure the children started so far are drained and the lock
-// released, so no half-started stack leaks.
+// (idempotent 0600) → agent image present → compass-runner (token via env) → poll
+// GetServerInfo until this Runner id is enrolled. Attach to a live server skips
+// enrollment gating because this stack owns no Runner. On any failure children
+// started so far are drained and the lock released.
 func Up(ctx context.Context, cfg Config, deps Deps) (*Stack, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -246,18 +259,37 @@ func (s *Stack) RestartRunner(ctx context.Context) error {
 	if len(s.pgids) == 0 || s.pgids[len(s.pgids)-1].Component != ComponentRunner {
 		return errors.New("stack: runner teardown record is missing")
 	}
-	if err := s.runner.Signal(ctx, SignalTerm); err != nil {
-		return fmt.Errorf("stop runner: %w", err)
+	after, err := s.runnerEnrollment(ctx)
+	if err != nil {
+		return fmt.Errorf("stack: read runner enrollment before restart: %w", err)
 	}
-	if err := s.runner.Wait(ctx); err != nil {
-		return fmt.Errorf("wait for runner: %w", err)
+	stopErr := s.stopRunner(ctx)
+	if stopErr != nil {
+		if s.runnerWait == nil {
+			return fmt.Errorf("stop runner: %w", stopErr)
+		}
+		select {
+		case <-s.runnerWait.done:
+		default:
+			return fmt.Errorf("stop runner: %w", stopErr)
+		}
 	}
 	s.runner = nil
+	s.runnerWait = nil
 	s.pgids = s.pgids[:len(s.pgids)-1]
 	if err := writePgidFile(s.cfg.StateDir, pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}); err != nil {
+		if stopErr != nil {
+			return errors.Join(fmt.Errorf("stop runner: %w", stopErr), fmt.Errorf("persist runner stop: %w", err))
+		}
 		return fmt.Errorf("persist runner stop: %w", err)
 	}
-	return s.startRunner(ctx)
+	if stopErr != nil {
+		return fmt.Errorf("stop runner: %w", stopErr)
+	}
+	if err := s.startRunner(ctx); err != nil {
+		return err
+	}
+	return s.waitRunnerEnrolled(ctx, after)
 }
 
 // Health probes current readiness by asking the server over the socket. An
@@ -398,7 +430,10 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 	}
 
 	// 5-7. Runner token, agent image, guest paths, then compass-runner.
-	return s.startRunner(ctx)
+	if err := s.startRunner(ctx); err != nil {
+		return err
+	}
+	return s.waitRunnerEnrolled(ctx, 0)
 }
 
 // resolveGuest resolves the microVM guest image to concrete paths. Validate
@@ -630,6 +665,107 @@ func (s *Stack) waitReady(ctx context.Context) error {
 	}
 }
 
+// waitRunnerEnrolled waits until the Runner's enrollment sequence advances.
+func (s *Stack) waitRunnerEnrolled(ctx context.Context, after uint64) error {
+	if s.runner == nil {
+		return errors.New("wait for Runner enrollment: runner process is not owned")
+	}
+	if s.runnerWait == nil {
+		waitCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		watch := &processWait{done: make(chan struct{}), cancel: cancel}
+		s.runnerWait = watch
+		go func(runner Process, wait *processWait) {
+			wait.err = runner.Wait(waitCtx)
+			close(wait.done)
+		}(s.runner, watch)
+	}
+
+	deadline := s.deps.now().Add(runnerEnrollPollBudget)
+	ticker := time.NewTicker(runnerEnrollPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.runnerWait.done:
+			return runnerExitedError(s.runnerWait.err)
+		default:
+		}
+		info, err := s.deps.Prober.Probe(ctx, s.cfg.SocketPath)
+		select {
+		case <-s.runnerWait.done:
+			return runnerExitedError(s.runnerWait.err)
+		default:
+		}
+		if err == nil {
+			for _, enrolled := range info.EnrolledRunners {
+				if enrolled.ID == embeddedRunnerID && enrolled.Enrollment > after {
+					return nil
+				}
+			}
+		}
+		if !s.deps.now().Before(deadline) {
+			return fmt.Errorf("compass-runner %q was not enrolled within %s", embeddedRunnerID, runnerEnrollPollBudget)
+		}
+		select {
+		case <-s.runnerWait.done:
+			return runnerExitedError(s.runnerWait.err)
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func runnerExitedError(err error) error {
+	if err == nil {
+		return errors.New("compass-runner exited before enrolling")
+	}
+	return fmt.Errorf("compass-runner exited before enrolling: %w", err)
+}
+
+// runnerEnrollment is the Runner's current enrollment number, or 0 when the probe has none.
+func (s *Stack) runnerEnrollment(ctx context.Context) (uint64, error) {
+	info, err := s.deps.Prober.Probe(ctx, s.cfg.SocketPath)
+	if err != nil {
+		return 0, err
+	}
+	for _, enrolled := range info.EnrolledRunners {
+		if enrolled.ID == embeddedRunnerID {
+			return enrolled.Enrollment, nil
+		}
+	}
+	return 0, nil
+}
+
+// stopRunner terminates the owned Runner and reaps it through the watcher when one runs.
+// An already-exited Runner is not signalled; cancelling the watcher escalates to SIGKILL.
+func (s *Stack) stopRunner(ctx context.Context) error {
+	w := s.runnerWait
+	if w == nil {
+		if err := s.runner.Signal(ctx, SignalTerm); err != nil {
+			return err
+		}
+		return s.runner.Wait(ctx)
+	}
+	defer w.cancel()
+	select {
+	case <-w.done:
+		return w.err
+	default:
+	}
+	if err := s.runner.Signal(ctx, SignalTerm); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		w.cancel()
+		<-w.done
+		return errors.Join(err, w.err)
+	}
+	select {
+	case <-w.done:
+	case <-ctx.Done():
+		w.cancel()
+		<-w.done
+	}
+	return w.err
+}
+
 // waitPostgres polls DBProber.ProbeDB until postgres accepts connections on the
 // full DSN (dbname=compass) or the budget elapses — a direct mirror of waitReady
 // for the postgres precondition. Probing the full DSN (not just the socket)
@@ -721,23 +857,27 @@ func (s *Stack) waitNats(ctx context.Context) error {
 	}
 }
 
-// drainChildren signals and waits each owned child in reverse start order
-// (runner → server → gateway → nats → collector → postgres). It is safe to call with nil handles
-// (a mid-sequence failure) and on an attached stack (all nil).
+// drainChildren signals and waits each owned child in reverse start order.
 func (s *Stack) drainChildren(ctx context.Context) error {
 	var errs error
 	for _, c := range []struct {
 		name string
 		p    Process
 	}{
-		{"compass-runner", s.runner},
-		{"compass-server", s.server},
+		{ComponentRunner.String(), s.runner},
+		{ComponentServer.String(), s.server},
 		{"llm-gateway", s.gateway},
 		{"nats", s.nats},
 		{"otel-collector", s.collector},
 		{"postgres", s.pg},
 	} {
 		if c.p == nil {
+			continue
+		}
+		if c.name == ComponentRunner.String() {
+			if err := s.stopRunner(ctx); err != nil {
+				errs = errors.Join(errs, fmt.Errorf("stop %s: %w", c.name, err))
+			}
 			continue
 		}
 		if err := c.p.Signal(ctx, SignalTerm); err != nil {
@@ -748,6 +888,7 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 			errs = errors.Join(errs, fmt.Errorf("wait %s: %w", c.name, err))
 		}
 	}
+	s.runnerWait = nil
 	s.runner, s.server, s.gateway, s.nats, s.collector, s.pg = nil, nil, nil, nil, nil, nil
 	return errs
 }

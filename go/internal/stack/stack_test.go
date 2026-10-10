@@ -8,12 +8,13 @@ import (
 	"net"
 	"reflect"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// coldStartSequence is the ordered event log a successful cold Up produces, with
-// probes filtered out.
+// coldStartSequence is the ordered cold-start event log with poll probes filtered out.
 var coldStartSequence = []string{
 	"start postgres",
 	"start otel-collector",
@@ -306,6 +307,290 @@ func TestUpServerNeverReady(t *testing.T) {
 	assertLockFree(t, cfg.StateDir)
 }
 
+func TestUpWaitsForRunnerEnrollment(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	h.prober.runnerProbes = make(chan runnerProbeResult)
+	done := make(chan struct {
+		stack *Stack
+		err   error
+	}, 1)
+	go func() {
+		s, err := Up(context.Background(), cfg, h.deps)
+		done <- struct {
+			stack *Stack
+			err   error
+		}{stack: s, err: err}
+	}()
+
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not probe Runner enrollment")
+	}
+	h.prober.setEnrolledRunners(EnrolledRunner{ID: embeddedRunnerID, Enrollment: 1})
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not observe Runner enrollment")
+	}
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("Up() = %v, want nil after Runner enrollment", result.err)
+	}
+	if result.stack == nil || result.stack.attached {
+		t.Fatalf("Up() stack = %+v, want spawned stack", result.stack)
+	}
+	if err := result.stack.Down(context.Background()); err != nil {
+		t.Fatalf("Down() = %v", err)
+	}
+}
+
+func TestUpRunnerExitBeforeEnrollmentDrainsChildren(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	h.prober.runnerProbes = make(chan runnerProbeResult)
+	exitErr := errors.New("preflight failed")
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := Up(context.Background(), cfg, h.deps)
+		done <- err
+	}()
+
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not probe Runner enrollment")
+	}
+	h.sup.process().exit(exitErr)
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), exitErr.Error()) || !strings.Contains(err.Error(), "compass-runner exited before enrolling") {
+		t.Fatalf("Up() error = %v, want Runner exit before enrollment: %v", err, exitErr)
+	}
+	assertDrainedCleanly(t, h)
+}
+
+func TestUpRunnerEnrollmentBudgetExhausted(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	h.prober.runnerProbes = make(chan runnerProbeResult)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var runnerClockReads atomic.Int32
+	h.deps.Now = func() time.Time {
+		if h.sup.runnerStarted.Load() && runnerClockReads.Add(1) > 1 {
+			return start.Add(runnerEnrollPollBudget + time.Second)
+		}
+		return start
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Up(context.Background(), cfg, h.deps)
+		done <- err
+	}()
+	for {
+		select {
+		case <-h.prober.runnerProbes:
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), embeddedRunnerID) || !strings.Contains(err.Error(), runnerEnrollPollBudget.String()) {
+				t.Fatalf("Up() error = %v, want enrollment timeout naming %q and %s", err, embeddedRunnerID, runnerEnrollPollBudget)
+			}
+			assertDrainedCleanly(t, h)
+			return
+		}
+	}
+}
+func TestRestartRunnerWaitsForEnrollment(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.manualRunnerEnrollFlag.Store(true)
+	h.prober.runnerProbes = make(chan runnerProbeResult)
+	doneUp := make(chan struct {
+		stack *Stack
+		err   error
+	}, 1)
+	go func() {
+		s, err := Up(context.Background(), cfg, h.deps)
+		doneUp <- struct {
+			stack *Stack
+			err   error
+		}{stack: s, err: err}
+	}()
+	select {
+	case probe := <-h.prober.runnerProbes:
+		if probe.enrollment != 0 || probe.err != nil {
+			t.Fatalf("initial probe = %+v, want no enrollment", probe)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial Up did not probe Runner enrollment")
+	}
+	h.prober.setEnrolledRunners(EnrolledRunner{ID: embeddedRunnerID, Enrollment: 1})
+	select {
+	case probe := <-h.prober.runnerProbes:
+		if probe.enrollment != 1 || probe.err != nil {
+			t.Fatalf("initial enrollment probe = %+v, want enrollment 1", probe)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial Up did not observe Runner enrollment")
+	}
+	initial := <-doneUp
+	if initial.err != nil {
+		t.Fatalf("initial Up() = %v", initial.err)
+	}
+	s := initial.stack
+	if s == nil {
+		t.Fatal("initial Up() returned nil stack")
+	}
+	oldRunner := h.sup.process()
+	done := make(chan error, 1)
+	go func() { done <- s.RestartRunner(context.Background()) }()
+	select {
+	case probe := <-h.prober.runnerProbes:
+		if probe.enrollment != 1 || probe.err != nil {
+			t.Fatalf("pre-stop probe = %+v, want enrollment 1", probe)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not perform pre-stop enrollment probe")
+	}
+	select {
+	case <-oldRunner.waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not stop old Runner")
+	}
+	select {
+	case probe := <-h.prober.runnerProbes:
+		if probe.enrollment != 1 || probe.err != nil {
+			t.Fatalf("post-restart probe = %+v, want old enrollment 1", probe)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not probe Runner enrollment")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("RestartRunner() = %v with old enrollment, want it to keep waiting", err)
+	default:
+	}
+	h.prober.setEnrolledRunners(EnrolledRunner{ID: embeddedRunnerID, Enrollment: 2})
+	select {
+	case probe := <-h.prober.runnerProbes:
+		if probe.enrollment != 2 || probe.err != nil {
+			t.Fatalf("fresh enrollment probe = %+v, want enrollment 2", probe)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not observe fresh Runner enrollment")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("RestartRunner() = %v, want nil after fresh Runner enrollment", err)
+	}
+	if err := s.Down(context.Background()); err != nil {
+		t.Fatalf("Down() = %v", err)
+	}
+}
+
+func TestRestartRunnerProbeErrorDoesNotSignalRunner(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.prober.runnerProbes = make(chan runnerProbeResult)
+	type upResult struct {
+		stack *Stack
+		err   error
+	}
+	doneUp := make(chan upResult, 1)
+	go func() {
+		s, err := Up(context.Background(), cfg, h.deps)
+		doneUp <- upResult{stack: s, err: err}
+	}()
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not probe Runner enrollment")
+	}
+	initial := <-doneUp
+	if initial.err != nil {
+		t.Fatalf("Up() = %v", initial.err)
+	}
+	s := initial.stack
+	probeErr := errors.New("probe unavailable")
+	h.prober.setRunnerProbeError(probeErr)
+	done := make(chan error, 1)
+	go func() { done <- s.RestartRunner(context.Background()) }()
+	select {
+	case probe := <-h.prober.runnerProbes:
+		if !errors.Is(probe.err, probeErr) {
+			t.Fatalf("pre-stop probe error = %v, want %v", probe.err, probeErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not perform pre-stop enrollment probe")
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "stack: read runner enrollment before restart") || !errors.Is(err, probeErr) {
+		t.Fatalf("RestartRunner() error = %v, want wrapped pre-stop probe error", err)
+	}
+	for _, event := range h.rec.snapshot() {
+		if event == "signal compass-runner" {
+			t.Fatal("runner was signalled after pre-stop probe failure")
+		}
+	}
+	if err := s.Down(context.Background()); err != nil {
+		t.Fatalf("Down() = %v", err)
+	}
+}
+
+func TestRestartRunnerClearsExitedRunnerAfterWaitError(t *testing.T) {
+	cfg, h := newHarness(t)
+	h.prober.runnerProbes = make(chan runnerProbeResult)
+	type upResult struct {
+		stack *Stack
+		err   error
+	}
+	doneUp := make(chan upResult, 1)
+	go func() {
+		s, err := Up(context.Background(), cfg, h.deps)
+		doneUp <- upResult{stack: s, err: err}
+	}()
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Up did not probe Runner enrollment")
+	}
+	initial := <-doneUp
+	if initial.err != nil {
+		t.Fatalf("Up() = %v", initial.err)
+	}
+	s := initial.stack
+	exitErr := errors.New("runner failed")
+	h.sup.process().exit(exitErr)
+	done := make(chan error, 1)
+	go func() { done <- s.RestartRunner(context.Background()) }()
+	select {
+	case <-h.prober.runnerProbes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartRunner did not perform pre-stop enrollment probe")
+	}
+	if err := <-done; err == nil || !errors.Is(err, exitErr) {
+		t.Fatalf("RestartRunner() error = %v, want runner wait error %v", err, exitErr)
+	}
+	if s.runner != nil || s.runnerWait != nil || s.pgids[len(s.pgids)-1].Component == ComponentRunner {
+		t.Fatalf("RestartRunner retained exited Runner state: runner=%v wait=%v pgids=%v", s.runner, s.runnerWait, s.pgids)
+	}
+	if err := s.RestartRunner(context.Background()); err == nil || err.Error() != "stack: runner is not owned" {
+		t.Fatalf("second RestartRunner() = %v, want stack: runner is not owned", err)
+	}
+	if err := s.Down(context.Background()); err != nil {
+		t.Fatalf("Down() = %v", err)
+	}
+}
+
+func TestDownAfterRunnerExitsFollowingEnrollment(t *testing.T) {
+	cfg, h := newHarness(t)
+	s, err := Up(context.Background(), cfg, h.deps)
+	if err != nil {
+		t.Fatalf("Up() = %v", err)
+	}
+	h.sup.process().exit(nil)
+	if err := s.Down(context.Background()); err != nil {
+		t.Fatalf("Down() after runner exit = %v, want nil", err)
+	}
+}
+
 // TestUpWaitsForPostgresBeforeServer pins the cold-start gate: when postgres is
 // not immediately reachable, spawnChain must poll DBProber until it accepts
 // BEFORE starting compass-server — the bug the integration test surfaced, where
@@ -486,23 +771,25 @@ func stopEvents(events []string) []string {
 	return out
 }
 
-// assertDrainedCleanly asserts every child the stub supervisor started was
-// subsequently signalled (no orphaned child on a failed Up).
+// assertDrainedCleanly ensures every child is stopped or already exited.
 func assertDrainedCleanly(t *testing.T, h *harness) {
 	t.Helper()
 	started := map[string]bool{}
 	signalled := map[string]bool{}
+	finished := map[string]bool{}
 	for _, e := range h.rec.snapshot() {
 		switch {
-		case len(e) > 6 && e[:6] == "start " && e != "start-failed":
+		case len(e) > 6 && e[:6] == "start ":
 			started[e[6:]] = true
 		case len(e) > 7 && e[:7] == "signal ":
 			signalled[e[7:]] = true
+		case len(e) > 5 && e[:5] == "wait ":
+			finished[e[5:]] = true
 		}
 	}
 	for name := range started {
-		if !signalled[name] {
-			t.Errorf("child %q started but never drained on failure", name)
+		if !signalled[name] && !finished[name] {
+			t.Errorf("child %q started but was neither stopped nor waited after exit", name)
 		}
 	}
 }

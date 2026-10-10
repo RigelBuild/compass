@@ -388,9 +388,16 @@ type NatsProber interface {
 	ProbeNats(ctx context.Context, monitorEndpoint string) error
 }
 
+// EnrolledRunner is the last server-observed enrollment for a Runner id.
+type EnrolledRunner struct {
+	ID         string
+	Enrollment uint64
+}
+
 // ServerInfo is the subset of GetServerInfo the core consumes.
 type ServerInfo struct {
-	Version string
+	Version         string
+	EnrolledRunners []EnrolledRunner
 }
 
 // now returns the configured clock or time.Now when unset, so callers need not

@@ -118,9 +118,8 @@ func TestHarnessCore(t *testing.T) {
 // foreign compass-runner and either false-green or flake on a concurrent runner
 // with different flags.
 //
-// It reads argv via `ps` rather than racing the runner's async enrollment; the
-// runner process exists as soon as spawnChain's final step returned, which is
-// before Up returned Ready, so the process is present by the time this runs.
+// ps inspects the live Runner's argv; spawnChain waits for enrollment before
+// Up returns Ready, so the process exists by the time this assertion runs.
 func assertRunnerHasConfiguredFlags(t *testing.T, f *Fixture) {
 	t.Helper()
 	runtimeDir := f.runtimeDir

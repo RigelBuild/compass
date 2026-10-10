@@ -114,7 +114,7 @@ func TestWaitRunnerEnrolledBudgetTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("waitRunnerEnrolled() = nil, want budget-timeout error")
 	}
-	if !strings.Contains(err.Error(), "did not enroll within") {
+	if !strings.Contains(err.Error(), "did not attach within") {
 		t.Errorf("err = %q, want budget-timeout message", err.Error())
 	}
 }

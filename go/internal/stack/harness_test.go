@@ -5,6 +5,7 @@ package stack
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -39,38 +40,72 @@ func (r *recorder) snapshot() []string {
 // pgid-capture path persists; a test stubs readStartTime so no real /proc lookup
 // happens.
 type stubProcess struct {
-	name string
-	pid  int
-	rec  *recorder
+	name     string
+	pid      int
+	rec      *recorder
+	waitDone chan struct{}
+	waitMu   sync.Mutex
+	waitErr  error
+	exited   bool
+	waitOnce sync.Once
 }
 
 func (p *stubProcess) Signal(_ context.Context, sig ProcessSignal) error {
 	p.rec.add("signal " + p.name)
+	p.waitMu.Lock()
+	if p.exited {
+		p.waitMu.Unlock()
+		return os.ErrProcessDone
+	}
+	p.exited = true
+	p.waitMu.Unlock()
+	p.waitOnce.Do(func() {
+		if p.waitDone != nil {
+			close(p.waitDone)
+		}
+	})
 	return nil
 }
 
+// Wait records on return, not entry: the enrollment watcher calls it early, and drain order is what tests pin.
 func (p *stubProcess) Wait(ctx context.Context) error {
-	p.rec.add("wait " + p.name)
-	return nil
+	if p.waitDone == nil {
+		p.rec.add("wait " + p.name)
+		return nil
+	}
+	select {
+	case <-p.waitDone:
+		p.rec.add("wait " + p.name)
+		p.waitMu.Lock()
+		defer p.waitMu.Unlock()
+		return p.waitErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *stubProcess) Pid() int { return p.pid }
 
-// stubSupervisor records each Start, can inject a per-component start error, can
-// gate a component's Start on a channel (for the concurrency race), and flips
-// serverStarted when compass-server launches (which the prober reads as "now
-// answering").
+func (p *stubProcess) exit(err error) {
+	p.waitMu.Lock()
+	p.waitErr = err
+	p.exited = true
+	p.waitMu.Unlock()
+	p.waitOnce.Do(func() { close(p.waitDone) })
+}
+
+// stubSupervisor records component starts and exposes their process handles.
 type stubSupervisor struct {
-	rec           *recorder
-	startErr      map[Component]error
-	gate          map[Component]chan struct{}
-	entered       map[Component]chan struct{}
-	serverStarted *atomic.Bool
-	// mu guards specs, which records the last spec each component was started
-	// with so a test can assert the resolved argv. Two concurrent Ups share one
-	// supervisor (the contention test), so the map needs the lock.
-	mu    sync.Mutex
-	specs map[Component]ProcessSpec
+	rec               *recorder
+	startErr          map[Component]error
+	gate              map[Component]chan struct{}
+	entered           map[Component]chan struct{}
+	serverStarted     *atomic.Bool
+	runnerStarted     *atomic.Bool
+	runnerEnrollments *atomic.Uint64
+	mu                sync.Mutex
+	specs             map[Component]ProcessSpec
+	processes         map[Component]*stubProcess
 }
 
 func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
@@ -91,8 +126,27 @@ func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, 
 	if spec.Component == ComponentServer && s.serverStarted != nil {
 		s.serverStarted.Store(true)
 	}
-	return &stubProcess{name: spec.Component.String(), pid: fakePid(spec.Component), rec: s.rec}, nil
+	proc := &stubProcess{name: spec.Component.String(), pid: fakePid(spec.Component), rec: s.rec, waitDone: make(chan struct{})}
+	s.mu.Lock()
+	s.processes[spec.Component] = proc
+	s.mu.Unlock()
+	if spec.Component == ComponentRunner {
+		if s.runnerStarted != nil {
+			s.runnerStarted.Store(true)
+		}
+		if s.runnerEnrollments != nil {
+			s.runnerEnrollments.Add(1)
+		}
+	}
+	return proc, nil
 }
+
+func (s *stubSupervisor) process() *stubProcess {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.processes[ComponentRunner]
+}
+
 func (s *stubSupervisor) spec(t *testing.T, c Component) ProcessSpec {
 	t.Helper()
 	s.mu.Lock()
@@ -134,22 +188,76 @@ func fakePid(c Component) int {
 }
 
 // stubProber answers GetServerInfo. forceLive makes it answer unconditionally
-// (attach-if-live); otherwise it answers only once compass-server has started,
-// which models the socket-binds-before-migrations reality (readiness is the
-// first answering probe, not socket existence).
+// (attach-if-live); otherwise it answers only once compass-server has started.
 type stubProber struct {
-	rec           *recorder
-	forceLive     bool
-	version       string
-	serverStarted *atomic.Bool
+	rec                *recorder
+	forceLive          bool
+	version            string
+	serverStarted      *atomic.Bool
+	runnerStarted      *atomic.Bool
+	runnerEnrollments  *atomic.Uint64
+	runnerProbes       chan runnerProbeResult
+	manualRunnerEnroll *atomic.Bool
+	mu                 sync.Mutex
+	enrolled           []EnrolledRunner
+	runnerProbeErr     error
+}
+
+type runnerProbeResult struct {
+	enrollment uint64
+	err        error
 }
 
 func (p *stubProber) Probe(ctx context.Context, socketPath string) (ServerInfo, error) {
 	p.rec.add("probe")
+	p.mu.Lock()
+	enrolled := append([]EnrolledRunner(nil), p.enrolled...)
+	runnerProbeErr := p.runnerProbeErr
+	p.runnerProbeErr = nil
+	p.mu.Unlock()
+	if p.runnerStarted != nil && p.runnerStarted.Load() {
+		return p.probeRunner(enrolled, runnerProbeErr)
+	}
 	if p.forceLive || (p.serverStarted != nil && p.serverStarted.Load()) {
-		return ServerInfo{Version: p.version}, nil
+		return ServerInfo{Version: p.version, EnrolledRunners: enrolled}, nil
 	}
 	return ServerInfo{}, errNotAnswering
+}
+
+func (p *stubProber) probeRunner(enrolled []EnrolledRunner, runnerProbeErr error) (ServerInfo, error) {
+	info := ServerInfo{Version: p.version, EnrolledRunners: enrolled}
+	if p.manualRunnerEnroll == nil || !p.manualRunnerEnroll.Load() {
+		info.EnrolledRunners = []EnrolledRunner{{ID: embeddedRunnerID, Enrollment: p.runnerEnrollments.Load()}}
+	}
+	if runnerProbeErr != nil {
+		info = ServerInfo{}
+	}
+	var enrollment uint64
+	for _, runner := range info.EnrolledRunners {
+		if runner.ID == embeddedRunnerID {
+			enrollment = runner.Enrollment
+			break
+		}
+	}
+	if p.runnerProbes != nil {
+		p.runnerProbes <- runnerProbeResult{enrollment: enrollment, err: runnerProbeErr}
+	}
+	if runnerProbeErr != nil {
+		return ServerInfo{}, runnerProbeErr
+	}
+	return info, nil
+}
+
+func (p *stubProber) setEnrolledRunners(runners ...EnrolledRunner) {
+	p.mu.Lock()
+	p.enrolled = append([]EnrolledRunner(nil), runners...)
+	p.mu.Unlock()
+}
+
+func (p *stubProber) setRunnerProbeError(err error) {
+	p.mu.Lock()
+	p.runnerProbeErr = err
+	p.mu.Unlock()
 }
 
 var errNotAnswering = &probeError{}
@@ -712,43 +820,57 @@ func (*natsProbeError) Error() string { return "nats not answering" }
 // harness bundles the recorder, the shared serverStarted flag, and the stub
 // seams so a test can tweak individual fields before calling Up.
 type harness struct {
-	rec             *recorder
-	serverStarted   *atomic.Bool
-	sup             *stubSupervisor
-	cert            *stubCert
-	token           *stubToken
-	image           *stubImage
-	prober          *stubProber
-	dbProber        *stubDBProber
-	groupSig        *fakeGroupSignaller
-	containers      *fakeContainerController
-	collector       *fakeCollectorContainer
-	collectorProber *stubCollectorProber
-	nats            *fakeNatsContainer
-	natsProber      *stubNatsProber
-	gateway         *fakeGatewayContainer
-	gatewayProber   *stubGatewayProber
-	deps            Deps
+	rec                    *recorder
+	manualRunnerEnrollFlag *atomic.Bool
+	serverStarted          *atomic.Bool
+	sup                    *stubSupervisor
+	cert                   *stubCert
+	token                  *stubToken
+	image                  *stubImage
+	prober                 *stubProber
+	dbProber               *stubDBProber
+	groupSig               *fakeGroupSignaller
+	containers             *fakeContainerController
+	collector              *fakeCollectorContainer
+	collectorProber        *stubCollectorProber
+	nats                   *fakeNatsContainer
+	natsProber             *stubNatsProber
+	gateway                *fakeGatewayContainer
+	gatewayProber          *stubGatewayProber
+	deps                   Deps
 }
 
 const testVersion = "1.0.0"
 
 func newHarness(t *testing.T) (Config, *harness) {
 	t.Helper()
+	return newHarnessWithRunnerEnrollment(t, false)
+}
+
+func newHarnessWithRunnerEnrollment(t *testing.T, manual bool) (Config, *harness) {
+	t.Helper()
+	manualRunnerEnroll := &atomic.Bool{}
+	manualRunnerEnroll.Store(manual)
+	return newHarnessWithRunnerEnrollmentFlag(t, manualRunnerEnroll)
+}
+
+func newHarnessWithRunnerEnrollmentFlag(t *testing.T, manualRunnerEnroll *atomic.Bool) (Config, *harness) {
+	t.Helper()
+
 	rec := &recorder{}
 	started := &atomic.Bool{}
 	sup := &stubSupervisor{
-		rec:           rec,
-		startErr:      map[Component]error{},
-		gate:          map[Component]chan struct{}{},
-		entered:       map[Component]chan struct{}{},
-		serverStarted: started,
-		specs:         map[Component]ProcessSpec{},
+		rec: rec, startErr: map[Component]error{}, gate: map[Component]chan struct{}{}, entered: map[Component]chan struct{}{},
+		serverStarted: started, runnerStarted: &atomic.Bool{}, runnerEnrollments: &atomic.Uint64{},
+		specs: map[Component]ProcessSpec{}, processes: map[Component]*stubProcess{},
 	}
 	cert := &stubCert{rec: rec, notAfter: time.Now().Add(365 * 24 * time.Hour), rotateWindow: 30 * 24 * time.Hour}
 	token := &stubToken{rec: rec}
 	image := &stubImage{rec: rec}
-	prober := &stubProber{rec: rec, version: testVersion, serverStarted: started}
+	prober := &stubProber{
+		rec: rec, version: testVersion, serverStarted: started, runnerStarted: sup.runnerStarted,
+		runnerEnrollments: sup.runnerEnrollments, manualRunnerEnroll: manualRunnerEnroll,
+	}
 	dbProber := &stubDBProber{rec: rec}
 	groupSig := newFakeGroupSignaller(rec)
 	containers := newFakeContainerController(rec)
@@ -767,7 +889,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	t.Cleanup(func() { readStartTime = prev })
 	stubBootID(t, testBootID)
 	h := &harness{
-		rec: rec, serverStarted: started,
+		rec: rec, serverStarted: started, manualRunnerEnrollFlag: manualRunnerEnroll,
 		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers, collector: collector, collectorProber: collectorProber, nats: nats, natsProber: natsProber,
 		gateway: gateway, gatewayProber: gatewayProber,
 	}
