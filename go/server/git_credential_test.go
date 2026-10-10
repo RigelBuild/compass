@@ -302,20 +302,95 @@ func TestGitCredentialBrokerDoesNotMintOversizedGrant(t *testing.T) {
 	}
 }
 
-func TestBrokeredSecretResolverExplicitGitHubSecretWins(t *testing.T) {
+func TestBrokeredSecretResolverFiltersUserGitHubSecrets(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
-	grants := &fakeGitCredentialGrants{repos: []string{"owner/repo"}}
-	minter := &fakeGitCredentialMinter{tokens: []string{"must-not-mint"}, expiresAt: now.Add(time.Hour)}
-	inner := &fakeAgentSecretResolver{resolved: []secrets.ResolvedSecret{{Name: "USER_GH", Value: "user-token", Kind: secrets.SecretGH, Host: "github.com"}}}
-	broker := newGitCredentialTestBroker(grants, minter, &now, nil)
-	resolver := &brokeredSecretResolver{inner: inner, broker: broker}
-
-	got := resolveBrokeredSecret(t, resolver)
-	if len(got) != 1 || got[0].Name != "USER_GH" || got[0].Value != "user-token" {
-		t.Fatalf("resolved secrets = %+v, want the explicit user credential only", got)
+	userSecrets := []secrets.ResolvedSecret{
+		{Name: "USER_GH", Value: "user-token", Kind: secrets.SecretGH, Host: "github.com"},
+		{Name: "OTHER_GH", Value: "other-token", Kind: secrets.SecretGH, Host: "github.enterprise"},
+		{Name: "GENERIC", Value: "generic-value", Kind: secrets.SecretGeneric},
+		{Name: "PROVIDER", Value: "provider-value", Kind: secrets.SecretProvider, Provider: "anthropic"},
 	}
-	if minter.callCount() != 0 {
-		t.Fatalf("mint calls = %d, want 0", minter.callCount())
+	tests := []struct {
+		name          string
+		broker        bool
+		grants        []string
+		reason        string
+		wantToken     string
+		wantMintCalls int
+		resolverError bool
+	}{
+		{name: "broker credential replaces user credentials", broker: true, grants: []string{"owner/repo"}, reason: gitCredentialReason, wantToken: "ghs_scoped", wantMintCalls: 1},
+		{name: "no grants drops user credentials", broker: true, reason: gitCredentialReason},
+		{name: "nil broker drops user credentials", reason: gitCredentialReason},
+		{name: "other reason drops user credentials", broker: true, grants: []string{"owner/repo"}, reason: "other secret consumer"},
+		{name: "resolver error drops credentials", broker: true, grants: []string{"owner/repo"}, reason: gitCredentialReason, resolverError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &fakeAgentSecretResolver{resolved: userSecrets}
+			if tt.resolverError {
+				inner.err = errors.New("user secret resolution failed")
+			}
+			var resolver *brokeredSecretResolver
+			var minter *fakeGitCredentialMinter
+			if tt.broker {
+				grants := &fakeGitCredentialGrants{repos: tt.grants}
+				minter = &fakeGitCredentialMinter{tokens: []string{"ghs_scoped"}, expiresAt: now.Add(time.Hour)}
+				broker := newGitCredentialTestBroker(grants, minter, &now, nil)
+				resolver = &brokeredSecretResolver{inner: inner, broker: broker}
+			} else {
+				resolver = &brokeredSecretResolver{inner: inner}
+			}
+
+			got, err := resolver.ResolveFor(context.Background(), "agent-id", tt.reason)
+			if (err != nil) != tt.resolverError {
+				t.Fatalf("ResolveFor error = %v, want resolver error %v", err, tt.resolverError)
+			}
+			if tt.resolverError && len(got) != 2 {
+				t.Fatalf("resolved secrets after inner error = %+v, want only generic and provider", got)
+			}
+			assertNoUserGitHubSecrets(t, got, tt.wantToken)
+			if minter != nil && minter.callCount() != tt.wantMintCalls {
+				t.Errorf("mint calls = %d, want %d", minter.callCount(), tt.wantMintCalls)
+			}
+		})
+	}
+}
+
+func assertNoUserGitHubSecrets(t *testing.T, got []secrets.ResolvedSecret, wantBrokered string) {
+	t.Helper()
+	wantNames := []string{"GENERIC", "PROVIDER"}
+	if wantBrokered != "" {
+		wantNames = append(wantNames, gitCredentialSecretName)
+	}
+	gotNames := make([]string, len(got))
+	githubSecrets := 0
+	for i, secret := range got {
+		gotNames[i] = secret.Name
+		if secret.Kind == secrets.SecretGH {
+			githubSecrets++
+			if secret.Name != gitCredentialSecretName || secret.Value != wantBrokered || secret.Host != "github.com" {
+				t.Errorf("GitHub secret = %+v, want the brokered token only", secret)
+			}
+		}
+	}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Errorf("resolved secret names = %v, want %v", gotNames, wantNames)
+	}
+	wantGitHubSecrets := 0
+	if wantBrokered != "" {
+		wantGitHubSecrets = 1
+	}
+	if githubSecrets != wantGitHubSecrets {
+		t.Errorf("GitHub secret count = %d, want %d", githubSecrets, wantGitHubSecrets)
+	}
+}
+
+func TestBrokeredSecretResolverNilInnerReturnsNil(t *testing.T) {
+	resolver := &brokeredSecretResolver{}
+	got, err := resolver.ResolveFor(context.Background(), "agent-id", gitCredentialReason)
+	if err != nil || got != nil {
+		t.Fatalf("ResolveFor with nil inner = (%v, %v), want (nil, nil)", got, err)
 	}
 }
 

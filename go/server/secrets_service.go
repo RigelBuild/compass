@@ -328,10 +328,8 @@ func (s *secretsService) bumpSecretsVersion(ctx context.Context) {
 }
 
 // secretRoutingFromProto maps the public proto delivery/kind enums to the
-// resolve-surface (secrets package) enums StoreResolver.Upsert takes, rejecting
-// an UNSPECIFIED value (the proto 0) as an invalid argument — a SetSecret must
-// name a concrete delivery and kind. The store door re-validates the
-// kind↔provider/host routing invariant, so this only translates.
+// resolve-surface enums StoreResolver.Upsert takes. UNSPECIFIED values and
+// user-declared GitHub credentials are rejected as invalid arguments.
 func secretRoutingFromProto(d compassv1.SecretDelivery, k compassv1.SecretKind) (secrets.DeliveryKind, secrets.SecretKind, error) {
 	var delivery secrets.DeliveryKind
 	switch d {
@@ -349,7 +347,7 @@ func secretRoutingFromProto(d compassv1.SecretDelivery, k compassv1.SecretKind) 
 	case compassv1.SecretKind_SECRET_KIND_PROVIDER:
 		kind = secrets.SecretProvider
 	case compassv1.SecretKind_SECRET_KIND_GH:
-		kind = secrets.SecretGH
+		return 0, 0, errors.New("GitHub credentials come from the GitHub App; user GitHub secrets are not accepted")
 	default:
 		return 0, 0, errors.New("secret kind is unspecified")
 	}
