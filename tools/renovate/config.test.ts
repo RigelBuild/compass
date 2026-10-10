@@ -59,6 +59,7 @@ type RenovateConfig = {
 	schedule?: string[];
 	lockFileMaintenance?: { enabled?: boolean; schedule?: string[] };
 	rebaseWhen?: string;
+	prHourlyLimit?: number;
 	minimumReleaseAge?: string;
 	packageRules: PackageRule[];
 	osvVulnerabilityAlerts?: boolean;
@@ -383,6 +384,11 @@ describe("tools/renovate extends", () => {
 		expect(cfg.schedule).toBeUndefined();
 		expect(cfg.lockFileMaintenance).toBeUndefined();
 		expect(cfg.packageRules.filter((r) => "schedule" in r)).toEqual([]);
+	});
+
+	// The run is daily, so any nonzero hourly cap starves every update past it.
+	test("sets no hourly PR cap", () => {
+		expect(cfg.prHourlyLimit).toBe(0);
 	});
 });
 
