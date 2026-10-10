@@ -32,9 +32,8 @@ func TestAgentImageVCSTools(t *testing.T) {
 	}
 }
 
-// TestAgentImageGHTokenAuth installs fixture tokens with the production
-// GHHostsScript, then checks Git and jj-vine's tokenCommand return only the
-// token for the host jj-vine resolves, never another host's.
+// TestAgentImageGHTokenAuth installs tokens with the production GHHostsScript and
+// checks Git and jj-vine get only the requested host's token, never another's.
 func TestAgentImageGHTokenAuth(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the image toolchain check")
@@ -45,6 +44,9 @@ func TestAgentImageGHTokenAuth(t *testing.T) {
 	const tokenCommand = `argv=$(jj config get jj-vine.github.tokenCommand | tr -d '[],"' | sed "s/{host}/$host/")
 got=$($argv 2>/dev/null || true)
 `
+	// gitPassword prints the password Git's credential helpers return for $host.
+	const gitPassword = `pw=$(printf 'protocol=https\nhost=%s\n\n' "$host" | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null | sed -n 's/^password=//p' || true)
+`
 	for _, tc := range []struct {
 		name  string
 		creds []runtime.GHCredentials
@@ -53,9 +55,8 @@ got=$($argv 2>/dev/null || true)
 		{
 			name:  "github token",
 			creds: []runtime.GHCredentials{{Host: "github.example.com", Token: "ghs_other"}, {Host: "github.com", Token: tok}},
-			check: `credential=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
-case "$credential" in *"password=` + tok + `"*) ;; *) echo "git credential: $credential"; exit 1 ;; esac
-host=github.com
+			check: `host=github.com
+` + gitPassword + `test "$pw" = "` + tok + `" || { echo "git credential returned $pw"; exit 1; }
 ` + tokenCommand + `test "$got" = "` + tok + `" || { echo "tokenCommand returned $got"; exit 1; }
 `,
 		},
@@ -63,7 +64,10 @@ host=github.com
 			name:  "other host only",
 			creds: []runtime.GHCredentials{{Host: "github.example.com", Token: "ghs_other"}},
 			check: `host=github.com
+` + gitPassword + `test -z "$pw" || { echo "git credential returned $pw"; exit 1; }
 ` + tokenCommand + `test -z "$got" || { echo "tokenCommand returned $got"; exit 1; }
+host=github.example.com
+` + gitPassword + `test "$pw" = ghs_other || { echo "git credential for GHE returned $pw"; exit 1; }
 `,
 		},
 		{

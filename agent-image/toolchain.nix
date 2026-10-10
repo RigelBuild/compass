@@ -137,9 +137,9 @@ pkgs.buildEnv {
       host = "https://api.github.com"
       tokenCommand = ["${pkgs.gh}/bin/gh", "auth", "token", "--hostname", "{host}"]
     '')
-    # Git delegates GitHub credential lookup to gh's materialized host token.
+    # Git asks gh for any host's token; gh answers only for hosts it holds.
     (pkgs.writeTextDir "etc/gitconfig" ''
-      [credential "https://github.com"]
+      [credential]
           helper =
           helper = !${pkgs.gh}/bin/gh auth git-credential
     '')
