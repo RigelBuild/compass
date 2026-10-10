@@ -62,6 +62,7 @@ type commandRouter struct {
 	// it detaches. Guarded by mu.
 	sender *senderState
 
+	// mu may be taken while Hub.mu is held (Hub.RunnerEnrolled); never take Hub.mu under it.
 	mu sync.Mutex
 	// inflight maps a request id to the pending call awaiting its result. A
 	// retry with a live request id joins the existing call rather than issuing a

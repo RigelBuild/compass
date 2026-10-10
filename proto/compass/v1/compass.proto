@@ -869,6 +869,9 @@ message GetAgentStatusRequest {
 
 message GetAgentStatusResponse {
   repeated AgentSessionStatus statuses = 1;
+  // True when a Runner is enrolled and its Sessions stream is attached; unset
+  // from a server that predates the field.
+  optional bool runner_enrolled = 2;
 }
 
 // IssueToken: the admin-only path to mint a bearer token for an account.

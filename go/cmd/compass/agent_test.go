@@ -80,6 +80,32 @@ func TestRunAgentStatusEmpty(t *testing.T) {
 	}
 }
 
+func TestRunAgentStatusRunnerEnrollment(t *testing.T) {
+	tests := []struct {
+		name         string
+		enrolled     *bool
+		wantNoRunner bool
+	}{
+		{name: "not enrolled", enrolled: new(false), wantNoRunner: true},
+		{name: "enrolled", enrolled: new(true)},
+		{name: "older server leaves it unset"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeCompass{statusEnrolled: tt.enrolled}
+			client := startFakeServer(t, fake)
+			var out strings.Builder
+			if err := runAgentStatus(context.Background(), client, "", &out); err != nil {
+				t.Fatalf("runAgentStatus: %v", err)
+			}
+			got := strings.Contains(out.String(), "no enrolled runner")
+			if got != tt.wantNoRunner {
+				t.Errorf("no enrolled runner line = %t, want %t; output %q", got, tt.wantNoRunner, out.String())
+			}
+		})
+	}
+}
+
 // TestAgentStatusFlagParsing asserts the status verb parses --session off argv
 // into the request (flag wiring, not just the run function).
 func TestAgentStatusFlagParsing(t *testing.T) {

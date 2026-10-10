@@ -11,6 +11,7 @@ package runnerhub
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -240,6 +241,56 @@ func TestEnrollDuplicateReattaches(t *testing.T) {
 	// serve it).
 	if _, _, err := hub.routerFor("any"); err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a live router", err)
+	}
+}
+
+// TestRunnerEnrolledTracksSessionsAttachment distinguishes enrollment from a
+// live command stream and observes detach through the public hub accessor.
+func TestRunnerEnrolledTracksSessionsAttachment(t *testing.T) {
+	hub := newHubOnly()
+	if hub.RunnerEnrolled() {
+		t.Fatal("fresh hub reports an enrolled Runner")
+	}
+
+	hub, cancel, loopDone := runnerLoopFixture(t, &fakeSessionHost{})
+	if !hub.RunnerEnrolled() {
+		t.Fatal("RunnerEnrolled() = false after Sessions stream attached, want true")
+	}
+	cancel()
+	select {
+	case <-loopDone:
+	case <-timeAfter():
+		t.Fatal("Runner Sessions loop did not detach")
+	}
+	deadline := timeAfter()
+	for hub.RunnerEnrolled() {
+		select {
+		case <-deadline:
+			t.Fatal("RunnerEnrolled() stayed true after Sessions stream detached")
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+// TestRunnerEnrolledFalseAfterReenrollUntilAttach pins that a completed re-enroll
+// answers for the NEW router, never the old router's still-attached stream.
+func TestRunnerEnrolledFalseAfterReenrollUntilAttach(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	old, _, err := hub.routerFor("")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v", err)
+	}
+	old.attach(func(*compassv1internal.SessionsResponse) error { return nil })
+	t.Cleanup(func() { old.detach(errStreamClosed) })
+	if !hub.RunnerEnrolled() {
+		t.Fatal("RunnerEnrolled() = false with the router attached, want true")
+	}
+
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+	if hub.RunnerEnrolled() {
+		t.Fatal("RunnerEnrolled() = true after re-enroll with the old router still attached, want false")
 	}
 }
 

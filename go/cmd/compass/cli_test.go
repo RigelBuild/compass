@@ -255,14 +255,15 @@ func TestTokenResolution(t *testing.T) {
 // Postgres.
 type fakeCompass struct {
 	compassv1connect.UnimplementedCompassServiceHandler
-	gotBundle   []byte
-	putVersion  string
-	info        *compassv1.GetAgentConfigInfoResponse
-	deleteCalls int
-	gotToken    string
-	gotStatus   *compassv1.GetAgentStatusRequest
-	statuses    []*compassv1.AgentSessionStatus
-	gotAuth     string
+	gotBundle      []byte
+	putVersion     string
+	info           *compassv1.GetAgentConfigInfoResponse
+	deleteCalls    int
+	gotToken       string
+	gotStatus      *compassv1.GetAgentStatusRequest
+	statusEnrolled *bool
+	statuses       []*compassv1.AgentSessionStatus
+	gotAuth        string
 }
 
 func (f *fakeCompass) PutAgentConfig(_ context.Context, req *connect.Request[compassv1.PutAgentConfigRequest]) (*connect.Response[compassv1.PutAgentConfigResponse], error) {
@@ -295,7 +296,7 @@ func (f *fakeCompass) RevokeToken(_ context.Context, req *connect.Request[compas
 func (f *fakeCompass) GetAgentStatus(_ context.Context, req *connect.Request[compassv1.GetAgentStatusRequest]) (*connect.Response[compassv1.GetAgentStatusResponse], error) {
 	f.gotStatus = req.Msg
 	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.GetAgentStatusResponse{Statuses: f.statuses}), nil
+	return connect.NewResponse(&compassv1.GetAgentStatusResponse{Statuses: f.statuses, RunnerEnrolled: f.statusEnrolled}), nil
 }
 
 // startFakeServer stands up the fake CompassService over a plain-HTTP httptest

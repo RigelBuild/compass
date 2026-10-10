@@ -272,11 +272,13 @@ func (s *service) GetAgentStatus(
 	_ context.Context,
 	req *connect.Request[compassv1.GetAgentStatusRequest],
 ) (*connect.Response[compassv1.GetAgentStatusResponse], error) {
+	enrolled := s.hub != nil && s.hub.RunnerEnrolled()
 	if s.board == nil {
-		return connect.NewResponse(&compassv1.GetAgentStatusResponse{}), nil
+		return connect.NewResponse(&compassv1.GetAgentStatusResponse{RunnerEnrolled: &enrolled}), nil
 	}
 	return connect.NewResponse(&compassv1.GetAgentStatusResponse{
-		Statuses: s.board.Snapshot(req.Msg.GetSessionId()),
+		Statuses:       s.board.Snapshot(req.Msg.GetSessionId()),
+		RunnerEnrolled: &enrolled,
 	}), nil
 }
 

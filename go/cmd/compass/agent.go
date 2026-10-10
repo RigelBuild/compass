@@ -62,6 +62,12 @@ func runAgentStatus(ctx context.Context, client compassv1connect.CompassServiceC
 	if err != nil {
 		return fmt.Errorf("getting agent status: %w", err)
 	}
+	// Unset means an older server that cannot report enrollment; stay silent then.
+	if resp.Msg.RunnerEnrolled != nil && !resp.Msg.GetRunnerEnrolled() {
+		if _, err := fmt.Fprintln(out, "no enrolled runner"); err != nil {
+			return err
+		}
+	}
 	statuses := resp.Msg.GetStatuses()
 	if len(statuses) == 0 {
 		_, err = fmt.Fprintln(out, "no live agent sessions")

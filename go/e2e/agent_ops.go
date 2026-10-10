@@ -282,12 +282,10 @@ func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequ
 // runner.
 //
 // The observable enrollment signal available to the cross-process fixture is a
-// lightweight enrollment-gated probe. The client GetAgentStatus is served off
-// the Server's board projection (server/service.go), NOT a Runner relay, so it
-// answers even with no Runner and cannot observe enrollment. StopAgentSession,
-// by contrast, relays through the hub's routerFor exactly as Provision does, so
-// it returns the CodeUnavailable `no runner enrolled` error until a Runner has
-// enrolled — and once one has, a Stop of a synthetic never-started session id is
+// lightweight enrollment-gated probe. StopAgentSession relays through the hub's
+// routerFor exactly as Provision does, so it returns the CodeUnavailable
+// `no runner enrolled` error until a Runner has enrolled — and once one has, a
+// Stop of a synthetic never-started session id is
 // an idempotent Runner-side no-op (host.Stop returns success for an unknown
 // session; the session-end transcript flush is skipped since the id has no
 // entries), so the probe has NO container or session side effect. ONLY that
