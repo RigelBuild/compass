@@ -211,7 +211,9 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 		return errors.New("runner config requires a container engine")
 	}
 	if cfg.RunnerID == "" {
-		return errors.New("runner config requires a runner id")
+		if _, ok := cfg.Token.(*FileToken); !ok {
+			return errors.New("runner config requires a runner id")
+		}
 	}
 	if err := validateRuntimeDir(cfg.RuntimeDir); err != nil {
 		return err
@@ -223,17 +225,21 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 		}
 		return err
 	}
-	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, cfg.RunnerID, log)
+	runnerID := link.RunnerID()
+	if runnerID == "" {
+		return errors.New("runner enrollment returned an empty runner id")
+	}
+	sweepStaleAgentContainers(ctx, cfg.Engine, cfg.RuntimeDir, runnerID, log)
 	if ctx.Err() != nil {
 		return nil
 	}
-	log.Info("runner enrolled", slog.String("runner_id", cfg.RunnerID), slog.Bool("reattached", link.Reattached()))
+	log.Info("runner enrolled", slog.String("runner_id", runnerID), slog.Bool("reattached", link.Reattached()))
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(cfg.Engine, registry)
 	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
 		RuntimeDir: cfg.RuntimeDir,
 		AgentModel: cfg.AgentModel,
-		RunnerID:   cfg.RunnerID,
+		RunnerID:   runnerID,
 	}, log)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);

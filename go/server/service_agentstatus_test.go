@@ -214,7 +214,7 @@ func TestGetAgentStatusRunnerEnrollment(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	link, err := runner.Dial(ctx, runner.RunnerConfig{
-		RunnerID: "runner-1", ServerAddr: srv.URL, Token: "runner-tok", HTTPClient: runnertest.H2CClient(t),
+		RunnerID: "runner-1", ServerAddr: srv.URL, Token: runner.StaticToken("runner-tok"), HTTPClient: runnertest.H2CClient(t),
 	})
 	if err != nil {
 		t.Fatalf("runner.Dial = %v", err)

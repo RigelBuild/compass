@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -42,6 +43,8 @@ func main() {
 func run() error {
 	runnerID := flag.String("runner-id", "",
 		"This Runner's stable id, cross-checked against the token subject. Defaults to $COMPASS_RUNNER_ID.")
+	tokenFile := flag.String("token-file", "",
+		"Path to the projected Runner token. Defaults to $COMPASS_RUNNER_TOKEN_FILE.")
 	serverAddr := flag.String("server", "",
 		"The Server's base URL (e.g. https://server.example:443). Defaults to $COMPASS_SERVER_ADDR.")
 	image := flag.String("image", "",
@@ -105,18 +108,20 @@ func run() error {
 	defer stop()
 
 	id := orEnv(*runnerID, "COMPASS_RUNNER_ID")
-	if id == "" {
-		return errors.New("a runner id is required: pass --runner-id or set $COMPASS_RUNNER_ID")
-	}
 	addr := orEnv(*serverAddr, "COMPASS_SERVER_ADDR")
 	if addr == "" {
 		return errors.New("a server address is required: pass --server or set $COMPASS_SERVER_ADDR")
 	}
-	// The per-Runner token is a bearer secret: env only, never a flag (a flag
-	// leaks into the process table). Operator-provisioned, stored 0600 (OQ7).
-	token := os.Getenv("COMPASS_RUNNER_TOKEN")
-	if token == "" {
-		return errors.New("a runner token is required: set $COMPASS_RUNNER_TOKEN")
+	tokenPath := orEnv(*tokenFile, "COMPASS_RUNNER_TOKEN_FILE")
+	tokenSource, err := resolveTokenSource(os.Getenv("COMPASS_RUNNER_TOKEN"), tokenPath, log)
+	if err != nil {
+		return err
+	}
+	if id == "" && tokenPath == "" {
+		return errors.New("a runner id is required: pass --runner-id or set $COMPASS_RUNNER_ID")
+	}
+	if err := checkMountsAgainstTokenFile(mounts, tokenPath); err != nil {
+		return err
 	}
 	// The agent image is required by the container backends and unread by the
 	// microVM backend, so the engine decides — resolved in newSpecBuilder.
@@ -155,12 +160,77 @@ func run() error {
 	return runner.Run(ctx, runner.RunnerConfig{
 		RunnerID:   id,
 		ServerAddr: addr,
-		Token:      token,
+		Token:      tokenSource,
 		Engine:     engine,
 		RuntimeDir: *runtimeDir,
 		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
 		HTTPClient: httpClient,
 	}, specs, log)
+}
+
+func resolveTokenSource(staticToken, tokenPath string, log *slog.Logger) (runner.TokenSource, error) {
+	if staticToken != "" && tokenPath != "" {
+		return nil, errors.New("runner token sources are mutually exclusive: use COMPASS_RUNNER_TOKEN or --token-file")
+	}
+	if staticToken != "" {
+		return runner.StaticToken(staticToken), nil
+	}
+	if tokenPath != "" {
+		return runner.NewFileToken(tokenPath, log, nil), nil
+	}
+	return nil, errors.New("a runner token is required: set $COMPASS_RUNNER_TOKEN or --token-file")
+}
+
+func checkMountsAgainstTokenFile(mounts []runtime.Mount, tokenPath string) error {
+	if tokenPath == "" {
+		return nil
+	}
+	tokenDir, err := filepath.Abs(filepath.Dir(tokenPath))
+	if err != nil {
+		return fmt.Errorf("resolving runner token directory: %w", err)
+	}
+	tokenDir, err = resolveExistingPath(tokenDir)
+	if err != nil {
+		return fmt.Errorf("resolving runner token directory: %w", err)
+	}
+	for _, mount := range mounts {
+		hostPath, err := filepath.Abs(mount.HostPath)
+		if err != nil {
+			return fmt.Errorf("resolving --mount host path %q: %w", mount.HostPath, err)
+		}
+		hostPath, err = resolveExistingPath(hostPath)
+		if err != nil {
+			return fmt.Errorf("resolving --mount host path %q: %w", mount.HostPath, err)
+		}
+		if pathContains(tokenDir, hostPath) || pathContains(hostPath, tokenDir) {
+			return fmt.Errorf("--mount host path %q overlaps runner token directory %q", mount.HostPath, tokenDir)
+		}
+	}
+	return nil
+}
+
+func resolveExistingPath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return filepath.Clean(path), nil
+	}
+	resolvedParent, err := resolveExistingPath(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(path)), nil
+}
+
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && (rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // newSpecBuilder assembles the config spec builder from the resolved engine and

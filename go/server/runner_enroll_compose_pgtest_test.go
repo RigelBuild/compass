@@ -95,7 +95,7 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	link, err := runner.Dial(dctx, runner.RunnerConfig{
 		RunnerID:   runnerID,
 		ServerAddr: serverAddr,
-		Token:      token,
+		Token:      runner.StaticToken(token),
 		HTTPClient: httpClient,
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	_, err = runner.Dial(bctx, runner.RunnerConfig{
 		RunnerID:   runnerID,
 		ServerAddr: serverAddr,
-		Token:      "not-a-real-runner-token",
+		Token:      runner.StaticToken("not-a-real-runner-token"),
 		HTTPClient: httpClient,
 	})
 	if err == nil {
@@ -138,7 +138,7 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	_, err = runner.Dial(kctx, runner.RunnerConfig{
 		RunnerID:   runnerID,
 		ServerAddr: serverAddr,
-		Token:      adminToken,
+		Token:      runner.StaticToken(adminToken),
 		HTTPClient: httpClient,
 	})
 	if err == nil {
