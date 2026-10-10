@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, jest, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { render, waitFor } from "@solidjs/testing-library";
@@ -61,12 +61,14 @@ function byHandle(): Map<string, Account> {
 }
 
 // A streaming fence is highlighted only once its text has been quiet for
-// HIGHLIGHT_DEBOUNCE_MS (MarkdownText.tsx), so a test that asserts on highlight
-// kickoff must let that window elapse first.
+// HIGHLIGHT_DEBOUNCE_MS (150ms, MarkdownText.tsx). Tests that cross that window
+// run on Bun's fake clock, which also drives the leading-edge gate's
+// performance.now, then drain Solid so the trailing highlight is asked.
 const DEBOUNCE_FLUSH_MS = 200;
-const flushHighlightDebounce = () =>
-	// biome-ignore lint/style/noRestrictedGlobals: waits out the component's real HIGHLIGHT_DEBOUNCE_MS debounce; the debounce is a real setTimeout with no injectable clock here, and the suite uses no fake timers (fake-timer conversion tracked in RIG-3016)
-	new Promise((r) => setTimeout(r, DEBOUNCE_FLUSH_MS));
+function flushHighlightDebounce(): void {
+	jest.advanceTimersByTime(DEBOUNCE_FLUSH_MS);
+	flush();
+}
 
 // The async Shiki highlight (150ms debounce + async tokenize) is observed with
 // `waitFor`, whose default ceiling is 1000ms. On a loaded CI box (concurrent go
@@ -310,6 +312,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 	// module via mock.module, which otherwise leaks to the real-Shiki tests above
 	// and to other files. Re-registering the real namespace resets it.
 	afterEach(() => {
+		jest.useRealTimers();
 		mock.module("../markdown/highlighter", () => ({
 			...realHighlighter,
 			highlightToHtml: realHighlightToHtml,
@@ -346,6 +349,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 	});
 
 	test("an unknown-lang fence stays plain (no token spans, no error)", async () => {
+		jest.useFakeTimers();
 		// Deterministic replacement for the old `setTimeout(50)`-then-assert-absence
 		// race. Wrap the REAL highlighter so the genuine unknown-lang → null
 		// decision is exercised (teeth on highlightToHtml, not a hardcoded null),
@@ -372,7 +376,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		);
 		// Await the REAL highlight resolution(s) — the unknown lang resolves to
 		// null — then flush. The assertion runs against a genuinely-settled render.
-		await flushHighlightDebounce();
+		flushHighlightDebounce();
 		expect(settledPromises.length).toBeGreaterThan(0);
 		const results = await Promise.all(settledPromises);
 		expect(results.every((r) => r === null)).toBe(true); // unknown → null
@@ -389,6 +393,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 	// it), then resolve the earlier stale tick LATE and assert the DOM still shows
 	// the latest, never the stale overwrite.
 	test("a stale highlight resolving after the latest tick does not overwrite it", async () => {
+		jest.useFakeTimers();
 		const pending: {
 			code: string;
 			resolve: (v: string | null) => void;
@@ -406,16 +411,17 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		));
 		// Each tick must clear the highlight debounce so it actually kicks a
 		// fetch — that is what makes two competing in-flight requests exist.
-		await flushHighlightDebounce();
+		flushHighlightDebounce();
 		// Grow the fence → a second highlight fetch is kicked for the newer text.
 		setText("```ts\nAAA\nBBB\n```");
-		await flushHighlightDebounce();
+		flushHighlightDebounce();
 		expect(pending.length).toBeGreaterThanOrEqual(2);
 		const stale = pending[0]; // the earlier "AAA" tick
 		const latest = pending[pending.length - 1]; // the "AAA\nBBB" tick
 		expect(stale.code).not.toBe(latest.code);
 
-		// Resolve the LATEST first and let it paint.
+		// Resolve the LATEST first and let it paint; waitFor polls on real timers.
+		jest.useRealTimers();
 		latest.resolve(
 			'<pre class="shiki"><code><span style="color:green" data-tick="latest">AAA BBB</span></code></pre>',
 		);
@@ -445,6 +451,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 	// unreachable through the public component, not merely uncaught here. The
 	// stale-resolution test above is what guards the painted result.
 	test("each growth tick issues its own highlight request", async () => {
+		jest.useFakeTimers();
 		const asked: string[] = [];
 		mock.module("../markdown/highlighter", () => ({
 			...realHighlighter,
@@ -456,9 +463,9 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		const [text, setText] = createSignal("```ts\nAAA\n```");
 		render(() => <MarkdownText text={text()} byHandle={byHandle()} />);
 		// One debounce window per tick, so each issues its own request.
-		await flushHighlightDebounce();
+		flushHighlightDebounce();
 		setText("```ts\nAAA\nBBB\n```");
-		await flushHighlightDebounce();
+		flushHighlightDebounce();
 
 		expect(asked.length).toBeGreaterThanOrEqual(2);
 		// The first request was kicked for "AAA" alone and must still say so.
@@ -584,6 +591,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 	// must issue ONE leading-edge pass, then collapse the whole growth burst into
 	// exactly ONE trailing pass — not one per tick.
 	test("a fence's within-window growth ticks collapse to one trailing highlight", async () => {
+		jest.useFakeTimers();
 		const asked: string[] = [];
 		mock.module("../markdown/highlighter", () => ({
 			...realHighlighter,
@@ -610,7 +618,7 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		expect(asked.length).toBe(1);
 		// Once the window elapses, the burst collapses to exactly ONE trailing pass
 		// carrying the latest text — not one pass per tick.
-		await flushHighlightDebounce();
+		flushHighlightDebounce();
 		expect(asked.length).toBe(2);
 		expect(asked[1]).toContain("L3");
 	});
