@@ -67,21 +67,6 @@
 	min-width: 180px;
 }
 
-.topbar-search-input {
-	box-sizing: border-box;
-	width: 100%;
-	padding: 5px 8px;
-	border: 1px solid var(--cx-border);
-	background: var(--cx-bg);
-	color: var(--cx-text);
-}
-
-.topbar-search-input:focus-visible {
-	outline: var(--cx-focus-ring);
-	outline-offset: 1px;
-	border-color: var(--cx-border-focus);
-}
-
 .topbar-search-panel {
 	position: absolute;
 	top: calc(100% + 4px);
@@ -3272,37 +3257,14 @@
 	background: var(--cx-bg-raised);
 }
 
-.conv-composer .field {
+.conv-composer .cx-composer {
 	flex: 1;
-	background: var(--cx-bg-panel);
-	border: 1px solid var(--cx-border);
-	color: var(--cx-text);
-	padding: 8px 12px;
-	font: inherit;
 }
 
-.conv-composer .field:focus-visible {
-	outline: var(--cx-focus-ring);
-	outline-offset: 1px;
-	border-color: var(--cx-border-focus);
-}
-
-.conv-composer .field:disabled {
-	opacity: 0.5;
-}
-
-.conv-composer .send {
+.conv-composer .cx-btn {
 	flex: 0 0 auto;
-	background: var(--cx-accent);
-	border: none;
-	color: var(--cx-bg);
-	padding: 0 16px;
-}
-
-.conv-composer .send:disabled {
-	background: var(--cx-bg-panel);
-	color: var(--cx-text-faint);
-	cursor: default;
+	/* Stay one row tall at the bottom while the composer grows. */
+	align-self: flex-end;
 }
 
 /* A failed post: the error sits beside the field on its own row (the composer

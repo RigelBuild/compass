@@ -236,8 +236,8 @@ describe("SplitPane", () => {
 	test("splitting and closing the other pane keep the first view mounted", async () => {
 		const { store, container } = mountApp(TOPIC_PATH);
 		await flush();
-		const input = container.querySelector<HTMLInputElement>(
-			".conv-composer input.field",
+		const input = container.querySelector<HTMLTextAreaElement>(
+			".conv-composer textarea.cx-composer",
 		);
 		if (!input) throw new Error("no composer");
 		fireEvent.input(input, { target: { value: "draft" } });

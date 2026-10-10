@@ -11,7 +11,9 @@ test("W V splits a tab; a send in the first pane leaves the second pane put", as
 	await page.goto(`/#${TOPIC_PATH}`);
 	const tabs = page.locator('.cx-tab-strip [role="tab"]');
 	const panels = page.locator(".cx-split-pane:not([hidden]) > .view-panel");
-	await expect(page.locator(".conv-composer input.field")).toBeVisible();
+	await expect(
+		page.locator(".conv-composer textarea.cx-composer"),
+	).toBeVisible();
 
 	await tabs.first().click();
 	await page.keyboard.press("w");
@@ -41,9 +43,11 @@ test("W V splits a tab; a send in the first pane leaves the second pane put", as
 	await expect(second).toHaveAttribute("data-focused", "");
 	await page.locator(".tree-agent", { hasText: "compass-ui" }).first().click();
 	await expect(second.locator(".agent-view")).toBeVisible();
-	await expect(first.locator(".conv-composer input.field")).toBeVisible();
+	await expect(
+		first.locator(".conv-composer textarea.cx-composer"),
+	).toBeVisible();
 
-	const composer = first.locator(".conv-composer input.field");
+	const composer = first.locator(".conv-composer textarea.cx-composer");
 	await composer.click();
 	await expect(first).toHaveAttribute("data-focused", "");
 	await composer.fill("from the first pane");

@@ -1,5 +1,5 @@
 /* Input / Search / Select / Composer (D3). Text-entry surfaces sharing one
-   contract: border --cx-border, focus swaps to --cx-border-focus + ring.
+   contract: border --cx-border-field, focus swaps to --cx-border-focus + ring.
    Six mandatory states on each. Consumes only --cx-* tiers. */
 
 .cx-input,
@@ -9,7 +9,7 @@
 	display: block;
 	width: 100%;
 	padding: var(--cx-space-2) var(--cx-space-3);
-	border: 1px solid var(--cx-border);
+	border: 1px solid var(--cx-border-field);
 	background: var(--cx-bg-panel);
 	color: var(--cx-text);
 	font-family: var(--cx-font-ui);

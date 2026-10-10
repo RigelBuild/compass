@@ -40,6 +40,7 @@ import { fuzzyScore } from "../keyboard/fuzzy";
 import { shortcutFor } from "../keyboard/keymap";
 import type { LiveClients } from "../live/client";
 import "../design/components/palette.css";
+import "../design/components/loader.css";
 import {
 	destinationSurfaceRows,
 	SEARCH_DEBOUNCE_MS,

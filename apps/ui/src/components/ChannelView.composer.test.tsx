@@ -70,17 +70,38 @@ const twoTopicSnapshot = () => ({
 // Re-queried after every topic switch: the composer is a FRESH instance per
 // topic, so a reference captured before the switch is a detached node.
 const composerInput = (c: HTMLElement) =>
-	c.querySelector<HTMLInputElement>(".conv-main .conv-composer input.field");
+	c.querySelector<HTMLTextAreaElement>(
+		".conv-main .conv-composer textarea.cx-composer",
+	);
 const composerSend = (c: HTMLElement) =>
-	c.querySelector<HTMLButtonElement>(".conv-main .conv-composer .send");
+	c.querySelector<HTMLButtonElement>(
+		'.conv-main .conv-composer .cx-btn[data-variant="primary"]',
+	);
 
 /** Mount TopicView over a live store, wait out the driver's snapshot round-trip,
  *  then open the primary topic so the composer is bound before the body runs.
  *  Every hop is a resolved promise, so the bounded microtask drain is
  *  deterministic — no timers. */
+// jsdom does no layout; stand in the three box heights the composer reads.
+function stubBox(
+	el: HTMLElement,
+	box: () => { scroll: number; client: number; offset: number },
+): void {
+	for (const [prop, key] of [
+		["scrollHeight", "scroll"],
+		["clientHeight", "client"],
+		["offsetHeight", "offset"],
+	] as const) {
+		Object.defineProperty(el, prop, {
+			configurable: true,
+			get: () => box()[key],
+		});
+	}
+}
+
 async function mountComposer(fake: FakeComms): Promise<{
 	store: AppStore;
-	input: HTMLInputElement;
+	input: HTMLTextAreaElement;
 	send: HTMLButtonElement;
 	container: HTMLElement;
 	settled: () => Promise<void>;
@@ -138,9 +159,8 @@ describe("topic composer (live PostMessage)", () => {
 		}
 	});
 
-	// Enter sends too — the affordance a human actually uses. Shift+Enter does
-	// NOT (it is the newline escape), so a multi-line draft is still possible.
-	test("Enter sends; Shift+Enter does not", async () => {
+	// Enter sends too — the affordance a human actually uses.
+	test("Enter sends", async () => {
 		const fake = createFakeComms(snapshot());
 		const { input, settled } = await mountComposer(fake);
 		try {
@@ -151,15 +171,69 @@ describe("topic composer (live PostMessage)", () => {
 			flush();
 
 			expect(fake.posts.map((p) => p.text)).toEqual(["sent with enter"]);
+			expect(input.value).toBe("");
+		} finally {
+			fake.close();
+		}
+	});
 
-			fireEvent.input(input, { target: { value: "not sent" } });
+	// Shift+Enter is the newline escape: the key is left to the textarea's
+	// default action, so a multi-line draft is kept whole and nothing posts.
+	test("Shift+Enter inserts a newline and does not send", async () => {
+		const fake = createFakeComms(snapshot());
+		const { input, settled } = await mountComposer(fake);
+		try {
+			fireEvent.input(input, { target: { value: "line one" } });
 			flush();
-			fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+			const notCancelled = fireEvent.keyDown(input, {
+				key: "Enter",
+				shiftKey: true,
+			});
+			// The browser's default action for that key is the newline itself.
+			fireEvent.input(input, { target: { value: "line one\nline two" } });
 			await settled();
 			flush();
 
-			expect(fake.posts.map((p) => p.text)).toEqual(["sent with enter"]);
-			expect(input.value).toBe("not sent");
+			expect(notCancelled).toBe(true);
+			expect(fake.posts).toEqual([]);
+			expect(input.value).toBe("line one\nline two");
+		} finally {
+			fake.close();
+		}
+	});
+
+	// Enter that commits an IME composition picks the candidate; sending then
+	// would post a half-composed word.
+	test("Enter during IME composition does not send", async () => {
+		const fake = createFakeComms(snapshot());
+		const { input, settled } = await mountComposer(fake);
+		try {
+			fireEvent.input(input, { target: { value: "にほん" } });
+			flush();
+			fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+			await settled();
+			flush();
+
+			expect(fake.posts).toEqual([]);
+			expect(input.value).toBe("にほん");
+		} finally {
+			fake.close();
+		}
+	});
+
+	// A textarea does not grow by itself: each input resets the height and
+	// then sizes it to the content (the primitive's max-height caps it).
+	// Under border-box the height must also hold the border, which
+	// scrollHeight leaves out, or every multi-line draft scrolls by it.
+	test("input grows the composer to its content plus its border", async () => {
+		const fake = createFakeComms(snapshot());
+		const { input } = await mountComposer(fake);
+		try {
+			stubBox(input, () => ({ scroll: 120, client: 118, offset: 120 }));
+			fireEvent.input(input, { target: { value: "a\nb\nc\nd" } });
+			flush();
+
+			expect(input.style.height).toBe("122px");
 		} finally {
 			fake.close();
 		}
@@ -220,13 +294,21 @@ describe("topic composer (live PostMessage)", () => {
 		try {
 			fake.failNextPost(new Error("door is shut"));
 
-			fireEvent.input(input, { target: { value: "precious words" } });
+			// Two lines measure taller than the empty field, so the height shows
+			// which value it was last fitted to.
+			stubBox(input, () =>
+				input.value.includes("\n")
+					? { scroll: 60, client: 58, offset: 60 }
+					: { scroll: 38, client: 38, offset: 40 },
+			);
+			fireEvent.input(input, { target: { value: "precious\nwords" } });
 			flush();
 			fireEvent.click(send);
 			await settled();
 			flush();
 
-			expect(input.value).toBe("precious words");
+			expect(input.value).toBe("precious\nwords");
+			expect(input.style.height).toBe("62px");
 			expect(
 				container.querySelector(".conv-composer-error")?.textContent,
 			).toContain("door is shut");

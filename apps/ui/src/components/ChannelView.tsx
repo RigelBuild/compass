@@ -1,4 +1,11 @@
-import { type Component, createMemo, createSignal, For, Show } from "solid-js";
+import {
+	type Component,
+	createEffect,
+	createMemo,
+	createSignal,
+	For,
+	Show,
+} from "solid-js";
 import {
 	blockText,
 	canPost,
@@ -24,6 +31,8 @@ import {
 } from "../comms-stub";
 import { avatarInitial } from "../constants";
 import { useStore } from "../context";
+import "../design/components/button.css";
+import "../design/components/input.css";
 import { useView } from "../view-scope";
 import { MarkdownText } from "./MarkdownText";
 
@@ -352,6 +361,17 @@ export const Composer: Component<{
 	const store = useStore();
 	const [draft, setDraft] = createSignal("");
 	const [error, setError] = createSignal<string | null>(null);
+	let field: HTMLTextAreaElement | undefined;
+	// A textarea does not grow by itself: reset so it can shrink, then fit the
+	// content. scrollHeight leaves out the border, which border-box counts.
+	const fit = () => {
+		if (!field) return;
+		field.style.height = "auto";
+		field.style.height = `${field.scrollHeight + field.offsetHeight - field.clientHeight}px`;
+	};
+	// Typing, the clear on send and a restored failed post all change the draft;
+	// the last two fire no input event, so fit on the draft, after it renders.
+	createEffect(draft, fit);
 	// The post-policy gate (comms substrate §A2): an `owner_only` channel admits
 	// only its owner. Separate from the membership gate — the composer is
 	// disabled if EITHER fails. This is the honest-disabled pattern (mirroring
@@ -382,14 +402,19 @@ export const Composer: Component<{
 	};
 	return (
 		<div class="conv-composer">
-			<input
-				class="field"
+			<textarea
+				ref={field}
+				class="cx-composer"
+				rows={1}
 				placeholder={hint()}
 				value={draft()}
 				disabled={blocked()}
-				onInput={(e) => setDraft(e.currentTarget.value)}
+				onInput={(e) => {
+					setDraft(e.currentTarget.value);
+				}}
 				onKeyDown={(e) => {
-					if (e.key === "Enter" && !e.shiftKey) {
+					// Enter during IME composition commits the candidate, not the message.
+					if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
 						e.preventDefault();
 						send();
 					}
@@ -397,7 +422,8 @@ export const Composer: Component<{
 			/>
 			<button
 				type="button"
-				class="send"
+				class="cx-btn"
+				data-variant="primary"
 				disabled={blocked() || draft().trim().length === 0}
 				onClick={send}
 			>
@@ -511,7 +537,7 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 	return (
 		<div class="new-topic">
 			<input
-				class="new-topic-name field"
+				class="new-topic-name cx-input"
 				placeholder={
 					!policyOk() && props.channel.membership !== "none"
 						? "Owner-only channel…"
@@ -522,7 +548,7 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 				onInput={(e) => setName(e.currentTarget.value)}
 			/>
 			<input
-				class="new-topic-message field"
+				class="new-topic-message cx-input"
 				placeholder="First message…"
 				value={message()}
 				disabled={blocked()}
@@ -536,7 +562,7 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 			/>
 			<button
 				type="button"
-				class="new-topic-start"
+				class="new-topic-start cx-btn"
 				disabled={!canStart()}
 				onClick={start}
 			>
