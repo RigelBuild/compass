@@ -345,7 +345,7 @@ describe("renderRunnerManifests", () => {
 		if (!Array.isArray(validations))
 			throw new Error("policy validations missing");
 		expect(object(validations[0]).expression).toBe(
-			"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-')",
+			"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-') || request.userInfo.groups.exists(g, g in variables.breakGlassGroups)",
 		);
 	});
 	test("restores the DaemonSet selector to the pod template labels", () => {
@@ -371,6 +371,54 @@ describe("renderRunnerManifests", () => {
 				maxTokenLifetimeSeconds: 2 ** 32,
 			}),
 		).not.toThrow();
+	});
+
+	test("lets only break-glass groups exec into the Runner pod", () => {
+		const policyFor = (input: typeof values) => {
+			const policy = renderRunnerManifests(input).find(
+				(manifest) => object(manifest).kind === "ValidatingAdmissionPolicy",
+			);
+			if (policy === undefined) throw new Error("policy missing");
+			const variables = nested(policy, "spec", "variables");
+			const validations = nested(policy, "spec", "validations");
+			if (!Array.isArray(variables) || !Array.isArray(validations))
+				throw new Error("policy body missing");
+			return {
+				breakGlass: variables
+					.map(object)
+					.find((entry) => entry.name === "breakGlassGroups")?.expression,
+				subresourceRule: validations
+					.map(object)
+					.map((entry) => String(entry.expression))
+					.find((expression) => expression.includes("'exec'")),
+			};
+		};
+		const defaults = policyFor(values);
+		expect(defaults.breakGlass).toBe("['system:masters']");
+		expect(defaults.subresourceRule).toContain(
+			"request.userInfo.groups.exists(g, g in variables.breakGlassGroups)",
+		);
+		expect(
+			policyFor({
+				...values,
+				admission: {
+					...values.admission,
+					breakGlassGroups: ["ops:runner-admins"],
+				},
+			}).breakGlass,
+		).toBe("['ops:runner-admins']");
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { ...values.admission, breakGlassGroups: [] },
+			}),
+		).toThrow("admission.breakGlassGroups must not be empty");
+		expect(() =>
+			renderRunnerManifests({
+				...values,
+				admission: { ...values.admission, breakGlassGroups: ["bad'group"] },
+			}),
+		).toThrow();
 	});
 
 	test("renders admission username defaults and configured deployers", () => {

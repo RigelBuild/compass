@@ -188,7 +188,8 @@ The rendered Runner's namespace, `serviceAccount: compass-runner`, audience, and
 `tokenExpirationSeconds` / `maxTokenLifetimeSeconds` must match the Server
 cluster entry. A token lifetime above the Server's `maxTokenLifetime` fails
 authentication. The admission policy denies exec, attach, and ephemeral
-containers on Runner pods.
+containers on Runner pods except to a break-glass group (`admission.breakGlassGroups`,
+default `system:masters`, the cluster-admin group).
 
 `audience` and `maxTokenLifetime` show their defaults. By default the Server
 finds keys through OIDC discovery on `issuer`. Set at most one of `jwksURI` or

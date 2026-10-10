@@ -17,7 +17,8 @@ The DaemonSet uses a projected `compass-runner` ServiceAccount token at
 must match that Server cluster entry. The admission policy uses
 `admission.controllers` and `admission.deployers`; set them to the controller
 identities that create Runner pods and the identity that applies the DaemonSet.
-It denies exec, attach, and ephemeral containers on Runner pods.
+It denies exec, attach, and ephemeral containers on Runner pods except to
+`admission.breakGlassGroups` (default `system:masters`).
 The Server assigns each Runner ID during enrollment. The ServiceAccount has no
 RBAC binding. Rollout beyond one node waits for the multi-Runner hub.
 

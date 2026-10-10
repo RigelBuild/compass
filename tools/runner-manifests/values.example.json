@@ -28,7 +28,8 @@
 			"system:serviceaccount:kube-system:daemon-set-controller",
 			"system:kube-controller-manager"
 		],
-		"deployers": ["system:serviceaccount:flux-system:kustomize-controller"]
+		"deployers": ["system:serviceaccount:flux-system:kustomize-controller"],
+		"breakGlassGroups": ["system:masters"]
 	},
 	"maxUnavailable": 1,
 	"perSessionReapSeconds": 180,

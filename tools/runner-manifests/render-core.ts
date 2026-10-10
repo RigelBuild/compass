@@ -13,6 +13,8 @@ const DEFAULT_ADMISSION_CONTROLLERS = [
 const DEFAULT_ADMISSION_DEPLOYERS = [
 	"system:serviceaccount:flux-system:kustomize-controller",
 ] as const;
+// Cluster admins keep exec and debug access to the Runner pod as a break-glass.
+const DEFAULT_ADMISSION_BREAK_GLASS_GROUPS = ["system:masters"] as const;
 
 export interface RunnerDeployValues {
 	namespace: string;
@@ -36,6 +38,7 @@ export interface RunnerDeployValues {
 	admission?: {
 		controllers?: readonly string[];
 		deployers?: readonly string[];
+		breakGlassGroups?: readonly string[];
 	};
 	maxUnavailable: number;
 	perSessionReapSeconds: number;
@@ -52,7 +55,11 @@ type ValidatedRunnerDeployValues = Omit<
 	seccompProfilePath: string;
 	tokenExpirationSeconds: number;
 	maxTokenLifetimeSeconds: number;
-	admission: { controllers: readonly string[]; deployers: readonly string[] };
+	admission: {
+		controllers: readonly string[];
+		deployers: readonly string[];
+		breakGlassGroups: readonly string[];
+	};
 };
 
 export function assertRunnerImageDigest(image: string): void {
@@ -302,6 +309,16 @@ export function parseRunnerDeployValues(
 	) {
 		throw new Error("admission.deployers must be an array of strings");
 	}
+	const breakGlassGroups =
+		admissionInput?.breakGlassGroups === undefined
+			? DEFAULT_ADMISSION_BREAK_GLASS_GROUPS
+			: admissionInput.breakGlassGroups;
+	if (
+		!Array.isArray(breakGlassGroups) ||
+		!breakGlassGroups.every((item) => typeof item === "string")
+	) {
+		throw new Error("admission.breakGlassGroups must be an array of strings");
+	}
 	const effect = stringValue(toleration, "effect", "toleration.effect");
 	if (
 		effect !== "NoSchedule" &&
@@ -362,7 +379,7 @@ export function parseRunnerDeployValues(
 						"maxTokenLifetimeSeconds",
 						"maxTokenLifetimeSeconds",
 					),
-		admission: { controllers, deployers },
+		admission: { controllers, deployers, breakGlassGroups },
 		maxUnavailable: numberValue(root, "maxUnavailable", "maxUnavailable"),
 		perSessionReapSeconds: numberValue(
 			root,
@@ -603,6 +620,10 @@ export function renderRunnerManifests(
 						name: "deployers",
 						expression: `[${values.admission.deployers.map((item) => `'${item}'`).join(", ")}]`,
 					},
+					{
+						name: "breakGlassGroups",
+						expression: `[${values.admission.breakGlassGroups.map((item) => `'${item}'`).join(", ")}]`,
+					},
 					{ name: "res", expression: "request.resource.resource" },
 					{
 						name: "podSpec",
@@ -623,9 +644,9 @@ export function renderRunnerManifests(
 				validations: [
 					{
 						expression:
-							"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-')",
+							"!(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) || !request.name.startsWith('compass-runner-') || request.userInfo.groups.exists(g, g in variables.breakGlassGroups)",
 						message:
-							"the compass-runner pod cannot be exec'd, attached, or given ephemeral containers",
+							"only a break-glass group may exec into, attach to, or add ephemeral containers to the compass-runner pod",
 					},
 					{
 						expression:

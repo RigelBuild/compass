@@ -300,6 +300,8 @@ spec:
          'system:kube-controller-manager']
     - name: deployers                       # render parameter
       expression: "['system:serviceaccount:flux-system:kustomize-controller']"
+    - name: breakGlassGroups                # render parameter; admin exec access
+      expression: "['system:masters']"
     - name: res
       expression: request.resource.resource
     - name: podSpec
@@ -318,8 +320,9 @@ spec:
   validations:
     - expression: >-
         !(request.subResource in ['exec', 'attach', 'ephemeralcontainers']) ||
-        !request.name.startsWith('compass-runner-')
-      message: the compass-runner pod cannot be exec'd, attached, or given ephemeral containers
+        !request.name.startsWith('compass-runner-') ||
+        request.userInfo.groups.exists(g, g in variables.breakGlassGroups)
+      message: only a break-glass group may exec into, attach to, or add ephemeral containers to the compass-runner pod
     - expression: >-
         variables.res != 'serviceaccounts' || request.name != 'compass-runner' ||
         request.userInfo.username.startsWith('system:node:')
