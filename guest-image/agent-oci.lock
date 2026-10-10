@@ -1,7 +1,7 @@
 {
 	"repo": "ghcr.io/rigelbuild/compass-agent",
 	"tag": "git-7d22c69390cb",
-	"digest": "sha256:634aeee15954f43b9a009b2dd9fe2ad3b454f64dd09c9491957c03d0313a6823",
+	"digest": "sha256:4166133e54f83b5232ac0ff8cd13637e8e4d48f0b9010a5396948204362e64dd",
 	"layers": [
 		"sha256:989a42bd3ddf0028fce105bf936074ae1cad375bbabf868ba358161d6eddea56",
 		"sha256:50173e59368b86248a8fc447563bc692eb54cea61522d423c562037b27273b1f",
