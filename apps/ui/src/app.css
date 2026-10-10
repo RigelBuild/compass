@@ -2126,8 +2126,9 @@
 .r-files-search {
 	margin: 8px 10px;
 	padding: 5px 8px;
-	background: var(--cx-bg);
-	border: 1px solid var(--cx-border);
+	/* The input contract: on a night sidebar a night fill no longer marks the field. */
+	background: var(--cx-bg-panel);
+	border: 1px solid var(--cx-border-field);
 	color: var(--cx-text);
 	font-size: 12px;
 }
