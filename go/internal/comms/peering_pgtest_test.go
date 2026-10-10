@@ -36,8 +36,8 @@ func TestApprovePeerHandlerAuthorizationAndTargetTypes(t *testing.T) {
 	for _, handle := range []string{"peering-agent", "peering-owner/peering-agent", store.SystemAccountHandle, "peering-missing"} {
 		_, err := svc.ApprovePeer(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ApprovePeerRequest{PeerHandle: handle}))
 		connectCodeIs(t, err, connect.CodeNotFound, "approval target "+handle)
-		var ce *connect.Error
-		if !errors.As(err, &ce) {
+		ce, ok := errors.AsType[*connect.Error](err)
+		if !ok {
 			t.Fatalf("approval target %q: error %v is not a connect error", handle, err)
 		}
 		got := strings.ReplaceAll(ce.Message(), handle, "<handle>")
