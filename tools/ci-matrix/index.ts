@@ -118,6 +118,8 @@ const GTK4_CLOSURE_PATHS = [
 	"tools/toolchain/gtk-closure.nix",
 	"tools/toolchain/gtk-e2e-env.nix",
 ];
+/** Go module manifests: a dependency-only bump can change the Wails tree, which only the gtk4 lane vuln-scans. */
+const GTK4_MODULE_PATHS = ["go/go.mod", "go/go.sum"];
 /**
  * darwin trigger: the macos-14 lane compiles the SAME native shell the gtk4 lane
  * does, so it must fire on any go/cmd/compass-app/ change OR a shared GTK closure
@@ -305,7 +307,10 @@ export function generate(input: GenInput): GenOutput {
 	const gtk4Affected =
 		isFullSweep ||
 		input.changedPaths.some(
-			(p) => p.startsWith(GTK4_PATH_PREFIX) || GTK4_CLOSURE_PATHS.includes(p),
+			(p) =>
+				p.startsWith(GTK4_PATH_PREFIX) ||
+				GTK4_CLOSURE_PATHS.includes(p) ||
+				GTK4_MODULE_PATHS.includes(p),
 		);
 	const darwinAffected =
 		isFullSweep ||

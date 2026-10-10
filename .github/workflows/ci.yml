@@ -1475,7 +1475,8 @@ jobs:
             changed=$(git -C .. diff --name-only "$base"...HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
-              tools/toolchain/gtk-e2e-env.nix)
+              tools/toolchain/gtk-e2e-env.nix \
+              go/go.mod go/go.sum)
             if [ -z "$changed" ]; then
               run_it=0
             fi
