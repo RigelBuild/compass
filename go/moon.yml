@@ -90,9 +90,10 @@ tasks:
     # golangci-lint over the module against .golangci.yml (F1 enable-all +
     # reasoned disable-list, with the load-bearing gochecksumtype/exhaustive
     # exhaustiveness gate on). The gate (L1/L2). `--config` is explicit so the
-    # run can't silently fall back to a discovered or absent config.
+    # run can't silently fall back to a discovered or absent config. The second
+    # pass lints the build-tagged test files; unix,gtk4 needs cgo+GTK, so the gtk4 CI job lints it.
     # Serial runners: the run lock is host-wide, so concurrent runs wait.
-    command: 'golangci-lint run --allow-serial-runners --config .golangci.yml ./...'
+    script: 'set -e; golangci-lint run --allow-serial-runners --config .golangci.yml ./...; golangci-lint run --allow-serial-runners --config .golangci.yml --build-tags pgtest,podman,microvm,livegithub,keyring_integration ./...'
     env:
       # Per-worktree cache: a shared ~/.cache/golangci-lint leaks a peer
       # worktree's paths in as phantom findings. gitignored.
