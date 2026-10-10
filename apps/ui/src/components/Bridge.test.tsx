@@ -3,7 +3,7 @@ import { createRouter, memoryHistory } from "@solidjs/router";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { createRoot, flush as flushSync } from "solid-js";
 import App from "../App";
-import { prBoardRows, prCount } from "../board";
+import { backlogIssues, prBoardRows, prCount } from "../board";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
 import { appRoutes } from "../routes";
@@ -69,7 +69,10 @@ function tabButtons(container: HTMLElement): HTMLButtonElement[] {
 }
 const groupingSeg = (container: HTMLElement): HTMLElement | null =>
 	container.querySelector('[aria-label="Board grouping"]');
-const clickTab = (container: HTMLElement, label: "Issues" | "PRs"): void => {
+const clickTab = (
+	container: HTMLElement,
+	label: "Issues" | "PRs" | "Backlog" | "Done",
+): void => {
 	const btn = tabButtons(container).find((b) =>
 		(b.textContent ?? "").startsWith(label),
 	);
@@ -77,6 +80,79 @@ const clickTab = (container: HTMLElement, label: "Issues" | "PRs"): void => {
 	fireEvent.click(btn);
 	flushSync();
 };
+const activeTab = (container: HTMLElement): string | undefined =>
+	tabButtons(container).find((b) => b.classList.contains("active"))
+		?.textContent ?? undefined;
+
+// Backlog and Done are routed Bridge segments: the route picks them, and the
+// same Bridge instance serves all four, so its local state survives a switch.
+describe("Bridge Backlog and Done segments", () => {
+	test("at /backlog the Backlog segment is active and the three sections render", async () => {
+		const { container } = mountApp("/backlog");
+		await flush();
+		expect(container.querySelector(".bridge")).not.toBeNull();
+		expect(activeTab(container)).toStartWith("Backlog");
+		for (const id of ["todo", "backlog", "assigned-to-me"]) {
+			expect(container.querySelector(`#backlog-section-${id}`)).not.toBeNull();
+		}
+		expect(container.querySelector(".backlog-view h2")).toBeNull();
+		expect(container.querySelector(".bridge-grid")).toBeNull();
+		expect(groupingSeg(container)).toBeNull();
+	});
+
+	test("Done navigates to /done and renders the Done list", async () => {
+		const { container, history } = mountApp("/");
+		await flush();
+		clickTab(container, "Done");
+		await flush();
+		expect(history.get()).toBe("/done");
+		expect(activeTab(container)).toBe("Done");
+		expect(container.querySelector(".done-view")).not.toBeNull();
+		expect(container.querySelector(".bridge-grid")).toBeNull();
+	});
+
+	test("Issues from Backlog returns to / with the grid", async () => {
+		const { container, history } = mountApp("/backlog");
+		await flush();
+		clickTab(container, "Issues");
+		await flush();
+		expect(history.get()).toBe("/");
+		expect(container.querySelector(".backlog-view")).toBeNull();
+		expect(container.querySelector(".bridge-grid")).not.toBeNull();
+	});
+
+	test("Status grouping survives Issues → Backlog → Issues (no remount)", async () => {
+		const { container } = mountApp("/");
+		await flush();
+		const bridge = container.querySelector(".bridge");
+		const status = [
+			...(groupingSeg(container)?.querySelectorAll("button") ?? []),
+		].find((b) => b.textContent === "Status");
+		if (!status) throw new Error("no Status button");
+		fireEvent.click(status);
+		flushSync();
+		clickTab(container, "Backlog");
+		await flush();
+		expect(container.querySelector(".backlog-view")).not.toBeNull();
+		clickTab(container, "Issues");
+		await flush();
+		expect(container.querySelector(".bridge")).toBe(bridge);
+		const active = groupingSeg(container)?.querySelector("button.active");
+		expect(active?.textContent).toBe("Status");
+	});
+
+	test("the Backlog label counts pre-active plus assigned issues", async () => {
+		const { store, container } = mountApp("/");
+		await flush();
+		const expected =
+			backlogIssues(store.issues()).length + store.assignedIssues().length;
+		expect(store.assignedIssues().length).toBeGreaterThan(0);
+		const label = tabButtons(container).find((b) =>
+			(b.textContent ?? "").startsWith("Backlog"),
+		);
+		expect(label?.textContent).toBe(`Backlog · ${expected}`);
+	});
+});
 
 describe("Bridge Issues/PRs tabs (DL-097)", () => {
 	test("defaults to the Issues tab: grouping seg shown, no PR cards", () => {
@@ -696,7 +772,7 @@ describe("Bridge empty board (T5, RIG-2130)", () => {
 		expect(container.querySelector(".bridge-toolbar")).not.toBeNull();
 		expect(groupingSeg(container)).not.toBeNull();
 		const tabs = tabButtons(container);
-		expect(tabs).toHaveLength(2);
+		expect(tabs).toHaveLength(4);
 		expect((tabs[0].textContent ?? "").startsWith("Issues")).toBe(true);
 		expect(tabs[1].textContent).toContain("PRs · 0");
 	});

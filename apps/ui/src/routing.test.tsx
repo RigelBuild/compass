@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createRouter, memoryHistory } from "@solidjs/router";
-import { render } from "@solidjs/testing-library";
+import { cleanup, render } from "@solidjs/testing-library";
 import { createRoot, flush as flushSync } from "solid-js";
 import App from "./App";
 import {
@@ -47,8 +47,8 @@ const CHANNEL_ID = standaloneChannelId(); // "ch-svc-compass"
 
 describe("routing (record A1/A4)", () => {
 	// A deep-link initial path renders the matching surface. Boot straight onto
-	// /backlog: the route drives view → "backlog" and BacklogView mounts, with no
-	// in-app action taken. Mutation-check: a route-sync effect that ignored the
+	// /backlog: the route drives view → "backlog" and the Backlog list mounts,
+	// with no in-app action taken. Mutation-check: a route-sync effect that ignored the
 	// initial location would leave the boot-default bridge and redden.
 	test("a deep-link initial path renders the right surface", async () => {
 		const { store, container } = mountApp("/backlog");
@@ -56,6 +56,37 @@ describe("routing (record A1/A4)", () => {
 
 		expect(store.view()).toBe("backlog");
 		expect(container.querySelector(".backlog-view, .backlog")).not.toBeNull();
+	});
+
+	// Backlog and Done are Bridge segments: their routes mount the Bridge.
+	test("/backlog and /done mount the Bridge on their segment", async () => {
+		for (const [path, list] of [
+			["/backlog", ".backlog-view"],
+			["/done", ".done-view"],
+		] as const) {
+			const { container } = mountApp(path);
+			await flush();
+			expect(container.querySelector(`.bridge ${list}`)).not.toBeNull();
+			cleanup();
+		}
+	});
+
+	test("G L and G D land on the Backlog and Done segments", async () => {
+		const { store, container } = mountApp("/");
+		await flush();
+		const active = () =>
+			container.querySelector('[aria-label="Board view"] button.active')
+				?.textContent;
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "g" }));
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "l" }));
+		await flush();
+		expect(store.view()).toBe("backlog");
+		expect(active()).toStartWith("Backlog");
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "g" }));
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "d" }));
+		await flush();
+		expect(store.view()).toBe("done");
+		expect(active()).toBe("Done");
 	});
 
 	// A deep-link onto /channel/:channelId renders the channel surface with that

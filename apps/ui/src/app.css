@@ -444,8 +444,11 @@
 	overflow: hidden;
 }
 
+/* Four segments plus grouping overflow a narrow pane. Whole items wrap, so the
+   first line stays fixed and the tab seg does not move when grouping hides. */
 .bridge-toolbar {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 10px;
 	padding: 9px 14px;
@@ -483,6 +486,8 @@
 	padding: 4px 10px;
 	font-size: 11px;
 	color: var(--cx-text-dim);
+	/* A label like "Backlog · 3" must not split when the toolbar crowds. */
+	white-space: nowrap;
 }
 
 .seg button.active {
@@ -1551,11 +1556,9 @@
 	gap: 14px;
 }
 
-.agents-view > .heading,
-.backlog-view > .heading,
-.done-view > .heading {
+.agents-view > .heading {
 	font-size: 14px;
-	/* Agents and Backlog render an h2, which is bold by browser default. */
+	/* Agents renders an h2, which is bold by browser default. */
 	font-weight: 400;
 }
 

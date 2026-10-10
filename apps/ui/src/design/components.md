@@ -792,7 +792,7 @@ covers (`■ ⟩ ⟨ ⌗ ▸`) and the `→` style calls. All converted sites be
 
 | Site | Was | Glyph |
 | --- | --- | --- |
-| `BacklogView` section caret | `▸` | `disclosure` |
+| `BacklogList` section caret | `▸` | `disclosure` |
 | `LogPanel` Stop mark | `■` | `stop` |
 | `LogPanel` minimize toggle | `⟩` `⟨` | `disclosure` (CSS rotates 180°) |
 
