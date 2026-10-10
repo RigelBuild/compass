@@ -159,14 +159,11 @@ func TestCATrustEnrollEndToEnd(t *testing.T) {
 		// the x509 sentinel; if the wrapping chain preserves it, assert exactly
 		// that. Fall back to the substring check only when the chain has flattened
 		// the error to a string (so the test still means something either way).
-		var unknownAuth x509.UnknownAuthorityError
-		var hostErr x509.HostnameError
-		switch {
-		case errors.As(err, &unknownAuth):
+		if _, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
 			// Exactly the failure we want: the anchor does not vouch for the leaf.
-		case errors.As(err, &hostErr):
+		} else if _, ok := errors.AsType[x509.HostnameError](err); ok {
 			t.Errorf("rejected on hostname, not authority: %v — SANs should match; only the anchor differs", err)
-		default:
+		} else {
 			msg := strings.ToLower(err.Error())
 			if !strings.Contains(msg, "certificate") &&
 				!strings.Contains(msg, "authority") &&

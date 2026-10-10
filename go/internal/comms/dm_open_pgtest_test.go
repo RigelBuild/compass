@@ -759,8 +759,7 @@ func TestOpenDMMalformedQualifierIsNotFound(t *testing.T) {
 	for _, peer := range []string{"/bob", "owner/bob/x", "owner/", "/"} {
 		_, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: peer}))
 		connectCodeIs(t, err, connect.CodeNotFound, "OpenDM("+peer+")")
-		var ce *connect.Error
-		if !errors.As(err, &ce) || ce.Message() != notFoundFor(peer) {
+		if ce, ok := errors.AsType[*connect.Error](err); !ok || ce.Message() != notFoundFor(peer) {
 			t.Fatalf("OpenDM(%q) error = %v, want message %q naming the submitted handle", peer, err, notFoundFor(peer))
 		}
 	}

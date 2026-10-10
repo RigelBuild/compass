@@ -265,8 +265,8 @@ func assertFixtureError(t *testing.T, op string, err error, want fixtureError) {
 	if err == nil {
 		t.Fatalf("op %q succeeded, want a rejection with status %d", op, want.Status)
 	}
-	var se *StatusError
-	if !errors.As(err, &se) {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
 		t.Fatalf("op %q error = %v, want a *StatusError", op, err)
 	}
 	if se.Status != want.Status {

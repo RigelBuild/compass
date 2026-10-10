@@ -259,11 +259,13 @@ func TestComputeUsageSameSessionRunnerRebindKeepsInterval(t *testing.T) {
 func TestComputeUsageLegacyBindingGetsEstimatedStart(t *testing.T) {
 	for name, release := range map[string]func(*testing.T, context.Context, *Store){
 		"single release": func(t *testing.T, ctx context.Context, s *Store) {
+			t.Helper()
 			if err := s.DeleteSessionBinding(ctx, "legacy-session"); err != nil {
 				t.Fatalf("DeleteSessionBinding: %v", err)
 			}
 		},
 		"runner sweep": func(t *testing.T, ctx context.Context, s *Store) {
+			t.Helper()
 			if _, err := s.DeleteSessionBindingsForRunner(ctx, "runner-new"); err != nil {
 				t.Fatalf("DeleteSessionBindingsForRunner: %v", err)
 			}

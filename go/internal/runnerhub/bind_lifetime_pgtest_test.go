@@ -49,14 +49,14 @@ func TestBindLifetimeHandlerTenantScopedAndFailsClosed(t *testing.T) {
 	foreign := newRawRunnerClient(t, url, "foreign-runner-tok")
 
 	bind := func(client interface {
-		BindLifetime(context.Context, *connect.Request[compassv1internal.BindLifetimeRequest]) (*connect.Response[compassv1internal.BindLifetimeResponse], error)
+		BindLifetime(ctx context.Context, req *connect.Request[compassv1internal.BindLifetimeRequest]) (*connect.Response[compassv1internal.BindLifetimeResponse], error)
 	}, container, session string,
 	) error {
 		_, err := client.BindLifetime(ctx, connect.NewRequest(&compassv1internal.BindLifetimeRequest{ContainerName: container, SessionId: session}))
 		return err
 	}
 
-	var denials []string
+	denials := make([]string, 0, 3)
 	for _, tc := range []struct {
 		name string
 		err  error

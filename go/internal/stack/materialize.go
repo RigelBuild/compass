@@ -661,8 +661,8 @@ func guestGetAttempt(ctx context.Context, client *http.Client, requestURL, accep
 		}
 		token.value = ""
 		if err := fetchGuestBearerToken(ctx, client, requestURL, challenge, token); err != nil {
-			var transient retryable
-			return errors.As(err, &transient) && ctx.Err() == nil, err
+			_, transient := errors.AsType[retryable](err)
+			return transient && ctx.Err() == nil, err
 		}
 		return guestGetAttempt(ctx, client, requestURL, accept, token, sink, true)
 	}
@@ -674,8 +674,8 @@ func guestGetAttempt(ctx context.Context, client *http.Client, requestURL, accep
 		return transient, fmt.Errorf("GET %s: unexpected status %s", requestURL, resp.Status)
 	}
 	if err := sink(resp.Body); err != nil {
-		var transient retryable
-		return errors.As(err, &transient) && ctx.Err() == nil, err
+		_, transient := errors.AsType[retryable](err)
+		return transient && ctx.Err() == nil, err
 	}
 	return false, nil
 }

@@ -45,8 +45,8 @@ func isBodyReadTimeout(err error) bool {
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
-	var ne net.Error
-	return errors.As(err, &ne) && ne.Timeout()
+	ne, ok := errors.AsType[net.Error](err)
+	return ok && ne.Timeout()
 }
 
 // startDeadlineDoor stands up a loopback httptest server whose handler is the

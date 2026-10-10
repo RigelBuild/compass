@@ -311,14 +311,13 @@ func TestHostAsUser(t *testing.T) {
 
 	other := strconv.Itoa(os.Geteuid() + 1)
 	_, err := h.Exec(t.Context(), id, NewExecSpec("true").AsUser(other))
-	var unsupported *UnsupportedUserError
-	if !errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[*UnsupportedUserError](err); !ok {
 		t.Fatalf("Exec AsUser(other) err = %v, want *UnsupportedUserError", err)
 	}
 
 	// Streaming honors the same rule.
 	_, err = h.ExecStreaming(t.Context(), id, NewStreamingExecSpec("sleep", "1").AsUser(other))
-	if !errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[*UnsupportedUserError](err); !ok {
 		t.Fatalf("ExecStreaming AsUser(other) err = %v, want *UnsupportedUserError", err)
 	}
 }

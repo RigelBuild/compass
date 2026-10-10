@@ -96,7 +96,7 @@ func upBundledStack(ctx context.Context, t *testing.T, root string) bundledStack
 	if err != nil {
 		t.Fatalf("Up (%s): %v", filepath.Base(root), err)
 	}
-	downGuard(t, st)
+	downGuard(t, ctx, st)
 	return bundledStack{cfg: cfg, st: st}
 }
 

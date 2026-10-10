@@ -474,8 +474,8 @@ func TestLiveGitHubF1AuthorApprovalRejected(t *testing.T) {
 	// The author approving its OWN PR is a 422 (GitHub forbids APPROVE /
 	// REQUEST_CHANGES from the PR author; only COMMENT is allowed).
 	_, err = authorGH.SubmitReview(ctx, repo, pr.Number, SubmitReview{Verdict: "approve"})
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != 422 {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != 422 {
 		t.Fatalf("author self-approve: want *StatusError 422, got %v", err)
 	}
 
@@ -502,8 +502,8 @@ func TestLiveGitHubAuthFailureInvalidates(t *testing.T) {
 	gh := liveGitHub(bad)
 
 	_, err := gh.ListIssues(ctx, repo, IssueFilter{State: "open"})
-	var se *StatusError
-	if !errors.As(err, &se) {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok {
 		t.Fatalf("bad-token ListIssues: want *StatusError, got %v", err)
 	}
 	if se.Status != http.StatusUnauthorized && se.Status != http.StatusForbidden {
@@ -877,8 +877,8 @@ func TestLiveLinearTransitionUnknownName(t *testing.T) {
 	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tunknown-" + newRunID()})
 
 	_, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: "compass-live-nonexistent-state"})
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != http.StatusUnprocessableEntity {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown-name transition: want *StatusError 422, got %v", err)
 	}
 	for _, sub := range []string{team, "no workflow state named", "compass-live-nonexistent-state"} {
@@ -903,8 +903,8 @@ func TestLiveLinearTransitionTypeContradiction(t *testing.T) {
 	issue := createVisibleLinearIssue(t, ln, ts, team, CreateIssue{Title: "compass-live-tcontra-" + newRunID()})
 
 	_, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: started})
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != http.StatusUnprocessableEntity {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("type-contradiction transition: want *StatusError 422, got %v", err)
 	}
 	for _, sub := range []string{team, started, "started", "contradicts", stateClosed} {
@@ -1158,8 +1158,8 @@ func isUpstreamTransient(err error) bool {
 
 // isSecondaryRateLimit reports whether err is GitHub's 403 secondary-rate-limit.
 func isSecondaryRateLimit(err error) bool {
-	var se *StatusError
-	if !errors.As(err, &se) || se.Status != http.StatusForbidden {
+	se, ok := errors.AsType[*StatusError](err)
+	if !ok || se.Status != http.StatusForbidden {
 		return false
 	}
 	return strings.Contains(strings.ToLower(se.Message), "secondary rate limit")
@@ -1170,15 +1170,15 @@ func isSecondaryRateLimit(err error) bool {
 // `Post "...": context deadline exceeded (Client.Timeout exceeded while awaiting
 // headers)` shape). The client wraps this as a *url.Error whose Timeout() is
 // true and which wraps context.DeadlineExceeded; the provider then wraps that as
-// `do request: %w`, so both errors.As(net.Error) and errors.Is(DeadlineExceeded)
+// `do request: %w`, so both errors.AsType[net.Error](err) and errors.Is(DeadlineExceeded)
 // see through the chain. This is a third-party latency/availability blip, not a
 // bug in our client — exactly the class createWithBackoff re-issues once.
 func isTransientNetworkTimeout(err error) bool {
 	if err == nil {
 		return false
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	netErr, ok := errors.AsType[net.Error](err)
+	if ok && netErr.Timeout() {
 		return true
 	}
 	return errors.Is(err, context.DeadlineExceeded)
@@ -1448,6 +1448,10 @@ func updateCaptureSpecs() []captureSpec {
 // into committed testdata and into the bot PR this lane opens, and would break
 // the prelude accounting the specs assert.
 func githubUpdateSpecs() []captureSpec {
+	return append(githubCreateReadSpecs(), githubTransitionSpecs()...)
+}
+
+func githubCreateReadSpecs() []captureSpec {
 	return []captureSpec{
 		{provider: providerGitHub, name: "create_issue", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
@@ -1567,6 +1571,11 @@ func githubUpdateSpecs() []captureSpec {
 				return fixtureRequest{Op: "comment_on_issue", Repo: repo, Number: issue.Number,
 					Input: &fixtureInput{Body: body}}
 			}},
+	}
+}
+
+func githubTransitionSpecs() []captureSpec {
+	return []captureSpec{
 		{provider: providerGitHub, name: "transition_issue_close_default", prelude: 0,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()
@@ -1687,6 +1696,10 @@ func githubUpdateSpecs() []captureSpec {
 // reads are single-shot (prelude 0). Each run drives the SAME live op its sibling
 // oracle scenario runs, with the same teardown hygiene.
 func linearUpdateSpecs() []captureSpec {
+	return append(linearCreateReadSpecs(), linearTransitionSpecs()...)
+}
+
+func linearCreateReadSpecs() []captureSpec {
 	return []captureSpec{
 		{provider: providerLinear, name: "create_issue", prelude: 2,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
@@ -1746,6 +1759,11 @@ func linearUpdateSpecs() []captureSpec {
 				return fixtureRequest{Op: "comment_on_issue", Repo: team, Number: issue.Number,
 					Input: &fixtureInput{Body: body}}
 			}},
+	}
+}
+
+func linearTransitionSpecs() []captureSpec {
+	return []captureSpec{
 		{provider: providerLinear, name: "transition_issue_close_default", prelude: 3,
 			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
 				t.Helper()

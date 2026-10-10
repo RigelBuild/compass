@@ -127,7 +127,7 @@ func TestCollectorUpDown(t *testing.T) {
 
 	// The collector container is gone and the record removed.
 	waitContainerGone(t, colName, containerGoneBudget)
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
 		t.Fatalf("stack.pgids record %q still present after a full down: stat err = %v", recordPath, err)
 	}
@@ -186,7 +186,7 @@ func TestExternalOTLPUpDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compass-stack down (--otel-external): %v\n%s", err, out)
 	}
-	assertServerGone(t, fx.deps, cfg.SocketPath)
+	assertServerGone(t, t.Context(), fx.deps, cfg.SocketPath)
 }
 
 // derivedCollectorName reproduces stack.collectorContainerName (package-internal

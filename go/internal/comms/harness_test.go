@@ -56,14 +56,6 @@ func newTestStoreDSN(t *testing.T) (*store.Store, string) {
 	return openStore(t, dsn), dsn
 }
 
-// reopenStore opens an additional store against an existing, already-migrated
-// dsn WITHOUT resetting the schema — for the restart path, which reads back what
-// a prior store committed.
-func reopenStore(t *testing.T, dsn string) *store.Store {
-	t.Helper()
-	return openStore(t, dsn)
-}
-
 // openStore opens a store against dsn (which pgtest has reset to empty), running
 // migrations, and registers its Close on cleanup.
 func openStore(t *testing.T, dsn string) *store.Store {

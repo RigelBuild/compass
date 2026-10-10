@@ -39,11 +39,12 @@ type sharedState struct {
 var shared sharedState
 
 // registerSharedFixtureOption declares an option the shared stack must be built
-// with. Call it from a leg's init(), NOT from the leg body:
+// with. Call it from a leg's register<Leg>FixtureOptions function, listed in
+// TestMain, NOT from the leg body:
 //
-//	func init() { registerSharedFixtureOption(WithCannedMarkerScript("leg-b", ...)) }
+//	func registerLegBFixtureOptions() { registerSharedFixtureOption(WithCannedMarkerScript("leg-b", ...)) }
 //
-// Every init() in the package runs before the first test, so the full option
+// TestMain runs every registration before the first test, so the full option
 // set is known before stand-up no matter which leg reaches sharedFixture first,
 // and no matter how `go test -run` filters or reorders the legs.
 //
@@ -62,10 +63,10 @@ var shared sharedState
 // first routes its turns by marker.
 func registerSharedFixtureOption(opts ...fixtureOption) {
 	if shared.stoodUp {
-		// init() ordering guarantees this cannot happen from an init(); reaching
-		// here means a leg body called it, whose option would be silently lost.
+		// TestMain registers before any test runs; reaching here means a leg
+		// body called it, whose option would be silently lost.
 		panic("registerSharedFixtureOption called after the shared fixture stood up: " +
-			"call it from an init(), not from a test body — canned routes freeze at construction")
+			"register it from TestMain, not from a test body — canned routes freeze at construction")
 	}
 	shared.opts = append(shared.opts, opts...)
 }
@@ -263,7 +264,11 @@ func freeSharedPorts(n int) ([]int, error) {
 			return nil, fmt.Errorf("reserve port: %w", err)
 		}
 		lns = append(lns, ln)
-		ports = append(ports, ln.Addr().(*net.TCPAddr).Port)
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok {
+			return nil, fmt.Errorf("reserved listener address %T, want *net.TCPAddr", ln.Addr())
+		}
+		ports = append(ports, addr.Port)
 	}
 	for _, ln := range lns {
 		if err := ln.Close(); err != nil {
